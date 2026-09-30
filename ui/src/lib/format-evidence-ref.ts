@@ -55,7 +55,8 @@ export function formatEvidenceRef(refOrRawId: ResolvedEvidenceRef | string): Evi
     return { label: rawId, rawId, title: rawId };
   }
 
-  const { label } = formatSourceLabel(ref.sourceLabel);
+  // #573 — classified on the cited row's stored source, not the name alone.
+  const { label } = formatSourceLabel(ref.sourceLabel, undefined, ref.source);
   const base = label || rawId;
   const withLine = typeof ref.line === "number" ? `${base} #${ref.line}` : base;
   return { label: withLine, rawId, title: rawId };

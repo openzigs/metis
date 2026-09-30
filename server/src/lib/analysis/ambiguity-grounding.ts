@@ -16,6 +16,7 @@
  */
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { HAIKU_MODEL_ID, tierModelFor } from "../ai/model-router.js";
+import type { DocumentSource } from "../documents/document-source.js";
 import { createChildLogger } from "../logger.js";
 import type { ClarifyingQuestion, GroundingCitation } from "./types/requirements.js";
 
@@ -52,6 +53,8 @@ export interface GroundingRetriever {
       filename: string;
       text: string;
       score: number;
+      /** #573 — the hit's `documents.source`, carried onto the citation. */
+      source: DocumentSource;
     }>;
   }>;
 }
@@ -193,6 +196,7 @@ export class AmbiguityGrounding {
         if (!hit) continue; // ignore out-of-range indexes
         citations.push({
           source: hit.filename,
+          documentSource: hit.source,
           snippet: truncate(hit.text),
           documentId: hit.documentId,
           chunkId: hit.chunkId,

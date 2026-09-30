@@ -28,6 +28,7 @@ import {
   estimateFusedBlockTokens,
   renderFusedCodeContextBlock,
   retrieveFusedCodeChunks,
+  toFusedRagChunkRef,
   retrieveFusedCodeContext,
   symbolHitToContextChunk,
 } from "./fused-code-chunks.js";
@@ -208,7 +209,7 @@ describe("retrieveFusedCodeChunks — flag on (AC: fused hits + provenance)", ()
     const chunks = await retrieveFusedCodeChunks({
       projectId: "proj-1",
       query: "auth login",
-      ragChunks: [{ filename: "connector:repo:conn1:src/src/lib/auth/login.ts" }],
+      ragChunks: [{ filename: "connector:repo:conn1:src/src/lib/auth/login.ts", source: "repo" }],
       enabled: true,
       tokenBudget: 1500,
       maxSymbols: 12,
@@ -216,6 +217,19 @@ describe("retrieveFusedCodeChunks — flag on (AC: fused hits + provenance)", ()
     });
     expect(chunks).toHaveLength(1);
     expect(chunks[0]!.symbolId).toBe("sym-2");
+  });
+
+  it("#573 — keeps a hit whose path only an upload chunk shares", async () => {
+    const chunks = await retrieveFusedCodeChunks({
+      projectId: "proj-1",
+      query: "auth login",
+      ragChunks: [{ filename: "connector:repo:conn1:src/src/lib/auth/login.ts", source: "upload" }],
+      enabled: true,
+      tokenBudget: 1500,
+      maxSymbols: 12,
+      deps: { searcher: makeSearcher([rawHit()]), lineLookup: makeLineLookup(spans) },
+    });
+    expect(chunks.map((c) => c.symbolId)).toEqual(["sym-1"]);
   });
 
   it("truncates the ranked tail deterministically under the token budget", async () => {
@@ -406,5 +420,31 @@ describe("retrieveFusedCodeContext (#729) — shared agentic/req-grounded helper
     expect(ctx.block).toContain("src/lib/auth/login.ts:12-48");
     expect(ctx.tokens).toBe(estimateFusedBlockTokens(ctx.block));
     expect(ctx.tokens).toBeGreaterThan(0);
+  });
+});
+
+describe("toFusedRagChunkRef (#573)", () => {
+  it("carries a document chunk's documents.source", () => {
+    expect(
+      toFusedRagChunkRef({
+        documentId: "d1",
+        chunkIndex: 0,
+        filename: "connector:repo:c1:src/a.ts",
+        text: "t",
+        source: "repo",
+      }),
+    ).toEqual({ filename: "connector:repo:c1:src/a.ts", source: "repo" });
+  });
+
+  it("gives a code-graph symbol chunk no document source", () => {
+    expect(
+      toFusedRagChunkRef({
+        documentId: `${CODE_GRAPH_DOCUMENT_PREFIX}s1`,
+        chunkIndex: 0,
+        filename: "src/a.ts",
+        text: "t",
+        source: "code-graph",
+      }),
+    ).toEqual({ filename: "src/a.ts", source: undefined });
   });
 });

@@ -362,4 +362,32 @@ describe("#289 — agent-phase findings in the results view", () => {
     expect(repoList).toHaveBeenCalledWith("p1");
     expect(screen.getByTestId("findings-section").textContent).not.toContain("acmerp");
   });
+
+  // #573 — the label is classified on the cited row's stored source. A legacy
+  // upload stored as `connector:repo:…` before the #540 guard keeps its name;
+  // the repository row beside it is still labelled as a repository file.
+  it("labels a legacy reserved-prefix upload by its source, not its name (#573)", async () => {
+    repoList.mockResolvedValue([
+      { id: "cmexample0000000000acmerp", repoName: "wms-core", label: "WMS" },
+    ]);
+    const legacyName = "connector:repo:cmexample0000000000acmerp:src/NOTES.md";
+    const snapshot = structuredClone(SNAPSHOT);
+    snapshot.agentResults[0].findings[0].citations = [
+      { documentId: "doc-1", filename: legacyName, chunkIndex: 1, source: "upload" },
+      {
+        documentId: "doc-2",
+        filename: "connector:repo:cmexample0000000000acmerp:src/README.md",
+        chunkIndex: 3,
+        source: "repo",
+      },
+    ] as never;
+    apiMock.get.mockResolvedValue(snapshot);
+    renderPage();
+    await waitForResults();
+
+    await waitFor(() => expect(screen.getByText("README.md — wms-core")).toBeInTheDocument());
+    const legacy = screen.getByText(legacyName);
+    expect(legacy).toHaveAttribute("title", legacyName);
+    expect(screen.queryByText("NOTES.md — wms-core")).toBeNull();
+  });
 });

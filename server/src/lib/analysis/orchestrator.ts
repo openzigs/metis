@@ -191,6 +191,7 @@ import {
 import {
   retrieveFusedCodeChunks,
   retrieveFusedCodeContext,
+  toFusedRagChunkRef,
   type AnalysisFusedCodeDeps,
 } from "./fused-code-chunks.js";
 import {
@@ -2727,7 +2728,7 @@ export class AnalysisOrchestrator {
           projectDescription: input.projectDescription,
           extraInstructions: input.extraInstructions,
           requirements: input.requirements,
-          ragChunks: perRequirement.flatMap((r) => r.chunks).map((c) => ({ filename: c.filename })),
+          ragChunks: perRequirement.flatMap((r) => r.chunks).map(toFusedRagChunkRef),
           deps: this.deps.fusedCode,
         });
 
@@ -3488,7 +3489,7 @@ export class AnalysisOrchestrator {
           extraInstructions: input.extraInstructions,
           fallback: RETRIEVAL_QUERIES.code,
         }),
-        ragChunks: combined.map((c) => ({ filename: c.filename })),
+        ragChunks: combined.map(toFusedRagChunkRef),
         deps: this.deps.fusedCode,
       });
       return fusedChunks.length > 0 ? [...combined, ...fusedChunks] : combined;

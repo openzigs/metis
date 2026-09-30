@@ -170,9 +170,9 @@ export async function buildSpecKitRagContext(
         "",
         blocks,
       ].join("\n");
-      // #547 — only a repo-sourced chunk can stand in for a code symbol. An
-      // upload named `connector:repo:…` must not suppress the real code hit.
-      ragChunks = hits.filter((h) => h.source === "repo").map((h) => ({ filename: h.filename }));
+      // #547/#573 — only a repo-sourced chunk can stand in for a code symbol;
+      // `fuseCodeContext` enforces that on the `source` carried here.
+      ragChunks = hits.map((h) => ({ filename: h.filename, source: h.source }));
     }
 
     // #714 — merge deduped, budgeted code-graph symbol hits. No-op (empty block,

@@ -15,6 +15,7 @@ import {
   FINDING_SEVERITIES,
   NLI_LABELS,
 } from "./constants.js";
+import { documentSourceSchema } from "./project.js";
 
 // ---- NLI contradiction detection (Issue #219) ------------------------------
 
@@ -95,6 +96,13 @@ export const resolvedEvidenceRefSchema = z.object({
   sourceId: z.string().min(1).max(128).optional(),
   /** The citation `chunkIndex` (position within the source), when available. */
   line: z.number().int().min(0).optional(),
+  /**
+   * #573 — the cited document's `documents.source`, read from the row at read
+   * time. The UI parses a `connector:repo:` label only when this is `repo`, so
+   * a legacy upload stored under that name keeps it. Absent when no document
+   * row resolved (code citations, deleted documents).
+   */
+  source: documentSourceSchema.optional(),
 });
 export type ResolvedEvidenceRef = z.infer<typeof resolvedEvidenceRefSchema>;
 

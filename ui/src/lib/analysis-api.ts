@@ -12,6 +12,7 @@ import type {
   AnalysisDatabaseAware,
   AnalysisEscalation,
   AnalysisSkippedRepo,
+  DocumentSource,
   FindingSupportPanel,
   FindingVerificationStatus,
   RequirementCoverage,
@@ -99,6 +100,8 @@ export interface AnalysisDocumentCitation {
   filename?: string;
   snippet?: string;
   score?: number;
+  /** #573 — the cited row's `documents.source`; absent when it did not resolve. */
+  source?: DocumentSource;
 }
 
 /**
@@ -248,6 +251,8 @@ export interface ResolvedEvidenceRef {
   sourceId?: string;
   /** Citation position within the source, when available. */
   line?: number;
+  /** #573 — the cited row's `documents.source`; absent when it did not resolve. */
+  source?: DocumentSource;
 }
 
 /** Epic #203 (#221) — a first-class cross-document detection finding. */
@@ -729,7 +734,10 @@ export interface ClarifyImportResult {
 }
 
 export interface GroundingCitation {
+  /** The cited document's name — a display label, not its classification. */
   source: string;
+  /** #573 — the cited row's `documents.source`; absent on pre-#573 dialog state. */
+  documentSource?: DocumentSource;
   snippet: string;
   documentId?: string;
   chunkId?: string;

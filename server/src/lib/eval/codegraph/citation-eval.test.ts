@@ -114,7 +114,7 @@ describe("codegraph citation eval — flag ON (grounded, cited)", () => {
       fixture: f,
       provider,
       enabled: true,
-      ragChunks: [{ filename: "connector:repo:c1:src/payments/fee-calculator.ts" }],
+      ragChunks: [{ filename: "connector:repo:c1:src/payments/fee-calculator.ts", source: "repo" }],
     });
 
     const derived = expectedLocator(f.targetSymbol);

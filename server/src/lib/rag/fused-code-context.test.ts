@@ -81,9 +81,13 @@ describe("fuseCodeContext — rendering + locators (AC a)", () => {
   it("returns the surviving hits in render order, excluding deduped/budgeted drops", () => {
     const kept = hit({ symbolId: "s1", filePath: "src/A.ts", startLine: 5, endLine: 9, name: "A" });
     const dup = hit({ symbolId: "s2", filePath: "src/B.ts", name: "B" });
-    const res = fuseCodeContext([kept, dup], [{ filename: "connector:repo:cid1:src/src/B.ts" }], {
-      tokenBudget: 10_000,
-    });
+    const res = fuseCodeContext(
+      [kept, dup],
+      [{ filename: "connector:repo:cid1:src/src/B.ts", source: "repo" }],
+      {
+        tokenBudget: 10_000,
+      },
+    );
     expect(res.usedSymbols).toBe(1);
     expect(res.hits).toEqual([kept]);
   });
@@ -92,7 +96,7 @@ describe("fuseCodeContext — rendering + locators (AC a)", () => {
 describe("fuseCodeContext — dedupe against RAG doc chunks (AC b)", () => {
   it("drops a symbol hit whose file is already a source-as-RAG chunk (whole-file)", () => {
     const ragChunks: FusedRagChunkRef[] = [
-      { filename: "connector:repo:cid1:src/main/java/Foo.java" },
+      { filename: "connector:repo:cid1:src/main/java/Foo.java", source: "repo" },
     ];
     const res = fuseCodeContext(
       [
@@ -111,7 +115,7 @@ describe("fuseCodeContext — dedupe against RAG doc chunks (AC b)", () => {
   it("normalises leading ./ so path comparison still matches", () => {
     const res = fuseCodeContext(
       [hit({ filePath: "./a/b.ts" })],
-      [{ filename: "connector:repo:cid1:src/a/b.ts" }],
+      [{ filename: "connector:repo:cid1:src/a/b.ts", source: "repo" }],
       { tokenBudget: 10_000 },
     );
     expect(res.droppedDuplicate).toBe(1);
@@ -120,7 +124,7 @@ describe("fuseCodeContext — dedupe against RAG doc chunks (AC b)", () => {
 
   it("dedupes by line-range overlap when the RAG chunk carries a line span", () => {
     const ragChunks: FusedRagChunkRef[] = [
-      { filename: "connector:repo:cid1:src/a/b.ts", lineStart: 1, lineEnd: 20 },
+      { filename: "connector:repo:cid1:src/a/b.ts", source: "repo", lineStart: 1, lineEnd: 20 },
     ];
     const overlapping = hit({ symbolId: "ov", filePath: "a/b.ts", startLine: 15, endLine: 30 });
     const disjoint = hit({
@@ -136,10 +140,25 @@ describe("fuseCodeContext — dedupe against RAG doc chunks (AC b)", () => {
     expect(res.block).toContain("Later");
   });
 
+  // #573 — a legacy upload stored under a reserved `connector:repo:` name shares
+  // the repo path but is not repository code, so it must not hide the symbol.
+  it.each([["upload" as const], ["jira" as const], [undefined]])(
+    "does not dedupe against a %s-sourced chunk that shares the repo path",
+    (source) => {
+      const res = fuseCodeContext(
+        [hit({ filePath: "main/java/Foo.java" })],
+        [{ filename: "connector:repo:cid1:src/main/java/Foo.java", source }],
+        { tokenBudget: 10_000 },
+      );
+      expect(res.droppedDuplicate).toBe(0);
+      expect(res.usedSymbols).toBe(1);
+    },
+  );
+
   it("does not dedupe against non-source RAG chunks (README etc.)", () => {
     const res = fuseCodeContext(
       [hit({ filePath: "main/java/Foo.java" })],
-      [{ filename: "connector:repo:cid1:README.md" }],
+      [{ filename: "connector:repo:cid1:README.md", source: "repo" }],
       { tokenBudget: 10_000 },
     );
     expect(res.droppedDuplicate).toBe(0);
@@ -265,7 +284,7 @@ describe("buildFusedCodeBlock — enabled path", () => {
     const res = await buildFusedCodeBlock({
       projectId: "p1",
       query: "q",
-      ragChunks: [{ filename: "connector:repo:cid:src/a/dup.ts" }],
+      ragChunks: [{ filename: "connector:repo:cid:src/a/dup.ts", source: "repo" }],
       enabled: true,
       tokenBudget: 1500,
       maxSymbols: 12,

@@ -112,6 +112,32 @@ describe("ClarificationDialogPanel self-resolution", () => {
     expect(source).toHaveAttribute("title", rawId);
   });
 
+  // #573 — a legacy upload stored under a reserved `connector:repo:` name keeps
+  // its name: the label is classified on the cited row's stored source.
+  it("labels grounding citations by their stored source, not their name (#573)", () => {
+    const state = buildState();
+    const legacy = "connector:repo:cmexample0000000000acmerp:src/NOTES.md";
+    const repo = "connector:repo:cmexample0000000000acmerp:src/Auth.java";
+    state.rounds[0]!.questions[0]!.groundingCitations = [
+      { source: legacy, documentSource: "upload", snippet: "…" },
+      { source: repo, documentSource: "repo", snippet: "…" },
+      { source: legacy, documentSource: "upload", snippet: "again" },
+    ];
+
+    render(
+      <ClarificationDialogPanel
+        projectId="proj-1"
+        analysisId="ana-1"
+        state={state}
+        onComplete={() => {}}
+      />,
+    );
+
+    const source = screen.getByTestId("suggested-answer-source");
+    expect(source).toHaveTextContent(`Suggested answer (from ${legacy}, Auth.java — acmerp)`);
+    expect(source).toHaveAttribute("title", `${legacy}, ${repo}`);
+  });
+
   it("renders an open question with a blank input and no suggested-answer affordance", () => {
     render(
       <ClarificationDialogPanel

@@ -112,4 +112,24 @@ describe("formatEvidenceRef (#448)", () => {
       expect(r.label).not.toBe(r.rawId);
     });
   });
+
+  // #573 — classified on the cited row's stored source, not the name alone.
+  describe("#573 — a legacy reserved-prefix upload keeps its name", () => {
+    const name = "connector:repo:cmexample0000000000acmerp:src/NOTES.md";
+
+    it("does not parse a connector-shaped name whose source is an upload", () => {
+      const r = formatEvidenceRef({
+        chunkId: RAW_ID,
+        sourceLabel: name,
+        source: "upload",
+        line: 2,
+      });
+      expect(r.label).toBe(`${name} #2`);
+    });
+
+    it("still parses it when the source is repo", () => {
+      const r = formatEvidenceRef({ chunkId: RAW_ID, sourceLabel: name, source: "repo" });
+      expect(r.label).toBe("NOTES.md — acmerp");
+    });
+  });
 });

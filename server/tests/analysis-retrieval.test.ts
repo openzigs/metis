@@ -151,6 +151,15 @@ describe("buildRetrievalQueries", () => {
 // ── runGroundedRetrieval (#917 / #918 / #919) ────────────────────────────────
 
 describe("runGroundedRetrieval", () => {
+  it("#573 — carries each hit's documents.source onto the chunk", async () => {
+    const { knowledge } = makeKnowledge(() => [
+      chunk({ chunkId: "a", source: "repo" }),
+      chunk({ chunkId: "b", source: "upload" }),
+    ]);
+    const out = await runGroundedRetrieval(knowledge, { projectId: "p1", queries: ["q"] });
+    expect(out.map((c) => c.source)).toEqual(["repo", "upload"]);
+  });
+
   it("forwards documentIds to every search call (#913)", async () => {
     const { knowledge, calls } = makeKnowledge(() => [chunk({ chunkId: "a" })]);
     await runGroundedRetrieval(knowledge, {
@@ -280,6 +289,15 @@ describe("runGroundedRetrieval", () => {
 // ── retrievePerRequirement (#916) ────────────────────────────────────────────
 
 describe("retrievePerRequirement", () => {
+  it("#573 — carries each hit's documents.source onto the chunk", async () => {
+    const { knowledge } = makeKnowledge(() => [chunk({ chunkId: "a", source: "upload" })]);
+    const out = await retrievePerRequirement(knowledge, {
+      projectId: "p1",
+      requirements: [{ id: "REQ-001", text: "must encrypt at rest" }],
+    });
+    expect(out[0].chunks[0].source).toBe("upload");
+  });
+
   it("searches with each requirement's text and filters to documentIds", async () => {
     const { knowledge, calls } = makeKnowledge((q) => [chunk({ chunkId: q })]);
     const out = await retrievePerRequirement(knowledge, {

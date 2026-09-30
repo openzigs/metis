@@ -19,12 +19,21 @@
  * it falls back to a short form of the `connectorId`, distinct enough to
  * disambiguate the same filename across repos; the full id stays in the tooltip.
  *
+ * #573 — `source` is the cited row's `documents.source` when the caller knows
+ * it. Only a `repo` row is parsed as a repository file, so a legacy upload
+ * stored as `connector:repo:…` (before the #540 upload guard) keeps its name.
+ * When the source is unknown — a citation whose document no longer resolves, or
+ * dialog state written before #573 — the name is the only evidence left and is
+ * parsed as before.
+ *
  * The helper is pure and side-effect-free so it is trivially unit-testable and
  * reusable across every render site. Anything that is NOT in the
  * `connector:repo:` shape (legacy ids, plain filenames, empty/malformed input)
  * degrades gracefully: the raw value is returned unchanged as the label, so no
  * call site can crash on an id it did not expect.
  */
+
+import type { DocumentSource } from "@/lib/projects-api";
 
 export interface SourceLabel {
   /** Human-readable display label — `"<basename> — <repoLabel>"` for connector
@@ -81,6 +90,7 @@ function repoTokenFromConnectorId(connectorId: string): string {
 export function formatSourceLabel(
   rawId: string,
   repoNames?: Readonly<Record<string, string>>,
+  source?: DocumentSource,
 ): SourceLabel {
   const raw = (rawId ?? "").trim();
 
@@ -95,7 +105,7 @@ export function formatSourceLabel(
     return { label: "Live schema", rawId: raw, basename: "Live schema", isConnector: false };
   }
 
-  const match = raw.match(CONNECTOR_REPO_RE);
+  const match = source === undefined || source === "repo" ? raw.match(CONNECTOR_REPO_RE) : null;
   if (!match) {
     return { label: raw, rawId: raw, basename: raw, isConnector: false };
   }

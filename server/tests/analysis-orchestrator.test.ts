@@ -2900,6 +2900,93 @@ describe("AnalysisOrchestrator fused code-graph context (#729)", () => {
     expect(codePrompt).toBeDefined();
     expect(codePrompt).toContain("src/lib/auth/login.ts:12-48");
   });
+
+  // #573 — fused-code dedup classifies the retrieved chunk on its stored
+  // `documents.source`, threaded through the analysis chunk types. A chunk that
+  // shares the symbol's repo path suppresses the symbol only when it IS repo
+  // code; a legacy upload stored under the same `connector:repo:` name must not.
+  const sharedPathKnowledge = (source: "repo" | "upload") =>
+    ({
+      search: vi.fn(async () => ({
+        hits: [
+          {
+            chunkId: "ck-shared",
+            documentId: "doc-shared-path1",
+            position: 0,
+            filename: "connector:repo:conn1:src/src/lib/auth/login.ts",
+            text: "shared-path chunk",
+            score: 0.9,
+            source,
+          },
+        ],
+        embeddingModel: "stub",
+        elapsedMs: 1,
+      })),
+    }) as unknown as import("../src/lib/rag/knowledge-service.js").KnowledgeService;
+
+  it.each([
+    { source: "upload" as const, kept: true },
+    { source: "repo" as const, kept: false },
+  ])(
+    "SINGLE-SHOT (#573): a $source chunk sharing the symbol's repo path → symbol kept=$kept",
+    async ({ source, kept }) => {
+      vi.stubEnv("ANALYSIS_FUSED_CODE_RETRIEVAL", "true");
+      __resetConfigSingleton();
+      const { provider, userPrompts } = makeCapturingProvider();
+      const orch = new AnalysisOrchestrator({
+        provider,
+        knowledge: sharedPathKnowledge(source),
+        fusedCode: { searcher: fusedSearcher(), lineLookup: fusedLineLookup() },
+      });
+      const { id: analysisId } = await orch.start({
+        projectId: "proj-abcdefghij",
+        startedById: "user-1234567890",
+        agentKeys: ["code"],
+      });
+      await drain(analysisId);
+      expect(analyses.get(analysisId)!.status).toBe("completed");
+      expect(userPrompts.some((p) => p.includes("documentId=code-graph:sym-login"))).toBe(kept);
+    },
+  );
+
+  it.each([
+    { source: "upload" as const, kept: true },
+    { source: "repo" as const, kept: false },
+  ])(
+    "REQUIREMENT-GROUNDED (#573): a $source chunk sharing the symbol's repo path → symbol kept=$kept",
+    async ({ source, kept }) => {
+      vi.stubEnv("ANALYSIS_FUSED_CODE_RETRIEVAL", "true");
+      __resetConfigSingleton();
+      const { provider, userPrompts } = makeCapturingProvider();
+      const orch = new AnalysisOrchestrator({
+        provider,
+        knowledge: sharedPathKnowledge(source),
+        fusedCode: { searcher: fusedSearcher(), lineLookup: fusedLineLookup() },
+      });
+      await (
+        orch as unknown as {
+          runRequirementGroundedCodeAgent: (input: {
+            analysisId: string;
+            projectId: string;
+            projectName: string;
+            projectDescription: string;
+            requirements: Array<{ id: string; text: string }>;
+            documentIds?: string[];
+            signal: AbortSignal;
+          }) => Promise<import("../src/lib/analysis/agent-runner.js").AgentRunResult>;
+        }
+      ).runRequirementGroundedCodeAgent({
+        analysisId: nid("ana"),
+        projectId: "proj-abcdefghij",
+        projectName: "Acme",
+        projectDescription: "monolith with billing",
+        requirements: [{ id: "REQ-001", text: "users can log in" }],
+        documentIds: ["doc-shared-path1"],
+        signal: new AbortController().signal,
+      });
+      expect(userPrompts.some((p) => p.includes("src/lib/auth/login.ts:12-48"))).toBe(kept);
+    },
+  );
 });
 
 /**

@@ -80,6 +80,18 @@ export function symbolHitToContextChunk(hit: FusedSymbolHit): RetrievalContextCh
 }
 
 /**
+ * #573 — the dedup view of an already-retrieved chunk. A fused symbol chunk
+ * (`source: "code-graph"`) is not a document, so it carries no document source;
+ * a document chunk carries its `documents.source`, which the dedup reads.
+ */
+export function toFusedRagChunkRef(chunk: RetrievalContextChunk): FusedRagChunkRef {
+  return {
+    filename: chunk.filename,
+    source: chunk.source === "code-graph" ? undefined : chunk.source,
+  };
+}
+
+/**
  * Retrieve fused code-graph symbol chunks for the code agent's context.
  * Returns `[]` (searcher untouched) when the feature is disabled — the
  * flag-off path reproduces today's behaviour exactly.
