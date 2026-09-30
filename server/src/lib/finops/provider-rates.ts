@@ -326,8 +326,11 @@ export function isThirdPartyAnthropicEndpoint(
  * or gateway relaying to Anthropic (`ANTHROPIC_BASE_URL_BILLS_AS=anthropic`),
  * so Anthropic's list prices DO apply behind it. Anything else keeps the host
  * check. Never throws inside usage accounting.
+ *
+ * #512 — also the one reading the Anthropic provider's `servesRouterModel`
+ * uses, so pricing and model routing cannot disagree about such an endpoint.
  */
-function baseUrlBillsAsAnthropic(config: ConfigService): boolean {
+export function baseUrlBillsAsAnthropic(config: ConfigService = getConfigService()): boolean {
   try {
     return config.get("ANTHROPIC_BASE_URL_BILLS_AS")?.trim().toLowerCase() === "anthropic";
   } catch {

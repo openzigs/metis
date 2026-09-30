@@ -48,6 +48,7 @@
     "embeddings:migrate": "tsx --env-file=../.env scripts/embed-migrate.ts",
     "backfill:leaked-markers": "tsx --env-file-if-exists=../.env scripts/backfill-leaked-markers.ts",
     "facts:purge-truncated": "tsx --env-file-if-exists=../.env scripts/purge-truncated-facts.ts",
+    "publishing:dedup-leftovers": "tsx --env-file-if-exists=../.env scripts/report-dedup-leftovers.ts",
     "verify:cache": "tsx --env-file=../.env scripts/verify-prompt-cache.ts"
   },
   "dependencies": {
