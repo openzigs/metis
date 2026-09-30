@@ -19,6 +19,7 @@ import {
   enableUser,
   parseExpiryToSeconds,
   pruneExpiredRevocations,
+  RefreshUnavailableError,
   setRevocationStore,
   verifyAccessToken,
   verifyRefreshToken,
@@ -30,8 +31,10 @@ import type { RevocationStore } from "../src/lib/auth/revocation-store.js";
  * server restart. `restart()` returns a brand-new store reading these same maps.
  */
 interface Backing {
-  revoked: Map<string, { userId: string; expiresAt: Date }>;
+  revoked: Map<string, { userId: string; expiresAt: Date; revokedAt?: Date }>;
   cutoffs: Map<string, Date>;
+  /** #582 — when set, the next `isCutOff` read awaits this instead of the map. */
+  cutoffRead?: () => Promise<boolean>;
 }
 
 /** #561 — refresh re-reads memberships; these tests are about rotation. */
@@ -41,15 +44,25 @@ class InMemoryRevocationStore implements RevocationStore {
   constructor(private readonly db: Backing) {}
 
   async revokeToken(tokenId: string, userId: string, expiresAt: Date): Promise<void> {
-    this.db.revoked.set(tokenId, { userId, expiresAt });
+    this.db.revoked.set(tokenId, { userId, expiresAt, revokedAt: new Date() });
   }
 
-  async claimToken(tokenId: string, userId: string, expiresAt: Date): Promise<boolean> {
+  async claimToken(
+    tokenId: string,
+    userId: string,
+    expiresAt: Date,
+    claimedAt: Date = new Date(),
+  ): Promise<boolean> {
     // Atomic like the unique-index insert it stands in for: check and set run in
     // one synchronous step, so no other caller can interleave between them.
     if (this.db.revoked.has(tokenId)) return false;
-    this.db.revoked.set(tokenId, { userId, expiresAt });
+    this.db.revoked.set(tokenId, { userId, expiresAt, revokedAt: claimedAt });
     return true;
+  }
+
+  async releaseClaim(tokenId: string, claimedAt: Date): Promise<void> {
+    const row = this.db.revoked.get(tokenId);
+    if (row?.revokedAt?.getTime() === claimedAt.getTime()) this.db.revoked.delete(tokenId);
   }
 
   async isRevoked(tokenId: string, userId: string, issuedAt?: number): Promise<boolean> {
@@ -62,6 +75,11 @@ class InMemoryRevocationStore implements RevocationStore {
   }
 
   async isCutOff(userId: string, issuedAt: number): Promise<boolean> {
+    const override = this.db.cutoffRead;
+    if (override) {
+      this.db.cutoffRead = undefined;
+      return override();
+    }
     const cutoff = this.db.cutoffs.get(userId);
     return cutoff !== undefined && issuedAt <= Math.floor(cutoff.getTime() / 1000);
   }
@@ -214,14 +232,78 @@ describe("jwt", () => {
       // `revokeAllForUser` runs after `verifyRefreshToken` has passed and before
       // the claim — the claim still wins (the token itself is not revoked), so
       // only the post-claim cutoff re-check can refuse issuance.
-      await expect(
-        refreshAccessToken(refreshToken, async (userId) => {
-          await revokeAllUserSessions(userId);
-          return [];
-        }),
-      ).rejects.toThrow("Token has been revoked");
-      // The claim was recorded, so the presented token is spent either way.
+      const attempt = refreshAccessToken(refreshToken, async (userId) => {
+        await revokeAllUserSessions(userId);
+        return [];
+      });
+      await expect(attempt).rejects.toThrow("Token has been revoked");
+      // A confirmed cutoff is a refusal, not a retryable fault...
+      await expect(attempt).rejects.not.toBeInstanceOf(RefreshUnavailableError);
+      // ...and the claim is kept, so the presented token is spent.
       expect(backing.revoked.size).toBe(1);
+    });
+
+    it("a cutoff read that errors after the claim releases it: no pair now, the token still redeems", async () => {
+      const refreshToken = token();
+      backing.cutoffRead = () => Promise.reject(new Error("db blip"));
+      const failed = refreshAccessToken(refreshToken, noMemberships);
+      // Retryable, not "revoked" — the route turns this into a 503.
+      await expect(failed).rejects.toBeInstanceOf(RefreshUnavailableError);
+      // The failed attempt minted nothing and left no claim behind.
+      expect(backing.revoked.size).toBe(0);
+      // The same token redeems on the next try, exactly once.
+      const pair = await refreshAccessToken(refreshToken, noMemberships);
+      await expect(verifyRefreshToken(pair.refreshToken)).resolves.toBeTruthy();
+      await expect(verifyRefreshToken(refreshToken)).rejects.toThrow(/revoked/);
+    });
+
+    it("a concurrent loser is refused while the winner's claim holds, even if the winner then errors", async () => {
+      const refreshToken = token();
+      let failWinnerRead!: (e: Error) => void;
+      let winnerReading!: () => void;
+      const atRead = new Promise<void>((r) => (winnerReading = r));
+      backing.cutoffRead = () =>
+        new Promise<boolean>((_, reject) => {
+          failWinnerRead = reject;
+          winnerReading();
+        });
+      const winner = refreshAccessToken(refreshToken, noMemberships);
+      winner.catch(() => undefined);
+      await atRead; // the winner holds the claim and is mid cutoff-read
+      await expect(refreshAccessToken(refreshToken, noMemberships)).rejects.toThrow(
+        "Token has been revoked",
+      );
+      failWinnerRead(new Error("db blip"));
+      await expect(winner).rejects.toBeInstanceOf(RefreshUnavailableError);
+      // Released after the loser was refused: the holder can retry once.
+      await expect(refreshAccessToken(refreshToken, noMemberships)).resolves.toBeTruthy();
+    });
+
+    it("a release that itself fails still reports retryable and leaves the token spent (fail closed)", async () => {
+      const store = new InMemoryRevocationStore(backing);
+      store.releaseClaim = () => Promise.reject(new Error("db still down"));
+      setRevocationStore(store);
+      const refreshToken = token();
+      backing.cutoffRead = () => Promise.reject(new Error("db blip"));
+      await expect(refreshAccessToken(refreshToken, noMemberships)).rejects.toBeInstanceOf(
+        RefreshUnavailableError,
+      );
+      await expect(verifyRefreshToken(refreshToken)).rejects.toThrow(/revoked/);
+    });
+
+    it("a release never undoes a logout that restamped the claimed row", async () => {
+      const refreshToken = token();
+      const { tokenId } = await verifyRefreshToken(refreshToken);
+      backing.cutoffRead = async () => {
+        // Logout lands on the claimed row while the cutoff read is in flight.
+        await new Promise((r) => setTimeout(r, 2));
+        await revokeRefreshToken(tokenId, "u1", new Date(Date.now() + 60_000));
+        throw new Error("db blip");
+      };
+      await expect(refreshAccessToken(refreshToken, noMemberships)).rejects.toBeInstanceOf(
+        RefreshUnavailableError,
+      );
+      await expect(verifyRefreshToken(refreshToken)).rejects.toThrow(/revoked/);
     });
 
     it("a refresh with no deprovision still issues after the cutoff re-check", async () => {

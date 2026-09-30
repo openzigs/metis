@@ -7,10 +7,12 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import { proxyAuth } from "@/lib/auth-proxy";
 import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/config";
+import { resetRefreshSingleFlight } from "@/lib/edge-auth";
 
 const fetchMock = vi.fn();
 
 beforeEach(() => {
+  resetRefreshSingleFlight();
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
 });

@@ -105,13 +105,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           if (n === 2) resolve();
         };
       });
-      const claim = vi
-        .spyOn(revocationStore, "claimToken")
-        .mockImplementation(async (tokenId, userId, expiresAt) => {
-          arrive();
-          await bothArrived;
-          return realClaim(tokenId, userId, expiresAt);
-        });
+      const claim = vi.spyOn(revocationStore, "claimToken").mockImplementation(async (...args) => {
+        arrive();
+        await bothArrived;
+        return realClaim(...args);
+      });
       const refreshToken = freshRefreshToken();
       const [a, b] = await Promise.all([
         request(app()).post("/api/auth/refresh").send({ refreshToken }),
@@ -135,6 +133,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await store.claimToken("tok-582-direct", USER, expiresAt)).toBe(true);
       await expect(store.claimToken("tok-582-direct", USER, expiresAt)).resolves.toBe(false);
       expect(await db.revokedRefreshToken.count({ where: { tokenId: "tok-582-direct" } })).toBe(1);
+    });
+
+    it("a cutoff read error after the claim is a 503 that hands the token back; the retry succeeds", async () => {
+      vi.spyOn(revocationStore, "isCutOff").mockRejectedValueOnce(new Error("db blip"));
+      const refreshToken = freshRefreshToken();
+      const before = await db.revokedRefreshToken.count();
+
+      const failed = await request(app()).post("/api/auth/refresh").send({ refreshToken });
+      expect(failed.status).toBe(503);
+      expect(failed.body.error?.code).toBe("REFRESH_UNAVAILABLE");
+      expect(failed.headers["retry-after"]).toBe("1");
+      // No pair left the server, and the claim row was deleted by the real
+      // `releaseClaim` — the timestamp round-tripped through the driver intact.
+      expect(failed.body.data).toBeUndefined();
+      expect(failed.headers["set-cookie"]).toBeUndefined();
+      expect(await db.revokedRefreshToken.count()).toBe(before);
+
+      const retry = await request(app()).post("/api/auth/refresh").send({ refreshToken });
+      expect(retry.status).toBe(200);
+      expect(retry.body.data?.refreshToken).toEqual(expect.any(String));
+    });
+
+    it("a logout that restamps the claimed row survives a release", async () => {
+      const store = new PrismaRevocationStore();
+      const expiresAt = new Date(Date.now() + 60_000);
+      const claimedAt = new Date(Date.now() - 5_000);
+      expect(await store.claimToken("tok-582-logout", USER, expiresAt, claimedAt)).toBe(true);
+      await store.revokeToken("tok-582-logout", USER, expiresAt);
+      await store.releaseClaim("tok-582-logout", claimedAt);
+      expect(await db.revokedRefreshToken.count({ where: { tokenId: "tok-582-logout" } })).toBe(1);
     });
   },
 );

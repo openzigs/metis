@@ -16,6 +16,7 @@ import { getAuthProvider, type AuthenticatedUser } from "../lib/auth/providers.j
 import {
   issueTokens,
   refreshAccessToken,
+  RefreshUnavailableError,
   revokeRefreshToken,
   verifyRefreshToken,
 } from "../lib/auth/jwt.js";
@@ -213,7 +214,13 @@ export function authRouter(): Router {
     let tokens;
     try {
       tokens = await refreshAccessToken(refreshToken);
-    } catch {
+    } catch (err) {
+      // #582 — a transient store fault after the claim: the token was handed
+      // back, so tell the client to retry rather than sending it to /login.
+      if (err instanceof RefreshUnavailableError) {
+        res.set("Retry-After", "1");
+        throw new AppError(503, "REFRESH_UNAVAILABLE", "Session refresh temporarily unavailable");
+      }
       throw new AppError(401, "REFRESH_FAILED", "Invalid or expired refresh token");
     }
     res.cookie("accessToken", tokens.accessToken, {

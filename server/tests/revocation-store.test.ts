@@ -31,20 +31,25 @@ vi.mock("../src/lib/prisma.js", () => ({
       upsert: vi.fn(
         async ({
           where,
+          update,
           create,
         }: {
           where: { tokenId: string };
-          create: { tokenId: string; userId: string; expiresAt: Date };
+          update: { revokedAt?: Date };
+          create: { tokenId: string; userId: string; expiresAt: Date; revokedAt?: Date };
         }) => {
           const existing = revoked.get(where.tokenId);
-          if (existing) return existing; // update {} — no-op
+          if (existing) {
+            if (update.revokedAt) existing.revokedAt = update.revokedAt;
+            return existing;
+          }
           nextId += 1;
           const row: RevokedRow = {
             id: `rrt_${nextId}`,
             tokenId: create.tokenId,
             userId: create.userId,
             expiresAt: create.expiresAt,
-            revokedAt: new Date(),
+            revokedAt: create.revokedAt ?? new Date(),
           };
           revoked.set(row.tokenId, row);
           return row;
@@ -53,14 +58,22 @@ vi.mock("../src/lib/prisma.js", () => ({
       // The `tokenId @unique` index: a second insert of one tokenId rejects
       // with Prisma's unique-violation code, which is what makes it atomic.
       create: vi.fn(
-        async ({ data }: { data: { tokenId: string; userId: string; expiresAt: Date } }) => {
+        async ({
+          data,
+        }: {
+          data: { tokenId: string; userId: string; expiresAt: Date; revokedAt?: Date };
+        }) => {
           if (revoked.has(data.tokenId)) {
             throw Object.assign(new Error("Unique constraint failed on the fields: (`tokenId`)"), {
               code: "P2002",
             });
           }
           nextId += 1;
-          const row: RevokedRow = { id: `rrt_${nextId}`, ...data, revokedAt: new Date() };
+          const row: RevokedRow = {
+            id: `rrt_${nextId}`,
+            ...data,
+            revokedAt: data.revokedAt ?? new Date(),
+          };
           revoked.set(row.tokenId, row);
           return row;
         },
@@ -68,16 +81,27 @@ vi.mock("../src/lib/prisma.js", () => ({
       findUnique: vi.fn(async ({ where }: { where: { tokenId: string } }) => {
         return revoked.get(where.tokenId) ?? null;
       }),
-      deleteMany: vi.fn(async ({ where }: { where: { expiresAt: { lt: Date } } }) => {
-        let count = 0;
-        for (const [id, row] of revoked) {
-          if (row.expiresAt.getTime() < where.expiresAt.lt.getTime()) {
-            revoked.delete(id);
-            count += 1;
+      deleteMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: { expiresAt?: { lt: Date }; tokenId?: string; revokedAt?: Date };
+        }) => {
+          let count = 0;
+          for (const [id, row] of revoked) {
+            const matches = where.expiresAt
+              ? row.expiresAt.getTime() < where.expiresAt.lt.getTime()
+              : row.tokenId === where.tokenId &&
+                (where.revokedAt === undefined ||
+                  row.revokedAt.getTime() === where.revokedAt.getTime());
+            if (matches) {
+              revoked.delete(id);
+              count += 1;
+            }
           }
-        }
-        return { count };
-      }),
+          return { count };
+        },
+      ),
     },
     userSessionRevocation: {
       upsert: vi.fn(
@@ -189,6 +213,28 @@ describe("PrismaRevocationStore — claimToken (#582 atomic revoke-if-not-revoke
     expect(await store.claimToken("tok-1", "u1", exp())).toBe(false);
   });
 
+  it("releaseClaim (#582) deletes the claimed row, so the token is no longer revoked", async () => {
+    const claimedAt = new Date("2026-09-30T12:00:00.123Z");
+    expect(await store.claimToken("tok-1", "u1", exp(), claimedAt)).toBe(true);
+    await store.releaseClaim("tok-1", claimedAt);
+    expect(await store.isRevoked("tok-1", "u1")).toBe(false);
+    expect(await store.claimToken("tok-1", "u1", exp())).toBe(true);
+  });
+
+  it("releaseClaim leaves a row restamped by a logout in place", async () => {
+    const claimedAt = new Date(Date.now() - 1_000);
+    await store.claimToken("tok-1", "u1", exp(), claimedAt);
+    await store.revokeToken("tok-1", "u1", exp()); // logout lands on the claimed row
+    await store.releaseClaim("tok-1", claimedAt);
+    expect(await store.isRevoked("tok-1", "u1")).toBe(true);
+  });
+
+  it("releaseClaim with another claim's timestamp deletes nothing", async () => {
+    await store.claimToken("tok-1", "u1", exp(), new Date(1_000));
+    await store.releaseClaim("tok-1", new Date(2_000));
+    expect(await store.isRevoked("tok-1", "u1")).toBe(true);
+  });
+
   it("a non-unique-violation error propagates rather than reading as a lost claim", async () => {
     vi.spyOn(prisma.revokedRefreshToken, "create").mockRejectedValueOnce(new Error("db down"));
     await expect(store.claimToken("tok-1", "u1", exp())).rejects.toThrow("db down");
@@ -240,11 +286,11 @@ describe("PrismaRevocationStore — revoke-all via per-user cutoff", () => {
     expect(await store.isCutOff("u2", before)).toBe(false);
   });
 
-  it("isCutOff fails closed when the cutoff read throws", async () => {
+  it("isCutOff rethrows a read error so the caller can release its claim", async () => {
     vi.spyOn(prisma.userSessionRevocation, "findUnique").mockRejectedValueOnce(
       new Error("db down"),
     );
-    expect(await store.isCutOff("u1", 123)).toBe(true);
+    await expect(store.isCutOff("u1", 123)).rejects.toThrow("db down");
   });
 
   it("skips the cutoff check when issuedAt is undefined", async () => {
@@ -280,6 +326,7 @@ describe("startRevocationPruner", () => {
     const fake: RevocationStore = {
       revokeToken: vi.fn(),
       claimToken: vi.fn(),
+      releaseClaim: vi.fn(),
       isRevoked: vi.fn(),
       isCutOff: vi.fn(),
       revokeAllForUser: vi.fn(),
@@ -300,6 +347,7 @@ describe("startRevocationPruner", () => {
     const fake: RevocationStore = {
       revokeToken: vi.fn(),
       claimToken: vi.fn(),
+      releaseClaim: vi.fn(),
       isRevoked: vi.fn(),
       isCutOff: vi.fn(),
       revokeAllForUser: vi.fn(),

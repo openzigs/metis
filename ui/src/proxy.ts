@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/config";
-import { applyRotatedCookies, refreshUpstreamTokens } from "@/lib/edge-auth";
+import { applyRotatedCookies, isRetryableRefreshStatus, refreshUpstream } from "@/lib/edge-auth";
 
 const PUBLIC_PATHS = new Set(["/login"]);
 // `/invites/<token>` is the workspace-invitation landing page. Its audience is
@@ -8,6 +8,11 @@ const PUBLIC_PATHS = new Set(["/login"]);
 // (`GET /api/workspaces/invites/:token` and `POST …/accept`) are deliberately
 // unauthenticated — gating the page here bounced every invitee to /login.
 const PUBLIC_PREFIXES = ["/_next", "/favicon", "/api/auth/", "/invites/"];
+
+/** Served when the session refresh failed transiently; reloads itself shortly. */
+const RETRY_PAGE =
+  '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="2">' +
+  "<title>Reconnecting</title><p>Reconnecting to Metis…</p>";
 
 /**
  * Auth gate. Lets authenticated requests through; for a request whose
@@ -43,11 +48,24 @@ export async function proxy(request: NextRequest) {
   // single-flight per token within the process (see `refreshUpstreamTokens`):
   // parallel page requests share one refresh and set the same rotated cookies.
   const refreshValue = request.cookies.get(REFRESH_COOKIE)?.value;
-  const rotated = await refreshUpstreamTokens(refreshValue);
-  if (rotated) {
+  const refreshed = await refreshUpstream(refreshValue);
+  if (refreshed?.tokens) {
     const response = NextResponse.next();
-    applyRotatedCookies(response, rotated);
+    applyRotatedCookies(response, refreshed.tokens);
     return response;
+  }
+  // #582 — a 5xx refusal (e.g. the server's 503 `REFRESH_UNAVAILABLE`, which
+  // hands the refresh token back) is not an expired session: answer 503 and
+  // reload shortly instead of sending the user to /login.
+  if (refreshed && isRetryableRefreshStatus(refreshed.status)) {
+    return new NextResponse(RETRY_PAGE, {
+      status: 503,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Retry-After": refreshed.retryAfter ?? "2",
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
   // No (or invalid/expired) session → bounce to /login, preserving the path.

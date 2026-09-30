@@ -86,7 +86,14 @@ function buildUrl(path: string, params?: ApiFetchOptions["params"]): string {
 // original 401 surfaced as an ApiError.
 // ---------------------------------------------------------------------------
 
-let inFlightRefresh: Promise<boolean> | null = null;
+/**
+ * `unavailable` — the refresh was refused for a transient reason (a 5xx, e.g.
+ * the server's 503 `REFRESH_UNAVAILABLE`, which hands the refresh token back).
+ * The session is still good, so this must not log the user out (#582).
+ */
+type RefreshOutcome = "ok" | "failed" | "unavailable";
+
+let inFlightRefresh: Promise<RefreshOutcome> | null = null;
 type RefreshFailureHandler = () => void;
 let onRefreshFailure: RefreshFailureHandler | null = null;
 
@@ -133,10 +140,10 @@ export function _resetAuthRetryState(): void {
  * caller decides whether to re-hydrate `/auth/me` or treat it as a logout).
  */
 export async function refreshAccessToken(): Promise<boolean> {
-  return refreshOnce();
+  return (await refreshOnce()) === "ok";
 }
 
-async function refreshOnce(): Promise<boolean> {
+async function refreshOnce(): Promise<RefreshOutcome> {
   if (!inFlightRefresh) {
     inFlightRefresh = (async () => {
       try {
@@ -157,9 +164,10 @@ async function refreshOnce(): Promise<boolean> {
             /* swallow — a faulty subscriber cannot fail the refresh */
           }
         }
-        return response.ok;
+        if (response.ok) return "ok";
+        return response.status >= 500 ? "unavailable" : "failed";
       } catch {
-        return false;
+        return "failed";
       }
     })().finally(() => {
       // Clear after the current promise settles so a subsequent expiry triggers
@@ -268,11 +276,18 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
 
   if (shouldRetry) {
     const refreshed = await refreshOnce();
-    if (refreshed) {
+    if (refreshed === "ok") {
       ({ response, payload } = await doFetch<T>(path, { ...options, _skipAuthRetry: true }));
       if (response.status === 401) {
         onRefreshFailure?.();
       }
+    } else if (refreshed === "unavailable") {
+      // #582 — the session is intact; surface a retryable error, don't log out.
+      throw new ApiError(
+        503,
+        "Session refresh temporarily unavailable — please retry",
+        "REFRESH_UNAVAILABLE",
+      );
     } else {
       onRefreshFailure?.();
     }
@@ -343,7 +358,7 @@ export async function streamFetch(
 
   if (shouldRetry) {
     const refreshed = await refreshOnce();
-    if (refreshed) {
+    if (refreshed === "ok") {
       // Discard the original 401 body so the underlying socket can be reused.
       try {
         await response.body?.cancel();
@@ -354,9 +369,11 @@ export async function streamFetch(
       if (response.status === 401) {
         onRefreshFailure?.();
       }
-    } else {
+    } else if (refreshed === "failed") {
       onRefreshFailure?.();
     }
+    // `unavailable` (#582): return the original 401 untouched and keep the
+    // session — the caller surfaces an error and a later request retries.
   }
 
   return response;

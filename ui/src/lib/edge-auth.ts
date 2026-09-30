@@ -42,16 +42,25 @@ export interface RotatedTokens {
 }
 
 /**
- * #582 follow-up — single-flight for the proxy-side refresh.
+ * #582 follow-up — single-flight for EVERY UI-side refresh.
  *
  * The server's refresh is strictly one-winner: a refresh token rotates exactly
- * once, and every other request presenting it is refused (401). A navigation
- * plus its RSC prefetches, or two tabs, can reach `proxy.ts` together with the
- * same lapsed access cookie and the same refresh cookie — without coordination
- * every loser would be bounced to /login. So within this process, concurrent
- * callers presenting one refresh token share ONE upstream call, and callers
- * arriving within `REFRESH_RESULT_TTL_MS` after it succeeded reuse its rotated
- * pair (so they set the same cookies the winner did).
+ * once, and every other request presenting it is refused (401). Two paths in
+ * this process present the browser's refresh cookie upstream: the auth gate
+ * (`proxy.ts`, on a page request whose access cookie lapsed) and the
+ * `/api/auth/refresh` route (`auth-proxy.ts`, which the browser api-client
+ * calls on a 401 or from its sliding-session timer). A navigation plus its RSC
+ * prefetches, two tabs each running the api-client, or a tab's api-client
+ * racing a page request can all present the same refresh cookie at once —
+ * without coordination every loser would be sent to /login. Both paths go
+ * through `refreshUpstream` below, so within this process concurrent callers
+ * presenting one refresh token share ONE upstream call and all receive the same
+ * status, body and rotated cookies; callers arriving within
+ * `REFRESH_RESULT_TTL_MS` after it succeeded reuse its rotated pair.
+ *
+ * The api-client has its own per-tab single-flight (`refreshOnce`); that one
+ * only coalesces callers inside one tab. Cross-tab and cross-path coalescing is
+ * this map's job.
  *
  * - Keyed by a SHA-256 of the refresh token, never the raw token.
  * - Bounded: at most `REFRESH_CACHE_MAX_ENTRIES` keys; expired entries are
@@ -67,8 +76,23 @@ export interface RotatedTokens {
 export const REFRESH_RESULT_TTL_MS = 5_000;
 export const REFRESH_CACHE_MAX_ENTRIES = 500;
 
+/**
+ * The outcome of one upstream `/auth/refresh`, shared by every caller of a
+ * flight. `body` is the upstream JSON envelope with the tokens still in it —
+ * treat it as read-only and strip the tokens before it reaches a browser.
+ */
+export interface UpstreamRefreshResult {
+  /** Upstream HTTP status; 502 when the upstream could not be reached. */
+  status: number;
+  body: unknown;
+  /** The rotated pair — present only on a 2xx carrying both tokens. */
+  tokens: RotatedTokens | null;
+  /** Upstream `Retry-After`, forwarded on a retryable (5xx) refusal. */
+  retryAfter: string | null;
+}
+
 interface RefreshFlight {
-  promise: Promise<RotatedTokens | null>;
+  promise: Promise<UpstreamRefreshResult>;
   /** `Infinity` while in flight; `settledAt + TTL` once it succeeded. */
   expiresAt: number;
 }
@@ -113,8 +137,9 @@ function evictForInsert(now: number): void {
  *
  * Returns the rotated pair on success, or `null` on ANY failure — missing/empty
  * input, a non-2xx response (e.g. an expired/invalid/revoked refresh token →
- * 401 `REFRESH_FAILED`), a malformed body, or a network error. It NEVER throws;
- * callers treat `null` as "refresh not possible → fall back to /login".
+ * 401 `REFRESH_FAILED`, or a retryable 503 `REFRESH_UNAVAILABLE`), a malformed
+ * body, or a network error. It NEVER throws. Callers that must tell "retry"
+ * apart from "log in again" use `refreshUpstream` and read the status.
  *
  * Security: only the refresh token is forwarded server-to-server; nothing is
  * trusted from the client beyond the HttpOnly cookie value, and tokens are
@@ -123,12 +148,24 @@ function evictForInsert(now: number): void {
 export async function refreshUpstreamTokens(
   refreshTokenValue: string | undefined,
 ): Promise<RotatedTokens | null> {
+  return (await refreshUpstream(refreshTokenValue))?.tokens ?? null;
+}
+
+/**
+ * The single-flight upstream refresh itself — `refreshUpstreamTokens` and the
+ * `/api/auth/refresh` route both call this. Returns `null` only when there is no
+ * refresh token to present; otherwise the shared upstream outcome, success or
+ * not. Never throws.
+ */
+export async function refreshUpstream(
+  refreshTokenValue: string | undefined,
+): Promise<UpstreamRefreshResult | null> {
   if (!refreshTokenValue) return null;
   let key: string;
   try {
     key = await refreshKey(refreshTokenValue);
   } catch {
-    return null;
+    return unreachable();
   }
   // Everything from here to the `set` is synchronous, so two callers resumed
   // from the digest cannot both miss the map.
@@ -139,7 +176,7 @@ export async function refreshUpstreamTokens(
 
   evictForInsert(now);
   const flight: RefreshFlight = {
-    promise: fetchRotatedTokens(refreshTokenValue),
+    promise: fetchUpstreamRefresh(refreshTokenValue),
     expiresAt: Number.POSITIVE_INFINITY,
   };
   refreshFlights.set(key, flight);
@@ -147,13 +184,25 @@ export async function refreshUpstreamTokens(
   // Only the entry this call created is updated — an evicted or replaced one
   // belongs to someone else by now.
   if (refreshFlights.get(key) === flight) {
-    if (result) flight.expiresAt = Date.now() + REFRESH_RESULT_TTL_MS;
+    if (result.tokens) flight.expiresAt = Date.now() + REFRESH_RESULT_TTL_MS;
     else refreshFlights.delete(key);
   }
   return result;
 }
 
-async function fetchRotatedTokens(refreshTokenValue: string): Promise<RotatedTokens | null> {
+function unreachable(): UpstreamRefreshResult {
+  return {
+    status: 502,
+    body: {
+      success: false,
+      error: { code: "UPSTREAM_UNREACHABLE", message: "Authentication service unreachable" },
+    },
+    tokens: null,
+    retryAfter: null,
+  };
+}
+
+async function fetchUpstreamRefresh(refreshTokenValue: string): Promise<UpstreamRefreshResult> {
   try {
     const upstream = await fetch(`${UPSTREAM_API_BASE}/auth/refresh`, {
       method: "POST",
@@ -162,17 +211,25 @@ async function fetchRotatedTokens(refreshTokenValue: string): Promise<RotatedTok
         Cookie: `${UPSTREAM_REFRESH_COOKIE}=${refreshTokenValue}`,
       },
     });
-    if (!upstream.ok) return null;
-    const json = (await upstream.json().catch(() => null)) as {
+    const body = (await upstream.json().catch(() => null)) as {
       data?: { accessToken?: string; refreshToken?: string };
     } | null;
-    const accessToken = json?.data?.accessToken;
-    const refreshToken = json?.data?.refreshToken;
-    if (!accessToken || !refreshToken) return null;
-    return { accessToken, refreshToken };
+    const accessToken = body?.data?.accessToken;
+    const refreshToken = body?.data?.refreshToken;
+    return {
+      status: upstream.status,
+      body,
+      tokens: upstream.ok && accessToken && refreshToken ? { accessToken, refreshToken } : null,
+      retryAfter: upstream.headers?.get?.("retry-after") ?? null,
+    };
   } catch {
-    return null;
+    return unreachable();
   }
+}
+
+/** True when a refresh was refused for a transient reason — retry, don't log out. */
+export function isRetryableRefreshStatus(status: number): boolean {
+  return status >= 500;
 }
 
 /** Set the rotated Next-origin cookies (`metis.at` / `metis.rt`) on a response. */

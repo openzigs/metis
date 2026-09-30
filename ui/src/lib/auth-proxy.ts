@@ -9,6 +9,7 @@ import {
   REFRESH_OPTS,
   UPSTREAM_ACCESS_COOKIE,
   UPSTREAM_REFRESH_COOKIE,
+  refreshUpstream,
 } from "@/lib/edge-auth";
 
 interface UpstreamData {
@@ -54,6 +55,24 @@ export async function proxyAuth(
 
   const access = request.cookies.get(ACCESS_COOKIE)?.value;
   const refresh = request.cookies.get(REFRESH_COOKIE)?.value;
+
+  // #582 — a cookie-borne refresh joins the process-wide single-flight shared
+  // with the `proxy.ts` auth gate, so two tabs (or a tab and a page request)
+  // presenting one refresh cookie make one upstream call and all get its
+  // result. The server rotates a token exactly once; forwarding each of them
+  // separately would refuse every caller but the first.
+  if (endpoint === "refresh" && refresh) {
+    const shared = await refreshUpstream(refresh);
+    if (shared) {
+      return toBrowserResponse(
+        endpoint,
+        shared.status,
+        shared.body as UpstreamEnvelope | null,
+        shared.retryAfter,
+      );
+    }
+  }
+
   const cookieParts: string[] = [];
   if (access) cookieParts.push(`${UPSTREAM_ACCESS_COOKIE}=${access}`);
   if (refresh) cookieParts.push(`${UPSTREAM_REFRESH_COOKIE}=${refresh}`);
@@ -76,6 +95,22 @@ export async function proxyAuth(
     }
   }
 
+  return toBrowserResponse(endpoint, upstream.status, parsed, upstream.headers.get("retry-after"));
+}
+
+/**
+ * Build the browser-facing response from an upstream status + envelope. Never
+ * mutates `upstreamBody` — a single-flight refresh result is shared between
+ * callers.
+ */
+function toBrowserResponse(
+  endpoint: string,
+  status: number,
+  upstreamBody: UpstreamEnvelope | null,
+  retryAfter: string | null,
+): NextResponse {
+  const ok = status >= 200 && status < 300;
+  let parsed = upstreamBody;
   // Capture token rotations BEFORE we strip them from the body.
   const newAccess = parsed?.data?.accessToken;
   const newRefresh = parsed?.data?.refreshToken;
@@ -86,14 +121,13 @@ export async function proxyAuth(
     parsed = { ...parsed, data: cleaned };
   }
 
-  const response = NextResponse.json(parsed ?? { success: upstream.ok }, {
-    status: upstream.status,
-  });
+  const response = NextResponse.json(parsed ?? { success: ok }, { status });
+  if (retryAfter && status >= 500) response.headers.set("Retry-After", retryAfter);
 
-  if (upstream.ok && newAccess) {
+  if (ok && newAccess) {
     response.cookies.set(ACCESS_COOKIE, newAccess, ACCESS_OPTS);
   }
-  if (upstream.ok && newRefresh) {
+  if (ok && newRefresh) {
     response.cookies.set(REFRESH_COOKIE, newRefresh, REFRESH_OPTS);
   }
   if (endpoint === "logout") {
