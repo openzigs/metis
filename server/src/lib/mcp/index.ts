@@ -62,7 +62,8 @@ export function bootstrapMCP(opts: BootstrapOptions = {}): MCPBootstrap {
     : null;
   const lifecycle = new MCPLifecycleManager({
     provisioners,
-    resolveEnv: async (env) => expandVaultRefs(env, getVaultService()),
+    resolveEnv: async (env, secretBindings) =>
+      expandVaultRefs(env, getVaultService(), secretBindings),
     // #340 — a user-scope server's events reach only its owner and admins.
     // #353 — a project-scope server's events reach only its project's
     // workspace members and admins (`assertProjectAccess` semantics).

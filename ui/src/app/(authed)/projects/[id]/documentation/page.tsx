@@ -1191,6 +1191,8 @@ function IndexingBadge({ state }: { state?: string | null }): React.ReactElement
     quarantined: "bg-warning-muted text-warning",
     rejected: "bg-destructive/10 text-destructive",
     failed: "bg-destructive/10 text-destructive",
+    // #489 — a user stopped it; nothing went wrong, so not the destructive tone.
+    cancelled: "bg-muted text-muted-foreground",
   };
   return (
     <span
@@ -1211,6 +1213,8 @@ function formatIndexingSummary(indexing?: GeneratedDoc["indexing"]): string {
       return "Awaiting approval before indexing.";
     case "rejected":
       return indexing.errorMessage?.trim() || "Indexing was rejected.";
+    case "cancelled":
+      return indexing.errorMessage?.trim() || "Publishing was cancelled.";
     default:
       return indexing.errorMessage?.trim() || "Queued for indexing.";
   }

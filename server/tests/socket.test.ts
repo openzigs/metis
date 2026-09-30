@@ -80,6 +80,27 @@ function makeClient(opts: {
   });
 }
 
+/** Connect as a developer and resolve once the server has sent `auth:ok`. */
+async function connectAs(userId: string, username: string): Promise<ClientSocket> {
+  const { accessToken } = issueTokens({
+    userId,
+    username,
+    role: "developer",
+    permissions: ["analysis.read"],
+  });
+  const socket = ioClient(`http://127.0.0.1:${port}`, {
+    auth: { token: accessToken },
+    transports: ["websocket"],
+    reconnection: false,
+    timeout: 1500,
+  });
+  await new Promise<void>((resolve, reject) => {
+    socket.on("auth:ok", () => resolve());
+    socket.on("connect_error", (err) => reject(err));
+  });
+  return socket;
+}
+
 describe("Socket.IO server", () => {
   it("rejects connections without a JWT", async () => {
     const { ok, err, socket } = await makeClient({});
@@ -262,14 +283,162 @@ describe("Socket.IO server", () => {
 
     createJobEventEmitter(io).completed("analysis", "foreign-job", "p-other", "secret progress");
 
-    const received: unknown[] = [];
-    socket.on("job:lifecycle", (e: unknown) => received.push(e));
-    socket.emit("subscribe:job", { jobId: "foreign-job" });
-    // The authz check is async; give it more time than it needs, then assert
-    // silence. A bare `await nextTick` would pass even if the gate were absent.
-    await new Promise((r) => setTimeout(r, 300));
-    expect(received).toEqual([]);
+    createJobEventEmitter(io).completed("analysis", "allowed-job", "p1", "visible");
 
+    const received: Array<{ jobId: string }> = [];
+    socket.on("job:lifecycle", (e: { jobId: string }) => received.push(e));
+    socket.emit("subscribe:job", { jobId: "foreign-job" });
+    // The authz check is async, so a fixed sleep fails open against a slow
+    // replay. Barrier instead: a later subscribe to an allowed job on the same
+    // socket must replay first, and only then is silence for the foreign job
+    // meaningful.
+    socket.emit("subscribe:job", { jobId: "allowed-job" });
+    await vi.waitFor(() => expect(received.map((e) => e.jobId)).toContain("allowed-job"));
+    expect(received.map((e) => e.jobId)).toEqual(["allowed-job"]);
+
+    socket.close();
+  });
+
+  /**
+   * #510 — `subscribe:job` also replays the latest `job:doc-section` state of
+   * each section. A section that finished while the socket was down (a
+   * reconnect drops its rooms) was otherwise only seen on the next refetch.
+   */
+  it("replays the latest job:doc-section state of each section to a member", async () => {
+    _resetJobLifecycleMemory();
+    const socket = await connectAs("u1", "alice");
+    const emitter = createJobEventEmitter(io);
+    emitter.started("doc-generation", "doc-job", "p1");
+    emitter.docSection({
+      jobId: "doc-job",
+      projectId: "p1",
+      section: "Overview",
+      status: "generating",
+    });
+    emitter.docSection({ jobId: "doc-job", projectId: "p1", section: "Risks", status: "done" });
+    emitter.docSection({ jobId: "doc-job", projectId: "p1", section: "Overview", status: "done" });
+
+    const received: Array<{ section: string; status: string }> = [];
+    socket.on("job:doc-section", (e: { section: string; status: string }) => received.push(e));
+    socket.emit("subscribe:job", { jobId: "doc-job" });
+    await vi.waitFor(() =>
+      expect(received.map((e) => [e.section, e.status])).toEqual([
+        ["Overview", "done"],
+        ["Risks", "done"],
+      ]),
+    );
+    socket.close();
+  });
+
+  it("replays doc-sections even when no lifecycle event is remembered", async () => {
+    _resetJobLifecycleMemory();
+    const socket = await connectAs("u1", "alice");
+    createJobEventEmitter(io).docSection({
+      jobId: "sections-only",
+      projectId: "p1",
+      section: "Overview",
+      status: "done",
+    });
+    const received: Array<{ section: string }> = [];
+    socket.on("job:doc-section", (e: { section: string }) => received.push(e));
+    socket.emit("subscribe:job", { jobId: "sections-only" });
+    await vi.waitFor(() => expect(received.map((e) => e.section)).toEqual(["Overview"]));
+    socket.close();
+  });
+
+  it("does NOT replay doc-sections of a project the subscriber cannot access", async () => {
+    _resetJobLifecycleMemory();
+    const socket = await connectAs("u1", "alice");
+    createJobEventEmitter(io).docSection({
+      jobId: "foreign-doc",
+      projectId: "p-other",
+      section: "Secret section",
+      status: "done",
+    });
+    createJobEventEmitter(io).docSection({
+      jobId: "allowed-doc",
+      projectId: "p1",
+      section: "Visible section",
+      status: "done",
+    });
+    const received: Array<{ jobId: string }> = [];
+    socket.on("job:doc-section", (e: { jobId: string }) => received.push(e));
+    socket.emit("subscribe:job", { jobId: "foreign-doc" });
+    // Barrier rather than a fixed sleep (which fails open on a slow replay):
+    // wait for an allowed job's replay on the same socket, then assert.
+    socket.emit("subscribe:job", { jobId: "allowed-doc" });
+    await vi.waitFor(() => expect(received.map((e) => e.jobId)).toContain("allowed-doc"));
+    expect(received.map((e) => e.jobId)).toEqual(["allowed-doc"]);
+    socket.close();
+  });
+
+  it("replays only the sections of the project the gate checked", async () => {
+    _resetJobLifecycleMemory();
+    const socket = await connectAs("u1", "alice");
+    const emitter = createJobEventEmitter(io);
+    emitter.started("doc-generation", "mixed-job", "p1");
+    emitter.docSection({
+      jobId: "mixed-job",
+      projectId: "p-other",
+      section: "Foreign",
+      status: "done",
+    });
+    const sections: unknown[] = [];
+    socket.on("job:doc-section", (e: unknown) => sections.push(e));
+    const lifecycle = new Promise<void>((resolve) => socket.on("job:lifecycle", () => resolve()));
+    socket.emit("subscribe:job", { jobId: "mixed-job" });
+    await lifecycle;
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sections).toEqual([]);
+    socket.close();
+  });
+
+  /**
+   * #510 acceptance: a section completed during an outage reaches the client
+   * after reconnect. The client drops, the section finishes into a room it is
+   * no longer in, and the re-subscribe on the next connect (what
+   * `ui/src/lib/job-rooms.ts` sends) brings it back.
+   */
+  it("delivers a section completed during an outage after the reconnect re-subscribe", async () => {
+    _resetJobLifecycleMemory();
+    const { accessToken } = issueTokens({
+      userId: "u1",
+      username: "alice",
+      role: "developer",
+      permissions: ["analysis.read"],
+    });
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: accessToken },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 1500,
+    });
+    const statuses: string[] = [];
+    socket.on("job:doc-section", (e: { status: string }) => statuses.push(e.status));
+    await new Promise<void>((resolve) => socket.once("auth:ok", () => resolve()));
+    const emitter = createJobEventEmitter(io);
+    emitter.docSection({
+      jobId: "outage-job",
+      projectId: "p1",
+      section: "Overview",
+      status: "generating",
+    });
+    socket.emit("subscribe:job", { jobId: "outage-job" });
+    await vi.waitFor(() => expect(statuses).toEqual(["generating"]));
+
+    socket.disconnect();
+    emitter.docSection({
+      jobId: "outage-job",
+      projectId: "p1",
+      section: "Overview",
+      status: "done",
+    });
+    expect(statuses).toEqual(["generating"]);
+
+    socket.connect();
+    await new Promise<void>((resolve) => socket.once("auth:ok", () => resolve()));
+    socket.emit("subscribe:job", { jobId: "outage-job" });
+    await vi.waitFor(() => expect(statuses).toEqual(["generating", "done"]));
     socket.close();
   });
 

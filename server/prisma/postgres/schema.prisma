@@ -1015,7 +1015,8 @@ model RepoConnection {
   /// Epic #708 — AI Bug Scanner runs against this repo.
   scans              Scan[]
 
-  @@unique([projectId, label])
+  /// #492 — partial: a soft-deleted connector frees its label for reuse.
+  @@unique([projectId, label], where: { deletedAt: null }, map: "repo_connections_projectId_label_key")
   /// #457 — at most one live primary repository per project.
   @@unique([projectId], where: { isPrimary: true, deletedAt: null }, map: "repo_connections_projectId_primary_key")
   @@index([secretId])
@@ -2242,6 +2243,8 @@ model MCPServer {
   envJson                String? // JSON object — values may be ${vault:label} refs
   envSecretId            String? // optional pointer to a vault secret holding env JSON
   envSecretRefs          String? // JSON map of envKey -> secretLabel (importer + UI)
+  /// #480 — JSON map of `${vault:x}` ref body -> the secret id it was bound to when saved. NULL = saved before #480.
+  secretBindings         String?
   trustLevel             String    @default("untrusted") // trusted|untrusted
   defaultToolRisk        String    @default("medium") // low|medium|high
   version                String?

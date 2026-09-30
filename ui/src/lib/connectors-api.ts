@@ -57,7 +57,12 @@ export interface RefreshIngestSummary {
   cloneSizeBytes: number;
   /** #449 — false when the refresh landed but regeneration was not scheduled. */
   regenerationScheduled?: boolean;
-  /** #449 — set when scheduling regeneration failed; its retry runs on its own. */
+  /** #498 — ingest failures, plus one when scheduling regeneration failed. */
+  failureCount?: number;
+  /**
+   * #449 / #498 — set when part of the ingest failed (regeneration skipped) or
+   * when scheduling regeneration failed (its retry runs on its own).
+   */
   warning?: string;
 }
 

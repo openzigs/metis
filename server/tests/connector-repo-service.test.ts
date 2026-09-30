@@ -91,14 +91,6 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     auditLog: { create: vi.fn(async () => ({})) },
-    secret: {
-      findFirst: vi.fn(
-        async ({ where }: { where: { OR: Array<{ name: string }>; deletedAt: null } }) => {
-          const label = where.OR[0]?.name;
-          return label ? { id: label, name: label } : null;
-        },
-      ),
-    },
   },
 }));
 
@@ -129,6 +121,15 @@ vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
 
 vi.mock("../src/lib/connectors/vault-resolver.js", () => ({
   resolveVaultRef: vi.fn(async (ref: string | null) => (ref ? `pat_${ref}` : null)),
+  readBoundSecret: vi.fn(async (id: string) => `pat_${id}`),
+}));
+
+// #480 — binding a reference to its secret id is exercised against a real
+// database in vault-secret-binding-480.sqlite.test.ts; here every reference
+// binds to an id equal to its body.
+vi.mock("../src/lib/vault/bound-secret.js", () => ({
+  VAULT_REF_UNRESOLVED: "VAULT_REF_UNRESOLVED",
+  bindSecretRef: vi.fn(async (ref: string) => ref),
 }));
 
 vi.mock("../src/lib/vault/vault-service.js", () => ({
@@ -417,24 +418,106 @@ describe("Repo connector service — CRUD", () => {
     }
   });
 
-  it("#457/#475 — a unique violation on a non-primary insert reaches the caller as a 409", async () => {
-    // e.g. a racing duplicate label, or one held by a soft-deleted row: the
-    // label is the only caller-chosen unique key.
-    await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
-    const { prisma } = await import("../src/lib/prisma.js");
-    const create = vi.mocked(prisma.repoConnection.create);
-    const insert = create.getMockImplementation()!;
-    create.mockImplementation((async () => {
-      throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
-    }) as never);
-    try {
+  describe("#492 — renaming onto a used label", () => {
+    const make = (label: string) =>
+      createRepoConnector("proj_1", { label, ownerOrOrg: "o", repoName: "r" }, "user_1");
+
+    it("a live connector's label is a 409 and the row keeps its label", async () => {
+      await make("taken");
+      const c = await make("mine");
       await expect(
-        createRepoConnector("proj_1", { label: "b", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+        updateRepoConnector("proj_1", c.id, { label: "taken" }, "user_1"),
       ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
-      expect(create).toHaveBeenCalledTimes(2); // the first create above, then one attempt
-    } finally {
-      create.mockImplementation(insert);
-    }
+      expect(rows.get(c.id)?.label).toBe("mine");
+    });
+
+    it("its own label is not a clash", async () => {
+      const c = await make("mine");
+      await expect(
+        updateRepoConnector("proj_1", c.id, { label: "mine" }, "user_1"),
+      ).resolves.toMatchObject({ label: "mine" });
+    });
+
+    it("a rename that loses a race for the label is a 409, not a 500", async () => {
+      const c = await make("mine");
+      const { prisma } = await import("../src/lib/prisma.js");
+      vi.mocked(prisma.repoConnection.update).mockRejectedValueOnce(
+        Object.assign(new Error("Unique constraint failed"), {
+          code: "P2002",
+          meta: { target: "repo_connections_projectId_label_key" },
+        }),
+      );
+      await expect(
+        updateRepoConnector("proj_1", c.id, { label: "raced" }, "user_1"),
+      ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
+    });
+
+    it("an update that fails on another constraint is rethrown as it is", async () => {
+      const c = await make("mine");
+      const { prisma } = await import("../src/lib/prisma.js");
+      vi.mocked(prisma.repoConnection.update).mockRejectedValueOnce(
+        Object.assign(new Error("Unique constraint failed"), {
+          code: "P2002",
+          meta: { target: "repo_connections_pkey" },
+        }),
+      );
+      await expect(
+        updateRepoConnector("proj_1", c.id, { label: "other" }, "user_1"),
+      ).rejects.toMatchObject({ code: "P2002" });
+    });
+
+    it("an update without a label passes a unique violation through untouched", async () => {
+      const c = await make("mine");
+      const { prisma } = await import("../src/lib/prisma.js");
+      const err = Object.assign(new Error("Unique constraint failed"), {
+        code: "P2002",
+        meta: { target: "repo_connections_projectId_label_key" },
+      });
+      vi.mocked(prisma.repoConnection.update).mockRejectedValueOnce(err);
+      await expect(
+        updateRepoConnector("proj_1", c.id, { defaultBranch: "dev" }, "user_1"),
+      ).rejects.toBe(err);
+    });
+  });
+
+  describe("#492 — a P2002 that names no constraint on a non-primary insert", () => {
+    const shapeless = async () => {
+      const { prisma } = await import("../src/lib/prisma.js");
+      const create = vi.mocked(prisma.repoConnection.create);
+      const insert = create.getMockImplementation()!;
+      create.mockImplementation((async () => {
+        throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+      }) as never);
+      return { create, restore: () => create.mockImplementation(insert) };
+    };
+
+    it("is a 409 when a live row holds the label (a create that lost the race)", async () => {
+      await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
+      const { prisma } = await import("../src/lib/prisma.js");
+      // The pre-check misses the racing row; the post-violation lookup sees it.
+      vi.mocked(prisma.repoConnection.findFirst).mockResolvedValueOnce(null);
+      const { create, restore } = await shapeless();
+      try {
+        await expect(
+          createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+        ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
+        expect(create).toHaveBeenCalledTimes(2); // the first create above, then one attempt
+      } finally {
+        restore();
+      }
+    });
+
+    it("is rethrown as it is when no live row holds the label", async () => {
+      await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
+      const { restore } = await shapeless();
+      try {
+        await expect(
+          createRepoConnector("proj_1", { label: "b", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+        ).rejects.toMatchObject({ code: "P2002" });
+      } finally {
+        restore();
+      }
+    });
   });
 
   describe("#475 — which P2002 is a label clash", () => {
@@ -650,6 +733,28 @@ describe("Repo connector service — update + auth/clone", () => {
     expect(updated.defaultBranch).toBe("develop");
     expect(updated.apiBaseUrl).toBe("https://github.example.com/api/v3");
     expect(updated.secretRef).toBe("${vault:fresh}");
+  });
+});
+
+describe("Repo connector service — #480 keep a re-sent bound reference", () => {
+  it("does not re-bind a re-sent ${vault:<bound id>} (PR #499 panel)", async () => {
+    const { bindSecretRef } = await import("../src/lib/vault/bound-secret.js");
+    const c = await createRepoConnector(
+      "proj_1",
+      { label: "keep", ownerOrOrg: "o", repoName: "r", secretRef: "${vault:sec-bound}" },
+      "user_1",
+    );
+    vi.mocked(bindSecretRef).mockClear();
+    // The UI re-sends the connector's own ref on an unrelated edit. Re-binding it
+    // would re-resolve the id (or a label) — exactly the re-bind #480 closes.
+    const updated = await updateRepoConnector(
+      "proj_1",
+      c.id,
+      { defaultBranch: "develop", secretRef: "${vault:sec-bound}" },
+      "user_1",
+    );
+    expect(bindSecretRef).not.toHaveBeenCalled();
+    expect(updated.secretRef).toBe("${vault:sec-bound}");
   });
 });
 

@@ -75,6 +75,11 @@ export function isConnectorIngestActive(connectorId: string): boolean {
   return active.has(connectorId);
 }
 
+/** Which entry point holds the connector's lease, or `null` when it is free. */
+export function connectorIngestHolder(connectorId: string): string | null {
+  return active.get(connectorId)?.holder ?? null;
+}
+
 /** Run `fn` holding the connector's lease; refuse with a 409 when it is busy. */
 export async function withConnectorIngest<T>(
   connectorId: string,

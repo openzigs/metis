@@ -341,9 +341,50 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     renderPage();
     await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
-    expect(await screen.findByText(warning)).toHaveAttribute("role", "alert");
-    expect(toast.warning).toHaveBeenCalledWith(warning);
+    expectAnnouncedOnce(await screen.findByText(warning), warning);
+    expect(screen.getByText(/Sync finished with a warning/)).toBeInTheDocument();
+    expect(screen.queryByText(/Sync complete\b/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * #498 — the toast is the one announcement: sonner's toaster is itself a live
+   * region, so the inline copy must not be one too (role="alert" or "status"
+   * would make a screen reader read the warning twice).
+   */
+  function expectAnnouncedOnce(inline: HTMLElement, warning: string) {
+    expect(toast.warning).toHaveBeenCalledExactlyOnceWith(warning);
     expect(toast.success).not.toHaveBeenCalled();
+    expect(inline.closest('[role="alert"],[role="status"],[aria-live]')).toBeNull();
+  }
+
+  it("does not say 'Sync complete' when the sync's ingest partly failed (#498)", async () => {
+    const warning =
+      "Sync completed with 2 failures: 2 source files could not be ingested. " +
+      "Automatic document regeneration was skipped; run Sync again to retry.";
+    refreshIngest.mockResolvedValueOnce({
+      pulled: true,
+      filesChanged: 2,
+      codeGraph: {
+        filesScanned: 4,
+        filesParsed: 2,
+        filesSkipped: 2,
+        symbolsUpserted: 3,
+        edgesUpserted: 1,
+        durationMs: 10,
+      },
+      sourceKnowledge: { documentsCreated: 0, documentsUpdated: 1, chunkCount: 4 },
+      cloneSizeBytes: 0,
+      regenerationScheduled: false,
+      failureCount: 2,
+      warning,
+    });
+    repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    expectAnnouncedOnce(await screen.findByText(warning), warning);
+    expect(screen.getByText(/Sync finished with a warning/)).toBeInTheDocument();
+    expect(screen.queryByText(/Sync complete\b/)).not.toBeInTheDocument();
   });
 });
 

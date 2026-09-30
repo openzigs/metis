@@ -95,6 +95,7 @@ import {
 } from "../lib/docs-gen/generation-failure-message.js";
 import {
   INDEXING_PUBLICATION_CANCELLED_MESSAGE,
+  isGeneratedDocPublicationCancelled,
   publicIndexingErrorMessage,
 } from "../lib/rag/indexing-failure-message.js";
 
@@ -130,20 +131,56 @@ async function canUseLegacyIndex(
   return summary?.legacy.historicalCitations === "legacy-unknown";
 }
 
+type SyntheticIndexRow = {
+  indexState: string;
+  status: string;
+  chunkCount: number;
+  errorMessage: string | null;
+  processedAt: Date | null;
+};
+
+/** #489 — what `indexing` reports for a publication a user cancelled. */
+const CANCELLED_INDEX = {
+  state: "cancelled",
+  status: "cancelled",
+  errorMessage: INDEXING_PUBLICATION_CANCELLED_MESSAGE,
+} as const;
+
+function syntheticIndex(document: SyntheticIndexRow) {
+  const index = {
+    state: document.indexState,
+    status: document.status,
+    chunkCount: document.chunkCount,
+    // #98 — never the ingest pipeline's raw exception text.
+    errorMessage: publicIndexingErrorMessage(document.errorMessage, document.indexState),
+    processedAt: document.processedAt,
+  };
+  // #489 — a cancelled row keeps its `pending`/`quarantined` indexState, so the
+  // badge said "pending" beside a "cancelled" message. The row carries the
+  // prefixed text #201 writes; the classifier reads the same predicate. Only
+  // those two states can be a cancelled publication: the recovery write has no
+  // indexState filter, so a stale prefix must not relabel an indexed row.
+  const cancellable = document.indexState === "pending" || document.indexState === "quarantined";
+  return cancellable && isGeneratedDocPublicationCancelled(document.errorMessage)
+    ? { ...index, ...CANCELLED_INDEX }
+    : index;
+}
+
 function unpublishedIndex(outbox?: PublicationState | null) {
-  const failed = outbox?.status === "failed" || outbox?.status === "cancelled";
+  // #232 / #489 — detected on the task's status, not through the classifier's
+  // `isGeneratedDocPublicationCancelled`: the outbox task stores the bare
+  // cancellation reason with no `generated-doc publication cancelled` prefix
+  // (only the synthetic row's text carries it). Keep the two in step.
+  if (outbox?.status === "cancelled") {
+    return { ...CANCELLED_INDEX, chunkCount: 0, processedAt: null };
+  }
+  const failed = outbox?.status === "failed";
   return {
     state: failed ? "failed" : "pending",
     status: failed ? "failed" : outbox?.status === "running" ? "processing" : "pending",
     chunkCount: 0,
     // #98 — the outbox task's error is the publication's own exception text.
-    // #232 — a cancelled task's is the cancellation reason: say "cancelled".
-    errorMessage:
-      outbox?.status === "cancelled"
-        ? INDEXING_PUBLICATION_CANCELLED_MESSAGE
-        : failed
-          ? publicIndexingErrorMessage(outbox.errorMessage)
-          : null,
+    errorMessage: failed ? publicIndexingErrorMessage(outbox.errorMessage) : null,
     processedAt: null,
   };
 }
@@ -468,17 +505,7 @@ export function generatedDocsRouter(): Router {
       },
     });
     const indexByGeneratedDocId = new Map(
-      syntheticDocuments.map((document) => [
-        document.id,
-        {
-          state: document.indexState,
-          status: document.status,
-          chunkCount: document.chunkCount,
-          // #98 — never the ingest pipeline's raw exception text.
-          errorMessage: publicIndexingErrorMessage(document.errorMessage, document.indexState),
-          processedAt: document.processedAt,
-        },
-      ]),
+      syntheticDocuments.map((document) => [document.id, syntheticIndex(document)]),
     );
     const data = await Promise.all(
       docs.map(async (doc) => {
@@ -575,19 +602,8 @@ export function generatedDocsRouter(): Router {
         warnings: publicDocWarnings(doc.warnings),
         // #50 — lets the UI explain a restart and offer a one-click regenerate.
         interrupted: doc.status === "failed" && doc.errorMessage === GENERATION_INTERRUPTED_MESSAGE,
-        indexing: syntheticDocument
-          ? {
-              state: syntheticDocument.indexState,
-              status: syntheticDocument.status,
-              chunkCount: syntheticDocument.chunkCount,
-              // #98 — same rule as the list handler.
-              errorMessage: publicIndexingErrorMessage(
-                syntheticDocument.errorMessage,
-                syntheticDocument.indexState,
-              ),
-              processedAt: syntheticDocument.processedAt,
-            }
-          : unpublishedIndex(outbox),
+        // #98 / #489 — same projection as the list handler.
+        indexing: syntheticDocument ? syntheticIndex(syntheticDocument) : unpublishedIndex(outbox),
         versions: await Promise.all(
           versions.map(async (version) => ({
             id: version.id,

@@ -31,6 +31,7 @@ function makeFakeSocket() {
   const handlers = new Map<string, Set<Handler>>();
   const emit = vi.fn();
   const socket = {
+    connected: true,
     emit,
     on: vi.fn((name: string, fn: Handler) => {
       if (!handlers.has(name)) handlers.set(name, new Set());
@@ -112,6 +113,9 @@ describe("useJobToast", () => {
     const { result, unmount } = renderHook(() => useJobToast("job-1", { onTerminal }));
     expect(fake.emit).toHaveBeenCalledTimes(1);
 
+    fake.socket.connected = false;
+    act(() => fake.fire("disconnect", "transport close"));
+    fake.socket.connected = true;
     act(() => fake.fire("connect", undefined));
     expect(fake.emit).toHaveBeenLastCalledWith("subscribe:job", { jobId: "job-1" });
     expect(fake.emit).toHaveBeenCalledTimes(2);
@@ -126,6 +130,16 @@ describe("useJobToast", () => {
     const emitsAfterUnmount = fake.emit.mock.calls.length;
     act(() => fake.fire("connect", undefined));
     expect(fake.emit.mock.calls.length).toBe(emitsAfterUnmount);
+  });
+
+  // #486 — the join made before the first connect is buffered and reaches the
+  // server on it, so the first connect must not subscribe a second time.
+  it("sends no extra subscribe on the first connect", () => {
+    fake.socket.connected = false;
+    renderHook(() => useJobToast("job-1"));
+    fake.socket.connected = true;
+    act(() => fake.fire("connect", undefined));
+    expect(fake.emit).toHaveBeenCalledTimes(1);
   });
 
   it("subscribes to the job room and exposes the latest progress event", () => {

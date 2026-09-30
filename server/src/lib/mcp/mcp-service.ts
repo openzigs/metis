@@ -26,6 +26,8 @@ import { auditMcpEvent } from "../audit/mcp-audit.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { expandVaultRefs } from "../vault/env-manager.js";
+import { bindSecretRefs, parseSecretBindings } from "../vault/bound-secret.js";
+import { mcpRefs } from "./secret-binding.js";
 import { getVaultService } from "../vault/vault-service.js";
 import type { MCPLifecycleManager } from "./lifecycle-manager.js";
 import {
@@ -255,10 +257,17 @@ export class MCPRegistryService {
     //   2. DB-side `$transaction` so the count + create commit together —
     //      on Postgres/MySQL this also serializes against other replicas
     //      (sqlite already serializes writes globally).
+    // #480 — bind every env/header vault reference to the secret id it
+    // resolves to now; the server is started from those ids only.
+    const secretBindings = JSON.stringify(
+      await bindSecretRefs(mcpRefs(input.env ?? null, input.headers ?? null)),
+    );
     if (scope === "user") {
-      return this.withUserLock(actor.id, () => this.createUserScopedAtomic(input, actor, options));
+      return this.withUserLock(actor.id, () =>
+        this.createUserScopedAtomic(input, actor, options, secretBindings),
+      );
     }
-    return this.createInternal(input, actor, options);
+    return this.createInternal(input, actor, options, secretBindings);
   }
 
   /**
@@ -270,10 +279,11 @@ export class MCPRegistryService {
     input: CreateMCPServerInput,
     actor: ActorLite,
     options: CreateMCPOptions,
+    secretBindings: string,
   ): Promise<MCPServerView> {
     const cfg = (await import("../config/config-service.js")).getConfigService();
     const cap = cfg.getNumber("MCP_USER_MAX_CONCURRENT", 3);
-    const data = this.buildPersistencePayload(input, { actorId: actor.id });
+    const data = { ...this.buildPersistencePayload(input, { actorId: actor.id }), secretBindings };
     const row = await prisma.$transaction(async (tx) => {
       const active = await tx.mCPServer.count({
         where: { userId: actor.id, scope: "user", enabled: true, deletedAt: null },
@@ -334,8 +344,9 @@ export class MCPRegistryService {
     input: CreateMCPServerInput,
     actor: ActorLite,
     options: CreateMCPOptions,
+    secretBindings: string,
   ): Promise<MCPServerView> {
-    const data = this.buildPersistencePayload(input, { actorId: actor.id });
+    const data = { ...this.buildPersistencePayload(input, { actorId: actor.id }), secretBindings };
     const existing = await prisma.mCPServer.findFirst({
       where: {
         scope: data.scope,
@@ -413,6 +424,23 @@ export class MCPRegistryService {
     // Sub-issue #276 — admin-only trust promotion on updates.
     assertTrustPromotionAllowed(input.trustLevel, actor);
     const data = this.buildUpdatePayload(input);
+    // #480 — rebind only when the env or headers change. A reference the
+    // server already holds keeps the id it was bound to, even when that secret
+    // has since been deleted; only a new reference is resolved now.
+    if (input.env !== undefined || input.headers !== undefined) {
+      const nextEnv = input.env !== undefined ? input.env : parseObject(existing.envJson);
+      const nextHeaders =
+        input.headers !== undefined ? input.headers : parseObject(existing.headers);
+      data.secretBindings = JSON.stringify(
+        await bindSecretRefs(
+          mcpRefs(
+            nextEnv as Record<string, string> | null,
+            nextHeaders as Record<string, string> | null,
+          ),
+          parseSecretBindings(existing.secretBindings),
+        ),
+      );
+    }
     let row;
     if (expectedUpdatedAt === undefined) {
       row = await prisma.mCPServer.update({ where: { id }, data });
@@ -725,9 +753,12 @@ export class MCPRegistryService {
    * Resolve the env map for a given server, expanding vault refs. Used by the
    * lifecycle manager and the CLI tester.
    */
-  async resolveEnv(env: Record<string, string>): Promise<Record<string, string>> {
+  async resolveEnv(
+    env: Record<string, string>,
+    secretBindings?: Record<string, string> | null,
+  ): Promise<Record<string, string>> {
     if (!env || Object.keys(env).length === 0) return {};
-    return expandVaultRefs(env, getVaultService());
+    return expandVaultRefs(env, getVaultService(), secretBindings);
   }
 
   toConfig(row: McpRow): MCPServerConfig {
@@ -749,6 +780,7 @@ export class MCPRegistryService {
       headers: parseObject(row.headers),
       env: parseObject(row.envJson),
       envSecretRefs: parseObject(row.envSecretRefs),
+      secretBindings: parseSecretBindings((row as McpRow).secretBindings),
       trustLevel: row.trustLevel as MCPTrustLevel,
       defaultToolRisk: row.defaultToolRisk as "low" | "medium" | "high",
       version: row.version,
@@ -929,6 +961,7 @@ interface McpRow {
   envJson: string | null;
   envSecretId: string | null;
   envSecretRefs: string | null;
+  secretBindings?: string | null;
   trustLevel: string;
   defaultToolRisk: string;
   version: string | null;

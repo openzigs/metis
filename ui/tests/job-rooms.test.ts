@@ -5,9 +5,37 @@
 import { describe, it, expect, vi } from "vitest";
 import { joinJobRoom } from "@/lib/job-rooms";
 
-const fakeSocket = () => ({ emit: vi.fn() });
+const fakeSocket = (connected = true) => {
+  const handlers = new Map<string, Set<() => void>>();
+  const socket = {
+    connected,
+    emit: vi.fn(),
+    on: vi.fn((event: string, fn: () => void) => {
+      if (!handlers.has(event)) handlers.set(event, new Set());
+      handlers.get(event)!.add(fn);
+    }),
+    off: vi.fn((event: string, fn: () => void) => {
+      handlers.get(event)?.delete(fn);
+    }),
+    listeners: (event: string) => handlers.get(event)?.size ?? 0,
+    fire: (event: string) => {
+      for (const fn of [...(handlers.get(event) ?? [])]) fn();
+    },
+    /** The transport dropped and came back: the server lost every room. */
+    reconnect: () => {
+      socket.connected = false;
+      socket.connected = true;
+      socket.fire("connect");
+    },
+  };
+  return socket;
+};
 type Fake = ReturnType<typeof fakeSocket>;
 const join = (s: Fake, jobId: string) => joinJobRoom(s as never, jobId);
+const subscribes = (s: Fake, jobId?: string) =>
+  s.emit.mock.calls.filter(
+    ([e, p]) => e === "subscribe:job" && (!jobId || (p as { jobId: string }).jobId === jobId),
+  ).length;
 
 describe("joinJobRoom", () => {
   it("subscribes on every join so each follower gets the replay", () => {
@@ -56,5 +84,97 @@ describe("joinJobRoom", () => {
     const again = join(s, "j1");
     again();
     expect(s.emit.mock.calls.filter(([e]) => e === "unsubscribe:job")).toHaveLength(2);
+  });
+});
+
+// #486 — a reconnect drops the socket's rooms on the server. `job-rooms.ts`
+// re-joins them itself, once per room, instead of once per following hook.
+describe("joinJobRoom across a reconnect", () => {
+  it("owns one connect listener per socket, however many rooms and followers", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    join(s, "j1");
+    join(s, "j2");
+    expect(s.listeners("connect")).toBe(1);
+  });
+
+  it("re-joins a room with two followers exactly once", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    join(s, "j1");
+    s.emit.mockClear();
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(1);
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(2);
+  });
+
+  it("re-joins every room that still has followers, and none that was released", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    const leave2 = join(s, "j2");
+    join(s, "j3");
+    leave2();
+    s.emit.mockClear();
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(1);
+    expect(subscribes(s, "j2")).toBe(0);
+    expect(subscribes(s, "j3")).toBe(1);
+  });
+
+  it("sends no extra subscribe on the first connect", () => {
+    // Emits made before the first connect are buffered by socket.io-client and
+    // reach the server on it.
+    const s = fakeSocket(false);
+    join(s, "j1");
+    join(s, "j1");
+    s.connected = true;
+    s.fire("connect");
+    expect(subscribes(s)).toBe(2);
+  });
+
+  it("does not re-join a room whose subscribe is still buffered from the outage", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    s.connected = false;
+    join(s, "j2"); // buffered; flushed on the coming connect
+    s.emit.mockClear();
+    s.connected = true;
+    s.fire("connect");
+    expect(subscribes(s, "j1")).toBe(1);
+    expect(subscribes(s, "j2")).toBe(0);
+    // The buffer is flushed now, so the next reconnect re-joins both.
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(2);
+    expect(subscribes(s, "j2")).toBe(1);
+  });
+
+  it("drops the connect listener when the last room is released", () => {
+    const s = fakeSocket();
+    const a = join(s, "j1");
+    const b = join(s, "j2");
+    a();
+    expect(s.listeners("connect")).toBe(1);
+    b();
+    expect(s.listeners("connect")).toBe(0);
+    s.emit.mockClear();
+    s.reconnect();
+    expect(subscribes(s)).toBe(0);
+    // A fresh join installs the listener again.
+    join(s, "j1");
+    expect(s.listeners("connect")).toBe(1);
+  });
+
+  it("keeps each socket's rooms to that socket", () => {
+    const s1 = fakeSocket();
+    const s2 = fakeSocket();
+    join(s1, "j1");
+    join(s2, "j2");
+    s1.emit.mockClear();
+    s2.emit.mockClear();
+    s1.reconnect();
+    expect(subscribes(s1, "j1")).toBe(1);
+    expect(subscribes(s1, "j2")).toBe(0);
+    expect(subscribes(s2)).toBe(0);
   });
 });

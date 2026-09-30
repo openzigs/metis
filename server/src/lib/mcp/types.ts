@@ -32,6 +32,11 @@ export interface MCPServerConfig {
   env: Record<string, string> | null;
   /** Optional explicit map of envKey -> secret label written by the importer. */
   envSecretRefs: Record<string, string> | null;
+  /**
+   * #480 — `${vault:x}` ref body -> the secret id it was bound to when saved.
+   * `null`/absent only on a server saved before #480 (resolved by label).
+   */
+  secretBindings?: Record<string, string> | null;
   trustLevel: MCPTrustLevel;
   defaultToolRisk: MCPToolRisk;
   version: string | null;

@@ -50,7 +50,7 @@ import { audit } from "../audit/audit-service.js";
 import { assertDraftsPublishable } from "../reviews/approval-gate.js";
 import { createChildLogger } from "../logger.js";
 import { getVaultService } from "../vault/vault-service.js";
-import { resolveVaultRef } from "../connectors/vault-resolver.js";
+import { readBoundSecret, resolveVaultRef } from "../connectors/vault-resolver.js";
 import { resolvePublishTarget } from "./host-allowlist.js";
 import {
   acquirePublishOctokit,
@@ -183,6 +183,13 @@ export interface RunBatchInput {
   dryRun: boolean;
   /** Vault ref for the GitHub PAT — `${vault:label}` or null. */
   secretRef: string | null;
+  /**
+   * #480 — the secret id `secretRef` was bound to when the batch was created.
+   * When set, the token is read by this id only and `secretRef` is ignored.
+   * Null only on batches created before #480 and on dry runs whose reference
+   * did not resolve.
+   */
+  boundSecretId?: string | null;
   /** Optional override for testing. */
   rateLimit?: PublishRateLimitConfig;
   /** Sleep implementation (test injectable). */
@@ -257,7 +264,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     // M1 is preserved: the vault is a local secret store, so this touches no
     // DNS, no host allow-list and no GitHub endpoint. The token is resolved
     // and immediately discarded — only the verdict reaches the plan.
-    const credential = await preflightCredential(input.secretRef);
+    const credential = await preflightCredential(input.secretRef, input.boundSecretId);
     const plan = buildDryRunPlan({
       batchId: batch.id,
       targetOwner: dryTarget.owner,
@@ -324,7 +331,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     repo: batch.targetRepo,
     baseUrl: batch.targetBaseUrl,
   });
-  const token = input.secretRef ? await resolveVaultRef(input.secretRef, getVaultService()) : null;
+  const token = await resolvePublishToken(input.secretRef, input.boundSecretId);
   if (!token) {
     throw new PublishError(400, "TOKEN_REQUIRED", "publish requires a vault-resolved GitHub token");
   }
@@ -822,10 +829,11 @@ async function runPublishExtensions(args: RunExtensionsArgs): Promise<void> {
  */
 async function preflightCredential(
   secretRef: string | null,
+  boundSecretId?: string | null,
 ): Promise<{ check: CredentialCheckResult; errorCode: string | null }> {
-  if (!secretRef) return { check: "missing", errorCode: "TOKEN_REQUIRED" };
+  if (!secretRef && !boundSecretId) return { check: "missing", errorCode: "TOKEN_REQUIRED" };
   try {
-    const token = await resolveVaultRef(secretRef, getVaultService());
+    const token = await resolvePublishToken(secretRef, boundSecretId);
     if (token) return { check: "resolved", errorCode: null };
     return { check: "unresolved", errorCode: "TOKEN_REQUIRED" };
   } catch (err) {
@@ -1023,12 +1031,27 @@ export function rollbackOutcomeMessage(
   );
 }
 
+/**
+ * #480 — a batch's token: the secret it was bound to at creation, by id and
+ * never re-resolved by label; only a batch with no binding (created before
+ * #480, or a dry run whose reference did not resolve) resolves `secretRef`.
+ */
+async function resolvePublishToken(
+  secretRef: string | null,
+  boundSecretId: string | null | undefined,
+): Promise<string | null> {
+  if (boundSecretId) return readBoundSecret(boundSecretId, getVaultService());
+  return secretRef ? resolveVaultRef(secretRef, getVaultService()) : null;
+}
+
 export async function archiveBatch(input: {
   batchId: string;
   reason: string;
   closeIssues: boolean;
   actorId: string;
   secretRef: string | null;
+  /** #480 — see {@link RunBatchInput.boundSecretId}. */
+  boundSecretId?: string | null;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<void> {
   const sleep = input.sleep ?? defaultSleep;
@@ -1038,10 +1061,10 @@ export async function archiveBatch(input: {
     return;
   }
   if (input.closeIssues && !batch.dryRun) {
-    if (!input.secretRef) {
+    if (!input.secretRef && !input.boundSecretId) {
       throw new PublishError(400, "TOKEN_REQUIRED", "closing issues requires a vault token");
     }
-    const token = await resolveVaultRef(input.secretRef, getVaultService());
+    const token = await resolvePublishToken(input.secretRef, input.boundSecretId);
     if (!token) {
       throw new PublishError(400, "TOKEN_REQUIRED", "vault returned no token");
     }

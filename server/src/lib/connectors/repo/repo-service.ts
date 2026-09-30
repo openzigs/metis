@@ -45,7 +45,9 @@ import {
   type ConnectorEmitter,
 } from "../types.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
-import { resolveVaultRef } from "../vault-resolver.js";
+import { readBoundSecret } from "../vault-resolver.js";
+import { bindSecretRef, VAULT_REF_UNRESOLVED } from "../../vault/bound-secret.js";
+import { AppError } from "../../../middleware/error-handler.js";
 import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
@@ -53,6 +55,7 @@ import {
   cleanupExtraction,
   extractArchiveBuffer,
   extractArchiveFromPath,
+  removeStoredArchive,
   removeUploadedArchive,
   storeUploadedArchive,
 } from "./archive-extract.js";
@@ -286,9 +289,7 @@ export async function createRepoConnector(
   const exists = await prisma.repoConnection.findFirst({
     where: { projectId, label: input.label, deletedAt: null },
   });
-  if (exists) {
-    throw new ConnectorError(409, "REPO_LABEL_TAKEN", `label '${input.label}' already exists`);
-  }
+  if (exists) throw labelTaken(input.label);
   if (input.apiBaseUrl) assertHttpsUrl(input.apiBaseUrl);
 
   const provider = (input.provider ?? "github") as RepoProvider;
@@ -310,29 +311,10 @@ export async function createRepoConnector(
     localPath = validated.realPath;
   }
 
-  const secretLabel = input.secretRef ? extractRefBody(input.secretRef) : null;
-  let secretId: string | null = null;
-  if (secretLabel) {
-    // Vault names are scoped as "global:<label>" or "project:<label>"
-    const secret = await prisma.secret.findFirst({
-      where: {
-        OR: [
-          { name: secretLabel },
-          { name: `global:${secretLabel}` },
-          { name: `project:${secretLabel}` },
-        ],
-        deletedAt: null,
-      },
-    });
-    if (!secret) {
-      throw new ConnectorError(
-        404,
-        "VAULT_SECRET_NOT_FOUND",
-        `vault secret '${secretLabel}' not found`,
-      );
-    }
-    secretId = secret.id;
-  }
+  // #480 — bind the id the reference resolves to now (by id, or by a label
+  // that reaches exactly one live secret); the use path reads that id only.
+  const secretRefBody = input.secretRef ? extractRefBody(input.secretRef) : null;
+  const secretId = secretRefBody ? await bindRepoSecret(secretRefBody) : null;
   const row = await insertRepoConnectionOrLabelTaken({
     projectId,
     label: input.label,
@@ -388,11 +370,9 @@ async function insertRepoConnection(
 }
 
 /**
- * #475 — `insertRepoConnection`, with a label clash answered as the 409 a live
- * clash gets. The label pre-checks only see live rows, but
- * `@@unique([projectId, label])` also covers soft-deleted ones, so reusing a
- * deleted connector's label (or losing a race for a live one) surfaces here as
- * a P2002.
+ * #475 — `insertRepoConnection`, with a label clash answered as the 409 the
+ * pre-check gives. #492 — the index covers live rows only, so this is a create
+ * that lost a race for a live label.
  */
 async function insertRepoConnectionOrLabelTaken(
   data: Omit<Prisma.RepoConnectionUncheckedCreateInput, "isPrimary">,
@@ -400,27 +380,45 @@ async function insertRepoConnectionOrLabelTaken(
   try {
     return await insertRepoConnection(data);
   } catch (err) {
-    if (!isLabelIndexViolation(err)) throw err;
-    throw new ConnectorError(
-      409,
-      "REPO_LABEL_TAKEN",
-      `label '${data.label}' is already used by a current or deleted repository in this project`,
-    );
+    throw await labelTakenOr(err, data.projectId, data.label);
   }
+}
+
+function labelTaken(label: string): ConnectorError {
+  return new ConnectorError(409, "REPO_LABEL_TAKEN", `label '${label}' already exists`);
+}
+
+/**
+ * #475/#492 — the error to throw for a failed insert or rename: a 409 when
+ * `err` is the `(projectId, label)` index rejecting it, `err` itself otherwise.
+ */
+async function labelTakenOr(err: unknown, projectId: string, label: string): Promise<unknown> {
+  return (await isLabelIndexViolation(err, projectId, label)) ? labelTaken(label) : err;
 }
 
 const PRIMARY_INDEX = "repo_connections_projectId_primary_key";
 const LABEL_INDEX = "repo_connections_projectId_label_key";
 
 /**
- * #475 — is `err` the `(projectId, label)` unique index rejecting the insert?
- * One that names no constraint counts: the label is the only caller-chosen
- * unique key, and the primary index is retried before a P2002 gets here.
+ * #475 — is `err` the `(projectId, label)` unique index rejecting the write?
+ * #492 — a P2002 that names no constraint is not assumed to be the label: it
+ * counts only when a live row in the project does hold `label`, so a future
+ * unique column is never reported as a label clash.
  */
-function isLabelIndexViolation(err: unknown): boolean {
+async function isLabelIndexViolation(
+  err: unknown,
+  projectId: string,
+  label: string,
+): Promise<boolean> {
   if (!isUniqueViolation(err)) return false;
   const target = uniqueViolationTarget(err);
-  if (!target) return true;
+  if (!target) {
+    const holder = await prisma.repoConnection.findFirst({
+      where: { projectId, label, deletedAt: null },
+      select: { id: true },
+    });
+    return holder !== null;
+  }
   if (target.index !== undefined) return target.index === LABEL_INDEX;
   return target.fields?.includes("label") === true;
 }
@@ -461,9 +459,7 @@ export async function createUploadRepoConnector(
   const exists = await prisma.repoConnection.findFirst({
     where: { projectId, label, deletedAt: null },
   });
-  if (exists) {
-    throw new ConnectorError(409, "REPO_LABEL_TAKEN", `label '${label}' already exists`);
-  }
+  if (exists) throw labelTaken(label);
 
   // #463 — validate first, insert once. The id is generated up front so the
   // archive can be stored under it, and the row is written with `uploadPath`
@@ -569,6 +565,14 @@ export async function updateRepoConnector(
     where: { id, projectId, deletedAt: null },
   });
   if (!existing) throw new ConnectorError(404, "REPO_CONNECTOR_NOT_FOUND", "not found");
+  // #492 — a rename onto a live connector's label is the 409 a create gets;
+  // a deleted connector's label is free (the index covers live rows only).
+  if (patch.label !== undefined && patch.label !== existing.label) {
+    const holder = await prisma.repoConnection.findFirst({
+      where: { projectId, label: patch.label, deletedAt: null },
+    });
+    if (holder) throw labelTaken(patch.label);
+  }
   const data: Record<string, unknown> = {};
   if (patch.label !== undefined) data.label = patch.label;
   if (patch.provider !== undefined) data.provider = patch.provider;
@@ -580,41 +584,32 @@ export async function updateRepoConnector(
     data.apiBaseUrl = patch.apiBaseUrl;
   }
   if (patch.secretRef !== undefined) {
-    const patchLabel = patch.secretRef ? extractRefBody(patch.secretRef) : null;
-    if (patchLabel) {
-      const secret = await prisma.secret.findFirst({
-        where: {
-          OR: [
-            { name: patchLabel },
-            { name: `global:${patchLabel}` },
-            { name: `project:${patchLabel}` },
-          ],
-          deletedAt: null,
-        },
-      });
-      if (!secret) {
-        throw new ConnectorError(
-          404,
-          "VAULT_SECRET_NOT_FOUND",
-          `vault secret '${patchLabel}' not found`,
-        );
-      }
-      data.secretId = secret.id;
-    } else {
-      data.secretId = null;
-    }
+    // #480 — a re-sent `${vault:<bound id>}` keeps the binding as it is,
+    // even when that secret has since been deleted.
+    const patchRefBody = patch.secretRef ? extractRefBody(patch.secretRef) : null;
+    data.secretId =
+      patchRefBody === null
+        ? null
+        : patchRefBody === existing.secretId
+          ? patchRefBody
+          : await bindRepoSecret(patchRefBody);
   }
   let row;
-  if (expectedUpdatedAt === undefined) {
-    row = await prisma.repoConnection.update({ where: { id }, data });
-  } else {
-    if (expectedUpdatedAt === null) throw concurrentUpdateError();
-    const { count } = await prisma.repoConnection.updateMany({
-      where: { id, updatedAt: expectedUpdatedAt },
-      data,
-    });
-    if (count === 0) throw concurrentUpdateError();
-    row = await prisma.repoConnection.findUniqueOrThrow({ where: { id } });
+  try {
+    if (expectedUpdatedAt === undefined) {
+      row = await prisma.repoConnection.update({ where: { id }, data });
+    } else {
+      if (expectedUpdatedAt === null) throw concurrentUpdateError();
+      const { count } = await prisma.repoConnection.updateMany({
+        where: { id, updatedAt: expectedUpdatedAt },
+        data,
+      });
+      if (count === 0) throw concurrentUpdateError();
+      row = await prisma.repoConnection.findUniqueOrThrow({ where: { id } });
+    }
+  } catch (err) {
+    // A rename that lost a race for the label.
+    throw patch.label === undefined ? err : await labelTakenOr(err, projectId, patch.label);
   }
   audit({
     actor: { id: actorId },
@@ -634,15 +629,11 @@ export async function deleteRepoConnector(projectId: string, id: string, actorId
     where: { id },
     data: { deletedAt: new Date(), status: "disabled" },
   });
-  // #475 — an upload connector's stored archive goes with it. The row is
-  // already deleted, so a failed removal is logged rather than surfaced.
+  // #475/#492 — an upload connector's stored archive and extraction go with
+  // it. The row is already deleted, so a failed removal is logged, not surfaced.
   if (existing.uploadPath) {
-    await removeUploadedArchive(id).catch((err: unknown) => {
-      log.warn("Failed to remove a deleted upload connector's archive", {
-        connectorId: id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
+    await removeUploadedArchiveAt(id, existing.uploadPath);
+    await cleanupExtraction(id);
   }
   audit({
     actor: { id: actorId },
@@ -650,6 +641,31 @@ export async function deleteRepoConnector(projectId: string, id: string, actorId
     target: { type: "repo_connector", id },
     metadata: { projectId },
   });
+}
+
+/**
+ * #492 — remove the archive at the path the server recorded when it stored it,
+ * not at the current `uploadArchiveRoot()`: the root may have changed since,
+ * the connector may predate #329, or another replica (with its own directory)
+ * may be serving this DELETE. A missing archive is logged, never silent.
+ */
+async function removeUploadedArchiveAt(id: string, uploadPath: string): Promise<void> {
+  try {
+    await removeStoredArchive(id, uploadPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT") {
+      log.warn("A deleted upload connector had no archive at its stored path", {
+        connectorId: id,
+        uploadPath,
+      });
+      return;
+    }
+    log.warn("Failed to remove a deleted upload connector's archive", {
+      connectorId: id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // ---- Primary repo helpers --------------------------------------------------
@@ -1234,10 +1250,31 @@ async function acquireOctokit(apiBaseUrl: string | null, secretRef: string): Pro
   return octokitFactoryOverride ? octokitFactoryOverride(args) : await defaultOctokit(args);
 }
 
+/** #480 — the connector's bound secret, by id only (`secretRef` is `${vault:<secretId>}`). */
 async function resolveSecret(secretRef: string): Promise<string | null> {
-  if (!secretRef) return null;
-  const vault = getVaultService();
-  return resolveVaultRef(secretRef, vault);
+  const secretId = secretRef ? extractRefBody(secretRef) : null;
+  if (!secretId) return null;
+  return readBoundSecret(secretId, getVaultService());
+}
+
+/**
+ * Bind a reference body to one live secret id. Kept as a 404
+ * `VAULT_SECRET_NOT_FOUND` for an unknown reference, which is what this
+ * service has always answered; an ambiguous label is a 409.
+ */
+async function bindRepoSecret(refBody: string): Promise<string> {
+  try {
+    return await bindSecretRef(refBody);
+  } catch (err) {
+    if (err instanceof AppError && err.code === VAULT_REF_UNRESOLVED) {
+      throw new ConnectorError(
+        404,
+        "VAULT_SECRET_NOT_FOUND",
+        `vault secret '${refBody}' not found`,
+      );
+    }
+    throw err;
+  }
 }
 
 async function assertHostFromBaseUrl(apiBaseUrl: string | null): Promise<void> {

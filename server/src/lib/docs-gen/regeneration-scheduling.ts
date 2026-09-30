@@ -13,9 +13,21 @@ import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSchedulerBootstrap } from "../scheduler/index.js";
 import { readTaskRecord } from "../scheduler/task-store.js";
+import { tryAcquireConnectorIngest, connectorIngestHolder } from "../connectors/ingest-guard.js";
 import { checkIncrementalRegeneration } from "./incremental.js";
 
 const log = createChildLogger("docs-gen-regeneration-scheduling");
+
+/**
+ * Lease holders that schedule regeneration themselves when their ingest lands
+ * (or report why not), so a pending retry can stand down for them (#498).
+ */
+const SELF_SCHEDULING_INGESTS = new Set([
+  "auto-ingest",
+  "deep-ingest",
+  "refresh-ingest",
+  "scheduled-refresh",
+]);
 
 /** The task that retries only the scheduling step (#449). */
 export const SCHEDULE_REGENERATION_TASK = "schedule-regeneration";
@@ -147,6 +159,13 @@ export async function scheduleIncrementalRegeneration(
  * propagate so the task queue retries with backoff. The connector must belong
  * to the task's project — the payload never widens scope — and a connector
  * deleted since leaves nothing to schedule, which is not worth a retry.
+ *
+ * #498 — the step runs under the connector's ingest lease, so a retry woken by
+ * backoff never captures a partial input snapshot in the middle of a later
+ * ingest. While an ingest holds the lease the retry stands down rather than
+ * throwing: that ingest schedules regeneration itself when it lands, or reports
+ * its failure and asks for another run. Throwing instead would spend the few
+ * backoff attempts (seconds apart) against an ingest that runs for minutes.
  */
 export async function retryRegenerationScheduling(
   projectId: string,
@@ -163,5 +182,34 @@ export async function retryRegenerationScheduling(
     });
     return;
   }
-  await checkIncrementalRegeneration(projectId, repoConnectorId);
+  const lease = tryAcquireConnectorIngest(repoConnectorId, SCHEDULE_REGENERATION_TASK);
+  if (!lease) {
+    const holder = connectorIngestHolder(repoConnectorId);
+    // Stand down only for an ingest that schedules regeneration (or reports
+    // why not) when it lands. Any other holder -- the docs-gen eval runner's
+    // bare source ingest -- never schedules, so standing down would drop this
+    // retry for good; throw so the queue retries it with backoff (PR #505 review).
+    if (holder !== null && SELF_SCHEDULING_INGESTS.has(holder)) {
+      log.info(
+        "Skipping the regeneration scheduling retry: an ingest is running and schedules it",
+        {
+          projectId,
+          connectorId: repoConnectorId,
+          holder,
+        },
+      );
+      return;
+    }
+    log.warn("Regeneration scheduling retry deferred: the connector's lease is held", {
+      projectId,
+      connectorId: repoConnectorId,
+      holder,
+    });
+    throw new Error(`regeneration scheduling retry deferred: connector lease held by ${holder}`);
+  }
+  try {
+    await checkIncrementalRegeneration(projectId, repoConnectorId);
+  } finally {
+    lease.release();
+  }
 }

@@ -57,7 +57,14 @@ export interface LifecycleOptions {
    * Resolves vault refs (`${vault:...}`) inside env values. Provided by the
    * caller so tests can inject a fake vault.
    */
-  resolveEnv: (env: Record<string, string>) => Promise<Record<string, string>>;
+  /**
+   * Expand `${vault:x}` references. `secretBindings` (#480) is the server's
+   * ref → bound-secret-id map; references are then read by id only.
+   */
+  resolveEnv: (
+    env: Record<string, string>,
+    secretBindings?: Record<string, string> | null,
+  ) => Promise<Record<string, string>>;
   /**
    * Override the transport factory — tests inject mock transports here.
    * Receives the provisioner result (process OR endpoint) so docker-runtime
@@ -244,7 +251,7 @@ export class MCPLifecycleManager {
     let env: Record<string, string> = {};
     try {
       const raw = entry.config.env ?? {};
-      env = await this.opts.resolveEnv(raw);
+      env = await this.opts.resolveEnv(raw, entry.config.secretBindings ?? null);
     } catch (err) {
       const message = redactErrorMessage(`env resolution failed: ${(err as Error).message}`);
       entry.state.status = "error";

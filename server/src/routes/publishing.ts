@@ -81,9 +81,15 @@ const VAULT_ERROR_MESSAGES: Record<string, string> = {
   VAULT_REF_AMBIGUOUS:
     "That vault secret label matches more than one secret. Qualify it as " +
     '"${vault:global:label}" or "${vault:project:label}", or use the secret id.',
+  // #480 — the batch's bound secret was deleted after the batch was created.
+  VAULT_BINDING_STALE:
+    "The vault secret this batch was created with has been deleted. " +
+    "Start a new batch with a current secret.",
 };
 
 function asAppError(err: unknown): unknown {
+  // Already client-safe by construction (e.g. #480's bind-time 400/409).
+  if (err instanceof AppError) return err;
   if (err instanceof PublishError) {
     return new AppError(err.status, err.code, err.message, err.details);
   }

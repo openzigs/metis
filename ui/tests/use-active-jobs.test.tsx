@@ -266,6 +266,23 @@ describe("useFollowJobs", () => {
       expect(fake.socket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "b" });
     });
 
+    // #486 — the room is re-joined by `joinJobRoom`, once per socket, not once
+    // per hook following the job.
+    it("re-joins a job followed by several hooks exactly once", () => {
+      applyJobLifecycleEvent(lifecycle({ jobId: "a", ts: 1 }));
+      renderHook(() => {
+        useFollowJobs(["a"]);
+        useJobToast("a");
+      });
+      fake.socket.emit.mockClear();
+      reconnect();
+      expect(
+        fake.socket.emit.mock.calls.filter(
+          ([name, p]) => name === "subscribe:job" && (p as { jobId: string }).jobId === "a",
+        ),
+      ).toHaveLength(1);
+    });
+
     it("does not forget a still-running job while the socket is down", () => {
       applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
       const { result } = follow(["job-1"]);
@@ -322,7 +339,8 @@ describe("useFollowJobs", () => {
     it("stops listening for connect/disconnect on unmount", () => {
       applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
       const { unmount } = follow(["job-1"]);
-      expect(fake.listeners("connect")).toBe(1);
+      // The hook's clock, plus the one re-join listener `joinJobRoom` owns (#486).
+      expect(fake.listeners("connect")).toBe(2);
       expect(fake.listeners("disconnect")).toBe(1);
       unmount();
       // #473 — assert each listener is gone: the emit check below cannot see a

@@ -234,6 +234,131 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(after[1].body).toContain("Passkey body");
     });
 
+    // #490 — a re-run whose synthesis emits the same-titled twins in the other
+    // order must not swap their drafts: each published issue keeps its own text.
+    describe("#490 — same-titled twins re-run in swapped order", () => {
+      const opts = { projectId: "p1", targetOwner: "acme", targetRepo: "metis" };
+      const setUp = async (analysisId: string, title: string) => {
+        await db.analysis.create({ data: { id: analysisId, projectId: "p1", startedById: "u1" } });
+        const createRequirements = async (
+          suffix: string,
+          rows: Array<{ key: string; body: string; at: string }>,
+        ) => {
+          for (const r of rows) {
+            await db.requirement.create({
+              data: {
+                id: `${analysisId}_${r.key}${suffix}`,
+                projectId: "p1",
+                analysisId,
+                title,
+                body: r.body,
+                createdAt: new Date(r.at),
+              },
+            });
+          }
+        };
+        const features = () =>
+          db.issueDraft.findMany({
+            where: {
+              projectId: "p1",
+              title: { startsWith: `[Feature] ${title}` },
+              deletedAt: null,
+            },
+            orderBy: { title: "asc" },
+          });
+        await createRequirements("", [
+          { key: "one", body: "Password body", at: T0 },
+          { key: "two", body: "Passkey body", at: T1 },
+        ]);
+        await generateDrafts({ ...opts, analysisId });
+        const first = await features();
+        expect(first.map((d) => d.requirementId)).toEqual([
+          `${analysisId}_one`,
+          `${analysisId}_two`,
+        ]);
+        await db.issueDraft.updateMany({
+          where: { id: { in: first.map((d) => d.id) } },
+          data: { status: "published" },
+        });
+        // What persistRequirements does on a re-run.
+        await db.requirement.deleteMany({ where: { analysisId } });
+        return { first, features, createRequirements };
+      };
+
+      it("keeps each published draft's text and re-links it to its own requirement", async () => {
+        const { first, features, createRequirements } = await setUp("an_swap", "Enrol");
+        // The re-run emits the twins in the other order.
+        await createRequirements("_v2", [
+          { key: "one", body: "Password body", at: T1 },
+          { key: "two", body: "Passkey body", at: T0 },
+        ]);
+        const rerun = await generateDrafts({ ...opts, analysisId: "an_swap" });
+        expect(rerun.upserted).toBe(0);
+
+        const after = await features();
+        expect(after.map((d) => d.id)).toEqual(first.map((d) => d.id));
+        expect(after.map((d) => d.requirementId)).toEqual(["an_swap_one_v2", "an_swap_two_v2"]);
+        expect(after[0].body).toContain("Password body");
+        expect(after[0].body).not.toContain("Passkey body");
+        expect(after[1].body).toContain("Passkey body");
+        expect(after.map((d) => d.status)).toEqual(["published", "published"]);
+      });
+
+      it("never rewrites a published draft's body when the twins' text changed too", async () => {
+        const { first, features, createRequirements } = await setUp("an_edit", "Recover");
+        await createRequirements("_v2", [
+          { key: "one", body: "Password body, reworded", at: T1 },
+          { key: "two", body: "Passkey body, reworded", at: T0 },
+        ]);
+        await generateDrafts({ ...opts, analysisId: "an_edit" });
+
+        const after = await features();
+        expect(after.map((d) => d.id)).toEqual(first.map((d) => d.id));
+        expect(after.map((d) => d.body)).toEqual(first.map((d) => d.body));
+        // No key matches, so the links follow the re-run's order (best-effort,
+        // see the #490 note on claimTitle): each draft is linked, to a distinct
+        // requirement of the re-run.
+        expect([...after.map((d) => d.requirementId)].sort()).toEqual([
+          "an_edit_one_v2",
+          "an_edit_two_v2",
+        ]);
+
+        // Generate is repeatable (POST /drafts/generate). The drafts are linked
+        // now, so the hold must outlast the re-link: a second and third run
+        // still leave each published body with its own text.
+        for (let run = 0; run < 2; run++) {
+          await generateDrafts({ ...opts, analysisId: "an_edit" });
+          const again = await features();
+          expect(again.map((d) => d.body)).toEqual(first.map((d) => d.body));
+          expect(again[0].body).not.toContain("Passkey");
+          expect(again[1].body).not.toContain("Password");
+          expect(again.map((d) => d.status)).toEqual(["published", "published"]);
+        }
+      });
+
+      it("releases the hold once the requirement's text matches the draft again", async () => {
+        const { first, features, createRequirements } = await setUp("an_back", "Reset");
+        await createRequirements("_v2", [
+          { key: "one", body: "Password body, reworded", at: T0 },
+          { key: "two", body: "Passkey body, reworded", at: T1 },
+        ]);
+        await generateDrafts({ ...opts, analysisId: "an_back" });
+        expect((await features()).map((d) => d.body)).toEqual(first.map((d) => d.body));
+
+        // A third run whose synthesis restores the original text.
+        await db.requirement.deleteMany({ where: { analysisId: "an_back" } });
+        await createRequirements("_v3", [
+          { key: "one", body: "Password body", at: T0 },
+          { key: "two", body: "Passkey body", at: T1 },
+        ]);
+        await generateDrafts({ ...opts, analysisId: "an_back" });
+        const after = await features();
+        expect(after.map((d) => d.requirementId)).toEqual(["an_back_one_v3", "an_back_two_v3"]);
+        const meta = after.map((d) => JSON.parse(d.metadata ?? "{}") as Record<string, unknown>);
+        expect(meta.map((m) => m.bodyHeld)).toEqual([undefined, undefined]);
+      });
+    });
+
     it("lets a test-coverage export be retried after createBatch refused the first attempt", async () => {
       const suggestion = (id: string) => ({
         id,

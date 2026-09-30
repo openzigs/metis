@@ -366,8 +366,9 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
           });
           for (const indexing of await getIndexing())
             expect(indexing).toEqual({
-              state: "failed",
-              status: "failed",
+              // #489 — a cancelled task reads as `cancelled`, not `failed`.
+              state: status,
+              status,
               chunkCount: 0,
               // #98 — never the task's raw error; #232 — a cancellation says so.
               errorMessage:

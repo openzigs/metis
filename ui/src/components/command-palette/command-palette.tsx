@@ -16,7 +16,8 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "@/components/tables/responsive-table";
 import { projectsApi } from "@/lib/projects-api";
-import { PALETTE_DESTINATIONS } from "@/lib/navigation";
+import { useAuth } from "@/lib/auth-context";
+import { PALETTE_DESTINATIONS, paletteDestinations } from "@/lib/navigation";
 
 /**
  * Below this width the palette presents as a bottom sheet instead of the
@@ -88,6 +89,8 @@ export function CommandPalette() {
   const router = useRouter();
   const isMobile = useMediaQuery(MOBILE_QUERY);
   const listId = useId();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
 
   // ⌘K / Ctrl+K to toggle.
   useEffect(() => {
@@ -108,7 +111,9 @@ export function CommandPalette() {
   });
 
   const items = useMemo<CommandItem[]>(() => {
-    const navItems: CommandItem[] = PALETTE_DESTINATIONS.map((n) => ({
+    // Pass PALETTE_DESTINATIONS explicitly: a test's vi.mock of that export does
+    // not reach the default parameter inside navigation.ts (PR #509 review).
+    const navItems: CommandItem[] = paletteDestinations(isAdmin, PALETTE_DESTINATIONS).map((n) => ({
       id: `nav:${n.href}`,
       label: n.label,
       hint: "Page",
@@ -121,7 +126,7 @@ export function CommandPalette() {
       href: `/projects/${p.id}`,
     }));
     return [...navItems, ...projectItems];
-  }, [projects.data]);
+  }, [projects.data, isAdmin]);
 
   const ranked = useMemo(() => rankCommands(items, query), [items, query]);
 

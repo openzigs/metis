@@ -41,6 +41,10 @@ import {
   scheduleIncrementalRegeneration,
 } from "../../src/lib/docs-gen/regeneration-scheduling.js";
 import { isDurableTask } from "../../src/lib/scheduler/durable-task-types.js";
+import {
+  isConnectorIngestActive,
+  tryAcquireConnectorIngest,
+} from "../../src/lib/connectors/ingest-guard.js";
 
 const ID = "docs-regen-schedule:p1:rc1";
 
@@ -186,5 +190,47 @@ describe("retryRegenerationScheduling (#449)", () => {
     h.findFirst.mockResolvedValueOnce({ id: "rc1" });
     const error = failScheduling();
     await expect(retryRegenerationScheduling("p1", "rc1")).rejects.toBe(error);
+    // #498 — the lease is released on failure too.
+    expect(isConnectorIngestActive("rc1")).toBe(false);
+  });
+
+  it("holds the connector's ingest lease while it schedules, then releases it (#498)", async () => {
+    h.findFirst.mockResolvedValueOnce({ id: "rc1" });
+    let heldDuringCheck = false;
+    h.check.mockImplementationOnce(async () => {
+      heldDuringCheck = isConnectorIngestActive("rc1");
+      // A Sync starting now is refused rather than racing the snapshot.
+      expect(tryAcquireConnectorIngest("rc1", "refresh-ingest")).toBeNull();
+    });
+    await retryRegenerationScheduling("p1", "rc1");
+    expect(heldDuringCheck).toBe(true);
+    expect(isConnectorIngestActive("rc1")).toBe(false);
+  });
+
+  it("defers (throws) while a non-scheduling holder has the lease, so the retry is not lost (PR #505 review)", async () => {
+    h.findFirst.mockResolvedValueOnce({ id: "rc1" });
+    // The docs-gen eval runner's bare source ingest never schedules regeneration.
+    const lease = tryAcquireConnectorIngest("rc1", "source-ingest")!;
+    try {
+      await expect(retryRegenerationScheduling("p1", "rc1")).rejects.toThrow(/deferred/);
+      expect(h.check).not.toHaveBeenCalled();
+      expect(lease.held).toBe(true);
+    } finally {
+      lease.release();
+    }
+  });
+
+  it("skips while an ingest holds the connector, which schedules itself when it lands (#498)", async () => {
+    h.findFirst.mockResolvedValueOnce({ id: "rc1" });
+    const lease = tryAcquireConnectorIngest("rc1", "refresh-ingest")!;
+    try {
+      await expect(retryRegenerationScheduling("p1", "rc1")).resolves.toBeUndefined();
+      expect(h.check).not.toHaveBeenCalled();
+      // The running ingest's claim is untouched.
+      expect(lease.held).toBe(true);
+      expect(isConnectorIngestActive("rc1")).toBe(true);
+    } finally {
+      lease.release();
+    }
   });
 });
