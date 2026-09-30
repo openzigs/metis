@@ -11,6 +11,15 @@
  * keys on a requirement are preserved (`looseObject`) because the refined
  * requirements are persisted back into `Analysis.metadata` and must not lose
  * fields the dialog does not itself read.
+ *
+ * Issue #438 — `title`, `description` and the ambiguity text stay OPTIONAL,
+ * but default to `""`. Requiring a non-empty title would reject real data:
+ * `RequirementsExtractor.parseResponse` keeps a requirement that has a
+ * description and no title, emitting `title: ""`, and those are persisted and
+ * sent back by the client. The dialog interpolates these fields straight into
+ * its prompts, so without a default a sparse body reached the model — and
+ * `Analysis.metadata` — as the literal text "undefined". `""` is exactly what
+ * the extractor already produces for an absent field.
  */
 import { z } from "zod";
 
@@ -28,14 +37,14 @@ const MAX_TEXT_CHARS = 20_000;
 
 const ambiguitySchema = z.looseObject({
   field: z.string().min(1).max(MAX_ID_CHARS),
-  description: z.string().max(MAX_TEXT_CHARS).optional(),
-  suggestedQuestion: z.string().max(MAX_TEXT_CHARS).optional(),
+  description: z.string().max(MAX_TEXT_CHARS).default(""),
+  suggestedQuestion: z.string().max(MAX_TEXT_CHARS).default(""),
 });
 
 const requirementSchema = z.looseObject({
   id: z.string().min(1).max(MAX_ID_CHARS),
-  title: z.string().max(MAX_TEXT_CHARS).optional(),
-  description: z.string().max(MAX_TEXT_CHARS).optional(),
+  title: z.string().max(MAX_TEXT_CHARS).default(""),
+  description: z.string().max(MAX_TEXT_CHARS).default(""),
   ambiguities: z.array(ambiguitySchema).max(MAX_CLARIFY_AMBIGUITIES_PER_REQUIREMENT).nullish(),
 });
 
