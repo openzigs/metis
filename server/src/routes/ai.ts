@@ -1888,8 +1888,9 @@ export function aiRouter(): Router {
     // #521 — defence in depth behind the `writableEnded` guards: an `error`
     // emitted on the response (a write after end, a socket reset) with no
     // listener is an uncaught exception that takes the process down. #541 — a
-    // write after end does NOT destroy the response or emit `close`: Node 22's
-    // `_http_outgoing` only schedules the `error` (`onError` -> `emitErrorNt`).
+    // write after end does not itself destroy the response or trigger `close`
+    // (the normal finish still emits it): Node 22's `_http_outgoing` only
+    // schedules the `error` (`onError` -> `emitErrorNt`).
     // Nothing needs aborting by then — the timers that end the response early
     // abort the turn first, and the `finally` ends it only once the turn is
     // over — so this listener only records the error.

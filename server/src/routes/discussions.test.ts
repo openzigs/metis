@@ -13,6 +13,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 
+const logWarn = vi.hoisted(() => vi.fn());
+vi.mock("../lib/logger.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../lib/logger.js")>();
+  return {
+    ...real,
+    createChildLogger: (name: string) =>
+      name === "discussions-routes"
+        ? { ...real.createChildLogger(name), warn: logWarn }
+        : real.createChildLogger(name),
+  };
+});
+
 let currentUser: { userId: string; role: string } = { userId: "u1", role: "member" };
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: () => void) => {
@@ -770,6 +782,11 @@ describe("discussions routes", () => {
       expect(res.status).toBe(200);
       expect(thrown).toBeUndefined();
       expect(res.text).toContain("event: done");
+      // PR #546 review — the error is recorded, not merely swallowed.
+      expect(logWarn).toHaveBeenCalledWith(
+        "Discussion AI stream response emitted an error",
+        expect.objectContaining({ threadId: "t1", userId: "u1", error: "socket reset" }),
+      );
     });
   });
 
