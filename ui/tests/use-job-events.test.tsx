@@ -19,6 +19,7 @@ function makeFakeSocket() {
   const handlers = new Map<string, Set<Handler>>();
   const emit = vi.fn();
   const socket = {
+    connected: true,
     emit,
     on: vi.fn((name: string, fn: Handler) => {
       if (!handlers.has(name)) handlers.set(name, new Set());
@@ -58,6 +59,74 @@ const lifecycle = (over: Partial<JobLifecycleEvent>): JobLifecycleEvent => ({
 beforeEach(() => {
   fake = makeFakeSocket();
   vi.clearAllMocks();
+});
+
+const subscribes = (jobId: string) =>
+  fake.emit.mock.calls.filter(
+    ([name, payload]) => name === "subscribe:job" && (payload as { jobId: string }).jobId === jobId,
+  ).length;
+
+const listeners = (name: string) => fake.handlers.get(name)?.size ?? 0;
+
+// #473 — a reconnect (network blip, or the token-refresh disconnect+connect)
+// drops this socket's rooms on the server, so each hook re-joins on every
+// connect after the first. The first connect needs nothing: the emits made
+// before it were buffered and reach the server on it.
+function reconnect() {
+  fake.socket.connected = false;
+  act(() => fake.fire("disconnect", "transport close"));
+  fake.socket.connected = true;
+  act(() => fake.fire("connect", undefined));
+}
+
+describe.each([
+  ["useJobLifecycle", (id: string) => useJobLifecycle(id)],
+  ["useDocSectionProgress", (id: string) => useDocSectionProgress(id)],
+])("%s across a reconnect (#473)", (_name, hook) => {
+  it("re-subscribes to the job's room on a reconnect", () => {
+    const qc = new QueryClient();
+    renderHook(() => hook("job-1"), { wrapper: wrapper(qc) });
+    expect(subscribes("job-1")).toBe(1);
+    reconnect();
+    expect(subscribes("job-1")).toBe(2);
+    reconnect();
+    expect(subscribes("job-1")).toBe(3);
+  });
+
+  it("does not subscribe again on the first connect", () => {
+    fake.socket.connected = false;
+    const qc = new QueryClient();
+    renderHook(() => hook("job-1"), { wrapper: wrapper(qc) });
+    act(() => fake.fire("connect", undefined));
+    expect(subscribes("job-1")).toBe(1);
+    // A later connect is a reconnect.
+    reconnect();
+    expect(subscribes("job-1")).toBe(2);
+  });
+
+  it("removes its connect listener on unmount", () => {
+    const qc = new QueryClient();
+    const { unmount } = renderHook(() => hook("job-1"), { wrapper: wrapper(qc) });
+    expect(listeners("connect")).toBe(1);
+    unmount();
+    expect(listeners("connect")).toBe(0);
+    fake.emit.mockClear();
+    reconnect();
+    expect(fake.emit).not.toHaveBeenCalled();
+  });
+
+  it("re-subscribes to the new job, not the old one, after the job changes", () => {
+    const qc = new QueryClient();
+    const { rerender } = renderHook(({ id }) => hook(id), {
+      wrapper: wrapper(qc),
+      initialProps: { id: "job-1" },
+    });
+    rerender({ id: "job-2" });
+    fake.emit.mockClear();
+    reconnect();
+    expect(subscribes("job-2")).toBe(1);
+    expect(subscribes("job-1")).toBe(0);
+  });
 });
 
 describe("useJobLifecycle", () => {

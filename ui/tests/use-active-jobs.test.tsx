@@ -39,7 +39,8 @@ function makeFakeSocket() {
     }),
   };
   const fire = (name: string, data: unknown) => handlers.get(name)?.forEach((fn) => fn(data));
-  return { socket, fire };
+  const listeners = (name: string) => handlers.get(name)?.size ?? 0;
+  return { socket, fire, listeners };
 }
 
 let fake = makeFakeSocket();
@@ -304,10 +305,30 @@ describe("useFollowJobs", () => {
       expect(result.current).toHaveLength(0);
     });
 
+    // #473 — intended: after a deliberate `socket.disconnect()` with no
+    // reconnect (a logout outside the renewal path), the wait stays paused, so
+    // a job the server lost stays listed until reload instead of being
+    // forgotten after REPLAY_WAIT_MS. Nothing can be heard while offline, and
+    // forgetting a job that may still be running is the worse mistake.
+    it("keeps a job listed while the socket stays deliberately disconnected", () => {
+      applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+      const { result } = follow(["job-1"]);
+      fake.socket.connected = false;
+      act(() => fake.fire("disconnect", "io client disconnect"));
+      act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS * 10));
+      expect(result.current.map((j) => j.jobId)).toEqual(["job-1"]);
+    });
+
     it("stops listening for connect/disconnect on unmount", () => {
       applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
       const { unmount } = follow(["job-1"]);
+      expect(fake.listeners("connect")).toBe(1);
+      expect(fake.listeners("disconnect")).toBe(1);
       unmount();
+      // #473 — assert each listener is gone: the emit check below cannot see a
+      // leaked `disconnect` listener, which only clears a timer.
+      expect(fake.listeners("connect")).toBe(0);
+      expect(fake.listeners("disconnect")).toBe(0);
       fake.socket.emit.mockClear();
       reconnect();
       expect(fake.socket.emit).not.toHaveBeenCalled();
