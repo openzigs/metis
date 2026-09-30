@@ -116,3 +116,5 @@ graph LR
 
 // The #686 mermaid render-security tests live in exporters-render-security.test.ts,
 // which stubs puppeteer so they never spawn a real Chromium under the fan-out (#388).
+// The pdf/docx tests ABOVE still launch a real Chromium, the same contended
+// resource; moving them off the fan-out is #447.
