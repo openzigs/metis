@@ -59,6 +59,8 @@ class ScriptedProvider implements AIProvider {
   readonly model = "stub-model";
   readonly offline = true;
   prompts: ChatMessage[][] = [];
+  /** Throw after the first delta: the turn ends as a failed/incomplete reply. */
+  failMidStream = false;
   async chat(messages: ChatMessage[]) {
     this.prompts.push(messages);
     return {
@@ -71,6 +73,7 @@ class ScriptedProvider implements AIProvider {
   async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
     this.prompts.push(messages);
     yield { type: "delta", content: "stream answer" };
+    if (this.failMidStream) throw new Error("provider dropped the stream");
     yield { type: "done", finishReason: "stop" };
   }
   async embed() {
@@ -218,6 +221,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       };
       expect(res.body.data.grounding).toEqual(expected);
       expect(await replyGroundings(sessionId)).toEqual([expected]);
+    });
+
+    it("a reply that fails mid-stream keeps its grounding on reload", async () => {
+      // PR #437 panel: the failed-turn write (recordFailedTurn) had no test —
+      // the scripted stream never errored.
+      state.hits = [{ filename: "a.md", position: 0, score: 0.5, text: "alpha" }];
+      model.failMidStream = true;
+      const sessionId = await newSession(PROJECT);
+      await post("/api/ai/stream", { sessionId, message: "what is alpha?" });
+      expect(await replyGroundings(sessionId)).toEqual([
+        { status: "grounded", projectId: PROJECT, projectName: "Payments", sources: 1 },
+      ]);
     });
 
     it("each reply carries its own turn's grounding", async () => {
