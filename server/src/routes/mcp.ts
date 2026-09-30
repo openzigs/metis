@@ -60,6 +60,7 @@ import { scanForHiddenChars } from "../lib/mcp/hidden-char-scanner.js";
 import { getVaultService } from "../lib/vault/vault-service.js";
 import { freshSecretLabel } from "../lib/vault/secret-rotation.js";
 import { withdrawCreatedSecrets } from "../lib/vault/secret-retirement.js";
+import type { SecretBindings } from "../lib/vault/bound-secret.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -197,6 +198,8 @@ async function vaultPlaintextSecrets(
     isSecretFn: (key: string, value: string) => boolean;
     /** #495 — receives the id of every secret created, so a failed write can withdraw it. */
     created?: string[];
+    /** #577 — receives each created secret's ref body → id, so the write binds exactly it. */
+    bound?: SecretBindings;
   },
 ): Promise<{ rewritten: Record<string, string> | null; refs: Record<string, string> }> {
   if (!record) return { rewritten: null, refs: {} };
@@ -234,6 +237,7 @@ async function vaultPlaintextSecrets(
         createdById: ctx.actorId,
       });
       ctx.created?.push(summary.id);
+      if (ctx.bound) ctx.bound[secretLabel] = summary.id;
       audit({
         actor: { id: ctx.actorId },
         action: "vault.write",
@@ -291,7 +295,11 @@ export function mcpRouter(): Router {
     const actor = actorFromReq(req);
     await assertProjectScopedCreate(req, parsed.data.scope, parsed.data.projectId);
     // #344 — before any vault write, so a refused request leaves nothing.
-    await assertMcpCreateSecretBinding({ userId: actor.id, role: actor.role }, parsed.data);
+    // #577 — and the write binds exactly the ids this check approved.
+    const bound = await assertMcpCreateSecretBinding(
+      { userId: actor.id, role: actor.role },
+      parsed.data,
+    );
     try {
       const requestedScope = parsed.data.scope ?? "global";
       // Vault has no `user` scope; user-scoped MCP secrets fold into global.
@@ -301,6 +309,7 @@ export function mcpRouter(): Router {
         field: "env",
         actorId: actor.id,
         scope,
+        bound,
         isSecretFn: (k, v) => SECRET_KEY_PATTERN.test(k) || isSecretValue(v),
       });
       const headerResult = await vaultPlaintextSecrets(parsed.data.headers, {
@@ -308,6 +317,7 @@ export function mcpRouter(): Router {
         field: "header",
         actorId: actor.id,
         scope,
+        bound,
         isSecretFn: (k, v) => isSecretHeaderName(k) || isSecretValue(v),
       });
       const created = await svc().create(
@@ -321,6 +331,7 @@ export function mcpRouter(): Router {
           headers: headerResult.rewritten ?? parsed.data.headers,
         },
         actor,
+        { secretBindings: bound },
       );
       res.status(201).json(ok(created));
     } catch (err) {
@@ -338,11 +349,14 @@ export function mcpRouter(): Router {
     const actor = actorFromReq(req);
     await assertServerAccess(req, String(req.params.id));
     // #344 — before any vault write, so a refused request leaves nothing.
-    const checkedAt = await assertMcpUpdateSecretBinding(
+    const check = await assertMcpUpdateSecretBinding(
       { userId: actor.id, role: actor.role },
       String(req.params.id),
       parsed.data,
     );
+    const checkedAt = check?.checkedAt ?? null;
+    /** #577 — the ids the check approved, plus any secret this request vaults. */
+    const bound = check?.bindings ?? undefined;
     /** #495 — secrets this request vaults; withdrawn if the write does not land. */
     const created: string[] = [];
     /** #495 — set the moment the row is written: from then on it names the new secrets. */
@@ -367,6 +381,7 @@ export function mcpRouter(): Router {
             actorId: actor.id,
             scope,
             created,
+            bound,
             isSecretFn: (k, v) => SECRET_KEY_PATTERN.test(k) || isSecretValue(v),
           })
         : { rewritten: parsed.data.env ?? null, refs: {} as Record<string, string> };
@@ -378,6 +393,7 @@ export function mcpRouter(): Router {
             actorId: actor.id,
             scope,
             created,
+            bound,
             isSecretFn: (k, v) => isSecretHeaderName(k) || isSecretValue(v),
           })
         : { rewritten: parsed.data.headers ?? null, refs: {} as Record<string, string> };
@@ -402,6 +418,7 @@ export function mcpRouter(): Router {
         () => {
           landed = true;
         },
+        bound,
       );
       res.json(ok(updated));
     } catch (err) {
@@ -426,12 +443,9 @@ export function mcpRouter(): Router {
     const actor = actorFromReq(req);
     const id = String(req.params.id);
     await assertServerAccess(req, id);
-    const checkedAt = await assertMcpRebindSecretBinding(
-      { userId: actor.id, role: actor.role },
-      id,
-    );
+    const check = await assertMcpRebindSecretBinding({ userId: actor.id, role: actor.role }, id);
     try {
-      res.json(ok(await svc().rebindSecrets(id, actor, checkedAt)));
+      res.json(ok(await svc().rebindSecrets(id, actor, check?.checkedAt ?? null, check?.bindings)));
     } catch (err) {
       rethrow(err);
     }
@@ -525,11 +539,13 @@ export function mcpRouter(): Router {
         return;
       }
       // #344 — every secret an entry references must be the caller's.
-      await assertMcpImportSecretBinding(
+      // #577 — and each entry binds exactly the ids its check approved.
+      const secretBindings = await assertMcpImportSecretBinding(
         { userId: actor.id, role: actor.role },
         await buildImportPlan(body.mcpJson, { labelPrefix: body.labelPrefix }),
       );
       const result = await executeImport(body.mcpJson, svc(), actor, {
+        secretBindings,
         scope: body.scope,
         projectId: body.projectId ?? null,
         trustLevel: body.trustLevel,
@@ -979,11 +995,13 @@ export function mcpRouter(): Router {
         return;
       }
       // #344 — every secret an entry references must be the caller's.
-      await assertMcpImportSecretBinding(
+      // #577 — and each entry binds exactly the ids its check approved.
+      const secretBindings = await assertMcpImportSecretBinding(
         { userId: actor.id, role: actor.role },
         await buildImportPlan(wrapped),
       );
       const result = await executeImport(wrapped, svc(), actor, {
+        secretBindings,
         scope: body.scope,
         projectId: body.projectId ?? null,
       });

@@ -10,6 +10,11 @@ export interface BindingSuiteState {
   between: null | (() => Promise<void>);
   /** Runs once, after a vault secret is created and before the row is written. */
   afterVaultCreate: null | (() => Promise<void>);
+  /**
+   * #577 — optional: replaces guard `name`'s result before the route sees it,
+   * so a suite can hand the write a checked set that misses a reference.
+   */
+  rewrite?: null | ((name: string, result: unknown) => unknown);
 }
 
 /** Wrap every guard export so `state.between` fires after the real guard returns. */
@@ -25,7 +30,7 @@ export function interleaved(
       const hook = state.between;
       state.between = null;
       if (hook) await hook();
-      return result;
+      return state.rewrite ? state.rewrite(name, result) : result;
     };
   }
   return wrapped;

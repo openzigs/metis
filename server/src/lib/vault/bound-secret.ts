@@ -20,12 +20,22 @@
  * the check approved: an id match wins, otherwise the reference must reach
  * exactly one live secret by label.
  */
+import { hasPermission, type AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
-import { candidateFilters, reaches } from "./secret-binding.js";
+import {
+  candidateFilters,
+  judgeSecretBinding,
+  reaches,
+  readCandidateSecrets,
+  type SecretBindingChange,
+  type SecretBindingContext,
+} from "./secret-binding.js";
 
 export const VAULT_REF_UNRESOLVED = "VAULT_REF_UNRESOLVED";
 export const VAULT_REF_AMBIGUOUS = "VAULT_REF_AMBIGUOUS";
+/** #577 — a write reached with a reference its binding check never approved. */
+export const SECRET_BINDING_UNCHECKED = "SECRET_BINDING_UNCHECKED";
 
 /** Reference body → the secret id it is bound to. */
 export type SecretBindings = Record<string, string>;
@@ -45,24 +55,46 @@ export async function bindSecretRefs(
   refs: string[],
   kept: SecretBindings | null = null,
 ): Promise<SecretBindings> {
+  const unbound = unkeptRefs(refs, kept);
+  if (unbound.length === 0) return bindFromRows(refs, kept, []);
+  const rows = await prisma.secret.findMany({
+    where: { deletedAt: null, OR: unbound.flatMap(candidateFilters) },
+    select: { id: true, name: true },
+  });
+  return bindFromRows(refs, kept, rows);
+}
+
+/** The references `kept` does not already bind — the only ones that need a read. */
+function unkeptRefs(refs: string[], kept: SecretBindings | null): string[] {
+  return [...new Set(refs)].filter((ref) => keptIdOf(kept, ref) === undefined);
+}
+
+function keptIdOf(kept: SecretBindings | null, ref: string): string | undefined {
+  const id = kept && Object.hasOwn(kept, ref) ? kept[ref] : undefined;
+  return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+/**
+ * Bind each reference from rows already read: a kept binding wins, then an id
+ * match, then exactly one label match. Pure, so a caller that has just judged
+ * these rows binds exactly the ids it judged (#577).
+ */
+function bindFromRows(
+  refs: string[],
+  kept: SecretBindings | null,
+  rows: Array<{ id: string; name: string }>,
+): SecretBindings {
   // Vault labels may be `constructor`, `toString` or `__proto__`: a plain `{}`
   // would read those from Object.prototype (a "kept" binding that is a
   // function) or drop an `__proto__` key on write. A null-prototype object and
   // an own-property check make every label an ordinary key (PR #499 review).
   const out: SecretBindings = Object.create(null) as SecretBindings;
-  const unbound: string[] = [];
   for (const ref of new Set(refs)) {
-    const keptId = kept && Object.hasOwn(kept, ref) ? kept[ref] : undefined;
-    if (typeof keptId === "string" && keptId.length > 0) out[ref] = keptId;
-    else unbound.push(ref);
-  }
-  if (unbound.length === 0) return out;
-
-  const rows = await prisma.secret.findMany({
-    where: { deletedAt: null, OR: unbound.flatMap(candidateFilters) },
-    select: { id: true, name: true },
-  });
-  for (const ref of unbound) {
+    const keptId = keptIdOf(kept, ref);
+    if (keptId !== undefined) {
+      out[ref] = keptId;
+      continue;
+    }
     const byId = rows.find((r) => r.id === ref);
     if (byId) {
       out[ref] = byId.id;
@@ -85,6 +117,70 @@ export async function bindSecretRefs(
       );
     }
     out[ref] = matches[0].id;
+  }
+  return out;
+}
+
+/**
+ * #577 — the #344 ownership check and the #480 binding over ONE read of the
+ * secret table: the references in `change.after` are resolved once, judged
+ * (unless the caller holds `vault.reveal`), and bound to exactly the ids that
+ * were judged. Checking and binding in separate reads let a secret deleted and
+ * re-created under the same label between them be bound unchecked.
+ *
+ * Pass the returned bindings to the write as its pre-resolved ids; `kept` is
+ * as for {@link bindSecretRefs}.
+ *
+ * @throws AppError 403 SECRET_BINDING_FORBIDDEN (audited), 409
+ *   VAULT_REF_AMBIGUOUS, 400 VAULT_REF_UNRESOLVED.
+ */
+export async function authorizeAndBindSecretRefs(
+  user: Pick<AuthPayload, "userId" | "role">,
+  change: SecretBindingChange,
+  ctx: SecretBindingContext,
+  kept: SecretBindings | null = null,
+): Promise<SecretBindings> {
+  const after = [...new Set(change.after)];
+  if (after.length === 0) return Object.create(null) as SecretBindings;
+  if (hasPermission(user.role, "vault.reveal")) {
+    return bindFromRows(after, kept, await readCandidateSecrets(unkeptRefs(after, kept)));
+  }
+  const rows = await readCandidateSecrets([...new Set([...change.before, ...after])]);
+  judgeSecretBinding(user, change, ctx, rows);
+  return bindFromRows(after, kept, rows);
+}
+
+/**
+ * #577 — bind `refs` from the ids a write was handed, and nothing else: no read
+ * of the secret table. `covered` is what the route's binding check approved
+ * (plus any secret the request itself vaulted, and on an existing server the
+ * bindings it already holds). A reference outside it is refused, never resolved
+ * by label here — resolving it again is the TOCTOU the check-and-bind read
+ * closes, so a route that forgot to pass the checked ids fails closed.
+ *
+ * A write with no references binds nothing and needs no `covered` set (registry
+ * and federation installs).
+ *
+ * @throws AppError 500 SECRET_BINDING_UNCHECKED
+ */
+export function bindCheckedSecretRefs(
+  refs: string[],
+  covered: SecretBindings | null | undefined,
+): SecretBindings {
+  const out: SecretBindings = Object.create(null) as SecretBindings;
+  const unchecked: string[] = [];
+  for (const ref of new Set(refs)) {
+    const id = keptIdOf(covered ?? null, ref);
+    if (id === undefined) unchecked.push(ref);
+    else out[ref] = id;
+  }
+  if (unchecked.length > 0) {
+    throw new AppError(
+      500,
+      SECRET_BINDING_UNCHECKED,
+      `internal error: ${unchecked.length} vault reference(s) reached the write without ` +
+        "passing the binding check; refusing to resolve them by label",
+    );
   }
   return out;
 }
