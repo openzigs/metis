@@ -18,6 +18,7 @@ import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query-keys";
 import {
+  ambiguitiesOf,
   analysisApi,
   readEnhancementMetadata,
   type DomainTrust,
@@ -337,7 +338,7 @@ function ClarificationSection({
   // from structuredRequirements so the panel is never a bare spinner. This
   // preview deliberately has NO submit affordance — answers can only be posted
   // through the interactive panel above, which carries real server `q.id`s.
-  if (structured && structured.requirements.some((r) => r.ambiguities.length > 0)) {
+  if (structured && structured.requirements.some((r) => ambiguitiesOf(r).length > 0)) {
     return (
       <GapsPreviewPanel
         structured={structured}
@@ -382,7 +383,7 @@ function GapsPreviewPanel({
   startFailed?: boolean;
   onRetryStart?: () => void;
 }): React.ReactElement {
-  const requirementsWithGaps = structured.requirements.filter((r) => r.ambiguities.length > 0);
+  const requirementsWithGaps = structured.requirements.filter((r) => ambiguitiesOf(r).length > 0);
 
   return (
     <Card id={QUESTIONS_ANCHOR} className="space-y-4 p-4" data-testid="gaps-preview">
@@ -419,7 +420,7 @@ function GapsPreviewPanel({
               <p className="mb-2 text-xs text-muted-foreground">{req.description}</p>
             )}
             <ul className="space-y-2">
-              {req.ambiguities.map((amb) => (
+              {ambiguitiesOf(req).map((amb) => (
                 <li
                   key={`${req.id}:${amb.field}`}
                   className="rounded border border-border/70 bg-muted/40 p-2"

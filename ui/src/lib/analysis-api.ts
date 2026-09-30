@@ -835,8 +835,20 @@ export interface StructuredRequirement {
   id: string;
   title: string;
   description: string;
-  ambiguities: RequirementAmbiguity[];
+  /**
+   * Absent (or `null`) on requirements stored before ambiguities were
+   * extracted (#382). Read it through {@link ambiguitiesOf}, never directly.
+   */
+  ambiguities?: RequirementAmbiguity[] | null;
   evidenceNeeds: RequirementEvidenceNeed[];
+}
+
+/**
+ * Issue #403 — a requirement's ambiguities, treating a missing or non-array
+ * field as "none" so an older stored record renders instead of throwing.
+ */
+export function ambiguitiesOf(requirement: StructuredRequirement): RequirementAmbiguity[] {
+  return Array.isArray(requirement.ambiguities) ? requirement.ambiguities : [];
 }
 
 export interface StructuredRequirementsPayload {

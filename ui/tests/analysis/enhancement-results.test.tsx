@@ -294,6 +294,46 @@ describe("EnhancementResults", () => {
     expect(document.querySelector("input")).toBeNull();
   });
 
+  // Issue #403 — requirements stored before ambiguities were extracted carry no
+  // `ambiguities` array (#382). The readers must treat that as "none", not throw.
+  it("renders the gaps preview when some stored requirements have no ambiguities array", async () => {
+    analysisApi.getClarification.mockResolvedValue({ state: null });
+    analysisApi.clarify.mockReturnValue(new Promise(() => {}));
+
+    renderResults({
+      enhancement: { enableWebResearch: false, enableClarification: true },
+      structuredRequirements: {
+        requirements: [
+          { id: "req-legacy", title: "Legacy requirement", description: "d", evidenceNeeds: [] },
+          {
+            id: "req-null",
+            title: "Null ambiguities",
+            description: "d",
+            ambiguities: null,
+            evidenceNeeds: [],
+          },
+          {
+            id: "req-open",
+            title: "Open requirement",
+            description: "d",
+            ambiguities: [
+              { field: "retention", description: "how long?", suggestedQuestion: "How long?" },
+            ],
+            evidenceNeeds: [],
+          },
+        ],
+        totalAmbiguities: 1,
+        totalEvidenceNeeds: 0,
+      },
+    });
+
+    expect(await screen.findByText("How long?")).toBeInTheDocument();
+    expect(screen.getByText("Open requirement")).toBeInTheDocument();
+    // Requirements with no ambiguities are not listed as gaps.
+    expect(screen.queryByText("Legacy requirement")).not.toBeInTheDocument();
+    expect(screen.queryByText("Null ambiguities")).not.toBeInTheDocument();
+  });
+
   it("never offers a fabricated-id submit path when the dialog start fails", async () => {
     // This is the exact case the old static fallback mishandled: GET → null and
     // the POST `{}` start rejects (no usable interactive dialog). Old behavior
