@@ -319,8 +319,8 @@ importers:
         specifier: ^5.4.0
         version: 5.4.0
       nodemailer:
-        specifier: ^9.1.1
-        version: 9.1.1
+        specifier: ^10.0.10
+        version: 10.0.10
       officeparser:
         specifier: ^6.1.1
         version: 6.1.1
@@ -6978,9 +6978,9 @@ packages:
     resolution: {integrity: sha512-jVe6Z61gPcPjCElPZ6j8llB3wnqGcuQzefim1ERsqIakxnEy5JlzV7XKdO1KmacRG5TKwPc4vJTgSRQ0LfkbFw==}
     engines: {node: '>=8'}
 
-  nodemailer@9.1.1:
-    resolution: {integrity: sha512-izw9mVKFix6YSnC9eLgV6g1opl9DUlRio9ZNcq+Wu9Ujn2UwF+8Nl0B8nz22kEC+CTZCvinkxwJ0DeFbb6NwcQ==}
-    engines: {node: '>=6.0.0'}
+  nodemailer@10.0.10:
+    resolution: {integrity: sha512-He9XskOFms62SyAKkLu8CcGcYHAo+BSHSsORI8s4PJH8qZgZY4L4lDfvyN0twvmbpyG+eGrxpyBlskj9d9rJ8A==}
+    engines: {node: '>=20.0.0'}
 
   normalize-path@3.0.0:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
@@ -8874,8 +8874,6 @@ snapshots:
       json-bignum: 0.0.3
       pad-left: 2.1.0
       tslib: 2.8.1
-    transitivePeerDependencies:
-      - '@75lb/nature'
 
   '@asamuzakjp/css-color@5.1.11':
     dependencies:
@@ -12669,6 +12667,8 @@ snapshots:
       json-bignum: 0.0.3
       pad-left: 2.1.0
       tslib: 2.8.1
+    transitivePeerDependencies:
+      - '@75lb/nature'
 
   append-field@1.0.0: {}
 
@@ -15963,7 +15963,7 @@ snapshots:
       '@types/pegjs': 0.10.6
       big-integer: 1.6.52
 
-  nodemailer@9.1.1: {}
+  nodemailer@10.0.10: {}
 
   normalize-path@3.0.0: {}
 
