@@ -115,6 +115,12 @@ export async function storeUploadedArchive(connectorId: string, buffer: Buffer):
   return archivePath;
 }
 
+/** Remove a connector's stored upload archive (best-effort; a missing file is fine). */
+export async function removeUploadedArchive(connectorId: string): Promise<void> {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- `connectorId` is a server-generated id (matches /^[a-z0-9]+$/), never user input; this is the same path storeUploadedArchive() wrote.
+  await fs.rm(path.join(uploadArchiveRoot(), `${connectorId}.zip`), { force: true });
+}
+
 /**
  * Extract a stored archive (by path) into a FRESH extraction directory for the
  * given connector, enforcing all zip-slip / zip-bomb guards and the source

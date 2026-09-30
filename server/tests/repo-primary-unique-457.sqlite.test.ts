@@ -21,6 +21,7 @@ import {
   type MigratedSqlite,
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
 } from "./helpers/sqlite-migrated-db.js";
+import { countBarrier, overrideRepoConnection } from "./helpers/repo-count-barrier.js";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("../src/lib/prisma.js", async () => {
@@ -41,40 +42,6 @@ const { createRepoConnector, createUploadRepoConnector } =
 const MIGRATION = "20261003000457_issue457_repo_primary_unique";
 const T0 = "2026-09-01T00:00:00.000Z";
 const T1 = "2026-09-02T00:00:00.000Z";
-
-/**
- * A client whose `repoConnection.count` holds every caller until `n` callers
- * have counted — so `n` concurrent creates all read the same (empty) project
- * before any of them inserts. The race, made deterministic.
- */
-function countBarrier(db: PrismaClient, n: number): PrismaClient {
-  let arrived = 0;
-  let release!: () => void;
-  const allCounted = new Promise<void>((r) => (release = r));
-  const repo = db.repoConnection;
-  const racingRepo = new Proxy(repo, {
-    get(target, prop) {
-      if (prop === "count") {
-        return async (args: Parameters<typeof repo.count>[0]) => {
-          const result = await target.count(args);
-          arrived += 1;
-          if (arrived === n) release();
-          await allCounted;
-          return result;
-        };
-      }
-      const value = Reflect.get(target, prop) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return new Proxy(db, {
-    get(target, prop) {
-      if (prop === "repoConnection") return racingRepo;
-      const value = Reflect.get(target, prop) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
 
 async function zipBuf(): Promise<Buffer> {
   const zip = new JSZip();
@@ -101,7 +68,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
          VALUES ('u1','u1','U1','u1@example.test',?,?)`,
         [T0, T0],
       );
-      for (const p of ["p1", "p2", "p3", "p4", "p5"]) {
+      for (const p of ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]) {
         x(
           `INSERT INTO projects (id, name, slug, createdById, createdAt, updatedAt)
            VALUES (?, 'Apollo', ?, 'u1', ?, ?)`,
@@ -213,6 +180,91 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(first.isPrimary).toBe(true);
       expect(second.isPrimary).toBe(false);
       expect(await primaries("p5")).toEqual([first.id]);
+    });
+
+    it("#463 — a failed upload never takes the primary flag from a create racing it", async () => {
+      // Before #463 the upload inserted its row (primary) and THEN validated the
+      // archive: a create counting inside that window went in non-primary, the
+      // failed row was deleted, and the project was left with no primary.
+      const real = db.repoConnection;
+      const insertedLabels: string[] = [];
+      let raced = false;
+      const race = () =>
+        createRepoConnector("p6", { label: "good", ownerOrOrg: "o", repoName: "good" }, "u1");
+      state.db = overrideRepoConnection(db, {
+        create: async (args: Parameters<typeof real.create>[0]) => {
+          insertedLabels.push(String(args.data.label));
+          const row = await real.create(args);
+          if (args.data.label === "bad" && !raced) {
+            raced = true;
+            await race();
+          }
+          return row;
+        },
+      });
+      try {
+        await expect(
+          createUploadRepoConnector("p6", "bad", Buffer.from("not a zip"), "u1"),
+        ).rejects.toMatchObject({ code: "ARCHIVE_INVALID" });
+        if (!raced) await race();
+      } finally {
+        state.db = db;
+      }
+      expect(insertedLabels).not.toContain("bad");
+      const rows = await db.repoConnection.findMany({ where: { projectId: "p6" } });
+      expect(rows.map((r) => [r.label, r.isPrimary])).toEqual([["good", true]]);
+    });
+
+    it("#463 — writes an upload's row once, with uploadPath, and never updates it", async () => {
+      const real = db.repoConnection;
+      const creates: Array<Record<string, unknown>> = [];
+      let updates = 0;
+      state.db = overrideRepoConnection(db, {
+        create: async (args: Parameters<typeof real.create>[0]) => {
+          creates.push({ ...(args.data as Record<string, unknown>) });
+          return real.create(args);
+        },
+        update: async (args: Parameters<typeof real.update>[0]) => {
+          updates += 1;
+          return real.update(args);
+        },
+      });
+      let created;
+      try {
+        created = await createUploadRepoConnector("p7", "fresh", await zipBuf(), "u1");
+      } finally {
+        state.db = db;
+      }
+      expect(updates).toBe(0);
+      expect(creates).toHaveLength(1);
+      expect(creates[0]).toMatchObject({ id: created.id, isPrimary: true });
+      const row = await db.repoConnection.findUniqueOrThrow({ where: { id: created.id } });
+      expect(row.uploadPath).toBe(creates[0].uploadPath);
+      expect(path.basename(row.uploadPath ?? "")).toBe(`${created.id}.zip`);
+      await expect(fs.access(row.uploadPath ?? "")).resolves.toBeUndefined();
+      expect(row.isPrimary).toBe(true);
+    });
+
+    it("#463 — a label clash with a soft-deleted row is not retried as non-primary", async () => {
+      await db.repoConnection.create({
+        data: { projectId: "p8", label: "old", deletedAt: new Date() },
+      });
+      const real = db.repoConnection;
+      let creates = 0;
+      state.db = overrideRepoConnection(db, {
+        create: async (args: Parameters<typeof real.create>[0]) => {
+          creates += 1;
+          return real.create(args);
+        },
+      });
+      try {
+        await expect(
+          createRepoConnector("p8", { label: "old", ownerOrOrg: "o", repoName: "old" }, "u1"),
+        ).rejects.toMatchObject({ code: "P2002" });
+      } finally {
+        state.db = db;
+      }
+      expect(creates).toBe(1);
     });
   },
 );

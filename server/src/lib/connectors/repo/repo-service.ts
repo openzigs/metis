@@ -29,11 +29,12 @@ import {
   type RepoProvider,
   type UpdateRepoConnectorInput,
 } from "@metis/shared";
+import { ulid } from "ulid";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../prisma.js";
-import { isUniqueViolation } from "../../db/prisma-errors.js";
+import { isUniqueViolation, uniqueViolationTarget } from "../../db/prisma-errors.js";
 import { getVaultService } from "../../vault/vault-service.js";
 import { resolveRepoCloneRoot, resolveRepoClonePath } from "./clone-path.js";
 import { assertConnectorHostAllowed, resolveAndAssertConnectorHost } from "../network-allowlist.js";
@@ -47,6 +48,7 @@ import {
   cleanupExtraction,
   extractArchiveBuffer,
   extractArchiveFromPath,
+  removeUploadedArchive,
   storeUploadedArchive,
 } from "./archive-extract.js";
 
@@ -360,7 +362,8 @@ export async function createRepoConnector(
  * `repo_connections_projectId_primary_key` (one live primary per project)
  * rejects the loser's insert with P2002, and the loser is re-inserted as a
  * non-primary row. A P2002 on that retry (e.g. a racing duplicate label) is the
- * caller's to see.
+ * caller's to see — and so is a first-insert P2002 that names another
+ * constraint (#463: a label held by a soft-deleted row), which no retry fixes.
  */
 async function insertRepoConnection(
   data: Omit<Prisma.RepoConnectionUncheckedCreateInput, "isPrimary">,
@@ -374,9 +377,24 @@ async function insertRepoConnection(
   try {
     return await prisma.repoConnection.create({ data: { ...data, isPrimary: true } });
   } catch (err) {
-    if (!isUniqueViolation(err)) throw err;
+    if (!isPrimaryIndexViolation(err)) throw err;
     return prisma.repoConnection.create({ data: { ...data, isPrimary: false } });
   }
+}
+
+const PRIMARY_INDEX = "repo_connections_projectId_primary_key";
+
+/**
+ * #463 — is `err` the one-live-primary index rejecting the insert? A P2002 that
+ * names another constraint is not; one that names none (an unknown error
+ * shape) is treated as the primary index, since the retry is then harmless.
+ */
+function isPrimaryIndexViolation(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const target = uniqueViolationTarget(err);
+  if (!target) return true;
+  if (target.index !== undefined) return target.index === PRIMARY_INDEX;
+  return target.fields?.length === 1 && target.fields[0] === "projectId";
 }
 
 /**
@@ -399,30 +417,34 @@ export async function createUploadRepoConnector(
     throw new ConnectorError(409, "REPO_LABEL_TAKEN", `label '${label}' already exists`);
   }
 
-  const row = await insertRepoConnection({
-    projectId,
-    label,
-    provider: REPO_PROVIDER_UPLOAD,
-    ownerOrOrg: null,
-    repoName: null,
-    defaultBranch: "main",
-    status: "pending",
-    createdById: actorId,
-  });
-
-  // Persist the archive + validate it now (zip-slip / zip-bomb guards run here).
-  let uploadPath: string;
+  // #463 — validate first, insert once. The id is generated up front so the
+  // archive can be stored under it, and the row is written with `uploadPath`
+  // and `isPrimary` in a single insert: a bad archive never inserts (so never
+  // holds, then drops, the primary flag) and no follow-up update can fail after
+  // the row exists. Extraction runs the zip-slip / zip-bomb guards.
+  const id = ulid().toLowerCase();
+  let row;
   try {
-    uploadPath = await storeUploadedArchive(row.id, archive);
-    await extractArchiveBuffer(row.id, archive);
+    await extractArchiveBuffer(id, archive);
+    const uploadPath = await storeUploadedArchive(id, archive);
+    row = await insertRepoConnection({
+      id,
+      projectId,
+      label,
+      provider: REPO_PROVIDER_UPLOAD,
+      ownerOrOrg: null,
+      repoName: null,
+      defaultBranch: "main",
+      uploadPath,
+      status: "pending",
+      createdById: actorId,
+    });
   } catch (err) {
-    // Roll back the connector row so a bad upload leaves no orphan.
-    await prisma.repoConnection.delete({ where: { id: row.id } }).catch(() => undefined);
-    await cleanupExtraction(row.id).catch(() => undefined);
+    // A failed upload leaves neither an archive nor an extraction behind.
+    await removeUploadedArchive(id).catch(() => undefined);
+    await cleanupExtraction(id).catch(() => undefined);
     throw err;
   }
-  await prisma.repoConnection.update({ where: { id: row.id }, data: { uploadPath } });
-  row.uploadPath = uploadPath;
 
   audit({
     actor: { id: actorId },
