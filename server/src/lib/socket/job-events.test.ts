@@ -7,6 +7,7 @@ import type { MetisIOServer } from "./server.js";
 import {
   createJobEventEmitter,
   genericFailureMessage,
+  getLastDocSections,
   getLastJobLifecycle,
   JOB_KINDS,
   NOOP_JOB_EMITTER,
@@ -404,5 +405,111 @@ describe("last-event memory for late subscribers", () => {
     }
     expect(getLastJobLifecycle("bounded-0")).toBeUndefined();
     expect(getLastJobLifecycle("bounded-519")?.status).toBe("started");
+  });
+});
+
+/**
+ * #510 — a section that moves while the subscriber's socket is down is pushed
+ * into a room it is no longer in. The emitter remembers each section's latest
+ * state so `subscribe:job` can replay it, as it already does the lifecycle.
+ */
+describe("last doc-section memory for re-subscribers (#510)", () => {
+  beforeEach(() => {
+    _resetJobLifecycleMemory();
+  });
+
+  const section = (jobId: string, name: string, status: "generating" | "done" | "failed") => ({
+    jobId,
+    projectId: "proj-1",
+    section: name,
+    status,
+  });
+
+  it("keeps the latest state of each section, in first-reported order", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    emitter.docSection(section("doc-1", "Overview", "generating"));
+    emitter.docSection(section("doc-1", "Risks", "generating"));
+    emitter.docSection(section("doc-1", "Overview", "done"));
+
+    const sections = getLastDocSections("doc-1");
+    expect(sections.map((s) => [s.section, s.status])).toEqual([
+      ["Overview", "done"],
+      ["Risks", "generating"],
+    ]);
+    expect(typeof sections[0].ts).toBe("number");
+  });
+
+  it("keeps jobs apart and reports nothing for an unknown job", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    emitter.docSection(section("doc-a", "Overview", "done"));
+    emitter.docSection(section("doc-b", "Risks", "generating"));
+
+    expect(getLastDocSections("doc-a").map((s) => s.section)).toEqual(["Overview"]);
+    expect(getLastDocSections("doc-b").map((s) => s.section)).toEqual(["Risks"]);
+    expect(getLastDocSections("doc-never-seen")).toEqual([]);
+  });
+
+  it("remembers even when no IO server is wired (emit is a no-op)", () => {
+    NOOP_JOB_EMITTER.docSection(section("doc-offline", "Overview", "done"));
+    expect(getLastDocSections("doc-offline")[0]?.status).toBe("done");
+  });
+
+  it("evicts the oldest jobs beyond the cap, and a touched job counts as newest", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    for (let i = 0; i < 510; i += 1) {
+      emitter.docSection(section(`bounded-${i}`, "Overview", "generating"));
+    }
+    // Touch the oldest survivor so it moves to the back of the eviction order.
+    emitter.docSection(section("bounded-10", "Risks", "done"));
+    for (let i = 510; i < 520; i += 1) {
+      emitter.docSection(section(`bounded-${i}`, "Overview", "generating"));
+    }
+    expect(getLastDocSections("bounded-0")).toEqual([]);
+    expect(getLastDocSections("bounded-11")).toEqual([]);
+    expect(getLastDocSections("bounded-10").map((s) => s.section)).toEqual(["Overview", "Risks"]);
+    expect(getLastDocSections("bounded-519")).toHaveLength(1);
+  });
+
+  /**
+   * Regenerating a document reuses its id as the job id, so a new run must not
+   * inherit the previous run's section states: the UI counts `done`/`failed`
+   * as terminal and would start the new run's counter part-way through.
+   */
+  it("forgets a job's sections when a new run of the same job id starts", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    emitter.started("doc-generation", "doc-rerun", "proj-1");
+    emitter.docSection(section("doc-rerun", "Overview", "done"));
+    emitter.docSection(section("doc-rerun", "Risks", "failed"));
+    emitter.failed("doc-generation", "doc-rerun", "proj-1", "boom");
+    // Terminal transitions keep the sections: a late subscriber to the ended
+    // run still learns how each section finished.
+    expect(getLastDocSections("doc-rerun")).toHaveLength(2);
+
+    emitter.started("doc-generation", "doc-rerun", "proj-1");
+    expect(getLastDocSections("doc-rerun")).toEqual([]);
+
+    emitter.docSection(section("doc-rerun", "Risks", "generating"));
+    expect(getLastDocSections("doc-rerun").map((s) => [s.section, s.status])).toEqual([
+      ["Risks", "generating"],
+    ]);
+  });
+
+  it("keeps sections across progress events within one run", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    emitter.started("doc-generation", "doc-progress", "proj-1");
+    emitter.docSection(section("doc-progress", "Overview", "done"));
+    emitter.progress("doc-generation", "doc-progress", "proj-1", 50);
+    expect(getLastDocSections("doc-progress").map((s) => s.section)).toEqual(["Overview"]);
+  });
+
+  it("clears with the lifecycle memory", () => {
+    NOOP_JOB_EMITTER.docSection(section("doc-reset", "Overview", "done"));
+    _resetJobLifecycleMemory();
+    expect(getLastDocSections("doc-reset")).toEqual([]);
   });
 });

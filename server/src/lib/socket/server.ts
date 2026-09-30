@@ -30,7 +30,7 @@ import {
 import { verifyAccessToken } from "../auth/jwt.js";
 import { actorCanAccessProject } from "../scheduler/project-access.js";
 import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
-import { getLastJobLifecycle } from "./job-events.js";
+import { getLastDocSections, getLastJobLifecycle } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
 import { mcpStatusRoomsFor } from "../mcp/status-rooms.js";
@@ -295,13 +295,16 @@ function attachHandlers(
     // `actorCanAccessProject` check `subscribe:project` uses — a guessed job
     // id must not become a way to read another project's job state. Events
     // with no `projectId` carry no project to scope to and replay as before.
+    //
+    // #510 — the latest `job:doc-section` state of each section replays too, so
+    // a section that finished while the socket was down (a reconnect drops its
+    // rooms) reaches the Documentation page without waiting for a refetch.
+    // Doc-section events always name a project, so they always take the gate.
     const last = getLastJobLifecycle(jobId);
-    if (!last) return;
-    if (!last.projectId) {
-      socket.emit("job:lifecycle", last);
-      return;
-    }
-    const scopedProjectId = last.projectId;
+    if (last && !last.projectId) socket.emit("job:lifecycle", last);
+    const sections = getLastDocSections(jobId);
+    const scopedProjectId = last?.projectId ?? sections[0]?.projectId;
+    if (!scopedProjectId) return;
     void (async () => {
       try {
         const allowed = await actorCanAccessProject(
@@ -313,7 +316,12 @@ function attachHandlers(
             action: "socket.subscribe:job",
           },
         );
-        if (allowed) socket.emit("job:lifecycle", last);
+        if (!allowed) return;
+        if (last?.projectId) socket.emit("job:lifecycle", last);
+        // Only sections of the project that was just checked.
+        for (const section of sections) {
+          if (section.projectId === scopedProjectId) socket.emit("job:doc-section", section);
+        }
       } catch (err) {
         log.warn("socket.job_replay_authz_failed", {
           jobId,

@@ -18,6 +18,13 @@
  * its last transition. A join emitted while the socket was down is buffered by
  * socket.io-client and flushed on the next connect, so that room is not joined
  * a second time — which is also why the first connect sends nothing extra.
+ *
+ * Known window (#510, from socket.io-client 4.8.3 `build/esm/socket.js:262`):
+ * after the ping times out but before the client notices, `connected` still
+ * reads true, so a join made then is buffered without being recorded in
+ * `buffered`. The next connect flushes it AND re-joins the room, so the server
+ * sees one duplicate `subscribe:job`. That is harmless — the join is idempotent
+ * and the replay (lifecycle plus each section's latest state) is too — and rare.
  */
 import type { Socket } from "socket.io-client";
 
