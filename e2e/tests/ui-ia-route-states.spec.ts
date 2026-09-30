@@ -69,9 +69,20 @@ test.describe("UI IA — route states & feedback (#133)", () => {
   test("segment loading shows an announced skeleton, then content", async ({ page }) => {
     // Shape the network so the documents query stays in flight long enough to
     // observe the skeleton. This delays the response; it is not a blind sleep.
+    //
+    // The route stays registered and passes requests on once the delay is
+    // switched off: removing the last route (`unrouteAll`) can strand the
+    // page's next list request, the same race as `{ times }` (#297, measured
+    // in #327).
+    let delaying = true;
+    const delayed = new Set<Promise<void>>();
     await page.route(/\/api\/projects\/[^/]+\/documents(\?.*)?$/, async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-      await route.continue();
+      if (!delaying) return route.fallback();
+      const held = new Promise<void>((resolve) => setTimeout(resolve, 1200)).then(() =>
+        route.continue(),
+      );
+      delayed.add(held);
+      await held;
     });
 
     await page.goto(`/projects/${projectId}/documents`, { waitUntil: "commit" });
@@ -79,11 +90,11 @@ test.describe("UI IA — route states & feedback (#133)", () => {
     const loading = page.getByRole("status").filter({ hasText: "Loading documents…" });
     await expect(loading).toBeVisible({ timeout: 10_000 });
 
-    // Wait for any handler still sleeping to finish its `route.continue()`. A
-    // plain `unroute` let Playwright settle an in-flight route first, so the
-    // handler's later `continue()` threw "Route is already handled!" (flaked
-    // in CI on PR #250).
-    await page.unrouteAll({ behavior: "wait" });
+    // Stop delaying, then wait for any handler still sleeping to finish its
+    // `route.continue()` so none outlives the test (a handler cut short threw
+    // "Route is already handled!" in CI on PR #250).
+    delaying = false;
+    await Promise.all(delayed);
 
     // Freshly created project → the list resolves to the empty state.
     await expect(page.getByText("No documents yet.")).toBeVisible({ timeout: 15_000 });

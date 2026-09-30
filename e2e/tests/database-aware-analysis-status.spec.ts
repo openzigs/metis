@@ -139,13 +139,25 @@ test.describe("Database-aware analysis — settings control + status indicator (
     // data, which the server integration suite (#861's other deliverable)
     // already proves; this half proves the UI renders whatever the resolver
     // decided, using its exact reason vocabulary.
-    async function injectDatabaseAware(databaseAware: {
+    //
+    // One route, registered on the first injection and never removed: each
+    // step swaps the injected value instead. Removing the last route
+    // (`unrouteAll`) can strand a poll the page starts at that instant, the
+    // same race as `{ times }` (#297, measured in #327).
+    type DatabaseAware = {
       setting: string;
       enabled: boolean;
       ran: boolean;
       reason: string;
-    }): Promise<void> {
-      await page.unrouteAll({ behavior: "ignoreErrors" });
+    };
+    let injected: DatabaseAware | null = null;
+    async function injectDatabaseAware(databaseAware: DatabaseAware): Promise<void> {
+      const first = injected === null;
+      injected = databaseAware;
+      if (first) await routeAnalysisDetail();
+      await page.reload({ waitUntil: "load" });
+    }
+    async function routeAnalysisDetail(): Promise<void> {
       await page.route(
         (url) => /\/api\/analyses\/[^/]+$/.test(url.pathname),
         async (route) => {
@@ -174,13 +186,14 @@ test.describe("Database-aware analysis — settings control + status indicator (
             }
           })();
           if (body?.data) {
-            body.data.databaseAware = databaseAware;
+            // Read at answer time, so a poll still in flight across a step
+            // boundary carries the current step's value, not the last one's.
+            body.data.databaseAware = injected;
             return route.fulfill({ status, headers, body: JSON.stringify(body) });
           }
           return route.fulfill({ status, headers, body: text });
         },
       );
-      await page.reload({ waitUntil: "load" });
     }
 
     await test.step("reason 'auto->resolved-on' renders the 'on' badge (emerald tone)", async () => {

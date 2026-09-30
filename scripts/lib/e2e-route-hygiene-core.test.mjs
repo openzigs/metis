@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { routeCallsWithTimes } from "./e2e-route-hygiene-core.mjs";
+import { routeCallsWithTimes, unrouteCalls } from "./e2e-route-hygiene-core.mjs";
 
 describe("routeCallsWithTimes (#297)", () => {
   it("flags a route call that passes { times }", () => {
@@ -74,7 +74,43 @@ describe("routeCallsWithTimes (#297)", () => {
   });
 });
 
-describe("the e2e suite (#297)", () => {
+describe("unrouteCalls (#327)", () => {
+  it("flags page.unroute, context.unroute and unrouteAll with or without options", () => {
+    const src = [
+      "await page.unroute('**/a', h);",
+      "await context.unroute(/github/, sentinel);",
+      "await page.unrouteAll();",
+      'await page.unrouteAll({ behavior: "wait" });',
+    ].join("\n");
+    expect(unrouteCalls(src)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("passes route, fallback and a flag that disarms a route", () => {
+    const src = [
+      "let armed = true;",
+      "await page.route('**/a', (r) => (armed ? r.abort() : r.fallback()));",
+      "armed = false;",
+    ].join("\n");
+    expect(unrouteCalls(src)).toEqual([]);
+  });
+
+  it("ignores the words in strings, comments and a bare identifier", () => {
+    const src = [
+      "// page.unroute('**/a') would strand the next request",
+      "const s = 'page.unrouteAll()';",
+      "const unroute = 1;",
+      "unrouteAll();",
+    ].join("\n");
+    expect(unrouteCalls(src)).toEqual([]);
+  });
+
+  it("parses JSX in a .tsx file", () => {
+    const src = "const el = <div a='x' />;\nawait page.unrouteAll();";
+    expect(unrouteCalls(src, "c.tsx")).toEqual([2]);
+  });
+});
+
+describe("the e2e suite (#297, #327)", () => {
   const e2eRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "e2e");
 
   /** @param {string} dir @returns {string[]} */
@@ -93,6 +129,17 @@ describe("the e2e suite (#297)", () => {
     const offenders = ["tests", "pages", "fixtures"].flatMap((dir) =>
       tsFiles(path.join(e2eRoot, dir)).flatMap((file) =>
         routeCallsWithTimes(fs.readFileSync(file, "utf8"), file).map(
+          (line) => `${path.relative(e2eRoot, file)}:${line}`,
+        ),
+      ),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("has no unroute / unrouteAll — removing the last route can strand the page's next request", () => {
+    const offenders = ["tests", "pages", "fixtures"].flatMap((dir) =>
+      tsFiles(path.join(e2eRoot, dir)).flatMap((file) =>
+        unrouteCalls(fs.readFileSync(file, "utf8"), file).map(
           (line) => `${path.relative(e2eRoot, file)}:${line}`,
         ),
       ),

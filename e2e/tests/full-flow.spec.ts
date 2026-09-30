@@ -286,8 +286,15 @@ test.describe("METIS — full workbench journey (#144)", () => {
         // GitHub during dry-run. The dry-run path explicitly short-circuits
         // before any external resolution; this asserts that contract from
         // the test harness too.
+        //
+        // The sentinel stays registered and passes requests on once disarmed:
+        // removing the last route with `unroute` can strand a request the
+        // page starts at that instant, the same race as `{ times }` (#297,
+        // measured in #327).
         const ghRequests: string[] = [];
+        let armed = true;
         const sentinel = (route: import("@playwright/test").Route) => {
+          if (!armed) return route.fallback();
           ghRequests.push(route.request().url());
           return route.abort();
         };
@@ -328,7 +335,7 @@ test.describe("METIS — full workbench journey (#144)", () => {
             `expected at least one issue.create/update action: ${JSON.stringify(plan.actions)}`,
           ).toBeGreaterThan(0);
         } finally {
-          await context.unroute(/api\.github\.com|github\.com/, sentinel);
+          armed = false;
         }
         expect(ghRequests, "no GitHub network calls during dry-run").toEqual([]);
       } finally {

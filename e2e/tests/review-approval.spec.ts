@@ -246,8 +246,13 @@ test.describe("Epic #609 — review & approval workflow (#622)", () => {
 
     await test.step("publishing (non-dry-run) is blocked with the actionable APPROVAL_REQUIRED error", async () => {
       // Defensive sentinel: the gate must block BEFORE any GitHub call.
+      // It stays registered and passes requests on once disarmed: removing the
+      // last route with `unroute` can strand a request the page starts at that
+      // instant, the same race as `{ times }` (#297, measured in #327).
       const ghHits: string[] = [];
+      let armed = true;
       const sentinel = (route: import("@playwright/test").Route) => {
+        if (!armed) return route.fallback();
         ghHits.push(route.request().url());
         return route.abort();
       };
@@ -274,7 +279,7 @@ test.describe("Epic #609 — review & approval workflow (#622)", () => {
         expect(body.error.code).toBe("APPROVAL_REQUIRED");
         expect(body.error.details?.requirementIds ?? []).toContain(requirementId);
       } finally {
-        await context.unroute(/api\.github\.com|github\.com/, sentinel);
+        armed = false;
       }
       expect(ghHits, "no GitHub traffic — the gate blocked first").toEqual([]);
     });

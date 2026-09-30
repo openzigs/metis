@@ -1,6 +1,6 @@
 /**
- * #297 — find Playwright `route()` calls in the e2e suite that pass a `times`
- * option.
+ * #297 / #327 — find Playwright calls in the e2e suite that can remove the last
+ * route mid-test: `route()` with a `times` option, and `unroute` / `unrouteAll`.
  *
  * A `{ times: N }` route removes itself after N matches. When it was the last
  * route, Playwright turns Chromium's request interception off, and a request the
@@ -11,11 +11,19 @@
  * that stays registered and passes later requests on. This scanner finds the
  * option so the suite cannot reintroduce it.
  *
- * Scope: only `times`. An explicit `unroute` / `unrouteAll` can also remove the
- * last route, but it runs at a point the test chose rather than on whichever
- * request happens to be the Nth, and no flake has been traced to one; the
- * remaining call sites are tracked in #327 instead of being banned
- * here unmeasured.
+ * #327 — an explicit `unroute` / `unrouteAll` that removes the last route
+ * switches interception off the same way and strands requests the same way.
+ * Measured on playwright-core 1.63.0 (Chromium, local HTTP server, 200
+ * iterations per row, one counted as hung if any request is still unanswered
+ * after 5 s), with the page keeping four fetches in flight while the test
+ * removes its only route:
+ * `page.unroute` 33/200, `context.unroute` 24/200, `unrouteAll({ behavior:
+ * "wait" })` 48/200, `unrouteAll({ behavior: "ignoreErrors" })` 44/200. The
+ * same harness with the route left registered and disarmed by a flag
+ * (`route.fallback()`): 0/200 on page and 0/200 on context. With a single
+ * follow-up fetch fired as a routed one settles, `unrouteAll({ behavior:
+ * "wait" })` hung 3/200. `unrouteCalls` finds both methods, so a spec keeps
+ * its route registered and disarms it with a flag instead.
  *
  * The source is parsed with the TypeScript compiler, not scanned by hand: a
  * character loop that blanks strings and comments cannot tell a regex literal
@@ -39,14 +47,15 @@ function setsTimes(obj) {
 }
 
 /**
- * 1-based line numbers of every `.route(` call in `src` whose arguments set a
- * `times` option in an object literal.
+ * 1-based line numbers of every `x.<method>(...)` call in `src` for which
+ * `matches` holds.
  *
  * @param {string} src
- * @param {string} [fileName] only its extension matters (`.tsx` enables JSX).
+ * @param {string} fileName only its extension matters (`.tsx` enables JSX).
+ * @param {(call: ts.CallExpression & { expression: ts.PropertyAccessExpression }) => boolean} matches
  * @returns {number[]}
  */
-export function routeCallsWithTimes(src, fileName = "spec.ts") {
+function methodCallLines(src, fileName, matches) {
   const kind = fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, kind);
   /** @type {number[]} */
@@ -56,8 +65,7 @@ export function routeCallsWithTimes(src, fileName = "spec.ts") {
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === "route" &&
-      node.arguments.some((a) => ts.isObjectLiteralExpression(a) && setsTimes(a))
+      matches(/** @type {any} */ (node))
     ) {
       const at = node.expression.name.getStart(sf);
       lines.push(sf.getLineAndCharacterOfPosition(at).line + 1);
@@ -66,4 +74,37 @@ export function routeCallsWithTimes(src, fileName = "spec.ts") {
   };
   visit(sf);
   return lines;
+}
+
+/**
+ * 1-based line numbers of every `.route(` call in `src` whose arguments set a
+ * `times` option in an object literal.
+ *
+ * @param {string} src
+ * @param {string} [fileName] only its extension matters (`.tsx` enables JSX).
+ * @returns {number[]}
+ */
+export function routeCallsWithTimes(src, fileName = "spec.ts") {
+  return methodCallLines(
+    src,
+    fileName,
+    (call) =>
+      call.expression.name.text === "route" &&
+      call.arguments.some((a) => ts.isObjectLiteralExpression(a) && setsTimes(a)),
+  );
+}
+
+const REMOVERS = new Set(["unroute", "unrouteAll"]);
+
+/**
+ * 1-based line numbers of every `.unroute(` and `.unrouteAll(` call in `src`.
+ * Either can remove the last route, which switches Chromium's request
+ * interception off and can strand a request the page starts at that instant.
+ *
+ * @param {string} src
+ * @param {string} [fileName] only its extension matters (`.tsx` enables JSX).
+ * @returns {number[]}
+ */
+export function unrouteCalls(src, fileName = "spec.ts") {
+  return methodCallLines(src, fileName, (call) => REMOVERS.has(call.expression.name.text));
 }
