@@ -10,18 +10,21 @@ vi.mock("next/server", () => ({
 }));
 // Mock the edge-auth refresh so no real network call happens.
 vi.mock("@/lib/edge-auth", () => ({
-  refreshUpstreamTokens: vi.fn(),
+  refreshUpstream: vi.fn(),
   applyRotatedCookies: vi.fn(),
+  isRetryableRefreshStatus: (status: number) => status >= 500,
 }));
 
 import { proxy } from "@/proxy";
 import { NextResponse } from "next/server";
-import { refreshUpstreamTokens, applyRotatedCookies } from "@/lib/edge-auth";
+import { refreshUpstream, applyRotatedCookies } from "@/lib/edge-auth";
 import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/config";
 
 const nextMock = vi.mocked(NextResponse.next);
 const redirectMock = vi.mocked(NextResponse.redirect);
-const refreshMock = vi.mocked(refreshUpstreamTokens);
+const refreshMock = vi.mocked(refreshUpstream);
+
+const refused = { status: 401, body: null, tokens: null, retryAfter: null };
 const applyMock = vi.mocked(applyRotatedCookies);
 
 interface ClonedUrl {
@@ -95,7 +98,12 @@ describe("proxy auth gate (handler)", () => {
   });
 
   it("refreshes and PROCEEDS (no redirect) when access is gone but refresh succeeds", async () => {
-    refreshMock.mockResolvedValue({ accessToken: "AT", refreshToken: "RT" });
+    refreshMock.mockResolvedValue({
+      status: 200,
+      body: null,
+      tokens: { accessToken: "AT", refreshToken: "RT" },
+      retryAfter: null,
+    });
     const res = await run(makeReq("/projects/abc", { refresh: "rt" }));
     expect(refreshMock).toHaveBeenCalledWith("rt");
     expect(applyMock).toHaveBeenCalledWith(res, { accessToken: "AT", refreshToken: "RT" });
@@ -103,7 +111,7 @@ describe("proxy auth gate (handler)", () => {
   });
 
   it("redirects to /login?next when the refresh fails", async () => {
-    refreshMock.mockResolvedValue(null);
+    refreshMock.mockResolvedValue(refused);
     const req = makeReq("/projects/abc", { refresh: "bad" }, "?tab=1");
     await run(req);
     expect(redirectMock).toHaveBeenCalledTimes(1);

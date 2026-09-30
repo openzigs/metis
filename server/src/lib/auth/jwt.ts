@@ -366,6 +366,31 @@ export async function pruneExpiredRevocations(): Promise<number> {
 }
 
 /**
+ * #582 — a refresh that could not be decided because a store read failed after
+ * the token was claimed. The claim has been released (best effort), so the
+ * presented token is still redeemable: this means "try again", not "revoked".
+ * The auth route maps it to a 503, which the UI does not treat as a logout.
+ */
+export class RefreshUnavailableError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "RefreshUnavailableError";
+  }
+}
+
+async function releaseClaimQuietly(tokenId: string, claimedAt: Date): Promise<void> {
+  try {
+    await store.releaseClaim(tokenId, claimedAt);
+  } catch (err) {
+    // The token stays claimed, i.e. spent — fail closed. The retry the 503
+    // invites is then refused with a 401, the pre-release behaviour.
+    log.error("refresh claim release failed; presented token remains spent", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Rotate a refresh token, returning a new pair.
  *
  * #561 — the `workspaces` claim is RE-READ from the membership rows, never
@@ -384,7 +409,29 @@ export async function refreshAccessToken(
       : new Date(Date.now() + refreshTtlSeconds() * 1000);
   // Read before revoking, so a failed read leaves the presented token usable.
   const workspaces = await resolveWorkspaces(decoded.userId);
-  await revokeRefreshToken(decoded.tokenId, decoded.userId, expiresAt);
+  // #582 — the revoke is the gate, not `verifyRefreshToken`'s check: two
+  // concurrent refreshes with one token both pass the check, and only the one
+  // that wins this atomic revoke-if-not-revoked may mint a new pair.
+  const claimedAt = new Date();
+  if (!(await store.claimToken(decoded.tokenId, decoded.userId, expiresAt, claimedAt))) {
+    throw new Error("Token has been revoked");
+  }
+  // #582 — a SCIM deprovision (`revokeAllForUser`) can land between the check in
+  // `verifyRefreshToken` and the claim above; re-read the cutoff now that the
+  // token is ours, so a deprovisioned user never receives the new pair.
+  if (decoded.iat !== undefined) {
+    let cutOff: boolean;
+    try {
+      cutOff = await store.isCutOff(decoded.userId, decoded.iat);
+    } catch (err) {
+      // Unknown whether the user was deprovisioned: issue nothing, but hand the
+      // token back rather than burning it on a DB blip — the read-before-revoke
+      // rule above, applied to the one read that must follow the claim.
+      await releaseClaimQuietly(decoded.tokenId, claimedAt);
+      throw new RefreshUnavailableError("Session cutoff check failed", { cause: err });
+    }
+    if (cutOff) throw new Error("Token has been revoked");
+  }
   return issueTokens({
     userId: decoded.userId,
     username: decoded.username,

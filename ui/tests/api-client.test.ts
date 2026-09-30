@@ -579,3 +579,61 @@ describe("streamFetch", () => {
     expect(onFail).toHaveBeenCalledTimes(1);
   });
 });
+
+// #582 — the server answers a refresh with 503 `REFRESH_UNAVAILABLE` when a
+// transient store fault stopped the rotation and the refresh token was handed
+// back. The session is intact, so that must never log the user out.
+describe("retryable refresh refusal (#582)", () => {
+  const unavailable = () =>
+    makeResponse(
+      { success: false, error: { code: "REFRESH_UNAVAILABLE", message: "retry" } },
+      { status: 503 },
+    );
+
+  it("apiFetch surfaces a retryable 503 and does NOT fire onRefreshFailure", async () => {
+    const onFail = vi.fn();
+    setOnRefreshFailure(onFail);
+    fetchMock
+      .mockResolvedValueOnce(makeResponse({ success: false }, { status: 401 }))
+      .mockResolvedValueOnce(unavailable());
+
+    await expect(apiFetch("/things")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 503,
+      code: "REFRESH_UNAVAILABLE",
+    });
+    expect(onFail).not.toHaveBeenCalled();
+    // No retry of the original request against a session that did not renew.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("streamFetch returns the original 401 and does NOT fire onRefreshFailure", async () => {
+    const onFail = vi.fn();
+    setOnRefreshFailure(onFail);
+    fetchMock
+      .mockResolvedValueOnce(new Response("", { status: 401 }))
+      .mockResolvedValueOnce(unavailable());
+
+    const res = await streamFetch("/ai/stream", { method: "POST" });
+    expect(res.status).toBe(401);
+    expect(onFail).not.toHaveBeenCalled();
+  });
+
+  it("the proactive refresh reports false on a 503 (no success signal)", async () => {
+    const onSuccess = vi.fn();
+    setOnRefreshSuccess(onSuccess);
+    fetchMock.mockResolvedValueOnce(unavailable());
+    await expect(refreshAccessToken()).resolves.toBe(false);
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  it("a 401 refusal still logs out — only 5xx is retryable", async () => {
+    const onFail = vi.fn();
+    setOnRefreshFailure(onFail);
+    fetchMock
+      .mockResolvedValueOnce(makeResponse({ success: false }, { status: 401 }))
+      .mockResolvedValueOnce(makeResponse({ success: false }, { status: 401 }));
+    await expect(apiFetch("/things")).rejects.toMatchObject({ status: 401 });
+    expect(onFail).toHaveBeenCalledTimes(1);
+  });
+});

@@ -28,12 +28,29 @@
  */
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 const log = createChildLogger("revocation-store");
 
 export interface RevocationStore {
   /** Mark a single refresh token (by its ULID tokenId) as revoked. */
   revokeToken(tokenId: string, userId: string, expiresAt: Date): Promise<void>;
+  /**
+   * #582 — atomically revoke a refresh token IF it is not already revoked.
+   * Returns `true` only to the one caller that recorded the revocation; every
+   * other caller (a concurrent refresh with the same token, or a token already
+   * revoked by logout) gets `false`. Refresh rotation proceeds only on `true`,
+   * so one refresh token can never mint two token pairs.
+   */
+  claimToken(tokenId: string, userId: string, expiresAt: Date, claimedAt?: Date): Promise<boolean>;
+  /**
+   * #582 — undo a claim this caller won, so the presented refresh token stays
+   * redeemable after a transient fault stopped the rotation. Deletes only the
+   * row the claim inserted — matched on `tokenId` AND the `claimedAt` passed to
+   * `claimToken` — so it cannot undo a logout's `revokeToken`, which restamps
+   * `revokedAt` on a row it finds. Throws if the delete fails.
+   */
+  releaseClaim(tokenId: string, claimedAt: Date): Promise<void>;
   /**
    * True if the given refresh token must be rejected. Considers BOTH an explicit
    * per-token revocation AND the user's session cutoff (revoke-all). `issuedAt`
@@ -44,6 +61,19 @@ export interface RevocationStore {
    * error can never widen the window in which a revoked token is accepted.
    */
   isRevoked(tokenId: string, userId: string, issuedAt?: number): Promise<boolean>;
+  /**
+   * #582 — true if a token issued at `issuedAt` (seconds) falls at/before the
+   * user's session cutoff, ignoring any per-token revocation. Refresh rotation
+   * re-checks this AFTER `claimToken` (which has itself just revoked the token,
+   * so `isRevoked` can no longer answer), so a SCIM deprovision that lands
+   * between the first check and the claim still refuses the new pair.
+   *
+   * Unlike `isRevoked` it does NOT swallow a read error — it rethrows, so the
+   * caller (which has already claimed the token) can release the claim and
+   * report a retryable failure instead of burning the token on a DB blip. The
+   * caller must treat a throw as "do not issue".
+   */
+  isCutOff(userId: string, issuedAt: number): Promise<boolean>;
   /**
    * Revoke every CURRENT session for a user by recording a cutoff = now. Tokens
    * issued strictly AFTER this instant (e.g. after re-provisioning) still pass.
@@ -63,13 +93,50 @@ export interface RevocationStore {
  */
 export class PrismaRevocationStore implements RevocationStore {
   async revokeToken(tokenId: string, userId: string, expiresAt: Date): Promise<void> {
-    // Idempotent: re-revoking an already-revoked token (e.g. double logout) is a
-    // no-op rather than a unique-constraint error.
+    // Idempotent: re-revoking an already-revoked token (e.g. double logout) is
+    // not a unique-constraint error. #582 — the update restamps `revokedAt`, so a
+    // refresh claim released afterwards (`releaseClaim` matches on the claim's
+    // own `revokedAt`) no longer matches and cannot undo this revocation.
+    const now = new Date();
     await prisma.revokedRefreshToken.upsert({
       where: { tokenId },
-      update: {},
-      create: { tokenId, userId, expiresAt },
+      update: { revokedAt: now },
+      create: { tokenId, userId, expiresAt, revokedAt: now },
     });
+  }
+
+  async claimToken(
+    tokenId: string,
+    userId: string,
+    expiresAt: Date,
+    claimedAt: Date = new Date(),
+  ): Promise<boolean> {
+    // An insert-unique on `tokenId`: the database's unique index serialises
+    // concurrent inserts, so exactly one succeeds and the rest see P2002. A
+    // check-then-write here would reopen the race this method exists to close.
+    try {
+      await prisma.revokedRefreshToken.create({
+        data: { tokenId, userId, expiresAt, revokedAt: claimedAt },
+      });
+      return true;
+    } catch (err) {
+      if (isUniqueViolation(err)) return false;
+      throw err;
+    }
+  }
+
+  async releaseClaim(tokenId: string, claimedAt: Date): Promise<void> {
+    // `deleteMany` so a row that no longer matches (restamped by a logout, or
+    // already pruned) is a zero-count no-op rather than a not-found error.
+    await prisma.revokedRefreshToken.deleteMany({ where: { tokenId, revokedAt: claimedAt } });
+  }
+
+  async isCutOff(userId: string, issuedAt: number): Promise<boolean> {
+    const marker = await prisma.userSessionRevocation.findUnique({
+      where: { userId },
+      select: { cutoff: true },
+    });
+    return marker !== null && issuedAt <= Math.floor(marker.cutoff.getTime() / 1000);
   }
 
   async isRevoked(tokenId: string, userId: string, issuedAt?: number): Promise<boolean> {

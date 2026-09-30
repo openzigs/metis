@@ -4366,6 +4366,35 @@ closed** — if the store throws, the token is treated as revoked, so a transien
 DB error can never widen the window in which a revoked token is accepted (OWASP
 A07). The store never logs token values.
 
+**Single-use rotation under concurrency (#582):** `refreshAccessToken` mints a
+new pair only after winning `claimToken` — an insert on the unique `tokenId`, so
+of N concurrent refreshes with one token exactly one succeeds and the rest see
+P2002 and get `401 REFRESH_FAILED`. After the claim it re-reads the session
+cutoff (`isCutOff`), so a SCIM deprovision that lands between verification and
+the claim still refuses issuance and keeps the claim. If that cutoff read
+*errors*, the refresh issues nothing but calls `releaseClaim` — which deletes
+only the row this claim inserted, matched on `tokenId` and the claim's
+`revokedAt` stamp (a logout's `revokeToken` restamps the row, so a release can
+never undo a logout) — and throws `RefreshUnavailableError`, which the route
+returns as `503 REFRESH_UNAVAILABLE` with `Retry-After`. The presented token
+stays redeemable, so a DB blip is "retry", not "log in again".
+
+Every UI-side refresh is **single-flight per refresh token within the process**
+(`refreshUpstream` in `ui/src/lib/edge-auth.ts`): both the page gate
+(`src/proxy.ts`) and the `/api/auth/refresh` route (`auth-proxy.ts`, called by
+the browser api-client) go through it, so concurrent callers — a navigation plus
+its RSC prefetches, several tabs, or a tab's api-client racing a page request —
+share one upstream call, keyed by a SHA-256 of the token, and all receive the
+same status, body and rotated cookies. Followers within 5 s reuse the winner's
+pair. The map is capped at 500 keys, sweeps expired results on insert, and never
+caches a failure. A 5xx refresh is treated as retryable: the api-client surfaces
+a `503 REFRESH_UNAVAILABLE` error without calling `onRefreshFailure`, and the
+page gate answers 503 with a self-reloading page instead of redirecting to
+`/login`. **Residual:** several UI server instances behind a load balancer can
+still race on one token; that is accepted, because the losing request simply
+re-authenticates via `/login`. `api-client.ts` additionally single-flights
+refreshes within one tab.
+
 **Async + lifecycle:** `verifyRefreshToken`, `revokeRefreshToken`,
 `revokeAllUserSessions`, `refreshAccessToken`, `isUserDisabled`, and `enableUser`
 are now `async` (they await the store); `issueTokens` stays synchronous (no
