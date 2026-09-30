@@ -5,6 +5,9 @@
  * The validate route now answers `valid: false, workspaceDeleted: true` and
  * withholds the workspace and inviter. The live-invite case is the control: a
  * page that showed the gone state for every invite would fail it.
+ *
+ * #597 — an expired or used invite now gets the same withholding, so the page
+ * must explain those reasons from the flags alone, with no workspace or inviter.
  */
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -66,4 +69,28 @@ describe("InviteAcceptPage (#579)", () => {
     expect(screen.getByText("Live Workspace")).toBeInTheDocument();
     expect(screen.queryByText("Workspace No Longer Exists")).toBeNull();
   });
+
+  it.each([
+    ["an expired", { expired: true, consumed: false }, "Invitation Expired", /has expired/],
+    ["a used", { expired: false, consumed: true }, "Invitation Used", /already been accepted/],
+  ] as const)(
+    "#597 — explains %s invite with the workspace and inviter withheld",
+    async (_label, flags, title, description) => {
+      stubValidate({
+        ...base,
+        ...flags,
+        valid: false,
+        workspaceDeleted: false,
+        workspace: null,
+        invitedBy: null,
+      });
+      render(<InviteAcceptPage />);
+
+      expect(await screen.findByText(title)).toBeInTheDocument();
+      expect(screen.getByText(description)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /accept invitation/i })).toBeNull();
+      expect(screen.queryByText(/invited you to join/)).toBeNull();
+      expect(screen.queryByText("Workspace No Longer Exists")).toBeNull();
+    },
+  );
 });

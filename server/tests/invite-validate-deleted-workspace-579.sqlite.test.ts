@@ -8,6 +8,10 @@
  * through the REAL router against a REAL SQLite database built from the
  * migration chain, paired with a positive control on a live workspace so a
  * route that reports every invite invalid cannot pass.
+ *
+ * #597 — the same withholding applies to every invalid invite: an expired or
+ * already-used token is as stale as one to a deleted workspace, so it keeps the
+ * reason flags, email, role and expiry, and drops the workspace and inviter.
  */
 import express from "express";
 import request from "supertest";
@@ -46,6 +50,7 @@ const DEAD_NAME = "Deleted Workspace 579";
 const INVITEE = "u-invitee-579";
 const INVITER = "u-inviter-579";
 const INVITER_NAME = "Inviter Display 579";
+const LIVE_NAME = "Live Workspace 579";
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#579 — invite validation on a soft-deleted workspace",
@@ -84,7 +89,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const expiresAt = new Date(Date.now() + 86_400_000);
       for (const [ws, name] of [
-        [LIVE, "Live Workspace 579"],
+        [LIVE, LIVE_NAME],
         [DEAD, DEAD_NAME],
       ] as const) {
         await db.workspace.create({ data: { id: ws, name, slug: ws } });
@@ -104,6 +109,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
       // What `DELETE /api/workspaces/:id` does: a soft delete. The invite survives.
       await db.workspace.update({ where: { id: DEAD }, data: { deletedAt: new Date() } });
+      // #597 — an expired and an already-used invite, both to the LIVE workspace.
+      await db.workspaceInvite.create({
+        data: {
+          workspaceId: LIVE,
+          email: `${INVITEE}@example.test`,
+          role: "member",
+          token: "token-expired-597",
+          invitedById: INVITER,
+          expiresAt: new Date(Date.now() - 86_400_000),
+        },
+      });
+      await db.workspaceInvite.create({
+        data: {
+          workspaceId: LIVE,
+          email: `${INVITEE}@example.test`,
+          role: "member",
+          token: "token-consumed-597",
+          invitedById: INVITER,
+          expiresAt,
+          consumedAt: new Date(),
+        },
+      });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -133,10 +160,34 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.body.data).toMatchObject({
         valid: true,
         workspaceDeleted: false,
-        workspace: { id: LIVE, name: "Live Workspace 579", slug: LIVE },
+        workspace: { id: LIVE, name: LIVE_NAME, slug: LIVE },
         invitedBy: INVITER_NAME,
       });
       expect(res.body.data.workspace).not.toHaveProperty("deletedAt");
     });
+
+    it.each([
+      ["expired", "token-expired-597", { expired: true, consumed: false }],
+      ["already-used", "token-consumed-597", { expired: false, consumed: true }],
+    ] as const)(
+      "#597 — reports an %s invite as not valid, naming the reason, without the workspace name or inviter",
+      async (_label, token, flags) => {
+        const res = await request(app()).get(`/api/workspaces/invites/${token}`);
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({
+          valid: false,
+          workspaceDeleted: false,
+          ...flags,
+          workspace: null,
+          invitedBy: null,
+          // What the page still needs to explain itself.
+          email: `${INVITEE}@example.test`,
+          role: "member",
+        });
+        expect(res.body.data.expiresAt).toEqual(expect.any(String));
+        expect(JSON.stringify(res.body)).not.toContain(LIVE_NAME);
+        expect(JSON.stringify(res.body)).not.toContain(INVITER_NAME);
+      },
+    );
   },
 );

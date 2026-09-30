@@ -480,19 +480,22 @@ export function workspacesRouter(): Router {
 
     const expired = invite.expiresAt < new Date();
     const consumed = !!invite.consumedAt;
-    // A soft-deleted workspace keeps its invites (#563): report the invite as not
-    // valid, and withhold the workspace and inviter a token holder can no longer join (#579).
+    // A soft-deleted workspace keeps its invites (#563): report the invite as not valid.
     const workspaceDeleted = !!invite.workspace.deletedAt;
+    const valid = !expired && !consumed && !workspaceDeleted;
     const { deletedAt: _deletedAt, ...workspace } = invite.workspace;
 
+    // This route is public. A token that can no longer be accepted (expired, used,
+    // or its workspace deleted) must not keep disclosing who invited whom to what
+    // (#579, #597): withhold both, keeping the reason flags so the page can explain.
     res.json(
       ok({
-        valid: !expired && !consumed && !workspaceDeleted,
+        valid,
         expired,
         consumed,
         workspaceDeleted,
-        workspace: workspaceDeleted ? null : workspace,
-        invitedBy: workspaceDeleted ? null : invite.invitedBy.displayName,
+        workspace: valid ? workspace : null,
+        invitedBy: valid ? invite.invitedBy.displayName : null,
         email: invite.email,
         role: invite.role,
         expiresAt: invite.expiresAt,

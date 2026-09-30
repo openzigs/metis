@@ -10,9 +10,11 @@ interface InviteInfo {
   valid: boolean;
   expired: boolean;
   consumed: boolean;
-  /** The workspace was deleted; `workspace` and `invitedBy` are withheld (#579). */
+  /** The workspace was deleted (#579). */
   workspaceDeleted?: boolean;
+  /** Withheld (`null`) whenever `valid` is false — expired, used or deleted (#579, #597). */
   workspace: { id: string; name: string; slug: string } | null;
+  /** Withheld (`null`) whenever `valid` is false (#579, #597). */
   invitedBy: string | null;
   email: string;
   role: string;

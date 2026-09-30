@@ -661,6 +661,52 @@ describe("Workspace Routes", () => {
       expect(res.body.data.expired).toBe(true);
     });
 
+    // #597 — every invalid invite withholds the workspace and inviter, not only a
+    // deleted workspace's. The SQLite real-DB sibling is skipped on postgres-adapter.
+    it.each([
+      [
+        "expired",
+        { consumedAt: null, expiresAt: new Date(Date.now() - 86400000) },
+        { expired: true, consumed: false },
+      ],
+      [
+        "already-used",
+        { consumedAt: new Date(), expiresAt: new Date(Date.now() + 86400000) },
+        { expired: false, consumed: true },
+      ],
+    ] as const)(
+      "withholds the workspace name and inviter for an %s invite",
+      async (_label, dates, flags) => {
+        const app = createApp();
+        vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
+          id: "inv-1",
+          workspaceId: "ws-1",
+          email: "user@test.com",
+          role: "member",
+          token: "stale-token",
+          ...dates,
+          invitedById: "inviter-1",
+          workspace: { id: "ws-1", name: "Secret Name 597", slug: "test", deletedAt: null },
+          invitedBy: { displayName: "Ottoline Inviter-597" },
+          createdAt: new Date(),
+        } as never);
+
+        const res = await request(app).get("/workspaces/invites/stale-token");
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({
+          valid: false,
+          workspaceDeleted: false,
+          ...flags,
+          workspace: null,
+          invitedBy: null,
+          email: "user@test.com",
+          role: "member",
+        });
+        expect(JSON.stringify(res.body)).not.toContain("Secret Name 597");
+        expect(JSON.stringify(res.body)).not.toContain("Ottoline Inviter-597");
+      },
+    );
+
     // #579 — a soft-deleted workspace keeps its invites; validation must not call them valid
     // nor disclose the workspace name or inviter.
     it("reports an invite to a soft-deleted workspace as not valid, withholding name and inviter", async () => {
