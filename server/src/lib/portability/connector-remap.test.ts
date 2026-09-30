@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  anchoredUploadPath,
   computeModelRemap,
   computeUploadPathAnchoring,
   computeRemap,
@@ -220,5 +221,19 @@ describe("computeUploadPathAnchoring", () => {
     expect(() =>
       computeUploadPathAnchoring([{ id: "Abc", uploadPath: "/tmp/Abc.zip" }], ROOT),
     ).toThrow(/not a server-generated id/);
+  });
+});
+
+describe("anchoredUploadPath", () => {
+  const ROOT = path.resolve("/srv/metis/data/repo-archives");
+
+  it("places a server-generated id's archive at <root>/<id>.zip", () => {
+    expect(anchoredUploadPath("abc123", ROOT)).toBe(path.join(ROOT, "abc123.zip"));
+  });
+
+  it("refuses an id that is not a server-generated string", () => {
+    expect(() => anchoredUploadPath("../x", ROOT)).toThrow(RemapValidationError);
+    expect(() => anchoredUploadPath("", ROOT)).toThrow(RemapValidationError);
+    expect(() => anchoredUploadPath(42, ROOT)).toThrow(/not a server-generated id/);
   });
 });

@@ -23,7 +23,15 @@
  * test fails with a CLEAR message rather than silently skipping.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,6 +130,7 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
   let archiveRoot: string; // the importing server's UPLOAD_ARCHIVE_DIR (#527)
 
   let remapDb: string; // third DB exercising --remap
+  let emptyDb: string; // migrated, empty — copied by the #527 failure-path tests
   const OLD_API = "https://source-host.internal/api";
   const NEW_API = "https://target-host.internal/api";
 
@@ -224,6 +233,10 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
     // connector/env remap apply path end-to-end.
     remapDb = path.join(tmpDir, "remap.db");
     migrate(remapDb);
+    // A migrated, still-empty DB the #527 failure-path tests copy from, so they
+    // need no migrate run of their own.
+    emptyDb = path.join(tmpDir, "empty.db");
+    copyFileSync(remapDb, emptyDb);
     const remapFile = path.join(tmpDir, "remap.json");
     writeFileSync(
       remapFile,
@@ -353,6 +366,60 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
       await remap.$disconnect();
     }
   });
+
+  /** Import a tampered copy of the dump into a fresh DB; the import must fail. */
+  function importTampered(name: string, tamper: (dir: string) => void): string {
+    const dir = path.join(tmpDir, `dump-${name}`);
+    cpSync(dumpDir, dir, { recursive: true });
+    tamper(dir);
+    const db = path.join(tmpDir, `${name}.db`);
+    copyFileSync(emptyDb, db);
+    expect(() => runCli(IMPORT_CLI, [dir], db, { UPLOAD_ARCHIVE_DIR: archiveRoot })).toThrow();
+    return db;
+  }
+
+  it(
+    "#527 — an import that fails after the load never leaves the bundle's uploadPath stored",
+    async () => {
+      // Row-count verification runs after pass 1 has committed every row.
+      const db = importTampered("count-mismatch", (dir) => {
+        const file = path.join(dir, "logical-manifest.json");
+        const manifest = JSON.parse(readFileSync(file, "utf8"));
+        manifest.rowCounts.Workspace += 1;
+        writeFileSync(file, JSON.stringify(manifest), "utf8");
+      });
+      const client = clientFor(db);
+      try {
+        const repo = await client.repoConnection.findUniqueOrThrow({
+          where: { id: uploadRepoId },
+        });
+        expect(repo.uploadPath).toBe(path.join(archiveRoot, `${uploadRepoId}.zip`));
+      } finally {
+        await client.$disconnect();
+      }
+    },
+    SUITE_TIMEOUT,
+  );
+
+  it(
+    "#527 — a row whose id is not server-generated is refused before it is written",
+    async () => {
+      const db = importTampered("bad-id", (dir) => {
+        const file = path.join(dir, "RepoConnection.ndjson");
+        writeFileSync(file, readFileSync(file, "utf8").replaceAll(uploadRepoId, "EVIL-ID"), "utf8");
+      });
+      const client = clientFor(db);
+      try {
+        expect(await client.repoConnection.findUnique({ where: { id: "EVIL-ID" } })).toBeNull();
+        expect(
+          await client.repoConnection.count({ where: { uploadPath: { contains: "/anywhere/" } } }),
+        ).toBe(0);
+      } finally {
+        await client.$disconnect();
+      }
+    },
+    SUITE_TIMEOUT,
+  );
 
   it("applies a --remap spec to rewrite an env-specific connector field", async () => {
     const remap = clientFor(remapDb);

@@ -269,21 +269,32 @@ const SERVER_GENERATED_ID = /^[a-z0-9]+$/;
  * is refused rather than guessed at. Pure: returns the changes, writes nothing.
  */
 export function computeUploadPathAnchoring(rows: RemapRow[], archiveRoot: string): FieldChange[] {
-  const root = path.resolve(archiveRoot);
   const changes: FieldChange[] = [];
   for (const row of rows) {
     const before = row.uploadPath;
     if (before === null || before === undefined) continue;
-    if (!SERVER_GENERATED_ID.test(row.id)) {
-      throw new RemapValidationError(
-        `RepoConnection "${row.id}" has an uploadPath but its id is not a server-generated id; ` +
-          `refusing to place its archive.`,
-      );
-    }
-    const after = path.join(root, `${row.id}.zip`);
+    const after = anchoredUploadPath(row.id, archiveRoot);
     if (before !== after) changes.push({ rowId: row.id, field: "uploadPath", before, after });
   }
   return changes;
+}
+
+/**
+ * #527 — the one place an imported upload connector's archive may live:
+ * `<archiveRoot>/<id>.zip`. The logical import calls this on every
+ * `RepoConnection` row with an `uploadPath` BEFORE the row is inserted, so a
+ * bundle's untrusted path never reaches the database even if the import later
+ * fails. Throws {@link RemapValidationError} for an id that is not
+ * server-generated, since such an id could steer the join out of the root.
+ */
+export function anchoredUploadPath(id: unknown, archiveRoot: string): string {
+  if (typeof id !== "string" || !SERVER_GENERATED_ID.test(id)) {
+    throw new RemapValidationError(
+      `RepoConnection "${String(id)}" has an uploadPath but its id is not a server-generated id; ` +
+        `refusing to place its archive.`,
+    );
+  }
+  return path.join(path.resolve(archiveRoot), `${id}.zip`);
 }
 
 function valuesEqual(a: unknown, b: unknown): boolean {

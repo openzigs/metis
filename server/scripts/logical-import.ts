@@ -28,10 +28,11 @@
  *     manifest at the end, failing LOUDLY (non-zero exit) on any mismatch.
  *   - The optional `--remap <file.json>` applies env-specific connector/config
  *     rewrites AFTER load, inside a transaction (see connector-remap.ts).
- *   - #527 — last of all, every upload connector's `uploadPath` is re-anchored
- *     to `<uploadArchiveRoot()>/<id>.zip` on THIS server (UPLOAD_ARCHIVE_DIR, or
- *     `<cwd>/data/repo-archives`), whatever the bundle or the remap said: a
- *     later DELETE removes the file that column names.
+ *   - #527 — every upload connector's `uploadPath` is anchored to
+ *     `<uploadArchiveRoot()>/<id>.zip` on THIS server (UPLOAD_ARCHIVE_DIR, or
+ *     `<cwd>/data/repo-archives`) in pass 1, before the row is inserted, and
+ *     again after any remap: a later DELETE removes the file that column names,
+ *     so the bundle's path must never be stored, even by a failed import.
  *
  * Usage:
  *   tsx scripts/logical-import.ts <inDir> [--remap <file.json>] [--help]
@@ -60,6 +61,7 @@ import {
   type LogicalManifest,
 } from "../src/lib/portability/logical-dump.js";
 import {
+  anchoredUploadPath,
   computeRemap,
   computeUploadPathAnchoring,
   parseRemapSpec,
@@ -227,6 +229,9 @@ async function main(): Promise<void> {
     log(`manifest  : provider=${manifest.provider} schemaVersion=${manifest.schemaVersion}`);
     log(`models    : ${manifest.loadOrder.length}  (deferred FKs: ${manifest.deferredFks.length})`);
 
+    // #527 — resolved once; pass 1 anchors every imported uploadPath under it.
+    const archiveRoot = uploadArchiveRoot();
+
     // ── Pass 1: load rows in FK-safe order, nulling deferred FK columns ──────
     for (const modelName of manifest.loadOrder) {
       const file = path.join(resolvedIn, `${modelName}.ndjson`);
@@ -259,6 +264,16 @@ async function main(): Promise<void> {
         const row = deserializeRow(raw, types);
         // Null deferred FK columns on first insert (restored in pass 2).
         for (const col of deferredCols) row[col] = null;
+        // #527 — anchor BEFORE insert: the bundle's uploadPath is untrusted and
+        // a later DELETE removes the file it names, so it must never be stored,
+        // even if the import dies after this row lands (no enclosing transaction).
+        if (modelName === "RepoConnection" && row.uploadPath != null) {
+          try {
+            row.uploadPath = anchoredUploadPath(row.id, archiveRoot);
+          } catch (err) {
+            die(err instanceof Error ? err.message : String(err), 1);
+          }
+        }
         batch.push(row);
         if (batch.length >= BATCH) await flush();
       }
@@ -331,8 +346,8 @@ async function main(): Promise<void> {
       printFixupChecklist();
     }
 
-    // ── #527: anchor upload archives under THIS server's archive root ───────
-    await anchorUploadPaths(prisma);
+    // ── #527: re-anchor after the remap, which may have set uploadPath ──────
+    await anchorUploadPaths(prisma, archiveRoot);
 
     log(`=== IMPORT COMPLETE ===`);
   } finally {
@@ -421,6 +436,12 @@ async function applyRemap(
   });
 
   // Report counts only (never log secret values — these models hold none).
+  if (plan.models.some((r) => r.changes.some((c) => c.field === "uploadPath"))) {
+    log(
+      "  WARNING: --remap set RepoConnection.uploadPath; it is ignored — every uploadPath " +
+        "is re-anchored to <archive root>/<id>.zip (#527)",
+    );
+  }
   log("=== REMAP APPLIED ===");
   for (const result of plan.models) {
     log(`  ${result.model}: ${result.changes.length} field change(s)`);
@@ -433,8 +454,7 @@ async function applyRemap(
  * `<uploadArchiveRoot()>/<id>.zip`, so neither the bundle nor a remap can point
  * a connector (and so a later DELETE) at a file outside this server's root.
  */
-async function anchorUploadPaths(prisma: PrismaClient): Promise<void> {
-  const root = uploadArchiveRoot();
+async function anchorUploadPaths(prisma: PrismaClient, root: string): Promise<void> {
   const rows = (await (client(prisma, "repoConnection") as unknown as FindManyDelegate).findMany({
     where: { uploadPath: { not: null } },
     select: { id: true, uploadPath: true },
