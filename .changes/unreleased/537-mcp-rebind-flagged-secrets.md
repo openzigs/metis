@@ -3,7 +3,7 @@ issue: 537
 section: Fixed
 ---
 
-- An MCP server whose vault references the pre-#480 backfill could not bind now
+- An MCP server whose vault references the #504 backfill could not bind now
   says so on its row in Settings → MCP servers, names the references, and offers
   **Re-bind secrets**. Before, the only sign was an audit entry and a failed
   connect, and the documented fix (save the server again) had no UI path. The

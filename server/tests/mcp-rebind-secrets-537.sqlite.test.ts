@@ -211,6 +211,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.status).toBe(403);
         expect(res.body.error.code).toBe("SECRET_BINDING_FORBIDDEN");
         expect(await bindingsOf(id)).toEqual({});
+
+        // A headers-only patch re-binds the stored env too, so it is judged the same.
+        const headersOnly = await request(app())
+          .patch(`/api/mcp/${id}`)
+          .set("Authorization", `Bearer ${COORD}`)
+          .send({ headers: {} });
+        expect(headersOnly.status).toBe(403);
+        expect(await bindingsOf(id)).toEqual({});
+      });
+
+      it("a patch without env or headers binds nothing, so its creator may still make it", async () => {
+        const label = `imported-toggle-537-${next()}`;
+        await secret(label, "imported-value", null);
+        const id = await legacyMcp({ TOKEN: ref(label) });
+        await backfillSecretBindings();
+
+        const res = await request(app())
+          .patch(`/api/mcp/${id}`)
+          .set("Authorization", `Bearer ${COORD}`)
+          .send({ enabled: false });
+        expect(res.status).toBe(200);
+        expect((await rowOf(id)).enabled).toBe(false);
+        expect(await bindingsOf(id)).toEqual({});
+        expect(res.body.data.unboundSecretRefs).toEqual([label]);
+        expect(await auditsFor(id, "vault.binding_refused")).toEqual([]);
       });
     });
 

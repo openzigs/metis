@@ -133,8 +133,11 @@ export async function assertMcpUpdateSecretBinding(
   // #537 — a reference the server holds but is not bound to (#504 flagged it)
   // is attached by this write, not kept: the update re-binds it, so it must
   // pass rule 1 like a new one. Otherwise any `mcp.manage` caller could re-save
-  // a server and bind a secret the backfill refused to.
-  const unbound = new Set(unboundMcpRefs(row));
+  // a server and bind a secret the backfill refused to. Only a patch that
+  // carries env or headers re-binds (`MCPRegistryService.update`), so any other
+  // patch ({enabled}, {label}, ...) binds nothing and is not judged for them.
+  const rebinds = patch.env !== undefined || patch.headers !== undefined;
+  const unbound = new Set(rebinds ? unboundMcpRefs(row) : []);
   await assertSecretBindingAllowed(
     user,
     {

@@ -78,6 +78,10 @@ export interface MCPServerView {
    * #537 — env/header vault references the server holds but is not bound to
    * (flagged by the #504 backfill). The server will not start until they are
    * re-bound (`POST /api/mcp/:id/rebind-secrets`) or replaced.
+   * Deliberately includes a label embedded in a header that `headers` masks
+   * whole (`Bearer ${vault:y}` shows as `***`): it is a secret's label, never
+   * its value, the view is `mcp.manage`-gated, and without it the most common
+   * flagged case, a bearer header, could not be named or repaired.
    */
   unboundSecretRefs: string[];
   trustLevel: MCPTrustLevel;
