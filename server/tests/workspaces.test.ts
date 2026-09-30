@@ -377,6 +377,8 @@ describe("Workspace Routes", () => {
 
       const res = await request(app).post("/workspaces/invites/deleted-ws-token/accept");
       expect(res.status).toBe(410);
+      // 410 also means expired or used; pin the reason (server vitest retries twice).
+      expect(res.body.error.message).toBe("This workspace no longer exists");
       expect(prisma.workspaceMember.create).not.toHaveBeenCalled();
       expect(prisma.workspaceInvite.update).not.toHaveBeenCalled();
     });

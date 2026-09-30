@@ -102,6 +102,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("refuses the deleted workspace's invite with 410, creates no membership, leaves the invite unconsumed", async () => {
       const res = await request(app()).post(`/api/workspaces/invites/token-${DEAD}/accept`);
       expect(res.status).toBe(410);
+      // 410 also means expired or used; pin the reason, or a retry passes on "already used".
+      expect(res.body.error.message).toBe("This workspace no longer exists");
       expect(await membership(DEAD)).toBeNull();
       const invite = await db.workspaceInvite.findUnique({ where: { token: `token-${DEAD}` } });
       expect(invite?.consumedAt).toBeNull();
