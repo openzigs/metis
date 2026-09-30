@@ -507,6 +507,68 @@ describe("reference links and footnotes in the body across sections (#228)", () 
         "[^1]: One.",
       ].join("\n"),
     ],
+    // #522 — references counted from the parse, not a line scan.
+    [
+      "an escaped footnote reference is literal text, not a reference",
+      [
+        "## A",
+        "Escaped \\[^1] stays literal.",
+        "## B",
+        "Real[^1] and [^2].",
+        "",
+        "[^1]: One.",
+        "[^2]: Two.",
+      ].join("\n"),
+    ],
+    [
+      "a reference on the line after a bare, invalid link definition",
+      [
+        "## A",
+        "Intro.",
+        "",
+        "[x]:",
+        "[^1] is cited here, after an invalid definition.",
+        "## B",
+        "Again[^1].",
+        "",
+        "[^1]: One.",
+      ].join("\n"),
+    ],
+    [
+      "a bare link definition whose destination is on the next line, spelled like a reference",
+      ["## A", "See [x].", "", "[x]:", "[^1]", "## B", "Real[^1].", "", "[^1]: One."].join("\n"),
+    ],
+    [
+      "a footnote reference inside a raw HTML block is not a reference",
+      [
+        "## A",
+        "<div>",
+        "[^1]",
+        "</div>",
+        "",
+        "After.",
+        "## B",
+        "Real[^2] then [^1].",
+        "",
+        "[^1]: One.",
+        "[^2]: Two.",
+      ].join("\n"),
+    ],
+    [
+      "a footnote reference inside an indented code block is not a reference",
+      [
+        "## A",
+        "Para.",
+        "",
+        "    [^1] in code",
+        "",
+        "## B",
+        "Real[^2] then [^1].",
+        "",
+        "[^1]: One.",
+        "[^2]: Two.",
+      ].join("\n"),
+    ],
   ];
 
   it.each(DOCUMENTS)("%s renders exactly as a whole-document render", (_, markdown) => {

@@ -36,6 +36,11 @@
  * references document-wide ({@link rehypeSectionFootnotes}), and the list is
  * rendered once, after every section ({@link footnoteListMarkdown}), so no
  * `#footnote-label` or `fn-*` id is repeated.
+ *
+ * #522 — a section's footnote references are counted from its parse
+ * ({@link footnoteReferences}), exactly the parse it is rendered from, not by
+ * scanning its lines: an escaped `\[^1]`, or a `[^1]` in raw HTML or indented
+ * code, is not a reference, and one after an invalid definition is.
  */
 import GithubSlugger from "github-slugger";
 import remarkGfm from "remark-gfm";
@@ -99,16 +104,13 @@ const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const DEFINITION = /^ {0,3}\[((?:[^\\[\]]|\\.)+)\]:(?:[ \t]|$)/;
 /** A bracketed run: a candidate reference or footnote label. */
 const BRACKETED = /\[([^[\]]+)\]/g;
-/** A footnote reference: GFM footnote labels hold no whitespace. */
-const FOOTNOTE_REFERENCE = /\[\^([^\]\s]+)\]/g;
-/** An inline code span, where nothing is a reference. */
-const CODE_SPAN = /(`+)[^`]*?\1/g;
-/** A line holding only a link-definition title. */
-const TITLE_LINE = /^[ \t]*("[^"]*"|'[^']*'|\([^()]*\))[ \t]*$/;
 /** Content indented into a footnote definition. */
 const INDENTED = /^(?: {4}|\t)/;
 /** A line that starts a block, so it cannot continue a footnote's paragraph. */
 const BLOCK_START = /^ {0,3}(?:>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}$|<)/;
+
+/** Parses markdown with the same grammar extensions the previewer renders with. */
+const headingParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).freeze();
 
 /** A label as the markdown parser matches it: whitespace collapsed, case folded. */
 function normalizeLabel(label: string): string {
@@ -171,14 +173,17 @@ function footnoteEnd(lines: string[], fenced: boolean[], start: number): number 
   return end;
 }
 
-/** Where the link definition starting at line `start` ends (exclusive). */
-function linkDefinitionEnd(lines: string[], start: number): number {
-  let end = start + 1;
-  // `[label]:` with its destination on the next line.
-  if (/\]:[ \t]*$/.test(lines[start]) && end < lines.length) end++;
-  // A title on a line of its own.
-  if (end < lines.length && TITLE_LINE.test(lines[end])) end++;
-  return end;
+/**
+ * Where the link definition starting at line `start` ends (exclusive), as the
+ * parser reads it (label, destination and title span at most three lines), or
+ * `undefined` when the line does not start a valid definition: a bare
+ * `[label]:` whose next line is no destination is a paragraph (#522).
+ */
+function linkDefinitionEnd(lines: string[], start: number): number | undefined {
+  const source = lines.slice(start, start + 3).join("\n");
+  const [first] = (headingParser.parse(source) as MdastNode).children ?? [];
+  if (first?.type !== "definition") return undefined;
+  return start + (first.position?.end?.line ?? 1);
 }
 
 /**
@@ -189,12 +194,8 @@ function linkDefinitionEnd(lines: string[], start: number): number {
  * definition-shaped line continuing it is part of it, unless it is another
  * footnote definition.
  */
-function collectDefinitions(lines: string[]): {
-  definitions: Definitions;
-  definitionLines: Set<number>;
-} {
+function collectDefinitions(lines: string[]): Definitions {
   const definitions = new Map<string, string>();
-  const definitionLines = new Set<number>();
   const inFence = fenceTracker();
   const fenced = lines.map((line) => inFence(line));
   let atBlock = true;
@@ -205,20 +206,22 @@ function collectDefinitions(lines: string[]): {
       continue;
     }
     const label = DEFINITION.exec(line)?.[1];
-    if (label && atBlock) {
-      const end = label.startsWith("^")
-        ? footnoteEnd(lines, fenced, i)
-        : linkDefinitionEnd(lines, i);
+    const end =
+      label && atBlock
+        ? label.startsWith("^")
+          ? footnoteEnd(lines, fenced, i)
+          : linkDefinitionEnd(lines, i)
+        : undefined;
+    if (label && end !== undefined) {
       const key = normalizeLabel(label);
       if (!definitions.has(key)) definitions.set(key, lines.slice(i, end).join("\n"));
-      for (let j = i; j < end; j++) definitionLines.add(j);
       i = end - 1;
       atBlock = true;
     } else {
       atBlock = line.trim() === "" || HEADING.test(line);
     }
   }
-  return { definitions, definitionLines };
+  return definitions;
 }
 
 /**
@@ -248,10 +251,31 @@ export function withDefinitions(markdown: string, definitions: Definitions): str
 export interface MdastNode {
   type: string;
   value?: string;
+  label?: string;
   depth?: number;
   children?: MdastNode[];
-  position?: { start?: { offset?: number }; end?: { offset?: number } };
+  position?: { start?: { offset?: number }; end?: { offset?: number; line?: number } };
   data?: { hProperties?: Record<string, unknown> } & Record<string, unknown>;
+}
+
+/**
+ * The labels (`1`, `Note`) of the footnote references `markdown` renders in
+ * its body, in document order, as the renderer parses it: beside the
+ * definitions it names ({@link withDefinitions}). A footnote definition's own
+ * references are left out; the footnote list numbers them after the body's, as
+ * a whole-document render does.
+ */
+function footnoteReferences(markdown: string, definitions: Definitions): string[] {
+  // Every reference starts `[^`: a section without one needs no parse.
+  if (!markdown.includes("[^")) return [];
+  const labels: string[] = [];
+  const visit = (node: MdastNode) => {
+    if (node.type === "footnoteDefinition") return;
+    if (node.type === "footnoteReference" && node.label !== undefined) labels.push(node.label);
+    node.children?.forEach(visit);
+  };
+  visit(headingParser.parse(withDefinitions(markdown, definitions)) as MdastNode);
+  return labels;
 }
 
 /**
@@ -267,9 +291,6 @@ export function headingSlugText(node: MdastNode): string {
   if (typeof node.value === "string") return node.value;
   return (node.children ?? []).map(headingSlugText).join("");
 }
-
-/** Parses markdown with the same grammar extensions the previewer renders with. */
-const headingParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).freeze();
 
 /** The heading `source` parses to (as the first block), or `undefined`. */
 function parseHeading(source: string): MdastNode | undefined {
@@ -306,7 +327,7 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
   const toc: TocEntry[] = [];
   const sectionOfId = new Map<string, number>();
   const source = markdown.split("\n");
-  const { definitions, definitionLines } = collectDefinitions(source);
+  const definitions = collectDefinitions(source);
   const footnoteCounts: Record<string, number> = {};
   const order = new Map<string, number>();
   const references: string[] = [];
@@ -320,13 +341,24 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
   const flush = () => {
     const text = lines.join("\n");
     if (text.trim() !== "" || current.heading) {
+      for (const label of footnoteReferences(text, definitions)) {
+        const key = normalizeLabel(`^${label}`);
+        if (!order.has(key)) order.set(key, order.size + 1);
+        const count = (footnoteCounts[key] ?? 0) + 1;
+        footnoteCounts[key] = count;
+        references.push(`^${label}`);
+        // The footnote list's back-link lands here, so reaching the list first
+        // must still be able to render this section (#228).
+        const id = footnoteReferenceId(key, count);
+        if (!sectionOfId.has(id)) sectionOfId.set(id, sections.length);
+      }
       sections.push({ ...current, index: sections.length, markdown: text });
     }
     lines = [];
   };
 
   const inFence = fenceTracker();
-  for (const [index, line] of source.entries()) {
+  for (const line of source) {
     if (inFence(line)) {
       lines.push(line);
       continue;
@@ -352,21 +384,6 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
       if (level <= 3) toc.push({ ...heading, sectionIndex: sections.length });
     }
     lines.push(line);
-    // A footnote definition's own references are numbered after the body's,
-    // by the footnote list, exactly as a whole-document render numbers them.
-    if (definitionLines.has(index)) continue;
-    for (const [, label] of line.replace(CODE_SPAN, "").matchAll(FOOTNOTE_REFERENCE)) {
-      const key = normalizeLabel(`^${label}`);
-      if (!definitions.has(key)) continue; // an undefined reference is literal text
-      if (!order.has(key)) order.set(key, order.size + 1);
-      const count = (footnoteCounts[key] ?? 0) + 1;
-      footnoteCounts[key] = count;
-      references.push(`^${label}`);
-      // The footnote list's back-link lands here, so reaching the list first
-      // must still be able to render this section (#228).
-      const id = footnoteReferenceId(key, count);
-      if (!sectionOfId.has(id)) sectionOfId.set(id, sections.length);
-    }
   }
   flush();
   return { sections, toc, sectionOfId, definitions, footnotes: { order, references } };
