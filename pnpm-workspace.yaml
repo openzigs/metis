@@ -451,7 +451,13 @@ overrides:
   # minimumReleaseAge window); verified 2026-09-20 that 16.3.3, 16.3.4 AND 16.3.5
   # each return ZERO vulns on api.osv.dev. Stays inside 16.x: 16.3 is a patch
   # line off the major the UI already runs.
-  next@<16.3.3: ^16.3.3
+  #
+  # 2026-09-30: a third CRITICAL, GHSA-vcvr-r3jv-pc5j (CVSS 9.5, RCE in
+  # next/og ImageResponse), published 14:48Z for `>=16.2.0 <16.3.6`, fixed in
+  # 16.3.6. METIS does not import next/og, but the CI audit gate fails on it.
+  # Bound and floor move to 16.3.6 with `ui/package.json`. 16.3.6 was published
+  # 2026-09-22, clear of the 7-day minimumReleaseAge window; 16.3.7 (09-29) is not.
+  next@<16.3.6: ^16.3.6
 
   # @xmldom/xmldom, NINETEEN High advisories across two lines, all published
   # 2026-09-08 (#1363) — DOM-clobbering and parser-confusion bugs that let
