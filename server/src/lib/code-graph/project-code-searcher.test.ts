@@ -280,6 +280,35 @@ describe("#372 — prismaSymbolIndex caches the full symbol set per project", ()
     expect(findMany).toHaveBeenCalledTimes(2);
   });
 
+  // PR #413 panel — an older load that finishes first must not clear the
+  // NEWER load's in-flight entry, or a third search on the new fingerprint runs
+  // its own findMany instead of sharing the pending one.
+  it("#394: an older load finishing first leaves the newer in-flight load shared", async () => {
+    const releases: Array<(rows: ReturnType<typeof sym>[]) => void> = [];
+    const pending = () =>
+      new Promise<ReturnType<typeof sym>[]>((resolve) => releases.push(resolve));
+    findMany
+      .mockImplementationOnce(pending)
+      .mockImplementationOnce(pending)
+      .mockResolvedValue([sym("duplicate")]);
+    aggregate
+      .mockResolvedValueOnce(fingerprint(1, 1_000))
+      .mockResolvedValueOnce(fingerprint(1, 2_000))
+      .mockResolvedValueOnce(fingerprint(1, 2_000));
+
+    const older = prismaSymbolIndex.getSymbols("p1");
+    const newer = prismaSymbolIndex.getSymbols("p1");
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    releases[0]([sym("old")]);
+    await older;
+
+    const third = prismaSymbolIndex.getSymbols("p1");
+    releases[1]([sym("new")]);
+    expect((await third).map((s) => s.symbolId)).toEqual(["new"]);
+    expect((await newer).map((s) => s.symbolId)).toEqual(["new"]);
+    expect(findMany).toHaveBeenCalledTimes(2);
+  });
+
   it("#394: a failed load is not shared with the next search", async () => {
     findMany.mockRejectedValueOnce(new Error("db down")).mockResolvedValueOnce([sym("s1")]);
 
