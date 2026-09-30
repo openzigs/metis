@@ -69,15 +69,52 @@ const subscribes = (jobId: string) =>
 const listeners = (name: string) => fake.handlers.get(name)?.size ?? 0;
 
 // #473 — a reconnect (network blip, or the token-refresh disconnect+connect)
-// drops this socket's rooms on the server, so each hook re-joins on every
-// connect after the first. The first connect needs nothing: the emits made
-// before it were buffered and reach the server on it.
+// drops this socket's rooms on the server, so each room is re-joined on every
+// connect after the first — by `joinJobRoom`, once per socket (#486). The first
+// connect needs nothing: the emits made before it were buffered and reach the
+// server on it.
 function reconnect() {
   fake.socket.connected = false;
   act(() => fake.fire("disconnect", "transport close"));
   fake.socket.connected = true;
   act(() => fake.fire("connect", undefined));
 }
+
+// #486 — `documentation/page.tsx` mounts both hooks for the same job, twice.
+// A reconnect re-joins that one room once, not once per hook instance.
+describe("several hooks following one job across a reconnect (#486)", () => {
+  it("sends one subscribe:job for the job, however many hooks follow it", () => {
+    const qc = new QueryClient();
+    renderHook(
+      () => {
+        useJobLifecycle("job-1");
+        useDocSectionProgress("job-1");
+        useJobLifecycle("job-1");
+        useDocSectionProgress("job-1");
+      },
+      { wrapper: wrapper(qc) },
+    );
+    expect(listeners("connect")).toBe(1);
+    fake.emit.mockClear();
+    reconnect();
+    expect(subscribes("job-1")).toBe(1);
+  });
+
+  it("sends no extra subscribe on the first connect", () => {
+    fake.socket.connected = false;
+    const qc = new QueryClient();
+    renderHook(
+      () => {
+        useJobLifecycle("job-1");
+        useDocSectionProgress("job-1");
+      },
+      { wrapper: wrapper(qc) },
+    );
+    act(() => fake.fire("connect", undefined));
+    // One buffered join per hook, and nothing on top.
+    expect(subscribes("job-1")).toBe(2);
+  });
+});
 
 describe.each([
   ["useJobLifecycle", (id: string) => useJobLifecycle(id)],

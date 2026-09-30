@@ -202,7 +202,8 @@ export function forgetActiveJob(jobId: string): void {
  * other followers of the same job on this socket in the room.
  *
  * #465 — a reconnect loses the socket's rooms on the server, so each connect
- * after the first re-subscribes and restarts the wait, and the clock is stopped
+ * after the first re-subscribes (in `joinJobRoom`, #486) and restarts the
+ * wait, and the clock is stopped
  * while the socket is down: nothing can be heard then, and a running job must
  * not be forgotten for it.
  *
@@ -238,23 +239,16 @@ export function useFollowJobs(jobIds: readonly string[]): void {
 
     // Emits made before the socket connects are buffered and reach the server on
     // the first connect, so the replay cannot arrive until then; start the clock
-    // on connect, not on mount. A later connect is a reconnect: the server has
-    // dropped this socket's rooms, so re-join them. A re-join, not a new
-    // follower — it leaves the `joinJobRoom` count alone, as in `useJobToast`.
-    let joined = socket.connected;
-    const onConnect = () => {
-      if (joined) for (const jobId of ids) socket.emit("subscribe:job", { jobId });
-      joined = true;
-      startClock();
-    };
+    // on connect, not on mount. A later connect is a reconnect: `joinJobRoom`
+    // re-joins the rooms (#486), and the clock restarts for their replay.
     if (socket.connected) startClock();
-    socket.on("connect" as never, onConnect as never);
+    socket.on("connect" as never, startClock as never);
     socket.on("disconnect" as never, stopClock as never);
 
     return () => {
       stopClock();
       socket.off("job:lifecycle" as never, onLifecycle as never);
-      socket.off("connect" as never, onConnect as never);
+      socket.off("connect" as never, startClock as never);
       socket.off("disconnect" as never, stopClock as never);
       for (const leave of leaves) leave();
     };
