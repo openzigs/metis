@@ -22,7 +22,7 @@ interface Recorded {
 }
 
 const rec: Recorded = { launches: [], contents: [], scripts: [], closed: 0 };
-const launchBehaviour: { fail: boolean } = { fail: false };
+const launchBehaviour: { fail: boolean; pdfFail: boolean } = { fail: false, pdfFail: false };
 
 function fakePage() {
   return {
@@ -36,7 +36,10 @@ function fakePage() {
     },
     waitForSelector: async () => null,
     $: async () => ({ screenshot: async () => Buffer.from("PNGDATA") }),
-    pdf: async () => Buffer.from("%PDF-1.4 fake"),
+    pdf: async () => {
+      if (launchBehaviour.pdfFail) throw new Error("render crashed after launch");
+      return Buffer.from("%PDF-1.4 fake");
+    },
     close: async () => {},
   };
 }
@@ -81,6 +84,7 @@ beforeEach(() => {
   rec.scripts.length = 0;
   rec.closed = 0;
   launchBehaviour.fail = false;
+  launchBehaviour.pdfFail = false;
 });
 
 describe("mermaid render security (#686)", () => {
@@ -122,6 +126,22 @@ describe("mermaid render security (#686)", () => {
       expect(rec.closed).toBe(1);
     });
 
+    it("still closes the browser when rendering fails after launch (PR #442 review)", async () => {
+      launchBehaviour.pdfFail = true;
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const result = await exportDocument(MALICIOUS, "xss-probe", "pdf");
+
+        expect(result.mimeType).toBe("text/html");
+        expect(result.buffer.toString("utf-8")).not.toContain(PAYLOAD);
+        expect(rec.closed).toBe(1);
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    });
+
     it("falls back to escaped HTML when Chrome cannot launch", async () => {
       launchBehaviour.fail = true;
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -153,7 +173,7 @@ describe("mermaid render security (#686)", () => {
       const init = mermaidInitScripts();
       expect(init).toHaveLength(1);
       expect(init[0]).toContain("securityLevel: 'strict'");
-      expect(rec.closed).toBeGreaterThanOrEqual(1);
+      expect(rec.closed).toBe(1);
     });
   });
 
