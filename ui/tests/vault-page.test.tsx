@@ -2,7 +2,7 @@
  * Epic #196 / #222 — Standalone /vault admin UI tests.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 import VaultPage from "@/app/(authed)/vault/page";
 import { vaultApi } from "@/lib/vault-api";
@@ -214,4 +214,27 @@ describe("<VaultPage />", () => {
     fireEvent.click(screen.getByTestId("vault-entry-delete-btn"));
     await waitFor(() => expect(removeMock).toHaveBeenCalledWith("sec_1"));
   });
+});
+
+describe("Vault vs runtime secrets (#410)", () => {
+  it("an admin sees a note linking back to Settings → Configuration for server config", async () => {
+    asRole("admin");
+    renderPage();
+    const note = await screen.findByTestId("vault-server-config-note");
+    expect(note).toHaveTextContent(/connectors, MCP servers and publishing/i);
+    expect(note).toHaveTextContent(/server configuration/i);
+    const link = within(note).getByRole("link", { name: /configuration/i });
+    expect(link).toHaveAttribute("href", "/settings/api-keys");
+  });
+
+  it.each(["coordinator", "developer", "reader"] as const)(
+    "a %s does not see the server-config link",
+    async (role) => {
+      asRole(role);
+      renderPage();
+      await screen.findByTestId("vault-list");
+      expect(screen.queryByTestId("vault-server-config-note")).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /configuration/i })).not.toBeInTheDocument();
+    },
+  );
 });

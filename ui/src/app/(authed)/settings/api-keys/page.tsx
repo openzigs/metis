@@ -13,6 +13,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -153,6 +154,14 @@ function ConfigTabBody() {
     <div className="space-y-6" data-testid="settings-config-section">
       <section>
         <h3 className="mb-2 text-sm font-semibold">Runtime secrets</h3>
+        <p className="mb-2 text-xs text-muted-foreground" data-testid="settings-secrets-vs-vault">
+          These are server configuration values the server itself reads, such as provider API keys.
+          Connector, MCP and publishing credentials belong in the{" "}
+          <Link href="/vault" className="underline underline-offset-2">
+            Vault
+          </Link>
+          .
+        </p>
         <p className="mb-2 text-xs text-muted-foreground">
           Vault-backed values. Save rotates the secret; Clear removes the override and falls back to
           the env value.

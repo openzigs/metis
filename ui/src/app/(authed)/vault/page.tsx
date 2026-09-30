@@ -15,6 +15,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { hasPermission } from "@metis/shared";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,10 @@ export default function VaultPage() {
   const [selected, setSelected] = useState<VaultEntry | null>(null);
 
   const isForbidden = list.error?.status === 403;
+  const { user } = useAuth();
+  // #410 — Settings → Configuration is gated on `admin.read`, so only roles
+  // that can open it get the pointer there.
+  const canSeeServerConfig = user ? hasPermission(user.role, "admin.read") : false;
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="vault-root">
@@ -54,6 +59,18 @@ export default function VaultPage() {
           </>
         }
       />
+
+      {canSeeServerConfig ? (
+        <p className="text-xs text-muted-foreground" data-testid="vault-server-config-note">
+          Vault entries are user and project secrets that connectors, MCP servers and publishing
+          reference as <code>{"${vault:…}"}</code>. Server configuration values, such as provider
+          API keys, live in{" "}
+          <Link href="/settings/api-keys" className="underline underline-offset-2">
+            Settings → Configuration
+          </Link>
+          .
+        </p>
+      ) : null}
 
       {isForbidden ? (
         <Card className="p-4" data-testid="vault-forbidden">

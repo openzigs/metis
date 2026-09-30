@@ -4,7 +4,7 @@
  * `/api/admin/config` API.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { makeWrapper } from "../test-utils";
 import SettingsApiKeysPage from "@/app/(authed)/settings/api-keys/page";
 import { configApi, settingsApi } from "@/lib/settings-api";
@@ -171,5 +171,18 @@ describe("Configuration page (#259)", () => {
     );
     expect(screen.getByTestId("config-tunable-SCHEDULER_ENABLED-clear")).toBeDisabled();
     expect(screen.getByTestId("config-tunable-AI_DEFAULT_MODEL-clear")).not.toBeDisabled();
+  });
+});
+
+describe("Runtime secrets vs the Vault (#410)", () => {
+  it("explains that runtime secrets are server configuration and links to the Vault", async () => {
+    renderPage();
+    const note = await screen.findByTestId("settings-secrets-vs-vault");
+    expect(note).toHaveTextContent(/server configuration values/i);
+    expect(note).toHaveTextContent(
+      /connector, MCP and publishing credentials belong in the Vault/i,
+    );
+    const link = within(note).getByRole("link", { name: /vault/i });
+    expect(link).toHaveAttribute("href", "/vault");
   });
 });
