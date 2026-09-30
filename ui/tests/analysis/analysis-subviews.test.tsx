@@ -838,6 +838,25 @@ describe("the requirement deep link", () => {
     expect(await screen.findByText("Requirement 0 (edited)")).toBeInTheDocument();
     expect(screen.queryByText("Requirement 7")).not.toBeInTheDocument();
   });
+
+  // PR #470 review: a promote appends the requirement to a run whose detail is
+  // usually still cached. The cached snapshot, which lacks it, must not use up
+  // the link before the refetch that brings it lands.
+  it("follows the link once a refetch brings the requirement a cached run lacked", async () => {
+    nav.search = new URLSearchParams("tab=requirements&requirementId=req-11");
+    const beforePromote = manyFindings();
+    beforePromote.requirements = beforePromote.requirements.slice(0, 11);
+    apiMock.get.mockResolvedValue(beforePromote);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: TEST_USER, queryClient }) });
+    expect(await screen.findByText("Requirement 0")).toBeInTheDocument();
+    expect(screen.getByTestId("requirements-pager")).toHaveTextContent("Page 1 of 3");
+    apiMock.get.mockResolvedValue(manyFindings());
+    await queryClient.invalidateQueries();
+    expect(await screen.findByText("Requirement 11")).toBeInTheDocument();
+    expect(screen.getByTestId("requirements-pager")).toHaveTextContent("Page 3 of 3");
+    await waitFor(() => expect(scrolled).toEqual([document.getElementById("requirement-req-11")]));
+  });
 });
 
 // Issue #424 — Traceability says why it is empty while a run is in progress.
@@ -849,6 +868,13 @@ describe("the Traceability tab before a run completes", () => {
     expect(await screen.findByTestId("traceability-pending")).toHaveTextContent(
       /when the run completes/,
     );
+  });
+
+  it.each(["failed", "cancelled"])("says a %s run has no traceability", async (status) => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, status, completedAt: null });
+    nav.search = new URLSearchParams("tab=traceability");
+    renderPage();
+    expect(await screen.findByTestId("traceability-pending")).toHaveTextContent(/did not complete/);
   });
 
   it("shows no empty state once the run completed", async () => {

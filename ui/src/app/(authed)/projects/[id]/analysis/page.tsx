@@ -579,6 +579,7 @@ export default function AnalysisPage(): React.ReactElement {
     REQUIREMENTS_PAGE_SIZE,
   );
   const tabCounts = detail.data ? analysisTabCounts(detail.data, approvals.data?.ticketStatus) : {};
+  const traceabilityPending = detail.data ? traceabilityPendingMessage(detail.data.status) : null;
 
   // Issue #424 — `?requirementId=` (the promote dialog's "View requirement")
   // opens the page that holds it and scrolls to its card. Applied once per run,
@@ -591,13 +592,15 @@ export default function AnalysisPage(): React.ReactElement {
     if (!requestedRequirementId || !snapshot) return;
     const key = `${snapshot.id}:${requestedRequirementId}`;
     if (appliedRequirementLink.current === key) return;
-    appliedRequirementLink.current = key;
     const page = requirementPage(
       snapshot.requirements,
       requestedRequirementId,
       REQUIREMENTS_PAGE_SIZE,
     );
+    // Not in this snapshot yet: a promote appends it to a run whose detail may
+    // still be cached, so leave the link for the refetch that brings it.
     if (page === null) return;
+    appliedRequirementLink.current = key;
     setCoverageFilter(null);
     setRequirementsPage(page);
     if (!requestedTab) setTab("requirements");
@@ -1368,12 +1371,12 @@ export default function AnalysisPage(): React.ReactElement {
                 <TabsContent value="traceability" className="space-y-4">
                   {/* Issue #424 — the panels below render nothing until the run
                   completes; say why rather than leave an empty pane. */}
-                  {traceabilityPendingMessage(detail.data.status) ? (
+                  {traceabilityPending ? (
                     <p
                       className="rounded border border-dashed border-border p-4 text-sm text-muted-foreground"
                       data-testid="traceability-pending"
                     >
-                      {traceabilityPendingMessage(detail.data.status)}
+                      {traceabilityPending}
                     </p>
                   ) : null}
                   {/* Issue #737 — requirement→findings→code→tests traceability matrix. */}

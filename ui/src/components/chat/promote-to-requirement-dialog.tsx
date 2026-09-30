@@ -15,6 +15,7 @@
  */
 import { useState } from "react";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +28,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { promoteMessage, type PromoteResult } from "@/lib/discussions-api";
+import { queryKeys } from "@/lib/query-keys";
 
 const TYPES = ["feature", "bug", "chore", "epic", "task"] as const;
 const PRIORITIES = ["low", "medium", "high", "critical"] as const;
@@ -101,6 +103,7 @@ export function PromoteToRequirementDialog({
   const [priority, setPriority] = useState<(typeof PRIORITIES)[number]>("medium");
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<PromoteResult | null>(null);
+  const queryClient = useQueryClient();
 
   async function handleSubmit() {
     if (!title.trim() || pending) return;
@@ -111,6 +114,9 @@ export function PromoteToRequirementDialog({
         type,
         priority,
       });
+      // PR #470 review — the requirement is appended to an existing run whose
+      // detail is usually cached; drop it so "View requirement" reads it fresh.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.analyses.detail(res.analysisId) });
       setResult(res);
       onPromoted?.(res);
       toast.success("Promoted to a requirement");
