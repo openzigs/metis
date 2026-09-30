@@ -63,6 +63,27 @@ export function __resetArchiveHooks(): void {
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
+/**
+ * #560 — a new project may go only into a live workspace the actor belongs to.
+ * The membership is read from the table, not the token claim, which is minted
+ * at login and can outlive both the membership and the workspace (#549). System
+ * admins may use any live workspace; nobody may use a soft-deleted one. Unknown,
+ * deleted and not-a-member are one 404, so the body cannot probe workspace ids.
+ */
+async function assertWorkspaceAssignable(workspaceId: string, actor: ProjectActor) {
+  const workspace = await prisma.workspace.findFirst({
+    where: {
+      id: workspaceId,
+      deletedAt: null,
+      ...(actor.role === "admin" ? {} : { members: { some: { userId: actor.id } } }),
+    },
+    select: { id: true },
+  });
+  if (!workspace) {
+    throw new ProjectError(404, "WORKSPACE_NOT_FOUND", "Workspace not found");
+  }
+}
+
 export async function createProject(input: CreateProjectInput, actor: ProjectActor) {
   const slug = input.slug.toLowerCase();
   if (!SLUG_PATTERN.test(slug)) {
@@ -80,6 +101,8 @@ export async function createProject(input: CreateProjectInput, actor: ProjectAct
   if (existing) {
     throw new ProjectError(409, "SLUG_TAKEN", `slug '${slug}' already exists`);
   }
+  const workspaceId = (input as { workspaceId?: string }).workspaceId ?? null;
+  if (workspaceId) await assertWorkspaceAssignable(workspaceId, actor);
   const aiProviderId = normalizeAiProviderId(input.aiProviderId);
   const aiModel = normalizeAiModel(input.aiModel);
   return prisma.project.create({
@@ -91,7 +114,7 @@ export async function createProject(input: CreateProjectInput, actor: ProjectAct
       aiProviderId,
       aiModel,
       createdById: actor.id,
-      workspaceId: (input as { workspaceId?: string }).workspaceId ?? null,
+      workspaceId,
     },
   });
 }
