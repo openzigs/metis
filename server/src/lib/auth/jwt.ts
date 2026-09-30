@@ -384,7 +384,12 @@ export async function refreshAccessToken(
       : new Date(Date.now() + refreshTtlSeconds() * 1000);
   // Read before revoking, so a failed read leaves the presented token usable.
   const workspaces = await resolveWorkspaces(decoded.userId);
-  await revokeRefreshToken(decoded.tokenId, decoded.userId, expiresAt);
+  // #582 — the revoke is the gate, not `verifyRefreshToken`'s check: two
+  // concurrent refreshes with one token both pass the check, and only the one
+  // that wins this atomic revoke-if-not-revoked may mint a new pair.
+  if (!(await store.claimToken(decoded.tokenId, decoded.userId, expiresAt))) {
+    throw new Error("Token has been revoked");
+  }
   return issueTokens({
     userId: decoded.userId,
     username: decoded.username,

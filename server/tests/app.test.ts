@@ -50,6 +50,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     // every lookup returns "not revoked".
     revokedRefreshToken: {
       findUnique: vi.fn(async () => null),
+      // #582 — refresh rotation claims the token with an insert-unique.
+      create: vi.fn(async () => ({})),
       upsert: vi.fn(async () => ({})),
       deleteMany: vi.fn(async () => ({ count: 0 })),
     },

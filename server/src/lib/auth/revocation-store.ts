@@ -28,12 +28,21 @@
  */
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 const log = createChildLogger("revocation-store");
 
 export interface RevocationStore {
   /** Mark a single refresh token (by its ULID tokenId) as revoked. */
   revokeToken(tokenId: string, userId: string, expiresAt: Date): Promise<void>;
+  /**
+   * #582 — atomically revoke a refresh token IF it is not already revoked.
+   * Returns `true` only to the one caller that recorded the revocation; every
+   * other caller (a concurrent refresh with the same token, or a token already
+   * revoked by logout) gets `false`. Refresh rotation proceeds only on `true`,
+   * so one refresh token can never mint two token pairs.
+   */
+  claimToken(tokenId: string, userId: string, expiresAt: Date): Promise<boolean>;
   /**
    * True if the given refresh token must be rejected. Considers BOTH an explicit
    * per-token revocation AND the user's session cutoff (revoke-all). `issuedAt`
@@ -70,6 +79,19 @@ export class PrismaRevocationStore implements RevocationStore {
       update: {},
       create: { tokenId, userId, expiresAt },
     });
+  }
+
+  async claimToken(tokenId: string, userId: string, expiresAt: Date): Promise<boolean> {
+    // An insert-unique on `tokenId`: the database's unique index serialises
+    // concurrent inserts, so exactly one succeeds and the rest see P2002. A
+    // check-then-write here would reopen the race this method exists to close.
+    try {
+      await prisma.revokedRefreshToken.create({ data: { tokenId, userId, expiresAt } });
+      return true;
+    } catch (err) {
+      if (isUniqueViolation(err)) return false;
+      throw err;
+    }
   }
 
   async isRevoked(tokenId: string, userId: string, issuedAt?: number): Promise<boolean> {

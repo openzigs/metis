@@ -44,6 +44,14 @@ class InMemoryRevocationStore implements RevocationStore {
     this.db.revoked.set(tokenId, { userId, expiresAt });
   }
 
+  async claimToken(tokenId: string, userId: string, expiresAt: Date): Promise<boolean> {
+    // Atomic like the unique-index insert it stands in for: check and set run in
+    // one synchronous step, so no other caller can interleave between them.
+    if (this.db.revoked.has(tokenId)) return false;
+    this.db.revoked.set(tokenId, { userId, expiresAt });
+    return true;
+  }
+
   async isRevoked(tokenId: string, userId: string, issuedAt?: number): Promise<boolean> {
     if (this.db.revoked.has(tokenId)) return true;
     if (issuedAt !== undefined) {
@@ -158,6 +166,43 @@ describe("jwt", () => {
     await expect(verifyRefreshToken(refreshToken)).rejects.toThrow(/revoked/);
     // The freshly-minted refresh token still verifies.
     await expect(verifyRefreshToken(newPair.refreshToken)).resolves.toBeTruthy();
+  });
+
+  describe("#582 — concurrent refreshes with one token", () => {
+    const token = () =>
+      issueTokens({ userId: "u1", username: "alice", role: "reader", permissions: [] })
+        .refreshToken;
+
+    it("exactly one of two concurrent refreshes succeeds; the other is rejected as revoked", async () => {
+      const refreshToken = token();
+      // Both refreshes pass verification before either records the revocation:
+      // the membership read yields, so the two calls interleave at that point.
+      const results = await Promise.allSettled([
+        refreshAccessToken(refreshToken, noMemberships),
+        refreshAccessToken(refreshToken, noMemberships),
+      ]);
+      const won = results.filter((r) => r.status === "fulfilled");
+      const lost = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      expect(won).toHaveLength(1);
+      expect(lost).toHaveLength(1);
+      expect((lost[0].reason as Error).message).toBe("Token has been revoked");
+      // The winner's new refresh token is live; the presented one is spent.
+      const pair = (won[0] as PromiseFulfilledResult<{ refreshToken: string }>).value;
+      await expect(verifyRefreshToken(pair.refreshToken)).resolves.toBeTruthy();
+      await expect(verifyRefreshToken(refreshToken)).rejects.toThrow(/revoked/);
+    });
+
+    it("a refresh that loses the claim mints no tokens even after passing verification", async () => {
+      const refreshToken = token();
+      const { tokenId } = await verifyRefreshToken(refreshToken);
+      // The token is revoked after verification passed but before the claim.
+      await expect(
+        refreshAccessToken(refreshToken, async () => {
+          await revokeRefreshToken(tokenId, "u1", new Date(Date.now() + 60_000));
+          return [];
+        }),
+      ).rejects.toThrow("Token has been revoked");
+    });
   });
 
   describe("#561 — refresh re-reads workspace memberships", () => {
