@@ -162,7 +162,7 @@ import {
   withFindingsRepairNote,
   type FindingsRepair,
 } from "./findings-repair.js";
-import { createRunDocumentLookup } from "./run-document-lookup.js";
+import { createRunDocumentLookup, projectDocumentQueries } from "./run-document-lookup.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
 import { RequirementsExtractor } from "./requirements-extractor.js";
@@ -2137,20 +2137,9 @@ export class AnalysisOrchestrator {
         // #384 — ids already confirmed in this run, or present in the loaded
         // list, are answered without a query; the id check's `in` list is
         // capped (see `createRunDocumentLookup`).
-        const { loadKnownDocuments, findKnownDocumentIds } = createRunDocumentLookup({
-          listDocuments: () =>
-            prisma.document.findMany({
-              where: { projectId: input.projectId, deletedAt: null },
-              select: { id: true, filename: true },
-            }),
-          findDocumentIds: async (ids) => {
-            const rows = await prisma.document.findMany({
-              where: { projectId: input.projectId, deletedAt: null, id: { in: [...ids] } },
-              select: { id: true },
-            });
-            return rows.map((r) => r.id);
-          },
-        });
+        const { loadKnownDocuments, findKnownDocumentIds } = createRunDocumentLookup(
+          projectDocumentQueries(prisma, input.projectId),
+        );
 
         /**
          * #483/#734 — run ONE agentic loop over `passRequirements` with the given
