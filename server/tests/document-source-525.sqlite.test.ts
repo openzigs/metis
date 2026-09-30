@@ -39,6 +39,13 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// The real evidence gate, wrapped so a test can read the rows the generation
+// inventory's own query returned: the gate drops a connector-named upload too,
+// so the snapshot alone would not show whether the query excluded it.
+vi.mock("../src/lib/docs-gen/evidence-filter.js", async (original) => {
+  const real = await original<typeof import("../src/lib/docs-gen/evidence-filter.js")>();
+  return { ...real, filterPrimaryEvidence: vi.fn(real.filterPrimaryEvidence) };
+});
 
 const { documentsRouter } = await import("../src/routes/documents.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
@@ -46,6 +53,7 @@ const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { detectStaticCapability } = await import("../src/lib/analysis/analysis-capability.js");
 const { defaultAnalysisDocumentIds } = await import("../src/lib/analysis/orchestrator.js");
 const { filterPrimaryEvidence } = await import("../src/lib/docs-gen/evidence-filter.js");
+const { captureGenerationInputs } = await import("../src/lib/docs-gen/generation-inputs.js");
 
 const MIGRATION = "20261006000525_issue525_generated_source_by_id";
 const PROJ = "proj-source-000525";
@@ -209,6 +217,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "confluence:DOCS:123",
         "repo:c1:README.md",
         "generated-doc-abc.md",
+        "live-schema:proj-1",
+        "Live-Schema:proj-1.md",
         "JIRA:ABC-1",
         "  jira:ABC-1",
       ])("the text upload refuses the reserved filename %j with a 400", async (filename) => {
@@ -301,6 +311,46 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           );
         expect(await ids([])).toEqual(["d-repo"]);
         expect(await ids(["d-upload"])).toEqual(["d-upload", "d-repo"]);
+      });
+
+      it("the generation inventory query reads a repository row, never an upload named like one", async () => {
+        const filename = "connector:repo:c1:src/auth.ts";
+        await doc("d-upload", filename, "upload");
+        await doc("d-repo", filename, "repo");
+        for (const documentId of ["d-upload", "d-repo"]) {
+          await db.knowledgeChunk.create({
+            data: {
+              id: `k-${documentId}`,
+              projectId: PROJ,
+              documentId,
+              position: 0,
+              text: `text of ${documentId}`,
+              md5: documentId,
+            },
+          });
+        }
+        const gate = vi.mocked(filterPrimaryEvidence);
+        gate.mockClear();
+        await captureGenerationInputs(
+          {
+            projectId: PROJ,
+            title: "Doc",
+            scope: "project",
+            scopeFilter: "{}",
+            evidencePolicy: null,
+          },
+          {
+            projectId: PROJ,
+            generatedDocumentId: "g",
+            actor: { userId: USER, role: "admin" },
+            repoConnectorId: "c1",
+            codeGraphId: "graph",
+            sharedDocumentIds: [],
+            allowWebResearch: false,
+          },
+        );
+        expect(gate).toHaveBeenCalledTimes(1);
+        expect(gate.mock.calls[0][0].map((c) => c.documentId)).toEqual(["d-repo"]);
       });
     });
   },

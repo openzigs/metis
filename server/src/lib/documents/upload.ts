@@ -90,6 +90,8 @@ export function validateUpload(input: UploadCandidate): UploadValidation {
  * - `repo:`          the legacy repository shape (`fused-code-context.ts`)
  * - `jira:`, `confluence:` the Atlassian connector (`atlassian.ts`)
  * - `generated-doc-` a published generated document (`generated-doc-publication.ts`)
+ * - `live-schema:`   the analysis database agent's schema citation
+ *                    (`analysis/schema-context.ts`); the UI labels it "Live schema"
  */
 export const RESERVED_FILENAME_PREFIXES = [
   "connector:",
@@ -97,6 +99,7 @@ export const RESERVED_FILENAME_PREFIXES = [
   "jira:",
   "confluence:",
   "generated-doc-",
+  "live-schema:",
 ] as const;
 
 /** The reserved prefix `filename` starts with, or null. */

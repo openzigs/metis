@@ -1,7 +1,7 @@
 -- Issue #525 — classify generated documents by their synthetic id, not their
 -- filename (Postgres mirror). See the SQLite migration of the same name for the
 -- rationale. Both statements are guarded on the current `source`, so the
--- migration is a no-op when run again (#556).
+-- migration is a no-op when run again.
 --
 -- Rollback: data-only; re-run #474's filename backfill for generated rows:
 --   UPDATE "documents" SET "source" = 'upload'
