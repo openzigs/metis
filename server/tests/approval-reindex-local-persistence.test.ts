@@ -155,7 +155,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         `CREATE TABLE documents (id TEXT PRIMARY KEY, projectId TEXT, filename TEXT, mimeType TEXT,
       sizeBytes INTEGER, storagePath TEXT, checksum TEXT, status TEXT DEFAULT 'pending',
       indexState TEXT DEFAULT 'pending', autoApproveTrusted BOOLEAN DEFAULT false,
-      aclSubjects TEXT DEFAULT '[]', isSpec BOOLEAN DEFAULT false, errorMessage TEXT,
+      aclSubjects TEXT DEFAULT '[]', isSpec BOOLEAN DEFAULT false, source TEXT NOT NULL DEFAULT 'upload', title TEXT, errorMessage TEXT,
       chunkCount INTEGER DEFAULT 0, uploadedById TEXT, uploadedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
       processedAt DATETIME, deletedAt DATETIME)`,
         `CREATE TABLE knowledge_chunks (id TEXT PRIMARY KEY, projectId TEXT, documentId TEXT,

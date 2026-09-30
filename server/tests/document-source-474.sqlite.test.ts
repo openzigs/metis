@@ -239,6 +239,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await listed()).toMatchObject([{ source: "confluence", title: "Runbook" }]);
       });
 
+      it("a renamed page's new title replaces the old one on the next ingest", async () => {
+        const args = {
+          projectId: PROJ,
+          spaceKey: "DOCS",
+          actorId: USER,
+          resolveServer: async () => ({ id: "srv" }),
+        };
+        await ingestConfluenceSpace({ ...args, invokeTool: confluence("Draft plan") });
+        const second = await ingestConfluenceSpace({
+          ...args,
+          invokeTool: confluence("Final plan", "revised body"),
+        });
+        expect(second.documentsUpdated).toBe(1);
+        expect(await listed()).toMatchObject([{ source: "confluence", title: "Final plan" }]);
+      });
+
       it("a Jira issue never overwrites an upload that shares its filename", async () => {
         await db.document.create({
           data: {
