@@ -3,7 +3,7 @@
  * landing on the new project's Overview with the ingest running.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api-client";
@@ -14,12 +14,25 @@ vi.mock("sonner", () => ({
 }));
 vi.mock("@/lib/projects-api", () => ({ projectsApi: { create: vi.fn() } }));
 vi.mock("@/lib/connectors-api", () => ({ repoConnectorsApi: { deepIngest: vi.fn() } }));
-vi.mock("@/hooks/use-active-jobs", () => ({ applyJobLifecycleEvent: vi.fn() }));
+// The REAL active-jobs store, spied on: the Overview reads what the wizard writes.
+vi.mock("@/hooks/use-active-jobs", async (orig) => {
+  const actual = await orig<typeof import("@/hooks/use-active-jobs")>();
+  return { ...actual, applyJobLifecycleEvent: vi.fn(actual.applyJobLifecycleEvent) };
+});
+vi.mock("@/lib/socket-client", async (orig) => ({
+  ...(await orig<typeof import("@/lib/socket-client")>()),
+  useSocket: () => null,
+}));
 
 import { NewProjectDialog, NewProjectWizard } from "@/components/projects/new-project-wizard";
 import { projectsApi } from "@/lib/projects-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
-import { applyJobLifecycleEvent } from "@/hooks/use-active-jobs";
+import {
+  __resetActiveJobsForTests,
+  applyJobLifecycleEvent,
+  useActiveJobs,
+} from "@/hooks/use-active-jobs";
+import { isProjectRepoIngestJob } from "@/lib/project-pipeline";
 import { toast } from "sonner";
 
 const create = vi.mocked(projectsApi.create);
@@ -30,6 +43,7 @@ const PROJECT = { id: "p-new", name: "Acme", slug: "acme" };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetActiveJobsForTests();
   push().mockClear();
 });
 
@@ -106,6 +120,24 @@ describe("NewProjectWizard", () => {
     );
     expect(toast.success).toHaveBeenCalledWith("Project created — ingest started");
     expect(onDone).toHaveBeenCalled();
+  });
+
+  it("leaves a job in the real store that the Overview counts as this project's ingest", async () => {
+    const user = userEvent.setup();
+    create.mockResolvedValue({ ...PROJECT, primaryRepo: { id: "c-1" } } as never);
+    deepIngest.mockResolvedValue({ jobId: "job-1", connectorId: "c-1", status: "started" });
+    renderWizard();
+    await fillName(user);
+    await fillRepo(user);
+    await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
+    await waitFor(() => expect(push()).toHaveBeenCalledWith("/projects/p-new"));
+
+    // The same read + predicate `ProjectPipelineOverview` uses for its Ingest stage.
+    const jobs = renderHook(() => useActiveJobs()).result.current;
+    expect(jobs.filter((j) => isProjectRepoIngestJob(j, "p-new")).map((j) => j.jobId)).toEqual([
+      "job-1",
+    ]);
+    expect(jobs.filter((j) => isProjectRepoIngestJob(j, "p-other"))).toEqual([]);
   });
 
   it("creates without a source when the user skips it, and starts no ingest", async () => {
