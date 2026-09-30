@@ -53,12 +53,24 @@ export class ProjectsPage {
     await this.nameInput.fill(name);
     await this.slugInput.fill(slug);
     await this.submitButton.click();
-    // Dialog closes; project card appears in the list with the slug.
-    // The card renders the slug in BOTH an <h2> heading and a <code> badge,
-    // so first() avoids a strict-mode violation.
-    await expect(this.list.getByText(slug, { exact: true }).first()).toBeVisible({
-      timeout: 10_000,
-    });
+    await this.expectOnNewProjectOverview(name);
+  }
+
+  /**
+   * #370 — a successful Create lands on the new project's Overview, and the
+   * header breadcrumb's project switcher names the new project rather than the
+   * previously active one.
+   */
+  async expectOnNewProjectOverview(name: string): Promise<void> {
+    await this.page.waitForURL(/\/projects\/[^/]+$/, { timeout: 15_000 });
+    await expect(
+      this.page.getByTestId("project-overview-root").getByRole("heading", { name, exact: true }),
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      this.page
+        .getByTestId("header-breadcrumb")
+        .getByRole("button", { name: `Active project: ${name}`, exact: true }),
+    ).toBeVisible({ timeout: 10_000 });
   }
 
   /**
@@ -80,12 +92,15 @@ export class ProjectsPage {
     if (repo.apiBaseUrl) await this.repoApiBaseInput.fill(repo.apiBaseUrl);
     if (repo.secretRef) await this.repoSecretInput.fill(repo.secretRef);
     await this.submitButton.click();
-    await expect(this.list.getByText(slug, { exact: true }).first()).toBeVisible({
-      timeout: 10_000,
-    });
+    await this.expectOnNewProjectOverview(name);
   }
 
   async openProject(slug: string): Promise<void> {
+    // Create now leaves the browser on the new project (#370), so come back to
+    // the list first rather than assume it is on screen.
+    if (!/\/projects\/?$/.test(new URL(this.page.url()).pathname)) await this.goto();
+    // The card renders the slug in BOTH an <h2> heading and a <code> badge,
+    // so first() avoids a strict-mode violation.
     await this.list.getByText(slug, { exact: true }).first().click();
     await this.page.waitForURL(/\/projects\/[^/]+$/, { timeout: 10_000 });
   }
