@@ -33,7 +33,8 @@ import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
 import { getLastDocSections, getLastJobLifecycle } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
-import { mcpStatusRoomsFor } from "../mcp/status-rooms.js";
+import { isMcpStatusRoom, mcpStatusRoomsFor } from "../mcp/status-rooms.js";
+import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("socket");
@@ -200,6 +201,9 @@ function attachHandlers(
   socket.on("unsubscribe:session", ({ sessionId }) => {
     void socket.leave(`session:${sessionId}`);
   });
+  // #562 — bumped by every subscribe/unsubscribe, so a subscribe whose
+  // membership lookup resolves after a later unsubscribe does not join.
+  let mcpSubscription = 0;
   socket.on("subscribe:mcp", () => {
     // SEC-5: only roles with `mcp.manage` (admin) may subscribe to the
     // mcp:status room. Status events leak server labels, scope, projectId,
@@ -218,11 +222,31 @@ function attachHandlers(
     // #340 / #353 — the shared room carries global events and those of projects
     // with no workspace; a user-scope server's events go only to its owner's
     // room and the admins' room, and a workspace project's only to that
-    // workspace's room (joined from the JWT) and the admins' room.
-    void socket.join(mcpStatusRoomsFor(user));
+    // workspace's room and the admins' room.
+    // #562 — workspace rooms come from the user's live, non-deleted
+    // memberships, not the token's `workspaces` claim, which still lists a
+    // workspace deleted (or left) after the token was issued. A failed lookup
+    // joins no workspace room (fail closed).
+    const attempt = ++mcpSubscription;
+    void (async () => {
+      let liveWorkspaceIds: string[] = [];
+      try {
+        liveWorkspaceIds = await readLiveWorkspaceIds(user.userId);
+      } catch (err) {
+        log.warn("Socket subscribe:mcp membership lookup failed — no workspace rooms", {
+          socketId: socket.id,
+          userId: user.userId,
+          error: (err as Error).message,
+        });
+      }
+      if (attempt !== mcpSubscription) return;
+      await socket.join(mcpStatusRoomsFor(user, liveWorkspaceIds));
+    })();
   });
   socket.on("unsubscribe:mcp", () => {
-    for (const room of mcpStatusRoomsFor(user)) void socket.leave(room);
+    ++mcpSubscription;
+    // Every mcp:status room this socket is in, whatever memberships it joined.
+    for (const room of [...socket.rooms]) if (isMcpStatusRoom(room)) void socket.leave(room);
   });
 
   socket.on("subscribe:connector", ({ connectorId }) => {
