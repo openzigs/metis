@@ -39,7 +39,12 @@ function fixture() {
     metadata: "{}",
     chunkerIdentity: null,
     aclSubjects: "[]",
-    document: { filename: r.filename, storagePath: "blob", aclSubjects: r.acl },
+    document: {
+      filename: r.filename,
+      source: r.filename.startsWith("connector:repo:") ? "repo" : "upload",
+      storagePath: "blob",
+      aclSubjects: r.acl,
+    },
     embeddingModel: "fake",
     position: 0,
   }));

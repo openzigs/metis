@@ -136,14 +136,12 @@ const VALID_DRAFT = {
 };
 
 class StubOrchestrator extends AnalysisOrchestrator {
-  chatMock = vi.fn(
-    async (_messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse> => ({
-      content: JSON.stringify(VALID_DRAFT),
-      usage: { promptTokens: 120, completionTokens: 60, totalTokens: 180 },
-      model: opts?.model ?? "haiku",
-      provider: "offline-stub",
-    }),
-  );
+  chatMock = vi.fn(async (_messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse> => ({
+    content: JSON.stringify(VALID_DRAFT),
+    usage: { promptTokens: 120, completionTokens: 60, totalTokens: 180 },
+    model: opts?.model ?? "haiku",
+    provider: "offline-stub",
+  }));
 
   constructor() {
     super({
@@ -151,6 +149,9 @@ class StubOrchestrator extends AnalysisOrchestrator {
         key: "offline-stub",
         model: "stub",
         offline: false,
+        // #532 — the deep-dive's Haiku default is sent only to a provider that
+        // serves Claude tier ids.
+        servesRouterModel: () => true,
         chat: (m: ChatMessage[], o?: ChatOptions) => this.chatMock(m, o),
         stream: vi.fn(),
         embed: vi.fn(),

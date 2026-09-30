@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { Prisma, prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
-import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "../ai/model-router.js";
+import { HAIKU_MODEL_ID, SONNET_MODEL_ID, tierModelFor } from "../ai/model-router.js";
 import type { AIProvider } from "../ai/types.js";
 import { pullOrCloneRepo } from "../connectors/repo/repo-service.js";
 import { readBoundSecret } from "../connectors/vault-resolver.js";
@@ -401,7 +401,8 @@ export function buildScannerPorts(): ScannerPorts {
       const result = await scanSymbol(provider, {
         symbol: assembled,
         context: ctx,
-        modelOverride: HAIKU_MODEL_ID,
+        // #532 — a Claude tier id only on a provider that serves it.
+        modelOverride: tierModelFor(provider, HAIKU_MODEL_ID),
         signal,
       });
       return { candidates: result.candidates, totalTokens: result.totalTokens };
@@ -412,7 +413,7 @@ export function buildScannerPorts(): ScannerPorts {
       const result = await filterCandidate(provider, {
         candidate,
         symbolBody: body,
-        modelOverride: SONNET_MODEL_ID,
+        modelOverride: tierModelFor(provider, SONNET_MODEL_ID),
         signal,
       });
       return {

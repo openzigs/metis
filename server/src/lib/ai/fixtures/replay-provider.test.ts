@@ -59,6 +59,21 @@ describe("ReplayProvider", () => {
     expect(await p.ping()).toBe(true);
   });
 
+  // #532 — replay stands in for the provider the fixtures were recorded on, so
+  // it answers `servesRouterModel` as that provider did; call sites that pick a
+  // Claude tier id then send the same model the recording keyed on.
+  it("answers servesRouterModel as the provider it stands in for", () => {
+    const serves = vi.fn((id: string) => id === "tier-a");
+    const p = new ReplayProvider({ store, servesRouterModel: serves });
+    expect(p.servesRouterModel("tier-a")).toBe(true);
+    expect(p.servesRouterModel("tier-b")).toBe(false);
+    expect(serves).toHaveBeenCalledWith("tier-a");
+  });
+
+  it("serves no router model when the stood-in provider cannot answer", () => {
+    expect(new ReplayProvider({ store }).servesRouterModel("tier-a")).toBe(false);
+  });
+
   it("throws ReplayFixtureMissError on a miss with no fallback", async () => {
     const p = new ReplayProvider({ store });
     await expect(p.chat(msgs)).rejects.toBeInstanceOf(ReplayFixtureMissError);

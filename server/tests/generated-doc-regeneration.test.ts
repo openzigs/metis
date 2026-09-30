@@ -512,6 +512,7 @@ describe("successful ingest regeneration (#1356)", () => {
           aclSubjects: "[]",
           document: {
             filename: "connector:repo:r:README.md",
+            source: "repo",
             storagePath: "ref",
             aclSubjects: "[]",
           },
@@ -706,7 +707,12 @@ describe("successful ingest regeneration (#1356)", () => {
       text: "New architectural evidence",
       metadata: "{}",
       aclSubjects: "[]",
-      document: { filename: "connector:repo:r:README.md", storagePath: "ref", aclSubjects: "[]" },
+      document: {
+        filename: "connector:repo:r:README.md",
+        source: "repo",
+        storagePath: "ref",
+        aclSubjects: "[]",
+      },
     });
     state.search.mockImplementation(async (_project, query: string) => ({
       hits: query.includes(target.metadata.sectionLabel)

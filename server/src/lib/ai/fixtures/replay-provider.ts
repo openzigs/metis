@@ -47,6 +47,11 @@ export interface ReplayProviderOptions {
   /** Provider identity surfaced on synthesised misses / model lookups. */
   key?: ProviderKey;
   model?: string;
+  /**
+   * #532 — the stood-in provider's answer to `servesRouterModel`, so a call
+   * site that picks a Claude tier id sends the model the fixture was keyed on.
+   */
+  servesRouterModel?: (modelId: string) => boolean;
 }
 
 const tokenize = (s: string): string[] => s.match(/\S+/g) ?? [];
@@ -64,12 +69,18 @@ export class ReplayProvider implements AIProvider {
 
   private readonly store: FixtureStore;
   private readonly fallback?: AIProvider;
+  private readonly serves?: (modelId: string) => boolean;
 
   constructor(opts: ReplayProviderOptions) {
     this.store = opts.store;
     this.fallback = opts.fallbackProvider;
     this.key = opts.key ?? "offline-stub";
     this.model = opts.model ?? "replay";
+    this.serves = opts.servesRouterModel;
+  }
+
+  servesRouterModel(modelId: string): boolean {
+    return this.serves?.(modelId) === true;
   }
 
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {

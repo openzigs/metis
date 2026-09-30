@@ -6,7 +6,7 @@
  * heavy modules (provider, Octokit, JiraClient, repo clone) are mocked
  * so the suite stays a unit test.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // #1330 — the Finding create payload is validated against the REAL schema,
 // not against a hand-written stub that resolves for anything.
 import {
@@ -37,13 +37,17 @@ vi.mock("../prisma.js", () => ({ prisma: mockPrisma }));
 
 vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
 
+// #532 — one provider object for the whole file: the adapter caches the first
+// provider it builds, so tests reshape this object rather than swap it.
+const mockProvider: {
+  key: string;
+  model: string;
+  chat: ReturnType<typeof vi.fn>;
+  servesRouterModel?: (id: string) => boolean;
+} = { key: "openai", model: "configured-model", chat: vi.fn() };
 vi.mock("../ai/index.js", () => ({
-  buildProvider: vi.fn(() => ({ chat: vi.fn() })),
+  buildProvider: vi.fn(() => mockProvider),
   loadAIConfig: vi.fn(() => ({})),
-}));
-vi.mock("../ai/model-router.js", () => ({
-  HAIKU_MODEL_ID: "haiku",
-  SONNET_MODEL_ID: "sonnet",
 }));
 
 vi.mock("../connectors/repo/repo-service.js", () => ({
@@ -103,6 +107,7 @@ const {
   materializeTriagedFinding,
 } = await import("./prisma-adapter.js");
 const { PublishError } = await import("./finding-publisher.js");
+const { HAIKU_MODEL_ID, SONNET_MODEL_ID } = await import("../ai/model-router.js");
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -1083,5 +1088,97 @@ describe("buildScannerPorts wrappers", () => {
     });
     expect(out).toContain("no eval");
     expect(out).toContain("r1");
+  });
+});
+
+// ----------------------------------------------------------------------------
+// #532 — scanner model on the active provider
+// ----------------------------------------------------------------------------
+
+describe("buildScannerPorts — model on the active provider (#532)", () => {
+  const scan = {
+    id: "scan-1",
+    projectId: "proj-1",
+    repoConnectionId: "repo-1",
+    commitSha: "abc",
+    mode: "both" as const,
+    budgetCapTokens: 100_000,
+    createdById: "user-1",
+  };
+  const symbol = {
+    id: "sym-1",
+    qualifiedName: "lib/foo.ts::bar",
+    kind: "function",
+    language: "ts",
+    filePath: "lib/foo.ts",
+    startLine: 1,
+    endLine: 2,
+  };
+  const candidate = {
+    ruleId: null,
+    symbolId: "sym-1",
+    qualifiedName: "lib/foo.ts::bar",
+    filePath: "lib/foo.ts",
+    title: "t",
+    body: "b",
+    severity: "low" as const,
+    category: "bug",
+    evidenceLines: [1],
+    confidence: 0.9,
+  };
+
+  beforeEach(() => {
+    mockPrisma.codeEdge.findMany.mockResolvedValue([]);
+    mockKnowledgeSearch.mockResolvedValue({ hits: [], mode: "hybrid" });
+    mockProvider.chat.mockResolvedValue({ content: "{}", usage: { totalTokens: 1 } });
+  });
+  afterEach(() => {
+    delete mockProvider.servesRouterModel;
+  });
+
+  async function firstPassModel(): Promise<unknown> {
+    await buildScannerPorts()
+      .runFirstPass({
+        scan,
+        symbol,
+        body: "function bar() {}",
+        ruleInstructions: "",
+        signal: new AbortController().signal,
+      })
+      .catch(() => undefined);
+    expect(mockProvider.chat).toHaveBeenCalled();
+    return (mockProvider.chat.mock.calls[0] as unknown[])[1];
+  }
+
+  async function fpFilterModel(): Promise<unknown> {
+    await buildScannerPorts()
+      .runFpFilter({ candidate, body: "function bar() {}", signal: new AbortController().signal })
+      .catch(() => undefined);
+    expect(mockProvider.chat).toHaveBeenCalled();
+    return (mockProvider.chat.mock.calls[0] as unknown[])[1];
+  }
+
+  it("first pass sends the configured model when the provider cannot serve the Haiku tier id", async () => {
+    mockProvider.servesRouterModel = () => false;
+    expect(await firstPassModel()).toMatchObject({ model: "configured-model" });
+  });
+
+  it("first pass sends the configured model when the provider cannot answer at all", async () => {
+    expect(await firstPassModel()).toMatchObject({ model: "configured-model" });
+  });
+
+  it("first pass sends the Haiku tier id to a provider that serves it", async () => {
+    mockProvider.servesRouterModel = (id) => id === HAIKU_MODEL_ID;
+    expect(await firstPassModel()).toMatchObject({ model: HAIKU_MODEL_ID });
+  });
+
+  it("FP filter sends the configured model when the provider cannot serve the Sonnet tier id", async () => {
+    mockProvider.servesRouterModel = () => false;
+    expect(await fpFilterModel()).toMatchObject({ model: "configured-model" });
+  });
+
+  it("FP filter sends the Sonnet tier id to a provider that serves it", async () => {
+    mockProvider.servesRouterModel = (id) => id === SONNET_MODEL_ID;
+    expect(await fpFilterModel()).toMatchObject({ model: SONNET_MODEL_ID });
   });
 });
