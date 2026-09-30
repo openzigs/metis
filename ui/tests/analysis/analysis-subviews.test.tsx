@@ -1021,6 +1021,22 @@ describe("the run resyncs from the URL while mounted", () => {
     expect(screen.queryByText("Requirement 5")).not.toBeInTheDocument();
   });
 
+  it("drops run A's coverage filter on a run switch (PR #496 review)", async () => {
+    nav.search = new URLSearchParams("analysisId=an-a&tab=requirements");
+    const navigate = renderNavigable();
+    await screen.findByText("Requirement 0");
+    // No fixture requirement carries coverage, so "No evidence" hides them all.
+    await userEvent.click(screen.getByTestId("coverage-filter-no_evidence"));
+    expect(screen.queryByText("Requirement 0")).not.toBeInTheDocument();
+
+    apiMock.get.mockImplementation(async (id: string) => ({ ...manyFindings(), id }));
+    navigate("analysisId=an-b&tab=requirements");
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith("an-b"));
+    // A filter carried over from run A would hide run B's requirements.
+    expect(await screen.findByText("Requirement 0")).toBeInTheDocument();
+    expect(screen.getByTestId("coverage-filter-all")).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("keeps the shown run for an id that is not in this project's list", async () => {
     nav.search = new URLSearchParams("analysisId=an-a&tab=findings");
     const navigate = renderNavigable();
