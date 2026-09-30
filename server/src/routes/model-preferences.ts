@@ -33,6 +33,7 @@ import {
   readAgentCountFromMetadata,
 } from "../lib/ai/analysis-run-estimate.js";
 import { getProjectMonthlyAnalysisTokens } from "../lib/analysis/cost-cap.js";
+import { getOrchestrator } from "../lib/analysis/orchestrator.js";
 
 const log = createChildLogger("model-preferences");
 
@@ -254,13 +255,21 @@ export function initModelRecommendationRouter(): Router {
 }
 
 /**
- * #512 — the provider an analysis run uses, built from the same configuration
- * the analysis orchestrator is booted from, so the Model card names the model
- * the run will actually use. Building it makes no network call. A configuration
- * that cannot be loaded leaves the recommendation on tier routing (the run
- * itself will surface that error) rather than failing the form.
+ * #512 — the provider an analysis run uses, so the Model card names the model
+ * the run will actually use. The booted analysis orchestrator's own provider
+ * when there is one (it is built once at boot, so a config built per request
+ * could disagree with it after a runtime change); otherwise one built from the
+ * same configuration the orchestrator is lazily booted from, which makes no
+ * network call. A configuration that cannot be loaded leaves the
+ * recommendation on tier routing (the run itself will surface that error)
+ * rather than failing the form.
  */
 function activeRouterProvider(): RouterProvider | undefined {
+  try {
+    return getOrchestrator().provider;
+  } catch {
+    // Not booted yet — fall through to the configuration.
+  }
   try {
     return buildProvider({ config: loadAIConfig() });
   } catch (err) {

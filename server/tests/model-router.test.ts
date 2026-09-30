@@ -2,7 +2,13 @@
  * Epic #593 / Issue #603 — Model Router unit tests.
  */
 import { describe, expect, it } from "vitest";
-import { ModelRouter, HAIKU_MODEL_ID, SONNET_MODEL_ID } from "../src/lib/ai/model-router.js";
+import {
+  ModelRouter,
+  FABLE_MODEL_ID,
+  HAIKU_MODEL_ID,
+  OPUS_MODEL_ID,
+  SONNET_MODEL_ID,
+} from "../src/lib/ai/model-router.js";
 import type { TaskProfile } from "../src/lib/ai/types.js";
 
 const simpleProfile: TaskProfile = {
@@ -265,5 +271,45 @@ describe("ModelRouter — active provider (#512)", () => {
   it("treats a provider that cannot answer (no servesRouterModel) as non-Claude", () => {
     const router = new ModelRouter({ provider: { key: "offline-stub", model: "stub" } });
     expect(router.select(complexProfile).modelId).toBe("stub");
+  });
+});
+
+/**
+ * Review of PR #523 (#512) — the run path resolves a `force-*` override the same
+ * way the Model card does, so the card and the run name the same model.
+ */
+describe("ModelRouter.resolveRunModel (#512)", () => {
+  it.each([
+    ["force-haiku", HAIKU_MODEL_ID],
+    ["force-sonnet", SONNET_MODEL_ID],
+    ["force-fable", FABLE_MODEL_ID],
+    ["force-opus", OPUS_MODEL_ID],
+  ])("maps %s to its tier id on a Claude-serving provider", (override, tierId) => {
+    const router = new ModelRouter({
+      provider: { key: "bedrock-gateway", model: SONNET_MODEL_ID, servesRouterModel: () => true },
+    });
+    expect(router.resolveRunModel(override)).toBe(tierId);
+  });
+
+  it("maps a forced tier to the provider's configured model when it cannot serve it", () => {
+    const router = new ModelRouter({
+      provider: { key: "openai", model: "gpt-4.1", servesRouterModel: () => false },
+    });
+    expect(router.resolveRunModel("force-opus")).toBe("gpt-4.1");
+    expect(router.resolveRunModel("force-haiku")).toBe("gpt-4.1");
+  });
+
+  it("maps a forced tier to its tier id when no provider is attached", () => {
+    expect(new ModelRouter().resolveRunModel("force-sonnet")).toBe(SONNET_MODEL_ID);
+  });
+
+  it("returns an explicit model id, or none, unchanged", () => {
+    const router = new ModelRouter({
+      provider: { key: "openai", model: "gpt-4.1", servesRouterModel: () => false },
+    });
+    expect(router.resolveRunModel("gpt-4.1-mini")).toBe("gpt-4.1-mini");
+    expect(router.resolveRunModel(undefined)).toBeUndefined();
+    // An inherited Object property is not an override.
+    expect(router.resolveRunModel("toString")).toBe("toString");
   });
 });

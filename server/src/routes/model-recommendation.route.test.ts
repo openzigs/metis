@@ -325,6 +325,22 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
       expect(body.data.selection.modelId).toBe("deepseek-v4-pro");
     });
 
+    // Review of PR #523 — the card must read the provider the run uses: the
+    // booted orchestrator's, not a fresh one built from the (possibly changed)
+    // config on every request.
+    it("uses the booted analysis orchestrator's provider when there is one", async () => {
+      const { setOrchestratorForTests } = await import("../lib/analysis/orchestrator.js");
+      setOrchestratorForTests({ provider: deepSeek } as never);
+      try {
+        const body = await post({ agentKeys: ["document"], override: "force-sonnet" });
+        expect(body.data.selection.modelId).toBe("deepseek-v4-pro");
+        expect(buildProviderMock).not.toHaveBeenCalled();
+        expect(loadAIConfigMock).not.toHaveBeenCalled();
+      } finally {
+        setOrchestratorForTests(null);
+      }
+    });
+
     it("still answers (with tier routing) when the AI config cannot be loaded", async () => {
       loadAIConfigMock.mockImplementationOnce(() => {
         throw new Error("Invalid AI configuration");

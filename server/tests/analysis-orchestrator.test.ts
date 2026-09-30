@@ -1983,7 +1983,10 @@ describe("AnalysisOrchestrator misc branches", () => {
  * configured model (a Claude id sent to DeepSeek/OpenAI is not what runs).
  */
 describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
-  async function modelsSentBy(overrides: Partial<AIProvider>): Promise<Array<string | undefined>> {
+  async function modelsSentBy(
+    overrides: Partial<AIProvider>,
+    run: { model?: string; regenerate?: boolean } = {},
+  ): Promise<Array<string | undefined>> {
     const base = makeProvider({});
     const sent: Array<string | undefined> = [];
     const provider = {
@@ -2009,31 +2012,73 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
     const { id: analysisId } = await orch.start({
       projectId: "proj-abcdefghij",
       startedById: "user-1234567890",
+      ...(run.model ? { model: run.model } : {}),
     });
     for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
       await new Promise((r) => setTimeout(r, 5));
     }
     expect(analyses.get(analysisId)!.status).toBe("completed");
+    if (run.regenerate) {
+      // Only what the regenerate sends: the model is reloaded from metadata.
+      sent.length = 0;
+      await orch.regenerateAgent({
+        analysisId,
+        agentKey: "document",
+        actorId: "user-1234567890",
+      });
+      expect(sent.length).toBeGreaterThan(0);
+    }
     return sent;
   }
 
+  const deepSeek: Partial<AIProvider> = {
+    key: "anthropic",
+    model: "deepseek-chat",
+    servesRouterModel: () => false,
+  };
+  const gateway: Partial<AIProvider> = {
+    key: "bedrock-gateway",
+    model: "us.anthropic.claude-sonnet-5",
+    servesRouterModel: () => true,
+  };
+
+  // Review of PR #523 — the card resolves a forced tier through the router with
+  // the provider attached; the run must too, or the two disagree.
+  it.each(["force-sonnet", "force-haiku", "force-opus", "force-fable"])(
+    "a %s run on a non-Claude provider runs on the provider's configured model",
+    async (override) => {
+      const sent = await modelsSentBy(deepSeek, { model: override });
+      expect(sent.length).toBeGreaterThan(0);
+      expect(new Set(sent)).toEqual(new Set(["deepseek-chat"]));
+    },
+  );
+
+  it("a forced tier on a Claude-serving provider runs that tier's id, never the override string", async () => {
+    const { OPUS_MODEL_ID } = await import("../src/lib/ai/model-router.js");
+    const sent = await modelsSentBy(gateway, { model: "force-opus" });
+    expect(sent.length).toBeGreaterThan(0);
+    expect(new Set(sent)).toEqual(new Set([OPUS_MODEL_ID]));
+  });
+
+  it("a regenerate of a forced-tier run resolves the persisted override the same way", async () => {
+    const sent = await modelsSentBy(deepSeek, { model: "force-sonnet", regenerate: true });
+    expect(new Set(sent)).toEqual(new Set(["deepseek-chat"]));
+  });
+
+  it("an explicit model id (not a force-* override) is sent unchanged", async () => {
+    const sent = await modelsSentBy(deepSeek, { model: "deepseek-reasoner" });
+    expect(new Set(sent)).toEqual(new Set(["deepseek-reasoner"]));
+  });
+
   it("routes specialists to Claude tier ids on a Claude-serving provider", async () => {
     const { HAIKU_MODEL_ID } = await import("../src/lib/ai/model-router.js");
-    const sent = await modelsSentBy({
-      key: "bedrock-gateway",
-      model: "us.anthropic.claude-sonnet-5",
-      servesRouterModel: () => true,
-    });
+    const sent = await modelsSentBy(gateway);
     // The retrieved context is one word — a simple task — so Haiku is chosen.
     expect(sent).toContain(HAIKU_MODEL_ID);
   });
 
   it("runs specialists on the provider's configured model on a non-Claude provider", async () => {
-    const sent = await modelsSentBy({
-      key: "anthropic",
-      model: "deepseek-chat",
-      servesRouterModel: () => false,
-    });
+    const sent = await modelsSentBy(deepSeek);
     expect(sent).toContain("deepseek-chat");
     expect(sent.filter((m) => m?.startsWith("us.anthropic."))).toEqual([]);
   });

@@ -192,6 +192,24 @@ export class ModelRouter {
     return this.buildSelection(selectedModel, profile, rationale, false);
   }
 
+  /**
+   * #512 — the model a run started with `model` actually sends. A `force-*`
+   * override resolves through {@link OVERRIDE_MODEL_MAP} and, like the Model
+   * card's selection, falls back to the provider's configured model when the
+   * provider cannot serve that tier id. Any other value (an explicit model id,
+   * or none) is returned unchanged.
+   */
+  resolveRunModel(model: string | undefined): string | undefined {
+    if (model === undefined || !Object.hasOwn(OVERRIDE_MODEL_MAP, model)) return model;
+    const tierId = OVERRIDE_MODEL_MAP[model as keyof typeof OVERRIDE_MODEL_MAP];
+    return this.cannotServe(tierId) ? this.provider!.model : tierId;
+  }
+
+  /** #512 — true when a provider is attached and it cannot run `modelId` as sent. */
+  private cannotServe(modelId: string): boolean {
+    return this.provider !== undefined && this.provider.servesRouterModel?.(modelId) !== true;
+  }
+
   private buildSelection(
     modelId: string,
     profile: TaskProfile,
@@ -203,7 +221,7 @@ export class ModelRouter {
     // compatible endpoint receives the id verbatim. Report (and run) the
     // provider's configured model, with no Claude rate quoted against it.
     const provider = this.provider;
-    if (provider && provider.servesRouterModel?.(modelId) !== true) {
+    if (provider && this.cannotServe(modelId)) {
       return {
         modelId: provider.model,
         modelName: provider.model,

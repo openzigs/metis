@@ -27,7 +27,7 @@ import { transformJSONSchema } from "@anthropic-ai/sdk/lib/transform-json-schema
 import { createChildLogger } from "../../logger.js";
 import { lastUserText, traceModelChat, traceModelStream } from "../../otel/genai-spans.js";
 import { AIProviderError } from "../errors.js";
-import { isDeepSeekEndpoint } from "./anthropic-endpoint.js";
+import { isAnthropicApiEndpoint, isDeepSeekEndpoint } from "./anthropic-endpoint.js";
 
 export { isDeepSeekEndpoint };
 import { ToolTagStreamParser } from "./tool-tag-parser.js";
@@ -219,6 +219,8 @@ export class AnthropicProvider implements AIProvider {
   private readonly streamMaxTokens: number;
   /** #25 — `baseUrl` is DeepSeek's Anthropic-compatible endpoint. */
   private readonly deepSeekEndpoint: boolean;
+  /** #512 — `baseUrl` is Anthropic's own API (unset, or api.anthropic.com). */
+  private readonly anthropicApiEndpoint: boolean;
   /** #198 — warn once per instance when a forced tool choice is downgraded. */
   private forcedChoiceWarned = false;
 
@@ -229,6 +231,7 @@ export class AnthropicProvider implements AIProvider {
     this.defaultMaxTokens = opts.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
     this.streamMaxTokens = opts.streamMaxTokens ?? DEFAULT_STREAM_MAX_TOKENS;
     this.deepSeekEndpoint = isDeepSeekEndpoint(opts.baseUrl);
+    this.anthropicApiEndpoint = isAnthropicApiEndpoint(opts.baseUrl);
     this.capabilities = {
       responseFormat: !this.deepSeekEndpoint,
       nativeToolCalls: true,
@@ -250,11 +253,12 @@ export class AnthropicProvider implements AIProvider {
 
   /**
    * #512 — Anthropic's API serves the router's tier ids (normalized to their
-   * bare form at the provider boundary); DeepSeek's endpoint maps `claude-*`
-   * names onto its own models, so a tier id there is not the model that runs.
+   * bare form at the provider boundary). Any other Anthropic-compatible host is
+   * treated as unable: DeepSeek's endpoint maps `claude-*` names onto its own
+   * models, and an unknown vendor or proxy is not known to run them as sent.
    */
   servesRouterModel(_modelId: string): boolean {
-    return !this.deepSeekEndpoint;
+    return this.anthropicApiEndpoint;
   }
 
   /**

@@ -28,6 +28,22 @@ describe("servesRouterModel (#512)", () => {
     expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
   });
 
+  // Review of PR #523 — an unknown adapter counts as "cannot serve"; so does an
+  // unknown Anthropic-compatible host (a proxy or another vendor).
+  it("Anthropic's API named explicitly serves Claude tier ids", () => {
+    const p = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com" });
+    expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(true);
+  });
+
+  it.each([
+    "https://llm-proxy.example.com/anthropic",
+    "https://api.anthropic.com.evil.test",
+    "not a url",
+  ])("an Anthropic-compatible endpoint that is not Anthropic's API (%s) does not", (baseUrl) => {
+    const p = new AnthropicProvider({ apiKey: "k", baseUrl });
+    expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
+  });
+
   it("the Bedrock gateway serves Claude tier ids", () => {
     expect(direct("bedrock-gateway").servesRouterModel(SONNET_MODEL_ID)).toBe(true);
   });
