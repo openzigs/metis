@@ -179,6 +179,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
     state.db = db;
     // Exact scalar columns used by the real Prisma models; no app DB or migration state touched.
     const tables = [
+      `CREATE TABLE workspaces (id TEXT PRIMARY KEY, deletedAt DATETIME)`,
       `CREATE TABLE projects (id TEXT PRIMARY KEY, workspaceId TEXT, deletedAt DATETIME,
       autoApproveTrustedSources BOOLEAN DEFAULT true)`,
       `CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, displayName TEXT, email TEXT,
@@ -214,6 +215,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
       ord INTEGER, text TEXT, embedding TEXT, metadata TEXT DEFAULT '{}', createdAt DATETIME DEFAULT CURRENT_TIMESTAMP)`,
     ];
     for (const sql of tables) await db.$executeRawUnsafe(sql);
+    await db.$executeRaw`INSERT INTO workspaces (id) VALUES ('workspace')`;
   });
   afterAll(async () => {
     await db?.$disconnect();

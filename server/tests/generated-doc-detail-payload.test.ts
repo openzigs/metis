@@ -148,6 +148,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       });
       state.db = recordingVersionReads(db, versionReads);
       for (const sql of [
+        `CREATE TABLE workspaces (id TEXT PRIMARY KEY, deletedAt DATETIME)`,
         `CREATE TABLE projects (id TEXT PRIMARY KEY, workspaceId TEXT NOT NULL)`,
         `CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL, status TEXT DEFAULT 'active', deletedAt DATETIME, authRolesInitializedAt DATETIME DEFAULT CURRENT_TIMESTAMP, authRoleAuthority TEXT DEFAULT 'explicit')`,
         `CREATE TABLE roles (id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT '', isSystem BOOLEAN DEFAULT true, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP)`,
@@ -159,6 +160,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         `CREATE TABLE documents (id TEXT PRIMARY KEY, projectId TEXT, filename TEXT, mimeType TEXT, sizeBytes INTEGER, storagePath TEXT, checksum TEXT, status TEXT DEFAULT 'pending', indexState TEXT DEFAULT 'pending', autoApproveTrusted BOOLEAN DEFAULT false, aclSubjects TEXT DEFAULT '[]', isSpec BOOLEAN DEFAULT false, source TEXT NOT NULL DEFAULT 'upload', title TEXT, errorMessage TEXT, chunkCount INTEGER DEFAULT 0, uploadedById TEXT, uploadedAt DATETIME DEFAULT CURRENT_TIMESTAMP, processedAt DATETIME, deletedAt DATETIME)`,
       ])
         await db.$executeRawUnsafe(sql);
+      await db.$executeRaw`INSERT INTO workspaces (id) VALUES ('ws'), ('other')`;
       await db.$executeRaw`INSERT INTO projects (id, workspaceId) VALUES ('project', 'ws'), ('foreign', 'other')`;
       await db.$executeRaw`INSERT INTO roles (id, key, name) VALUES ('reader', 'reader', 'Reader'), ('coordinator', 'coordinator', 'Coordinator')`;
       for (const [userId, role, workspaceId] of [

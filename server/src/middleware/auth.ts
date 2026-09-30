@@ -9,6 +9,7 @@ import jwt from "jsonwebtoken";
 import { getPermissionsForRole, type RoleKey } from "@metis/shared";
 import { resolveEffectiveRole } from "../lib/auth/durable-roles.js";
 import { verifyAccessToken } from "../lib/auth/jwt.js";
+import { readLiveWorkspaceIds } from "../lib/auth/live-workspace-ids.js";
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "./error-handler.js";
 
@@ -61,15 +62,12 @@ export const refreshAuthenticatedUser: RequestHandler = async (req, _res, next) 
     if (!req.user?.userId) {
       throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
     }
-    const [user, memberships, role] = await Promise.all([
+    const [user, workspaces, role] = await Promise.all([
       prisma.user.findFirst({
         where: { id: req.user.userId, status: "active", deletedAt: null },
         select: { id: true, username: true, authRolesInitializedAt: true },
       }),
-      prisma.workspaceMember.findMany({
-        where: { userId: req.user.userId },
-        select: { workspaceId: true },
-      }),
+      readLiveWorkspaceIds(req.user.userId),
       resolveEffectiveRole(req.user.userId),
     ]);
     if (!user) {
@@ -80,7 +78,7 @@ export const refreshAuthenticatedUser: RequestHandler = async (req, _res, next) 
       username: user.username,
       role: isRecognizedRole(role.role) ? role.role : "reader",
       permissions: getPermissionsForRole(isRecognizedRole(role.role) ? role.role : "reader"),
-      workspaces: memberships.map((membership) => membership.workspaceId),
+      workspaces,
     };
     next();
   } catch (err) {

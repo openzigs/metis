@@ -120,7 +120,10 @@ describe("accessibleProjectWhere / listAccessibleProjectIds", () => {
     });
     expect(where).toEqual({
       deletedAt: null,
-      OR: [{ workspaceId: null }, { workspaceId: { in: ["ws-a"] } }],
+      OR: [
+        { workspaceId: null },
+        { workspaceId: { in: ["ws-a"] }, workspace: { deletedAt: null } },
+      ],
     });
   });
 

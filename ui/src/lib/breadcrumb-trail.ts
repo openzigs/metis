@@ -7,6 +7,7 @@
  * links to its landing page.
  */
 import { NAV_DESTINATIONS, isActiveRoute } from "./navigation";
+import { SETTINGS_NAV } from "./settings-nav";
 import {
   getProjectTabModel,
   isProjectTabActive,
@@ -98,5 +99,12 @@ export function pageCrumbs(pathname: string): Crumb[] {
     (a, b) => b.href.length - a.href.length,
   )[0];
   if (!nav) return [];
+  // #545 — a Settings section is named by the settings nav ("MCP servers"),
+  // not by its URL segment ("Mcp").
+  const section =
+    nav.href === "/settings"
+      ? SETTINGS_NAV.find((item) => item.href === path && item.href !== "/settings")
+      : undefined;
+  if (section) return [{ label: nav.label, href: nav.href }, { label: section.label }];
   return withLeaf(path, nav.href, [{ label: nav.label, href: nav.href }]);
 }
