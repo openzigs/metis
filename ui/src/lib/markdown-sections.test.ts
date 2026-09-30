@@ -629,6 +629,14 @@ describe("reference links and footnotes in the body across sections (#228)", () 
         "[x]: https://example.com/x",
       ].join("\n"),
     ],
+    [
+      // PR #556 panel: only a differently-cased spelling, so a label check that
+      // skipped case-folding would pick a colliding label.
+      "a document that spells the closing label in another case only",
+      ["## A", "See [x] and [Metis-Definitions-End].", "## B", "[x]: https://example.com/x"].join(
+        "\n",
+      ),
+    ],
   ];
 
   it.each(DOCUMENTS)("%s renders exactly as a whole-document render", (_, markdown) => {
@@ -658,6 +666,15 @@ describe("reference links and footnotes in the body across sections (#228)", () 
     expect(withDefinitions("x[^n]", definitions)).toBe(
       "[^n]: Note [a].\n\n[a]: https://example.com/a\n\n[metis-definitions-end]: #\n\nx[^n]",
     );
+  });
+
+  it("picks a closing label longer than any dash run the text already spells", () => {
+    // PR #556 panel: the label is found in one scan, not by growing it a dash at
+    // a time and rescanning (quadratic in a long hostile dash run).
+    const { definitions } = splitMarkdownSections("## A\n[x]: https://example.com/x");
+    const run = "-".repeat(5000);
+    const out = withDefinitions(`[x] metis-definitions-end${run}`, definitions);
+    expect(out).toContain(`[metis-definitions-end${run}-]: #`);
   });
 
   it("a footnote reference whose href is not percent-decodable keeps its own number", () => {

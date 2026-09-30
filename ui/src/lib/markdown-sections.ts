@@ -276,9 +276,18 @@ export function withDefinitions(markdown: string, definitions: Definitions): str
  */
 function unreferencedDefinition(text: string): string {
   const folded = normalizeLabel(text);
-  let label = "metis-definitions-end";
-  while (folded.includes(normalizeLabel(label))) label += "-";
-  return `[${label}]: #`;
+  const base = "metis-definitions-end";
+  const needle = normalizeLabel(base);
+  // One linear scan for the longest run of dashes after the base, then one more
+  // dash than that: growing the label a dash at a time and rescanning each time
+  // was quadratic in a hostile `metis-definitions-end----…` (PR #556 panel).
+  let longest = -1;
+  for (let at = folded.indexOf(needle); at !== -1; at = folded.indexOf(needle, at + 1)) {
+    let dashes = 0;
+    while (folded[at + needle.length + dashes] === "-") dashes += 1;
+    if (dashes > longest) longest = dashes;
+  }
+  return `[${base}${"-".repeat(longest + 1)}]: #`;
 }
 
 /** A markdown AST node, as far as slugging needs one. */
