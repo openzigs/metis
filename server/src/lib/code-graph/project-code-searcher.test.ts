@@ -303,6 +303,11 @@ describe("#372 — prismaSymbolIndex caches the full symbol set per project", ()
     await older;
 
     const third = prismaSymbolIndex.getSymbols("p1");
+    // Let the third search compute its fingerprint and reach the in-flight
+    // check BEFORE the newer load finishes; releasing earlier lets it hit the
+    // fresh cache instead and never exercise the in-flight entry.
+    await vi.waitFor(() => expect(aggregate).toHaveBeenCalledTimes(3));
+    await new Promise((r) => setTimeout(r, 0));
     releases[1]([sym("new")]);
     expect((await third).map((s) => s.symbolId)).toEqual(["new"]);
     expect((await newer).map((s) => s.symbolId)).toEqual(["new"]);
