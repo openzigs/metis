@@ -17,15 +17,13 @@
  */
 import { type MCPJsonImport, mcpJsonImportSchema } from "@metis/shared";
 import { audit } from "../audit/audit-service.js";
-import { createChildLogger } from "../logger.js";
 import { getVaultService } from "../vault/vault-service.js";
 import { freshSecretLabel } from "../vault/secret-rotation.js";
+import { withdrawCreatedSecrets } from "../vault/secret-retirement.js";
 import type { SecretBindings } from "../vault/bound-secret.js";
 import { assertBindingWriteWindowOpen } from "../vault/binding-write-mark.js";
 import type { MCPRegistryService } from "./mcp-service.js";
 import type { McpImportBindingCheck } from "./secret-binding.js";
-
-const log = createChildLogger("mcp-importer");
 
 /**
  * Env keys that conventionally carry secrets. Extended for SEC-9 to include
@@ -194,6 +192,9 @@ export async function executeImport(
     // success, and the server kept resolving the OLD secret. A vault failure
     // now fails the entry, and the secrets it already wrote are withdrawn.
     const written: string[] = [];
+    // #592 — set the moment the entry's row is written (`onLanded`): from then
+    // on the row names the secrets in `written`, so a later throw keeps them.
+    let landed = false;
     // #577 review — an entry the check could not bind (unresolved or
     // ambiguous reference) fails alone, before it vaults anything.
     const failure = opts.secretBindings?.failures.get(entry.label);
@@ -277,17 +278,24 @@ export async function executeImport(
           enabled: true,
         },
         actor,
-        { secretBindings: bound },
+        {
+          secretBindings: bound,
+          onLanded: () => {
+            landed = true;
+          },
+        },
       );
       result.created.push({ id: created.id, label: created.label });
     } catch (err) {
-      for (const id of written) {
-        await vault.delete(id).catch((cleanupErr: unknown) =>
-          log.warn("Vault cleanup after failed MCP import entry failed", {
-            id,
-            error: (cleanupErr as Error).message,
-          }),
-        );
+      // #592 — withdraw (audited as `vault.delete`) only when the row never
+      // landed; a landed row names these secrets, so they stay.
+      if (!landed) {
+        await withdrawCreatedSecrets(vault, written, {
+          actorId: actor.id,
+          resource: { type: "mcp_server" },
+          projectId: opts.scope === "project" ? (opts.projectId ?? null) : null,
+          cause: err,
+        });
       }
       const code = (err as { code?: unknown }).code;
       result.errors.push({
