@@ -13,7 +13,8 @@
  *   pnpm --filter @metis/server test:integration exporters-real-chromium
  *
  * The exporter degrades to HTML / an image-less DOCX when Chrome cannot launch,
- * so each binary assertion is conditional on the real format having come back.
+ * and the assertions below are unconditional, so a Chromium that cannot launch
+ * fails this suite. CI runs it in the `server` job (#456).
  */
 import { describe, it, expect } from "vitest";
 import { exportDocument } from "../src/lib/docs-gen/exporters.js";
