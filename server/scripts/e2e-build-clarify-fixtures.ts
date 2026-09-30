@@ -19,8 +19,7 @@
  */
 /* eslint-disable no-console -- CLI script: progress to stdout, errors to stderr */
 import { HAIKU_MODEL_ID, tierModelFor } from "../src/lib/ai/model-router.js";
-import { maybeWrapProviderForFixtures } from "../src/lib/ai/fixtures/install.js";
-import { OfflineStubProvider } from "../src/lib/ai/providers/offline-stub-provider.js";
+import { buildServerProvider } from "../src/lib/ai/server-provider.js";
 import {
   buildQuestionMessages,
   buildResolutionMessages,
@@ -49,6 +48,7 @@ import {
   SPECIALIST_RESPONSE_JSON,
   SYNTHESIS_RESPONSE_JSON,
 } from "../../e2e/fixtures/clarify-loop.js";
+import { e2eServerAIEnv } from "../../e2e/fixtures/ai-mode.js";
 
 const usage = (tokens: number) => ({
   promptTokens: tokens,
@@ -81,13 +81,12 @@ export async function main(): Promise<void> {
   const store = new FixtureStore(dir);
 
   // #532 — the dialog sends its Haiku tier id only to a provider that serves
-  // it, otherwise the provider's configured model. Ask the provider the e2e
-  // server runs (the offline stub, replay-wrapped) rather than restate either.
+  // it, otherwise the provider's configured model. #558 — ask the provider the
+  // e2e server runs, built by the server's own construction from the e2e
+  // server's environment, so `AI_PROVIDER` moves the key here exactly as it
+  // moves the server's request. Naming a provider here is how they drifted.
   const dialogModel = tierModelFor(
-    maybeWrapProviderForFixtures(new OfflineStubProvider(), {
-      env: { AI_REPLAY: "1" },
-      fixtureDir: dir,
-    }),
+    buildServerProvider({ ...process.env, ...e2eServerAIEnv(process.env, dir) }),
     HAIKU_MODEL_ID,
   );
 

@@ -25,6 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, devices } from "@playwright/test";
 import { apiServerCommand, resolveStackPaths, uiServerCommand } from "../scripts/lib/e2e-stack.mjs";
+import { e2eServerAIEnv } from "./fixtures/ai-mode.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,8 +57,10 @@ const LLM_FIXTURE_DIR = process.env.AI_FIXTURE_DIR ?? path.join(__dirname, "fixt
 // work under it. Specs read `E2E_AI_OFFLINE` to skip — with a reason — rather
 // than assert something the harness cannot produce. Point `AI_PROVIDER` at a
 // real provider and those specs run.
-const AI_PROVIDER = process.env.AI_PROVIDER ?? "offline-stub";
-process.env.E2E_AI_OFFLINE = AI_PROVIDER === "offline-stub" ? "1" : "0";
+// #558 — derived in one place (`e2eServerAIEnv`) so the clarify fixture
+// builder builds the same provider this server runs with.
+const AI_ENV = e2eServerAIEnv(process.env, LLM_FIXTURE_DIR);
+process.env.E2E_AI_OFFLINE = AI_ENV.AI_OFFLINE;
 
 // Expose the resolved DB path so test specs can reach into the SQLite file
 // for fixtures that bypass the API surface (e.g. seeding requirements when
@@ -125,14 +128,12 @@ export default defineConfig({
             // Issue #144 AC: deterministic — no live AI provider, GitHub, or
             // external network. The offline-stub returns hash-derived
             // responses without I/O.
-            AI_PROVIDER,
-            AI_OFFLINE: AI_PROVIDER === "offline-stub" ? "1" : "0",
-            // Epic #209 (#235) — replay recorded LLM fixtures (#234) for the
+            // AI_PROVIDER / AI_OFFLINE, plus (Epic #209, #235) AI_REPLAY +
+            // AI_FIXTURE_DIR: replay recorded LLM fixtures (#234) for the
             // clarification → refinement → spec loop. Replay wins over the
             // offline stub; fixture misses still fall back to the stub, so the
             // rest of the deterministic suite is unaffected. No LLM keys needed.
-            AI_REPLAY: process.env.AI_REPLAY ?? "1",
-            AI_FIXTURE_DIR: LLM_FIXTURE_DIR,
+            ...AI_ENV,
             // Epic #129 (#148) — a script book makes the offline stub return
             // real native tool calls, selected by a marker in the message, so
             // `agents-skills.spec.ts` drives a whole tool loop. Unset (the

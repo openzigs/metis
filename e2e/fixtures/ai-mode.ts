@@ -21,3 +21,37 @@ export function isOfflineAiStub(): boolean {
 export const OFFLINE_AI_SKIP_REASON =
   "requires a live AI provider: the offline-stub returns hash-derived prose, " +
   "so no structured suggestions/agent JSON can be produced (set AI_PROVIDER to run)";
+
+/** The e2e stack's provider when `AI_PROVIDER` is unset: deterministic, no I/O. */
+export const DEFAULT_E2E_AI_PROVIDER = "offline-stub";
+
+/** The AI settings the e2e API server is started with. */
+export interface E2EServerAIEnv {
+  AI_PROVIDER: string;
+  AI_OFFLINE: "0" | "1";
+  AI_REPLAY: string;
+  AI_FIXTURE_DIR: string;
+}
+
+/**
+ * #558 — the AI part of the e2e API server's environment, derived from the
+ * caller's `env`. `playwright.config.ts` starts the server with it, and the
+ * clarify fixture builder (`server/scripts/e2e-build-clarify-fixtures.ts`)
+ * builds its provider from it, so both key the replay fixtures on the same
+ * provider's model. Restating any of it in either place is how they drift.
+ *
+ *   - `AI_PROVIDER` — the caller's, else the offline stub.
+ *   - `AI_REPLAY`   — replay committed fixtures unless the caller turned it off.
+ */
+export function e2eServerAIEnv(
+  env: Record<string, string | undefined>,
+  fixtureDir: string,
+): E2EServerAIEnv {
+  const provider = env.AI_PROVIDER ?? DEFAULT_E2E_AI_PROVIDER;
+  return {
+    AI_PROVIDER: provider,
+    AI_OFFLINE: provider === DEFAULT_E2E_AI_PROVIDER ? "1" : "0",
+    AI_REPLAY: env.AI_REPLAY ?? "1",
+    AI_FIXTURE_DIR: fixtureDir,
+  };
+}

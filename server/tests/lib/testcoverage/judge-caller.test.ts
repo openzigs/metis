@@ -4,6 +4,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createProviderJudgeCaller } from "../../../src/lib/testcoverage/judge-caller.js";
 import type { AIProvider } from "../../../src/lib/ai/types.js";
+import { HAIKU_MODEL_ID } from "../../../src/lib/ai/model-router.js";
 
 function makeProvider(overrides: Partial<AIProvider> = {}): AIProvider {
   return {
@@ -86,5 +87,35 @@ describe("createProviderJudgeCaller", () => {
     });
     expect(res.provider).toBe("anthropic");
     expect(res.model).toBe("deepseek-flash");
+  });
+
+  // #558 — the judge and suggestion phases want the Haiku tier. The caller
+  // resolves it against the provider it wraps, the same way `tierModelFor` does
+  // for every other call site (#532), so a non-Claude provider is never sent a
+  // Claude tier id.
+  describe("modelFor (#558)", () => {
+    it("keeps the tier id on a provider that serves it", () => {
+      const provider = makeProvider({
+        key: "anthropic",
+        model: "claude-sonnet-4-5",
+        servesRouterModel: (id: string) => id === HAIKU_MODEL_ID,
+      });
+      expect(createProviderJudgeCaller(provider).modelFor?.(HAIKU_MODEL_ID)).toBe(HAIKU_MODEL_ID);
+    });
+
+    it("sends a non-Claude provider its configured model", () => {
+      const provider = makeProvider({
+        key: "openai",
+        model: "gpt-4o-mini",
+        servesRouterModel: () => false,
+      });
+      expect(createProviderJudgeCaller(provider).modelFor?.(HAIKU_MODEL_ID)).toBe("gpt-4o-mini");
+    });
+
+    it("treats a provider that cannot answer as unable", () => {
+      // makeProvider defines no servesRouterModel.
+      const provider = makeProvider({ model: "stub-model" });
+      expect(createProviderJudgeCaller(provider).modelFor?.(HAIKU_MODEL_ID)).toBe("stub-model");
+    });
   });
 });

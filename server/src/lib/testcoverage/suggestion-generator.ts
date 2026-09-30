@@ -265,6 +265,9 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
   const buckets = clusterRequirements(input.requirements, k);
   const cache = getSemanticCache();
   const embedder = getEmbedder();
+  // #558 — the model the active provider can run for the Haiku tier, resolved
+  // once: it is both what is sent and what the cache is keyed on.
+  const modelId = input.caller.modelFor?.(HAIKU_MODEL_ID) ?? HAIKU_MODEL_ID;
 
   let modelCalls = 0;
   let cacheHits = 0;
@@ -314,13 +317,13 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
       embeddingTokens: estimateEmbeddingTokens([userPrompt]),
     });
     let raw: string | null = null;
-    const hit = await cache.lookup(cacheKey, HAIKU_MODEL_ID, SYSTEM_PROMPT_HASH, input.projectId);
+    const hit = await cache.lookup(cacheKey, modelId, SYSTEM_PROMPT_HASH, input.projectId);
     if (hit) {
       raw = hit.response;
       cacheHits += 1;
     } else {
       const out = await input.caller.call({
-        modelId: HAIKU_MODEL_ID,
+        modelId,
         systemPrompt: SUGGESTION_SYSTEM_PROMPT,
         userPrompt,
       });
@@ -336,7 +339,7 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
         promptTokens: out.promptTokens,
         completionTokens: out.completionTokens,
       });
-      await cache.store(cacheKey, HAIKU_MODEL_ID, SYSTEM_PROMPT_HASH, raw, input.projectId);
+      await cache.store(cacheKey, modelId, SYSTEM_PROMPT_HASH, raw, input.projectId);
     }
 
     let items: SuggestionItem[];

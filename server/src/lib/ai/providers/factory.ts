@@ -38,6 +38,11 @@ export interface BuildProviderOptions {
    * endpoint with the per-session key.
    */
   apiKeyOverride?: string;
+  /**
+   * #558 — the environment the record/replay harness reads `AI_REPLAY` /
+   * `AI_RECORD` from. Defaults to `process.env`.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -126,7 +131,10 @@ function buildBaseProvider(opts: BuildProviderOptions): AIProvider {
 }
 
 export function buildProvider(opts: BuildProviderOptions): AIProvider {
-  return maybeWrapProviderForFixtures(buildBaseProvider(opts));
+  return maybeWrapProviderForFixtures(
+    buildBaseProvider(opts),
+    opts.env === undefined ? {} : { env: opts.env },
+  );
 }
 
 let singleton: AIProvider | null = null;
