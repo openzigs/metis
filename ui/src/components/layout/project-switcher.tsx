@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { projectsApi, type Project } from "@/lib/projects-api";
+import { queryKeys } from "@/lib/query-keys";
 
 const STORAGE_KEY = "metis.activeProjectId";
 
@@ -72,14 +73,29 @@ export function ProjectSwitcher() {
   const activeId =
     pathId ??
     (storedId && items.some((p) => p.id === storedId) ? storedId : (items[0]?.id ?? null));
-  const active = items.find((p) => p.id === activeId) ?? null;
+  // #370 — the list is cached for 30s and capped at 50, so the project in the
+  // URL (e.g. one just created) may be missing from it. Load that one project
+  // rather than falling back to "No project" or a previously active name.
+  const listed = items.find((p) => p.id === activeId) ?? null;
+  // Not gated on the list succeeding (a failed list must not hide a project the
+  // page itself loaded), and no `retry: false`: this cache entry is shared with
+  // the Overview page, which relies on the default retries (PR #409 review).
+  const pathProject = useQuery({
+    queryKey: queryKeys.projects.detail(pathId ?? ""),
+    queryFn: () => projectsApi.get(pathId as string),
+    enabled: Boolean(pathId) && !projects.isLoading && !listed,
+  });
+  const active = listed ?? pathProject.data ?? null;
 
   // Persist whenever the resolved active project changes (URL or selection).
   useEffect(() => {
     if (activeId) writeStoredActiveId(activeId);
   }, [activeId]);
 
-  const label = active?.name ?? (projects.isLoading ? "Loading…" : "No project");
+  // While the URL's project is still loading, say so — not "No project", which
+  // is the flash #370 set out to remove (PR #409 review).
+  const label =
+    active?.name ?? (projects.isLoading || pathProject.isFetching ? "Loading…" : "No project");
 
   return (
     <DropdownMenu>
