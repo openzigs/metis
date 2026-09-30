@@ -45,11 +45,15 @@ export async function bindSecretRefs(
   refs: string[],
   kept: SecretBindings | null = null,
 ): Promise<SecretBindings> {
-  const out: SecretBindings = {};
+  // Vault labels may be `constructor`, `toString` or `__proto__`: a plain `{}`
+  // would read those from Object.prototype (a "kept" binding that is a
+  // function) or drop an `__proto__` key on write. A null-prototype object and
+  // an own-property check make every label an ordinary key (PR #499 review).
+  const out: SecretBindings = Object.create(null) as SecretBindings;
   const unbound: string[] = [];
   for (const ref of new Set(refs)) {
-    const keptId = kept?.[ref];
-    if (keptId) out[ref] = keptId;
+    const keptId = kept && Object.hasOwn(kept, ref) ? kept[ref] : undefined;
+    if (typeof keptId === "string" && keptId.length > 0) out[ref] = keptId;
     else unbound.push(ref);
   }
   if (unbound.length === 0) return out;

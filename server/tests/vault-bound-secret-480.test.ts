@@ -115,6 +115,24 @@ describe("bindSecretRefs", () => {
     expect(state.findManyCalls).toBe(1);
   });
 
+  it("treats Object.prototype names as ordinary labels (PR #499 review)", async () => {
+    // Legal vault labels: a plain-object lookup would read `constructor` from
+    // Object.prototype as a "kept" binding and drop an `__proto__` key.
+    secret("s-c", "global:constructor", "c");
+    secret("s-p", "global:__proto__", "p");
+    secret("s-t", "global:toString", "t");
+    const created = await bindSecretRefs(["constructor", "__proto__", "toString"]);
+    expect(JSON.parse(JSON.stringify(created))).toEqual({
+      constructor: "s-c",
+      // Computed key: a literal `__proto__:` would set the prototype, not a key.
+      ["__proto__"]: "s-p",
+      toString: "s-t",
+    });
+    // An update with an unrelated kept map still resolves them, not Object's members.
+    const updated = await bindSecretRefs(["constructor", "toString"], { other: "s-o" });
+    expect(JSON.parse(JSON.stringify(updated))).toEqual({ constructor: "s-c", toString: "s-t" });
+  });
+
   it("reads nothing for no references", async () => {
     expect(await bindSecretRefs([])).toEqual({});
     expect(state.findManyCalls).toBe(0);
