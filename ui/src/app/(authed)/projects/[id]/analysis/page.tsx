@@ -230,6 +230,10 @@ export default function AnalysisPage(): React.ReactElement {
     setSelectedAnalysisId(id);
     setFindingsPage(0);
     setRequirementsPage(0);
+    // PR #416 review — filters are per run: a filter kept across a switch
+    // showed "No findings match" under a select that read "All".
+    setFindingFilters(NO_FINDING_FILTERS);
+    setCoverageFilter(null);
     updateUrl({ analysisId: id });
   };
   // Issue #30 — the run form is collapsed once there are runs to read, and
@@ -287,6 +291,8 @@ export default function AnalysisPage(): React.ReactElement {
     successMessage: "Analysis started",
     invalidateKeys: [queryKeys.analyses.forProject(projectId), ["analyses", "cost-cap"]],
     onSuccess: (res) => {
+      // Starting a run and reading one stay separate: close the form (PR #416 review).
+      setStartFormOpen(false);
       selectRun(res.id);
     },
   });
@@ -1221,6 +1227,11 @@ export default function AnalysisPage(): React.ReactElement {
 
                 <TabsContent value="approvals" className="space-y-4">
                   {/* Epic #202 (#217) — human-in-the-loop approval checkpoints. */}
+                  {approvals.data && (approvals.data.items?.length ?? 0) === 0 ? (
+                    <p className="text-sm text-muted-foreground" data-testid="approvals-none">
+                      This run has no approval checkpoints.
+                    </p>
+                  ) : null}
                   <ApprovalsPanel
                     projectId={projectId}
                     analysisId={detail.data.id}

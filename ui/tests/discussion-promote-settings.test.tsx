@@ -181,6 +181,8 @@ describe("PromoteToRequirementDialog", () => {
     expect(onPromoted).toHaveBeenCalledWith({ requirementId: "req-9", analysisId: "a1" });
     const link = await screen.findByTestId("promote-requirement-link");
     expect(link).toHaveAttribute("href", expect.stringContaining("requirementId=req-9"));
+    // PR #416 review — the Analysis page opens on Summary, which shows no requirements.
+    expect(link).toHaveAttribute("href", expect.stringContaining("tab=requirements"));
     expect(toastSuccess).toHaveBeenCalled();
   });
 

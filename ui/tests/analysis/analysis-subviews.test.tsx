@@ -259,6 +259,13 @@ const apiMock = analysisApi as unknown as {
   listApprovals: ReturnType<typeof vi.fn>;
 };
 
+/** Mirrors the vi.mock factory's listForProject default (one completed run). */
+const DEFAULT_RUNS = {
+  items: [
+    { id: "an-1", status: "completed", startedAt: new Date().toISOString(), totalTokens: 10 },
+  ],
+};
+
 const SEVERITIES = ["critical", "high", "medium", "low", "info"];
 const CATEGORIES = ["security", "architecture", "performance"];
 
@@ -360,6 +367,13 @@ describe("only the active sub-view mounts", () => {
     nav.search = new URLSearchParams("tab=agents");
     renderPage();
     expect(await screen.findByRole("button", { name: "Regenerate" })).toBeInTheDocument();
+  });
+
+  // PR #416 review — ApprovalsPanel renders nothing when a run has none.
+  it("says so when the run has no approval checkpoints", async () => {
+    nav.search = new URLSearchParams("tab=approvals");
+    renderPage();
+    expect(await screen.findByTestId("approvals-none")).toBeInTheDocument();
   });
 
   it("says so when the run asked no clarifying questions", async () => {
@@ -468,6 +482,26 @@ describe("findings: filters and paging with 100+ findings", () => {
       "Showing 21–40 of 105 findings",
     );
     expect(findingTitles()).toHaveLength(20);
+  });
+
+  // PR #416 review — filters belong to a run; switching runs clears them.
+  it("clears the findings filters when another run is picked", async () => {
+    apiMock.listForProject.mockResolvedValue({
+      items: [
+        { id: "an-new", status: "completed", startedAt: new Date().toISOString(), totalTokens: 1 },
+        { id: "an-old", status: "completed", startedAt: new Date().toISOString(), totalTokens: 1 },
+      ],
+    });
+    nav.search = new URLSearchParams("tab=findings");
+    renderPage();
+    await screen.findByTestId("findings-section");
+    await userEvent.selectOptions(screen.getByTestId("finding-filter-agent"), "document");
+    expect(screen.getByTestId("finding-filter-agent")).toHaveValue("document");
+    await userEvent.click(await screen.findByRole("button", { name: /an-old/ }));
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith("an-old"));
+    await waitFor(() => expect(screen.getByTestId("finding-filter-agent")).toHaveValue(""));
+    // A persistent mock outlives clearAllMocks: restore the module default.
+    apiMock.listForProject.mockResolvedValue(DEFAULT_RUNS);
   });
 
   it("filters by severity, category and agent, and returns to page 1", async () => {
