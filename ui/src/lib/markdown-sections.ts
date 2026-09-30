@@ -110,7 +110,7 @@ const BRACKETED = /\[([^[\]]+)\]/g;
 const INDENTED = /^(?: {4}|\t)/;
 /** A line that starts a block, so it cannot continue a footnote's paragraph. */
 const BLOCK_START =
-  /^ {0,3}(?:>|[-*+](?:[ \t]|\r?$)|\d{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}\r?$|<)/;
+  /^ {0,3}(?:>|[-*+](?:[ \t]|\r?$)|\d{1,9}[.)](?:[ \t]|\r?$)|(?:[-*_][ \t]*){3,}\r?$|<)/;
 
 /**
  * A blank line as CommonMark reads one: nothing but spaces and tabs, before a

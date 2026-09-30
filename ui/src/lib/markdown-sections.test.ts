@@ -145,14 +145,15 @@ describe("splitMarkdownSections", () => {
     expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
   });
 
-  it("opens a fence on a CRLF-terminated fence line, with or without an info string", () => {
-    for (const opener of ["```\r", "```js\r", "~~~\r"]) {
+  it.each(["```\r", "```js\r", "~~~\r"])(
+    "opens a fence on the CRLF-terminated fence line %j",
+    (opener) => {
       const close = opener[0].repeat(3);
       const markdown = ["## A", opener, "## Inside", close, "## B"].join("\n");
       const { sections } = splitMarkdownSections(markdown);
       expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
-    }
-  });
+    },
+  );
 
   it("splits at a CRLF-terminated heading and puts it in the table of contents", () => {
     const { sections, toc } = splitMarkdownSections("## A\r\nText.\r\n## B #\r\nMore.");
@@ -712,6 +713,10 @@ describe("reference links and footnotes in the body across sections (#228)", () 
     [
       "a CRLF-terminated `-` line under a footnote's paragraph",
       ["## A", "Cited.[^1]", "## B", "", "[^1]: One", "-\r", "After."].join("\n"),
+    ],
+    [
+      "an empty CRLF-terminated ordered item under a footnote's paragraph",
+      ["## A", "Cited.[^1]", "## B", "", "[^1]: One", "1.\r", "After."].join("\n"),
     ],
     // …and a CRLF-terminated heading counts toward the slug of the next
     // heading with the same text.
