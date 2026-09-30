@@ -13,6 +13,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -53,11 +54,11 @@ export default function SettingsApiKeysPage({
         title="Configuration"
         description={
           <>
-            Provider preferences, security evaluations, and runtime configuration. Plaintext
-            credentials live in the encrypted Vault — see{" "}
-            <a href="/vault" className="underline">
-              /vault
-            </a>
+            Provider preferences, security evaluations, and runtime configuration. Connector, MCP
+            and publishing credentials live in the encrypted{" "}
+            <Link href="/vault" className="underline">
+              Vault
+            </Link>
             .
           </>
         }
@@ -153,9 +154,18 @@ function ConfigTabBody() {
     <div className="space-y-6" data-testid="settings-config-section">
       <section>
         <h3 className="mb-2 text-sm font-semibold">Runtime secrets</h3>
+        <p className="mb-2 text-xs text-muted-foreground" data-testid="settings-secrets-vs-vault">
+          These are server configuration values the server itself reads, such as provider API keys.
+          Each is stored as a global-scope entry in the{" "}
+          <Link href="/vault" className="underline underline-offset-2">
+            Vault
+          </Link>{" "}
+          under its key name; manage it here, where Clear falls back to the env value and changes
+          are audited. Connector, MCP and publishing credentials belong in the Vault directly,
+          referenced as <code>{"${vault:…}"}</code>.
+        </p>
         <p className="mb-2 text-xs text-muted-foreground">
-          Vault-backed values. Save rotates the secret; Clear removes the override and falls back to
-          the env value.
+          Save rotates the secret; Clear removes the override and falls back to the env value.
         </p>
         <div data-testid="settings-secrets">
           {secrets.map((view) => (
