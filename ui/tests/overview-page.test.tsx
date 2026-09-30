@@ -106,7 +106,7 @@ describe("ProjectOverviewPage", () => {
   });
 
   it("regenerates, fires a success toast with the symbol count, and updates the markdown", async () => {
-    getOverviewMock.mockRejectedValue(new ApiError(404, "NOT_FOUND", "never generated"));
+    getOverviewMock.mockResolvedValue({ markdown: null, generatedAt: null });
     regenMock.mockResolvedValue(withStats("# Fresh overview", 42));
 
     render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
@@ -125,7 +125,7 @@ describe("ProjectOverviewPage", () => {
   });
 
   it("fires a generic, user-safe error toast on regenerate failure", async () => {
-    getOverviewMock.mockRejectedValue(new ApiError(404, "NOT_FOUND", "never generated"));
+    getOverviewMock.mockResolvedValue({ markdown: null, generatedAt: null });
     regenMock.mockRejectedValue(new ApiError(409, "NO_GRAPH", "project not ingested"));
 
     render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
@@ -146,7 +146,7 @@ describe("ProjectOverviewPage", () => {
   // assertive live region so SR users hear the failure without the toast (which
   // is deliberately kept generic). The page also exposes a single h1.
   it("announces the regenerate-failure card as an alert (#58)", async () => {
-    getOverviewMock.mockRejectedValue(new ApiError(404, "NOT_FOUND", "never generated"));
+    getOverviewMock.mockResolvedValue({ markdown: null, generatedAt: null });
     regenMock.mockRejectedValue(new ApiError(409, "NO_GRAPH", "project not ingested"));
 
     render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
@@ -160,4 +160,31 @@ describe("ProjectOverviewPage", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/Failed to regenerate/);
   });
+
+  // Issue #364 — a never-generated overview is a 200 with `markdown: null`, so
+  // the first visit no longer logs a console 404; only that shows the empty state.
+  it("shows the empty state for a never-generated overview (markdown: null)", async () => {
+    getOverviewMock.mockResolvedValue({ markdown: null, generatedAt: null });
+    render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByTestId("overview-empty-state")).toBeInTheDocument();
+    expect(screen.getByTestId("overview-copy")).toBeDisabled();
+  });
+
+  it("does not call a failed load 'No overview yet'", async () => {
+    getOverviewMock.mockRejectedValue(new ApiError(404, "Project not found", "PROJECT_NOT_FOUND"));
+    render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(getOverviewMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText("Loading overview…")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("overview-empty-state")).not.toBeInTheDocument();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("This project could not be found. It may have been deleted.");
+  });
+
+  it("shows an alert, not a blank overview, when the load fails with a server error", async () => {
+    getOverviewMock.mockRejectedValue(new ApiError(500, "Internal error", "INTERNAL"));
+    render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
+    const alert = await screen.findByRole("alert", {}, { timeout: 10_000 });
+    expect(alert).toHaveTextContent("The overview could not be loaded. Try refreshing the page.");
+    expect(screen.queryByTestId("overview-empty-state")).not.toBeInTheDocument();
+  }, 15_000);
 });

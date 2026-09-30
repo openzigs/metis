@@ -961,8 +961,10 @@ export function projectsRouter(): Router {
 
   // ── Project overview (Epic #298 / Issue #313) ──────────────────────────
   // GET /api/projects/:id/overview
-  // Returns the cached `project_overview.md` as text/markdown. 404 when the
-  // project has never had its overview generated.
+  // Returns the cached `project_overview.md`. #364 — a never-generated overview
+  // is a normal empty state, not an error: it answers 200 with
+  // `markdown: null`, so the Code tab's first visit no longer logs a console
+  // 404 (`OVERVIEW_NOT_GENERATED`). A missing project is still a 404.
   r.get(
     "/:id/overview",
     requireAuth,
@@ -974,13 +976,6 @@ export function projectsRouter(): Router {
         select: { id: true, overviewMarkdown: true, overviewGeneratedAt: true },
       });
       if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
-      if (!project.overviewMarkdown) {
-        throw new AppError(
-          404,
-          "OVERVIEW_NOT_GENERATED",
-          "Project overview has not been generated yet. POST /overview/regenerate first.",
-        );
-      }
       // Return as JSON envelope so the existing UI api-client unwraps it.
       res.json(
         ok({

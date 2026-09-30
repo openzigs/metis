@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MAX_DOCUMENT_BYTES } from "@metis/shared";
-import { DocumentUploader } from "@/components/projects/document-uploader";
+import { DocumentUploader, uploadOutcomeMessage } from "@/components/projects/document-uploader";
 import { makeWrapper } from "./test-utils";
 
 vi.mock("@/lib/projects-api", async () => {
@@ -134,5 +134,53 @@ describe("DocumentUploader", () => {
       target: { files: [makeFile("n.md", 5, "application/octet-stream")] },
     });
     await waitFor(() => expect(mockUpload).toHaveBeenCalled());
+  });
+});
+
+// Issue #364 — the row said "done — queued · 0 chunks" while the list below
+// already showed the document's real chunk count.
+describe("uploadOutcomeMessage (#364)", () => {
+  it("does not report a chunk count for a queued ingest", () => {
+    const msg = uploadOutcomeMessage({ status: "queued", chunkCount: 0 });
+    expect(msg).toBe("indexing in the background — the document list shows progress");
+    expect(msg).not.toMatch(/0 chunks/);
+  });
+
+  it("names the chunk count of a synchronous ingest", () => {
+    expect(uploadOutcomeMessage({ status: "ready", chunkCount: 4 })).toBe("indexed · 4 chunks");
+    expect(uploadOutcomeMessage({ status: "ready", chunkCount: 1 })).toBe("indexed · 1 chunk");
+  });
+
+  it("points a failed ingest at the list", () => {
+    expect(uploadOutcomeMessage({ status: "failed", chunkCount: 0 })).toBe(
+      "indexing failed — see the document list",
+    );
+  });
+});
+
+describe("DocumentUploader — queued ingest row (#364)", () => {
+  it("says the document is uploaded and indexing, not 'done — queued · 0 chunks'", async () => {
+    mockUpload.mockResolvedValue({
+      document: {
+        id: "doc_q1",
+        projectId: "proj_aaaa1",
+        filename: "spec.md",
+        mimeType: "text/markdown",
+        sizeBytes: 5,
+        status: "pending",
+        chunkCount: 0,
+        uploadedAt: new Date().toISOString(),
+      },
+      ingest: { status: "queued", chunkCount: 0 },
+    });
+    renderUploader();
+    fireEvent.change(screen.getByTestId("upload-file-input"), {
+      target: { files: [makeFile("spec.md", 5, "text/markdown")] },
+    });
+    const row = await screen.findByTestId("upload-status-done");
+    expect(row).toHaveTextContent(
+      "uploaded — indexing in the background — the document list shows progress",
+    );
+    expect(row).not.toHaveTextContent("0 chunks");
   });
 });

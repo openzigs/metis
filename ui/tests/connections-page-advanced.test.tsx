@@ -395,3 +395,51 @@ describe("ConnectionsPage — DB allow list fields", () => {
     expect(screen.getByLabelText(/Allowed columns/i)).toBeInTheDocument();
   });
 });
+
+// Issue #364 — a local-directory connector has no Git host: no token to set,
+// and it is never tested, so its stored `status` stays "pending" for good.
+describe("ConnectionsPage — non-Git repository connectors (#364)", () => {
+  it("shows no Token row and the ingest outcome instead of 'pending' for a local directory", async () => {
+    repoList.mockResolvedValue([
+      makeRepo({
+        provider: "local",
+        ownerOrOrg: null,
+        repoName: null,
+        hasLocalSource: true,
+        secretRef: "",
+        status: "pending",
+        sourceIngest: { effectiveStatus: "completed" },
+      }),
+    ]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Main Repo")).toBeInTheDocument());
+    expect(screen.queryByText("Token:")).not.toBeInTheDocument();
+    expect(screen.queryByText(/not set — click to add/i)).not.toBeInTheDocument();
+    expect(screen.getByText("ingested")).toBeInTheDocument();
+    expect(screen.queryByText("pending")).not.toBeInTheDocument();
+  });
+
+  it("colours a failed local ingest destructive, from the same state as its label", async () => {
+    repoList.mockResolvedValue([
+      makeRepo({
+        provider: "local",
+        ownerOrOrg: null,
+        repoName: null,
+        hasLocalSource: true,
+        secretRef: "",
+        status: "pending",
+        sourceIngest: { effectiveStatus: "failed" },
+      }),
+    ]);
+    renderPage();
+    const badge = await screen.findByText("ingest failed");
+    expect(badge.className).toContain("text-destructive");
+  });
+
+  it("keeps the Token row for a Git connector", async () => {
+    repoList.mockResolvedValue([makeRepo({ secretRef: "" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Main Repo")).toBeInTheDocument());
+    expect(screen.getByText("Token:")).toBeInTheDocument();
+  });
+});

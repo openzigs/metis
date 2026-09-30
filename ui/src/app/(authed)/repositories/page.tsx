@@ -11,7 +11,6 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { RepoConnector } from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import {
   ResponsiveTable,
@@ -22,8 +21,13 @@ import { projectsApi, type Project } from "@/lib/projects-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { ApiError } from "@/lib/api-client";
 import { PageHeader } from "@/components/ui/page-header";
+import {
+  repoLocationLabel,
+  repoStatusLabel,
+  type RepoConnectorWithIngest,
+} from "@/lib/repo-connector-display";
 
-interface AggregatedRepo extends RepoConnector {
+interface AggregatedRepo extends RepoConnectorWithIngest {
   projectName: string;
 }
 
@@ -34,9 +38,11 @@ const repositoryColumns: ResponsiveColumn<AggregatedRepo>[] = [
   {
     key: "ownerRepo",
     header: "Owner / Repo",
-    cell: (row) => `${row.ownerOrOrg}/${row.repoName}`,
+    // #364 — a local/upload connector has no owner or repo ("null/null").
+    cell: (row) => repoLocationLabel(row),
   },
-  { key: "status", header: "Status", cell: (row) => row.status },
+  // #364 — a non-Git connector is never tested, so its `status` stays "pending".
+  { key: "status", header: "Status", cell: (row) => repoStatusLabel(row) },
   {
     key: "open",
     header: "Open",

@@ -188,14 +188,18 @@ export const projectsApi = {
   },
 };
 
-/** Epic #298 / #313 — cached project overview returned by GET /overview. */
+/**
+ * Epic #298 / #313 — cached project overview returned by GET /overview.
+ * #364 — `markdown` is null when the overview has never been generated.
+ */
 export interface ProjectOverview {
-  markdown: string;
+  markdown: string | null;
   generatedAt: string | null;
 }
 
 /** Epic #298 / #313 — full payload returned by POST /overview/regenerate. */
 export interface ProjectOverviewWithStats extends ProjectOverview {
+  markdown: string;
   generatedAt: string;
   stats: {
     symbolCount: number;

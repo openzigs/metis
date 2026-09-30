@@ -105,7 +105,7 @@ describe("#1135 — approving refreshes the analysis detail", () => {
   it("does the same for a rejection, and carries the review note", async () => {
     const { invalidateSpy } = renderPanel();
 
-    fireEvent.change(await screen.findByLabelText("Review note for r1"), {
+    fireEvent.change(await screen.findByLabelText("Review note for requirement item 1"), {
       target: { value: "Out of scope for this release." },
     });
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));

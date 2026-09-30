@@ -11,6 +11,17 @@ export interface CapabilityReasonCopy {
   title: string;
   /** Concrete next step the user can take to fix it. */
   action: string;
+  /**
+   * #364 — the headline in the future tense, for the start form's "Before you
+   * start" hint, where no run has happened yet. Only reasons the hint can show
+   * and whose `title` is written in the past tense carry one.
+   */
+  preRunTitle?: string;
+}
+
+/** The headline to show before any run exists: {@link CapabilityReasonCopy.preRunTitle} if set. */
+export function preRunCapabilityTitle(copy: CapabilityReasonCopy): string {
+  return copy.preRunTitle ?? copy.title;
 }
 
 export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, CapabilityReasonCopy> = {
@@ -18,11 +29,14 @@ export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, Capability
     title: "Code was not deeply analyzed: no code graph has been built for this project.",
     action:
       "Build the code graph (connect a repository and run indexing) to enable agentic code analysis.",
+    preRunTitle: "Code will not be deeply analyzed: no code graph has been built for this project.",
   },
   "source-not-ingested": {
     title:
       "Repository source code has not been ingested, so code gap analysis was document-grounded only.",
     action: "Connect a repository so its source is indexed as knowledge alongside your documents.",
+    preRunTitle:
+      "Repository source code has not been ingested, so code gap analysis will be document-grounded only.",
   },
   "agentic-unavailable-no-requirements": {
     title:

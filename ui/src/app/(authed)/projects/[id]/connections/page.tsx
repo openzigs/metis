@@ -36,6 +36,13 @@ import { DbConnectorWizard } from "@/components/connectors/db-connector-wizard";
 import { DatabaseResourceManager } from "@/components/connectors/database-resource-manager";
 import { RebuildCacheButton } from "@/components/projects/rebuild-cache-button";
 import { PageHeader } from "@/components/ui/page-header";
+import {
+  isNonGitRepoProvider,
+  repoStatusLabel,
+  repoStatusTone,
+  type RepoConnectorWithIngest,
+  type RepoStatusTone,
+} from "@/lib/repo-connector-display";
 
 const repoKeys = {
   list: (pid: string) => ["connectors", "repos", pid] as const,
@@ -61,6 +68,19 @@ function statusBadge(status: string): string {
     default:
       return "bg-muted text-foreground";
   }
+}
+
+const REPO_TONE_BADGE: Record<RepoStatusTone, string> = {
+  success: "bg-success-muted text-success",
+  warning: "bg-warning-muted text-warning",
+  destructive: "bg-destructive/10 text-destructive",
+  neutral: "bg-muted text-foreground",
+};
+
+/** #364 — colour the badge from the state its label names, not the raw `status`. */
+function repoStatusBadge(r: RepoConnectorWithIngest): string {
+  const tone = repoStatusTone(r);
+  return tone ? REPO_TONE_BADGE[tone] : statusBadge(r.status);
 }
 
 /** Format a date as a relative time string (e.g., "2h ago", "3d ago"). */
@@ -795,61 +815,65 @@ export default function ConnectionsPage() {
                     {r.errorMessage ? (
                       <div className="mt-1 text-xs text-destructive">{r.errorMessage}</div>
                     ) : null}
-                    <div className="flex items-center gap-1 font-mono text-xs text-muted-foreground">
-                      <span className="shrink-0 text-muted-foreground/60">Token:</span>
-                      {editingSecretId === r.id ? (
-                        <span className="flex items-center gap-1">
-                          <input
-                            className="h-5 w-64 rounded border bg-background px-1 font-mono text-xs"
-                            value={editSecretValue}
-                            onChange={(e) => setEditSecretValue(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" && isVaultRefOrEmpty(editSecretValue))
-                                updateRepoSecret.mutate({ id: r.id, secretRef: editSecretValue });
-                              if (e.key === "Escape") setEditingSecretId(null);
+                    {/* #364 — a local directory or uploaded archive has no Git host to
+                        authenticate against, so it never needs a token. */}
+                    {!isNonGitRepoProvider(r.provider) && (
+                      <div className="flex items-center gap-1 font-mono text-xs text-muted-foreground">
+                        <span className="shrink-0 text-muted-foreground/60">Token:</span>
+                        {editingSecretId === r.id ? (
+                          <span className="flex items-center gap-1">
+                            <input
+                              className="h-5 w-64 rounded border bg-background px-1 font-mono text-xs"
+                              value={editSecretValue}
+                              onChange={(e) => setEditSecretValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && isVaultRefOrEmpty(editSecretValue))
+                                  updateRepoSecret.mutate({ id: r.id, secretRef: editSecretValue });
+                                if (e.key === "Escape") setEditingSecretId(null);
+                              }}
+                              placeholder="${vault:my-token-label}"
+                              autoFocus
+                            />
+                            <Button
+                              size="sm"
+                              className="h-5 px-1 text-xs"
+                              onClick={() =>
+                                updateRepoSecret.mutate({ id: r.id, secretRef: editSecretValue })
+                              }
+                              disabled={
+                                updateRepoSecret.isPending || !isVaultRefOrEmpty(editSecretValue)
+                              }
+                            >
+                              Save
+                            </Button>
+                            <Button
+                              aria-label="Cancel secret edit"
+                              size="sm"
+                              variant="ghost"
+                              className="h-5 px-1 text-xs"
+                              onClick={() => setEditingSecretId(null)}
+                            >
+                              ✕
+                            </Button>
+                          </span>
+                        ) : (
+                          <button
+                            className="underline decoration-dotted hover:text-foreground"
+                            title="Click to set vault secret reference (e.g. ${vault:github-pat})"
+                            onClick={() => {
+                              setEditingSecretId(r.id);
+                              setEditSecretValue(r.secretRef ?? "");
                             }}
-                            placeholder="${vault:my-token-label}"
-                            autoFocus
-                          />
-                          <Button
-                            size="sm"
-                            className="h-5 px-1 text-xs"
-                            onClick={() =>
-                              updateRepoSecret.mutate({ id: r.id, secretRef: editSecretValue })
-                            }
-                            disabled={
-                              updateRepoSecret.isPending || !isVaultRefOrEmpty(editSecretValue)
-                            }
                           >
-                            Save
-                          </Button>
-                          <Button
-                            aria-label="Cancel secret edit"
-                            size="sm"
-                            variant="ghost"
-                            className="h-5 px-1 text-xs"
-                            onClick={() => setEditingSecretId(null)}
-                          >
-                            ✕
-                          </Button>
-                        </span>
-                      ) : (
-                        <button
-                          className="underline decoration-dotted hover:text-foreground"
-                          title="Click to set vault secret reference (e.g. ${vault:github-pat})"
-                          onClick={() => {
-                            setEditingSecretId(r.id);
-                            setEditSecretValue(r.secretRef ?? "");
-                          }}
-                        >
-                          {r.secretRef ? (
-                            r.secretRef
-                          ) : (
-                            <span className="italic text-warning">not set — click to add</span>
-                          )}
-                        </button>
-                      )}
-                    </div>
+                            {r.secretRef ? (
+                              r.secretRef
+                            ) : (
+                              <span className="italic text-warning">not set — click to add</span>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    )}
                     {r.provider === "github_enterprise" && (
                       <div className="flex items-center gap-1 font-mono text-xs text-muted-foreground">
                         <span className="shrink-0">API:</span>
@@ -911,8 +935,11 @@ export default function ConnectionsPage() {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className={`rounded px-2 py-0.5 text-xs ${statusBadge(r.status)}`}>
-                      {r.status}
+                    <span
+                      className={`rounded px-2 py-0.5 text-xs ${repoStatusBadge(r as RepoConnectorWithIngest)}`}
+                      data-testid={`repo-status-${r.id}`}
+                    >
+                      {repoStatusLabel(r as RepoConnectorWithIngest)}
                     </span>
                     {!r.isPrimary && (repos.data ?? []).length > 1 && (
                       <Button

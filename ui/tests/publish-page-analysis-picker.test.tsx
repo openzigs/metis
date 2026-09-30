@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 import { makeWrapper } from "./test-utils";
 
 vi.mock("next/navigation", async () => {
@@ -52,6 +53,7 @@ vi.mock("@/lib/connectors-api", () => ({
 import { analysisApi } from "@/lib/analysis-api";
 import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
+import { repoConnectorsApi } from "@/lib/connectors-api";
 import PublishingPage from "@/app/(authed)/projects/[id]/publish/page";
 
 const listForProjectMock = analysisApi.listForProject as unknown as ReturnType<typeof vi.fn>;
@@ -289,5 +291,89 @@ describe("PublishingPage — screen-reader affordances (#58)", () => {
     // Batches table column headers are scoped, incl. the sr-only actions header.
     expect(screen.getByRole("columnheader", { name: "Status" })).toHaveAttribute("scope", "col");
     expect(screen.getByRole("columnheader", { name: "Actions" })).toBeInTheDocument();
+  });
+});
+
+describe("PublishingPage — run labels and target pre-fill (#364)", () => {
+  const getPrimaryMock = repoConnectorsApi.getPrimary as unknown as ReturnType<typeof vi.fn>;
+
+  function renderPage() {
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+  }
+
+  it("labels analyses 'Run #N — <date>' with the short id last, oldest run = #1", async () => {
+    listForProjectMock.mockResolvedValue({
+      items: [
+        makeAnalysis({ id: "cmumww553000newer", startedAt: "2026-04-02T00:00:00.000Z" }),
+        makeAnalysis({ id: "cmumaa111000older", startedAt: "2026-04-01T00:00:00.000Z" }),
+      ],
+    });
+    renderPage();
+    const newer = await screen.findByRole("option", { name: /cmumww55/ });
+    expect(newer.textContent).toMatch(/^Run #2 — .+ · completed · cmumww55$/);
+    const older = screen.getByRole("option", { name: /cmumaa11/ });
+    expect(older.textContent).toMatch(/^Run #1 — /);
+  });
+
+  it("fills owner and repo from the primary repository when they are empty", async () => {
+    getPrimaryMock.mockResolvedValueOnce({ ownerOrOrg: "acme", repoName: "api" });
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText("Target owner")).toHaveValue("acme"));
+    expect(screen.getByLabelText("Target repo")).toHaveValue("api");
+  });
+
+  it("never pairs a typed owner with the primary's repo: a typed field suppresses the pre-fill", async () => {
+    let resolvePrimary: (v: unknown) => void = () => {};
+    getPrimaryMock.mockReturnValueOnce(new Promise((r) => (resolvePrimary = r)));
+    renderPage();
+    const owner = await screen.findByLabelText("Target owner");
+    fireEvent.change(owner, { target: { value: "my-org" } });
+    resolvePrimary({ ownerOrOrg: "acme", repoName: "from-primary" });
+    await waitFor(() => expect(getPrimaryMock).toHaveBeenCalled());
+    // Let the resolved query settle and the effect run.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByLabelText("Target owner")).toHaveValue("my-org");
+    expect(screen.getByLabelText("Target repo")).toHaveValue("");
+  });
+
+  it("does not pre-fill half a pair from a local/upload primary with no owner", async () => {
+    getPrimaryMock.mockResolvedValueOnce({ ownerOrOrg: null, repoName: "from-primary" });
+    renderPage();
+    await waitFor(() => expect(getPrimaryMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByLabelText("Target owner")).toHaveValue("");
+    expect(screen.getByLabelText("Target repo")).toHaveValue("");
+  });
+
+  it("does not refill fields the user cleared when the primary repo refetches", async () => {
+    getPrimaryMock.mockResolvedValue({ ownerOrOrg: "acme", repoName: "api" });
+    try {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const Wrapper = makeWrapper({ queryClient });
+      render(
+        <Wrapper>
+          <PublishingPage />
+        </Wrapper>,
+      );
+      await waitFor(() => expect(screen.getByLabelText("Target owner")).toHaveValue("acme"));
+      fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "" } });
+      fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "" } });
+      const calls = getPrimaryMock.mock.calls.length;
+      // Changed data, so the refetch hands the page a new object (an identical
+      // result is structurally shared and would never reach the effect at all).
+      getPrimaryMock.mockResolvedValue({ ownerOrOrg: "acme", repoName: "api-renamed" });
+      await queryClient.refetchQueries({ queryKey: ["connectors", "repos"] });
+      await waitFor(() => expect(getPrimaryMock.mock.calls.length).toBeGreaterThan(calls));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.getByLabelText("Target owner")).toHaveValue("");
+      expect(screen.getByLabelText("Target repo")).toHaveValue("");
+    } finally {
+      getPrimaryMock.mockResolvedValue(null);
+    }
   });
 });

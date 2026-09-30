@@ -126,4 +126,29 @@ describe("<RepositoriesTopLevelPage />", () => {
       "/projects/p1/connections",
     );
   });
+
+  // Issue #364 — a local-directory connector printed "null/null" and "pending".
+  it("describes a local-directory connector by its source and ingest state", async () => {
+    repoListMock.mockImplementation(async (projectId: string) =>
+      projectId === "p1"
+        ? [
+            {
+              ...repo("r1", "p1", "onyourleft"),
+              provider: "local" as const,
+              ownerOrOrg: null,
+              repoName: null,
+              hasLocalSource: true,
+              status: "pending" as const,
+              sourceIngest: { effectiveStatus: "completed" as const },
+            },
+          ]
+        : [],
+    );
+    renderPage();
+    const row = await screen.findByTestId("repositories-top-row-r1");
+    expect(row).toHaveTextContent("Local directory");
+    expect(row).toHaveTextContent("ingested");
+    expect(row).not.toHaveTextContent("null/null");
+    expect(row).not.toHaveTextContent("pending");
+  });
 });

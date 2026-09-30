@@ -10,11 +10,12 @@
  * dedicated components.
  */
 import { useParams, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
 import { analysisApi, type AnalysisListItem } from "@/lib/analysis-api";
+import { formatChangeRunLabels, type ChangeRunLabel } from "@/lib/format-change-run-label";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PausableLiveRegion } from "@/components/a11y/pausable-live-region";
@@ -62,15 +63,13 @@ function statusClass(status: string): string {
   }
 }
 
-/** Human-readable label for an analysis option in the source picker. */
-function analysisLabel(a: AnalysisListItem): string {
-  let when = a.startedAt;
-  try {
-    when = new Date(a.startedAt).toLocaleString();
-  } catch {
-    /* keep raw value */
-  }
-  return `${a.status} · ${when} · ${a.id.slice(0, 8)}`;
+/**
+ * Human-readable label for an analysis option in the source picker. #364 — it
+ * is the same "Run #N — <date>" the Analysis page shows, so a run reads the
+ * same on both pages; the short id stays last, for telling runs apart.
+ */
+function analysisLabel(a: AnalysisListItem, label: ChangeRunLabel): string {
+  return `${label.primary} · ${a.status} · ${label.shortId}`;
 }
 
 /**
@@ -124,6 +123,10 @@ export default function PublishingPage() {
     queryFn: () => analysisApi.listForProject(projectId),
     enabled: Boolean(projectId),
   });
+  const analysisRunLabels = useMemo(
+    () => formatChangeRunLabels(analyses.data?.items ?? []).ordered,
+    [analyses.data],
+  );
 
   // Epic #640 — pre-fill owner/repo from primary repo connector
   const primaryRepo = useQuery({
@@ -131,12 +134,21 @@ export default function PublishingPage() {
     queryFn: () => repoConnectorsApi.getPrimary(projectId),
     enabled: Boolean(projectId),
   });
+  // #364 — a one-time pre-fill, not a reset. Owner and repo are filled together
+  // and only when BOTH are still empty: filling them independently could pair
+  // the user's owner with the primary's repo (naming no repository), and a
+  // refetch used to refill a field the user had deliberately cleared.
+  const prefilledFromPrimary = useRef(false);
   useEffect(() => {
-    if (primaryRepo.data) {
-      // Issue #288 — owner/repo are null for local/upload connectors.
-      setTargetOwner(primaryRepo.data.ownerOrOrg ?? "");
-      setTargetRepo(primaryRepo.data.repoName ?? "");
-    }
+    if (!primaryRepo.data || prefilledFromPrimary.current) return;
+    prefilledFromPrimary.current = true;
+    const { ownerOrOrg, repoName } = primaryRepo.data;
+    // A local/upload primary connector (#288) has no owner or repo to offer.
+    if (!ownerOrOrg || !repoName) return;
+    if (targetOwner || targetRepo) return;
+    setTargetOwner(ownerOrOrg);
+    setTargetRepo(repoName);
+    // Deliberately keyed on data arrival only; the ref makes it one-shot.
   }, [primaryRepo.data]);
 
   const generate = useMutation({
@@ -431,9 +443,9 @@ export default function PublishingPage() {
                     ? "No analyses yet"
                     : "Select an analysis…"}
               </option>
-              {(analyses.data?.items ?? []).map((a) => (
+              {(analyses.data?.items ?? []).map((a, i) => (
                 <option key={a.id} value={a.id}>
-                  {analysisLabel(a)}
+                  {analysisLabel(a, analysisRunLabels[i])}
                 </option>
               ))}
             </select>
