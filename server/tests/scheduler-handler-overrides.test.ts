@@ -36,8 +36,18 @@ const mocks = vi.hoisted(() => {
     ingestRepoMetadata: vi.fn(async () => ({ failures: 0 })),
     ingestSourceAsKnowledge: vi.fn(async () => ({ chunkCount: 5, failures: 0 })),
     ingestCodeGraph: vi.fn(async () => ({ filesParsed: 2, symbolsUpserted: 10 })),
+    logWarn: vi.fn(),
   };
 });
+
+vi.mock("../src/lib/logger.js", () => ({
+  createChildLogger: () => ({
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    warn: mocks.logWarn,
+  }),
+}));
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -275,6 +285,12 @@ describe("buildSchedulerHandlerOverrides", () => {
     expect((rejection as Error).message).toBe(REGENERATION_SCHEDULING_FAILED_MESSAGE);
     expect((rejection as Error).cause).toBe(error);
     expect((rejection as Error).message).not.toContain("outbox unavailable");
+    // #432 review — the task queue stores only the message, so the cause must be
+    // logged here or it is lost for good.
+    expect(mocks.logWarn).toHaveBeenCalledWith(
+      expect.stringContaining("scheduling regeneration failed"),
+      expect.objectContaining({ err: error, projectId: "p-alpha", connectorId: "rc1" }),
+    );
   });
 
   it("refresh-repo-connector resolves projectId and calls metadata + test", async () => {

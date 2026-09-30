@@ -15,7 +15,7 @@ import { checkIncrementalRegeneration } from "./incremental.js";
  */
 export const REGENERATION_SCHEDULING_FAILED_MESSAGE =
   "The repository was ingested, but scheduling automatic document regeneration failed. " +
-  "The details are in the server log; run the ingest again to retry.";
+  "The details are in the server log; the next ingest of this repository retries it.";
 
 /** Marks a failure to schedule regeneration apart from a failure of the ingest. */
 export class RegenerationSchedulingError extends Error {
