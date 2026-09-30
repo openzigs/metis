@@ -170,7 +170,11 @@ describe("#529 the current-page crumb keeps a readable width", () => {
       .querySelectorAll('[data-slot="breadcrumb-item"]');
     expect(items.length).toBeGreaterThan(2);
     for (const li of items) {
-      if (li !== item) expect(classesOf(li)).not.toContain("max-sm:shrink-0");
+      if (li !== item) {
+        // PR #538 review: neither the phone-only nor a bare shrink-0.
+        expect(classesOf(li)).not.toContain("max-sm:shrink-0");
+        expect(classesOf(li)).not.toContain("shrink-0");
+      }
     }
   });
 });
