@@ -222,7 +222,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "string",
     schema: z.enum(["auto", "anthropic"]),
     description:
-      "Whose list prices apply to the anthropic provider when ANTHROPIC_BASE_URL is set ('auto' | 'anthropic'; default 'auto'). 'auto': any host other than api.anthropic.com is treated as a different provider (e.g. DeepSeek, which serves claude-* names as its own models), so built-in Anthropic prices are not applied and only MODEL_PRICES prices its usage. 'anthropic': the endpoint is a proxy or AI gateway that relays to Anthropic and bills Anthropic's list prices (a corporate egress proxy, LiteLLM, …), so built-in Claude prices apply as if no base URL were set. Unknown models stay unpriced either way.",
+      "Whose list prices apply to the anthropic provider when ANTHROPIC_BASE_URL is set ('auto' | 'anthropic'; default 'auto'). 'auto': any host other than api.anthropic.com is treated as a different provider (e.g. DeepSeek, which serves claude-* names as its own models), so built-in Anthropic prices are not applied and only MODEL_PRICES prices its usage. 'anthropic': the endpoint is a proxy or AI gateway that relays to Anthropic and bills Anthropic's list prices (a corporate egress proxy, LiteLLM, …), so built-in Claude prices apply as if no base URL were set, and model routing sends it Claude tier ids (forced tiers, budget downgrade) as it would Anthropic's API. Unknown models stay unpriced either way.",
     sensitive: false,
   },
   // ── #22 — administrator-configured per-model prices ───────────────────

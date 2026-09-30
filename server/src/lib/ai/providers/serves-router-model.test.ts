@@ -7,6 +7,10 @@ import { describe, expect, it } from "vitest";
 import { AnthropicProvider } from "./anthropic-provider.js";
 import { BedrockDirectProvider } from "./bedrock-direct-provider.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "../model-router.js";
+import { ConfigService } from "../../config/config-service.js";
+
+/** A ConfigService reading only the given env — no DB, no vault, no process.env. */
+const configWith = (env: Record<string, string>) => new ConfigService({ env, vault: {} as never });
 
 const direct = (providerKey: string, modelProfileMap?: Record<string, string>) =>
   new BedrockDirectProvider({
@@ -42,6 +46,45 @@ describe("servesRouterModel (#512)", () => {
   ])("an Anthropic-compatible endpoint that is not Anthropic's API (%s) does not", (baseUrl) => {
     const p = new AnthropicProvider({ apiKey: "k", baseUrl });
     expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
+  });
+
+  // Adversarial panel on PR #523 — a proxy or gateway relaying to Anthropic is
+  // a supported setup, opted into with ANTHROPIC_BASE_URL_BILLS_AS=anthropic
+  // (the same setting pricing honours).
+  describe("ANTHROPIC_BASE_URL_BILLS_AS opt-in", () => {
+    const proxy = "https://llm-proxy.example.com/anthropic";
+
+    it("a proxy host with the opt-in serves Claude tier ids", () => {
+      const config = configWith({ ANTHROPIC_BASE_URL_BILLS_AS: "anthropic" });
+      const p = new AnthropicProvider({ apiKey: "k", baseUrl: proxy, config });
+      expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(true);
+    });
+
+    it.each([{}, { ANTHROPIC_BASE_URL_BILLS_AS: "auto" }])(
+      "the same proxy host without the opt-in (%o) does not",
+      (env) => {
+        const p = new AnthropicProvider({ apiKey: "k", baseUrl: proxy, config: configWith(env) });
+        expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
+      },
+    );
+
+    it("DeepSeek with the setting at something other than 'anthropic' does not", () => {
+      const config = configWith({ ANTHROPIC_BASE_URL_BILLS_AS: "auto" });
+      const p = new AnthropicProvider({
+        apiKey: "k",
+        baseUrl: "https://api.deepseek.com/anthropic",
+        config,
+      });
+      expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
+    });
+
+    it("reads the setting per call, so a tunable change applies without a restart", () => {
+      const env: Record<string, string> = {};
+      const p = new AnthropicProvider({ apiKey: "k", baseUrl: proxy, config: configWith(env) });
+      expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
+      env.ANTHROPIC_BASE_URL_BILLS_AS = "anthropic";
+      expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(true);
+    });
   });
 
   it("the Bedrock gateway serves Claude tier ids", () => {
