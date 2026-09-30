@@ -95,7 +95,10 @@ import {
   registerBuiltInHandlers,
 } from "../src/lib/scheduler/task-handlers.js";
 import { publishGeneratedDocRevision } from "../src/lib/docs-gen/generated-doc-publication.js";
-import { INDEXING_FAILED_MESSAGE } from "../src/lib/rag/indexing-failure-message.js";
+import {
+  INDEXING_FAILED_MESSAGE,
+  INDEXING_PUBLICATION_CANCELLED_MESSAGE,
+} from "../src/lib/rag/indexing-failure-message.js";
 import {
   dispatchGeneratedDocTask,
   generatedDocOutboxId,
@@ -366,7 +369,11 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
               state: "failed",
               status: "failed",
               chunkCount: 0,
-              errorMessage: INDEXING_FAILED_MESSAGE, // #98 — never the task's raw error,
+              // #98 — never the task's raw error; #232 — a cancellation says so.
+              errorMessage:
+                status === "cancelled"
+                  ? INDEXING_PUBLICATION_CANCELLED_MESSAGE
+                  : INDEXING_FAILED_MESSAGE,
               processedAt: null,
             });
         }

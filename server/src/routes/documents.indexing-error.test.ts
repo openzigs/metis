@@ -70,8 +70,10 @@ vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 const { documentsRouter } = await import("./documents.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
 const {
+  GENERATED_DOC_PUBLICATION_CANCELLED,
   INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE,
   INDEXING_FAILED_MESSAGE,
+  INDEXING_PUBLICATION_CANCELLED_MESSAGE,
   INDEXING_REJECTED_MESSAGE,
   APPROVAL_NOT_FOUND_MESSAGE,
   APPROVAL_NOT_AWAITING_MESSAGE,
@@ -137,6 +139,22 @@ describe("documents routes — indexing errorMessage (#98)", () => {
     expect(res.body.data.items[0].errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
     expect(res.body.data.items[1].errorMessage).toBeNull();
     expect(res.body.data.items[0].filename).toBe("a.md");
+  });
+
+  it("#232 — GET / lists a cancelled generated-doc publication as cancelled", async () => {
+    document.findMany.mockResolvedValueOnce([
+      row({
+        id: "gendoc-doc-1:revision-1",
+        errorMessage: `${GENERATED_DOC_PUBLICATION_CANCELLED}: cancelled by user`,
+      }),
+      row({ id: "gendoc-doc-2:revision-1", errorMessage: `generated-doc publication failed: x` }),
+    ]);
+    document.count.mockResolvedValueOnce(2);
+    const res = await request(app).get("/api/projects/p-1/documents");
+    expect(res.status).toBe(200);
+    expect(res.body.data.items[0].errorMessage).toBe(INDEXING_PUBLICATION_CANCELLED_MESSAGE);
+    expect(res.body.data.items[1].errorMessage).toBe(INDEXING_FAILED_MESSAGE);
+    expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
   });
 
   it("GET /:documentId sanitises the row", async () => {

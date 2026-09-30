@@ -88,6 +88,21 @@ export const INDEXING_EMPTY_TEXT_MESSAGE =
 export const INDEXING_PARSE_FAILED_MESSAGE =
   "The file could not be parsed; it may be corrupt or password-protected.";
 
+/**
+ * #201 — `errorMessage` prefix of a generated-doc publication a user cancelled,
+ * written on its synthetic `gendoc-*` row. Defined here (and re-exported by
+ * `generated-doc-publication.ts`) so this leaf module needs no import of the
+ * publication pipeline.
+ */
+export const GENERATED_DOC_PUBLICATION_CANCELLED = "generated-doc publication cancelled";
+
+/**
+ * #232 — what a client reads for a cancelled publication. Fixed: the stored
+ * cancellation reason after the prefix is never echoed.
+ */
+export const INDEXING_PUBLICATION_CANCELLED_MESSAGE =
+  "Publishing this revision was cancelled before it finished, so it was not indexed.";
+
 /** METIS writes this on a soft-deleted row; it is its own, not an exception. */
 const DELETED_MARKER = "deleted";
 
@@ -111,8 +126,12 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   INDEXING_TOO_MANY_PAGES_MESSAGE,
   INDEXING_EMPTY_TEXT_MESSAGE,
   INDEXING_PARSE_FAILED_MESSAGE,
+  INDEXING_PUBLICATION_CANCELLED_MESSAGE,
   DELETED_MARKER,
 ]);
+
+/** Anchored, like the parser refusals: a quoted prefix is not a cancellation. */
+const PUBLICATION_CANCELLED = new RegExp(`^${GENERATED_DOC_PUBLICATION_CANCELLED}(?::|$)`);
 
 /**
  * The parser's refusal codes (`lib/documents/parsers.ts`), anchored at the start
@@ -159,6 +178,7 @@ export function indexingFailureMessage(err: unknown): string {
   }
   if (/^storage read failed\b/i.test(message)) return INDEXING_STORAGE_MESSAGE;
   if (message === "rejected") return INDEXING_REJECTED_MESSAGE;
+  if (PUBLICATION_CANCELLED.test(message)) return INDEXING_PUBLICATION_CANCELLED_MESSAGE;
 
   // #165 — embedding calls are not streamed, so a reset under `fetch failed`
   // came before any response, not while one was arriving.

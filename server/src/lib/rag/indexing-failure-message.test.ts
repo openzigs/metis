@@ -237,6 +237,49 @@ describe("publicIndexingErrorMessage", () => {
   it("keeps the METIS-authored deletion marker", () => {
     expect(publicIndexingErrorMessage("deleted", "pending")).toBe("deleted");
   });
+
+  // #232 — #201 writes `generated-doc publication cancelled: <reason>` on the
+  // synthetic row; it used to read as the generic indexing failure.
+  it("reads a cancelled generated-doc publication as cancelled, without the stored reason", () => {
+    const stored = `${m.GENERATED_DOC_PUBLICATION_CANCELLED}: cancelled by user /srv/metis sk-live-x`;
+    for (const indexState of ["pending", "quarantined"]) {
+      const out = publicIndexingErrorMessage(stored, indexState);
+      expect(out).toBe(m.INDEXING_PUBLICATION_CANCELLED_MESSAGE);
+      expect(out).not.toContain("cancelled by user");
+      expectNoLeak(out);
+    }
+    // The recovery path's fallback when the task carried no message.
+    expect(indexingFailureMessage(`${m.GENERATED_DOC_PUBLICATION_CANCELLED}: cancelled`)).toBe(
+      m.INDEXING_PUBLICATION_CANCELLED_MESSAGE,
+    );
+    // Idempotent: an already-public string stays itself.
+    expect(indexingFailureMessage(m.INDEXING_PUBLICATION_CANCELLED_MESSAGE)).toBe(
+      m.INDEXING_PUBLICATION_CANCELLED_MESSAGE,
+    );
+    expect(m.INDEXING_PUBLICATION_CANCELLED_MESSAGE).not.toBe(INDEXING_FAILED_MESSAGE);
+  });
+
+  it("keeps a failed publication in the indexing-failure vocabulary", () => {
+    expect(publicIndexingErrorMessage("generated-doc publication failed: boom /srv/x")).toBe(
+      INDEXING_FAILED_MESSAGE,
+    );
+    expect(
+      publicIndexingErrorMessage(
+        "generated-doc publication failed: embedding failed: fetch failed",
+      ),
+    ).toBe(INDEXING_PROVIDER_UNREACHABLE_MESSAGE);
+  });
+
+  it("does not trust a cancellation prefix quoted inside some other exception", () => {
+    expect(
+      indexingFailureMessage(
+        `prisma: /srv/db locked while ${m.GENERATED_DOC_PUBLICATION_CANCELLED}: x`,
+      ),
+    ).toBe(INDEXING_FAILED_MESSAGE);
+    expect(indexingFailureMessage(`${m.GENERATED_DOC_PUBLICATION_CANCELLED}ish: x`)).toBe(
+      INDEXING_FAILED_MESSAGE,
+    );
+  });
 });
 
 describe("approvalFailureMessage (#108)", () => {

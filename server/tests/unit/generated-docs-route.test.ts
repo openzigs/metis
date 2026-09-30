@@ -212,8 +212,10 @@ import { synthesizeDbSchemaDocument } from "../../src/lib/docs-gen/db-schema-syn
 import { runDomainWebResearch } from "../../src/lib/docs-gen/grounding/domain-web-research.js";
 import { jobEvents } from "../../src/lib/socket/job-events.js";
 import {
+  GENERATED_DOC_PUBLICATION_CANCELLED,
   INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE,
   INDEXING_PROVIDER_UNREACHABLE_MESSAGE,
+  INDEXING_PUBLICATION_CANCELLED_MESSAGE,
 } from "../../src/lib/rag/indexing-failure-message.js";
 
 function buildApp() {
@@ -1115,6 +1117,33 @@ describe("generated-docs routes", () => {
       expectNoIndexingLeak(JSON.stringify(res.body));
       expect(res.body.data[0].indexing.errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
     });
+
+    it("#232 — lists a cancelled publication as cancelled, without the stored reason", async () => {
+      vi.mocked(prisma.generatedDocument.findMany).mockResolvedValue([
+        {
+          id: "doc-1",
+          title: "Doc 1",
+          status: "ready",
+          versions: [{ id: "v2", version: 2, revisionId: "revision-2", createdAt: new Date(0) }],
+        },
+      ] as never);
+      vi.mocked(prisma.document.findMany).mockResolvedValue([
+        {
+          id: "gendoc-doc-1:revision-2",
+          indexState: "pending",
+          status: "failed",
+          chunkCount: 0,
+          errorMessage: `${GENERATED_DOC_PUBLICATION_CANCELLED}: cancelled by user`,
+          processedAt: null,
+        },
+      ] as never);
+
+      const res = await request(app).get("/projects/proj-1/docs");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].indexing.errorMessage).toBe(INDEXING_PUBLICATION_CANCELLED_MESSAGE);
+      expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
+    });
   });
 
   describe("GET /projects/:projectId/docs/:docId", () => {
@@ -1179,6 +1208,66 @@ describe("generated-docs routes", () => {
       expect(res.body.data.indexing.state).toBe("failed");
       expectNoIndexingLeak(JSON.stringify(res.body));
       expect(res.body.data.indexing.errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
+    });
+
+    it("#232 — a cancelled publication reads as cancelled, not as an indexing failure", async () => {
+      vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
+        id: "doc-1",
+        content: "",
+        versions: [
+          {
+            id: "v1",
+            documentId: "doc-1",
+            version: 1,
+            revisionId: null,
+            provenanceManifest: null,
+            createdAt: new Date(0),
+          },
+        ],
+      } as never);
+      vi.mocked(prisma.document.findFirst).mockResolvedValue({
+        indexState: "pending",
+        status: "failed",
+        chunkCount: 0,
+        errorMessage: `${GENERATED_DOC_PUBLICATION_CANCELLED}: cancelled by user /srv/metis`,
+        processedAt: null,
+      } as never);
+
+      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.indexing.errorMessage).toBe(INDEXING_PUBLICATION_CANCELLED_MESSAGE);
+      expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
+      expectNoIndexingLeak(JSON.stringify(res.body));
+    });
+
+    it("#232 — a cancelled publication task with no Document row reads as cancelled", async () => {
+      vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
+        id: "doc-1",
+        content: "",
+        versions: [
+          {
+            id: "v1",
+            documentId: "doc-1",
+            version: 1,
+            revisionId: "revision-1",
+            provenanceManifest: null,
+            createdAt: new Date(0),
+          },
+        ],
+      } as never);
+      vi.mocked(prisma.task.findUnique).mockResolvedValueOnce({
+        status: "cancelled",
+        errorMessage: "cancelled by user /srv/metis",
+      } as never);
+      vi.mocked(prisma.document.findFirst).mockResolvedValue(null);
+
+      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.indexing.state).toBe("failed");
+      expect(res.body.data.indexing.errorMessage).toBe(INDEXING_PUBLICATION_CANCELLED_MESSAGE);
+      expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
     });
 
     it("#98 — names an unreachable embedding host on the indexing status line", async () => {
