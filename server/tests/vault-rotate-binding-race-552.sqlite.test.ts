@@ -48,7 +48,7 @@ const { getVaultService, __resetVaultSingleton } =
   await import("../src/lib/vault/vault-service.js");
 const { getAuditService } = await import("../src/lib/audit/audit-service.js");
 const { assertSecretBindingAllowed } = await import("../src/lib/vault/secret-binding.js");
-const { BINDING_WRITE_WINDOW_MS, SECRET_BINDING_WINDOW_EXPIRED } =
+const { BINDING_WRITE_WINDOW_MS, SECRET_BINDING_WINDOW_EXPIRED, markBindingWrite } =
   await import("../src/lib/vault/binding-write-mark.js");
 const { authorizeAndBindSecretRefs } = await import("../src/lib/vault/bound-secret.js");
 const { assertDbSecretBinding, assertRepoSecretBinding } =
@@ -298,6 +298,34 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.status).toBe(200);
       expect(await plaintextOf(id)).toBe(ADMIN_VALUE);
       expect((await secretRow(id)).createdById).toBe("u-admin");
+    });
+
+    it("a stamp written by the raw markBindingWrite, once past, compares equal in the rotation's conditional UPDATE", async () => {
+      // PR #587 panel — the stamp is written with raw SQL and the rotation's
+      // compare-and-set reads it back through Prisma and matches it as a typed
+      // Date. If the two representations never compare equal, a confirmed
+      // rotation is refused forever. Write a window that has already closed
+      // through the SAME raw helper every binding write uses.
+      const id = await newSecret("u-coord");
+      await bindDb("db-552-raw", id, "raw.coord.example");
+      const until = await markBindingWrite(
+        [{ id }],
+        "u-coord",
+        new Date(Date.now() - BINDING_WRITE_WINDOW_MS - 5_000),
+      );
+      expect(until).not.toBeNull();
+      // Stamped through the raw path, and read back as the same instant.
+      expect((await secretRow(id)).bindingWriteUntil?.getTime()).toBe(until!.getTime());
+
+      const res = await rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: [pg("db-552-raw", "raw.coord.example")],
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(await plaintextOf(id)).toBe(ADMIN_VALUE);
+      expect((await secretRow(id)).createdById).toBe("u-admin");
+      expect(await rotateAudit(id)).toHaveLength(1);
     });
 
     it("a rotation that lands first serializes the binding write after it: the old owner is refused", async () => {
