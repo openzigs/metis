@@ -197,6 +197,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(rest).toHaveLength(6);
     });
 
+    it("a cursor page never returns a row soft-deleted after the cursor (PR #469 review)", async () => {
+      const ids = await seed();
+      const first = await list({ limit: 4 });
+      // Delete a row the client has NOT seen yet: the cursor query must still
+      // apply the soft-delete filter, not just the project and position.
+      const unseen = ids[5]!;
+      await db.document.update({ where: { id: unseen }, data: { deletedAt: new Date() } });
+      const second = await list({ limit: 10, cursor: first.body.data.nextCursor });
+      const secondIds: string[] = second.body.data.items.map((d: { id: string }) => d.id);
+      expect(secondIds).not.toContain(unseen);
+      expect(secondIds).toHaveLength(5);
+    });
+
     it("a row inserted mid-read neither repeats nor displaces a row", async () => {
       const ids = await seed();
       const first = await list({ limit: 4 });

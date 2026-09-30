@@ -98,6 +98,20 @@ describe("listAllDocuments", () => {
     );
   });
 
+  it("stops on an empty page even if it still carries a cursor (PR #469 review)", async () => {
+    listMock.mockResolvedValueOnce({
+      items: rows(0, 2),
+      total: 2,
+      limit: DOCUMENT_PAGE_SIZE,
+      offset: 0,
+      nextCursor: "c1",
+    });
+    afterMock.mockResolvedValue({ items: [], limit: DOCUMENT_PAGE_SIZE, nextCursor: "c1" });
+    const all = await listAllDocuments("p1");
+    expect(all.items.map((d) => d.id)).toEqual(["d0", "d1"]);
+    expect(afterMock).toHaveBeenCalledTimes(1);
+  });
+
   it("treats a page without a total or cursor as the whole list", async () => {
     listMock.mockResolvedValue({ items: rows(0, 2) } as never);
     const out = await listAllDocuments("p1");

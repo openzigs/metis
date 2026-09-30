@@ -30,6 +30,9 @@ export async function listAllDocuments(projectId: string): Promise<AllDocuments>
   let cursor = first.nextCursor ?? null;
   while (cursor && items.length < MAX_PANEL_DOCUMENTS) {
     const page = await documentsApi.listAfter(projectId, cursor, { limit: DOCUMENT_PAGE_SIZE });
+    // An empty page ends the read even if it carries a cursor, so termination
+    // does not rest on a server rule (PR #469 review).
+    if (page.items.length === 0) break;
     items.push(...page.items);
     cursor = page.nextCursor;
   }
