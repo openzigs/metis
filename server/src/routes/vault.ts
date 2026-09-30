@@ -74,11 +74,20 @@ const createSchema = z.object({
   description: z.string().max(500).optional(),
 });
 
+/** Longest secret value a create or rotate accepts. */
+export const SECRET_VALUE_MAX = 64 * 1024;
+export const CONFIRMED_BINDING_ID_MAX = 200;
+export const CONFIRMED_BINDING_DESTINATION_MAX = 8192;
+/**
+ * #557 — the most bindings a foreign-owner confirm may echo back. Sized so the
+ * largest body the schema accepts fits the 10 MiB JSON limit (`JSON_LIMIT_BYTES`)
+ * even when every character JSON-escapes to six bytes (~8 MB at this cap), so a
+ * valid confirm is never refused as an opaque 413.
+ */
+export const MAX_CONFIRMED_BINDINGS = 150;
+
 const rotateSchema = z.object({
-  value: z
-    .string()
-    .min(1)
-    .max(64 * 1024),
+  value: z.string().min(1).max(SECRET_VALUE_MAX),
   /** #482 — required to rotate a secret another user owns. */
   confirmForeignOwner: z.boolean().optional(),
   /**
@@ -98,13 +107,14 @@ const rotateSchema = z.object({
             "mcp_server",
             "jira_connection",
           ]),
-          id: z.string().min(1).max(200),
-          destination: z.string().max(8192).nullable(),
-          routing: z.string().min(1).max(128),
+          id: z.string().min(1).max(CONFIRMED_BINDING_ID_MAX),
+          destination: z.string().max(CONFIRMED_BINDING_DESTINATION_MAX).nullable(),
+          // #557 — exactly what `routingDigest` issues: HMAC-SHA256, lowercase hex.
+          routing: z.string().regex(/^[0-9a-f]{64}$/, "routing must be the digest the 409 issued"),
         })
         .strict(),
     )
-    .max(1000)
+    .max(MAX_CONFIRMED_BINDINGS)
     .optional(),
 });
 

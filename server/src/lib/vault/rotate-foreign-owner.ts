@@ -127,14 +127,27 @@ export const routingFields = {
 } satisfies Record<BindingType, (row: never) => unknown[]>;
 
 /**
- * #557 — the digest a binding's `routing` carries: HMAC-SHA256 over its type,
- * id and routing fields, under a key derived (HKDF, own label) from the
- * server's signing secret, so it is stable across instances and restarts.
+ * #557 — the key {@link routingDigest} signs under: derived (HKDF, own label)
+ * from the server's signing secret, so it is stable across instances and
+ * restarts. Derive it once per listing and pass it to each digest.
  */
-export function routingDigest(type: BindingType, id: string, fields: unknown[]): string {
-  const key = Buffer.from(
+export function routingKey(): Buffer {
+  return Buffer.from(
     hkdfSync("sha256", resolveJwtSecret().secret, "", "metis:vault-rotate-routing:v1", 32),
   );
+}
+
+/**
+ * #557 — the digest a binding's `routing` carries: HMAC-SHA256 over its type,
+ * id and routing fields, under {@link routingKey}. Always 64 lowercase hex
+ * characters, which is exactly what the rotate route's schema accepts back.
+ */
+export function routingDigest(
+  type: BindingType,
+  id: string,
+  fields: unknown[],
+  key: Buffer = routingKey(),
+): string {
   return createHmac("sha256", key)
     .update(JSON.stringify([type, id, ...fields]))
     .digest("hex");
@@ -261,6 +274,7 @@ export async function describeForeignOwner(secret: {
     }),
   ]);
 
+  const key = routingKey();
   const bindings: SecretBindingView[] = [
     ...dbs.map((d) => ({
       type: "db_connector" as const,
@@ -268,7 +282,7 @@ export async function describeForeignOwner(secret: {
       label: d.label,
       projectId: d.projectId,
       destination: d.host ? `${d.driver}://${d.host}${d.port ? `:${d.port}` : ""}` : d.driver,
-      routing: routingDigest("db_connector", d.id, routingFields.db_connector(d)),
+      routing: routingDigest("db_connector", d.id, routingFields.db_connector(d), key),
     })),
     ...repos.map((r) => ({
       type: "repo_connector" as const,
@@ -276,7 +290,7 @@ export async function describeForeignOwner(secret: {
       label: r.label,
       projectId: r.projectId,
       destination: r.apiBaseUrl ?? r.provider,
-      routing: routingDigest("repo_connector", r.id, routingFields.repo_connector(r)),
+      routing: routingDigest("repo_connector", r.id, routingFields.repo_connector(r), key),
     })),
     ...imports.map((i) => ({
       type: "import_source" as const,
@@ -284,7 +298,7 @@ export async function describeForeignOwner(secret: {
       label: i.label,
       projectId: i.projectId,
       destination: i.baseUrl ?? i.source,
-      routing: routingDigest("import_source", i.id, routingFields.import_source(i)),
+      routing: routingDigest("import_source", i.id, routingFields.import_source(i), key),
     })),
     ...mcps
       .filter(
@@ -300,7 +314,7 @@ export async function describeForeignOwner(secret: {
         label: m.label,
         projectId: m.projectId,
         destination: m.url ?? m.command,
-        routing: routingDigest("mcp_server", m.id, routingFields.mcp_server(m)),
+        routing: routingDigest("mcp_server", m.id, routingFields.mcp_server(m), key),
       })),
     ...jiras.map((j) => ({
       type: "jira_connection" as const,
@@ -308,7 +322,7 @@ export async function describeForeignOwner(secret: {
       label: j.label,
       projectId: j.projectId,
       destination: j.baseUrl,
-      routing: routingDigest("jira_connection", j.id, routingFields.jira_connection(j)),
+      routing: routingDigest("jira_connection", j.id, routingFields.jira_connection(j), key),
     })),
   ];
 

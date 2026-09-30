@@ -14,6 +14,18 @@ const db = vi.hoisted(() => ({
   jiraConnection: { findMany: vi.fn() },
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
+// #557 — a pass-through spy, so a test can count the HKDF derivations.
+const hkdf = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("node:crypto", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:crypto")>();
+  return {
+    ...real,
+    hkdfSync: (...args: Parameters<typeof real.hkdfSync>) => {
+      hkdf.calls += 1;
+      return real.hkdfSync(...args);
+    },
+  };
+});
 
 const {
   bindingsChangedMessage,
@@ -332,6 +344,35 @@ describe("#557 — routing digest over the full routing fields", () => {
         expect(routingDigest(type, "x", fields(changed)), `${type}.${key}`).not.toBe(base);
       }
     }
+  });
+
+  it("derives the HKDF key once per listing, not once per binding", async () => {
+    db.databaseConnection.findMany.mockResolvedValueOnce([
+      { id: "d1", label: "D1", projectId: "p", ...pg },
+      { id: "d2", label: "D2", projectId: "p", ...pg },
+    ]);
+    db.mCPServer.findMany.mockResolvedValueOnce([
+      { id: "m", label: "M", projectId: "p", ...stdio },
+    ]);
+    db.jiraConnection.findMany.mockResolvedValueOnce([
+      {
+        id: "j",
+        label: "J",
+        projectId: "p",
+        baseUrl: "https://j",
+        proxyUrl: null,
+        tlsRejectUnauthorized: true,
+        tlsCaSecretId: null,
+      },
+    ]);
+    hkdf.calls = 0;
+    const { bindings } = await describeForeignOwner(SECRET);
+    expect(bindings).toHaveLength(4);
+    expect(hkdf.calls).toBe(1);
+    // …and the shared key gives the same digest a standalone call derives.
+    expect(bindings[0]!.routing).toBe(
+      routingDigest("db_connector", "d1", routingFields.db_connector(pg)),
+    );
   });
 
   it("ignores the DB allow-list, which never chooses the destination", () => {

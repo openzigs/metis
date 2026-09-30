@@ -32,8 +32,9 @@ import { assertRerankOnnxSingleThread } from "./lib/rag/reranker.js";
 import { metricsMiddleware } from "./lib/metrics/middleware.js";
 import { metricsHandler } from "./lib/metrics/route.js";
 import { mountSlackReceiver } from "./lib/slack/slack-receiver.js";
+import { JSON_LIMIT_BYTES } from "./lib/config/json-limit.js";
 
-const JSON_LIMIT = "10mb"; // matches MAX_DOCUMENT_BYTES (10 MiB) for upload routes
+const JSON_LIMIT = JSON_LIMIT_BYTES; // 10 MiB, matches MAX_DOCUMENT_BYTES for upload routes
 
 /**
  * Issue #17.3 — parse the `TRUST_PROXY` env var into a safe value for

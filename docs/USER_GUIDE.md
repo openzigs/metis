@@ -2829,7 +2829,9 @@ The `/vault` page is split into two panels:
      `confirmedBindings` (the `type`, `id`, `destination` and `routing` of
      every binding listed; `routing` is an opaque digest of every field that
      decides where that resource sends the secret, such as MCP args and env or
-     a connector's database name); if those no longer match the live bindings —
+     a connector's database name — echo it exactly as the 409 gave it; a
+     missing or malformed one is a `400`, and at most 150 bindings are
+     accepted); if those no longer match the live bindings —
      including a binding re-pointed under the same id, whether at a new host or
      at new args or a new database behind the same destination — it is refused with
      `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. While the

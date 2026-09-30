@@ -36,7 +36,16 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 
-const { vaultRouter } = await import("../src/routes/vault.js");
+const {
+  vaultRouter,
+  CONFIRMED_BINDING_DESTINATION_MAX,
+  CONFIRMED_BINDING_ID_MAX,
+  MAX_CONFIRMED_BINDINGS,
+  SECRET_VALUE_MAX,
+} = await import("../src/routes/vault.js");
+const { JSON_LIMIT_BYTES } = await import("../src/lib/config/json-limit.js");
+/** A well-formed routing digest that matches no live binding. */
+const HEX64 = "ab".repeat(32);
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getVaultService, __resetVaultSingleton } =
@@ -653,16 +662,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         [{ type: "db_connector", id: "db-1" }],
         [{ type: "nope", id: "db-1", destination: null }],
         [{ type: "db_connector", id: "", destination: null }],
-        [{ type: "db_connector", id: "db-1", destination: null, routing: "r", extra: 1 }],
+        [{ type: "db_connector", id: "db-1", destination: null, routing: HEX64, extra: 1 }],
         // #557 — the routing digest is required, and never empty.
         [{ type: "db_connector", id: "db-1", destination: null }],
         [{ type: "db_connector", id: "db-1", destination: null, routing: "" }],
         // Over the cap — kept small per entry so the body stays under the JSON limit.
-        Array.from({ length: 1001 }, () => ({
+        Array.from({ length: MAX_CONFIRMED_BINDINGS + 1 }, () => ({
           type: "db_connector",
           id: "x",
           destination: null,
-          routing: "r",
+          routing: HEX64,
         })),
       ]) {
         const res = await rotate(id, {
@@ -672,6 +681,74 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         expect(res.status).toBe(400);
       }
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+    });
+
+    it("#557: rejects a routing value that is not the 64-hex digest the server issues", async () => {
+      const id = await newSecret("u-coord");
+      for (const routing of [
+        "r",
+        HEX64.slice(1),
+        `${HEX64}0`,
+        HEX64.toUpperCase(),
+        `${HEX64.slice(1)}g`,
+        ` ${HEX64.slice(1)}`,
+        `${HEX64}\n`,
+        1234,
+        null,
+      ]) {
+        const res = await rotate(id, {
+          value: ADMIN_VALUE,
+          confirmForeignOwner: true,
+          confirmedBindings: [{ type: "db_connector", id: "db-1", destination: null, routing }],
+        });
+        expect(res.status, JSON.stringify(routing)).toBe(400);
+        expect(res.body.error.code).toBe("INVALID_BODY");
+      }
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+    });
+
+    it("#557: the largest confirm the schema accepts parses under the real JSON limit, not 413", async () => {
+      const id = await newSecret("u-coord");
+      // Worst case per field: every character JSON-escapes to six bytes (\u0001).
+      const worst = (len: number) => "\u0001".repeat(len);
+      const entry = {
+        type: "jira_connection",
+        id: worst(CONFIRMED_BINDING_ID_MAX),
+        destination: worst(CONFIRMED_BINDING_DESTINATION_MAX),
+        routing: HEX64,
+      };
+      const body = (count: number) => ({
+        value: worst(SECRET_VALUE_MAX),
+        confirmForeignOwner: true,
+        confirmedBindings: Array.from({ length: count }, () => entry),
+      });
+      const bytes = Buffer.byteLength(JSON.stringify(body(MAX_CONFIRMED_BINDINGS)));
+      // Comfortably inside the limit, with room to spare — not scraping it.
+      expect(bytes).toBeLessThan(JSON_LIMIT_BYTES * 0.8);
+
+      const realLimitRotate = (payload: unknown) => {
+        const a = express();
+        a.use(express.json({ limit: JSON_LIMIT_BYTES }));
+        a.use("/api/vault", vaultRouter());
+        a.use(notFoundHandler);
+        a.use(errorHandler);
+        return request(a)
+          .post(`/api/vault/${id}/rotate`)
+          .set("Authorization", `Bearer ${adminToken}`)
+          .send(payload as object);
+      };
+
+      // At the cap: parsed and validated, so the route answers on the merits —
+      // the bindings do not match the (empty) live set.
+      const atCap = await realLimitRotate(body(MAX_CONFIRMED_BINDINGS));
+      expect(atCap.status).toBe(409);
+      expect(atCap.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
+
+      // One over the cap is still a 400 from the schema, never a 413 from the parser.
+      const overCap = await realLimitRotate(body(MAX_CONFIRMED_BINDINGS + 1));
+      expect(overCap.status).toBe(400);
+      expect(overCap.body.error.code).toBe("INVALID_BODY");
       expect(await plaintextOf(id)).toBe(OWNER_VALUE);
     });
 
