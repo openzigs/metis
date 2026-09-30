@@ -18,9 +18,12 @@
  * `tlsCaSecretId`), and MCP servers — through the `${vault:x}` references in
  * their `envJson` / `headers` (how the importer and `routes/mcp.ts` bind them),
  * matched with the same id-or-label rule the binding check uses (`reaches`),
- * or the `envSecretId` column. Other embedded references (test-management
- * auth config, notification-channel refs, BYOK) are not enumerated, and the
- * refusal says so rather than claiming the secret is unbound (PR #494 review).
+ * or the `envSecretId` column — and (#609) test-management connections,
+ * through the `${vault:x}` refs in their `authConfigJson` / `tlsConfigJson`
+ * (the same columns `secret-retirement.ts` counts as a use), matched the same
+ * way. Other embedded references (notification-channel refs, BYOK) are not
+ * enumerated, and the refusal says so rather than claiming the secret is
+ * unbound (PR #494 review).
  *
  * #502 — the confirm is tied to what the admin was shown. The request must
  * carry `confirmedBindings`, the `{type, id, destination}` of every binding
@@ -61,7 +64,13 @@ export interface SecretOwnerView {
 }
 
 export interface SecretBindingView {
-  type: "db_connector" | "repo_connector" | "import_source" | "mcp_server" | "jira_connection";
+  type:
+    | "db_connector"
+    | "repo_connector"
+    | "import_source"
+    | "mcp_server"
+    | "jira_connection"
+    | "test_management_connection";
   id: string;
   label: string;
   projectId: string | null;
@@ -124,6 +133,14 @@ export const routingFields = {
     tlsRejectUnauthorized: boolean;
     tlsCaSecretId: string | null;
   }): unknown[] => [j.baseUrl, j.proxyUrl, j.tlsRejectUnauthorized, j.tlsCaSecretId],
+  // #609 — `kind` picks the auth scheme and API paths sent to `baseUrl`; the
+  // proxy and TLS configs decide the hop and which server is trusted.
+  test_management_connection: (t: {
+    kind: string;
+    baseUrl: string;
+    proxyConfigJson: string | null;
+    tlsConfigJson: string | null;
+  }): unknown[] => [t.kind, t.baseUrl, t.proxyConfigJson, t.tlsConfigJson],
 } satisfies Record<BindingType, (row: never) => unknown[]>;
 
 /**
@@ -197,7 +214,7 @@ export async function describeForeignOwner(secret: {
   name: string;
   createdById: string;
 }): Promise<ForeignOwnerDetails> {
-  const [user, dbs, repos, imports, mcps, jiras] = await Promise.all([
+  const [user, dbs, repos, imports, mcps, jiras, testMgmts] = await Promise.all([
     prisma.user.findUnique({
       where: { id: secret.createdById },
       select: { username: true, displayName: true },
@@ -272,6 +289,27 @@ export async function describeForeignOwner(secret: {
         tlsCaSecretId: true,
       },
     }),
+    // #609 — candidates only, like MCP: any connection holding a vault ref;
+    // `reaches` then decides which refs resolve to this secret.
+    prisma.testManagementConnection.findMany({
+      where: {
+        deletedAt: null,
+        OR: [
+          { authConfigJson: { contains: VAULT_REF_MARKER } },
+          { tlsConfigJson: { contains: VAULT_REF_MARKER } },
+        ],
+      },
+      select: {
+        id: true,
+        label: true,
+        projectId: true,
+        kind: true,
+        baseUrl: true,
+        authConfigJson: true,
+        proxyConfigJson: true,
+        tlsConfigJson: true,
+      },
+    }),
   ]);
 
   const key = routingKey();
@@ -324,6 +362,25 @@ export async function describeForeignOwner(secret: {
       destination: j.baseUrl,
       routing: routingDigest("jira_connection", j.id, routingFields.jira_connection(j), key),
     })),
+    ...testMgmts
+      .filter((t) =>
+        [...refBodiesInJson(t.authConfigJson), ...refBodiesInJson(t.tlsConfigJson)].some((ref) =>
+          reaches(ref, secret),
+        ),
+      )
+      .map((t) => ({
+        type: "test_management_connection" as const,
+        id: t.id,
+        label: t.label,
+        projectId: t.projectId,
+        destination: t.baseUrl,
+        routing: routingDigest(
+          "test_management_connection",
+          t.id,
+          routingFields.test_management_connection(t),
+          key,
+        ),
+      })),
   ];
 
   return {
@@ -342,8 +399,8 @@ export async function describeForeignOwner(secret: {
  * checked, so it must not claim the secret is bound nowhere (PR #494 review).
  */
 export const UNBOUND_NOTE =
-  "No DB or repo connector, import source, MCP server or Jira connection uses it; " +
-  "other references (test-management auth, notification channels) were not checked.";
+  "No DB or repo connector, import source, MCP server, Jira or test-management connection " +
+  "uses it; other references (notification channels, BYOK) were not checked.";
 
 function whoOwns(details: ForeignOwnerDetails): string {
   return details.owner.displayName ?? details.owner.username ?? `user ${details.owner.id}`;

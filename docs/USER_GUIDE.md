@@ -2814,10 +2814,11 @@ The `/vault` page is split into two panels:
    - **Rotate** — submits a new value via `POST /api/vault/:id/rotate`,
      bumps the key version, and clears any previously revealed plaintext.
      If another user created the secret, the page first shows who owns it
-     and which DB and repo connectors, import sources, Jira connections and
-     MCP servers use it (an MCP server counts when a `${vault:...}` reference
-     in its environment or headers resolves to the secret by id or label;
-     test-management auth and notification-channel references are not
+     and which DB and repo connectors, import sources, Jira connections, MCP
+     servers and test-management connections use it (an MCP server counts when
+     a `${vault:...}` reference in its environment or headers resolves to the
+     secret by id or label, and a test-management connection when one in its
+     auth or TLS config does; notification-channel references are not
      checked); it rotates only after **Rotate anyway**, because the owner's
      resources will send your value to the hosts they chose. The secret then
      becomes yours: the previous owner's existing bindings keep working where
@@ -2829,7 +2830,8 @@ The `/vault` page is split into two panels:
      `confirmedBindings` (the `type`, `id`, `destination` and `routing` of
      every binding listed; `routing` is an opaque digest of every field that
      decides where that resource sends the secret, such as MCP args and env or
-     a connector's database name — echo it exactly as the 409 gave it; a
+     a connector's database name, or a test-management connection's proxy
+     and TLS settings — echo it exactly as the 409 gave it; a
      missing or malformed one is a `400`); if those no longer match the live bindings —
      including a binding re-pointed under the same id, whether at a new host or
      at new args or a new database behind the same destination — it is refused with

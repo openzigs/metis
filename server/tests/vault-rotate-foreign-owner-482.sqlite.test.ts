@@ -525,6 +525,85 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await db.secret.findUniqueOrThrow({ where: { id } })).createdById).toBe("u-coord");
     });
 
+    it("#609: a secret bound only by a test-management connection is listed, and a stale digest refuses the confirm", async () => {
+      const id = await newSecret("u-coord");
+      // As `connection-service.ts` writes them: `${vault:<id>}` in the auth config.
+      await db.testManagementConnection.create({
+        data: {
+          id: "tm-609",
+          projectId: "proj-1",
+          label: "Coord Zephyr",
+          kind: "zephyr",
+          baseUrl: "https://zephyr.coord.example",
+          authConfigJson: JSON.stringify({ bearerTokenRef: `\${vault:${id}}` }),
+          createdById: "u-coord",
+        },
+      });
+      // One pointing at another secret is not a binding of this one.
+      await db.testManagementConnection.create({
+        data: {
+          id: "tm-609-other",
+          projectId: "proj-1",
+          label: "Other Zephyr",
+          kind: "zephyr",
+          baseUrl: "https://zephyr.other.example",
+          authConfigJson: JSON.stringify({ bearerTokenRef: "${vault:someone-else}" }),
+          createdById: "u-coord",
+        },
+      });
+      const first = await rotate(id, { value: ADMIN_VALUE });
+      expect(first.status).toBe(409);
+      expect(first.body.error.code).toBe("VAULT_ROTATE_FOREIGN_OWNER");
+      expect(first.body.error.details.bindings).toEqual([
+        {
+          type: "test_management_connection",
+          id: "tm-609",
+          label: "Coord Zephyr",
+          projectId: "proj-1",
+          destination: "https://zephyr.coord.example",
+          routing: expect.stringMatching(/^[0-9a-f]{64}$/),
+        },
+      ]);
+      expect(first.body.error.message).toContain(
+        "bound to Coord Zephyr (https://zephyr.coord.example)",
+      );
+      const shown = shownIn(first);
+
+      // The owner routes the SAME connection through a proxy of their choosing:
+      // the displayed destination is unchanged, the digest is not.
+      await db.testManagementConnection.update({
+        where: { id: "tm-609" },
+        data: { proxyConfigJson: JSON.stringify({ url: "http://proxy.evil.example:8080" }) },
+      });
+      const stale = await rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: shown,
+      });
+      expect(stale.status).toBe(409);
+      expect(stale.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
+      const fresh = shownIn(stale);
+      expect(fresh.map((b) => b.destination)).toEqual(["https://zephyr.coord.example"]);
+      expect(fresh[0]!.routing).not.toBe(shown[0]!.routing);
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+      expect(await rotateAudit(id)).toHaveLength(0);
+      expect((await db.secret.findUniqueOrThrow({ where: { id } })).createdById).toBe("u-coord");
+
+      // Confirming what is live now rotates, and the audit row records it.
+      const ok = await rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: fresh,
+      });
+      expect(ok.status).toBe(200);
+      expect(await plaintextOf(id)).toBe(ADMIN_VALUE);
+      const meta = JSON.parse((await rotateAudit(id))[0]!.metadata ?? "{}") as Record<
+        string,
+        unknown
+      >;
+      expect(meta.confirmedBindings).toEqual(fresh);
+    });
+
     it("#502: a binding added after the 409 refuses the confirm with the live list", async () => {
       const id = await newSecret("u-coord");
       await bindDb("db-502-b", id, "b.coord.example");
