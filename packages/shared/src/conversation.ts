@@ -32,6 +32,63 @@ export type TranscriptPart =
 
 export type TranscriptRole = "user" | "assistant" | "system";
 
+/**
+ * #18 — what a chat reply was grounded in. Retrieval runs only for a session
+ * bound to one project, so a reply is either:
+ * - `grounded`: excerpts from that project's knowledge base were in the prompt;
+ * - `no-context`: the session is bound to a project, but automatic retrieval
+ *   supplied no excerpts (nothing ingested, or retrieval failed). This does NOT
+ *   mean the answer came from general knowledge: the model may still have read
+ *   the project through its tools (PR #437 review);
+ * - `unscoped`: the session has no project ("All projects") and no retrieval ran.
+ *
+ * Recorded on the assistant row as the turn is answered and streamed to the
+ * client as a `grounding` event, so a reply says what it was based on both
+ * live and after a reload.
+ */
+export type ChatGrounding =
+  | { status: "grounded"; projectId: string; projectName: string; sources: number }
+  | { status: "no-context"; projectId: string; projectName: string }
+  | { status: "unscoped" };
+
+function nonEmpty(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
+}
+
+/**
+ * #18 — accept a {@link ChatGrounding} only in the shape the UI renders. The
+ * server reads it back from a row's free-form `meta`, the client from an SSE
+ * frame; anything malformed is `null` (not known), never passed through, and
+ * extra keys are dropped.
+ */
+export function parseChatGrounding(value: unknown): ChatGrounding | null {
+  if (!value || typeof value !== "object") return null;
+  const g = value as Record<string, unknown>;
+  switch (g.status) {
+    case "unscoped":
+      return { status: "unscoped" };
+    case "no-context":
+      return nonEmpty(g.projectId) && nonEmpty(g.projectName)
+        ? { status: "no-context", projectId: g.projectId, projectName: g.projectName }
+        : null;
+    case "grounded":
+      return nonEmpty(g.projectId) &&
+        nonEmpty(g.projectName) &&
+        typeof g.sources === "number" &&
+        Number.isInteger(g.sources) &&
+        g.sources > 0
+        ? {
+            status: "grounded",
+            projectId: g.projectId,
+            projectName: g.projectName,
+            sources: g.sources,
+          }
+        : null;
+    default:
+      return null;
+  }
+}
+
 /** `summary` rows are written by compaction and stand in for the rows they fold. */
 export type TranscriptKind = "message" | "summary";
 
@@ -78,6 +135,12 @@ export interface TranscriptMessageDto {
   } | null;
   /** Set when a reply ended early (stream error, stop, idle timeout). */
   incomplete: { code: string; message: string } | null;
+  /**
+   * #18 — assistant replies only: what the reply was grounded in. `null` for
+   * other rows and for replies recorded before #18 (not known), and for a
+   * semantic-cache hit (generated against another request's retrieval).
+   */
+  grounding?: ChatGrounding | null;
   createdAt: string;
 }
 

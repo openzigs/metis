@@ -19,6 +19,7 @@ import type {
   TranscriptRole,
 } from "@metis/shared";
 import { prisma } from "../../prisma.js";
+import { readGrounding } from "../chat-grounding.js";
 
 export type { TranscriptPart };
 
@@ -369,6 +370,8 @@ export function toDto(m: StoredMessage): TranscriptMessageDto {
       error && typeof error.code === "string"
         ? { code: error.code, message: typeof error.message === "string" ? error.message : "" }
         : null,
+    // #18 — what the reply was grounded in; only assistant replies carry one.
+    grounding: m.role === "assistant" && m.kind === "message" ? readGrounding(m.meta) : null,
     createdAt: m.createdAt.toISOString(),
   };
 }

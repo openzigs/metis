@@ -2507,22 +2507,29 @@ Both fields persist on the `Project` row and are read at session-create time. Th
   characters-per-token figure can be set in `AI_MODEL_CATALOG_OVERRIDES`
   (`contextWindow`, `charsPerToken`).
 
-### 14.6 Cross-Project Search
+### 14.6 Project Scope and Grounding
 
-By default, the AI Chat searches only within the current project's knowledge base. With the **Project Scope Selector**, you can search across multiple projects simultaneously.
+Chat answers from a project's knowledge base only when the chat is scoped to **one project**. With the scope on **All projects**, no project is searched: the model answers from its own general knowledge, which can sound confident while naming files or functions that do not exist in your code. [#18]
 
-**Using the scope selector:**
+**Choosing the scope:**
 
-1. In the Chat page, locate the scope pill above the message input (shows "All projects" by default).
-2. Click the pill to open the project picker.
-3. Select specific projects to scope your search, or choose "All my projects" to search everything you have access to.
-4. Your selection is remembered across sessions (stored in your browser).
+1. In the Chat page, find the scope pill in the header.
+2. Click it and pick one project, or **All my projects** for an unscoped chat.
+3. Your choice is remembered in your browser. If you have never picked one and can reach exactly one project, chat starts scoped to it; otherwise it starts on **All projects**.
 
-**How cross-project results appear:**
+Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
-When the AI retrieves information from multiple projects, each source is tagged with a colored badge showing the project name. This makes it clear which project each piece of information came from — helpful when requirements overlap or conflict across projects.
+**Seeing what an answer is based on:**
 
-**Access control:** You can only search projects you have been granted access to. If a project is removed from your access, its results will no longer appear in cross-project searches.
+- While the scope is **All projects**, a notice above the conversation says that answers are not grounded in any project.
+- Every reply carries a label underneath it:
+  - **Grounded in _Project_ · N sources** — excerpts from that project's knowledge base were given to the model.
+  - **No excerpts from _Project_ were retrieved automatically** — the chat is scoped, but automatic retrieval supplied no excerpts for this question (for example, nothing is ingested yet). The model may still have read the project through its tools, so check any file or code it names.
+  - **Not grounded — no project selected** — the chat is unscoped.
+
+  Replies written before this label existed show none.
+
+**Access control:** you can only scope a chat to a project you have been granted access to.
 
 ---
 
