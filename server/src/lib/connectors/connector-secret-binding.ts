@@ -6,6 +6,11 @@
  * `lib/vault/secret-binding.ts` for the model). Each guard runs before the
  * service writes anything; an unknown connector id is left to the service's own
  * 404 so the guard adds no existence oracle.
+ *
+ * #479 — each update guard returns the `updatedAt` of the row it checked
+ * (`null` for a create or an unknown id). The route hands it to the service,
+ * whose write is conditional on it, so a change landing between the check and
+ * the write is a 409 rather than a write the check never saw.
  */
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
@@ -35,19 +40,19 @@ export async function assertDbSecretBinding(
     databaseName?: string | null;
     secretRef?: string | null;
   },
-): Promise<void> {
+): Promise<Date | null> {
   if (id === null) {
     await assertSecretBindingAllowed(
       user,
       { before: [], after: refs(refBodyOf(input.secretRef)), destinationChanged: true },
       { target: { type: "db_connector", id: "new" }, metadata: { projectId } },
     );
-    return;
+    return null;
   }
   const existing = await prisma.databaseConnection.findFirst({
     where: { id, projectId, deletedAt: null },
   });
-  if (!existing) return;
+  if (!existing) return null;
   await assertSecretBindingAllowed(
     user,
     {
@@ -58,6 +63,7 @@ export async function assertDbSecretBinding(
     },
     { target: { type: "db_connector", id }, metadata: { projectId } },
   );
+  return existing.updatedAt;
 }
 
 /** The repo-connector counterpart of `assertDbSecretBinding`. */
@@ -66,19 +72,19 @@ export async function assertRepoSecretBinding(
   projectId: string,
   id: string | null,
   input: { provider?: string | null; apiBaseUrl?: string | null; secretRef?: string | null },
-): Promise<void> {
+): Promise<Date | null> {
   if (id === null) {
     await assertSecretBindingAllowed(
       user,
       { before: [], after: refs(refBodyOf(input.secretRef)), destinationChanged: true },
       { target: { type: "repo_connector", id: "new" }, metadata: { projectId } },
     );
-    return;
+    return null;
   }
   const existing = await prisma.repoConnection.findFirst({
     where: { id, projectId, deletedAt: null },
   });
-  if (!existing) return;
+  if (!existing) return null;
   await assertSecretBindingAllowed(
     user,
     {
@@ -89,6 +95,7 @@ export async function assertRepoSecretBinding(
     },
     { target: { type: "repo_connector", id }, metadata: { projectId } },
   );
+  return existing.updatedAt;
 }
 
 /**
@@ -110,11 +117,11 @@ export async function assertJiraSecretBinding(
     tlsCaCert?: string | null;
     apiToken?: string;
   },
-): Promise<void> {
+): Promise<Date | null> {
   const existing = await prisma.jiraConnection.findFirst({
     where: { id, deletedAt: null, ...(projectId ? { projectId } : {}) },
   });
-  if (!existing) return;
+  if (!existing) return null;
   await assertSecretBindingAllowed(
     user,
     {
@@ -124,6 +131,7 @@ export async function assertJiraSecretBinding(
     },
     { target: { type: "jira_connection", id }, metadata: { projectId: existing.projectId } },
   );
+  return existing.updatedAt;
 }
 
 /** The credential secret ids a test-management connection's `authConfigJson` holds. */
@@ -152,11 +160,11 @@ export async function assertTestMgmtSecretBinding(
     tlsConfig?: { rejectUnauthorized?: boolean; caCert?: string | null } | null;
     auth?: unknown;
   },
-): Promise<void> {
+): Promise<Date | null> {
   const existing = await prisma.testManagementConnection.findFirst({
     where: { id, deletedAt: null, ...(projectId ? { projectId } : {}) },
   });
-  if (!existing) return;
+  if (!existing) return null;
   const held = testMgmtCredentialIds(existing.authConfigJson);
   await assertSecretBindingAllowed(
     user,
@@ -170,4 +178,5 @@ export async function assertTestMgmtSecretBinding(
       metadata: { projectId: existing.projectId },
     },
   );
+  return existing.updatedAt;
 }

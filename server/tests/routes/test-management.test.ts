@@ -206,12 +206,13 @@ describe("PATCH /api/test-management/connections/:id", () => {
       .patch("/api/test-management/connections/c1")
       .send({ label: "renamed" });
     expect(res.status).toBe(200);
-    expect(updateTestManagementConnection).toHaveBeenCalledWith(
+    // Args 5–6 are the injectable deps and the #479 guard-read `updatedAt`.
+    expect(vi.mocked(updateTestManagementConnection).mock.calls[0].slice(0, 4)).toEqual([
       "c1",
       expect.objectContaining({ label: "renamed" }),
       "user-1",
       "p1",
-    );
+    ]);
   });
 });
 

@@ -129,6 +129,20 @@ vi.mock("../src/lib/prisma.js", async () => {
         servers.set(where.id, updated);
         return updated;
       }),
+      // #479 — the conditional write a binding-guarded PATCH makes.
+      updateMany: vi.fn(
+        async ({ where, data }: { where: { id: string; updatedAt: Date }; data: Partial<Row> }) => {
+          const r = servers.get(where.id);
+          if (!r || r.updatedAt.getTime() !== where.updatedAt.getTime()) return { count: 0 };
+          servers.set(where.id, { ...r, ...data, updatedAt: new Date() } as Row);
+          return { count: 1 };
+        },
+      ),
+      findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const r = servers.get(where.id);
+        if (!r) throw new Error("not found");
+        return r;
+      }),
     },
     projectMCPAllowlist: {
       findMany: vi.fn(

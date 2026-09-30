@@ -38,7 +38,12 @@ import { isUniqueViolation, uniqueViolationTarget } from "../../db/prisma-errors
 import { getVaultService } from "../../vault/vault-service.js";
 import { resolveRepoCloneRoot, resolveRepoClonePath } from "./clone-path.js";
 import { assertConnectorHostAllowed, resolveAndAssertConnectorHost } from "../network-allowlist.js";
-import { ConnectorError, NOOP_EMITTER, type ConnectorEmitter } from "../types.js";
+import {
+  ConnectorError,
+  concurrentUpdateError,
+  NOOP_EMITTER,
+  type ConnectorEmitter,
+} from "../types.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
 import { resolveVaultRef } from "../vault-resolver.js";
 import type { RepoFetcher } from "../../library/import.js";
@@ -514,6 +519,8 @@ export async function updateRepoConnector(
   id: string,
   patch: Omit<UpdateRepoConnectorInput, "id">,
   actorId: string,
+  /** #479 — the `updatedAt` the binding guard read; the write is conditional on it. */
+  expectedUpdatedAt?: Date | null,
 ) {
   const existing = await prisma.repoConnection.findFirst({
     where: { id, projectId, deletedAt: null },
@@ -554,7 +561,18 @@ export async function updateRepoConnector(
       data.secretId = null;
     }
   }
-  const row = await prisma.repoConnection.update({ where: { id }, data });
+  let row;
+  if (expectedUpdatedAt === undefined) {
+    row = await prisma.repoConnection.update({ where: { id }, data });
+  } else {
+    if (expectedUpdatedAt === null) throw concurrentUpdateError();
+    const { count } = await prisma.repoConnection.updateMany({
+      where: { id, updatedAt: expectedUpdatedAt },
+      data,
+    });
+    if (count === 0) throw concurrentUpdateError();
+    row = await prisma.repoConnection.findUniqueOrThrow({ where: { id } });
+  }
   audit({
     actor: { id: actorId },
     action: "connector.repo.update",

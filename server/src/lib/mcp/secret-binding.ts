@@ -96,14 +96,18 @@ export async function assertMcpCreateSecretBinding(
   );
 }
 
-/** An update of server `id`. An unknown id is left to the route's own 404. */
+/**
+ * An update of server `id`. An unknown id is left to the route's own 404.
+ * Returns the checked row's `updatedAt` (#479) for the conditional write, or
+ * `null` when there is no row.
+ */
 export async function assertMcpUpdateSecretBinding(
   user: Caller,
   id: string,
   patch: McpDestinationPatch,
-): Promise<void> {
+): Promise<Date | null> {
   const row = await prisma.mCPServer.findFirst({ where: { id, deletedAt: null } });
-  if (!row) return;
+  if (!row) return null;
   const storedEnv = parseJson(row.envJson) as StringMap;
   const storedHeaders = parseJson(row.headers) as StringMap;
   const nextEnv = patch.env !== undefined ? patch.env : storedEnv;
@@ -117,6 +121,7 @@ export async function assertMcpUpdateSecretBinding(
     },
     { target: { type: "mcp_server", id }, metadata: { label: row.label } },
   );
+  return row.updatedAt;
 }
 
 /**

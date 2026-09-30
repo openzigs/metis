@@ -25,7 +25,7 @@ import { getVaultService, type VaultService } from "../../vault/vault-service.js
 import { rotateOrCreate } from "../../vault/secret-rotation.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
-import { ConnectorError } from "../types.js";
+import { ConnectorError, concurrentUpdateError } from "../types.js";
 import { assertConnectorHostAllowed, type ConnectorKind } from "../network-allowlist.js";
 import { asVaultRef, resolveVaultRef } from "../vault-resolver.js";
 import { authenticateXray, buildBasicAuthHeader, buildBearerHeader } from "./auth.js";
@@ -464,6 +464,8 @@ export async function updateTestManagementConnection(
   actorId: string,
   projectId?: string,
   deps?: TestManagementServiceDeps,
+  /** #479 — the `updatedAt` the binding guard read; the write is conditional on it. */
+  expectedUpdatedAt?: Date | null,
 ): Promise<TestManagementConnectionDetail> {
   const db = pickPrisma(deps)!;
   const vault = pickVault(deps);
@@ -543,7 +545,17 @@ export async function updateTestManagementConnection(
 
   let row;
   try {
-    row = await db.testManagementConnection.update({ where: { id }, data });
+    if (expectedUpdatedAt === undefined) {
+      row = await db.testManagementConnection.update({ where: { id }, data });
+    } else {
+      if (expectedUpdatedAt === null) throw concurrentUpdateError();
+      const { count } = await db.testManagementConnection.updateMany({
+        where: { id, updatedAt: expectedUpdatedAt },
+        data,
+      });
+      if (count === 0) throw concurrentUpdateError();
+      row = await db.testManagementConnection.findUniqueOrThrow({ where: { id } });
+    }
   } catch (err) {
     if (isUniqueConstraintError(err) && typeof data.label === "string") {
       throw labelTaken(data.label);

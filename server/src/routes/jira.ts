@@ -161,12 +161,18 @@ export function jiraRouter(): Router {
       // #358 — moving a connection must not carry credentials someone else
       // supplied to a destination this caller chose.
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-      await assertJiraSecretBinding(req.user, String(req.params.id), scope, parsed.data);
+      const checkedAt = await assertJiraSecretBinding(
+        req.user,
+        String(req.params.id),
+        scope,
+        parsed.data,
+      );
       const updated = await updateJiraConnection(
         String(req.params.id),
         parsed.data,
         actor(req),
         scope,
+        checkedAt,
       );
       res.json(ok(updated));
     },

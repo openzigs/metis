@@ -3,6 +3,8 @@
  * `mcp-service.ts` so validators (`validation.ts`, `image-allowlist.ts`) can
  * throw it without creating a circular import back into the service file.
  */
+import { CONCURRENT_UPDATE, CONCURRENT_UPDATE_MESSAGE } from "../connectors/types.js";
+
 export class MCPRegistryError extends Error {
   readonly status: number;
   readonly code: string;
@@ -21,3 +23,7 @@ export class MCPRegistryError extends Error {
 export const PROJECT_REQUIRED = "PROJECT_REQUIRED";
 export const PROJECT_REQUIRED_MESSAGE =
   'A project-scoped MCP server needs a projectId: name the project it belongs to, or register it with scope "global".';
+
+/** #479 — the server row changed between the binding check and the write. */
+export const mcpConcurrentUpdateError = (): MCPRegistryError =>
+  new MCPRegistryError(409, CONCURRENT_UPDATE, CONCURRENT_UPDATE_MESSAGE);
