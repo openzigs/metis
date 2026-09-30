@@ -321,3 +321,105 @@ describe("Workbench — loading skills before the first message (PR #385 panel)"
     expect(screen.queryByTestId("skills-session")).toBeNull();
   });
 });
+
+describe("Workbench — first-send edge cases (#390)", () => {
+  it("a scope change aborts a create in flight, so the composer is usable again at once", async () => {
+    let createSignal: AbortSignal | undefined;
+    createSessionMock.mockImplementationOnce((_input, opts) => {
+      createSignal = opts?.signal;
+      // A create that never resolves on its own: only the abort ends it.
+      return new Promise<aiClient.AISession>((_, reject) => {
+        opts?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted.", "AbortError")),
+        );
+      });
+    });
+    renderStrict();
+    await waitForProject();
+    await send("slow");
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("workbench-send")).toHaveTextContent("Streaming…");
+    expect(createSignal?.aborted).toBe(false);
+
+    fireEvent.change(screen.getByTestId("workbench-project-picker"), { target: { value: "p2" } });
+
+    await waitFor(() => expect(screen.getByTestId("workbench-send")).toHaveTextContent("Send"));
+    expect(createSignal?.aborted).toBe(true);
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(touchMock).not.toHaveBeenCalled();
+    // The abort is the page's own doing, not a failure to report.
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("the next send after an aborted create opens a session in the new scope", async () => {
+    createSessionMock.mockImplementationOnce(
+      (_input, opts) =>
+        new Promise<aiClient.AISession>((_, reject) => {
+          opts?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    );
+    createSessionMock.mockResolvedValueOnce(session("sess-2", "p2"));
+    renderStrict();
+    await waitForProject();
+    await send("slow");
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByTestId("workbench-project-picker"), { target: { value: "p2" } });
+    await waitFor(() => expect(screen.getByTestId("workbench-send")).toHaveTextContent("Send"));
+
+    await send(" again");
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(2));
+    expect(createSessionMock.mock.calls[1]![0]).toMatchObject({ projectId: "p2" });
+    await waitFor(() =>
+      expect(streamChatMock).toHaveBeenCalledWith("sess-2", "slow again", expect.anything()),
+    );
+  });
+
+  it("a first send that fails before any reply does not put the session in Recent", async () => {
+    streamChatMock.mockImplementationOnce(async function* () {
+      throw new Error("HTTP 400");
+    });
+    renderStrict();
+    await waitForProject();
+    await send("rejected");
+    expect(await screen.findByText(/HTTP 400/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("workbench-send")).toHaveTextContent("Send"));
+    expect(touchMock).not.toHaveBeenCalled();
+  });
+
+  it("a turn that got a reply before the stream failed still reaches Recent", async () => {
+    streamChatMock.mockImplementationOnce(async function* () {
+      yield { type: "delta", content: "partial" } as StreamEvent;
+      throw new Error("connection reset");
+    });
+    renderStrict();
+    await waitForProject();
+    await send("hi");
+    expect(await screen.findByText(/connection reset/)).toBeInTheDocument();
+    await waitFor(() => expect(touchMock).toHaveBeenCalledTimes(1));
+    expect(touchMock.mock.calls[0]![0]).toMatchObject({ id: "sess-1" });
+  });
+
+  it("a stream aborted by a scope change shows no error banner", async () => {
+    streamChatMock.mockImplementationOnce(async function* (_id, _msg, signal) {
+      yield { type: "delta", content: "streaming…" } as StreamEvent;
+      await new Promise<void>((_, reject) => {
+        signal?.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted.", "AbortError")),
+        );
+      });
+    });
+    renderStrict();
+    await waitForProject();
+    await send("long");
+    await screen.findByText(/streaming…/);
+
+    fireEvent.change(screen.getByTestId("workbench-project-picker"), { target: { value: "p2" } });
+
+    await waitFor(() => expect(screen.getByTestId("workbench-send")).toHaveTextContent("Send"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/aborted/)).toBeNull();
+  });
+});
