@@ -138,6 +138,29 @@ describe("splitMarkdownSections", () => {
     expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
   });
 
+  // #576 — a CR before the LF is part of the line ending, so a fence or
+  // heading line in a mixed-ending document still opens, closes or splits.
+  it("closes a fence on a CRLF-terminated fence line", () => {
+    const { sections } = splitMarkdownSections("## A\n```\ncode\n```\r\n## B");
+    expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
+  });
+
+  it.each(["```\r", "```js\r", "~~~\r"])(
+    "opens a fence on the CRLF-terminated fence line %j",
+    (opener) => {
+      const close = opener[0].repeat(3);
+      const markdown = ["## A", opener, "## Inside", close, "## B"].join("\n");
+      const { sections } = splitMarkdownSections(markdown);
+      expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
+    },
+  );
+
+  it("splits at a CRLF-terminated heading and puts it in the table of contents", () => {
+    const { sections, toc } = splitMarkdownSections("## A\r\nText.\r\n## B #\r\nMore.");
+    expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
+    expect(toc.map((e) => e.id)).toEqual(["a", "b"]);
+  });
+
   it("closes a fence only with the same character and at least its length", () => {
     const { sections } = splitMarkdownSections("## A\n````\n```\n## Inside\n````\n## B");
     expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
@@ -668,6 +691,39 @@ describe("reference links and footnotes in the body across sections (#228)", () 
       "## A\nSee [b].\n## B\npara\r\n\r\n[b]: /y",
     ],
     ["a preamble holding only a CR", ["\r", "## A", "Text."].join("\n")],
+    // #576 — a CRLF-terminated fence line closes (and opens) a fence, as
+    // CommonMark reads it, so the headings after it are headings.
+    [
+      "a fence closed by a CRLF-terminated fence line",
+      ["## A", "```", "code", "```\r", "## B", "```", "## C"].join("\n"),
+    ],
+    [
+      "a fence opened by a CRLF-terminated fence line",
+      ["## A", "```js\r", "## Not a heading", "```", "## B", "Text."].join("\n"),
+    ],
+    // …and so does a definition line or a block start (#576).
+    [
+      "a definition whose CRLF-terminated label line takes its destination from the next",
+      ["## A", "See [b].", "## B", "", "[b]:\r", "/y"].join("\n"),
+    ],
+    [
+      "a CRLF-terminated thematic break ending a footnote's paragraph",
+      ["## A", "Cited.[^1]", "## B", "", "[^1]: One", "***\r", "After."].join("\n"),
+    ],
+    [
+      "a CRLF-terminated `-` line under a footnote's paragraph",
+      ["## A", "Cited.[^1]", "## B", "", "[^1]: One", "-\r", "After."].join("\n"),
+    ],
+    [
+      "an empty CRLF-terminated ordered item under a footnote's paragraph",
+      ["## A", "Cited.[^1]", "## B", "", "[^1]: One", "1.\r", "After."].join("\n"),
+    ],
+    // …and a CRLF-terminated heading counts toward the slug of the next
+    // heading with the same text.
+    [
+      "a CRLF-terminated heading",
+      ["## B", "Text.", "### B\r", "More.", "## B", "Last."].join("\n"),
+    ],
     // The longest dash run that still leaves room for the closing label's one
     // extra dash inside CommonMark's 999-character label limit, and the first
     // that does not (PR #569 review).
