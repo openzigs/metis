@@ -371,13 +371,13 @@ describe("POST /drafts/generate", () => {
     expect(res.body.data.summary.total).toBe(1);
   });
 
-  it("#362 — forwards the approval-gate precondition and its resolve link to the client", async () => {
+  it("#362 — forwards the approval-gate precondition to the client", async () => {
     vi.mocked(generateDraftsMock).mockRejectedValueOnce(
       new PublishError(400, "APPROVALS_BLOCKING", "2 pending approval(s)", false, {
         analysisId: "analysis_test_001",
         pendingCount: 2,
         rejectedCount: 0,
-        resolveUrl: "/projects/proj_test_001/analysis?analysisId=analysis_test_001#approvals",
+        action: "resolve",
       }),
     );
     const token = await login("developer");
@@ -392,7 +392,7 @@ describe("POST /drafts/generate", () => {
       analysisId: "analysis_test_001",
       pendingCount: 2,
       rejectedCount: 0,
-      resolveUrl: "/projects/proj_test_001/analysis?analysisId=analysis_test_001#approvals",
+      action: "resolve",
     });
   });
 

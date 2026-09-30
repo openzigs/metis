@@ -421,9 +421,11 @@ describe("generateDrafts", () => {
           pendingCount: 3,
           rejectedCount: 0,
           action: "resolve",
-          resolveUrl: "/projects/proj_1/analysis?analysisId=analysis_1#approvals",
         },
       });
+      // #406 — ids and counts only: the UI builds its own route, so there is
+      // no server-made URL for it to guard against.
+      expect((gated as PublishError).details).not.toHaveProperty("resolveUrl");
       const message = (gated as PublishError).message;
       expect(message).toContain("3 pending");
       expect(message).not.toContain("rejected");
@@ -447,9 +449,9 @@ describe("generateDrafts", () => {
           pendingCount: 3,
           rejectedCount: 1,
           action: "rerun",
-          resolveUrl: "/projects/proj_1/analysis",
         },
       });
+      expect((rejected as PublishError).details).not.toHaveProperty("resolveUrl");
       expect((rejected as PublishError).message).toContain("re-run the analysis");
       expect((rejected as PublishError).message).not.toContain("resolve them");
 

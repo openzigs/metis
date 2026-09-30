@@ -7,7 +7,7 @@
  * severity / category / agent and page at 20, and the run form is collapsed
  * once there are runs to read.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper, TEST_USER } from "../test-utils";
@@ -222,7 +222,7 @@ vi.mock("@/components/analysis/ApprovalsPanel", async () => {
     ApprovalsPanel: ({ analysisId }: { analysisId: string }) => {
       const qc = useQueryClient();
       return (
-        <div data-testid="approvals-panel-stub">
+        <div id="approvals" data-testid="approvals-panel-stub">
           <button
             type="button"
             onClick={() => void qc.invalidateQueries({ queryKey: ["approvals", analysisId] })}
@@ -328,10 +328,16 @@ const findingTitles = () =>
     .queryAllByText(/^Finding \d+$/)
     .map((el) => el.textContent);
 
+let scrolled: Element[] = [];
+
 const lastReplace = () => nav.replace.mock.calls.at(-1)?.[0] as string | undefined;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  scrolled = [];
+  HTMLElement.prototype.scrollIntoView = function (this: Element) {
+    scrolled.push(this);
+  };
   nav.search = new URLSearchParams();
   apiMock.get.mockResolvedValue(SNAPSHOT);
   apiMock.listApprovals.mockResolvedValue({
@@ -419,6 +425,125 @@ describe("the URL carries the tab and the run", () => {
     await userEvent.click(link);
     expect(await screen.findByTestId("approvals-panel-stub")).toBeInTheDocument();
     expect(lastReplace()).toBe("/projects/p1/analysis?tab=approvals");
+    // #406 — and scrolls to the panel, which mounts after the tab switch.
+    await waitFor(() => expect(scrolled).toEqual([screen.getByTestId("approvals-panel-stub")]));
+  });
+});
+
+// Issue #406 — the Publish page's "Resolve approvals" link ends in #approvals,
+// but the panel mounts only after the run, detail and approvals queries
+// resolve, so the browser's own fragment scroll finds nothing.
+describe("the #approvals deep link", () => {
+  afterEach(() => {
+    window.history.replaceState(null, "", window.location.pathname);
+  });
+
+  it("scrolls to the approvals panel once it mounts", async () => {
+    window.history.replaceState(null, "", "#approvals");
+    nav.search = new URLSearchParams("analysisId=an-1&tab=approvals");
+    renderPage();
+    const panel = await screen.findByTestId("approvals-panel-stub");
+    await waitFor(() => expect(scrolled).toEqual([panel]));
+  });
+
+  it("does not scroll without the fragment", async () => {
+    nav.search = new URLSearchParams("analysisId=an-1&tab=approvals");
+    renderPage();
+    await screen.findByTestId("approvals-panel-stub");
+    await screen.findByTestId("approvals-none");
+    expect(scrolled).toEqual([]);
+  });
+});
+
+// Issue #406 — how the page wires GenerateIssuesAction. The component has its
+// own tests; these catch a wrong prop (requirementCount, hasFindings,
+// ticketStatus, approvalsState) that those cannot see.
+describe("Generate GitHub Issues on the Findings tab", () => {
+  beforeEach(() => {
+    nav.search = new URLSearchParams("tab=findings");
+  });
+
+  it("links to Publish for this run when it has requirements", async () => {
+    renderPage();
+    expect(await screen.findByRole("link", { name: /Generate GitHub Issues/ })).toHaveAttribute(
+      "href",
+      "/projects/p1/publish?analysisId=an-1",
+    );
+  });
+
+  it("names the pending approvals holding the requirements back", async () => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, requirements: [] });
+    apiMock.listApprovals.mockResolvedValue({
+      items: [],
+      ticketStatus: { allowed: false, pendingCount: 2, rejectedCount: 0 },
+    });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
+        "2 pending approval(s) must be resolved",
+      ),
+    );
+    expect(screen.queryByRole("link", { name: /Generate GitHub Issues/ })).not.toBeInTheDocument();
+  });
+
+  it("names a rejected approval", async () => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, requirements: [] });
+    apiMock.listApprovals.mockResolvedValue({
+      items: [],
+      ticketStatus: { allowed: false, pendingCount: 0, rejectedCount: 1 },
+    });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
+        "1 approval(s) were rejected",
+      ),
+    );
+  });
+
+  it("says it is checking while the approvals query is in flight", async () => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, requirements: [] });
+    apiMock.listApprovals.mockReturnValue(new Promise(() => {}));
+    renderPage();
+    expect(await screen.findByTestId("generate-issues-reason")).toHaveTextContent(
+      "Checking approvals…",
+    );
+  });
+
+  it("says the gate could not be checked when the approvals query fails", async () => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, requirements: [] });
+    apiMock.listApprovals.mockRejectedValue(new Error("boom"));
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
+        "Couldn't check the approval gate",
+      ),
+    );
+  });
+
+  it("explains an ungated run with findings but no requirements", async () => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, requirements: [] });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
+        "No requirements to generate issues from.",
+      ),
+    );
+  });
+
+  it("offers nothing on an ungated run with no findings and no requirements", async () => {
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      requirements: [],
+      agentResults: SNAPSHOT.agentResults.map((a) => ({ ...a, findings: [] })),
+    });
+    renderPage();
+    await screen.findByTestId("findings-section");
+    await waitFor(() => expect(apiMock.listApprovals).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId("generate-issues-reason")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Generate GitHub Issues/ }),
+    ).not.toBeInTheDocument();
   });
 });
 

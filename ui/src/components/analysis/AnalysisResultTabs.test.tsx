@@ -13,10 +13,12 @@ function Harness({
   initial = "summary",
   counts = {},
   onChange = () => {},
+  onAnchor,
 }: {
   initial?: AnalysisTab;
   counts?: Partial<Record<AnalysisTab, number>>;
   onChange?: (t: AnalysisTab) => void;
+  onAnchor?: (anchor: string) => void;
 }) {
   const [tab, setTab] = useState<AnalysisTab>(initial);
   return (
@@ -27,6 +29,7 @@ function Harness({
         onChange(t);
       }}
       counts={counts}
+      onAnchor={onAnchor}
     >
       <TabsContent value="summary">
         <p>summary body</p>
@@ -81,6 +84,18 @@ describe("AnalysisResultTabs (#30)", () => {
     expect(screen.getByText("approvals body")).toBeInTheDocument();
   });
 
+  // #406 — the switch alone left the reader at the top of the page; the page
+  // needs the anchor to scroll to once the tab's content mounts.
+  it("reports the anchor it intercepted, so the page can scroll to it", async () => {
+    const onAnchor = vi.fn();
+    render(<Harness onAnchor={onAnchor} />);
+    await userEvent.click(screen.getByRole("link", { name: "Go to approvals" }));
+    expect(onAnchor).toHaveBeenCalledWith("#approvals");
+    await userEvent.click(screen.getByRole("tab", { name: /^Summary/ }));
+    await userEvent.click(screen.getByRole("link", { name: "Elsewhere" }));
+    expect(onAnchor).toHaveBeenCalledTimes(1);
+  });
+
   it("turns 'Review questions' into a switch to the Questions tab", async () => {
     render(<Harness />);
     await userEvent.click(screen.getByRole("link", { name: "Review questions" }));
@@ -89,7 +104,8 @@ describe("AnalysisResultTabs (#30)", () => {
 
   it("lets an anchor into the CURRENT tab scroll as a normal link", () => {
     const onChange = vi.fn();
-    render(<Harness initial="questions" onChange={onChange} />);
+    const onAnchor = vi.fn();
+    render(<Harness initial="questions" onChange={onChange} onAnchor={onAnchor} />);
     const link = document.createElement("a");
     link.setAttribute("href", "#clarifying-questions");
     screen.getByText("questions body").appendChild(link);
@@ -99,6 +115,7 @@ describe("AnalysisResultTabs (#30)", () => {
 
     expect(event.defaultPrevented).toBe(false);
     expect(onChange).not.toHaveBeenCalled();
+    expect(onAnchor).not.toHaveBeenCalled();
   });
 
   it("leaves any other link alone", async () => {
