@@ -152,7 +152,12 @@ describe("generated-doc publication compatibility", () => {
       expect.objectContaining({
         where: { id: revisionDocumentId },
         update: {},
-        create: expect.objectContaining({ status: "pending", indexState: "pending" }),
+        // #474 — stored as a generated document, not left at the `upload` default.
+        create: expect.objectContaining({
+          status: "pending",
+          indexState: "pending",
+          source: "generated",
+        }),
       }),
     );
     expect(schedulerEnqueue).toHaveBeenCalledWith(
@@ -545,6 +550,9 @@ describe("generated-doc publication compatibility", () => {
     });
 
     expect(storageWrite).toHaveBeenCalled();
+    expect(prisma.document.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ source: "generated" }) }),
+    );
     expect(embed).toHaveBeenCalledWith(["## Overview\n\nAlpha"]);
     expect(writeQuarantine).toHaveBeenCalledWith(
       expect.objectContaining({

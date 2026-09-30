@@ -59,10 +59,20 @@ export interface ProjectListPage {
   offset: number;
 }
 
+/**
+ * #474 — which path wrote a document (`documents.source`, see
+ * `server/src/lib/documents/document-source.ts`). Classify on this, never on
+ * the filename: an upload may be named `jira:ABC-1`.
+ */
+export type DocumentSource = "upload" | "generated" | "repo" | "db" | "confluence" | "jira";
+
 export interface DocumentRow {
   id: string;
   projectId: string;
   filename: string;
+  source: DocumentSource;
+  /** #474 — a title the source supplied (a Confluence page's); null when none. */
+  title?: string | null;
   mimeType: string;
   sizeBytes: number;
   status: "pending" | "queued" | "processing" | "ready" | "failed";
