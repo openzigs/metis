@@ -65,6 +65,11 @@ export function describeConditionalBindingUpdates(opts: {
   /** Unique per run: every row and secret name carries it (a Postgres db is shared). */
   suffix: string;
   connect: () => Promise<{ db: PrismaClient; cleanup: () => Promise<void> | void }>;
+  /**
+   * Delete every row this run wrote before disconnecting. Needed where the
+   * database outlives the run (Postgres); a throwaway SQLite file does not.
+   */
+  purgeRunRows?: boolean;
   hookTimeoutMs?: number;
 }): void {
   const { state, suffix } = opts;
@@ -154,6 +159,60 @@ export function describeConditionalBindingUpdates(opts: {
     let seq = 0;
     const next = () => (seq += 1);
 
+    type Model = "jiraConnection" | "testManagementConnection" | "mCPServer";
+    /**
+     * #495 — run `fn` with `model.findUniqueOrThrow` failing: the read the
+     * service makes right AFTER its conditional write has committed. Anything
+     * the request does after that point sees a written row.
+     */
+    const failingReadAfterWrite = async <T>(model: Model, fn: () => Promise<T>): Promise<T> => {
+      const real = db;
+      const delegate = (real as unknown as Record<Model, object>)[model];
+      const failing = new Proxy(delegate, {
+        get(target, prop) {
+          if (prop === "findUniqueOrThrow") {
+            return async () => {
+              throw new Error("injected: read after the committed write failed");
+            };
+          }
+          const v = Reflect.get(target, prop, target) as unknown;
+          return typeof v === "function" ? (v as () => unknown).bind(target) : v;
+        },
+      });
+      state.db = new Proxy(real, {
+        get(target, prop) {
+          if (prop === model) return failing;
+          const v = Reflect.get(target, prop, target) as unknown;
+          return typeof v === "function" ? (v as () => unknown).bind(target) : v;
+        },
+      });
+      try {
+        return await fn();
+      } finally {
+        state.db = real;
+      }
+    };
+
+    /** #495 — the `vault.delete` audit rows recorded against `secretIds`. */
+    const withdrawalAudits = async (secretIds: string[]) => {
+      await vi.waitFor(() => expect(getAuditService().inFlight).toBe(0));
+      return db.auditLog.findMany({
+        where: { action: "vault.delete", targetType: "secret", targetId: { in: secretIds } },
+      });
+    };
+    /** #495 — every audit row names `reason: concurrent_update` and the actor. */
+    const expectConcurrentWithdrawals = async (secretIds: string[]) => {
+      expect(secretIds.length, "the losing PATCH created no secret").toBeGreaterThan(0);
+      const rows = await withdrawalAudits(secretIds);
+      expect(rows.map((r) => r.targetId).sort()).toEqual([...secretIds].sort());
+      for (const r of rows) {
+        expect(r.actorId).toBe(COORD_ID);
+        expect(JSON.parse(r.metadata ?? "{}")).toMatchObject({ reason: "concurrent_update" });
+      }
+    };
+    /** Secrets `after` holds that `before` did not. */
+    const added = (before: string[], after: string[]) => after.filter((s) => !before.includes(s));
+
     beforeAll(async () => {
       ({ db, cleanup } = await opts.connect());
       state.db = db;
@@ -216,12 +275,32 @@ export function describeConditionalBindingUpdates(opts: {
       state.afterVaultCreate = null;
     });
 
+    /**
+     * Every row this run wrote, children first. Most hang off the project and
+     * go with it (`onDelete: Cascade`); MCP servers, secrets and audit rows do
+     * not, and are found by the run's users and label suffix.
+     */
+    const purgeRunRows = async () => {
+      const users = [ADMIN_ID, COORD_ID];
+      await db.auditLog.deleteMany({ where: { actorId: { in: users } } });
+      await db.mCPServer.deleteMany({ where: { label: { startsWith: `mcp-${suffix}-` } } });
+      await db.project.deleteMany({ where: { id: PROJ } });
+      await db.workspaceMember.deleteMany({ where: { workspaceId: WS } });
+      await db.workspace.deleteMany({ where: { id: WS } });
+      await db.secret.deleteMany({ where: { createdById: { in: users } } });
+      await db.user.deleteMany({ where: { id: { in: users } } });
+    };
+
     afterAll(async () => {
       await vi.waitFor(() => expect(getAuditService().inFlight).toBe(0));
       setMCPRegistry(null);
       __resetVaultSingleton();
-      await db?.$disconnect();
-      await cleanup();
+      try {
+        if (db && opts.purgeRunRows) await purgeRunRows();
+      } finally {
+        await db?.$disconnect();
+        await cleanup();
+      }
     });
 
     // ── DB connectors ────────────────────────────────────────────────────────
@@ -370,6 +449,7 @@ export function describeConditionalBindingUpdates(opts: {
         const id = await create();
         const before = await row(id);
         const secretsBefore = await liveCoordSecrets();
+        const secretsEvery = await everyCoordSecret();
         const { a, b } = await interleaveAfterVault(url(id), newCredentials, {
           label: `a-${next()}`,
         });
@@ -385,6 +465,24 @@ export function describeConditionalBindingUpdates(opts: {
           where: { id: { in: [before.secretId, before.tlsCaSecretId!] }, deletedAt: null },
         });
         expect(held).toHaveLength(2);
+        // A09 — each withdrawal is on the record, as each creation was.
+        await expectConcurrentWithdrawals(added(secretsEvery, await everyCoordSecret()));
+      });
+
+      it("#495 — a failure after the write has landed keeps the secrets the row now names", async () => {
+        const id = await create();
+        const before = await row(id);
+        const res = await failingReadAfterWrite("jiraConnection", () =>
+          call("patch", url(id), COORD, newCredentials),
+        );
+        expect(res.status, JSON.stringify(res.body)).toBe(500);
+        const after = await row(id);
+        expect(after.secretId).not.toBe(before.secretId);
+        expect(after.tlsCaSecretId).not.toBe(before.tlsCaSecretId);
+        const vault = getVaultService();
+        expect((await vault.read(after.secretId)).plaintext).toBe(newCredentials.apiToken);
+        expect((await vault.read(after.tlsCaSecretId!)).plaintext).toBe(newCredentials.tlsCaCert);
+        expect(await withdrawalAudits([after.secretId, after.tlsCaSecretId!])).toEqual([]);
       });
 
       it("#495 — the same PATCH without a concurrent change keeps its new secrets", async () => {
@@ -462,12 +560,32 @@ export function describeConditionalBindingUpdates(opts: {
         const id = await create();
         const before = await row(id);
         const secretsBefore = await liveCoordSecrets();
+        const secretsEvery = await everyCoordSecret();
         const { a, b } = await interleaveAfterVault(url(id), newAuth, { label: `a-${next()}` });
         expect(a.status, JSON.stringify(a.body)).toBe(200);
         expect(b.status, JSON.stringify(b.body)).toBe(409);
         expect(b.body.error.code).toBe(CONFLICT);
         expect(await liveCoordSecrets()).toEqual(secretsBefore);
         expect((await row(id)).authConfigJson).toBe(before.authConfigJson);
+        // A09 — the withdrawal is on the record, as the creation was.
+        await expectConcurrentWithdrawals(added(secretsEvery, await everyCoordSecret()));
+      });
+
+      it("#495 — a failure after the write has landed keeps the secret the row now names", async () => {
+        const id = await create();
+        const before = await row(id);
+        const secretsBefore = await liveCoordSecrets();
+        const res = await failingReadAfterWrite("testManagementConnection", () =>
+          call("patch", url(id), COORD, newAuth),
+        );
+        expect(res.status, JSON.stringify(res.body)).toBe(500);
+        const after = await row(id);
+        expect(after.authConfigJson).not.toBe(before.authConfigJson);
+        const made = added(secretsBefore, await liveCoordSecrets());
+        expect(made).toHaveLength(1);
+        expect(after.authConfigJson).toContain(made[0]);
+        expect((await getVaultService().read(made[0])).plaintext).toBe(newAuth.auth.bearerToken);
+        expect(await withdrawalAudits(made)).toEqual([]);
       });
 
       it("the service refuses a write whose guard saw no row", async () => {
@@ -535,6 +653,7 @@ export function describeConditionalBindingUpdates(opts: {
       it("#495 — a PATCH whose row moved during its vault work withdraws the secret it made", async () => {
         const id = await create();
         const secretsBefore = await liveCoordSecrets();
+        const secretsEvery = await everyCoordSecret();
         const { a, b } = await interleaveAfterVault(url(id), plaintextEnv, {
           label: `a-${next()}`,
         });
@@ -543,6 +662,25 @@ export function describeConditionalBindingUpdates(opts: {
         expect(b.body.error.code).toBe(CONFLICT);
         expect(await liveCoordSecrets()).toEqual(secretsBefore);
         expect(JSON.parse((await row(id)).envJson ?? "{}")).toEqual({ API_KEY: ref(FOREIGN) });
+        // A09 — the withdrawal is on the record, as the creation was.
+        await expectConcurrentWithdrawals(added(secretsEvery, await everyCoordSecret()));
+      });
+
+      it("#495 — a failure after the write has landed keeps the secret the row now names", async () => {
+        const id = await create();
+        const secretsBefore = await liveCoordSecrets();
+        const res = await failingReadAfterWrite("mCPServer", () =>
+          call("patch", url(id), COORD, plaintextEnv),
+        );
+        expect(res.status, JSON.stringify(res.body)).toBe(500);
+        const made = added(secretsBefore, await liveCoordSecrets());
+        expect(made).toHaveLength(1);
+        const [secret] = await db.secret.findMany({ where: { id: made[0] } });
+        expect(JSON.parse((await row(id)).envJson ?? "{}").API_KEY).toBe(
+          ref(secret.name.replace(/^global:/, "")),
+        );
+        expect((await getVaultService().read(made[0])).plaintext).toBe(plaintextEnv.env.API_KEY);
+        expect(await withdrawalAudits(made)).toEqual([]);
       });
 
       it("#495 — the same PATCH without a concurrent change keeps its new secret", async () => {

@@ -23,7 +23,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../../prisma.js";
 import { getVaultService, type VaultService } from "../../vault/vault-service.js";
 import { rotateOrCreate } from "../../vault/secret-rotation.js";
-import { retireReplacedSecret } from "../../vault/secret-retirement.js";
+import { retireReplacedSecret, withdrawCreatedSecrets } from "../../vault/secret-retirement.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError, concurrentUpdateError, rowUnchangedSince } from "../types.js";
@@ -610,9 +610,12 @@ export async function updateTestManagementConnection(
   }
 
   let row;
+  /** #495 — set the moment the row is written: from then on it names the new secrets. */
+  let landed = false;
   try {
     if (expectedUpdatedAt === undefined) {
       row = await db.testManagementConnection.update({ where: { id }, data });
+      landed = true;
     } else {
       if (expectedUpdatedAt === null) throw concurrentUpdateError();
       const { count } = await db.testManagementConnection.updateMany({
@@ -620,12 +623,22 @@ export async function updateTestManagementConnection(
         data,
       });
       if (count === 0) throw concurrentUpdateError();
+      landed = true;
       row = await db.testManagementConnection.findUniqueOrThrow({ where: { id } });
     }
   } catch (err) {
-    // #495 — the secrets this request created belong to no connection now, so
-    // they are withdrawn (as the create path does).
-    for (const secretId of created) await vault.delete(secretId).catch(() => undefined);
+    // #495 — a write that did not land leaves the secrets this request created
+    // belonging to no connection, so they are withdrawn (as the create path
+    // does). Once the write has landed the row names them, and withdrawing
+    // would leave it unreadable.
+    if (!landed) {
+      await withdrawCreatedSecrets(vault, created, {
+        actorId,
+        resource: { type: "test_management_connection", id },
+        projectId: existing.projectId,
+        cause: err,
+      });
+    }
     if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);
     }

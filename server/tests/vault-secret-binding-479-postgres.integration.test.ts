@@ -67,8 +67,13 @@ describeConditionalBindingUpdates({
   enabled,
   state,
   suffix: randomUUID().slice(0, 8),
-  connect: async () => ({
-    db: new PrismaClient({ adapter: selectPrismaAdapter(databaseUrl) }),
-    cleanup: () => undefined,
-  }),
+  // The database is shared and outlives the run: the suite deletes every row
+  // this run wrote, then disconnects the client before `cleanup` runs.
+  purgeRunRows: true,
+  connect: async () => {
+    const db = new PrismaClient({ adapter: selectPrismaAdapter(databaseUrl) });
+    // Idempotent after the suite's own `$disconnect()`: the client owns a pg
+    // pool, and a pool left open keeps the worker alive past the run.
+    return { db, cleanup: () => db.$disconnect() };
+  },
 });

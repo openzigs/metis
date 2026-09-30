@@ -28,6 +28,7 @@
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import { CONCURRENT_UPDATE } from "../connectors/types.js";
 import { createChildLogger } from "../logger.js";
 import type { VaultService } from "./vault-service.js";
 
@@ -113,5 +114,55 @@ export async function retireReplacedSecret(
       error: err instanceof Error ? err.message : String(err),
     });
     return false;
+  }
+}
+
+export interface WithdrawContext {
+  actorId: string;
+  /** The resource whose update created the secrets, e.g. `{ type: "jira_connection", id }`. */
+  resource: { type: string; id: string };
+  projectId?: string | null;
+  /** The error that stopped the update from landing. */
+  cause: unknown;
+}
+
+/**
+ * #495 — soft-delete the secrets an update created when that update did not
+ * land, and record each withdrawal as `vault.delete` against the secret — the
+ * counterpart of the `vault.write` its creation emitted. Call ONLY when the
+ * row was not written: a committed row names these secrets.
+ *
+ * Never throws: the caller is already on its error path and rethrows its own
+ * error. A secret that cannot be withdrawn is logged and stays live.
+ */
+export async function withdrawCreatedSecrets(
+  vault: Pick<VaultService, "delete">,
+  secretIds: readonly string[],
+  ctx: WithdrawContext,
+): Promise<void> {
+  const code = (ctx.cause as { code?: unknown } | null)?.code;
+  const reason = code === CONCURRENT_UPDATE ? "concurrent_update" : "update_failed";
+  for (const secretId of secretIds) {
+    try {
+      await vault.delete(secretId);
+      audit({
+        actor: { id: ctx.actorId },
+        action: "vault.delete",
+        target: { type: "secret", id: secretId },
+        metadata: {
+          source: "update_not_applied",
+          reason,
+          resourceType: ctx.resource.type,
+          resourceId: ctx.resource.id,
+          ...(ctx.projectId ? { projectId: ctx.projectId } : {}),
+        },
+      });
+    } catch (err) {
+      log.warn("Could not withdraw a secret created by an update that did not land", {
+        secretId,
+        resource: ctx.resource,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }

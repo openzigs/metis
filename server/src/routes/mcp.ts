@@ -59,6 +59,7 @@ import { exportToCopilotMcpJson, parseCopilotMcpJson } from "../lib/mcp/mcp-json
 import { scanForHiddenChars } from "../lib/mcp/hidden-char-scanner.js";
 import { getVaultService } from "../lib/vault/vault-service.js";
 import { freshSecretLabel } from "../lib/vault/secret-rotation.js";
+import { withdrawCreatedSecrets } from "../lib/vault/secret-retirement.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -343,6 +344,8 @@ export function mcpRouter(): Router {
     );
     /** #495 — secrets this request vaults; withdrawn if the write does not land. */
     const created: string[] = [];
+    /** #495 — set the moment the row is written: from then on it names the new secrets. */
+    let landed = false;
     try {
       const existing = await svc().get(String(req.params.id));
       if (!existing) throw new AppError(404, "NOT_FOUND", "MCP server not found");
@@ -395,14 +398,21 @@ export function mcpRouter(): Router {
         },
         actor,
         checkedAt,
+        () => {
+          landed = true;
+        },
       );
       res.json(ok(updated));
     } catch (err) {
-      // #495 — the vaulted values belong to no server now, so they are withdrawn.
-      for (const id of created) {
-        await getVaultService()
-          .delete(id)
-          .catch(() => undefined);
+      // #495 — a write that did not land leaves the vaulted values belonging to
+      // no server, so they are withdrawn. Once it has landed the row names
+      // them, and withdrawing would leave the server's env unresolvable.
+      if (!landed) {
+        await withdrawCreatedSecrets(getVaultService(), created, {
+          actorId: actor.id,
+          resource: { type: "mcp_server", id: String(req.params.id) },
+          cause: err,
+        });
       }
       rethrow(err);
     }
