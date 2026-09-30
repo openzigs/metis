@@ -61,6 +61,11 @@ class InMemoryRevocationStore implements RevocationStore {
     return false;
   }
 
+  async isCutOff(userId: string, issuedAt: number): Promise<boolean> {
+    const cutoff = this.db.cutoffs.get(userId);
+    return cutoff !== undefined && issuedAt <= Math.floor(cutoff.getTime() / 1000);
+  }
+
   async revokeAllForUser(userId: string): Promise<void> {
     this.db.cutoffs.set(userId, new Date());
   }
@@ -202,6 +207,26 @@ describe("jwt", () => {
           return [];
         }),
       ).rejects.toThrow("Token has been revoked");
+    });
+
+    it("a SCIM deprovision that lands after verification refuses the new pair", async () => {
+      const refreshToken = token();
+      // `revokeAllForUser` runs after `verifyRefreshToken` has passed and before
+      // the claim — the claim still wins (the token itself is not revoked), so
+      // only the post-claim cutoff re-check can refuse issuance.
+      await expect(
+        refreshAccessToken(refreshToken, async (userId) => {
+          await revokeAllUserSessions(userId);
+          return [];
+        }),
+      ).rejects.toThrow("Token has been revoked");
+      // The claim was recorded, so the presented token is spent either way.
+      expect(backing.revoked.size).toBe(1);
+    });
+
+    it("a refresh with no deprovision still issues after the cutoff re-check", async () => {
+      const pair = await refreshAccessToken(token(), noMemberships);
+      await expect(verifyRefreshToken(pair.refreshToken)).resolves.toBeTruthy();
     });
   });
 

@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { refreshUpstreamTokens, applyRotatedCookies } from "@/lib/edge-auth";
+import {
+  refreshUpstreamTokens,
+  applyRotatedCookies,
+  resetRefreshSingleFlight,
+} from "@/lib/edge-auth";
 import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/config";
 import type { NextResponse } from "next/server";
 
 const fetchMock = vi.fn();
 
 beforeEach(() => {
+  resetRefreshSingleFlight();
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
 });

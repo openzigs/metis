@@ -390,6 +390,12 @@ export async function refreshAccessToken(
   if (!(await store.claimToken(decoded.tokenId, decoded.userId, expiresAt))) {
     throw new Error("Token has been revoked");
   }
+  // #582 — a SCIM deprovision (`revokeAllForUser`) can land between the check in
+  // `verifyRefreshToken` and the claim above; re-read the cutoff now that the
+  // token is ours, so a deprovisioned user never receives the new pair.
+  if (decoded.iat !== undefined && (await store.isCutOff(decoded.userId, decoded.iat))) {
+    throw new Error("Token has been revoked");
+  }
   return issueTokens({
     userId: decoded.userId,
     username: decoded.username,

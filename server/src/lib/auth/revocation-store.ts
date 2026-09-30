@@ -54,6 +54,16 @@ export interface RevocationStore {
    */
   isRevoked(tokenId: string, userId: string, issuedAt?: number): Promise<boolean>;
   /**
+   * #582 — true if a token issued at `issuedAt` (seconds) falls at/before the
+   * user's session cutoff, ignoring any per-token revocation. Refresh rotation
+   * re-checks this AFTER `claimToken` (which has itself just revoked the token,
+   * so `isRevoked` can no longer answer), so a SCIM deprovision that lands
+   * between the first check and the claim still refuses the new pair.
+   *
+   * FAILS CLOSED like `isRevoked`.
+   */
+  isCutOff(userId: string, issuedAt: number): Promise<boolean>;
+  /**
    * Revoke every CURRENT session for a user by recording a cutoff = now. Tokens
    * issued strictly AFTER this instant (e.g. after re-provisioning) still pass.
    */
@@ -91,6 +101,21 @@ export class PrismaRevocationStore implements RevocationStore {
     } catch (err) {
       if (isUniqueViolation(err)) return false;
       throw err;
+    }
+  }
+
+  async isCutOff(userId: string, issuedAt: number): Promise<boolean> {
+    try {
+      const marker = await prisma.userSessionRevocation.findUnique({
+        where: { userId },
+        select: { cutoff: true },
+      });
+      return marker !== null && issuedAt <= Math.floor(marker.cutoff.getTime() / 1000);
+    } catch (err) {
+      log.error("session cutoff read failed; treating token as revoked", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return true;
     }
   }
 

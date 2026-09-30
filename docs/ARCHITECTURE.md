@@ -4366,6 +4366,23 @@ closed** — if the store throws, the token is treated as revoked, so a transien
 DB error can never widen the window in which a revoked token is accepted (OWASP
 A07). The store never logs token values.
 
+**Single-use rotation under concurrency (#582):** `refreshAccessToken` mints a
+new pair only after winning `claimToken` — an insert on the unique `tokenId`, so
+of N concurrent refreshes with one token exactly one succeeds and the rest see
+P2002 and get `401 REFRESH_FAILED`. After the claim it re-reads the session
+cutoff (`isCutOff`), so a SCIM deprovision that lands between verification and
+the claim still refuses issuance. The UI's proxy-side refresh
+(`refreshUpstreamTokens` in `ui/src/lib/edge-auth.ts`, used by `src/proxy.ts`)
+is therefore **single-flight per refresh token within the process**: concurrent
+page requests (a navigation plus its RSC prefetches, or two tabs) share one
+upstream call, keyed by a SHA-256 of the token, and followers within 5 s reuse
+the winner's rotated pair so every response sets the same cookies. The map is
+capped at 500 keys, sweeps expired results on insert, and never caches a
+failure. **Residual:** several UI server instances behind a load balancer can
+still race on one token; that is accepted, because the losing request simply
+re-authenticates via `/login`. `api-client.ts` single-flights client-side refreshes
+within one tab.
+
 **Async + lifecycle:** `verifyRefreshToken`, `revokeRefreshToken`,
 `revokeAllUserSessions`, `refreshAccessToken`, `isUserDisabled`, and `enableUser`
 are now `async` (they await the store); `issueTokens` stays synchronous (no

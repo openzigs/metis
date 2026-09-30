@@ -230,6 +230,23 @@ describe("PrismaRevocationStore — revoke-all via per-user cutoff", () => {
     await expect(store.clearUserRevocation("never-seen")).resolves.toBeUndefined();
   });
 
+  it("isCutOff (#582) applies the cutoff alone, ignoring per-token revocation", async () => {
+    const before = Math.floor((Date.now() - 10_000) / 1000);
+    const after = Math.floor((Date.now() + 10_000) / 1000);
+    expect(await store.isCutOff("u1", before)).toBe(false);
+    await store.revokeAllForUser("u1");
+    expect(await store.isCutOff("u1", before)).toBe(true);
+    expect(await store.isCutOff("u1", after)).toBe(false);
+    expect(await store.isCutOff("u2", before)).toBe(false);
+  });
+
+  it("isCutOff fails closed when the cutoff read throws", async () => {
+    vi.spyOn(prisma.userSessionRevocation, "findUnique").mockRejectedValueOnce(
+      new Error("db down"),
+    );
+    expect(await store.isCutOff("u1", 123)).toBe(true);
+  });
+
   it("skips the cutoff check when issuedAt is undefined", async () => {
     await store.revokeAllForUser("u1");
     // No iat passed → cutoff not consulted, and the tokenId itself isn't revoked.
@@ -262,7 +279,9 @@ describe("startRevocationPruner", () => {
     vi.useFakeTimers();
     const fake: RevocationStore = {
       revokeToken: vi.fn(),
+      claimToken: vi.fn(),
       isRevoked: vi.fn(),
+      isCutOff: vi.fn(),
       revokeAllForUser: vi.fn(),
       clearUserRevocation: vi.fn(),
       isUserRevoked: vi.fn(),
@@ -280,7 +299,9 @@ describe("startRevocationPruner", () => {
     vi.useFakeTimers();
     const fake: RevocationStore = {
       revokeToken: vi.fn(),
+      claimToken: vi.fn(),
       isRevoked: vi.fn(),
+      isCutOff: vi.fn(),
       revokeAllForUser: vi.fn(),
       clearUserRevocation: vi.fn(),
       isUserRevoked: vi.fn(),

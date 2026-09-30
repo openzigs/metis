@@ -39,6 +39,9 @@ export async function proxy(request: NextRequest) {
   // silently renewed instead of bounced to /login. On success we forward the
   // request and set the rotated cookies on the response (no redirect, no flash
   // of /login); only a genuine refresh failure falls through to the redirect.
+  // #582 — the server rotates a refresh token exactly once, so this call is
+  // single-flight per token within the process (see `refreshUpstreamTokens`):
+  // parallel page requests share one refresh and set the same rotated cookies.
   const refreshValue = request.cookies.get(REFRESH_COOKIE)?.value;
   const rotated = await refreshUpstreamTokens(refreshValue);
   if (rotated) {
