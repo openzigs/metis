@@ -16,12 +16,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import McpSettingsPage from "@/app/(authed)/settings/mcp/page";
 import AdminAuthPage from "@/app/(authed)/settings/auth/page";
 import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 import { ProjectSwitcher } from "@/components/layout/project-switcher";
+import { Breadcrumbs } from "@/components/layout/breadcrumbs";
 
 const ADMIN = { ...TEST_USER, role: "admin" as const };
 
@@ -110,6 +111,64 @@ describe("#508 header switchers shrink inside their breadcrumb item", () => {
     expect(classesOf(trigger)).toEqual(expect.arrayContaining(["min-w-0", "overflow-hidden"]));
     const label = screen.getByText("Demo Project");
     expect(classesOf(label)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
+  });
+});
+
+// #529 — not overlapping was not enough: sharing one row with the header's
+// controls left the breadcrumb ~100px at 390px, and the current-page crumb was
+// cut to "M" / "A.". Below `sm` the breadcrumb wraps onto a full-width second
+// row (the header's row half is pinned in header.test.tsx), and the current-page
+// crumb does not shrink: the switchers truncate instead.
+describe("#529 the current-page crumb keeps a readable width", () => {
+  beforeEach(() => {
+    vi.mocked(usePathname).mockReturnValue("/projects/p-1/requirements");
+    const projects = {
+      items: [{ id: "p-1", name: "Demo Project", slug: "demo", status: "active" }],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    };
+    const workspaces = [{ id: "w1", name: "Acme", slug: "acme", logoUrl: null, role: "admin" }];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        Promise.resolve(jsonResponse(String(url).includes("/workspaces") ? workspaces : projects)),
+      ),
+    );
+  });
+
+  it("below sm the breadcrumb is its own full-width, last row; from sm it rejoins the row", () => {
+    render(<Breadcrumbs />, { wrapper: makeWrapper({ initialUser: ADMIN }) });
+    const nav = screen.getByTestId("header-breadcrumb");
+    expect(classesOf(nav)).toEqual(
+      expect.arrayContaining([
+        "min-w-0",
+        "order-last",
+        "basis-full",
+        "sm:order-none",
+        "sm:basis-auto",
+      ]),
+    );
+  });
+
+  it("the current-page crumb does not shrink; it truncates only past its max width", async () => {
+    render(<Breadcrumbs />, { wrapper: makeWrapper({ initialUser: ADMIN }) });
+    await screen.findByRole("button", { name: /active project: demo project/i });
+    const current = screen
+      .getByTestId("header-breadcrumb")
+      .querySelector('[aria-current="page"]') as HTMLElement;
+    expect(current).toHaveTextContent("Review");
+    expect(classesOf(current)).toContain("truncate");
+    const item = current.closest("li") as HTMLElement;
+    expect(classesOf(item)).toEqual(expect.arrayContaining(["shrink-0", "max-w-[12rem]"]));
+    // The switchers' items are the ones that give way (separators are fixed-size).
+    const items = screen
+      .getByTestId("header-breadcrumb")
+      .querySelectorAll('[data-slot="breadcrumb-item"]');
+    expect(items.length).toBeGreaterThan(2);
+    for (const li of items) {
+      if (li !== item) expect(classesOf(li)).not.toContain("shrink-0");
+    }
   });
 });
 
