@@ -51,7 +51,7 @@ export default function ProjectOverviewPage(): React.ReactElement {
     queryFn: () => projectsApi.getOverview(projectId),
     enabled: Boolean(projectId),
     retry: (failureCount, err) => {
-      // 404 = "never generated" — render the empty state instead of retrying.
+      // 404 = the project is gone — retrying cannot help.
       if (err instanceof ApiError && err.status === 404) return false;
       return failureCount < 2;
     },
@@ -107,8 +107,9 @@ export default function ProjectOverviewPage(): React.ReactElement {
 
   if (!projectId) return <p className="p-6">Missing project id.</p>;
 
-  const isMissing =
-    overview.error instanceof ApiError && overview.error.status === 404 && !markdown;
+  // #364 — a never-generated overview arrives as `markdown: null` (200), not as
+  // a 404 the browser console logs on every first visit.
+  const isMissing = overview.isSuccess && !markdown;
   const regenerateError = regenerate.error;
 
   return (

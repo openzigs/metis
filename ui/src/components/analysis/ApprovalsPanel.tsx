@@ -20,6 +20,7 @@ import {
   type StructuredRequirement,
   type TicketStatus,
 } from "@/lib/analysis-api";
+import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
 import { Button } from "@/components/ui/button";
@@ -146,9 +147,24 @@ function PromotionBanner({
   );
 }
 
+/**
+ * Issue #364 — what an approval is called in accessible names: the matched
+ * requirement's title, else its type and 1-based position in its list. Screen
+ * readers used to announce the raw item UUID ("Review note for fee9ca97-…").
+ */
+export function approvalItemName(
+  approval: Pick<ApprovalRequestPayload, "type">,
+  position: number,
+  requirement?: Pick<StructuredRequirement, "title">,
+): string {
+  if (requirement?.title) return requirement.title;
+  return `${(TYPE_LABELS[approval.type] ?? approval.type).toLowerCase()} item ${position}`;
+}
+
 function ApprovalCard({
   approval,
   requirement,
+  position,
   projectId,
   analysisId,
   onChange,
@@ -156,6 +172,8 @@ function ApprovalCard({
   approval: ApprovalRequestPayload;
   /** #922 — matched structured requirement for `requirement` approvals. */
   requirement?: StructuredRequirement;
+  /** #364 — 1-based position in its list, for the accessible name. */
+  position: number;
   projectId: string;
   analysisId: string;
   onChange: () => void;
@@ -183,7 +201,19 @@ function ApprovalCard({
       // saved requirement" until the user reloaded the page.
       qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(analysisId) });
     },
+    onError: (err) => {
+      // #364 — someone (or another tab) resolved it first: refresh so the card
+      // moves to Resolved instead of leaving a button that can only 409.
+      if (err instanceof ApiError && err.code === "APPROVAL_ALREADY_REVIEWED") onChange();
+    },
   });
+  // #364 — once a decision has been recorded the card stays on screen until the
+  // approvals refetch lands; a second click in that window returned 409.
+  const decided = reviewMutation.isPending || reviewMutation.isSuccess;
+  const itemName = approvalItemName(approval, position, requirement);
+  const alreadyReviewed =
+    reviewMutation.error instanceof ApiError &&
+    reviewMutation.error.code === "APPROVAL_ALREADY_REVIEWED";
 
   return (
     <Card className="space-y-3 p-4" data-testid={`approval-${approval.id}`}>
@@ -236,7 +266,7 @@ function ApprovalCard({
       {!isResolved && (
         <div className="space-y-2">
           <Textarea
-            aria-label={`Review note for ${approval.itemId}`}
+            aria-label={`Review note for ${itemName}`}
             placeholder="Optional review note…"
             value={note}
             onChange={(e) => setNote(e.target.value)}
@@ -246,7 +276,7 @@ function ApprovalCard({
             <Button
               size="sm"
               onClick={() => reviewMutation.mutate("approved")}
-              disabled={reviewMutation.isPending}
+              disabled={decided || alreadyReviewed}
             >
               Approve
             </Button>
@@ -254,11 +284,20 @@ function ApprovalCard({
               size="sm"
               variant="outline"
               onClick={() => reviewMutation.mutate("rejected")}
-              disabled={reviewMutation.isPending}
+              disabled={decided || alreadyReviewed}
             >
               Reject
             </Button>
           </div>
+          {reviewMutation.isError && (
+            <p role="alert" className="text-xs text-destructive">
+              {alreadyReviewed
+                ? "This approval was already reviewed — refreshing."
+                : reviewMutation.error instanceof ApiError
+                  ? reviewMutation.error.message
+                  : "Could not record the review. Try again."}
+            </p>
+          )}
         </div>
       )}
 
@@ -371,11 +410,12 @@ export function ApprovalsPanel({
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Pending ({pending.length})
           </p>
-          {pending.map((approval) => (
+          {pending.map((approval, i) => (
             <ApprovalCard
               key={approval.id}
               approval={approval}
               requirement={lookupRequirement(approval)}
+              position={i + 1}
               projectId={projectId}
               analysisId={analysisId}
               onChange={() => query.refetch()}
@@ -389,11 +429,12 @@ export function ApprovalsPanel({
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Resolved ({resolved.length})
           </p>
-          {resolved.map((approval) => (
+          {resolved.map((approval, i) => (
             <ApprovalCard
               key={approval.id}
               approval={approval}
               requirement={lookupRequirement(approval)}
+              position={i + 1}
               projectId={projectId}
               analysisId={analysisId}
               onChange={() => query.refetch()}

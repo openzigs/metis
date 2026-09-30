@@ -52,6 +52,7 @@ vi.mock("@/lib/connectors-api", () => ({
 import { analysisApi } from "@/lib/analysis-api";
 import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
+import { repoConnectorsApi } from "@/lib/connectors-api";
 import PublishingPage from "@/app/(authed)/projects/[id]/publish/page";
 
 const listForProjectMock = analysisApi.listForProject as unknown as ReturnType<typeof vi.fn>;
@@ -289,5 +290,51 @@ describe("PublishingPage — screen-reader affordances (#58)", () => {
     // Batches table column headers are scoped, incl. the sr-only actions header.
     expect(screen.getByRole("columnheader", { name: "Status" })).toHaveAttribute("scope", "col");
     expect(screen.getByRole("columnheader", { name: "Actions" })).toBeInTheDocument();
+  });
+});
+
+describe("PublishingPage — run labels and target pre-fill (#364)", () => {
+  const getPrimaryMock = repoConnectorsApi.getPrimary as unknown as ReturnType<typeof vi.fn>;
+
+  function renderPage() {
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+  }
+
+  it("labels analyses 'Run #N — <date>' with the short id last, oldest run = #1", async () => {
+    listForProjectMock.mockResolvedValue({
+      items: [
+        makeAnalysis({ id: "cmumww553000newer", startedAt: "2026-04-02T00:00:00.000Z" }),
+        makeAnalysis({ id: "cmumaa111000older", startedAt: "2026-04-01T00:00:00.000Z" }),
+      ],
+    });
+    renderPage();
+    const newer = await screen.findByRole("option", { name: /cmumww55/ });
+    expect(newer.textContent).toMatch(/^Run #2 — .+ · completed · cmumww55$/);
+    const older = screen.getByRole("option", { name: /cmumaa11/ });
+    expect(older.textContent).toMatch(/^Run #1 — /);
+  });
+
+  it("fills owner and repo from the primary repository when they are empty", async () => {
+    getPrimaryMock.mockResolvedValueOnce({ ownerOrOrg: "acme", repoName: "api" });
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText("Target owner")).toHaveValue("acme"));
+    expect(screen.getByLabelText("Target repo")).toHaveValue("api");
+  });
+
+  it("never overwrites or clears a value the user typed before the primary repo loaded", async () => {
+    let resolvePrimary: (v: unknown) => void = () => {};
+    getPrimaryMock.mockReturnValueOnce(new Promise((r) => (resolvePrimary = r)));
+    renderPage();
+    const owner = await screen.findByLabelText("Target owner");
+    fireEvent.change(owner, { target: { value: "my-org" } });
+    // A local-directory primary connector has no owner or repo (#288).
+    resolvePrimary({ ownerOrOrg: null, repoName: "from-primary" });
+    await waitFor(() => expect(screen.getByLabelText("Target repo")).toHaveValue("from-primary"));
+    expect(screen.getByLabelText("Target owner")).toHaveValue("my-org");
   });
 });

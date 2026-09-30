@@ -46,6 +46,7 @@ import { PersonaTag } from "@/components/findings/persona-tag";
 import { agentSourcePersonas } from "@/components/findings/agent-source-persona";
 import { DeepDiveDialog, type DeepDiveDialogFinding } from "@/components/findings/deep-dive-dialog";
 import { ModelRecommendation } from "@/components/analysis/ModelRecommendation";
+import { formatChangeRunLabels } from "@/lib/format-change-run-label";
 import { EnhancementStatus } from "@/components/analysis/EnhancementStatus";
 import { EnhancementResults } from "@/components/analysis/EnhancementResults";
 import { ApprovalsPanel } from "@/components/analysis/ApprovalsPanel";
@@ -186,6 +187,9 @@ export default function AnalysisPage(): React.ReactElement {
     queryFn: () => analysisApi.listForProject(projectId),
     enabled: Boolean(projectId),
   });
+  // #364 — runs were labelled by a raw id ("cmumww553000"); name them "Run #N —
+  // <date>" and keep the short id as a secondary token.
+  const runLabels = useMemo(() => formatChangeRunLabels(list.data?.items ?? []).byId, [list.data]);
   // Epic #208 (#233) — stakeholders + project context for the surface panel.
   const stakeholders = useQuery({
     queryKey: ["stakeholders", projectId],
@@ -849,15 +853,17 @@ export default function AnalysisPage(): React.ReactElement {
                       : "border-border hover:bg-muted/40"
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {item.id.slice(0, 12)}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-foreground">
+                      {runLabels.get(item.id)?.primary}
                     </span>
                     <StatusBadge status={item.status} />
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {new Date(item.startedAt).toLocaleString()} · {formatTokens(item.totalTokens)}{" "}
-                    tok
+                    {formatTokens(item.totalTokens)} tok ·{" "}
+                    <span className="font-mono" title={item.id}>
+                      {runLabels.get(item.id)?.shortId}
+                    </span>
                   </div>
                 </button>
               </li>
@@ -873,7 +879,10 @@ export default function AnalysisPage(): React.ReactElement {
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-base font-semibold">
-                    Run {detail.data.id.slice(0, 12)} <StatusBadge status={detail.data.status} />
+                    {runLabels.has(detail.data.id)
+                      ? `Run #${runLabels.get(detail.data.id)?.sequence}`
+                      : "Run"}{" "}
+                    <StatusBadge status={detail.data.status} />
                   </h3>
                   <p className="text-xs text-muted-foreground">
                     Started {new Date(detail.data.startedAt).toLocaleString()} ·{" "}

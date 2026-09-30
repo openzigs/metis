@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
 import { analysisApi, type AnalysisListItem } from "@/lib/analysis-api";
+import { formatChangeRunLabels, type ChangeRunLabel } from "@/lib/format-change-run-label";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PausableLiveRegion } from "@/components/a11y/pausable-live-region";
@@ -62,15 +63,13 @@ function statusClass(status: string): string {
   }
 }
 
-/** Human-readable label for an analysis option in the source picker. */
-function analysisLabel(a: AnalysisListItem): string {
-  let when = a.startedAt;
-  try {
-    when = new Date(a.startedAt).toLocaleString();
-  } catch {
-    /* keep raw value */
-  }
-  return `${a.status} · ${when} · ${a.id.slice(0, 8)}`;
+/**
+ * Human-readable label for an analysis option in the source picker. #364 — it
+ * is the same "Run #N — <date>" the Analysis page shows, so a run reads the
+ * same on both pages; the short id stays last, for telling runs apart.
+ */
+function analysisLabel(a: AnalysisListItem, label: ChangeRunLabel): string {
+  return `${label.primary} · ${a.status} · ${label.shortId}`;
 }
 
 /**
@@ -124,6 +123,10 @@ export default function PublishingPage() {
     queryFn: () => analysisApi.listForProject(projectId),
     enabled: Boolean(projectId),
   });
+  const analysisRunLabels = useMemo(
+    () => formatChangeRunLabels(analyses.data?.items ?? []).ordered,
+    [analyses.data],
+  );
 
   // Epic #640 — pre-fill owner/repo from primary repo connector
   const primaryRepo = useQuery({
@@ -133,9 +136,13 @@ export default function PublishingPage() {
   });
   useEffect(() => {
     if (primaryRepo.data) {
-      // Issue #288 — owner/repo are null for local/upload connectors.
-      setTargetOwner(primaryRepo.data.ownerOrOrg ?? "");
-      setTargetRepo(primaryRepo.data.repoName ?? "");
+      // #364 — a pre-fill, not a reset: fill only a field that is still empty.
+      // Every arrival of the primary-repo data (a late load, a refetch) used to
+      // overwrite both fields, clearing what the user had typed — and a
+      // local/upload connector (#288: owner/repo are null) cleared them to "".
+      const { ownerOrOrg, repoName } = primaryRepo.data;
+      setTargetOwner((current) => current || ownerOrOrg || "");
+      setTargetRepo((current) => current || repoName || "");
     }
   }, [primaryRepo.data]);
 
@@ -431,9 +438,9 @@ export default function PublishingPage() {
                     ? "No analyses yet"
                     : "Select an analysis…"}
               </option>
-              {(analyses.data?.items ?? []).map((a) => (
+              {(analyses.data?.items ?? []).map((a, i) => (
                 <option key={a.id} value={a.id}>
-                  {analysisLabel(a)}
+                  {analysisLabel(a, analysisRunLabels[i])}
                 </option>
               ))}
             </select>

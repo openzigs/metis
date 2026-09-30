@@ -47,6 +47,21 @@ function clientValidate(file: File): string | null {
   return unsupportedFileTypeMessage(UPLOAD_EXTENSION_ALLOWLIST);
 }
 
+/**
+ * Issue #364 — what the queue row says once the upload is accepted. Ingest is
+ * normally queued, so the response carries `queued · 0 chunks` while the list
+ * below goes on to show the real chunk count; the row read "done — queued · 0
+ * chunks" beside "awaiting review · 4 chunks". Only a synchronous ingest knows
+ * its chunk count here, so only that one names it.
+ */
+export function uploadOutcomeMessage(ingest: { status: string; chunkCount: number }): string {
+  if (ingest.status === "ready") {
+    return `indexed · ${ingest.chunkCount} chunk${ingest.chunkCount === 1 ? "" : "s"}`;
+  }
+  if (ingest.status === "failed") return "indexing failed — see the document list";
+  return "indexing in the background — the document list shows progress";
+}
+
 export function DocumentUploader({ projectId, onUploaded }: Props) {
   const [items, setItems] = useState<QueueItem[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -82,7 +97,7 @@ export function DocumentUploader({ projectId, onUploaded }: Props) {
                   ...q,
                   status: "done",
                   document: result.document,
-                  message: `${result.ingest.status} · ${result.ingest.chunkCount} chunks`,
+                  message: uploadOutcomeMessage(result.ingest),
                 }
               : q,
           ),
@@ -171,7 +186,7 @@ export function DocumentUploader({ projectId, onUploaded }: Props) {
                   }`}
                   data-testid={`upload-status-${item.status}`}
                 >
-                  {item.status}
+                  {item.status === "done" ? "uploaded" : item.status}
                   {item.message ? ` — ${item.message}` : ""}
                 </span>
               </div>

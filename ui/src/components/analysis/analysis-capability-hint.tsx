@@ -12,7 +12,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { deriveCapabilityReasons } from "@metis/shared";
 import { analysisApi, type AnalysisAgentKey } from "@/lib/analysis-api";
-import { CAPABILITY_REASON_COPY } from "@/lib/analysis-capability-copy";
+import { CAPABILITY_REASON_COPY, preRunCapabilityTitle } from "@/lib/analysis-capability-copy";
 
 interface Props {
   projectId: string;
@@ -52,7 +52,8 @@ export function AnalysisCapabilityHint({
       <ul className="mt-1 list-disc space-y-0.5 pl-4">
         {reasons.map((reason) => (
           <li key={reason} data-testid={`capability-hint-${reason}`}>
-            {CAPABILITY_REASON_COPY[reason].title}{" "}
+            {/* #364 — no run exists yet, so say what WILL happen, not what did. */}
+            {preRunCapabilityTitle(CAPABILITY_REASON_COPY[reason])}{" "}
             <span className="text-warning">{CAPABILITY_REASON_COPY[reason].action}</span>
           </li>
         ))}

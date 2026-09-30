@@ -2,7 +2,7 @@
  * Epic #298 / Issue #313 — project overview route tests.
  *
  * Mocks Prisma in-memory and drives the routes via supertest. Verifies:
- *  - GET returns the cached markdown with 404 fallback when never generated
+ *  - GET returns the cached markdown, or `markdown: null` when never generated (#364)
  *  - POST regenerate persists + returns markdown
  *  - POST regenerate enforces project.update auth (admin/manager only)
  *  - POST returns 409 NO_GRAPH when there is no CodeGraph data
@@ -300,13 +300,14 @@ describe("GET /api/projects/:id/overview", () => {
     expect(res.body.error.code).toBe("PROJECT_NOT_FOUND");
   });
 
-  it("404s with OVERVIEW_NOT_GENERATED when never generated", async () => {
+  // #364 — never-generated is an empty state, not a 404 the console logs.
+  it("answers 200 with a null markdown when never generated", async () => {
     seedProject();
     const res = await request(app)
       .get("/api/projects/proj_overview_1/overview")
       .set("Authorization", `Bearer ${adminToken}`);
-    expect(res.status).toBe(404);
-    expect(res.body.error.code).toBe("OVERVIEW_NOT_GENERATED");
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ markdown: null, generatedAt: null });
   });
 
   it("returns persisted markdown with generatedAt", async () => {

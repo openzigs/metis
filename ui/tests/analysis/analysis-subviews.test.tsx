@@ -1173,3 +1173,21 @@ describe("the Traceability tab before a run completes", () => {
     expect(screen.queryByTestId("traceability-pending")).not.toBeInTheDocument();
   });
 });
+
+// Issue #364 — runs were labelled by a raw id ("cmumww553000").
+describe("past runs are named by sequence and date, not id", () => {
+  it("labels list entries 'Run #N — <date>' and the detail header 'Run #N'", async () => {
+    apiMock.listForProject.mockResolvedValueOnce({
+      items: [
+        { id: "an-1", status: "completed", startedAt: "2026-04-02T00:00:00.000Z", totalTokens: 1 },
+        { id: "an-0", status: "completed", startedAt: "2026-04-01T00:00:00.000Z", totalTokens: 1 },
+      ],
+    });
+    nav.search = new URLSearchParams("analysisId=an-1");
+    renderPage();
+    const newer = await screen.findByRole("button", { name: /Run #2 — / });
+    expect(newer).toHaveTextContent("an-1");
+    expect(screen.getByRole("button", { name: /Run #1 — / })).toHaveTextContent("an-0");
+    expect(await screen.findByRole("heading", { name: /^Run #2\b/ })).toBeInTheDocument();
+  });
+});

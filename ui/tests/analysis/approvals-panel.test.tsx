@@ -18,7 +18,8 @@ vi.mock("@/lib/analysis-api", async () => {
   return { ...actual, analysisApi };
 });
 
-import { ApprovalsPanel } from "@/components/analysis/ApprovalsPanel";
+import { ApprovalsPanel, approvalItemName } from "@/components/analysis/ApprovalsPanel";
+import { ApiError } from "@/lib/api-client";
 import type { ApprovalRequestPayload, TicketStatus } from "@/lib/analysis-api";
 
 function approval(over: Partial<ApprovalRequestPayload> = {}): ApprovalRequestPayload {
@@ -97,7 +98,7 @@ describe("ApprovalsPanel", () => {
     analysisApi.reviewApproval.mockResolvedValue(approval({ status: "approved" }));
     renderPanel([approval()], { allowed: false, pendingCount: 1, rejectedCount: 0 });
 
-    const note = await screen.findByLabelText("Review note for req-1");
+    const note = await screen.findByLabelText("Review note for requirement item 1");
     fireEvent.change(note, { target: { value: "looks good" } });
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
 
@@ -220,5 +221,86 @@ describe("ApprovalsPanel", () => {
     );
     expect(await screen.findByText(/Resolved \(1\)/)).toBeInTheDocument();
     expect(screen.getByText("Note: ok")).toBeInTheDocument();
+  });
+
+  // Issue #364 — accessible names announced the raw item UUID.
+  it("names review-note boxes by requirement title or type + position, never the item id", async () => {
+    renderPanel(
+      [
+        approval({ id: "ap-1", type: "requirement", itemId: "fee9ca97-uuid" }),
+        approval({ id: "ap-2", type: "evidence", itemId: "ev-uuid-a" }),
+        approval({ id: "ap-3", type: "evidence", itemId: "ev-uuid-b" }),
+      ],
+      { allowed: false, pendingCount: 3, rejectedCount: 0 },
+      {
+        structuredRequirements: {
+          requirements: [
+            {
+              id: "fee9ca97-uuid",
+              title: "Audit log retention",
+              description: "",
+              ambiguities: [],
+              evidenceNeeds: [],
+            },
+          ],
+          totalAmbiguities: 0,
+          totalEvidenceNeeds: 0,
+        },
+      },
+    );
+    expect(await screen.findByLabelText("Review note for Audit log retention")).toBeInTheDocument();
+    expect(screen.getByLabelText("Review note for evidence item 2")).toBeInTheDocument();
+    expect(screen.getByLabelText("Review note for evidence item 3")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/uuid/)).not.toBeInTheDocument();
+  });
+
+  it("approvalItemName falls back to the raw type when it has no label", () => {
+    expect(approvalItemName({ type: "custom" }, 4)).toBe("custom item 4");
+    expect(approvalItemName({ type: "requirement" }, 1, { title: "" })).toBe("requirement item 1");
+  });
+
+  // Issue #364 — the Approve button stayed clickable after the decision was
+  // recorded, and a second click returned 409 APPROVAL_ALREADY_REVIEWED.
+  it("disables Approve and Reject once the decision has been recorded", async () => {
+    analysisApi.reviewApproval.mockResolvedValue(approval({ status: "approved" }));
+    // The refetch still returns the stale pending row, as a slow refetch would.
+    renderPanel([approval()], { allowed: false, pendingCount: 1, rejectedCount: 0 });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(analysisApi.reviewApproval).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(analysisApi.reviewApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a 409 APPROVAL_ALREADY_REVIEWED as resolved: says so and refetches", async () => {
+    analysisApi.reviewApproval.mockRejectedValue(
+      new ApiError(409, "Approval already reviewed", "APPROVAL_ALREADY_REVIEWED"),
+    );
+    renderPanel([approval()], { allowed: false, pendingCount: 1, rejectedCount: 0 });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByText(/already reviewed — refreshing/)).toBeInTheDocument();
+    await waitFor(() => expect(analysisApi.listApprovals).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+  });
+
+  it("shows any other review failure and leaves the buttons usable", async () => {
+    analysisApi.reviewApproval.mockRejectedValue(new ApiError(500, "Database unavailable"));
+    renderPanel([approval()], { allowed: false, pendingCount: 1, rejectedCount: 0 });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    expect(await screen.findByText("Database unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+    expect(analysisApi.listApprovals).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to a generic message for a non-API failure", async () => {
+    analysisApi.reviewApproval.mockRejectedValue(new Error("network"));
+    renderPanel([approval()], { allowed: false, pendingCount: 1, rejectedCount: 0 });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByText(/Could not record the review/)).toBeInTheDocument();
   });
 });
