@@ -556,3 +556,40 @@ describe("reference links and footnotes in the body across sections (#228)", () 
     expect(ref.children).toEqual([{ type: "text", value: "1" }]);
   });
 });
+
+describe("footnote reference ids in sectionOfId (#228)", () => {
+  const doc = [
+    "## A",
+    "Cite.[^1] Again.[^Note]",
+    "## B",
+    "Cite again.[^1] Accented.[^é] Encoded.[^a%41] Undefined.[^nope] `code [^1]`",
+    "",
+    "[^1]: One, citing.[^é]",
+    "",
+    "[^NOTE]: Two.",
+    "",
+    "[^é]: Three.",
+    "",
+    "[^a%41]: Four.",
+  ].join("\n");
+
+  it("maps every body reference's whole-document id to the section citing it", () => {
+    const { sectionOfId } = splitMarkdownSections(doc);
+    const fnrefs = [...sectionOfId].filter(([id]) => id.startsWith("user-content-fnref-"));
+    expect(fnrefs).toEqual([
+      ["user-content-fnref-1", 0],
+      ["user-content-fnref-note", 0],
+      ["user-content-fnref-1-2", 1],
+      ["user-content-fnref-%C3%A9", 1],
+      ["user-content-fnref-a%41", 1],
+    ]);
+    // Exactly the ids a whole-document render gives its body references.
+    const html = renderToStaticMarkup(
+      createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, doc),
+    );
+    const rendered = [...html.matchAll(/<a[^>]* id="(user-content-fnref-[^"]*)"/g)].map(
+      (m) => m[1],
+    );
+    expect(rendered.slice(0, fnrefs.length)).toEqual(fnrefs.map(([id]) => id));
+  });
+});

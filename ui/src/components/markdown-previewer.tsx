@@ -60,12 +60,17 @@ function initialRendered(count: number): Set<number> {
   return new Set(Array.from({ length: Math.min(INITIAL_RENDERED_SECTIONS, count) }, (_, i) => i));
 }
 
-function hashTarget(): string | null {
-  if (typeof window === "undefined" || window.location.hash.length < 2) return null;
+/**
+ * The ids the URL hash may name: decoded (a heading id is unicode text), and
+ * as written (a footnote id is itself percent-encoded, #228).
+ */
+function hashTargets(): string[] {
+  if (typeof window === "undefined" || window.location.hash.length < 2) return [];
+  const raw = window.location.hash.slice(1);
   try {
-    return decodeURIComponent(window.location.hash.slice(1));
+    return [decodeURIComponent(raw), raw];
   } catch {
-    return null;
+    return [raw];
   }
 }
 
@@ -103,7 +108,10 @@ export function MarkdownPreviewer({
     });
   }, []);
 
-  /** Render the section holding heading `id` (if needed) and scroll to it. */
+  /**
+   * Render the section holding `id` — a heading, or a footnote reference the
+   * footnote list links back to (#228) — if needed, and scroll to it.
+   */
   const reveal = useCallback(
     (id: string) => {
       const index = sectionOfId.get(id);
@@ -131,8 +139,7 @@ export function MarkdownPreviewer({
   // Deep links: honour the URL hash on load and when it changes.
   useEffect(() => {
     const onHash = () => {
-      const id = hashTarget();
-      if (id) reveal(id);
+      hashTargets().some((id) => reveal(id));
     };
     onHash();
     window.addEventListener("hashchange", onHash);

@@ -70,7 +70,10 @@ export interface SplitDocument {
   sections: MarkdownSection[];
   /** H1–H3 headings, for the table of contents. */
   toc: TocEntry[];
-  /** Every heading id (all levels) → the section that contains it. */
+  /**
+   * Every heading id (all levels) and every footnote reference id
+   * (`user-content-fnref-*`, #228) → the section that contains it.
+   */
   sectionOfId: Map<string, number>;
   /** Every definition in the document, for {@link headingText} and {@link withDefinitions}. */
   definitions: Definitions;
@@ -356,8 +359,13 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
       const key = normalizeLabel(`^${label}`);
       if (!definitions.has(key)) continue; // an undefined reference is literal text
       if (!order.has(key)) order.set(key, order.size + 1);
-      footnoteCounts[key] = (footnoteCounts[key] ?? 0) + 1;
+      const count = (footnoteCounts[key] ?? 0) + 1;
+      footnoteCounts[key] = count;
       references.push(`^${label}`);
+      // The footnote list's back-link lands here, so reaching the list first
+      // must still be able to render this section (#228).
+      const id = footnoteReferenceId(key, count);
+      if (!sectionOfId.has(id)) sectionOfId.set(id, sections.length);
     }
   }
   flush();
@@ -421,6 +429,60 @@ export interface HastNode {
 
 /** remark-rehype's default `clobberPrefix` on footnote ids. */
 const FOOTNOTE_HREF = "#user-content-fn-";
+
+/**
+ * micromark's `normalizeUri`, which mdast-util-to-hast applies to a footnote
+ * identifier to make its ids (`micromark-util-sanitize-uri`, not a direct
+ * dependency of this package): percent-encode everything but URL-safe ASCII,
+ * keeping any valid `%XX` escape as it is.
+ */
+function normalizeUri(value: string): string {
+  const alphanumeric = (code: number) =>
+    (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+  let result = "";
+  let start = 0;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    let replace = "";
+    let skip = 0;
+    if (
+      code === 37 &&
+      alphanumeric(value.charCodeAt(index + 1)) &&
+      alphanumeric(value.charCodeAt(index + 2))
+    ) {
+      skip = 2;
+    } else if (code < 128) {
+      if (!/[!#$&-;=?-Z_a-z~]/.test(String.fromCharCode(code))) replace = String.fromCharCode(code);
+    } else if (code > 55_295 && code < 57_344) {
+      const next = value.charCodeAt(index + 1);
+      if (code < 56_320 && next > 56_319 && next < 57_344) {
+        replace = String.fromCharCode(code, next);
+        skip = 1;
+      } else {
+        replace = "\uFFFD";
+      }
+    } else {
+      replace = String.fromCharCode(code);
+    }
+    if (replace) {
+      result += value.slice(start, index) + encodeURIComponent(replace);
+      start = index + skip + 1;
+    }
+    index += skip;
+  }
+  return result + value.slice(start);
+}
+
+/**
+ * The id of the `count`-th reference to footnote `key` (`^LABEL`) in a
+ * whole-document render: what {@link rehypeSectionFootnotes} gives it and the
+ * footnote list's back-link points at.
+ */
+export function footnoteReferenceId(key: string, count: number): string {
+  // mdast-util-to-hast's case round trip on the identifier, exactly.
+  const safeId = normalizeUri(key.slice(1).toLowerCase().toUpperCase().toLowerCase());
+  return `user-content-fnref-${safeId}${count > 1 ? `-${count}` : ""}`;
+}
 
 /** A footnote list remark-rehype appended to a render. */
 function isFootnoteList(node: HastNode): boolean {

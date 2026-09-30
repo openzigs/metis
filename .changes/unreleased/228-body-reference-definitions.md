@@ -9,4 +9,5 @@ section: Fixed
   text when the definition is in a later section.
 - Footnotes appear in one list at the end of the document, numbered in reading
   order, instead of a separate list (with repeated ids) under every section
-  that defines one.
+  that defines one. Its back-links, and links to a footnote reference, reach
+  the citing text even before that part of the document has rendered.
