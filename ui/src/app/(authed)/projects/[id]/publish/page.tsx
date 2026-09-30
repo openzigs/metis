@@ -75,19 +75,23 @@ function analysisLabel(a: AnalysisListItem): string {
 
 /**
  * Issue #362 — a Generate blocked by the analysis approval gate carries a link
- * to where those approvals are resolved. Only a same-app path is followed.
+ * to where those approvals are resolved. #406 — the server sends only the run
+ * id and the remedy; the link is built here, so no server-supplied URL is ever
+ * followed.
  */
-function approvalsResolveLink(err: unknown): { href: string; label: string } | null {
+function approvalsResolveLink(
+  err: unknown,
+  projectId: string,
+): { href: string; label: string } | null {
   if (!(err instanceof ApiError) || err.code !== "APPROVALS_BLOCKING") return null;
-  const details = err.details as { resolveUrl?: unknown; action?: unknown } | undefined;
-  const url = details?.resolveUrl;
-  if (typeof url !== "string" || !url.startsWith("/projects/")) return null;
+  const details = err.details as { analysisId?: unknown; action?: unknown } | undefined;
+  const analysisPath = `/projects/${encodeURIComponent(projectId)}/analysis`;
   // A rejected approval is final, so the server sends `action: "rerun"` and the
   // remedy is a new analysis run, not the approvals panel (PR #404 panel).
-  return {
-    href: url,
-    label: details?.action === "rerun" ? "Re-run analysis" : "Resolve approvals",
-  };
+  if (details?.action === "rerun") return { href: analysisPath, label: "Re-run analysis" };
+  if (typeof details?.analysisId !== "string") return null;
+  const query = new URLSearchParams({ analysisId: details.analysisId, tab: "approvals" });
+  return { href: `${analysisPath}?${query.toString()}#approvals`, label: "Resolve approvals" };
 }
 
 export default function PublishingPage() {
@@ -144,7 +148,7 @@ export default function PublishingPage() {
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.drafts(projectId) }),
   });
-  const resolveLink = approvalsResolveLink(generate.error);
+  const resolveLink = approvalsResolveLink(generate.error, projectId);
 
   const approve = useMutation({
     mutationFn: (id: string) => publishingApi.approveDraft(projectId, id),

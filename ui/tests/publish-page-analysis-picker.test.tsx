@@ -119,7 +119,7 @@ describe("PublishingPage — analysis picker", () => {
           analysisId: "analysis_abcdef123456",
           pendingCount: 3,
           rejectedCount: 0,
-          resolveUrl: "/projects/proj_1/analysis?analysisId=analysis_abcdef123456#approvals",
+          action: "resolve",
         },
       ),
     );
@@ -143,7 +143,7 @@ describe("PublishingPage — analysis picker", () => {
     expect(error).not.toHaveTextContent("run analysis first");
     expect(screen.getByRole("link", { name: "Resolve approvals" })).toHaveAttribute(
       "href",
-      "/projects/proj_1/analysis?analysisId=analysis_abcdef123456#approvals",
+      "/projects/proj_1/analysis?analysisId=analysis_abcdef123456&tab=approvals#approvals",
     );
   });
 
@@ -159,7 +159,6 @@ describe("PublishingPage — analysis picker", () => {
           pendingCount: 0,
           rejectedCount: 1,
           action: "rerun",
-          resolveUrl: "/projects/proj_1/analysis",
         },
       ),
     );
@@ -186,9 +185,12 @@ describe("PublishingPage — analysis picker", () => {
     expect(screen.queryByRole("link", { name: "Resolve approvals" })).not.toBeInTheDocument();
   });
 
-  it("#362 — never follows a resolve link that is not an in-app path", async () => {
+  it("#406 — ignores a server-supplied URL and offers no link without the run id", async () => {
     generateMock.mockRejectedValue(
-      new ApiError(400, "blocked", "APPROVALS_BLOCKING", { resolveUrl: "https://evil.example/" }),
+      new ApiError(400, "blocked", "APPROVALS_BLOCKING", {
+        action: "resolve",
+        resolveUrl: "https://evil.example/",
+      }),
     );
     const Wrapper = makeWrapper({});
     render(
@@ -207,6 +209,38 @@ describe("PublishingPage — analysis picker", () => {
 
     expect(await screen.findByTestId("generate-error")).toHaveTextContent("blocked");
     expect(screen.queryByRole("link", { name: "Resolve approvals" })).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="https:"]')).toBeNull();
+  });
+
+  it("#406 — builds the approvals link from the run id, encoded, with the Approvals tab", async () => {
+    generateMock.mockRejectedValue(
+      new ApiError(400, "blocked", "APPROVALS_BLOCKING", {
+        analysisId: "a/../../evil?x=1#y",
+        pendingCount: 1,
+        rejectedCount: 0,
+        action: "resolve",
+      }),
+    );
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    const select = await screen.findByTestId("publish-analysis-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /completed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(select, { target: { value: "analysis_abcdef123456" } });
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "app" } });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    await screen.findByTestId("generate-error");
+    expect(screen.getByRole("link", { name: "Resolve approvals" })).toHaveAttribute(
+      "href",
+      "/projects/proj_1/analysis?analysisId=a%2F..%2F..%2Fevil%3Fx%3D1%23y&tab=approvals#approvals",
+    );
   });
 
   it("shows an empty-state option when the project has no analyses", async () => {

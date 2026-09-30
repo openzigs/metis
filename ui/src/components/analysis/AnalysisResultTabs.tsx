@@ -9,7 +9,9 @@
  *
  * In-page anchors that predate the tabs — "Go to approvals", "Review
  * questions" — now point at content that may not be mounted. A click on one is
- * intercepted here and turned into a tab switch instead of a dead scroll.
+ * intercepted here and turned into a tab switch instead of a dead scroll, and
+ * reported through `onAnchor` so the page can scroll to the target once the
+ * new tab's content mounts (#406).
  */
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -23,22 +25,27 @@ export function AnalysisResultTabs({
   value,
   onValueChange,
   counts,
+  onAnchor,
   children,
 }: {
   value: AnalysisTab;
   onValueChange: (tab: AnalysisTab) => void;
   counts: Partial<Record<AnalysisTab, number>>;
+  /** Called with the intercepted `#anchor` after the tab switch it caused. */
+  onAnchor?: (anchor: string) => void;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
     <div
       onClickCapture={(e) => {
         const anchor = (e.target as HTMLElement).closest?.("a");
-        const tab = tabForAnchor(anchor?.getAttribute("href"));
+        const href = anchor?.getAttribute("href") ?? null;
+        const tab = tabForAnchor(href);
         // Already on that tab: let the browser scroll to the anchor as before.
-        if (tab === null || tab === value) return;
+        if (href === null || tab === null || tab === value) return;
         e.preventDefault();
         onValueChange(tab);
+        onAnchor?.(href);
       }}
     >
       <Tabs value={value} onValueChange={(v) => onValueChange(v as AnalysisTab)}>

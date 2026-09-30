@@ -62,7 +62,7 @@ export interface GeneratedDraftSummary {
  * approval checkpoint is resolved. Name that precondition, with its counts and
  * where to resolve it, instead of telling the user to re-run the analysis.
  */
-async function noRequirementsError(projectId: string, analysisId: string): Promise<PublishError> {
+async function noRequirementsError(analysisId: string): Promise<PublishError> {
   const gate = await canCreateTickets(analysisId);
   if (gate.allowed) {
     return new PublishError(
@@ -71,7 +71,9 @@ async function noRequirementsError(projectId: string, analysisId: string): Promi
       "analysis has no requirements — run analysis first",
     );
   }
-  const analysisUrl = `/projects/${encodeURIComponent(projectId)}/analysis`;
+  // #406 — ids, counts and the remedy only. The UI builds the route itself, so
+  // the server holds no knowledge of UI paths and the client follows no URL it
+  // was handed.
   // A rejection is final (a reviewed approval cannot be re-reviewed, 409
   // APPROVAL_ALREADY_REVIEWED), so a run holding one can never produce
   // requirements: the remedy is a new run, not the approvals panel (PR #404 panel).
@@ -86,7 +88,6 @@ async function noRequirementsError(projectId: string, analysisId: string): Promi
         pendingCount: gate.pendingCount,
         rejectedCount: gate.rejectedCount,
         action: "rerun",
-        resolveUrl: analysisUrl,
       },
     );
   }
@@ -100,7 +101,6 @@ async function noRequirementsError(projectId: string, analysisId: string): Promi
       pendingCount: gate.pendingCount,
       rejectedCount: gate.rejectedCount,
       action: "resolve",
-      resolveUrl: `${analysisUrl}?analysisId=${encodeURIComponent(analysisId)}#approvals`,
     },
   );
 }
@@ -123,7 +123,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
     orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
   });
   if (requirements.length === 0) {
-    throw await noRequirementsError(opts.projectId, opts.analysisId);
+    throw await noRequirementsError(opts.analysisId);
   }
 
   const summary: GeneratedDraftSummary = {

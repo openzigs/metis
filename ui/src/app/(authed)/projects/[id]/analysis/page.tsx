@@ -8,7 +8,7 @@
  * split into deep-linkable tabs (`?tab=`) with paged lists, so no view grows
  * with the size of the run.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
@@ -56,6 +56,7 @@ import { SynthesisDegradedNotice } from "@/components/analysis/SynthesisDegraded
 import { AddDocumentsPanel } from "@/components/analysis/add-documents-panel";
 import { formatSourceLabel } from "@/lib/format-source-label";
 import { useRepoNames } from "@/hooks/use-repo-names";
+import { useScrollToAnchor } from "@/hooks/use-scroll-to-anchor";
 import { EvaluateRequirementsPanel } from "@/components/analysis/evaluate-requirements-panel";
 import { CrossDocFindingsPanel } from "@/components/analysis/CrossDocFindingsPanel";
 import { StakeholdersPanel } from "@/components/analysis/StakeholdersPanel";
@@ -121,6 +122,7 @@ import {
   paginate,
   parseAnalysisTab,
   runHasQuestionsView,
+  tabForAnchor,
   type AnalysisTab,
   type FindingFilters,
 } from "@/components/analysis/analysis-views";
@@ -215,6 +217,23 @@ export default function AnalysisPage(): React.ReactElement {
   useEffect(() => {
     setTab(parseAnalysisTab(requestedTab));
   }, [requestedTab]);
+  // Issue #406 — an anchor to scroll to once its target mounts: the URL's own
+  // `#approvals` (the Publish page's link) or one a tab switch intercepted.
+  // The browser's fragment scroll runs before the panel's queries resolve.
+  const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
+  // PR #434 review: a fragment with no `?tab=` (an old `?analysisId=…#approvals`
+  // bookmark) opens the tab that holds the anchor, rather than arming a scroll
+  // that would fire only when the user later opened that tab.
+  useEffect(() => {
+    const hash = window.location.hash;
+    const anchorTab = tabForAnchor(hash);
+    if (!anchorTab) return;
+    setPendingAnchor(hash);
+    if (!requestedTab) setTab(anchorTab);
+    // Mount only: the fragment is read once, like the browser's own scroll.
+  }, []);
+  const clearPendingAnchor = useCallback(() => setPendingAnchor(null), []);
+  useScrollToAnchor(pendingAnchor, clearPendingAnchor);
   const updateUrl = (patch: Record<string, string | null>) =>
     router.replace(analysisViewHref(pathname, searchParams, patch), { scroll: false });
   // Epic #727 (#740) filtered findings by verifier verdict; #30 adds severity,
@@ -223,6 +242,10 @@ export default function AnalysisPage(): React.ReactElement {
   const [findingsPage, setFindingsPage] = useState(0);
   const [requirementsPage, setRequirementsPage] = useState(0);
   const selectTab = (next: AnalysisTab) => {
+    // PR #434 review: a tab switch cancels a scroll still waiting for its target,
+    // or it fires later as a surprise. An anchor the tab bar intercepts is set
+    // after this (onValueChange runs before onAnchor), so it survives.
+    setPendingAnchor(null);
     setTab(next);
     updateUrl({ tab: next });
   };
@@ -789,7 +812,12 @@ export default function AnalysisPage(): React.ReactElement {
                 ) : null}
               </div>
 
-              <AnalysisResultTabs value={tab} onValueChange={selectTab} counts={tabCounts}>
+              <AnalysisResultTabs
+                value={tab}
+                onValueChange={selectTab}
+                counts={tabCounts}
+                onAnchor={setPendingAnchor}
+              >
                 <TabsContent value="summary" className="space-y-4">
                   {/* Issue #1232 — the run's outcome, in the synthesis agent's own
                   words, above everything it is a conclusion about. Renders
