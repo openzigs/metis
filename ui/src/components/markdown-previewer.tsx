@@ -18,6 +18,10 @@
  * its plain text, so the browser's find-in-page still finds words in it and its
  * heading anchor already exists. Heading ids continue one document-wide slug
  * counter across sections, so duplicate headings keep distinct, stable ids.
+ *
+ * #228 — a section is rendered with the definitions it names from elsewhere in
+ * the document, and footnotes form one document-level list after the last
+ * section, numbered as a whole-document render numbers them.
  */
 import { useMemo, useEffect, useRef, useState, useCallback, memo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
@@ -29,9 +33,14 @@ import type { MermaidConfig } from "mermaid";
 import { DiagramViewer } from "./diagram-viewer";
 import { loadMermaid, themeTokenColor } from "@/lib/mermaid";
 import { useKatexCss } from "@/lib/katex-css";
+import type { PluggableList } from "unified";
 import {
   splitMarkdownSections,
   remarkSectionSlugs,
+  rehypeSectionFootnotes,
+  rehypeFootnoteList,
+  footnoteListMarkdown,
+  withDefinitions,
   type Definitions,
   type MarkdownSection,
 } from "@/lib/markdown-sections";
@@ -75,12 +84,9 @@ export function MarkdownPreviewer({
   // edges, causing the markdown parser to treat subsequent headings as
   // part of the code block.
   const repairedContent = useMemo(() => repairFences(content), [content]);
-  const {
-    sections,
-    toc: tocEntries,
-    sectionOfId,
-    definitions,
-  } = useMemo(() => splitMarkdownSections(repairedContent), [repairedContent]);
+  const split = useMemo(() => splitMarkdownSections(repairedContent), [repairedContent]);
+  const { sections, toc: tocEntries, sectionOfId, definitions, footnotes } = split;
+  const footnoteList = useMemo(() => footnoteListMarkdown(split), [split]);
   const sectionCount = sections.length;
 
   const [rendered, setRendered] = useState<Set<number>>(() => initialRendered(sectionCount));
@@ -273,12 +279,22 @@ export function MarkdownPreviewer({
                 markdown={section.markdown}
                 slugOccurrences={section.slugOccurrences}
                 definitions={definitions}
+                footnoteOrder={footnotes.order}
+                footnotesBefore={section.footnotesBefore}
                 mermaidSvgs={mermaidSvgs}
               />
             </div>
           ) : (
             <PendingSection key={section.index} section={section} />
           ),
+        )}
+        {footnoteList !== null && (
+          <MemoizedSection
+            markdown={footnoteList}
+            slugOccurrences={NO_OCCURRENCES}
+            definitions={definitions}
+            mermaidSvgs={mermaidSvgs}
+          />
         )}
       </div>
     </div>
@@ -315,11 +331,23 @@ function PendingSection({ section }: { section: MarkdownSection }): React.ReactE
 // adding new sections never causes already-visible sections to re-parse.
 // ============================================================================
 
+const NO_OCCURRENCES: Readonly<Record<string, number>> = {};
+
 interface SectionProps {
   markdown: string;
   slugOccurrences: Readonly<Record<string, number>>;
-  /** Every definition in the document, so heading ids resolve references (#227). */
+  /**
+   * Every definition in the document, so heading ids (#227) and the body's
+   * references (#228) resolve wherever their definition sits.
+   */
   definitions: Definitions;
+  /**
+   * The document's footnote numbering and this section's references before it
+   * (#228). Omitted, the markdown is the document's footnote list, and only
+   * that list is rendered.
+   */
+  footnoteOrder?: ReadonlyMap<string, number>;
+  footnotesBefore?: Readonly<Record<string, number>>;
   mermaidSvgs: Map<string, string>;
 }
 
@@ -327,8 +355,15 @@ const MemoizedSection = memo(function Section({
   markdown,
   slugOccurrences,
   definitions,
+  footnoteOrder,
+  footnotesBefore,
   mermaidSvgs,
 }: SectionProps) {
+  const source = useMemo(() => withDefinitions(markdown, definitions), [markdown, definitions]);
+  const footnotePlugin: PluggableList =
+    footnoteOrder && footnotesBefore
+      ? [[rehypeSectionFootnotes, { order: footnoteOrder, before: footnotesBefore }]]
+      : [rehypeFootnoteList];
   return (
     <ReactMarkdown
       remarkPlugins={[
@@ -336,7 +371,7 @@ const MemoizedSection = memo(function Section({
         remarkMath,
         [remarkSectionSlugs, { occurrences: slugOccurrences, definitions }],
       ]}
-      rehypePlugins={[rehypeKatex]}
+      rehypePlugins={[rehypeKatex, ...footnotePlugin]}
       components={{
         code: ({ node: _nc, className, children, ...props }) => {
           if (!className) {
@@ -428,7 +463,7 @@ const MemoizedSection = memo(function Section({
         ),
       }}
     >
-      {markdown}
+      {source}
     </ReactMarkdown>
   );
 });

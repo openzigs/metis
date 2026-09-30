@@ -350,4 +350,53 @@ describe("MarkdownPreviewer — progressive rendering (#190)", () => {
       },
     );
   });
+
+  describe("reference links and footnotes in the body across sections (#228)", () => {
+    const issue = [
+      "## One",
+      "See [the spec][spec] and a note.[^1]",
+      "## Two",
+      "Another note.[^2]",
+      "",
+      "[^2]: Two.",
+      "## Three",
+      "",
+      "[spec]: https://example.com/spec",
+      "",
+      "[^1]: One.",
+    ].join("\n");
+
+    it("resolves a reference or footnote defined in another section, with one footnote list", () => {
+      const { container } = render(<MarkdownPreviewer content={issue} />);
+      const content = container.querySelector('[data-testid="markdown-content"]')!;
+      expect(rendered(container)).toHaveLength(3);
+      expect(content.textContent).not.toContain("[the spec][spec]");
+      expect(content.textContent).not.toContain("[^1]");
+      const link = content.querySelector('a[href="https://example.com/spec"]');
+      expect(link?.textContent).toBe("the spec");
+      // Document-wide numbering, each reference pointing at its own list item.
+      const refs = [...content.querySelectorAll("a[data-footnote-ref]")];
+      expect(refs.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
+        ["1", "#user-content-fn-1"],
+        ["2", "#user-content-fn-2"],
+      ]);
+      // One footnote list, after every section, holding both notes in order.
+      const lists = content.querySelectorAll("section[data-footnotes]");
+      expect(lists).toHaveLength(1);
+      expect(content.querySelectorAll("#footnote-label")).toHaveLength(1);
+      expect([...lists[0].querySelectorAll("li")].map((li) => li.id)).toEqual([
+        "user-content-fn-1",
+        "user-content-fn-2",
+      ]);
+      expect(lists[0].closest("[data-section-rendered]")).toBeNull();
+      const ids = [...content.querySelectorAll("[id]")].map((el) => el.id);
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it("a document without footnote references renders no footnote list", () => {
+      const { container } = render(<MarkdownPreviewer content={"## A\n[x][y]\n## B\n[y]: /y"} />);
+      expect(container.querySelector("section[data-footnotes]")).toBeNull();
+      expect(container.querySelector('a[href="/y"]')?.textContent).toBe("x");
+    });
+  });
 });
