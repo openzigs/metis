@@ -101,7 +101,10 @@ export function pageCrumbs(pathname: string): Crumb[] {
   if (!nav) return [];
   // #545 — a Settings section is named by the settings nav ("MCP servers"),
   // not by its URL segment ("Mcp").
-  const section = SETTINGS_NAV.find((item) => item.href === path && item.href !== nav.href);
+  const section =
+    nav.href === "/settings"
+      ? SETTINGS_NAV.find((item) => item.href === path && item.href !== "/settings")
+      : undefined;
   if (section) return [{ label: nav.label, href: nav.href }, { label: section.label }];
   return withLeaf(path, nav.href, [{ label: nav.label, href: nav.href }]);
 }
