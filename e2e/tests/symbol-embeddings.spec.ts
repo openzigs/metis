@@ -20,6 +20,7 @@ import { LoginPage } from "../pages/login.page.js";
 import { ProjectsPage } from "../pages/project.page.js";
 import { WorkbenchPage } from "../pages/workbench.page.js";
 import { apiBase } from "../fixtures/api-base.js";
+import { isOfflineAiStub } from "../fixtures/ai-mode.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -311,7 +312,10 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
   // ──────────────────────────────────────────────────────────────────────────
   // AC #509: Hybrid search returns relevant code symbols
   // ──────────────────────────────────────────────────────────────────────────
-  test("hybrid search API returns ranked results with expected fields", async () => {
+  // fixme(#423): POST /api/projects/:id/code-search is not a mounted route, so
+  // this test only ever took its `ok()`-guarded no-op branch and passed having
+  // asserted nothing. Parked until #423 decides the endpoint or deletes the test.
+  test.fixme("hybrid search API returns ranked results with expected fields", async () => {
     const api = await authedApi(accessToken);
     const slug = `e2e-search-${Date.now().toString(36)}`;
     try {
@@ -576,45 +580,60 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
         },
       });
 
-      if (uploadRes.ok()) {
-        // Wait for ingestion
-        const docs = await pollUntil(
-          async () => {
-            const res = await api.get(`/api/projects/${pid}/documents?limit=10`);
-            if (!res.ok()) return null;
-            const body = (await res.json()) as ApiEnvelope<{
-              items: Array<{ id: string; status: string }>;
-            }>;
-            return body.data.items;
-          },
-          (items) => items.length > 0 && items.every((d) => d.status !== "queued"),
-          { timeoutMs: 30_000, label: "document ingestion" },
-        );
+      // Upload answers 201 (synchronous ingest) or 202 (queued); anything else
+      // fails here instead of skipping the rest of the test.
+      expect([201, 202], `document upload: ${await uploadRes.text()}`).toContain(
+        uploadRes.status(),
+      );
 
-        // Start an analysis
-        const analysisRes = await api.post(`/api/projects/${pid}/analyses`, {
-          data: { documentIds: docs.map((d) => d.id) },
-        });
+      // Wait for ingestion to reach `ready`. DOCUMENT_STATUSES is
+      // pending | processing | ready | failed; a failed ingest fails the test.
+      const docs = await pollUntil(
+        async () => {
+          const res = await api.get(`/api/projects/${pid}/documents?limit=10`);
+          if (!res.ok()) return null;
+          const body = (await res.json()) as ApiEnvelope<{
+            items: Array<{ id: string; status: string }>;
+          }>;
+          return body.data.items;
+        },
+        (items) => items.length > 0 && items.every((d) => ["ready", "failed"].includes(d.status)),
+        { timeoutMs: 30_000, label: "document ingestion" },
+      );
+      expect(
+        docs.map((d) => d.status),
+        "every document ingested",
+      ).toEqual(docs.map(() => "ready"));
 
-        if (analysisRes.status() === 202) {
-          const analysisBody = (await analysisRes.json()) as ApiEnvelope<{ id: string }>;
-          const analysisId = analysisBody.data.id;
+      // Start an analysis
+      const analysisRes = await api.post(`/api/projects/${pid}/analyses`, {
+        data: { documentIds: docs.map((d) => d.id) },
+      });
+      expect(analysisRes.status(), `analysis start: ${await analysisRes.text()}`).toBe(202);
+      const analysisBody = (await analysisRes.json()) as ApiEnvelope<{ id: string }>;
+      const analysisId = analysisBody.data.id;
+      expect(analysisId).toBeTruthy();
 
-          // Poll until analysis completes
-          const result = await pollUntil(
-            async () => {
-              const res = await api.get(`/api/analyses/${analysisId}`);
-              if (!res.ok()) return null;
-              const body = (await res.json()) as ApiEnvelope<{ status: string }>;
-              return body.data;
-            },
-            (snap) => ["completed", "failed", "cancelled"].includes(snap.status),
-            { timeoutMs: 90_000, intervalMs: 1000, label: "analysis completion" },
-          );
+      // Poll until analysis reaches a terminal state
+      const result = await pollUntil(
+        async () => {
+          const res = await api.get(`/api/analyses/${analysisId}`);
+          if (!res.ok()) return null;
+          const body = (await res.json()) as ApiEnvelope<{ status: string }>;
+          return body.data;
+        },
+        (snap) => ["completed", "failed", "cancelled"].includes(snap.status),
+        { timeoutMs: 90_000, intervalMs: 1000, label: "analysis completion" },
+      );
 
-          // Analysis should complete without errors even with graph context
-          expect(["completed", "failed"]).toContain(result.status);
-        }
+      // Branch on the DECLARED provider, as full-flow.spec.ts does: the
+      // offline-stub returns prose, every specialist rejects it, and the
+      // orchestrator's honesty gate fails the run. A real provider must
+      // complete. Accepting either outcome regardless would pass a broken run.
+      if (isOfflineAiStub()) {
+        expect(result.status, "offline-stub: the honesty gate fails the run").toBe("failed");
+      } else {
+        expect(result.status, "a real AI provider must complete the run").toBe("completed");
       }
     } finally {
       await api.dispose();
