@@ -22,6 +22,7 @@ import { ulid } from "ulid";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
+import { concurrentUpdateError } from "../connectors/types.js";
 
 const log = createChildLogger("vault");
 
@@ -82,6 +83,22 @@ export interface SecretSummary {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/**
+ * #593 — what {@link VaultService.rotateUndoable} replaced, so a caller whose
+ * surrounding write then fails can put the previous value back
+ * ({@link VaultService.undoRotation}). Holds ciphertext only, never plaintext.
+ */
+export interface RotationUndo {
+  id: string;
+  /** The envelope the rotation overwrote. */
+  previous: SecretEnvelope;
+  /** The ciphertext the rotation wrote; the undo applies only while it is still stored. */
+  written: string;
+}
+
+/** #593 — a rotation re-reads and retries this many times when a concurrent write interleaves. */
+const ROTATE_UNDOABLE_ATTEMPTS = 3;
 
 export class VaultConfigurationError extends Error {
   constructor(message: string) {
@@ -466,6 +483,76 @@ export class VaultService {
     }
     log.info("Secret rotated", { id });
     return this.toSummary(row, this.scopeOf(row.name));
+  }
+
+  /**
+   * #593 — {@link rotate} that can be undone. Same liveness and `onlyIfCreatedBy`
+   * rules (a miss is {@link SecretNotFoundError}), but it reads the stored
+   * envelope first and writes only while that envelope is still the stored one
+   * (compare-and-swap on `ciphertext`, which is unique per write: every
+   * envelope carries a random salt and IV). The returned {@link RotationUndo}
+   * therefore names exactly the value this rotation replaced. A concurrent
+   * write between the read and the swap makes it re-read and retry; one that
+   * keeps winning makes it give up rather than overwrite what it never read,
+   * with the connectors' 409 `CONCURRENT_UPDATE` error: the caller's request
+   * lost a race, so it is reported (and its earlier rotations undone) as one.
+   */
+  async rotateUndoable(
+    id: string,
+    newPlaintext: string,
+    opts: { onlyIfCreatedBy?: string | null } = {},
+  ): Promise<RotationUndo> {
+    const envelope = await this.encrypt(newPlaintext);
+    const owner = opts.onlyIfCreatedBy !== undefined ? { createdById: opts.onlyIfCreatedBy } : {};
+    for (let attempt = 0; attempt < ROTATE_UNDOABLE_ATTEMPTS; attempt++) {
+      const current = await prisma.secret.findFirst({
+        where: { id, deletedAt: null, ...owner },
+        select: { ciphertext: true, keyVersion: true, algorithm: true },
+      });
+      if (!current) throw new SecretNotFoundError(id);
+      const { count } = await prisma.secret.updateMany({
+        where: { id, deletedAt: null, ...owner, ciphertext: current.ciphertext },
+        data: {
+          ciphertext: envelope.ciphertext,
+          keyVersion: envelope.keyVersion,
+          algorithm: envelope.algorithm,
+        },
+      });
+      if (count === 1) {
+        log.info("Secret rotated", { id });
+        return {
+          id,
+          previous: {
+            ciphertext: current.ciphertext,
+            keyVersion: current.keyVersion,
+            algorithm: current.algorithm,
+          },
+          written: envelope.ciphertext,
+        };
+      }
+    }
+    log.warn("Secret kept changing during rotation; not rotated", { id });
+    throw concurrentUpdateError();
+  }
+
+  /**
+   * #593 — put back the value an {@link rotateUndoable} replaced. Conditional on
+   * the rotation's own ciphertext still being stored, so a later write by
+   * anyone else is never overwritten, and on the secret still being live, as
+   * {@link rotateUndoable} requires: a soft-deleted row is never written into.
+   * Returns whether the value was restored.
+   */
+  async undoRotation(undo: RotationUndo): Promise<boolean> {
+    const { count } = await prisma.secret.updateMany({
+      where: { id: undo.id, deletedAt: null, ciphertext: undo.written },
+      data: {
+        ciphertext: undo.previous.ciphertext,
+        keyVersion: undo.previous.keyVersion,
+        algorithm: undo.previous.algorithm,
+      },
+    });
+    if (count === 1) log.info("Secret rotation undone", { id: undo.id });
+    return count === 1;
   }
 
   /** Generate a fresh master key (base64 encoded) — for ops use. */

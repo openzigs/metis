@@ -159,6 +159,26 @@ const vaultDouble = {
     row.plaintext = value;
     return { id };
   }),
+  // #593 — the undoable form the update path uses; "ciphertext" is the plaintext here.
+  rotateUndoable: vi.fn(async (id: string, value: string) => {
+    const row = secrets.get(id);
+    if (!row || row.deletedAt) throw new SecretNotFoundError(id);
+    const previous = row.plaintext;
+    row.plaintext = value;
+    return {
+      id,
+      previous: { ciphertext: previous, keyVersion: 1, algorithm: "t" },
+      written: value,
+    };
+  }),
+  undoRotation: vi.fn(
+    async (undo: { id: string; previous: { ciphertext: string }; written: string }) => {
+      const row = secrets.get(undo.id);
+      if (!row || row.plaintext !== undo.written) return false;
+      row.plaintext = undo.previous.ciphertext;
+      return true;
+    },
+  ),
   delete: vi.fn(async (id: string) => {
     const row = secrets.get(id);
     if (row) row.deletedAt = new Date();
@@ -478,12 +498,12 @@ describe("Jira service — secret rotation against a unique-name vault (#106)", 
     );
     const { secretId, tlsCaSecretId } = rows.get(created.id)!;
     vaultDouble.list.mockClear();
-    vaultDouble.rotate.mockClear();
+    vaultDouble.rotateUndoable.mockClear();
 
     await updateJiraConnection(created.id, { apiToken: "new", tlsCaCert: CA_NEW }, "user_1");
 
     expect(vaultDouble.list).not.toHaveBeenCalled();
-    expect(vaultDouble.rotate.mock.calls.map(([id]) => id).sort()).toEqual(
+    expect(vaultDouble.rotateUndoable.mock.calls.map(([id]) => id).sort()).toEqual(
       [secretId, tlsCaSecretId].sort(),
     );
   });
@@ -495,7 +515,7 @@ describe("Jira service — secret rotation against a unique-name vault (#106)", 
       "user_1",
     );
     const before = secrets.size;
-    vaultDouble.rotate.mockRejectedValueOnce(new Error("vault master key unavailable"));
+    vaultDouble.rotateUndoable.mockRejectedValueOnce(new Error("vault master key unavailable"));
     await expect(updateJiraConnection(created.id, { apiToken: "new" }, "user_1")).rejects.toThrow(
       "vault master key unavailable",
     );

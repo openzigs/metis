@@ -22,8 +22,13 @@ import type {
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../../prisma.js";
 import { getVaultService, type VaultService } from "../../vault/vault-service.js";
-import { rotateOrCreate } from "../../vault/secret-rotation.js";
-import { retireReplacedSecret, withdrawCreatedSecrets } from "../../vault/secret-retirement.js";
+import { rotateOrCreateUndoable } from "../../vault/secret-rotation.js";
+import {
+  retireReplacedSecret,
+  undoRotations,
+  withdrawCreatedSecrets,
+} from "../../vault/secret-retirement.js";
+import type { RotationUndo } from "../../vault/vault-service.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError, concurrentUpdateError, rowUnchangedSince } from "../types.js";
@@ -176,6 +181,14 @@ function refId(ref: string | null | undefined): string | null {
   return m ? m[1] : null;
 }
 
+/** What a request wrote to the vault, so a write that does not land can revert it. */
+interface VaultWrites {
+  /** #574 — secrets created (not ones rotated in place). */
+  created: string[];
+  /** #593 — secrets rotated in place, with what each replaced. */
+  undos: RotationUndo[];
+}
+
 /**
  * #258 — write one credential. On update, `existingRef` is the connection's own
  * ref for the same field: its secret is rotated in place if this writer owns it
@@ -192,22 +205,23 @@ async function writeSecret(
   label: string,
   description: string,
   createdById: string,
-  /** #574 — receives the id of a secret this call created (not one rotated in place). */
-  created: string[],
+  /** #574/#593 — receives what this call wrote: a created id, or a rotation's undo. */
+  writes: VaultWrites,
 ): Promise<string> {
-  // #344/#358 — `rotateOrCreate` rewrites the existing secret in place only
-  // when `createdById` (this writer) already owns it. A secret someone else
+  // #344/#358 — `rotateOrCreateUndoable` (#593) rewrites the existing secret
+  // in place only when `createdById` (this writer) already owns it. A secret someone else
   // supplied — another user's, or a pre-#358 system-owned one — is left
   // untouched and a fresh secret owned by this writer is created instead, so
   // `createdById` always names whoever supplied the current credential. The
   // PATCH binding check (`assertTestMgmtSecretBinding`) depends on that.
-  const written = await rotateOrCreate(vault, refId(existingRef), value, {
-    label: sanitizeLabelComponent(label),
-    scope: "project",
-    description,
-    createdById,
-  });
-  if (written.created) created.push(written.id);
+  const written = await rotateOrCreateUndoable(
+    vault,
+    refId(existingRef),
+    value,
+    { label: sanitizeLabelComponent(label), scope: "project", description, createdById },
+    writes.undos,
+  );
+  if (written.created) writes.created.push(written.id);
   return asVaultRef(written.id);
 }
 
@@ -217,7 +231,7 @@ async function persistAuthConfig(
   label: string,
   input: CreateTestManagementConnectionInput["auth"],
   actorId: string,
-  created: string[],
+  writes: VaultWrites,
   existing: Partial<Record<string, string>> = {},
 ): Promise<TestManagementAuthConfigRefs> {
   const base = `testmgmt-${projectId}-${label}`;
@@ -230,7 +244,7 @@ async function persistAuthConfig(
         `${base}-client-id`,
         `Xray client_id for ${label}`,
         actorId,
-        created,
+        writes,
       );
       const clientSecretRef = await writeSecret(
         vault,
@@ -239,7 +253,7 @@ async function persistAuthConfig(
         `${base}-client-secret`,
         `Xray client_secret for ${label}`,
         actorId,
-        created,
+        writes,
       );
       return { kind: "xray", clientIdRef, clientSecretRef };
     }
@@ -251,7 +265,7 @@ async function persistAuthConfig(
         `${base}-bearer`,
         `Zephyr bearer token for ${label}`,
         actorId,
-        created,
+        writes,
       );
       return { kind: "zephyr", bearerTokenRef };
     }
@@ -263,7 +277,7 @@ async function persistAuthConfig(
         `${base}-api-key`,
         `TestRail API key for ${label}`,
         actorId,
-        created,
+        writes,
       );
       return { kind: "testrail", email: input.email, apiKeyRef };
     }
@@ -276,7 +290,7 @@ async function persistTlsConfig(
   label: string,
   input: NonNullable<CreateTestManagementConnectionInput["tlsConfig"]>,
   actorId: string,
-  created: string[],
+  writes: VaultWrites,
   existingCaCertRef: string | null = null,
 ): Promise<PersistedTlsConfig | null> {
   if (!input) return null;
@@ -289,7 +303,7 @@ async function persistTlsConfig(
       `testmgmt-${projectId}-${label}-ca`,
       `TLS CA cert for ${label}`,
       actorId,
-      created,
+      writes,
     );
   }
   return {
@@ -463,7 +477,7 @@ export async function createTestManagementConnection(
   });
 
   /** #574 — secrets this request created, withdrawn if the row is never written. */
-  const created: string[] = [];
+  const writes: VaultWrites = { created: [], undos: [] };
   /** Set once the vault writes are done: a unique violation after it is the label. */
   let writingRow = false;
   let row;
@@ -474,10 +488,10 @@ export async function createTestManagementConnection(
       input.label,
       input.auth,
       actorId,
-      created,
+      writes,
     );
     const tls = input.tlsConfig
-      ? await persistTlsConfig(vault, projectId, input.label, input.tlsConfig, actorId, created)
+      ? await persistTlsConfig(vault, projectId, input.label, input.tlsConfig, actorId, writes)
       : null;
 
     writingRow = true;
@@ -498,7 +512,7 @@ export async function createTestManagementConnection(
     // #574 — whichever step failed (a second xray credential, the TLS CA cert,
     // or the row itself), the secrets already written belong to no connection,
     // so they are withdrawn.
-    await withdrawCreatedSecrets(vault, created, {
+    await withdrawCreatedSecrets(vault, writes.created, {
       actorId,
       resource: { type: "test_management_connection" },
       projectId,
@@ -538,8 +552,19 @@ export async function updateTestManagementConnection(
   let baseUrlChanged = false;
   let authChanged = false;
   const superseded: string[] = [];
-  /** #495/#574 — secrets this request created, withdrawn if the write does not land. */
-  const created: string[] = [];
+  /** #495/#574/#593 — what this request wrote to the vault, reverted if the write does not land. */
+  const writes: VaultWrites = { created: [], undos: [] };
+  /** #574/#593 — put the vault back as it was: nothing this request wrote is kept. */
+  const revertVault = async (cause: unknown) => {
+    const ctx = {
+      actorId,
+      resource: { type: "test_management_connection", id },
+      projectId: existing.projectId,
+      cause,
+    };
+    await withdrawCreatedSecrets(vault, writes.created, ctx);
+    await undoRotations(vault, writes.undos, ctx);
+  };
 
   if (input.baseUrl !== undefined && input.baseUrl !== existing.baseUrl) {
     const { hostname } = new URL(input.baseUrl);
@@ -577,7 +602,7 @@ export async function updateTestManagementConnection(
         (data.label as string | undefined) ?? existing.label,
         input.auth,
         actorId,
-        created,
+        writes,
         stored,
       );
       data.authConfigJson = JSON.stringify(refs);
@@ -601,7 +626,7 @@ export async function updateTestManagementConnection(
           (data.label as string | undefined) ?? existing.label,
           input.tlsConfig,
           actorId,
-          created,
+          writes,
           oldCaCertRef,
         );
         data.tlsConfigJson = tls ? JSON.stringify(tls) : null;
@@ -613,13 +638,9 @@ export async function updateTestManagementConnection(
   } catch (err) {
     // #574 — a later secret write failed (the second xray credential, or the
     // TLS CA cert after the auth config): nothing was written to the row, so
-    // every secret created so far is withdrawn.
-    await withdrawCreatedSecrets(vault, created, {
-      actorId,
-      resource: { type: "test_management_connection", id },
-      projectId: existing.projectId,
-      cause: err,
-    });
+    // every secret created so far is withdrawn, and (#593) every one rotated
+    // so far gets its old value back.
+    await revertVault(err);
     throw err;
   }
 
@@ -649,16 +670,11 @@ export async function updateTestManagementConnection(
   } catch (err) {
     // #495 — a write that did not land leaves the secrets this request created
     // belonging to no connection, so they are withdrawn (as the create path
-    // does). Once the write has landed the row names them, and withdrawing
-    // would leave it unreadable.
-    if (!landed) {
-      await withdrawCreatedSecrets(vault, created, {
-        actorId,
-        resource: { type: "test_management_connection", id },
-        projectId: existing.projectId,
-        cause: err,
-      });
-    }
+    // does). #593 — one rotated in place is the row's own and stays, with its
+    // previous value restored: the request failed, so its credential must not
+    // have changed. Once the write has landed the row names the new secrets,
+    // and withdrawing would leave it unreadable.
+    if (!landed) await revertVault(err);
     if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);
     }

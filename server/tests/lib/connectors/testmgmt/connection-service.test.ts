@@ -162,6 +162,26 @@ function makeVault() {
       rec.plaintext = value;
       return { id, label: rec.label };
     }),
+    // #593 — the undoable form the update path uses; "ciphertext" is the plaintext here.
+    rotateUndoable: vi.fn(async (id: string, value: string) => {
+      const rec = secrets.get(id);
+      if (!rec || rec.deletedAt) throw new SecretNotFoundError(id);
+      const previous = rec.plaintext;
+      rec.plaintext = value;
+      return {
+        id,
+        previous: { ciphertext: previous, keyVersion: 1, algorithm: "t" },
+        written: value,
+      };
+    }),
+    undoRotation: vi.fn(
+      async (undo: { id: string; previous: { ciphertext: string }; written: string }) => {
+        const rec = secrets.get(undo.id);
+        if (!rec || rec.plaintext !== undo.written) return false;
+        rec.plaintext = undo.previous.ciphertext;
+        return true;
+      },
+    ),
     read: vi.fn(async (id: string) => {
       const rec = secrets.get(id);
       if (!rec || rec.deletedAt) throw new SecretNotFoundError(id);
