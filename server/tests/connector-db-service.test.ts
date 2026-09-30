@@ -97,6 +97,14 @@ vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
 
 vi.mock("../src/lib/connectors/vault-resolver.js", () => ({
   resolveVaultRef: vi.fn(async (ref: string | null) => (ref ? `plain-${ref}` : null)),
+  readBoundSecret: vi.fn(async (id: string) => `plain-${id}`),
+}));
+
+// #480 — binding a reference to its secret id is exercised against a real
+// database in vault-secret-binding-480.sqlite.test.ts; here every reference
+// binds to an id equal to its body.
+vi.mock("../src/lib/vault/bound-secret.js", () => ({
+  bindSecretRef: vi.fn(async (ref: string) => ref),
 }));
 
 vi.mock("../src/lib/vault/vault-service.js", () => ({

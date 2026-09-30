@@ -91,14 +91,6 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     auditLog: { create: vi.fn(async () => ({})) },
-    secret: {
-      findFirst: vi.fn(
-        async ({ where }: { where: { OR: Array<{ name: string }>; deletedAt: null } }) => {
-          const label = where.OR[0]?.name;
-          return label ? { id: label, name: label } : null;
-        },
-      ),
-    },
   },
 }));
 
@@ -116,6 +108,15 @@ vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
 
 vi.mock("../src/lib/connectors/vault-resolver.js", () => ({
   resolveVaultRef: vi.fn(async (ref: string | null) => (ref ? `pat_${ref}` : null)),
+  readBoundSecret: vi.fn(async (id: string) => `pat_${id}`),
+}));
+
+// #480 — binding a reference to its secret id is exercised against a real
+// database in vault-secret-binding-480.sqlite.test.ts; here every reference
+// binds to an id equal to its body.
+vi.mock("../src/lib/vault/bound-secret.js", () => ({
+  VAULT_REF_UNRESOLVED: "VAULT_REF_UNRESOLVED",
+  bindSecretRef: vi.fn(async (ref: string) => ref),
 }));
 
 vi.mock("../src/lib/vault/vault-service.js", () => ({

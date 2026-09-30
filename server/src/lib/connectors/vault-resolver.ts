@@ -17,6 +17,7 @@
  * when a label matches more than one live secret (#358).
  */
 import { createChildLogger } from "../logger.js";
+import { prisma } from "../prisma.js";
 import type { VaultService } from "../vault/vault-service.js";
 import { ConnectorError } from "./types.js";
 
@@ -106,6 +107,35 @@ export async function resolveVaultRef(
     "VAULT_REF_UNRESOLVED",
     `vault reference \${vault:${refBody}} could not be resolved`,
   );
+}
+
+export const VAULT_BINDING_STALE = "VAULT_BINDING_STALE";
+
+/**
+ * #480 — read the secret a resource is BOUND to, by id only.
+ *
+ * `resolveVaultRef` falls back to a label lookup, so handing it a stored id
+ * whose secret was deleted would resolve whatever now holds that string as a
+ * label — including a secret someone created under the deleted id's text. A
+ * binding follows the secret it was made against, never its label: when the
+ * id no longer names a live secret the resource refuses to use it.
+ *
+ * @throws ConnectorError 409 VAULT_BINDING_STALE when the bound secret is gone.
+ */
+export async function readBoundSecret(secretId: string, vault: VaultService): Promise<string> {
+  const live = await prisma.secret.findFirst({
+    where: { id: secretId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!live) {
+    throw new ConnectorError(
+      409,
+      VAULT_BINDING_STALE,
+      "the vault secret this resource was bound to has been deleted; select a secret again",
+    );
+  }
+  const { plaintext } = await vault.read(secretId);
+  return plaintext;
 }
 
 function preview(s: string): string {

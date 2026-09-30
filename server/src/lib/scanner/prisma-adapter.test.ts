@@ -52,6 +52,8 @@ vi.mock("../connectors/repo/repo-service.js", () => ({
 
 vi.mock("../connectors/vault-resolver.js", () => ({
   resolveVaultRef: vi.fn().mockResolvedValue("ghp_fake"),
+  // #480 — the repo connector's secret is read by its bound id.
+  readBoundSecret: vi.fn().mockResolvedValue("ghp_fake"),
 }));
 vi.mock("../vault/vault-service.js", () => ({
   getVaultService: vi.fn(() => ({

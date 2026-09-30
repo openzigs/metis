@@ -41,7 +41,8 @@ import { resolveAndAssertConnectorHost } from "../network-allowlist.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
 import { redactRows } from "../pii-redactor.js";
 import { ConnectorError, NOOP_EMITTER, type ConnectorEmitter } from "../types.js";
-import { resolveVaultRef } from "../vault-resolver.js";
+import { readBoundSecret } from "../vault-resolver.js";
+import { bindSecretRef } from "../../vault/bound-secret.js";
 import { getDriverFactory, hasDriver, type DbDriverAdapter } from "./driver.js";
 import { registerBuiltInDrivers } from "./register-drivers.js";
 import { validateSelectOnly } from "./sql-validator.js";
@@ -114,7 +115,9 @@ export async function createDbConnector(
   if (exists) {
     throw new ConnectorError(409, "DB_LABEL_TAKEN", `label '${input.label}' already exists`);
   }
-  const secretId = input.secretRef ? extractRefBody(input.secretRef) : null;
+  // #480 — store the id the reference resolves to NOW, never the label.
+  const refBody = input.secretRef ? extractRefBody(input.secretRef) : null;
+  const secretId = refBody ? await bindSecretRef(refBody) : null;
   const row = await prisma.databaseConnection.create({
     data: {
       projectId,
@@ -184,7 +187,16 @@ export async function updateDbConnector(
   if (patch.databaseName !== undefined) data.databaseName = patch.databaseName ?? null;
   if (patch.username !== undefined) data.username = patch.username ?? null;
   if (patch.secretRef !== undefined) {
-    data.secretId = patch.secretRef ? extractRefBody(patch.secretRef) : null;
+    // #480 — a re-sent `${vault:<bound id>}` (a full-form save) keeps the
+    // binding as it is, even when that secret has since been deleted; any
+    // other reference is bound to the id it resolves to now.
+    const refBody = patch.secretRef ? extractRefBody(patch.secretRef) : null;
+    data.secretId =
+      refBody === null
+        ? null
+        : refBody === existing.secretId
+          ? refBody
+          : await bindSecretRef(refBody);
   }
   if (patch.options !== undefined) {
     // Already a JSON-encoded string — see createDbConnector for why we must
@@ -654,10 +666,11 @@ async function acquireAdapter(projectId: string, id: string): Promise<DbDriverAd
   return adapter;
 }
 
+/** #480 — the connector's bound secret, by id only (`secretRef` is `${vault:<secretId>}`). */
 async function resolveSecret(secretRef: string): Promise<string | null> {
-  if (!secretRef) return null;
-  const vault = getVaultService();
-  return resolveVaultRef(secretRef, vault);
+  const secretId = secretRef ? extractRefBody(secretRef) : null;
+  if (!secretId) return null;
+  return readBoundSecret(secretId, getVaultService());
 }
 
 /**

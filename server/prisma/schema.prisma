@@ -2231,6 +2231,8 @@ model MCPServer {
   envJson                String? // JSON object — values may be ${vault:label} refs
   envSecretId            String? // optional pointer to a vault secret holding env JSON
   envSecretRefs          String? // JSON map of envKey -> secretLabel (importer + UI)
+  /// #480 — JSON map of `${vault:x}` ref body -> the secret id it was bound to when saved. NULL = saved before #480.
+  secretBindings         String?
   trustLevel             String    @default("untrusted") // trusted|untrusted
   defaultToolRisk        String    @default("medium") // low|medium|high
   version                String?
