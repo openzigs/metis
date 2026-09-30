@@ -312,30 +312,30 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
   // ──────────────────────────────────────────────────────────────────────────
   // AC #509: Hybrid search returns relevant code symbols
   // ──────────────────────────────────────────────────────────────────────────
-  // fixme(#423): POST /api/projects/:id/code-search is not a mounted route, so
-  // this test only ever took its `ok()`-guarded no-op branch and passed having
-  // asserted nothing. Parked until #423 decides the endpoint or deletes the test.
-  test.fixme("hybrid search API returns ranked results with expected fields", async () => {
+  // #423: the test used to POST to an unmounted route and wrap every assertion
+  // in `if (searchRes.ok())`, so it passed having asserted nothing. The route is
+  // now mounted and the contract is asserted unconditionally against a symbol
+  // the fixture repo really defines (`export function add` in src/index.ts).
+  test("hybrid search API returns ranked results with expected fields", async () => {
     const api = await authedApi(accessToken);
     const slug = `e2e-search-${Date.now().toString(36)}`;
     try {
-      // Create project and seed some data
       const projRes = await api.post("/api/projects", {
         data: { name: `Search ${slug}`, slug },
       });
       expect(projRes.ok()).toBe(true);
-      const projBody = (await projRes.json()) as ApiEnvelope<{ id: string }>;
-      const pid = projBody.data.id;
+      const pid = ((await projRes.json()) as ApiEnvelope<{ id: string }>).data.id;
 
-      // Attempt a code search query against the project.
-      // The hybrid search endpoint may be exposed via POST /api/projects/:id/code-search
-      // or integrated into the chat context pipeline.
+      const repoId = await uploadSampleRepo(api, pid, "fixture-ts-repo-search");
+      await deepIngestToCompletion(api, accessToken, pid, repoId);
+      await waitForSymbolEmbeddings(api, pid);
+
       const searchRes = await api.post(`/api/projects/${pid}/code-search`, {
-        data: { query: "function that handles authentication", limit: 10 },
+        data: { query: "add", limit: 10 },
       });
-
-      if (searchRes.ok()) {
-        const searchBody = (await searchRes.json()) as ApiEnvelope<{
+      expect(searchRes.status(), `code-search: ${await searchRes.text()}`).toBe(200);
+      const { results } = (
+        (await searchRes.json()) as ApiEnvelope<{
           results: Array<{
             symbolId: string;
             filePath: string;
@@ -344,29 +344,24 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
             score: number;
             snippet?: string;
           }>;
-        }>;
-        // AC: Results include symbolId, filePath, name, kind, score, snippet
-        if (searchBody.data.results.length > 0) {
-          const first = searchBody.data.results[0];
-          expect(first.symbolId).toBeTruthy();
-          expect(first.filePath).toBeTruthy();
-          expect(first.name).toBeTruthy();
-          expect(first.kind).toBeTruthy();
-          expect(first.score).toBeGreaterThan(0);
-        }
-        // Results should be ordered by score descending
-        const scores = searchBody.data.results.map((r) => r.score);
-        for (let i = 1; i < scores.length; i++) {
-          expect(scores[i]).toBeLessThanOrEqual(scores[i - 1]);
-        }
-      } else {
-        // If no dedicated search endpoint exists, the feature is accessible
-        // only through the chat context builder (tested in subsequent cases).
-        // Mark this as a known limitation rather than a failure.
-        test.info().annotations.push({
-          type: "note",
-          description: "No standalone /code-search endpoint; hybrid search tested via chat context",
-        });
+        }>
+      ).data;
+
+      // AC #509: a query naming a fixture symbol returns that symbol.
+      const hit = results.find((r) => r.name === "add");
+      expect(hit, `"add" in ${JSON.stringify(results)}`).toBeTruthy();
+      expect(hit!.filePath).toMatch(/src\/index\.ts$/);
+      for (const r of results) {
+        expect(r.symbolId).toBeTruthy();
+        expect(r.filePath).toBeTruthy();
+        expect(r.name).toBeTruthy();
+        expect(r.kind).toBeTruthy();
+        expect(r.score).toBeGreaterThan(0);
+      }
+      // Ranked: scores are non-increasing.
+      const scores = results.map((r) => r.score);
+      for (let i = 1; i < scores.length; i++) {
+        expect(scores[i]).toBeLessThanOrEqual(scores[i - 1]);
       }
     } finally {
       await api.dispose();
