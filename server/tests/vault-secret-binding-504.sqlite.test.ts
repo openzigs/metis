@@ -224,6 +224,65 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
+    /**
+     * Run `run` with the secret lookup `bindSecretRefs` makes throwing an
+     * unexpected (non-flag) error whenever it is asked about `poison`.
+     */
+    const failingLookupFor = async <T>(poison: string, run: () => Promise<T>): Promise<T> => {
+      const delegate = db.secret as unknown as Record<string, unknown>;
+      const wrapped = new Proxy(delegate, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop) as unknown;
+          if (prop !== "findMany" || typeof value !== "function") return value;
+          return async (args: unknown) => {
+            if (JSON.stringify(args).includes(poison)) throw new Error("database is on fire");
+            return (value as (a: unknown) => Promise<unknown>).call(target, args);
+          };
+        },
+      });
+      state.db = new Proxy(db, {
+        get: (target, prop) => (prop === "secret" ? wrapped : Reflect.get(target, prop)),
+      });
+      try {
+        return await run();
+      } finally {
+        state.db = db;
+      }
+    };
+
+    describe("one row's unexpected error does not stop the rest (PR #518 panel)", () => {
+      it("MCP servers: the row after a failing one is still bound", async () => {
+        const poison = `mcp-poison-504-${next()}`;
+        const good = `mcp-after-poison-504-${next()}`;
+        const goodId = await secret(good, "good-value");
+        const failing = await legacyMcp({ TOKEN: ref(poison) });
+        const later = await legacyMcp({ TOKEN: ref(good) });
+
+        const report = await failingLookupFor(poison, () => backfillSecretBindings());
+
+        expect(await bindingsOf(later)).toEqual({ [good]: goodId });
+        expect(report.mcpServersBound).toBeGreaterThanOrEqual(1);
+        // The failing row stays unbound, for the next boot to retry.
+        expect(
+          (await db.mCPServer.findUniqueOrThrow({ where: { id: failing } })).secretBindings,
+        ).toBeNull();
+        expect(await flagsFor(failing)).toEqual([]);
+      });
+
+      it("publish batches: the batch after a failing one is still bound", async () => {
+        const poison = `batch-poison-504-${next()}`;
+        const good = `batch-after-poison-504-${next()}`;
+        const goodId = await secret(good, "gh-token");
+        const failing = await legacyBatch({ secretRef: ref(poison) });
+        const later = await legacyBatch({ secretRef: ref(good) });
+
+        await failingLookupFor(poison, () => backfillSecretBindings());
+
+        expect(await metaOf(later)).toMatchObject({ secretId: goodId });
+        expect(await metaOf(failing)).toEqual({ secretRef: ref(poison) });
+      });
+    });
+
     // ── 1. MCP servers ──────────────────────────────────────────────────────
     describe("MCP servers saved before #480", () => {
       it("binds env and header references to the ids they resolve to now", async () => {
@@ -707,6 +766,117 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await expect(
           loadResolvedTestManagementConnection(conn.id, PROJ, deps),
         ).rejects.toMatchObject({ code: "VAULT_BINDING_STALE" });
+      });
+
+      describe("test management: every bound read, one at a time (PR #518 panel)", () => {
+        /**
+         * A vault that records every plaintext it hands out, so a test can
+         * prove the squatter's value was never read — not merely not returned.
+         */
+        const recordingVault = () => {
+          const handedOut: string[] = [];
+          const real = getVaultService();
+          const vault = new Proxy(real, {
+            get(target, prop) {
+              const value = Reflect.get(target, prop) as unknown;
+              if (prop !== "read" || typeof value !== "function") return value;
+              return async (...args: unknown[]) => {
+                const out = (await (
+                  value as (...a: unknown[]) => Promise<{ plaintext: string }>
+                ).apply(target, args)) as { plaintext: string };
+                handedOut.push(out.plaintext);
+                return out;
+              };
+            },
+          });
+          return { vault, handedOut };
+        };
+        const tmConnection = async (
+          kind: "xray" | "zephyr" | "testrail",
+          auth: Record<string, unknown>,
+          tls: Record<string, unknown> | null = null,
+        ) =>
+          (
+            await db.testManagementConnection.create({
+              data: {
+                projectId: PROJ,
+                label: `tm-read-504-${next()}`,
+                kind,
+                baseUrl: `https://${kind}.example.test`,
+                authConfigJson: JSON.stringify({ kind, ...auth }),
+                tlsConfigJson: tls ? JSON.stringify(tls) : null,
+                createdById: "u-coord",
+              },
+            })
+          ).id;
+        /** Squat on `own`, then prove the load refuses and never reads the squatter. */
+        const expectStaleAfterSquat = async (id: string, own: string) => {
+          await squatOnId(own);
+          const { vault, handedOut } = recordingVault();
+          await expect(
+            loadResolvedTestManagementConnection(id, PROJ, {
+              assertHost: async () => undefined,
+              vault,
+            }),
+          ).rejects.toMatchObject({ status: 409, code: "VAULT_BINDING_STALE" });
+          expect(handedOut).not.toContain(ADMIN_VALUE);
+        };
+
+        it("xray clientId", async () => {
+          const cid = await secret(`tm-xray-cid-504-${next()}`, "xray-cid");
+          const csec = await secret(`tm-xray-csec-504-${next()}`, "xray-csec");
+          const id = await tmConnection("xray", {
+            clientIdRef: ref(cid),
+            clientSecretRef: ref(csec),
+          });
+          const ok = await loadResolvedTestManagementConnection(id, PROJ, {
+            assertHost: async () => undefined,
+          });
+          expect(ok.auth).toEqual({
+            kind: "xray",
+            clientId: "xray-cid",
+            clientSecret: "xray-csec",
+          });
+
+          await expectStaleAfterSquat(id, cid);
+        });
+
+        it("xray clientSecret", async () => {
+          const cid = await secret(`tm-xray-cid-504-${next()}`, "xray-cid");
+          const csec = await secret(`tm-xray-csec-504-${next()}`, "xray-csec");
+          const id = await tmConnection("xray", {
+            clientIdRef: ref(cid),
+            clientSecretRef: ref(csec),
+          });
+          await expectStaleAfterSquat(id, csec);
+        });
+
+        it("testrail apiKey", async () => {
+          const key = await secret(`tm-testrail-504-${next()}`, "testrail-key");
+          const id = await tmConnection("testrail", { email: "e@x.test", apiKeyRef: ref(key) });
+          const ok = await loadResolvedTestManagementConnection(id, PROJ, {
+            assertHost: async () => undefined,
+          });
+          expect(ok.auth).toEqual({ kind: "testrail", email: "e@x.test", apiKey: "testrail-key" });
+
+          await expectStaleAfterSquat(id, key);
+        });
+
+        it("TLS CA certificate", async () => {
+          const token = await secret(`tm-tls-token-504-${next()}`, "tm-token");
+          const ca = await secret(`tm-tls-ca-504-${next()}`, "ca-pem");
+          const id = await tmConnection(
+            "zephyr",
+            { bearerTokenRef: ref(token) },
+            { rejectUnauthorized: true, caCertRef: ref(ca) },
+          );
+          const ok = await loadResolvedTestManagementConnection(id, PROJ, {
+            assertHost: async () => undefined,
+          });
+          expect(ok.tls).toEqual({ rejectUnauthorized: true, caCert: "ca-pem" });
+
+          await expectStaleAfterSquat(id, ca);
+        });
       });
     });
   },

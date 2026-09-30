@@ -259,21 +259,30 @@ export class MCPLifecycleManager {
     let config = entry.config;
     let resolving: VaultRefMapKind = "env";
     try {
-      const raw = entry.config.env ?? {};
-      env = await this.opts.resolveEnv(raw, entry.config.secretBindings ?? null);
+      const bindings = entry.config.secretBindings ?? null;
       const headers = entry.config.headers;
-      if (
-        headers &&
-        Object.values(headers).some((v) => typeof v === "string" && v.includes("${vault:"))
-      ) {
+      const refHeaders = headers
+        ? Object.keys(headers).filter((k) => {
+            const v: unknown = headers[k];
+            return typeof v === "string" && v.includes("${vault:");
+          })
+        : [];
+      // A header is sent to the server's URL, so it is only ever expanded
+      // through #480 bindings. With none (a pre-#480 row the backfill has not
+      // reached), the resolver would fall back to a label lookup with no #344
+      // ownership check — refuse before anything is resolved or sent.
+      if (refHeaders.length > 0 && bindings === null) {
+        resolving = "header";
+        throw new Error(
+          `header ${refHeaders[0]} references the vault but this server has no secret bindings yet; save the server again`,
+        );
+      }
+      env = await this.opts.resolveEnv(entry.config.env ?? {}, bindings);
+      if (headers && refHeaders.length > 0) {
         resolving = "header";
         config = {
           ...entry.config,
-          headers: await this.opts.resolveEnv(
-            headers,
-            entry.config.secretBindings ?? null,
-            "header",
-          ),
+          headers: await this.opts.resolveEnv(headers, bindings, "header"),
         };
       }
     } catch (err) {

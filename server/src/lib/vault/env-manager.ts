@@ -60,6 +60,12 @@ async function expandValue(
   secretBindings: Record<string, string> | null,
 ): Promise<string> {
   if (!value.includes("${vault:")) return value;
+  // #504 — a header goes to a remote URL: never resolve one by label.
+  if (secretBindings === null && where.startsWith("header ")) {
+    throw new Error(
+      `${where} references the vault but this server has no secret bindings yet; save the server again`,
+    );
+  }
 
   const matches = [...value.matchAll(VAULT_REF_PATTERN)];
   let result = value;

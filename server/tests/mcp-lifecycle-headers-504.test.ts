@@ -136,6 +136,72 @@ describe("MCP header vault references (#504)", () => {
     expect(state.lastError).toMatch(/^env resolution failed: .*\(env TOKEN\)/);
   });
 
+  describe("a server with no bindings yet (pre-#480, backfill not run) — PR #518 panel", () => {
+    it("refuses a header vault reference, resolving and sending nothing", async () => {
+      const { mgr, factory, resolveEnv } = manager();
+      vi.mocked(vault.read).mockClear();
+      vi.mocked(vault.list).mockClear();
+      const state = await mgr.start(
+        makeConfig({
+          id: "srv-504-unbound-hdr",
+          env: { TOKEN: "${vault:tok}" },
+          headers: { "X-Plain": "p", Authorization: "Bearer ${vault:tok}" },
+          secretBindings: null,
+        }),
+      );
+
+      expect(state.status).toBe("error");
+      expect(state.lastError).toBe(
+        "header resolution failed: header Authorization references the vault but this server " +
+          "has no secret bindings yet; save the server again",
+      );
+      expect(resolveEnv).not.toHaveBeenCalled();
+      expect(vault.read).not.toHaveBeenCalled();
+      expect(vault.list).not.toHaveBeenCalled();
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it("treats an absent binding map as none", async () => {
+      const { mgr, factory } = manager();
+      const state = await mgr.start(
+        makeConfig({ id: "srv-504-absent", headers: { Authorization: "Bearer ${vault:tok}" } }),
+      );
+      expect(state.lastError).toMatch(/has no secret bindings yet/);
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it("still starts a server whose headers carry no vault reference", async () => {
+      const { mgr, factory } = manager();
+      const state = await mgr.start(
+        makeConfig({
+          id: "srv-504-unbound-plain",
+          headers: { "X-Plain": "p" },
+          secretBindings: null,
+        }),
+      );
+      expect(state.status).toBe("ready");
+      expect(factory.mock.calls[0][0].headers).toEqual({ "X-Plain": "p" });
+    });
+
+    it("the resolver itself never label-resolves a header without bindings", async () => {
+      vi.mocked(vault.read).mockClear();
+      vi.mocked(vault.list).mockClear();
+      await expect(
+        expandVaultRefs({ Authorization: "Bearer ${vault:tok}" }, vault, null, "header"),
+      ).rejects.toThrow(
+        "header Authorization references the vault but this server has no secret bindings yet",
+      );
+      expect(vault.read).not.toHaveBeenCalled();
+      expect(vault.list).not.toHaveBeenCalled();
+    });
+
+    it("keeps the label lookup for env values without bindings (pre-#480 behaviour)", async () => {
+      await expect(expandVaultRefs({ TOKEN: "${vault:sec-hdr}" }, vault, null)).resolves.toEqual({
+        TOKEN: "hdr-token",
+      });
+    });
+  });
+
   it("does not run header values without references through the resolver", async () => {
     const { mgr, factory, resolveEnv } = manager();
     await mgr.start(makeConfig({ id: "srv-504-plain", headers: { "X-Plain": "p" } }));

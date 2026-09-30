@@ -171,6 +171,20 @@ function flagAudit(
   });
 }
 
+/**
+ * One row's unexpected error (a vault or database fault — not a flag) is logged
+ * and skipped, so it cannot stop the rows after it. The row stays unbound, is
+ * retried on the next boot, and until then a header reference in it is refused
+ * at connect time rather than resolved by label.
+ */
+function rowFailed(type: string, id: string, err: unknown): void {
+  log.warn("Vault binding backfill failed for a row; continuing with the rest", {
+    type,
+    id,
+    error: err instanceof Error ? err.message : String(err),
+  });
+}
+
 async function backfillMcpServers(
   report: SecretBindingBackfillReport,
   cache: Map<string, boolean>,
@@ -181,28 +195,46 @@ async function backfillMcpServers(
     select: { id: true, label: true, envJson: true, headers: true, createdById: true },
   });
   for (const row of rows) {
-    const refs = [
-      ...new Set([...refBodiesIn(parseMap(row.envJson)), ...refBodiesIn(parseMap(row.headers))]),
-    ];
-    const { bindings, flagged } = await bindForOwner(refs, row.createdById, cache);
-    const { count } = await prisma.mCPServer.updateMany({
-      where: { id: row.id, secretBindings: null },
-      data: { secretBindings: JSON.stringify(bindings) },
-    });
-    if (count === 0) continue; // saved (and so bound) since we read it
-    if (flagged.length > 0) {
-      report.mcpServersFlagged += 1;
-      // Enough to act on without a join: which server, which refs, whose
-      // ownership was judged (the creator, not a later editor), and the repair.
-      flagAudit("mcp_server", row.id, flagged, {
-        serverId: row.id,
-        serverLabel: row.label,
-        judgedOwnerId: row.createdById,
-        remedy: "Save the MCP server again to re-bind its vault references.",
-      });
-    } else {
-      report.mcpServersBound += 1;
+    try {
+      await backfillMcpServer(row, report, cache);
+    } catch (err) {
+      rowFailed("mcp_server", row.id, err);
     }
+  }
+}
+
+async function backfillMcpServer(
+  row: {
+    id: string;
+    label: string;
+    envJson: string | null;
+    headers: string | null;
+    createdById: string | null;
+  },
+  report: SecretBindingBackfillReport,
+  cache: Map<string, boolean>,
+): Promise<void> {
+  const refs = [
+    ...new Set([...refBodiesIn(parseMap(row.envJson)), ...refBodiesIn(parseMap(row.headers))]),
+  ];
+  const { bindings, flagged } = await bindForOwner(refs, row.createdById, cache);
+  const { count } = await prisma.mCPServer.updateMany({
+    where: { id: row.id, secretBindings: null },
+    data: { secretBindings: JSON.stringify(bindings) },
+  });
+  if (count === 0) return; // saved (and so bound) since we read it
+  if (flagged.length > 0) {
+    report.mcpServersFlagged += 1;
+    // Enough to act on without a join: which server, which refs, whose
+    // ownership was judged (the creator, not a later editor), and the repair.
+    flagAudit("mcp_server", row.id, flagged, {
+      serverId: row.id,
+      serverLabel: row.label,
+      judgedOwnerId: row.createdById,
+      remedy: "Save the MCP server again to re-bind its vault references.",
+    });
+  } else {
+    report.mcpServersBound += 1;
   }
 }
 
@@ -215,36 +247,53 @@ async function backfillPublishBatches(
     select: { id: true, metadata: true, startedById: true, targetBaseUrl: true },
   });
   for (const row of rows) {
-    const meta = parseMap(row.metadata);
-    if (!meta || Object.hasOwn(meta, "secretId")) continue;
-    const ref = refBodyOf(typeof meta.secretRef === "string" ? meta.secretRef : null);
-    if (!ref) continue;
-    // #358 enforces ownership only for a caller-chosen host: a token sent to the
-    // public GitHub API goes to the service that issued it. Same predicate as
-    // `assertPublishSecretBinding`, so the backfill and createBatch cannot drift.
-    const { bindings, flagged } = await bindForOwner(
-      [ref],
-      row.startedById,
-      cache,
-      isCallerChosenPublishHost(row.targetBaseUrl),
-    );
-    const r: { id: string } | { flag: BindingFlagReason } =
-      flagged.length > 0 ? { flag: flagged[0].reason } : { id: bindings[ref] };
-    const next =
-      "id" in r
-        ? { ...meta, secretId: r.id }
-        : { ...meta, secretId: null, secretBindingFlag: r.flag };
-    const { count } = await prisma.publishBatch.updateMany({
-      where: { id: row.id, metadata: row.metadata },
-      data: { metadata: JSON.stringify(next) },
-    });
-    if (count === 0) continue;
-    if ("id" in r) {
-      report.batchesBound += 1;
-    } else {
-      report.batchesFlagged += 1;
-      flagAudit("publish_batch", row.id, [{ ref, reason: r.flag }]);
+    try {
+      await backfillPublishBatch(row, report, cache);
+    } catch (err) {
+      rowFailed("publish_batch", row.id, err);
     }
+  }
+}
+
+async function backfillPublishBatch(
+  row: {
+    id: string;
+    metadata: string | null;
+    startedById: string | null;
+    targetBaseUrl: string | null;
+  },
+  report: SecretBindingBackfillReport,
+  cache: Map<string, boolean>,
+): Promise<void> {
+  const meta = parseMap(row.metadata);
+  if (!meta || Object.hasOwn(meta, "secretId")) return;
+  const ref = refBodyOf(typeof meta.secretRef === "string" ? meta.secretRef : null);
+  if (!ref) return;
+  // #358 enforces ownership only for a caller-chosen host: a token sent to the
+  // public GitHub API goes to the service that issued it. Same predicate as
+  // `assertPublishSecretBinding`, so the backfill and createBatch cannot drift.
+  const { bindings, flagged } = await bindForOwner(
+    [ref],
+    row.startedById,
+    cache,
+    isCallerChosenPublishHost(row.targetBaseUrl),
+  );
+  const r: { id: string } | { flag: BindingFlagReason } =
+    flagged.length > 0 ? { flag: flagged[0].reason } : { id: bindings[ref] };
+  const next =
+    "id" in r
+      ? { ...meta, secretId: r.id }
+      : { ...meta, secretId: null, secretBindingFlag: r.flag };
+  const { count } = await prisma.publishBatch.updateMany({
+    where: { id: row.id, metadata: row.metadata },
+    data: { metadata: JSON.stringify(next) },
+  });
+  if (count === 0) return;
+  if ("id" in r) {
+    report.batchesBound += 1;
+  } else {
+    report.batchesFlagged += 1;
+    flagAudit("publish_batch", row.id, [{ ref, reason: r.flag }]);
   }
 }
 
