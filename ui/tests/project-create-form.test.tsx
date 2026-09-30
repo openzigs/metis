@@ -9,6 +9,7 @@
  *  - the repo-pair "both or neither" rule blocks submit + shows its message.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProjectCreateForm } from "@/components/projects/project-create-form";
@@ -311,6 +312,25 @@ describe("ProjectCreateForm", () => {
     await waitFor(() => expect(useRouter().push).toHaveBeenCalledWith("/projects/p-new"));
     expect(useRouter().push).toHaveBeenCalledTimes(1);
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "p-new" }));
+  });
+
+  // #411 — the projects cache is invalidated once per create, not twice.
+  it("invalidates the projects cache exactly once after a create (#411)", async () => {
+    const user = userEvent.setup();
+    const spy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      create.mockResolvedValueOnce({ id: "p-new", name: "Acme", slug: "acme" });
+      renderForm();
+      await user.type(screen.getByTestId("project-name-input"), "Acme");
+      await user.click(screen.getByTestId("project-create-submit"));
+      await waitFor(() => expect(useRouter().push).toHaveBeenCalledWith("/projects/p-new"));
+      const projectInvalidations = spy.mock.calls.filter(
+        ([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(["projects"]),
+      );
+      expect(projectInvalidations).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("stays put when the create fails (#370)", async () => {

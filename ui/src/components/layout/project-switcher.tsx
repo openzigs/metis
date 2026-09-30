@@ -87,10 +87,12 @@ export function ProjectSwitcher() {
   });
   const active = listed ?? pathProject.data ?? null;
 
-  // Persist whenever the resolved active project changes (URL or selection).
+  // Persist only a project that actually resolved (#411): a URL id that 404s
+  // (deleted or foreign) must not be stored as the active project.
+  const resolvedId = active?.id ?? null;
   useEffect(() => {
-    if (activeId) writeStoredActiveId(activeId);
-  }, [activeId]);
+    if (resolvedId) writeStoredActiveId(resolvedId);
+  }, [resolvedId]);
 
   // While the URL's project is still loading, say so — not "No project", which
   // is the flash #370 set out to remove (PR #409 review).
@@ -115,6 +117,17 @@ export function ProjectSwitcher() {
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuLabel>Switch project</DropdownMenuLabel>
         <DropdownMenuSeparator />
+        {/* #411 — the list is capped at 50, so the active project may be
+            missing from it; pin it first so it still has an entry. */}
+        {active && !listed ? (
+          <DropdownMenuItem
+            key={active.id}
+            onSelect={() => router.push(`/projects/${active.id}`)}
+            aria-current
+          >
+            {active.name}
+          </DropdownMenuItem>
+        ) : null}
         {items.length === 0 ? (
           <DropdownMenuItem disabled>No projects available</DropdownMenuItem>
         ) : (
