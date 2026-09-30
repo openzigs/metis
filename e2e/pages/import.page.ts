@@ -37,7 +37,7 @@ export class ImportPage {
     this.page = page;
     this.projectId = projectId;
 
-    this.heading = page.getByRole("heading", { name: "Import Requirements" });
+    this.heading = page.getByRole("heading", { name: "Import Requirements", exact: true });
     this.newImportTitle = page.getByText("New import", { exact: true });
     // `exact` matters: the project sub-nav is labelled "Sources pages" and the
     // tab bar has a "Sources" link, both of which a substring match selects.

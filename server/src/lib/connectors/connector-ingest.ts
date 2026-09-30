@@ -251,6 +251,7 @@ async function ingestUnits(
 interface UnitContext {
   projectId: string;
   connectorId: string;
+  /** Also the `source` stamped on every document this unit writes (#474). */
   kind: "repo" | "db";
   actorId: string;
   storage: ReturnType<typeof getDocumentStorage>;
@@ -287,8 +288,10 @@ async function ingestUnit(ctx: UnitContext, unit: IngestionUnit): Promise<UnitOu
   try {
     const buffer = Buffer.from(unit.body, "utf-8");
     const blob = await storage.write({ projectId, buffer });
+    // #474 — matched on `source` as well as the filename, so a user's upload
+    // that happens to share this filename is never overwritten by the connector.
     const existing = await prisma.document.findFirst({
-      where: { projectId, filename: unit.filename, deletedAt: null },
+      where: { projectId, filename: unit.filename, source: ctx.kind, deletedAt: null },
     });
     let docId: string;
     if (existing) {
@@ -317,6 +320,7 @@ async function ingestUnit(ctx: UnitContext, unit: IngestionUnit): Promise<UnitOu
         data: {
           projectId,
           filename: unit.filename,
+          source: ctx.kind,
           mimeType: "text/markdown",
           sizeBytes: blob.sizeBytes,
           storagePath: blob.storagePath,

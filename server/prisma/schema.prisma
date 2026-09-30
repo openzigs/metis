@@ -855,6 +855,15 @@ model Document {
   /// Epic #724 — when true this document is a "spec" and will be used by the
   /// spec-checking scan mode for implementation-vs-spec comparison.
   isSpec             Boolean   @default(false)
+  /// Issue #474 — which path wrote this row: `upload` (file, URL or text
+  /// ingest), `generated`, `repo`, `db`, `confluence` or `jira`. Classify on
+  /// this, not the filename: an upload may be named `jira:ABC-1`
+  /// (`lib/documents/document-source.ts`). Some readers still use the
+  /// filename prefix until #525.
+  source             String    @default("upload")
+  /// Issue #474 — a display title the source supplied (a Confluence page's
+  /// title). Null when the source has none; the filename is the fallback.
+  title              String?
   errorMessage       String?
   chunkCount         Int       @default(0)
   uploadedById       String

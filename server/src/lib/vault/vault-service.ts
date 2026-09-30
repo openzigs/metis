@@ -370,7 +370,7 @@ export class VaultService {
     const row = await prisma.secret.findFirst({
       where: { id, deletedAt: null },
     });
-    if (!row) throw new Error(`Secret ${id} not found`);
+    if (!row) throw new SecretNotFoundError(id);
     const plaintext = await this.decrypt({
       ciphertext: row.ciphertext,
       algorithm: row.algorithm,

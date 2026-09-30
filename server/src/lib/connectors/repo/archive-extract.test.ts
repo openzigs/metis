@@ -14,7 +14,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import { ConnectorError } from "../types.js";
 import {
@@ -174,7 +174,7 @@ describe("existing extraction behaviour unchanged (regression)", () => {
     await expect(fs.stat(path.join(uploadExtractionRoot(), "conn5abc"))).rejects.toThrow();
   });
 
-  it("cleanupExtraction removes a connector's extraction dir and never throws", async () => {
+  it("cleanupExtraction removes a connector's extraction dir; a missing dir is a no-op", async () => {
     process.env.UPLOAD_EXTRACT_DIR = path.join(scratch, "extracts");
     const buf = await makeZip({ "src/a.py": "x=1\n" });
     const result = await extractArchiveBuffer("conn7abc", buf);
@@ -183,6 +183,18 @@ describe("existing extraction behaviour unchanged (regression)", () => {
     await expect(fs.stat(result.dir)).rejects.toThrow();
     // Idempotent: a second cleanup on an already-gone dir is a no-op, not a throw.
     await expect(cleanupExtraction("conn7abc")).resolves.toBeUndefined();
+  });
+
+  it("#527 — cleanupExtraction surfaces a real removal failure instead of swallowing it", async () => {
+    process.env.UPLOAD_EXTRACT_DIR = path.join(scratch, "extracts");
+    const rmSpy = vi
+      .spyOn(fs, "rm")
+      .mockRejectedValueOnce(Object.assign(new Error("EBUSY"), { code: "EBUSY" }));
+    try {
+      await expect(cleanupExtraction("conn7xyz")).rejects.toMatchObject({ code: "EBUSY" });
+    } finally {
+      rmSpy.mockRestore();
+    }
   });
 
   it("#492 — removeStoredArchive removes the recorded path, under any root", async () => {

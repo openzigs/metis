@@ -68,6 +68,7 @@ import { startChargebackScheduler } from "./lib/finops/chargeback-scheduler.js";
 import { startWorkspaceUsageRollup } from "./lib/workspaces/usage-rollup.js";
 import { startInterruptedGenerationSweeper } from "./lib/docs-gen/interrupted-generations.js";
 import { reconcileStrandedGeneratedDocPublications } from "./lib/docs-gen/generated-doc-publication-recovery.js";
+import { backfillSecretBindings } from "./lib/vault/secret-binding-backfill.js";
 
 const log = createChildLogger("server-bootstrap");
 
@@ -124,6 +125,12 @@ export class SingletonJobs {
         log.warn("Scheduler start failed", { error: (err as Error).message });
       },
     );
+    // #504 — bind the vault references saved before #480 (MCP servers, live
+    // publish batches), flagging what cannot be bound. Idempotent and
+    // conditional per row, so a re-run after a leadership change is a no-op.
+    backfillSecretBindings().catch((err) => {
+      log.warn("Vault secret-binding backfill failed", { error: (err as Error).message });
+    });
     // Scattered interval jobs — each fires once cluster-wide now they run only
     // on the leader. Epic refs: #736 (SLA), #48/#49/#52 (FinOps), #413 (revocation).
     this.handles = [

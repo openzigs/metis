@@ -84,6 +84,7 @@ function doc(over: Partial<DocumentRow> = {}): DocumentRow {
     id: "d1",
     projectId: PROJECT_ID,
     filename: "spec.pdf",
+    source: "upload",
     mimeType: "application/pdf",
     sizeBytes: 2048,
     status: "processing",

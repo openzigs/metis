@@ -23,7 +23,15 @@
  * test fails with a CLEAR message rather than silently skipping.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,10 +79,20 @@ function clientFor(dbFile: string): PrismaClient {
   return new PrismaClient({ adapter });
 }
 
-function runCli(scriptPath: string, args: string[], dbFile: string): string {
+function runCli(
+  scriptPath: string,
+  args: string[],
+  dbFile: string,
+  extraEnv: Record<string, string> = {},
+): string {
   return execFileSync("npx", ["tsx", scriptPath, ...args], {
     cwd: SERVER_ROOT,
-    env: { ...process.env, DATABASE_URL: `file:${dbFile}`, DATABASE_PROVIDER: "sqlite" },
+    env: {
+      ...process.env,
+      DATABASE_URL: `file:${dbFile}`,
+      DATABASE_PROVIDER: "sqlite",
+      ...extraEnv,
+    },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -108,8 +126,11 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
   let parentReqId: string;
   let childReqId: string;
   let repoId: string;
+  let uploadRepoId: string;
+  let archiveRoot: string; // the importing server's UPLOAD_ARCHIVE_DIR (#527)
 
   let remapDb: string; // third DB exercising --remap
+  let emptyDb: string; // migrated, empty — copied by the #527 failure-path tests
   const OLD_API = "https://source-host.internal/api";
   const NEW_API = "https://target-host.internal/api";
 
@@ -188,32 +209,49 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
         data: { projectId, label: "RT Repo", apiBaseUrl: OLD_API },
       });
       repoId = repo.id;
+
+      // #527 — an upload connector whose bundle row points its archive OUTSIDE
+      // any archive root; a later DELETE would remove whatever it names.
+      const upload = await src.repoConnection.create({
+        data: { projectId, label: "RT Upload", provider: "upload" },
+      });
+      uploadRepoId = upload.id;
+      await src.repoConnection.update({
+        where: { id: uploadRepoId },
+        data: { uploadPath: `/anywhere/${uploadRepoId}.zip` },
+      });
     } finally {
       await src.$disconnect();
     }
 
     // Export from src, import into dst (no remap).
+    archiveRoot = path.join(tmpDir, "target-archives");
     runCli(EXPORT_CLI, [dumpDir], srcDb);
-    runCli(IMPORT_CLI, [dumpDir], dstDb);
+    runCli(IMPORT_CLI, [dumpDir], dstDb, { UPLOAD_ARCHIVE_DIR: archiveRoot });
 
     // Third import into a fresh DB WITH a --remap spec, to exercise the
     // connector/env remap apply path end-to-end.
     remapDb = path.join(tmpDir, "remap.db");
     migrate(remapDb);
+    // A migrated, still-empty DB the #527 failure-path tests copy from, so they
+    // need no migrate run of their own.
+    emptyDb = path.join(tmpDir, "empty.db");
+    copyFileSync(remapDb, emptyDb);
     const remapFile = path.join(tmpDir, "remap.json");
     writeFileSync(
       remapFile,
       JSON.stringify({
         version: 1,
-        RepoConnection: { valueMap: { apiBaseUrl: { [OLD_API]: NEW_API } } },
+        RepoConnection: {
+          valueMap: { apiBaseUrl: { [OLD_API]: NEW_API } },
+          // #527 — a remap cannot move the archive out of the root either.
+          byId: { [uploadRepoId]: { uploadPath: `/elsewhere/${uploadRepoId}.zip` } },
+        },
       }),
       "utf8",
     );
-    execFileSync("npx", ["tsx", IMPORT_CLI, dumpDir, "--remap", remapFile], {
-      cwd: SERVER_ROOT,
-      env: { ...process.env, DATABASE_URL: `file:${remapDb}`, DATABASE_PROVIDER: "sqlite" },
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
+    runCli(IMPORT_CLI, [dumpDir, "--remap", remapFile], remapDb, {
+      UPLOAD_ARCHIVE_DIR: archiveRoot,
     });
   }, SUITE_TIMEOUT);
 
@@ -303,10 +341,85 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
     try {
       const repo = await dst.repoConnection.findUniqueOrThrow({ where: { id: repoId } });
       expect(repo.apiBaseUrl).toBe(OLD_API);
+      expect(repo.uploadPath).toBeNull();
     } finally {
       await dst.$disconnect();
     }
   });
+
+  it("#527 — re-anchors an imported uploadPath under the importing server's archive root", async () => {
+    const dst = clientFor(dstDb);
+    try {
+      const repo = await dst.repoConnection.findUniqueOrThrow({ where: { id: uploadRepoId } });
+      expect(repo.uploadPath).toBe(path.join(archiveRoot, `${uploadRepoId}.zip`));
+    } finally {
+      await dst.$disconnect();
+    }
+  });
+
+  it("#527 — a --remap cannot point uploadPath outside the archive root", async () => {
+    const remap = clientFor(remapDb);
+    try {
+      const repo = await remap.repoConnection.findUniqueOrThrow({ where: { id: uploadRepoId } });
+      expect(repo.uploadPath).toBe(path.join(archiveRoot, `${uploadRepoId}.zip`));
+    } finally {
+      await remap.$disconnect();
+    }
+  });
+
+  /** Import a tampered copy of the dump into a fresh DB; the import must fail. */
+  function importTampered(name: string, tamper: (dir: string) => void): string {
+    const dir = path.join(tmpDir, `dump-${name}`);
+    cpSync(dumpDir, dir, { recursive: true });
+    tamper(dir);
+    const db = path.join(tmpDir, `${name}.db`);
+    copyFileSync(emptyDb, db);
+    expect(() => runCli(IMPORT_CLI, [dir], db, { UPLOAD_ARCHIVE_DIR: archiveRoot })).toThrow();
+    return db;
+  }
+
+  it(
+    "#527 — an import that fails after the load never leaves the bundle's uploadPath stored",
+    async () => {
+      // Row-count verification runs after pass 1 has committed every row.
+      const db = importTampered("count-mismatch", (dir) => {
+        const file = path.join(dir, "logical-manifest.json");
+        const manifest = JSON.parse(readFileSync(file, "utf8"));
+        manifest.rowCounts.Workspace += 1;
+        writeFileSync(file, JSON.stringify(manifest), "utf8");
+      });
+      const client = clientFor(db);
+      try {
+        const repo = await client.repoConnection.findUniqueOrThrow({
+          where: { id: uploadRepoId },
+        });
+        expect(repo.uploadPath).toBe(path.join(archiveRoot, `${uploadRepoId}.zip`));
+      } finally {
+        await client.$disconnect();
+      }
+    },
+    SUITE_TIMEOUT,
+  );
+
+  it(
+    "#527 — a row whose id is not server-generated is refused before it is written",
+    async () => {
+      const db = importTampered("bad-id", (dir) => {
+        const file = path.join(dir, "RepoConnection.ndjson");
+        writeFileSync(file, readFileSync(file, "utf8").replaceAll(uploadRepoId, "EVIL-ID"), "utf8");
+      });
+      const client = clientFor(db);
+      try {
+        expect(await client.repoConnection.findUnique({ where: { id: "EVIL-ID" } })).toBeNull();
+        expect(
+          await client.repoConnection.count({ where: { uploadPath: { contains: "/anywhere/" } } }),
+        ).toBe(0);
+      } finally {
+        await client.$disconnect();
+      }
+    },
+    SUITE_TIMEOUT,
+  );
 
   it("applies a --remap spec to rewrite an env-specific connector field", async () => {
     const remap = clientFor(remapDb);

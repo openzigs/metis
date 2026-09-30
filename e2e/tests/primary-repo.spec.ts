@@ -218,7 +218,7 @@ test.describe("Epic #640 — Primary Repository", () => {
       await expect(primaryCard.getByText("link-org/link-repo")).toBeVisible();
       await primaryCard.getByRole("link", { name: "Change" }).click();
       await expect(page).toHaveURL(new RegExp(`/projects/${projectId!}/connections`));
-      await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Connections", exact: true })).toBeVisible();
     });
   });
 

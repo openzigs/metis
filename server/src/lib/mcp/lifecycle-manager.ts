@@ -12,6 +12,7 @@ import type { MCPStatus } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { MCPClient } from "./client.js";
 import { MCPHttpTransport } from "./http-transport.js";
+import type { VaultRefMapKind } from "../vault/env-manager.js";
 import { MCPStdioTransport, validateCommand } from "./stdio-transport.js";
 import {
   defaultProvisionerRegistry,
@@ -54,7 +55,7 @@ export function redactErrorMessage(input: string | null | undefined): string | n
 
 export interface LifecycleOptions {
   /**
-   * Resolves vault refs (`${vault:...}`) inside env values. Provided by the
+   * Resolves vault refs (`${vault:...}`) inside env and header values. Provided by the
    * caller so tests can inject a fake vault.
    */
   /**
@@ -64,6 +65,7 @@ export interface LifecycleOptions {
   resolveEnv: (
     env: Record<string, string>,
     secretBindings?: Record<string, string> | null,
+    kind?: VaultRefMapKind,
   ) => Promise<Record<string, string>>;
   /**
    * Override the transport factory — tests inject mock transports here.
@@ -249,11 +251,44 @@ export class MCPLifecycleManager {
     this.emit(entry.config, entry.state);
 
     let env: Record<string, string> = {};
+    // #504 — header values carry `${vault:x}` references too (the importer
+    // vaults an `Authorization` header, and #480 binds them), so they are
+    // expanded through the same bindings as the env instead of being sent
+    // literally. Only the transport sees the expanded copy; `entry.config`
+    // keeps the references.
+    let config = entry.config;
+    let resolving: VaultRefMapKind = "env";
     try {
-      const raw = entry.config.env ?? {};
-      env = await this.opts.resolveEnv(raw, entry.config.secretBindings ?? null);
+      const bindings = entry.config.secretBindings ?? null;
+      const headers = entry.config.headers;
+      const refHeaders = headers
+        ? Object.keys(headers).filter((k) => {
+            const v: unknown = headers[k];
+            return typeof v === "string" && v.includes("${vault:");
+          })
+        : [];
+      // A header is sent to the server's URL, so it is only ever expanded
+      // through #480 bindings. With none (a pre-#480 row the backfill has not
+      // reached), the resolver would fall back to a label lookup with no #344
+      // ownership check — refuse before anything is resolved or sent.
+      if (refHeaders.length > 0 && bindings === null) {
+        resolving = "header";
+        throw new Error(
+          `header ${refHeaders[0]} references the vault but this server has no secret bindings yet; save the server again`,
+        );
+      }
+      env = await this.opts.resolveEnv(entry.config.env ?? {}, bindings);
+      if (headers && refHeaders.length > 0) {
+        resolving = "header";
+        config = {
+          ...entry.config,
+          headers: await this.opts.resolveEnv(headers, bindings, "header"),
+        };
+      }
     } catch (err) {
-      const message = redactErrorMessage(`env resolution failed: ${(err as Error).message}`);
+      const message = redactErrorMessage(
+        `${resolving} resolution failed: ${(err as Error).message}`,
+      );
       entry.state.status = "error";
       entry.state.lastError = message;
       entry.state.failureCount += 1;
@@ -287,10 +322,7 @@ export class MCPLifecycleManager {
     }
     entry.cleanup = provisioned.cleanup ?? null;
 
-    const transport = (this.opts.transportFactory ?? defaultTransportFactory)(
-      entry.config,
-      provisioned,
-    );
+    const transport = (this.opts.transportFactory ?? defaultTransportFactory)(config, provisioned);
     const client = new MCPClient(transport, entry.config.defaultToolRisk);
     entry.transport = transport;
     entry.client = client;

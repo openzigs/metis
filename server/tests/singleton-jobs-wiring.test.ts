@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   startChargebackScheduler: vi.fn(),
   startRevocationPruner: vi.fn(),
   reconcileStrandedGeneratedDocPublications: vi.fn(),
+  backfillSecretBindings: vi.fn(),
   bootLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
@@ -70,6 +71,11 @@ vi.mock(
   ),
 );
 
+vi.mock(
+  "../src/lib/vault/secret-binding-backfill.js",
+  partial("backfillSecretBindings", mocks.backfillSecretBindings),
+);
+
 // #201 — the bootstrap logger, so a test can read which failure was reported.
 vi.mock("../src/lib/logger.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../src/lib/logger.js")>();
@@ -98,6 +104,7 @@ describe("SingletonJobs registration", () => {
       if (typeof fn === "function") fn.mockReturnValue(handleOf(name));
     }
     mocks.reconcileStrandedGeneratedDocPublications.mockResolvedValue({});
+    mocks.backfillSecretBindings.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -190,6 +197,27 @@ describe("SingletonJobs registration", () => {
         error: "boom",
       }),
     );
+    jobs.stop();
+  });
+
+  it("#504 — runs the vault secret-binding backfill once on the leader", () => {
+    const jobs = new SingletonJobs(fakeSchedulerBootstrap() as never);
+    jobs.start();
+    jobs.start();
+    expect(mocks.backfillSecretBindings).toHaveBeenCalledTimes(1);
+    jobs.stop();
+  });
+
+  it("#504 — reports a backfill failure without failing the leader's start", async () => {
+    mocks.backfillSecretBindings.mockRejectedValue(new Error("db locked"));
+    const jobs = new SingletonJobs(fakeSchedulerBootstrap() as never);
+    jobs.start();
+    await vi.waitFor(() =>
+      expect(mocks.bootLog.warn).toHaveBeenCalledWith("Vault secret-binding backfill failed", {
+        error: "db locked",
+      }),
+    );
+    expect(mocks.startWorkspaceUsageRollup).toHaveBeenCalledTimes(1);
     jobs.stop();
   });
 

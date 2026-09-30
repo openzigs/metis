@@ -19,7 +19,7 @@ export class TokenBreakdownSection {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Token Usage by Category" });
+    this.heading = page.getByRole("heading", { name: "Token Usage by Category", exact: true });
     this.donutChart = page.locator('svg[aria-label="Token category donut chart"]');
     this.stackedBar = page.locator('[role="img"][aria-label="Token category stacked bar"]');
     this.totalTokensDisplay = page.getByText("total tokens");

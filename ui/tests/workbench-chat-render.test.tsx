@@ -164,6 +164,7 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
       items: [
         {
           id: "doc-repo",
+          source: "repo",
           filename:
             "connector:repo:cmexample0000000000acmerp:src/main/java/com/acme/wms/common/vo/ShipmentSourceVO.java",
           status: "ready",
@@ -196,6 +197,7 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
       items: [
         {
           id: "doc-repo",
+          source: "repo",
           filename: "connector:repo:cmexample0000000000acmerp:README.md",
           status: "ready",
         },
@@ -261,6 +263,7 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
       items: [
         {
           id: "doc-repo",
+          source: "repo",
           filename: "connector:repo:cmexample0000000000acmerp:README.md",
           status: "ready",
         },
@@ -282,6 +285,43 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     ).toBeInTheDocument();
   });
 
+  // #474 — the panel numbered its unnamed-repository groups but the chips did
+  // not, so two repositories' READMEs both read "README.md — Unnamed repository".
+  it("labels a chip with its panel group's ordinal when two repositories are unnamed (#474)", async () => {
+    const user = userEvent.setup();
+    repoListMock.mockResolvedValueOnce([]);
+    documentsListMock.mockResolvedValue({
+      items: [
+        {
+          id: "doc-a",
+          source: "repo",
+          filename: "connector:repo:cmexample0000000000aaaaaa:README.md",
+          status: "ready",
+        },
+        {
+          id: "doc-b",
+          source: "repo",
+          filename: "connector:repo:cmexample0000000000bbbbbb:README.md",
+          status: "ready",
+        },
+      ],
+    });
+
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+
+    // Attach only the second repository's README: the chip is numbered from the
+    // whole list, as the panel is, not from what is attached.
+    await user.click(await screen.findByRole("button", { name: /Unnamed repository 2/ }));
+    await user.click(screen.getByTestId("workbench-doc-attach-doc-b"));
+
+    const chips = await screen.findByTestId("workbench-context-chips");
+    const chip = within(chips).getByRole("listitem", {
+      name: "Remove README.md — Unnamed repository 2 from context",
+    });
+    expect(chip).toHaveAttribute("title", "Unnamed repository 2/README.md");
+  });
+
   it("labels a chip for an unnamed repository without an id fragment (#440)", async () => {
     const user = userEvent.setup();
     repoListMock.mockResolvedValueOnce([]);
@@ -289,6 +329,7 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
       items: [
         {
           id: "doc-repo",
+          source: "repo",
           filename: "connector:repo:cmexample0000000000acmerp:README.md",
           status: "ready",
         },

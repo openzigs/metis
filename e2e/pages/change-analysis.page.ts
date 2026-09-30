@@ -43,28 +43,31 @@ export class ChangeAnalysisPage {
     this.page = page;
 
     // Page-level
-    this.heading = page.getByRole("heading", { name: "Change Analysis" });
+    this.heading = page.getByRole("heading", { name: "Change Analysis", exact: true });
     this.subtitle = page.getByText(
       "Compare requirements between analysis runs to detect additions, removals, and modifications.",
     );
 
     // Trigger form
     this.triggerForm = page.getByTestId("trigger-form");
-    this.triggerHeading = page.getByRole("heading", { name: "Trigger New Analysis" });
+    this.triggerHeading = page.getByRole("heading", { name: "Trigger New Analysis", exact: true });
     this.baseAnalysisSelect = page.getByTestId("base-analysis-select");
     this.headAnalysisSelect = page.getByTestId("head-analysis-select");
     this.compareButton = page.getByTestId("trigger-btn");
     this.triggerError = this.triggerForm.locator("p.text-destructive");
 
     // Analysis history
-    this.analysisHistoryHeading = page.getByRole("heading", { name: "Analysis History" });
+    this.analysisHistoryHeading = page.getByRole("heading", {
+      name: "Analysis History",
+      exact: true,
+    });
     this.analysisList = page.getByTestId("analysis-list");
     this.emptyListMessage = page.getByText("No change analyses yet.");
     this.loadingMessage = page.getByText("Loading…");
 
     // Detail panel
     this.detailPanel = page.getByTestId("change-detail");
-    this.detailHeading = page.getByRole("heading", { name: "Change Analysis Detail" });
+    this.detailHeading = page.getByRole("heading", { name: "Change Analysis Detail", exact: true });
     this.detailPlaceholder = page.getByText("Select a change analysis to view details");
     this.changesList = page.getByTestId("changes-list");
     this.noChangesMessage = page.getByText("No changes detected.");

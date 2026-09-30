@@ -49,7 +49,7 @@ export class DataMappingsPage {
     // `exact: true` is essential: "Suggested data mappings" is also a region
     // and would match a substring "Data mappings".
     this.panel = page.getByRole("region", { name: "Data mappings", exact: true });
-    this.heading = this.panel.getByRole("heading", { name: "Data mappings" });
+    this.heading = this.panel.getByRole("heading", { name: "Data mappings", exact: true });
     this.addMappingButton = this.panel.getByRole("button", { name: "Add mapping" });
     this.cancelButton = this.panel.getByRole("button", { name: "Cancel" });
     this.suggestButton = this.panel.getByRole("button", { name: "Suggest mappings" });

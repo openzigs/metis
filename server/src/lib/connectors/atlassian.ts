@@ -22,6 +22,7 @@
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import type { DocumentSource } from "../documents/document-source.js";
 import { getDocumentStorage } from "../documents/storage.js";
 import { getKnowledgeService } from "../rag/knowledge-service.js";
 import { getMCPRegistry } from "../mcp/mcp-service.js";
@@ -318,7 +319,11 @@ export async function ingestConfluenceSpace(
       await ingestUnit({
         projectId: input.projectId,
         actorId: input.actorId,
+        source: "confluence",
         filename,
+        // #474 — the Workbench labels the page by its title, not "Page <id>".
+        // Redacted like the body it heads.
+        title: redactString(page.title).trim() || null,
         body,
         summary,
       });
@@ -419,7 +424,9 @@ export async function ingestJiraQuery(input: IngestJiraInput): Promise<Atlassian
       await ingestUnit({
         projectId: input.projectId,
         actorId: input.actorId,
+        source: "jira",
         filename,
+        title: null,
         body,
         summary,
       });
@@ -470,7 +477,11 @@ export function renderJiraMarkdown(issue: JiraIssueContent, attachmentMarkdown?:
 interface IngestUnitArgs {
   projectId: string;
   actorId: string;
+  /** #474 — stored on the row, and part of the match for an existing one. */
+  source: Extract<DocumentSource, "confluence" | "jira">;
   filename: string;
+  /** #474 — the source's display title, or null when it has none. */
+  title: string | null;
   body: string;
   summary: AtlassianIngestSummary;
 }
@@ -480,18 +491,30 @@ async function ingestUnit(args: IngestUnitArgs): Promise<void> {
   const knowledge = getKnowledgeService();
   const buffer = Buffer.from(args.body, "utf-8");
   const blob = await storage.write({ projectId: args.projectId, buffer });
+  // #474 — matched on `source` as well as the filename, so a user's upload
+  // that happens to share this filename is never overwritten by the connector.
   const existing = await prisma.document.findFirst({
-    where: { projectId: args.projectId, filename: args.filename, deletedAt: null },
+    where: {
+      projectId: args.projectId,
+      filename: args.filename,
+      source: args.source,
+      deletedAt: null,
+    },
   });
   let docId: string;
   if (existing) {
     if (existing.checksum === blob.checksum) {
+      // Unchanged content, but a row ingested before #474 has no title yet.
+      if (existing.title !== args.title) {
+        await prisma.document.update({ where: { id: existing.id }, data: { title: args.title } });
+      }
       args.summary.skipped += 1;
       return;
     }
     await prisma.document.update({
       where: { id: existing.id },
       data: {
+        title: args.title,
         storagePath: blob.storagePath,
         checksum: blob.checksum,
         sizeBytes: blob.sizeBytes,
@@ -505,7 +528,9 @@ async function ingestUnit(args: IngestUnitArgs): Promise<void> {
     const created = await prisma.document.create({
       data: {
         projectId: args.projectId,
+        source: args.source,
         filename: args.filename,
+        title: args.title,
         mimeType: "text/markdown",
         sizeBytes: blob.sizeBytes,
         storagePath: blob.storagePath,

@@ -21,7 +21,7 @@ export class WorkspaceSettingsPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Workspace Settings" });
+    this.heading = page.getByRole("heading", { name: "Workspace Settings", exact: true });
     // `exact` matters: a workspace whose NAME contains "name" would otherwise
     // make the switcher button match this locator too.
     this.nameInput = page.getByLabel("Name", { exact: true });

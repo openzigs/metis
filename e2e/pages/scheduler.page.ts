@@ -15,7 +15,7 @@ export class SchedulerPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Scheduler" });
+    this.heading = page.getByRole("heading", { name: "Scheduler", exact: true });
   }
 
   async goto(): Promise<void> {
@@ -43,7 +43,7 @@ export class TasksPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Tasks" });
+    this.heading = page.getByRole("heading", { name: "Tasks", exact: true });
   }
 
   async goto(): Promise<void> {

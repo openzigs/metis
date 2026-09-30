@@ -778,7 +778,7 @@ test.describe("Epic #594 — Token Usage Tracking & Cost Allocation", () => {
       });
 
       await test.step("Verify details table heading", async () => {
-        await expect(page.getByRole("heading", { name: "Details" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Details", exact: true })).toBeVisible();
       });
     });
   });

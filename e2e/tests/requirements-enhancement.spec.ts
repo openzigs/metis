@@ -603,7 +603,9 @@ test.describe("UI: Clarification Dialog rendering (#625)", () => {
     await enhancementPage.goto(projectId);
 
     // The analysis page should load with the config card
-    await expect(page.getByRole("heading", { name: "Start a new analysis" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Start a new analysis", exact: true }),
+    ).toBeVisible();
     await expect(enhancementPage.enhancementOptions).toBeVisible();
   });
 });
@@ -630,7 +632,9 @@ test.describe("UI: Evidence Review rendering (#625)", () => {
 
     // The config card loads; evidence review panel renders when an
     // analysis with evidence is selected. We verify the page structure.
-    await expect(page.getByRole("heading", { name: "Start a new analysis" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Start a new analysis", exact: true }),
+    ).toBeVisible();
   });
 });
 

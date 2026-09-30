@@ -11,7 +11,8 @@
  * (or "Unnamed repository", numbered when there are several), a generated
  * document is told apart by its date rather than by a cuid fragment, and a
  * document another connector wrote (a database schema, a Confluence page, a
- * Jira issue) goes under "Other sources" rather than under "Uploaded".
+ * Jira issue) goes under "Other sources" rather than under "Uploaded" — decided
+ * by the document's stored `source`, never by its filename (#474).
  */
 import type { DocumentRow } from "@/lib/projects-api";
 import { formatSourceLabel } from "@/lib/format-source-label";
@@ -101,66 +102,133 @@ function sourceEntry(
   };
 }
 
-/** A document another connector wrote, or undefined when it is not one. */
-function toSourceEntry(
+function repoEntry(
+  doc: DocumentRow,
+  connectorId: string,
+  repoName: string,
+  basename: string,
+  path: string,
+): PanelEntry {
+  return {
+    doc,
+    kind: "repo",
+    name: basename,
+    title: `${repoName}/${path}`,
+    path,
+    connectorId,
+    repoName,
+    searchText: path.toLowerCase(),
+  };
+}
+
+/**
+ * #474 — a document the source column says a connector wrote, parsed for its
+ * group and name. The filename pattern is read only for a row whose `source`
+ * already names that connector, so an upload named `jira:ABC-1` stays an upload.
+ */
+function toConnectorEntry(
   doc: DocumentRow,
   repoNames: Readonly<Record<string, string>> | undefined,
 ): PanelEntry | undefined {
   const raw = (doc.filename ?? "").trim();
-  const db = DB_RE.exec(raw);
-  if (db) {
-    const table = db[2].replace(/\.md$/i, "");
-    return sourceEntry(
-      doc,
-      `db:${db[1]}`,
-      knownName(db[1], repoNames) ?? UNNAMED_DATABASE,
-      table === "OVERVIEW" ? "Overview" : table,
-    );
+  switch (doc.source) {
+    case "repo": {
+      const source = formatSourceLabel(raw, repoNames);
+      const connectorId = source.isConnector ? connectorIdOf(source.rawId) : undefined;
+      if (!source.path || !connectorId) return undefined;
+      const repoName = knownName(connectorId, repoNames) || UNNAMED_REPOSITORY;
+      return repoEntry(doc, connectorId, repoName, source.basename, source.path);
+    }
+    case "db": {
+      const db = DB_RE.exec(raw);
+      if (!db) return undefined;
+      const table = db[2].replace(/\.md$/i, "");
+      return sourceEntry(
+        doc,
+        `db:${db[1]}`,
+        knownName(db[1], repoNames) ?? UNNAMED_DATABASE,
+        table === "OVERVIEW" ? "Overview" : table,
+      );
+    }
+    case "confluence": {
+      const page = CONFLUENCE_RE.exec(raw);
+      if (!page) return undefined;
+      const name = doc.title?.trim() || `Page ${page[2]}`;
+      return sourceEntry(doc, `confluence:${page[1]}`, `Confluence ${page[1]}`, name);
+    }
+    case "jira": {
+      const issue = JIRA_RE.exec(raw);
+      return issue ? sourceEntry(doc, "jira", "Jira", issue[1]) : undefined;
+    }
+    default:
+      return undefined;
   }
-  const page = CONFLUENCE_RE.exec(raw);
-  if (page) {
-    return sourceEntry(doc, `confluence:${page[1]}`, `Confluence ${page[1]}`, `Page ${page[2]}`);
-  }
-  const issue = JIRA_RE.exec(raw);
-  if (issue) return sourceEntry(doc, "jira", "Jira", issue[1]);
-  return undefined;
 }
 
-/** Parse every document once into what the panel renders and searches. */
+function toUploadEntry(doc: DocumentRow): PanelEntry {
+  const label = formatDocLabel(doc.filename);
+  // A generated document's secondary is a cuid fragment: show its date instead.
+  const secondary = label.kind === "generated" ? formatDate(doc.uploadedAt) : label.secondary;
+  return {
+    doc,
+    kind: "upload",
+    name: label.primary,
+    ...(secondary ? { secondary } : {}),
+    title: label.primary,
+    searchText: label.primary.toLowerCase(),
+  };
+}
+
+/**
+ * Give groups that share a fallback name ("Unnamed repository") an ordinal —
+ * "Unnamed repository 2" — so two unknown connectors can be told apart without
+ * showing either one's id. Ordinals follow the connector id, so they are stable.
+ *
+ * #474 — numbered here, on every entry, rather than on the panel's groups: the
+ * attached-document chips are built from the same entries, so a chip reads
+ * "README.md — Unnamed repository 2" exactly when its file sits in the panel
+ * group of that name. Callers pass the whole document list, never a subset, so
+ * an ordinal does not change with what else is attached or filtered.
+ */
+function numberDuplicateGroups(entries: PanelEntry[]): void {
+  const idsByName = new Map<string, Set<string>>();
+  for (const e of entries) {
+    if (e.kind === "upload" || !e.connectorId || !e.repoName) continue;
+    const key = `${e.kind}\0${e.repoName}`;
+    const ids = idsByName.get(key);
+    if (ids) ids.add(e.connectorId);
+    else idsByName.set(key, new Set([e.connectorId]));
+  }
+  const renamed = new Map<string, string>();
+  for (const [key, ids] of idsByName) {
+    if (ids.size < 2) continue;
+    const [kind, name] = key.split("\0");
+    [...ids].sort().forEach((id, i) => {
+      if (i > 0) renamed.set(`${kind}\0${id}`, `${name} ${i + 1}`);
+    });
+  }
+  if (renamed.size === 0) return;
+  entries.forEach((e, i) => {
+    const name = renamed.get(`${e.kind}\0${e.connectorId}`);
+    if (!name || !e.connectorId || !e.path) return;
+    entries[i] =
+      e.kind === "repo"
+        ? repoEntry(e.doc, e.connectorId, name, e.name, e.path)
+        : sourceEntry(e.doc, e.connectorId, name, e.name);
+  });
+}
+
+/**
+ * Parse every document once into what the panel renders and searches. Pass
+ * the project's whole document list: group ordinals are numbered across it.
+ */
 export function toPanelEntries(
   docs: readonly DocumentRow[],
   repoNames?: Readonly<Record<string, string>>,
 ): PanelEntry[] {
-  return docs.map((doc) => {
-    const source = formatSourceLabel(doc.filename, repoNames);
-    const connectorId = source.isConnector ? connectorIdOf(source.rawId) : undefined;
-    if (source.isConnector && source.path && connectorId) {
-      const repoName = knownName(connectorId, repoNames) || UNNAMED_REPOSITORY;
-      return {
-        doc,
-        kind: "repo",
-        name: source.basename,
-        title: `${repoName}/${source.path}`,
-        path: source.path,
-        connectorId,
-        repoName,
-        searchText: source.path.toLowerCase(),
-      };
-    }
-    const other = toSourceEntry(doc, repoNames);
-    if (other) return other;
-    const label = formatDocLabel(doc.filename);
-    // A generated document's secondary is a cuid fragment: show its date instead.
-    const secondary = label.kind === "generated" ? formatDate(doc.uploadedAt) : label.secondary;
-    return {
-      doc,
-      kind: "upload",
-      name: label.primary,
-      ...(secondary ? { secondary } : {}),
-      title: label.primary,
-      searchText: label.primary.toLowerCase(),
-    };
-  });
+  const entries = docs.map((doc) => toConnectorEntry(doc, repoNames) ?? toUploadEntry(doc));
+  numberDuplicateGroups(entries);
+  return entries;
 }
 
 /**
@@ -198,27 +266,6 @@ function sortFolder(folder: FolderNode): void {
   folder.folders.sort(byName);
   folder.files.sort(byName);
   for (const child of folder.folders) sortFolder(child);
-}
-
-/**
- * Give groups that share a fallback name ("Unnamed repository") an ordinal —
- * "Unnamed repository 2" — so two unknown connectors can be told apart without
- * showing either one's id. Ordinals follow the connector id, so they are stable.
- */
-function numberDuplicateNames(groups: RepoNode[]): void {
-  const sameName = new Map<string, RepoNode[]>();
-  for (const g of groups) {
-    const list = sameName.get(g.name);
-    if (list) list.push(g);
-    else sameName.set(g.name, [g]);
-  }
-  for (const [name, same] of sameName) {
-    if (same.length < 2) continue;
-    same.sort((a, b) => (a.connectorId < b.connectorId ? -1 : 1));
-    same.forEach((g, i) => {
-      if (i > 0) g.name = `${name} ${i + 1}`;
-    });
-  }
 }
 
 /** Uploads first (as listed), then one folder tree per repository and per other source, by name. */
@@ -271,8 +318,6 @@ export function groupEntries(entries: readonly PanelEntry[]): DocumentGroups {
 
   const repoList = [...repos.values()];
   const sourceList = [...sources.values()];
-  numberDuplicateNames(repoList);
-  numberDuplicateNames(sourceList);
   repoList.sort(byName);
   sourceList.sort(byName);
   for (const group of [...repoList, ...sourceList]) sortFolder(group);

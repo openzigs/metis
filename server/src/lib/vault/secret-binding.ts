@@ -142,6 +142,29 @@ async function secretsReachableBy(refs: string[]): Promise<Map<string, SecretOwn
   return out;
 }
 
+/**
+ * #344 rule 1: a user may attach a reference only if EVERY live secret it can
+ * reach was created by them. An unknown reference reaches nothing and so is
+ * never owned.
+ */
+function ownedBy(reachable: SecretOwner[], userId: string | null): boolean {
+  return (
+    userId !== null && reachable.length > 0 && reachable.every((s) => s.createdById === userId)
+  );
+}
+
+/**
+ * #504 — the references `userId` could have attached under rule 1, for a
+ * write made without a caller (the pre-#480 backfill). The `vault.reveal`
+ * exemption is the caller's to decide; this checks ownership only.
+ */
+export async function refsOwnedBy(userId: string | null, refs: string[]): Promise<Set<string>> {
+  const unique = [...new Set(refs)];
+  if (userId === null || unique.length === 0) return new Set();
+  const reachableBy = await secretsReachableBy(unique);
+  return new Set(unique.filter((ref) => ownedBy(reachableBy.get(ref) ?? [], userId)));
+}
+
 export interface SecretBindingChange {
   /** Reference bodies the resource holds before the write (empty on create). */
   before: string[];
@@ -188,8 +211,7 @@ export async function assertSecretBindingAllowed(
     const reachable = reachableBy.get(ref) ?? [];
     const alreadyBound = reachable.length > 0 && reachable.every((s) => boundIds.has(s.id));
     if (alreadyBound && !change.destinationChanged) continue;
-    const owned = reachable.length > 0 && reachable.every((s) => s.createdById === user.userId);
-    if (owned) continue;
+    if (ownedBy(reachable, user.userId)) continue;
     audit({
       actor: { id: user.userId },
       action: "vault.binding_refused",

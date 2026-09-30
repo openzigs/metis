@@ -17,3 +17,18 @@ export function isDeepSeekEndpoint(baseUrl: string | undefined): boolean {
     return false;
   }
 }
+
+/**
+ * #512 — true when `baseUrl` is Anthropic's own API: unset (the SDK default,
+ * api.anthropic.com) or naming that host exactly. Any other Anthropic-compatible
+ * host — DeepSeek, another vendor, a proxy — is not known to run Claude tier ids
+ * as sent, and an unparseable URL is not known to be Anthropic's → false.
+ */
+export function isAnthropicApiEndpoint(baseUrl: string | undefined): boolean {
+  if (!baseUrl?.trim()) return true;
+  try {
+    return new URL(baseUrl.trim()).hostname.toLowerCase() === "api.anthropic.com";
+  } catch {
+    return false;
+  }
+}

@@ -31,7 +31,7 @@ export class AdminEmbeddingsPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Embedding backends" });
+    this.heading = page.getByRole("heading", { name: "Embedding backends", exact: true });
 
     this.activeBackendCard = page.getByTestId("active-backend");
     this.healthBadge = page.getByTestId("health-badge");

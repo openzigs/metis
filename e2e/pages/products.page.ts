@@ -28,7 +28,7 @@ export class ProductsListPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Products" });
+    this.heading = page.getByRole("heading", { name: "Products", exact: true });
     this.subheading = page.getByText("Multi-repository product documentation");
     this.newProductButton = page.getByTestId("new-product-button");
     this.emptyState = page.getByText("No products yet");
@@ -36,7 +36,7 @@ export class ProductsListPage {
     this.loadingIndicator = page.getByText("Loading…");
 
     // Create product dialog
-    this.dialogTitle = page.getByRole("heading", { name: "Create product" });
+    this.dialogTitle = page.getByRole("heading", { name: "Create product", exact: true });
     this.nameInput = page.getByLabel("Name");
     this.slugInput = page.getByLabel("Slug");
     this.descriptionInput = page.getByLabel("Description");
@@ -113,13 +113,14 @@ export class ProductDetailPage {
     this.backButton = page.getByRole("link", { name: "" }).locator("button");
 
     // Repos section
-    this.reposHeading = page.getByRole("heading", { name: "Repositories" });
+    this.reposHeading = page.getByRole("heading", { name: "Repositories", exact: true });
     this.addRepoButton = page.getByTestId("add-repo-button");
     this.repoEmptyState = page.getByText("No repositories associated yet");
 
     // Add repo dialog
     this.addRepoDialogTitle = page.getByRole("heading", {
       name: "Add repository to product",
+      exact: true,
     });
     // The dialog now picks a connection from a searchable list rather than
     // pasting an opaque id.
@@ -129,7 +130,7 @@ export class ProductDetailPage {
     this.addRepoError = page.locator(".text-destructive");
 
     // Documentation section
-    this.docsHeading = page.getByRole("heading", { name: "Documentation" });
+    this.docsHeading = page.getByRole("heading", { name: "Documentation", exact: true });
     this.docsEmptyState = page.getByText("No documentation generated yet");
   }
 
