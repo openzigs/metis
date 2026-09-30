@@ -246,13 +246,15 @@ export default function WorkbenchPage() {
     setInput("");
     const controller = new AbortController();
     abortRef.current = controller;
-    // #390 — whether the server answered at all. A send refused before any
-    // frame (a 4xx on the first send) stored no turn.
-    let answered = false;
+    // #390/#422 — whether the server accepted the turn. A refused send (a 4xx
+    // on the first send) stored no turn; an accepted one did, even if it is
+    // aborted or dropped before the first frame arrives.
+    let accepted = false;
     try {
       // #136 — only the new message goes up; the server holds the history.
-      for await (const ev of streamChat(active.id, composed, controller.signal)) {
-        answered = true;
+      for await (const ev of streamChat(active.id, composed, controller.signal, undefined, () => {
+        accepted = true;
+      })) {
         handleStream(ev, assistantMsg.id);
       }
     } catch (err) {
@@ -264,10 +266,10 @@ export default function WorkbenchPage() {
       setStreaming(false);
       abortRef.current = null;
     }
-    // #361 — recorded once a turn has happened (as Chat does, #1367), so an
-    // unused session never reaches Recent or the dashboard's Recent activity.
-    // Chat resumes a session from `?sessionId=`.
-    if (!answered) return;
+    // #361 — recorded once a turn has been accepted (as Chat does, #422), so
+    // an unused session never reaches Recent or the dashboard's Recent
+    // activity. Chat resumes a session from `?sessionId=`.
+    if (!accepted) return;
     recentTracker.touch({
       kind: "session",
       id: active.id,

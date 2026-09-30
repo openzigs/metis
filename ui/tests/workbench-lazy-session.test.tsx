@@ -97,7 +97,12 @@ function session(id: string, projectId: string | null = "p1"): aiClient.AISessio
   };
 }
 
-async function* reply(text: string): AsyncGenerator<StreamEvent> {
+/** The trailing `streamChat` arguments: signal, default idle budget, `onAccepted`. */
+const STREAM_ARGS = [expect.anything(), undefined, expect.any(Function)] as const;
+
+/** An accepted turn (#422): the server's 2xx, then the reply. */
+async function* reply(text: string, onAccepted?: () => void): AsyncGenerator<StreamEvent> {
+  onAccepted?.();
   yield { type: "delta", content: text };
   yield { type: "done" };
 }
@@ -136,7 +141,9 @@ beforeEach(() => {
     ],
   });
   createSessionMock.mockResolvedValue(session("sess-1"));
-  streamChatMock.mockImplementation(() => reply("hello back"));
+  streamChatMock.mockImplementation((_id, _msg, _signal, _idle, onAccepted) =>
+    reply("hello back", onAccepted),
+  );
 });
 
 describe("Workbench — no session until the first message (#361)", () => {
@@ -173,7 +180,7 @@ describe("Workbench — no session until the first message (#361)", () => {
       projectId: "p1",
       agentKey: "architect",
     });
-    expect(streamChatMock).toHaveBeenCalledWith("sess-1", "what is this?", expect.anything());
+    expect(streamChatMock).toHaveBeenCalledWith("sess-1", "what is this?", ...STREAM_ARGS);
     expect(screen.getByText(/bedrock-gateway · anthropic\.claude-sonnet-4-5/)).toBeInTheDocument();
   });
 
@@ -223,7 +230,7 @@ describe("Workbench — no session until the first message (#361)", () => {
     await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(2));
     expect(createSessionMock.mock.calls[1]![0]).toMatchObject({ projectId: "p2" });
     await waitFor(() =>
-      expect(streamChatMock).toHaveBeenLastCalledWith("sess-2", "second", expect.anything()),
+      expect(streamChatMock).toHaveBeenLastCalledWith("sess-2", "second", ...STREAM_ARGS),
     );
   });
 
@@ -372,7 +379,7 @@ describe("Workbench — first-send edge cases (#390)", () => {
     await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(2));
     expect(createSessionMock.mock.calls[1]![0]).toMatchObject({ projectId: "p2" });
     await waitFor(() =>
-      expect(streamChatMock).toHaveBeenCalledWith("sess-2", "slow again", expect.anything()),
+      expect(streamChatMock).toHaveBeenCalledWith("sess-2", "slow again", ...STREAM_ARGS),
     );
   });
 
@@ -389,7 +396,8 @@ describe("Workbench — first-send edge cases (#390)", () => {
   });
 
   it("a turn that got a reply before the stream failed still reaches Recent", async () => {
-    streamChatMock.mockImplementationOnce(async function* () {
+    streamChatMock.mockImplementationOnce(async function* (_id, _msg, _signal, _idle, onAccepted) {
+      onAccepted?.();
       yield { type: "delta", content: "partial" } as StreamEvent;
       throw new Error("connection reset");
     });
@@ -397,6 +405,40 @@ describe("Workbench — first-send edge cases (#390)", () => {
     await waitForProject();
     await send("hi");
     expect(await screen.findByText(/connection reset/)).toBeInTheDocument();
+    await waitFor(() => expect(touchMock).toHaveBeenCalledTimes(1));
+    expect(touchMock.mock.calls[0]![0]).toMatchObject({ id: "sess-1" });
+  });
+
+  it("an accepted turn aborted by a scope change before any frame still reaches Recent (#422)", async () => {
+    // The server stored the question when it accepted the send; no frame has
+    // arrived yet when the project switch aborts the stream.
+    streamChatMock.mockImplementationOnce(async function* (_id, _msg, signal, _idle, onAccepted) {
+      onAccepted?.();
+      await new Promise<void>((_, reject) => {
+        signal?.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted.", "AbortError")),
+        );
+      });
+    });
+    renderStrict();
+    await waitForProject();
+    await send("accepted");
+    await waitFor(() => expect(streamChatMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByTestId("workbench-project-picker"), { target: { value: "p2" } });
+
+    await waitFor(() => expect(touchMock).toHaveBeenCalledTimes(1));
+    expect(touchMock.mock.calls[0]![0]).toMatchObject({ id: "sess-1", projectId: "p1" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("an accepted turn dropped before any frame still reaches Recent (#422)", async () => {
+    streamChatMock.mockImplementationOnce(async function* (_id, _msg, _signal, _idle, onAccepted) {
+      onAccepted?.();
+    });
+    renderStrict();
+    await waitForProject();
+    await send("dropped");
     await waitFor(() => expect(touchMock).toHaveBeenCalledTimes(1));
     expect(touchMock.mock.calls[0]![0]).toMatchObject({ id: "sess-1" });
   });
