@@ -553,12 +553,20 @@ const IDLE = Symbol("idle");
  * yields a terminal `error` event and returns, so the caller's `finally` runs
  * and the composer is re-enabled. Everything streamed before the stall has
  * already been yielded, so partial content is preserved.
+ *
+ * #422 — `onAccepted` runs once, when the server has accepted the turn (a 2xx
+ * with a body), before any frame is read. Every refusal (validation, a
+ * read-only session, budget, provider) is a plain HTTP error sent before the
+ * SSE headers, so acceptance — not the first frame — is when the turn is on
+ * its way to the transcript. A send aborted or dropped after acceptance but
+ * before any frame still counts as a turn.
  */
 export async function* streamChat(
   sessionId: string,
   message: string,
   signal?: AbortSignal,
   idleTimeoutMs: number = STREAM_IDLE_TIMEOUT_MS,
+  onAccepted?: () => void,
 ): AsyncGenerator<StreamEvent> {
   // #136 — only the new user message goes up; the server owns the history.
   const res = await streamFetch("/ai/stream", {
@@ -579,6 +587,7 @@ export async function* streamChat(
     }
     throw new ApiError(res.status, message, code);
   }
+  onAccepted?.();
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   const guard = idleTimeoutMs > 0;

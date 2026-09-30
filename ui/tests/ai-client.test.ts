@@ -321,6 +321,40 @@ describe("streamChat", () => {
   });
 });
 
+// #422 — "accepted" is the server's 2xx, not the first frame: the question is
+// on its way to the transcript before any frame is written.
+describe("streamChat — onAccepted", () => {
+  it("reports acceptance once, before any frame is read", async () => {
+    const order: string[] = [];
+    // A body with no frames at all: accepted, then dropped.
+    fetchMock.mockResolvedValueOnce(sseResponse(""));
+    const onAccepted = vi.fn(() => order.push("accepted"));
+    for await (const ev of streamChat("s1", "hi", undefined, 0, onAccepted)) order.push(ev.type);
+    expect(onAccepted).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["accepted"]);
+  });
+
+  it("reports acceptance before the first frame is yielded", async () => {
+    const order: string[] = [];
+    fetchMock.mockResolvedValueOnce(sseResponse('event: delta\ndata: {"content":"x"}\n\n'));
+    for await (const ev of streamChat("s1", "hi", undefined, 0, () => order.push("accepted"))) {
+      order.push(ev.type);
+    }
+    expect(order).toEqual(["accepted", "delta"]);
+  });
+
+  it("does not report acceptance for a refused send", async () => {
+    fetchMock.mockResolvedValueOnce(sseResponse("", 409));
+    const onAccepted = vi.fn();
+    await expect(async () => {
+      for await (const _ of streamChat("s1", "x", undefined, 0, onAccepted)) {
+        // exhaust
+      }
+    }).rejects.toMatchObject({ name: "ApiError", status: 409 });
+    expect(onAccepted).not.toHaveBeenCalled();
+  });
+});
+
 // H1 — streamChat MUST go through the same single-flight refresh chain as
 // the rest of the API client. An expired access token should trigger one
 // /auth/refresh, then the original stream request should be retried once.

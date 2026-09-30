@@ -326,9 +326,19 @@ export default function ChatPage() {
     setError(null);
     const controller = new AbortController();
     abortRef.current = controller;
+    // #422 — whether the server accepted the turn (see the Workbench, #390).
+    let accepted = false;
     try {
       // #136 — only the new message goes up; the server holds the history.
-      for await (const ev of streamChat(session.id, userMsg.content, controller.signal)) {
+      for await (const ev of streamChat(
+        session.id,
+        userMsg.content,
+        controller.signal,
+        undefined,
+        () => {
+          accepted = true;
+        },
+      )) {
         handleEvent(ev, assistantMsg.id);
       }
     } catch (err) {
@@ -357,13 +367,16 @@ export default function ChatPage() {
       // #1367 — dashboard "Recent activity" read an empty localStorage store
       // because nothing in chat ever wrote to it. Record the session once a turn
       // has actually happened, so the widget reflects real chat activity.
-      recentTracker.touch({
-        kind: "session",
-        id: session.id,
-        label: session.title || "Chat",
-        href: `/chat?sessionId=${encodeURIComponent(session.id)}`,
-        ...(session.projectId ? { projectId: session.projectId } : {}),
-      });
+      // #422 — only an accepted turn: a refused send stored nothing.
+      if (accepted) {
+        recentTracker.touch({
+          kind: "session",
+          id: session.id,
+          label: session.title || "Chat",
+          href: `/chat?sessionId=${encodeURIComponent(session.id)}`,
+          ...(session.projectId ? { projectId: session.projectId } : {}),
+        });
+      }
     }
   }
 
