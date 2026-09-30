@@ -432,7 +432,7 @@ describe("grounding in the codebase (#20)", () => {
       },
     });
     expect(r.message).toMatch(
-      /1 referenced path is not in the project's code graph: `server\/src\/lib\/MultiTurnToolCallNormalizer\.ts`\.$/,
+      /1 referenced path is not in the project's code graph \(expected only for new files\): `server\/src\/lib\/MultiTurnToolCallNormalizer\.ts`\.$/,
     );
     expect(r.message).not.toContain("agent-loop.ts");
   });
@@ -462,8 +462,39 @@ describe("grounding in the codebase (#20)", () => {
       deps: { provider: new FakeProvider("# Plan\n`a/b.ts` and `c/d.ts`") },
     });
     expect(r.message).toContain(
-      "2 referenced paths are not in the project's code graph: `a/b.ts`, `c/d.ts`.",
+      "2 referenced paths are not in the project's code graph (expected only for new files): `a/b.ts`, `c/d.ts`.",
     );
+    // …and none of them exists, which is the #20 failure itself.
+    expect(r.message).toContain("The plan names no existing file");
+  });
+
+  // PR #419 review — the exact #20 report: a plan that names no file at all.
+  it("/plan warns when a plan names no existing file", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const r = await runPlan({
+      projectId: "p1",
+      knowledgeService: fakeKnowledgeService([]),
+      fusedCode: noCode,
+      pathLookup: { hasCodeGraph: async () => true, findExisting: async () => [] },
+      deps: { provider: new FakeProvider("# Plan\nAdd a MultiTurnToolCallNormalizer component.") },
+    });
+    expect(r.message).toContain("The plan names no existing file");
+  });
+
+  // PR #419 review — /plan's document pinning had no test of its own.
+  it("/plan pins the retrieved requirements document with a second, expanding search", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const ks = fakeKnowledgeService([
+      ragChunk({ filename: "requirements.md", position: "0", text: "FR-1 recover calls" }),
+    ]);
+    await runPlan({
+      projectId: "p1",
+      knowledgeService: ks,
+      fusedCode: noCode,
+      pathLookup: { hasCodeGraph: async () => false, findExisting: async () => [] },
+      deps: { provider: new FakeProvider("# Plan") },
+    });
+    expect(ks.search.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("/tasks reports test tasks that trail the implementation they cover", async () => {

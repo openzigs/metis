@@ -146,11 +146,18 @@ describe("verifyPlanPaths", () => {
     expect(lk.findExisting).not.toHaveBeenCalled();
   });
 
-  it("skips the lookup entirely when the plan names no paths", async () => {
+  // PR #419 review — naming no path is the #20 failure, so it is still checked.
+  it("checks a plan that names no paths against the code graph, without a path query", async () => {
     const lk = lookup({ graph: true, stored: [] });
     const r = await verifyPlanPaths("p1", "no paths here", lk);
+    expect(r).toEqual({ checked: true, referenced: [], unverified: [] });
+    expect(lk.findExisting).not.toHaveBeenCalled();
+  });
+
+  it("leaves a no-path plan unchecked when the project has no code graph", async () => {
+    const lk = lookup({ graph: false, stored: [] });
+    const r = await verifyPlanPaths("p1", "no paths here", lk);
     expect(r.checked).toBe(false);
-    expect(lk.hasCodeGraph).not.toHaveBeenCalled();
   });
 
   it("never throws when the lookup fails", async () => {

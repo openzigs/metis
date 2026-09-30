@@ -158,9 +158,11 @@ export async function verifyPlanPaths(
 ): Promise<PlanPathCheck> {
   const referenced = extractReferencedPaths(markdown);
   const unchecked: PlanPathCheck = { checked: false, referenced, unverified: [] };
-  if (referenced.length === 0) return unchecked;
   try {
     if (!(await lookup.hasCodeGraph(projectId))) return unchecked;
+    // A plan that names no path at all is still checked against a code graph:
+    // naming no existing file is the #20 failure itself (PR #419 review).
+    if (referenced.length === 0) return { checked: true, referenced, unverified: [] };
     const stored = await lookup.findExisting(projectId, referenced);
     const unverified = referenced.filter((p) => !stored.some((s) => samePath(p, s)));
     return { checked: true, referenced, unverified };

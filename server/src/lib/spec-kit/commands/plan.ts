@@ -156,14 +156,21 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
 
   // #20 — an invented path is reported, not trusted.
   const paths = await verifyPlanPaths(input.projectId, run.content, input.pathLookup);
+  // PR #419 review — the note must fire on the exact #20 failure (no existing
+  // file named at all), and must not call a planned NEW file "invented".
+  const existingNamed = paths.referenced.length - paths.unverified.length;
+  const noneNote =
+    paths.checked && existingNamed === 0
+      ? " The plan names no existing file from the project's code graph — check where the change goes before implementing."
+      : "";
   const pathNote =
     paths.unverified.length > 0
-      ? ` ${paths.unverified.length} referenced path${paths.unverified.length === 1 ? " is" : "s are"} not in the project's code graph: ${paths.unverified.map((p) => `\`${p}\``).join(", ")}.`
+      ? ` ${paths.unverified.length} referenced path${paths.unverified.length === 1 ? " is" : "s are"} not in the project's code graph (expected only for new files): ${paths.unverified.map((p) => `\`${p}\``).join(", ")}.`
       : "";
 
   return {
     artifact,
     tokensUsed: run.tokensUsed,
-    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${pathNote}`,
+    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${pathNote}${noneNote}`,
   };
 }
