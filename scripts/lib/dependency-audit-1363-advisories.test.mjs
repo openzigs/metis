@@ -144,10 +144,12 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
     ).not.toBeNull();
   });
 
-  describe("next — GHSA-2xp9-vwfh-vxw4 + GHSA-p293-qw3h-jr36, the only two CRITICALs", () => {
-    const FIXED = /** @type {[number, number, number]} */ ([16, 3, 3]);
+  describe("next — GHSA-2xp9-vwfh-vxw4 + GHSA-p293-qw3h-jr36 (fixed 16.3.3) and GHSA-vcvr-r3jv-pc5j (fixed 16.3.6, #554), the CRITICALs", () => {
+    // #554 raised the floor from 16.3.3 to 16.3.6: GHSA-vcvr-r3jv-pc5j (CVSS 9.5, RCE in
+    // next/og ImageResponse) covers `>=16.2.0 <16.3.6`. 16.3.6 covers all three.
+    const FIXED = /** @type {[number, number, number]} */ ([16, 3, 6]);
 
-    it("targets 16.3.3 or above", () => {
+    it("targets 16.3.6 or above", () => {
       const entries = overridesFor("next");
       expect(entries, "no override governs next").not.toHaveLength(0);
       for (const [key, target] of entries) {
@@ -158,7 +160,8 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
           `override "${key}" targets "${target}". Both advisories record ` +
             "`introduced 16.0.0 -> fixed 16.3.3`: unauthenticated RCE in the Image " +
             "Optimization API on AVIF input (CVSS 9.5) and unauthenticated RCE on " +
-            "Windows-hosted servers (CVSS 9.0).",
+            "Windows-hosted servers (CVSS 9.0). GHSA-vcvr-r3jv-pc5j (#554, CVSS 9.5, " +
+            "next/og RCE) is fixed in 16.3.6.",
         ).toBe(true);
       }
     });
@@ -173,7 +176,7 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
         const ceiling = /<\s*(\d+\.\d+\.\d+)/.exec(key)?.[1];
         expect(
           ceiling,
-          `override key "${key}" does not bound at 16.3.3. A \`<\`-bounded selector ` +
+          `override key "${key}" does not bound at ${FIXED.join(".")}. A \`<\`-bounded selector ` +
             "stops matching the moment a consumer's declared range clears the bound, so " +
             "leaving `<16.2.11` while raising the target to ^16.3.3 leaves the backstop " +
             "covering only the band already fixed — #1208's floor-not-ceiling defect, " +
@@ -182,7 +185,7 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
       }
     });
 
-    it("declares ^16.3.3 or above in ui/package.json, not just in the override", () => {
+    it("declares ^16.3.6 or above in ui/package.json, not just in the override", () => {
       const range = declaredRange("ui/package.json", "next");
       expect(range, "ui/package.json declares no `next` dependency").toBeDefined();
       const floor = /(\d+)\.(\d+)\.(\d+)/.exec(range);
@@ -194,7 +197,7 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
       ).toBe(true);
     });
 
-    it("resolves NO next copy below 16.3.3", () => {
+    it("resolves NO next copy below 16.3.6", () => {
       const resolved = resolvedVersions("next");
       expect(
         resolved.length,
@@ -204,8 +207,8 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
       const breaching = resolved.filter((v) => !resolvedVersionMeetsFloor(v, FIXED));
       expect(
         breaching,
-        `lockfile resolves next ${breaching.join(", ")} below 16.3.3 — two unauthenticated ` +
-          "RCEs, one of which (the AVIF Image Optimization path) is not Windows-specific.",
+        `lockfile resolves next ${breaching.join(", ")} below 16.3.6 — unauthenticated RCEs ` +
+          "(the AVIF Image Optimization path, Windows hosting, and next/og ImageResponse).",
       ).toEqual([]);
     });
   });
