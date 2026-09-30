@@ -50,6 +50,23 @@ describe("pageCrumbs (#271)", () => {
     expect(pageCrumbs("/runs/42")).toEqual([{ label: "Runs", href: "/runs" }, { label: "Run" }]);
   });
 
+  it("a Settings section is named by the settings nav, not its URL segment (#545)", () => {
+    expect(pageCrumbs("/settings/mcp")).toEqual([
+      { label: "Settings", href: "/settings" },
+      { label: "MCP servers" },
+    ]);
+    expect(pageCrumbs("/settings/api-keys/")).toEqual([
+      { label: "Settings", href: "/settings" },
+      { label: "Configuration" },
+    ]);
+    expect(pageCrumbs("/settings")).toEqual([{ label: "Settings" }]);
+    // Below a section, the leaf is still the page's own segment.
+    expect(pageCrumbs("/settings/integrations/teams")).toEqual([
+      { label: "Settings", href: "/settings" },
+      { label: "Teams" },
+    ]);
+  });
+
   it("is empty for a project route outside the project tabs", () => {
     expect(pageCrumbs("/projects/p1/nowhere")).toEqual([]);
   });
