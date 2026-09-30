@@ -53,14 +53,27 @@ const MAX_CACHED_PROJECTS = 4;
 interface CachedSymbols {
   fingerprint: string;
   symbols: readonly SearchableSymbol[];
+  /** Load order (PR #413 review): a load only replaces an entry from an older load. */
+  seq: number;
 }
 
 /** Insertion order is recency order: the first key is the least recently used. */
 const symbolCache = new Map<string, CachedSymbols>();
 
+/**
+ * #394 — loads in flight, per project. Concurrent searches on a cold cache that
+ * see the same fingerprint share ONE `findMany` (and, through the shared array
+ * identity, one BM25 build) instead of each loading the full symbol set.
+ */
+const inFlight = new Map<
+  string,
+  { fingerprint: string; load: Promise<readonly SearchableSymbol[]> }
+>();
+
 /** Test seam: drop every cached project symbol set. */
 export function __resetSymbolIndexCache(): void {
   symbolCache.clear();
+  inFlight.clear();
 }
 
 const SYMBOL_SELECT = {
@@ -90,6 +103,69 @@ function toSearchable(r: SymbolRow): SearchableSymbol {
 }
 
 /**
+ * What the cache is keyed on. Every symbol write is a create or a delete
+ * (`ingest.ts`, `schema-graph.ts` — no update), so a create moves `max(createdAt)`
+ * and a pure delete moves the count: together they change whenever the project's
+ * symbol set does.
+ *
+ * #394: `createdAt` alone can fail to move — clock skew, two concurrent ingests on
+ * Postgres (where `now()` is the transaction start) or an explicit `createdAt` can
+ * let a delete-k/create-k re-parse keep both numbers. The newest
+ * `CodeGraph.lastIndexedAt` is the backstop: every production symbol write runs
+ * inside `ingestCodeGraph`, which stamps it app-side (`new Date()`, not the DB
+ * clock) as its last write (step 8), so a completed ingest moves the fingerprint
+ * even when the symbol aggregate does not. An ingest that throws midway does not
+ * stamp it; the next successful one does.
+ */
+async function symbolFingerprint(projectId: string): Promise<string> {
+  const [symbols, graphs] = await Promise.all([
+    prisma.codeSymbol.aggregate({
+      where: { projectId },
+      _count: { _all: true },
+      _max: { createdAt: true },
+    }),
+    prisma.codeGraph.aggregate({
+      where: { projectId },
+      _max: { lastIndexedAt: true },
+    }),
+  ]);
+  return [
+    symbols._count._all,
+    symbols._max.createdAt?.getTime() ?? "",
+    graphs._max.lastIndexedAt?.getTime() ?? "",
+  ].join("|");
+}
+
+let loadSeq = 0;
+
+async function loadSymbols(
+  projectId: string,
+  fingerprint: string,
+): Promise<readonly SearchableSymbol[]> {
+  const seq = ++loadSeq;
+  const rows = await prisma.codeSymbol.findMany({
+    where: { projectId },
+    select: SYMBOL_SELECT,
+    // Stable order keeps BM25 tie-breaks reproducible across queries.
+    orderBy: { id: "asc" },
+  });
+  // Frozen: every caller shares this array, and the shared BM25 cache is keyed on
+  // its identity, so a caller that sorted or pushed into it would corrupt both.
+  const symbols = Object.freeze(rows.map(toSearchable));
+  // An older load that finishes after a newer one must not overwrite the newer
+  // entry (PR #413 review). Its caller still gets these symbols; only the shared
+  // cache keeps the newest load.
+  const cached = symbolCache.get(projectId);
+  if (cached && cached.seq > seq) return symbols;
+  symbolCache.delete(projectId);
+  if (symbolCache.size >= MAX_CACHED_PROJECTS) {
+    symbolCache.delete(symbolCache.keys().next().value as string);
+  }
+  symbolCache.set(projectId, { fingerprint, symbols, seq });
+  return symbols;
+}
+
+/**
  * Prisma-backed symbol index feeding the BM25 keyword scorer.
  *
  * Exported so the #797 tests and the `--wired` eval can drive the PRODUCTION
@@ -110,39 +186,27 @@ function toSearchable(r: SymbolRow): SearchableSymbol {
  * (`DEFAULT_WEIGHTS`) were tuned against.
  */
 export const prismaSymbolIndex: SymbolIndex = {
-  async getSymbols(projectId: string): Promise<SearchableSymbol[]> {
-    // Every symbol write is a create or a delete (`ingest.ts`, `schema-graph.ts`
-    // — no update), so a create moves `max(createdAt)` and a pure delete moves the
-    // count: together they change whenever the project's symbol set does.
-    const agg = await prisma.codeSymbol.aggregate({
-      where: { projectId },
-      _count: { _all: true },
-      _max: { createdAt: true },
-    });
-    const fingerprint = `${agg._count._all}|${agg._max.createdAt?.getTime() ?? ""}`;
+  async getSymbols(projectId: string): Promise<readonly SearchableSymbol[]> {
+    const fingerprint = await symbolFingerprint(projectId);
     const cached = symbolCache.get(projectId);
     if (cached?.fingerprint === fingerprint) {
       // Refresh recency for the LRU.
       symbolCache.delete(projectId);
       symbolCache.set(projectId, cached);
-      return cached.symbols as SearchableSymbol[];
+      return cached.symbols;
     }
 
-    const rows = await prisma.codeSymbol.findMany({
-      where: { projectId },
-      select: SYMBOL_SELECT,
-      // Stable order keeps BM25 tie-breaks reproducible across queries.
-      orderBy: { id: "asc" },
-    });
-    // Frozen: every caller shares this array, and the shared BM25 cache is keyed on
-    // its identity, so a caller that sorted or pushed into it would corrupt both.
-    const symbols = Object.freeze(rows.map(toSearchable));
-    symbolCache.delete(projectId);
-    if (symbolCache.size >= MAX_CACHED_PROJECTS) {
-      symbolCache.delete(symbolCache.keys().next().value as string);
+    const pending = inFlight.get(projectId);
+    if (pending?.fingerprint === fingerprint) return pending.load;
+
+    const load = loadSymbols(projectId, fingerprint);
+    inFlight.set(projectId, { fingerprint, load });
+    try {
+      return await load;
+    } finally {
+      // A newer load for a changed fingerprint may have replaced this one.
+      if (inFlight.get(projectId)?.load === load) inFlight.delete(projectId);
     }
-    symbolCache.set(projectId, { fingerprint, symbols });
-    return symbols as SearchableSymbol[];
   },
 
   async getSymbolsByIds(projectId: string, symbolIds: string[]): Promise<SearchableSymbol[]> {
