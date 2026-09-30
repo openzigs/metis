@@ -422,6 +422,9 @@ export async function createUploadRepoConnector(
   // and `isPrimary` in a single insert: a bad archive never inserts (so never
   // holds, then drops, the primary flag) and no follow-up update can fail after
   // the row exists. Extraction runs the zip-slip / zip-bomb guards.
+  // Deliberately a lowercase ULID, not Prisma's cuid(): the id must exist
+  // before the insert. Both formats are /^[a-z0-9]+$/ and fit idSchema's
+  // 10–64 chars; nothing orders repo connections by id (PR #472 review).
   const id = ulid().toLowerCase();
   let row;
   try {
