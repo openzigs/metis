@@ -78,7 +78,7 @@ export default function McpSettingsPage() {
               key={t.id}
               value={t.id}
               data-testid={`tab-${t.id}`}
-              className="shrink-0 rounded-none border-b-2 border-transparent px-4 py-2 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+              className="shrink-0 rounded-none border-b-2 border-transparent px-4 py-2 text-muted-foreground shadow-none focus-visible:ring-inset focus-visible:ring-offset-0 hover:text-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
             >
               {t.label}
             </TabsTrigger>

@@ -64,6 +64,11 @@ describe("#508 settings tab rows scroll within themselves at phone width", () =>
     for (const tab of screen.getAllByRole("tab")) {
       expect(classesOf(tab)).not.toContain("-mb-px");
       expect(classesOf(tab)).toContain("shrink-0");
+      // The scroller clips overflow, so the focus ring must sit inside the
+      // trigger or keyboard users lose it (PR #520 review).
+      expect(classesOf(tab)).toEqual(
+        expect.arrayContaining(["focus-visible:ring-inset", "focus-visible:ring-offset-0"]),
+      );
     }
   });
 
