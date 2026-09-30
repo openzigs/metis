@@ -18,12 +18,14 @@
  * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped.
  */
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { countBarrier, overrideRepoConnection } from "./helpers/repo-count-barrier.js";
 
 const databaseUrl = process.env.DATABASE_URL ?? "";
 const isPostgres = databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://");
@@ -42,7 +44,8 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => {
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { selectPrismaAdapter } = await import("../src/lib/prisma.js");
-const { createRepoConnector } = await import("../src/lib/connectors/repo/repo-service.js");
+const { createRepoConnector, createUploadRepoConnector } =
+  await import("../src/lib/connectors/repo/repo-service.js");
 
 const MIGRATION = "20261003000457_issue457_repo_primary_unique";
 const migrationSql = readFileSync(
@@ -57,36 +60,6 @@ const migrationSql = readFileSync(
   ),
   "utf8",
 );
-
-/** Holds every `repoConnection.count` caller until `n` have counted. */
-function countBarrier(db: PrismaClient, n: number): PrismaClient {
-  let arrived = 0;
-  let release!: () => void;
-  const allCounted = new Promise<void>((r) => (release = r));
-  const repo = db.repoConnection;
-  const racingRepo = new Proxy(repo, {
-    get(target, prop) {
-      if (prop === "count") {
-        return async (args: Parameters<typeof repo.count>[0]) => {
-          const result = await target.count(args);
-          arrived += 1;
-          if (arrived === n) release();
-          await allCounted;
-          return result;
-        };
-      }
-      const value = Reflect.get(target, prop) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return new Proxy(db, {
-    get(target, prop) {
-      if (prop === "repoConnection") return racingRepo;
-      const value = Reflect.get(target, prop) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
 
 describe.runIf(enabled)(
   "repo_connections one live primary per project (real Postgres, #457)",
@@ -201,6 +174,97 @@ describe.runIf(enabled)(
         const rows = await db.repoConnection.findMany({ where: { projectId } });
         expect(rows).toHaveLength(2);
         expect(rows.filter((r) => r.isPrimary)).toHaveLength(1);
+      });
+    });
+
+    describe("#463 — upload validates before insert; only the primary index retries", () => {
+      const db = new PrismaClient({ adapter: selectPrismaAdapter(databaseUrl) });
+      const suffix = randomUUID().slice(0, 8);
+      const userId = `u463_${suffix}`;
+      const projects = { race: `p463a_${suffix}`, clash: `p463b_${suffix}` };
+      let tmp: string;
+
+      beforeAll(async () => {
+        tmp = await fs.mkdtemp(path.join(os.tmpdir(), "metis-463-pg-"));
+        process.env.UPLOAD_EXTRACT_DIR = path.join(tmp, "extracts");
+        process.env.UPLOAD_ARCHIVE_DIR = path.join(tmp, "archives");
+        await db.user.create({
+          data: { id: userId, username: userId, displayName: "U", email: `${userId}@example.test` },
+        });
+        for (const id of Object.values(projects)) {
+          await db.project.create({ data: { id, name: "Apollo", slug: id, createdById: userId } });
+        }
+      });
+
+      afterAll(async () => {
+        const ids = Object.values(projects);
+        await db.repoConnection.deleteMany({ where: { projectId: { in: ids } } });
+        await db.project.deleteMany({ where: { id: { in: ids } } });
+        await db.user.deleteMany({ where: { id: userId } });
+        await db.$disconnect();
+        await fs.rm(tmp, { recursive: true, force: true });
+        delete process.env.UPLOAD_EXTRACT_DIR;
+        delete process.env.UPLOAD_ARCHIVE_DIR;
+      });
+
+      it("a failed upload never takes the primary flag from a create racing it", async () => {
+        const real = db.repoConnection;
+        const labels: string[] = [];
+        let raced = false;
+        const race = () =>
+          createRepoConnector(
+            projects.race,
+            { label: "good", ownerOrOrg: "o", repoName: "good" },
+            userId,
+          );
+        state.db = overrideRepoConnection(db, {
+          create: async (args: Parameters<typeof real.create>[0]) => {
+            labels.push(String(args.data.label));
+            const row = await real.create(args);
+            if (args.data.label === "bad" && !raced) {
+              raced = true;
+              await race();
+            }
+            return row;
+          },
+        });
+        try {
+          await expect(
+            createUploadRepoConnector(projects.race, "bad", Buffer.from("not a zip"), userId),
+          ).rejects.toMatchObject({ code: "ARCHIVE_INVALID" });
+          if (!raced) await race();
+        } finally {
+          state.db = db;
+        }
+        expect(labels).not.toContain("bad");
+        const rows = await db.repoConnection.findMany({ where: { projectId: projects.race } });
+        expect(rows.map((r) => [r.label, r.isPrimary])).toEqual([["good", true]]);
+      });
+
+      it("a label held by a soft-deleted row fails once, without a non-primary retry", async () => {
+        await db.repoConnection.create({
+          data: { projectId: projects.clash, label: "old", deletedAt: new Date() },
+        });
+        const real = db.repoConnection;
+        let creates = 0;
+        state.db = overrideRepoConnection(db, {
+          create: async (args: Parameters<typeof real.create>[0]) => {
+            creates += 1;
+            return real.create(args);
+          },
+        });
+        try {
+          await expect(
+            createRepoConnector(
+              projects.clash,
+              { label: "old", ownerOrOrg: "o", repoName: "old" },
+              userId,
+            ),
+          ).rejects.toMatchObject({ code: "P2002" });
+        } finally {
+          state.db = db;
+        }
+        expect(creates).toBe(1);
       });
     });
   },

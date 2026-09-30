@@ -39,7 +39,7 @@ import { SOURCE_EXTENSIONS } from "../connector-ingest.js";
 /** Best-effort recursive remove that never throws (used on cleanup paths). */
 async function rmSilent(target: string): Promise<void> {
   try {
-    // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- callers only pass server-derived extraction dirs (root + cuid) or zip-slip-validated paths; never raw user input.
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- callers only pass server-derived extraction dirs (root + cuid or lowercase ULID) or zip-slip-validated paths; never raw user input.
     await fs.rm(target, { recursive: true, force: true });
   } catch {
     /* swallow — cleanup is best-effort */
@@ -108,11 +108,17 @@ export interface ExtractResult {
 export async function storeUploadedArchive(connectorId: string, buffer: Buffer): Promise<string> {
   const root = uploadArchiveRoot();
   await fs.mkdir(root, { recursive: true });
-  // connectorId is a server-generated cuid (no user-controlled separators).
+  // connectorId is a server-generated cuid or lowercase ULID (no user-controlled separators).
   const archivePath = path.join(root, `${connectorId}.zip`);
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- `connectorId` is a server-generated cuid (matches /^[a-z0-9]+$/), never user input, so the join cannot traverse outside `uploadArchiveRoot()`.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- `connectorId` is a server-generated cuid or lowercase ULID (#463; both match /^[a-z0-9]+$/), never user input, so the join cannot traverse outside `uploadArchiveRoot()`.
   await fs.writeFile(archivePath, buffer, { mode: 0o600 });
   return archivePath;
+}
+
+/** Remove a connector's stored upload archive (best-effort; a missing file is fine). */
+export async function removeUploadedArchive(connectorId: string): Promise<void> {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- `connectorId` is a server-generated id (matches /^[a-z0-9]+$/), never user input; this is the same path storeUploadedArchive() wrote.
+  await fs.rm(path.join(uploadArchiveRoot(), `${connectorId}.zip`), { force: true });
 }
 
 /**
@@ -126,7 +132,7 @@ export async function extractArchiveFromPath(
 ): Promise<ExtractResult> {
   let buffer: Buffer;
   try {
-    // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `archivePath` is produced by storeUploadedArchive() from a server-generated cuid; it is never raw user input.
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `archivePath` is produced by storeUploadedArchive() from a server-generated cuid or lowercase ULID; it is never raw user input.
     buffer = await fs.readFile(archivePath);
   } catch (err) {
     // Issue #329 — a missing stored archive means re-ingest CANNOT re-extract
@@ -207,12 +213,12 @@ export async function extractArchiveBuffer(
   buffer: Buffer,
 ): Promise<ExtractResult> {
   const root = uploadExtractionRoot();
-  // connectorId is a server-generated cuid — safe to join.
+  // connectorId is a server-generated cuid or lowercase ULID — safe to join.
   const dir = path.join(root, connectorId);
   // Always start from a clean extraction directory.
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `dir` is root + server-generated cuid; no user-controlled path segment.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `dir` is root + server-generated cuid or lowercase ULID; no user-controlled path segment.
   await fs.rm(dir, { recursive: true, force: true });
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `dir` is root + server-generated cuid; no user-controlled path segment.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `dir` is root + server-generated cuid or lowercase ULID; no user-controlled path segment.
   await fs.mkdir(dir, { recursive: true });
   const realDir = await fs.realpath(dir);
 
@@ -316,6 +322,6 @@ export async function extractArchiveBuffer(
 /** Remove a connector's extraction directory (best-effort). */
 export async function cleanupExtraction(connectorId: string): Promise<void> {
   const dir = path.join(uploadExtractionRoot(), connectorId);
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `dir` is root + server-generated cuid; no user-controlled segment.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `dir` is root + server-generated cuid or lowercase ULID; no user-controlled segment.
   await rmSilent(dir);
 }

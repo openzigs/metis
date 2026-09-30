@@ -178,6 +178,40 @@ describe("createUploadRepoConnector + resolveNonGitIngestRoot", () => {
     expect([...rows.values()].length).toBe(0);
   });
 
+  it("#463 — an invalid archive is rejected before any insert and leaves no file", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    await expect(
+      createUploadRepoConnector("proj_1", "bad", Buffer.from("not a zip"), "user_1"),
+    ).rejects.toMatchObject({ code: "ARCHIVE_INVALID" });
+    expect(prisma.repoConnection.create).not.toHaveBeenCalled();
+    expect(prisma.repoConnection.count).not.toHaveBeenCalled();
+    const archives = await fs.readdir(process.env.UPLOAD_ARCHIVE_DIR!).catch(() => []);
+    expect(archives).toEqual([]);
+  });
+
+  it("#463 — a failed insert removes the stored archive and the extraction", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    vi.mocked(prisma.repoConnection.create).mockRejectedValueOnce(new Error("db down"));
+    await expect(
+      createUploadRepoConnector("proj_1", "one", await zipBuf(), "user_1"),
+    ).rejects.toThrow("db down");
+    const [[arg]] = vi.mocked(prisma.repoConnection.create).mock.calls;
+    expect(arg.data.uploadPath).toBe(
+      path.join(process.env.UPLOAD_ARCHIVE_DIR!, `${String(arg.data.id)}.zip`),
+    );
+    expect(await fs.readdir(process.env.UPLOAD_ARCHIVE_DIR!)).toEqual([]);
+    expect(await fs.readdir(process.env.UPLOAD_EXTRACT_DIR!).catch(() => [])).toEqual([]);
+    expect(rows.size).toBe(0);
+  });
+
+  it("#463 — the id is server-generated, lowercase alphanumeric", async () => {
+    const created = await createUploadRepoConnector("proj_1", "one", await zipBuf(), "user_1");
+    expect(created.id).toMatch(/^[a-z0-9]+$/);
+    expect(rows.get(created.id)?.uploadPath).toBe(
+      path.join(process.env.UPLOAD_ARCHIVE_DIR!, `${created.id}.zip`),
+    );
+  });
+
   it("#457 — writes isPrimary with the insert, never with a separate update", async () => {
     // A separate isPrimary update after the row exists could throw and leave an
     // upload connector behind while the caller is told the create failed.
