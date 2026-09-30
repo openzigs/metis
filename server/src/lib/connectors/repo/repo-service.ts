@@ -31,7 +31,9 @@ import {
 } from "@metis/shared";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../../prisma.js";
+import { isUniqueViolation } from "../../db/prisma-errors.js";
 import { getVaultService } from "../../vault/vault-service.js";
 import { resolveRepoCloneRoot, resolveRepoClonePath } from "./clone-path.js";
 import { assertConnectorHostAllowed, resolveAndAssertConnectorHost } from "../network-allowlist.js";
@@ -324,28 +326,18 @@ export async function createRepoConnector(
     }
     secretId = secret.id;
   }
-  // Epic #640 — a project's first repository is its primary one. #448 — decided
-  // before the insert and written with it: a separate update after the row
-  // exists could fail and leave a connector behind while the caller is told the
-  // create failed.
-  const liveRepoCount = await prisma.repoConnection.count({
-    where: { projectId, deletedAt: null },
-  });
-  const row = await prisma.repoConnection.create({
-    data: {
-      projectId,
-      label: input.label,
-      provider,
-      isPrimary: liveRepoCount === 0,
-      ownerOrOrg: input.ownerOrOrg ?? null,
-      repoName: input.repoName ?? null,
-      localPath,
-      defaultBranch: input.defaultBranch ?? "main",
-      apiBaseUrl: input.apiBaseUrl ?? null,
-      secretId,
-      status: "pending",
-      createdById: actorId,
-    },
+  const row = await insertRepoConnection({
+    projectId,
+    label: input.label,
+    provider,
+    ownerOrOrg: input.ownerOrOrg ?? null,
+    repoName: input.repoName ?? null,
+    localPath,
+    defaultBranch: input.defaultBranch ?? "main",
+    apiBaseUrl: input.apiBaseUrl ?? null,
+    secretId,
+    status: "pending",
+    createdById: actorId,
   });
 
   audit({
@@ -355,6 +347,36 @@ export async function createRepoConnector(
     metadata: { projectId, provider: row.provider, repo: repoSourceLabel(row) },
   });
   return toApi(row);
+}
+
+/**
+ * Insert a repo connector row, deciding `isPrimary` before the insert and
+ * writing it with the insert.
+ *
+ * Epic #640 — a project's first repository is its primary one. #448/#457 — a
+ * separate update after the row exists could fail and leave a connector behind
+ * while the caller is told the create failed. #457 — the count-then-insert is a
+ * race: two concurrent first creates can both read 0. The partial unique index
+ * `repo_connections_projectId_primary_key` (one live primary per project)
+ * rejects the loser's insert with P2002, and the loser is re-inserted as a
+ * non-primary row. A P2002 on that retry (e.g. a racing duplicate label) is the
+ * caller's to see.
+ */
+async function insertRepoConnection(
+  data: Omit<Prisma.RepoConnectionUncheckedCreateInput, "isPrimary">,
+) {
+  const liveRepoCount = await prisma.repoConnection.count({
+    where: { projectId: data.projectId, deletedAt: null },
+  });
+  if (liveRepoCount > 0) {
+    return prisma.repoConnection.create({ data: { ...data, isPrimary: false } });
+  }
+  try {
+    return await prisma.repoConnection.create({ data: { ...data, isPrimary: true } });
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    return prisma.repoConnection.create({ data: { ...data, isPrimary: false } });
+  }
 }
 
 /**
@@ -377,17 +399,15 @@ export async function createUploadRepoConnector(
     throw new ConnectorError(409, "REPO_LABEL_TAKEN", `label '${label}' already exists`);
   }
 
-  const row = await prisma.repoConnection.create({
-    data: {
-      projectId,
-      label,
-      provider: REPO_PROVIDER_UPLOAD,
-      ownerOrOrg: null,
-      repoName: null,
-      defaultBranch: "main",
-      status: "pending",
-      createdById: actorId,
-    },
+  const row = await insertRepoConnection({
+    projectId,
+    label,
+    provider: REPO_PROVIDER_UPLOAD,
+    ownerOrOrg: null,
+    repoName: null,
+    defaultBranch: "main",
+    status: "pending",
+    createdById: actorId,
   });
 
   // Persist the archive + validate it now (zip-slip / zip-bomb guards run here).
@@ -403,14 +423,6 @@ export async function createUploadRepoConnector(
   }
   await prisma.repoConnection.update({ where: { id: row.id }, data: { uploadPath } });
   row.uploadPath = uploadPath;
-
-  const repoCount = await prisma.repoConnection.count({
-    where: { projectId, deletedAt: null },
-  });
-  if (repoCount === 1) {
-    await prisma.repoConnection.update({ where: { id: row.id }, data: { isPrimary: true } });
-    row.isPrimary = true;
-  }
 
   audit({
     actor: { id: actorId },

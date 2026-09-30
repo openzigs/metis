@@ -359,6 +359,69 @@ describe("Repo connector service — CRUD", () => {
     expect(rows.get(created.id)?.isPrimary).toBe(true);
   });
 
+  it("#457 — a first create that loses the primary race is re-inserted as non-primary", async () => {
+    // Two concurrent first creates both count 0; the partial unique index
+    // rejects the loser's primary insert with P2002. Simulated here by a
+    // winner already holding the flag when the loser inserts.
+    const { prisma } = await import("../src/lib/prisma.js");
+    const create = vi.mocked(prisma.repoConnection.create);
+    const insert = create.getMockImplementation()!;
+    create.mockImplementation((async (args: { data: Partial<RepoRow> }) => {
+      if (args.data.isPrimary) {
+        throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+      }
+      return insert(args as never);
+    }) as never);
+    try {
+      const created = await createRepoConnector(
+        "proj_1",
+        { label: "loser", ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      );
+      expect(create.mock.calls.map(([a]) => a.data.isPrimary)).toEqual([true, false]);
+      expect(created.isPrimary).toBe(false);
+      expect(rows.get(created.id)?.isPrimary).toBe(false);
+      expect(prisma.repoConnection.update).not.toHaveBeenCalled();
+    } finally {
+      create.mockImplementation(insert);
+    }
+  });
+
+  it("#457 — a non-unique insert failure is not retried", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    const create = vi.mocked(prisma.repoConnection.create);
+    const insert = create.getMockImplementation()!;
+    create.mockImplementation((async () => {
+      throw Object.assign(new Error("disk I/O error"), { code: "P1001" });
+    }) as never);
+    try {
+      await expect(
+        createRepoConnector("proj_1", { label: "x", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+      ).rejects.toMatchObject({ code: "P1001" });
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      create.mockImplementation(insert);
+    }
+  });
+
+  it("#457 — a unique violation on a non-primary insert reaches the caller", async () => {
+    await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
+    const { prisma } = await import("../src/lib/prisma.js");
+    const create = vi.mocked(prisma.repoConnection.create);
+    const insert = create.getMockImplementation()!;
+    create.mockImplementation((async () => {
+      throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+    }) as never);
+    try {
+      await expect(
+        createRepoConnector("proj_1", { label: "b", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+      ).rejects.toMatchObject({ code: "P2002" });
+      expect(create).toHaveBeenCalledTimes(2); // the first create above, then one attempt
+    } finally {
+      create.mockImplementation(insert);
+    }
+  });
+
   it("project isolation enforced", async () => {
     const c = await createRepoConnector(
       "proj_a",

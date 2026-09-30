@@ -1005,6 +1005,8 @@ model RepoConnection {
   scans              Scan[]
 
   @@unique([projectId, label])
+  /// #457 — at most one live primary repository per project.
+  @@unique([projectId], where: { isPrimary: true, deletedAt: null }, map: "repo_connections_projectId_primary_key")
   @@index([secretId])
   @@index([projectId, status])
   @@map("repo_connections")

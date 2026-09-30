@@ -742,6 +742,14 @@ jobs:
         working-directory: server
         run: pnpm test:integration issue-draft-dedup-postgres
 
+      # Issue #457 — the same empty-database blind spot for the one-live-primary
+      # repo index: runs the Postgres migration.sql verbatim over seeded extra
+      # primaries (scratch schema), then races two first repo creates through
+      # the real service on the real tables and asserts one primary.
+      - name: Prove one primary repository per project on real Postgres
+        working-directory: server
+        run: pnpm test:integration repo-primary-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing
