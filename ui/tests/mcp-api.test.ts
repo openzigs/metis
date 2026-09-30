@@ -48,6 +48,8 @@ describe("mcpApi", () => {
     expect(apiFetchMock).toHaveBeenLastCalledWith("/mcp/s1/restart", { method: "POST" });
     await mcpApi.test("s1");
     expect(apiFetchMock).toHaveBeenLastCalledWith("/mcp/s1/test", { method: "POST" });
+    await mcpApi.rebindSecrets("s1");
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/mcp/s1/rebind-secrets", { method: "POST" });
     await mcpApi.import({ mcpJson: {}, dryRun: true });
     expect(apiFetchMock).toHaveBeenLastCalledWith("/mcp/import", {
       method: "POST",

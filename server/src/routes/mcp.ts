@@ -66,6 +66,7 @@ import { workspaceScopeWhere } from "../lib/auth/project-scope.js";
 import {
   assertMcpCreateSecretBinding,
   assertMcpImportSecretBinding,
+  assertMcpRebindSecretBinding,
   assertMcpUpdateSecretBinding,
 } from "../lib/mcp/secret-binding.js";
 
@@ -384,6 +385,24 @@ export function mcpRouter(): Router {
         checkedAt,
       );
       res.json(ok(updated));
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  // #537 — re-bind the vault references the #504 backfill flagged, under the
+  // #344 rule for the acting user: they must have created each secret, or hold
+  // `vault.reveal`. Nothing else about the server changes.
+  r.post("/:id/rebind-secrets", requireAuth, requirePermission("mcp.manage"), async (req, res) => {
+    const actor = actorFromReq(req);
+    const id = String(req.params.id);
+    await assertServerAccess(req, id);
+    const checkedAt = await assertMcpRebindSecretBinding(
+      { userId: actor.id, role: actor.role },
+      id,
+    );
+    try {
+      res.json(ok(await svc().rebindSecrets(id, actor, checkedAt)));
     } catch (err) {
       rethrow(err);
     }

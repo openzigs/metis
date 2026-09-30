@@ -174,6 +174,9 @@ function ServerRow({ server, onChange }: { server: MCPServerView; onChange: () =
       <td className="px-4 py-3">
         <div className="font-medium">{server.label}</div>
         <div className="text-xs text-muted-foreground">{server.id}</div>
+        {server.unboundSecretRefs.length > 0 ? (
+          <UnboundSecretsNotice server={server} onChange={onChange} />
+        ) : null}
       </td>
       <td className="px-4 py-3" data-testid={`mcp-scope-${server.id}`}>
         {SCOPE_LABEL[server.scope]}
@@ -237,6 +240,59 @@ function ServerRow({ server, onChange }: { server: MCPServerView; onChange: () =
         />
       </td>
     </tr>
+  );
+}
+
+/**
+ * #537 — a server the #504 backfill flagged: some of its vault references are
+ * not bound to a secret, so it will not start. Re-binding attaches them to the
+ * secrets they name now, under the #344 rule for the person clicking: they must
+ * have created those secrets, or be an admin. The server says why otherwise.
+ */
+function UnboundSecretsNotice({
+  server,
+  onChange,
+}: {
+  server: MCPServerView;
+  onChange: () => void;
+}) {
+  const rebind = useMutation({
+    mutationFn: () => mcpApi.rebindSecrets(server.id),
+    onSuccess: onChange,
+  });
+  const refs = server.unboundSecretRefs;
+  return (
+    <div
+      className="mt-2 space-y-1 rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
+      data-testid={`mcp-unbound-${server.id}`}
+    >
+      <p>
+        {refs.length === 1 ? "A vault reference is" : `${refs.length} vault references are`} not
+        bound to a secret, so this server will not start:{" "}
+        {refs.map((r, i) => (
+          <span key={r}>
+            {i > 0 ? ", " : null}
+            <code>{r}</code>
+          </span>
+        ))}
+        . Re-bind them to the secrets they name now — you must have created those secrets, or be an
+        admin.
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={rebind.isPending}
+        onClick={() => rebind.mutate()}
+        data-testid={`mcp-rebind-${server.id}`}
+      >
+        {rebind.isPending ? "Re-binding…" : "Re-bind secrets"}
+      </Button>
+      {rebind.isError ? (
+        <p className="text-destructive" role="alert">
+          {rebind.error instanceof ApiError ? rebind.error.message : "Failed to re-bind secrets"}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

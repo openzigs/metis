@@ -56,6 +56,7 @@ function makeServer(over: Partial<MCPServerView> = {}): MCPServerView {
     url: null,
     headers: null,
     env: null,
+    unboundSecretRefs: [],
     envSecretRefs: null,
     enabled: true,
     trustLevel: "untrusted",

@@ -23,6 +23,7 @@ vi.mock("@/lib/mcp-api", async () => {
       restart: vi.fn(),
       test: vi.fn(),
       remove: vi.fn(),
+      rebindSecrets: vi.fn(),
     },
   };
 });
@@ -43,6 +44,7 @@ function server(over: Partial<MCPServerView> = {}): MCPServerView {
     headers: null,
     env: null,
     envSecretRefs: null,
+    unboundSecretRefs: [],
     enabled: true,
     trustLevel: "untrusted",
     defaultToolRisk: "medium",
@@ -154,6 +156,70 @@ describe("<McpServersPanel /> row actions", () => {
     const dialog = await screen.findByRole("alertdialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(api.remove).toHaveBeenCalledWith("s1"));
+  });
+});
+
+describe("<McpServersPanel /> flagged vault references (#537)", () => {
+  const flagged = (refs: string[]) =>
+    server({ id: "s9", label: "Imported", unboundSecretRefs: refs });
+
+  it("shows no notice on a server with every reference bound", async () => {
+    renderPanel();
+    await screen.findByTestId("mcp-scope-s1");
+    expect(screen.queryByTestId("mcp-unbound-s1")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Re-bind secrets" })).not.toBeInTheDocument();
+  });
+
+  it("names every unbound reference on the server's row, with the remedy", async () => {
+    api.list.mockResolvedValue({ items: [flagged(["legacy-token", "global:hdr"])] });
+    renderPanel();
+    const notice = await screen.findByTestId("mcp-unbound-s9");
+    expect(notice).toHaveTextContent("2 vault references are not bound to a secret");
+    expect(notice).toHaveTextContent("legacy-token, global:hdr");
+    expect(notice).toHaveTextContent(/you must have created those secrets, or be an admin/);
+  });
+
+  it("uses the singular for one reference", async () => {
+    api.list.mockResolvedValue({ items: [flagged(["legacy-token"])] });
+    renderPanel();
+    expect(await screen.findByTestId("mcp-unbound-s9")).toHaveTextContent(
+      "A vault reference is not bound to a secret",
+    );
+  });
+
+  it("re-binds that server and refreshes the list", async () => {
+    api.list.mockResolvedValue({ items: [flagged(["legacy-token"])] });
+    api.rebindSecrets.mockResolvedValue(server({ id: "s9" }));
+    renderPanel();
+    await screen.findByTestId("mcp-unbound-s9");
+    const calls = api.list.mock.calls.length;
+    fireEvent.click(screen.getByTestId("mcp-rebind-s9"));
+    await waitFor(() => expect(api.rebindSecrets).toHaveBeenCalledWith("s9"));
+    await waitFor(() => expect(api.list.mock.calls.length).toBeGreaterThan(calls));
+  });
+
+  it("shows the server's refusal when the caller may not bind the secret", async () => {
+    api.list.mockResolvedValue({ items: [flagged(["legacy-token"])] });
+    api.rebindSecrets.mockRejectedValue(
+      new ApiError(
+        403,
+        "You can only attach vault secrets you created.",
+        "SECRET_BINDING_FORBIDDEN",
+      ),
+    );
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("mcp-rebind-s9"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "You can only attach vault secrets you created.",
+    );
+  });
+
+  it("falls back to a generic message for a non-API failure", async () => {
+    api.list.mockResolvedValue({ items: [flagged(["legacy-token"])] });
+    api.rebindSecrets.mockRejectedValue(new Error("network"));
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("mcp-rebind-s9"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to re-bind secrets");
   });
 });
 

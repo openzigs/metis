@@ -15,6 +15,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { assertSecretBindingAllowed, refBodiesIn } from "../vault/secret-binding.js";
+import { parseSecretBindings } from "../vault/bound-secret.js";
 import type { ImportPlan } from "./mcp-importer.js";
 
 type Caller = Pick<AuthPayload, "userId" | "role">;
@@ -97,6 +98,23 @@ export async function assertMcpCreateSecretBinding(
 }
 
 /**
+ * #537 — the references a server's env/headers hold that its stored bindings
+ * do not cover: those the #504 backfill flagged (ambiguous, unresolved, or not
+ * the creator's), which `expandVaultRefs` refuses, so the server cannot start.
+ * A row the backfill has not reached yet (`secretBindings` NULL) is not judged.
+ */
+export function unboundMcpRefs(row: {
+  envJson: string | null;
+  headers: string | null;
+  secretBindings?: string | null;
+}): string[] {
+  const bindings = parseSecretBindings(row.secretBindings);
+  if (bindings === null) return [];
+  const refs = mcpRefs(parseJson(row.envJson) as StringMap, parseJson(row.headers) as StringMap);
+  return [...new Set(refs)].filter((ref) => !Object.hasOwn(bindings, ref));
+}
+
+/**
  * An update of server `id`. An unknown id is left to the route's own 404.
  * Returns the checked row's `updatedAt` (#479) for the conditional write, or
  * `null` when there is no row.
@@ -112,14 +130,40 @@ export async function assertMcpUpdateSecretBinding(
   const storedHeaders = parseJson(row.headers) as StringMap;
   const nextEnv = patch.env !== undefined ? patch.env : storedEnv;
   const nextHeaders = patch.headers !== undefined ? patch.headers : storedHeaders;
+  // #537 — a reference the server holds but is not bound to (#504 flagged it)
+  // is attached by this write, not kept: the update re-binds it, so it must
+  // pass rule 1 like a new one. Otherwise any `mcp.manage` caller could re-save
+  // a server and bind a secret the backfill refused to. Only a patch that
+  // carries env or headers re-binds (`MCPRegistryService.update`), so any other
+  // patch ({enabled}, {label}, ...) binds nothing and is not judged for them.
+  const rebinds = patch.env !== undefined || patch.headers !== undefined;
+  const unbound = new Set(rebinds ? unboundMcpRefs(row) : []);
   await assertSecretBindingAllowed(
     user,
     {
-      before: mcpRefs(storedEnv, storedHeaders),
+      before: mcpRefs(storedEnv, storedHeaders).filter((ref) => !unbound.has(ref)),
       after: mcpRefs(nextEnv, nextHeaders),
       destinationChanged: mcpDestinationChanged(row, patch),
     },
     { target: { type: "mcp_server", id }, metadata: { label: row.label } },
+  );
+  return row.updatedAt;
+}
+
+/**
+ * #537 — re-binding server `id`'s flagged references ({@link unboundMcpRefs})
+ * attaches them now, so each must be the caller's (#344 rule 1) unless they
+ * hold `vault.reveal`. Nothing else about the server changes. Returns the
+ * checked row's `updatedAt` for the conditional write, or `null` when there is
+ * no row (the route's own 404).
+ */
+export async function assertMcpRebindSecretBinding(user: Caller, id: string): Promise<Date | null> {
+  const row = await prisma.mCPServer.findFirst({ where: { id, deletedAt: null } });
+  if (!row) return null;
+  await assertSecretBindingAllowed(
+    user,
+    { before: [], after: unboundMcpRefs(row), destinationChanged: true },
+    { target: { type: "mcp_server", id }, metadata: { label: row.label, rebind: true } },
   );
   return row.updatedAt;
 }

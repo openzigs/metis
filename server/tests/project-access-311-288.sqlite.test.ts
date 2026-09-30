@@ -175,6 +175,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       { name: "POST /:id/restart", method: "post", path: (id) => `/api/mcp/${id}/restart` },
       { name: "POST /:id/test", method: "post", path: (id) => `/api/mcp/${id}/test` },
       {
+        name: "POST /:id/rebind-secrets",
+        method: "post",
+        path: (id) => `/api/mcp/${id}/rebind-secrets`,
+      },
+      {
         name: "GET /servers/:id/tools",
         method: "get",
         path: (id) => `/api/mcp/servers/${id}/tools`,

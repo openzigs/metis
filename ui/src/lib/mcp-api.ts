@@ -33,6 +33,11 @@ export interface MCPServerView {
   headers: Record<string, string> | null;
   env: Record<string, string> | null;
   envSecretRefs: Record<string, string> | null;
+  /**
+   * #537 — vault references the server holds but is not bound to (flagged by
+   * the #504 backfill). The server will not start until they are re-bound.
+   */
+  unboundSecretRefs: string[];
   trustLevel: MCPTrustLevel;
   defaultToolRisk: MCPToolRisk;
   version: string | null;
@@ -136,6 +141,9 @@ export const mcpApi = {
   start: (id: string) => apiFetch<MCPServerView>(`/mcp/${id}/start`, { method: "POST" }),
   stop: (id: string) => apiFetch<MCPServerView>(`/mcp/${id}/stop`, { method: "POST" }),
   restart: (id: string) => apiFetch<MCPServerView>(`/mcp/${id}/restart`, { method: "POST" }),
+  /** #537 — bind the references the #504 backfill flagged, as the caller. */
+  rebindSecrets: (id: string) =>
+    apiFetch<MCPServerView>(`/mcp/${id}/rebind-secrets`, { method: "POST" }),
   test: (id: string) =>
     apiFetch<{
       ok: boolean;
