@@ -207,6 +207,19 @@ describe("retryRegenerationScheduling (#449)", () => {
     expect(isConnectorIngestActive("rc1")).toBe(false);
   });
 
+  it("defers (throws) while a non-scheduling holder has the lease, so the retry is not lost (PR #505 review)", async () => {
+    h.findFirst.mockResolvedValueOnce({ id: "rc1" });
+    // The docs-gen eval runner's bare source ingest never schedules regeneration.
+    const lease = tryAcquireConnectorIngest("rc1", "source-ingest")!;
+    try {
+      await expect(retryRegenerationScheduling("p1", "rc1")).rejects.toThrow(/deferred/);
+      expect(h.check).not.toHaveBeenCalled();
+      expect(lease.held).toBe(true);
+    } finally {
+      lease.release();
+    }
+  });
+
   it("skips while an ingest holds the connector, which schedules itself when it lands (#498)", async () => {
     h.findFirst.mockResolvedValueOnce({ id: "rc1" });
     const lease = tryAcquireConnectorIngest("rc1", "refresh-ingest")!;
