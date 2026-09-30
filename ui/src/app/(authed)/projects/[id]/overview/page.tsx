@@ -180,6 +180,16 @@ export default function ProjectOverviewPage(): React.ReactElement {
         <p role="status" className="text-sm text-muted-foreground">
           Loading overview…
         </p>
+      ) : overview.isError ? (
+        <Card
+          role="alert"
+          className="border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+          data-testid="overview-load-error"
+        >
+          {overview.error?.status === 404
+            ? "This project could not be found. It may have been deleted."
+            : "The overview could not be loaded. Try refreshing the page."}
+        </Card>
       ) : isMissing ? (
         <Card className="space-y-3 p-4" data-testid="overview-empty-state">
           <h2 className="text-lg font-semibold">No overview yet</h2>

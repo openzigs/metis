@@ -6,7 +6,9 @@ import {
   isNonGitRepoProvider,
   repoLocationLabel,
   repoStatusLabel,
+  repoStatusTone,
 } from "@/lib/repo-connector-display";
+import { NON_GIT_REPO_PROVIDERS, REPO_PROVIDERS } from "@metis/shared";
 
 const git = { provider: "github" as const, ownerOrOrg: "octocat", repoName: "hello" };
 
@@ -93,5 +95,48 @@ describe("repoStatusLabel", () => {
     const base = { provider: "local" as const, lastIngestAt: null, sourceIngest: null };
     expect(repoStatusLabel({ ...base, status: "error" })).toBe("error");
     expect(repoStatusLabel({ ...base, status: "disabled" })).toBe("disabled");
+  });
+});
+
+describe("isNonGitRepoProvider follows the shared list", () => {
+  it("agrees with NON_GIT_REPO_PROVIDERS for every provider", () => {
+    for (const p of REPO_PROVIDERS) {
+      expect(isNonGitRepoProvider(p)).toBe(
+        (NON_GIT_REPO_PROVIDERS as readonly string[]).includes(p),
+      );
+    }
+  });
+});
+
+describe("repoStatusTone", () => {
+  it("leaves a Git connector to its connection status", () => {
+    expect(repoStatusTone({ provider: "github", status: "error", lastIngestAt: null })).toBeNull();
+  });
+
+  it.each([
+    ["running", "warning"],
+    ["completed", "success"],
+    ["partial", "warning"],
+    ["failed", "destructive"],
+    ["interrupted", "warning"],
+  ] as const)("colours a non-Git %s ingest %s", (effectiveStatus, tone) => {
+    expect(
+      repoStatusTone({
+        provider: "local",
+        status: "pending",
+        lastIngestAt: null,
+        sourceIngest: { effectiveStatus },
+      }),
+    ).toBe(tone);
+  });
+
+  it("falls back like the label does", () => {
+    const base = { provider: "upload" as const, sourceIngest: null };
+    expect(repoStatusTone({ ...base, status: "pending", lastIngestAt: new Date() })).toBe(
+      "success",
+    );
+    expect(repoStatusTone({ ...base, status: "pending", lastIngestAt: null })).toBe("neutral");
+    expect(repoStatusTone({ ...base, status: "error", lastIngestAt: null })).toBe("destructive");
+    expect(repoStatusTone({ ...base, status: "disabled", lastIngestAt: null })).toBe("neutral");
   });
 });

@@ -39,7 +39,9 @@ import { PageHeader } from "@/components/ui/page-header";
 import {
   isNonGitRepoProvider,
   repoStatusLabel,
+  repoStatusTone,
   type RepoConnectorWithIngest,
+  type RepoStatusTone,
 } from "@/lib/repo-connector-display";
 
 const repoKeys = {
@@ -66,6 +68,19 @@ function statusBadge(status: string): string {
     default:
       return "bg-muted text-foreground";
   }
+}
+
+const REPO_TONE_BADGE: Record<RepoStatusTone, string> = {
+  success: "bg-success-muted text-success",
+  warning: "bg-warning-muted text-warning",
+  destructive: "bg-destructive/10 text-destructive",
+  neutral: "bg-muted text-foreground",
+};
+
+/** #364 — colour the badge from the state its label names, not the raw `status`. */
+function repoStatusBadge(r: RepoConnectorWithIngest): string {
+  const tone = repoStatusTone(r);
+  return tone ? REPO_TONE_BADGE[tone] : statusBadge(r.status);
 }
 
 /** Format a date as a relative time string (e.g., "2h ago", "3d ago"). */
@@ -918,7 +933,10 @@ export default function ConnectionsPage() {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className={`rounded px-2 py-0.5 text-xs ${statusBadge(r.status)}`}>
+                    <span
+                      className={`rounded px-2 py-0.5 text-xs ${repoStatusBadge(r as RepoConnectorWithIngest)}`}
+                      data-testid={`repo-status-${r.id}`}
+                    >
                       {repoStatusLabel(r as RepoConnectorWithIngest)}
                     </span>
                     {!r.isPrimary && (repos.data ?? []).length > 1 && (

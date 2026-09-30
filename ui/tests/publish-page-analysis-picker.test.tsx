@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 import { makeWrapper } from "./test-utils";
 
 vi.mock("next/navigation", async () => {
@@ -326,15 +327,53 @@ describe("PublishingPage — run labels and target pre-fill (#364)", () => {
     expect(screen.getByLabelText("Target repo")).toHaveValue("api");
   });
 
-  it("never overwrites or clears a value the user typed before the primary repo loaded", async () => {
+  it("never pairs a typed owner with the primary's repo: a typed field suppresses the pre-fill", async () => {
     let resolvePrimary: (v: unknown) => void = () => {};
     getPrimaryMock.mockReturnValueOnce(new Promise((r) => (resolvePrimary = r)));
     renderPage();
     const owner = await screen.findByLabelText("Target owner");
     fireEvent.change(owner, { target: { value: "my-org" } });
-    // A local-directory primary connector has no owner or repo (#288).
-    resolvePrimary({ ownerOrOrg: null, repoName: "from-primary" });
-    await waitFor(() => expect(screen.getByLabelText("Target repo")).toHaveValue("from-primary"));
+    resolvePrimary({ ownerOrOrg: "acme", repoName: "from-primary" });
+    await waitFor(() => expect(getPrimaryMock).toHaveBeenCalled());
+    // Let the resolved query settle and the effect run.
+    await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByLabelText("Target owner")).toHaveValue("my-org");
+    expect(screen.getByLabelText("Target repo")).toHaveValue("");
+  });
+
+  it("does not pre-fill half a pair from a local/upload primary with no owner", async () => {
+    getPrimaryMock.mockResolvedValueOnce({ ownerOrOrg: null, repoName: "from-primary" });
+    renderPage();
+    await waitFor(() => expect(getPrimaryMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByLabelText("Target owner")).toHaveValue("");
+    expect(screen.getByLabelText("Target repo")).toHaveValue("");
+  });
+
+  it("does not refill fields the user cleared when the primary repo refetches", async () => {
+    getPrimaryMock.mockResolvedValue({ ownerOrOrg: "acme", repoName: "api" });
+    try {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const Wrapper = makeWrapper({ queryClient });
+      render(
+        <Wrapper>
+          <PublishingPage />
+        </Wrapper>,
+      );
+      await waitFor(() => expect(screen.getByLabelText("Target owner")).toHaveValue("acme"));
+      fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "" } });
+      fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "" } });
+      const calls = getPrimaryMock.mock.calls.length;
+      // Changed data, so the refetch hands the page a new object (an identical
+      // result is structurally shared and would never reach the effect at all).
+      getPrimaryMock.mockResolvedValue({ ownerOrOrg: "acme", repoName: "api-renamed" });
+      await queryClient.refetchQueries({ queryKey: ["connectors", "repos"] });
+      await waitFor(() => expect(getPrimaryMock.mock.calls.length).toBeGreaterThan(calls));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.getByLabelText("Target owner")).toHaveValue("");
+      expect(screen.getByLabelText("Target repo")).toHaveValue("");
+    } finally {
+      getPrimaryMock.mockResolvedValue(null);
+    }
   });
 });

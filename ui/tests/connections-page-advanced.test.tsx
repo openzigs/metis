@@ -378,6 +378,23 @@ describe("ConnectionsPage — non-Git repository connectors (#364)", () => {
     expect(screen.queryByText("pending")).not.toBeInTheDocument();
   });
 
+  it("colours a failed local ingest destructive, from the same state as its label", async () => {
+    repoList.mockResolvedValue([
+      makeRepo({
+        provider: "local",
+        ownerOrOrg: null,
+        repoName: null,
+        hasLocalSource: true,
+        secretRef: "",
+        status: "pending",
+        sourceIngest: { effectiveStatus: "failed" },
+      }),
+    ]);
+    renderPage();
+    const badge = await screen.findByText("ingest failed");
+    expect(badge.className).toContain("text-destructive");
+  });
+
   it("keeps the Token row for a Git connector", async () => {
     repoList.mockResolvedValue([makeRepo({ secretRef: "" })]);
     renderPage();

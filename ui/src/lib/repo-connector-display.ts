@@ -6,11 +6,13 @@
  * "null/null" and a permanent "pending" status even after its source had been
  * ingested. These helpers give the non-Git providers their own wording.
  */
-import type { RepoConnector } from "@metis/shared";
+import { NON_GIT_REPO_PROVIDERS, type RepoConnector } from "@metis/shared";
+
+const NON_GIT_PROVIDERS: ReadonlySet<string> = new Set(NON_GIT_REPO_PROVIDERS);
 
 /** Providers whose source is a server directory or an uploaded archive, not a clone. */
 export function isNonGitRepoProvider(provider: string): boolean {
-  return provider === "local" || provider === "upload";
+  return NON_GIT_PROVIDERS.has(provider);
 }
 
 /**
@@ -57,4 +59,29 @@ export function repoStatusLabel(
   }
   if (r.sourceIngest) return SOURCE_INGEST_LABELS[r.sourceIngest.effectiveStatus];
   return r.lastIngestAt ? "ingested" : "not ingested";
+}
+
+export type RepoStatusTone = "success" | "warning" | "destructive" | "neutral";
+
+const SOURCE_INGEST_TONES: Record<RepoSourceIngestSummary["effectiveStatus"], RepoStatusTone> = {
+  running: "warning",
+  completed: "success",
+  partial: "warning",
+  failed: "destructive",
+  interrupted: "warning",
+};
+
+/**
+ * The badge colour for a non-Git connector, derived from the same state
+ * {@link repoStatusLabel} names — so "ingest failed" is never drawn neutral.
+ * Returns `null` for a Git connector, whose badge follows its connection status.
+ */
+export function repoStatusTone(
+  r: Pick<RepoConnectorWithIngest, "provider" | "status" | "lastIngestAt" | "sourceIngest">,
+): RepoStatusTone | null {
+  if (!isNonGitRepoProvider(r.provider)) return null;
+  if (r.status === "error") return "destructive";
+  if (r.status === "disabled") return "neutral";
+  if (r.sourceIngest) return SOURCE_INGEST_TONES[r.sourceIngest.effectiveStatus];
+  return r.lastIngestAt ? "success" : "neutral";
 }

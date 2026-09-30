@@ -176,5 +176,15 @@ describe("ProjectOverviewPage", () => {
     await waitFor(() => expect(getOverviewMock).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByText("Loading overview…")).not.toBeInTheDocument());
     expect(screen.queryByTestId("overview-empty-state")).not.toBeInTheDocument();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("This project could not be found. It may have been deleted.");
   });
+
+  it("shows an alert, not a blank overview, when the load fails with a server error", async () => {
+    getOverviewMock.mockRejectedValue(new ApiError(500, "Internal error", "INTERNAL"));
+    render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
+    const alert = await screen.findByRole("alert", {}, { timeout: 10_000 });
+    expect(alert).toHaveTextContent("The overview could not be loaded. Try refreshing the page.");
+    expect(screen.queryByTestId("overview-empty-state")).not.toBeInTheDocument();
+  }, 15_000);
 });

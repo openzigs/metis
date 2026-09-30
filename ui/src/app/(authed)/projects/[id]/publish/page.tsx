@@ -10,7 +10,7 @@
  * dedicated components.
  */
 import { useParams, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
@@ -134,16 +134,21 @@ export default function PublishingPage() {
     queryFn: () => repoConnectorsApi.getPrimary(projectId),
     enabled: Boolean(projectId),
   });
+  // #364 — a one-time pre-fill, not a reset. Owner and repo are filled together
+  // and only when BOTH are still empty: filling them independently could pair
+  // the user's owner with the primary's repo (naming no repository), and a
+  // refetch used to refill a field the user had deliberately cleared.
+  const prefilledFromPrimary = useRef(false);
   useEffect(() => {
-    if (primaryRepo.data) {
-      // #364 — a pre-fill, not a reset: fill only a field that is still empty.
-      // Every arrival of the primary-repo data (a late load, a refetch) used to
-      // overwrite both fields, clearing what the user had typed — and a
-      // local/upload connector (#288: owner/repo are null) cleared them to "".
-      const { ownerOrOrg, repoName } = primaryRepo.data;
-      setTargetOwner((current) => current || ownerOrOrg || "");
-      setTargetRepo((current) => current || repoName || "");
-    }
+    if (!primaryRepo.data || prefilledFromPrimary.current) return;
+    prefilledFromPrimary.current = true;
+    const { ownerOrOrg, repoName } = primaryRepo.data;
+    // A local/upload primary connector (#288) has no owner or repo to offer.
+    if (!ownerOrOrg || !repoName) return;
+    if (targetOwner || targetRepo) return;
+    setTargetOwner(ownerOrOrg);
+    setTargetRepo(repoName);
+    // Deliberately keyed on data arrival only; the ref makes it one-shot.
   }, [primaryRepo.data]);
 
   const generate = useMutation({
