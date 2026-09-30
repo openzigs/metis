@@ -128,6 +128,11 @@ describe("splitMarkdownSections", () => {
     expect(sections[0].heading).toBeUndefined();
   });
 
+  it("drops a preamble of only a CR, which is a line ending rather than content", () => {
+    const { sections } = splitMarkdownSections("\r\n## A\nText.");
+    expect(sections.map((s) => s.heading?.text)).toEqual(["A"]);
+  });
+
   it("does not open a fence on a backtick line that carries a backtick in its info", () => {
     const { sections } = splitMarkdownSections("## A\n```inline ` tick\n## B");
     expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
@@ -656,6 +661,25 @@ describe("reference links and footnotes in the body across sections (#228)", () 
       ["## A", "```", "code", "``` ", "## Not a heading", "```", "## B", "Text."].join("\n"),
     ],
     ["a preamble holding only an NBSP", [" ", "## A", "Text."].join("\n")],
+    // PR #569 review — a CR before the LF is a line ending, not content, so a
+    // CRLF blank line in a mixed-ending document is still blank.
+    [
+      "a definition-shaped line after a CRLF blank line ends a paragraph",
+      "## A\nSee [b].\n## B\npara\r\n\r\n[b]: /y",
+    ],
+    ["a preamble holding only a CR", ["\r", "## A", "Text."].join("\n")],
+    // The longest dash run that still leaves room for the closing label's one
+    // extra dash inside CommonMark's 999-character label limit, and the first
+    // that does not (PR #569 review).
+    ...[977, 978].map((dashes): [string, string] => [
+      `a document that spells the closing label with a ${dashes}-dash run`,
+      [
+        "## A",
+        `See [x] metis-definitions-end${"-".repeat(dashes)}.`,
+        "## B",
+        "[x]: https://example.com/x",
+      ].join("\n"),
+    ]),
     [
       // Past CommonMark's 999-character label limit a longer dash run would
       // parse as a paragraph and render as text.

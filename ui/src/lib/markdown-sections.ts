@@ -110,11 +110,12 @@ const INDENTED = /^(?: {4}|\t)/;
 const BLOCK_START = /^ {0,3}(?:>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}$|<)/;
 
 /**
- * A blank line as CommonMark reads one: nothing but spaces and tabs. Not
+ * A blank line as CommonMark reads one: nothing but spaces and tabs, before a
+ * CR that is part of a CRLF line ending (lines are split on LF alone). Not
  * `trim()`, which also empties a line of U+00A0 or other Unicode space (#564).
  */
 function isBlank(line: string): boolean {
-  return /^[ \t]*$/.test(line);
+  return /^[ \t]*\r?$/.test(line);
 }
 
 /** Parses markdown with the same grammar extensions the previewer renders with. */
@@ -412,7 +413,7 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
   };
   const flush = () => {
     const text = lines.join("\n");
-    if (!/^[ \t\n]*$/.test(text) || current.heading) {
+    if (!lines.every(isBlank) || current.heading) {
       for (const label of footnoteReferences(text, definitions)) {
         const key = normalizeLabel(`^${label}`);
         if (!order.has(key)) order.set(key, order.size + 1);
