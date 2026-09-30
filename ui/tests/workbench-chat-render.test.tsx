@@ -12,6 +12,9 @@ import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 import type { StreamEvent } from "@/lib/ai-client";
 
+// #526 — the document list is virtualised; jsdom has no layout (see the stub).
+vi.mock("@tanstack/react-virtual", async () => (await import("./virtualizer-stub")).module);
+
 // #142 — the page joins its session's socket room; no real socket in unit tests.
 vi.mock("@/lib/socket-client", () => ({ useSocket: () => null }));
 
@@ -207,9 +210,9 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     const Wrapper = makeWrapper({ withAuth: false });
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
-    const repos = await screen.findByTestId("workbench-repos");
-    await waitFor(() => expect(repos).toHaveTextContent("wms-core"));
-    expect(repos.textContent).not.toContain("acmerp");
+    const folder = await screen.findByRole("button", { name: /wms-core/ });
+    expect(folder.closest("li")).toHaveAttribute("data-group", "repos");
+    expect(screen.getByRole("tree", { name: "Documents" }).textContent).not.toContain("acmerp");
   });
 
   it("reaches a document past the first page — the panel is no longer capped at 50 (#32)", async () => {
@@ -273,10 +276,7 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     const Wrapper = makeWrapper({ withAuth: false });
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
-    await waitFor(() =>
-      expect(screen.getByTestId("workbench-repos")).toHaveTextContent("wms-core"),
-    );
-    await user.click(screen.getByRole("button", { name: /wms-core/ }));
+    await user.click(await screen.findByRole("button", { name: /wms-core/ }));
     await user.click(screen.getByTestId("workbench-doc-attach-doc-repo"));
 
     const chips = await screen.findByTestId("workbench-context-chips");

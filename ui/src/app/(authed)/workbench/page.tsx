@@ -2,7 +2,8 @@
  * Phase 12 — Workbench page (issue #84).
  *
  * Three-pane layout: documents/knowledge tree (left), chat (center),
- * tasks + recent (right). Layout widths persist per browser via
+ * tasks + recent (right), with a draggable separator between each pair
+ * (#526). Layout widths persist per browser via
  * `workbench-storage.ts`. Selecting a tree item attaches it to the chat
  * context as a context chip; the recent panel surfaces the user's
  * last-used sessions and analyses.
@@ -20,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { projectsApi, type DocumentRow, type Project } from "@/lib/projects-api";
 import { listAllDocuments } from "@/lib/list-all-documents";
 import { DocumentPanel } from "@/components/workbench/document-panel";
+import { PaneSeparator } from "@/components/workbench/pane-separator";
 import { entryLabel, toPanelEntries } from "@/lib/workbench-document-tree";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import {
@@ -32,7 +34,14 @@ import {
 } from "@/lib/ai-client";
 import { analysisApi } from "@/lib/analysis-api";
 import { tasksApi } from "@/lib/scheduler-api";
-import { loadLayout, saveLayout, resetLayout, type WorkbenchLayout } from "@/lib/workbench-storage";
+import {
+  loadLayout,
+  saveLayout,
+  resetLayout,
+  MAX_PCT,
+  MIN_PCT,
+  type WorkbenchLayout,
+} from "@/lib/workbench-storage";
 import { recentTracker } from "@/lib/recent-tracker";
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
 import { AgentPicker } from "@/components/chat/agent-picker";
@@ -51,6 +60,10 @@ interface DisplayMessage extends ChatMessage {
 
 export default function WorkbenchPage() {
   const [layout, setLayout] = useState<WorkbenchLayout>(() => loadLayout());
+  // #526 — the side-pane widths while a separator is being dragged, before commit.
+  const [paneDraft, setPaneDraft] = useState<Pick<WorkbenchLayout, "leftPct" | "rightPct"> | null>(
+    null,
+  );
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [session, setSession] = useState<AISession | null>(null);
@@ -152,21 +165,23 @@ export default function WorkbenchPage() {
     };
   }, [activeProjectId, layout.agentKey, resetToolActivity]);
 
-  const contextDocs = useMemo<DocumentRow[]>(() => {
-    const all = documents.data?.items ?? [];
-    return all.filter((d) => layout.contextIds.includes(d.id));
-  }, [documents.data, layout.contextIds]);
-
-  // #474 — chips are parsed from the WHOLE document list, as the panel is, so a
-  // chip from the second unnamed repository reads "Unnamed repository 2" like
-  // its panel group, whatever else is attached.
-  const contextEntries = useMemo(
-    () =>
-      toPanelEntries(documents.data?.items ?? [], repoNames).filter((e) =>
-        layout.contextIds.includes(e.doc.id),
-      ),
-    [documents.data, repoNames, layout.contextIds],
+  // #526 — the document list is parsed ONCE per change of the list (or of the
+  // repository names), here, and shared by the panel and the chips: attaching
+  // or detaching a document re-filters the parsed entries, never re-parses.
+  // #474 — parsed from the WHOLE list, so a chip from the second unnamed
+  // repository reads "Unnamed repository 2" like its panel group, whatever
+  // else is attached.
+  const entries = useMemo(
+    () => toPanelEntries(documents.data?.items ?? [], repoNames),
+    [documents.data, repoNames],
   );
+  const attachedIds = useMemo(() => new Set(layout.contextIds), [layout.contextIds]);
+  const contextEntries = useMemo(
+    () => entries.filter((e) => attachedIds.has(e.doc.id)),
+    [entries, attachedIds],
+  );
+  const contextDocs = useMemo(() => contextEntries.map((e) => e.doc), [contextEntries]);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   function attachToContext(docId: string) {
     setLayout((prev) =>
@@ -315,8 +330,14 @@ export default function WorkbenchPage() {
     }
   }
 
-  const leftPct = layout.leftPct;
-  const rightPct = layout.rightPct;
+  // #526 — a drag in progress moves the panes through `paneDraft` only; the
+  // persisted `layout` (and so localStorage) changes once, when it is committed.
+  const leftPct = paneDraft?.leftPct ?? layout.leftPct;
+  const rightPct = paneDraft?.rightPct ?? layout.rightPct;
+  function commitPane(side: "leftPct" | "rightPct", pct: number) {
+    setPaneDraft(null);
+    setLayout((prev) => ({ ...prev, [side]: pct }));
+  }
   const gridStyle: CSSProperties = {
     ["--wb-left" as string]: `${leftPct}%`,
     ["--wb-right" as string]: `${rightPct}%`,
@@ -371,18 +392,18 @@ export default function WorkbenchPage() {
       ) : null}
 
       <div
-        className="grid min-h-0 flex-1 grid-cols-1 gap-3 md:grid-cols-[var(--wb-left)_1fr_var(--wb-right)]"
+        ref={gridRef}
+        className="grid min-h-0 flex-1 grid-cols-1 gap-3 md:grid-cols-[var(--wb-left)_auto_1fr_auto_var(--wb-right)] md:gap-1"
         style={gridStyle}
       >
         {/* LEFT — documents tree */}
-        <Card className="flex min-h-0 flex-col p-3" data-testid="workbench-left-panel">
+        <Card
+          id="workbench-left-panel"
+          className="flex min-h-0 flex-col p-3"
+          data-testid="workbench-left-panel"
+        >
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-semibold">Documents</h2>
-            <PanelResizer
-              ariaLabel="Resize left panel"
-              value={layout.leftPct}
-              onChange={(v) => setLayout((prev) => ({ ...prev, leftPct: v }))}
-            />
           </div>
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
             {!activeProjectId ? (
@@ -411,16 +432,27 @@ export default function WorkbenchPage() {
               <DocumentPanel
                 // A new project starts with every folder collapsed and no filter.
                 key={activeProjectId}
-                documents={documents.data?.items ?? []}
+                entries={entries}
                 total={documents.data?.total}
-                repoNames={repoNames}
-                attachedIds={layout.contextIds}
+                attachedIds={attachedIds}
                 onAttach={attachToContext}
                 onDetach={detachFromContext}
               />
             )}
           </div>
         </Card>
+
+        <PaneSeparator
+          ariaLabel="Resize documents panel"
+          controls="workbench-left-panel"
+          side="left"
+          value={leftPct}
+          min={MIN_PCT}
+          max={MAX_PCT}
+          container={gridRef}
+          onChange={(v) => setPaneDraft({ leftPct: v, rightPct })}
+          onCommit={(v) => commitPane("leftPct", v)}
+        />
 
         {/* CENTER — chat */}
         <Card className="flex min-h-0 flex-col p-3" data-testid="workbench-center-panel">
@@ -542,15 +574,26 @@ export default function WorkbenchPage() {
           </form>
         </Card>
 
+        <PaneSeparator
+          ariaLabel="Resize recent panel"
+          controls="workbench-right-panel"
+          side="right"
+          value={rightPct}
+          min={MIN_PCT}
+          max={MAX_PCT}
+          container={gridRef}
+          onChange={(v) => setPaneDraft({ leftPct, rightPct: v })}
+          onCommit={(v) => commitPane("rightPct", v)}
+        />
+
         {/* RIGHT — recent + skills + tasks */}
-        <Card className="flex min-h-0 flex-col gap-3 p-3" data-testid="workbench-right-panel">
+        <Card
+          id="workbench-right-panel"
+          className="flex min-h-0 flex-col gap-3 p-3"
+          data-testid="workbench-right-panel"
+        >
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">Recent</h2>
-            <PanelResizer
-              ariaLabel="Resize right panel"
-              value={layout.rightPct}
-              onChange={(v) => setLayout((prev) => ({ ...prev, rightPct: v }))}
-            />
           </div>
           <RecentList />
           <div>
@@ -616,28 +659,6 @@ function composeWithContext(input: string, attachments: DocumentRow[]): string {
     input,
   ];
   return lines.join("\n");
-}
-
-interface ResizerProps {
-  ariaLabel: string;
-  value: number;
-  onChange: (v: number) => void;
-}
-
-function PanelResizer({ ariaLabel, value, onChange }: ResizerProps) {
-  return (
-    <input
-      type="range"
-      min={12}
-      max={50}
-      step={1}
-      value={value}
-      aria-label={ariaLabel}
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="h-2 w-20"
-      data-testid={`resizer-${ariaLabel.replace(/\s+/g, "-").toLowerCase()}`}
-    />
-  );
 }
 
 interface EmptyStateProps {

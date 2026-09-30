@@ -12,6 +12,9 @@ import { makeWrapper } from "./test-utils";
 import WorkbenchPage from "@/app/(authed)/workbench/page";
 import * as aiClient from "@/lib/ai-client";
 
+// #526 — the document list is virtualised; jsdom has no layout (see the stub).
+vi.mock("@tanstack/react-virtual", async () => (await import("./virtualizer-stub")).module);
+
 // #142 — the page joins its session's socket room; no real socket in unit tests.
 vi.mock("@/lib/socket-client", () => ({ useSocket: () => null }));
 

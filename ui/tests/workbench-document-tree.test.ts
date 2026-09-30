@@ -10,8 +10,10 @@ import {
   UNNAMED_REPOSITORY,
   entryLabel,
   filterEntries,
+  flattenGroups,
   groupEntries,
   toPanelEntries,
+  type PanelRow,
 } from "@/lib/workbench-document-tree";
 
 const CONN = "cmexample0000000000acmerp";
@@ -364,6 +366,125 @@ describe("chip labels carry the panel's group ordinal (#474)", () => {
     expect(groupEntries(entries).sources.map((s) => s.name)).toEqual([
       UNNAMED_DATABASE,
       `${UNNAMED_DATABASE} 2`,
+    ]);
+  });
+});
+
+// #526 — the flat row list the panel virtualises.
+describe("flattenGroups", () => {
+  const summary = (rows: PanelRow[]) =>
+    rows.map((r) =>
+      r.type === "heading"
+        ? `# ${r.label}`
+        : r.type === "folder"
+          ? `${"  ".repeat(r.depth)}${r.folder.name}/ [${r.group}]`
+          : `${"  ".repeat(r.depth)}${r.entry.name} [${r.group}]`,
+    );
+  const entries = toPanelEntries(
+    [
+      repo("r1", "src/a.ts"),
+      repo("r2", "README.md"),
+      from("jira", "j1", "jira:WMS-1"),
+      doc("u1", "Spec.docx"),
+    ],
+    { [CONN]: "wms-core" },
+  );
+  const groups = groupEntries(entries);
+
+  it("lists each group's heading, then its rows, with every folder collapsed", () => {
+    expect(summary(flattenGroups(groups, () => false))).toEqual([
+      "# Uploaded",
+      "Spec.docx [uploads]",
+      "# Repositories",
+      "wms-core/ [repos]",
+      "# Other sources",
+      "Jira/ [sources]",
+    ]);
+  });
+
+  it("follows an open folder with its folders, then its files, one level deeper", () => {
+    const open = new Set([`repo:${CONN}`, `repo:${CONN}/src`]);
+    expect(summary(flattenGroups(groups, (k) => open.has(k)))).toEqual([
+      "# Uploaded",
+      "Spec.docx [uploads]",
+      "# Repositories",
+      "wms-core/ [repos]",
+      "  src/ [repos]",
+      "    a.ts [repos]",
+      "  README.md [repos]",
+      "# Other sources",
+      "Jira/ [sources]",
+    ]);
+  });
+
+  it("hides a closed folder's children even when its parent is open", () => {
+    const open = new Set([`repo:${CONN}`]);
+    const rows = flattenGroups(groups, (k) => open.has(k));
+    expect(summary(rows)).not.toContain("    a.ts [repos]");
+    expect(summary(rows)).toContain("  src/ [repos]");
+  });
+
+  it("gives every row a unique key, and omits the headings of empty groups", () => {
+    const rows = flattenGroups(groups, () => true);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
+    expect(flattenGroups(groupEntries([]), () => true)).toEqual([]);
+    const onlyUploads = flattenGroups(
+      groupEntries(toPanelEntries([doc("u1", "x.md")])),
+      () => true,
+    );
+    expect(summary(onlyUploads)).toEqual(["# Uploaded", "x.md [uploads]"]);
+  });
+
+  // #526 review — the panel mounts only the rows in view, so the hierarchy and
+  // each level's full size must travel on the rows themselves.
+  it("gives every row its tree level, and its place among ALL its siblings", () => {
+    const tree = groupEntries(
+      toPanelEntries(
+        [
+          doc("u1", "A.md"),
+          doc("u2", "B.md"),
+          repo("r1", "src/b.ts"),
+          repo("r2", "README.md"),
+          repo("r3", "src/a.ts"),
+          repo("o1", "x.md", OTHER),
+        ],
+        { [CONN]: "wms-core" },
+      ),
+    );
+    const position = (r: PanelRow) =>
+      `${r.type === "heading" ? r.label : r.type === "folder" ? `${r.folder.name}/` : r.entry.name} L${r.level} ${r.posInSet}/${r.setSize}`;
+
+    expect(flattenGroups(tree, () => true).map(position)).toEqual([
+      "Uploaded L1 1/2",
+      "A.md L2 1/2",
+      "B.md L2 2/2",
+      "Repositories L1 2/2",
+      "Unnamed repository/ L2 1/2",
+      "x.md L3 1/1",
+      "wms-core/ L2 2/2",
+      // A folder's sub-folders and files are one sibling set, folders first.
+      "src/ L3 1/2",
+      "a.ts L4 1/2",
+      "b.ts L4 2/2",
+      "README.md L3 2/2",
+    ]);
+    // Collapsed, a folder keeps its own place; its children are simply absent.
+    expect(flattenGroups(tree, () => false).map(position)).toEqual([
+      "Uploaded L1 1/2",
+      "A.md L2 1/2",
+      "B.md L2 2/2",
+      "Repositories L1 2/2",
+      "Unnamed repository/ L2 1/2",
+      "wms-core/ L2 2/2",
+    ]);
+  });
+
+  it("numbers all three groups when each has documents", () => {
+    const headings = flattenGroups(groups, () => false).filter((r) => r.type === "heading");
+    expect(headings.map((r) => [r.label, r.level, r.posInSet, r.setSize])).toEqual([
+      ["Uploaded", 1, 1, 3],
+      ["Repositories", 1, 2, 3],
+      ["Other sources", 1, 3, 3],
     ]);
   });
 });
