@@ -6,6 +6,7 @@
  * | 1 | #265 Light chosen on a dark OS renders light surfaces (and vice versa)    | `dark:` utilities follow the chosen theme         |
  * | 2 | #266 Templates heading/panels legible (≥4.5:1) in both themes            | Templates screen text clears 4.5:1                |
  * | 3 | #266 Analysis panels legible (≥4.5:1) in both themes                     | Analysis screen neutral text clears 4.5:1         |
+ * | 4 | #429 Toasts follow the theme chosen in the app's toggle                  | a toast renders in the chosen theme               |
  *
  * Each case runs twice with the browser's `prefers-color-scheme` set OPPOSITE
  * to the theme picked in the app's own toggle, which is the combination that
@@ -16,7 +17,12 @@
  * because Tailwind 4's palette computes to `oklch(...)` in Chromium.
  */
 import { test, expect, type Page } from "@playwright/test";
-import { chooseTheme, neutralTextContrast, type Theme } from "../fixtures/theme-contrast.js";
+import {
+  backgroundLuminance,
+  chooseTheme,
+  neutralTextContrast,
+  type Theme,
+} from "../fixtures/theme-contrast.js";
 import { apiBase } from "../fixtures/api-base.js";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { createProjectViaApi } from "../fixtures/project-helpers.js";
@@ -100,6 +106,34 @@ for (const { os, theme } of SCENARIOS) {
       const samples = await neutralTextContrast(page, "main");
       expect(samples.map((s) => s.text)).toContain("Issue Templates");
       expect(samples.filter((s) => s.ratio < 4.5)).toEqual([]);
+    });
+
+    test("a toast renders in the chosen theme, not sonner's light default (#429)", async ({
+      page,
+    }, testInfo) => {
+      await page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
+      const card = page.getByTestId("autopilot-settings-card");
+      await expect(card).toBeVisible({ timeout: 15_000 });
+      await chooseTheme(page, theme);
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId(`theme-${theme}`)).toBeHidden();
+
+      await card.getByTestId("autopilot-ceiling-input").fill("5");
+      await card.getByTestId("autopilot-save-button").click();
+      const toast = page.locator("[data-sonner-toast]").filter({
+        hasText: "Autopilot settings saved",
+      });
+      await expect(toast).toBeVisible({ timeout: 10_000 });
+      await page.screenshot({ path: testInfo.outputPath(`toast-${theme}.png`) });
+
+      await expect(page.locator("[data-sonner-toaster]")).toHaveAttribute(
+        "data-sonner-theme",
+        theme,
+      );
+      // richColors success: pale green on Light, near-black green on Dark.
+      const luminance = await backgroundLuminance(toast);
+      if (theme === "light") expect(luminance, "toast background").toBeGreaterThan(0.6);
+      else expect(luminance, "toast background").toBeLessThan(0.1);
     });
 
     test("Analysis screen neutral text clears 4.5:1 (#266)", async ({ page }, testInfo) => {

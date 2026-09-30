@@ -6,7 +6,7 @@
  * Colours are compared in sRGB by painting the computed value onto a canvas,
  * because Tailwind 4's palette computes to `oklch(...)` in Chromium.
  */
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import { AppShellPage } from "../pages/app-shell.page.js";
 
 export type Theme = "light" | "dark";
@@ -24,6 +24,21 @@ export async function chooseTheme(page: Page, theme: Theme): Promise<void> {
   await page.getByTestId(`theme-${theme}`).click();
   if (theme === "dark") await expect(page.locator("html")).toHaveClass(/(^|\s)dark(\s|$)/);
   else await expect(page.locator("html")).not.toHaveClass(/(^|\s)dark(\s|$)/);
+}
+
+/** Relative luminance of `el`'s computed background colour, measured in sRGB via a canvas. */
+export async function backgroundLuminance(el: Locator): Promise<number> {
+  return el.evaluate((node) => {
+    const ctx = document.createElement("canvas").getContext("2d")!;
+    ctx.fillStyle = getComputedStyle(node).backgroundColor;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+    const lin = (c: number) => {
+      const x = c / 255;
+      return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  });
 }
 
 /**
