@@ -147,6 +147,8 @@ describe("splitMarkdownSections", () => {
     const parse = vi.spyOn(Object.getPrototypeOf(unified()), "parse");
     try {
       splitMarkdownSections(markdown);
+      // PR #556 review: a spy that never fires would read 0 and pass vacuously.
+      expect(parse).toHaveBeenCalled();
       const parsed = parse.mock.calls.reduce((sum, [file]) => sum + String(file).length, 0);
       expect(parsed).toBeLessThan(10 * markdown.length);
     } finally {
