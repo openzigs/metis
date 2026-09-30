@@ -9,6 +9,7 @@
  * (`components/layout/hub-tabs`) is what makes the sibling pages reachable.
  */
 import type { LucideIcon } from "lucide-react";
+import { isAdminOnlySettingsPath } from "@/lib/settings-nav";
 import {
   Activity,
   FolderKanban,
@@ -113,6 +114,20 @@ export const PALETTE_DESTINATIONS: readonly NavTab[] = [
   { href: "/settings/mcp", label: "MCP servers" },
   { href: "/settings/usage", label: "Usage & cost" },
 ];
+
+/**
+ * #368 — the palette entries this user may see. Hides an entry marked
+ * `adminOnly` and any admin-only Settings section (`settings-nav`) from a
+ * non-admin, the same rule the hub tabs (`visibleTabs`) and the Settings nav
+ * apply, so the palette cannot list a page the rest of the shell hides.
+ */
+export function paletteDestinations(
+  isAdmin: boolean,
+  destinations: readonly NavTab[] = PALETTE_DESTINATIONS,
+): NavTab[] {
+  if (isAdmin) return [...destinations];
+  return destinations.filter((t) => !t.adminOnly && !isAdminOnlySettingsPath(t.href));
+}
 
 export const PUBLIC_PATHS: readonly string[] = ["/login"];
 
