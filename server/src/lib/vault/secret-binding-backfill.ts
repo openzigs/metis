@@ -13,9 +13,15 @@
  *
  * This binds each such reference with the #344 matching rule (`bindSecretRefs`:
  * an id match wins, otherwise the reference must reach exactly one live secret
- * by label). A reference that is ambiguous or reaches nothing is FLAGGED, never
- * guessed: it is audited as `vault.binding_backfill_flagged`, and the row is
- * written so that the reference can no longer resolve by label —
+ * by label) AND the #344 ownership rule: the resource's owner (an MCP server's
+ * `createdById`, a batch's `startedById`) must have created every secret the
+ * reference can reach, unless they hold `vault.reveal` now. Rows saved before
+ * #344 were never checked, and binding a foreign secret here would send its
+ * plaintext to a destination the owner chose (an MCP header, since #504, goes
+ * to the server's URL). A reference that is ambiguous, reaches nothing, or is
+ * not the owner's is FLAGGED, never guessed or bound: it is audited as
+ * `vault.binding_backfill_flagged`, and the row is written so that the
+ * reference can no longer resolve by label —
  *
  *   - an MCP server gets the bindings that did resolve; the flagged reference
  *     is left out, so `expandVaultRefs` refuses it ("save the server again");
@@ -29,8 +35,10 @@
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import { hasPermission } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
-import { refBodiesIn, refBodyOf } from "./secret-binding.js";
+import { resolveEffectiveRoleFromRows } from "../auth/durable-roles.js";
+import { refBodiesIn, refBodyOf, refsOwnedBy } from "./secret-binding.js";
 import {
   bindSecretRefs,
   VAULT_REF_AMBIGUOUS,
@@ -42,7 +50,7 @@ const log = createChildLogger("vault-binding-backfill");
 
 export const BACKFILL_FLAGGED_ACTION = "vault.binding_backfill_flagged";
 
-export type BindingFlagReason = "ambiguous" | "unresolved";
+export type BindingFlagReason = "ambiguous" | "unresolved" | "not_owned";
 
 export interface FlaggedRef {
   ref: string;
@@ -67,6 +75,60 @@ async function bindOne(ref: string): Promise<{ id: string } | { flag: BindingFla
     if (code === VAULT_REF_UNRESOLVED) return { flag: "unresolved" };
     throw err;
   }
+}
+
+/**
+ * Could `userId` attach a secret they did not create? Only with `vault.reveal`
+ * (#344), read from their CURRENT roles: an inactive or deleted owner, or none,
+ * gets no exemption. Cached per run.
+ */
+async function mayBindForeign(
+  userId: string | null,
+  cache: Map<string, boolean>,
+): Promise<boolean> {
+  if (userId === null) return false;
+  const hit = cache.get(userId);
+  if (hit !== undefined) return hit;
+  const user = await prisma.user.findFirst({
+    where: { id: userId, status: "active", deletedAt: null },
+    select: { authRoleAuthority: true, roles: { include: { role: true } } },
+  });
+  const ok = user
+    ? hasPermission(
+        resolveEffectiveRoleFromRows(user.roles, user.authRoleAuthority).role,
+        "vault.reveal",
+      )
+    : false;
+  cache.set(userId, ok);
+  return ok;
+}
+
+/**
+ * Bind every reference with {@link bindOne}, then drop — as `not_owned` — any
+ * the owner could not have attached at save time under #344.
+ */
+async function bindForOwner(
+  refs: string[],
+  ownerId: string | null,
+  cache: Map<string, boolean>,
+): Promise<{ bindings: SecretBindings; flagged: FlaggedRef[] }> {
+  const bindings: SecretBindings = Object.create(null) as SecretBindings;
+  const flagged: FlaggedRef[] = [];
+  for (const ref of refs) {
+    const r = await bindOne(ref);
+    if ("id" in r) bindings[ref] = r.id;
+    else flagged.push({ ref, reason: r.flag });
+  }
+  const bound = Object.keys(bindings);
+  if (bound.length > 0 && !(await mayBindForeign(ownerId, cache))) {
+    const owned = await refsOwnedBy(ownerId, bound);
+    for (const ref of bound) {
+      if (owned.has(ref)) continue;
+      delete bindings[ref];
+      flagged.push({ ref, reason: "not_owned" });
+    }
+  }
+  return { bindings, flagged };
 }
 
 function parseMap(raw: string | null): Record<string, unknown> | null {
@@ -95,22 +157,20 @@ function flagAudit(type: string, id: string, flagged: FlaggedRef[]): void {
   });
 }
 
-async function backfillMcpServers(report: SecretBindingBackfillReport): Promise<void> {
+async function backfillMcpServers(
+  report: SecretBindingBackfillReport,
+  cache: Map<string, boolean>,
+): Promise<void> {
+  // A soft-deleted server never connects again; leave it unbound and unflagged.
   const rows = await prisma.mCPServer.findMany({
-    where: { secretBindings: null },
-    select: { id: true, envJson: true, headers: true },
+    where: { secretBindings: null, deletedAt: null },
+    select: { id: true, envJson: true, headers: true, createdById: true },
   });
   for (const row of rows) {
     const refs = [
       ...new Set([...refBodiesIn(parseMap(row.envJson)), ...refBodiesIn(parseMap(row.headers))]),
     ];
-    const bindings: SecretBindings = Object.create(null) as SecretBindings;
-    const flagged: FlaggedRef[] = [];
-    for (const ref of refs) {
-      const r = await bindOne(ref);
-      if ("id" in r) bindings[ref] = r.id;
-      else flagged.push({ ref, reason: r.flag });
-    }
+    const { bindings, flagged } = await bindForOwner(refs, row.createdById, cache);
     const { count } = await prisma.mCPServer.updateMany({
       where: { id: row.id, secretBindings: null },
       data: { secretBindings: JSON.stringify(bindings) },
@@ -125,17 +185,22 @@ async function backfillMcpServers(report: SecretBindingBackfillReport): Promise<
   }
 }
 
-async function backfillPublishBatches(report: SecretBindingBackfillReport): Promise<void> {
+async function backfillPublishBatches(
+  report: SecretBindingBackfillReport,
+  cache: Map<string, boolean>,
+): Promise<void> {
   const rows = await prisma.publishBatch.findMany({
     where: { dryRun: false, archived: false, metadata: { contains: "secretRef" } },
-    select: { id: true, metadata: true },
+    select: { id: true, metadata: true, startedById: true },
   });
   for (const row of rows) {
     const meta = parseMap(row.metadata);
     if (!meta || Object.hasOwn(meta, "secretId")) continue;
     const ref = refBodyOf(typeof meta.secretRef === "string" ? meta.secretRef : null);
     if (!ref) continue;
-    const r = await bindOne(ref);
+    const { bindings, flagged } = await bindForOwner([ref], row.startedById, cache);
+    const r: { id: string } | { flag: BindingFlagReason } =
+      flagged.length > 0 ? { flag: flagged[0].reason } : { id: bindings[ref] };
     const next =
       "id" in r
         ? { ...meta, secretId: r.id }
@@ -154,7 +219,7 @@ async function backfillPublishBatches(report: SecretBindingBackfillReport): Prom
   }
 }
 
-/** Bind every pre-#480 MCP server and live publish batch; flag what cannot be bound. */
+/** Bind every pre-#480 live MCP server and live publish batch; flag what cannot be bound. */
 export async function backfillSecretBindings(): Promise<SecretBindingBackfillReport> {
   const report: SecretBindingBackfillReport = {
     mcpServersBound: 0,
@@ -162,8 +227,9 @@ export async function backfillSecretBindings(): Promise<SecretBindingBackfillRep
     batchesBound: 0,
     batchesFlagged: 0,
   };
-  await backfillMcpServers(report);
-  await backfillPublishBatches(report);
+  const mayReveal = new Map<string, boolean>();
+  await backfillMcpServers(report, mayReveal);
+  await backfillPublishBatches(report, mayReveal);
   if (Object.values(report).some((n) => n > 0)) {
     log.info("Pre-#480 vault references backfilled", { ...report });
   }

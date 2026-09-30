@@ -60,8 +60,9 @@ function makeTransport(): MCPTransportClient {
 
 function manager() {
   const factory = vi.fn((_config: MCPServerConfig) => makeTransport());
-  const resolveEnv = vi.fn((env: Record<string, string>, b?: Record<string, string> | null) =>
-    expandVaultRefs(env, vault, b),
+  const resolveEnv = vi.fn(
+    (env: Record<string, string>, b?: Record<string, string> | null, kind?: "env" | "header") =>
+      expandVaultRefs(env, vault, b, kind),
   );
   const mgr = new MCPLifecycleManager({
     resolveEnv,
@@ -104,6 +105,35 @@ describe("MCP header vault references (#504)", () => {
     expect(state.status).toBe("error");
     expect(state.lastError).toMatch(/has been deleted/);
     expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("names a header, not an env var, when a header reference fails", async () => {
+    const { mgr } = manager();
+    const state = await mgr.start(
+      makeConfig({
+        id: "srv-504-hdr-msg",
+        env: { TOKEN: "${vault:tok}" },
+        headers: { Authorization: "Bearer ${vault:gone}" },
+        secretBindings: { tok: "sec-hdr" },
+      }),
+    );
+
+    expect(state.lastError).toMatch(/^header resolution failed: .*\(header Authorization\)/);
+    expect(state.lastError).not.toMatch(/env/);
+  });
+
+  it("still names the env var when an env reference fails", async () => {
+    const { mgr } = manager();
+    const state = await mgr.start(
+      makeConfig({
+        id: "srv-504-env-msg",
+        env: { TOKEN: "${vault:gone}" },
+        headers: { Authorization: "Bearer ${vault:tok}" },
+        secretBindings: { tok: "sec-hdr" },
+      }),
+    );
+
+    expect(state.lastError).toMatch(/^env resolution failed: .*\(env TOKEN\)/);
   });
 
   it("does not run header values without references through the resolver", async () => {

@@ -36,6 +36,26 @@ vi.mock("../src/lib/connectors/network-allowlist.js", async (importOriginal) => 
   ...(await importOriginal<Record<string, unknown>>()),
   assertConnectorHostAllowed: async () => undefined,
 }));
+// #504 — the publish path up to the GitHub client is real; the client factory
+// records the token it would authenticate with, and resolving the target does
+// no DNS.
+vi.mock("../src/lib/publishing/host-allowlist.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolvePublishTarget: async (t: { owner: string; repo: string }) => ({
+    owner: t.owner,
+    repo: t.repo,
+    baseUrl: "https://api.github.com",
+    pinnedAddress: "140.82.112.6",
+    pinnedFamily: 4,
+  }),
+}));
+vi.mock("../src/lib/publishing/octokit-factory.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  acquirePublishOctokit: async (o: { token: string }) => {
+    state.sent.push(o.token);
+    throw new Error("octokit stub: token captured");
+  },
+}));
 vi.mock("../src/lib/connectors/jira/jira-client.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   createJiraClient: (cfg: { apiToken: string }) => {
@@ -51,13 +71,15 @@ const { backfillSecretBindings, BACKFILL_FLAGGED_ACTION } =
   await import("../src/lib/vault/secret-binding-backfill.js");
 const { parseSecretBindings } = await import("../src/lib/vault/bound-secret.js");
 const { expandVaultRefs } = await import("../src/lib/vault/env-manager.js");
-const { batchTokenSource } = await import("../src/lib/publishing/publishing-service.js");
+const { batchTokenSource, executeBatch, archiveBatch } =
+  await import("../src/lib/publishing/publishing-service.js");
 const { buildJiraClientForConnection } = await import("../src/lib/connectors/jira/jira-service.js");
 const { loadResolvedTestManagementConnection } =
   await import("../src/lib/connectors/testmgmt/connection-service.js");
 
 const PROJ = "proj-504-backfill";
 const ADMIN_VALUE = "admin-value-504";
+const FOREIGN_VALUE = "foreign-value-504";
 const ref = (body: string) => `\${vault:${body}}`;
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
@@ -70,6 +92,46 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     const secret = async (label: string, value: string, scope: "global" | "project" = "global") =>
       (await getVaultService().create(label, value, scope, { createdById: "u-coord" })).id;
+    /** A secret someone other than the resource's owner created. */
+    const foreignSecret = async (label: string, value = FOREIGN_VALUE) =>
+      (await getVaultService().create(label, value, "global", { createdById: "u-other" })).id;
+    /**
+     * Run `between` after the backfill has read the rows and before it writes
+     * row `id`: the prisma client the backfill sees is wrapped so that model's
+     * `updateMany` for that row first lets a concurrent writer in.
+     */
+    const racing = async <T>(
+      model: "mCPServer" | "publishBatch",
+      id: string,
+      between: () => Promise<unknown>,
+      run: () => Promise<T>,
+    ): Promise<T> => {
+      let raced = false;
+      const delegate = db[model] as unknown as Record<string, unknown>;
+      const wrapped = new Proxy(delegate, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop) as unknown;
+          if (prop !== "updateMany" || typeof value !== "function") return value;
+          return async (args: { where?: { id?: string } }) => {
+            if (!raced && args.where?.id === id) {
+              raced = true;
+              await between();
+            }
+            return (value as (a: unknown) => Promise<unknown>).call(target, args);
+          };
+        },
+      });
+      state.db = new Proxy(db, {
+        get: (target, prop) => (prop === model ? wrapped : Reflect.get(target, prop)),
+      });
+      try {
+        const out = await run();
+        expect(raced).toBe(true);
+        return out;
+      } finally {
+        state.db = db;
+      }
+    };
     /** Delete the bound secret, then create a secret whose LABEL is its id. */
     const squatOnId = async (id: string) => {
       await getVaultService().delete(id);
@@ -127,13 +189,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
       __resetVaultSingleton();
-      for (const id of ["u-admin", "u-coord"]) {
+      for (const id of ["u-admin", "u-coord", "u-other", "u-revealer"]) {
         await db.user.create({
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
         });
       }
       await db.project.create({
         data: { id: PROJ, name: PROJ, slug: PROJ, createdById: "u-admin" },
+      });
+      // `u-revealer` holds `vault.reveal` (admin); `u-coord` and `u-other` hold no role.
+      const adminRole = await db.role.upsert({
+        where: { key: "admin" },
+        update: {},
+        create: { key: "admin", name: "admin", isSystem: true },
+      });
+      await db.userRole.create({
+        data: { userId: "u-revealer", roleId: adminRole.id, source: "local" },
       });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
@@ -244,6 +315,149 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    describe("MCP servers — races, soft deletes and ownership (PR #518 review)", () => {
+      it("does not overwrite a server saved between the backfill's read and its write", async () => {
+        const missing = `mcp-race-504-${next()}`;
+        const id = await legacyMcp({ TOKEN: ref(missing) });
+        const saved = JSON.stringify({ [missing]: "sec-saved-concurrently" });
+
+        const report = await racing(
+          "mCPServer",
+          id,
+          () => db.mCPServer.update({ where: { id }, data: { secretBindings: saved } }),
+          () => backfillSecretBindings(),
+        );
+
+        expect((await db.mCPServer.findUniqueOrThrow({ where: { id } })).secretBindings).toBe(
+          saved,
+        );
+        expect(report).toMatchObject({ mcpServersBound: 0, mcpServersFlagged: 0 });
+        expect(await flagsFor(id)).toEqual([]);
+      });
+
+      it("neither binds nor flags a soft-deleted server", async () => {
+        const good = `mcp-deleted-504-${next()}`;
+        await secret(good, "v");
+        const bindable = await legacyMcp({ A: ref(good) });
+        const flaggable = await legacyMcp({ B: ref(`mcp-deleted-missing-504-${next()}`) });
+        for (const id of [bindable, flaggable]) {
+          await db.mCPServer.update({ where: { id }, data: { deletedAt: new Date() } });
+        }
+
+        await backfillSecretBindings();
+
+        for (const id of [bindable, flaggable]) {
+          expect(
+            (await db.mCPServer.findUniqueOrThrow({ where: { id } })).secretBindings,
+          ).toBeNull();
+          expect(await flagsFor(id)).toEqual([]);
+        }
+      });
+
+      it("binds a header reference to a secret the server's owner created", async () => {
+        const label = `mcp-owned-hdr-504-${next()}`;
+        const own = await secret(label, "owned-hdr-value");
+        const id = await legacyMcp({}, { Authorization: `Bearer ${ref(label)}` });
+
+        await backfillSecretBindings();
+
+        expect(await bindingsOf(id)).toEqual({ [label]: own });
+        expect(await flagsFor(id)).toEqual([]);
+        await expect(
+          expandVaultRefs(
+            { Authorization: `Bearer ${ref(label)}` },
+            getVaultService(),
+            await bindingsOf(id),
+            "header",
+          ),
+        ).resolves.toEqual({ Authorization: "Bearer owned-hdr-value" });
+      });
+
+      it("flags — never binds or sends — a header or env reference to another user's secret", async () => {
+        const hdr = `mcp-foreign-hdr-504-${next()}`;
+        const env = `mcp-foreign-env-504-${next()}`;
+        const mine = `mcp-mine-504-${next()}`;
+        await foreignSecret(hdr);
+        await foreignSecret(env);
+        const mineId = await secret(mine, "mine-value");
+        const id = await legacyMcp(
+          { TOKEN: ref(env), MINE: ref(mine) },
+          { Authorization: `Bearer ${ref(hdr)}` },
+        );
+
+        const report = await backfillSecretBindings();
+
+        expect(await bindingsOf(id)).toEqual({ [mine]: mineId });
+        expect(report.mcpServersFlagged).toBeGreaterThanOrEqual(1);
+        const [flags] = await flagsFor(id);
+        expect(flags).toEqual(
+          expect.arrayContaining([
+            { ref: env, reason: "not_owned" },
+            { ref: hdr, reason: "not_owned" },
+          ]),
+        );
+        expect(flags).toHaveLength(2);
+        await expect(
+          expandVaultRefs(
+            { Authorization: `Bearer ${ref(hdr)}` },
+            getVaultService(),
+            await bindingsOf(id),
+            "header",
+          ),
+        ).rejects.toThrow(/\(header Authorization\) is not bound/);
+        await expect(
+          expandVaultRefs({ TOKEN: ref(env) }, getVaultService(), await bindingsOf(id)),
+        ).rejects.toThrow(/not bound to a secret/);
+      });
+
+      it("flags a reference that also reaches another user's secret, as #344 does at save time", async () => {
+        const own = await secret(`mcp-mixed-504-${next()}`, "mine");
+        // Another user's secret whose LABEL is the owner's secret id. The id
+        // match wins for binding, but #344 requires every row the reference
+        // can reach to be the owner's.
+        await foreignSecret(own);
+        const id = await legacyMcp({ TOKEN: ref(own) });
+
+        await backfillSecretBindings();
+
+        expect(await bindingsOf(id)).toEqual({});
+        expect(await flagsFor(id)).toEqual([[{ ref: own, reason: "not_owned" }]]);
+      });
+
+      it("binds another user's secret for an owner who holds vault.reveal", async () => {
+        const label = `mcp-revealer-504-${next()}`;
+        const foreign = await foreignSecret(label);
+        const id = (
+          await db.mCPServer.create({
+            data: {
+              label: `mcp-504-${next()}`,
+              transport: "stdio",
+              command: "node",
+              envJson: JSON.stringify({ TOKEN: ref(label) }),
+              createdById: "u-revealer",
+            },
+          })
+        ).id;
+
+        await backfillSecretBindings();
+
+        expect(await bindingsOf(id)).toEqual({ [label]: foreign });
+        expect(await flagsFor(id)).toEqual([]);
+      });
+
+      it("flags every reference of a server with no owner", async () => {
+        const label = `mcp-orphan-504-${next()}`;
+        await secret(label, "v");
+        const id = await legacyMcp({ TOKEN: ref(label) });
+        await db.mCPServer.update({ where: { id }, data: { createdById: null } });
+
+        await backfillSecretBindings();
+
+        expect(await bindingsOf(id)).toEqual({});
+        expect(await flagsFor(id)).toEqual([[{ ref: label, reason: "not_owned" }]]);
+      });
+    });
+
     // ── 1b. Publish batches ─────────────────────────────────────────────────
     describe("publish batches created before #480", () => {
       it("binds a live batch's reference to the id it resolves to now", async () => {
@@ -292,6 +506,89 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await metaOf(dry)).toEqual({ secretRef: ref(label) });
         expect(await metaOf(bound)).toEqual({ secretRef: ref(label), secretId: null });
         expect(await metaOf(malformed)).toEqual({ secretRef: "not-a-ref" });
+      });
+
+      it("leaves an archived batch alone", async () => {
+        const label = `batch-archived-504-${next()}`;
+        await secret(label, "v");
+        const id = await legacyBatch({ secretRef: ref(label) });
+        await db.publishBatch.update({ where: { id }, data: { archived: true } });
+
+        await backfillSecretBindings();
+
+        expect(await metaOf(id)).toEqual({ secretRef: ref(label) });
+      });
+
+      it("does not overwrite a batch changed between the backfill's read and its write", async () => {
+        const label = `batch-race-504-${next()}`;
+        await secret(label, "v");
+        const id = await legacyBatch({ secretRef: ref(label) });
+        const concurrent = { secretRef: ref(label), secretId: "sec-written-concurrently" };
+
+        const report = await racing(
+          "publishBatch",
+          id,
+          () =>
+            db.publishBatch.update({
+              where: { id },
+              data: { metadata: JSON.stringify(concurrent) },
+            }),
+          () => backfillSecretBindings(),
+        );
+
+        expect(await metaOf(id)).toEqual(concurrent);
+        expect(report).toMatchObject({ batchesBound: 0, batchesFlagged: 0 });
+      });
+
+      it("flags a batch whose reference reaches a secret its starter did not create", async () => {
+        const label = `batch-foreign-504-${next()}`;
+        await foreignSecret(label);
+        const id = await legacyBatch({ secretRef: ref(label) });
+
+        await backfillSecretBindings();
+
+        expect(await metaOf(id)).toMatchObject({ secretId: null, secretBindingFlag: "not_owned" });
+        expect(await flagsFor(id)).toEqual([[{ ref: label, reason: "not_owned" }]]);
+      });
+
+      describe("a flagged batch gets no token (executeBatch, archiveBatch)", () => {
+        /**
+         * The attack the flag closes: the reference reached nothing at backfill
+         * time, and a secret is created under its label afterwards. Read by
+         * label, `meta.secretRef` would now resolve — and be sent to GitHub.
+         */
+        const flaggedBatch = async () => {
+          const label = `batch-flagged-use-504-${next()}`;
+          const id = await legacyBatch({ secretRef: ref(label) });
+          await backfillSecretBindings();
+          expect(await metaOf(id)).toMatchObject({ secretBindingFlag: "unresolved" });
+          await secret(label, ADMIN_VALUE);
+          state.sent.length = 0;
+          return id;
+        };
+
+        it("executeBatch refuses to publish it", async () => {
+          const id = await flaggedBatch();
+          await expect(executeBatch({ batchId: id, actorId: "u-coord" })).rejects.toMatchObject({
+            code: "TOKEN_REQUIRED",
+          });
+          expect(state.sent).toEqual([]);
+        });
+
+        it("archiveBatch refuses to close its issues", async () => {
+          const id = await flaggedBatch();
+          await expect(
+            archiveBatch({
+              batchId: id,
+              projectId: PROJ,
+              input: { reason: "rollback", closeIssues: true },
+              actorId: "u-coord",
+              actorRole: "coordinator",
+            }),
+          ).rejects.toMatchObject({ code: "TOKEN_REQUIRED" });
+          expect(state.sent).toEqual([]);
+          expect((await db.publishBatch.findUniqueOrThrow({ where: { id } })).archived).toBe(false);
+        });
       });
     });
 

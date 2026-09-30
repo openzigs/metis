@@ -12,6 +12,7 @@ import type { MCPStatus } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { MCPClient } from "./client.js";
 import { MCPHttpTransport } from "./http-transport.js";
+import type { VaultRefMapKind } from "../vault/env-manager.js";
 import { MCPStdioTransport, validateCommand } from "./stdio-transport.js";
 import {
   defaultProvisionerRegistry,
@@ -64,6 +65,7 @@ export interface LifecycleOptions {
   resolveEnv: (
     env: Record<string, string>,
     secretBindings?: Record<string, string> | null,
+    kind?: VaultRefMapKind,
   ) => Promise<Record<string, string>>;
   /**
    * Override the transport factory — tests inject mock transports here.
@@ -255,6 +257,7 @@ export class MCPLifecycleManager {
     // literally. Only the transport sees the expanded copy; `entry.config`
     // keeps the references.
     let config = entry.config;
+    let resolving: VaultRefMapKind = "env";
     try {
       const raw = entry.config.env ?? {};
       env = await this.opts.resolveEnv(raw, entry.config.secretBindings ?? null);
@@ -263,13 +266,20 @@ export class MCPLifecycleManager {
         headers &&
         Object.values(headers).some((v) => typeof v === "string" && v.includes("${vault:"))
       ) {
+        resolving = "header";
         config = {
           ...entry.config,
-          headers: await this.opts.resolveEnv(headers, entry.config.secretBindings ?? null),
+          headers: await this.opts.resolveEnv(
+            headers,
+            entry.config.secretBindings ?? null,
+            "header",
+          ),
         };
       }
     } catch (err) {
-      const message = redactErrorMessage(`env resolution failed: ${(err as Error).message}`);
+      const message = redactErrorMessage(
+        `${resolving} resolution failed: ${(err as Error).message}`,
+      );
       entry.state.status = "error";
       entry.state.lastError = message;
       entry.state.failureCount += 1;

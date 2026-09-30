@@ -329,7 +329,10 @@ async function releaseDeletedLabel(
  * `readBoundSecret` (#480) against the injected vault rather than the global
  * Prisma client.
  *
- * @throws ConnectorError 409 VAULT_BINDING_STALE when the bound secret is gone.
+ * @throws ConnectorError 409 VAULT_BINDING_STALE when the bound secret is gone
+ *   (`vault.read` reports `SECRET_NOT_FOUND`). Any other failure — a database
+ *   outage, a decryption error — is rethrown unchanged: it says nothing about
+ *   the binding, and "enter the credential again" would be the wrong advice.
  */
 async function readBound(vault: VaultService, ref: string | null | undefined): Promise<string> {
   const id = refId(ref);
@@ -344,7 +347,8 @@ async function readBound(vault: VaultService, ref: string | null | undefined): P
     const { plaintext } = await vault.read(id);
     return plaintext;
   } catch (err) {
-    log.warn("Bound test-management secret not readable", { err: (err as Error).message });
+    if ((err as { code?: unknown }).code !== "SECRET_NOT_FOUND") throw err;
+    log.warn("Bound test-management secret not live", { secretId: id });
     throw new ConnectorError(
       409,
       VAULT_BINDING_STALE,
