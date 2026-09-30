@@ -250,6 +250,36 @@ describe("#372 — prismaSymbolIndex caches the full symbol set per project", ()
     expect((await newer).map((s) => s.symbolId)).toEqual(["new"]);
   });
 
+  // PR #413 review — the older load finishing LAST must not overwrite the
+  // newer entry, or the next search pays one more full findMany.
+  it("#394: an older load that finishes last does not overwrite the newer cache entry", async () => {
+    const releases: Array<(rows: ReturnType<typeof sym>[]) => void> = [];
+    const pending = () =>
+      new Promise<ReturnType<typeof sym>[]>((resolve) => releases.push(resolve));
+    // Two held loads; any further load resolves at once, so a cache miss fails
+    // the call-count assertion instead of hanging the test.
+    findMany
+      .mockImplementationOnce(pending)
+      .mockImplementationOnce(pending)
+      .mockResolvedValue([sym("reloaded")]);
+    aggregate
+      .mockResolvedValueOnce(fingerprint(1, 1_000))
+      .mockResolvedValueOnce(fingerprint(1, 2_000))
+      .mockResolvedValueOnce(fingerprint(1, 2_000));
+
+    const older = prismaSymbolIndex.getSymbols("p1");
+    const newer = prismaSymbolIndex.getSymbols("p1");
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    releases[1]([sym("new")]);
+    await newer;
+    releases[0]([sym("old")]);
+    await older;
+
+    const next = await prismaSymbolIndex.getSymbols("p1");
+    expect(next.map((s) => s.symbolId)).toEqual(["new"]);
+    expect(findMany).toHaveBeenCalledTimes(2);
+  });
+
   it("#394: a failed load is not shared with the next search", async () => {
     findMany.mockRejectedValueOnce(new Error("db down")).mockResolvedValueOnce([sym("s1")]);
 

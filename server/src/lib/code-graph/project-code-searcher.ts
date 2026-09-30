@@ -53,6 +53,8 @@ const MAX_CACHED_PROJECTS = 4;
 interface CachedSymbols {
   fingerprint: string;
   symbols: readonly SearchableSymbol[];
+  /** Load order (PR #413 review): a load only replaces an entry from an older load. */
+  seq: number;
 }
 
 /** Insertion order is recency order: the first key is the least recently used. */
@@ -134,10 +136,13 @@ async function symbolFingerprint(projectId: string): Promise<string> {
   ].join("|");
 }
 
+let loadSeq = 0;
+
 async function loadSymbols(
   projectId: string,
   fingerprint: string,
 ): Promise<readonly SearchableSymbol[]> {
+  const seq = ++loadSeq;
   const rows = await prisma.codeSymbol.findMany({
     where: { projectId },
     select: SYMBOL_SELECT,
@@ -147,11 +152,16 @@ async function loadSymbols(
   // Frozen: every caller shares this array, and the shared BM25 cache is keyed on
   // its identity, so a caller that sorted or pushed into it would corrupt both.
   const symbols = Object.freeze(rows.map(toSearchable));
+  // An older load that finishes after a newer one must not overwrite the newer
+  // entry (PR #413 review). Its caller still gets these symbols; only the shared
+  // cache keeps the newest load.
+  const cached = symbolCache.get(projectId);
+  if (cached && cached.seq > seq) return symbols;
   symbolCache.delete(projectId);
   if (symbolCache.size >= MAX_CACHED_PROJECTS) {
     symbolCache.delete(symbolCache.keys().next().value as string);
   }
-  symbolCache.set(projectId, { fingerprint, symbols });
+  symbolCache.set(projectId, { fingerprint, symbols, seq });
   return symbols;
 }
 
