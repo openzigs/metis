@@ -252,11 +252,12 @@ describe("<VaultPage />", () => {
       expect(rotateMock).toHaveBeenNthCalledWith(1, "sec_1", "ghp_admin");
     });
 
-    it("says so when the secret is not bound anywhere, and Cancel dismisses without rotating", async () => {
+    it("says only what was checked when no binding is found, and Cancel dismisses without rotating", async () => {
       rotateMock.mockRejectedValueOnce(refuse({ ...foreign, bindings: [] }));
       await submitRotate();
       const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
-      expect(panel).toHaveTextContent("not bound to any connector or server");
+      expect(panel).toHaveTextContent("were not checked");
+      expect(panel).not.toHaveTextContent("not bound");
       fireEvent.click(screen.getByTestId("vault-entry-rotate-cancel"));
       expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument();
       expect(rotateMock).toHaveBeenCalledTimes(1);

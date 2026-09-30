@@ -82,7 +82,7 @@ function scopeOf(name: string): "global" | "project" {
 }
 
 /** Does a reference body resolve to this row, by id or by (scoped) label? */
-function reaches(ref: string, row: { id: string; name: string }): boolean {
+export function reaches(ref: string, row: { id: string; name: string }): boolean {
   const label = labelOf(row.name);
   return (
     row.id === ref || row.name === ref || label === ref || `${scopeOf(row.name)}:${label}` === ref

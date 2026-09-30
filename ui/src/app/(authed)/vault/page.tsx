@@ -452,10 +452,14 @@ function EntryDetail({
                   foreignOwner.owner.username ??
                   foreignOwner.owner.id}
               </strong>
-              . Rotating it sends your value wherever they have bound it.
+              . Rotating it sends your value wherever they have bound it, and they stay its owner,
+              so they can bind it elsewhere afterwards.
             </p>
             {foreignOwner.bindings.length === 0 ? (
-              <p>It is not bound to any connector or server.</p>
+              <p>
+                No DB or repo connector, import source, MCP server or Jira connection uses it; other
+                references (test-management auth, notification channels) were not checked.
+              </p>
             ) : (
               <ul className="list-disc pl-4" data-testid="vault-entry-rotate-bindings">
                 {foreignOwner.bindings.map((b) => (

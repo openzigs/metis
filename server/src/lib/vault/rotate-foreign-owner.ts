@@ -12,13 +12,17 @@
  * (`createdById` null: system-written, or its creator was deleted) belongs to
  * no user, so rotating it is not refused.
  *
- * Bindings are the live resources that hold the secret's id in a column: DB and
- * repo connectors and import sources (`secretId`), MCP servers (`envSecretId`)
- * and Jira connections (`secretId` / `tlsCaSecretId`). References embedded in
- * JSON (MCP env/header `${vault:x}`, test-management auth config) are not
- * enumerated.
+ * Bindings are the live resources that reach the secret: DB and repo connectors
+ * and import sources (`secretId`), Jira connections (`secretId` /
+ * `tlsCaSecretId`), and MCP servers — through the `${vault:x}` references in
+ * their `envJson` / `headers` (how the importer and `routes/mcp.ts` bind them),
+ * matched with the same id-or-label rule the binding check uses (`reaches`),
+ * or the `envSecretId` column. Other embedded references (test-management
+ * auth config, notification-channel refs, BYOK) are not enumerated, and the
+ * refusal says so rather than claiming the secret is unbound (PR #494 review).
  */
 import { prisma } from "../prisma.js";
+import { reaches, refBodiesIn } from "./secret-binding.js";
 
 export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
 
@@ -46,16 +50,32 @@ export interface ForeignOwnerDetails {
 /** The live secret's owner, or null for an unknown / deleted id. */
 export async function secretOwnerOf(
   id: string,
-): Promise<{ id: string; createdById: string | null } | null> {
+): Promise<{ id: string; name: string; createdById: string | null } | null> {
   return prisma.secret.findFirst({
     where: { id, deletedAt: null },
-    select: { id: true, createdById: true },
+    select: { id: true, name: true, createdById: true },
   });
+}
+
+const VAULT_REF_MARKER = "${vault:";
+
+/** The `${vault:x}` bodies in a JSON string-map column; malformed JSON holds none. */
+function refBodiesInJson(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? refBodiesIn(parsed as Record<string, unknown>)
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /** The owner and live bindings of a secret, for the 409 body and the UI. */
 export async function describeForeignOwner(secret: {
   id: string;
+  name: string;
   createdById: string;
 }): Promise<ForeignOwnerDetails> {
   const [user, dbs, repos, imports, mcps, jiras] = await Promise.all([
@@ -75,9 +95,27 @@ export async function describeForeignOwner(secret: {
       where: { secretId: secret.id, deletedAt: null },
       select: { id: true, label: true, projectId: true, source: true, baseUrl: true },
     }),
+    // Candidates only: servers pointing at the id, or holding any vault ref at
+    // all; `reaches` then decides which refs resolve to this secret.
     prisma.mCPServer.findMany({
-      where: { envSecretId: secret.id, deletedAt: null },
-      select: { id: true, label: true, projectId: true, url: true, command: true },
+      where: {
+        deletedAt: null,
+        OR: [
+          { envSecretId: secret.id },
+          { envJson: { contains: VAULT_REF_MARKER } },
+          { headers: { contains: VAULT_REF_MARKER } },
+        ],
+      },
+      select: {
+        id: true,
+        label: true,
+        projectId: true,
+        url: true,
+        command: true,
+        envSecretId: true,
+        envJson: true,
+        headers: true,
+      },
     }),
     prisma.jiraConnection.findMany({
       where: {
@@ -110,13 +148,21 @@ export async function describeForeignOwner(secret: {
       projectId: i.projectId,
       destination: i.baseUrl ?? i.source,
     })),
-    ...mcps.map((m) => ({
-      type: "mcp_server" as const,
-      id: m.id,
-      label: m.label,
-      projectId: m.projectId,
-      destination: m.url ?? m.command,
-    })),
+    ...mcps
+      .filter(
+        (m) =>
+          m.envSecretId === secret.id ||
+          [...refBodiesInJson(m.envJson), ...refBodiesInJson(m.headers)].some((ref) =>
+            reaches(ref, secret),
+          ),
+      )
+      .map((m) => ({
+        type: "mcp_server" as const,
+        id: m.id,
+        label: m.label,
+        projectId: m.projectId,
+        destination: m.url ?? m.command,
+      })),
     ...jiras.map((j) => ({
       type: "jira_connection" as const,
       id: j.id,
@@ -137,12 +183,20 @@ export async function describeForeignOwner(secret: {
   };
 }
 
+/**
+ * What an empty binding list means — only the kinds enumerated above were
+ * checked, so it must not claim the secret is bound nowhere (PR #494 review).
+ */
+export const UNBOUND_NOTE =
+  "No DB or repo connector, import source, MCP server or Jira connection uses it; " +
+  "other references (test-management auth, notification channels) were not checked.";
+
 /** A one-line, human-readable refusal naming the owner and where the secret is bound. */
 export function foreignOwnerMessage(details: ForeignOwnerDetails): string {
   const who = details.owner.displayName ?? details.owner.username ?? `user ${details.owner.id}`;
   const where =
     details.bindings.length === 0
-      ? "It is not bound to any connector or server."
+      ? UNBOUND_NOTE
       : `It is bound to ${details.bindings
           .map((b) => `${b.label}${b.destination ? ` (${b.destination})` : ""}`)
           .join(", ")}.`;

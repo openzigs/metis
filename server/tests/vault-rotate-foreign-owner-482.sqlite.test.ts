@@ -4,7 +4,8 @@
  * proven through the REAL vault router, vault service and audit service against
  * a REAL SQLite database built from the migration chain.
  *
- * The refusal names the owner and the resources the secret is bound to; it
+ * The refusal names the owner and the resources the secret is bound to —
+ * including MCP servers whose env / headers hold a `${vault:x}` ref to it; it
  * writes nothing (the stored value is read back and still decrypts to the
  * owner's). With the flag the rotation lands and its audit row records the
  * confirmation. Rotating your own secret, or one no user owns, is unchanged.
@@ -74,14 +75,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         where: { action: "vault.rotate", targetType: "secret", targetId: id },
       });
     };
+    let lastLabel = "";
     const newSecret = async (createdById: string | undefined) => {
       n += 1;
+      lastLabel = `s482-${n}`;
       return (
-        await getVaultService().create(`s482-${n}`, OWNER_VALUE, "global", {
+        await getVaultService().create(lastLabel, OWNER_VALUE, "global", {
           ...(createdById ? { createdById } : {}),
         })
       ).id;
     };
+    const mcpServer = (
+      id: string,
+      label: string,
+      fields: { envJson?: string; headers?: string; url?: string; command?: string },
+    ) =>
+      db.mCPServer.create({
+        data: {
+          id,
+          scope: "project",
+          projectId: "proj-1",
+          label,
+          transport: fields.url ? "http" : "stdio",
+          ...fields,
+        },
+      });
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("482-vault-rotate-foreign");
@@ -138,16 +156,32 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           secretId: id,
         },
       });
-      await db.mCPServer.create({
+      await db.importSource.create({
         data: {
-          id: "mcp-coord",
-          scope: "project",
+          id: "imp-coord",
           projectId: "proj-1",
-          label: "Coord MCP",
-          transport: "stdio",
-          command: "coord-mcp",
-          envSecretId: id,
+          analysisId: "an-1",
+          source: "linear",
+          label: "Coord Linear",
+          baseUrl: "https://linear.coord.example",
+          secretId: id,
+          createdById: "u-coord",
         },
+      });
+      // MCP bindings are `${vault:<label>}` refs in env / headers, as the
+      // importer and `routes/mcp.ts` write them — by label and by id.
+      await mcpServer("mcp-coord", "Coord MCP", {
+        command: "coord-mcp",
+        envJson: JSON.stringify({ TOKEN: `\${vault:${lastLabel}}`, MODE: "prod" }),
+      });
+      await mcpServer("mcp-coord-http", "Coord MCP HTTP", {
+        url: "https://mcp.coord.example",
+        headers: JSON.stringify({ Authorization: `Bearer \${vault:${id}}` }),
+      });
+      // A server referencing some other secret is not a binding of this one.
+      await mcpServer("mcp-other", "Other MCP", {
+        command: "other-mcp",
+        envJson: JSON.stringify({ TOKEN: "${vault:someone-else}" }),
       });
       await db.jiraConnection.create({
         data: {
@@ -206,11 +240,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               destination: "https://ghe.coord.example/api/v3",
             },
             {
+              type: "import_source",
+              id: "imp-coord",
+              label: "Coord Linear",
+              projectId: "proj-1",
+              destination: "https://linear.coord.example",
+            },
+            {
               type: "mcp_server",
               id: "mcp-coord",
               label: "Coord MCP",
               projectId: "proj-1",
               destination: "coord-mcp",
+            },
+            {
+              type: "mcp_server",
+              id: "mcp-coord-http",
+              label: "Coord MCP HTTP",
+              projectId: "proj-1",
+              destination: "https://mcp.coord.example",
             },
             {
               type: "jira_connection",
@@ -221,7 +269,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             },
           ]),
         );
-        expect(bindings).toHaveLength(4);
+        expect(bindings).toHaveLength(6);
         expect(JSON.stringify(res.body)).not.toContain(ADMIN_VALUE);
       }
 
@@ -229,12 +277,52 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await rotateAudit(id)).toHaveLength(0);
     });
 
-    it("an unbound foreign secret is refused too, and says so", async () => {
+    it("an unbound foreign secret is refused too, and says only what was checked", async () => {
       const id = await newSecret("u-coord");
       const res = await rotate(id, { value: ADMIN_VALUE });
       expect(res.status).toBe(409);
       expect(res.body.error.details.bindings).toEqual([]);
-      expect(res.body.error.message).toContain("not bound");
+      expect(res.body.error.message).toContain("were not checked");
+      expect(res.body.error.message).not.toContain("not bound");
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+    });
+
+    it("names an MCP server as the only binding when its env holds a ${vault:label} ref", async () => {
+      const id = await newSecret("u-coord");
+      await mcpServer("mcp-only", "Only MCP", {
+        command: "only-mcp",
+        envJson: JSON.stringify({ API_KEY: `\${vault:global:${lastLabel}}` }),
+      });
+      const res = await rotate(id, { value: ADMIN_VALUE });
+      expect(res.status).toBe(409);
+      expect(res.body.error.details.bindings).toEqual([
+        {
+          type: "mcp_server",
+          id: "mcp-only",
+          label: "Only MCP",
+          projectId: "proj-1",
+          destination: "only-mcp",
+        },
+      ]);
+      expect(res.body.error.message).toContain("bound to Only MCP (only-mcp)");
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+    });
+
+    it("rotates only against the owner it checked (compare-and-swap on createdById)", async () => {
+      const id = await newSecret("u-admin");
+      const svc = getVaultService();
+      const real = svc.rotate.bind(svc);
+      // The owner changes between the route's owner check and its write.
+      const spy = vi.spyOn(svc, "rotate").mockImplementationOnce(async (...args) => {
+        await db.secret.update({ where: { id }, data: { createdById: "u-coord" } });
+        return real(...args);
+      });
+      try {
+        const res = await rotate(id, { value: ADMIN_VALUE });
+        expect(res.status).toBe(404);
+      } finally {
+        spy.mockRestore();
+      }
       expect(await plaintextOf(id)).toBe(OWNER_VALUE);
     });
 

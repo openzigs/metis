@@ -155,8 +155,12 @@ export function vaultRouter(): Router {
     const secret = await secretOwnerOf(id);
     const foreignOwnerId =
       secret?.createdById && secret.createdById !== aId ? secret.createdById : null;
-    if (foreignOwnerId && parsed.data.confirmForeignOwner !== true) {
-      const details = await describeForeignOwner({ id, createdById: foreignOwnerId });
+    if (secret && foreignOwnerId && parsed.data.confirmForeignOwner !== true) {
+      const details = await describeForeignOwner({
+        id,
+        name: secret.name,
+        createdById: foreignOwnerId,
+      });
       throw new AppError(
         409,
         VAULT_ROTATE_FOREIGN_OWNER,
@@ -166,7 +170,13 @@ export function vaultRouter(): Router {
     }
     let summary: SecretSummary;
     try {
-      summary = await getVaultService().rotate(id, parsed.data.value);
+      // The owner seen above is the owner written against (compare-and-swap),
+      // so the check and the rotate cannot straddle an ownership change.
+      summary = await getVaultService().rotate(
+        id,
+        parsed.data.value,
+        secret ? { onlyIfCreatedBy: secret.createdById } : {},
+      );
     } catch (err) {
       // Issue #580 — a key rotation FAILURE is a sev-1 operational event. Fire a
       // best-effort PagerDuty incident to the designated ops workspace (env

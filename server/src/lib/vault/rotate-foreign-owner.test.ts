@@ -15,7 +15,8 @@ const db = vi.hoisted(() => ({
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
 
-const { describeForeignOwner, foreignOwnerMessage } = await import("./rotate-foreign-owner.js");
+const { describeForeignOwner, foreignOwnerMessage, UNBOUND_NOTE } =
+  await import("./rotate-foreign-owner.js");
 
 beforeEach(() => {
   for (const model of Object.values(db)) {
@@ -33,9 +34,11 @@ beforeEach(() => {
   }
 });
 
+const SECRET = { id: "sec-1", name: "global:gh-token", createdById: "u-1" };
+
 describe("describeForeignOwner", () => {
   it("queries every binding column by the secret id, live rows only", async () => {
-    await describeForeignOwner({ id: "sec-1", createdById: "u-1" });
+    await describeForeignOwner(SECRET);
     expect(db.databaseConnection.findMany.mock.calls[0]![0].where).toEqual({
       secretId: "sec-1",
       deletedAt: null,
@@ -49,8 +52,12 @@ describe("describeForeignOwner", () => {
       deletedAt: null,
     });
     expect(db.mCPServer.findMany.mock.calls[0]![0].where).toEqual({
-      envSecretId: "sec-1",
       deletedAt: null,
+      OR: [
+        { envSecretId: "sec-1" },
+        { envJson: { contains: "${vault:" } },
+        { headers: { contains: "${vault:" } },
+      ],
     });
     expect(db.jiraConnection.findMany.mock.calls[0]![0].where).toEqual({
       deletedAt: null,
@@ -71,10 +78,10 @@ describe("describeForeignOwner", () => {
       { id: "i2", label: "ADO", projectId: "p", source: "azure-devops", baseUrl: "https://ado" },
     ]);
     db.mCPServer.findMany.mockResolvedValue([
-      { id: "m1", label: "Http", projectId: null, url: "https://mcp", command: null },
-      { id: "m2", label: "Stdio", projectId: "p", url: null, command: "npx srv" },
+      mcp({ id: "m1", label: "Http", projectId: null, url: "https://mcp", envSecretId: "sec-1" }),
+      mcp({ id: "m2", label: "Stdio", projectId: "p", command: "npx srv", envSecretId: "sec-1" }),
     ]);
-    const out = await describeForeignOwner({ id: "sec-1", createdById: "u-1" });
+    const out = await describeForeignOwner(SECRET);
     expect(out.bindings.map((b) => [b.type, b.id, b.destination])).toEqual([
       ["db_connector", "d1", "sqlite"],
       ["db_connector", "d2", "mysql://h"],
@@ -85,6 +92,48 @@ describe("describeForeignOwner", () => {
       ["mcp_server", "m2", "npx srv"],
     ]);
     expect(out.owner).toEqual({ id: "u-1", username: null, displayName: null });
+  });
+});
+
+function mcp(over: Record<string, unknown>) {
+  return {
+    projectId: "p",
+    url: null,
+    command: "srv",
+    envSecretId: null,
+    envJson: null,
+    headers: null,
+    ...over,
+  };
+}
+
+describe("describeForeignOwner — MCP env/header ${vault:x} refs", () => {
+  it("keeps servers whose env or headers reach the secret by id or label, and drops the rest", async () => {
+    db.mCPServer.findMany.mockResolvedValue([
+      mcp({ id: "byLabel", label: "L", envJson: JSON.stringify({ T: "${vault:gh-token}" }) }),
+      mcp({
+        id: "byScoped",
+        label: "S",
+        envJson: JSON.stringify({ T: "${vault:global:gh-token}" }),
+      }),
+      mcp({
+        id: "byName",
+        label: "N",
+        envJson: JSON.stringify({ T: "x ${vault:global:gh-token} y" }),
+      }),
+      mcp({ id: "byId", label: "I", headers: JSON.stringify({ A: "Bearer ${vault:sec-1}" }) }),
+      mcp({ id: "other", label: "O", envJson: JSON.stringify({ T: "${vault:other-token}" }) }),
+      mcp({
+        id: "wrongScope",
+        label: "W",
+        envJson: JSON.stringify({ T: "${vault:project:gh-token}" }),
+      }),
+      mcp({ id: "badJson", label: "B", envJson: "{not json ${vault:gh-token}" }),
+      mcp({ id: "array", label: "A", envJson: JSON.stringify(["${vault:gh-token}"]) }),
+      mcp({ id: "nullJson", label: "Z", headers: "null" }),
+    ]);
+    const out = await describeForeignOwner(SECRET);
+    expect(out.bindings.map((b) => b.id)).toEqual(["byLabel", "byScoped", "byName", "byId"]);
   });
 });
 
@@ -101,6 +150,16 @@ describe("foreignOwnerMessage", () => {
     expect(
       foreignOwnerMessage({ ...base, owner: { id: "u-9", username: null, displayName: null } }),
     ).toContain("belongs to user u-9.");
+  });
+
+  it("with no bindings says only what was checked, never that it is bound nowhere", () => {
+    const msg = foreignOwnerMessage({
+      ...base,
+      owner: { id: "u", username: "c", displayName: null },
+    });
+    expect(msg).toContain(UNBOUND_NOTE);
+    expect(msg).toContain("were not checked");
+    expect(msg).not.toContain("not bound");
   });
 
   it("lists each binding with its destination when it has one", () => {
