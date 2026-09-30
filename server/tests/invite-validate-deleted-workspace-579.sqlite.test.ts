@@ -10,8 +10,9 @@
  * route that reports every invite invalid cannot pass.
  *
  * #597 — the same withholding applies to every invalid invite: an expired or
- * already-used token is as stale as one to a deleted workspace, so it keeps the
- * reason flags, email, role and expiry, and drops the workspace and inviter.
+ * already-used token is as stale as one to a deleted workspace, so it keeps only
+ * the reason flags and drops the workspace, inviter, invitee email, role and
+ * expiry — nothing the page's invalid states read.
  */
 import express from "express";
 import request from "supertest";
@@ -53,7 +54,7 @@ const INVITER_NAME = "Inviter Display 579";
 const LIVE_NAME = "Live Workspace 579";
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
-  "#579 — invite validation on a soft-deleted workspace",
+  "#579, #597 — public invite validation withholds a deleted-workspace, expired or used invite's details",
   () => {
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
@@ -149,8 +150,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         consumed: false,
         workspace: null,
         invitedBy: null,
+        email: null,
+        role: null,
+        expiresAt: null,
       });
       expect(JSON.stringify(res.body)).not.toContain(DEAD_NAME);
+      expect(JSON.stringify(res.body)).not.toContain(INVITEE);
       expect(JSON.stringify(res.body)).not.toContain(INVITER_NAME);
     });
 
@@ -162,7 +167,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         workspaceDeleted: false,
         workspace: { id: LIVE, name: LIVE_NAME, slug: LIVE },
         invitedBy: INVITER_NAME,
+        email: `${INVITEE}@example.test`,
+        role: "member",
       });
+      expect(res.body.data.expiresAt).toEqual(expect.any(String));
       expect(res.body.data.workspace).not.toHaveProperty("deletedAt");
     });
 
@@ -170,7 +178,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ["expired", "token-expired-597", { expired: true, consumed: false }],
       ["already-used", "token-consumed-597", { expired: false, consumed: true }],
     ] as const)(
-      "#597 — reports an %s invite as not valid, naming the reason, without the workspace name or inviter",
+      "#597 — reports an %s invite as not valid, naming the reason, withholding everything else",
       async (_label, token, flags) => {
         const res = await request(app()).get(`/api/workspaces/invites/${token}`);
         expect(res.status).toBe(200);
@@ -180,12 +188,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ...flags,
           workspace: null,
           invitedBy: null,
-          // What the page still needs to explain itself.
-          email: `${INVITEE}@example.test`,
-          role: "member",
+          // The page's invalid states read only the reason flags.
+          email: null,
+          role: null,
+          expiresAt: null,
         });
-        expect(res.body.data.expiresAt).toEqual(expect.any(String));
         expect(JSON.stringify(res.body)).not.toContain(LIVE_NAME);
+        expect(JSON.stringify(res.body)).not.toContain(INVITEE);
         expect(JSON.stringify(res.body)).not.toContain(INVITER_NAME);
       },
     );

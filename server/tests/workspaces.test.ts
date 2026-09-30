@@ -627,7 +627,15 @@ describe("Workspace Routes", () => {
       const res = await request(app).get("/workspaces/invites/valid-token");
       expect(res.status).toBe(200);
       // #579 — the SQLite live control is skipped on postgres-adapter; pin validity here too.
-      expect(res.body.data).toMatchObject({ valid: true, workspaceDeleted: false });
+      // #597 — and that a valid invite still carries what the accept card renders.
+      expect(res.body.data).toMatchObject({
+        valid: true,
+        workspaceDeleted: false,
+        invitedBy: "Inviter",
+        email: "user@test.com",
+        role: "member",
+      });
+      expect(res.body.data.expiresAt).toEqual(expect.any(String));
       expect(res.body.data.workspace.name).toBe("Test");
     });
 
@@ -675,7 +683,7 @@ describe("Workspace Routes", () => {
         { expired: false, consumed: true },
       ],
     ] as const)(
-      "withholds the workspace name and inviter for an %s invite",
+      "withholds the workspace, inviter, email, role and expiry for an %s invite",
       async (_label, dates, flags) => {
         const app = createApp();
         vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
@@ -699,9 +707,11 @@ describe("Workspace Routes", () => {
           ...flags,
           workspace: null,
           invitedBy: null,
-          email: "user@test.com",
-          role: "member",
+          email: null,
+          role: null,
+          expiresAt: null,
         });
+        expect(JSON.stringify(res.body)).not.toContain("user@test.com");
         expect(JSON.stringify(res.body)).not.toContain("Secret Name 597");
         expect(JSON.stringify(res.body)).not.toContain("Ottoline Inviter-597");
       },
@@ -734,7 +744,11 @@ describe("Workspace Routes", () => {
         consumed: false,
         workspace: null,
         invitedBy: null,
+        email: null,
+        role: null,
+        expiresAt: null,
       });
+      expect(JSON.stringify(res.body)).not.toContain("user@test.com");
       expect(JSON.stringify(res.body)).not.toContain("Secret Name");
       expect(JSON.stringify(res.body)).not.toContain("Ottoline Inviter-579");
     });

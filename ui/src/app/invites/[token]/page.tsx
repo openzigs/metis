@@ -16,9 +16,13 @@ interface InviteInfo {
   workspace: { id: string; name: string; slug: string } | null;
   /** Withheld (`null`) whenever `valid` is false (#579, #597). */
   invitedBy: string | null;
-  email: string;
-  role: string;
-  expiresAt: string;
+  /**
+   * The invitee's address, role and expiry: also withheld (`null`) whenever `valid`
+   * is false (#597). The invalid-invite cards read only the reason flags.
+   */
+  email: string | null;
+  role: string | null;
+  expiresAt: string | null;
 }
 
 export default function InviteAcceptPage() {
@@ -143,13 +147,15 @@ export default function InviteAcceptPage() {
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
             <Clock className="mx-auto h-12 w-12 text-warning" />
+            {/* Used before expired: an invite that is both was already accepted, and
+                the accept route checks `consumedAt` first too (#597). */}
             <CardTitle className="mt-3">
-              {invite.expired ? "Invitation Expired" : "Invitation Used"}
+              {invite.consumed ? "Invitation Used" : "Invitation Expired"}
             </CardTitle>
             <CardDescription>
-              {invite.expired
-                ? "This invitation has expired. Please ask the workspace admin for a new one."
-                : "This invitation has already been accepted."}
+              {invite.consumed
+                ? "This invitation has already been accepted."
+                : "This invitation has expired. Please ask the workspace admin for a new one."}
             </CardDescription>
           </CardHeader>
           <CardContent className="text-center">
@@ -188,7 +194,7 @@ export default function InviteAcceptPage() {
             Accept invitation
           </Button>
           <p className="text-center text-xs text-muted-foreground">
-            Expires: {invite ? new Date(invite.expiresAt).toLocaleDateString() : "—"}
+            Expires: {invite?.expiresAt ? new Date(invite.expiresAt).toLocaleDateString() : "—"}
           </p>
         </CardContent>
       </Card>

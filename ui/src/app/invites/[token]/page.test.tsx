@@ -7,7 +7,9 @@
  * page that showed the gone state for every invite would fail it.
  *
  * #597 — an expired or used invite now gets the same withholding, so the page
- * must explain those reasons from the flags alone, with no workspace or inviter.
+ * must explain those reasons from the flags alone: no workspace, inviter, email,
+ * role or expiry. An invite that is both expired and used reads as used, matching
+ * the accept route, which checks `consumedAt` first.
  */
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,17 +36,25 @@ function stubValidate(data: Record<string, unknown>) {
   return fetchMock;
 }
 
-describe("InviteAcceptPage (#579)", () => {
+/** What the validate route returns for any invalid invite: reason flags only (#579, #597). */
+const withheld = {
+  valid: false,
+  workspace: null,
+  invitedBy: null,
+  email: null,
+  role: null,
+  expiresAt: null,
+};
+
+describe("InviteAcceptPage — deleted-workspace, expired and used invites (#579, #597)", () => {
   beforeEach(() => push.mockReset());
   afterEach(() => vi.unstubAllGlobals());
 
   it("shows the gone state, with no accept button, for a deleted workspace", async () => {
     const fetchMock = stubValidate({
       ...base,
-      valid: false,
+      ...withheld,
       workspaceDeleted: true,
-      workspace: null,
-      invitedBy: null,
     });
     render(<InviteAcceptPage />);
 
@@ -73,21 +83,30 @@ describe("InviteAcceptPage (#579)", () => {
   it.each([
     ["an expired", { expired: true, consumed: false }, "Invitation Expired", /has expired/],
     ["a used", { expired: false, consumed: true }, "Invitation Used", /already been accepted/],
+    // Used wins over expired, as in `POST /invites/:token/accept`, which checks
+    // `consumedAt` first and answers "already been used".
+    [
+      "an expired and used",
+      { expired: true, consumed: true },
+      "Invitation Used",
+      /already been accepted/,
+    ],
   ] as const)(
-    "#597 — explains %s invite with the workspace and inviter withheld",
+    "#597 — explains %s invite with everything but the reason withheld",
     async (_label, flags, title, description) => {
       stubValidate({
         ...base,
+        ...withheld,
         ...flags,
-        valid: false,
         workspaceDeleted: false,
-        workspace: null,
-        invitedBy: null,
       });
       render(<InviteAcceptPage />);
 
       expect(await screen.findByText(title)).toBeInTheDocument();
       expect(screen.getByText(description)).toBeInTheDocument();
+      expect(
+        screen.queryByText(title === "Invitation Used" ? "Invitation Expired" : "Invitation Used"),
+      ).toBeNull();
       expect(screen.queryByRole("button", { name: /accept invitation/i })).toBeNull();
       expect(screen.queryByText(/invited you to join/)).toBeNull();
       expect(screen.queryByText("Workspace No Longer Exists")).toBeNull();

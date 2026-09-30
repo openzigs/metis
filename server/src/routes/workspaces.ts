@@ -487,7 +487,8 @@ export function workspacesRouter(): Router {
 
     // This route is public. A token that can no longer be accepted (expired, used,
     // or its workspace deleted) must not keep disclosing who invited whom to what
-    // (#579, #597): withhold both, keeping the reason flags so the page can explain.
+    // (#579, #597): withhold the workspace, inviter, invitee email, role and expiry,
+    // keeping only the reason flags, which are all the page's invalid states read.
     res.json(
       ok({
         valid,
@@ -496,9 +497,9 @@ export function workspacesRouter(): Router {
         workspaceDeleted,
         workspace: valid ? workspace : null,
         invitedBy: valid ? invite.invitedBy.displayName : null,
-        email: invite.email,
-        role: invite.role,
-        expiresAt: invite.expiresAt,
+        email: valid ? invite.email : null,
+        role: valid ? invite.role : null,
+        expiresAt: valid ? invite.expiresAt : null,
       }),
     );
   });
