@@ -8,12 +8,15 @@
  *  - progress/message are carried and preserved across transitions,
  *  - `jobKindLabel` maps known kinds and gracefully title-cases unknown ones.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { JobKind, JobLifecycleEvent } from "@metis/shared";
+import { useJobLifecycle } from "@/hooks/use-job-events";
 import {
   useActiveJobs,
+  useFollowJobs,
   applyJobLifecycleEvent,
+  REPLAY_WAIT_MS,
   jobKindLabel,
   __resetActiveJobsForTests,
 } from "@/hooks/use-active-jobs";
@@ -24,6 +27,7 @@ type Handler = (data: unknown) => void;
 function makeFakeSocket() {
   const handlers = new Map<string, Set<Handler>>();
   const socket = {
+    connected: true,
     emit: vi.fn(),
     on: vi.fn((name: string, fn: Handler) => {
       if (!handlers.has(name)) handlers.set(name, new Set());
@@ -173,5 +177,91 @@ describe("jobKindLabel", () => {
 
   it("title-cases an unknown future kind without a code edit", () => {
     expect(jobKindLabel("brand-new-kind" as JobKind)).toBe("Brand New Kind");
+  });
+});
+
+/**
+ * #430 — a followed job the server's replay cannot account for (API restart, or
+ * evicted from the 500-job replay cache) stops counting as running.
+ */
+describe("useFollowJobs", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const follow = (ids: string[]) =>
+    renderHook(() => {
+      useFollowJobs(ids);
+      return useActiveJobs();
+    });
+
+  it("subscribes to each job's room", () => {
+    applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+    follow(["job-1"]);
+    expect(fake.socket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-1" });
+  });
+
+  it("forgets a job when no replay arrives in time", () => {
+    applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+    const { result } = follow(["job-1"]);
+    act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS - 1));
+    expect(result.current).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current).toHaveLength(0);
+  });
+
+  it("keeps a job whose replay says it is still running", () => {
+    applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+    const { result } = follow(["job-1"]);
+    act(() => fake.fire("job:lifecycle", lifecycle({ kind: "repo-ingest", status: "progress" })));
+    act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS * 2));
+    expect(result.current.map((j) => j.jobId)).toEqual(["job-1"]);
+  });
+
+  it("forgets only the followed jobs that heard nothing", () => {
+    applyJobLifecycleEvent(lifecycle({ jobId: "a", ts: 1 }));
+    applyJobLifecycleEvent(lifecycle({ jobId: "b", ts: 2 }));
+    const { result } = follow(["a", "b"]);
+    act(() => fake.fire("job:lifecycle", lifecycle({ jobId: "b", status: "progress" })));
+    act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS));
+    expect(result.current.map((j) => j.jobId)).toEqual(["b"]);
+  });
+
+  it("starts the clock only once the socket connects", () => {
+    fake.socket.connected = false;
+    applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+    const { result } = follow(["job-1"]);
+    act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS * 2));
+    expect(result.current).toHaveLength(1);
+    act(() => fake.fire("connect", undefined));
+    act(() => fake.fire("connect", undefined)); // a second connect does not restart it
+    act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS));
+    expect(result.current).toHaveLength(0);
+  });
+
+  it("does nothing, and forgets nothing, with no jobs to follow", () => {
+    applyJobLifecycleEvent(lifecycle({}));
+    const { result } = follow([]);
+    act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS));
+    expect(fake.socket.emit).not.toHaveBeenCalled();
+    expect(result.current).toHaveLength(1);
+  });
+
+  it("cancels the clock and releases the rooms on unmount", () => {
+    applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+    const { unmount } = follow(["job-1"]);
+    unmount();
+    act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS));
+    const { result } = renderHook(() => useActiveJobs());
+    expect(result.current).toHaveLength(1);
+    expect(fake.socket.emit).toHaveBeenCalledWith("unsubscribe:job", { jobId: "job-1" });
+  });
+
+  it("leaves another follower of the same job in the room on unmount", () => {
+    const other = renderHook(() => useJobLifecycle("job-1"));
+    const { unmount } = follow(["job-1"]);
+    unmount();
+    expect(fake.socket.emit).not.toHaveBeenCalledWith("unsubscribe:job", expect.anything());
+    other.unmount();
+    expect(fake.socket.emit).toHaveBeenCalledWith("unsubscribe:job", { jobId: "job-1" });
   });
 });

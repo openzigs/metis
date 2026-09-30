@@ -21,6 +21,7 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { DocSectionProgressEvent, JobKind, JobLifecycleEvent } from "@metis/shared";
 import { useSocket } from "@/lib/socket-client";
+import { joinJobRoom } from "@/lib/job-rooms";
 import { queryKeys } from "@/lib/query-keys";
 import { impactAnalysisKeys } from "@/lib/impact-analysis-hooks";
 
@@ -34,13 +35,13 @@ export function useJobLifecycle(jobId: string | null | undefined): JobLifecycleE
 
   useEffect(() => {
     if (!socket || !jobId) return;
-    socket.emit("subscribe:job", { jobId });
+    const leave = joinJobRoom(socket, jobId);
     const onLifecycle = (data: JobLifecycleEvent) => {
       if (data.jobId === jobId) setEvent(data);
     };
     socket.on("job:lifecycle" as never, onLifecycle as never);
     return () => {
-      socket.emit("unsubscribe:job", { jobId });
+      leave();
       socket.off("job:lifecycle" as never, onLifecycle as never);
     };
   }, [socket, jobId]);
@@ -60,14 +61,14 @@ export function useDocSectionProgress(
       setSections({});
       return;
     }
-    socket.emit("subscribe:job", { jobId });
+    const leave = joinJobRoom(socket, jobId);
     const onSection = (data: DocSectionProgressEvent) => {
       if (data.jobId !== jobId) return;
       setSections((prev) => ({ ...prev, [data.section]: data }));
     };
     socket.on("job:doc-section" as never, onSection as never);
     return () => {
-      socket.emit("unsubscribe:job", { jobId });
+      leave();
       socket.off("job:doc-section" as never, onSection as never);
     };
   }, [socket, jobId]);

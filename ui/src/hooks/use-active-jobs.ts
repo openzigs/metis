@@ -27,6 +27,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { JobKind, JobLifecycleEvent } from "@metis/shared";
 import { useSocket } from "@/lib/socket-client";
+import { joinJobRoom } from "@/lib/job-rooms";
 
 /** A single in-flight job tracked for the global indicator. */
 export interface ActiveJob {
@@ -170,10 +171,31 @@ export function useActiveJobs(): ActiveJob[] {
 }
 
 /**
+ * #430 — how long `useFollowJobs` waits, once the socket is connected, for a
+ * followed job's replay. The server remembers only the last 500 jobs and only in
+ * memory, so an API restart or an eviction means no replay ever comes; without a
+ * bound the stale `started` entry read as running until a page reload.
+ */
+export const REPLAY_WAIT_MS = 15_000;
+
+/**
+ * Drop a job the store can no longer account for. A later `started`/`progress`
+ * event for it still re-adds it through `applyJobLifecycleEvent`.
+ */
+export function forgetActiveJob(jobId: string): void {
+  if (activeJobs.delete(jobId)) emitChange();
+}
+
+/**
  * #273 — join each job's room so the server replays its last transition. A job
  * put into the store by the surface that started it (the New-project wizard)
  * may have ended before this page joined any room; the replay reaches the
  * `useActiveJobs` listener, which drops a terminal job from the store.
+ *
+ * #430 — a job that hears nothing within `REPLAY_WAIT_MS` of the socket being
+ * connected is forgotten: the server has no record of it, so nothing would ever
+ * end it. Rooms are joined through `joinJobRoom`, so unmounting here leaves
+ * other followers of the same job on this socket in the room.
  */
 export function useFollowJobs(jobIds: readonly string[]): void {
   const socket = useSocket();
@@ -181,9 +203,30 @@ export function useFollowJobs(jobIds: readonly string[]): void {
   useEffect(() => {
     if (!socket || !key) return;
     const ids = key.split(",");
-    for (const jobId of ids) socket.emit("subscribe:job", { jobId });
+    const heard = new Set<string>();
+    const onLifecycle = (data: JobLifecycleEvent) => {
+      if (data) heard.add(data.jobId);
+    };
+    socket.on("job:lifecycle" as never, onLifecycle as never);
+    const leaves = ids.map((jobId) => joinJobRoom(socket, jobId));
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startClock = () => {
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        for (const jobId of ids) if (!heard.has(jobId)) forgetActiveJob(jobId);
+      }, REPLAY_WAIT_MS);
+    };
+    // Emits made before the socket connects are buffered, so the replay cannot
+    // arrive until it has; start the clock then, not on mount.
+    if (socket.connected) startClock();
+    else socket.on("connect" as never, startClock as never);
+
     return () => {
-      for (const jobId of ids) socket.emit("unsubscribe:job", { jobId });
+      clearTimeout(timer);
+      socket.off("job:lifecycle" as never, onLifecycle as never);
+      socket.off("connect" as never, startClock as never);
+      for (const leave of leaves) leave();
     };
   }, [socket, key]);
 }
