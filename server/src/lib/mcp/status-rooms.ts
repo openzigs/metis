@@ -9,8 +9,9 @@
  * - A `scope: "project"` server (#353) follows `assertProjectAccess`
  *   (`lib/custom-agents/authz.ts`): its events go to the room of the project's
  *   workspace — joined only by subscribers with a live membership of that
- *   workspace, read at subscribe time (#562) — and to the admins' room. A legacy project with no workspace is
- *   open to every authenticated user, so its events go to the shared room. An
+ *   workspace, read at subscribe time (#562) — and to the admins' room. A
+ *   legacy project with no workspace is open to every authenticated user, so
+ *   its events go to the shared room. An
  *   unknown project, a project server with no project id, or a failed lookup
  *   reaches admins only (fail closed).
  *

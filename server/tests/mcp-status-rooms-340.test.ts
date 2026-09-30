@@ -15,12 +15,13 @@ import http from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
 
-// #562 — holds u-slow's membership lookup open until a test releases it.
-const slowMembership = vi.hoisted(() => {
-  const d = { promise: Promise.resolve(), release: () => {} };
-  d.promise = new Promise<void>((resolve) => (d.release = resolve));
-  return d;
-});
+// #562 — holds u-slow's membership lookup open until the race test releases
+// it. The race test creates the gate per attempt, never here: server vitest
+// has `retry: 2`, and a module-scoped one-shot gate would already be open on a
+// retry, so the retry would no longer exercise the race.
+const slowMembership = vi.hoisted(() => ({
+  gate: null as { promise: Promise<void>; release: () => void } | null,
+}));
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -37,7 +38,8 @@ vi.mock("../src/lib/prisma.js", () => ({
         async ({ where }: { where: { userId: string; workspace?: { deletedAt: null } } }) => {
           if (where.userId === "u-db-down") throw new Error("db down");
           if (where.userId === "u-slow") {
-            await slowMembership.promise;
+            if (!slowMembership.gate) throw new Error("u-slow lookup without a gate");
+            await slowMembership.gate.promise;
             return [{ workspaceId: "ws1" }];
           }
           const rows = [
@@ -69,6 +71,7 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+import { prisma } from "../src/lib/prisma.js";
 import { createSocketServer, type MetisIOServer } from "../src/lib/socket/server.js";
 import { issueTokens } from "../src/lib/auth/jwt.js";
 import { bootstrapMCP, type MCPBootstrap } from "../src/lib/mcp/index.js";
@@ -124,6 +127,11 @@ afterEach(() => {
 
 const roomHas = (room: string, sid: string) =>
   io.sockets.adapter.rooms.get(room)?.has(sid) ?? false;
+
+/** A server socket as seen by a test that adds an acked event of its own. */
+interface BarrierSocket {
+  on(event: string, listener: (ack: () => void) => void): void;
+}
 
 async function subscribe(
   userId: string,
@@ -578,6 +586,16 @@ describe("#562 mcp:status — workspace rooms come from live memberships, not th
   });
 
   it("an unsubscribe that lands while the membership lookup is pending wins", async () => {
+    // A fresh gate per attempt, so a retry re-runs the race rather than
+    // meeting a lookup that has already resolved.
+    let release!: () => void;
+    const gate = { promise: new Promise<void>((r) => (release = r)), release: () => release() };
+    slowMembership.gate = gate;
+    const findMany = vi.mocked(prisma.workspaceMember.findMany);
+    const slowLookups = () =>
+      findMany.mock.calls.filter(([args]) => args?.where?.userId === "u-slow").length;
+    const slowLookupsBefore = slowLookups();
+
     const { accessToken } = issueTokens({
       userId: "u-slow",
       username: "u-slow",
@@ -597,14 +615,27 @@ describe("#562 mcp:status — workspace rooms come from live memberships, not th
       socket.on("connect_error", reject);
     });
     const sid = socket.id!;
+    // A test-only acked event on this socket's SERVER side. Socket.IO delivers
+    // one connection's packets in order (never across connections), so its ack
+    // proves the server has run the subscribe:mcp and unsubscribe:mcp handlers
+    // sent before it on the same socket.
+    const serverSocket = io.sockets.sockets.get(sid);
+    expect(serverSocket).toBeDefined();
+    (serverSocket as unknown as BarrierSocket).on("test:barrier", (ack) => ack());
+
     socket.emit("subscribe:mcp");
     socket.emit("unsubscribe:mcp");
-    // A later subscribe from another socket proves both events were handled.
-    const probe = await subscribe("u-probe562", "coordinator");
-    slowMembership.release();
-    await slowMembership.promise;
-    await vi.waitFor(() => expect(roomHas(MCP_STATUS_ROOM, probe.sid)).toBe(true));
-    await new Promise((r) => setTimeout(r, 50));
+    await socket.timeout(2000).emitWithAck("test:barrier");
+
+    // The subscribe's lookup is in flight and held open: the race is set up.
+    expect(slowLookups()).toBe(slowLookupsBefore + 1);
+    expect(roomHas(MCP_STATUS_ROOM, sid)).toBe(false);
+
+    gate.release();
+    // From the lookup resolving to a join is microtasks only (the in-memory
+    // adapter joins synchronously), so after one macrotask turn a stale
+    // subscribe would already have joined.
+    await new Promise<void>((r) => setImmediate(r));
     expect(roomHas(MCP_STATUS_ROOM, sid)).toBe(false);
     expect(roomHas(mcpStatusWorkspaceRoom("ws1"), sid)).toBe(false);
   });
