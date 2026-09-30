@@ -31,8 +31,9 @@ import { suggestedConnectorCredentialReadRateLimiter } from "../middleware/conne
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { audit } from "../lib/audit/audit-service.js";
-import { getVaultService } from "../lib/vault/vault-service.js";
-import { rotateOrCreate } from "../lib/vault/secret-rotation.js";
+import { type RotationUndo, getVaultService } from "../lib/vault/vault-service.js";
+import { rotateOrCreateUndoable } from "../lib/vault/secret-rotation.js";
+import { undoRotations } from "../lib/vault/secret-retirement.js";
 import {
   createDbConnector,
   deleteDbConnector,
@@ -431,6 +432,8 @@ export function suggestedConnectorsRouter(): Router {
     // differs, rotate. Otherwise create fresh.
     let vaultRef: string | null = null;
     let mutation: "reused" | "rotated" | "created" = "created";
+    // #610 — an in-place rotation, undone if the provision does not land.
+    const undos: RotationUndo[] = [];
     const storedLive =
       !body.password && row.passwordVaultRef
         ? (await prisma.secret.findFirst({
@@ -479,12 +482,18 @@ export function suggestedConnectorsRouter(): Router {
         // 500'd here) create a new one under a label no earlier secret holds. A
         // label fixed by the row id was still held by the secret a failed
         // provision rolled back, so the retry 500'd on `Secret.name`.
-        const written = await rotateOrCreate(vault, row.passwordVaultRef, body.password, {
-          label: `provisioned-cred:project:${projectId}:suggestion:${row.id}`,
-          scope: "project",
-          description: `Provisioned dev DB password from suggestion ${row.id}`,
-          createdById: actorId,
-        });
+        const written = await rotateOrCreateUndoable(
+          vault,
+          row.passwordVaultRef,
+          body.password,
+          {
+            label: `provisioned-cred:project:${projectId}:suggestion:${row.id}`,
+            scope: "project",
+            description: `Provisioned dev DB password from suggestion ${row.id}`,
+            createdById: actorId,
+          },
+          undos,
+        );
         vaultRef = written.id;
         mutation = written.created ? "created" : "rotated";
       }
@@ -544,7 +553,9 @@ export function suggestedConnectorsRouter(): Router {
       // suggestion) cannot end up in a partially-provisioned state.
       //
       // 1. Vault: roll back ONLY when we created it on this request. Reused
-      //    or rotated rows existed before and must survive.
+      //    or rotated rows existed before and must survive; a rotated one
+      //    gets its previous value back (#610) unless the suggestion update
+      //    landed, since the accepted connector then uses the new value.
       // 2. Connector: if step 2 succeeded but step 3 (suggestion update)
       //    failed, soft-delete the orphan so a retry doesn't trip
       //    DB_LABEL_TAKEN. Best-effort — a delete failure is logged but
@@ -555,6 +566,14 @@ export function suggestedConnectorsRouter(): Router {
             vaultRef,
             error: String(cleanupErr),
           });
+        });
+      }
+      if (undos.length > 0 && !suggestionUpdated) {
+        await undoRotations(vault, undos, {
+          actorId,
+          resource: { type: "suggested_connector", id: row.id },
+          projectId,
+          cause: err,
         });
       }
       if (createdConnectorId && !suggestionUpdated) {

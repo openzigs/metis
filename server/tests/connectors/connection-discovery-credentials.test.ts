@@ -86,7 +86,7 @@ vi.mock("../../src/lib/vault/vault-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/vault/vault-service.js")>()),
   getVaultService: () => ({
     create: vaultCreate,
-    rotate: vaultRotate,
+    rotateUndoable: vaultRotate,
     read: vaultRead,
   }),
 }));
