@@ -418,7 +418,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ...(opts.completedAt ? { completedAt: opts.completedAt } : {}),
         },
       });
-    const DAY = 86_400_000;
+    const HOUR = 3_600_000;
+    const DAY = 24 * HOUR;
     /** Just past the retry window: a terminal Task this old can no longer be retried. */
     const expired = () => new Date(Date.now() - TASK_RETRY_WINDOW_MS - DAY);
     /** Just inside it. */
@@ -609,6 +610,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .mocked(audit)
         .mock.calls.map(([e]) => e)
         .filter((e) => e.action === "vault.delete");
+    /** A sweep with the per-secret throttle off, so a just-marked secret is due. */
+    const sweepDue = (now?: Date) => sweepReplacedSecrets(now, { recheckAfterMs: 0 });
 
     it("#591 — a replaced secret that is kept is marked, and its Updated time is untouched", async () => {
       const s = await freshSecret();
@@ -643,7 +646,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await markOf(before.secretId)).toBeInstanceOf(Date);
 
       vi.mocked(audit).mockClear();
-      await sweepReplacedSecrets();
+      await sweepDue();
       // Still inside the window: the sweep leaves it alone.
       expect(await isLive(before.secretId)).toBe(true);
       expect(sweepAudits()).toEqual([]);
@@ -652,7 +655,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         where: { id: task.id },
         data: { completedAt: expired(), updatedAt: expired() },
       });
-      const result = await sweepReplacedSecrets();
+      const result = await sweepDue();
 
       expect(await isLive(before.secretId)).toBe(false);
       expect(result.retired).toContain(before.secretId);
@@ -681,7 +684,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await markOf(before.secretId)).toBeInstanceOf(Date);
 
       vi.mocked(audit).mockClear();
-      const result = await sweepReplacedSecrets();
+      const result = await sweepDue();
 
       expect(await isLive(before.secretId)).toBe(true);
       expect(result.retired).not.toContain(before.secretId);
@@ -692,15 +695,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const s = await freshSecret();
       await webhookTask(s.id, "failed", { completedAt: recent(), updatedAt: recent() });
       await db.secret.update({ where: { id: s.id }, data: { replacedKeptAt: new Date() } });
-      expect((await sweepReplacedSecrets()).retired).not.toContain(s.id);
+      expect((await sweepDue()).retired).not.toContain(s.id);
       const later = new Date(Date.now() + 2 * DAY);
-      expect((await sweepReplacedSecrets(later)).retired).toContain(s.id);
+      expect((await sweepDue(later)).retired).toContain(s.id);
       expect(await isLive(s.id)).toBe(false);
     });
 
     it("#591 — the sweep never touches an unreferenced secret that was not a kept replacement", async () => {
       const s = await freshSecret();
-      await sweepReplacedSecrets();
+      await sweepDue();
       expect(await isLive(s.id)).toBe(true);
     });
 
@@ -711,13 +714,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         where: { id: s.id },
         data: { replacedKeptAt: now, bindingWriteUntil: new Date(now.getTime() + 60_000) },
       });
-      const result = await sweepReplacedSecrets(now);
+      const result = await sweepDue(now);
       expect(await isLive(s.id)).toBe(true);
       expect(result.retired).not.toContain(s.id);
 
       // Once the window has closed it goes.
       await db.secret.update({ where: { id: s.id }, data: { bindingWriteUntil: now } });
-      expect((await sweepReplacedSecrets(now)).retired).toContain(s.id);
+      expect((await sweepDue(now)).retired).toContain(s.id);
       expect(await isLive(s.id)).toBe(false);
     });
 
@@ -725,25 +728,104 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const bad = await freshSecret();
       const good = await freshSecret();
       const now = new Date();
-      for (const id of [bad.id, good.id]) {
-        await db.secret.update({ where: { id }, data: { replacedKeptAt: now } });
-      }
+      // Older than anything an earlier test marked, so `bad` is the first row
+      // the sweep reaches and so the one the injected failure hits.
+      await db.secret.update({
+        where: { id: bad.id },
+        data: { replacedKeptAt: new Date(now.getTime() - 30 * DAY) },
+      });
+      await db.secret.update({
+        where: { id: good.id },
+        data: { replacedKeptAt: new Date(now.getTime() - 30 * DAY + 1_000) },
+      });
       const spy = vi.spyOn(db.secret, "updateMany").mockImplementationOnce(() => {
         // A non-Error throw is reported too.
         throw "db locked";
       });
       try {
-        const result = await sweepReplacedSecrets(now);
-        expect(result.retired).toHaveLength(1);
+        const result = await sweepDue(now);
+        expect(result.retired).toContain(good.id);
+        expect(result.retired).not.toContain(bad.id);
       } finally {
         spy.mockRestore();
       }
-      // Exactly one of the two went; the other is picked up next time.
-      const live = [await isLive(bad.id), await isLive(good.id)];
-      expect(live.filter(Boolean)).toHaveLength(1);
-      await sweepReplacedSecrets(now);
-      expect(await isLive(bad.id)).toBe(false);
+      expect(await isLive(bad.id)).toBe(true);
       expect(await isLive(good.id)).toBe(false);
+      // The failed one was not re-stamped, so the next run picks it up.
+      expect((await sweepDue(now)).retired).toContain(bad.id);
+      expect(await isLive(bad.id)).toBe(false);
+    });
+
+    it("#591 — one run re-checks at most batchSize secrets, oldest mark first", async () => {
+      const now = new Date();
+      const ids: string[] = [];
+      for (const ageDays of [60, 59, 58]) {
+        const s = await freshSecret();
+        await db.secret.update({
+          where: { id: s.id },
+          data: { replacedKeptAt: new Date(now.getTime() - ageDays * DAY) },
+        });
+        ids.push(s.id);
+      }
+      const [oldest, middle, newest] = ids;
+
+      const result = await sweepReplacedSecrets(now, { batchSize: 2 });
+
+      expect(result.checked).toBe(2);
+      expect(result.retired).toEqual(expect.arrayContaining([oldest, middle]));
+      expect(result.retired).not.toContain(newest);
+      expect(await isLive(newest)).toBe(true);
+      // The next run reaches it.
+      expect((await sweepReplacedSecrets(now, { batchSize: 2 })).retired).toContain(newest);
+    });
+
+    it("#591 — a still-referenced secret is re-checked at most once per interval", async () => {
+      const s = await freshSecret();
+      const conn = await db.databaseConnection.create({
+        data: { projectId: "p1", label: uniq("db"), driver: "postgres", secretId: s.id },
+      });
+      const now = new Date();
+      await db.secret.update({
+        where: { id: s.id },
+        data: { replacedKeptAt: new Date(now.getTime() - 2 * HOUR) },
+      });
+
+      // Due, checked, still referenced: kept and re-stamped.
+      expect((await sweepReplacedSecrets(now)).retired).not.toContain(s.id);
+      expect((await markOf(s.id))?.getTime()).toBe(now.getTime());
+
+      // The binding goes. Within the interval the secret is not re-checked...
+      await db.databaseConnection.delete({ where: { id: conn.id } });
+      const soon = new Date(now.getTime() + 30 * 60_000);
+      expect((await sweepReplacedSecrets(soon)).retired).not.toContain(s.id);
+      expect(await isLive(s.id)).toBe(true);
+
+      // ...and once the interval has passed it is, and goes.
+      const later = new Date(now.getTime() + HOUR + 1_000);
+      expect((await sweepReplacedSecrets(later)).retired).toContain(s.id);
+      expect(await isLive(s.id)).toBe(false);
+    });
+
+    it("#591 — the sweep runs once shortly after start, not an interval later", async () => {
+      vi.useFakeTimers();
+      try {
+        const sweep = vi.fn().mockResolvedValue({ checked: 0, retired: [] });
+        const handle = startReplacedSecretSweep(HOUR, sweep, 5_000);
+        await vi.advanceTimersByTimeAsync(4_999);
+        expect(sweep).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(sweep).toHaveBeenCalledTimes(1);
+        handle.stop();
+
+        // Stopped before the first run: it never happens.
+        const other = vi.fn().mockResolvedValue({ checked: 0, retired: [] });
+        startReplacedSecretSweep(HOUR, other, 5_000).stop();
+        await vi.advanceTimersByTimeAsync(2 * HOUR);
+        expect(other).not.toHaveBeenCalled();
+        expect(sweep).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("#591 — the sweep runs on its interval until stopped, and a failed run does not kill it", async () => {

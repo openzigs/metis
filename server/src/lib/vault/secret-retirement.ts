@@ -30,8 +30,9 @@
  * #591 — the check runs once, at replacement time, but one reference it
  * honours is time-bounded (a Task's retry window, #574). A secret kept then is
  * marked `replacedKeptAt`, and {@link sweepReplacedSecrets} — a leader-only
- * interval job ({@link startReplacedSecretSweep}) — re-runs the check on every
- * marked live secret and retires the ones nothing references any more.
+ * interval job ({@link startReplacedSecretSweep}) — re-runs the check on marked
+ * live secrets (a bounded batch, each at most once per interval) and retires
+ * the ones nothing references any more.
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
@@ -282,10 +283,31 @@ export interface ReplacedSecretSweepResult {
   retired: string[];
 }
 
+/** Default sweep cadence: hourly. The retry window is days, so an hour late is nothing. */
+const REPLACED_SECRET_SWEEP_INTERVAL_MS = 60 * 60 * 1_000;
+/** Most marked secrets one run re-checks; the rest wait for a later run, oldest first. */
+const REPLACED_SECRET_SWEEP_BATCH = 100;
+/** Delay before the first run after gaining leadership, so boot is not blocked. */
+const REPLACED_SECRET_SWEEP_INITIAL_DELAY_MS = 60 * 1_000;
+
+export interface ReplacedSecretSweepOptions {
+  /** Most marked secrets to re-check in this run (oldest `replacedKeptAt` first). */
+  batchSize?: number;
+  /** A secret is re-checked only once its `replacedKeptAt` is at least this old. */
+  recheckAfterMs?: number;
+}
+
 /**
- * #591 — re-run the reference check on every replaced secret that was kept
+ * #591 — re-run the reference check on replaced secrets that were kept
  * (`replacedKeptAt` set, still live) and retire the ones nothing references
  * any more, each audited as `vault.delete` by the system.
+ *
+ * Bounded and throttled: a run takes at most `batchSize` secrets, oldest
+ * `replacedKeptAt` first, and only those whose `replacedKeptAt` is at least
+ * `recheckAfterMs` old. A secret found still referenced is re-stamped
+ * `replacedKeptAt = now`, so one kept by a durable binding (a DB connector, an
+ * MCP server) costs one check per interval and goes to the back of the queue.
+ * `replacedKeptAt` therefore reads "last found still referenced".
  *
  * The soft-delete is ONE conditional UPDATE that re-states "still live" and
  * "no binding write in flight" (#552 `bindingWriteUntil`): a write that binds
@@ -293,22 +315,32 @@ export interface ReplacedSecretSweepResult {
  * either the stamp lands first and this delete is refused, or the delete lands
  * first and the binding check no longer finds a live secret.
  *
- * A failure on one secret is logged and the rest still run; it is picked up
- * again on the next run. The marked set is small — only secrets a non-owner's
- * credential write replaced while something still referenced them.
+ * A failure on one secret is logged and the rest still run; it is not
+ * re-stamped, so it is picked up again on the next run.
  */
 export async function sweepReplacedSecrets(
   now: Date = new Date(),
+  {
+    batchSize = REPLACED_SECRET_SWEEP_BATCH,
+    recheckAfterMs = REPLACED_SECRET_SWEEP_INTERVAL_MS,
+  }: ReplacedSecretSweepOptions = {},
 ): Promise<ReplacedSecretSweepResult> {
+  const dueBy = new Date(now.getTime() - recheckAfterMs);
   const rows = await prisma.secret.findMany({
-    where: { replacedKeptAt: { not: null }, deletedAt: null },
+    where: { replacedKeptAt: { lte: dueBy }, deletedAt: null },
     select: { id: true, name: true },
     orderBy: [{ replacedKeptAt: "asc" }, { id: "asc" }],
+    take: batchSize,
   });
   const retired: string[] = [];
   for (const row of rows) {
     try {
-      if (await isSecretReferenced(row.id, row.name, now)) continue;
+      if (await isSecretReferenced(row.id, row.name, now)) {
+        // Throttle: not due again for another interval. Raw SQL so the vault
+        // page's "Updated" is not moved, as in retireReplacedSecret.
+        await prisma.$executeRaw`UPDATE "secrets" SET "replacedKeptAt" = ${now} WHERE "id" = ${row.id} AND "deletedAt" IS NULL`;
+        continue;
+      }
       const { count } = await prisma.secret.updateMany({
         where: {
           id: row.id,
@@ -338,31 +370,35 @@ export async function sweepReplacedSecrets(
   return { checked: rows.length, retired };
 }
 
-/** Default sweep cadence: hourly. The retry window is days, so an hour late is nothing. */
-const REPLACED_SECRET_SWEEP_INTERVAL_MS = 60 * 60 * 1_000;
-
 /**
- * #591 — run {@link sweepReplacedSecrets} every `intervalMs`. A cluster
- * singleton: registered in `SingletonJobs` (server.ts) so it runs on the
- * leader only. Follows the FinOps / revocation lifecycle pattern
+ * #591 — run {@link sweepReplacedSecrets} once `initialDelayMs` after start,
+ * then every `intervalMs`. The first run is not left for a whole interval: a
+ * cluster that restarts or changes leader more often than that would never
+ * sweep. A cluster singleton: registered in `SingletonJobs` (server.ts) so it
+ * runs on the leader only. Follows the FinOps / revocation lifecycle pattern
  * (`setInterval` + `unref` + a handle with `stop()`); a failed run is logged
  * and the timer survives.
  */
 export function startReplacedSecretSweep(
   intervalMs = REPLACED_SECRET_SWEEP_INTERVAL_MS,
   sweep: () => Promise<ReplacedSecretSweepResult> = sweepReplacedSecrets,
+  initialDelayMs = REPLACED_SECRET_SWEEP_INITIAL_DELAY_MS,
 ): { stop(): void } {
-  const timer = setInterval(() => {
+  const run = () => {
     sweep().catch((err: unknown) => {
       log.error("Replaced-secret sweep failed", {
         error: err instanceof Error ? err.message : String(err),
       });
     });
-  }, intervalMs);
+  };
+  const first = setTimeout(run, initialDelayMs);
+  first.unref();
+  const timer = setInterval(run, intervalMs);
   timer.unref();
-  log.info("replaced-secret sweep started", { intervalMs });
+  log.info("replaced-secret sweep started", { intervalMs, initialDelayMs });
   return {
     stop() {
+      clearTimeout(first);
       clearInterval(timer);
       log.info("replaced-secret sweep stopped");
     },

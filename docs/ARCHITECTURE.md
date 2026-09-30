@@ -4418,6 +4418,8 @@ The Vault securely stores sensitive information like API keys, tokens, and passw
 
 In the API, secret names are listed without values — you can see what secrets exist without exposing their contents.
 
+**Retiring replaced secrets (#481, #591).** A non-owner's credential write never rewrites another principal's secret (#358): it creates a fresh one and repoints the connection. `retireReplacedSecret` (`server/src/lib/vault/secret-retirement.ts`) then soft-deletes the old secret, unless `isSecretReferenced` finds a stored reference that could still resolve to it (connector and MCP server bindings, publish batches, BYOK sessions, scheduled jobs, and http-webhook Tasks still inside their retry window, #574). A secret kept for that reason is stamped `secrets.replacedKeptAt` (nullable; SQLite and Postgres migrations `20261008000591_issue591_secret_replaced_kept`). The **replaced-secret sweep** (`startReplacedSecretSweep`) is a leader-only job registered in `SingletonJobs` (`server/src/server.ts`): it runs a minute after gaining leadership, then hourly. Each run re-checks at most 100 marked live secrets, oldest `replacedKeptAt` first, and only those stamped at least an hour ago. A secret still referenced is re-stamped, so one pinned by a durable binding costs one check per hour. An unreferenced one is soft-deleted by a conditional update that refuses while a binding write is in flight (#552 `bindingWriteUntil`), and is audited as `vault.delete` by `system` with `source: "replaced_secret_sweep"`.
+
 ---
 
 ## 16. Real-Time Communication
