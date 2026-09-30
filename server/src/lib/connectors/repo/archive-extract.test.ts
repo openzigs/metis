@@ -24,6 +24,7 @@ import {
   uploadArchiveRoot,
   uploadExtractionRoot,
   cleanupExtraction,
+  removeStoredArchive,
 } from "./archive-extract.js";
 
 const ORIG_ENV = { ...process.env };
@@ -182,5 +183,26 @@ describe("existing extraction behaviour unchanged (regression)", () => {
     await expect(fs.stat(result.dir)).rejects.toThrow();
     // Idempotent: a second cleanup on an already-gone dir is a no-op, not a throw.
     await expect(cleanupExtraction("conn7abc")).resolves.toBeUndefined();
+  });
+
+  it("#492 — removeStoredArchive removes the recorded path, under any root", async () => {
+    const elsewhere = path.join(scratch, "old-root");
+    await fs.mkdir(elsewhere, { recursive: true });
+    const archive = path.join(elsewhere, "conn8abc.zip");
+    await fs.writeFile(archive, "zip");
+    await removeStoredArchive("conn8abc", archive);
+    await expect(fs.stat(archive)).rejects.toMatchObject({ code: "ENOENT" });
+    // A second removal says there was nothing there.
+    await expect(removeStoredArchive("conn8abc", archive)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("#492 — removeStoredArchive refuses a path that is not this connector's archive", async () => {
+    const other = path.join(scratch, "other.zip");
+    await fs.writeFile(other, "keep");
+    await expect(removeStoredArchive("conn9abc", other)).rejects.toThrow(/does not name/);
+    await expect(removeStoredArchive("conn9abc", "conn9abc.zip")).rejects.toThrow(/does not name/);
+    await expect(fs.readFile(other, "utf8")).resolves.toBe("keep");
   });
 });

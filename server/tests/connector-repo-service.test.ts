@@ -418,24 +418,106 @@ describe("Repo connector service — CRUD", () => {
     }
   });
 
-  it("#457/#475 — a unique violation on a non-primary insert reaches the caller as a 409", async () => {
-    // e.g. a racing duplicate label, or one held by a soft-deleted row: the
-    // label is the only caller-chosen unique key.
-    await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
-    const { prisma } = await import("../src/lib/prisma.js");
-    const create = vi.mocked(prisma.repoConnection.create);
-    const insert = create.getMockImplementation()!;
-    create.mockImplementation((async () => {
-      throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
-    }) as never);
-    try {
+  describe("#492 — renaming onto a used label", () => {
+    const make = (label: string) =>
+      createRepoConnector("proj_1", { label, ownerOrOrg: "o", repoName: "r" }, "user_1");
+
+    it("a live connector's label is a 409 and the row keeps its label", async () => {
+      await make("taken");
+      const c = await make("mine");
       await expect(
-        createRepoConnector("proj_1", { label: "b", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+        updateRepoConnector("proj_1", c.id, { label: "taken" }, "user_1"),
       ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
-      expect(create).toHaveBeenCalledTimes(2); // the first create above, then one attempt
-    } finally {
-      create.mockImplementation(insert);
-    }
+      expect(rows.get(c.id)?.label).toBe("mine");
+    });
+
+    it("its own label is not a clash", async () => {
+      const c = await make("mine");
+      await expect(
+        updateRepoConnector("proj_1", c.id, { label: "mine" }, "user_1"),
+      ).resolves.toMatchObject({ label: "mine" });
+    });
+
+    it("a rename that loses a race for the label is a 409, not a 500", async () => {
+      const c = await make("mine");
+      const { prisma } = await import("../src/lib/prisma.js");
+      vi.mocked(prisma.repoConnection.update).mockRejectedValueOnce(
+        Object.assign(new Error("Unique constraint failed"), {
+          code: "P2002",
+          meta: { target: "repo_connections_projectId_label_key" },
+        }),
+      );
+      await expect(
+        updateRepoConnector("proj_1", c.id, { label: "raced" }, "user_1"),
+      ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
+    });
+
+    it("an update that fails on another constraint is rethrown as it is", async () => {
+      const c = await make("mine");
+      const { prisma } = await import("../src/lib/prisma.js");
+      vi.mocked(prisma.repoConnection.update).mockRejectedValueOnce(
+        Object.assign(new Error("Unique constraint failed"), {
+          code: "P2002",
+          meta: { target: "repo_connections_pkey" },
+        }),
+      );
+      await expect(
+        updateRepoConnector("proj_1", c.id, { label: "other" }, "user_1"),
+      ).rejects.toMatchObject({ code: "P2002" });
+    });
+
+    it("an update without a label passes a unique violation through untouched", async () => {
+      const c = await make("mine");
+      const { prisma } = await import("../src/lib/prisma.js");
+      const err = Object.assign(new Error("Unique constraint failed"), {
+        code: "P2002",
+        meta: { target: "repo_connections_projectId_label_key" },
+      });
+      vi.mocked(prisma.repoConnection.update).mockRejectedValueOnce(err);
+      await expect(
+        updateRepoConnector("proj_1", c.id, { defaultBranch: "dev" }, "user_1"),
+      ).rejects.toBe(err);
+    });
+  });
+
+  describe("#492 — a P2002 that names no constraint on a non-primary insert", () => {
+    const shapeless = async () => {
+      const { prisma } = await import("../src/lib/prisma.js");
+      const create = vi.mocked(prisma.repoConnection.create);
+      const insert = create.getMockImplementation()!;
+      create.mockImplementation((async () => {
+        throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+      }) as never);
+      return { create, restore: () => create.mockImplementation(insert) };
+    };
+
+    it("is a 409 when a live row holds the label (a create that lost the race)", async () => {
+      await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
+      const { prisma } = await import("../src/lib/prisma.js");
+      // The pre-check misses the racing row; the post-violation lookup sees it.
+      vi.mocked(prisma.repoConnection.findFirst).mockResolvedValueOnce(null);
+      const { create, restore } = await shapeless();
+      try {
+        await expect(
+          createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+        ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
+        expect(create).toHaveBeenCalledTimes(2); // the first create above, then one attempt
+      } finally {
+        restore();
+      }
+    });
+
+    it("is rethrown as it is when no live row holds the label", async () => {
+      await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
+      const { restore } = await shapeless();
+      try {
+        await expect(
+          createRepoConnector("proj_1", { label: "b", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+        ).rejects.toMatchObject({ code: "P2002" });
+      } finally {
+        restore();
+      }
+    });
   });
 
   describe("#475 — which P2002 is a label clash", () => {

@@ -122,6 +122,21 @@ export async function removeUploadedArchive(connectorId: string): Promise<void> 
 }
 
 /**
+ * #492 — remove a connector's archive at the path recorded when it was stored,
+ * which may lie under an earlier `uploadArchiveRoot()`. Throws `ENOENT` when
+ * there is nothing there, so the caller can say so. Only a file named for this
+ * connector is removed: the path comes from the database, and a row that names
+ * any other file is refused rather than trusted.
+ */
+export async function removeStoredArchive(connectorId: string, archivePath: string): Promise<void> {
+  if (!path.isAbsolute(archivePath) || path.basename(archivePath) !== `${connectorId}.zip`) {
+    throw new Error("stored archive path does not name this connector's archive");
+  }
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `archivePath` is the path storeUploadedArchive() recorded, and is checked above to be an absolute path to `<connectorId>.zip` (a server-generated id).
+  await fs.rm(archivePath);
+}
+
+/**
  * Extract a stored archive (by path) into a FRESH extraction directory for the
  * given connector, enforcing all zip-slip / zip-bomb guards and the source
  * extension filter. The caller owns cleanup of the returned `dir`.

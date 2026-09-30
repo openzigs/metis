@@ -72,6 +72,17 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+const repoLog = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock("../src/lib/logger.js", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../src/lib/logger.js")>();
+  return {
+    ...orig,
+    createChildLogger: (name: string) => {
+      const real = orig.createChildLogger(name);
+      return name === "repo-service" ? { ...real, ...repoLog } : real;
+    },
+  };
+});
 vi.mock("../src/lib/vault/vault-service.js", () => ({ getVaultService: vi.fn() }));
 
 import {
@@ -267,6 +278,44 @@ describe("createUploadRepoConnector + resolveNonGitIngestRoot", () => {
     expect(await fs.readdir(process.env.UPLOAD_ARCHIVE_DIR!)).toEqual([`${kept.id}.zip`]);
   });
 
+  it("#492 — delete removes the archive at the stored path after the root moved", async () => {
+    const created = await createUploadRepoConnector("proj_1", "moved", await zipBuf(), "user_1");
+    const archive = rows.get(created.id)!.uploadPath!;
+    process.env.UPLOAD_ARCHIVE_DIR = path.join(tmp, "archives-elsewhere");
+    await fs.mkdir(process.env.UPLOAD_ARCHIVE_DIR, { recursive: true });
+    // A same-named file under the CURRENT root is not this connector's archive.
+    const decoy = path.join(process.env.UPLOAD_ARCHIVE_DIR, `${created.id}.zip`);
+    await fs.writeFile(decoy, "decoy");
+
+    await deleteRepoConnector("proj_1", created.id, "user_1");
+
+    await expect(fs.access(archive)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(decoy, "utf8")).resolves.toBe("decoy");
+    expect(repoLog.warn).not.toHaveBeenCalled();
+  });
+
+  it("#492 — delete removes the connector's extraction directory", async () => {
+    const created = await createUploadRepoConnector("proj_1", "ext", await zipBuf(), "user_1");
+    const { path: dir } = await resolveNonGitIngestRoot("proj_1", created.id);
+    await expect(fs.access(dir)).resolves.toBeUndefined();
+
+    await deleteRepoConnector("proj_1", created.id, "user_1");
+
+    await expect(fs.access(dir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("#492 — delete logs when the stored archive is already gone", async () => {
+    const created = await createUploadRepoConnector("proj_1", "gone2", await zipBuf(), "user_1");
+    const uploadPath = rows.get(created.id)!.uploadPath!;
+    await fs.rm(uploadPath);
+
+    await expect(deleteRepoConnector("proj_1", created.id, "user_1")).resolves.toBeUndefined();
+
+    expect(repoLog.warn).toHaveBeenCalledTimes(1);
+    expect(repoLog.warn.mock.calls[0]?.[0]).toMatch(/no archive at its stored path/);
+    expect(repoLog.warn.mock.calls[0]?.[1]).toEqual({ connectorId: created.id, uploadPath });
+  });
+
   it("#475 — an archive that cannot be removed does not fail the delete", async () => {
     const created = await createUploadRepoConnector("proj_1", "stuck", await zipBuf(), "user_1");
     // A non-empty directory at the archive path makes the removal throw.
@@ -277,6 +326,8 @@ describe("createUploadRepoConnector + resolveNonGitIngestRoot", () => {
 
     await expect(deleteRepoConnector("proj_1", created.id, "user_1")).resolves.toBeUndefined();
     expect(rows.get(created.id)?.deletedAt).toBeInstanceOf(Date);
+    expect(repoLog.warn).toHaveBeenCalledTimes(1);
+    expect(repoLog.warn.mock.calls[0]?.[0]).toMatch(/Failed to remove/);
   });
 
   it("resolveNonGitIngestRoot for a local connector returns realpath + boundary", async () => {

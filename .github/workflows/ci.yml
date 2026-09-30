@@ -767,6 +767,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration repo-primary-postgres
 
+      # Issue #492 — the partial (live-rows-only) repo label index on real
+      # Postgres: delete-then-re-add under one label succeeds, a rename onto a
+      # live label is a 409 through the real router, including a lost race.
+      - name: Prove repo connector label reuse and rename clash on real Postgres
+        working-directory: server
+        run: pnpm test:integration repo-connector-labels-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing
