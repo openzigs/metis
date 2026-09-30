@@ -22,7 +22,6 @@
  */
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
 import { projectsApi, type Project } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useAppMutation } from "@/lib/use-app-mutation";
@@ -62,7 +61,6 @@ export interface ProjectCreateFormProps {
 }
 
 export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormProps) {
-  const qc = useQueryClient();
   const router = useRouter();
 
   const [name, setName] = useState("");
@@ -122,7 +120,6 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
     successMessage: "Project created",
     invalidateKeys: [queryKeys.projects.all],
     onSuccess: (project) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.projects.all });
       setName("");
       setSlug("");
       setSlugEdited(false);
