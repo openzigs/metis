@@ -26,7 +26,7 @@ import { auditMcpEvent } from "../audit/mcp-audit.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { expandVaultRefs, type VaultRefMapKind } from "../vault/env-manager.js";
-import { bindSecretRefs, parseSecretBindings } from "../vault/bound-secret.js";
+import { bindSecretRefs, parseSecretBindings, type SecretBindings } from "../vault/bound-secret.js";
 import { mcpRefs, unboundMcpRefs } from "./secret-binding.js";
 import { getVaultService } from "../vault/vault-service.js";
 import type { MCPLifecycleManager } from "./lifecycle-manager.js";
@@ -118,6 +118,12 @@ interface ActorLite {
 export interface CreateMCPOptions {
   /** Curated registration source — required when MCP_REQUIRE_CATALOG is on. */
   source?: RegistrationSource | null;
+  /**
+   * #577 — the secret ids the caller's binding check approved (and any the
+   * request itself vaulted). A reference listed here is bound to that id, not
+   * resolved again.
+   */
+  secretBindings?: SecretBindings;
 }
 
 export function normalizeRuntimeForConfig(input: {
@@ -270,7 +276,10 @@ export class MCPRegistryService {
     // #480 — bind every env/header vault reference to the secret id it
     // resolves to now; the server is started from those ids only.
     const secretBindings = JSON.stringify(
-      await bindSecretRefs(mcpRefs(input.env ?? null, input.headers ?? null)),
+      await bindSecretRefs(
+        mcpRefs(input.env ?? null, input.headers ?? null),
+        options.secretBindings ?? null,
+      ),
     );
     if (scope === "user") {
       return this.withUserLock(actor.id, () =>
@@ -412,6 +421,8 @@ export class MCPRegistryService {
      * now depends on it.
      */
     onLanded?: () => void,
+    /** #577 — the ids the route's binding check approved; bound as checked. */
+    checkedBindings?: SecretBindings | null,
   ): Promise<MCPServerView> {
     const existing = await prisma.mCPServer.findFirst({ where: { id, deletedAt: null } });
     if (!existing) {
@@ -453,7 +464,7 @@ export class MCPRegistryService {
             nextEnv as Record<string, string> | null,
             nextHeaders as Record<string, string> | null,
           ),
-          parseSecretBindings(existing.secretBindings),
+          withChecked(parseSecretBindings(existing.secretBindings), checkedBindings),
         ),
       );
     }
@@ -499,6 +510,8 @@ export class MCPRegistryService {
     id: string,
     actor: ActorLite,
     expectedUpdatedAt: Date | null,
+    /** #577 — the ids the route's binding check approved; bound as checked. */
+    checkedBindings?: SecretBindings | null,
   ): Promise<MCPServerView> {
     const existing = await prisma.mCPServer.findFirst({ where: { id, deletedAt: null } });
     if (!existing) {
@@ -512,7 +525,7 @@ export class MCPRegistryService {
         parseObject<Record<string, string>>(existing.envJson),
         parseObject<Record<string, string>>(existing.headers),
       ),
-      parseSecretBindings(existing.secretBindings),
+      withChecked(parseSecretBindings(existing.secretBindings), checkedBindings),
     );
     const { count } = await prisma.mCPServer.updateMany({
       where: { id, updatedAt: expectedUpdatedAt },
@@ -1051,6 +1064,18 @@ interface McpRow {
   createdAt: Date;
   updatedAt: Date;
   deletedAt: Date | null;
+}
+
+/**
+ * #577 — the bindings a write keeps: the stored ones, overlaid with the ids the
+ * route's check approved. `null` (a pre-#480 row, no check) stays `null`.
+ */
+function withChecked(
+  stored: SecretBindings | null,
+  checked: SecretBindings | null | undefined,
+): SecretBindings | null {
+  if (!checked) return stored;
+  return Object.assign(Object.create(null) as SecretBindings, stored, checked);
 }
 
 function parseStringArray(json: string | null): string[] | null {

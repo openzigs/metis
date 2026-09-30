@@ -125,18 +125,30 @@ export function candidateFilters(ref: string): Array<Record<string, unknown>> {
   return out;
 }
 
+/** A live secret row as the check and the binding read it. */
+export interface CandidateSecret {
+  id: string;
+  name: string;
+  createdById: string | null;
+}
+
 /**
- * Every live secret each reference body could resolve to, by id or by label —
- * one read of the secret table per write, however many references it names,
- * filtered to the rows those references could name.
+ * Every live secret any of `refs` could resolve to, by id or by label — one
+ * read of the secret table, filtered to the rows those references could name.
+ * The ownership check and the #480 binding both judge these rows, so a caller
+ * that needs both reads once (#577).
  */
-async function secretsReachableBy(refs: string[]): Promise<Map<string, SecretOwner[]>> {
-  const out = new Map<string, SecretOwner[]>();
-  if (refs.length === 0) return out;
-  const rows = await prisma.secret.findMany({
+export async function readCandidateSecrets(refs: string[]): Promise<CandidateSecret[]> {
+  if (refs.length === 0) return [];
+  return prisma.secret.findMany({
     where: { deletedAt: null, OR: refs.flatMap(candidateFilters) },
     select: { id: true, name: true, createdById: true },
   });
+}
+
+/** Each reference body → the rows it reaches among `rows`. */
+function reachableIn(refs: string[], rows: CandidateSecret[]): Map<string, SecretOwner[]> {
+  const out = new Map<string, SecretOwner[]>();
   for (const ref of refs) {
     out.set(
       ref,
@@ -144,6 +156,11 @@ async function secretsReachableBy(refs: string[]): Promise<Map<string, SecretOwn
     );
   }
   return out;
+}
+
+/** One read of the secret table per write, however many references it names. */
+async function secretsReachableBy(refs: string[]): Promise<Map<string, SecretOwner[]>> {
+  return reachableIn(refs, await readCandidateSecrets(refs));
 }
 
 /**
@@ -195,11 +212,30 @@ export async function assertSecretBindingAllowed(
   ctx: SecretBindingContext,
 ): Promise<void> {
   if (hasPermission(user.role, "vault.reveal")) return;
+  if (change.after.length === 0) return;
+  const refs = [...new Set([...change.before, ...change.after])];
+  judgeSecretBinding(user, change, ctx, await readCandidateSecrets(refs));
+}
+
+/**
+ * The #344 rule of {@link assertSecretBindingAllowed}, judged against rows the
+ * caller has already read ({@link readCandidateSecrets} over `before` ∪
+ * `after`), so the same rows can then be bound (#577). The `vault.reveal`
+ * exemption is the caller's to apply.
+ *
+ * @throws AppError 403 SECRET_BINDING_FORBIDDEN, audited.
+ */
+export function judgeSecretBinding(
+  user: Pick<AuthPayload, "userId">,
+  change: SecretBindingChange,
+  ctx: SecretBindingContext,
+  rows: CandidateSecret[],
+): void {
   const after = [...new Set(change.after)];
   if (after.length === 0) return;
 
   const before = [...new Set(change.before)];
-  const reachableBy = await secretsReachableBy([...new Set([...before, ...after])]);
+  const reachableBy = reachableIn([...new Set([...before, ...after])], rows);
   const boundIds = new Set<string>();
   for (const ref of before) {
     for (const s of reachableBy.get(ref) ?? []) boundIds.add(s.id);
