@@ -574,6 +574,45 @@ export function describeConditionalBindingUpdates(opts: {
         await expectConcurrentWithdrawals(added(secretsEvery, await everyCoordSecret()));
       });
 
+      it("#495 — a PATCH that rotated the row's own secret in place and then lost the race does not withdraw it", async () => {
+        // Seeded and PATCHed by the same owner, so `rotateOrCreate` rotates the
+        // row's existing secret instead of creating one: the id is the one the
+        // row already names, and withdrawing it would leave the row unreadable.
+        const id = await create();
+        const before = await row(id);
+        const ownId = (JSON.parse(before.authConfigJson ?? "{}") as { bearerTokenRef?: string })
+          .bearerTokenRef;
+        expect(ownId, "the seeded row names no bearer-token secret").toBeTruthy();
+        const secretId = ownId!.replace(/^\$\{vault:(.+)\}$/, "$1");
+        const vault = getVaultService();
+        const realRotate = vault.rotate.bind(vault);
+        let a: request.Response | undefined;
+        let rotated = 0;
+        vi.spyOn(vault, "rotate").mockImplementation(async (...args) => {
+          const result = await realRotate(...args);
+          rotated += 1;
+          if (!a) a = await call("patch", url(id), ADMIN, { label: `a-${next()}` });
+          return result;
+        });
+        const createSpy = vi.mocked(vault.create);
+        createSpy.mockClear();
+        const b = await call("patch", url(id), ADMIN, {
+          auth: { kind: "zephyr", bearerToken: "admin-rotated-495" },
+        });
+        expect(rotated, "B did not rotate the row's secret in place").toBeGreaterThan(0);
+        expect(createSpy, "B created a secret instead of rotating").not.toHaveBeenCalled();
+        expect(a?.status, JSON.stringify(a?.body)).toBe(200);
+        expect(b.status, JSON.stringify(b.body)).toBe(409);
+        expect(b.body.error.code).toBe(CONFLICT);
+        // The row still names its own secret, which is live and readable.
+        const after = await row(id);
+        expect(after.authConfigJson).toBe(before.authConfigJson);
+        const secret = await db.secret.findUniqueOrThrow({ where: { id: secretId } });
+        expect(secret.deletedAt).toBeNull();
+        await expect(vault.read(secretId)).resolves.toBeTruthy();
+        expect(await withdrawalAudits([secretId])).toEqual([]);
+      });
+
       it("#495 — a failure after the write has landed keeps the secret the row now names", async () => {
         const id = await create();
         const before = await row(id);
