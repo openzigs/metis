@@ -175,15 +175,30 @@ function footnoteEnd(lines: string[], fenced: boolean[], start: number): number 
 
 /**
  * Where the link definition starting at line `start` ends (exclusive), as the
- * parser reads it (label, destination and title span at most three lines), or
- * `undefined` when the line does not start a valid definition: a bare
- * `[label]:` whose next line is no destination is a paragraph (#522).
+ * parser reads it, or `undefined` when the line does not start a valid
+ * definition: a bare `[label]:` whose next line is no destination is a
+ * paragraph (#522). No part of a definition may contain a blank line, but its
+ * label, destination and title can each span several lines (#548), so it is
+ * parsed through the next blank line. That run is parsed once: every
+ * definition that starts a block in it is recorded in `ends` (line → end), so
+ * a run of consecutive definitions costs one parse, not one per definition.
  */
-function linkDefinitionEnd(lines: string[], start: number): number | undefined {
-  const source = lines.slice(start, start + 3).join("\n");
-  const [first] = (headingParser.parse(source) as MdastNode).children ?? [];
-  if (first?.type !== "definition") return undefined;
-  return start + (first.position?.end?.line ?? 1);
+function linkDefinitionEnd(
+  lines: string[],
+  start: number,
+  ends: Map<number, number>,
+): number | undefined {
+  if (!ends.has(start)) {
+    let stop = start + 1;
+    while (stop < lines.length && lines[stop].trim() !== "") stop++;
+    const tree = headingParser.parse(lines.slice(start, stop).join("\n")) as MdastNode;
+    for (const node of tree.children ?? []) {
+      if (node.type === "definition" && node.position?.start?.line && node.position.end?.line) {
+        ends.set(start + node.position.start.line - 1, start + node.position.end.line);
+      }
+    }
+  }
+  return ends.get(start);
 }
 
 /**
@@ -198,6 +213,7 @@ function collectDefinitions(lines: string[]): Definitions {
   const definitions = new Map<string, string>();
   const inFence = fenceTracker();
   const fenced = lines.map((line) => inFence(line));
+  const linkEnds = new Map<number, number>();
   let atBlock = true;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -210,7 +226,7 @@ function collectDefinitions(lines: string[]): Definitions {
       label && atBlock
         ? label.startsWith("^")
           ? footnoteEnd(lines, fenced, i)
-          : linkDefinitionEnd(lines, i)
+          : linkDefinitionEnd(lines, i, linkEnds)
         : undefined;
     if (label && end !== undefined) {
       const key = normalizeLabel(label);
@@ -243,8 +259,23 @@ export function withDefinitions(markdown: string, definitions: Definitions): str
       }
     }
   }
-  // Blank-line separated, so no definition reads as continuing another.
-  return supplied.size > 0 ? `${[...supplied].join("\n\n")}\n\n${markdown}` : markdown;
+  if (supplied.size === 0) return markdown;
+  // Blank-line separated, so no definition reads as continuing another, and
+  // closed by one more that nothing references, so `markdown` opening with
+  // indented code cannot continue a footnote definition (#548).
+  const text = [...supplied, markdown].join("\n\n");
+  return `${[...supplied].join("\n\n")}\n\n${unreferencedDefinition(text)}\n\n${markdown}`;
+}
+
+/**
+ * A link definition that renders nothing and that no reference in `text` can
+ * name: its label, normalized, occurs nowhere in `text` normalized.
+ */
+function unreferencedDefinition(text: string): string {
+  const folded = normalizeLabel(text);
+  let label = "metis-definitions-end";
+  while (folded.includes(normalizeLabel(label))) label += "-";
+  return `[${label}]: #`;
 }
 
 /** A markdown AST node, as far as slugging needs one. */
@@ -254,7 +285,10 @@ export interface MdastNode {
   label?: string;
   depth?: number;
   children?: MdastNode[];
-  position?: { start?: { offset?: number }; end?: { offset?: number; line?: number } };
+  position?: {
+    start?: { offset?: number; line?: number };
+    end?: { offset?: number; line?: number };
+  };
   data?: { hProperties?: Record<string, unknown> } & Record<string, unknown>;
 }
 

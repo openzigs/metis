@@ -569,6 +569,48 @@ describe("reference links and footnotes in the body across sections (#228)", () 
         "[^2]: Two.",
       ].join("\n"),
     ],
+    // #548 — pre-existing section-render mismatches found reviewing #542.
+    [
+      "a link definition whose title spans several lines",
+      [
+        "## A",
+        "See [x].",
+        "## B",
+        "[x]:",
+        "https://example.com/x",
+        '"A title',
+        "that goes on",
+        'for three lines"',
+      ].join("\n"),
+    ],
+    [
+      "a preamble that starts with indented code, after a prepended footnote definition",
+      ["    [^1] in code", "", "Cited.[^1]", "## A", "", "[^1]: One."].join("\n"),
+    ],
+    [
+      "a run of consecutive definitions, one with a multi-line title",
+      [
+        "## A",
+        "See [a], [b] and [c].",
+        "## B",
+        "[a]: https://example.com/a",
+        "[b]:",
+        "https://example.com/b",
+        "'B,",
+        "titled'",
+        "[c]: https://example.com/c (C",
+        "title)",
+      ].join("\n"),
+    ],
+    [
+      "a document that spells the label closing the prepended definitions",
+      [
+        "## A",
+        "See [x], [metis-definitions-end] and [METIS-DEFINITIONS-END-].",
+        "## B",
+        "[x]: https://example.com/x",
+      ].join("\n"),
+    ],
   ];
 
   it.each(DOCUMENTS)("%s renders exactly as a whole-document render", (_, markdown) => {
@@ -596,7 +638,7 @@ describe("reference links and footnotes in the body across sections (#228)", () 
     expect(withDefinitions("plain text", definitions)).toBe("plain text");
     // A footnote's own references are supplied too (to a fixed point).
     expect(withDefinitions("x[^n]", definitions)).toBe(
-      "[^n]: Note [a].\n\n[a]: https://example.com/a\n\nx[^n]",
+      "[^n]: Note [a].\n\n[a]: https://example.com/a\n\n[metis-definitions-end]: #\n\nx[^n]",
     );
   });
 
