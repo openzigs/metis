@@ -344,14 +344,17 @@ describe("Repo connector service — CRUD", () => {
 
   it("#448 — marking the first repository primary cannot fail after its row exists", async () => {
     // A separate isPrimary update after the insert could throw and leave a
-    // connector behind while the caller is told the create failed.
+    // connector behind while the caller is told the create failed. Asserting
+    // no update runs (rather than queuing a once-rejection) keeps the mock
+    // clean: clearAllMocks does not drain an unconsumed once-implementation,
+    // which would then fail the next test's update.
     const { prisma } = await import("../src/lib/prisma.js");
-    vi.mocked(prisma.repoConnection.update).mockRejectedValueOnce(new Error("deadlock"));
     const created = await createRepoConnector(
       "proj_1",
       { label: "only", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
+    expect(prisma.repoConnection.update).not.toHaveBeenCalled();
     expect(created.isPrimary).toBe(true);
     expect(rows.get(created.id)?.isPrimary).toBe(true);
   });
