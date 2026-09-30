@@ -1827,6 +1827,11 @@ export function aiRouter(): Router {
       safeEnd();
     });
     const heartbeat = setInterval(() => {
+      // A write after end is an 'error' event, not a throw (PR #511 review).
+      if (res.writableEnded) {
+        clearInterval(heartbeat);
+        return;
+      }
       try {
         res.write(": ping\n\n");
       } catch {
@@ -1859,12 +1864,13 @@ export function aiRouter(): Router {
           hardCeilingMs: limits.hardCeilingMs,
         });
         try {
-          res.write(
-            `event: error\ndata: ${JSON.stringify({
-              code: "STREAM_MAX_DURATION",
-              message: `The response was stopped after ${Math.round(limits.hardCeilingMs / 1000)}s. Any partial answer above is incomplete.`,
-            })}\n\n`,
-          );
+          if (!res.writableEnded)
+            res.write(
+              `event: error\ndata: ${JSON.stringify({
+                code: "STREAM_MAX_DURATION",
+                message: `The response was stopped after ${Math.round(limits.hardCeilingMs / 1000)}s. Any partial answer above is incomplete.`,
+              })}\n\n`,
+            );
         } catch {
           /* nothing left to write */
         }
@@ -1880,7 +1886,13 @@ export function aiRouter(): Router {
     req.on("aborted", () => ac.abort());
     res.on("close", () => ac.abort());
 
+    // #506 — once the response has ended (the hard ceiling or the queue limit
+    // wrote its own error frame and ended it), the aborted turn's `catch` still
+    // sends one. A write after end is not thrown — Node EMITS it as an `error`
+    // on the response a tick later, which nothing listens for, so it surfaced
+    // as an uncaught exception whenever the socket was still open.
     const send = (event: string, data: unknown): void => {
+      if (res.writableEnded) return;
       res.write(`event: ${event}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
