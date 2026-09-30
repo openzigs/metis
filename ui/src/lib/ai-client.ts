@@ -146,19 +146,29 @@ export interface CreateSessionResult {
 /** #236 — the refusals a custom agent that is unusable HERE produces. */
 const UNBINDABLE_AGENT_CODES = new Set(["AGENT_NOT_FOUND", "AGENT_REQUIRES_PROJECT"]);
 
-async function postSession(input: CreateSessionInput): Promise<CreateSessionResult> {
+/** #390 — lets a caller cancel a create it no longer wants (e.g. its scope changed). */
+export interface CreateSessionOptions {
+  signal?: AbortSignal;
+}
+
+async function postSession(
+  input: CreateSessionInput,
+  { signal }: CreateSessionOptions,
+): Promise<CreateSessionResult> {
   const res = await apiFetch<{ session: AISession; scope?: SessionScope }>("/ai/sessions", {
     method: "POST",
     body: input,
+    ...(signal ? { signal } : {}),
   });
   return { session: res.session, scope: res.scope ?? null };
 }
 
 export async function createSessionWithScope(
   input: CreateSessionInput,
+  options: CreateSessionOptions = {},
 ): Promise<CreateSessionResult> {
   try {
-    return await postSession(input);
+    return await postSession(input, options);
   } catch (err) {
     // #236 — a custom agent saved in the browser is scoped to the project it
     // was picked in. When this session cannot bind it, retry ONCE with the
@@ -171,14 +181,17 @@ export async function createSessionWithScope(
       agentRef?.startsWith("custom:")
     ) {
       const { agentRef: _dropped, ...rest } = input;
-      return { ...(await postSession(rest)), droppedAgentRef: agentRef };
+      return { ...(await postSession(rest, options)), droppedAgentRef: agentRef };
     }
     throw err;
   }
 }
 
-export async function createSession(input: CreateSessionInput): Promise<AISession> {
-  return (await createSessionWithScope(input)).session;
+export async function createSession(
+  input: CreateSessionInput,
+  options: CreateSessionOptions = {},
+): Promise<AISession> {
+  return (await createSessionWithScope(input, options)).session;
 }
 
 export async function getSession(id: string): Promise<AISession> {

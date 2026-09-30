@@ -88,6 +88,33 @@ describe("ai-client REST", () => {
     });
   });
 
+  it("createSession passes the caller's abort signal to the request (#390)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ success: true, data: { session: { id: "s1", title: "t" } } }),
+    );
+    const controller = new AbortController();
+    await createSession({ title: "t" }, { signal: controller.signal });
+    expect((fetchMock.mock.calls[0]![1] as RequestInit).signal).toBe(controller.signal);
+  });
+
+  it("the default-agent retry keeps the caller's abort signal (#390)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ success: false, error: { code: "AGENT_NOT_FOUND", message: "no" } }, 404),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ success: true, data: { session: { id: "s2", title: "t" } } }),
+      );
+    const controller = new AbortController();
+    const res = await createSessionWithScope(
+      { title: "t", agentRef: "custom:x" },
+      { signal: controller.signal },
+    );
+    expect(res.droppedAgentRef).toBe("custom:x");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((fetchMock.mock.calls[1]![1] as RequestInit).signal).toBe(controller.signal);
+  });
+
   it("createSessionWithScope tolerates a response without scope metadata", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
