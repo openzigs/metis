@@ -1,6 +1,7 @@
 /**
- * #642 — the Scheduler page and the ApprovalsPanel re-join their rooms after a
- * disconnect + reconnect, and live updates resume on the same socket.
+ * #642 — the Scheduler page, the ApprovalsPanel and PresenceAvatars re-join
+ * their rooms after a disconnect + reconnect, and live updates resume on the
+ * same socket.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
@@ -31,6 +32,7 @@ vi.mock("@/lib/analysis-api", () => ({
 
 import SchedulerPage from "@/app/(authed)/scheduler/page";
 import { ApprovalsPanel } from "@/components/analysis/ApprovalsPanel";
+import { PresenceAvatars } from "@/components/presence/PresenceAvatars";
 
 function renderWithClient(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -97,5 +99,32 @@ describe("ApprovalsPanel (#642)", () => {
     expect(socket.emitted("unsubscribe:analysis", room)).toBeGreaterThan(0);
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:analysis", room)).toBe(subscribed);
+  });
+});
+
+describe("PresenceAvatars (#642)", () => {
+  it("re-joins the presence room on reconnect and keeps rendering presence updates", () => {
+    const { unmount } = render(<PresenceAvatars artifactType="discussion" artifactId="d1" />);
+    const room = { artifactType: "discussion", artifactId: "d1" };
+    expect(socket.emitted("presence:join", room)).toBe(1);
+
+    // The server's disconnect handler dropped this socket from the room's
+    // presence list, so without a re-join the user vanishes for everyone else.
+    act(() => socket.reconnect());
+    expect(socket.emitted("presence:join", room)).toBe(2);
+
+    act(() =>
+      socket.fire("presence:update", {
+        room: "presence:discussion:d1",
+        users: [{ userId: "u1", username: "alice" }],
+        ts: 0,
+      }),
+    );
+    expect(screen.getByLabelText("1 user(s) viewing")).toBeInTheDocument();
+
+    unmount();
+    expect(socket.emitted("presence:leave", room)).toBe(1);
+    act(() => socket.reconnect());
+    expect(socket.emitted("presence:join", room)).toBe(2);
   });
 });

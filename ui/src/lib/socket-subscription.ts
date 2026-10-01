@@ -12,6 +12,13 @@
  * buffer and is flushed on the next connect, so that one connect is skipped —
  * the same rule `job-rooms.ts` (#486) applies to job rooms.
  *
+ * Known window (#510, shared with `job-rooms.ts`): after a ping timeout but
+ * before the client notices, `connected` still reads true, so a subscribe made
+ * then is buffered without the skip being armed. The next connect flushes it
+ * AND re-sends it, so the server sees the subscription twice. Every room this
+ * helper serves joins idempotently (`socket.join`, and presence keys its list
+ * by socket id), so the duplicate is harmless.
+ *
  * Event listeners registered with `socket.on` survive a reconnect on the same
  * instance, so only the room join needs repeating.
  */
