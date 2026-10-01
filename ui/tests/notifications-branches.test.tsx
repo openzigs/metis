@@ -380,7 +380,7 @@ describe("NotificationsDrawer — mark-all-read persistence (#416)", () => {
 });
 
 describe("NotificationsDrawer — reconciles mentions missed while disconnected (#646)", () => {
-  it("re-reads the persisted history on reconnect, not on the initial connect", async () => {
+  it("re-reads the persisted history on the first connect after a mid-gap mount, and on each reconnect", async () => {
     const socket = createFakeSocket(false);
     useSocketMock.mockReturnValue(socket);
     const Wrapper = makeWrapper({});
@@ -391,8 +391,10 @@ describe("NotificationsDrawer — reconciles mentions missed while disconnected 
       </Wrapper>,
     );
     await waitFor(() => expect(reads()).toHaveLength(1));
+    // Mounted while the socket was down: the first connect re-reads too (#646),
+    // since a mention emitted after the mount-time read never reached it.
     act(() => socket.connect());
-    expect(reads()).toHaveLength(1);
+    await waitFor(() => expect(reads()).toHaveLength(2));
 
     act(() => socket.disconnect());
     // The `comment:mention` is emitted now — and lost; the server persisted it.
@@ -408,7 +410,7 @@ describe("NotificationsDrawer — reconciles mentions missed while disconnected 
     act(() => socket.connect());
 
     await waitFor(() => expect(mockStore.hydrate).toHaveBeenCalledWith([missed]));
-    expect(reads()).toHaveLength(2);
+    expect(reads()).toHaveLength(3);
 
     unmount();
     expect(socket.listeners("connect")).toBe(0);

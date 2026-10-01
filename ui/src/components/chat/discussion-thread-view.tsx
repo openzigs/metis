@@ -89,6 +89,43 @@ function upsert(
   return next;
 }
 
+/**
+ * #646 — merge authoritative server rows (a live `message:new`, or a reconnect
+ * re-read) into the list. One rule for both paths: when an AI row lands that the
+ * list does not yet hold as a settled message, the requester's local SSE
+ * placeholder (`ai-local-*`) streamed that same reply, so it is dropped and the
+ * server row (real id) replaces it — never rendered twice.
+ */
+function mergeServerMessages(
+  list: DiscussionListMessage[],
+  incoming: readonly DiscussionMessage[],
+): DiscussionListMessage[] {
+  const settled = new Set(list.filter((m) => !m.streaming).map((m) => m.id));
+  const landsAiReply = incoming.some((m) => m.authorKind === "ai" && !settled.has(m.id));
+  const base = landsAiReply ? list.filter((m) => !m.id.startsWith("ai-local-")) : list;
+  return incoming.reduce((acc, m) => upsert(acc, { ...m, streaming: false }), base);
+}
+
+/** Page size of a history read; the server caps `limit` at 100. */
+const PAGE_SIZE = 100;
+/** Most pages one reconnect re-read walks before settling for what it has. */
+const MAX_RECONCILE_PAGES = 20;
+
+/** #646 — the newest message a view received from the server, per thread. */
+interface SyncedCursor {
+  threadId: string;
+  messageId: string;
+}
+
+function markSynced(
+  ref: { current: SyncedCursor | null },
+  threadId: string,
+  rows: readonly DiscussionMessage[],
+): void {
+  const last = rows[rows.length - 1];
+  if (last) ref.current = { threadId, messageId: last.id };
+}
+
 export function DiscussionThreadView({
   threadId,
   currentUserId,
@@ -106,6 +143,9 @@ export function DiscussionThreadView({
   const [showSettings, setShowSettings] = useState(false);
   const [mode, setMode] = useState(aiResponseMode);
   const abortRef = useRef<AbortController | null>(null);
+  // #646 — the newest message received from the server in order, the cursor a
+  // reconnect re-read pages forward from. Keyed by thread so a switch resets it.
+  const syncedRef = useRef<SyncedCursor | null>(null);
 
   // The promote action is member-only AND needs a project to link the created
   // requirement back to. Both gates are honest with the server-side check.
@@ -118,8 +158,10 @@ export function DiscussionThreadView({
     setError(null);
     void (async () => {
       try {
-        const history = await listMessages(threadId, { limit: 100 });
-        if (!cancelled) setMessages(history);
+        const history = await listMessages(threadId, { limit: PAGE_SIZE });
+        if (cancelled) return;
+        setMessages(history);
+        markSynced(syncedRef, threadId, history);
       } catch (err) {
         if (!cancelled) setError((err as Error).message || "Failed to load discussion");
       } finally {
@@ -131,24 +173,35 @@ export function DiscussionThreadView({
     };
   }, [threadId]);
 
-  // #646 — a `message:new` sent while the socket was down is lost. Re-read the
-  // history on reconnect and merge it in, keeping local streaming placeholders.
+  // #646 — a `message:new` sent while the socket was down is lost. On reconnect,
+  // re-read every message newer than the last one this view received from the
+  // server in order (history read or room event) and merge it in. The route
+  // orders oldest-first, so a plain `limit` read would return the OLDEST page
+  // and recover nothing on a long thread; its `cursor` pages forward from a
+  // message id instead. The view's own posts are not a cursor: one posted mid-gap
+  // is newer than a message another member posted before it.
   const threadIdRef = useRef(threadId);
   useEffect(() => {
     threadIdRef.current = threadId;
   });
   useOnReconnect(() => {
     const id = threadId;
-    listMessages(id, { limit: 100 })
-      .then((history) => {
-        if (threadIdRef.current !== id) return;
-        setMessages((prev) =>
-          history.reduce((acc, m) => upsert(acc, { ...m, streaming: false }), prev),
-        );
-      })
-      .catch(() => {
+    const synced = syncedRef.current;
+    let cursor = synced?.threadId === id ? synced.messageId : undefined;
+    void (async () => {
+      try {
+        for (let page = 0; page < MAX_RECONCILE_PAGES; page++) {
+          const rows = await listMessages(id, { limit: PAGE_SIZE, cursor });
+          if (threadIdRef.current !== id) return;
+          setMessages((prev) => mergeServerMessages(prev, rows));
+          markSynced(syncedRef, id, rows);
+          if (rows.length < PAGE_SIZE) return;
+          cursor = rows[rows.length - 1].id;
+        }
+      } catch {
         // Best-effort: the next live event or a reload converges the thread.
-      });
+      }
+    })();
   });
 
   // ---- 2. Subscribe to the realtime room -----------------------------------
@@ -159,16 +212,10 @@ export function DiscussionThreadView({
 
     function onNew(evt: DiscussionMessageNewEvent) {
       if (evt.threadId !== threadId) return;
-      setMessages((prev) => {
-        // When the authoritative AI message:new arrives, drop any local SSE
-        // placeholder (`ai-local-*`) the requester was streaming into — the
-        // server row (real id) replaces it, so we never render a duplicate.
-        const base =
-          evt.message.authorKind === "ai"
-            ? prev.filter((m) => !m.id.startsWith("ai-local-"))
-            : prev;
-        return upsert(base, { ...evt.message, streaming: false });
-      });
+      // The authoritative row replaces any local SSE placeholder of the same
+      // AI reply (`mergeServerMessages`), so it is never rendered twice.
+      setMessages((prev) => mergeServerMessages(prev, [evt.message]));
+      markSynced(syncedRef, threadId, [evt.message]);
     }
     function onStream(evt: DiscussionMessageStreamEvent) {
       if (evt.threadId !== threadId || !evt.messageId) return;

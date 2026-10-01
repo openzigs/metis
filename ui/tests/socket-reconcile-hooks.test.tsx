@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { type ReactNode } from "react";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { JobKind } from "@metis/shared";
 import { createFakeSocket, type FakeSocket } from "./helpers/fake-socket";
 
 let socket: FakeSocket;
@@ -90,12 +91,24 @@ describe("query-backed hooks re-read on reconnect (#646)", () => {
     await waitFor(() => expect(result.current.data?.items).toHaveLength(1));
   });
 
-  it("useProjectDocuments does not re-read on the initial connect", async () => {
+  it("useProjectDocuments mounted while the socket is down catches up on its first connect", async () => {
     socket = createFakeSocket(false);
+    listDocuments.mockResolvedValue({ items: [] });
+    const { result } = renderHook(() => useProjectDocuments("p1"), { wrapper });
+    await waitFor(() => expect(result.current.data?.items).toHaveLength(0));
+    expect(listDocuments).toHaveBeenCalledTimes(1);
+    // After the mount-time read, a document lands and its event is lost: the
+    // socket was never up. The first connect closes that gap.
+    listDocuments.mockResolvedValue({ items: [{ id: "d1", status: "ready" }] });
+    act(() => socket.connect());
+    await waitFor(() => expect(result.current.data?.items).toHaveLength(1));
+    expect(listDocuments).toHaveBeenCalledTimes(2);
+  });
+
+  it("useProjectDocuments on a connected socket does not re-read until a reconnect", async () => {
     listDocuments.mockResolvedValue({ items: [] });
     renderHook(() => useProjectDocuments("p1"), { wrapper });
     await waitFor(() => expect(listDocuments).toHaveBeenCalledTimes(1));
-    act(() => socket.connect());
     await new Promise((r) => setTimeout(r, 20));
     expect(listDocuments).toHaveBeenCalledTimes(1);
   });
@@ -133,6 +146,44 @@ describe("query-backed hooks re-read on reconnect (#646)", () => {
     }
   });
 
+  it("useProjectJobEvents' reconnect refresh covers every key a live transition of any kind refreshes", () => {
+    // `satisfies` makes a new JobKind a type error here until it is listed.
+    const ALL_KINDS = Object.keys({
+      analysis: true,
+      "doc-generation": true,
+      "impact-analysis": true,
+      scan: true,
+      "pr-review": true,
+      "import-sync": true,
+      "embeddings-reindex": true,
+      "spec-kit": true,
+      "overview-regenerate": true,
+      "repo-ingest": true,
+    } satisfies Record<JobKind, true>) as JobKind[];
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    const seen = () =>
+      new Set(invalidate.mock.calls.map(([filters]) => JSON.stringify(filters?.queryKey)));
+    renderHook(() => useProjectJobEvents("p1"), { wrapper });
+
+    act(() => socket.reconnect());
+    const onReconnect = seen();
+
+    for (const kind of ALL_KINDS) {
+      invalidate.mockClear();
+      act(() =>
+        socket.fire("job:lifecycle", {
+          jobId: `j-${kind}`,
+          kind,
+          projectId: "p1",
+          status: "completed",
+        }),
+      );
+      const live = seen();
+      expect(live.size).toBeGreaterThan(0);
+      for (const key of live) expect(onReconnect, `${kind} → ${key}`).toContain(key);
+    }
+  });
+
   it("useConnectorDiscovery runs the caller's refresh on reconnect without a toast", () => {
     const onDiscovery = vi.fn();
     renderHook(() => useConnectorDiscovery("p1", onDiscovery));
@@ -166,10 +217,22 @@ describe("useTaskProgress re-reads the task on reconnect (#646)", () => {
     expect(onTerminal).toHaveBeenCalledTimes(1);
   });
 
-  it("does not re-read on the initial connect", () => {
+  it("re-reads on the first connect when mounted while the socket was down", async () => {
     socket = createFakeSocket(false);
-    renderHook(() => useTaskProgress("t1"));
+    getTask.mockResolvedValue(taskRow("completed"));
+    const onTerminal = vi.fn();
+    const { result } = renderHook(() => useTaskProgress("t1", onTerminal));
+    expect(getTask).not.toHaveBeenCalled();
+    // The task finished before the room join was ever flushed: its terminal
+    // event never reached this socket.
     act(() => socket.connect());
+    await waitFor(() => expect(result.current.status?.status).toBe("completed"));
+    expect(getTask).toHaveBeenCalledWith("t1");
+    expect(onTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-read on mount over a connected socket", () => {
+    renderHook(() => useTaskProgress("t1"));
     expect(getTask).not.toHaveBeenCalled();
   });
 
@@ -182,6 +245,33 @@ describe("useTaskProgress re-reads the task on reconnect (#646)", () => {
     unmount();
     await act(async () => resolve(taskRow("failed")));
     expect(onTerminal).not.toHaveBeenCalled();
+  });
+
+  it("ignores a slow re-read answered before a newer live status (#646)", async () => {
+    let resolve: (row: unknown) => void = () => {};
+    getTask.mockReturnValue(new Promise((r) => (resolve = r)));
+    const onTerminal = vi.fn();
+    const { result } = renderHook(() => useTaskProgress("t1", onTerminal));
+    act(() => socket.reconnect());
+    // The server read the row as running (updated at :05), then the task
+    // finished and the live terminal event (stamped at :09) arrived first.
+    const finishedAt = Date.parse("2026-10-01T00:00:09.000Z");
+    act(() => socket.fire("task:status", { taskId: "t1", status: "completed", ts: finishedAt }));
+    expect(result.current.status?.status).toBe("completed");
+    await act(async () => resolve(taskRow("running")));
+    expect(result.current.status?.status).toBe("completed");
+    expect(onTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies a re-read newer than the last live status (#646)", async () => {
+    const { result } = renderHook(() => useTaskProgress("t1"));
+    const failedAt = Date.parse("2026-10-01T00:00:01.000Z");
+    act(() => socket.fire("task:status", { taskId: "t1", status: "failed", ts: failedAt }));
+    act(() => socket.disconnect());
+    // Retried in the gap: the row (updated at :05) is newer than the event.
+    getTask.mockResolvedValue(taskRow("running"));
+    act(() => socket.connect());
+    await waitFor(() => expect(result.current.status?.status).toBe("running"));
   });
 
   it("keeps the last status when the re-read fails", async () => {

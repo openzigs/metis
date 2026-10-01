@@ -198,14 +198,31 @@ describe("reconcile on reconnect (#646)", () => {
     expect(order.filter((o) => o === "reconcile")).toHaveLength(2);
   });
 
-  it("does not reconcile on the initial connect of a socket that was still down", () => {
+  it("reconciles on the connect that flushes a buffered subscribe, without re-subscribing", () => {
+    const s = createFakeSocket(false);
+    const subscribe = vi.fn();
+    const reconcile = vi.fn();
+    keepSubscribed(s as never, subscribe, reconcile);
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(reconcile).not.toHaveBeenCalled();
+    // socket.io-client flushes the buffered subscribe itself; the view mounted
+    // mid-gap still re-reads what it may have missed since its mount-time read.
+    s.connect();
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    s.reconnect();
+    expect(subscribe).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it("onReconnect on a socket that was still down reconciles on its first connect", () => {
     const s = createFakeSocket(false);
     const reconcile = vi.fn();
-    keepSubscribed(s as never, vi.fn(), reconcile);
-    s.connect();
+    onReconnect(s as never, reconcile);
     expect(reconcile).not.toHaveBeenCalled();
-    s.reconnect();
+    s.connect();
     expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(s.emit).not.toHaveBeenCalled();
   });
 
   it("keepRoomSubscribed reconciles on reconnect and stops once released", () => {

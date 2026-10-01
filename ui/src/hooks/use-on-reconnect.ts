@@ -1,9 +1,10 @@
 "use client";
 
 /**
- * #646 — run `reconcile` on every reconnect of the shared socket (not the
- * initial connect), so a view re-reads state an event may have carried while
- * the socket was down. See `onReconnect` in `socket-subscription.ts` for the
+ * #646 — run `reconcile` on every connect after mount (a reconnect, or the
+ * first connect of a view mounted while the socket was down), so a view re-reads
+ * state an event may have carried while the socket was down. Mounting on a
+ * connected socket does not run it. See `onReconnect` in `socket-subscription.ts` for the
  * rules. The latest `reconcile` is held in a ref, so a fresh closure on every
  * render does not re-register the listener.
  */

@@ -92,6 +92,11 @@ export function useTaskProgress(
     // The status last applied, so a reconnect that re-reads an unchanged task
     // (say, one whose terminal event did arrive) does not fire `onTerminal` twice.
     let lastStatus: TaskStatusEvent["status"] | null = null;
+    // ...and when it happened, so a slow re-read that the server answered BEFORE
+    // a newer live event (a stale "running" landing after a live "completed")
+    // cannot overwrite it. Server-stamped on both sides: an event's `ts` is taken
+    // after the write the row's `updatedAt` records.
+    let lastTs: number | null = null;
 
     const onProgress = (data: TaskProgressEvent) => {
       if (data.taskId !== taskId) return;
@@ -100,6 +105,7 @@ export function useTaskProgress(
     const onStatus = (data: TaskStatusEvent) => {
       if (data.taskId !== taskId) return;
       lastStatus = data.status;
+      lastTs = typeof data.ts === "number" ? data.ts : null;
       setState((prev) => ({ ...prev, status: data }));
       if (isTerminalTaskStatus(data.status)) onTerminalRef.current?.(data);
     };
@@ -110,7 +116,11 @@ export function useTaskProgress(
       tasksApi
         .get(taskId)
         .then((row) => {
-          if (active && row.status !== lastStatus) onStatus(statusEventFromRow(row));
+          if (!active || row.status === lastStatus) return;
+          const event = statusEventFromRow(row);
+          // Not newer than the status already applied: the reply is stale.
+          if (lastTs !== null && !(event.ts > lastTs)) return;
+          onStatus(event);
         })
         .catch(() => {
           // Best-effort: the page's poll is the fallback for a failed read.

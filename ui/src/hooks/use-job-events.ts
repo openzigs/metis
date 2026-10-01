@@ -79,54 +79,56 @@ export function useDocSectionProgress(
   return sections;
 }
 
+type InvalidationKeys = readonly (readonly unknown[])[];
+
 /**
- * Map a job kind to the query keys that should be invalidated on a transition.
+ * The query keys a job transition invalidates, per kind.
  *
- * The original three kinds (#239) have bespoke target lists. Every other kind —
- * including the long-running ops added by Epic #406 (#419): `scan`, `pr-review`,
- * `import-sync`, `embeddings-reindex`, `spec-kit`, `overview-regenerate` — falls
- * through to a generic, project-scoped default that invalidates the project
- * detail cache so whatever surface is showing that project converges. This means
- * a brand-new `JobKind` needs NO edit here: it gets sensible refresh behavior for
- * free. A kind only needs a `case` if it wants more targeted invalidation.
+ * The original three kinds (#239) have bespoke target lists here. Every other
+ * kind — including the long-running ops added by Epic #406 (#419): `scan`,
+ * `pr-review`, `import-sync`, `embeddings-reindex`, `spec-kit`,
+ * `overview-regenerate` — falls through to `DEFAULT_INVALIDATION`, a generic,
+ * project-scoped default that invalidates the project detail cache so whatever
+ * surface is showing that project converges. A brand-new `JobKind` needs NO edit
+ * here: it gets sensible refresh behavior for free. A kind only needs an entry
+ * if it wants more targeted invalidation.
+ *
+ * #646 — this table is also what a reconnect refreshes (`reconnectInvalidationKeys`),
+ * so a kind given bespoke keys here is reconciled without a second list to keep.
  */
-function invalidationKeysFor(kind: JobKind, projectId: string): readonly (readonly unknown[])[] {
-  switch (kind) {
-    case "analysis":
-      return [queryKeys.analyses.forProject(projectId)];
-    case "doc-generation":
-      // The Documentation list keys generated docs separately from uploaded
-      // documents (#29); without it a finished run kept its "generating" badge.
-      return [
-        queryKeys.documents.forProject(projectId),
-        queryKeys.generatedDocs.forProject(projectId),
-      ];
-    case "impact-analysis":
-      return [impactAnalysisKeys.list()];
-    default:
-      // Generic default for any current or future kind: refresh the project
-      // surface so its job/list views re-fetch on the transition.
-      return [queryKeys.projects.detail(projectId)];
-  }
+const BESPOKE_INVALIDATION = new Map<JobKind, (projectId: string) => InvalidationKeys>([
+  ["analysis", (projectId) => [queryKeys.analyses.forProject(projectId)]],
+  // The Documentation list keys generated docs separately from uploaded
+  // documents (#29); without it a finished run kept its "generating" badge.
+  [
+    "doc-generation",
+    (projectId) => [
+      queryKeys.documents.forProject(projectId),
+      queryKeys.generatedDocs.forProject(projectId),
+    ],
+  ],
+  ["impact-analysis", () => [impactAnalysisKeys.list()]],
+]);
+
+/** Generic default for any current or future kind without bespoke keys. */
+const DEFAULT_INVALIDATION = (projectId: string): InvalidationKeys => [
+  queryKeys.projects.detail(projectId),
+];
+
+function invalidationKeysFor(kind: JobKind, projectId: string): InvalidationKeys {
+  return (BESPOKE_INVALIDATION.get(kind) ?? DEFAULT_INVALIDATION)(projectId);
 }
 
 /**
  * #646 — every key a transition of any kind invalidates for `projectId`, plus
  * the doc-detail caches a doc-generation completion refreshes. A reconnect
- * cannot know which transitions it missed, so it refreshes all of them.
+ * cannot know which transitions it missed, so it refreshes all of them. Derived
+ * from the same table as `invalidationKeysFor`, so the two cannot drift.
  */
-// The three kinds with bespoke keys, and one (`scan`) that stands for every kind
-// on the generic default branch.
-const RECONCILED_KINDS: readonly JobKind[] = [
-  "analysis",
-  "doc-generation",
-  "impact-analysis",
-  "scan",
-];
-
-function reconnectInvalidationKeys(projectId: string): readonly (readonly unknown[])[] {
+function reconnectInvalidationKeys(projectId: string): InvalidationKeys {
   return [
-    ...RECONCILED_KINDS.flatMap((kind) => invalidationKeysFor(kind, projectId)),
+    ...[...BESPOKE_INVALIDATION.values()].flatMap((keysFor) => keysFor(projectId)),
+    ...DEFAULT_INVALIDATION(projectId),
     queryKeys.documents.all,
   ];
 }
