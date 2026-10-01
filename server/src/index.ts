@@ -301,7 +301,7 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
     );
   }
 
-  const { http: httpServer, io, acp, prReviewWorker } = createServer();
+  const { http: httpServer, io, acp, prReviewWorker, socketCluster } = createServer();
   httpServer.listen(PORT, () => {
     log.info("METIS server listening", { port: PORT, env: process.env.NODE_ENV });
   });
@@ -337,6 +337,12 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
         await io.close();
       } catch (e) {
         log.error("Socket.IO close error", { error: (e as Error).message });
+      }
+      try {
+        // #622 — after `io.close()`, which released the adapter's LISTEN client.
+        await socketCluster?.close();
+      } catch (e) {
+        log.error("Socket.IO cluster adapter close error", { error: (e as Error).message });
       }
       try {
         await prisma.$disconnect();

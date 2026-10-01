@@ -18,12 +18,17 @@
  *   - `analysis:{id}` — analysis run progress.
  *   - `session:{id}` — chat / agent session events.
  *
+ * Cluster adapter (#622):
+ *   - `opts.adapter` (from `resolveSocketClusterAdapter`, Postgres datasources
+ *     only) relays room operations — evictions and emits — to every replica.
+ *     Unset, Socket.IO's in-memory adapter reaches this replica only.
+ *
  * Heartbeat:
  *   - The Socket.IO ping/pong cycle is configured to fire every 30s; idle
  *     sockets are evicted after 60s.
  */
 import type { Server as HttpServer } from "node:http";
-import { Server as SocketIOServer, type Socket } from "socket.io";
+import { Server as SocketIOServer, type ServerOptions, type Socket } from "socket.io";
 import jwt from "jsonwebtoken";
 import {
   hasPermission,
@@ -64,6 +69,8 @@ export type MetisIOServer = SocketIOServer<
 
 export interface CreateSocketServerOptions {
   corsOrigin?: string;
+  /** #622 — the cluster adapter; omit for the single-replica in-memory adapter. */
+  adapter?: ServerOptions["adapter"];
 }
 
 export function createSocketServer(
@@ -77,6 +84,7 @@ export function createSocketServer(
     },
     pingInterval: 30_000,
     pingTimeout: 60_000,
+    ...(opts.adapter ? { adapter: opts.adapter } : {}),
   });
 
   // One async middleware with a single exit: `authenticateHandshake` either

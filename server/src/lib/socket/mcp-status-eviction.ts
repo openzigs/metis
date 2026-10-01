@@ -8,11 +8,12 @@
  * that workspace's project-server events until it unsubscribed or reconnected.
  * The workspace routes call these right after the database write.
  *
- * `socketsLeave` reaches only sockets connected to THIS replica: `createSocketServer`
- * uses Socket.IO's default in-memory adapter, so on a multi-replica deployment a
- * socket held by another replica keeps the room until its next `subscribe:mcp`
- * or reconnect (#622). With no registered server (tests, scripts) there is no
- * socket to evict and both are no-ops.
+ * Reach (#622): on a Postgres datasource `createServer` installs the Postgres
+ * cluster adapter (`cluster-adapter.ts`), which relays `socketsLeave` over
+ * `LISTEN` / `NOTIFY` to EVERY replica. Without it (SQLite dev, or
+ * `NODE_ENV=test`) the in-memory adapter reaches only this replica's sockets —
+ * all there is in a single-replica setup. With no registered server (tests,
+ * scripts) there is no socket to evict and both are no-ops.
  *
  * Both run after the database write has committed, so they are best-effort: an
  * adapter error is logged, never thrown, so the route cannot answer 500 for a

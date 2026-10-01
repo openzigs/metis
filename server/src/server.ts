@@ -58,6 +58,10 @@ import {
 import { setPrReviewWorker } from "./lib/agents/pr-reviewer/worker-singleton.js";
 import { findProjectForRepo } from "./routes/webhooks-github.js";
 import { registerSocketServer } from "./lib/socket/registry.js";
+import {
+  resolveSocketClusterAdapter,
+  type SocketClusterAdapter,
+} from "./lib/socket/cluster-adapter.js";
 import { wirePresenceHandlers } from "./lib/collaboration/presence.js";
 import { startSlaChecker } from "./lib/collaboration/sla-checker.js";
 import { startForecastRecompute } from "./lib/finops/forecast-service.js";
@@ -181,6 +185,11 @@ export interface MetisServer {
    * shutdown can call `prReviewWorker.shutdown()` unconditionally.
    */
   prReviewWorker: PrReviewWorkerHandle;
+  /**
+   * #622 — the Socket.IO cluster adapter, present on a Postgres datasource
+   * outside tests. Shutdown closes it after `io.close()`.
+   */
+  socketCluster: SocketClusterAdapter | null;
 }
 
 export interface CreateServerOptions extends CreateAppOptions {
@@ -254,7 +263,16 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   const httpServer = http.createServer(app);
   // #221 — `HTTP_KEEP_ALIVE_TIMEOUT_MS`; unset keeps Node's default.
   applyHttpKeepAliveTimeout(httpServer);
-  const io = createSocketServer(httpServer, opts);
+  // #622 — on a Postgres datasource the Socket.IO cluster adapter relays room
+  // operations (SCIM deprovision disconnects, MCP status evictions, emits) to
+  // every replica. Skipped under NODE_ENV=test, like the backend factories above,
+  // so a Postgres DATABASE_URL in the unit suite opens no pool.
+  const socketCluster =
+    process.env.NODE_ENV !== "test" ? resolveSocketClusterAdapter(process.env) : null;
+  const io = createSocketServer(httpServer, {
+    ...opts,
+    ...(socketCluster ? { adapter: socketCluster.adapter } : {}),
+  });
   // Epic #728 — register IO in the global registry so lib code (e.g.
   // @mention fan-out, presence) can access it without DI threading.
   registerSocketServer(io);
@@ -472,7 +490,7 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   const prReviewWorker = startWorker({ processorDeps });
   setPrReviewWorker(prReviewWorker);
 
-  return { http: httpServer, io, mcp, acp, prReviewWorker };
+  return { http: httpServer, io, mcp, acp, prReviewWorker, socketCluster };
 }
 
 function createNoopAcpHandle(): AcpServerHandle {

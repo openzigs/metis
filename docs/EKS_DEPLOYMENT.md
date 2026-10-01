@@ -663,6 +663,29 @@ env:
 
 ---
 
+## 9f.1 Socket.IO cluster adapter (multi-replica) — automatic on Postgres
+
+No setting. When `DATABASE_URL` is Postgres, every server pod installs the
+Socket.IO Postgres cluster adapter (`@socket.io/postgres-adapter`,
+`server/src/lib/socket/cluster-adapter.ts`, #622), so room operations reach
+sockets on **every** replica: a SCIM deprovision closes the user's sockets
+wherever they are connected, MCP status evictions (workspace delete, member
+removal) take sockets out of the room on every pod, and room emits are delivered
+cluster-wide. It relays over Postgres `LISTEN` / `NOTIFY` on the same database —
+no new managed service.
+
+- **Cost:** a pool of at most 2 extra connections per pod, one of which is held
+  for `LISTEN`. Count them against the database's connection limit.
+- **Table:** messages over NOTIFY's 8000-byte limit (or carrying binary) go
+  through the UNLOGGED `socket_io_attachments` table, which the server creates
+  itself behind an advisory lock (no migration), so the database user needs
+  `CREATE` on the schema — as for the other self-created shared tables.
+- **PgBouncer:** `LISTEN` needs a session-pooled connection. A transaction-mode
+  pooler between the pods and Postgres silently drops notifications.
+- With SQLite (single-replica dev) the in-memory adapter is kept unchanged.
+
+---
+
 ## 9g. Cross-region Disaster Recovery — Postgres standby + S3 CRR (Epic #70)
 
 DR is a **cross-Region** concern layered on top of the multi-replica backends

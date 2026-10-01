@@ -9,10 +9,14 @@
  * on connect from the verified JWT). With no registered server (tests, scripts)
  * it is a no-op.
  *
- * Reach is THIS replica only. No Socket.IO cluster adapter is installed
- * (`createSocketServer` uses the default in-memory adapter), so on a
- * multi-replica deployment a socket held by another replica survives the
- * deprovision and keeps its rooms. Cross-replica reach is tracked in #622.
+ * Reach (#622): on a Postgres datasource `createServer` installs the Postgres
+ * cluster adapter (`cluster-adapter.ts`), which relays the disconnect over
+ * `LISTEN` / `NOTIFY` so it closes the user's sockets on EVERY replica. Without
+ * it (SQLite dev, or `NODE_ENV=test`) the in-memory adapter reaches only the
+ * sockets on this replica — which is all there is in a single-replica setup.
+ * A replica whose adapter is cut off from Postgres at that moment misses the
+ * relay and keeps that socket until it disconnects; a reconnect is refused by
+ * the live-user handshake (#617).
  *
  * Called after the database write has committed, so it is best-effort: an
  * adapter error is logged, never thrown, so the route cannot answer 500 for a
@@ -41,7 +45,7 @@ let revocations = 0;
 /** #613 — moves whenever any user's sockets are revoked on this replica. */
 export const userSocketRevocationEpoch = (): number => revocations;
 
-/** Disconnect every socket of `userId` connected to this replica (see #622). */
+/** Disconnect every socket of `userId`, on every replica the adapter reaches (#622). */
 export function disconnectUserSockets(userId: string): void {
   revocations++;
   try {
