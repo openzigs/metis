@@ -504,9 +504,12 @@ export function workspacesRouter(): Router {
     }
 
     const expired = invite.expiresAt < new Date();
-    const consumed = !!invite.consumedAt;
-    // A soft-deleted workspace keeps its invites (#563): report the invite as not valid.
+    // A soft-deleted workspace (#563) is reported as such and not valid.
     const workspaceDeleted = !!invite.workspace.deletedAt;
+    // The DELETE also stamps `consumedAt` on the invites it voids (#601), so a
+    // deleted workspace's invite is not reported as consumed: `consumed` means
+    // the invite was accepted, which a voided one never was.
+    const consumed = !!invite.consumedAt && !workspaceDeleted;
     const valid = !expired && !consumed && !workspaceDeleted;
     const { deletedAt: _deletedAt, ...workspace } = invite.workspace;
 

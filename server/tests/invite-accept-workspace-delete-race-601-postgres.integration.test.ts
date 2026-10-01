@@ -14,9 +14,9 @@
  *
  *   - the DELETE's transaction is held open just before its commit; the accept
  *     (whose pre-check read ran before the delete) issues its guarded consume
- *     and is seen blocked on a lock in `pg_locks`; the delete then commits. The
- *     accept must answer 410 "This workspace no longer exists" and no
- *     membership row may exist.
+ *     and is seen blocked by the delete's transaction (`pg_blocking_pids`); the
+ *     delete then commits. The accept must answer 410 "This workspace no longer
+ *     exists" and no membership row may exist.
  *   - the reverse order: an accept that consumed first holds the DELETE until
  *     it commits. Both succeed (the member joined before the delete), nothing
  *     deadlocks, and the invite keeps the accept's consume time.
@@ -62,6 +62,19 @@ const { errorHandler, notFoundHandler } = await import("../src/middleware/error-
 const SUFFIX = randomUUID().slice(0, 8);
 const OWNER = `u-601pg-owner-${SUFFIX}`;
 const INVITEE = `u-601pg-invitee-${SUFFIX}`;
+/**
+ * Every connection of the client under test carries this `application_name`, so
+ * the lock probe sees only this run's own transaction pair, never another
+ * backend that happens to be waiting on a lock in the shared database.
+ */
+const APP_NAME = `metis-601pg-${SUFFIX}`;
+
+/** `databaseUrl` with this run's `application_name` on every connection it opens. */
+function taggedUrl(url: string): string {
+  const u = new URL(url);
+  u.searchParams.set("application_name", APP_NAME);
+  return u.toString();
+}
 
 /** A promise with its resolver exposed. */
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -166,10 +179,12 @@ describe.skipIf(!enabled)(
       });
 
     /**
-     * Resolves once some backend is waiting on a lock while running an UPDATE of
-     * `workspace_invites` — the named request's guarded statement, blocked on a
-     * row the other transaction holds. Resolves early if `settled` does, so a
-     * statement that never blocks fails on its assertions, not a timeout.
+     * Resolves once one of THIS test's connections is waiting on a lock while
+     * running an UPDATE of `workspace_invites`, AND the backend blocking it
+     * (`pg_blocking_pids`) is also one of this test's connections — i.e. the
+     * request's guarded statement is blocked on a row the test's other
+     * transaction holds. Resolves early if `settled` does, so a statement that
+     * never blocks fails on its assertions, not a timeout.
      */
     async function blockedOnInvite(settled: Promise<unknown>): Promise<"blocked" | "settled"> {
       let done = false;
@@ -178,10 +193,17 @@ describe.skipIf(!enabled)(
         if (done) return "settled";
         const rows = await observer.$queryRaw<{ n: bigint }[]>`
           SELECT count(*) AS n
-            FROM pg_stat_activity
-           WHERE datname = current_database()
-             AND wait_event_type = 'Lock'
-             AND query ILIKE 'UPDATE%workspace_invites%'`;
+            FROM pg_stat_activity waiter
+           WHERE waiter.datname = current_database()
+             AND waiter.application_name = ${APP_NAME}
+             AND waiter.wait_event_type = 'Lock'
+             AND waiter.query ILIKE 'UPDATE%workspace_invites%'
+             AND EXISTS (
+                   SELECT 1
+                     FROM pg_stat_activity blocker
+                    WHERE blocker.pid = ANY (pg_blocking_pids(waiter.pid))
+                      AND blocker.application_name = ${APP_NAME}
+                 )`;
         if (Number(rows[0]?.n ?? 0) > 0) return "blocked";
         await new Promise((r) => setTimeout(r, 25));
       }
@@ -189,7 +211,7 @@ describe.skipIf(!enabled)(
     }
 
     beforeAll(async () => {
-      db = new PrismaClient({ adapter: selectPrismaAdapter(databaseUrl) });
+      db = new PrismaClient({ adapter: selectPrismaAdapter(taggedUrl(databaseUrl)) });
       observer = new PrismaClient({ adapter: selectPrismaAdapter(databaseUrl) });
       for (const id of [OWNER, INVITEE]) {
         await db.user.create({
