@@ -125,6 +125,8 @@ import { createSocketServer, type MetisIOServer } from "../src/lib/socket/server
 import { createJobEventEmitter, _resetJobLifecycleMemory } from "../src/lib/socket/job-events.js";
 import { issueTokens } from "../src/lib/auth/jwt.js";
 import { canJoinAnalysisRoom } from "../src/lib/socket/analysis-room-access.js";
+import { wirePresenceHandlers } from "../src/lib/collaboration/presence.js";
+import type { ClientToServerEvents } from "@metis/shared";
 
 let httpServer: http.Server;
 let io: MetisIOServer;
@@ -133,6 +135,8 @@ let port: number;
 beforeAll(async () => {
   httpServer = http.createServer();
   io = createSocketServer(httpServer);
+  // `src/server.ts` wires the artifact presence handlers on the same server.
+  wirePresenceHandlers(io);
   await new Promise<void>((resolve) => {
     httpServer.listen(0, () => {
       const addr = httpServer.address();
@@ -859,6 +863,95 @@ describe("#617 the handshake trusts live user state, not the token", () => {
     await vi.waitFor(() =>
       expect(io.sockets.adapter.rooms.get("mcp:status")?.has(socket.id!) ?? false).toBe(true),
     );
+    socket.close();
+  });
+});
+
+// #654 — every handler used to destructure its payload in the parameter
+// list, so a null or missing payload threw inside socket.io's nextTick
+// dispatch: an uncaught exception that took the whole API process down.
+describe("#654 a null, missing or primitive payload never crashes the process", () => {
+  // A `Record` over `keyof ClientToServerEvents`, so a new client event fails
+  // typecheck until it is listed here too.
+  const CLIENT_EVENTS: Record<keyof ClientToServerEvents, true> = {
+    "subscribe:project": true,
+    "unsubscribe:project": true,
+    "subscribe:analysis": true,
+    "unsubscribe:analysis": true,
+    "subscribe:session": true,
+    "unsubscribe:session": true,
+    "subscribe:mcp": true,
+    "unsubscribe:mcp": true,
+    "subscribe:connector": true,
+    "unsubscribe:connector": true,
+    "subscribe:publish": true,
+    "unsubscribe:publish": true,
+    "subscribe:scheduler": true,
+    "unsubscribe:scheduler": true,
+    "subscribe:task": true,
+    "unsubscribe:task": true,
+    "subscribe:bg-run": true,
+    "unsubscribe:bg-run": true,
+    "subscribe:job": true,
+    "unsubscribe:job": true,
+    "subscribe:thread": true,
+    "unsubscribe:thread": true,
+    "presence:thread:join": true,
+    "presence:thread:leave": true,
+    "typing:start": true,
+    "typing:stop": true,
+    "presence:join": true,
+    "presence:leave": true,
+  };
+  const events = Object.keys(CLIENT_EVENTS);
+
+  it.each([
+    ["null", [null]],
+    ["no", []],
+    ["a primitive", [42]],
+  ] as const)("survives %s payload on every client event", async (_label, args) => {
+    const crashes: unknown[] = [];
+    const onCrash = (err: unknown): void => {
+      crashes.push(err);
+    };
+    process.on("uncaughtException", onCrash);
+    process.on("unhandledRejection", onCrash);
+    try {
+      const socket = await connectAs("u1", "u1");
+      const errors: string[] = [];
+      socket.on("auth:error", ({ message }: { message: string }) => errors.push(message));
+      const rawEmit = socket.emit as (ev: string, ...rest: unknown[]) => void;
+      for (const event of events) rawEmit.call(socket, event, ...args);
+      await new Promise((r) => setTimeout(r, 150));
+      expect(crashes).toEqual([]);
+      // No room was joined from the bad payload.
+      const joined = [...(io.sockets.adapter.sids.get(socket.id!) ?? [])];
+      expect(joined.filter((room) => /:(undefined|null|42)$/.test(room))).toEqual([]);
+      // The same socket is still connected and still subscribes normally.
+      expect(socket.connected).toBe(true);
+      socket.emit("subscribe:connector", { connectorId: "c-654" });
+      await vi.waitFor(() =>
+        expect(io.sockets.adapter.rooms.get("connector:c-654")?.has(socket.id!) ?? false).toBe(
+          true,
+        ),
+      );
+      socket.close();
+    } finally {
+      process.off("uncaughtException", onCrash);
+      process.off("unhandledRejection", onCrash);
+    }
+  });
+
+  it("ignores subscribe:project with no usable projectId instead of running the access check", async () => {
+    const socket = await connectAs("u1", "u1");
+    const errors: string[] = [];
+    socket.on("auth:error", ({ message }: { message: string }) => errors.push(message));
+    const rawEmit = socket.emit as (ev: string, ...rest: unknown[]) => void;
+    for (const args of [[null], [], [42], [{ projectId: "" }], [{ projectId: 7 }]]) {
+      rawEmit.call(socket, "subscribe:project", ...args);
+    }
+    await new Promise((r) => setTimeout(r, 150));
+    expect(errors).toEqual([]);
     socket.close();
   });
 });

@@ -46,9 +46,13 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
     /** Tracks which presence rooms this socket has joined. */
     const joinedRooms = new Set<string>();
 
+    // #654 — the payload is read with `?.`, never destructured: a null or
+    // missing payload rejected the handler's promise and crashed the process.
     socket.on(
       "presence:join",
-      async ({ artifactType, artifactId }: { artifactType?: unknown; artifactId?: unknown }) => {
+      async (payload?: { artifactType?: unknown; artifactId?: unknown } | null) => {
+        const artifactType = payload?.artifactType;
+        const artifactId = payload?.artifactId;
         if (typeof artifactType !== "string" || typeof artifactId !== "string") return;
         // Cap rooms per socket to prevent unbounded growth.
         if (joinedRooms.size >= 50) {
@@ -70,7 +74,9 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
 
     socket.on(
       "presence:leave",
-      async ({ artifactType, artifactId }: { artifactType?: unknown; artifactId?: unknown }) => {
+      async (payload?: { artifactType?: unknown; artifactId?: unknown } | null) => {
+        const artifactType = payload?.artifactType;
+        const artifactId = payload?.artifactId;
         if (typeof artifactType !== "string" || typeof artifactId !== "string") return;
         const key = roomKey(artifactType, artifactId);
         await socket.leave(key);

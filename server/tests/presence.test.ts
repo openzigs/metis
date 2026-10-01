@@ -125,6 +125,24 @@ describe("wirePresenceHandlers", () => {
     expect(getRoomPresence().size).toBe(0);
   });
 
+  // #654 — a destructured null payload rejected the async handler, an
+  // unhandled rejection that crashed the API process.
+  it("ignores a null or missing payload on presence:join and presence:leave", async () => {
+    const { mockIo, mockSocket, socketListeners } = createMockIo();
+    wirePresenceHandlers(mockIo);
+    const connectionHandler = vi
+      .mocked(mockIo.on)
+      .mock.calls.find(([e]) => e === "connection")?.[1];
+    connectionHandler!(mockSocket);
+    for (const event of ["presence:join", "presence:leave"]) {
+      await expect(socketListeners[event]?.(null)).resolves.toBeUndefined();
+      await expect(socketListeners[event]?.()).resolves.toBeUndefined();
+    }
+    expect(mockSocket.join).not.toHaveBeenCalled();
+    expect(mockSocket.leave).not.toHaveBeenCalled();
+    expect(getRoomPresence().size).toBe(0);
+  });
+
   it("rejects joining when room cap (50) is reached", async () => {
     const { mockIo, mockSocket, socketListeners } = createMockIo();
     wirePresenceHandlers(mockIo);

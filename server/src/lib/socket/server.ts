@@ -245,7 +245,13 @@ function attachHandlers(
     void recheckLiveUser(socket);
   }
 
-  socket.on("subscribe:project", ({ projectId }) => {
+  // #654 — no handler destructures its payload in the parameter list: a null or
+  // missing payload threw inside socket.io's nextTick dispatch, an uncaught
+  // exception that took the whole API process down. Each reads its field with
+  // `?.` and ignores anything that is not a non-empty string.
+  socket.on("subscribe:project", (payload) => {
+    const projectId: unknown = payload?.projectId;
+    if (!projectId || typeof projectId !== "string") return;
     // #255 — per-project authorization. The `project:{id}` room fans out
     // job-lifecycle, presence, and comment events; an authenticated client must
     // not be able to subscribe to a project it has no access to (OWASP A01,
@@ -282,7 +288,9 @@ function attachHandlers(
       }
     })();
   });
-  socket.on("unsubscribe:project", ({ projectId }) => {
+  socket.on("unsubscribe:project", (payload) => {
+    const projectId: unknown = payload?.projectId;
+    if (!projectId || typeof projectId !== "string") return;
     void socket.leave(`project:${projectId}`);
   });
 
@@ -340,7 +348,8 @@ function attachHandlers(
   // arguments), so only the session's owner, who can still reach its project,
   // may join it — the same rule as every other read of the session. It used to
   // join any id a client named.
-  socket.on("subscribe:session", ({ sessionId }) => {
+  socket.on("subscribe:session", (payload) => {
+    const sessionId: unknown = payload?.sessionId;
     if (!sessionId || typeof sessionId !== "string") return;
     void (async () => {
       try {
@@ -351,7 +360,9 @@ function attachHandlers(
       }
     })();
   });
-  socket.on("unsubscribe:session", ({ sessionId }) => {
+  socket.on("unsubscribe:session", (payload) => {
+    const sessionId: unknown = payload?.sessionId;
+    if (!sessionId || typeof sessionId !== "string") return;
     void socket.leave(`session:${sessionId}`);
   });
   // #562 — bumped by every subscribe/unsubscribe, so a subscribe whose
@@ -424,16 +435,19 @@ function attachHandlers(
     for (const room of [...socket.rooms]) if (isMcpStatusRoom(room)) void socket.leave(room);
   });
 
-  socket.on("subscribe:connector", ({ connectorId }) => {
+  socket.on("subscribe:connector", (payload) => {
+    const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
     void socket.join(`connector:${connectorId}`);
   });
-  socket.on("unsubscribe:connector", ({ connectorId }) => {
+  socket.on("unsubscribe:connector", (payload) => {
+    const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
     void socket.leave(`connector:${connectorId}`);
   });
 
-  socket.on("subscribe:publish", ({ batchId }) => {
+  socket.on("subscribe:publish", (payload) => {
+    const batchId: unknown = payload?.batchId;
     if (!batchId || typeof batchId !== "string") return;
     if (!hasPermission(user.role, "issue.publish") && !hasPermission(user.role, "issue.preview")) {
       socket.emit("auth:error", { message: "FORBIDDEN" });
@@ -441,7 +455,8 @@ function attachHandlers(
     }
     void socket.join(`publish:${batchId}`);
   });
-  socket.on("unsubscribe:publish", ({ batchId }) => {
+  socket.on("unsubscribe:publish", (payload) => {
+    const batchId: unknown = payload?.batchId;
     if (!batchId || typeof batchId !== "string") return;
     void socket.leave(`publish:${batchId}`);
   });
@@ -459,7 +474,8 @@ function attachHandlers(
   socket.on("unsubscribe:scheduler", () => {
     void socket.leave("scheduler:status");
   });
-  socket.on("subscribe:task", ({ taskId }) => {
+  socket.on("subscribe:task", (payload) => {
+    const taskId: unknown = payload?.taskId;
     if (!taskId || typeof taskId !== "string") return;
     if (!hasPermission(user.role, "task.read")) {
       socket.emit("auth:error", { message: "FORBIDDEN: subscribe:task requires task.read" });
@@ -467,7 +483,8 @@ function attachHandlers(
     }
     void socket.join(`task:${taskId}`);
   });
-  socket.on("unsubscribe:task", ({ taskId }) => {
+  socket.on("unsubscribe:task", (payload) => {
+    const taskId: unknown = payload?.taskId;
     if (!taskId || typeof taskId !== "string") return;
     void socket.leave(`task:${taskId}`);
   });
@@ -476,7 +493,8 @@ function attachHandlers(
   // Analysis, doc-generation, and impact-analysis all broadcast here. Anyone
   // with a job id (returned from the trigger endpoint) may subscribe; finer
   // authz is enforced at the REST trigger layer that hands out the id.
-  socket.on("subscribe:job", ({ jobId }) => {
+  socket.on("subscribe:job", (payload) => {
+    const jobId: unknown = payload?.jobId;
     if (!jobId || typeof jobId !== "string") return;
     void socket.join(`job:${jobId}`);
     // Replay the job's last known transition to THIS socket. A room only
@@ -529,17 +547,20 @@ function attachHandlers(
       }
     })();
   });
-  socket.on("unsubscribe:job", ({ jobId }) => {
+  socket.on("unsubscribe:job", (payload) => {
+    const jobId: unknown = payload?.jobId;
     if (!jobId || typeof jobId !== "string") return;
     void socket.leave(`job:${jobId}`);
   });
 
   // Epic #156 — async background run rooms (`run:{runId}`).
-  socket.on("subscribe:bg-run", ({ runId }) => {
+  socket.on("subscribe:bg-run", (payload) => {
+    const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
     void socket.join(`run:${runId}`);
   });
-  socket.on("unsubscribe:bg-run", ({ runId }) => {
+  socket.on("unsubscribe:bg-run", (payload) => {
+    const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
     void socket.leave(`run:${runId}`);
   });

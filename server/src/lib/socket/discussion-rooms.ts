@@ -53,7 +53,8 @@ export function threadRoom(threadId: string): string {
 export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
   const user = socket.data.user;
 
-  socket.on("subscribe:thread", ({ threadId }) => {
+  socket.on("subscribe:thread", (payload) => {
+    const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
     void (async () => {
       try {
@@ -93,7 +94,8 @@ export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
     })();
   });
 
-  socket.on("unsubscribe:thread", ({ threadId }) => {
+  socket.on("unsubscribe:thread", (payload) => {
+    const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
     void socket.leave(threadRoom(threadId));
   });
