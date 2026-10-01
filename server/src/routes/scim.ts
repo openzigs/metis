@@ -602,39 +602,54 @@ export function scimRouter(): Router {
   return r;
 }
 
-/** Serialize explicit provisioning decisions with login reconciliation. */
+/**
+ * Serialize explicit provisioning decisions with login reconciliation.
+ *
+ * Returns whether the user's role state actually changed, judged from the
+ * writes themselves — a provider grant deleted, the targeted membership created
+ * or deleted, or the role authority moved to SCIM — never from the request verb.
+ * IdPs re-send unchanged memberships on every sync; those must not re-handshake
+ * the member's live sockets (#633).
+ */
 async function changeScimMembership(userId: string, roleId: string, operation: "add" | "remove") {
   const changed = await prisma.$transaction(
     async (tx) => {
-      if (operation === "remove") {
-        const membership = await tx.userRole.findUnique({
-          where: { userId_roleId: { userId, roleId } },
-        });
-        // An absent or explicitly local membership must not revoke other grants.
-        if (!membership || membership.source === "local") return false;
-      }
+      const membership = await tx.userRole.findUnique({
+        where: { userId_roleId: { userId, roleId } },
+      });
+      // An absent or explicitly local membership must not revoke other grants.
+      if (operation === "remove" && (!membership || membership.source === "local")) return false;
+      const before = await tx.user.findUnique({
+        where: { id: userId },
+        select: { authRoleAuthority: true },
+      });
       await tx.user.update({
         where: { id: userId },
         data: { authRolesInitializedAt: new Date(), authRoleAuthority: "scim" },
       });
       // An explicit SCIM decision supersedes IdP grants, including on revocation.
       // Otherwise removing the last SCIM reader could uncover a provider admin.
-      await tx.userRole.deleteMany({ where: { userId, source: "provider" } });
+      const providerDeleted = await tx.userRole.deleteMany({
+        where: { userId, source: "provider" },
+      });
+      let membershipChanged = false;
       if (operation === "add") {
-        await tx.userRole.upsert({
-          where: { userId_roleId: { userId, roleId } },
-          create: { userId, roleId, source: "scim" },
-          update: {}, // Preserve an existing local assignment's provenance.
-        });
+        // An existing assignment — notably a local one — keeps its provenance.
+        // A provider row for this role was just deleted, so it is replaced.
+        if (!membership || membership.source === "provider") {
+          await tx.userRole.create({ data: { userId, roleId, source: "scim" } });
+          membershipChanged = true;
+        }
       } else {
         // Legacy assignments predate provenance. Preserve the pre-migration SCIM
         // removal contract for the explicitly targeted membership, while never
         // removing a positively identified local grant.
-        await tx.userRole.deleteMany({
+        const removed = await tx.userRole.deleteMany({
           where: { userId, roleId, source: { in: ["scim", "unknown"] } },
         });
+        membershipChanged = removed.count > 0;
       }
-      return true;
+      return membershipChanged || providerDeleted.count > 0 || before?.authRoleAuthority !== "scim";
     },
     { isolationLevel: "Serializable" },
   );

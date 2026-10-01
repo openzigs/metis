@@ -57,6 +57,10 @@ vi.mock("../src/lib/prisma.js", () => {
           return { ...row };
         },
       ),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const row = db.users.get(where.id);
+        return row ? { ...row } : null;
+      }),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<UserRow> }) => {
         const row = db.users.get(where.id)!;
         Object.assign(row, data);
@@ -81,7 +85,13 @@ vi.mock("../src/lib/prisma.js", () => {
         db.assignments = db.assignments.filter((a) => !matches(a, where));
         return { count: before - db.assignments.length };
       }),
-      upsert: vi.fn(),
+      create: vi.fn(async ({ data }: { data: Assignment }) => {
+        if (db.assignments.some((a) => a.userId === data.userId && a.roleId === data.roleId)) {
+          throw new Error("Unique constraint failed on userId_roleId");
+        }
+        db.assignments.push({ ...data });
+        return { ...data };
+      }),
     },
     role: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
@@ -234,11 +244,13 @@ function adminOnlyServer(label: string): MCPServerConfig {
   };
 }
 
-const removeFromGroup = (userId: string, roleId: string) =>
+const changeGroup = (op: "add" | "remove", userId: string, roleId: string) =>
   request(app)
     .patch(`/scim/v2/Groups/${roleId}`)
     .set("Authorization", SCIM_AUTH)
-    .send({ Operations: [{ op: "remove", path: "members", value: [{ value: userId }] }] });
+    .send({ Operations: [{ op, path: "members", value: [{ value: userId }] }] });
+const removeFromGroup = (userId: string, roleId: string) => changeGroup("remove", userId, roleId);
+const addToGroup = (userId: string, roleId: string) => changeGroup("add", userId, roleId);
 
 describe("#633 a role change re-handshakes the user's open sockets", () => {
   it("a demoted admin reconnects as a reader and stops receiving admin-room events", async () => {
@@ -289,5 +301,40 @@ describe("#633 a role change re-handshakes the user's open sockets", () => {
     await vi.waitFor(() => expect(steady.labels).toContain("steady"));
     expect(steady.disconnectReasons).toEqual([]);
     expect(steady.sids).toHaveLength(1);
+  });
+
+  // IdPs re-send unchanged memberships on every sync; each one must not drop
+  // and reconnect every member's live connections.
+  it("a repeated add of an existing membership leaves the user's sockets alone", async () => {
+    seed(["u-resync"]);
+    const resync = await connectAdmin("u-resync");
+    for (let sync = 0; sync < 3; sync++) {
+      expect((await addToGroup("u-resync", "role-admin")).status).toBe(200);
+    }
+    expect(db.assignments).toEqual([{ userId: "u-resync", roleId: "role-admin", source: "scim" }]);
+    await mcp.lifecycle.start(adminOnlyServer("resync"));
+    await vi.waitFor(() => expect(resync.labels).toContain("resync"));
+    expect(resync.disconnectReasons).toEqual([]);
+    expect(resync.sids).toHaveLength(1);
+    expect(inAdminRoom(resync.sids[0])).toBe(true);
+  });
+
+  it("a first-time add re-handshakes the user's sockets", async () => {
+    seed(["u-added"]);
+    const added = await connectAdmin("u-added");
+    expect((await addToGroup("u-added", "role-reader")).status).toBe(200);
+    expect(db.assignments).toContainEqual({
+      userId: "u-added",
+      roleId: "role-reader",
+      source: "scim",
+    });
+    await vi.waitFor(() => {
+      expect(added.disconnectReasons).toEqual(["transport close"]);
+      expect(added.sids).toHaveLength(2);
+      expect(added.socket.connected).toBe(true);
+    });
+    expect(io.sockets.sockets.has(added.sids[0])).toBe(false);
+    // Still an admin through the admin membership: the new socket re-joins.
+    await vi.waitFor(() => expect(inAdminRoom(added.sids[1])).toBe(true));
   });
 });
