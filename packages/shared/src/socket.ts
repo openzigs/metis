@@ -24,6 +24,20 @@ export interface ThreadRoomEvent {
   threadId: string;
 }
 
+/**
+ * #655 — the payload of `auth:error`. Without `room` it is a connection-level
+ * failure the user must see. With `room` it is the refusal of one room join
+ * (`connector:{id}`, `run:{id}`, `job:{id}`): the client re-subscribes to those
+ * rooms on its own, after every reconnect, so a refusal there is not an error
+ * to show — the follower drops the room instead. The payload is the same for
+ * an unknown id, a foreign id and a failed lookup, so it is no existence oracle.
+ */
+export interface SocketAuthErrorEvent {
+  message: string;
+  /** The room whose join was refused, exactly as the client named it. */
+  room?: string;
+}
+
 export type AnalysisAgentEventType = "started" | "chunk" | "completed" | "failed" | "cancelled";
 
 /** Per-agent progress event broadcast inside `analysis:{id}` rooms (Phase 7). */
@@ -249,7 +263,7 @@ export interface ServerToClientEvents {
   /** Epic #238 (#243) — per-section doc-generation progress + warnings. */
   "job:doc-section": (data: DocSectionProgressEvent) => void;
   "auth:ok": (data: { userId: string; username: string }) => void;
-  "auth:error": (data: { message: string }) => void;
+  "auth:error": (data: SocketAuthErrorEvent) => void;
   "analysis:agent": (data: AnalysisAgentEvent) => void;
   /**
    * Epic #202 follow-up (#256) — distinct promotion-blocked outcome. Emitted

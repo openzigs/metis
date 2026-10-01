@@ -119,9 +119,10 @@ describe("#658 a throw from attachHandlers", () => {
 
       // The bystander is still connected and its handlers still run.
       expect(bystander.connected).toBe(true);
-      bystander.emit("subscribe:bg-run", { runId: "r-658" });
+      // (#655 — a role-gated room: the id-scoped rooms now need a row to exist.)
+      bystander.emit("subscribe:task", { taskId: "t-658" });
       await vi.waitFor(() =>
-        expect(io.sockets.adapter.rooms.get("run:r-658")?.has(bystander.id!)).toBe(true),
+        expect(io.sockets.adapter.rooms.get("task:t-658")?.has(bystander.id!)).toBe(true),
       );
       // A new socket after the failure is handled normally.
       const later = connect("u-later");
