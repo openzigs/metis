@@ -50,6 +50,11 @@ export interface WirePresenceOptions {
    * replica. Omitted, the list is this replica's alone (one replica).
    */
   clustered?: boolean;
+  /**
+   * #651 — the cluster adapter's `onListening` (#649): each re-established
+   * `LISTEN` connection re-merges every list, repairing a healed partition.
+   */
+  onAdapterListening?: (listener: () => void) => void;
 }
 
 export function wirePresenceHandlers(io: MetisIOServer, opts: WirePresenceOptions = {}): void {
@@ -57,6 +62,7 @@ export function wirePresenceHandlers(io: MetisIOServer, opts: WirePresenceOption
     kind: "artifact",
     clustered: opts.clustered ?? false,
     localMembers: (key) => [...(roomPresence.get(key)?.values() ?? [])],
+    onAdapterListening: opts.onAdapterListening,
   });
 
   onConnection(io, (socket) => {

@@ -696,6 +696,27 @@ describe("announceNodeRemoval", () => {
     });
   });
 
+  it.each([
+    ["missing", {}],
+    ["not a function", { removeNode: "renamed" }],
+  ])(
+    "leaves an adapter whose removeNode is %s unpatched, and warns naming the version",
+    (_label, extra) => {
+      warn.mockClear();
+      const adapter = Object.assign(new EventEmitter(), extra);
+
+      expect(() => announceNodeRemoval(adapter)).not.toThrow();
+      expect(announceNodeRemoval(adapter)).toBe(adapter);
+      expect((adapter as { removeNode?: unknown }).removeNode).toBe(
+        (extra as { removeNode?: unknown }).removeNode,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("socket.io-adapter 2.5.6"),
+        expect.any(Object),
+      );
+    },
+  );
+
   it("is installed on every namespace adapter createPostgresClusterAdapter builds", async () => {
     const bus = new FakePgNotifyBus();
     const cluster = createPostgresClusterAdapter(bus.pool(), {

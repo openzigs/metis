@@ -75,10 +75,16 @@ async function twoReplicas(heartbeat: SocketClusterHeartbeat = {}) {
   const bus = new FakePgNotifyBus();
   const pools = [bus.pool(), bus.pool()];
   adapters = pools.map((pool) => createPostgresClusterAdapter(pool, heartbeat));
-  a = await startReplica(adapters[0].adapter);
-  b = await startReplica(adapters[1].adapter);
-  (await freshPresence()).wirePresenceHandlers(a.io, { clustered: true });
-  (await freshPresence()).wirePresenceHandlers(b.io, { clustered: true });
+  a = await startReplica(adapters[0].adapter, adapters[0].onListening);
+  b = await startReplica(adapters[1].adapter, adapters[1].onListening);
+  (await freshPresence()).wirePresenceHandlers(a.io, {
+    clustered: true,
+    onAdapterListening: adapters[0].onListening,
+  });
+  (await freshPresence()).wirePresenceHandlers(b.io, {
+    clustered: true,
+    onAdapterListening: adapters[1].onListening,
+  });
   await vi.waitFor(async () => {
     expect(await a!.io.of("/").adapter.serverCount()).toBe(2);
     expect(await b!.io.of("/").adapter.serverCount()).toBe(2);
@@ -183,6 +189,60 @@ describe("#651 artifact presence spans every replica", () => {
     expect(Date.now() - cutAt).toBeLessThan(400 + 1_000 + 1_000);
     expect(await a.io.of("/").adapter.serverCount()).toBe(1);
     expect(b.io.of("/").adapter.rooms.get(ROOM)?.size).toBe(1);
+  });
+
+  it("re-merges both replicas' lists once a partition heals, with no client acting", async () => {
+    const { bus, pools, a, b } = await twoReplicas({
+      heartbeatInterval: 100,
+      heartbeatTimeout: 400,
+    });
+    seed(["v-a", "v-a2", "v-b"], []);
+    const onA = await connectUser(a, "v-a", open);
+    const onB = await connectUser(b, "v-b", open);
+    const seenOnA = watch(onA.socket);
+    const seenOnB = watch(onB.socket);
+    const threadOnA = watchThread(onA.socket);
+    const threadOnB = watchThread(onB.socket);
+    await vi.waitFor(() => {
+      for (const seen of [seenOnA, seenOnB, threadOnA, threadOnB]) {
+        expect(latest(seen)).toEqual(["v-a", "v-b"]);
+      }
+    });
+
+    // B is partitioned: its LISTEN connection drops and cannot come back until
+    // the heal; each side's adapter then drops the other.
+    const listenB = [...bus.clients].find((c) => c.pool === pools[1])!;
+    bus.sever(pools[1]);
+    listenB.emit("end");
+    await vi.waitFor(
+      () => {
+        expect(latest(seenOnA)).toEqual(["v-a"]);
+        expect(latest(seenOnB)).toEqual(["v-b"]);
+        expect(latest(threadOnA)).toEqual(["v-a"]);
+        expect(latest(threadOnB)).toEqual(["v-b"]);
+      },
+      { timeout: 4_000 },
+    );
+
+    // A change during the partition: its relay never reaches B.
+    const seenOnA2 = watch((await connectUser(a, "v-a2", open)).socket);
+    await vi.waitFor(() => expect(latest(seenOnA2)).toEqual(["v-a", "v-a2"]));
+    expect(latest(seenOnB)).toEqual(["v-b"]);
+
+    bus.restore(pools[1]);
+
+    // B's LISTEN is re-established (after the adapter's 1-3 s reconnect delay).
+    const merged = ["v-a", "v-a2", "v-b"];
+    await vi.waitFor(
+      () => {
+        expect(latest(seenOnA)).toEqual(merged);
+        expect(latest(seenOnA2)).toEqual(merged);
+        expect(latest(seenOnB)).toEqual(merged);
+        expect(latest(threadOnA)).toEqual(["v-a", "v-b"]);
+        expect(latest(threadOnB)).toEqual(["v-a", "v-b"]);
+      },
+      { timeout: 8_000 },
+    );
   });
 });
 

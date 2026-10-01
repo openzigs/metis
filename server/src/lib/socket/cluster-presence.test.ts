@@ -251,4 +251,127 @@ describe("createClusterPresence with the cluster adapter", () => {
     adapter.emit(ADAPTER_NODE_REMOVED_EVENT, "peer-2");
     expect(gathers.map((g) => g.room)).toEqual([ROOM]);
   });
+
+  /** Refresh ROOM once with a local viewer, so this replica tracks it. */
+  async function viewed(server: ReturnType<typeof setup>) {
+    server.adapter.rooms.set(ROOM, new Set(["s1"]));
+    server.presence.changed(ROOM);
+    server.gathers.splice(0).forEach((g) => g.ack(null, []));
+    await flush();
+  }
+
+  /** Whether ROOM is still tracked: a peer's removal re-lists only tracked rooms. */
+  function tracked(server: ReturnType<typeof setup>): boolean {
+    server.gathers.length = 0;
+    server.adapter.rooms.set(ROOM, new Set(["s9"]));
+    server.adapter.emit(ADAPTER_NODE_REMOVED_EVENT, "peer-x");
+    return server.gathers.some((g) => g.room === ROOM);
+  }
+
+  it("forgets a room when its last local viewer leaves", async () => {
+    const server = setup();
+    await viewed(server);
+    expect(tracked(server)).toBe(true);
+    server.gathers.splice(0).forEach((g) => g.ack(null, []));
+    await flush();
+
+    server.adapter.rooms.delete(ROOM);
+    server.presence.changed(ROOM);
+
+    expect(tracked(server)).toBe(false);
+  });
+
+  it("forgets a room on a peer's change once no local viewer is left in it", async () => {
+    const server = setup();
+    await viewed(server);
+
+    server.adapter.rooms.delete(ROOM);
+    server.listeners.get(EVENTS.changed)!(ROOM);
+
+    expect(server.gathers).toEqual([]);
+    expect(tracked(server)).toBe(false);
+  });
+});
+
+describe("createClusterPresence after a partition heals (#649 onAdapterListening)", () => {
+  function setup() {
+    const server = fakeServer();
+    let onListening: (() => void) | undefined;
+    const presence = createClusterPresence(server.io, {
+      kind: "artifact",
+      clustered: true,
+      localMembers: () => [member("u-local")],
+      onAdapterListening: (listener) => {
+        onListening = listener;
+      },
+    });
+    return { ...server, presence, listening: () => onListening!() };
+  }
+
+  const OTHER = "presence:discussion:r2";
+
+  async function viewing(server: ReturnType<typeof setup>, ...rooms: string[]) {
+    for (const room of rooms) {
+      server.adapter.rooms.set(room, new Set([`s-${room}`]));
+      server.presence.changed(room);
+    }
+    server.gathers.splice(0).forEach((g) => g.ack(null, []));
+    await flush();
+    server.serverSideEmit.mockClear();
+    server.emitted.length = 0;
+  }
+
+  it("asks every peer to re-list, and relays and refreshes each room it has viewers in", async () => {
+    const server = setup();
+    await viewing(server, ROOM, OTHER);
+    server.adapter.rooms.delete(OTHER); // its last viewer left without a change
+
+    server.listening();
+
+    expect(server.serverSideEmit.mock.calls.filter((c) => c[0] !== EVENTS.members)).toEqual([
+      [EVENTS.resync],
+      [EVENTS.changed, ROOM],
+    ]);
+    expect(server.gathers.map((g) => g.room)).toEqual([ROOM]);
+    server.gathers[0].ack(null, [[member("u-peer")]]);
+    await flush();
+    expect(server.emitted).toEqual([{ room: ROOM, users: [member("u-local"), member("u-peer")] }]);
+  });
+
+  it("sends nothing when it has no viewers, as on boot", () => {
+    const server = setup();
+
+    server.listening();
+
+    expect(server.serverSideEmit).not.toHaveBeenCalled();
+  });
+
+  it("logs a resync relay that throws and still re-lists its rooms", async () => {
+    const server = setup();
+    await viewing(server, ROOM);
+    server.serverSideEmit.mockImplementationOnce(() => {
+      throw new Error("adapter closed");
+    });
+
+    server.listening();
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("could not relay a presence change"),
+      expect.objectContaining({ event: EVENTS.resync, error: "adapter closed" }),
+    );
+    expect(server.gathers.map((g) => g.room)).toEqual([ROOM]);
+  });
+
+  it("answers a peer's resync by relaying and refreshing each room it has viewers in", async () => {
+    const server = setup();
+    await viewing(server, ROOM, OTHER);
+    server.adapter.rooms.delete(OTHER);
+
+    server.listeners.get(EVENTS.resync)!();
+
+    expect(server.serverSideEmit.mock.calls.filter((c) => c[0] !== EVENTS.members)).toEqual([
+      [EVENTS.changed, ROOM],
+    ]);
+    expect(server.gathers.map((g) => g.room)).toEqual([ROOM]);
+  });
 });

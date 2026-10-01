@@ -679,7 +679,15 @@ no new managed service.
   connected to every pod. Each pod asks the others for their viewers on each
   change and sends the merged list to its own viewers. A pod that dies without
   its connections closing drops off every list within about 11 seconds (the
-  adapter's 10-second heartbeat timeout plus its 1-second sweep).
+  adapter's 10-second heartbeat timeout plus its 1-second sweep). After a
+  database outage or failover, each pod re-merges the lists once its `LISTEN`
+  connection is back, with no viewer having to act.
+
+- **Rolling deploys:** while pods from before #651 are still running, presence
+  avatars on the new pods can lag by about 5 seconds per change. The old pods
+  never answer a new pod's request for their viewers, so each request waits
+  out the adapter's 5-second request timeout. The lag ends once every old pod
+  has been replaced.
 
 - **Cost:** a pool of at most 2 extra connections per pod, one of which is held
   for `LISTEN`. Count them against the database's connection limit.

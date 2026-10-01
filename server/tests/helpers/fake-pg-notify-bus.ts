@@ -49,16 +49,30 @@ export class FakePgNotifyBus {
   readonly clients = new Set<FakeListenClient>();
   /** Every non-notify statement any pool ran, in order. */
   readonly statements: string[] = [];
-  /** #651 — pools cut off from the bus (`sever`): they neither send nor receive. */
-  private readonly severed = new Set<object>();
+  /**
+   * #651 — pools cut off from the bus (`sever`): they neither send nor receive,
+   * and a new connection waits on the promise until `restore`.
+   */
+  private readonly severed = new Map<object, { healed: Promise<void>; heal: () => void }>();
 
   /**
    * #651 — cut `pool`'s replica off the database without closing anything, as a
    * replica that dies (or freezes) looks to its peers: its NOTIFYs stop arriving
-   * and it hears nothing, while its own sockets stay connected to it.
+   * and it hears nothing, while its own sockets stay connected to it. A
+   * `connect()` meanwhile — the adapter re-establishing a dropped `LISTEN` —
+   * waits until `restore`.
    */
   sever(pool: object): void {
-    this.severed.add(pool);
+    if (this.severed.has(pool)) return;
+    let heal = () => {};
+    const healed = new Promise<void>((r) => (heal = r));
+    this.severed.set(pool, { healed, heal });
+  }
+
+  /** #651 — heal a `sever`: the pool sends and receives again, and connects resume. */
+  restore(pool: object): void {
+    this.severed.get(pool)?.heal();
+    this.severed.delete(pool);
   }
 
   /** A pool for one replica. `ended` flips when the adapter's owner ends it. */
@@ -67,6 +81,7 @@ export class FakePgNotifyBus {
     const pool = Object.assign(emitter, {
       ended: false,
       connect: async () => {
+        await this.severed.get(pool)?.healed;
         const client = new FakeListenClient(this, pool);
         this.clients.add(client);
         return client;

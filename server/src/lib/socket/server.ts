@@ -169,7 +169,8 @@ export function createSocketServer(
   // #658 — a throw from `attachHandlers` is logged and drops this one socket;
   // unwrapped, socket.io's nextTick connect would make it an uncaughtException.
   // #651 — thread presence lists span every replica on a clustered server.
-  const threadPresence = createThreadPresence(io, Boolean(opts.adapter));
+  // A re-established LISTEN connection re-merges them (a healed partition).
+  const threadPresence = createThreadPresence(io, Boolean(opts.adapter), opts.onAdapterListening);
   onConnection(io, (socket) => attachHandlers(socket, threadPresence));
   // #622 — with the cluster adapter, a revocation or eviction handled on another
   // replica moves THIS replica's #613 epochs too, so a handshake or

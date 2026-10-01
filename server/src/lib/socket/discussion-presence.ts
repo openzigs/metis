@@ -55,21 +55,34 @@ type PresenceMap = Map<string, Map<string, PresenceMember>>;
  */
 export interface ThreadPresence {
   members: PresenceMap;
-  /** Re-list `room` to its viewers after `socket` joined or left it. */
-  changed(room: string, socket: PresenceSocket): void;
+  /**
+   * Re-list `room` to its viewers after `origin` joined or left it. Only the
+   * socket-less default (`defaultPresence`, one replica, the fake-socket unit
+   * tests) sends through `origin`; a server's presence (`createThreadPresence`)
+   * emits to the room's sockets through `io.local` and ignores it — so a socket
+   * that has just left the room is no longer sent the list.
+   */
+  changed(room: string, origin: PresenceSocket): void;
 }
 
 /**
  * #651 — the thread presence of `io`, built once per server by
  * `createSocketServer`: with the cluster adapter (`clustered`) every list is
- * merged from every replica; without it, this replica's list.
+ * merged from every replica, and re-merged whenever the adapter's `LISTEN`
+ * connection is re-established (`onAdapterListening`); without it, this
+ * replica's list.
  */
-export function createThreadPresence(io: MetisIOServer, clustered: boolean): ThreadPresence {
+export function createThreadPresence(
+  io: MetisIOServer,
+  clustered: boolean,
+  onAdapterListening?: (listener: () => void) => void,
+): ThreadPresence {
   const members: PresenceMap = new Map();
   const presence = createClusterPresence(io, {
     kind: "thread",
     clustered,
     localMembers: (room) => membersOf(members, room),
+    onAdapterListening,
   });
   return { members, changed: (room) => presence.changed(room) };
 }

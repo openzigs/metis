@@ -285,7 +285,10 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // Epic #728 — register IO in the global registry so lib code (e.g.
   // @mention fan-out, presence) can access it without DI threading.
   registerSocketServer(io);
-  wirePresenceHandlers(io, { clustered: Boolean(socketCluster) });
+  wirePresenceHandlers(io, {
+    clustered: Boolean(socketCluster),
+    ...(socketCluster ? { onAdapterListening: socketCluster.onListening } : {}),
+  });
   // Issue #251 — preload vault-backed runtime secrets into ConfigService so
   // synchronous `get(key)` calls in provider factories see vault values
   // ahead of env on the very first request. Failures are non-fatal: callers

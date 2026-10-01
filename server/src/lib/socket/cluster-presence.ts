@@ -30,6 +30,20 @@
  * dies resolves at its removal (the adapter settles requests waiting on it) or
  * at the adapter's 5 s request timeout, with the answers it has.
  *
+ * A partition that heals re-merges every list. While it lasted, changes were
+ * never relayed and each side's adapter dropped the other, so nothing else would
+ * re-list a room until a viewer joined or left it. When the replica's `LISTEN`
+ * connection is re-established (`onAdapterListening`, #649), it relays `resync`,
+ * then relays `changed` for, and refreshes, every room it has viewers in. Each
+ * peer answers a `resync` the same way for every room IT has viewers in. The
+ * healed replica's adapter counts a peer again as soon as any message of the
+ * peer's arrives, so that peer's `changed` makes it gather again with the peer
+ * included. A replica with no viewers sends nothing: a booting one has nothing
+ * to repair, and so a boot never makes every peer re-list every room. What that
+ * leaves unrepaired: a replica whose LAST viewer of a room left during a
+ * partition shorter than `heartbeatTimeout`, its relay lost, stays in its peers'
+ * list of that room until the next change there.
+ *
  * The cost: a change costs one relay, and each replica with viewers in the room
  * one request and N-1 responses over Postgres NOTIFY. Without the cluster
  * adapter nothing is relayed and a refresh is the local list, emitted at once.
@@ -55,10 +69,15 @@ export interface PresenceMember {
 export const ADAPTER_NODE_REMOVED_EVENT = "metis:node-removed";
 
 /** The server-side events one presence kind relays between replicas. */
-export function presenceRelayEvents(kind: string): { changed: string; members: string } {
+export function presenceRelayEvents(kind: string): {
+  changed: string;
+  members: string;
+  resync: string;
+} {
   return {
     changed: `metis:presence:${kind}:changed`,
     members: `metis:presence:${kind}:members`,
+    resync: `metis:presence:${kind}:resync`,
   };
 }
 
@@ -69,6 +88,11 @@ export interface ClusterPresenceOptions {
   clustered: boolean;
   /** This replica's present members of `room`. */
   localMembers(room: string): PresenceMember[];
+  /**
+   * The cluster adapter's `onListening` (#649): registers a callback for every
+   * (re)established `LISTEN` connection, on which every list is re-merged.
+   */
+  onAdapterListening?: (listener: () => void) => void;
 }
 
 export interface ClusterPresence {
@@ -111,7 +135,11 @@ export function createClusterPresence(
 
   /** Rooms with a refresh in flight → whether another must follow it. */
   const inFlight = new Map<string, boolean>();
-  /** Rooms this replica has refreshed, revisited when a peer replica is dropped. */
+  /**
+   * Rooms this replica has viewers in, as of its last refresh or change of each:
+   * revisited when a peer replica is dropped or a partition heals. A room leaves
+   * it with its last local viewer, so it never outgrows the rooms being viewed.
+   */
   const known = new Set<string>();
 
   /** Every other replica's members of `room`, as many as answered. */
@@ -159,7 +187,33 @@ export function createClusterPresence(
     );
   };
 
-  // Replica-to-replica only: no client reaches these, and neither can throw.
+  const relayOrLog = (event: string, ...args: string[]): void => {
+    try {
+      relay.serverSideEmit(event, ...args);
+    } catch (err) {
+      log.warn("could not relay a presence change to the other replicas", {
+        event,
+        room: args[0],
+        error: (err as Error).message,
+      });
+    }
+  };
+
+  const changed = (room: string): void => {
+    relayOrLog(events.changed, room);
+    if (hasLocalSockets(room)) refresh(room);
+    else known.delete(room);
+  };
+
+  /** Relay `changed` for, and refresh, every room this replica has viewers in. */
+  const relayKnown = (): void => {
+    for (const room of [...known]) {
+      if (hasLocalSockets(room)) changed(room);
+      else known.delete(room);
+    }
+  };
+
+  // Replica-to-replica only: no client reaches these, and none can throw.
   asRelayServer(io).on(events.members, (...args: unknown[]) => {
     const [room, ack] = args;
     if (typeof ack !== "function") return;
@@ -170,7 +224,19 @@ export function createClusterPresence(
 
   asRelayServer(io).on(events.changed, (...args: unknown[]) => {
     const [room] = args;
-    if (typeof room === "string" && hasLocalSockets(room)) refresh(room);
+    if (typeof room !== "string") return;
+    if (hasLocalSockets(room)) refresh(room);
+    else known.delete(room);
+  });
+
+  // A peer's partition healed: its viewers need this replica's members, and ours its.
+  asRelayServer(io).on(events.resync, () => relayKnown());
+
+  // #649 — this replica's own partition healed. A throw is logged by the adapter.
+  opts.onAdapterListening?.(() => {
+    if (known.size === 0) return;
+    relayOrLog(events.resync);
+    relayKnown();
   });
 
   // eslint-disable-next-line no-restricted-syntax -- #651: the namespace adapter's own event, emitted by `announceNodeRemoval`, which catches a listener's throw; no client reaches it
@@ -181,17 +247,5 @@ export function createClusterPresence(
     }
   });
 
-  return {
-    changed(room) {
-      try {
-        relay.serverSideEmit(events.changed, room);
-      } catch (err) {
-        log.warn("could not relay a presence change to the other replicas", {
-          room,
-          error: (err as Error).message,
-        });
-      }
-      if (hasLocalSockets(room)) refresh(room);
-    },
-  };
+  return { changed };
 }

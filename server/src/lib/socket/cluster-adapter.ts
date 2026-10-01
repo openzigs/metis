@@ -273,9 +273,27 @@ interface NodeRemover {
  * (`cluster-presence.ts`) re-lists its rooms on it, so a replica that died
  * without its sockets disconnecting stops counting. A throw from a listener is
  * logged: the adapter's own sweep timer calls this.
+ *
+ * `removeNode` is protected, not public API, and `@socket.io/postgres-adapter`
+ * 0.5.0 accepts `socket.io-adapter` `^2.5.4`. If an upgrade drops it, the
+ * adapter is returned unpatched with a warning: everything works except the
+ * dead-replica re-list (a dead replica's viewers then stay listed until the
+ * room's next change, or the next partition heal). `socket.io-adapter` is
+ * deliberately NOT pinned (no direct dependency, no pnpm override): the
+ * lockfile already fixes 2.5.6 under `--frozen-lockfile`, so it moves only in a
+ * reviewed lockfile change, where the "is installed on every namespace adapter"
+ * test fails if the method is gone — and a pin would hold back that package's
+ * security fixes.
  */
 export function announceNodeRemoval<T extends object>(adapter: T): T {
-  const target = adapter as unknown as NodeRemover;
+  const target = adapter as unknown as Partial<NodeRemover> & Pick<NodeRemover, "emit">;
+  if (typeof target.removeNode !== "function") {
+    log.warn(
+      "socket cluster adapter has no removeNode (written against socket.io-adapter 2.5.6) — a dead replica's presence is not re-listed until the room's next change",
+      { removeNode: typeof target.removeNode },
+    );
+    return adapter;
+  }
   const removeNode = target.removeNode.bind(adapter);
   target.removeNode = (uid) => {
     removeNode(uid);
