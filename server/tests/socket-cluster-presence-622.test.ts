@@ -16,6 +16,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Socket as ClientSocket } from "socket.io-client";
 import { presenceRoom } from "@metis/shared";
 
+// #679 — every viewer here may read the artifact; the join's access rule is
+// covered in `socket.test.ts`.
+vi.mock("../src/lib/socket/room-access.js", () => ({
+  canJoinPresenceRoom: async () => true,
+}));
+
 vi.mock("../src/lib/prisma.js", async () =>
   (await import("./helpers/two-replica-prisma.js")).prismaModuleMock(),
 );

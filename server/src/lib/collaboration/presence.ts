@@ -10,10 +10,14 @@
  *     → joins room `presence:{artifactType}:{artifactId}`; an artifact type
  *       outside `PRESENCE_ARTIFACT_TYPES` is ignored, so no free-form type can
  *       make two `type:id` pairs share a room (#676)
+ *     → only if the user could read the artifact through REST
+ *       (`canJoinPresenceRoom`, #679); otherwise `auth:error { message, room }`,
+ *       the same for an unknown id, a forbidden one and a failed lookup; a
+ *       refused socket already in the room is removed from it as on a leave
  *     → broadcasts `presence:update` with current user list to the room
  *
  *   `presence:leave` { artifactType: PresenceArtifactType, artifactId: string }
- *     → leaves room, broadcasts updated list
+ *     → leaves room (or drops a join still being checked), broadcasts updated list
  *
  *   disconnect
  *     → leaves all presence rooms for that socket, broadcasts updates
@@ -21,6 +25,17 @@
 import { isPresenceArtifactType, presenceRoom } from "@metis/shared";
 import type { MetisIOServer } from "../socket/server.js";
 import { onClientEvent, onConnection } from "../socket/client-event-handler.js";
+import { canJoinPresenceRoom } from "../socket/room-access.js";
+import { createChildLogger } from "../logger.js";
+
+const log = createChildLogger("socket:presence");
+
+/**
+ * #679 — one refusal for every reason, naming the room: the UI re-joins
+ * presence rooms on its own after a reconnect, so a room-scoped refusal is
+ * dropped by its follower rather than toasted (`SocketAuthErrorEvent`).
+ */
+const PRESENCE_DENIAL = "FORBIDDEN: no access to artifact";
 
 /** In-memory map: room key → Set of socket.data.user descriptors. */
 const roomPresence = new Map<
@@ -48,6 +63,22 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
     const user = socket.data.user;
     /** Tracks which presence rooms this socket has joined. */
     const joinedRooms = new Set<string>();
+    /**
+     * #679 — joins whose access check is still running, by room. A leave or a
+     * disconnect drops the entry, so a check that resolves afterwards does not
+     * join (a disconnected socket would otherwise linger in the list).
+     */
+    const pendingJoins = new Map<string, number>();
+    let joinSeq = 0;
+
+    /** Leaves `key` and broadcasts the shorter list to the viewers who remain. */
+    async function leaveRoom(key: string): Promise<void> {
+      await socket.leave(key);
+      joinedRooms.delete(key);
+      roomPresence.get(key)?.delete(socket.id);
+      broadcastPresenceUpdate(io, key);
+      if ((roomPresence.get(key)?.size ?? 0) === 0) roomPresence.delete(key);
+    }
 
     // #654 — the payload is read with `?.`, never destructured: a null or
     // missing payload rejected the handler's promise and crashed the process.
@@ -58,12 +89,35 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
         const artifactType = payload?.artifactType;
         const artifactId = payload?.artifactId;
         if (!isPresenceArtifactType(artifactType) || typeof artifactId !== "string") return;
-        // Cap rooms per socket to prevent unbounded growth.
-        if (joinedRooms.size >= 50) {
+        // Cap rooms per socket to prevent unbounded growth; a join still being
+        // checked counts, or a burst could pass the cap during the check.
+        if (joinedRooms.size + pendingJoins.size >= 50) {
           socket.emit("presence:error", { message: "Maximum room limit reached" });
           return;
         }
         const key = roomKey(artifactType, artifactId);
+        const attempt = ++joinSeq;
+        pendingJoins.set(key, attempt);
+        let allowed = false;
+        try {
+          allowed = await canJoinPresenceRoom(user, artifactType, artifactId);
+        } catch (err) {
+          log.warn("Socket presence access check failed", {
+            socketId: socket.id,
+            room: key,
+            error: (err as Error).message,
+          });
+        }
+        if (pendingJoins.get(key) !== attempt) return;
+        pendingJoins.delete(key);
+        if (!allowed) {
+          // A socket already in the room (access revoked since it joined) is
+          // taken out of it, or it would keep receiving `presence:update` and
+          // stay on everyone's list while its UI follower drops the room.
+          if (joinedRooms.has(key)) await leaveRoom(key);
+          socket.emit("auth:error", { message: PRESENCE_DENIAL, room: key });
+          return;
+        }
         await socket.join(key);
         joinedRooms.add(key);
         if (!roomPresence.has(key)) roomPresence.set(key, new Map());
@@ -84,15 +138,13 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
         const artifactId = payload?.artifactId;
         if (!isPresenceArtifactType(artifactType) || typeof artifactId !== "string") return;
         const key = roomKey(artifactType, artifactId);
-        await socket.leave(key);
-        joinedRooms.delete(key);
-        roomPresence.get(key)?.delete(socket.id);
-        broadcastPresenceUpdate(io, key);
-        if ((roomPresence.get(key)?.size ?? 0) === 0) roomPresence.delete(key);
+        pendingJoins.delete(key);
+        await leaveRoom(key);
       },
     );
 
     onClientEvent(socket, "disconnect", () => {
+      pendingJoins.clear();
       for (const key of joinedRooms) {
         roomPresence.get(key)?.delete(socket.id);
         broadcastPresenceUpdate(io, key);

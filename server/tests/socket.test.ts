@@ -83,6 +83,18 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     auditLog: { create: vi.fn(async () => ({})) },
+    // #679 — a discussion presence room takes the thread read rule
+    // (`canAccessThread`): thread `t1` lives in `p1`, which `u1` created;
+    // `t-boom` makes the lookup throw; `t-deleted` is soft-deleted.
+    discussionThread: {
+      findFirst: vi.fn(async (args: { where: { id: string; deletedAt?: null } }) => {
+        if (args.where.id === "t-boom") throw new Error("db down");
+        if (args.where.id === "t-deleted" && args.where.deletedAt !== null) {
+          return { id: "t-deleted", projectId: "p1" };
+        }
+        return args.where.id === "t1" ? { id: "t1", projectId: "p1" } : null;
+      }),
+    },
     // #655 — connector, background-run and job rooms authorize like their REST
     // reads. Every row below lives in `p1` (workspace `w1`, member `u1`); a
     // `*-boom` id makes the lookup throw; `*-slow` resolves late; a
@@ -191,8 +203,12 @@ import { issueTokens } from "../src/lib/auth/jwt.js";
 import { canJoinAnalysisRoom } from "../src/lib/socket/analysis-room-access.js";
 import { canJoinConnectorRoom } from "../src/lib/socket/room-access.js";
 import { wirePresenceHandlers } from "../src/lib/collaboration/presence.js";
-import { publishRoom, taskRoom } from "@metis/shared";
-import type { ClientToServerEvents, SocketAuthErrorEvent } from "@metis/shared";
+import { presenceRoom, publishRoom, taskRoom } from "@metis/shared";
+import type {
+  ClientToServerEvents,
+  PresenceArtifactType,
+  SocketAuthErrorEvent,
+} from "@metis/shared";
 
 let httpServer: http.Server;
 let io: MetisIOServer;
@@ -954,6 +970,121 @@ describe("Socket.IO server", () => {
       expect(got.outsider).toEqual([]);
       member.close();
       outsider.close();
+    });
+  });
+
+  // #679 — `presence:{type}:{id}` lists who is viewing an artifact, so joining
+  // it takes the REST read rule of that artifact; it used to admit any id.
+  describe("#679 presence:join admits only a reader of the artifact", () => {
+    type Artifact = { artifactType: PresenceArtifactType; artifactId: string };
+    const DENIAL = "FORBIDDEN: no access to artifact";
+    const denied = (a: Artifact) => ({
+      joined: false,
+      errors: [{ message: DENIAL, room: presenceRoom(a.artifactType, a.artifactId) }],
+    });
+
+    /** Join and settle on the denial or the membership — never on a fixed sleep. */
+    async function join(
+      userId: string,
+      artifact: Artifact,
+    ): Promise<{ joined: boolean; errors: SocketAuthErrorEvent[] }> {
+      const socket = await connectAs(userId, userId);
+      const errors: SocketAuthErrorEvent[] = [];
+      socket.on("auth:error", (payload: SocketAuthErrorEvent) => errors.push(payload));
+      const room = presenceRoom(artifact.artifactType, artifact.artifactId);
+      const inRoom = () => io.sockets.adapter.rooms.get(room)?.has(socket.id!) ?? false;
+      socket.emit("presence:join", artifact);
+      await vi.waitFor(() => expect(errors.length > 0 || inRoom()).toBe(true));
+      const joined = inRoom();
+      socket.close();
+      return { joined, errors };
+    }
+
+    // [readable artifact, unknown id, id whose lookup throws]
+    const cases: Array<[PresenceArtifactType, string, string, string]> = [
+      ["discussion", "t1", "t-missing", "t-boom"],
+      ["spec-kit-artifact", "p1:spec.md", "p-missing:spec.md", "p-boom:spec.md"],
+    ];
+
+    it.each(cases)("%s %s admits a reader", async (artifactType, artifactId) => {
+      expect(await join("u1", { artifactType, artifactId })).toEqual({
+        joined: true,
+        errors: [],
+      });
+    });
+
+    it.each(cases)(
+      "%s %s refuses an outsider, an unknown id and a failed lookup alike",
+      async (artifactType, artifactId, unknownId, boomId) => {
+        for (const [userId, id] of [
+          ["u2", artifactId],
+          ["u1", unknownId],
+          ["u1", boomId],
+        ] as const) {
+          const artifact = { artifactType, artifactId: id };
+          expect(await join(userId, artifact)).toEqual(denied(artifact));
+        }
+      },
+    );
+
+    it.each([["p1:not-an-artifact.md"], ["p1"], [":spec.md"], ["p1:"]])(
+      "refuses the spec-kit artifact id %j, which no read route serves",
+      async (artifactId) => {
+        const artifact = { artifactType: "spec-kit-artifact" as const, artifactId };
+        expect(await join("u1", artifact)).toEqual(denied(artifact));
+      },
+    );
+
+    // An admin passes every project check, so only the id's own shape refuses
+    // these: without the separator check, `spec.md` would name project `spec.m`.
+    it.each([["spec.md"], [":spec.md"]])(
+      "refuses the malformed spec-kit artifact id %j even to an admin",
+      async (artifactId) => {
+        const artifact = { artifactType: "spec-kit-artifact" as const, artifactId };
+        expect(await join("u-admin", artifact)).toEqual(denied(artifact));
+        expect(await join("u-admin", { ...artifact, artifactId: "p1:spec.md" })).toEqual({
+          joined: true,
+          errors: [],
+        });
+      },
+    );
+
+    it("refuses a soft-deleted discussion thread to a member of its project", async () => {
+      const artifact = { artifactType: "discussion" as const, artifactId: "t-deleted" };
+      expect(await join("u1", artifact)).toEqual(denied(artifact));
+    });
+
+    it("never shows a refused socket to the room, nor the room to it", async () => {
+      const artifact = { artifactType: "discussion" as const, artifactId: "t1" };
+      const room = presenceRoom(artifact.artifactType, artifact.artifactId);
+      type Update = { room: string; users: Array<{ userId: string }> };
+      const member = await connectAs("u1", "u1");
+      const outsider = await connectAs("u2", "u2");
+      const seen: Record<"member" | "outsider", string[][]> = { member: [], outsider: [] };
+      member.on("presence:update", (u: Update) => {
+        if (u.room === room) seen.member.push(u.users.map((x) => x.userId));
+      });
+      outsider.on("presence:update", (u: Update) => {
+        if (u.room === room) seen.outsider.push(u.users.map((x) => x.userId));
+      });
+      member.emit("presence:join", artifact);
+      await vi.waitFor(() => expect(seen.member.length).toBeGreaterThan(0));
+      const refused = new Promise<SocketAuthErrorEvent>((r) => outsider.on("auth:error", r));
+      outsider.emit("presence:join", artifact);
+      expect(await refused).toEqual({ message: DENIAL, room });
+      // A second member join after the refusal: its update is the proof that
+      // any update the outsider could have caused has already been delivered.
+      const second = await connectAs("u1", "u1-tab2");
+      second.emit("presence:join", artifact);
+      const twoTabs = (ids: string[]) => ids.filter((id) => id === "u1").length >= 2;
+      await vi.waitFor(() => expect(seen.member.some(twoTabs)).toBe(true));
+      // Sockets an earlier test closed may still be leaving, so the lists are
+      // searched for the outsider rather than compared whole.
+      expect(seen.member.flat()).not.toContain("u2");
+      expect(seen.outsider).toEqual([]);
+      member.close();
+      outsider.close();
+      second.close();
     });
   });
 
