@@ -6,20 +6,20 @@ import { describe, it, expect, vi } from "vitest";
 import { joinJobRoom } from "@/lib/job-rooms";
 
 const fakeSocket = (connected = true) => {
-  const handlers = new Map<string, Set<() => void>>();
+  const handlers = new Map<string, Set<(...args: unknown[]) => void>>();
   const socket = {
     connected,
     emit: vi.fn(),
-    on: vi.fn((event: string, fn: () => void) => {
+    on: vi.fn((event: string, fn: (...args: unknown[]) => void) => {
       if (!handlers.has(event)) handlers.set(event, new Set());
       handlers.get(event)!.add(fn);
     }),
-    off: vi.fn((event: string, fn: () => void) => {
+    off: vi.fn((event: string, fn: (...args: unknown[]) => void) => {
       handlers.get(event)?.delete(fn);
     }),
     listeners: (event: string) => handlers.get(event)?.size ?? 0,
-    fire: (event: string) => {
-      for (const fn of [...(handlers.get(event) ?? [])]) fn();
+    fire: (event: string, ...args: unknown[]) => {
+      for (const fn of [...(handlers.get(event) ?? [])]) fn(...args);
     },
     /** The transport dropped and came back: the server lost every room. */
     reconnect: () => {
@@ -176,5 +176,74 @@ describe("joinJobRoom across a reconnect", () => {
     expect(subscribes(s1, "j1")).toBe(1);
     expect(subscribes(s1, "j2")).toBe(0);
     expect(subscribes(s2)).toBe(0);
+  });
+});
+
+// #655 — the server refuses a join it cannot scope with an `auth:error` that
+// names the room. A refused job room is dropped, so it is not re-subscribed.
+describe("joinJobRoom after the server refuses a room", () => {
+  const refuse = (s: Fake, room: string) =>
+    s.fire("auth:error", { message: "FORBIDDEN: no access to job", room });
+
+  it("stops re-subscribing a refused room and keeps the others", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    join(s, "j1");
+    join(s, "j2");
+    s.reconnect();
+    refuse(s, "job:j1");
+    s.emit.mockClear();
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(0);
+    expect(subscribes(s, "j2")).toBe(1);
+  });
+
+  it("forgets a refused room whose subscribe is still buffered", () => {
+    const s = fakeSocket();
+    join(s, "j2");
+    s.connected = false;
+    join(s, "j1");
+    refuse(s, "job:j1");
+    s.emit.mockClear();
+    s.connected = true;
+    s.fire("connect");
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(0);
+    expect(subscribes(s, "j2")).toBe(2);
+  });
+
+  it("ignores a refusal of a room it does not follow, of another kind, or with no room", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    refuse(s, "job:other");
+    refuse(s, "connector:j1");
+    s.fire("auth:error", { message: "UNAUTHORIZED" });
+    s.fire("auth:error", undefined);
+    s.emit.mockClear();
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(1);
+  });
+
+  it("makes the refused room's releases no-ops, even after it is followed afresh", () => {
+    const s = fakeSocket();
+    const stale = join(s, "j1");
+    refuse(s, "job:j1");
+    const fresh = join(s, "j1");
+    stale();
+    expect(s.emit).not.toHaveBeenCalledWith("unsubscribe:job", expect.anything());
+    s.emit.mockClear();
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(1);
+    fresh();
+    expect(s.emit).toHaveBeenCalledWith("unsubscribe:job", { jobId: "j1" });
+  });
+
+  it("drops its listeners when the last followed room is refused", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    expect(s.listeners("auth:error")).toBe(1);
+    refuse(s, "job:j1");
+    expect(s.listeners("connect")).toBe(0);
+    expect(s.listeners("auth:error")).toBe(0);
   });
 });

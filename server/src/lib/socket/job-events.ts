@@ -130,22 +130,29 @@ const lastLifecycleByJob = new Map<string, JobLifecycleEvent>();
  * #655 — the scope a `job:{id}` room join is authorized against: the job's
  * kind and project, taken from every event emitted for it and from
  * {@link rememberJobScope} for an id handed out before its first event (a
- * queued PR review). Bounded on the same cap and eviction order as the
- * lifecycle memory.
+ * queued PR review).
+ *
+ * Two stores, each bounded on {@link LAST_EVENT_CAP} with least-recently-touched
+ * eviction. Event-derived scopes share the lifecycle memory's churn; a scope
+ * recorded by `rememberJobScope` lives in its own store, so a PR review that
+ * waits in the queue behind 500 other jobs' events is still authorizable when
+ * its first event (or its client's `subscribe:job`) arrives. Only another 500
+ * remembered ids evict it — the bound on hand-outs before a first event.
  */
 export interface JobScope {
   kind: JobKind;
   projectId: string | null;
 }
-const jobScopeById = new Map<string, JobScope>();
+const eventJobScopeById = new Map<string, JobScope>();
+const rememberedJobScopeById = new Map<string, JobScope>();
 
-function storeJobScope(jobId: string, scope: JobScope): void {
-  jobScopeById.delete(jobId);
-  jobScopeById.set(jobId, scope);
-  while (jobScopeById.size > LAST_EVENT_CAP) {
-    const oldest = jobScopeById.keys().next();
+function storeJobScope(store: Map<string, JobScope>, jobId: string, scope: JobScope): void {
+  store.delete(jobId);
+  store.set(jobId, scope);
+  while (store.size > LAST_EVENT_CAP) {
+    const oldest = store.keys().next();
     if (oldest.done) break;
-    jobScopeById.delete(oldest.value);
+    store.delete(oldest.value);
   }
 }
 
@@ -154,16 +161,16 @@ function storeJobScope(jobId: string, scope: JobScope): void {
  * been emitted for it, so the client's `subscribe:job` can be authorized.
  */
 export function rememberJobScope(jobId: string, kind: JobKind, projectId: string | null): void {
-  storeJobScope(jobId, { kind, projectId });
+  storeJobScope(rememberedJobScopeById, jobId, { kind, projectId });
 }
 
 /** The remembered scope of a job, or `undefined` when this process has none. */
 export function getJobScope(jobId: string): JobScope | undefined {
-  return jobScopeById.get(jobId);
+  return eventJobScopeById.get(jobId) ?? rememberedJobScopeById.get(jobId);
 }
 
 function rememberLifecycle(event: JobLifecycleEvent): void {
-  storeJobScope(event.jobId, { kind: event.kind, projectId: event.projectId });
+  storeJobScope(eventJobScopeById, event.jobId, { kind: event.kind, projectId: event.projectId });
   // Re-insert so the most recently touched job is the newest key.
   lastLifecycleByJob.delete(event.jobId);
   lastLifecycleByJob.set(event.jobId, event);
@@ -195,8 +202,11 @@ export function getLastJobLifecycle(jobId: string): JobLifecycleEvent | undefine
 const lastDocSectionsByJob = new Map<string, Map<string, DocSectionProgressEvent>>();
 
 function rememberDocSection(event: DocSectionProgressEvent): void {
-  if (!jobScopeById.has(event.jobId)) {
-    storeJobScope(event.jobId, { kind: "doc-generation", projectId: event.projectId });
+  if (!eventJobScopeById.has(event.jobId)) {
+    storeJobScope(eventJobScopeById, event.jobId, {
+      kind: "doc-generation",
+      projectId: event.projectId,
+    });
   }
   const sections = lastDocSectionsByJob.get(event.jobId) ?? new Map();
   sections.set(event.section, event);
@@ -221,7 +231,8 @@ export function getLastDocSections(jobId: string): DocSectionProgressEvent[] {
 export function _resetJobLifecycleMemory(): void {
   lastLifecycleByJob.clear();
   lastDocSectionsByJob.clear();
-  jobScopeById.clear();
+  eventJobScopeById.clear();
+  rememberedJobScopeById.clear();
 }
 
 /** Build an emitter bound to a specific IO server (used in server bootstrap / tests). */

@@ -164,6 +164,17 @@ describe("socket connection lifecycle store", () => {
     expect(result.current.error).toBe("Forbidden room");
   });
 
+  // #655 — a refusal naming a room belongs to that room's follower
+  // (`job-rooms.ts`), which re-subscribes automatically; it is not shown.
+  it("auth:error naming a room leaves the error unset", async () => {
+    const { result } = renderStatus();
+    await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
+    fake.fireSocket("auth:error", { message: "FORBIDDEN: no access to job", room: "job:j1" });
+    expect(result.current.error).toBeNull();
+    fake.fireSocket("auth:error", { message: "UNAUTHORIZED" });
+    expect(result.current.error).toBe("UNAUTHORIZED");
+  });
+
   it("auth:error with no message falls back to a generic string", async () => {
     const { result } = renderStatus();
     await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());

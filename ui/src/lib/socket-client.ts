@@ -23,6 +23,7 @@
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Socket } from "socket.io-client";
+import type { SocketAuthErrorEvent } from "@metis/shared";
 import { setOnRefreshSuccess } from "./api-client";
 
 let socketRef: Socket | null = null;
@@ -176,7 +177,14 @@ function registerLifecycle(socket: Socket): void {
   // server.ts). Surface it instead of dropping it. Reflected both as the store
   // error (for any status-aware UI) and — because the connection itself may
   // still be healthy — left to the UI layer to toast.
-  socket.on("auth:error", (data: { message: string }) => {
+  //
+  // #655 — a refusal that names a `room` belongs to that room's follower, not
+  // to the user: job rooms are re-subscribed automatically on every reconnect,
+  // and a job the server has since forgotten is refused (`job-rooms.ts` drops
+  // it). Toasting that would show the user who started the job an error for
+  // nothing they did.
+  socket.on("auth:error", (data: SocketAuthErrorEvent) => {
+    if (data?.room) return;
     setState({ error: data?.message ?? "Authentication error" });
   });
 

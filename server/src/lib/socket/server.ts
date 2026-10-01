@@ -730,7 +730,10 @@ function attachHandlers(socket: MetisSocket): void {
   // #655 — the connector, background-run and job rooms carry reads of the
   // resource they are named after, so each join takes the REST read's rule
   // (`room-access.ts`); they used to join any id named. Denials share one
-  // message per room, whatever the reason. A room's pending check is recorded
+  // message per room, whatever the reason, and name the refused room: the UI
+  // re-subscribes to these rooms on its own after every reconnect, so a
+  // room-scoped refusal is dropped by its follower rather than shown as an
+  // error (`SocketAuthErrorEvent`). A room's pending check is recorded
   // here and dropped by an unsubscribe, so a check that resolves after a later
   // unsubscribe (or a newer subscribe) does not act.
   const pendingRoomChecks = new Map<string, number>();
@@ -757,7 +760,7 @@ function attachHandlers(socket: MetisSocket): void {
       if (pendingRoomChecks.get(room) !== attempt) return;
       pendingRoomChecks.delete(room);
       if (!allowed) {
-        socket.emit("auth:error", { message: denial });
+        socket.emit("auth:error", { message: denial, room });
         return;
       }
       await socket.join(room);

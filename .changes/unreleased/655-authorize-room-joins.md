@@ -10,3 +10,5 @@ section: Security
   rooms by id, and PR-review job ids are sequential.
 - A job with no project (a PR review from a webhook with none) can be followed by admins only;
   an impact analysis by anyone who can open it.
+- A refused join names its room, and the UI drops that room quietly instead of showing an error,
+  so a job the server forgot after a restart no longer raises a toast on every reconnect.

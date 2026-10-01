@@ -559,20 +559,36 @@ describe("job scope memory (#655)", () => {
     expect(getJobScope("prr-1")).toEqual({ kind: "pr-review", projectId: "proj-1" });
   });
 
-  it("evicts the least recently touched scopes beyond the cap", () => {
-    rememberJobScope("kept", "scan", "proj-1");
-    for (let i = 0; i < 499; i += 1) rememberJobScope(`filler-${i}`, "scan", "proj-1");
+  it("evicts the least recently touched event-derived scopes beyond the cap", () => {
+    NOOP_JOB_EMITTER.started("scan", "kept", "proj-1");
+    for (let i = 0; i < 499; i += 1) NOOP_JOB_EMITTER.started("scan", `filler-${i}`, "proj-1");
     // Touching `kept` makes `filler-0` the oldest.
     NOOP_JOB_EMITTER.progress("scan", "kept", "proj-1", 50);
-    rememberJobScope("one-more", "scan", "proj-1");
+    NOOP_JOB_EMITTER.started("scan", "one-more", "proj-1");
     expect(getJobScope("filler-0")).toBeUndefined();
     expect(getJobScope("kept")).toBeDefined();
     expect(getJobScope("one-more")).toBeDefined();
   });
 
+  it("keeps a remembered scope however many other jobs emit before its first event", () => {
+    // A queued PR review: its id is handed out, then 500+ other jobs run.
+    rememberJobScope("prr-queued", "pr-review", "proj-1");
+    for (let i = 0; i < 600; i += 1) NOOP_JOB_EMITTER.started("scan", `busy-${i}`, "proj-2");
+    expect(getJobScope("prr-queued")).toEqual({ kind: "pr-review", projectId: "proj-1" });
+  });
+
+  it("bounds remembered scopes on their own cap", () => {
+    rememberJobScope("first", "pr-review", "proj-1");
+    for (let i = 0; i < 500; i += 1) rememberJobScope(`prr-${i}`, "pr-review", "proj-1");
+    expect(getJobScope("first")).toBeUndefined();
+    expect(getJobScope("prr-499")).toBeDefined();
+  });
+
   it("is cleared by the test seam", () => {
     rememberJobScope("gone", "scan", "proj-1");
+    NOOP_JOB_EMITTER.started("scan", "gone-too", "proj-1");
     _resetJobLifecycleMemory();
     expect(getJobScope("gone")).toBeUndefined();
+    expect(getJobScope("gone-too")).toBeUndefined();
   });
 });

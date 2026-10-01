@@ -180,7 +180,7 @@ import { issueTokens } from "../src/lib/auth/jwt.js";
 import { canJoinAnalysisRoom } from "../src/lib/socket/analysis-room-access.js";
 import { canJoinConnectorRoom } from "../src/lib/socket/room-access.js";
 import { wirePresenceHandlers } from "../src/lib/collaboration/presence.js";
-import type { ClientToServerEvents } from "@metis/shared";
+import type { ClientToServerEvents, SocketAuthErrorEvent } from "@metis/shared";
 
 let httpServer: http.Server;
 let io: MetisIOServer;
@@ -724,10 +724,10 @@ describe("Socket.IO server", () => {
       userId: string,
       event: RoomEvent,
       id: string,
-    ): Promise<{ joined: boolean; errors: string[] }> {
+    ): Promise<{ joined: boolean; errors: SocketAuthErrorEvent[] }> {
       const socket = await connectAs(userId, userId);
-      const errors: string[] = [];
-      socket.on("auth:error", ({ message }: { message: string }) => errors.push(message));
+      const errors: SocketAuthErrorEvent[] = [];
+      socket.on("auth:error", (payload: SocketAuthErrorEvent) => errors.push(payload));
       const room = `${ROOM[event]}:${id}`;
       (socket.emit as (ev: string, ...args: unknown[]) => void)(event, { [FIELD[event]]: id });
       await vi.waitFor(() =>
@@ -757,10 +757,15 @@ describe("Socket.IO server", () => {
     it.each(cases)(
       "%s %s refuses an outsider, an unknown id and a failed lookup alike",
       async (event, id, boomId) => {
-        const denied = { joined: false, errors: [DENIAL[event]] };
-        expect(await subscribe("u2", event, id)).toEqual(denied);
-        expect(await subscribe("u1", event, `${id}-missing`)).toEqual(denied);
-        expect(await subscribe("u1", event, boomId)).toEqual(denied);
+        // Exactly `{ message, room }`: the same message whatever the reason,
+        // and the room the client itself named, so nothing tells them apart.
+        const denied = (roomId: string) => ({
+          joined: false,
+          errors: [{ message: DENIAL[event], room: `${ROOM[event]}:${roomId}` }],
+        });
+        expect(await subscribe("u2", event, id)).toEqual(denied(id));
+        expect(await subscribe("u1", event, `${id}-missing`)).toEqual(denied(`${id}-missing`));
+        expect(await subscribe("u1", event, boomId)).toEqual(denied(boomId));
       },
     );
 
@@ -772,7 +777,7 @@ describe("Socket.IO server", () => {
       await expect(canJoinConnectorRoom(user, "c-projboom")).rejects.toThrow("db down");
       expect(await subscribe("u1", "subscribe:connector", "c-projboom")).toEqual({
         joined: false,
-        errors: ["FORBIDDEN: no access to connector"],
+        errors: [{ message: "FORBIDDEN: no access to connector", room: "connector:c-projboom" }],
       });
     });
 
@@ -815,11 +820,11 @@ describe("Socket.IO server", () => {
       });
       expect(await subscribe("u2", "subscribe:job", "mem-p1")).toEqual({
         joined: false,
-        errors: ["FORBIDDEN: no access to job"],
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:mem-p1" }],
       });
       expect(await subscribe("u1", "subscribe:job", "mem-other")).toEqual({
         joined: false,
-        errors: ["FORBIDDEN: no access to job"],
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:mem-other" }],
       });
     });
 
@@ -832,7 +837,7 @@ describe("Socket.IO server", () => {
       });
       expect(await subscribe("u2", "subscribe:job", "prr-1-manual")).toEqual({
         joined: false,
-        errors: ["FORBIDDEN: no access to job"],
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:prr-1-manual" }],
       });
     });
 
@@ -842,13 +847,13 @@ describe("Socket.IO server", () => {
       expect(await subscribe("u1", "subscribe:job", "ia1")).toEqual({ joined: true, errors: [] });
       expect(await subscribe("u2", "subscribe:job", "ia1")).toEqual({
         joined: false,
-        errors: ["FORBIDDEN: no access to job"],
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:ia1" }],
       });
       createJobEventEmitter(io).started("impact-analysis", "ia1", null);
       expect(await subscribe("u1", "subscribe:job", "ia1")).toEqual({ joined: true, errors: [] });
       expect(await subscribe("u2", "subscribe:job", "ia1")).toEqual({
         joined: false,
-        errors: ["FORBIDDEN: no access to job"],
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:ia1" }],
       });
     });
 
@@ -857,7 +862,7 @@ describe("Socket.IO server", () => {
       createJobEventEmitter(io).completed("pr-review", "prr-system", null, "done");
       expect(await subscribe("u1", "subscribe:job", "prr-system")).toEqual({
         joined: false,
-        errors: ["FORBIDDEN: no access to job"],
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:prr-system" }],
       });
       const admin = await connectAs("u-admin", "root");
       const replayed = new Promise<{ jobId: string }>((resolve) =>

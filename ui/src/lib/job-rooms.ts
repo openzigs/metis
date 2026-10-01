@@ -25,65 +25,104 @@
  * `buffered`. The next connect flushes it AND re-joins the room, so the server
  * sees one duplicate `subscribe:job`. That is harmless — the join is idempotent
  * and the replay (lifecycle plus each section's latest state) is too — and rare.
+ *
+ * #655 — the server authorizes each join and refuses one it cannot scope with
+ * an `auth:error` naming the room. Some jobs have no database row, so after a
+ * server restart (or once the job falls out of the server's scope memory) every
+ * re-subscribe of a job this socket still follows is refused. A refused room is
+ * dropped from the follow set here: it is not re-subscribed on later connects,
+ * and its followers' releases become no-ops. The socket client does not show a
+ * room-scoped refusal to the user (`socket-client.ts`); a follower that waits
+ * for a replay (`useFollowJobs`) forgets the job when none arrives.
  */
 import type { Socket } from "socket.io-client";
+import type { SocketAuthErrorEvent } from "@metis/shared";
 
 /** The socket surface this module needs; the typed app socket satisfies it. */
 type JobRoomSocket = Pick<Socket, "emit" | "on" | "off" | "connected">;
 
+/** One followed room; replaced, not reused, when a room is dropped and re-joined. */
+interface Follow {
+  count: number;
+}
+
 interface SocketRooms {
   /** Followers per job id; a room is present while it has at least one. */
-  counts: Map<string, number>;
+  follows: Map<string, Follow>;
   /** Rooms whose `subscribe:job` sits in the send buffer until the next connect. */
   buffered: Set<string>;
   onConnect: () => void;
+  onAuthError: (data: SocketAuthErrorEvent) => void;
 }
+
+const JOB_ROOM_PREFIX = "job:";
 
 const rooms = new WeakMap<JobRoomSocket, SocketRooms>();
 
+function detach(socket: JobRoomSocket, state: SocketRooms): void {
+  socket.off("connect", state.onConnect);
+  socket.off("auth:error", state.onAuthError);
+  rooms.delete(socket);
+}
+
 function roomsFor(socket: JobRoomSocket): SocketRooms {
-  let state = rooms.get(socket);
-  if (state) return state;
-  const counts = new Map<string, number>();
+  const existing = rooms.get(socket);
+  if (existing) return existing;
+  const follows = new Map<string, Follow>();
   const buffered = new Set<string>();
   const onConnect = () => {
-    for (const jobId of counts.keys()) {
+    for (const jobId of follows.keys()) {
       if (!buffered.has(jobId)) socket.emit("subscribe:job", { jobId });
     }
     buffered.clear();
   };
-  state = { counts, buffered, onConnect };
+  const state: SocketRooms = {
+    follows,
+    buffered,
+    onConnect,
+    onAuthError: (data) => {
+      const room = data?.room;
+      if (!room?.startsWith(JOB_ROOM_PREFIX)) return;
+      const jobId = room.slice(JOB_ROOM_PREFIX.length);
+      if (!follows.delete(jobId)) return;
+      if (follows.size === 0) detach(socket, state);
+    },
+  };
   rooms.set(socket, state);
   socket.on("connect", onConnect);
+  socket.on("auth:error", state.onAuthError);
   return state;
 }
 
 /**
  * Join `job:{jobId}` on `socket` and return a release function. The release is
- * idempotent; the socket leaves the room when the last follower releases.
+ * idempotent; the socket leaves the room when the last follower releases. A
+ * room the server refused has already been dropped, so its release does nothing.
  */
 export function joinJobRoom(socket: JobRoomSocket, jobId: string): () => void {
   const state = roomsFor(socket);
-  const { counts, buffered } = state;
-  counts.set(jobId, (counts.get(jobId) ?? 0) + 1);
+  const { follows, buffered } = state;
+  let follow = follows.get(jobId);
+  if (!follow) {
+    follow = { count: 0 };
+    follows.set(jobId, follow);
+  }
+  follow.count += 1;
   if (!socket.connected) buffered.add(jobId);
   socket.emit("subscribe:job", { jobId });
 
+  const mine = follow;
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const remaining = (counts.get(jobId) ?? 1) - 1;
-    if (remaining > 0) {
-      counts.set(jobId, remaining);
-      return;
-    }
-    counts.delete(jobId);
+    // Dropped after a refusal (and perhaps followed afresh since): not ours.
+    if (follows.get(jobId) !== mine) return;
+    mine.count -= 1;
+    if (mine.count > 0) return;
+    follows.delete(jobId);
     socket.emit("unsubscribe:job", { jobId });
-    if (counts.size === 0) {
-      // Nothing left to re-join; the buffered set only matters for live rooms.
-      socket.off("connect", state.onConnect);
-      rooms.delete(socket);
-    }
+    // Nothing left to re-join; the buffered set only matters for live rooms.
+    if (follows.size === 0) detach(socket, state);
   };
 }
