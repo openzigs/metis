@@ -307,6 +307,8 @@ describe("McpSettingsPage — Import / Export tab", () => {
     }
     fireEvent.change(input, { target: { files: [file] } });
     expect(await screen.findByTestId("import-preview")).toHaveTextContent("1 server(s) to import");
+    // #630 — the input is emptied after each pick, so the preview names the staged file.
+    expect(screen.getByTestId("import-file-name")).toHaveTextContent("mcp.json");
     fireEvent.click(screen.getByTestId("import-confirm"));
     await waitFor(() => expect(importCopilotMock).toHaveBeenCalledTimes(1));
   });
@@ -321,6 +323,180 @@ describe("McpSettingsPage — Import / Export tab", () => {
     }
     fireEvent.change(input, { target: { files: [file] } });
     expect(await screen.findByTestId("import-error")).toBeInTheDocument();
+  });
+});
+
+// #621 — the import result: which servers were registered, which were saved
+// with a warning (#608), and which failed — and a 207 read as a partial success.
+describe("McpSettingsPage — Import result (#621)", () => {
+  type ImportResponse = Awaited<ReturnType<typeof mcpPlatformApi.importCopilot>>;
+
+  async function importWith(response: ImportResponse) {
+    importCopilotMock.mockResolvedValue(response);
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+    const content = JSON.stringify({ servers: { fs: { command: "npx" }, gh: { command: "gh" } } });
+    const file = new File([content], "mcp.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: () => Promise.resolve(content) });
+    fireEvent.change(screen.getByTestId("import-file"), { target: { files: [file] } });
+    await screen.findByTestId("import-preview");
+    fireEvent.click(screen.getByTestId("import-confirm"));
+    return screen.findByTestId("import-result");
+  }
+
+  const plan = { entries: [], totalSecrets: 0 };
+
+  it("clean: lists every created server and reports a plain success", async () => {
+    const result = await importWith({
+      plan,
+      created: [
+        { id: "s1", label: "fs" },
+        { id: "s2", label: "gh" },
+      ],
+      errors: [],
+      dryRun: false,
+    });
+    expect(result).toHaveAttribute("data-outcome", "success");
+    expect(screen.getByTestId("import-result-status")).toHaveTextContent("Imported 2 server(s)");
+    const created = screen.getAllByTestId("import-result-created");
+    expect(created.map((li) => li.textContent)).toEqual(["fs", "gh"]);
+    expect(screen.queryByTestId("import-result-warning")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("import-result-failed")).not.toBeInTheDocument();
+    // The preview gives way to the result once the import lands.
+    expect(screen.queryByTestId("import-preview")).not.toBeInTheDocument();
+  });
+
+  it("warned: flags the created server that landed with a warning, with its message and code", async () => {
+    const result = await importWith({
+      plan,
+      created: [
+        { id: "s1", label: "fs" },
+        { id: "s2", label: "gh", warning: { message: "view failed", code: "VIEW_FAILED" } },
+      ],
+      errors: [],
+      dryRun: false,
+    });
+    expect(result).toHaveAttribute("data-outcome", "partial");
+    // A zero count is left out of the summary (#624 review).
+    expect(screen.getByTestId("import-result-status").textContent).toBe(
+      "Partially imported: 2 server(s) created, 1 with a warning",
+    );
+    const warnings = screen.getAllByTestId("import-result-warning");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toHaveTextContent("view failed");
+    expect(warnings[0]).toHaveTextContent("VIEW_FAILED");
+    const created = screen.getAllByTestId("import-result-created");
+    expect(created[0]).not.toHaveTextContent("view failed");
+    expect(created[1]).toHaveTextContent("gh");
+    expect(created[1]).toContainElement(warnings[0]!);
+  });
+
+  it("failed: lists failed entries with their message and code beside the created ones", async () => {
+    const result = await importWith({
+      plan,
+      created: [{ id: "s1", label: "fs" }],
+      errors: [
+        { label: "gh", message: "secret not yours", code: "SECRET_BINDING_UNCHECKED" },
+        { label: "db", message: "boom" },
+      ],
+      dryRun: false,
+    });
+    expect(result).toHaveAttribute("data-outcome", "partial");
+    expect(screen.getByTestId("import-result-status").textContent).toBe(
+      "Partially imported: 1 server(s) created, 2 failed",
+    );
+    const failed = screen.getAllByTestId("import-result-failed");
+    expect(failed).toHaveLength(2);
+    expect(failed[0]).toHaveTextContent("gh");
+    expect(failed[0]).toHaveTextContent("secret not yours");
+    expect(failed[0]).toHaveTextContent("SECRET_BINDING_UNCHECKED");
+    expect(failed[1]).toHaveTextContent("db");
+    expect(failed[1]).toHaveTextContent("boom");
+    expect(screen.getAllByTestId("import-result-created").map((li) => li.textContent)).toEqual([
+      "fs",
+    ]);
+  });
+
+  it("failed: an import where every entry failed reads as a failure, not a success", async () => {
+    const result = await importWith({
+      plan,
+      created: [],
+      errors: [{ label: "gh", message: "label taken", code: "LABEL_TAKEN" }],
+      dryRun: false,
+    });
+    expect(result).toHaveAttribute("data-outcome", "failed");
+    expect(screen.getByTestId("import-result-status")).toHaveTextContent(
+      "Import failed: 1 server(s) failed",
+    );
+    expect(screen.queryByTestId("import-result-created")).not.toBeInTheDocument();
+  });
+
+  it("announces only the summary line, not every listed entry", async () => {
+    await importWith({
+      plan,
+      created: [{ id: "s1", label: "fs" }],
+      errors: [{ label: "gh", message: "boom" }],
+      dryRun: false,
+    });
+    const status = screen.getByRole("status");
+    expect(status).toBe(screen.getByTestId("import-result-status"));
+    expect(status).not.toHaveTextContent("boom");
+  });
+
+  it("clears the previous result when a new file is chosen", async () => {
+    await importWith({ plan, created: [{ id: "s1", label: "fs" }], errors: [], dryRun: false });
+    const content = JSON.stringify({ servers: { x: { command: "x" } } });
+    const file = new File([content], "mcp.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: () => Promise.resolve(content) });
+    fireEvent.change(screen.getByTestId("import-file"), { target: { files: [file] } });
+    await screen.findByTestId("import-preview");
+    expect(screen.queryByTestId("import-result")).not.toBeInTheDocument();
+  });
+
+  // #630 — a browser fires no `change` when the chosen file equals the input's
+  // current one; `userEvent.upload` models that, where `fireEvent.change` does not.
+  it("re-selecting the same file after an import re-runs the preview and clears the result", async () => {
+    const user = userEvent.setup();
+    importCopilotMock.mockResolvedValue({
+      plan,
+      created: [{ id: "s1", label: "fs" }],
+      errors: [],
+      dryRun: false,
+    });
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+    const content = JSON.stringify({ servers: { fs: { command: "npx" } } });
+    const file = new File([content], "mcp.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: () => Promise.resolve(content) });
+    const input = screen.getByTestId("import-file") as HTMLInputElement;
+
+    await user.upload(input, file);
+    await screen.findByTestId("import-preview");
+    await user.click(screen.getByTestId("import-confirm"));
+    await screen.findByTestId("import-result");
+    expect(screen.queryByTestId("import-preview")).not.toBeInTheDocument();
+
+    await user.upload(input, file);
+    expect(await screen.findByTestId("import-preview")).toHaveTextContent("fs");
+    expect(screen.queryByTestId("import-result")).not.toBeInTheDocument();
+  });
+
+  it("re-selecting the same file after Clear brings its preview back", async () => {
+    const user = userEvent.setup();
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+    const content = JSON.stringify({ servers: { fs: { command: "npx" } } });
+    const file = new File([content], "mcp.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: () => Promise.resolve(content) });
+    const input = screen.getByTestId("import-file") as HTMLInputElement;
+
+    await user.upload(input, file);
+    await screen.findByTestId("import-preview");
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.queryByTestId("import-preview")).not.toBeInTheDocument();
+
+    await user.upload(input, file);
+    expect(await screen.findByTestId("import-preview")).toHaveTextContent("fs");
   });
 });
 
@@ -578,6 +754,17 @@ describe("McpSettingsPage — Import / Export edge paths (#529)", () => {
       click.mockRestore();
       error.mockRestore();
     }
+  });
+
+  it("does not offer to import a file whose servers object is empty", async () => {
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+    const content = JSON.stringify({ servers: {} });
+    const file = new File([content], "mcp.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: () => Promise.resolve(content) });
+    fireEvent.change(screen.getByTestId("import-file"), { target: { files: [file] } });
+    expect(await screen.findByTestId("import-error")).toHaveTextContent("No servers to import");
+    expect(screen.getByTestId("import-confirm")).toBeDisabled();
   });
 
   it("rejects a JSON file with no top-level servers object", async () => {

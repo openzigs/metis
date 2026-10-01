@@ -11,7 +11,8 @@
  *   POST   /                create entry  (vault.write)
  *   POST   /:id/rotate      rotate value  (vault.write; another user's secret
  *                            needs `confirmForeignOwner: true` and the
- *                            `confirmedBindings` it was shown, else 409 —
+ *                            `confirmedBindings` it was shown — or #611
+ *                            their `confirmedBindingsDigest` — else 409 —
  *                            #482/#502; the admin then owns it)
  *   GET    /:id/reveal      decrypt one (vault.reveal — admin only, audited, #324)
  *   DELETE /:id             soft-delete   (vault.write)
@@ -19,6 +20,7 @@
  *
  * Epic #196 / #222 — wires the standalone /vault admin UI to the service.
  */
+import { timingSafeEqual } from "node:crypto";
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { hasPermission, type ApiResponse } from "@metis/shared";
@@ -43,6 +45,7 @@ import {
   type ConfirmedBinding,
   describeForeignOwner,
   foreignOwnerMessage,
+  MAX_CONFIRMED_BINDINGS,
   secretOwnerOf,
   VAULT_ROTATE_BINDING_IN_PROGRESS,
   VAULT_ROTATE_BINDINGS_CHANGED,
@@ -78,15 +81,8 @@ const createSchema = z.object({
 export const SECRET_VALUE_MAX = 64 * 1024;
 export const CONFIRMED_BINDING_ID_MAX = 200;
 export const CONFIRMED_BINDING_DESTINATION_MAX = 8192;
-/**
- * #502 — the most bindings a foreign-owner confirm may echo back. The 409 lists
- * every live binding and the UI echoes all of them, so lowering this strands a
- * secret with more bindings than the cap: an admin could never rotate it.
- * A realistic confirm at this cap is well under the 10 MiB JSON limit
- * (`JSON_LIMIT_BYTES`); a pathological one (max-length, all-escaped fields)
- * can exceed it and gets the structured `413 PAYLOAD_TOO_LARGE`.
- */
-export const MAX_CONFIRMED_BINDINGS = 1000;
+/** #502 / #611 — re-exported: the cap now lives with the digest that lifts it. */
+export { MAX_CONFIRMED_BINDINGS };
 
 const rotateSchema = z.object({
   value: z.string().min(1).max(SECRET_VALUE_MAX),
@@ -119,7 +115,26 @@ const rotateSchema = z.object({
     )
     .max(MAX_CONFIRMED_BINDINGS)
     .optional(),
+  /**
+   * #611 — the `bindingsDigest` the 409 issued, in place of (or alongside)
+   * `confirmedBindings`: the only way to confirm a list over the cap.
+   */
+  confirmedBindingsDigest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/, "confirmedBindingsDigest must be the digest the 409 issued")
+    .optional(),
 });
+
+/**
+ * #611 (PR #627 review) — compare a confirmed bindings digest with the live one
+ * in constant time. The schema admits only 64 lowercase hex characters, but the
+ * lengths are checked first because `timingSafeEqual` throws on unequal buffers.
+ */
+export function digestsEqual(confirmed: string, live: string): boolean {
+  const a = Buffer.from(confirmed, "utf8");
+  const b = Buffer.from(live, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 function summaryToView(s: SecretSummary): {
   id: string;
@@ -245,7 +260,11 @@ export function vaultRouter(): Router {
         createdById: foreignOwnerId,
       });
       const confirmed = parsed.data.confirmedBindings;
-      if (parsed.data.confirmForeignOwner !== true || confirmed === undefined) {
+      const confirmedDigest = parsed.data.confirmedBindingsDigest;
+      if (
+        parsed.data.confirmForeignOwner !== true ||
+        (confirmed === undefined && confirmedDigest === undefined)
+      ) {
         throw new AppError(
           409,
           VAULT_ROTATE_FOREIGN_OWNER,
@@ -263,7 +282,11 @@ export function vaultRouter(): Router {
           details as unknown as Record<string, unknown>,
         );
       }
-      if (bindingsDiffer(details, confirmed)) {
+      // #611 — whichever form the confirm takes must match the live set; both, if both are sent.
+      if (
+        (confirmed !== undefined && bindingsDiffer(details, confirmed)) ||
+        (confirmedDigest !== undefined && !digestsEqual(confirmedDigest, details.bindingsDigest))
+      ) {
         throw new AppError(
           409,
           VAULT_ROTATE_BINDINGS_CHANGED,
@@ -271,7 +294,8 @@ export function vaultRouter(): Router {
           details as unknown as Record<string, unknown>,
         );
       }
-      confirmedBindings = canonicalBindings(confirmed);
+      // A digest matched the live set exactly, so the live list is what was confirmed.
+      confirmedBindings = canonicalBindings(confirmed ?? details.bindings);
     }
     let summary: SecretSummary;
     try {

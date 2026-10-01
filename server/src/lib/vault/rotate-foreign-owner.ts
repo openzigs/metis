@@ -41,6 +41,12 @@
  * the server's signing secret, because those fields can hold plaintext (an MCP
  * env value, a header) that an unkeyed hash would let a caller test guesses
  * against.
+ * #611 — a confirm may instead echo `bindingsDigest`, one server-issued digest
+ * over the WHOLE listed set ({@link bindingsSetDigest}), so a secret with more
+ * live bindings than a list confirm may carry ({@link MAX_CONFIRMED_BINDINGS})
+ * can still be confirmed — and an owner cannot block a takeover by inflating
+ * the bindings past that cap. It binds exactly what the list does: any added,
+ * removed or re-pointed binding changes it.
  * A confirmed rotation also transfers ownership (`createdById`) to the admin,
  * so the previous owner can no longer bind the secret, now holding the
  * admin's value, to a new destination (rule 1 of `secret-binding.ts`); their
@@ -170,10 +176,24 @@ export function routingDigest(
     .digest("hex");
 }
 
+/**
+ * #502 — the most bindings a foreign-owner confirm may echo back as
+ * `confirmedBindings`. A realistic confirm at this cap is well under the 10 MiB
+ * JSON limit (`JSON_LIMIT_BYTES`); a pathological one (max-length, all-escaped
+ * fields) can exceed it and gets the structured `413 PAYLOAD_TOO_LARGE`.
+ * #611 — a secret listed with more bindings than this is confirmed by its
+ * `bindingsDigest` instead, so the cap never strands a secret.
+ */
+export const MAX_CONFIRMED_BINDINGS = 1000;
+
 export interface ForeignOwnerDetails {
   secretId: string;
   owner: SecretOwnerView;
   bindings: SecretBindingView[];
+  /** #611 — {@link bindingsSetDigest} of `bindings`; a confirm may echo it instead of the list. */
+  bindingsDigest: string;
+  /** #611 — the most bindings a `confirmedBindings` list may carry. */
+  maxConfirmedBindings: number;
 }
 
 /**
@@ -395,6 +415,8 @@ export async function describeForeignOwner(secret: {
       displayName: user?.displayName ?? null,
     },
     bindings,
+    bindingsDigest: bindingsSetDigest(secret.id, secret.createdById, bindings, key),
+    maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
   };
 }
 
@@ -420,8 +442,9 @@ function whereBound(details: ForeignOwnerDetails): string {
 
 const TO_CONFIRM =
   "To rotate it anyway, set confirmForeignOwner and send the type, id, destination and routing of " +
-  "every binding listed here as confirmedBindings; the secret then becomes yours, so they can no longer " +
-  "bind it anywhere new.";
+  `every binding listed here as confirmedBindings (at most ${MAX_CONFIRMED_BINDINGS}), or the ` +
+  "bindingsDigest listed here as confirmedBindingsDigest; the secret then becomes yours, so they " +
+  "can no longer bind it anywhere new.";
 
 /** A one-line, human-readable refusal naming the owner and where the secret is bound. */
 export function foreignOwnerMessage(details: ForeignOwnerDetails): string {
@@ -457,6 +480,25 @@ export type ConfirmedBinding = Pick<SecretBindingView, "type" | "id" | "destinat
 
 function bindingKey(b: ConfirmedBinding): string {
   return JSON.stringify([b.type, b.id, b.destination, b.routing]);
+}
+
+/**
+ * #611 — one digest over a secret's whole binding set: HMAC-SHA256 (under
+ * {@link routingKey}, domain-separated from {@link routingDigest}) of the secret
+ * id, its owner id and every binding's type, id, destination and routing, in
+ * canonical order. Order-independent and duplicate-free exactly as
+ * {@link bindingsDiffer} is, so it matches the live set iff a list confirm would.
+ */
+export function bindingsSetDigest(
+  secretId: string,
+  ownerId: string,
+  bindings: ConfirmedBinding[],
+  key: Buffer = routingKey(),
+): string {
+  const keys = [...new Set(bindings.map(bindingKey))].sort();
+  return createHmac("sha256", key)
+    .update(JSON.stringify(["bindings-set", secretId, ownerId, keys]))
+    .digest("hex");
 }
 
 /** #502 — the confirmed bindings, deduplicated and in a stable order, for the audit row. */

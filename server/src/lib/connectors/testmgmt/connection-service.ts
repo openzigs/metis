@@ -685,7 +685,7 @@ export async function updateTestManagementConnection(
   // unless something else still references it.
   const retire = deps?.retireSecret ?? retireReplacedSecret;
   for (const oldId of superseded) {
-    await retire(vault, oldId, {
+    await retire(oldId, {
       actorId,
       target: { type: "test_management_connection", id },
       projectId: existing.projectId,

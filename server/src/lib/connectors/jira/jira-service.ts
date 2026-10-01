@@ -425,7 +425,7 @@ export async function updateJiraConnection(
   // #481 — the row now points at the replacements; retire each old secret
   // unless something else still references it.
   for (const oldId of superseded) {
-    await retireReplacedSecret(getVaultService(), oldId, {
+    await retireReplacedSecret(oldId, {
       actorId,
       target: { type: "jira_connection", id },
       projectId: existing.projectId,

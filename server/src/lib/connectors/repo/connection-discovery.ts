@@ -17,7 +17,7 @@ import { createChildLogger } from "../../logger.js";
 import { prisma } from "../../prisma.js";
 import { type RotationUndo, getVaultService } from "../../vault/vault-service.js";
 import { rotateOrCreateUndoable } from "../../vault/secret-rotation.js";
-import { undoRotations } from "../../vault/secret-retirement.js";
+import { undoRotations, withdrawCreatedSecrets } from "../../vault/secret-retirement.js";
 import { scanFileForConnections, type DiscoveredConnection } from "./connection-scanner.js";
 
 const log = createChildLogger("suggested-connector-discovery");
@@ -150,6 +150,9 @@ export async function discoverAndUpsertConnections(
     // #610 — an in-place rotation of the row's secret, undone if the upsert
     // below fails, so a suggestion that was not written keeps its old password.
     const undos: RotationUndo[] = [];
+    // #623 — a secret created because the old one was missing or deleted;
+    // nothing references it until the upsert lands, so it is withdrawn if not.
+    const created: string[] = [];
     let suggestionId: string | undefined;
     try {
       // Existing row lookup so we can reconcile any prior vault secret with
@@ -212,6 +215,7 @@ export async function discoverAndUpsertConnections(
             undos,
           );
           passwordVaultRef = written.id;
+          if (written.created) created.push(written.id);
           vaultMutated = written.created ? "created" : "rotated";
         }
       }
@@ -259,7 +263,10 @@ export async function discoverAndUpsertConnections(
             : {}),
         },
       });
-      undos.length = 0; // #610 — the row landed: its secret keeps the new value.
+      // #610/#623 — the row landed: its secret keeps the new value, and a
+      // created secret is now referenced by it.
+      undos.length = 0;
+      created.length = 0;
       summary.suggestionsUpserted++;
 
       if (vault && conn.devCredsDetected) {
@@ -279,13 +286,17 @@ export async function discoverAndUpsertConnections(
         });
       }
     } catch (err) {
+      const ctx = {
+        actorId: null,
+        resource: { type: "suggested_connector", ...(suggestionId ? { id: suggestionId } : {}) },
+        projectId,
+        cause: err,
+      };
+      if (vault && created.length > 0) {
+        await withdrawCreatedSecrets(vault, created, ctx);
+      }
       if (vault && undos.length > 0) {
-        await undoRotations(vault, undos, {
-          actorId: null,
-          resource: { type: "suggested_connector", ...(suggestionId ? { id: suggestionId } : {}) },
-          projectId,
-          cause: err,
-        });
+        await undoRotations(vault, undos, ctx);
       }
       // SECURITY: never serialise the full `conn` — it carries the plaintext
       // `password` field when extraction is enabled. Only log non-sensitive

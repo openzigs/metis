@@ -31,9 +31,11 @@ vi.mock("node:crypto", async (importOriginal) => {
 const {
   bindingsChangedMessage,
   bindingsDiffer,
+  bindingsSetDigest,
   canonicalBindings,
   describeForeignOwner,
   foreignOwnerMessage,
+  MAX_CONFIRMED_BINDINGS,
   routingDigest,
   routingFields,
   UNBOUND_NOTE,
@@ -516,3 +518,84 @@ describe("#557 — routing digest over the full routing fields", () => {
 });
 
 const SECRET_OWNER = { id: "u-1", username: null, displayName: null };
+
+describe("#611 — bindingsSetDigest: one confirm over the whole binding set", () => {
+  const b = (id: string, destination = `pg://${id}`, routing = "r".repeat(64)) => ({
+    type: "db_connector" as const,
+    id,
+    destination,
+    routing,
+  });
+  const digest = (...bs: ReturnType<typeof b>[]) => bindingsSetDigest("sec-1", "u-1", bs);
+
+  it("is 64 lowercase hex, and the same for the same set in any order or with duplicates", () => {
+    const d = digest(b("a"), b("b"));
+    expect(d).toMatch(/^[0-9a-f]{64}$/);
+    expect(digest(b("b"), b("a"))).toBe(d);
+    expect(digest(b("a"), b("b"), b("a"))).toBe(d);
+  });
+
+  it("changes when a binding is added, removed, re-pointed or re-routed", () => {
+    const d = digest(b("a"), b("b"));
+    expect(digest(b("a"))).not.toBe(d);
+    expect(digest(b("a"), b("b"), b("c"))).not.toBe(d);
+    expect(digest(b("a"), b("b", "pg://evil"))).not.toBe(d);
+    expect(digest(b("a"), b("b", "pg://b", "s".repeat(64)))).not.toBe(d);
+  });
+
+  it("is bound to the secret and its owner, so one secret's digest never confirms another", () => {
+    const bs = [b("a")];
+    const d = bindingsSetDigest("sec-1", "u-1", bs);
+    expect(bindingsSetDigest("sec-2", "u-1", bs)).not.toBe(d);
+    expect(bindingsSetDigest("sec-1", "u-2", bs)).not.toBe(d);
+    expect(bindingsSetDigest("sec-1", "u-1", [])).not.toBe(bindingsSetDigest("sec-2", "u-1", []));
+  });
+
+  it("ignores display-only fields (label, project), like bindingsDiffer", () => {
+    const shown = { ...b("a"), label: "A", projectId: "p" };
+    expect(bindingsSetDigest("sec-1", "u-1", [shown])).toBe(digest(b("a")));
+  });
+
+  it("is keyed off the server secret, not a plain hash", () => {
+    const d = digest(b("a"));
+    const prev = process.env.JWT_SECRET;
+    process.env.JWT_SECRET = "a-different-test-signing-secret-of-enough-length-611";
+    try {
+      expect(digest(b("a"))).not.toBe(d);
+    } finally {
+      if (prev === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = prev;
+    }
+  });
+
+  it("describeForeignOwner issues the digest of the listed bindings and the list cap", async () => {
+    db.databaseConnection.findMany.mockResolvedValueOnce([
+      {
+        id: "d1",
+        label: "D1",
+        projectId: "p",
+        driver: "postgres",
+        host: "h",
+        port: 5432,
+        databaseName: null,
+        options: null,
+      },
+    ]);
+    const out = await describeForeignOwner(SECRET);
+    expect(out.bindingsDigest).toBe(bindingsSetDigest(SECRET.id, SECRET.createdById, out.bindings));
+    expect(out.maxConfirmedBindings).toBe(MAX_CONFIRMED_BINDINGS);
+    expect(MAX_CONFIRMED_BINDINGS).toBe(1000);
+  });
+
+  it("the refusal names the digest as the alternative confirm", () => {
+    const msg = foreignOwnerMessage({
+      secretId: "s",
+      owner: { id: "u", username: "c", displayName: null },
+      bindings: [],
+      bindingsDigest: "0".repeat(64),
+      maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
+    });
+    expect(msg).toContain("confirmedBindingsDigest");
+    expect(msg).toContain(`at most ${MAX_CONFIRMED_BINDINGS}`);
+  });
+});
