@@ -57,7 +57,8 @@ import { verifyAccessToken } from "../auth/jwt.js";
 import { actorCanAccessProject } from "../scheduler/project-access.js";
 import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
 import { canJoinAnalysisRoom } from "./analysis-room-access.js";
-import { getLastDocSections, getLastJobLifecycle } from "./job-events.js";
+import { canJoinBgRunRoom, canJoinConnectorRoom, resolveJobRoomScope } from "./room-access.js";
+import { getLastDocSections, getLastJobLifecycle, type JobScope } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
 import { isMcpStatusRoom, mcpStatusRoomsFor, mcpStatusWorkspaceRoom } from "../mcp/status-rooms.js";
@@ -726,15 +727,61 @@ function attachHandlers(socket: MetisSocket): void {
     }
   });
 
+  // #655 — the connector, background-run and job rooms carry reads of the
+  // resource they are named after, so each join takes the REST read's rule
+  // (`room-access.ts`); they used to join any id named. Denials share one
+  // message per room, whatever the reason. A room's pending check is recorded
+  // here and dropped by an unsubscribe, so a check that resolves after a later
+  // unsubscribe (or a newer subscribe) does not act.
+  const pendingRoomChecks = new Map<string, number>();
+  let roomCheckSeq = 0;
+  const joinIfAuthorized = (
+    room: string,
+    authorize: () => Promise<boolean>,
+    denial: string,
+    onJoined?: () => void,
+  ): Promise<void> => {
+    const attempt = ++roomCheckSeq;
+    pendingRoomChecks.set(room, attempt);
+    return (async () => {
+      let allowed = false;
+      try {
+        allowed = await authorize();
+      } catch (err) {
+        log.warn("Socket room access check failed", {
+          socketId: socket.id,
+          room,
+          error: (err as Error).message,
+        });
+      }
+      if (pendingRoomChecks.get(room) !== attempt) return;
+      pendingRoomChecks.delete(room);
+      if (!allowed) {
+        socket.emit("auth:error", { message: denial });
+        return;
+      }
+      await socket.join(room);
+      onJoined?.();
+    })();
+  };
+  const leaveRoom = (room: string): Promise<void> | void => {
+    pendingRoomChecks.delete(room);
+    return socket.leave(room);
+  };
+
   onClientEvent(socket, "subscribe:connector", (payload) => {
     const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
-    return socket.join(`connector:${connectorId}`);
+    return joinIfAuthorized(
+      `connector:${connectorId}`,
+      () => canJoinConnectorRoom(user, connectorId),
+      "FORBIDDEN: no access to connector",
+    );
   });
   onClientEvent(socket, "unsubscribe:connector", (payload) => {
     const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
-    return socket.leave(`connector:${connectorId}`);
+    return leaveRoom(`connector:${connectorId}`);
   });
 
   onClientEvent(socket, "subscribe:publish", (payload) => {
@@ -781,79 +828,59 @@ function attachHandlers(socket: MetisSocket): void {
   });
 
   // Epic #238 (#239) — unified job-lifecycle rooms (`job:{jobId}`).
-  // Analysis, doc-generation, and impact-analysis all broadcast here. Anyone
-  // with a job id (returned from the trigger endpoint) may subscribe; finer
-  // authz is enforced at the REST trigger layer that hands out the id.
+  // Analysis, doc-generation, and impact-analysis all broadcast here. #655 —
+  // the join is authorized against the job's scope (`resolveJobRoomScope`); it
+  // used to be capability-based, and a PR-review job id is sequential.
   onClientEvent(socket, "subscribe:job", (payload) => {
     const jobId: unknown = payload?.jobId;
     if (!jobId || typeof jobId !== "string") return;
-    runDetached(socket.join(`job:${jobId}`), "subscribe:job join", socket.id);
-    // Replay the job's last known transition to THIS socket. A room only
-    // delivers what is emitted while you are in it, and a client cannot
-    // subscribe until the trigger endpoint has answered — so a short job
-    // (the embeddings reindex finishes in milliseconds) emitted `started`
+    let scope: JobScope | null = null;
+    // Once joined, replay the job's last known transition to THIS socket. A
+    // room only delivers what is emitted while you are in it, and a client
+    // cannot subscribe until the trigger endpoint has answered — so a short
+    // job (the embeddings reindex finishes in milliseconds) emitted `started`
     // and `completed` into an empty room and the surface never learned the
-    // job was done. Replay is idempotent: the client dedups terminal
-    // handling by job id.
-    //
-    // Joining the room stays capability-based (holding the job id is the
-    // capability; the REST trigger that hands the id out does the authz).
-    // The REPLAY is a new READ of stored state, though, so where the
-    // remembered event names a project it is gated by the same
-    // `actorCanAccessProject` check `subscribe:project` uses — a guessed job
-    // id must not become a way to read another project's job state. Events
-    // with no `projectId` carry no project to scope to and replay as before.
+    // job was done. Replay is idempotent: the client dedups terminal handling
+    // by job id.
     //
     // #510 — the latest `job:doc-section` state of each section replays too, so
     // a section that finished while the socket was down (a reconnect drops its
     // rooms) reaches the Documentation page without waiting for a refetch.
-    // Doc-section events always name a project, so they always take the gate.
-    const last = getLastJobLifecycle(jobId);
-    if (last && !last.projectId) socket.emit("job:lifecycle", last);
-    const sections = getLastDocSections(jobId);
-    const scopedProjectId = last?.projectId ?? sections[0]?.projectId;
-    if (!scopedProjectId) return;
-    return (async () => {
-      try {
-        const allowed = await actorCanAccessProject(
-          { id: user.userId, role: user.role },
-          scopedProjectId,
-          {
-            resource: "job_replay",
-            resourceId: jobId,
-            action: "socket.subscribe:job",
-          },
-        );
-        if (!allowed) return;
-        if (last?.projectId) socket.emit("job:lifecycle", last);
-        // Only sections of the project that was just checked.
-        for (const section of sections) {
-          if (section.projectId === scopedProjectId) socket.emit("job:doc-section", section);
-        }
-      } catch (err) {
-        log.warn("socket.job_replay_authz_failed", {
-          jobId,
-          error: (err as Error).message,
-        });
+    // Only events of the scope the join was authorized against replay.
+    const replay = (): void => {
+      const last = getLastJobLifecycle(jobId);
+      if (last && last.projectId === scope?.projectId) socket.emit("job:lifecycle", last);
+      for (const section of getLastDocSections(jobId)) {
+        if (section.projectId === scope?.projectId) socket.emit("job:doc-section", section);
       }
-    })();
+    };
+    return joinIfAuthorized(
+      `job:${jobId}`,
+      async () => (scope = await resolveJobRoomScope(user, jobId)) !== null,
+      "FORBIDDEN: no access to job",
+      replay,
+    );
   });
   onClientEvent(socket, "unsubscribe:job", (payload) => {
     const jobId: unknown = payload?.jobId;
     if (!jobId || typeof jobId !== "string") return;
-    return socket.leave(`job:${jobId}`);
+    return leaveRoom(`job:${jobId}`);
   });
 
   // Epic #156 — async background run rooms (`run:{runId}`).
   onClientEvent(socket, "subscribe:bg-run", (payload) => {
     const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
-    return socket.join(`run:${runId}`);
+    return joinIfAuthorized(
+      `run:${runId}`,
+      () => canJoinBgRunRoom(user, runId),
+      "FORBIDDEN: no access to background run",
+    );
   });
   onClientEvent(socket, "unsubscribe:bg-run", (payload) => {
     const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
-    return socket.leave(`run:${runId}`);
+    return leaveRoom(`run:${runId}`);
   });
 
   onClientEvent(socket, "disconnect", (reason) => {

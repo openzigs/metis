@@ -64,6 +64,7 @@ vi.mock("../middleware/require-permission.js", () => ({
 }));
 
 import { prReviewsRouter } from "./pr-reviews.js";
+import { getJobScope, _resetJobLifecycleMemory } from "../lib/socket/job-events.js";
 import { errorHandler, notFoundHandler } from "../middleware/error-handler.js";
 
 function makeApp(opts: { resolveQueue?: () => unknown } = {}) {
@@ -189,6 +190,7 @@ describe("POST /api/projects/:projectId/pr-reviews/:prNumber/re-review", () => {
   }
 
   it("202 ACCEPTED + enqueues onto the worker queue when the row exists", async () => {
+    _resetJobLifecycleMemory();
     seed({ prNumber: 7, lastReviewedSha: "deadbeef" });
     const fq = fakeQueue();
     const app = makeApp({ resolveQueue: () => fq.queue });
@@ -199,6 +201,8 @@ describe("POST /api/projects/:projectId/pr-reviews/:prNumber/re-review", () => {
     expect(resp.body.success).toBe(true);
     expect(resp.body.data.jobId).toBe("job-1");
     expect(fq.enqueued).toHaveLength(1);
+    // #655 — the queued job's scope is recorded for its `subscribe:job`.
+    expect(getJobScope("job-1")).toEqual({ kind: "pr-review", projectId: "p1" });
     const payload = fq.enqueued[0] as {
       projectId: string;
       owner: string;

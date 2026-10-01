@@ -7,12 +7,14 @@ import type { MetisIOServer } from "./server.js";
 import {
   createJobEventEmitter,
   genericFailureMessage,
+  getJobScope,
   getLastDocSections,
   getLastJobLifecycle,
   JOB_KINDS,
   NOOP_JOB_EMITTER,
   jobEvents,
   _resetJobLifecycleMemory,
+  rememberJobScope,
 } from "./job-events.js";
 import * as registry from "./registry.js";
 
@@ -511,5 +513,66 @@ describe("last doc-section memory for re-subscribers (#510)", () => {
     NOOP_JOB_EMITTER.docSection(section("doc-reset", "Overview", "done"));
     _resetJobLifecycleMemory();
     expect(getLastDocSections("doc-reset")).toEqual([]);
+  });
+});
+
+/** #655 — the scope a `job:{id}` room join is authorized against. */
+describe("job scope memory (#655)", () => {
+  beforeEach(() => {
+    _resetJobLifecycleMemory();
+  });
+
+  it("takes a job's kind and project from its lifecycle events", () => {
+    NOOP_JOB_EMITTER.started("spec-kit", "job-1", "proj-1");
+    expect(getJobScope("job-1")).toEqual({ kind: "spec-kit", projectId: "proj-1" });
+    NOOP_JOB_EMITTER.started("impact-analysis", "job-2", null);
+    expect(getJobScope("job-2")).toEqual({ kind: "impact-analysis", projectId: null });
+    expect(getJobScope("job-never-seen")).toBeUndefined();
+  });
+
+  it("scopes a job named only by doc-section events as a doc generation", () => {
+    NOOP_JOB_EMITTER.docSection({
+      jobId: "doc-1",
+      projectId: "proj-1",
+      section: "A",
+      status: "done",
+    });
+    expect(getJobScope("doc-1")).toEqual({ kind: "doc-generation", projectId: "proj-1" });
+  });
+
+  it("keeps a lifecycle-derived scope when a doc-section names another project", () => {
+    NOOP_JOB_EMITTER.started("doc-generation", "doc-2", "proj-1");
+    NOOP_JOB_EMITTER.docSection({
+      jobId: "doc-2",
+      projectId: "proj-x",
+      section: "A",
+      status: "done",
+    });
+    expect(getJobScope("doc-2")).toEqual({ kind: "doc-generation", projectId: "proj-1" });
+  });
+
+  it("records a scope handed out before the job's first event, and the event refreshes it", () => {
+    rememberJobScope("prr-1", "pr-review", "proj-1");
+    expect(getJobScope("prr-1")).toEqual({ kind: "pr-review", projectId: "proj-1" });
+    expect(getLastJobLifecycle("prr-1")).toBeUndefined();
+    NOOP_JOB_EMITTER.started("pr-review", "prr-1", "proj-1");
+    expect(getJobScope("prr-1")).toEqual({ kind: "pr-review", projectId: "proj-1" });
+  });
+
+  it("evicts the least recently touched scopes beyond the cap", () => {
+    rememberJobScope("kept", "scan", "proj-1");
+    for (let i = 0; i < 499; i += 1) rememberJobScope(`filler-${i}`, "scan", "proj-1");
+    // Touching `kept` makes `filler-0` the oldest.
+    NOOP_JOB_EMITTER.progress("scan", "kept", "proj-1", 50);
+    rememberJobScope("one-more", "scan", "proj-1");
+    expect(getJobScope("filler-0")).toBeUndefined();
+    expect(getJobScope("kept")).toBeDefined();
+    expect(getJobScope("one-more")).toBeDefined();
+  });
+
+  it("is cleared by the test seam", () => {
+    rememberJobScope("gone", "scan", "proj-1");
+    _resetJobLifecycleMemory();
+    expect(getJobScope("gone")).toBeUndefined();
   });
 });

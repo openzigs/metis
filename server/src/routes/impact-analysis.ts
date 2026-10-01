@@ -76,16 +76,13 @@ import {
 import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import { createChildLogger } from "../lib/logger.js";
-import {
-  getImpactAnalysisDetail,
-  listImpactAnalyses,
-} from "../lib/impact-analysis/impact-analysis-read.js";
+import { listImpactAnalyses } from "../lib/impact-analysis/impact-analysis-read.js";
+import { loadAccessibleImpactDetail } from "../lib/impact-analysis/impact-detail-access.js";
 import { diffImpactRuns } from "../lib/impact-analysis/impact-drift.js";
 import type { ImpactDriftReport } from "@metis/shared";
 import { serializeImpactAnalysisMarkdown } from "../lib/analysis/analysis-export.js";
 import { publishImpactAnalysisToJira } from "../lib/scanner/prisma-adapter.js";
 import { PublishError } from "../lib/scanner/finding-publisher.js";
-import type { ImpactAnalysisDetail } from "@metis/shared";
 import { manualUsageOverrideSchema, impactTableFeedbackInputSchema } from "@metis/shared";
 import {
   deleteTableFeedback,
@@ -127,8 +124,7 @@ function ok<T>(data: T): ApiResponse<T> {
  * stages a BA did not get.
  */
 type BuiltImpactProvider =
-  | { provider: AIProvider }
-  | { provider: null; reason: ImpactStageUnavailableReason };
+  { provider: AIProvider } | { provider: null; reason: ImpactStageUnavailableReason };
 
 function buildImpactStageProvider(): BuiltImpactProvider {
   let provider: AIProvider | null = null;
@@ -411,51 +407,6 @@ async function assertProjectsAccessible(
     throw new AppError(404, "PROJECT_NOT_FOUND", `Unknown project(s): ${missing.join(", ")}`);
   }
   throw new AppError(403, "FORBIDDEN", "You do not have access to one or more requested projects");
-}
-
-/**
- * Issue #963 — load an impact analysis for `actor`, enforcing the SAME tenant
- * isolation as `GET /:id`: the caller must be able to access EVERY project the
- * run touches. Missing run OR any inaccessible project ⇒ 404 (existence is never
- * leaked). Shared by the detail, export, re-run, drift and Jira-publish routes so
- * their authorization is identical (OWASP A01 / BOLA).
- *
- * #88 — the `projectIds.length > 0` guard this used to carry was the detail twin
- * of the hatch #70 removed from the list path: an empty list meant "skip the
- * check", and an empty list was exactly what a run with no items yet produced,
- * so ANY `analysis.read` holder could read another project's in-flight run by id
- * — and export it, and publish it to Jira. `getImpactAnalysisDetail` now names
- * the run's persisted projects (#70's `impact_analysis_projects`), so the check
- * runs on every run created since then.
- *
- * A pre-#70 run with neither persisted projects nor items remains unattributable.
- * Rather than become invisible to everyone, it stays readable by the actor who
- * STARTED it — the one principal with a claim to it — and by nobody else.
- */
-async function loadAccessibleImpactDetail(
-  actor: SchedulerActor,
-  id: string,
-): Promise<ImpactAnalysisDetail> {
-  const detail = await getImpactAnalysisDetail(id);
-  if (!detail) {
-    throw new AppError(404, "NOT_FOUND", "Impact analysis not found");
-  }
-  if (isAdminActor(actor)) return detail;
-
-  if (detail.projectIds.length === 0) {
-    // Unattributable run: the starter only. A projection that names no starter
-    // matches no actor, so it is refused — never defaulted to the caller.
-    if (detail.startedById !== actor.id) {
-      throw new AppError(404, "NOT_FOUND", "Impact analysis not found");
-    }
-    return detail;
-  }
-
-  const accessible = new Set(await listAccessibleProjectIds(actor));
-  if (!detail.projectIds.every((pid) => accessible.has(pid))) {
-    throw new AppError(404, "NOT_FOUND", "Impact analysis not found");
-  }
-  return detail;
 }
 
 /** #963 — optional body for the Jira publish: an explicit run project to bill the issue to. */

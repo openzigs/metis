@@ -126,7 +126,44 @@ export interface JobEventEmitter {
 const LAST_EVENT_CAP = 500;
 const lastLifecycleByJob = new Map<string, JobLifecycleEvent>();
 
+/**
+ * #655 — the scope a `job:{id}` room join is authorized against: the job's
+ * kind and project, taken from every event emitted for it and from
+ * {@link rememberJobScope} for an id handed out before its first event (a
+ * queued PR review). Bounded on the same cap and eviction order as the
+ * lifecycle memory.
+ */
+export interface JobScope {
+  kind: JobKind;
+  projectId: string | null;
+}
+const jobScopeById = new Map<string, JobScope>();
+
+function storeJobScope(jobId: string, scope: JobScope): void {
+  jobScopeById.delete(jobId);
+  jobScopeById.set(jobId, scope);
+  while (jobScopeById.size > LAST_EVENT_CAP) {
+    const oldest = jobScopeById.keys().next();
+    if (oldest.done) break;
+    jobScopeById.delete(oldest.value);
+  }
+}
+
+/**
+ * Record a job's scope when its id is handed to a client before any event has
+ * been emitted for it, so the client's `subscribe:job` can be authorized.
+ */
+export function rememberJobScope(jobId: string, kind: JobKind, projectId: string | null): void {
+  storeJobScope(jobId, { kind, projectId });
+}
+
+/** The remembered scope of a job, or `undefined` when this process has none. */
+export function getJobScope(jobId: string): JobScope | undefined {
+  return jobScopeById.get(jobId);
+}
+
 function rememberLifecycle(event: JobLifecycleEvent): void {
+  storeJobScope(event.jobId, { kind: event.kind, projectId: event.projectId });
   // Re-insert so the most recently touched job is the newest key.
   lastLifecycleByJob.delete(event.jobId);
   lastLifecycleByJob.set(event.jobId, event);
@@ -158,6 +195,9 @@ export function getLastJobLifecycle(jobId: string): JobLifecycleEvent | undefine
 const lastDocSectionsByJob = new Map<string, Map<string, DocSectionProgressEvent>>();
 
 function rememberDocSection(event: DocSectionProgressEvent): void {
+  if (!jobScopeById.has(event.jobId)) {
+    storeJobScope(event.jobId, { kind: "doc-generation", projectId: event.projectId });
+  }
   const sections = lastDocSectionsByJob.get(event.jobId) ?? new Map();
   sections.set(event.section, event);
   lastDocSectionsByJob.delete(event.jobId);
@@ -181,6 +221,7 @@ export function getLastDocSections(jobId: string): DocSectionProgressEvent[] {
 export function _resetJobLifecycleMemory(): void {
   lastLifecycleByJob.clear();
   lastDocSectionsByJob.clear();
+  jobScopeById.clear();
 }
 
 /** Build an emitter bound to a specific IO server (used in server bootstrap / tests). */

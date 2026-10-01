@@ -23,6 +23,7 @@ import {
 } from "../lib/agents/pr-reviewer/state-repo.js";
 import { getPrReviewWorker } from "../lib/agents/pr-reviewer/worker-singleton.js";
 import type { PrReviewQueue } from "../lib/agents/pr-reviewer/queue.js";
+import { rememberJobScope } from "../lib/socket/job-events.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -193,6 +194,10 @@ export function prReviewsRouter(deps: PrReviewsRouterDeps = {}): Router {
           actorUserId: (req as Request & { user?: { userId?: string } }).user?.userId ?? null,
         },
       });
+      // #655 — `subscribe:job` authorizes against the job's scope. A review
+      // queued behind another emits nothing until it starts, so record the
+      // scope now, for the client that subscribes as soon as it has the id.
+      rememberJobScope(enqueueOut.jobId, "pr-review", row.projectId || null);
       res.status(202).json(
         ok({
           jobId: enqueueOut.jobId,
