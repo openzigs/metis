@@ -27,6 +27,7 @@ import type {
 } from "@metis/shared";
 import { canAccessThread } from "../discussions/access.js";
 import { createChildLogger } from "../logger.js";
+import { onClientEvent } from "./client-event-handler.js";
 
 const log = createChildLogger("socket:discussion");
 
@@ -53,10 +54,10 @@ export function threadRoom(threadId: string): string {
 export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
   const user = socket.data.user;
 
-  socket.on("subscribe:thread", (payload) => {
+  onClientEvent(socket, "subscribe:thread", (payload) => {
     const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
-    void (async () => {
+    return (async () => {
       try {
         const access = await canAccessThread(
           { id: user.userId, role: user.role as RoleKey },
@@ -94,9 +95,9 @@ export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
     })();
   });
 
-  socket.on("unsubscribe:thread", (payload) => {
+  onClientEvent(socket, "unsubscribe:thread", (payload) => {
     const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
-    void socket.leave(threadRoom(threadId));
+    return socket.leave(threadRoom(threadId));
   });
 }

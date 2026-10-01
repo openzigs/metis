@@ -32,6 +32,7 @@ import type {
 import { canAccessThread as defaultCanAccessThread } from "../discussions/access.js";
 import { threadRoom } from "./discussion-rooms.js";
 import { createChildLogger } from "../logger.js";
+import { onClientEvent } from "./client-event-handler.js";
 
 const log = createChildLogger("socket:thread-presence");
 
@@ -95,10 +96,10 @@ export function wireDiscussionPresenceHandlers(
   /** Thread rooms this socket is currently present in. */
   const joined = new Set<string>();
 
-  socket.on("presence:thread:join", (payload) => {
+  onClientEvent(socket, "presence:thread:join", (payload) => {
     const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
-    void (async () => {
+    return (async () => {
       try {
         const result = await access({ id: user.userId, role: user.role as RoleKey }, threadId);
         if (!result.ok) {
@@ -128,7 +129,7 @@ export function wireDiscussionPresenceHandlers(
     })();
   });
 
-  socket.on("presence:thread:leave", (payload) => {
+  onClientEvent(socket, "presence:thread:leave", (payload) => {
     const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
     const room = threadRoom(threadId);
@@ -154,10 +155,10 @@ export function wireDiscussionPresenceHandlers(
     });
   };
 
-  socket.on("typing:start", (payload) => broadcastTyping(payload?.threadId, true));
-  socket.on("typing:stop", (payload) => broadcastTyping(payload?.threadId, false));
+  onClientEvent(socket, "typing:start", (payload) => broadcastTyping(payload?.threadId, true));
+  onClientEvent(socket, "typing:stop", (payload) => broadcastTyping(payload?.threadId, false));
 
-  socket.on("disconnect", () => {
+  onClientEvent(socket, "disconnect", () => {
     for (const room of joined) {
       removeFromRoom(room, socket.id);
       broadcastPresence(socket, room);

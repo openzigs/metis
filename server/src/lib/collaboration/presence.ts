@@ -17,6 +17,7 @@
  *     → leaves all presence rooms for that socket, broadcasts updates
  */
 import type { MetisIOServer } from "../socket/server.js";
+import { onClientEvent } from "../socket/client-event-handler.js";
 
 /** In-memory map: room key → Set of socket.data.user descriptors. */
 const roomPresence = new Map<
@@ -48,7 +49,8 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
 
     // #654 — the payload is read with `?.`, never destructured: a null or
     // missing payload rejected the handler's promise and crashed the process.
-    socket.on(
+    onClientEvent(
+      socket,
       "presence:join",
       async (payload?: { artifactType?: unknown; artifactId?: unknown } | null) => {
         const artifactType = payload?.artifactType;
@@ -72,7 +74,8 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
       },
     );
 
-    socket.on(
+    onClientEvent(
+      socket,
       "presence:leave",
       async (payload?: { artifactType?: unknown; artifactId?: unknown } | null) => {
         const artifactType = payload?.artifactType;
@@ -87,7 +90,7 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
       },
     );
 
-    socket.on("disconnect", () => {
+    onClientEvent(socket, "disconnect", () => {
       for (const key of joinedRooms) {
         roomPresence.get(key)?.delete(socket.id);
         broadcastPresenceUpdate(io, key);

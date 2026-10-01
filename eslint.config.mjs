@@ -53,6 +53,13 @@ export default tseslint.config(
           message:
             "Use patchSchemaOf(schema) from @metis/shared instead of .partial(): under zod 4 .partial() still applies inner .default()s, so a PATCH overwrites omitted fields (#346).",
         },
+        {
+          // #658 — socket.io dispatches a listener from process.nextTick with no
+          // try/catch, so a handler that throws or rejects crashes the process.
+          selector: "CallExpression[callee.object.name='socket'][callee.property.name='on']",
+          message:
+            "Register socket handlers with onClientEvent(socket, event, handler) from server/src/lib/socket/client-event-handler.ts: a throwing or rejecting socket.on handler crashes the API process (#658).",
+        },
       ],
     },
   },
@@ -72,6 +79,13 @@ export default tseslint.config(
           selector: "CallExpression[callee.property.name='partial']",
           message:
             "Use patchSchemaOf(schema) from @metis/shared instead of .partial() / .partial({...}) in a route: under zod 4 .partial() still applies inner .default()s, so a PATCH overwrites omitted fields (#346).",
+        },
+        {
+          // #658 — socket.io dispatches a listener from process.nextTick with no
+          // try/catch, so a handler that throws or rejects crashes the process.
+          selector: "CallExpression[callee.object.name='socket'][callee.property.name='on']",
+          message:
+            "Register socket handlers with onClientEvent(socket, event, handler) from server/src/lib/socket/client-event-handler.ts: a throwing or rejecting socket.on handler crashes the API process (#658).",
         },
       ],
     },
