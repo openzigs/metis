@@ -23,6 +23,22 @@ const slowMembership = vi.hoisted(() => ({
   gate: null as { promise: Promise<void>; release: () => void } | null,
 }));
 
+/**
+ * #617 — the handshake's live-user read is covered by `socket.test.ts` and the
+ * #612 SCIM test; here every user is live with the role the test connects as,
+ * so the membership lookups below are only `subscribe:mcp`'s.
+ */
+const liveRoles = vi.hoisted(() => new Map<string, "admin" | "coordinator">());
+vi.mock("../src/lib/auth/live-auth-payload.js", () => ({
+  loadLiveAuthPayload: vi.fn(async (userId: string) => ({
+    userId,
+    username: userId,
+    role: liveRoles.get(userId) ?? "coordinator",
+    permissions: [],
+    workspaces: [],
+  })),
+}));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     $queryRawUnsafe: vi.fn(async () => 1),
@@ -138,6 +154,7 @@ async function subscribe(
   role: "admin" | "coordinator",
   workspaces: string[] = [],
 ): Promise<Subscriber> {
+  liveRoles.set(userId, role);
   const { accessToken } = issueTokens({
     userId,
     username: userId,

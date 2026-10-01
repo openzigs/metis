@@ -5,11 +5,15 @@
  *   - JWT supplied via `socket.handshake.auth.token` OR `Authorization` header.
  *   - Connections without a valid token are REJECTED at handshake (issue #22
  *     acceptance criterion 1) — no events are processed for unauth sockets.
+ *   - #617 — the handshake then re-reads the user: a soft-deleted or inactive
+ *     user is rejected, and `socket.data.user` carries the durable role and
+ *     live workspaces, never the token's claims.
  *
  * Rooms:
  *   - `user:{id}` — personal room auto-joined on connect (NEVER from client input).
  *     Delivers `comment:mention` and `sla:deadline_expired` to exactly that user.
- *     The id is ALWAYS derived from `socket.data.user.userId` (verified JWT).
+ *     The id is ALWAYS derived from `socket.data.user.userId` (verified JWT,
+ *     re-read from the user row at handshake).
  *   - `project:{id}` — broadcast scope for project-level updates.
  *   - `analysis:{id}` — analysis run progress.
  *   - `session:{id}` — chat / agent session events.
@@ -35,6 +39,7 @@ import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
 import { isMcpStatusRoom, mcpStatusRoomsFor } from "../mcp/status-rooms.js";
 import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
+import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("socket");
@@ -92,14 +97,40 @@ export function createSocketServer(
         log.warn("Socket handshake rejected: no token", { socketId: socket.id });
         return next(new Error("UNAUTHORIZED"));
       }
+      let verified: AuthPayload;
       try {
-        socket.data.user = verifyAccessToken(token);
-        next();
+        verified = verifyAccessToken(token);
       } catch (err) {
         if (err instanceof jwt.TokenExpiredError) return next(new Error("TOKEN_EXPIRED"));
         if (err instanceof jwt.JsonWebTokenError) return next(new Error("TOKEN_INVALID"));
-        next(err as Error);
+        return next(err as Error);
       }
+      // #617 — a signature check alone admitted a SCIM-deprovisioned user's
+      // unexpired token and authorized every room gate from its `role` claim.
+      // Re-read the user as the HTTP path does (`refreshAuthenticatedUser`):
+      // reject a user who is not live, and carry the durable role, username and
+      // workspaces in `socket.data.user`. A lookup failure rejects (fail closed).
+      void loadLiveAuthPayload(verified.userId).then(
+        (live) => {
+          if (!live) {
+            log.warn("Socket handshake rejected: user is not active", {
+              socketId: socket.id,
+              userId: verified.userId,
+            });
+            return next(new Error("UNAUTHORIZED"));
+          }
+          socket.data.user = live;
+          next();
+        },
+        (err: unknown) => {
+          log.warn("Socket handshake rejected: user lookup failed", {
+            socketId: socket.id,
+            userId: verified.userId,
+            error: (err as Error).message,
+          });
+          next(new Error("UNAUTHORIZED"));
+        },
+      );
     } catch (err) {
       next(err as Error);
     }

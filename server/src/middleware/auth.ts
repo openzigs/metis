@@ -6,16 +6,9 @@
  */
 import type { RequestHandler } from "express";
 import jwt from "jsonwebtoken";
-import { getPermissionsForRole, type RoleKey } from "@metis/shared";
-import { resolveEffectiveRole } from "../lib/auth/durable-roles.js";
 import { verifyAccessToken } from "../lib/auth/jwt.js";
-import { readLiveWorkspaceIds } from "../lib/auth/live-workspace-ids.js";
-import { prisma } from "../lib/prisma.js";
+import { loadLiveAuthPayload } from "../lib/auth/live-auth-payload.js";
 import { AppError } from "./error-handler.js";
-
-function isRecognizedRole(role: string | undefined): role is RoleKey {
-  return role === "admin" || role === "coordinator" || role === "developer" || role === "reader";
-}
 
 export const requireAuth: RequestHandler = (req, _res, next) => {
   try {
@@ -62,24 +55,11 @@ export const refreshAuthenticatedUser: RequestHandler = async (req, _res, next) 
     if (!req.user?.userId) {
       throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
     }
-    const [user, workspaces, role] = await Promise.all([
-      prisma.user.findFirst({
-        where: { id: req.user.userId, status: "active", deletedAt: null },
-        select: { id: true, username: true, authRolesInitializedAt: true },
-      }),
-      readLiveWorkspaceIds(req.user.userId),
-      resolveEffectiveRole(req.user.userId),
-    ]);
-    if (!user) {
+    const live = await loadLiveAuthPayload(req.user.userId);
+    if (!live) {
       throw new AppError(401, "TOKEN_INVALID", "Access token is malformed or invalid");
     }
-    req.user = {
-      userId: user.id,
-      username: user.username,
-      role: isRecognizedRole(role.role) ? role.role : "reader",
-      permissions: getPermissionsForRole(isRecognizedRole(role.role) ? role.role : "reader"),
-      workspaces,
-    };
+    req.user = live;
     next();
   } catch (err) {
     next(err);

@@ -52,7 +52,12 @@ vi.mock("../src/lib/prisma.js", () => {
       return { ...row, createdAt: new Date(), updatedAt: new Date(), email: null };
     }),
   };
-  const userRole = { deleteMany: vi.fn(async () => ({ count: 0 })) };
+  const userRole = {
+    deleteMany: vi.fn(async () => ({ count: 0 })),
+    // #617 — the handshake resolves the durable role: every user here is a
+    // coordinator, matching the token `subscribe` issues.
+    findMany: vi.fn(async () => [{ source: "local", role: { key: "coordinator" } }]),
+  };
   const client = {
     user,
     userRole,
@@ -292,27 +297,40 @@ describe("#612 SCIM deprovision disconnects the user's sockets", () => {
     expect(s.labels).toContain("ws-612b-rename");
   });
 
+  // #617 — the handshake now re-reads the user, so the old access token is
+  // refused outright instead of connecting and joining no workspace room.
   it.each(DEPROVISION)(
-    "after %s, reconnecting with an unexpired token joins no workspace room",
+    "after %s, reconnecting with the old unexpired token is rejected at the handshake",
     async (_name, deprovision, status) => {
       seed(["u-back"], [["ws-612c", "u-back"]]);
       const before = await subscribe("u-back");
       await vi.waitFor(() =>
         expect(roomHas(mcpStatusWorkspaceRoom("ws-612c"), before.sid)).toBe(true),
       );
+      const oldToken = (before.socket.auth as { token: string }).token;
 
       const res = await deprovision("u-back").set("Authorization", SCIM_AUTH);
       expect(res.status).toBe(status);
       await vi.waitFor(() => expect(before.socket.connected).toBe(false));
 
-      // The WorkspaceMember row survives the deprovision; the access token is
-      // still within its lifetime, so the handshake accepts it.
+      // The WorkspaceMember row survives the deprovision and the access token
+      // is still within its lifetime — only the live-user check refuses it.
       expect(db.members.has("ws-612c:u-back")).toBe(true);
-      const after = await subscribe("u-back");
-      expect(roomHas(mcpStatusWorkspaceRoom("ws-612c"), after.sid)).toBe(false);
-
-      await emitAndSettle([after], "ws-612c", "reconnect");
-      expect(after.labels).not.toContain("ws-612c-reconnect");
+      const again = ioClient(`http://127.0.0.1:${port}`, {
+        auth: { token: oldToken },
+        transports: ["websocket"],
+        reconnection: false,
+        timeout: 2000,
+      });
+      open.push(again);
+      const outcome = await new Promise<string>((resolve) => {
+        again.on("auth:ok", () => resolve("auth:ok"));
+        again.on("connect_error", (err) => resolve(err.message));
+      });
+      expect(outcome).toBe("UNAUTHORIZED");
+      expect(again.connected).toBe(false);
+      // No server socket ever ran `attachHandlers` for the user.
+      expect(io.sockets.adapter.rooms.get("user:u-back")).toBeUndefined();
     },
   );
 });

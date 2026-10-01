@@ -1045,7 +1045,7 @@ Clients subscribe to the `analysis:{id}` room and receive type-checked events fr
 | `analysis:failed` | `{analysisId, errorMessage}` | Pipeline raised an unrecoverable error |
 | `analysis:cancelled` | `{analysisId}` | Pipeline observed `cancelled=true` |
 
-JWT auth at handshake gates room subscription so only authenticated users see progress.
+JWT auth at handshake gates room subscription so only authenticated users see progress. The handshake then re-reads the user through `loadLiveAuthPayload` (`lib/auth/live-auth-payload.ts`, shared with `refreshAuthenticatedUser`): a soft-deleted or inactive user is rejected `UNAUTHORIZED`, a lookup error fails closed, and `socket.data.user` carries the durable role, username and live workspaces, never the token's claims (#617).
 
 #### 7.6.1 Realtime job-events bus (Epic #238 / #239, widened by Epic #406 / #419)
 

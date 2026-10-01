@@ -26,13 +26,30 @@ const db = vi.hoisted(() => ({
   deletedWorkspaces: new Set<string>(),
   /** projectId → workspaceId, for the MCP status emitter's project lookup. */
   projects: new Map<string, string>(),
+  /** #617 — userId → durable role the handshake resolves (set by `subscribe`). */
+  roles: new Map<string, string>(),
 }));
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     $queryRawUnsafe: vi.fn(async () => 1),
-    user: { upsert: vi.fn() },
-    userRole: { findFirst: vi.fn(async () => null) },
+    // #617 — the handshake re-reads the user (always live here) and the
+    // durable role `subscribe` recorded.
+    user: {
+      upsert: vi.fn(),
+      findFirst: vi.fn(async ({ where }: { where: { id: string } }) => ({
+        id: where.id,
+        username: where.id,
+        authRoleAuthority: null,
+      })),
+    },
+    userRole: {
+      findFirst: vi.fn(async () => null),
+      findMany: vi.fn(async ({ where }: { where: { userId: string } }) => {
+        const key = db.roles.get(where.userId);
+        return key ? [{ source: "local", role: { key } }] : [];
+      }),
+    },
     auditLog: { create: vi.fn(async () => ({})) },
     workspace: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
@@ -157,6 +174,7 @@ function seed(memberships: Array<[workspaceId: string, userId: string]>): void {
 }
 
 async function subscribe(userId: string, role: "admin" | "coordinator"): Promise<Subscriber> {
+  db.roles.set(userId, role);
   const { accessToken } = issueTokens({
     userId,
     username: userId,
