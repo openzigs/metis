@@ -30,6 +30,10 @@
  *     `revalidateLocalSockets` each time the adapter's `LISTEN` connection is
  *     (re)established, so a revocation published while it was down — and so
  *     never delivered here — is applied from the database instead.
+ *   - #659 — on a clustered server `revalidateLocalSockets` also runs every
+ *     `SOCKET_REVALIDATE_INTERVAL_MS`, because a revocation whose PUBLISH fails
+ *     (only the publishing replica's pool times out, say) reaches no other
+ *     replica and gives them no reconnect to react to.
  *
  * Heartbeat:
  *   - The Socket.IO ping/pong cycle is configured to fire every 30s; idle
@@ -87,6 +91,13 @@ export interface CreateSocketServerOptions {
    * re-validated.
    */
   onAdapterListening?: (listener: () => void) => void;
+  /**
+   * #659 — how often every local socket is re-validated against the database
+   * (`revalidateLocalSockets`). Defaults to `SOCKET_REVALIDATE_INTERVAL_MS` when
+   * `adapter` is set, and to no sweep without it (one replica: every revocation
+   * runs here, against these sockets, with no publish to lose).
+   */
+  revalidateIntervalMs?: number;
 }
 
 type MetisSocket = Socket<
@@ -136,9 +147,28 @@ export function createSocketServer(
   // this replica's transports (see `reconnectUserSockets`).
   wireUserRevocationRelay(io, Boolean(opts.adapter));
   wireMcpStatusEvictionRelay(io, Boolean(opts.adapter));
-  opts.onAdapterListening?.(() => void revalidateLocalSockets(io));
+  opts.onAdapterListening?.(() => void revalidateLocalSockets(io, "listen"));
+  const sweepEvery =
+    opts.revalidateIntervalMs ?? (opts.adapter ? SOCKET_REVALIDATE_INTERVAL_MS : undefined);
+  if (sweepEvery !== undefined) {
+    const sweep = setInterval(() => void revalidateLocalSockets(io, "sweep"), sweepEvery);
+    sweep.unref();
+    // `io.close()` closes the HTTP server, which ends the sweep with it.
+    httpServer.once("close", () => clearInterval(sweep));
+  }
   return io;
 }
+
+/**
+ * #659 — the re-validation sweep interval on a clustered server, and so the
+ * documented bound on a revocation whose cross-replica publish failed: every
+ * replica applies it from the database by the end of its first sweep that
+ * starts after the revocation committed — at most this interval plus one pass
+ * (`REVALIDATE_CONCURRENCY` users re-read at a time). The cost is that pass,
+ * per replica, once a minute: the handshake's live-identity read per connected
+ * user (docs/EKS_DEPLOYMENT.md §9f.1).
+ */
+export const SOCKET_REVALIDATE_INTERVAL_MS = 60_000;
 
 /** Users re-read at once by `revalidateLocalSockets`, so a failover cannot flood the database pool. */
 export const REVALIDATE_CONCURRENCY = 4;
@@ -149,6 +179,8 @@ const MCP_STATUS_WORKSPACE_ROOM_PREFIX = mcpStatusWorkspaceRoom("");
 interface RevalidationState {
   /** Set by a call that arrived while this pass ran: run one more pass. */
   dirty: boolean;
+  /** The trigger the next pass logs as: `listen` if any call it serves was one. */
+  next: RevalidationTrigger;
   done: Promise<void>;
 }
 
@@ -173,20 +205,29 @@ const revalidations = new WeakMap<MetisIOServer, RevalidationState>();
  * finishes, which also sees a revocation committed after the running pass read
  * that user. A flapping `LISTEN` connection therefore never multiplies the read
  * bound. The returned promise settles once no pass is left to run.
+ *
+ * `trigger` only sets how loudly a pass is logged: a `LISTEN` (re)connect is
+ * rare and worth an info line, the #659 periodic sweep is not.
  */
-export function revalidateLocalSockets(io: MetisIOServer): Promise<void> {
+export function revalidateLocalSockets(
+  io: MetisIOServer,
+  trigger: RevalidationTrigger = "listen",
+): Promise<void> {
   const running = revalidations.get(io);
   if (running) {
     running.dirty = true;
+    running.next = running.next === "listen" ? "listen" : trigger;
     return running.done;
   }
-  const state: RevalidationState = { dirty: false, done: Promise.resolve() };
+  const state: RevalidationState = { dirty: false, next: trigger, done: Promise.resolve() };
   revalidations.set(io, state);
   state.done = (async () => {
     try {
       do {
+        const pass = state.next;
         state.dirty = false;
-        await revalidateOnce(io);
+        state.next = "sweep";
+        await revalidateOnce(io, pass);
       } while (state.dirty);
     } finally {
       revalidations.delete(io);
@@ -195,8 +236,11 @@ export function revalidateLocalSockets(io: MetisIOServer): Promise<void> {
   return state.done;
 }
 
+/** What started a `revalidateLocalSockets` pass. */
+export type RevalidationTrigger = "listen" | "sweep";
+
 /** One full `revalidateLocalSockets` pass. */
-async function revalidateOnce(io: MetisIOServer): Promise<void> {
+async function revalidateOnce(io: MetisIOServer, trigger: RevalidationTrigger): Promise<void> {
   bumpEpoch(io, "revocation");
   bumpEpoch(io, "eviction");
   const byUser = new Map<string, MetisSocket[]>();
@@ -207,12 +251,14 @@ async function revalidateOnce(io: MetisIOServer): Promise<void> {
     else byUser.set(userId, [socket]);
   }
   if (byUser.size === 0) return;
-  log.info(
-    "Re-validating sockets after the cluster adapter's LISTEN connection was (re)established",
-    {
-      users: byUser.size,
-    },
-  );
+  if (trigger === "listen") {
+    log.info(
+      "Re-validating sockets after the cluster adapter's LISTEN connection was (re)established",
+      { users: byUser.size },
+    );
+  } else {
+    log.debug("Periodic socket re-validation sweep", { users: byUser.size });
+  }
   const queue = [...byUser.values()];
   const worker = async (): Promise<void> => {
     for (let sockets = queue.shift(); sockets; sockets = queue.shift()) {

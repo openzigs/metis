@@ -56,6 +56,7 @@ import {
   type MetisIOServer,
 } from "../src/lib/socket/server.js";
 import { readEpoch } from "../src/lib/socket/revocation-relay.js";
+import { logger } from "../src/lib/logger.js";
 import { mcpStatusWorkspaceRoom } from "../src/lib/mcp/status-rooms.js";
 
 const payload = (userId: string, role = "coordinator"): AuthPayload => ({
@@ -297,5 +298,64 @@ describe("#649 revalidateLocalSockets", () => {
 
     expect(inRoom("ws-gone", c)).toBe(false);
     expect(inRoom("ws-old", c)).toBe(true);
+  });
+});
+
+describe("#659 revalidateLocalSockets log level by trigger", () => {
+  /** The level of each re-validation pass logged by the socket module. */
+  function passLevels(write: ReturnType<typeof vi.spyOn>): string[] {
+    return write.mock.calls
+      .map(([info]) => info as { level: string; message: string; module?: string })
+      .filter((i) => i.module === "socket" && /re-validat/i.test(i.message))
+      .map((i) => i.level);
+  }
+
+  it("logs a LISTEN pass at info and a periodic sweep at debug", async () => {
+    await connect("u-log");
+    const write = vi.spyOn(logger, "write");
+    try {
+      await revalidateLocalSockets(io, "listen");
+      await revalidateLocalSockets(io, "sweep");
+      expect(passLevels(write)).toEqual(["info", "debug"]);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("logs the coalesced pass at info when a LISTEN signal joined a running sweep", async () => {
+    await connect("u-log-join");
+    let unblock!: () => void;
+    live.userGate = new Promise<void>((r) => (unblock = r));
+    const write = vi.spyOn(logger, "write");
+    try {
+      const sweep = revalidateLocalSockets(io, "sweep");
+      await vi.waitFor(() => expect(loadLiveAuthPayload).toHaveBeenCalledWith("u-log-join"));
+      void revalidateLocalSockets(io, "listen");
+      void revalidateLocalSockets(io, "sweep");
+      unblock();
+      live.userGate = undefined;
+      await sweep;
+      expect(passLevels(write)).toEqual(["debug", "info"]);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("logs the trailing pass at debug when only a sweep joined a running LISTEN pass", async () => {
+    await connect("u-log-trail");
+    let unblock!: () => void;
+    live.userGate = new Promise<void>((r) => (unblock = r));
+    const write = vi.spyOn(logger, "write");
+    try {
+      const pass = revalidateLocalSockets(io, "listen");
+      await vi.waitFor(() => expect(loadLiveAuthPayload).toHaveBeenCalledWith("u-log-trail"));
+      void revalidateLocalSockets(io, "sweep");
+      unblock();
+      live.userGate = undefined;
+      await pass;
+      expect(passLevels(write)).toEqual(["info", "debug"]);
+    } finally {
+      write.mockRestore();
+    }
   });
 });

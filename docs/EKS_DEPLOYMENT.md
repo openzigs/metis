@@ -697,9 +697,20 @@ no new managed service.
   disconnect whose `NOTIFY` (or attachments `INSERT`) fails does not reach
   sockets on other pods, and is not retried. When the outage also drops the
   other pods' `LISTEN` connections — a failover or restart does — their
-  re-check on reconnect (below, #649) applies the revocations they missed; a
-  publish that fails while the other pods stay connected is still lost to them.
-  The pod logs a warning for each.
+  re-check on reconnect (below, #649) applies the revocations they missed. A
+  publish that fails while the other pods stay connected (only the publishing
+  pod's pool timing out, say) gives them no reconnect to react to, so every pod
+  also re-checks its sockets once a minute (#659, below). The pod logs a warning
+  for each failed publish.
+- **Revocation bound (#659):** every pod re-checks every socket it holds against
+  the database every **60 s** (`SOCKET_REVALIDATE_INTERVAL_MS`), exactly as it
+  does after a `LISTEN` reconnect. A SCIM deprovision, role change or workspace
+  membership removal whose cross-replica publish failed therefore reaches every
+  pod's sockets within **60 s plus one re-check pass** (users re-read four at a
+  time). The cost, per pod per minute, is that pass: the handshake's
+  live-identity read for each connected user. A user lookup that fails during a
+  pass closes that user's transports, so the client re-handshakes; while the
+  database is unreachable that handshake is refused, as it would be anyway.
 - **Timeouts:** the adapter's pool gives up on a connection attempt, a query or
   a statement after 5 s, so a hung database connection fails those cross-replica
   publishes within seconds instead of queueing every later one behind it.
