@@ -53,7 +53,9 @@ import {
   connectorRoom,
   hasPermission,
   jobRoom,
+  projectRoom,
   publishRoom,
+  SCHEDULER_STATUS_ROOM,
   sessionRoom,
   taskRoom,
   type AuthPayload,
@@ -533,7 +535,7 @@ function applyLiveUser(socket: MetisSocket, live: AuthPayload | null | undefined
  * #682 — the room each `subscribe:*` payload asks for, which the join rate
  * limit (`join-rate-limit.ts`) names in its refusal.
  */
-const projectRoomOf = roomFromField("projectId", (id) => `project:${id}`);
+const projectRoomOf = roomFromField("projectId", projectRoom);
 const analysisRoomOf = roomFromField("analysisId", analysisRoom);
 const sessionRoomOf = roomFromField("sessionId", sessionRoom);
 const connectorRoomOf = roomFromField("connectorId", connectorRoom);
@@ -542,7 +544,7 @@ const taskRoomOf = roomFromField("taskId", taskRoom);
 const jobRoomOf = roomFromField("jobId", jobRoom);
 const bgRunRoomOf = roomFromField("runId", bgRunRoom);
 const mcpRoomOf = () => MCP_STATUS_ROOM;
-const schedulerRoomOf = () => "scheduler:status";
+const schedulerRoomOf = () => SCHEDULER_STATUS_ROOM;
 
 function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): void {
   const user = socket.data.user;
@@ -599,7 +601,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
           });
           return;
         }
-        await socket.join(`project:${projectId}`);
+        await socket.join(projectRoom(projectId));
       } catch (err) {
         log.warn("Socket subscribe:project failed", {
           socketId: socket.id,
@@ -613,7 +615,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   onClientEvent(socket, "unsubscribe:project", (payload) => {
     const projectId: unknown = payload?.projectId;
     if (!projectId || typeof projectId !== "string") return;
-    return socket.leave(`project:${projectId}`);
+    return socket.leave(projectRoom(projectId));
   });
 
   // Epic #475 (Phase 2, #480) — authz-gated discussion-thread rooms
@@ -845,10 +847,10 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
       });
       return;
     }
-    return socket.join("scheduler:status");
+    return socket.join(SCHEDULER_STATUS_ROOM);
   });
   onClientEvent(socket, "unsubscribe:scheduler", () => {
-    return socket.leave("scheduler:status");
+    return socket.leave(SCHEDULER_STATUS_ROOM);
   });
   onRoomJoin(socket, "subscribe:task", taskRoomOf, (payload) => {
     const taskId: unknown = payload?.taskId;

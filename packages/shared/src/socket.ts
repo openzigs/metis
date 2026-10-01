@@ -39,7 +39,9 @@ export interface SocketAuthErrorEvent {
   /**
    * The room whose join was refused, named by its `@metis/shared` factory
    * (`connectorRoom`, `bgRunRoom`, `jobRoom`, `presenceRoom`) so a client
-   * compares it against the same factory's output (#676).
+   * compares it against the same factory's output (#676). A rate-limited
+   * refusal (#682) names the room of any rate-limited join, including
+   * `projectRoom` and `SCHEDULER_STATUS_ROOM`.
    */
   room?: string;
   /**

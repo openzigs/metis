@@ -21,6 +21,7 @@ import { isDocumentIngesting } from "@/lib/project-pipeline";
 import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
+import { projectJoin } from "@/lib/socket-rooms";
 
 /** How often the list is re-read while a document is still ingesting. */
 export const DOCUMENT_INGEST_POLL_MS = 3000;
@@ -43,11 +44,7 @@ export function useProjectDocuments(projectId: string) {
       qc.invalidateQueries({ queryKey: queryKeys.documents.forProject(projectId) });
     // #642 — re-join on reconnect; the server drops rooms with the old session.
     // #646 — and re-read the list, for a `document:status` sent during the gap.
-    const release = keepSubscribed(
-      socket,
-      () => socket.emit("subscribe:project", { projectId }),
-      refresh,
-    );
+    const release = keepSubscribed(socket, projectJoin(socket, projectId), refresh);
     const onDocumentStatus = (data: { projectId: string }) => {
       if (data.projectId !== projectId) return;
       refresh();

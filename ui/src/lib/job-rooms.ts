@@ -124,6 +124,8 @@ function roomsFor(socket: JobRoomSocket): SocketRooms {
         return;
       }
       follows.delete(refused);
+      // Timer cleanup: a pending retry would no-op on `follows.has`, unless the
+      // job is followed afresh before it fires and it sends a stray subscribe.
       cancelRetry(state, refused);
       if (follows.size === 0) detach(socket, state);
     },
@@ -161,6 +163,7 @@ export function joinJobRoom(socket: JobRoomSocket, jobId: string): () => void {
     mine.count -= 1;
     if (mine.count > 0) return;
     follows.delete(jobId);
+    // Timer cleanup, as in the refusal path; `detach` below clears the rest.
     cancelRetry(state, jobId);
     socket.emit("unsubscribe:job", { jobId });
     // Nothing left to re-join; the buffered set only matters for live rooms.

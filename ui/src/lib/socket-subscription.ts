@@ -62,7 +62,10 @@
  * (`socket-rate-limit.ts`) — if it has not been released and the socket is up
  * by then; a reconnect re-subscribes anyway and cancels the pending retry. An
  * authorization refusal (no `code`) changes nothing here: the follower keeps
- * re-subscribing on reconnect, exactly as before.
+ * re-subscribing on reconnect, exactly as before. A `keepSubscribed` follower
+ * is never left, but it is named too when built from a `RoomJoin` factory
+ * (`projectJoin`, `schedulerJoin`), so its rate-limited join is retried the
+ * same way; it still takes no part in the reference count.
  */
 import type { Socket } from "socket.io-client";
 import type { SocketAuthErrorEvent } from "@metis/shared";
@@ -72,14 +75,24 @@ import { rateLimitRetryDelay } from "./socket-rate-limit";
 type SubscriptionSocket = Pick<Socket, "on" | "off" | "connected">;
 
 /**
+ * #682 — a join of a server room that is never left: how to join it, and the
+ * room it is, so a rate-limited refusal of the join can be matched. Build it
+ * with a factory from `socket-rooms.ts`, never by hand (#672).
+ */
+export interface RoomJoin {
+  /** The server's room name, as a refusal of this join names it. */
+  room: string;
+  subscribe: () => void;
+}
+
+/**
  * One follower of a server room: how to join it, how to leave it, and the room
  * it is. Build it with a factory from `socket-rooms.ts`, never by hand — the
  * factories are what keep `room` equal to the room the events join (#672).
  */
-export interface RoomFollow {
+export interface RoomFollow extends RoomJoin {
   /** The server's room name; followers that share it share one membership. */
   room: string;
-  subscribe: () => void;
   unsubscribe: () => void;
 }
 
@@ -111,6 +124,7 @@ const noop = () => {};
 function follow(
   socket: SubscriptionSocket,
   subscribe: () => void,
+  room: string | undefined,
   leave: RoomFollow | undefined,
   reconcile: (() => void) | undefined,
 ): () => void {
@@ -132,9 +146,9 @@ function follow(
     else subscribe();
     reconcile?.();
   };
-  // #682 — only a room follower can be named by a refusal.
+  // #682 — only a follower that knows its room can be named by a refusal.
   const onAuthError = (data: SocketAuthErrorEvent | undefined) => {
-    if (!leave || data?.room !== leave.room || retry !== undefined) return;
+    if (room === undefined || data?.room !== room || retry !== undefined) return;
     const delay = rateLimitRetryDelay(data);
     if (delay === undefined) return;
     retry = setTimeout(() => {
@@ -144,7 +158,7 @@ function follow(
   };
   // Listen before subscribing, so no refusal of this subscribe can be missed.
   socket.on("connect", onConnect);
-  if (leave) socket.on("auth:error", onAuthError);
+  if (room !== undefined) socket.on("auth:error", onAuthError);
   subscribe();
 
   let released = false;
@@ -153,8 +167,8 @@ function follow(
     released = true;
     cancelRetry();
     socket.off("connect", onConnect);
+    if (room !== undefined) socket.off("auth:error", onAuthError);
     if (!leave) return;
-    socket.off("auth:error", onAuthError);
     const counts = countsFor(socket);
     const remaining = (counts.get(leave.room) ?? 1) - 1;
     if (remaining > 0) {
@@ -170,13 +184,20 @@ function follow(
  * Run `subscribe` now and again on every reconnect, for a subscription that is
  * never left (it has no unsubscribe), then `reconcile` (#646). Returns an
  * idempotent release that stops re-subscribing.
+ *
+ * #682 — pass a `RoomJoin` (`projectJoin`, `schedulerJoin`) rather than a bare
+ * function and a rate-limited refusal of that room is re-subscribed after its
+ * delay. A bare function has no room for a refusal to name, so is never retried.
  */
 export function keepSubscribed(
   socket: SubscriptionSocket,
-  subscribe: () => void,
+  subscribe: (() => void) | RoomJoin,
   reconcile?: () => void,
 ): () => void {
-  return follow(socket, subscribe, undefined, reconcile);
+  if (typeof subscribe === "function") {
+    return follow(socket, subscribe, undefined, undefined, reconcile);
+  }
+  return follow(socket, subscribe.subscribe, subscribe.room, undefined, reconcile);
 }
 
 /**
@@ -190,7 +211,7 @@ export function keepRoomSubscribed(
   room: RoomFollow,
   reconcile?: () => void,
 ): () => void {
-  return follow(socket, room.subscribe, room, reconcile);
+  return follow(socket, room.subscribe, room.room, room, reconcile);
 }
 
 /**
@@ -199,5 +220,5 @@ export function keepRoomSubscribed(
  * `reconcile` of `keepSubscribed`. Returns an idempotent release.
  */
 export function onReconnect(socket: SubscriptionSocket, reconcile: () => void): () => void {
-  return follow(socket, noop, undefined, reconcile);
+  return follow(socket, noop, undefined, undefined, reconcile);
 }

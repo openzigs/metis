@@ -22,6 +22,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { DocSectionProgressEvent, JobKind, JobLifecycleEvent } from "@metis/shared";
 import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
+import { projectJoin } from "@/lib/socket-rooms";
 import { joinJobRoom } from "@/lib/job-rooms";
 import { queryKeys } from "@/lib/query-keys";
 import { impactAnalysisKeys } from "@/lib/impact-analysis-hooks";
@@ -157,11 +158,7 @@ export function useProjectJobEvents(
       }
     };
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(
-      socket,
-      () => socket.emit("subscribe:project", { projectId }),
-      reconcile,
-    );
+    const release = keepSubscribed(socket, projectJoin(socket, projectId), reconcile);
 
     const onLifecycle = (data: JobLifecycleEvent) => {
       if (data.projectId && data.projectId !== projectId) return;

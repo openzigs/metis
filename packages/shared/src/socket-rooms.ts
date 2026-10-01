@@ -14,6 +14,15 @@
  * a lint error (`no-restricted-syntax`, `eslint.config.mjs`).
  */
 
+/**
+ * #682 — a project's broadcast room (`subscribe:project`). The UI never leaves
+ * it, but names it to match a rate-limited refusal of its join.
+ */
+export const projectRoom = (projectId: string): string => `project:${projectId}`;
+
+/** #682 — the scheduler's status room (`subscribe:scheduler`); one per deployment. */
+export const SCHEDULER_STATUS_ROOM = "scheduler:status";
+
 /** A discussion thread's realtime fan-out (`subscribe:thread`). */
 export const threadRoom = (threadId: string): string => `thread:${threadId}`;
 

@@ -12,8 +12,8 @@ import {
   keepSubscribed,
   onReconnect,
 } from "@/lib/socket-subscription";
-import { presenceFollow, taskFollow } from "@/lib/socket-rooms";
-import { presenceRoom, taskRoom } from "@metis/shared";
+import { presenceFollow, projectJoin, schedulerJoin, taskFollow } from "@/lib/socket-rooms";
+import { presenceRoom, projectRoom, SCHEDULER_STATUS_ROOM, taskRoom } from "@metis/shared";
 import { createFakeSocket, type FakeSocket } from "./helpers/fake-socket";
 
 describe("keepSubscribed", () => {
@@ -61,7 +61,7 @@ describe("keepSubscribed", () => {
 
   it("release without an unsubscribe only detaches the connect listener", () => {
     const s = createFakeSocket();
-    const release = keepSubscribed(s as never, vi.fn());
+    const release = keepSubscribed(s as never, vi.fn<() => void>());
     expect(s.listeners("connect")).toBe(1);
     release();
     expect(s.listeners("connect")).toBe(0);
@@ -151,7 +151,7 @@ describe("followedRooms (#672)", () => {
       subscribe: vi.fn(),
       unsubscribe: vi.fn(),
     });
-    keepSubscribed(s as never, vi.fn());
+    keepSubscribed(s as never, vi.fn<() => void>());
     expect(followedRooms(s as never)).toEqual(
       new Map([
         ["thread:t1", 2],
@@ -402,8 +402,128 @@ describe("keepRoomSubscribed after the join rate limit refuses its room (#682)",
 
   it("registers no refusal listener for a subscription without a room", () => {
     const s = createFakeSocket();
-    keepSubscribed(s as never, vi.fn());
+    keepSubscribed(s as never, vi.fn<() => void>());
     onReconnect(s as never, vi.fn());
     expect(s.listeners("auth:error")).toBe(0);
+  });
+});
+
+describe("keepSubscribed after the join rate limit refuses its room (#682)", () => {
+  const JITTER = 125; // Math.random() pinned to 0.5 → half of the 250 ms jitter
+  const rateLimited = (room: string, retryAfterMs = 3_000) => ({
+    message: "RATE_LIMITED: too many room joins, try again shortly",
+    room,
+    code: "RATE_LIMITED",
+    retryAfterMs,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * A server that refuses the first `subscribe:project` / `subscribe:scheduler`
+   * join of each room as rate-limited, naming the room the real handler joins,
+   * then admits; it delivers a room's events only to a socket that joined it.
+   */
+  function serverFor(s: FakeSocket) {
+    const joined = new Set<string>();
+    const refused = new Set<string>();
+    s.emit.mockImplementation((...args: unknown[]) => {
+      const [event, payload] = args as [string, { projectId: string } | undefined];
+      let room: string;
+      if (event === "subscribe:project" && payload) room = projectRoom(payload.projectId);
+      else if (event === "subscribe:scheduler") room = SCHEDULER_STATUS_ROOM;
+      else return;
+      if (!refused.has(room)) {
+        refused.add(room);
+        s.fire("auth:error", rateLimited(room));
+      } else joined.add(room);
+    });
+    return {
+      publish: (room: string, event: string, data: unknown) => {
+        if (joined.has(room)) s.fire(event, data);
+      },
+    };
+  }
+
+  it("re-subscribes a project join after the delay and then receives its events", () => {
+    const s = createFakeSocket();
+    const server = serverFor(s);
+    const received = vi.fn();
+    s.on("drift:detected", received);
+    keepSubscribed(s as never, projectJoin(s as never, "p1"));
+    expect(s.emitted("subscribe:project", { projectId: "p1" })).toBe(1);
+    server.publish(projectRoom("p1"), "drift:detected", { projectId: "p1" });
+    expect(received).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(3_000 + JITTER - 1);
+    expect(s.emitted("subscribe:project")).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(s.emitted("subscribe:project", { projectId: "p1" })).toBe(2);
+    server.publish(projectRoom("p1"), "drift:detected", { projectId: "p1" });
+    expect(received).toHaveBeenCalledWith({ projectId: "p1" });
+    // Never left, so never counted (#647).
+    expect(followedRooms(s as never).size).toBe(0);
+  });
+
+  it("re-subscribes a scheduler join after the delay and then receives its events", () => {
+    const s = createFakeSocket();
+    const server = serverFor(s);
+    const received = vi.fn();
+    s.on("scheduler:status", received);
+    keepSubscribed(s as never, schedulerJoin(s as never));
+    server.publish(SCHEDULER_STATUS_ROOM, "scheduler:status", { running: true });
+    expect(received).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(3_000 + JITTER);
+    expect(s.emitted("subscribe:scheduler")).toBe(2);
+    server.publish(SCHEDULER_STATUS_ROOM, "scheduler:status", { running: true });
+    expect(received).toHaveBeenCalledWith({ running: true });
+  });
+
+  it("retries only the join whose room the refusal names", () => {
+    const s = createFakeSocket();
+    keepSubscribed(s as never, projectJoin(s as never, "p1"));
+    keepSubscribed(s as never, projectJoin(s as never, "p2"));
+    s.fire("auth:error", rateLimited(projectRoom("p1")));
+    vi.advanceTimersByTime(3_000 + JITTER);
+    expect(s.emitted("subscribe:project", { projectId: "p1" })).toBe(2);
+    expect(s.emitted("subscribe:project", { projectId: "p2" })).toBe(1);
+  });
+
+  it("does not retry an authorization refusal", () => {
+    const s = createFakeSocket();
+    keepSubscribed(s as never, projectJoin(s as never, "p1"));
+    keepSubscribed(s as never, schedulerJoin(s as never));
+    s.fire("auth:error", { message: "FORBIDDEN: no access to project", room: projectRoom("p1") });
+    s.fire("auth:error", { message: "FORBIDDEN: no access to project" });
+    s.fire("auth:error", {
+      message: "FORBIDDEN: subscribe:scheduler requires scheduler.read",
+      room: SCHEDULER_STATUS_ROOM,
+    });
+    vi.advanceTimersByTime(60_000);
+    expect(s.emitted("subscribe:project")).toBe(1);
+    expect(s.emitted("subscribe:scheduler")).toBe(1);
+    // ...and still re-subscribes on reconnect, as before.
+    s.reconnect();
+    expect(s.emitted("subscribe:project")).toBe(2);
+  });
+
+  it("does not retry after release, and detaches its refusal listener", () => {
+    const s = createFakeSocket();
+    const release = keepSubscribed(s as never, projectJoin(s as never, "p1"));
+    expect(s.listeners("auth:error")).toBe(1);
+    s.fire("auth:error", rateLimited(projectRoom("p1")));
+    release();
+    expect(s.listeners("auth:error")).toBe(0);
+    expect(s.listeners("connect")).toBe(0);
+    vi.advanceTimersByTime(60_000);
+    expect(s.emitted("subscribe:project")).toBe(1);
   });
 });

@@ -23,6 +23,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { computeSchedulerStats } from "@/lib/scheduler-stats";
 import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
+import { schedulerJoin } from "@/lib/socket-rooms";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
@@ -65,7 +66,7 @@ export default function SchedulerPage() {
     const onAny = () => invalidate();
     // #642 — re-join on reconnect; the server drops rooms with the old session.
     // #646 — and refetch, for scheduler events sent while the socket was down.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:scheduler"), onAny);
+    const release = keepSubscribed(socket, schedulerJoin(socket), onAny);
     socket.on("scheduler:status", onAny);
     socket.on("task:status", onAny);
     return () => {
