@@ -7,7 +7,7 @@
  * updates, and the @AI-mention → ai-respond trigger.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 
@@ -46,6 +46,7 @@ vi.mock("@/lib/api-client", () => ({
 }));
 
 import { useSocket } from "@/lib/socket-client";
+import { createFakeSocket } from "./helpers/fake-socket";
 import { listMessages, postMessage, streamAiReply } from "@/lib/discussions-api";
 import { toast } from "sonner";
 import {
@@ -324,8 +325,7 @@ describe("DiscussionThreadView", () => {
 
   function socketHandler(event: string): ((p: unknown) => void) | undefined {
     return socket.on.mock.calls.find((c: unknown[]) => c[0] === event)?.[1] as
-      | ((p: unknown) => void)
-      | undefined;
+      ((p: unknown) => void) | undefined;
   }
 
   it("loads and renders history on mount", async () => {
@@ -348,6 +348,30 @@ describe("DiscussionThreadView", () => {
     );
     unmount();
     expect(socket.emit).toHaveBeenCalledWith("unsubscribe:thread", { threadId: "t1" });
+  });
+
+  it("re-joins the thread room after a reconnect and keeps rendering live messages (#642)", async () => {
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    const { unmount } = renderView();
+    await waitFor(() => expect(live.emitted("subscribe:thread", { threadId: "t1" })).toBe(1));
+
+    act(() => live.reconnect());
+    expect(live.emitted("subscribe:thread", { threadId: "t1" })).toBe(2);
+
+    act(() =>
+      live.fire("message:new", {
+        threadId: "t1",
+        message: humanMsg({ id: "after", body: "after reconnect" }),
+        ts: 1,
+      }),
+    );
+    expect(await screen.findByText("after reconnect")).toBeInTheDocument();
+
+    unmount();
+    expect(live.emitted("unsubscribe:thread", { threadId: "t1" })).toBe(1);
+    live.reconnect();
+    expect(live.emitted("subscribe:thread", { threadId: "t1" })).toBe(2);
   });
 
   it("renders a live message:new event from another member", async () => {

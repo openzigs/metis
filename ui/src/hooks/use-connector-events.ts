@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
 
 export interface ConnectorProgress {
   connectorId: string;
@@ -41,8 +42,9 @@ export function useConnectorProgress(projectId: string) {
   useEffect(() => {
     if (!socket || !projectId) return;
 
-    // Subscribe to the project room (server joins on subscribe:project)
-    socket.emit("subscribe:project", { projectId });
+    // Subscribe to the project room (server joins on subscribe:project).
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:project", { projectId }));
 
     const onProgress = (data: ConnectorProgress) => {
       // Handle error status — clear progress and let UI show error toast
@@ -69,6 +71,7 @@ export function useConnectorProgress(projectId: string) {
 
     socket.on("connector:progress" as never, onProgress as never);
     return () => {
+      release();
       socket.off("connector:progress" as never, onProgress as never);
     };
   }, [socket, projectId]);
@@ -96,7 +99,8 @@ export function useConnectorDiscovery(projectId: string, onDiscovery?: () => voi
   useEffect(() => {
     if (!socket || !projectId) return;
 
-    socket.emit("subscribe:project", { projectId });
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:project", { projectId }));
 
     const onEvent = (data: ConnectorDiscovery) => {
       toast.info(
@@ -114,6 +118,7 @@ export function useConnectorDiscovery(projectId: string, onDiscovery?: () => voi
 
     socket.on("connector:discovery" as never, onEvent as never);
     return () => {
+      release();
       socket.off("connector:discovery" as never, onEvent as never);
     };
   }, [socket, projectId]);

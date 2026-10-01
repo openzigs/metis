@@ -23,6 +23,7 @@ import {
 import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -54,7 +55,12 @@ function usePromotionBlockedEvent(
 
   useEffect(() => {
     if (!socket || !analysisId) return;
-    socket.emit("subscribe:analysis", { analysisId });
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    const release = keepSubscribed(
+      socket,
+      () => socket.emit("subscribe:analysis", { analysisId }),
+      () => socket.emit("unsubscribe:analysis", { analysisId }),
+    );
     const handler = (event: PromotionBlockedEvent): void => {
       if (event.analysisId !== analysisId) return;
       setBlocked(event);
@@ -65,7 +71,7 @@ function usePromotionBlockedEvent(
     socket.on("analysis:promotion-blocked" as never, handler as never);
     return () => {
       socket.off("analysis:promotion-blocked" as never, handler as never);
-      socket.emit("unsubscribe:analysis", { analysisId });
+      release();
     };
   }, [socket, analysisId, onBlocked]);
 

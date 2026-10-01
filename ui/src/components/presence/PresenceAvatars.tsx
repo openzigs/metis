@@ -8,6 +8,7 @@
  */
 import { useEffect, useState } from "react";
 import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
 import { cn } from "@/lib/utils";
 
 interface PresenceUser {
@@ -64,8 +65,15 @@ export function PresenceAvatars({
   useEffect(() => {
     if (!socket) return;
     // Join our presence room. The server derives the room key from these two
-    // fields as `presence:{artifactType}:{artifactId}`.
-    socket.emit("presence:join", { artifactType, artifactId });
+    // fields as `presence:{artifactType}:{artifactId}`. Re-join on every
+    // reconnect (#642): the server's disconnect handler drops this socket from
+    // the room's presence list, so a one-shot join would leave this user
+    // invisible to other members and deaf to `presence:update`.
+    const release = keepSubscribed(
+      socket,
+      () => socket.emit("presence:join", { artifactType, artifactId }),
+      () => socket.emit("presence:leave", { artifactType, artifactId }),
+    );
 
     // The server broadcasts `presence:update` keyed by `room` (it does not echo
     // artifactType/artifactId), so match on the room key we expect for this
@@ -80,7 +88,7 @@ export function PresenceAvatars({
     socket.on("presence:update", handleUpdate);
 
     return () => {
-      socket.emit("presence:leave", { artifactType, artifactId });
+      release();
       socket.off("presence:update", handleUpdate);
     };
   }, [socket, artifactType, artifactId]);

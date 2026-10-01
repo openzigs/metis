@@ -13,6 +13,7 @@ import { ApiError } from "@/lib/api-client";
 import { tasksApi, type TaskRow } from "@/lib/scheduler-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -44,11 +45,13 @@ export default function TasksPage() {
 
   useEffect(() => {
     if (!socket) return;
-    socket.emit("subscribe:scheduler");
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:scheduler"));
     const onChange = () => invalidate();
     socket.on("task:status", onChange);
     socket.on("task:progress", onChange);
     return () => {
+      release();
       socket.off("task:status", onChange);
       socket.off("task:progress", onChange);
     };

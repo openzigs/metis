@@ -16,6 +16,7 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
 import { fetchDriftCount } from "@/lib/sync-api";
 
 /** Query key for one project's pending-drift count. */
@@ -41,13 +42,15 @@ export function useProjectDriftCount(projectId: string): number {
 
   useEffect(() => {
     if (!socket || !projectId) return;
-    socket.emit("subscribe:project", { projectId });
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:project", { projectId }));
     const onDrift = (data: { projectId: string }) => {
       if (data.projectId !== projectId) return;
       void qc.invalidateQueries({ queryKey: driftCountKey(projectId) });
     };
     socket.on("drift:detected" as never, onDrift as never);
     return () => {
+      release();
       socket.off("drift:detected" as never, onDrift as never);
     };
   }, [socket, qc, projectId]);
