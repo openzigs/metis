@@ -32,7 +32,7 @@ import type {
   RoleKey,
 } from "@metis/shared";
 import { canAccessThread as defaultCanAccessThread } from "../discussions/access.js";
-import { threadRoom } from "./discussion-rooms.js";
+import { THREAD_DENIAL, threadRoom } from "./discussion-rooms.js";
 import { createChildLogger } from "../logger.js";
 import { onClientEvent, runDetached } from "./client-event-handler.js";
 import { createClusterPresence, type PresenceMember } from "./cluster-presence.js";
@@ -106,7 +106,7 @@ export type PresenceSocket = Pick<
 type AccessChecker = (
   actor: { id: string; role: RoleKey },
   threadId: string,
-) => Promise<{ ok: boolean }>;
+) => Promise<{ ok: boolean; reason?: string }>;
 
 /** Snapshot the current members of a thread room. */
 function membersOf(members: PresenceMap, room: string): PresenceMember[] {
@@ -153,9 +153,13 @@ export function wireDiscussionPresenceHandlers(
       try {
         const result = await access({ id: user.userId, role: user.role as RoleKey }, threadId);
         if (!result.ok) {
-          socket.emit("auth:error", {
-            message: "FORBIDDEN: no access to discussion thread",
+          log.warn("Socket presence:thread:join rejected", {
+            socketId: socket.id,
+            userId: user.userId,
+            threadId,
+            reason: result.reason,
           });
+          socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
           return;
         }
         const room = threadRoom(threadId);
@@ -174,7 +178,7 @@ export function wireDiscussionPresenceHandlers(
           threadId,
           error: (err as Error).message,
         });
-        socket.emit("auth:error", { message: "FORBIDDEN: no access to discussion thread" });
+        socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
       }
     })();
   });

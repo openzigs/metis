@@ -11,7 +11,9 @@ vi.mock("@/lib/api-client", () => ({
 const { astCacheApi } = await import("../src/lib/ast-cache-api");
 
 describe("astCacheApi", () => {
-  beforeEach(() => mockApiFetch.mockReset());
+  beforeEach(() => {
+    mockApiFetch.mockReset();
+  });
 
   it("POSTs to the rebuild-cache endpoint", async () => {
     mockApiFetch.mockResolvedValue({

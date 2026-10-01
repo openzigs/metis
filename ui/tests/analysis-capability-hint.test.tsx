@@ -31,7 +31,9 @@ function renderHint(selectedAgents: AnalysisAgentKey[]): void {
   );
 }
 
-beforeEach(() => capabilityPreview.mockReset());
+beforeEach(() => {
+  capabilityPreview.mockReset();
+});
 afterEach(cleanup);
 
 describe("AnalysisCapabilityHint", () => {

@@ -13,7 +13,9 @@ import { specKitApi } from "@/lib/spec-kit-api";
 
 const mockFetch = apiFetch as unknown as ReturnType<typeof vi.fn>;
 
-beforeEach(() => mockFetch.mockReset());
+beforeEach(() => {
+  mockFetch.mockReset();
+});
 afterEach(() => vi.clearAllMocks());
 
 describe("specKitApi", () => {

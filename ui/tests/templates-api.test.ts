@@ -17,7 +17,9 @@ const schema = {
   sections: [],
 };
 
-beforeEach(() => mockApiFetch.mockReset());
+beforeEach(() => {
+  mockApiFetch.mockReset();
+});
 
 describe("templatesApi", () => {
   it("list fetches templates for a project", async () => {

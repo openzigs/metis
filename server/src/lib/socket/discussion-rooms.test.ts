@@ -8,6 +8,7 @@
  *   - non-member (forbidden) → `auth:error`, never joins
  *   - missing / soft-deleted (not_found) → `auth:error`, never joins
  *   - helper throw → `auth:error`, never joins (fail-closed)
+ *   - every denial is the same room-scoped `{ message, room }` (#685)
  *   - unsubscribe → leaves the room
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -64,7 +65,12 @@ describe("threadRoom", () => {
 });
 
 describe("wireThreadRoomHandlers — subscribe:thread", () => {
-  beforeEach(() => canAccessThread.mockReset());
+  // A block body: `mockReset()` returns the mock, and a function returned from
+  // `beforeEach` is run by Vitest as that test's cleanup hook — it would call
+  // `canAccessThread()` after every test (and throw for a rejecting mock).
+  beforeEach(() => {
+    canAccessThread.mockReset();
+  });
   afterEach(() => vi.clearAllMocks());
 
   it("registers both subscribe:thread and unsubscribe:thread handlers", () => {
@@ -96,6 +102,7 @@ describe("wireThreadRoomHandlers — subscribe:thread", () => {
     expect(join).not.toHaveBeenCalled();
     expect(emit).toHaveBeenCalledWith("auth:error", {
       message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:t1",
     });
   });
 
@@ -107,8 +114,12 @@ describe("wireThreadRoomHandlers — subscribe:thread", () => {
     await fire(handlers, "subscribe:thread", { threadId: "gone" });
 
     expect(join).not.toHaveBeenCalled();
+    // #685 — the same refusal as a forbidden thread: the message never tells
+    // an unknown id apart from one the caller may not see, and the `room`
+    // marks it as that room's refusal rather than a connection error.
     expect(emit).toHaveBeenCalledWith("auth:error", {
-      message: "NOT_FOUND: discussion thread not found",
+      message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:gone",
     });
   });
 
@@ -125,6 +136,22 @@ describe("wireThreadRoomHandlers — subscribe:thread", () => {
 
     expect(emit).toHaveBeenCalledWith("auth:error", {
       message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:t1",
+    });
+  });
+
+  it("sends the same room-scoped refusal when the access lookup itself fails (#685)", async () => {
+    canAccessThread.mockRejectedValue(new Error("db down"));
+    const { socket, handlers, join, emit } = makeFakeSocket();
+    wireThreadRoomHandlers(socket);
+
+    await fire(handlers, "subscribe:thread", { threadId: "t1" });
+
+    expect(join).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith("auth:error", {
+      message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:t1",
     });
   });
 
