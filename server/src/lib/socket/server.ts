@@ -5,11 +5,15 @@
  *   - JWT supplied via `socket.handshake.auth.token` OR `Authorization` header.
  *   - Connections without a valid token are REJECTED at handshake (issue #22
  *     acceptance criterion 1) — no events are processed for unauth sockets.
+ *   - #617 — the handshake then re-reads the user: a soft-deleted or inactive
+ *     user is rejected, and `socket.data.user` carries the durable role and
+ *     live workspaces, never the token's claims.
  *
  * Rooms:
  *   - `user:{id}` — personal room auto-joined on connect (NEVER from client input).
  *     Delivers `comment:mention` and `sla:deadline_expired` to exactly that user.
- *     The id is ALWAYS derived from `socket.data.user.userId` (verified JWT).
+ *     The id is ALWAYS derived from `socket.data.user.userId` (verified JWT,
+ *     re-read from the user row at handshake).
  *   - `project:{id}` — broadcast scope for project-level updates.
  *   - `analysis:{id}` — analysis run progress.
  *   - `session:{id}` — chat / agent session events.
@@ -35,6 +39,7 @@ import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
 import { isMcpStatusRoom, mcpStatusRoomsFor } from "../mcp/status-rooms.js";
 import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
+import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("socket");
@@ -67,46 +72,86 @@ export function createSocketServer(
     pingTimeout: 60_000,
   });
 
-  io.use((socket, next) => {
+  // One async middleware with a single exit: `authenticateHandshake` either
+  // resolves the live user or throws the rejection, so every failure path
+  // (missing token, bad signature, inactive user, lookup error, an unexpected
+  // throw) reaches `next(err)` here and fails closed. `next()` runs once,
+  // outside the try, so a throw from it is never re-routed into a second call.
+  io.use(async (socket, next) => {
+    let user: AuthPayload;
     try {
-      const auth = socket.handshake.auth as { token?: string } | undefined;
-      const headerAuth = socket.handshake.headers.authorization;
-      // Also accept the HttpOnly `metis.at` cookie sent by the browser when
-      // connecting cross-port (localhost:3000 → localhost:4000).  The cookie
-      // domain is `localhost` (not port-scoped) so it is included in the WS
-      // upgrade handshake even though the socket server lives on a different
-      // port from the Next.js app.
-      const cookieHeader = socket.handshake.headers.cookie as string | undefined;
-      const cookieToken = cookieHeader
-        ?.split(";")
-        .map((c) => c.trim())
-        .find((c) => c.startsWith("metis.at="))
-        ?.slice("metis.at=".length);
-      const token =
-        auth?.token ??
-        (headerAuth?.startsWith("Bearer ")
-          ? headerAuth.slice("Bearer ".length).trim()
-          : undefined) ??
-        cookieToken;
-      if (!token) {
-        log.warn("Socket handshake rejected: no token", { socketId: socket.id });
-        return next(new Error("UNAUTHORIZED"));
-      }
-      try {
-        socket.data.user = verifyAccessToken(token);
-        next();
-      } catch (err) {
-        if (err instanceof jwt.TokenExpiredError) return next(new Error("TOKEN_EXPIRED"));
-        if (err instanceof jwt.JsonWebTokenError) return next(new Error("TOKEN_INVALID"));
-        next(err as Error);
-      }
+      user = await authenticateHandshake(socket);
     } catch (err) {
-      next(err as Error);
+      return next(err as Error);
     }
+    socket.data.user = user;
+    next();
   });
 
   io.on("connection", (socket) => attachHandlers(socket));
   return io;
+}
+
+/**
+ * Resolve the live user for a socket handshake, or throw the error the client
+ * receives as `connect_error` (`UNAUTHORIZED`, `TOKEN_EXPIRED`, `TOKEN_INVALID`).
+ */
+async function authenticateHandshake(
+  socket: Pick<Socket, "id" | "handshake">,
+): Promise<AuthPayload> {
+  const auth = socket.handshake.auth as { token?: string } | undefined;
+  const headerAuth = socket.handshake.headers.authorization;
+  // Also accept the HttpOnly `metis.at` cookie sent by the browser when
+  // connecting cross-port (localhost:3000 → localhost:4000).  The cookie
+  // domain is `localhost` (not port-scoped) so it is included in the WS
+  // upgrade handshake even though the socket server lives on a different
+  // port from the Next.js app.
+  const cookieHeader = socket.handshake.headers.cookie as string | undefined;
+  const cookieToken = cookieHeader
+    ?.split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith("metis.at="))
+    ?.slice("metis.at=".length);
+  const token =
+    auth?.token ??
+    (headerAuth?.startsWith("Bearer ") ? headerAuth.slice("Bearer ".length).trim() : undefined) ??
+    cookieToken;
+  if (!token) {
+    log.warn("Socket handshake rejected: no token", { socketId: socket.id });
+    throw new Error("UNAUTHORIZED");
+  }
+  let verified: AuthPayload;
+  try {
+    verified = verifyAccessToken(token);
+  } catch (err) {
+    if (err instanceof jwt.TokenExpiredError) throw new Error("TOKEN_EXPIRED");
+    if (err instanceof jwt.JsonWebTokenError) throw new Error("TOKEN_INVALID");
+    throw err;
+  }
+  // #617 — a signature check alone admitted a SCIM-deprovisioned user's
+  // unexpired token and authorized every room gate from its `role` claim.
+  // Re-read the user as the HTTP path does (`refreshAuthenticatedUser`):
+  // reject a user who is not live, and carry the durable role, username and
+  // workspaces in `socket.data.user`. A lookup failure rejects (fail closed).
+  let live: AuthPayload | null;
+  try {
+    live = await loadLiveAuthPayload(verified.userId);
+  } catch (err) {
+    log.warn("Socket handshake rejected: user lookup failed", {
+      socketId: socket.id,
+      userId: verified.userId,
+      error: (err as Error).message,
+    });
+    throw new Error("UNAUTHORIZED");
+  }
+  if (!live) {
+    log.warn("Socket handshake rejected: user is not active", {
+      socketId: socket.id,
+      userId: verified.userId,
+    });
+    throw new Error("UNAUTHORIZED");
+  }
+  return live;
 }
 
 function attachHandlers(

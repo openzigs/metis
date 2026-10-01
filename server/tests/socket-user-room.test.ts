@@ -17,8 +17,21 @@ import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     $queryRawUnsafe: vi.fn(async () => 1),
-    user: { upsert: vi.fn() },
-    userRole: { findFirst: vi.fn(async () => null) },
+    // #617 — the handshake re-reads the user: every user here is live, with a
+    // durable developer role and no workspaces.
+    user: {
+      upsert: vi.fn(),
+      findFirst: vi.fn(async ({ where }: { where: { id: string } }) => ({
+        id: where.id,
+        username: "testuser",
+        authRoleAuthority: null,
+      })),
+    },
+    userRole: {
+      findFirst: vi.fn(async () => null),
+      findMany: vi.fn(async () => [{ source: "local", role: { key: "developer" } }]),
+    },
+    workspaceMember: { findMany: vi.fn(async () => []) },
     auditLog: { create: vi.fn(async () => ({})) },
     project: {
       findMany: vi.fn(async (args?: { where?: { createdById?: string } }) => {
