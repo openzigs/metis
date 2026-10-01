@@ -54,6 +54,18 @@
  * publish that fails is lost to the OTHER replicas — cross-replica delivery
  * misses the outage window, as with a dropped `LISTEN` connection (#649).
  *
+ * Reconnect window (#649): while a replica's `LISTEN` connection is down — the
+ * ~1-3 s before the adapter reconnects after a failover, restart or
+ * `pg_terminate_backend` — every NOTIFY is lost to it, and the adapter does not
+ * replay. A SCIM deprovision, role change or MCP status eviction published then
+ * never reaches that replica's sockets. So `onListening` fires each time the
+ * `LISTEN` connection is (re)established — once its `LISTEN` statements have
+ * all completed — and the socket server re-validates every socket it holds
+ * against the database (`revalidateLocalSockets`). A revocation committed
+ * during the outage is seen by that re-read; one committed after it arrives
+ * over the restored `LISTEN`. It fires on the first connection too, which
+ * covers sockets accepted before a boot-time `LISTEN` came up.
+ *
  * Every adapter, pool and connection error is logged, never thrown: evictions
  * run after the database write has committed (#588, #612), and a pg client's
  * `error` with no listener crashes the process. `pool.on("error")` covers idle
@@ -112,6 +124,11 @@ export function socketClusterPoolConfig(connectionString: string): PoolConfig {
 export interface SocketClusterAdapter {
   /** Pass as `new Server(httpServer, { adapter })`. */
   adapter: ReturnType<typeof createAdapter>;
+  /**
+   * #649 — call `listener` every time the adapter's `LISTEN` connection is
+   * (re)established. A throw from it is logged.
+   */
+  onListening(listener: () => void): void;
   /** End the adapter's pool. Call after `io.close()`, which releases its `LISTEN` client. */
   close(): Promise<void>;
 }
@@ -146,9 +163,21 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   });
   // The adapter takes its LISTEN client with a bare `pool.connect()`; pg-pool's
   // own `pool.query` passes a callback and manages its client itself.
+  const listeners: Array<() => void> = [];
+  const listening = (): void => {
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch (err) {
+        log.warn("socket cluster adapter listening hook failed", { error: (err as Error).message });
+      }
+    }
+  };
   const connect = pool.connect.bind(pool) as (...args: unknown[]) => Promise<PoolClient>;
   pool.connect = ((...args: unknown[]) =>
-    args.length > 0 ? connect(...args) : connect().then(holdListenClient)) as Pool["connect"];
+    args.length > 0
+      ? connect(...args)
+      : connect().then((client) => holdListenClient(client, listening))) as Pool["connect"];
 
   const createNamespaceAdapter = createAdapter(pool, {
     tableName: SOCKET_IO_ATTACHMENTS_TABLE,
@@ -165,6 +194,9 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   let ended: Promise<void> | undefined;
   return {
     adapter,
+    onListening: (listener) => {
+      listeners.push(listener);
+    },
     close: () => (ended ??= pool.end()),
   };
 }
@@ -200,8 +232,11 @@ export function deliverLocallyFirst<T extends object>(adapter: T): T {
   return adapter;
 }
 
-/** Guard the adapter's long-held `LISTEN` client; see the module header. */
-function holdListenClient(client: PoolClient): PoolClient {
+/**
+ * Guard the adapter's long-held `LISTEN` client, and call `listening` once its
+ * `LISTEN` statements have all succeeded; see the module header.
+ */
+function holdListenClient(client: PoolClient, listening: () => void): PoolClient {
   client.on("error", (err) => {
     log.warn("socket cluster adapter connection error", { error: err.message });
   });
@@ -210,7 +245,42 @@ function holdListenClient(client: PoolClient): PoolClient {
   client.once("end", () => {
     client.release(new Error("socket cluster adapter LISTEN connection ended"));
   });
+  notifyWhenListening(client, listening);
   return client;
+}
+
+/**
+ * Call `listening` once, after the `LISTEN` statements the adapter issues on
+ * `client` have all succeeded. The adapter awaits them one after another, each
+ * issued in the previous one's continuation, so a check deferred to the next
+ * macrotask sees the next one already pending. A failed `LISTEN` never fires:
+ * the adapter then retries on a new client, which fires instead.
+ */
+function notifyWhenListening(client: PoolClient, listening: () => void): void {
+  const query = client.query.bind(client) as (...args: unknown[]) => unknown;
+  let pending = 0;
+  let failed = false;
+  let fired = false;
+  client.query = ((...args: unknown[]) => {
+    const result = query(...args);
+    if (typeof args[0] !== "string" || !args[0].startsWith("LISTEN ")) return result;
+    pending++;
+    Promise.resolve(result).then(
+      () => {
+        pending--;
+        setImmediate(() => {
+          if (pending > 0 || failed || fired) return;
+          fired = true;
+          listening();
+        });
+      },
+      () => {
+        pending--;
+        failed = true;
+      },
+    );
+    return result;
+  }) as PoolClient["query"];
 }
 
 /**

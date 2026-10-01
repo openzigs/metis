@@ -26,6 +26,10 @@
  *     lists are the exception: each replica emits its own list locally only
  *     (`collaboration/presence.ts`). Unset, Socket.IO's in-memory adapter
  *     reaches this replica only.
+ *   - #649 — `opts.onAdapterListening` (the adapter's `onListening`) runs
+ *     `revalidateLocalSockets` each time the adapter's `LISTEN` connection is
+ *     (re)established, so a revocation published while it was down — and so
+ *     never delivered here — is applied from the database instead.
  *
  * Heartbeat:
  *   - The Socket.IO ping/pong cycle is configured to fire every 30s; idle
@@ -47,12 +51,13 @@ import { canJoinAnalysisRoom } from "./analysis-room-access.js";
 import { getLastDocSections, getLastJobLifecycle } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
-import { isMcpStatusRoom, mcpStatusRoomsFor } from "../mcp/status-rooms.js";
+import { isMcpStatusRoom, mcpStatusRoomsFor, mcpStatusWorkspaceRoom } from "../mcp/status-rooms.js";
 import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
 import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
 import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status-eviction.js";
 import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
+import { bumpEpoch } from "./revocation-relay.js";
 
 const log = createChildLogger("socket");
 
@@ -76,7 +81,20 @@ export interface CreateSocketServerOptions {
   corsOrigin?: string;
   /** #622 — the cluster adapter; omit for the single-replica in-memory adapter. */
   adapter?: ServerOptions["adapter"];
+  /**
+   * #649 — the cluster adapter's `onListening`: registers a callback for every
+   * (re)established `LISTEN` connection, on which every local socket is
+   * re-validated.
+   */
+  onAdapterListening?: (listener: () => void) => void;
 }
+
+type MetisSocket = Socket<
+  ClientToServerEvents,
+  ServerToClientEvents,
+  Record<string, never>,
+  SocketData
+>;
 
 export function createSocketServer(
   httpServer: HttpServer,
@@ -118,7 +136,94 @@ export function createSocketServer(
   // this replica's transports (see `reconnectUserSockets`).
   wireUserRevocationRelay(io, Boolean(opts.adapter));
   wireMcpStatusEvictionRelay(io, Boolean(opts.adapter));
+  opts.onAdapterListening?.(() => void revalidateLocalSockets(io));
   return io;
+}
+
+/** Users re-read at once by `revalidateLocalSockets`, so a failover cannot flood the database pool. */
+export const REVALIDATE_CONCURRENCY = 4;
+
+/** Prefix of every `mcp:status` workspace room. */
+const MCP_STATUS_WORKSPACE_ROOM_PREFIX = mcpStatusWorkspaceRoom("");
+
+/**
+ * #649 — re-validate every socket connected to this replica against the
+ * database, applying any revocation it missed while the cluster adapter's
+ * `LISTEN` connection was down:
+ *   - a user no longer live is disconnected, a changed role re-handshakes, and
+ *     a failed lookup closes the transport (`applyLiveUser`, as #613's re-check);
+ *   - a socket still in an `mcp:status` workspace room it no longer has a live
+ *     membership of leaves it (#588). A failed membership lookup closes the
+ *     transport, so the client re-handshakes and re-subscribes from live state.
+ * Both #613 epochs are bumped first, so a handshake or `subscribe:mcp` in
+ * flight re-reads too. Each user is read once, `REVALIDATE_CONCURRENCY` users
+ * at a time. Never rejects.
+ */
+export async function revalidateLocalSockets(io: MetisIOServer): Promise<void> {
+  bumpEpoch(io, "revocation");
+  bumpEpoch(io, "eviction");
+  const byUser = new Map<string, MetisSocket[]>();
+  for (const socket of io.of("/").sockets.values()) {
+    const userId = socket.data.user.userId;
+    const sockets = byUser.get(userId);
+    if (sockets) sockets.push(socket);
+    else byUser.set(userId, [socket]);
+  }
+  if (byUser.size === 0) return;
+  log.info(
+    "Re-validating sockets after the cluster adapter's LISTEN connection was (re)established",
+    {
+      users: byUser.size,
+    },
+  );
+  const queue = [...byUser.values()];
+  const worker = async (): Promise<void> => {
+    for (let sockets = queue.shift(); sockets; sockets = queue.shift()) {
+      await revalidateUserSockets(sockets);
+    }
+  };
+  await Promise.all(Array.from({ length: REVALIDATE_CONCURRENCY }, worker));
+}
+
+/** Re-validate one user's sockets (`revalidateLocalSockets`). */
+async function revalidateUserSockets(sockets: MetisSocket[]): Promise<void> {
+  const userId = sockets[0].data.user.userId;
+  let live: AuthPayload | null | undefined;
+  try {
+    live = await loadLiveAuthPayload(userId);
+  } catch (err) {
+    live = undefined;
+    log.warn("Socket re-validation: live-user lookup failed — closing transports to re-handshake", {
+      userId,
+      error: (err as Error).message,
+    });
+  }
+  const kept = sockets.filter((socket) => applyLiveUser(socket, live));
+  const inWorkspaceRooms = kept.filter((socket) =>
+    [...socket.rooms].some((room) => room.startsWith(MCP_STATUS_WORKSPACE_ROOM_PREFIX)),
+  );
+  if (inWorkspaceRooms.length === 0) return;
+  let allowed: Set<string>;
+  try {
+    allowed = new Set((await readLiveWorkspaceIds(userId)).map(mcpStatusWorkspaceRoom));
+  } catch (err) {
+    log.warn(
+      "Socket re-validation: membership lookup failed — closing transports to re-handshake",
+      {
+        userId,
+        error: (err as Error).message,
+      },
+    );
+    for (const socket of inWorkspaceRooms) socket.conn.close();
+    return;
+  }
+  for (const socket of inWorkspaceRooms) {
+    for (const room of [...socket.rooms]) {
+      if (room.startsWith(MCP_STATUS_WORKSPACE_ROOM_PREFIX) && !allowed.has(room)) {
+        void socket.leave(room);
+      }
+    }
+  }
 }
 
 /**
@@ -195,34 +300,43 @@ async function authenticateHandshake(
  * transport close makes the client re-handshake, and `authenticateHandshake`
  * rejects that while the database is still down — fail closed, but recoverable.
  */
-async function recheckLiveUser(
-  socket: Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>,
-): Promise<void> {
-  const { userId, role } = socket.data.user;
-  let live: AuthPayload | null;
+async function recheckLiveUser(socket: MetisSocket): Promise<void> {
+  const { userId } = socket.data.user;
+  let live: AuthPayload | null | undefined;
   try {
     live = await loadLiveAuthPayload(userId);
   } catch (err) {
+    live = undefined;
     log.warn("Socket live-user re-check failed — closing transport to re-handshake", {
       socketId: socket.id,
       userId,
       error: (err as Error).message,
     });
-    socket.conn.close();
-    return;
   }
-  // Only the role is compared: workspaces are re-read live by `subscribe:mcp`,
-  // and the username is not security-relevant.
-  if (!live) {
-    socket.disconnect(true);
-  } else if (live.role !== role) {
-    socket.conn.close();
-  }
+  applyLiveUser(socket, live);
 }
 
-function attachHandlers(
-  socket: Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>,
-): void {
+/**
+ * Apply a live-user read to `socket`: `undefined` (the lookup failed) closes
+ * the transport, `null` (no longer live) disconnects, a changed role closes the
+ * transport. Returns whether the socket was left as it is.
+ */
+function applyLiveUser(socket: MetisSocket, live: AuthPayload | null | undefined): boolean {
+  // Only the role is compared: workspaces are re-read live by `subscribe:mcp`,
+  // and the username is not security-relevant.
+  if (live === undefined) {
+    socket.conn.close();
+  } else if (!live) {
+    socket.disconnect(true);
+  } else if (live.role !== socket.data.user.role) {
+    socket.conn.close();
+  } else {
+    return true;
+  }
+  return false;
+}
+
+function attachHandlers(socket: MetisSocket): void {
   const user = socket.data.user;
   log.info("Socket connected", { socketId: socket.id, userId: user.userId });
   socket.emit("auth:ok", { userId: user.userId, username: user.username });

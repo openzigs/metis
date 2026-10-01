@@ -695,15 +695,23 @@ no new managed service.
   when Postgres is down, slow or failing over, single-replica deployments
   included. What is lost is the *cross-replica* copy: an emit, eviction or
   disconnect whose `NOTIFY` (or attachments `INSERT`) fails does not reach
-  sockets on other pods, and is not retried — the same window as a dropped
-  `LISTEN` connection, below (#649). The pod logs a warning for each.
+  sockets on other pods, and is not retried. When the outage also drops the
+  other pods' `LISTEN` connections — a failover or restart does — their
+  re-check on reconnect (below, #649) applies the revocations they missed; a
+  publish that fails while the other pods stay connected is still lost to them.
+  The pod logs a warning for each.
 - **Timeouts:** the adapter's pool gives up on a connection attempt, a query or
   a statement after 5 s, so a hung database connection fails those cross-replica
   publishes within seconds instead of queueing every later one behind it.
 - **Failover:** when Postgres drops the `LISTEN` connection (failover, restart,
   `pg_terminate_backend`, TCP timeout) the pod logs a warning, frees the dead
-  connection and LISTENs again on a fresh one within about 3 s. Cross-replica
-  evictions issued in that window are lost.
+  connection and LISTENs again on a fresh one within about 3 s. Notifications
+  sent in that window are not replayed, so once it LISTENs again the pod
+  re-checks every socket it holds against the database (#649): a user
+  deprovisioned meanwhile is disconnected, a changed role re-handshakes, and a
+  lost workspace membership leaves its MCP status room. Users are re-read four
+  at a time, so the cost of a failover is one user lookup per connected user
+  on each pod.
 - **PgBouncer:** `LISTEN` needs a session-pooled connection. A transaction-mode
   pooler between the pods and Postgres silently drops notifications.
 - With SQLite (single-replica dev) the in-memory adapter is kept unchanged.

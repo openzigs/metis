@@ -19,9 +19,12 @@ export interface Replica {
   close(): Promise<void>;
 }
 
-export async function startReplica(adapter?: ServerOptions["adapter"]): Promise<Replica> {
+export async function startReplica(
+  adapter?: ServerOptions["adapter"],
+  onAdapterListening?: (listener: () => void) => void,
+): Promise<Replica> {
   const httpServer = http.createServer();
-  const io = createSocketServer(httpServer, { adapter });
+  const io = createSocketServer(httpServer, { adapter, onAdapterListening });
   const port = await new Promise<number>((resolve) => {
     httpServer.listen(0, "127.0.0.1", () => {
       const addr = httpServer.address();
