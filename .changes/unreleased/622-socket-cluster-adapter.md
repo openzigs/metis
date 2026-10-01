@@ -7,9 +7,9 @@ section: Security
   user's live connections on every replica, and a role change makes them
   reconnect with the new role on every replica; workspace member removal and
   deletion stop MCP status updates on every replica too, including for a
-  connection or subscription that was mid-way through on another replica when
-  the change landed. Most room updates now
-  reach every replica, but presence avatars still show only users on the
-  viewer's own replica. No new setting; up to two extra database connections
-  per replica. Without CREATE on the schema the server logs an error and keeps
-  single-replica behaviour.
+  connection or subscription mid-way through on another replica. Most room
+  updates reach every replica (presence avatars still show only the viewer's
+  own replica) and never wait on the database for the replica's own users.
+  No new setting; up to two extra database connections per replica. Without
+  CREATE on the schema the server logs an error and keeps single-replica
+  behaviour.

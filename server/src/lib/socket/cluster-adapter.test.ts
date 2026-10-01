@@ -19,9 +19,13 @@ import {
   type Socket,
 } from "node:net";
 import pg from "pg";
+import { createServer as createHttpServer } from "node:http";
+import { Server as SocketIOServer } from "socket.io";
+import { io as ioClient } from "socket.io-client";
 import {
   SOCKET_IO_ATTACHMENTS_TABLE,
   createPostgresClusterAdapter,
+  deliverLocallyFirst,
   ensureSocketClusterAttachmentsTable,
   resolveSocketClusterAdapter,
   selectSocketClusterAdapter,
@@ -284,5 +288,141 @@ describe("createPostgresClusterAdapter", () => {
     await cluster.close();
     expect(pool.ended).toBe(true);
     expect(end).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("local delivery never depends on the cluster publish", () => {
+  // socket.io-adapter's ClusterAdapter awaits the publish before every local
+  // operation, and its broadcast returns WITHOUT delivering when the publish
+  // rejects — which a large or binary emit's attachments INSERT does on a
+  // dropped connection or a statement timeout. A hung query stalls it outright.
+  type Fault = "rejects" | "hangs";
+  const faults: Fault[] = ["rejects", "hangs"];
+
+  let teardown: Array<() => Promise<void> | void> = [];
+  afterEach(async () => {
+    for (const t of teardown.reverse()) await t();
+    teardown = [];
+    warn.mockReset();
+  });
+
+  /** One replica on the fake bus, a client connected to it, its pool then broken. */
+  async function replicaWithBrokenPool(fault: Fault) {
+    const bus = new FakePgNotifyBus();
+    const pool = bus.pool();
+    const cluster = createPostgresClusterAdapter(pool);
+    const httpServer = createHttpServer();
+    const io = new SocketIOServer(httpServer, { adapter: cluster.adapter });
+    teardown.push(() => cluster.close());
+    teardown.push(() => io.close());
+    await vi.waitFor(() => expect(bus.clients.size).toBe(1));
+    io.on("connection", (s) => void s.join("room:r"));
+    const port = await new Promise<number>((resolve) =>
+      httpServer.listen(0, "127.0.0.1", () => resolve((httpServer.address() as AddressInfo).port)),
+    );
+    const client = ioClient(`http://127.0.0.1:${port}`, {
+      transports: ["websocket"],
+      reconnection: false,
+    });
+    teardown.push(() => void client.close());
+    await new Promise<void>((resolve, reject) => {
+      client.once("connect", () => resolve());
+      client.once("connect_error", reject);
+    });
+    await vi.waitFor(() => expect(io.sockets.adapter.rooms.get("room:r")?.size).toBe(1));
+    const sid = client.id!;
+    pool.query = vi.fn(() =>
+      fault === "rejects"
+        ? Promise.reject(new Error("Connection terminated unexpectedly"))
+        : new Promise(() => {}),
+    ) as unknown as Pool["query"];
+    return { io, client, sid, pool };
+  }
+
+  const payloads: Array<[string, () => unknown]> = [
+    ["a small", () => ({ n: 1 })],
+    ["a large (over NOTIFY's 8000 bytes)", () => ({ pad: "x".repeat(10_000) })],
+    ["a binary", () => ({ blob: Buffer.from([1, 2, 3]) })],
+  ];
+
+  for (const fault of faults) {
+    for (const [label, make] of payloads) {
+      it(`delivers ${label} room emit to a socket on the same replica when the publish ${fault}`, async () => {
+        const { io, client, pool } = await replicaWithBrokenPool(fault);
+        const received: unknown[] = [];
+        client.on("evt", (e: unknown) => received.push(e));
+
+        io.to("room:r").emit("evt", make());
+
+        await vi.waitFor(() => expect(received).toHaveLength(1), { timeout: 1_000 });
+        expect(pool.query).toHaveBeenCalled();
+      });
+    }
+
+    it(`disconnects a socket on the same replica when the publish ${fault}`, async () => {
+      const { io, client } = await replicaWithBrokenPool(fault);
+      let reason: string | null = null;
+      client.on("disconnect", (r) => (reason = r));
+
+      io.in("room:r").disconnectSockets(true);
+
+      await vi.waitFor(() => expect(reason).toBe("io server disconnect"), { timeout: 1_000 });
+    });
+
+    it(`takes a socket on the same replica out of a room when the publish ${fault}`, async () => {
+      const { io, sid } = await replicaWithBrokenPool(fault);
+
+      io.in("room:r").socketsLeave("room:r");
+
+      await vi.waitFor(
+        () => expect(io.sockets.adapter.rooms.get("room:r")?.has(sid) ?? false).toBe(false),
+        {
+          timeout: 1_000,
+        },
+      );
+    });
+
+    it(`puts a socket on the same replica into a room when the publish ${fault}`, async () => {
+      const { io, sid } = await replicaWithBrokenPool(fault);
+
+      io.in("room:r").socketsJoin("room:joined");
+
+      await vi.waitFor(
+        () => expect(io.sockets.adapter.rooms.get("room:joined")?.has(sid)).toBe(true),
+        {
+          timeout: 1_000,
+        },
+      );
+    });
+  }
+
+  it("logs a rejected publish as a warning", async () => {
+    const { io } = await replicaWithBrokenPool("rejects");
+
+    io.to("room:r").emit("evt", { pad: "x".repeat(10_000) });
+
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("this replica's sockets only"),
+        expect.objectContaining({ error: "Connection terminated unexpectedly" }),
+      ),
+    );
+  });
+
+  it("deliverLocallyFirst logs a publish that throws synchronously and still resolves", async () => {
+    const adapter = {
+      publishAndReturnOffset: vi.fn((_m: { type?: number }): Promise<string> => {
+        throw new Error("boom");
+      }),
+    };
+    deliverLocallyFirst(adapter);
+
+    await expect(adapter.publishAndReturnOffset({ type: 3 })).resolves.toBe("");
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("publish failed"),
+        expect.objectContaining({ type: 3, error: "boom" }),
+      ),
+    );
   });
 });

@@ -268,6 +268,42 @@ describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integr
     });
   });
 
+  it("delivers a large emit to the same replica at once while its publish is blocked, and loses it only cross-replica", async () => {
+    // Another session holds the attachments table, so the large emit's INSERT
+    // waits until the 5 s statement timeout and then rejects. Upstream
+    // socket.io-adapter awaited that publish and returned without delivering
+    // locally; the socket on A must get the emit now, and B — told nothing —
+    // is the outage's cost.
+    const admin = new pg.Pool({ connectionString: databaseUrl, max: 1 });
+    const holder = await admin.connect();
+    try {
+      seed(["u-blocked"], []);
+      const onA = await connectUser(a, "u-blocked", open);
+      const onB = await connectUser(b, "u-blocked", open);
+      const gotA: string[] = [];
+      const gotB: string[] = [];
+      onA.socket.on("heartbeat", (e: { pad?: string }) => e.pad && gotA.push(e.pad));
+      onB.socket.on("heartbeat", (e: { pad?: string }) => e.pad && gotB.push(e.pad));
+      await holder.query("BEGIN");
+      await holder.query(`LOCK TABLE ${SOCKET_IO_ATTACHMENTS_TABLE} IN ACCESS EXCLUSIVE MODE`);
+      const pad = "y".repeat(10_000);
+
+      const started = Date.now();
+      a.io.to("user:u-blocked").emit("heartbeat", { ts: started, pad } as never);
+
+      await vi.waitFor(() => expect(gotA).toEqual([pad]), { timeout: 2_000 });
+      expect(Date.now() - started).toBeLessThan(2_000);
+      // Past the statement timeout: the publish has failed, and B never got it.
+      await new Promise((r) => setTimeout(r, 6_000));
+      expect(gotA).toEqual([pad]);
+      expect(gotB).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      holder.release();
+      await admin.end();
+    }
+  });
+
   // Last: it drops every replica's LISTEN connection. Before the client-level
   // 'error' listener, pg emitted the termination on the checked-out client with
   // nothing listening and the process died (exit 1, "Unhandled error event").

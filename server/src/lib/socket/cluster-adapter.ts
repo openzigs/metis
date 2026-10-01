@@ -20,11 +20,39 @@
  * carrying binary, in an attachments table. Like the other shared Postgres
  * backends it is self-created (UNLOGGED, behind an advisory lock), not migrated.
  * The table is created BEFORE the adapter is installed, and if that fails the
- * adapter is not installed at all: socket.io-adapter's `broadcast` returns
- * before its local delivery when the publish rejects, so an adapter without its
- * table would drop every large or binary emit even for sockets on the same
- * replica. The process keeps the in-memory adapter and logs that cross-replica
- * eviction is disabled.
+ * adapter is not installed at all: without its table every large or binary
+ * emit's publish would fail, so no other replica would ever see one. The process
+ * keeps the in-memory adapter and logs that cross-replica eviction is disabled.
+ *
+ * Local delivery never waits on the publish (`deliverLocallyFirst`). Upstream
+ * (socket.io-adapter 2.5.6 `ClusterAdapter`), `broadcast`, `addSockets`,
+ * `delSockets` and `disconnectSockets` each `await` the publish before the
+ * local operation, and `broadcast` RETURNS from its catch without delivering
+ * when the publish rejects. A small message's NOTIFY failure is swallowed
+ * inside the Postgres adapter's own `publish`, but a large or binary one goes
+ * through the attachments INSERT, whose rejection is not — so a dropped
+ * connection, a failover, the 5 s statement / query timeout, or a 5 s wait for
+ * the single non-`LISTEN` pool connection lost the emit for sockets on THIS
+ * replica too, single-replica deployments included; and every other emit, join,
+ * leave and disconnect sat behind the NOTIFY for up to that long. So the
+ * adapter's `publishAndReturnOffset` is replaced, per instance, by one that
+ * starts the real publish, logs its failure, and resolves at once. Every one of
+ * those methods then runs its local operation a microtask later, whatever the
+ * database does; peers still get the publish exactly as before.
+ *
+ * Ordering: the real publish is still STARTED synchronously, so the message is
+ * serialised before the local operation mutates the packet (as upstream), and
+ * publishes go out in call order (as upstream). Local operations now also run
+ * in call order on the same microtask queue — upstream they ran in NOTIFY
+ * completion order, which a large message's extra INSERT could reorder. Local
+ * delivery no longer waits for peers to be told; nothing relied on that, and a
+ * revocation (`disconnectSockets`, `socketsLeave`) now takes effect locally at
+ * once instead of after a database round trip — the #613 epochs are bumped
+ * before either is called and their `serverSideEmit` relay is unchanged. The
+ * returned offset is `""`, which is what the Postgres adapter's `doPublish`
+ * always returns (it does not support connection state recovery). The cost: a
+ * publish that fails is lost to the OTHER replicas — cross-replica delivery
+ * misses the outage window, as with a dropped `LISTEN` connection (#649).
  *
  * Every adapter, pool and connection error is logged, never thrown: evictions
  * run after the database write has committed (#588, #612), and a pg client's
@@ -38,11 +66,12 @@
  * `POOL_MAX` 2, the new `LISTEN` client then fills the pool and every NOTIFY
  * queues forever.
  *
- * Timeouts (`socketClusterPoolConfig`): a broadcast awaits its NOTIFY before the
- * local delivery, so a connection attempt or a query that never answers would
- * stall every emit on this replica. A bounded connect, a client-side query
- * timeout and a server-side statement timeout turn that hang into a rejected
- * publish — logged by the error handler — within seconds.
+ * Timeouts (`socketClusterPoolConfig`): local delivery no longer waits on the
+ * NOTIFY, but a connection attempt or a query that never answers would still
+ * hold the pool's one NOTIFY connection, queueing every later publish behind it
+ * forever. A bounded connect, a client-side query timeout and a server-side
+ * statement timeout turn that hang into a failed publish — logged — within
+ * seconds.
  */
 import pg from "pg";
 import type { Pool, PoolClient, PoolConfig } from "pg";
@@ -121,18 +150,54 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   pool.connect = ((...args: unknown[]) =>
     args.length > 0 ? connect(...args) : connect().then(holdListenClient)) as Pool["connect"];
 
-  const adapter = createAdapter(pool, {
+  const createNamespaceAdapter = createAdapter(pool, {
     tableName: SOCKET_IO_ATTACHMENTS_TABLE,
     errorHandler: (err: Error) => {
       log.warn("socket cluster adapter error", { error: err.message });
     },
   });
+  // A `function`, not an arrow: Socket.IO calls it with `new`, and a
+  // constructor that returns an object yields that object.
+  const adapter = function (nsp: Parameters<typeof createNamespaceAdapter>[0]) {
+    return deliverLocallyFirst(createNamespaceAdapter(nsp));
+  } as typeof createNamespaceAdapter;
 
   let ended: Promise<void> | undefined;
   return {
     adapter,
     close: () => (ended ??= pool.end()),
   };
+}
+
+/** The protected `ClusterAdapter` method every cluster-wide operation awaits. */
+interface ClusterPublisher {
+  publishAndReturnOffset(message: { type?: number }): Promise<string>;
+}
+
+/**
+ * Make `adapter`'s local operations independent of its publish; see the module
+ * header. The publish is started synchronously and its failure logged, never
+ * thrown; the operation awaiting it resumes at once.
+ */
+export function deliverLocallyFirst<T extends object>(adapter: T): T {
+  const target = adapter as unknown as ClusterPublisher;
+  const publish = target.publishAndReturnOffset.bind(adapter);
+  target.publishAndReturnOffset = (message) => {
+    let sent: Promise<string>;
+    try {
+      sent = publish(message);
+    } catch (err) {
+      sent = Promise.reject(err);
+    }
+    sent.catch((err: unknown) => {
+      log.warn(
+        "socket cluster adapter publish failed — the operation reached this replica's sockets only",
+        { type: message.type, error: err instanceof Error ? err.message : String(err) },
+      );
+    });
+    return Promise.resolve("");
+  };
+  return adapter;
 }
 
 /** Guard the adapter's long-held `LISTEN` client; see the module header. */
