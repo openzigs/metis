@@ -225,6 +225,7 @@ import { wirePresenceHandlers } from "../src/lib/collaboration/presence.js";
 import {
   JOIN_RATE_LIMITED,
   JoinRateLimiter,
+  MAX_RETRY_AFTER_MS,
   setJoinRateLimiter,
   type RoomJoinEvent,
 } from "../src/lib/socket/join-rate-limit.js";
@@ -1556,9 +1557,12 @@ describe("#682 room joins are rate-limited per socket and per user", () => {
       if (payload === undefined) rawEmit.call(socket, event);
       else rawEmit.call(socket, event, payload);
     }
+    // The buckets never refill here, so every refusal names the capped wait.
     const expected = Object.values(JOINS).map(([, room]) => ({
       message: JOIN_RATE_LIMITED,
       room,
+      code: "RATE_LIMITED",
+      retryAfterMs: MAX_RETRY_AFTER_MS,
     }));
     await vi.waitFor(() => expect(errors).toHaveLength(expected.length));
     expect(errors).toEqual(expected);
@@ -1594,6 +1598,12 @@ describe("#682 room joins are rate-limited per socket and per user", () => {
     const limited = errors.filter((e) => e.message === JOIN_RATE_LIMITED);
     expect(limited).toHaveLength(total - USER_BURST);
     expect(limited.every((e) => typeof e.room === "string" && e.room !== "")).toBe(true);
+    expect(limited.every((e) => e.code === "RATE_LIMITED" && e.retryAfterMs! > 0)).toBe(true);
+    // The admitted probes were denied by authorization: no rate-limit marker,
+    // so a follower drops those rooms as before.
+    const denied = errors.filter((e) => e.message !== JOIN_RATE_LIMITED);
+    expect(denied).toHaveLength(USER_BURST);
+    expect(denied.every((e) => !("code" in e) && !("retryAfterMs" in e))).toBe(true);
     // Only the admitted probes reached `canAccessThread`, which audits each.
     await vi.waitFor(() => expect(audits.mock.calls.length - auditsBefore).toBe(USER_BURST));
     await new Promise((r) => setTimeout(r, 50));

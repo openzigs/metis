@@ -54,8 +54,19 @@
  * read, and nothing orders the server's room join before it answers the read.
  * An event emitted after the read is served but before the join lands (a few
  * milliseconds) is still missed, until the next event or reconnect.
+ *
+ * #682 — the server may refuse a room join over its join rate limit with a
+ * room-scoped `auth:error { code: "RATE_LIMITED", retryAfterMs }`. That join
+ * was legitimate, only early, so a room follower whose room is named sends its
+ * subscribe again after `retryAfterMs` plus a little jitter
+ * (`socket-rate-limit.ts`) — if it has not been released and the socket is up
+ * by then; a reconnect re-subscribes anyway and cancels the pending retry. An
+ * authorization refusal (no `code`) changes nothing here: the follower keeps
+ * re-subscribing on reconnect, exactly as before.
  */
 import type { Socket } from "socket.io-client";
+import type { SocketAuthErrorEvent } from "@metis/shared";
+import { rateLimitRetryDelay } from "./socket-rate-limit";
 
 /** The socket surface this helper needs; the typed app socket satisfies it. */
 type SubscriptionSocket = Pick<Socket, "on" | "off" | "connected">;
@@ -110,20 +121,40 @@ function follow(
   // Only a subscription that emits something can have it buffered (#646: the
   // reconcile-only `onReconnect` has nothing to flush).
   let buffered = subscribe !== noop && !socket.connected;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  const cancelRetry = () => {
+    clearTimeout(retry);
+    retry = undefined;
+  };
   const onConnect = () => {
+    cancelRetry();
     if (buffered) buffered = false;
     else subscribe();
     reconcile?.();
   };
-  subscribe();
+  // #682 — only a room follower can be named by a refusal.
+  const onAuthError = (data: SocketAuthErrorEvent | undefined) => {
+    if (!leave || data?.room !== leave.room || retry !== undefined) return;
+    const delay = rateLimitRetryDelay(data);
+    if (delay === undefined) return;
+    retry = setTimeout(() => {
+      retry = undefined;
+      if (socket.connected) subscribe();
+    }, delay);
+  };
+  // Listen before subscribing, so no refusal of this subscribe can be missed.
   socket.on("connect", onConnect);
+  if (leave) socket.on("auth:error", onAuthError);
+  subscribe();
 
   let released = false;
   return () => {
     if (released) return;
     released = true;
+    cancelRetry();
     socket.off("connect", onConnect);
     if (!leave) return;
+    socket.off("auth:error", onAuthError);
     const counts = countsFor(socket);
     const remaining = (counts.get(leave.room) ?? 1) - 1;
     if (remaining > 0) {

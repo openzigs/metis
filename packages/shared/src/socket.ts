@@ -42,7 +42,18 @@ export interface SocketAuthErrorEvent {
    * compares it against the same factory's output (#676).
    */
   room?: string;
+  /**
+   * #682 — set only when the join was refused by the room-join rate limit, never
+   * on an authorization denial (those stay indistinguishable from each other).
+   * A follower keeps a rate-limited room and re-subscribes after `retryAfterMs`.
+   */
+  code?: typeof SOCKET_JOIN_RATE_LIMITED_CODE;
+  /** #682 — with `code`: milliseconds until the join would be admitted. */
+  retryAfterMs?: number;
 }
+
+/** #682 — the `SocketAuthErrorEvent.code` of a rate-limited room join. */
+export const SOCKET_JOIN_RATE_LIMITED_CODE = "RATE_LIMITED" as const;
 
 export type AnalysisAgentEventType = "started" | "chunk" | "completed" | "failed" | "cancelled";
 

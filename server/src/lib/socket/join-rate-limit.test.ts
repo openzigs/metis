@@ -12,6 +12,8 @@ import {
   DEFAULT_JOIN_RATE_LIMITS,
   JOIN_RATE_LIMITED,
   JoinRateLimiter,
+  MAX_RETRY_AFTER_MS,
+  REFUSAL_LOG_INTERVAL_MS,
   getJoinRateLimiter,
   onRoomJoin,
   resolveJoinRateLimits,
@@ -69,6 +71,25 @@ describe("resolveJoinRateLimits", () => {
     );
   });
 
+  it.each([
+    ["METIS_SOCKET_JOIN_RATE_LIMIT_BURST", "socket"],
+    ["METIS_SOCKET_JOIN_USER_RATE_LIMIT_BURST", "user"],
+  ] as const)("ignores a fractional %s below 1, which would refuse every join", (name, scope) => {
+    const limits = resolveJoinRateLimits({ [name]: "0.5" });
+    expect(limits[scope].burst).toBe(DEFAULT_JOIN_RATE_LIMITS[scope].burst);
+    expect(warn).toHaveBeenCalledWith(
+      "Ignoring invalid socket join rate-limit setting",
+      expect.objectContaining({ name, value: "0.5" }),
+    );
+    // A burst of exactly 1 is the smallest that can ever admit a join.
+    expect(resolveJoinRateLimits({ [name]: "1" })[scope].burst).toBe(1);
+  });
+
+  it("keeps the per-user refill low enough to bound a probe loop's audit rows", () => {
+    // 5 admitted joins a second is 18,000 audit rows an hour per user per replica.
+    expect(DEFAULT_JOIN_RATE_LIMITS.user).toEqual({ burst: 300, perSecond: 5 });
+  });
+
   it("treats a blank value as unset", () => {
     expect(
       resolveJoinRateLimits({ METIS_SOCKET_JOIN_RATE_LIMIT_PER_SEC: " " }).socket.perSecond,
@@ -110,6 +131,33 @@ describe("JoinRateLimiter", () => {
     drain(limiter, first, "u1"); // socket 3, user 5 → 2 left
     for (let i = 0; i < 10; i++) limiter.tryTake(first, "u1");
     expect(drain(limiter, {}, "u1")).toBe(2);
+  });
+
+  it("names the wait until the emptier bucket holds a whole token", () => {
+    const { clock, limiter } = clocked({
+      socket: { burst: 2, perSecond: 4 },
+      user: { burst: 3, perSecond: 0.5 },
+    });
+    const socket = {};
+    expect(limiter.take(socket, "u1")).toBe(0);
+    expect(limiter.take(socket, "u1")).toBe(0);
+    // Socket empty (4/s → 250 ms), user holds 1.
+    expect(limiter.take(socket, "u1")).toBe(250);
+    clock.t += 125; // socket 0.5 → 125 ms left
+    expect(limiter.take(socket, "u1")).toBe(125);
+    clock.t += 125;
+    expect(limiter.take(socket, "u1")).toBe(0); // user now 0.125 (0.5/s)
+    clock.t += 250; // socket 1 again, user 0.25 → 1,500 ms
+    expect(limiter.take(socket, "u1")).toBe(1500);
+  });
+
+  it(`caps the named wait at ${MAX_RETRY_AFTER_MS} ms`, () => {
+    const { limiter } = clocked({
+      socket: { burst: 1, perSecond: 1e-9 },
+      user: { burst: 1, perSecond: 1e-9 },
+    });
+    limiter.take({}, "u1");
+    expect(limiter.take({}, "u1")).toBe(MAX_RETRY_AFTER_MS);
   });
 
   it("does not go backwards when the clock does", () => {
@@ -212,8 +260,14 @@ describe("onRoomJoin", () => {
     for (let i = 0; i < 5; i++) await fire("subscribe:job", { jobId: `j${i}` });
     expect(handler).toHaveBeenCalledTimes(3);
     expect(emit.mock.calls).toEqual([
-      ["auth:error", { message: JOIN_RATE_LIMITED, room: "job:j3" }],
-      ["auth:error", { message: JOIN_RATE_LIMITED, room: "job:j4" }],
+      [
+        "auth:error",
+        { message: JOIN_RATE_LIMITED, room: "job:j3", code: "RATE_LIMITED", retryAfterMs: 1000 },
+      ],
+      [
+        "auth:error",
+        { message: JOIN_RATE_LIMITED, room: "job:j4", code: "RATE_LIMITED", retryAfterMs: 1000 },
+      ],
     ]);
   });
 
@@ -233,20 +287,44 @@ describe("onRoomJoin", () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
-  it("logs the first refusal of a run only, and again after a join is admitted", async () => {
+  it("logs a socket's refusals at most once per interval, across its join events", async () => {
     const { clock, limiter } = clocked(small);
     setJoinRateLimiter(limiter);
     const { socket, fire } = fakeSocket();
     onRoomJoin(socket, "subscribe:task", () => "task:t", vi.fn());
+    onRoomJoin(socket, "subscribe:job", () => "job:j", vi.fn());
     for (let i = 0; i < 10; i++) await fire("subscribe:task", { taskId: "t" });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
       "Socket room join rate-limited",
-      expect.objectContaining({ userId: "u1", event: "subscribe:task", room: "task:t" }),
+      expect.objectContaining({
+        userId: "u1",
+        event: "subscribe:task",
+        room: "task:t",
+        suppressedSinceLastLog: 0,
+      }),
     );
-    clock.t += 1000;
-    await fire("subscribe:task", { taskId: "t" }); // admitted
-    await fire("subscribe:task", { taskId: "t" }); // refused: a new run
+    // Refill admits joins between refusals: re-arming on an admitted join would
+    // log at the refill rate. Within the interval nothing more is logged.
+    for (let s = 0; s < 30; s++) {
+      clock.t += 1000;
+      await fire("subscribe:job", { jobId: "j" }); // admitted
+      await fire("subscribe:job", { jobId: "j" }); // refused
+    }
+    expect(clock.t - 1_000_000).toBeLessThan(REFUSAL_LOG_INTERVAL_MS);
+    expect(warn).toHaveBeenCalledTimes(1);
+    clock.t += REFUSAL_LOG_INTERVAL_MS;
+    await fire("subscribe:job", { jobId: "j" }); // admitted after the refill
+    for (let i = 0; i < 5; i++) await fire("subscribe:job", { jobId: "j" });
     expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenLastCalledWith(
+      "Socket room join rate-limited",
+      expect.objectContaining({ event: "subscribe:job", suppressedSinceLastLog: 36 }),
+    );
+    // Another socket is logged on its own interval.
+    const other = fakeSocket("u2");
+    onRoomJoin(other.socket, "subscribe:job", () => "job:j", vi.fn());
+    for (let i = 0; i < 4; i++) await other.fire("subscribe:job", { jobId: "j" });
+    expect(warn).toHaveBeenCalledTimes(3);
   });
 });

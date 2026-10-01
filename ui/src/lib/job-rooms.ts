@@ -34,9 +34,17 @@
  * and its followers' releases become no-ops. The socket client does not show a
  * room-scoped refusal to the user (`socket-client.ts`); a follower that waits
  * for a replay (`useFollowJobs`) forgets the job when none arrives.
+ *
+ * #682 — a refusal by the server's join rate limit (`code: "RATE_LIMITED"`) is
+ * not a denial: the join was legitimate, only early. That room stays followed,
+ * and its `subscribe:job` is sent again after the refusal's `retryAfterMs` plus
+ * a little jitter (`socket-rate-limit.ts`) — once per room, however many
+ * followers it has — if it is still followed then. A reconnect in the meantime
+ * re-joins every room anyway, so it cancels the pending retries.
  */
 import type { Socket } from "socket.io-client";
 import { jobRoom, type SocketAuthErrorEvent } from "@metis/shared";
+import { rateLimitRetryDelay } from "./socket-rate-limit";
 
 /** The socket surface this module needs; the typed app socket satisfies it. */
 type JobRoomSocket = Pick<Socket, "emit" | "on" | "off" | "connected">;
@@ -51,13 +59,26 @@ interface SocketRooms {
   follows: Map<string, Follow>;
   /** Rooms whose `subscribe:job` sits in the send buffer until the next connect. */
   buffered: Set<string>;
+  /** #682 — pending re-subscribes of rate-limited rooms, by job id. */
+  retries: Map<string, ReturnType<typeof setTimeout>>;
   onConnect: () => void;
   onAuthError: (data: SocketAuthErrorEvent) => void;
 }
 
 const rooms = new WeakMap<JobRoomSocket, SocketRooms>();
 
+function cancelRetry(state: SocketRooms, jobId: string): void {
+  clearTimeout(state.retries.get(jobId));
+  state.retries.delete(jobId);
+}
+
+function cancelRetries(state: SocketRooms): void {
+  for (const timer of state.retries.values()) clearTimeout(timer);
+  state.retries.clear();
+}
+
 function detach(socket: JobRoomSocket, state: SocketRooms): void {
+  cancelRetries(state);
   socket.off("connect", state.onConnect);
   socket.off("auth:error", state.onAuthError);
   rooms.delete(socket);
@@ -68,7 +89,9 @@ function roomsFor(socket: JobRoomSocket): SocketRooms {
   if (existing) return existing;
   const follows = new Map<string, Follow>();
   const buffered = new Set<string>();
+  const retries = new Map<string, ReturnType<typeof setTimeout>>();
   const onConnect = () => {
+    cancelRetries(state);
     for (const jobId of follows.keys()) {
       if (!buffered.has(jobId)) socket.emit("subscribe:job", { jobId });
     }
@@ -77,6 +100,7 @@ function roomsFor(socket: JobRoomSocket): SocketRooms {
   const state: SocketRooms = {
     follows,
     buffered,
+    retries,
     onConnect,
     onAuthError: (data) => {
       const room = data?.room;
@@ -85,7 +109,22 @@ function roomsFor(socket: JobRoomSocket): SocketRooms {
       let refused: string | undefined;
       for (const jobId of follows.keys()) if (jobRoom(jobId) === room) refused = jobId;
       if (refused === undefined) return;
+      const delay = rateLimitRetryDelay(data);
+      if (delay !== undefined) {
+        const jobId = refused;
+        if (retries.has(jobId)) return;
+        retries.set(
+          jobId,
+          setTimeout(() => {
+            retries.delete(jobId);
+            // Released since, or down: the connect re-join covers a live room.
+            if (follows.has(jobId) && socket.connected) socket.emit("subscribe:job", { jobId });
+          }, delay),
+        );
+        return;
+      }
       follows.delete(refused);
+      cancelRetry(state, refused);
       if (follows.size === 0) detach(socket, state);
     },
   };
@@ -122,6 +161,7 @@ export function joinJobRoom(socket: JobRoomSocket, jobId: string): () => void {
     mine.count -= 1;
     if (mine.count > 0) return;
     follows.delete(jobId);
+    cancelRetry(state, jobId);
     socket.emit("unsubscribe:job", { jobId });
     // Nothing left to re-join; the buffered set only matters for live rooms.
     if (follows.size === 0) detach(socket, state);

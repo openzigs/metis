@@ -2,7 +2,7 @@
  * #430 — `job:{id}` room membership is reference-counted on the client, so one
  * follower leaving does not cut off another follower of the same job.
  */
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { bgRunRoom, connectorRoom, jobRoom } from "@metis/shared";
 import { joinJobRoom } from "@/lib/job-rooms";
 
@@ -247,5 +247,149 @@ describe("joinJobRoom after the server refuses a room", () => {
     refuse(s, jobRoom("j1"));
     expect(s.listeners("connect")).toBe(0);
     expect(s.listeners("auth:error")).toBe(0);
+  });
+});
+
+// #682 — a refusal by the server's join rate limit is not a denial: the room is
+// kept and re-subscribed after `retryAfterMs` plus jitter.
+describe("joinJobRoom after the join rate limit refuses a room", () => {
+  const JITTER = 125; // Math.random() pinned to 0.5 → half of the 250 ms jitter
+  const rateLimited = (room: string, retryAfterMs = 2_000) => ({
+    message: "RATE_LIMITED: too many room joins, try again shortly",
+    room,
+    code: "RATE_LIMITED",
+    retryAfterMs,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * A server that refuses the first `limited` joins as rate-limited, then
+   * admits; it delivers a room's events only to a socket that joined it.
+   */
+  function serverFor(s: Fake, limited: number) {
+    const joined = new Set<string>();
+    let refusals = limited;
+    s.emit.mockImplementation((event: string, payload: { jobId: string }) => {
+      if (event !== "subscribe:job") return;
+      const room = jobRoom(payload.jobId);
+      if (refusals > 0) {
+        refusals -= 1;
+        s.fire("auth:error", rateLimited(room));
+      } else joined.add(room);
+    });
+    return {
+      publish: (jobId: string, data: unknown) => {
+        if (joined.has(jobRoom(jobId))) s.fire("job:lifecycle", data);
+      },
+    };
+  }
+
+  it("re-subscribes after the delay and then receives the room's events", () => {
+    const s = fakeSocket();
+    const server = serverFor(s, 1);
+    const received = vi.fn();
+    s.on("job:lifecycle", received);
+    join(s, "j1");
+    expect(subscribes(s, "j1")).toBe(1);
+    server.publish("j1", { status: "running" });
+    expect(received).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(2_000 + JITTER - 1);
+    expect(subscribes(s, "j1")).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(subscribes(s, "j1")).toBe(2);
+    server.publish("j1", { status: "running" });
+    expect(received).toHaveBeenCalledWith({ status: "running" });
+    // Still followed: a reconnect re-joins it.
+    s.emit.mockClear();
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(1);
+  });
+
+  it("retries once per room however many refusals name it", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    join(s, "j1");
+    s.fire("auth:error", rateLimited(jobRoom("j1")));
+    s.fire("auth:error", rateLimited(jobRoom("j1")));
+    s.emit.mockClear();
+    vi.advanceTimersByTime(2_000 + JITTER);
+    expect(subscribes(s, "j1")).toBe(1);
+  });
+
+  it("falls back to a default delay when the refusal names none", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    s.fire("auth:error", { ...rateLimited(jobRoom("j1")), retryAfterMs: undefined });
+    s.emit.mockClear();
+    vi.advanceTimersByTime(1_000 + JITTER - 1);
+    expect(subscribes(s, "j1")).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(subscribes(s, "j1")).toBe(1);
+  });
+
+  it("does not retry a room released before the delay", () => {
+    const s = fakeSocket();
+    const release = join(s, "j1");
+    join(s, "j2");
+    s.fire("auth:error", rateLimited(jobRoom("j1")));
+    release();
+    s.emit.mockClear();
+    vi.advanceTimersByTime(60_000);
+    expect(subscribes(s)).toBe(0);
+  });
+
+  it("leaves the retry to the reconnect when the socket is down at the delay", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    s.fire("auth:error", rateLimited(jobRoom("j1")));
+    s.connected = false;
+    s.emit.mockClear();
+    vi.advanceTimersByTime(2_000 + JITTER);
+    expect(subscribes(s, "j1")).toBe(0);
+    s.connected = true;
+    s.fire("connect");
+    expect(subscribes(s, "j1")).toBe(1);
+  });
+
+  it("cancels the pending retry on a reconnect, which re-joins anyway", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    s.fire("auth:error", rateLimited(jobRoom("j1")));
+    s.emit.mockClear();
+    s.reconnect();
+    vi.advanceTimersByTime(60_000);
+    expect(subscribes(s, "j1")).toBe(1);
+  });
+
+  it("still drops a room on an authorization refusal, with no retry", () => {
+    const s = fakeSocket();
+    join(s, "j1");
+    join(s, "j2");
+    s.fire("auth:error", rateLimited(jobRoom("j1")));
+    s.fire("auth:error", { message: "FORBIDDEN: no access to job", room: jobRoom("j1") });
+    s.emit.mockClear();
+    vi.advanceTimersByTime(60_000);
+    expect(subscribes(s, "j1")).toBe(0);
+    s.reconnect();
+    expect(subscribes(s, "j1")).toBe(0);
+    expect(subscribes(s, "j2")).toBe(1);
+  });
+
+  it("cancels every pending retry once the last room is released", () => {
+    const s = fakeSocket();
+    const release = join(s, "j1");
+    s.fire("auth:error", rateLimited(jobRoom("j1")));
+    expect(vi.getTimerCount()).toBe(1);
+    release();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
