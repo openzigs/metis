@@ -70,7 +70,11 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 import { githubPrWebhookRouter } from "../src/routes/webhooks-github.js";
-import { createPrReviewQueue, type PrReviewQueue } from "../src/lib/agents/pr-reviewer/queue.js";
+import {
+  createPrReviewQueue,
+  SHUTDOWN_REJECTED_JOB_ID,
+  type PrReviewQueue,
+} from "../src/lib/agents/pr-reviewer/queue.js";
 import { _resetJobLifecycleMemory, getJobScope } from "../src/lib/socket/job-events.js";
 
 const SECRET = "test-secret";
@@ -175,6 +179,11 @@ describe("webhook dedup + queue", () => {
         enqueued.push(job);
         return { jobId: "jq_1", queueDepth: 1 };
       },
+      enqueueAfter: async (job, beforeDispatch) => {
+        await beforeDispatch("jq_1");
+        enqueued.push(job);
+        return { jobId: "jq_1", queueDepth: 1 };
+      },
       depth: () => enqueued.length,
       deadLetters: () => [],
       drain: async () => undefined,
@@ -201,6 +210,10 @@ describe("webhook dedup + queue", () => {
     _resetJobLifecycleMemory();
     const queue: PrReviewQueue = {
       enqueue: () => ({ jobId: "jq_scope", queueDepth: 1 }),
+      enqueueAfter: async (_job, beforeDispatch) => {
+        await beforeDispatch("jq_scope");
+        return { jobId: "jq_scope", queueDepth: 1 };
+      },
       depth: () => 1,
       deadLetters: () => [],
       drain: async () => undefined,
@@ -218,6 +231,52 @@ describe("webhook dedup + queue", () => {
     expect(jobScopes.get("jq_scope")).toEqual({ kind: "pr-review", projectId: "proj_1" });
     // …and remembered on this one.
     expect(getJobScope("jq_scope")).toEqual({ kind: "pr-review", projectId: "proj_1" });
+  });
+
+  it("commits the queued review's durable scope before its first `started` event", async () => {
+    jobScopes.clear();
+    _resetJobLifecycleMemory();
+    // The real queue: it dispatches, and so emits `started` (which the worker
+    // relays to `project:{id}`), in the enqueue tick.
+    const atStarted: Array<{ jobId: string; recorded: unknown }> = [];
+    const queue = createPrReviewQueue({
+      processor: async () => undefined,
+      onLifecycle: (e) => {
+        if (e.phase === "started")
+          atStarted.push({ jobId: e.jobId, recorded: jobScopes.get(e.jobId) });
+      },
+    });
+    const body = JSON.stringify(payload(105));
+    const resp = await request(makeApp(queue))
+      .post("/api/webhooks/github/pr")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", sign(body))
+      .set("X-GitHub-Delivery", "order-1")
+      .set("X-GitHub-Event", "pull_request")
+      .send(body);
+    await queue.drain();
+    expect(resp.status).toBe(200);
+    expect(atStarted).toEqual([
+      { jobId: "prr-1-order-1", recorded: { kind: "pr-review", projectId: "proj_1" } },
+    ]);
+  });
+
+  it("records no scope for a review the shutting-down queue rejects", async () => {
+    jobScopes.clear();
+    _resetJobLifecycleMemory();
+    const queue = createPrReviewQueue({ processor: async () => undefined });
+    await queue.shutdown();
+    const body = JSON.stringify(payload(106));
+    const resp = await request(makeApp(queue))
+      .post("/api/webhooks/github/pr")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", sign(body))
+      .set("X-GitHub-Delivery", "late-1")
+      .set("X-GitHub-Event", "pull_request")
+      .send(body);
+    expect(resp.status).toBe(200);
+    expect(jobScopes.size).toBe(0);
+    expect(getJobScope(SHUTDOWN_REJECTED_JOB_ID)).toBeUndefined();
   });
 
   it("skips dedup when skipDedup=true (test seam)", async () => {

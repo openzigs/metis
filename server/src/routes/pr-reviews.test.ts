@@ -31,6 +31,8 @@ vi.mock("../lib/prisma.js", () => ({
         }: {
           create: { jobId: string; kind: string; projectId: string | null };
         }) => {
+          // Lands late, so a write the route does not await is not seen by the 202.
+          await new Promise((r) => setTimeout(r, 5));
           jobScopes.set(create.jobId, { kind: create.kind, projectId: create.projectId });
           return create;
         },
@@ -79,6 +81,7 @@ vi.mock("../middleware/require-permission.js", () => ({
 }));
 
 import { prReviewsRouter } from "./pr-reviews.js";
+import { createPrReviewQueue, SHUTDOWN_REJECTED_JOB_ID } from "../lib/agents/pr-reviewer/queue.js";
 import { getJobScope, _resetJobLifecycleMemory } from "../lib/socket/job-events.js";
 import { errorHandler, notFoundHandler } from "../middleware/error-handler.js";
 
@@ -196,6 +199,11 @@ describe("POST /api/projects/:projectId/pr-reviews/:prNumber/re-review", () => {
           enqueued.push(payload);
           return { jobId: "job-1", queueDepth: 1 };
         },
+        async enqueueAfter(payload: unknown, beforeDispatch: (jobId: string) => Promise<void>) {
+          await beforeDispatch("job-1");
+          enqueued.push(payload);
+          return { jobId: "job-1", queueDepth: 1 };
+        },
         depth: () => 1,
         deadLetters: () => [],
         drain: async () => {},
@@ -236,6 +244,41 @@ describe("POST /api/projects/:projectId/pr-reviews/:prNumber/re-review", () => {
     expect(payload.deliveryId).toMatch(/^manual-rerun-acme-site-7-/);
     expect(payload.context.action).toBe("manual_rerun");
     expect(payload.context.headSha).toBe("deadbeef");
+  });
+
+  it("commits the durable scope before the review's first `started` event", async () => {
+    _resetJobLifecycleMemory();
+    seed({ prNumber: 8 });
+    // The real queue: it dispatches, and so emits `started`, in the enqueue tick.
+    const atStarted: Array<{ jobId: string; recorded: unknown }> = [];
+    const queue = createPrReviewQueue({
+      processor: async () => {},
+      onLifecycle: (e) => {
+        if (e.phase === "started")
+          atStarted.push({ jobId: e.jobId, recorded: jobScopes.get(e.jobId) });
+      },
+    });
+    const resp = await request(makeApp({ resolveQueue: () => queue }))
+      .post("/api/projects/p1/pr-reviews/8/re-review")
+      .send({ owner: "acme", repo: "site" });
+    await queue.drain();
+    expect(resp.status).toBe(202);
+    expect(atStarted).toEqual([
+      { jobId: resp.body.data.jobId, recorded: { kind: "pr-review", projectId: "p1" } },
+    ]);
+  });
+
+  it("records no scope for a re-review the shutting-down queue rejects", async () => {
+    _resetJobLifecycleMemory();
+    seed({ prNumber: 9 });
+    const queue = createPrReviewQueue({ processor: async () => {} });
+    await queue.shutdown();
+    const resp = await request(makeApp({ resolveQueue: () => queue }))
+      .post("/api/projects/p1/pr-reviews/9/re-review")
+      .send({ owner: "acme", repo: "site" });
+    expect(resp.body.data.jobId).toBe(SHUTDOWN_REJECTED_JOB_ID);
+    expect(jobScopes.size).toBe(0);
+    expect(getJobScope(SHUTDOWN_REJECTED_JOB_ID)).toBeUndefined();
   });
 
   it("404s when the PR-review row does not exist", async () => {

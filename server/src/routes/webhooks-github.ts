@@ -141,28 +141,32 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
         // review in production.
         const liveQueue = deps.queue ?? getPrReviewWorker()?.queue ?? null;
         if (liveQueue) {
-          const { jobId } = liveQueue.enqueue({
-            deliveryId,
-            projectId: project.id,
-            owner,
-            repo: repoName,
-            prNumber: pr.number,
-            context: {
-              action,
-              prTitle: pr.title ?? `PR #${pr.number}`,
-              prBody: pr.body ?? "",
-              prUrl,
-              installationId,
-              headSha: pr.head?.sha ?? null,
-              branchName: pr.head?.ref ?? null,
-              maxDiffBytes: project.prReviewMaxDiffBytes ?? null,
-              skipGlobsRaw: project.prReviewSkipGlobs ?? null,
+          // #674 — the queue dispatches in the enqueue tick, and `started`
+          // names the job on `project:{id}`; so the durable scope is written
+          // in the pre-dispatch hook, and a socket on any replica that learns
+          // the id from that broadcast is authorized for `job:{id}`. A
+          // shutdown-rejected enqueue records nothing.
+          await liveQueue.enqueueAfter(
+            {
+              deliveryId,
+              projectId: project.id,
+              owner,
+              repo: repoName,
+              prNumber: pr.number,
+              context: {
+                action,
+                prTitle: pr.title ?? `PR #${pr.number}`,
+                prBody: pr.body ?? "",
+                prUrl,
+                installationId,
+                headSha: pr.head?.sha ?? null,
+                branchName: pr.head?.ref ?? null,
+                maxDiffBytes: project.prReviewMaxDiffBytes ?? null,
+                skipGlobsRaw: project.prReviewSkipGlobs ?? null,
+              },
             },
-          });
-          // #674 — durably, as `pr-reviews.ts` does for a manual re-review, so
-          // a socket on any replica that learns the id from `project:{id}` is
-          // authorized for `job:{id}` before the review's first event.
-          await recordJobScope(jobId, "pr-review", project.id);
+            (jobId) => recordJobScope(jobId, "pr-review", project.id),
+          );
           return;
         }
 

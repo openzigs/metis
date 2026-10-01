@@ -10,7 +10,10 @@
  * refusing the job's own initiator.
  *
  * {@link recordJobScope} writes the scope to `job_scopes` as well, and the
- * trigger routes AWAIT it before they hand the job id to the client. So by the
+ * trigger routes AWAIT it before the job id leaves the server — in the response
+ * or in the job's first event on `project:{id}`. A queued PR review writes it in
+ * the queue's pre-dispatch hook (`enqueueAfter`), because the queue emits
+ * `started` in the enqueue tick. So by the
  * time any client can send `subscribe:job` for the id, the record is committed
  * and every replica reads the same answer: there is no subscribe-before-relay
  * window to cover.
