@@ -371,7 +371,10 @@ export default function PublishingPage() {
     const release = keepSubscribed(
       socket,
       () => socket.emit("subscribe:publish", { batchId: liveBatchId }),
-      () => socket.emit("unsubscribe:publish", { batchId: liveBatchId }),
+      {
+        room: `publish:${liveBatchId}`,
+        unsubscribe: () => socket.emit("unsubscribe:publish", { batchId: liveBatchId }),
+      },
     );
     const onStatus = (e: { status: string; message?: string | null }) => {
       setLiveLog((prev) => [...prev, `[${e.status}] ${e.message ?? ""}`]);

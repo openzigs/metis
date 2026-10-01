@@ -72,7 +72,10 @@ export function PresenceAvatars({
     const release = keepSubscribed(
       socket,
       () => socket.emit("presence:join", { artifactType, artifactId }),
-      () => socket.emit("presence:leave", { artifactType, artifactId }),
+      {
+        room: `presence:${artifactType}:${artifactId}`,
+        unsubscribe: () => socket.emit("presence:leave", { artifactType, artifactId }),
+      },
     );
 
     // The server broadcasts `presence:update` keyed by `room` (it does not echo

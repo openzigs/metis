@@ -72,11 +72,10 @@ export function useTaskProgress(
     // Reset when switching tasks so a previous task's progress never leaks.
     setState(EMPTY);
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(
-      socket,
-      () => socket.emit("subscribe:task", { taskId }),
-      () => socket.emit("unsubscribe:task", { taskId }),
-    );
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:task", { taskId }), {
+      room: `task:${taskId}`,
+      unsubscribe: () => socket.emit("unsubscribe:task", { taskId }),
+    });
 
     const onProgress = (data: TaskProgressEvent) => {
       if (data.taskId !== taskId) return;

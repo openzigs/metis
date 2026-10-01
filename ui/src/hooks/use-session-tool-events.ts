@@ -26,11 +26,10 @@ export function useSessionToolEvents(
   useEffect(() => {
     if (!socket || !sessionId) return;
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(
-      socket,
-      () => socket.emit("subscribe:session", { sessionId }),
-      () => socket.emit("unsubscribe:session", { sessionId }),
-    );
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:session", { sessionId }), {
+      room: `session:${sessionId}`,
+      unsubscribe: () => socket.emit("unsubscribe:session", { sessionId }),
+    });
     const onToolEvent = (data: unknown) => {
       const ev = parseToolEvent(data);
       if (!ev || ev.sessionId !== sessionId) return;
