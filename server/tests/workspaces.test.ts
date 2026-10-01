@@ -201,9 +201,21 @@ describe("Workspace Routes", () => {
         deletedAt: null,
       } as never);
       vi.mocked(prisma.workspace.update).mockResolvedValue({} as never);
+      // #601 — the soft delete and the invite void run in one interactive transaction.
+      vi.mocked(prisma.$transaction).mockImplementation(((fn: (tx: unknown) => unknown) =>
+        fn(prisma)) as never);
 
       const res = await request(app).delete("/workspaces/ws-1");
       expect(res.status).toBe(200);
+      const { data } = vi.mocked(prisma.workspace.update).mock.calls[0]![0] as {
+        data: { deletedAt: Date };
+      };
+      expect(data.deletedAt).toBeInstanceOf(Date);
+      // Outstanding invites of THIS workspace only, stamped with the delete's instant.
+      expect(prisma.workspaceInvite.updateMany).toHaveBeenCalledWith({
+        where: { workspaceId: "ws-1", consumedAt: null },
+        data: { consumedAt: data.deletedAt },
+      });
     });
 
     it("prevents deleting the default workspace", async () => {
@@ -717,7 +729,72 @@ describe("Workspace Routes", () => {
       },
     );
 
-    // #579 — a soft-deleted workspace keeps its invites; validation must not call them valid
+    // #601 — the DELETE stamps the voided invite's `consumedAt` with its own `deletedAt`.
+    // `consumed` means accepted, so the voided invite reports the workspace, not consumed.
+    it("reports an invite voided by workspace DELETE as workspaceDeleted, not consumed", async () => {
+      const app = createApp();
+      const deletedAt = new Date();
+      vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
+        id: "inv-1",
+        workspaceId: "ws-1",
+        email: "user@test.com",
+        role: "member",
+        token: "voided-token",
+        consumedAt: deletedAt,
+        expiresAt: new Date(Date.now() + 86400000),
+        invitedById: "inviter-1",
+        workspace: { id: "ws-1", name: "Secret Name", slug: "test", deletedAt },
+        invitedBy: { displayName: "Inviter" },
+        createdAt: new Date(),
+      } as never);
+
+      const res = await request(app).get("/workspaces/invites/voided-token");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        valid: false,
+        workspaceDeleted: true,
+        expired: false,
+        consumed: false,
+        // #597 — an invalid invite withholds every identifying field.
+        workspace: null,
+        invitedBy: null,
+        email: null,
+        role: null,
+        expiresAt: null,
+      });
+      expect(JSON.stringify(res.body)).not.toContain("user@test.com");
+      expect(JSON.stringify(res.body)).not.toContain("Secret Name");
+    });
+
+    // Control for the above: an accepted invite to a live workspace still reads consumed.
+    it("reports an accepted invite to a live workspace as consumed", async () => {
+      const app = createApp();
+      vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
+        id: "inv-1",
+        workspaceId: "ws-1",
+        email: "user@test.com",
+        role: "member",
+        token: "used-token",
+        consumedAt: new Date(),
+        expiresAt: new Date(Date.now() + 86400000),
+        invitedById: "inviter-1",
+        workspace: { id: "ws-1", name: "Test", slug: "test", deletedAt: null },
+        invitedBy: { displayName: "Inviter" },
+        createdAt: new Date(),
+      } as never);
+
+      const res = await request(app).get("/workspaces/invites/used-token");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        valid: false,
+        workspaceDeleted: false,
+        consumed: true,
+        workspace: null,
+        invitedBy: null,
+      });
+    });
+
+    // #579 — validation of an invite to a soft-deleted workspace must not call it valid
     // nor disclose the workspace name or inviter.
     it("reports an invite to a soft-deleted workspace as not valid, withholding name and inviter", async () => {
       const app = createApp();

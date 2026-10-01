@@ -32,6 +32,12 @@ const db = vi.hoisted(() => ({
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
+    // Workspace DELETE soft-deletes and voids its invites in one transaction (#601).
+    $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
+      const { prisma } = await import("../src/lib/prisma.js");
+      return fn(prisma);
+    }),
+    workspaceInvite: { updateMany: vi.fn(async () => ({ count: 0 })) },
     $queryRawUnsafe: vi.fn(async () => 1),
     // #617 — the handshake re-reads the user (always live here) and the
     // durable role `subscribe` recorded.

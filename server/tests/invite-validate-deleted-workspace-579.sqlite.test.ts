@@ -1,13 +1,16 @@
 /**
  * #579 — validating an invite to a soft-deleted workspace reports it as not valid.
  *
- * Workspace DELETE sets `deletedAt` and leaves outstanding invites in place
- * (#563). The accept route refuses such an invite, but the public validate route
- * `GET /api/workspaces/invites/:token` used to answer `valid: true` and disclose
- * the deleted workspace's name and the inviter to any token holder. Proven
- * through the REAL router against a REAL SQLite database built from the
- * migration chain, paired with a positive control on a live workspace so a
- * route that reports every invite invalid cannot pass.
+ * Workspace DELETE is a soft delete (#563). The public validate route
+ * `GET /api/workspaces/invites/:token` used to answer `valid: true` for an invite
+ * to a deleted workspace and disclose its name and the inviter to any token
+ * holder. Since #601 the DELETE also voids the workspace's outstanding invites
+ * (stamping `consumedAt`), and the validate route must still report the deleted
+ * workspace as the reason rather than "consumed" (an invite nobody accepted).
+ * The workspace is deleted through the REAL `DELETE /api/workspaces/:id` route
+ * against a REAL SQLite database built from the migration chain, paired with a
+ * positive control on a live workspace so a route that reports every invite
+ * invalid cannot pass.
  *
  * #597 — the same withholding applies to every invalid invite: an expired or
  * already-used token is as stale as one to a deleted workspace, so it keeps only
@@ -41,6 +44,10 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// The DELETE's caller is injected below; workspace RBAC runs for real against the database.
+vi.mock("../src/middleware/auth.js", () => ({
+  requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
 
 const { workspacesRouter } = await import("../src/routes/workspaces.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
@@ -59,9 +66,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
 
-    const app = () => {
+    // The validate route is public: only the DELETE runs as a signed-in user.
+    const app = (asUserId?: string) => {
       const a = express();
       a.use(express.json());
+      if (asUserId) {
+        a.use((req, _res, next) => {
+          req.user = { userId: asUserId, role: "developer" } as never;
+          next();
+        });
+      }
       a.use("/api/workspaces", workspacesRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
@@ -108,8 +122,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           },
         });
       }
-      // What `DELETE /api/workspaces/:id` does: a soft delete. The invite survives.
-      await db.workspace.update({ where: { id: DEAD }, data: { deletedAt: new Date() } });
+      // Delete through the real route, as the workspace's owner. Since #601 this
+      // soft-deletes the workspace AND voids its outstanding invite.
+      const del = await request(app(INVITER)).delete(`/api/workspaces/${DEAD}`);
+      expect(del.status, JSON.stringify(del.body)).toBe(200);
       // #597 — an expired and an already-used invite, both to the LIVE workspace.
       await db.workspaceInvite.create({
         data: {
@@ -140,9 +156,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("reports the deleted workspace's invite as not valid, naming the reason, without its name or inviter", async () => {
+      // The state under test: workspace deleted and its invite voided by that DELETE.
+      expect((await db.workspace.findUnique({ where: { id: DEAD } }))?.deletedAt).toBeInstanceOf(
+        Date,
+      );
+      expect(
+        (await db.workspaceInvite.findUnique({ where: { token: `token-${DEAD}` } }))?.consumedAt,
+      ).toBeInstanceOf(Date);
+
       const res = await request(app()).get(`/api/workspaces/invites/token-${DEAD}`);
       expect(res.status).toBe(200);
       // Pin the reason, not only `valid`: expired or used also read `valid: false`.
+      // `consumed: false` although `consumedAt` is set: the invite was voided, never accepted.
       expect(res.body.data).toMatchObject({
         valid: false,
         workspaceDeleted: true,
