@@ -307,6 +307,8 @@ describe("McpSettingsPage — Import / Export tab", () => {
     }
     fireEvent.change(input, { target: { files: [file] } });
     expect(await screen.findByTestId("import-preview")).toHaveTextContent("1 server(s) to import");
+    // #630 — the input is emptied after each pick, so the preview names the staged file.
+    expect(screen.getByTestId("import-file-name")).toHaveTextContent("mcp.json");
     fireEvent.click(screen.getByTestId("import-confirm"));
     await waitFor(() => expect(importCopilotMock).toHaveBeenCalledTimes(1));
   });
