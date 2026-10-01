@@ -68,6 +68,7 @@ import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status
 import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
 import { bumpEpoch } from "./revocation-relay.js";
 import { MAX_TIMEOUT_MS, envMs } from "../config/env-ms.js";
+import { onClientEvent, onConnection, runDetached } from "./client-event-handler.js";
 
 const log = createChildLogger("socket");
 
@@ -153,20 +154,28 @@ export function createSocketServer(
     next();
   });
 
-  io.on("connection", (socket) => attachHandlers(socket));
+  // #658 — a throw from `attachHandlers` is logged and drops this one socket;
+  // unwrapped, socket.io's nextTick connect would make it an uncaughtException.
+  onConnection(io, attachHandlers);
   // #622 — with the cluster adapter, a revocation or eviction handled on another
   // replica moves THIS replica's #613 epochs too, so a handshake or
   // `subscribe:mcp` in flight here re-reads; a role-change reconnect also closes
   // this replica's transports (see `reconnectUserSockets`).
   wireUserRevocationRelay(io, Boolean(opts.adapter));
   wireMcpStatusEvictionRelay(io, Boolean(opts.adapter));
-  opts.onAdapterListening?.(() => void revalidateLocalSockets(io, "listen"));
+  opts.onAdapterListening?.(() =>
+    runDetached(revalidateLocalSockets(io, "listen"), "revalidateLocalSockets listen"),
+  );
   const sweepEvery =
     opts.revalidateIntervalMs ?? (opts.adapter ? resolveSocketRevalidateIntervalMs() : undefined);
   if (sweepEvery !== undefined) {
-    const sweep = setInterval(() => void revalidateLocalSockets(io, "sweep"), sweepEvery);
+    const sweep = setInterval(
+      () => runDetached(revalidateLocalSockets(io, "sweep"), "revalidateLocalSockets sweep"),
+      sweepEvery,
+    );
     sweep.unref();
     // `io.close()` closes the HTTP server, which ends the sweep with it.
+    // eslint-disable-next-line no-restricted-syntax -- #658: the HTTP server's own `close`, not a socket.io listener; no client reaches it and clearInterval cannot throw
     httpServer.once("close", () => clearInterval(sweep));
   }
   return io;
@@ -384,7 +393,7 @@ async function revalidateUserSockets(
   }
   for (const [socket, rooms] of roomsBefore) {
     for (const room of rooms) {
-      if (!allowed.has(room)) void socket.leave(room);
+      if (!allowed.has(room)) runDetached(socket.leave(room), "revalidate leave", socket.id);
     }
   }
 }
@@ -509,7 +518,7 @@ function attachHandlers(socket: MetisSocket): void {
   // This intentionally does NOT expose any `subscribe:user` handler — there is
   // no client-supplied room id, so cross-user room injection is structurally
   // impossible. Every (re)connection triggers this so reconnect is covered.
-  void socket.join(`user:${user.userId}`);
+  runDetached(socket.join(`user:${user.userId}`), "join user room", socket.id);
   log.debug("Socket auto-joined personal room", {
     socketId: socket.id,
     room: `user:${user.userId}`,
@@ -519,14 +528,14 @@ function attachHandlers(socket: MetisSocket): void {
   // ran before the join above, found no socket in `user:{id}` and missed this
   // one. Any such revocation moved the epoch, so re-read the user once.
   if (userSocketRevocationEpoch(socket.nsp.server) !== socket.data.revocationEpoch) {
-    void recheckLiveUser(socket);
+    runDetached(recheckLiveUser(socket), "recheckLiveUser", socket.id);
   }
 
   // #654 — no handler destructures its payload in the parameter list: a null or
   // missing payload threw inside socket.io's nextTick dispatch, an uncaught
   // exception that took the whole API process down. Each reads its field with
   // `?.` and ignores anything that is not a non-empty string.
-  socket.on("subscribe:project", (payload) => {
+  onClientEvent(socket, "subscribe:project", (payload) => {
     const projectId: unknown = payload?.projectId;
     if (!projectId || typeof projectId !== "string") return;
     // #255 — per-project authorization. The `project:{id}` room fans out
@@ -536,7 +545,7 @@ function attachHandlers(socket: MetisSocket): void {
     // epics #207/#208 via the shared `actorCanAccessProject` helper, which also
     // emits an audit row on denial. Admins pass; non-members are rejected and
     // never join the room (so they receive no events).
-    void (async () => {
+    return (async () => {
       try {
         const allowed = await actorCanAccessProject(
           { id: user.userId, role: user.role },
@@ -565,10 +574,10 @@ function attachHandlers(socket: MetisSocket): void {
       }
     })();
   });
-  socket.on("unsubscribe:project", (payload) => {
+  onClientEvent(socket, "unsubscribe:project", (payload) => {
     const projectId: unknown = payload?.projectId;
     if (!projectId || typeof projectId !== "string") return;
-    void socket.leave(`project:${projectId}`);
+    return socket.leave(`project:${projectId}`);
   });
 
   // Epic #475 (Phase 2, #480) — authz-gated discussion-thread rooms
@@ -594,11 +603,11 @@ function attachHandlers(socket: MetisSocket): void {
     analysisSubscription.set(analysisId, attempt);
     return attempt;
   };
-  socket.on("subscribe:analysis", (payload) => {
+  onClientEvent(socket, "subscribe:analysis", (payload) => {
     const analysisId: unknown = payload?.analysisId;
     if (!analysisId || typeof analysisId !== "string") return;
     const attempt = bumpAnalysisSubscription(analysisId);
-    void (async () => {
+    return (async () => {
       try {
         if (await canJoinAnalysisRoom(user, analysisId)) {
           if (analysisSubscription.get(analysisId) !== attempt) return;
@@ -615,20 +624,20 @@ function attachHandlers(socket: MetisSocket): void {
       socket.emit("auth:error", { message: "FORBIDDEN: no access to analysis" });
     })();
   });
-  socket.on("unsubscribe:analysis", (payload) => {
+  onClientEvent(socket, "unsubscribe:analysis", (payload) => {
     const analysisId: unknown = payload?.analysisId;
     if (!analysisId || typeof analysisId !== "string") return;
     bumpAnalysisSubscription(analysisId);
-    void socket.leave(`analysis:${analysisId}`);
+    return socket.leave(`analysis:${analysisId}`);
   });
   // #142 — the session room now carries tool-approval prompts (with the tool's
   // arguments), so only the session's owner, who can still reach its project,
   // may join it — the same rule as every other read of the session. It used to
   // join any id a client named.
-  socket.on("subscribe:session", (payload) => {
+  onClientEvent(socket, "subscribe:session", (payload) => {
     const sessionId: unknown = payload?.sessionId;
     if (!sessionId || typeof sessionId !== "string") return;
-    void (async () => {
+    return (async () => {
       try {
         await loadAuthorizedSession(user, sessionId);
         await socket.join(`session:${sessionId}`);
@@ -637,15 +646,15 @@ function attachHandlers(socket: MetisSocket): void {
       }
     })();
   });
-  socket.on("unsubscribe:session", (payload) => {
+  onClientEvent(socket, "unsubscribe:session", (payload) => {
     const sessionId: unknown = payload?.sessionId;
     if (!sessionId || typeof sessionId !== "string") return;
-    void socket.leave(`session:${sessionId}`);
+    return socket.leave(`session:${sessionId}`);
   });
   // #562 — bumped by every subscribe/unsubscribe, so a subscribe whose
   // membership lookup resolves after a later unsubscribe does not join.
   let mcpSubscription = 0;
-  socket.on("subscribe:mcp", () => {
+  onClientEvent(socket, "subscribe:mcp", () => {
     // SEC-5: only roles with `mcp.manage` (admin) may subscribe to the
     // mcp:status room. Status events leak server labels, scope, projectId,
     // and lastError strings — none of which non-admins should see.
@@ -686,10 +695,12 @@ function attachHandlers(socket: MetisSocket): void {
     // (a workspace deleted or left since the last one), not only joins.
     const leaveMcpStatusRoomsNotIn = (rooms: string[]): void => {
       for (const room of [...socket.rooms]) {
-        if (isMcpStatusRoom(room) && !rooms.includes(room)) void socket.leave(room);
+        if (isMcpStatusRoom(room) && !rooms.includes(room)) {
+          runDetached(socket.leave(room), "subscribe:mcp leave", socket.id);
+        }
       }
     };
-    void (async () => {
+    return (async () => {
       // #613 — taken BEFORE the membership read: an eviction that lands between
       // the read and the join finds this socket not yet in the room.
       const evictionEpoch = mcpStatusEvictionEpoch(socket.nsp.server);
@@ -706,74 +717,77 @@ function attachHandlers(socket: MetisSocket): void {
       leaveMcpStatusRoomsNotIn(current);
     })();
   });
-  socket.on("unsubscribe:mcp", () => {
+  onClientEvent(socket, "unsubscribe:mcp", () => {
     ++mcpSubscription;
     // Every mcp:status room this socket is in, whatever memberships it joined.
-    for (const room of [...socket.rooms]) if (isMcpStatusRoom(room)) void socket.leave(room);
+    for (const room of [...socket.rooms]) {
+      if (isMcpStatusRoom(room))
+        runDetached(socket.leave(room), "unsubscribe:mcp leave", socket.id);
+    }
   });
 
-  socket.on("subscribe:connector", (payload) => {
+  onClientEvent(socket, "subscribe:connector", (payload) => {
     const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
-    void socket.join(`connector:${connectorId}`);
+    return socket.join(`connector:${connectorId}`);
   });
-  socket.on("unsubscribe:connector", (payload) => {
+  onClientEvent(socket, "unsubscribe:connector", (payload) => {
     const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
-    void socket.leave(`connector:${connectorId}`);
+    return socket.leave(`connector:${connectorId}`);
   });
 
-  socket.on("subscribe:publish", (payload) => {
+  onClientEvent(socket, "subscribe:publish", (payload) => {
     const batchId: unknown = payload?.batchId;
     if (!batchId || typeof batchId !== "string") return;
     if (!hasPermission(user.role, "issue.publish") && !hasPermission(user.role, "issue.preview")) {
       socket.emit("auth:error", { message: "FORBIDDEN" });
       return;
     }
-    void socket.join(`publish:${batchId}`);
+    return socket.join(`publish:${batchId}`);
   });
-  socket.on("unsubscribe:publish", (payload) => {
+  onClientEvent(socket, "unsubscribe:publish", (payload) => {
     const batchId: unknown = payload?.batchId;
     if (!batchId || typeof batchId !== "string") return;
-    void socket.leave(`publish:${batchId}`);
+    return socket.leave(`publish:${batchId}`);
   });
 
   // Phase 11 — scheduler + tasks rooms.
-  socket.on("subscribe:scheduler", () => {
+  onClientEvent(socket, "subscribe:scheduler", () => {
     if (!hasPermission(user.role, "scheduler.read")) {
       socket.emit("auth:error", {
         message: "FORBIDDEN: subscribe:scheduler requires scheduler.read",
       });
       return;
     }
-    void socket.join("scheduler:status");
+    return socket.join("scheduler:status");
   });
-  socket.on("unsubscribe:scheduler", () => {
-    void socket.leave("scheduler:status");
+  onClientEvent(socket, "unsubscribe:scheduler", () => {
+    return socket.leave("scheduler:status");
   });
-  socket.on("subscribe:task", (payload) => {
+  onClientEvent(socket, "subscribe:task", (payload) => {
     const taskId: unknown = payload?.taskId;
     if (!taskId || typeof taskId !== "string") return;
     if (!hasPermission(user.role, "task.read")) {
       socket.emit("auth:error", { message: "FORBIDDEN: subscribe:task requires task.read" });
       return;
     }
-    void socket.join(`task:${taskId}`);
+    return socket.join(`task:${taskId}`);
   });
-  socket.on("unsubscribe:task", (payload) => {
+  onClientEvent(socket, "unsubscribe:task", (payload) => {
     const taskId: unknown = payload?.taskId;
     if (!taskId || typeof taskId !== "string") return;
-    void socket.leave(`task:${taskId}`);
+    return socket.leave(`task:${taskId}`);
   });
 
   // Epic #238 (#239) — unified job-lifecycle rooms (`job:{jobId}`).
   // Analysis, doc-generation, and impact-analysis all broadcast here. Anyone
   // with a job id (returned from the trigger endpoint) may subscribe; finer
   // authz is enforced at the REST trigger layer that hands out the id.
-  socket.on("subscribe:job", (payload) => {
+  onClientEvent(socket, "subscribe:job", (payload) => {
     const jobId: unknown = payload?.jobId;
     if (!jobId || typeof jobId !== "string") return;
-    void socket.join(`job:${jobId}`);
+    runDetached(socket.join(`job:${jobId}`), "subscribe:job join", socket.id);
     // Replay the job's last known transition to THIS socket. A room only
     // delivers what is emitted while you are in it, and a client cannot
     // subscribe until the trigger endpoint has answered — so a short job
@@ -799,7 +813,7 @@ function attachHandlers(socket: MetisSocket): void {
     const sections = getLastDocSections(jobId);
     const scopedProjectId = last?.projectId ?? sections[0]?.projectId;
     if (!scopedProjectId) return;
-    void (async () => {
+    return (async () => {
       try {
         const allowed = await actorCanAccessProject(
           { id: user.userId, role: user.role },
@@ -824,25 +838,25 @@ function attachHandlers(socket: MetisSocket): void {
       }
     })();
   });
-  socket.on("unsubscribe:job", (payload) => {
+  onClientEvent(socket, "unsubscribe:job", (payload) => {
     const jobId: unknown = payload?.jobId;
     if (!jobId || typeof jobId !== "string") return;
-    void socket.leave(`job:${jobId}`);
+    return socket.leave(`job:${jobId}`);
   });
 
   // Epic #156 — async background run rooms (`run:{runId}`).
-  socket.on("subscribe:bg-run", (payload) => {
+  onClientEvent(socket, "subscribe:bg-run", (payload) => {
     const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
-    void socket.join(`run:${runId}`);
+    return socket.join(`run:${runId}`);
   });
-  socket.on("unsubscribe:bg-run", (payload) => {
+  onClientEvent(socket, "unsubscribe:bg-run", (payload) => {
     const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
-    void socket.leave(`run:${runId}`);
+    return socket.leave(`run:${runId}`);
   });
 
-  socket.on("disconnect", (reason) => {
+  onClientEvent(socket, "disconnect", (reason) => {
     log.info("Socket disconnected", { socketId: socket.id, reason });
   });
 
@@ -854,5 +868,5 @@ function attachHandlers(socket: MetisSocket): void {
   }, 30_000);
   // Don't keep the event loop alive on shutdown.
   heartbeat.unref?.();
-  socket.on("disconnect", () => clearInterval(heartbeat));
+  onClientEvent(socket, "disconnect", () => clearInterval(heartbeat));
 }
