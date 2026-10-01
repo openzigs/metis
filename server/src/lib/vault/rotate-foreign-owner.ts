@@ -47,6 +47,13 @@
  * can still be confirmed — and an owner cannot block a takeover by inflating
  * the bindings past that cap. It binds exactly what the list does: any added,
  * removed or re-pointed binding changes it.
+ * #629 — what leaves the server is bounded however many bindings the owner
+ * adds: the 409 lists at most {@link MAX_LISTED_BINDINGS} of them plus the
+ * total and per-type / per-host counts of the whole set
+ * ({@link foreignOwnerView}), its message names at most
+ * {@link MAX_NAMED_BINDINGS}, and the audit row of a confirm over the cap
+ * records the set digest, total and counts instead of every binding
+ * ({@link confirmedBindingsAudit}). The digest still covers every binding.
  * A confirmed rotation also transfers ownership (`createdById`) to the admin,
  * so the previous owner can no longer bind the secret, now holding the
  * admin's value, to a new destination (rule 1 of `secret-binding.ts`); their
@@ -62,6 +69,11 @@ export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
 export const VAULT_ROTATE_BINDINGS_CHANGED = "VAULT_ROTATE_BINDINGS_CHANGED";
 /** #552 — the owner is binding the secret somewhere right now. */
 export const VAULT_ROTATE_BINDING_IN_PROGRESS = "VAULT_ROTATE_BINDING_IN_PROGRESS";
+/**
+ * #629 (PR #635 review) — a list confirm of a set over {@link MAX_CONFIRMED_BINDINGS}:
+ * the list cannot name every binding, so it is refused as such, not as CHANGED.
+ */
+export const VAULT_ROTATE_CONFIRM_BY_DIGEST = "VAULT_ROTATE_CONFIRM_BY_DIGEST";
 
 export interface SecretOwnerView {
   id: string;
@@ -185,6 +197,20 @@ export function routingDigest(
  * `bindingsDigest` instead, so the cap never strands a secret.
  */
 export const MAX_CONFIRMED_BINDINGS = 1000;
+
+/**
+ * #629 — the most bindings a 409 lists. Equal to {@link MAX_CONFIRMED_BINDINGS}
+ * on purpose: every set a list confirm can echo is listed in full, so the
+ * listing only truncates where the digest is the confirm anyway — and a 409 at
+ * the cap is no bigger than the confirm request the route already accepts.
+ */
+export const MAX_LISTED_BINDINGS = MAX_CONFIRMED_BINDINGS;
+
+/** #629 — the most destination hosts counted one by one; the rest are summed. */
+export const MAX_HOST_ROWS = 10;
+
+/** #629 — the most bindings the one-line refusal message names. */
+export const MAX_NAMED_BINDINGS = 10;
 
 export interface ForeignOwnerDetails {
   secretId: string;
@@ -433,11 +459,17 @@ function whoOwns(details: ForeignOwnerDetails): string {
 }
 
 function whereBound(details: ForeignOwnerDetails): string {
-  return details.bindings.length === 0
-    ? UNBOUND_NOTE
-    : `It is bound to ${details.bindings
-        .map((b) => `${b.label}${b.destination ? ` (${b.destination})` : ""}`)
-        .join(", ")}.`;
+  const { bindings } = details;
+  if (bindings.length === 0) return UNBOUND_NOTE;
+  // #629 — name a bounded few; the 409's counts and listing carry the rest.
+  const named = bindings
+    .slice(0, MAX_NAMED_BINDINGS)
+    .map((b) => `${b.label}${b.destination ? ` (${b.destination})` : ""}`)
+    .join(", ");
+  const more = bindings.length - MAX_NAMED_BINDINGS;
+  return more > 0
+    ? `It is bound to ${bindings.length} resources, including ${named} and ${more} more.`
+    : `It is bound to ${named}.`;
 }
 
 const TO_CONFIRM =
@@ -459,6 +491,21 @@ export function bindingsChangedMessage(details: ForeignOwnerDetails): string {
   return (
     `The bindings of this secret, owned by ${whoOwns(details)}, changed since you confirmed. ` +
     `${whereBound(details)} Review them and confirm again. ${TO_CONFIRM}`
+  );
+}
+
+/**
+ * #629 (PR #635 review) — the refusal of a list confirm when the live set is
+ * over the cap. Its bindings need not have changed, and resending the same list
+ * would be refused again, so it says to confirm by the digest instead.
+ */
+export function confirmByDigestMessage(details: ForeignOwnerDetails): string {
+  return (
+    `This secret, owned by ${whoOwns(details)}, has ${details.bindings.length} bindings, more ` +
+    `than the ${MAX_CONFIRMED_BINDINGS} a confirmedBindings list can carry, so a list cannot ` +
+    `confirm them. ${whereBound(details)} To rotate it anyway, set confirmForeignOwner and send ` +
+    "the bindingsDigest listed here as confirmedBindingsDigest, without confirmedBindings; the " +
+    "secret then becomes yours, so they can no longer bind it anywhere new."
   );
 }
 
@@ -525,4 +572,104 @@ export function bindingsDiffer(
   const live = new Set(details.bindings.map(bindingKey));
   const shown = new Set(confirmed.map(bindingKey));
   return live.size !== shown.size || [...live].some((k) => !shown.has(k));
+}
+
+/** #629 — how many bindings of each type, and to which destination hosts. */
+export interface BindingCounts {
+  /** Most first, then by type. */
+  byType: Array<{ type: BindingType; count: number }>;
+  /** The {@link MAX_HOST_ROWS} hosts with the most bindings, most first, then by host. */
+  byHost: Array<{ host: string; count: number }>;
+  /** Distinct hosts beyond `byHost`, and how many bindings they hold. */
+  moreHosts: { hosts: number; bindings: number };
+  /** Bindings whose destination names no network host (a driver, provider or command). */
+  withoutHost: number;
+}
+
+/** The host a destination sends to, or null when it is not a URL with one. */
+export function destinationHost(destination: string | null): string | null {
+  if (!destination || !destination.includes("://")) return null;
+  try {
+    const host = new URL(destination).hostname;
+    return host ? host.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+function tally<K extends string>(keys: Iterable<K>): Array<[K, number]> {
+  const counts = new Map<K, number>();
+  for (const k of keys) counts.set(k, (counts.get(k) ?? 0) + 1);
+  // Map keys are distinct, so a tie on count never compares equal keys.
+  return [...counts].sort(([a, x], [b, y]) => y - x || (a < b ? -1 : 1));
+}
+
+/**
+ * #629 — counts over the WHOLE binding set, bounded in size: at most six type
+ * rows and {@link MAX_HOST_ROWS} host rows, whatever the number of bindings.
+ */
+export function countBindings(
+  bindings: ReadonlyArray<Pick<SecretBindingView, "type" | "destination">>,
+): BindingCounts {
+  const hosts: string[] = [];
+  let withoutHost = 0;
+  for (const b of bindings) {
+    const host = destinationHost(b.destination);
+    if (host) hosts.push(host);
+    else withoutHost += 1;
+  }
+  const allHosts = tally(hosts);
+  const rest = allHosts.slice(MAX_HOST_ROWS);
+  return {
+    byType: tally(bindings.map((b) => b.type)).map(([type, count]) => ({ type, count })),
+    byHost: allHosts.slice(0, MAX_HOST_ROWS).map(([host, count]) => ({ host, count })),
+    moreHosts: { hosts: rest.length, bindings: rest.reduce((n, [, c]) => n + c, 0) },
+    withoutHost,
+  };
+}
+
+/** #629 — the `details` a 409 carries: the listing capped, with the whole set's total and counts. */
+export interface ForeignOwnerView extends ForeignOwnerDetails {
+  /** At most {@link MAX_LISTED_BINDINGS}; `bindingsTotal` says how many there are. */
+  bindings: SecretBindingView[];
+  bindingsTotal: number;
+  /** True when `bindings` lists fewer than `bindingsTotal`. */
+  bindingsTruncated: boolean;
+  bindingCounts: BindingCounts;
+}
+
+/**
+ * #629 — the 409 body for a foreign-owner refusal: the first
+ * {@link MAX_LISTED_BINDINGS} bindings, plus the total, the counts and the set
+ * digest, all over the WHOLE set — so its size is capped however many
+ * bindings the owner adds, and the digest still confirms every one of them.
+ */
+export function foreignOwnerView(details: ForeignOwnerDetails): ForeignOwnerView {
+  return {
+    ...details,
+    bindings: details.bindings.slice(0, MAX_LISTED_BINDINGS),
+    bindingsTotal: details.bindings.length,
+    bindingsTruncated: details.bindings.length > MAX_LISTED_BINDINGS,
+    bindingCounts: countBindings(details.bindings),
+  };
+}
+
+/**
+ * #629 — what the `vault.rotate` audit row records about the confirmed
+ * bindings. Up to {@link MAX_CONFIRMED_BINDINGS}, every one (canonical, as
+ * #502 records them); over it, the set digest, the total and the counts
+ * instead — the digest pins exactly which set was confirmed.
+ */
+export function confirmedBindingsAudit(
+  confirmed: ConfirmedBinding[],
+  bindingsDigest: string,
+): Record<string, unknown> {
+  const bindings = canonicalBindings(confirmed);
+  return bindings.length > MAX_CONFIRMED_BINDINGS
+    ? {
+        confirmedBindingsDigest: bindingsDigest,
+        confirmedBindingsTotal: bindings.length,
+        confirmedBindingCounts: countBindings(bindings),
+      }
+    : { confirmedBindings: bindings };
 }

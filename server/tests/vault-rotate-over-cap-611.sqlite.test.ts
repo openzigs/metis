@@ -106,7 +106,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           secretId,
         })),
       });
-    type Listed = { bindingsDigest: string; maxConfirmedBindings: number; bindings: unknown[] };
+    type Listed = {
+      bindingsDigest: string;
+      maxConfirmedBindings: number;
+      bindings: unknown[];
+      bindingsTotal: number;
+      bindingsTruncated: boolean;
+    };
     const listed = (res: request.Response) => res.body.error.details as Listed;
 
     beforeAll(async () => {
@@ -141,7 +147,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    it("lists every binding over the cap, then the echoed digest rotates it and transfers ownership", async () => {
+    it("lists the bindings up to the cap and counts the rest (#629), then the echoed digest rotates it and transfers ownership", async () => {
       const id = await newSecret("u-owner");
       await bindMany(id, OVER_CAP, "big");
 
@@ -149,11 +155,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(first.status).toBe(409);
       expect(first.body.error.code).toBe("VAULT_ROTATE_FOREIGN_OWNER");
       const shown = listed(first);
-      expect(shown.bindings).toHaveLength(OVER_CAP);
+      // #629 — the listing stops at the cap; the total covers the whole set.
+      expect(shown.bindings).toHaveLength(MAX_CONFIRMED_BINDINGS);
+      expect(shown.bindingsTotal).toBe(OVER_CAP);
+      expect(shown.bindingsTruncated).toBe(true);
       expect(shown.maxConfirmedBindings).toBe(MAX_CONFIRMED_BINDINGS);
       expect(shown.bindingsDigest).toMatch(/^[0-9a-f]{64}$/);
 
-      // Echoing the whole list is over the cap: a 400, which is why the digest exists.
+      // Echoing the listed bindings is not the whole set: refused, which is why the digest exists.
+      // #629 (PR #635 review) — refused as a list over the cap, not as a change.
       const echoed = await rotate(id, {
         value: ADMIN_VALUE,
         confirmForeignOwner: true,
@@ -161,8 +171,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ({ type, id: bid, destination, routing }) => ({ type, id: bid, destination, routing }),
         ),
       });
-      expect(echoed.status).toBe(400);
-      expect(echoed.body.error.code).toBe("INVALID_BODY");
+      expect(echoed.status).toBe(409);
+      expect(echoed.body.error.code).toBe("VAULT_ROTATE_CONFIRM_BY_DIGEST");
       expect(await plaintextOf(id)).toBe(OWNER_VALUE);
 
       const res = await rotate(id, {
@@ -181,12 +191,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(meta.foreignOwnerConfirmed).toBe(true);
       expect(meta.ownerId).toBe("u-owner");
       expect(meta.ownershipTransferredTo).toBe("u-admin");
-      // The audit keeps every destination the digest stood for.
-      const recorded = meta.confirmedBindings as Array<{ id: string; destination: string }>;
-      expect(recorded).toHaveLength(OVER_CAP);
-      expect(recorded.find((b) => b.id === "big-7")?.destination).toBe(
-        "postgres://h7.owner.example",
-      );
+      // #629 — over the cap the audit pins the set by its digest, total and counts.
+      expect(meta).not.toHaveProperty("confirmedBindings");
+      expect(meta.confirmedBindingsDigest).toBe(shown.bindingsDigest);
+      expect(meta.confirmedBindingsTotal).toBe(OVER_CAP);
     });
 
     it("a binding re-pointed after the 409 refuses the digest with the fresh list and digest", async () => {
@@ -337,7 +345,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.status, JSON.stringify(res.body).slice(0, 500)).toBe(409);
       expect(res.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
       const fresh = listed(res);
-      expect(fresh.bindings).toHaveLength(OVER_CAP + 1);
+      expect(fresh.bindings).toHaveLength(MAX_CONFIRMED_BINDINGS);
+      expect(fresh.bindingsTotal).toBe(OVER_CAP + 1);
       expect(fresh.bindingsDigest).not.toBe(first.bindingsDigest);
       // Read back: the owner's value and ownership are unchanged, nothing audited.
       expect(await plaintextOf(id)).toBe(OWNER_VALUE);

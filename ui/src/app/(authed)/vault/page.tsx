@@ -31,13 +31,14 @@ import { useAuth } from "@/lib/auth-context";
 import {
   vaultApi,
   VAULT_ROTATE_BINDINGS_CHANGED,
+  VAULT_ROTATE_CONFIRM_BY_DIGEST,
   VAULT_ROTATE_FOREIGN_OWNER,
   type VaultEntry,
   type VaultAuditEntry,
   type VaultForeignOwner,
   type VaultRotateConfirm,
 } from "@/lib/vault-api";
-import { summarizeBindings } from "@/lib/vault-binding-summary";
+import { bindingTypeLabel } from "@/lib/vault-binding-summary";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -278,17 +279,18 @@ function CreateEntryCard({ onCreated }: { onCreated: () => void }) {
 /**
  * #611 (PR #627 review) — over the confirm cap, counts by binding type and by
  * destination host, so reviewing 1,000+ bindings starts from a few rows.
+ * #629 — the server counts the WHOLE set, including bindings past the listing.
  */
-function OverCapSummary({ bindings }: { bindings: VaultForeignOwner["bindings"] }) {
-  const { byType, byHost, moreHosts, withoutHost } = summarizeBindings(bindings);
+function OverCapSummary({ counts }: { counts: VaultForeignOwner["bindingCounts"] }) {
+  const { byType, byHost, moreHosts, withoutHost } = counts;
   return (
     <div className="grid gap-2 sm:grid-cols-2" data-testid="vault-entry-rotate-over-cap-summary">
       <div>
         <p className="font-semibold">By type</p>
         <ul data-testid="vault-entry-rotate-counts-by-type">
           {byType.map((t) => (
-            <li key={t.key}>
-              {t.label}: {t.count}
+            <li key={t.type}>
+              {bindingTypeLabel(t.type)}: {t.count}
             </li>
           ))}
         </ul>
@@ -297,8 +299,8 @@ function OverCapSummary({ bindings }: { bindings: VaultForeignOwner["bindings"] 
         <p className="font-semibold">By destination host</p>
         <ul data-testid="vault-entry-rotate-counts-by-host">
           {byHost.map((h) => (
-            <li key={h.key}>
-              {h.label}: {h.count}
+            <li key={h.host}>
+              {h.host}: {h.count}
             </li>
           ))}
           {moreHosts.hosts > 0 ? (
@@ -337,8 +339,9 @@ function EntryDetail({
   const [bindingsChanged, setBindingsChanged] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   // #611 — too many bindings to echo back: confirm by the digest of the whole list.
+  // #629 — judged on the total: the listing itself stops at the cap.
   const overCap =
-    foreignOwner !== null && foreignOwner.bindings.length > foreignOwner.maxConfirmedBindings;
+    foreignOwner !== null && foreignOwner.bindingsTotal > foreignOwner.maxConfirmedBindings;
 
   const auditQuery = useQuery({
     queryKey: ["vault", "audit", entry.id],
@@ -376,7 +379,10 @@ function EntryDetail({
       // #482 — another user's secret: show who owns it and where it is bound,
       // and let the admin confirm rather than failing outright.
       // #502 — if the bindings changed since, show the live list to confirm again.
-      const changed = err.code === VAULT_ROTATE_BINDINGS_CHANGED;
+      // #629 (PR #635 review) — the page lists one by one only a set it saw within the cap,
+      // so a set now over it has changed too; showing it re-arms the confirm by digest.
+      const changed =
+        err.code === VAULT_ROTATE_BINDINGS_CHANGED || err.code === VAULT_ROTATE_CONFIRM_BY_DIGEST;
       if ((err.code === VAULT_ROTATE_FOREIGN_OWNER || changed) && err.details) {
         setRotateError(null);
         setForeignOwner(err.details as VaultForeignOwner);
@@ -522,14 +528,14 @@ function EntryDetail({
             {overCap ? (
               <>
                 <p className="font-semibold" data-testid="vault-entry-rotate-over-cap">
-                  It is bound to {foreignOwner.bindings.length} resources, more than the{" "}
+                  It is bound to {foreignOwner.bindingsTotal} resources, more than the{" "}
                   {foreignOwner.maxConfirmedBindings} a confirmation can list one by one. Rotate
-                  anyway confirms the whole list below as one. Start from the counts: if every
-                  binding type and destination host is one you expect, the full list only needs a
-                  scan for names you do not recognise. If any binding changes before you confirm,
-                  you will be shown the new list.
+                  anyway confirms all of them as one. Start from the counts, which cover every
+                  binding: if every binding type and destination host is one you expect, the list
+                  only needs a scan for names you do not recognise. If any binding changes before
+                  you confirm, you will be shown the new list.
                 </p>
-                <OverCapSummary bindings={foreignOwner.bindings} />
+                <OverCapSummary counts={foreignOwner.bindingCounts} />
               </>
             ) : null}
             {foreignOwner.bindings.length === 0 ? (
@@ -550,6 +556,13 @@ function EntryDetail({
                 ))}
               </ul>
             )}
+            {foreignOwner.bindingsTruncated ? (
+              <p data-testid="vault-entry-rotate-bindings-truncated">
+                Showing the first {foreignOwner.bindings.length} of {foreignOwner.bindingsTotal}{" "}
+                bindings. The counts above cover all of them, and Rotate anyway confirms all of
+                them.
+              </p>
+            ) : null}
             <div className="flex gap-2">
               <Button
                 size="sm"

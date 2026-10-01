@@ -31,6 +31,7 @@ function asRole(role: Role) {
 vi.mock("@/lib/vault-api", () => ({
   VAULT_ROTATE_FOREIGN_OWNER: "VAULT_ROTATE_FOREIGN_OWNER",
   VAULT_ROTATE_BINDINGS_CHANGED: "VAULT_ROTATE_BINDINGS_CHANGED",
+  VAULT_ROTATE_CONFIRM_BY_DIGEST: "VAULT_ROTATE_CONFIRM_BY_DIGEST",
   vaultApi: {
     list: vi.fn(),
     create: vi.fn(),
@@ -224,6 +225,17 @@ describe("<VaultPage />", () => {
       ],
       bindingsDigest: "d".repeat(64),
       maxConfirmedBindings: 1000,
+      bindingsTotal: 2,
+      bindingsTruncated: false,
+      bindingCounts: {
+        byType: [
+          { type: "db_connector", count: 1 },
+          { type: "mcp_server", count: 1 },
+        ],
+        byHost: [{ host: "db.coord.example", count: 1 }],
+        moreHosts: { hosts: 0, bindings: 0 },
+        withoutHost: 1,
+      },
     };
     const refuse = (details: unknown = foreign) =>
       new ApiError(
@@ -381,7 +393,9 @@ describe("<VaultPage />", () => {
         routing: `rt-${i}`,
       }));
       rotateMock
-        .mockRejectedValueOnce(refuse({ ...foreign, bindings, maxConfirmedBindings: 2 }))
+        .mockRejectedValueOnce(
+          refuse({ ...foreign, bindings, bindingsTotal: 3, maxConfirmedBindings: 2 }),
+        )
         .mockResolvedValueOnce(entry({ keyVersion: 2 }));
       await submitRotate();
       const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
@@ -404,33 +418,80 @@ describe("<VaultPage />", () => {
       );
     });
 
-    it("#611 — over the cap, counts the bindings by type and by destination host above the full list", async () => {
-      const b = (type: string, id: string, destination: string | null) => ({
-        type,
-        id,
-        label: id,
+    it("#629 (PR #635 review) — a list confirm refused as over the cap re-shows the set and confirms by digest", async () => {
+      const bindings = Array.from({ length: 3 }, (_, i) => ({
+        type: "db_connector",
+        id: `db${i}`,
+        label: `DB ${i}`,
         projectId: "p1",
-        destination,
-        routing: `rt-${id}`,
-      });
-      const bindings = [
-        b("db_connector", "db0", "postgres://h0.owner.example:5432"),
-        b("db_connector", "db1", "postgres://H0.owner.example"),
-        b("db_connector", "db2", "postgres://h1.owner.example"),
-        b("mcp_server", "m0", "npx evil-mcp"),
-        b("mcp_server", "m1", "https://mcp.owner.example/sse"),
-        b("jira_connection", "j0", "https://h1.owner.example"),
-        b("repo_connector", "r0", "github"),
-        // More distinct hosts than the summary lists one by one.
-        ...Array.from({ length: 11 }, (_, i) =>
-          b(
-            "test_management_connection",
-            `t${i}`,
-            `https://tm${String(i).padStart(2, "0")}.example`,
-          ),
+        destination: `postgres://h${i}`,
+        routing: `rt-${i}`,
+      }));
+      // Shown within the cap, so the page confirms by list; the set grows past it meanwhile.
+      rotateMock
+        .mockRejectedValueOnce(refuse({ ...foreign, maxConfirmedBindings: 2 }))
+        .mockRejectedValueOnce(
+          new ApiError(409, "over the cap", "VAULT_ROTATE_CONFIRM_BY_DIGEST", {
+            ...foreign,
+            bindings: bindings.slice(0, 2),
+            bindingsTotal: 3,
+            bindingsTruncated: true,
+            maxConfirmedBindings: 2,
+            bindingsDigest: "e".repeat(64),
+          }),
+        )
+        .mockResolvedValueOnce(entry({ keyVersion: 2 }));
+      await submitRotate();
+      await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(screen.queryByTestId("vault-entry-rotate-over-cap")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith(
+          "sec_1",
+          "ghp_admin",
+          expect.objectContaining({ confirmedBindings: expect.any(Array) }),
         ),
-      ];
-      rotateMock.mockRejectedValueOnce(refuse({ ...foreign, bindings, maxConfirmedBindings: 5 }));
+      );
+
+      // The refusal is not a dead end: the live set is shown again, over the cap.
+      expect(await screen.findByTestId("vault-entry-rotate-bindings-changed")).toBeInTheDocument();
+      expect(screen.getByTestId("vault-entry-rotate-over-cap")).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
+          confirmForeignOwner: true,
+          confirmedBindingsDigest: "e".repeat(64),
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument(),
+      );
+    });
+
+    it("#629 — over the cap, renders the server's counts of the whole set above the capped list", async () => {
+      // The server listed 2 of 5,000 bindings; the counts cover all 5,000.
+      const counts = {
+        byType: [
+          { type: "test_management_connection", count: 4000 },
+          { type: "db_connector", count: 990 },
+          { type: "some_future_type", count: 10 },
+        ],
+        byHost: [
+          { host: "h0.owner.example", count: 3000 },
+          { host: "h1.owner.example", count: 1000 },
+        ],
+        moreHosts: { hosts: 980, bindings: 990 },
+        withoutHost: 10,
+      };
+      rotateMock.mockRejectedValueOnce(
+        refuse({
+          ...foreign,
+          bindingsTotal: 5000,
+          bindingsTruncated: true,
+          bindingCounts: counts,
+          maxConfirmedBindings: 2,
+        }),
+      );
       await submitRotate();
       const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
       const items = (testId: string) =>
@@ -438,35 +499,34 @@ describe("<VaultPage />", () => {
           .getAllByRole("listitem")
           .map((li) => li.textContent);
       expect(items("vault-entry-rotate-counts-by-type")).toEqual([
-        "Test-management connection: 11",
-        "DB connector: 3",
-        "MCP server: 2",
-        "Jira connection: 1",
-        "Repo connector: 1",
+        "Test-management connection: 4000",
+        "DB connector: 990",
+        // A type the UI has no name for shows as itself.
+        "some_future_type: 10",
       ]);
-      // Hosts case-folded, the port ignored; the eleven one-off hosts past the
-      // first ten rows summed; non-URL destinations counted apart.
       expect(items("vault-entry-rotate-counts-by-host")).toEqual([
-        "h0.owner.example: 2",
-        "h1.owner.example: 2",
-        "mcp.owner.example: 1",
-        "tm00.example: 1",
-        "tm01.example: 1",
-        "tm02.example: 1",
-        "tm03.example: 1",
-        "tm04.example: 1",
-        "tm05.example: 1",
-        "tm06.example: 1",
-        "4 more hosts: 4",
-        "No network host (driver, provider or command): 2",
+        "h0.owner.example: 3000",
+        "h1.owner.example: 1000",
+        "980 more hosts: 990",
+        "No network host (driver, provider or command): 10",
       ]);
-      // The summary sits above the full list, which is still all there.
+      expect(within(panel).getByTestId("vault-entry-rotate-over-cap")).toHaveTextContent(
+        "It is bound to 5000 resources, more than the 2 a confirmation can list one by one.",
+      );
+      // The summary sits above the capped list, which says it is capped.
       const summary = within(panel).getByTestId("vault-entry-rotate-over-cap-summary");
       const list = within(panel).getByTestId("vault-entry-rotate-bindings");
       expect(summary.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(within(list).getAllByRole("listitem")).toHaveLength(bindings.length);
-      expect(within(panel).getByTestId("vault-entry-rotate-over-cap")).toHaveTextContent(
-        "Start from the counts",
+      expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+      expect(within(panel).getByTestId("vault-entry-rotate-bindings-truncated")).toHaveTextContent(
+        "Showing the first 2 of 5000 bindings.",
+      );
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
+          confirmForeignOwner: true,
+          confirmedBindingsDigest: "d".repeat(64),
+        }),
       );
     });
 
@@ -477,6 +537,7 @@ describe("<VaultPage />", () => {
       await submitRotate();
       await screen.findByTestId("vault-entry-rotate-foreign-owner");
       expect(screen.queryByTestId("vault-entry-rotate-over-cap")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("vault-entry-rotate-bindings-truncated")).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
       await waitFor(() => expect(rotateMock).toHaveBeenCalledTimes(2));
       const opts = rotateMock.mock.calls[1]![2] as Record<string, unknown>;
