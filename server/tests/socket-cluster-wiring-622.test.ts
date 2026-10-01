@@ -70,4 +70,12 @@ describe("#622 bootServer selects and installs the cluster adapter", () => {
     expect(server.socketCluster).toBe(cluster);
     expect(adapterName(server)).toBe("PostgresAdapter");
   });
+
+  it("#649 createServer re-validates its sockets when the adapter's LISTEN connection is (re)established", () => {
+    const cluster = createPostgresClusterAdapter(new FakePgNotifyBus().pool());
+    const onListening = vi.spyOn(cluster, "onListening");
+    server = createServer({ skipMCPBootstrap: true, socketCluster: cluster });
+    expect(onListening).toHaveBeenCalledTimes(1);
+    expect(onListening).toHaveBeenCalledWith(expect.any(Function));
+  });
 });

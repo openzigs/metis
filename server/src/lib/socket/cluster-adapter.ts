@@ -54,6 +54,18 @@
  * publish that fails is lost to the OTHER replicas — cross-replica delivery
  * misses the outage window, as with a dropped `LISTEN` connection (#649).
  *
+ * Reconnect window (#649): while a replica's `LISTEN` connection is down — the
+ * ~1-3 s before the adapter reconnects after a failover, restart or
+ * `pg_terminate_backend` — every NOTIFY is lost to it, and the adapter does not
+ * replay. A SCIM deprovision, role change or MCP status eviction published then
+ * never reaches that replica's sockets. So `onListening` fires each time the
+ * `LISTEN` connection is (re)established — once its `LISTEN` statements have
+ * all completed — and the socket server re-validates every socket it holds
+ * against the database (`revalidateLocalSockets`). A revocation committed
+ * during the outage is seen by that re-read; one committed after it arrives
+ * over the restored `LISTEN`. It fires on the first connection too, which
+ * covers sockets accepted before a boot-time `LISTEN` came up.
+ *
  * Every adapter, pool and connection error is logged, never thrown: evictions
  * run after the database write has committed (#588, #612), and a pg client's
  * `error` with no listener crashes the process. `pool.on("error")` covers idle
@@ -64,7 +76,11 @@
  * its `end` releases it to the pool as broken: the adapter reconnects on `end`
  * but never releases the dead client, which would keep its slot — with
  * `POOL_MAX` 2, the new `LISTEN` client then fills the pool and every NOTIFY
- * queues forever.
+ * queues forever. The same leak follows a `LISTEN` that fails on a connection
+ * still alive (say, on the 5 s statement timeout): the adapter retries on a new
+ * client and abandons the old one unreleased, with no `end` to release it. So
+ * a new `LISTEN` checkout first discards, as broken, any client still held
+ * (`releaseSuperseded`).
  *
  * Timeouts (`socketClusterPoolConfig`): local delivery no longer waits on the
  * NOTIFY, but a connection attempt or a query that never answers would still
@@ -112,6 +128,11 @@ export function socketClusterPoolConfig(connectionString: string): PoolConfig {
 export interface SocketClusterAdapter {
   /** Pass as `new Server(httpServer, { adapter })`. */
   adapter: ReturnType<typeof createAdapter>;
+  /**
+   * #649 — call `listener` every time the adapter's `LISTEN` connection is
+   * (re)established. A throw from it is logged.
+   */
+  onListening(listener: () => void): void;
   /** End the adapter's pool. Call after `io.close()`, which releases its `LISTEN` client. */
   close(): Promise<void>;
 }
@@ -146,9 +167,31 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   });
   // The adapter takes its LISTEN client with a bare `pool.connect()`; pg-pool's
   // own `pool.query` passes a callback and manages its client itself.
+  const listeners: Array<() => void> = [];
+  const listening = (): void => {
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch (err) {
+        log.warn("socket cluster adapter listening hook failed", { error: (err as Error).message });
+      }
+    }
+  };
   const connect = pool.connect.bind(pool) as (...args: unknown[]) => Promise<PoolClient>;
-  pool.connect = ((...args: unknown[]) =>
-    args.length > 0 ? connect(...args) : connect().then(holdListenClient)) as Pool["connect"];
+  // The adapter keeps ONE LISTEN client (`PubSubClient.client`), so a new bare
+  // checkout always supersedes the one held before it.
+  let held: PoolClient | undefined;
+  pool.connect = ((...args: unknown[]) => {
+    if (args.length > 0) return connect(...args);
+    releaseSuperseded(held);
+    held = undefined;
+    return connect().then((client) => {
+      held = client;
+      return holdListenClient(client, listening, () => {
+        if (held === client) held = undefined;
+      });
+    });
+  }) as Pool["connect"];
 
   const createNamespaceAdapter = createAdapter(pool, {
     tableName: SOCKET_IO_ATTACHMENTS_TABLE,
@@ -165,6 +208,9 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   let ended: Promise<void> | undefined;
   return {
     adapter,
+    onListening: (listener) => {
+      listeners.push(listener);
+    },
     close: () => (ended ??= pool.end()),
   };
 }
@@ -200,17 +246,88 @@ export function deliverLocallyFirst<T extends object>(adapter: T): T {
   return adapter;
 }
 
-/** Guard the adapter's long-held `LISTEN` client; see the module header. */
-function holdListenClient(client: PoolClient): PoolClient {
+/**
+ * Guard the adapter's long-held `LISTEN` client, and call `listening` once its
+ * `LISTEN` statements have all succeeded; see the module header. `onRelease`
+ * runs on the client's first release, whoever releases it; a later release is
+ * a no-op, so the adapter's own close() can never double-release a client
+ * `releaseSuperseded` already discarded.
+ */
+function holdListenClient(
+  client: PoolClient,
+  listening: () => void,
+  onRelease: () => void,
+): PoolClient {
   client.on("error", (err) => {
     log.warn("socket cluster adapter connection error", { error: err.message });
   });
+  const release = client.release.bind(client);
+  let released = false;
+  client.release = ((err?: Error | boolean) => {
+    if (released) return;
+    released = true;
+    onRelease();
+    release(err);
+  }) as PoolClient["release"];
   // The adapter's own close() strips every `end` listener before it releases
   // the client, so this fires only for a connection lost while held.
   client.once("end", () => {
     client.release(new Error("socket cluster adapter LISTEN connection ended"));
   });
+  notifyWhenListening(client, listening);
   return client;
+}
+
+/**
+ * Discard a `LISTEN` client the adapter has abandoned but never released.
+ * Upstream `PubSubClient.initClient` (`@socket.io/postgres-adapter@0.5.0`
+ * `dist/util.js` L91-99), when a `LISTEN` rejects on a connection that is still
+ * alive, schedules a retry on a new client without releasing this one, and no
+ * `end` ever comes to release it here: it keeps its slot, so with `POOL_MAX` 2
+ * the retry's client fills the pool and every NOTIFY times out. Its `end`
+ * listeners are stripped first, as the adapter's close() does: otherwise the
+ * adapter's would schedule yet another reconnect when the pool ends it, and
+ * this module's would release it a second time.
+ */
+function releaseSuperseded(client: PoolClient | undefined): void {
+  if (!client) return;
+  log.warn("socket cluster adapter replaced a LISTEN client it never released — discarding it");
+  client.removeAllListeners("end");
+  client.release(new Error("socket cluster adapter LISTEN client superseded"));
+}
+
+/**
+ * Call `listening` once, after the `LISTEN` statements the adapter issues on
+ * `client` have all succeeded. The adapter awaits them one after another, each
+ * issued in the previous one's continuation, so a check deferred to the next
+ * macrotask sees the next one already pending. A failed `LISTEN` never fires:
+ * the adapter then retries on a new client, which fires instead.
+ */
+function notifyWhenListening(client: PoolClient, listening: () => void): void {
+  const query = client.query.bind(client) as (...args: unknown[]) => unknown;
+  let pending = 0;
+  let failed = false;
+  let fired = false;
+  client.query = ((...args: unknown[]) => {
+    const result = query(...args);
+    if (typeof args[0] !== "string" || !args[0].startsWith("LISTEN ")) return result;
+    pending++;
+    Promise.resolve(result).then(
+      () => {
+        pending--;
+        setImmediate(() => {
+          if (pending > 0 || failed || fired) return;
+          fired = true;
+          listening();
+        });
+      },
+      () => {
+        pending--;
+        failed = true;
+      },
+    );
+    return result;
+  }) as PoolClient["query"];
 }
 
 /**

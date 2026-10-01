@@ -272,10 +272,14 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // datasource, attachments table in place) relays room operations (SCIM
   // deprovision disconnects, role-change reconnects, MCP status evictions,
   // emits) to every replica. Absent, the in-memory adapter reaches this one.
+  // #649 — and each time its LISTEN connection is (re)established, every local
+  // socket is re-validated, so a revocation published while it was down lands.
   const socketCluster = opts.socketCluster ?? null;
   const io = createSocketServer(httpServer, {
     corsOrigin: opts.corsOrigin,
-    ...(socketCluster ? { adapter: socketCluster.adapter } : {}),
+    ...(socketCluster
+      ? { adapter: socketCluster.adapter, onAdapterListening: socketCluster.onListening }
+      : {}),
   });
   // Epic #728 — register IO in the global registry so lib code (e.g.
   // @mention fan-out, presence) can access it without DI threading.

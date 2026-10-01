@@ -259,6 +259,83 @@ describe("createPostgresClusterAdapter", () => {
     await cluster.close();
   });
 
+  it("discards a LISTEN client the adapter abandoned after a failed LISTEN on a live connection", async () => {
+    // Upstream initClient retries on a new client when a LISTEN rejects, but
+    // never releases the old one, and a live connection never emits `end`.
+    // Held, it keeps a slot and the retry's client fills the 2-connection pool.
+    const bus = new FakePgNotifyBus();
+    const pool = bus.pool();
+    type Client = Awaited<ReturnType<typeof bus.pool>["connect"]> & {
+      query: (sql: string) => Promise<unknown>;
+      release: (err?: Error) => void;
+      released: boolean;
+      releasedWith: Error | undefined;
+      emit: (event: string) => boolean;
+    };
+    const checkedOut: Client[] = [];
+    const connect = pool.connect.bind(pool) as unknown as () => Promise<Client>;
+    pool.connect = (async () => {
+      const client = await connect();
+      if (checkedOut.length === 0) {
+        client.query = async () => {
+          throw new Error("canceling statement due to statement timeout");
+        };
+      }
+      // pg-pool ends a client released with an error, which emits `end`.
+      const release = client.release.bind(client);
+      client.release = (err?: Error) => {
+        release(err);
+        if (err) setImmediate(() => client.emit("end"));
+      };
+      checkedOut.push(client);
+      return client;
+    }) as unknown as Pool["connect"];
+    const cluster = createPostgresClusterAdapter(pool);
+    const listening = vi.fn();
+    cluster.onListening(listening);
+    // Synchronously, so the namespace's channel is registered before the first
+    // client's LISTEN loop runs — the LISTEN then fails inside initClient.
+    const io = new SocketIOServer(createHttpServer(), { adapter: cluster.adapter });
+
+    await vi.waitFor(() => expect(listening).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    const [abandoned, retry] = checkedOut;
+    expect(abandoned.released).toBe(true);
+    expect(abandoned.releasedWith).toBeInstanceOf(Error);
+    expect([...bus.clients]).toEqual([retry]);
+    // Discarding it must not set the adapter's own reconnect off again (its
+    // `end` listener would), which would discard the healthy retry in turn.
+    await new Promise((r) => setTimeout(r, 3_200));
+    expect(checkedOut).toHaveLength(2);
+    expect(retry.released).toBe(false);
+
+    await io.close();
+    // The adapter's close() released the retry, healthy, exactly once.
+    expect(retry.released).toBe(true);
+    expect(retry.releasedWith).toBeUndefined();
+    await cluster.close();
+  }, 15_000);
+
+  it("lets the adapter release a LISTEN client already discarded as superseded, without a double release", async () => {
+    // Two overlapping upstream reconnects (a failed LISTEN's retry and the same
+    // connection's `end`) can leave the adapter's `client` pointing at one this
+    // module discarded; its close() then releases it again.
+    const bus = new FakePgNotifyBus();
+    const pool = bus.pool();
+    const cluster = createPostgresClusterAdapter(pool);
+    const first = (await pool.connect()) as unknown as {
+      release: () => void;
+      released: boolean;
+      releasedWith: Error | undefined;
+    };
+    await pool.connect();
+
+    expect(first.released).toBe(true);
+    expect(first.releasedWith).toBeInstanceOf(Error);
+    // The fake, like pg-pool, throws on a second release.
+    expect(() => first.release()).not.toThrow();
+    await cluster.close();
+  });
+
   it("routes an adapter publish failure to the log", async () => {
     const pool = new FakePgNotifyBus().pool();
     const cluster = createPostgresClusterAdapter(pool);
@@ -278,6 +355,167 @@ describe("createPostgresClusterAdapter", () => {
     );
     await io.close();
     await cluster.close();
+  });
+
+  describe("#649 onListening", () => {
+    async function start(bus: FakePgNotifyBus, pool = bus.pool()) {
+      const cluster = createPostgresClusterAdapter(pool);
+      const listening = vi.fn();
+      cluster.onListening(listening);
+      const { Server } = await import("socket.io");
+      const { createServer } = await import("node:http");
+      const io = new Server(createServer(), { adapter: cluster.adapter });
+      return { cluster, io, listening };
+    }
+
+    it("fires once the LISTEN connection is up, and again after it is re-established", async () => {
+      const bus = new FakePgNotifyBus();
+      const { cluster, io, listening } = await start(bus);
+      await vi.waitFor(() => expect(listening).toHaveBeenCalledTimes(1));
+      const [first] = bus.clients;
+      expect(first.channels.size).toBe(1);
+
+      first.emit("end");
+      // The adapter reconnects 1-3 s later on a fresh client.
+      await vi.waitFor(() => expect(listening).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+      const [second] = bus.clients;
+      expect(second).not.toBe(first);
+      expect(second.channels.size).toBe(1);
+      await io.close();
+      await cluster.close();
+    }, 10_000);
+
+    it("fires once per connection, not again when a later namespace LISTENs on it", async () => {
+      const bus = new FakePgNotifyBus();
+      const { cluster, io, listening } = await start(bus);
+      // A second namespace LISTENs on the same, already-listening client.
+      await vi.waitFor(() => expect(listening).toHaveBeenCalledTimes(1));
+      io.of("/second");
+      await vi.waitFor(() => expect([...bus.clients][0].channels.size).toBe(2));
+      await flush();
+      await flush();
+      expect(listening).toHaveBeenCalledTimes(1);
+      await io.close();
+      await cluster.close();
+    });
+
+    it("waits for every LISTEN on a new connection, not just the first to succeed", async () => {
+      // Both namespaces exist before the LISTEN client connects, so the adapter
+      // issues both LISTENs on that one client, one after the other. Hold the
+      // second open after the first has succeeded: nothing may fire until it does.
+      const bus = new FakePgNotifyBus();
+      const pool = bus.pool();
+      let releaseSecond!: () => void;
+      const secondHeld = new Promise<void>((r) => (releaseSecond = r));
+      let secondIssued = false;
+      const connect = pool.connect.bind(pool) as () => Promise<{
+        query: (sql: string) => Promise<unknown>;
+      }>;
+      pool.connect = (async () => {
+        const client = await connect();
+        const query = client.query.bind(client);
+        client.query = async (sql: string) => {
+          if (sql.includes("/second")) {
+            secondIssued = true;
+            await secondHeld;
+          }
+          return query(sql);
+        };
+        return client;
+      }) as unknown as Pool["connect"];
+      const { cluster, io, listening } = await start(bus, pool);
+      io.of("/second");
+
+      await vi.waitFor(() => expect(secondIssued).toBe(true));
+      const [client] = bus.clients;
+      // The first LISTEN has completed; the second is still held.
+      expect(client.channels.size).toBe(1);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(listening).not.toHaveBeenCalled();
+
+      releaseSecond();
+      await vi.waitFor(() => expect(client.channels.size).toBe(2));
+      await vi.waitFor(() => expect(listening).toHaveBeenCalledTimes(1));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(listening).toHaveBeenCalledTimes(1);
+      expect(bus.clients.size).toBe(1);
+      await io.close();
+      await cluster.close();
+    });
+
+    it("waits for a slow LISTEN to finish", async () => {
+      const bus = new FakePgNotifyBus();
+      const pool = bus.pool();
+      let finish!: () => void;
+      const slow = new Promise<void>((r) => (finish = r));
+      const connect = pool.connect.bind(pool) as () => Promise<{ query: (sql: string) => unknown }>;
+      pool.connect = (async () => {
+        const client = await connect();
+        const query = client.query.bind(client);
+        client.query = async (sql: string) => {
+          await slow;
+          return query(sql);
+        };
+        return client;
+      }) as unknown as Pool["connect"];
+      const { cluster, io, listening } = await start(bus, pool);
+      await vi.waitFor(() => expect(bus.clients.size).toBe(1));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(listening).not.toHaveBeenCalled();
+      finish();
+      await vi.waitFor(() => expect(listening).toHaveBeenCalledTimes(1));
+      await io.close();
+      await cluster.close();
+    });
+
+    it("does not fire when any LISTEN on the connection fails", async () => {
+      // Two namespaces: "/" LISTENs, then "/second" fails. The adapter then
+      // retries on a new client, which is what should fire, not this one.
+      const bus = new FakePgNotifyBus();
+      const pool = bus.pool();
+      const connect = pool.connect.bind(pool) as () => Promise<{
+        query: (sql: string) => Promise<unknown>;
+      }>;
+      pool.connect = (async () => {
+        const client = await connect();
+        const query = client.query.bind(client);
+        client.query = async (sql: string) => {
+          if (sql.includes("/second")) throw new Error("LISTEN failed");
+          return query(sql);
+        };
+        return client;
+      }) as unknown as Pool["connect"];
+      const cluster = createPostgresClusterAdapter(pool);
+      const listening = vi.fn();
+      cluster.onListening(listening);
+      const { Server } = await import("socket.io");
+      const { createServer } = await import("node:http");
+      const io = new Server(createServer(), { adapter: cluster.adapter });
+      io.of("/second");
+      await vi.waitFor(() => expect([...bus.clients][0]?.channels.size).toBe(1));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(listening).not.toHaveBeenCalled();
+      await io.close();
+      await cluster.close();
+    });
+
+    it("logs a listener that throws and still calls the others", async () => {
+      const bus = new FakePgNotifyBus();
+      const { cluster, io, listening } = await start(bus);
+      const after = vi.fn();
+      cluster.onListening(() => {
+        throw new Error("hook broke");
+      });
+      cluster.onListening(after);
+      await vi.waitFor(() => expect(after).toHaveBeenCalledTimes(1));
+      expect(listening).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("listening hook failed"),
+        expect.objectContaining({ error: "hook broke" }),
+      );
+      await io.close();
+      await cluster.close();
+    });
   });
 
   it("close() ends the pool, once", async () => {

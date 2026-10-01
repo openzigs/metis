@@ -54,6 +54,7 @@ import { connectUser, startReplica, type Replica } from "./helpers/two-replica-s
 import {
   SOCKET_IO_ATTACHMENTS_TABLE,
   resolveSocketClusterAdapter,
+  socketClusterPoolConfig,
   type SocketClusterAdapter,
 } from "../src/lib/socket/cluster-adapter.js";
 import { registerSocketServer } from "../src/lib/socket/registry.js";
@@ -71,6 +72,8 @@ const isPostgres = databaseUrl.startsWith("postgres://") || databaseUrl.startsWi
 const enabled = process.env.RUN_INTEGRATION_TESTS === "1" && isPostgres;
 
 const SCIM_AUTH = "Bearer scim-622-pg-token";
+const REPLICA_A_APP = "metis-socket-cluster-a";
+const REPLICA_B_APP = "metis-socket-cluster-b";
 
 describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integration)", () => {
   let clusters: SocketClusterAdapter[];
@@ -86,13 +89,16 @@ describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integr
       .query(`DROP TABLE IF EXISTS ${SOCKET_IO_ATTACHMENTS_TABLE}`)
       .finally(() => admin.end());
     const env = { ...process.env, NODE_ENV: "production" };
+    // The production pool, tagged per replica so a test can find B's backends.
+    const tagged = (name: string) => (url: string) =>
+      new pg.Pool({ ...socketClusterPoolConfig(url), application_name: name });
     clusters = (await Promise.all([
-      resolveSocketClusterAdapter(env),
-      resolveSocketClusterAdapter(env),
+      resolveSocketClusterAdapter(env, tagged(REPLICA_A_APP)),
+      resolveSocketClusterAdapter(env, tagged(REPLICA_B_APP)),
     ])) as SocketClusterAdapter[];
     expect(clusters.every(Boolean)).toBe(true);
-    a = await startReplica(clusters[0].adapter);
-    b = await startReplica(clusters[1].adapter);
+    a = await startReplica(clusters[0].adapter, clusters[0].onListening);
+    b = await startReplica(clusters[1].adapter, clusters[1].onListening);
     registerSocketServer(a.io);
     // Each replica has heard the other's heartbeat, so both LISTEN clients are up.
     await vi.waitFor(
@@ -300,6 +306,57 @@ describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integr
     } finally {
       await holder.query("ROLLBACK").catch(() => {});
       holder.release();
+      await admin.end();
+    }
+  });
+
+  // #649 — the adapter reconnects a dropped LISTEN connection but does not
+  // replay what was published meanwhile; B re-validates its sockets instead.
+  it("a deprovision on A while B's LISTEN connection is down disconnects B's socket once B reconnects", async () => {
+    const admin = new pg.Pool({ connectionString: databaseUrl, max: 1 });
+    const listenPidsOfB = async () =>
+      (
+        await admin.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity
+            WHERE datname = current_database() AND application_name = $1
+              AND query LIKE 'LISTEN "socket.io#%'`,
+          [REPLICA_B_APP],
+        )
+      ).rows.map((r) => r.pid);
+    try {
+      seed(["u-outage", "u-outage-kept"], []);
+      const gone = await connectUser(b, "u-outage", open);
+      const kept = await connectUser(b, "u-outage-kept", open);
+      const before = await listenPidsOfB();
+      expect(before).toHaveLength(1);
+
+      await admin.query("SELECT pg_terminate_backend($1)", [before[0]]);
+      await vi.waitFor(async () => expect(await listenPidsOfB()).toEqual([]), {
+        timeout: 2_000,
+        interval: 20,
+      });
+      const res = await request(app)
+        .delete("/scim/v2/Users/u-outage")
+        .set("Authorization", SCIM_AUTH);
+      expect(res.status).toBe(204);
+      // The deprovision's NOTIFY went out while B was not listening (the
+      // adapter waits at least 1 s before reconnecting), so B never hears it.
+      // This assertion depends on that delay — `2000 * (0.5 + random)` ms in
+      // upstream `PubSubClient.scheduleReconnection` (@socket.io/postgres-adapter
+      // 0.5.0, dist/util.js L58): a runner slow enough to spend over 1 s between
+      // the termination and here sees B listening again and fails RED. It can
+      // flake, but cannot pass falsely: it only ever passes with B deaf.
+      expect(await listenPidsOfB()).toEqual([]);
+      expect(gone.socket.connected).toBe(true);
+
+      await vi.waitFor(() => expect(gone.disconnectReason).toBe("io server disconnect"), {
+        timeout: 15_000,
+      });
+      const after = await listenPidsOfB();
+      expect(after).toHaveLength(1);
+      expect(after[0]).not.toBe(before[0]);
+      expect(kept.socket.connected).toBe(true);
+    } finally {
       await admin.end();
     }
   });
