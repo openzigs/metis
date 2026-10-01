@@ -27,7 +27,6 @@ function makeCtx(overrides: Partial<RunHandlerContext> = {}): RunHandlerContext 
     runId: "run1",
     projectId: "p1",
     sessionId: null,
-    kind: "chat",
     payload: {},
     signal: ctrl.signal,
     heartbeat: vi.fn(async () => {}),
@@ -73,16 +72,15 @@ describe("registerBuiltinRunHandlers (#146)", () => {
 
   it("analysis handler runs plan/execute/synthesize and reports score", async () => {
     const handler = handlers.get("analysis")!;
-    const ctx = makeCtx({ kind: "analysis" });
+    const ctx = makeCtx();
     const out = await handler(ctx);
-    expect(out.result.synthesis).toMatch(/analysis\(p1\)/);
+    expect(out.result).toMatchObject({ synthesis: expect.stringMatching(/analysis\(p1\)/) });
     expect(typeof out.score).toBe("number");
   });
 
   it("browse handler returns the requested url", async () => {
     const handler = handlers.get("browse")!;
     const ctx = makeCtx({
-      kind: "browse",
       payload: { url: "https://example.com" },
     });
     const out = await handler(ctx);
@@ -91,9 +89,9 @@ describe("registerBuiltinRunHandlers (#146)", () => {
 
   it("custom handler echoes the payload", async () => {
     const handler = handlers.get("custom")!;
-    const ctx = makeCtx({ kind: "custom", payload: { foo: "bar" } });
+    const ctx = makeCtx({ payload: { foo: "bar" } });
     const out = await handler(ctx);
-    expect(out.result.ok).toBe(true);
+    expect(out.result).toMatchObject({ ok: true });
     expect((out.result as any).payload).toEqual({ foo: "bar" });
   });
 
@@ -101,7 +99,7 @@ describe("registerBuiltinRunHandlers (#146)", () => {
     const handler = handlers.get("analysis")!;
     const ctrl = new AbortController();
     ctrl.abort();
-    const ctx = makeCtx({ kind: "analysis", signal: ctrl.signal });
+    const ctx = makeCtx({ signal: ctrl.signal });
     await expect(handler(ctx)).rejects.toThrow(/ABORTED/);
   });
 

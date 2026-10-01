@@ -49,12 +49,13 @@ function makeTransport(): MCPTransportClient {
     start: vi.fn(async () => undefined),
     stop: vi.fn(async () => undefined),
     notify: vi.fn(async () => undefined),
-    closed: vi.fn(() => new Promise(() => undefined)),
+    closed: vi.fn<MCPTransportClient["closed"]>(() => new Promise(() => undefined)),
+    // request<TResult> is generic; a canned-response stub cannot satisfy it without an assertion.
     request: vi.fn(async (method: string) =>
       method === "initialize"
         ? { protocolVersion: "2025-06-18", serverInfo: { name: "x" } }
         : { tools: [] },
-    ),
+    ) as MCPTransportClient["request"],
   };
 }
 

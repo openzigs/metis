@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
+import type { SecretSummary } from "../src/lib/vault/vault-service.js";
 import {
   ImportService,
   getImportService,
@@ -134,9 +135,19 @@ function makeDeps(over: Partial<ImportServiceDeps> = {}): {
   deleteScheduledJob: ReturnType<typeof vi.fn>;
 } {
   const p = makePrisma();
+  const summary: SecretSummary = {
+    id: "secret_1",
+    label: "import-token",
+    description: "",
+    scope: "project",
+    keyVersion: 1,
+    algorithm: "aes-256-gcm",
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  };
   const vault = {
-    create: vi.fn(async () => ({ id: "secret_1" })),
-    read: vi.fn(async () => ({ summary: { id: "secret_1" }, plaintext: "tok" })),
+    create: vi.fn(async () => summary),
+    read: vi.fn(async () => ({ summary, plaintext: "tok" })),
     delete: vi.fn(async () => undefined),
   };
   const enqueueTask = vi.fn(async () => ({ id: "task_1" }));

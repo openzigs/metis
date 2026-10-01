@@ -12,6 +12,7 @@ interface Row {
   cacheWriteTokens: number;
   dayBucket: string;
   userId: string;
+  promptHash?: string;
 }
 const rows: Row[] = [];
 vi.mock("../src/lib/prisma.js", () => ({

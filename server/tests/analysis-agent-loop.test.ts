@@ -205,7 +205,9 @@ describe("runAgentLoop", () => {
     // The provider's second call should include the error message
     const chatFn = provider.chat as ReturnType<typeof vi.fn>;
     const secondCall = chatFn.mock.calls[1]?.[0] as ChatMessage[];
-    const toolResultMsg = secondCall?.find((m) => m.content.includes("Unknown tool"));
+    const toolResultMsg = secondCall?.find(
+      (m) => typeof m.content === "string" && m.content.includes("Unknown tool"),
+    );
     expect(toolResultMsg).toBeDefined();
   });
 

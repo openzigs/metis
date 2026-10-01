@@ -25,7 +25,13 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
-import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../src/lib/ai/types.js";
+import type {
+  AIProvider,
+  ChatChunk,
+  ChatMessage,
+  ChatOptions,
+  EmbedResult,
+} from "../src/lib/ai/types.js";
 
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const state = vi.hoisted(() => {
@@ -102,7 +108,7 @@ class ScriptedProvider implements AIProvider {
     };
     yield { type: "done", finishReason: "stop" };
   }
-  async embed() {
+  async embed(): Promise<EmbedResult> {
     return { vectors: [], dimension: 0, model: "stub" };
   }
   async models() {
@@ -692,7 +698,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const rows = (await transcript(alice, sid)).body.data.messages;
       expect(
         rows.filter(
-          (r: { compactedAt: string | null }) => r.compactedAt === null && r.kind !== "summary",
+          (r: { compactedAt: string | null; kind?: string }) =>
+            r.compactedAt === null && r.kind !== "summary",
         ),
       ).toHaveLength(2);
       const again = await as(alice).post(`/api/ai/sessions/${sid}/compact`);
@@ -1163,7 +1170,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           .set("Authorization", `Bearer ${alice}`)
           .send({ title: "t" }),
       ];
-      for (const p of probes) expect(p.headers["ratelimit-limit"], p.req.path).toBeDefined();
+      for (const p of probes) expect(p.headers["ratelimit-limit"], p.request.url).toBeDefined();
     });
 
     it("resume refuses a session past its 24-hour window", async () => {

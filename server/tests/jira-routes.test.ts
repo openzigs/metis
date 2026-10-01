@@ -37,8 +37,8 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 // Mock the entire jira-service module
-const mockList = vi.fn(async () => []);
-const mockGet = vi.fn(async () => ({
+const mockList = vi.fn(async (..._args: unknown[]) => []);
+const mockGet = vi.fn(async (..._args: unknown[]) => ({
   id: "jira_1",
   projectId: "proj_1",
   label: "test",
@@ -56,7 +56,7 @@ const mockGet = vi.fn(async () => ({
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 }));
-const mockCreate = vi.fn(async () => ({
+const mockCreate = vi.fn(async (..._args: unknown[]) => ({
   id: "jira_new",
   projectId: "proj_1",
   label: "new-conn",
@@ -74,23 +74,23 @@ const mockCreate = vi.fn(async () => ({
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 }));
-const mockUpdate = vi.fn(async () => ({ ...mockGet(), label: "updated" }));
-const mockDelete = vi.fn(async () => undefined);
-const mockTest = vi.fn(async () => ({
+const mockUpdate = vi.fn(async (..._args: unknown[]) => ({ ...mockGet(), label: "updated" }));
+const mockDelete = vi.fn(async (..._args: unknown[]) => undefined);
+const mockTest = vi.fn(async (..._args: unknown[]) => ({
   ok: true,
   serverInfo: { version: "9.0.0", baseUrl: "https://test.atlassian.net" },
   latencyMs: 42,
 }));
-const mockListProjects = vi.fn(async () => [
+const mockListProjects = vi.fn(async (..._args: unknown[]) => [
   { id: "10000", key: "PROJ", name: "My Project", projectTypeKey: "software" },
 ]);
-const mockSearch = vi.fn(async () => ({
+const mockSearch = vi.fn(async (..._args: unknown[]) => ({
   startAt: 0,
   maxResults: 20,
   total: 1,
   issues: [{ id: "1", key: "PROJ-1", self: "u", fields: { summary: "Test" } }],
 }));
-const mockGetIssue = vi.fn(async () => ({
+const mockGetIssue = vi.fn(async (..._args: unknown[]) => ({
   id: "1",
   key: "PROJ-1",
   self: "u",

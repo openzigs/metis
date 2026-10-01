@@ -26,6 +26,7 @@ import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
+import type { MCPTransportClient } from "../src/lib/mcp/types.js";
 import {
   createMigratedSqlite,
   type MigratedSqlite,
@@ -534,12 +535,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             start: async () => undefined,
             stop: async () => undefined,
             notify: async () => undefined,
-            closed: () => new Promise(() => undefined),
-            request: async (m: string) => {
+            closed: () => new Promise<{ code: number | null; reason: string }>(() => undefined),
+            // The stub answers each JSON-RPC method with its own payload; `TResult` is the caller's.
+            request: (async (m: string) => {
               if (m === "initialize") return { protocolVersion: "2025-06-18" };
               if (m === "tools/list") return { tools: [{ name: "echo", description: "echo" }] };
               throw new Error(`unexpected ${m}`);
-            },
+            }) as MCPTransportClient["request"],
           }),
         });
         bridge = new MCPToolBridge(lifecycle, registry);

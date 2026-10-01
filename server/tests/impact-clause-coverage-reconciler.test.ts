@@ -101,9 +101,11 @@ function mockProvider(
 }
 
 /** Answer with gaps addressed by table NAME, resolved to the prompt's index. */
-function gapByName(
-  wanted: { table: string; clause?: string; rationale?: string }[],
-): (candidates: ParsedCandidate[]) => unknown {
+function gapByName(wanted: { table: string; clause?: string; rationale?: string }[]): (
+  candidates: ParsedCandidate[],
+) => {
+  gaps: { index: number; clause: string; rationale: string }[];
+} {
   return (candidates) => ({
     gaps: wanted.map((w) => ({
       index: candidates.find((c) => c.tableName === w.table)?.index ?? -1,

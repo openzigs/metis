@@ -58,7 +58,6 @@ function row(over: Partial<AffectedTableInput> & { tableName: string }): Affecte
   const columnName = over.columnName ?? null;
   return {
     objectKind: columnName ? "column" : "table",
-    tableName: over.tableName,
     columnName,
     columnType: null,
     changeKind: "reference",
@@ -315,7 +314,7 @@ describe("computeAffectedSchemaContext", () => {
       affectedSymbolIds: ["seed-1"],
       dataSource: stubDataSource(edges, symbols),
       tokenBudget: 100000,
-    } as const;
+    };
     const a = await computeAffectedSchemaContext(opts);
     const b = await computeAffectedSchemaContext(opts);
     expect(a).toEqual(b);

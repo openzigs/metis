@@ -12,6 +12,14 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+/** The workspace-access shape the authz guard selects from `project`. */
+type ProjectAccessRow = {
+  workspaceId: string | null;
+  workspace?: { deletedAt: Date | null; members: Array<{ id: string }> };
+};
+/** The subset of `backgroundRun.findMany` args these tests inspect. */
+type RunFindManyArgs = { where: { status?: unknown; project?: unknown }; take?: number };
+
 const { prismaMock } = vi.hoisted(() => ({
   prismaMock: {
     $queryRawUnsafe: vi.fn(async () => 1),
@@ -36,19 +44,19 @@ const { prismaMock } = vi.hoisted(() => ({
           ({
             workspaceId: "ws_a",
             workspace: { deletedAt: null, members: [{ id: "member-row" }] },
-          }) as { workspaceId: string | null } | null,
+          }) as ProjectAccessRow | null,
       ),
     },
     backgroundRun: {
       findUnique: vi.fn(async () => ({ projectId: "proj_a" }) as { projectId: string } | null),
       findFirst: vi.fn(
-        async () =>
+        async (_args: { where: Record<string, unknown> }) =>
           ({ id: "run_1", projectId: "proj_a", status: "running", messages: [] }) as Record<
             string,
             unknown
           > | null,
       ),
-      findMany: vi.fn(async () => [] as unknown[]),
+      findMany: vi.fn(async (_args: RunFindManyArgs) => [] as unknown[]),
     },
     runGroup: {
       findUnique: vi.fn(async () => ({ projectId: "proj_a" }) as { projectId: string } | null),
@@ -275,7 +283,7 @@ describe("caller-supplied projectId routes", () => {
       .get("/api/runs/background")
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(200);
-    const where = prismaMock.backgroundRun.findMany.mock.calls[0][0].where;
+    const where = prismaMock.backgroundRun.findMany.mock.calls[0]![0].where;
     expect(where.project).toEqual({
       OR: [
         { workspaceId: null },
@@ -312,7 +320,7 @@ describe("a legitimate owner still succeeds on every route", () => {
       .get("/api/runs/background/run_1")
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(200);
-    expect(prismaMock.backgroundRun.findFirst.mock.calls[0][0].where).toMatchObject({
+    expect(prismaMock.backgroundRun.findFirst.mock.calls[0]![0].where).toMatchObject({
       id: "run_1",
       projectId: "proj_a",
     });
@@ -444,7 +452,7 @@ describe("behaviour preserved for an authorized caller", () => {
       .get("/api/runs/background?status=running&limit=5")
       .set("Authorization", `Bearer ${token}`);
     expect(listed.status).toBe(200);
-    const call = prismaMock.backgroundRun.findMany.mock.calls[0][0];
+    const call = prismaMock.backgroundRun.findMany.mock.calls[0]![0];
     expect(call.where.status).toBe("running");
     expect(call.take).toBe(5);
   });
@@ -525,6 +533,6 @@ describe("system admin bypass", () => {
       .get("/api/runs/background")
       .set("Authorization", `Bearer ${token}`);
     expect(listed.status).toBe(200);
-    expect(prismaMock.backgroundRun.findMany.mock.calls[0][0].where.project).toBeUndefined();
+    expect(prismaMock.backgroundRun.findMany.mock.calls[0]![0].where.project).toBeUndefined();
   });
 });

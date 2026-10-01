@@ -12,14 +12,14 @@ import {
 describe("getRate", () => {
   it("returns exact provider:model match when present", () => {
     const r = getRate("openai", "gpt-4o");
-    expect(r.inputPer1k).toBe(0.25);
-    expect(r.outputPer1k).toBe(1.0);
+    expect(r!.inputPer1k).toBe(0.25);
+    expect(r!.outputPer1k).toBe(1.0);
   });
 
   it("supports Bedrock-hosted Claude with cache rates", () => {
     const r = getRate("bedrock-gateway", "anthropic.claude-3-5-sonnet-20241022-v2:0");
-    expect(r.cacheReadPer1k).toBe(0.03);
-    expect(r.cacheWritePer1k).toBe(0.375);
+    expect(r!.cacheReadPer1k).toBe(0.03);
+    expect(r!.cacheWritePer1k).toBe(0.375);
   });
 
   it("falls back to provider:default for a free internal provider when model is unknown", () => {

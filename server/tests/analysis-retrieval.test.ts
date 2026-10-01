@@ -38,6 +38,7 @@ const chunk = (overrides: Partial<RetrievedChunk> & { chunkId: string }): Retrie
   text: `text for ${overrides.chunkId}`,
   score: 1,
   embeddingModel: "stub",
+  source: "upload",
   ...overrides,
 });
 

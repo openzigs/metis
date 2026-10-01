@@ -31,7 +31,7 @@ function makeConn(opts: {
 function makePool(conn: MySqlConnLike): MySqlPoolLike {
   return {
     getConnection: vi.fn(async () => conn),
-    query: vi.fn(async () => [[], []]),
+    query: vi.fn<MySqlPoolLike["query"]>(async () => [[], []]),
     end: vi.fn(async () => {}),
   };
 }
@@ -46,6 +46,7 @@ describe("MySqlDriverAdapter", () => {
 
     const adapter = new MySqlDriverAdapter();
     await adapter.init({
+      driver: "mysql",
       host: "x",
       port: 3306,
       database: "y",
@@ -65,6 +66,7 @@ describe("MySqlDriverAdapter", () => {
 
     const adapter = new MySqlDriverAdapter();
     await adapter.init({
+      driver: "mysql",
       host: "x",
       port: 3306,
       database: "y",
@@ -92,6 +94,7 @@ describe("MySqlDriverAdapter", () => {
     __setMysqlPoolFactory(() => makePool(conn));
     const adapter = new MySqlDriverAdapter();
     await adapter.init({
+      driver: "mysql",
       host: "x",
       port: 3306,
       database: "y",
@@ -112,7 +115,7 @@ describe("MySqlDriverAdapter", () => {
     const conn = makeConn({ queries });
     const pool: MySqlPoolLike = {
       getConnection: vi.fn(async () => conn),
-      query: vi.fn(async (sql: string) => {
+      query: vi.fn<MySqlPoolLike["query"]>(async (sql: string) => {
         queries.push(sql);
         return [
           [
@@ -140,6 +143,7 @@ describe("MySqlDriverAdapter", () => {
     __setMysqlPoolFactory(() => pool);
     const adapter = new MySqlDriverAdapter();
     await adapter.init({
+      driver: "mysql",
       host: "x",
       port: 3306,
       database: "y",
@@ -157,7 +161,7 @@ describe("MySqlDriverAdapter", () => {
     let capturedParams: unknown[] | undefined;
     const pool: MySqlPoolLike = {
       getConnection: vi.fn(async () => makeConn({ queries: [] })),
-      query: vi.fn(async (sql: string, params?: unknown[]) => {
+      query: vi.fn<MySqlPoolLike["query"]>(async (sql: string, params?: unknown[]) => {
         capturedSql = sql;
         capturedParams = params;
         return [
@@ -182,7 +186,7 @@ describe("MySqlDriverAdapter", () => {
     };
     __setMysqlPoolFactory(() => pool);
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     const routines = await adapter.introspectRoutines({ schema: "app" });
 
     expect(capturedSql).toContain("?");
@@ -199,7 +203,7 @@ describe("MySqlDriverAdapter", () => {
     let capturedParams: unknown[] | undefined;
     const pool: MySqlPoolLike = {
       getConnection: vi.fn(async () => makeConn({ queries: [] })),
-      query: vi.fn(async (sql: string, params?: unknown[]) => {
+      query: vi.fn<MySqlPoolLike["query"]>(async (sql: string, params?: unknown[]) => {
         capturedSql = sql;
         capturedParams = params;
         return [[], []];
@@ -208,7 +212,7 @@ describe("MySqlDriverAdapter", () => {
     };
     __setMysqlPoolFactory(() => pool);
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     const routines = await adapter.introspectRoutines();
     expect(capturedSql).toContain("DATABASE()");
     expect(capturedParams).toEqual([]);
@@ -220,7 +224,7 @@ describe("MySqlDriverAdapter", () => {
     let capturedParams: unknown[] | undefined;
     const pool: MySqlPoolLike = {
       getConnection: vi.fn(async () => makeConn({ queries: [] })),
-      query: vi.fn(async (sql: string, params?: unknown[]) => {
+      query: vi.fn<MySqlPoolLike["query"]>(async (sql: string, params?: unknown[]) => {
         capturedSql = sql;
         capturedParams = params;
         return [[{ routine_definition: "BEGIN UPDATE orders SET total = 1; END" }], []];
@@ -229,7 +233,7 @@ describe("MySqlDriverAdapter", () => {
     };
     __setMysqlPoolFactory(() => pool);
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     const body = await adapter.fetchRoutineBody({
       schema: "app",
       name: "recalc",
@@ -245,12 +249,12 @@ describe("MySqlDriverAdapter", () => {
   it("fetchRoutineBody() returns null when the routine is not found (#316B)", async () => {
     const pool: MySqlPoolLike = {
       getConnection: vi.fn(async () => makeConn({ queries: [] })),
-      query: vi.fn(async () => [[], []]),
+      query: vi.fn<MySqlPoolLike["query"]>(async () => [[], []]),
       end: vi.fn(async () => {}),
     };
     __setMysqlPoolFactory(() => pool);
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     const body = await adapter.fetchRoutineBody({
       schema: "app",
       name: "ghost",
@@ -267,6 +271,7 @@ describe("MySqlDriverAdapter", () => {
     __setMysqlPoolFactory(() => pool);
     const adapter = new MySqlDriverAdapter();
     await adapter.init({
+      driver: "mysql",
       host: "x",
       port: 3306,
       database: "y",
@@ -329,7 +334,7 @@ describe("MySqlDriverAdapter — coverage uplift", () => {
     const conn = makeConn({ queries, fail: new Error("ER_ACCESS_DENIED_ERROR: Access denied") });
     __setMysqlPoolFactory(() => makePool(conn));
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     await expect(adapter.ping()).rejects.toMatchObject({ code: "DB_AUTH_FAILED" });
   });
 
@@ -338,7 +343,7 @@ describe("MySqlDriverAdapter — coverage uplift", () => {
     const conn = makeConn({ queries, fail: new Error("server has gone away") });
     __setMysqlPoolFactory(() => makePool(conn));
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     await expect(adapter.ping()).rejects.toMatchObject({ code: "DB_ERROR" });
   });
 
@@ -350,7 +355,7 @@ describe("MySqlDriverAdapter — coverage uplift", () => {
     });
     __setMysqlPoolFactory(() => makePool(conn));
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     await expect(
       adapter.query({ sql: "SELECT 1", maxRows: 100, statementTimeoutMs: 1000 }),
     ).rejects.toMatchObject({ code: "QUERY_TIMEOUT" });
@@ -361,7 +366,7 @@ describe("MySqlDriverAdapter — coverage uplift", () => {
     const conn = makeConn({ queries, fail: new Error("syntax error") });
     __setMysqlPoolFactory(() => makePool(conn));
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     await expect(
       adapter.query({ sql: "SELECT 1", maxRows: 100, statementTimeoutMs: 1000 }),
     ).rejects.toMatchObject({ code: "QUERY_FAILED" });
@@ -373,7 +378,7 @@ describe("MySqlDriverAdapter — coverage uplift", () => {
     const conn = makeConn({ queries, rows, fields: [{ name: "id" }] });
     __setMysqlPoolFactory(() => makePool(conn));
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     const out = await adapter.query({ sql: "SELECT 1", maxRows: 3, statementTimeoutMs: 1000 });
     expect(out.truncated).toBe(true);
     expect(out.rowCount).toBe(3);
@@ -386,7 +391,7 @@ describe("MySqlDriverAdapter — coverage uplift", () => {
       return makePool(makeConn({ queries: [] }));
     });
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     expect(captured!.host).toBe("localhost");
     expect(captured!.port).toBe(3306);
   });
@@ -405,7 +410,7 @@ describe("MySqlDriverAdapter — coverage uplift", () => {
     };
     __setMysqlPoolFactory(() => pool);
     const adapter = new MySqlDriverAdapter();
-    await adapter.init({ poolMax: 5, statementTimeoutMs: 1000 });
+    await adapter.init({ driver: "mysql", poolMax: 5, statementTimeoutMs: 1000 });
     await adapter.introspect();
     expect(receivedSql).toContain("DATABASE()");
     expect(receivedParams).toEqual([]);

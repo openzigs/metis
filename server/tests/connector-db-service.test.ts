@@ -46,29 +46,35 @@ vi.mock("../src/lib/prisma.js", () => ({
         }
         return null;
       }),
-      create: vi.fn(async ({ data }: { data: Partial<DbRow> }) => {
-        nextId += 1;
-        const row: DbRow = {
-          id: `db_${nextId}`,
-          host: null,
-          port: null,
-          databaseName: null,
-          username: null,
-          secretId: null,
-          options: null,
-          status: "pending",
-          errorMessage: null,
-          lastTestedAt: null,
-          lastIngestAt: null,
-          createdById: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          deletedAt: null,
-          ...(data as DbRow),
-        };
-        rows.set(row.id, row);
-        return row;
-      }),
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: Partial<DbRow> & Pick<DbRow, "projectId" | "label" | "driver">;
+        }) => {
+          nextId += 1;
+          const row: DbRow = {
+            id: `db_${nextId}`,
+            host: null,
+            port: null,
+            databaseName: null,
+            username: null,
+            secretId: null,
+            options: null,
+            status: "pending",
+            errorMessage: null,
+            lastTestedAt: null,
+            lastIngestAt: null,
+            createdById: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            deletedAt: null,
+            ...data,
+          };
+          rows.set(row.id, row);
+          return row;
+        },
+      ),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<DbRow> }) => {
         const r = rows.get(where.id);
         if (!r) throw new Error("not found");

@@ -276,13 +276,13 @@ function fakeSchemaPrisma(): { prisma: SchemaGraphPrisma; recorded: Recorded } {
   let n = 0;
   const prisma: SchemaGraphPrisma = {
     codeSymbol: {
-      create: async ({ data }) => {
+      create: async ({ data }: { data: SchemaSymbolCreateData }) => {
         recorded.symbols.push(data);
         return { id: `sym-${++n}` };
       },
     },
     codeEdge: {
-      create: async ({ data }) => {
+      create: async ({ data }: { data: SchemaEdgeCreateData }) => {
         recorded.edges.push(data);
         return undefined;
       },

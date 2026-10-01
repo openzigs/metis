@@ -25,7 +25,7 @@ describe("TokenTracker agentStep recording", () => {
     const result = tracker.record({
       sessionId: "sess-1",
       userId: "user-1",
-      provider: "bedrock",
+      provider: "bedrock-gateway",
       model: "claude-haiku",
       usage: { promptTokens: 10, completionTokens: 5 },
       agentStep: "code-agent:analysis",
@@ -42,7 +42,7 @@ describe("TokenTracker agentStep recording", () => {
     const result = tracker.record({
       sessionId: "sess-2",
       userId: "user-1",
-      provider: "bedrock",
+      provider: "bedrock-gateway",
       model: "claude-haiku",
       usage: { promptTokens: 5, completionTokens: 3 },
     });

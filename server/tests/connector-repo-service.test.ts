@@ -26,6 +26,11 @@ interface RepoRow {
   updatedAt: Date;
   deletedAt: Date | null;
 }
+// Non-null columns of the mock row with no mock default: every create here supplies them.
+type RepoCreateRequired = Pick<
+  RepoRow,
+  "projectId" | "label" | "provider" | "ownerOrOrg" | "repoName" | "defaultBranch"
+>;
 
 const rows = new Map<string, RepoRow>();
 let nextId = 0;
@@ -48,7 +53,7 @@ vi.mock("../src/lib/prisma.js", () => ({
         }
         return null;
       }),
-      create: vi.fn(async ({ data }: { data: Partial<RepoRow> }) => {
+      create: vi.fn(async ({ data }: { data: Partial<RepoRow> & RepoCreateRequired }) => {
         nextId += 1;
         const row: RepoRow = {
           id: `repo_${nextId}`,
@@ -64,7 +69,7 @@ vi.mock("../src/lib/prisma.js", () => ({
           createdAt: new Date(),
           updatedAt: new Date(),
           deletedAt: null,
-          ...(data as RepoRow),
+          ...data,
         };
         rows.set(row.id, row);
         return row;
@@ -287,7 +292,7 @@ describe("Repo connector service — CRUD", () => {
   it("#182 — exposes the latest source ingest, reporting a dead run as interrupted", async () => {
     const created = await createRepoConnector(
       "proj_1",
-      { label: "ingested", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "ingested", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     expect(created.sourceIngest).toBeNull();
@@ -310,9 +315,17 @@ describe("Repo connector service — CRUD", () => {
   });
 
   it("rejects duplicate label per project", async () => {
-    await createRepoConnector("proj_1", { label: "dup", ownerOrOrg: "o", repoName: "r" }, "user_1");
+    await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "dup", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
     await expect(
-      createRepoConnector("proj_1", { label: "dup", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+      createRepoConnector(
+        "proj_1",
+        { provider: "github", label: "dup", ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      ),
     ).rejects.toMatchObject({ code: "REPO_LABEL_TAKEN" });
   });
 
@@ -321,6 +334,7 @@ describe("Repo connector service — CRUD", () => {
       createRepoConnector(
         "proj_1",
         {
+          provider: "github",
           label: "http-bad",
           ownerOrOrg: "o",
           repoName: "r",
@@ -334,17 +348,17 @@ describe("Repo connector service — CRUD", () => {
   it("#448 — marks a project's first repository primary and later ones not", async () => {
     const first = await createRepoConnector(
       "proj_1",
-      { label: "first", ownerOrOrg: "o", repoName: "r1" },
+      { provider: "github", label: "first", ownerOrOrg: "o", repoName: "r1" },
       "user_1",
     );
     const second = await createRepoConnector(
       "proj_1",
-      { label: "second", ownerOrOrg: "o", repoName: "r2" },
+      { provider: "github", label: "second", ownerOrOrg: "o", repoName: "r2" },
       "user_1",
     );
     const other = await createRepoConnector(
       "proj_2",
-      { label: "first", ownerOrOrg: "o", repoName: "r3" },
+      { provider: "github", label: "first", ownerOrOrg: "o", repoName: "r3" },
       "user_1",
     );
     expect(first.isPrimary).toBe(true);
@@ -365,7 +379,7 @@ describe("Repo connector service — CRUD", () => {
     const { prisma } = await import("../src/lib/prisma.js");
     const created = await createRepoConnector(
       "proj_1",
-      { label: "only", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "only", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     expect(prisma.repoConnection.update).not.toHaveBeenCalled();
@@ -389,7 +403,7 @@ describe("Repo connector service — CRUD", () => {
     try {
       const created = await createRepoConnector(
         "proj_1",
-        { label: "loser", ownerOrOrg: "o", repoName: "r" },
+        { provider: "github", label: "loser", ownerOrOrg: "o", repoName: "r" },
         "user_1",
       );
       expect(create.mock.calls.map(([a]) => a.data.isPrimary)).toEqual([true, false]);
@@ -410,7 +424,11 @@ describe("Repo connector service — CRUD", () => {
     }) as never);
     try {
       await expect(
-        createRepoConnector("proj_1", { label: "x", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+        createRepoConnector(
+          "proj_1",
+          { provider: "github", label: "x", ownerOrOrg: "o", repoName: "r" },
+          "user_1",
+        ),
       ).rejects.toMatchObject({ code: "P1001" });
       expect(create).toHaveBeenCalledTimes(1);
     } finally {
@@ -420,7 +438,11 @@ describe("Repo connector service — CRUD", () => {
 
   describe("#492 — renaming onto a used label", () => {
     const make = (label: string) =>
-      createRepoConnector("proj_1", { label, ownerOrOrg: "o", repoName: "r" }, "user_1");
+      createRepoConnector(
+        "proj_1",
+        { provider: "github", label, ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      );
 
     it("a live connector's label is a 409 and the row keeps its label", async () => {
       await make("taken");
@@ -492,14 +514,22 @@ describe("Repo connector service — CRUD", () => {
     };
 
     it("is a 409 when a live row holds the label (a create that lost the race)", async () => {
-      await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
+      await createRepoConnector(
+        "proj_1",
+        { provider: "github", label: "a", ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      );
       const { prisma } = await import("../src/lib/prisma.js");
       // The pre-check misses the racing row; the post-violation lookup sees it.
       vi.mocked(prisma.repoConnection.findFirst).mockResolvedValueOnce(null);
       const { create, restore } = await shapeless();
       try {
         await expect(
-          createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+          createRepoConnector(
+            "proj_1",
+            { provider: "github", label: "a", ownerOrOrg: "o", repoName: "r" },
+            "user_1",
+          ),
         ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
         expect(create).toHaveBeenCalledTimes(2); // the first create above, then one attempt
       } finally {
@@ -508,11 +538,19 @@ describe("Repo connector service — CRUD", () => {
     });
 
     it("is rethrown as it is when no live row holds the label", async () => {
-      await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
+      await createRepoConnector(
+        "proj_1",
+        { provider: "github", label: "a", ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      );
       const { restore } = await shapeless();
       try {
         await expect(
-          createRepoConnector("proj_1", { label: "b", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+          createRepoConnector(
+            "proj_1",
+            { provider: "github", label: "b", ownerOrOrg: "o", repoName: "r" },
+            "user_1",
+          ),
         ).rejects.toMatchObject({ code: "P2002" });
       } finally {
         restore();
@@ -534,7 +572,11 @@ describe("Repo connector service — CRUD", () => {
       return () => create.mockImplementation(insert);
     };
     const create = (label: string) =>
-      createRepoConnector("proj_1", { label, ownerOrOrg: "o", repoName: "r" }, "user_1");
+      createRepoConnector(
+        "proj_1",
+        { provider: "github", label, ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      );
 
     it("the SQLite adapter's (projectId, label) fields shape is a 409", async () => {
       const restore = await failFirstInsert(
@@ -600,7 +642,7 @@ describe("Repo connector service — CRUD", () => {
   it("project isolation enforced", async () => {
     const c = await createRepoConnector(
       "proj_a",
-      { label: "x", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "x", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(getRepoConnector("proj_b", c.id)).rejects.toMatchObject({
@@ -614,7 +656,7 @@ describe("Repo connector service — test()", () => {
     __setOctokitFactory(() => makeOctokit());
     const c = await createRepoConnector(
       "proj_1",
-      { label: "t", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "t", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     const result = await testRepoConnector("proj_1", c.id, "user_1");
@@ -635,7 +677,7 @@ describe("Repo connector service — test()", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "t2", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "t2", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
@@ -654,7 +696,7 @@ describe("Repo connector service — test()", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "t3", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "t3", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
@@ -668,7 +710,7 @@ describe("Repo connector service — fetchRepoMetadata()", () => {
     __setOctokitFactory(() => makeOctokit());
     const c = await createRepoConnector(
       "proj_1",
-      { label: "m", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "m", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
@@ -690,7 +732,7 @@ describe("Repo connector service — fetchRepoMetadata()", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "m2", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "m2", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
@@ -702,7 +744,7 @@ describe("Repo connector service — update + auth/clone", () => {
   it("PATCH apiBaseUrl with non-HTTPS rejected", async () => {
     const c = await createRepoConnector(
       "proj_1",
-      { label: "u", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "u", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(
@@ -713,7 +755,7 @@ describe("Repo connector service — update + auth/clone", () => {
   it("PATCH supports updating multiple fields and secret", async () => {
     const c = await createRepoConnector(
       "proj_1",
-      { label: "u2", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "u2", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     const updated = await updateRepoConnector(
@@ -741,7 +783,13 @@ describe("Repo connector service — #480 keep a re-sent bound reference", () =>
     const { bindSecretRef } = await import("../src/lib/vault/bound-secret.js");
     const c = await createRepoConnector(
       "proj_1",
-      { label: "keep", ownerOrOrg: "o", repoName: "r", secretRef: "${vault:sec-bound}" },
+      {
+        provider: "github",
+        label: "keep",
+        ownerOrOrg: "o",
+        repoName: "r",
+        secretRef: "${vault:sec-bound}",
+      },
       "user_1",
     );
     vi.mocked(bindSecretRef).mockClear();
@@ -764,6 +812,7 @@ describe("Repo connector service — extractRefBody validation", () => {
       createRepoConnector(
         "proj_1",
         {
+          provider: "github",
           label: "bad-secret",
           ownerOrOrg: "o",
           repoName: "r",
@@ -777,7 +826,7 @@ describe("Repo connector service — extractRefBody validation", () => {
   it("rejects malformed secretRef on update", async () => {
     const c = await createRepoConnector(
       "proj_1",
-      { label: "u3", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "u3", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(
@@ -797,7 +846,7 @@ describe("Repo connector service — toOctokitError fallback", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "fb", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "fb", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
@@ -815,7 +864,7 @@ describe("Repo connector service — toOctokitError fallback", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "ie", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "ie", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
@@ -836,7 +885,7 @@ describe("Repo connector service — fetchRepoMetadata edge cases", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "lang-fail", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "lang-fail", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     // Service may either propagate or swallow; verify it's a defined behaviour
@@ -867,6 +916,7 @@ describe("Repo connector service — shallowCloneRepo", () => {
     const c = await createRepoConnector(
       "proj_1",
       {
+        provider: "github",
         label: "clone1",
         ownerOrOrg: "octocat",
         repoName: "demo",
@@ -926,6 +976,7 @@ describe("Repo connector service — shallowCloneRepo", () => {
     const c = await createRepoConnector(
       "proj_1",
       {
+        provider: "github",
         label: "clone-fail",
         ownerOrOrg: "octocat",
         repoName: "missing",
@@ -950,7 +1001,7 @@ describe("Repo connector service — shallowCloneRepo", () => {
     __setSimpleGitFactory(() => fakeGit);
     const c = await createRepoConnector(
       "proj_1",
-      { label: "noauth", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "noauth", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     await shallowCloneRepo("proj_1", c.id, "user_1");

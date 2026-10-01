@@ -1118,11 +1118,14 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
       __resetBM25IndexSingleton();
       const gate = barrier();
       const find = db.knowledgeChunk.findMany.bind(db.knowledgeChunk);
-      vi.spyOn(db.knowledgeChunk, "findMany").mockImplementationOnce(async (args) => {
+      // The BM25 loader only awaits findMany, so a native Promise stands in for Prisma's
+      // lazy PrismaPromise here.
+      const pausedFind = (async (args: Parameters<typeof find>[0]) => {
         const rows = await find(args);
         await gate.pause();
         return rows;
-      });
+      }) as unknown as typeof find;
+      vi.spyOn(db.knowledgeChunk, "findMany").mockImplementationOnce(pausedFind);
       const loading = getBM25Index().ensureProject("project");
       await gate.entered;
       await db.$executeRaw`UPDATE generated_documents SET deletedAt = CURRENT_TIMESTAMP WHERE id = 'doc'`;

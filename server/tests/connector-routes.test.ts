@@ -28,6 +28,11 @@ interface RepoRow {
   updatedAt: Date;
   deletedAt: Date | null;
 }
+// Non-null columns of the mock row with no mock default: every create here supplies them.
+type RepoCreateRequired = Pick<
+  RepoRow,
+  "projectId" | "label" | "provider" | "ownerOrOrg" | "repoName" | "defaultBranch"
+>;
 interface DbRow {
   id: string;
   projectId: string;
@@ -97,7 +102,7 @@ vi.mock("../src/lib/prisma.js", async () => {
         async ({ where }: { where: { projectId: string; deletedAt: null } }) =>
           [...repos.values()].filter((r) => r.projectId === where.projectId && !r.deletedAt).length,
       ),
-      create: vi.fn(async ({ data }: { data: Partial<RepoRow> }) => {
+      create: vi.fn(async ({ data }: { data: Partial<RepoRow> & RepoCreateRequired }) => {
         n += 1;
         const row: RepoRow = {
           id: `repo_test_${String(n).padStart(8, "0")}`,
@@ -113,7 +118,7 @@ vi.mock("../src/lib/prisma.js", async () => {
           createdAt: new Date(),
           updatedAt: new Date(),
           deletedAt: null,
-          ...(data as RepoRow),
+          ...data,
         };
         repos.set(row.id, row);
         return row;
@@ -163,29 +168,35 @@ vi.mock("../src/lib/prisma.js", async () => {
         }
         return null;
       }),
-      create: vi.fn(async ({ data }: { data: Partial<DbRow> }) => {
-        n += 1;
-        const row: DbRow = {
-          id: `db_test_${String(n).padStart(8, "0")}`,
-          host: null,
-          port: null,
-          databaseName: null,
-          username: null,
-          secretId: null,
-          options: null,
-          status: "pending",
-          errorMessage: null,
-          lastTestedAt: null,
-          lastIngestAt: null,
-          createdById: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          deletedAt: null,
-          ...(data as DbRow),
-        };
-        dbs.set(row.id, row);
-        return row;
-      }),
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: Partial<DbRow> & Pick<DbRow, "projectId" | "label" | "driver">;
+        }) => {
+          n += 1;
+          const row: DbRow = {
+            id: `db_test_${String(n).padStart(8, "0")}`,
+            host: null,
+            port: null,
+            databaseName: null,
+            username: null,
+            secretId: null,
+            options: null,
+            status: "pending",
+            errorMessage: null,
+            lastTestedAt: null,
+            lastIngestAt: null,
+            createdById: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            deletedAt: null,
+            ...data,
+          };
+          dbs.set(row.id, row);
+          return row;
+        },
+      ),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<DbRow> }) => {
         const r = dbs.get(where.id);
         if (!r) throw new Error("not found");

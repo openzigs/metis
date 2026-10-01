@@ -13,13 +13,14 @@ function makeRequest(opts: {
   recordset?: Record<string, unknown>[];
   fail?: Error;
 }): MssqlRequestLike {
-  return {
-    query: vi.fn(async (sql: string) => {
-      opts.queries.push(sql);
-      if (opts.fail) throw opts.fail;
-      return { recordset: opts.recordset ?? [] };
-    }),
-  };
+  const query = vi.fn(async (sql: string) => {
+    opts.queries.push(sql);
+    if (opts.fail) throw opts.fail;
+    return { recordset: opts.recordset ?? [] };
+  });
+  // `query<T>` lets the caller name the row type, as mssql does; a canned fake
+  // can only return the rows it was given, so the generic is asserted here.
+  return { query: query as MssqlRequestLike["query"] };
 }
 
 function makePool(req: MssqlRequestLike): MssqlPoolLike {

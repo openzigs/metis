@@ -74,8 +74,8 @@ vi.mock("../src/lib/documents/storage.js", () => ({
   getDocumentStorage: () => ({ write: writeMock }),
 }));
 
-const ingestDocumentMock = vi.fn(async (id: string) => ({
-  status: "ready" as const,
+const ingestDocumentMock = vi.fn(async (id: string): Promise<IngestResult> => ({
+  status: "ready",
   documentId: id,
   chunkCount: 3,
 }));
@@ -84,6 +84,7 @@ vi.mock("../src/lib/rag/knowledge-service.js", () => ({
   getKnowledgeService: () => ({ ingestDocument: ingestDocumentMock }),
 }));
 
+import type { IngestResult } from "../src/lib/rag/knowledge-service.js";
 import {
   dbSnapshotToUnits,
   ingestDbSchema,

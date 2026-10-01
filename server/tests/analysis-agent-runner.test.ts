@@ -13,6 +13,7 @@ import {
   repairMaxOutputTokens,
   resolveFinalAnswerMaxOutputTokens,
   runAgent,
+  type AgentRunInput,
 } from "../src/lib/analysis/agent-runner.js";
 
 const stubResponse = (content: string): ChatResponse => ({
@@ -110,7 +111,7 @@ describe("runAgent", () => {
     });
     expect(result.agentKey).toBe("code");
     expect(result.output.findings).toHaveLength(1);
-    expect(result.output.findings[0].citations[0].filename).toBe("src/billing.ts");
+    expect(result.output.findings[0].citations[0]).toMatchObject({ filename: "src/billing.ts" });
     expect(result.usage.totalTokens).toBe(30);
   });
 
@@ -164,6 +165,7 @@ describe("runAgent", () => {
       ],
     });
     const body = captured[0]![0]!.content;
+    if (typeof body !== "string") throw new Error("expected a string prompt");
     // Only the legitimate framing fences should remain (BEGIN/END for project
     // and retrieved context blocks \u2014 4 lines, 2 boundaries each = 8 total).
     const matches = body.match(/===METIS-DATA-BOUNDARY===/g) ?? [];
@@ -271,12 +273,12 @@ describe("#1224 single-shot output cap", () => {
     } as unknown as AIProvider;
   }
 
-  const INPUT = {
+  const INPUT: AgentRunInput = {
     agentKey: "code",
     projectName: "P",
     projectDescription: "D",
     retrieved: [],
-  } as const;
+  };
 
   /** Unparseable, so the run reaches the repair call. */
   const UNPARSEABLE = '{"summary":"ok","findings":[{"title":"T"';
@@ -392,12 +394,12 @@ describe("#1221 output-cap clamp", () => {
     } as unknown as AIProvider;
   }
 
-  const INPUT = {
+  const INPUT: AgentRunInput = {
     agentKey: "code",
     projectName: "P",
     projectDescription: "D",
     retrieved: [],
-  } as const;
+  };
 
   const UNPARSEABLE = '{"summary":"ok","findings":[{"title":"T"';
 
@@ -556,12 +558,12 @@ describe("#1224 finishReason surfacing", () => {
     ...(finishReason ? { finishReason } : {}),
   });
 
-  const INPUT = {
+  const INPUT: AgentRunInput = {
     agentKey: "code",
     projectName: "P",
     projectDescription: "D",
     retrieved: [],
-  } as const;
+  };
 
   const UNPARSEABLE = '{"summary":"ok","findings":[{"title":"T"';
 

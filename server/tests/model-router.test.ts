@@ -9,6 +9,7 @@ import {
   OPUS_MODEL_ID,
   SONNET_MODEL_ID,
   tierModelFor,
+  type RouterProvider,
 } from "../src/lib/ai/model-router.js";
 import type { TaskProfile } from "../src/lib/ai/types.js";
 
@@ -167,7 +168,7 @@ describe("ModelRouter", () => {
       const router = new ModelRouter();
       const haiku = router.select(moderateProfile, "force-haiku");
       const sonnet = router.select(moderateProfile, "force-sonnet");
-      expect(haiku.estimatedCost).toBeLessThan(sonnet.estimatedCost);
+      expect(haiku.estimatedCost).toBeLessThan(sonnet.estimatedCost!);
     });
   });
 
@@ -211,12 +212,16 @@ describe("ModelRouter", () => {
  * auto-mode specialist agents name the model the run really uses.
  */
 describe("ModelRouter — active provider (#512)", () => {
-  const claudeProvider = {
+  const claudeProvider: RouterProvider = {
     key: "bedrock-gateway",
     model: SONNET_MODEL_ID,
     servesRouterModel: () => true,
   };
-  const deepSeek = { key: "anthropic", model: "deepseek-chat", servesRouterModel: () => false };
+  const deepSeek: RouterProvider = {
+    key: "anthropic",
+    model: "deepseek-chat",
+    servesRouterModel: () => false,
+  };
 
   it("keeps tier routing on a provider that serves Claude tier ids", () => {
     const router = new ModelRouter({ provider: claudeProvider });
@@ -259,8 +264,8 @@ describe("ModelRouter — active provider (#512)", () => {
   });
 
   it("asks the provider per model id: a served tier id is kept, an unserved one falls back", () => {
-    const partial = {
-      key: "stub-adapter",
+    const partial: RouterProvider = {
+      key: "openai",
       model: "stub-model",
       servesRouterModel: (id: string) => id === HAIKU_MODEL_ID,
     };
@@ -322,7 +327,7 @@ describe("ModelRouter.resolveRunModel (#512)", () => {
  */
 describe("tierModelFor (#532)", () => {
   it("keeps the tier id on a provider that serves it", () => {
-    const bedrock = {
+    const bedrock: RouterProvider = {
       key: "bedrock-gateway",
       model: SONNET_MODEL_ID,
       servesRouterModel: () => true,
@@ -331,13 +336,17 @@ describe("tierModelFor (#532)", () => {
   });
 
   it("uses the provider's configured model when it cannot serve the tier id", () => {
-    const deepSeek = { key: "anthropic", model: "deepseek-chat", servesRouterModel: () => false };
+    const deepSeek: RouterProvider = {
+      key: "anthropic",
+      model: "deepseek-chat",
+      servesRouterModel: () => false,
+    };
     expect(tierModelFor(deepSeek, HAIKU_MODEL_ID)).toBe("deepseek-chat");
   });
 
   it("asks about the exact tier id it was given", () => {
-    const partial = {
-      key: "stub",
+    const partial: RouterProvider = {
+      key: "openai",
       model: "stub-model",
       servesRouterModel: (id: string) => id === HAIKU_MODEL_ID,
     };

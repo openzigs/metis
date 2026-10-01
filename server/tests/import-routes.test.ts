@@ -30,10 +30,14 @@ import { errorHandler } from "../src/middleware/error-handler.js";
 import type { ImportService } from "../src/lib/importers/import-service.js";
 import { parseImportFilter, type ImportSourceKind } from "@metis/shared";
 
-function buildApp(service: Partial<ImportService>) {
+/** A route stub: any subset of the service, returning only the fields a test reads. */
+type ImportServiceStub = { [K in keyof ImportService]?: (...args: never[]) => Promise<unknown> };
+
+function buildApp(service: ImportServiceStub) {
   const app = express();
   app.use(express.json());
-  app.use("/projects/:projectId/imports", importsRouter(service as ImportService));
+  // The route only serialises the stub's partial views.
+  app.use("/projects/:projectId/imports", importsRouter(service as unknown as ImportService));
   app.use(errorHandler);
   return app;
 }

@@ -42,6 +42,14 @@ import { main as buildClarifyFixtures } from "../scripts/e2e-build-clarify-fixtu
 import { buildServerProvider } from "../src/lib/ai/server-provider.js";
 import { OfflineStubProvider } from "../src/lib/ai/providers/offline-stub-provider.js";
 import { ClarificationDialog } from "../src/lib/analysis/clarification-dialog.js";
+import { FINDING_CATEGORIES, FINDING_SEVERITIES } from "@metis/shared";
+
+/** Narrow a fixture string to a closed set, failing loudly if the fixture drifts out of it. */
+function oneOf<T extends string>(values: readonly T[], value: string): T {
+  const match = values.find((v) => v === value);
+  if (match === undefined) throw new Error(`"${value}" is not one of ${values.join(", ")}`);
+  return match;
+}
 
 // #532 — the dialog persists its state; keep it in memory for this test.
 const dialogStore = new Map<string, unknown>();
@@ -148,8 +156,8 @@ describe("generative-e2e clarify fixtures", () => {
     const findings: FlatFinding[] = [
       {
         agentKey: SEED_FINDING.agentKey,
-        category: SEED_FINDING.category,
-        severity: SEED_FINDING.severity,
+        category: oneOf(FINDING_CATEGORIES, SEED_FINDING.category),
+        severity: oneOf(FINDING_SEVERITIES, SEED_FINDING.severity),
         title: SEED_FINDING.title,
         body: SEED_FINDING.body,
         tags: SEED_FINDING.tags,

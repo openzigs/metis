@@ -6,6 +6,7 @@ import { MCPLifecycleManager } from "../src/lib/mcp/lifecycle-manager.js";
 import type { MCPServerConfig, MCPTransportClient } from "../src/lib/mcp/types.js";
 import type {
   ContainerProvisioner,
+  ProvisionResult,
   ProvisionedProcess,
 } from "../src/lib/mcp/provisioners/index.js";
 
@@ -38,7 +39,8 @@ function makeTransport(): MCPTransportClient {
     start: vi.fn(async () => undefined),
     stop: vi.fn(async () => undefined),
     notify: vi.fn(async () => undefined),
-    closed: vi.fn(() => new Promise(() => undefined)),
+    closed: vi.fn<MCPTransportClient["closed"]>(() => new Promise(() => undefined)),
+    // request<TResult> is generic; a canned-response stub cannot satisfy it without an assertion.
     request: vi.fn(async (method: string) => {
       if (method === "initialize") {
         return { protocolVersion: "2025-06-18", serverInfo: { name: "x" } };
@@ -47,12 +49,12 @@ function makeTransport(): MCPTransportClient {
         return { tools: [{ name: "noop", description: "" }] };
       }
       throw new Error(`unexpected method ${method}`);
-    }),
+    }) as MCPTransportClient["request"],
   };
 }
 
 function recordingProvisioner(opts: {
-  cleanup?: ReturnType<typeof vi.fn>;
+  cleanup?: ProvisionedProcess["cleanup"];
   failProvision?: boolean;
 }): ContainerProvisioner & {
   calls: Array<{ config: MCPServerConfig; env: Record<string, string> }>;
@@ -80,7 +82,9 @@ describe("MCPLifecycleManager + provisioners (#281)", () => {
   it("calls the runtime-matching provisioner before spawn", async () => {
     const docker = recordingProvisioner({});
     const native = recordingProvisioner({});
-    const factory = vi.fn(() => makeTransport());
+    const factory = vi.fn((_config: MCPServerConfig, _provisioned: ProvisionResult) =>
+      makeTransport(),
+    );
     const mgr = new MCPLifecycleManager({
       resolveEnv: async (e) => ({ ...e, RESOLVED: "1" }),
       provisioners: { native, "docker-stdio": docker },

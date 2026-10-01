@@ -45,8 +45,8 @@ beforeAll(() => {
   viewerToken = issueTokens({
     userId: "u-viewer",
     username: "viewer",
-    role: "viewer",
-    permissions: getPermissionsForRole("viewer"),
+    role: "reader",
+    permissions: getPermissionsForRole("reader"),
   }).accessToken;
 });
 

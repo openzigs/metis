@@ -29,7 +29,6 @@ vi.mock("../src/lib/prisma.js", () => ({
             createdAt: new Date(),
             lastUsedAt: null,
             revokedAt: null,
-            expiresAt: data.expiresAt ?? null,
             ...data,
           };
           rows.set(row.id, row);

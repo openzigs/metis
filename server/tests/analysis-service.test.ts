@@ -434,6 +434,7 @@ describe("persistRequirements", () => {
             priority: "high",
             labels: ["x"],
             evidenceFindingIndexes: [0],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -570,6 +571,7 @@ describe("updateRequirementRow", () => {
             priority: "medium",
             labels: ["auth"],
             evidenceFindingIndexes: [0],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -622,6 +624,7 @@ describe("updateRequirementRow", () => {
             priority: "low",
             labels: [],
             evidenceFindingIndexes: [],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -797,6 +800,7 @@ describe("getAnalysisSnapshot rendering", () => {
             priority: "high",
             labels: ["audit"],
             evidenceFindingIndexes: [0],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -859,6 +863,7 @@ describe("getAnalysisSnapshot rendering", () => {
             priority: "low",
             labels: [],
             evidenceFindingIndexes: [0],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -939,6 +944,7 @@ describe("getAnalysisSnapshot rendering", () => {
       priority: "low",
       labels: JSON.stringify([]),
       storyPoints: null,
+      version: 1,
       reviewStatus: "totally-bogus-status",
       createdAt: new Date(),
       deletedAt: null,
@@ -976,9 +982,9 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
             id: "req-1",
             title: "Audit logging",
             description: "Retain audit logs",
-            type: "feature",
+            type: "functional",
             stakeholders: [],
-            priority: "high",
+            priority: "must-have",
             ambiguities: [],
             evidenceNeeds: [],
             rawSource: "raw",
@@ -1063,7 +1069,7 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
 
 // ── Issue #733 — capability record persistence + snapshot surfacing ──────────
 describe("persistAnalysisCapability + snapshot surfacing (#733)", () => {
-  const capabilityFixture = {
+  const capabilityFixture: Parameters<typeof persistAnalysisCapability>[1] = {
     codeAnalysisRequested: true,
     databaseAnalysisRequested: false,
     codeGraphPresent: false,
@@ -1073,7 +1079,7 @@ describe("persistAnalysisCapability + snapshot surfacing (#733)", () => {
     schemaContextEnabled: false,
     quarantineFallbackUsed: false,
     skippedRepos: [],
-    reasons: ["no-code-graph", "source-not-ingested"] as const,
+    reasons: ["no-code-graph", "source-not-ingested"],
   };
 
   it("merges the capability into metadata without clobbering existing keys", async () => {
@@ -1225,7 +1231,7 @@ describe("toResolvedEvidenceRef (#448) — pure mapper", () => {
       documentId: "doc-1234567890",
       chunkIndex: 1,
       filename: "spec.pdf",
-      // @ts-expect-error — snippet is on Citation but deliberately not read here.
+      // snippet is on Citation but deliberately not read here.
       snippet: "leaked-secret-snippet",
     });
     expect(JSON.stringify(ref)).not.toContain("leaked-secret-snippet");

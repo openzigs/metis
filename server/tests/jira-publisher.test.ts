@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // ---- Mocks -----------------------------------------------------------------
 
 const mockCreateIssue = vi.fn();
-const mockCreateJiraClient = vi.fn(() => ({
+const mockCreateJiraClient = vi.fn((..._args: unknown[]) => ({
   createIssue: mockCreateIssue,
   testConnection: vi.fn(),
   getServerInfo: vi.fn(),

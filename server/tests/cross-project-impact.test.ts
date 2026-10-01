@@ -18,7 +18,7 @@ import {
 } from "../src/lib/cross-project/cross-project-impact.js";
 import type { SchedulerActor } from "../src/lib/scheduler/project-access.js";
 
-const MEMBER_A: SchedulerActor = { id: "user-A", role: "member" };
+const MEMBER_A: SchedulerActor = { id: "user-A", role: "developer" };
 const ADMIN: SchedulerActor = { id: "admin", role: "admin" };
 
 /**

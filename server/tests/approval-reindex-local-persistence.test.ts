@@ -582,7 +582,14 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       expect(coverage.projects).toEqual([
         expect.objectContaining({ projectId: PROJECT, matchingChunks: 1, needsReindex: true }),
       ]);
-      const result = await reindexAll({ knowledge, store, kind: "local" } as MigrationDeps);
+      // reindexAll never probes the embedder; the stub only satisfies MigrationDeps.
+      const deps: MigrationDeps = {
+        knowledge,
+        store,
+        kind: "local",
+        embedder: { health: vi.fn() },
+      };
+      const result = await reindexAll(deps);
       expect(result.failures).toEqual([]);
       expect(result.results.map((item) => item.projectId)).toEqual([PROJECT]);
       expect(await generation()).toEqual({ model: NEW_MODEL, dimension: 2, pending: false });
