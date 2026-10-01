@@ -23,6 +23,14 @@ const userFindFirst = vi.hoisted(() =>
   })),
 );
 
+// Pass-through spy on the JWT verifier, so a test can prove requireAuth never ran.
+const verifyAccessTokenSpy = vi.hoisted(() => vi.fn());
+vi.mock("../lib/auth/jwt.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/auth/jwt.js")>();
+  verifyAccessTokenSpy.mockImplementation(actual.verifyAccessToken);
+  return { ...actual, verifyAccessToken: verifyAccessTokenSpy };
+});
+
 vi.mock("../lib/prisma.js", () => ({
   Prisma: { DbNull: null },
   prisma: {
@@ -123,15 +131,29 @@ describe("generated-docs router rate limiting (#632)", () => {
   it("answers an IP over the pre-auth ceiling with 429 before verifying any token", async () => {
     process.env.GENERATED_DOCS_PREAUTH_RATE_LIMIT_MAX = "1";
     const a = app();
-    // First anonymous request reaches requireAuth and is refused there.
     const ip = "203.0.113.7";
-    expect((await request(a).get("/projects/proj-1/docs").set("X-Forwarded-For", ip)).status).toBe(
-      401,
-    );
+    const auth = bearer("u-preauth");
+    // First request spends the IP's single pre-auth slot and is served.
+    expect(
+      (
+        await request(a)
+          .get("/projects/proj-1/docs")
+          .set("X-Forwarded-For", ip)
+          .set("Authorization", auth)
+      ).status,
+    ).toBe(200);
+    const verifiesBefore = verifyAccessTokenSpy.mock.calls.length;
+    expect(verifiesBefore).toBeGreaterThan(0);
 
-    const limited = await request(a).get("/projects/proj-1/docs").set("X-Forwarded-For", ip);
+    // Same IP, still a VALID token: refused by the per-IP limiter, not requireAuth.
+    const limited = await request(a)
+      .get("/projects/proj-1/docs")
+      .set("X-Forwarded-For", ip)
+      .set("Authorization", auth);
 
     expect(limited.status).toBe(429);
     expect(limited.body.error.code).toBe("GENERATED_DOCS_RATE_LIMITED");
+    // requireAuth never verified the token on the over-limit request.
+    expect(verifyAccessTokenSpy.mock.calls.length).toBe(verifiesBefore);
   });
 });

@@ -15,6 +15,8 @@ import {
 
 function app(limiter: RequestHandler, userId?: string) {
   const a = express();
+  // Lets a test pick its source IP via X-Forwarded-For.
+  a.set("trust proxy", true);
   a.use((req, _res, next) => {
     if (userId) (req as unknown as { user: { userId: string } }).user = { userId };
     next();
@@ -51,8 +53,11 @@ describe("generatedDocsRateLimiter (per user)", () => {
   it("keys an unauthenticated caller by IP", async () => {
     process.env.GENERATED_DOCS_RATE_LIMIT_MAX = "1";
     const a = app(generatedDocsRateLimiter);
-    expect((await request(a).get("/")).status).toBe(200);
-    expect((await request(a).get("/")).status).toBe(429);
+    const first = "198.51.100.10";
+    expect((await request(a).get("/").set("X-Forwarded-For", first)).status).toBe(200);
+    expect((await request(a).get("/").set("X-Forwarded-For", first)).status).toBe(429);
+    // A second source IP keeps its own budget — the fallback key is the IP, not a constant.
+    expect((await request(a).get("/").set("X-Forwarded-For", "198.51.100.11")).status).toBe(200);
   });
 
   it("ignores an invalid cap and falls back to the production default", async () => {
