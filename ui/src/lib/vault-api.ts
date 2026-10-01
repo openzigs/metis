@@ -46,7 +46,18 @@ export interface VaultForeignOwner {
     /** #557 — server-issued digest of every field that routes the secret; echo it back. */
     routing: string;
   }>;
+  /** #611 — server-issued digest of the whole `bindings` list; confirms a list over the cap. */
+  bindingsDigest: string;
+  /** #611 — the most bindings `confirmedBindings` may carry; over it, confirm by digest. */
+  maxConfirmedBindings: number;
 }
+
+/**
+ * #611 — how "Rotate anyway" confirms what it was shown: the bindings
+ * themselves, or (over `maxConfirmedBindings`) the digest of the whole list.
+ */
+export type VaultRotateConfirm =
+  { confirmedBindings: VaultConfirmedBinding[] } | { confirmedBindingsDigest: string };
 
 /** #502 — a binding as the admin confirmed it: what it is and where it sends (#557: and its routing digest). */
 export type VaultConfirmedBinding = Pick<
@@ -68,12 +79,17 @@ export const vaultApi = {
   /**
    * #482 — `confirmForeignOwner` is required to rotate a secret another user
    * owns; #502 — with `confirmedBindings`, the type, id and destination of
-   * every binding the 409 showed (#557 — and its `routing` digest).
+   * every binding the 409 showed (#557 — and its `routing` digest), or (#611)
+   * `confirmedBindingsDigest`, the 409's digest of that whole list.
    */
   rotate: (
     id: string,
     value: string,
-    opts: { confirmForeignOwner?: boolean; confirmedBindings?: VaultConfirmedBinding[] } = {},
+    opts: {
+      confirmForeignOwner?: boolean;
+      confirmedBindings?: VaultConfirmedBinding[];
+      confirmedBindingsDigest?: string;
+    } = {},
   ) =>
     apiFetch<VaultEntry>(`/vault/${id}/rotate`, {
       method: "POST",
@@ -82,6 +98,9 @@ export const vaultApi = {
             value,
             confirmForeignOwner: true,
             ...(opts.confirmedBindings ? { confirmedBindings: opts.confirmedBindings } : {}),
+            ...(opts.confirmedBindingsDigest
+              ? { confirmedBindingsDigest: opts.confirmedBindingsDigest }
+              : {}),
           }
         : { value },
     }),
