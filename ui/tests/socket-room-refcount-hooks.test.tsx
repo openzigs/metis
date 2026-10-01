@@ -1,9 +1,14 @@
 /**
  * #647 — two still-mounted followers of one non-job room on the shared socket.
  * Unmounting one must keep the room joined (no `unsubscribe:*`, the survivor
- * keeps receiving and re-joining); unmounting both leaves it. Before the fix
- * the first unmount sent the unsubscribe and silenced the survivor — the #430
- * shape that `job-rooms.ts` fixes for job rooms.
+ * keeps re-joining on reconnect); unmounting both leaves it. Before the fix
+ * the first unmount sent the unsubscribe, which made the server drop the room
+ * for the survivor too — the #430 shape that `job-rooms.ts` fixes for job rooms.
+ *
+ * The regression guard is the emitted `unsubscribe:*` count. The fake socket's
+ * `fire` reaches every registered listener and does not model server-side room
+ * membership, so the event-delivery assertions below only prove the survivor's
+ * listener is still attached — not that the server still has it in the room.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
@@ -39,6 +44,7 @@ describe("non-job rooms are reference-counted across hooks", () => {
         sessionId: "s1",
       }),
     );
+    // Listener still attached (see header: not a room-membership check).
     expect(onEvent).toHaveBeenCalledTimes(1);
 
     second.unmount();
@@ -52,6 +58,7 @@ describe("non-job rooms are reference-counted across hooks", () => {
 
     first.unmount();
     expect(socket.emitted("unsubscribe:task", room)).toBe(0);
+    // Listener still attached (see header: not a room-membership check).
     act(() => socket.fire("task:status", { taskId: "t1", status: "running" }));
     expect(second.result.current.status?.status).toBe("running");
 
