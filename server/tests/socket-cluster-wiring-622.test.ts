@@ -3,10 +3,18 @@
  *
  * The unit suite runs under `NODE_ENV=test`, where the adapter is never
  * selected, so a test that only builds servers by hand stays green if the
- * selection or the wiring is deleted. This pins both: `bootServer` — what
- * `index.ts` calls — given a production env with a Postgres URL builds the real
- * server on the real adapter (the pool comes from the in-process notify bus),
- * and given the test env builds it on the in-memory adapter with no pool.
+ * selection or the wiring is deleted. This pins both: `bootServer`, given a
+ * production env with a Postgres URL, builds the real server on the real adapter
+ * (the pool comes from the in-process notify bus), and given the test env builds
+ * it on the in-memory adapter with no pool.
+ *
+ * It does NOT pin that `index.ts` calls `bootServer`: that block runs only when
+ * `METIS_NO_LISTEN !== "1"`, which `tests/setup.ts` sets, so reverting it to
+ * `createServer()` leaves this suite green. That revert, and any other production
+ * boot that stops attaching the adapter, is caught by the CI image smoke test's
+ * `socket-cluster` probe (#650, scripts/lib/smoke-server-image.mjs), which boots
+ * the built image on Postgres with NODE_ENV=production and asks Postgres whether
+ * the adapter's `LISTEN` connection exists.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakePgNotifyBus } from "./helpers/fake-pg-notify-bus.js";

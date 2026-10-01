@@ -261,6 +261,31 @@ export const MODULE_PROBES = Object.freeze([
     ].join(" "),
   },
   {
+    // #650 — the Socket.IO cluster adapter (#622) is ATTACHED. The unit suite never
+    // selects it (NODE_ENV=test), so this image boot — NODE_ENV=production, a
+    // Postgres DATABASE_URL — is the only place a production boot path that stops
+    // installing it (index.ts calling `createServer()` instead of `bootServer()`)
+    // can fail. An attached adapter holds a pool connection whose most recent query
+    // is `LISTEN "socket.io#<namespace>"` (@socket.io/postgres-adapter); without it
+    // no connection LISTENs, and no other replica's eviction reaches this one's
+    // sockets. Asked of Postgres itself rather than of a log line, which could be
+    // printed by code that then never installed the adapter. Polled briefly: the
+    // adapter takes its LISTEN client asynchronously after the server is built.
+    name: "socket-cluster",
+    arms: ["postgres"],
+    code: [
+      'const { default: pg } = await import("pg");',
+      "const c = new pg.Client({ connectionString: process.env.DATABASE_URL });",
+      "await c.connect();",
+      "let n = 0;",
+      "try { for (let i = 0; i < 15; i += 1) {",
+      'const r = await c.query("select count(*)::int as n from pg_stat_activity where pid <> pg_backend_pid() and datname = current_database() and query like $1", [\'LISTEN "socket.io#%\']);',
+      "n = r.rows[0].n; if (n > 0) break; await new Promise((ok) => setTimeout(ok, 200)); } }",
+      "finally { await c.end(); }",
+      'if (n === 0) throw new Error("no connection LISTENs on a socket.io# channel: the Socket.IO cluster adapter is not attached");',
+    ].join(" "),
+  },
+  {
     // The MySQL connector (server/src/lib/connectors/db/drivers/mysql.ts).
     name: "mysql2",
     code: 'const m = await import("mysql2/promise"); if (typeof m.createPool !== "function" && typeof m.default?.createPool !== "function") throw new Error("mysql2/promise has no createPool");',
