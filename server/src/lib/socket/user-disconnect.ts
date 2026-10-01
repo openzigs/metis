@@ -23,8 +23,27 @@ import { getSocketServer } from "./registry.js";
 
 const log = createChildLogger("socket-user-disconnect");
 
+/**
+ * #613 — bumped by every disconnect / reconnect below, before it looks for
+ * sockets. Either one reaches only sockets already in `user:{id}`, which a
+ * socket joins only once connected — after the handshake has read the live
+ * user. A revocation committing inside that gap would miss the socket, so the
+ * socket server snapshots this before the read and re-reads the user when it
+ * has moved by the time the socket is in its room.
+ *
+ * The counter is process-wide, not per user: it counts EVERY revocation on this
+ * replica, so any handshake in flight during any user's revocation does one
+ * extra live-user read. That bounded cost is a deliberate trade-off against
+ * keeping (and pruning) a per-user map.
+ */
+let revocations = 0;
+
+/** #613 — moves whenever any user's sockets are revoked on this replica. */
+export const userSocketRevocationEpoch = (): number => revocations;
+
 /** Disconnect every socket of `userId` connected to this replica (see #622). */
 export function disconnectUserSockets(userId: string): void {
+  revocations++;
   try {
     getSocketServer()?.in(`user:${userId}`).disconnectSockets(true);
   } catch (err) {
@@ -51,6 +70,7 @@ export function disconnectUserSockets(userId: string): void {
  * `disconnectUserSockets`: call it after the role write commits.
  */
 export function reconnectUserSockets(userId: string): void {
+  revocations++;
   try {
     const io = getSocketServer();
     if (!io) return;
