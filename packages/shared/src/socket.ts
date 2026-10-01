@@ -28,17 +28,18 @@ export interface ThreadRoomEvent {
 /**
  * #655 — the payload of `auth:error`. Without `room` it is a connection-level
  * failure the user must see. With `room` it is the refusal of one room join
- * (`connector:{id}`, `run:{id}`, `job:{id}`): the client re-subscribes to those
- * rooms on its own, after every reconnect, so a refusal there is not an error
- * to show — the follower drops the room instead. The payload is the same for
+ * (`connector:{id}`, `run:{id}`, `job:{id}`, and `presence:{type}:{id}` since
+ * #679): the client re-subscribes to those rooms on its own, after every
+ * reconnect, so a refusal there is not an error to show — the follower drops
+ * the room instead (a presence follower just shows no viewers). The payload is the same for
  * an unknown id, a foreign id and a failed lookup, so it is no existence oracle.
  */
 export interface SocketAuthErrorEvent {
   message: string;
   /**
    * The room whose join was refused, named by its `@metis/shared` factory
-   * (`connectorRoom`, `bgRunRoom`, `jobRoom`) so a client compares it against
-   * the same factory's output (#676).
+   * (`connectorRoom`, `bgRunRoom`, `jobRoom`, `presenceRoom`) so a client
+   * compares it against the same factory's output (#676).
    */
   room?: string;
 }
@@ -573,7 +574,10 @@ export interface ClientToServerEvents {
    */
   "typing:start": (data: ThreadRoomEvent) => void;
   "typing:stop": (data: ThreadRoomEvent) => void;
-  /** Epic #728 — presence rooms per artifact. */
+  /**
+   * Epic #728 — presence rooms per artifact. #679: joined only by a user who
+   * could read the artifact through REST; otherwise a room-scoped `auth:error`.
+   */
   "presence:join": (data: { artifactType: PresenceArtifactType; artifactId: string }) => void;
   "presence:leave": (data: { artifactType: PresenceArtifactType; artifactId: string }) => void;
 }

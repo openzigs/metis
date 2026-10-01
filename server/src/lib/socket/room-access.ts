@@ -1,5 +1,6 @@
 /**
- * #655 — who may join a `connector:{id}`, `run:{id}` or `job:{id}` room.
+ * #655 — who may join a `connector:{id}`, `run:{id}` or `job:{id}` room, and
+ * (#679) a `presence:{type}:{id}` room.
  *
  * Each room carries reads of the resource it is named after, so joining it
  * takes the same rule as the REST read of that resource: the resource exists,
@@ -14,8 +15,9 @@
  * Anything that is not an `AppError` (a database failure) is rethrown, so the
  * caller logs it and still refuses the socket, as `canJoinAnalysisRoom` does.
  */
-import type { AuthPayload } from "@metis/shared";
+import { isSpecKitArtifactName, type AuthPayload, type PresenceArtifactType } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { canAccessThread } from "../discussions/access.js";
 import { assertProjectAccess } from "../custom-agents/authz.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { loadAccessibleImpactDetail } from "../impact-analysis/impact-detail-access.js";
@@ -108,4 +110,35 @@ export async function resolveJobRoomScope(
     allowed = user.role === "admin";
   }
   return allowed ? scope : null;
+}
+
+/**
+ * #679 — `presence:{type}:{id}` lists who is viewing an artifact, so joining it
+ * takes the REST read rule of that artifact:
+ *
+ * - `discussion` (id = thread id): `canAccessThread`, the rule of the thread
+ *   reads and of `subscribe:thread`. A soft-deleted thread is refused.
+ * - `spec-kit-artifact` (id = `{projectId}:{artifactName}`, as the Spec Kit page
+ *   names it): the rule of `GET /projects/:projectId/spec-kit/files/:name` —
+ *   project access, and a name that route serves. The artifact need not have
+ *   been generated yet: the page shows presence on an empty artifact too.
+ */
+export async function canJoinPresenceRoom(
+  user: AuthPayload,
+  artifactType: PresenceArtifactType,
+  artifactId: string,
+): Promise<boolean> {
+  switch (artifactType) {
+    case "discussion": {
+      const access = await canAccessThread({ id: user.userId, role: user.role }, artifactId);
+      return access.ok;
+    }
+    case "spec-kit-artifact": {
+      const sep = artifactId.indexOf(":");
+      const projectId = artifactId.slice(0, sep);
+      const name = artifactId.slice(sep + 1);
+      if (sep <= 0 || !isSpecKitArtifactName(name)) return false;
+      return canReachProject(user, projectId);
+    }
+  }
 }

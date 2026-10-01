@@ -2,6 +2,16 @@
  * Epic #728 / Issue #732 — Socket.IO presence rooms tests.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// #679 — the join's access rule is `canJoinPresenceRoom` (covered against its
+// lookups in `socket.test.ts`); here it admits unless a test says otherwise.
+const access = vi.hoisted(() => ({
+  check: vi.fn(async (..._args: unknown[]): Promise<boolean> => true),
+}));
+vi.mock("../src/lib/socket/room-access.js", () => ({
+  canJoinPresenceRoom: (...args: unknown[]) => access.check(...args),
+}));
+
 import {
   wirePresenceHandlers,
   getRoomPresence,
@@ -62,6 +72,8 @@ describe("wirePresenceHandlers", () => {
   beforeEach(() => {
     clearPresenceState();
     vi.clearAllMocks();
+    access.check.mockReset();
+    access.check.mockResolvedValue(true);
   });
 
   it("broadcasts presence:update when a user joins", async () => {
@@ -210,5 +222,125 @@ describe("wirePresenceHandlers", () => {
       "presence:error",
       expect.objectContaining({ message: expect.any(String) }),
     );
+  });
+});
+
+// #679 — a presence room lists who is viewing an artifact, so the join takes
+// the artifact's REST read rule.
+describe("presence:join access (#679)", () => {
+  beforeEach(() => {
+    clearPresenceState();
+    vi.clearAllMocks();
+    access.check.mockReset();
+  });
+
+  function connect() {
+    const ctx = createMockIo();
+    wirePresenceHandlers(ctx.mockIo);
+    const connectionHandler = vi
+      .mocked(ctx.mockIo.on)
+      .mock.calls.find(([e]) => e === "connection")?.[1];
+    connectionHandler!(ctx.mockSocket);
+    return ctx;
+  }
+
+  /** An access check the test resolves by hand. */
+  function deferredCheck() {
+    let resolve!: (allowed: boolean) => void;
+    access.check.mockImplementationOnce(() => new Promise<boolean>((r) => (resolve = r)));
+    return (allowed: boolean) => resolve(allowed);
+  }
+
+  const ARTIFACT = { artifactType: "discussion", artifactId: "t1" } as const;
+  const ROOM = "presence:discussion:t1";
+
+  it("checks the joining user against the named artifact", async () => {
+    access.check.mockResolvedValue(true);
+    const { mockSocket, socketListeners } = connect();
+    await socketListeners["presence:join"]?.({
+      artifactType: "spec-kit-artifact",
+      artifactId: "p1:spec.md",
+    });
+    expect(access.check).toHaveBeenCalledWith(
+      mockSocket.data.user,
+      "spec-kit-artifact",
+      "p1:spec.md",
+    );
+    expect(mockSocket.join).toHaveBeenCalledWith("presence:spec-kit-artifact:p1:spec.md");
+  });
+
+  it.each([
+    ["a refusal", () => access.check.mockResolvedValue(false)],
+    ["a failed lookup", () => access.check.mockRejectedValue(new Error("db down"))],
+  ])("answers %s with one room-scoped auth:error and no join", async (_label, arrange) => {
+    arrange();
+    const { mockSocket, socketListeners, emittedEvents } = connect();
+    await expect(socketListeners["presence:join"]?.(ARTIFACT)).resolves.toBeUndefined();
+
+    expect(mockSocket.join).not.toHaveBeenCalled();
+    expect(mockSocket.emit).toHaveBeenCalledTimes(1);
+    expect(mockSocket.emit).toHaveBeenCalledWith("auth:error", {
+      message: "FORBIDDEN: no access to artifact",
+      room: ROOM,
+    });
+    expect(emittedEvents).toEqual([]);
+    expect(getRoomPresence().size).toBe(0);
+  });
+
+  it("does not join when the socket leaves before the check resolves", async () => {
+    const settle = deferredCheck();
+    const { mockSocket, socketListeners, emittedEvents } = connect();
+    const joining = socketListeners["presence:join"]?.(ARTIFACT);
+    await socketListeners["presence:leave"]?.(ARTIFACT);
+    emittedEvents.length = 0;
+    settle(true);
+    await joining;
+
+    expect(mockSocket.join).not.toHaveBeenCalled();
+    expect(mockSocket.emit).not.toHaveBeenCalled();
+    expect(emittedEvents).toEqual([]);
+    expect(getRoomPresence().size).toBe(0);
+  });
+
+  it("does not list a socket that disconnected before the check resolved", async () => {
+    const settle = deferredCheck();
+    const { mockSocket, socketListeners, emittedEvents } = connect();
+    const joining = socketListeners["presence:join"]?.(ARTIFACT);
+    socketListeners["disconnect"]?.("transport close");
+    settle(true);
+    await joining;
+
+    expect(mockSocket.join).not.toHaveBeenCalled();
+    expect(emittedEvents).toEqual([]);
+    expect(getRoomPresence().size).toBe(0);
+  });
+
+  it("acts on the newest join when an older check resolves after it", async () => {
+    const settleFirst = deferredCheck();
+    const settleSecond = deferredCheck();
+    const { mockSocket, socketListeners } = connect();
+    const first = socketListeners["presence:join"]?.(ARTIFACT);
+    const second = socketListeners["presence:join"]?.(ARTIFACT);
+    settleFirst(true);
+    await first;
+    expect(mockSocket.join).not.toHaveBeenCalled();
+    settleSecond(true);
+    await second;
+    expect(mockSocket.join).toHaveBeenCalledTimes(1);
+    expect(getRoomPresence().get(ROOM)?.size).toBe(1);
+  });
+
+  it("counts joins still being checked against the room cap", async () => {
+    access.check.mockImplementation(() => new Promise<boolean>(() => {}));
+    const { mockSocket, socketListeners } = connect();
+    for (let i = 0; i < 50; i++) {
+      void socketListeners["presence:join"]?.({ artifactType: "discussion", artifactId: `${i}` });
+    }
+    await socketListeners["presence:join"]?.({ artifactType: "discussion", artifactId: "x" });
+
+    expect(access.check).toHaveBeenCalledTimes(50);
+    expect(mockSocket.emit).toHaveBeenCalledWith("presence:error", {
+      message: "Maximum room limit reached",
+    });
   });
 });
