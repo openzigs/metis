@@ -11,14 +11,16 @@ import type { Socket } from "socket.io-client";
 import {
   analysisRoom,
   presenceRoom,
+  projectRoom,
   publishRoom,
+  SCHEDULER_STATUS_ROOM,
   sessionRoom,
   taskRoom,
   threadRoom,
   type ClientToServerEvents,
   type PresenceArtifactType,
 } from "@metis/shared";
-import type { RoomFollow } from "./socket-subscription";
+import type { RoomFollow, RoomJoin } from "./socket-subscription";
 
 type EmitSocket = Pick<Socket, "emit">;
 
@@ -67,3 +69,17 @@ export const presenceFollow = (
     artifactType,
     artifactId,
   });
+
+/**
+ * #682 — joins the UI makes and never leaves (`keepSubscribed`). Each names the
+ * room the server joins, so a rate-limited refusal of it can be retried.
+ */
+export const projectJoin = (socket: EmitSocket, projectId: string): RoomJoin => ({
+  room: projectRoom(projectId),
+  subscribe: () => socket.emit("subscribe:project", { projectId }),
+});
+
+export const schedulerJoin = (socket: EmitSocket): RoomJoin => ({
+  room: SCHEDULER_STATUS_ROOM,
+  subscribe: () => socket.emit("subscribe:scheduler"),
+});

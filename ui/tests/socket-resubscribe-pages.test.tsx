@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { followedRooms } from "@/lib/socket-subscription";
-import { analysisRoom, presenceRoom } from "@metis/shared";
+import { analysisRoom, presenceRoom, SCHEDULER_STATUS_ROOM } from "@metis/shared";
 import { createFakeSocket, type FakeSocket } from "./helpers/fake-socket";
 
 let socket: FakeSocket;
@@ -69,6 +69,23 @@ describe("SchedulerPage (#642)", () => {
     unmount();
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:scheduler")).toBe(2);
+  });
+
+  it("re-sends subscribe:scheduler after a rate-limited refusal's delay (#682)", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const { unmount } = renderWithClient(<SchedulerPage />);
+    expect(socket.emitted("subscribe:scheduler")).toBe(1);
+    act(() =>
+      socket.fire("auth:error", {
+        message: "RATE_LIMITED",
+        room: SCHEDULER_STATUS_ROOM,
+        code: "RATE_LIMITED",
+        retryAfterMs: 0,
+      }),
+    );
+    await waitFor(() => expect(socket.emitted("subscribe:scheduler")).toBe(2));
+    unmount();
+    vi.restoreAllMocks();
   });
 });
 

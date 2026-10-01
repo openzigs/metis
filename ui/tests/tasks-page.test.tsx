@@ -12,6 +12,7 @@ import { makeWrapper } from "./test-utils";
 import { ApiError } from "@/lib/api-client";
 import { act } from "react";
 import { createFakeSocket } from "./helpers/fake-socket";
+import { SCHEDULER_STATUS_ROOM } from "@metis/shared";
 
 vi.mock("@/lib/socket-client", () => ({
   useSocket: vi.fn().mockReturnValue(null),
@@ -320,6 +321,29 @@ describe("TasksPage — live updates survive a reconnect (#642)", () => {
       act(() => socket.reconnect());
       expect(socket.emitted("subscribe:scheduler")).toBe(2);
     } finally {
+      vi.mocked(useSocket).mockReturnValue(null);
+    }
+  });
+
+  it("re-sends subscribe:scheduler after a rate-limited refusal's delay (#682)", async () => {
+    const socket = createFakeSocket();
+    vi.mocked(useSocket).mockReturnValue(socket as never);
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      const { unmount } = renderPage();
+      expect(socket.emitted("subscribe:scheduler")).toBe(1);
+      act(() =>
+        socket.fire("auth:error", {
+          message: "RATE_LIMITED",
+          room: SCHEDULER_STATUS_ROOM,
+          code: "RATE_LIMITED",
+          retryAfterMs: 0,
+        }),
+      );
+      await waitFor(() => expect(socket.emitted("subscribe:scheduler")).toBe(2));
+      unmount();
+    } finally {
+      random.mockRestore();
       vi.mocked(useSocket).mockReturnValue(null);
     }
   });

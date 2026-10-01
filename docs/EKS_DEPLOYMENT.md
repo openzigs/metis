@@ -758,6 +758,16 @@ no new managed service.
 - **PgBouncer:** `LISTEN` needs a session-pooled connection. A transaction-mode
   pooler between the pods and Postgres silently drops notifications.
 - With SQLite (single-replica dev) the in-memory adapter is kept unchanged.
+- **Room-join rate limit (#682):** each `subscribe:*` / `presence:join` takes a
+  token from the socket's bucket and from the user's bucket **on that pod**, so a
+  user whose sockets land on N replicas gets up to N times the per-user rate. A
+  join over the limit is refused with a room-scoped `auth:error` before any access
+  check or audit write runs; the refusal carries `code: "RATE_LIMITED"` and
+  `retryAfterMs`, and the UI keeps the room and re-subscribes after that delay
+  (plus up to 250 ms of jitter). Defaults: socket burst 100 at 5/s, user burst
+  300 at 5/s — at most 18,000 audit rows an hour from one user's probe loop per
+  replica. Refusals are logged at most once a minute per socket. Tune with the
+  `METIS_SOCKET_JOIN_*` settings in `.env.example`.
 
 ---
 

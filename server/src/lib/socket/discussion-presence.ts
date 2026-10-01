@@ -37,6 +37,7 @@ import { createChildLogger } from "../logger.js";
 import { onClientEvent, runDetached } from "./client-event-handler.js";
 import { createClusterPresence, type PresenceMember } from "./cluster-presence.js";
 import type { MetisIOServer } from "./server.js";
+import { onRoomJoin, roomFromField } from "./join-rate-limit.js";
 
 const log = createChildLogger("socket:thread-presence");
 
@@ -145,7 +146,7 @@ export function wireDiscussionPresenceHandlers(
   /** Thread rooms this socket is currently present in. */
   const joined = new Set<string>();
 
-  onClientEvent(socket, "presence:thread:join", (payload) => {
+  onRoomJoin(socket, "presence:thread:join", roomFromField("threadId", threadRoom), (payload) => {
     const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
     return (async () => {

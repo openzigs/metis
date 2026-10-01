@@ -53,7 +53,9 @@ import {
   connectorRoom,
   hasPermission,
   jobRoom,
+  projectRoom,
   publishRoom,
+  SCHEDULER_STATUS_ROOM,
   sessionRoom,
   taskRoom,
   type AuthPayload,
@@ -72,7 +74,12 @@ import {
   wireDiscussionPresenceHandlers,
   type ThreadPresence,
 } from "./discussion-presence.js";
-import { isMcpStatusRoom, mcpStatusRoomsFor, mcpStatusWorkspaceRoom } from "../mcp/status-rooms.js";
+import {
+  MCP_STATUS_ROOM,
+  isMcpStatusRoom,
+  mcpStatusRoomsFor,
+  mcpStatusWorkspaceRoom,
+} from "../mcp/status-rooms.js";
 import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
 import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
@@ -81,6 +88,7 @@ import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disco
 import { bumpEpoch } from "./revocation-relay.js";
 import { MAX_TIMEOUT_MS, envMs } from "../config/env-ms.js";
 import { onClientEvent, onConnection, runDetached } from "./client-event-handler.js";
+import { onRoomJoin, roomFromField } from "./join-rate-limit.js";
 
 const log = createChildLogger("socket");
 
@@ -523,6 +531,21 @@ function applyLiveUser(socket: MetisSocket, live: AuthPayload | null | undefined
   return false;
 }
 
+/**
+ * #682 — the room each `subscribe:*` payload asks for, which the join rate
+ * limit (`join-rate-limit.ts`) names in its refusal.
+ */
+const projectRoomOf = roomFromField("projectId", projectRoom);
+const analysisRoomOf = roomFromField("analysisId", analysisRoom);
+const sessionRoomOf = roomFromField("sessionId", sessionRoom);
+const connectorRoomOf = roomFromField("connectorId", connectorRoom);
+const publishRoomOf = roomFromField("batchId", publishRoom);
+const taskRoomOf = roomFromField("taskId", taskRoom);
+const jobRoomOf = roomFromField("jobId", jobRoom);
+const bgRunRoomOf = roomFromField("runId", bgRunRoom);
+const mcpRoomOf = () => MCP_STATUS_ROOM;
+const schedulerRoomOf = () => SCHEDULER_STATUS_ROOM;
+
 function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): void {
   const user = socket.data.user;
   log.info("Socket connected", { socketId: socket.id, userId: user.userId });
@@ -550,7 +573,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   // missing payload threw inside socket.io's nextTick dispatch, an uncaught
   // exception that took the whole API process down. Each reads its field with
   // `?.` and ignores anything that is not a non-empty string.
-  onClientEvent(socket, "subscribe:project", (payload) => {
+  onRoomJoin(socket, "subscribe:project", projectRoomOf, (payload) => {
     const projectId: unknown = payload?.projectId;
     if (!projectId || typeof projectId !== "string") return;
     // #255 — per-project authorization. The `project:{id}` room fans out
@@ -578,7 +601,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
           });
           return;
         }
-        await socket.join(`project:${projectId}`);
+        await socket.join(projectRoom(projectId));
       } catch (err) {
         log.warn("Socket subscribe:project failed", {
           socketId: socket.id,
@@ -592,7 +615,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   onClientEvent(socket, "unsubscribe:project", (payload) => {
     const projectId: unknown = payload?.projectId;
     if (!projectId || typeof projectId !== "string") return;
-    return socket.leave(`project:${projectId}`);
+    return socket.leave(projectRoom(projectId));
   });
 
   // Epic #475 (Phase 2, #480) — authz-gated discussion-thread rooms
@@ -618,7 +641,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
     analysisSubscription.set(analysisId, attempt);
     return attempt;
   };
-  onClientEvent(socket, "subscribe:analysis", (payload) => {
+  onRoomJoin(socket, "subscribe:analysis", analysisRoomOf, (payload) => {
     const analysisId: unknown = payload?.analysisId;
     if (!analysisId || typeof analysisId !== "string") return;
     const attempt = bumpAnalysisSubscription(analysisId);
@@ -649,7 +672,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   // arguments), so only the session's owner, who can still reach its project,
   // may join it — the same rule as every other read of the session. It used to
   // join any id a client named.
-  onClientEvent(socket, "subscribe:session", (payload) => {
+  onRoomJoin(socket, "subscribe:session", sessionRoomOf, (payload) => {
     const sessionId: unknown = payload?.sessionId;
     if (!sessionId || typeof sessionId !== "string") return;
     return (async () => {
@@ -669,7 +692,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   // #562 — bumped by every subscribe/unsubscribe, so a subscribe whose
   // membership lookup resolves after a later unsubscribe does not join.
   let mcpSubscription = 0;
-  onClientEvent(socket, "subscribe:mcp", () => {
+  onRoomJoin(socket, "subscribe:mcp", mcpRoomOf, () => {
     // SEC-5: only roles with `mcp.manage` (admin) may subscribe to the
     // mcp:status room. Status events leak server labels, scope, projectId,
     // and lastError strings — none of which non-admins should see.
@@ -786,7 +809,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
     return socket.leave(room);
   };
 
-  onClientEvent(socket, "subscribe:connector", (payload) => {
+  onRoomJoin(socket, "subscribe:connector", connectorRoomOf, (payload) => {
     const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
     return joinIfAuthorized(
@@ -801,7 +824,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
     return leaveRoom(connectorRoom(connectorId));
   });
 
-  onClientEvent(socket, "subscribe:publish", (payload) => {
+  onRoomJoin(socket, "subscribe:publish", publishRoomOf, (payload) => {
     const batchId: unknown = payload?.batchId;
     if (!batchId || typeof batchId !== "string") return;
     if (!hasPermission(user.role, "issue.publish") && !hasPermission(user.role, "issue.preview")) {
@@ -817,19 +840,19 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   });
 
   // Phase 11 — scheduler + tasks rooms.
-  onClientEvent(socket, "subscribe:scheduler", () => {
+  onRoomJoin(socket, "subscribe:scheduler", schedulerRoomOf, () => {
     if (!hasPermission(user.role, "scheduler.read")) {
       socket.emit("auth:error", {
         message: "FORBIDDEN: subscribe:scheduler requires scheduler.read",
       });
       return;
     }
-    return socket.join("scheduler:status");
+    return socket.join(SCHEDULER_STATUS_ROOM);
   });
   onClientEvent(socket, "unsubscribe:scheduler", () => {
-    return socket.leave("scheduler:status");
+    return socket.leave(SCHEDULER_STATUS_ROOM);
   });
-  onClientEvent(socket, "subscribe:task", (payload) => {
+  onRoomJoin(socket, "subscribe:task", taskRoomOf, (payload) => {
     const taskId: unknown = payload?.taskId;
     if (!taskId || typeof taskId !== "string") return;
     if (!hasPermission(user.role, "task.read")) {
@@ -848,7 +871,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   // Analysis, doc-generation, and impact-analysis all broadcast here. #655 —
   // the join is authorized against the job's scope (`resolveJobRoomScope`); it
   // used to be capability-based, and a PR-review job id is sequential.
-  onClientEvent(socket, "subscribe:job", (payload) => {
+  onRoomJoin(socket, "subscribe:job", jobRoomOf, (payload) => {
     const jobId: unknown = payload?.jobId;
     if (!jobId || typeof jobId !== "string") return;
     let scope: JobScope | null = null;
@@ -885,7 +908,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   });
 
   // Epic #156 — async background run rooms (`run:{runId}`).
-  onClientEvent(socket, "subscribe:bg-run", (payload) => {
+  onRoomJoin(socket, "subscribe:bg-run", bgRunRoomOf, (payload) => {
     const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
     return joinIfAuthorized(

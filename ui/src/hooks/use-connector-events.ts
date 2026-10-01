@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
+import { projectJoin } from "@/lib/socket-rooms";
 
 export interface ConnectorProgress {
   connectorId: string;
@@ -44,7 +45,7 @@ export function useConnectorProgress(projectId: string) {
 
     // Subscribe to the project room (server joins on subscribe:project).
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:project", { projectId }));
+    const release = keepSubscribed(socket, projectJoin(socket, projectId));
 
     const onProgress = (data: ConnectorProgress) => {
       // Handle error status — clear progress and let UI show error toast
@@ -102,10 +103,8 @@ export function useConnectorDiscovery(projectId: string, onDiscovery?: () => voi
     // #642 — re-join on reconnect; the server drops rooms with the old session.
     // #646 — a discovery sent during the gap is not toasted after the fact, but
     // the caller's refresh runs so the suggestions it would have shown appear.
-    const release = keepSubscribed(
-      socket,
-      () => socket.emit("subscribe:project", { projectId }),
-      () => callbackRef.current?.(),
+    const release = keepSubscribed(socket, projectJoin(socket, projectId), () =>
+      callbackRef.current?.(),
     );
 
     const onEvent = (data: ConnectorDiscovery) => {

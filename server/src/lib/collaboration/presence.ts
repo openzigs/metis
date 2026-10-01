@@ -27,6 +27,7 @@ import type { MetisIOServer } from "../socket/server.js";
 import { onClientEvent, onConnection } from "../socket/client-event-handler.js";
 import { canJoinPresenceRoom } from "../socket/room-access.js";
 import { createClusterPresence, type PresenceMember } from "../socket/cluster-presence.js";
+import { onRoomJoin } from "../socket/join-rate-limit.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("socket:presence");
@@ -88,9 +89,13 @@ export function wirePresenceHandlers(io: MetisIOServer, opts: WirePresenceOption
 
     // #654 — the payload is read with `?.`, never destructured: a null or
     // missing payload rejected the handler's promise and crashed the process.
-    onClientEvent(
+    onRoomJoin(
       socket,
       "presence:join",
+      (payload?: { artifactType?: unknown; artifactId?: unknown } | null) =>
+        isPresenceArtifactType(payload?.artifactType) && typeof payload.artifactId === "string"
+          ? roomKey(payload.artifactType, payload.artifactId)
+          : undefined,
       async (payload?: { artifactType?: unknown; artifactId?: unknown } | null) => {
         const artifactType = payload?.artifactType;
         const artifactId = payload?.artifactId;
