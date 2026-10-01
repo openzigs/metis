@@ -5,6 +5,7 @@
 import type { AGENT_RESULT_STATUSES, ANALYSIS_AGENT_KEYS } from "./constants.js";
 import type { AnalysisCapability, AnalysisSkippedRepo } from "./analysis.js";
 import type { AiToolEvent } from "./conversation.js";
+import type { PresenceArtifactType } from "./socket-rooms.js";
 
 export interface ProjectRoomEvent {
   projectId: string;
@@ -34,7 +35,11 @@ export interface ThreadRoomEvent {
  */
 export interface SocketAuthErrorEvent {
   message: string;
-  /** The room whose join was refused, exactly as the client named it. */
+  /**
+   * The room whose join was refused, named by its `@metis/shared` factory
+   * (`connectorRoom`, `bgRunRoom`, `jobRoom`) so a client compares it against
+   * the same factory's output (#676).
+   */
   room?: string;
 }
 
@@ -569,8 +574,8 @@ export interface ClientToServerEvents {
   "typing:start": (data: ThreadRoomEvent) => void;
   "typing:stop": (data: ThreadRoomEvent) => void;
   /** Epic #728 — presence rooms per artifact. */
-  "presence:join": (data: { artifactType: string; artifactId: string }) => void;
-  "presence:leave": (data: { artifactType: string; artifactId: string }) => void;
+  "presence:join": (data: { artifactType: PresenceArtifactType; artifactId: string }) => void;
+  "presence:leave": (data: { artifactType: PresenceArtifactType; artifactId: string }) => void;
 }
 
 // ---- Phase 11: Scheduler + Tasks -------------------------------------------

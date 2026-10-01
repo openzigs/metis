@@ -5,6 +5,7 @@
  * registers them with the singletons used by routes. Returns a teardown
  * function for graceful shutdown + tests.
  */
+import { sessionRoom } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import type { MetisIOServer } from "../socket/server.js";
@@ -104,10 +105,10 @@ export function bootstrapMCP(opts: BootstrapOptions = {}): MCPBootstrap {
     const io = opts.io;
     setApprovalNotifier({
       emit(event) {
-        io.to(`session:${event.sessionId}`).emit("mcp:approval:requested", event);
+        io.to(sessionRoom(event.sessionId)).emit("mcp:approval:requested", event);
       },
       emitDecision(event) {
-        io.to(`session:${event.sessionId}`).emit("mcp:approval:decided", event);
+        io.to(sessionRoom(event.sessionId)).emit("mcp:approval:decided", event);
       },
     });
   }

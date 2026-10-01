@@ -20,6 +20,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
   patchSchemaOf,
+  sessionRoom,
   type ApiResponse,
   type CompactionEventDto,
   type ModelCatalogResponse,
@@ -756,7 +757,7 @@ function emitToolEventToSession(event: ToolEvent): void {
   const io = getSocketServer();
   if (!io) return;
   try {
-    io.to(`session:${event.sessionId}`).emit("ai:tool:event", event);
+    io.to(sessionRoom(event.sessionId)).emit("ai:tool:event", event);
   } catch (err) {
     log.warn("Tool event socket emit failed", { error: (err as Error).message });
   }

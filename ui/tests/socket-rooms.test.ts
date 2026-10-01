@@ -91,3 +91,11 @@ describe("room-follow factories (#672)", () => {
     },
   );
 });
+
+describe("room-follow factory types (#676)", () => {
+  it("accepts only a listed presence artifact type", () => {
+    // @ts-expect-error — a free-form type could make two `type:id` rooms collide.
+    const follow = presenceFollow(s as never, "requirement", "x");
+    expect(follow.room).toBe("presence:requirement:x");
+  });
+});

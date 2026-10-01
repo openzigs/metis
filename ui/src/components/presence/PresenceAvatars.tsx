@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 import { useSocket } from "@/lib/socket-client";
 import { keepRoomSubscribed } from "@/lib/socket-subscription";
 import { presenceFollow } from "@/lib/socket-rooms";
-import { presenceRoom } from "@metis/shared";
+import { presenceRoom, type PresenceArtifactType } from "@metis/shared";
 import { cn } from "@/lib/utils";
 
 interface PresenceUser {
@@ -31,7 +31,7 @@ interface PresenceUpdate {
 }
 
 interface PresenceAvatarsProps {
-  artifactType: string;
+  artifactType: PresenceArtifactType;
   artifactId: string;
   /** Max visible avatars before showing "+N". Default 5. */
   maxVisible?: number;
