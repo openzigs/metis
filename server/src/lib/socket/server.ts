@@ -68,7 +68,7 @@ import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status
 import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
 import { bumpEpoch } from "./revocation-relay.js";
 import { MAX_TIMEOUT_MS, envMs } from "../config/env-ms.js";
-import { onClientEvent } from "./client-event-handler.js";
+import { onClientEvent, onConnection, runDetached } from "./client-event-handler.js";
 
 const log = createChildLogger("socket");
 
@@ -154,18 +154,25 @@ export function createSocketServer(
     next();
   });
 
-  io.on("connection", (socket) => attachHandlers(socket));
+  // #658 — a throw from `attachHandlers` is logged and drops this one socket;
+  // unwrapped, socket.io's nextTick connect would make it an uncaughtException.
+  onConnection(io, attachHandlers);
   // #622 — with the cluster adapter, a revocation or eviction handled on another
   // replica moves THIS replica's #613 epochs too, so a handshake or
   // `subscribe:mcp` in flight here re-reads; a role-change reconnect also closes
   // this replica's transports (see `reconnectUserSockets`).
   wireUserRevocationRelay(io, Boolean(opts.adapter));
   wireMcpStatusEvictionRelay(io, Boolean(opts.adapter));
-  opts.onAdapterListening?.(() => void revalidateLocalSockets(io, "listen"));
+  opts.onAdapterListening?.(() =>
+    runDetached(revalidateLocalSockets(io, "listen"), "revalidateLocalSockets listen"),
+  );
   const sweepEvery =
     opts.revalidateIntervalMs ?? (opts.adapter ? resolveSocketRevalidateIntervalMs() : undefined);
   if (sweepEvery !== undefined) {
-    const sweep = setInterval(() => void revalidateLocalSockets(io, "sweep"), sweepEvery);
+    const sweep = setInterval(
+      () => runDetached(revalidateLocalSockets(io, "sweep"), "revalidateLocalSockets sweep"),
+      sweepEvery,
+    );
     sweep.unref();
     // `io.close()` closes the HTTP server, which ends the sweep with it.
     httpServer.once("close", () => clearInterval(sweep));
@@ -385,7 +392,7 @@ async function revalidateUserSockets(
   }
   for (const [socket, rooms] of roomsBefore) {
     for (const room of rooms) {
-      if (!allowed.has(room)) void socket.leave(room);
+      if (!allowed.has(room)) runDetached(socket.leave(room), "revalidate leave", socket.id);
     }
   }
 }
@@ -510,7 +517,7 @@ function attachHandlers(socket: MetisSocket): void {
   // This intentionally does NOT expose any `subscribe:user` handler — there is
   // no client-supplied room id, so cross-user room injection is structurally
   // impossible. Every (re)connection triggers this so reconnect is covered.
-  void socket.join(`user:${user.userId}`);
+  runDetached(socket.join(`user:${user.userId}`), "join user room", socket.id);
   log.debug("Socket auto-joined personal room", {
     socketId: socket.id,
     room: `user:${user.userId}`,
@@ -520,7 +527,7 @@ function attachHandlers(socket: MetisSocket): void {
   // ran before the join above, found no socket in `user:{id}` and missed this
   // one. Any such revocation moved the epoch, so re-read the user once.
   if (userSocketRevocationEpoch(socket.nsp.server) !== socket.data.revocationEpoch) {
-    void recheckLiveUser(socket);
+    runDetached(recheckLiveUser(socket), "recheckLiveUser", socket.id);
   }
 
   // #654 — no handler destructures its payload in the parameter list: a null or
@@ -687,7 +694,9 @@ function attachHandlers(socket: MetisSocket): void {
     // (a workspace deleted or left since the last one), not only joins.
     const leaveMcpStatusRoomsNotIn = (rooms: string[]): void => {
       for (const room of [...socket.rooms]) {
-        if (isMcpStatusRoom(room) && !rooms.includes(room)) void socket.leave(room);
+        if (isMcpStatusRoom(room) && !rooms.includes(room)) {
+          runDetached(socket.leave(room), "subscribe:mcp leave", socket.id);
+        }
       }
     };
     return (async () => {
@@ -710,7 +719,10 @@ function attachHandlers(socket: MetisSocket): void {
   onClientEvent(socket, "unsubscribe:mcp", () => {
     ++mcpSubscription;
     // Every mcp:status room this socket is in, whatever memberships it joined.
-    for (const room of [...socket.rooms]) if (isMcpStatusRoom(room)) void socket.leave(room);
+    for (const room of [...socket.rooms]) {
+      if (isMcpStatusRoom(room))
+        runDetached(socket.leave(room), "unsubscribe:mcp leave", socket.id);
+    }
   });
 
   onClientEvent(socket, "subscribe:connector", (payload) => {
@@ -774,7 +786,7 @@ function attachHandlers(socket: MetisSocket): void {
   onClientEvent(socket, "subscribe:job", (payload) => {
     const jobId: unknown = payload?.jobId;
     if (!jobId || typeof jobId !== "string") return;
-    void socket.join(`job:${jobId}`);
+    runDetached(socket.join(`job:${jobId}`), "subscribe:job join", socket.id);
     // Replay the job's last known transition to THIS socket. A room only
     // delivers what is emitted while you are in it, and a client cannot
     // subscribe until the trigger endpoint has answered — so a short job

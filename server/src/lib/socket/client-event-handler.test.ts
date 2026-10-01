@@ -14,7 +14,7 @@ vi.mock("../logger.js", () => ({
   createChildLogger: () => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error }),
 }));
 
-import { onClientEvent } from "./client-event-handler.js";
+import { onClientEvent, onConnection, runDetached } from "./client-event-handler.js";
 
 let httpServer: http.Server;
 let io: SocketIOServer;
@@ -156,5 +156,139 @@ describe("#658 onClientEvent contains handler failures", () => {
       expect.objectContaining({ event: "subscribe:session", socketId: "fake-1", error: "db down" }),
     );
     expect(listeners.get("unsubscribe:job")!({ jobId: "j1" })).toBeUndefined();
+  });
+
+  it("contains a rejecting non-native thenable (a lazy PrismaPromise returned directly)", async () => {
+    const listeners = new Map<string, (...args: unknown[]) => unknown>();
+    const fake = {
+      id: "fake-2",
+      on: (event: string, listener: (...args: unknown[]) => unknown) => {
+        listeners.set(event, listener);
+      },
+    };
+    // Lazy like a PrismaPromise: the work runs only when `then` is called, and
+    // it is not a native Promise, so an `instanceof Promise` check misses it.
+    let started = 0;
+    const lazyRejecting: PromiseLike<never> = {
+      then(_onFulfilled, onRejected) {
+        started += 1;
+        setTimeout(() => onRejected?.(new Error("lazy boom")), 0);
+        return this as never;
+      },
+    };
+    expect(lazyRejecting instanceof Promise).toBe(false);
+    onClientEvent(fake, "subscribe:job", () => lazyRejecting);
+    // A `then` that throws synchronously is a rejection too, not an escape.
+    onClientEvent(fake, "unsubscribe:job", () => ({
+      then() {
+        throw new Error("then threw");
+      },
+    }));
+
+    await listeners.get("subscribe:job")!({ jobId: "j1" });
+    // The wrapper subscribed to the thenable (so the lazy work ran) and logged
+    // its rejection.
+    expect(started).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      "Socket handler failed",
+      expect.objectContaining({ event: "subscribe:job", socketId: "fake-2", error: "lazy boom" }),
+    );
+    await listeners.get("unsubscribe:job")!({ jobId: "j1" });
+    expect(error).toHaveBeenCalledWith(
+      "Socket handler failed",
+      expect.objectContaining({ event: "unsubscribe:job", error: "then threw" }),
+    );
+  });
+});
+
+describe("#658 runDetached contains a rejection nothing waits on", () => {
+  it("logs a rejecting promise or lazy thenable, ignores a plain value, and never escapes", async () => {
+    const crashes: unknown[] = [];
+    const onCrash = (err: unknown): void => {
+      crashes.push(err);
+    };
+    process.on("unhandledRejection", onCrash);
+    try {
+      let started = 0;
+      const lazy: PromiseLike<never> = {
+        then(_f, onRejected) {
+          started += 1;
+          onRejected?.("lazy reason");
+          return this as never;
+        },
+      };
+      expect(runDetached(Promise.reject(new Error("join failed")), "join", "s-1")).toBeUndefined();
+      runDetached(lazy, "lazy", "s-2");
+      runDetached(undefined, "sync join");
+      await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(2));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(crashes).toEqual([]);
+      expect(started).toBe(1);
+      expect(error).toHaveBeenCalledWith(
+        "Detached socket work failed",
+        expect.objectContaining({ what: "join", socketId: "s-1", error: "join failed" }),
+      );
+      expect(error).toHaveBeenCalledWith(
+        "Detached socket work failed",
+        expect.objectContaining({ what: "lazy", socketId: "s-2", error: "lazy reason" }),
+      );
+    } finally {
+      process.off("unhandledRejection", onCrash);
+    }
+  });
+});
+
+describe("#658 onConnection contains a throw while attaching handlers", () => {
+  it("logs the throw, disconnects that socket, and leaves the process alive", () => {
+    let listener: ((socket: { id: string; disconnect: () => void }) => void) | undefined;
+    const fakeIo = {
+      on: (_event: "connection", l: (socket: { id: string; disconnect: () => void }) => void) => {
+        listener = l;
+      },
+    };
+    const attached: string[] = [];
+    onConnection(fakeIo, (socket) => {
+      if (socket.id === "bad") throw new Error("attach boom");
+      attached.push(socket.id);
+    });
+    const bad = { id: "bad", disconnect: vi.fn() };
+    const good = { id: "good", disconnect: vi.fn() };
+    expect(() => listener!(bad)).not.toThrow();
+    listener!(good);
+    expect(bad.disconnect).toHaveBeenCalledWith(true);
+    expect(good.disconnect).not.toHaveBeenCalled();
+    expect(attached).toEqual(["good"]);
+    expect(error).toHaveBeenCalledWith(
+      "Socket connection setup failed; disconnecting the socket",
+      expect.objectContaining({ socketId: "bad", error: "attach boom" }),
+    );
+  });
+
+  it("logs, and does not throw, when the disconnect itself throws", () => {
+    type Listener = (socket: { id: string; disconnect: () => void }) => void;
+    let listener: Listener | undefined;
+    const fakeIo = {
+      on: (_event: "connection", l: Listener) => {
+        listener = l;
+      },
+    };
+    onConnection(fakeIo, () => {
+      throw "non-error";
+    });
+    const socket = {
+      id: "s",
+      disconnect: () => {
+        throw new Error("already gone");
+      },
+    };
+    expect(() => listener!(socket)).not.toThrow();
+    expect(error).toHaveBeenCalledWith(
+      "Socket connection setup failed; disconnecting the socket",
+      expect.objectContaining({ socketId: "s", error: "non-error" }),
+    );
+    expect(error).toHaveBeenCalledWith(
+      "Socket disconnect after a failed setup also failed",
+      expect.objectContaining({ socketId: "s", error: "already gone" }),
+    );
   });
 });

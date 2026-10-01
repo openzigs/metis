@@ -9,16 +9,32 @@
  * make one handler fail took every other user's connection down with it.
  * #652 / #654 removed every known way to do that; this closes the class.
  *
- * `onClientEvent(socket, event, handler)` is the only way a handler is
- * registered on a server-side socket — `socket.on(...)` is a lint error in
- * `server/src` (see `eslint.config.mjs`). The wrapper:
- *   - catches a synchronous throw;
- *   - catches a rejection of the promise the handler RETURNS. A handler that
- *     starts async work must return (or `await`) it: a promise it discards with
- *     `void` is out of reach, exactly as before;
- *   - logs the failure at `error` with the event name and socket id, and leaves
- *     the socket connected. Nothing is sent to the client — the error text is
- *     server-side detail.
+ * Three wrappers, one per way async socket work can fail outside a try/catch:
+ *   - `onClientEvent(socket, event, handler)` registers a client-event handler.
+ *     It catches a synchronous throw and a rejection of the promise — or any
+ *     other thenable, such as a lazy PrismaPromise — the handler RETURNS, logs
+ *     it at `error` with the event name and socket id, and leaves the socket
+ *     connected. Nothing is sent to the client: the error text is server-side
+ *     detail.
+ *   - `onConnection(io, attach)` registers the `connection` listener, which
+ *     socket.io also runs from `process.nextTick` with no try/catch. A throw
+ *     from `attach` is logged and disconnects that one socket.
+ *   - `runDetached(work, what, socketId)` takes async work started mid-handler
+ *     that nothing waits on (a `socket.join` / `socket.leave`), in place of
+ *     `void work`, and logs its rejection.
+ *
+ * Enforced by ESLint (`eslint.config.mjs`), on non-test files only:
+ *   - anywhere in `server/src`: `on`, `once`, `addListener`, `prependListener`,
+ *     `prependOnceListener` or `onAny` called on an object named `socket`
+ *     (`socket.on(...)`, `this.socket.once(...)`) — `no-restricted-syntax`;
+ *   - in `server/src/lib/socket/**` and `collaboration/presence.ts`: the same
+ *     methods called on ANY object (`s.on`, `client.once`, `io.on`), except
+ *     `asRelayServer(io).on(...)`, the replica-to-replica relay in
+ *     `revocation-relay.ts`. This file and `cluster-adapter.ts` (pg `Pool` and
+ *     `Client` listeners only) are exempt;
+ *   - in those same socket modules: a floating promise, `void` included —
+ *     type-aware `@typescript-eslint/no-floating-promises` with
+ *     `ignoreVoid: false`.
  *
  * Decision — no process-level `uncaughtException` / `unhandledRejection`
  * handler is registered. A throw that escapes this wrapper is a genuine fault
@@ -56,6 +72,15 @@ export interface ClientEventSocket {
 
 type RawOn = (event: string, listener: (...args: unknown[]) => unknown) => unknown;
 
+/** Anything with a callable `then`: a native promise or any other thenable. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
 function logFailure(event: string, socketId: string, err: unknown): void {
   log.error("Socket handler failed", {
     event,
@@ -75,20 +100,84 @@ export function onClientEvent<E extends ClientEventName>(
   // invokes the listener directly — a unit test's fake socket — can await the
   // handler's work. socket.io ignores a listener's return value.
   const contained = (...args: unknown[]): Promise<void> | undefined => {
-    let result: unknown;
+    let pending: PromiseLike<unknown>;
     try {
-      result = (handler as (...a: unknown[]) => unknown)(...args);
+      const result = (handler as (...a: unknown[]) => unknown)(...args);
+      if (!isThenable(result)) return undefined;
+      pending = result;
     } catch (err) {
       logFailure(event, socket.id, err);
       return undefined;
     }
-    if (result instanceof Promise) {
-      return result.then(
-        () => undefined,
-        (err: unknown) => logFailure(event, socket.id, err),
-      );
-    }
-    return undefined;
+    // `Promise.resolve` adopts a non-native thenable too (a lazy PrismaPromise
+    // returned directly), so its rejection is caught here as well — and a
+    // `then` that throws becomes a rejection rather than an escape.
+    return Promise.resolve(pending).then(
+      () => undefined,
+      (err: unknown) => logFailure(event, socket.id, err),
+    );
   };
   (socket.on as unknown as RawOn).call(socket, event, contained);
+}
+
+/**
+ * Start async work nothing waits on — a `socket.join` mid-handler, a
+ * `socket.leave` loop, a re-check kicked off at connect — so that a rejection
+ * is logged at `error` (with `what` and the socket id) instead of escaping as an
+ * `unhandledRejection`, which `void work` would let it do. Timing is unchanged:
+ * the caller does not wait. A non-native thenable is subscribed to, so lazy
+ * work runs. Type-aware `no-floating-promises` (`ignoreVoid: false`) enforces
+ * this in the socket modules (`eslint.config.mjs`).
+ */
+export function runDetached(work: unknown, what: string, socketId?: string): void {
+  if (!isThenable(work)) return;
+  Promise.resolve(work).then(undefined, (err: unknown) => {
+    log.error("Detached socket work failed", {
+      what,
+      socketId,
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+  });
+}
+
+/** The socket surface `onConnection` needs to drop a socket it could not set up. */
+export interface ConnectionSocket {
+  id: string;
+  disconnect(close?: boolean): unknown;
+}
+
+/**
+ * Register `attach` as the server's `connection` listener. socket.io 4.x runs
+ * `connection` listeners from `process.nextTick` with no try/catch
+ * (`Namespace._doConnect`), so a synchronous throw while attaching handlers
+ * would crash the process. A throw is logged at `error` with the socket id, and
+ * that one socket is disconnected: it would otherwise stay connected with only
+ * some of its handlers registered. `attach` is synchronous — a promise it
+ * returns is not awaited, so async work belongs inside a handler.
+ */
+export function onConnection<S extends ConnectionSocket>(
+  io: { on(event: "connection", listener: (socket: S) => void): unknown },
+  attach: (socket: S) => void,
+): void {
+  const contained = (socket: S): void => {
+    try {
+      attach(socket);
+    } catch (err) {
+      log.error("Socket connection setup failed; disconnecting the socket", {
+        socketId: socket.id,
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      try {
+        socket.disconnect(true);
+      } catch (disconnectErr) {
+        log.error("Socket disconnect after a failed setup also failed", {
+          socketId: socket.id,
+          error: disconnectErr instanceof Error ? disconnectErr.message : String(disconnectErr),
+        });
+      }
+    }
+  };
+  io.on("connection", contained);
 }

@@ -32,7 +32,7 @@ import type {
 import { canAccessThread as defaultCanAccessThread } from "../discussions/access.js";
 import { threadRoom } from "./discussion-rooms.js";
 import { createChildLogger } from "../logger.js";
-import { onClientEvent } from "./client-event-handler.js";
+import { onClientEvent, runDetached } from "./client-event-handler.js";
 
 const log = createChildLogger("socket:thread-presence");
 
@@ -133,7 +133,7 @@ export function wireDiscussionPresenceHandlers(
     const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
     const room = threadRoom(threadId);
-    void socket.leave(room);
+    runDetached(socket.leave(room), "presence:thread:leave", socket.id);
     joined.delete(room);
     removeFromRoom(room, socket.id);
     broadcastPresence(socket, room);

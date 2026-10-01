@@ -17,7 +17,7 @@
  *     → leaves all presence rooms for that socket, broadcasts updates
  */
 import type { MetisIOServer } from "../socket/server.js";
-import { onClientEvent } from "../socket/client-event-handler.js";
+import { onClientEvent, onConnection } from "../socket/client-event-handler.js";
 
 /** In-memory map: room key → Set of socket.data.user descriptors. */
 const roomPresence = new Map<
@@ -42,7 +42,7 @@ function broadcastPresenceUpdate(io: MetisIOServer, key: string): void {
 }
 
 export function wirePresenceHandlers(io: MetisIOServer): void {
-  io.on("connection", (socket) => {
+  onConnection(io, (socket) => {
     const user = socket.data.user;
     /** Tracks which presence rooms this socket has joined. */
     const joinedRooms = new Set<string>();
