@@ -33,6 +33,7 @@ import {
   planMigration,
 } from "../../lib/rag/embed-migration.js";
 import { jobEvents, genericFailureMessage } from "../../lib/socket/job-events.js";
+import { recordJobScope } from "../../lib/socket/job-scope-store.js";
 import { createChildLogger } from "../../lib/logger.js";
 
 const log = createChildLogger("admin:embeddings");
@@ -281,6 +282,9 @@ export function embeddingsAdminRouter(): Router {
           });
         }
         const jobId = randomUUID();
+        // #674 — durably, before the 202 hands the id out, so `subscribe:job`
+        // is authorized on any replica.
+        await recordJobScope(jobId, "embeddings-reindex", projectId);
         // Fire-and-forget: the worker owns all lifecycle emission + error
         // handling and always resolves, so this never rejects into the request.
         void runReindexJob(jobId, projectId, {

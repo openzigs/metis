@@ -23,6 +23,9 @@ const authDb = vi.hoisted(() => ({
   lookupError: null as Error | null,
 }));
 
+/** #674 review — set to make every `job_scopes` read fail. */
+const jobScopeDb = vi.hoisted(() => ({ readError: null as Error | null }));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     $queryRawUnsafe: vi.fn(async () => 1),
@@ -147,6 +150,21 @@ vi.mock("../src/lib/prisma.js", () => ({
         args.where.id === "ia1" ? { id: "ia1" } : null,
       ),
     },
+    // #674 — the durable scope of a row-less job: `rec-p1` is a spec-kit job
+    // in `p1`; `rec-expired` lapsed; `rec-bogus` names no known kind.
+    jobScopeRecord: {
+      findFirst: vi.fn(async (args: { where: { jobId: string; expiresAt?: { gt: Date } } }) => {
+        if (jobScopeDb.readError) throw jobScopeDb.readError;
+        const rows: Record<string, { kind: string; projectId: string; expiresAt: Date }> = {
+          "rec-p1": { kind: "spec-kit", projectId: "p1", expiresAt: new Date(8.64e15) },
+          "rec-expired": { kind: "spec-kit", projectId: "p1", expiresAt: new Date(0) },
+          "rec-bogus": { kind: "not-a-kind", projectId: "p1", expiresAt: new Date(8.64e15) },
+        };
+        const row = rows[args.where.jobId];
+        const after = args.where.expiresAt?.gt;
+        return row && (!after || row.expiresAt > after) ? row : null;
+      }),
+    },
     // #142 — `subscribe:session` authorises like every session read: `u1`
     // owns the unscoped session `s1`; nobody else owns anything.
     aISession: {
@@ -201,7 +219,8 @@ import {
 } from "../src/lib/socket/job-events.js";
 import { issueTokens } from "../src/lib/auth/jwt.js";
 import { canJoinAnalysisRoom } from "../src/lib/socket/analysis-room-access.js";
-import { canJoinConnectorRoom } from "../src/lib/socket/room-access.js";
+import { canJoinConnectorRoom, resolveJobRoomScope } from "../src/lib/socket/room-access.js";
+import { prisma } from "../src/lib/prisma.js";
 import { wirePresenceHandlers } from "../src/lib/collaboration/presence.js";
 import { presenceRoom, publishRoom, taskRoom } from "@metis/shared";
 import type {
@@ -915,6 +934,86 @@ describe("Socket.IO server", () => {
       expect(await subscribe("u2", "subscribe:job", "prr-1-manual")).toEqual({
         joined: false,
         errors: [{ message: "FORBIDDEN: no access to job", room: "job:prr-1-manual" }],
+      });
+    });
+
+    it("authorizes a row-less job from its durable scope record when this process remembers none", async () => {
+      // #674 — another replica (or this one before a restart) recorded the scope.
+      _resetJobLifecycleMemory();
+      expect(await subscribe("u1", "subscribe:job", "rec-p1")).toEqual({
+        joined: true,
+        errors: [],
+      });
+      expect(await subscribe("u2", "subscribe:job", "rec-p1")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:rec-p1" }],
+      });
+      for (const jobId of ["rec-expired", "rec-bogus"]) {
+        expect(await subscribe("u1", "subscribe:job", jobId)).toEqual({
+          joined: false,
+          errors: [{ message: "FORBIDDEN: no access to job", room: `job:${jobId}` }],
+        });
+      }
+    });
+
+    describe("#674 review — job_scopes is a last resort, and its failure is a miss", () => {
+      const member = {
+        userId: "u1",
+        username: "u1",
+        role: "developer",
+        permissions: [],
+        workspaces: ["w1"],
+      } as never;
+      const findRecorded = () => vi.mocked(prisma.jobScopeRecord.findFirst);
+
+      afterEach(() => {
+        jobScopeDb.readError = null;
+      });
+
+      it.each(["a1", "d1", "ir1"])(
+        "a failing job_scopes read still admits a member to row-backed job %s",
+        async (jobId) => {
+          _resetJobLifecycleMemory();
+          jobScopeDb.readError = new Error("job_scopes down");
+          expect(await subscribe("u1", "subscribe:job", jobId)).toEqual({
+            joined: true,
+            errors: [],
+          });
+        },
+      );
+
+      it.each(["a1", "d1", "ir1", "ia1"])(
+        "does not query job_scopes when row-backed job %s matches",
+        async (jobId) => {
+          _resetJobLifecycleMemory();
+          findRecorded().mockClear();
+          expect(await resolveJobRoomScope(member, jobId)).not.toBeNull();
+          expect(findRecorded()).not.toHaveBeenCalled();
+        },
+      );
+
+      it("queries job_scopes once every row lookup has missed", async () => {
+        _resetJobLifecycleMemory();
+        findRecorded().mockClear();
+        expect(await resolveJobRoomScope(member, "rec-p1")).toEqual({
+          kind: "spec-kit",
+          projectId: "p1",
+        });
+        expect(findRecorded()).toHaveBeenCalledTimes(1);
+      });
+
+      it("refuses an unknown id when the job_scopes read fails, without throwing", async () => {
+        _resetJobLifecycleMemory();
+        jobScopeDb.readError = new Error("job_scopes down");
+        await expect(resolveJobRoomScope(member, "unknown-job")).resolves.toBeNull();
+        // A recorded scope cannot be read either, so it fails closed too.
+        await expect(resolveJobRoomScope(member, "rec-p1")).resolves.toBeNull();
+        for (const jobId of ["unknown-job", "rec-p1"]) {
+          expect(await subscribe("u1", "subscribe:job", jobId)).toEqual({
+            joined: false,
+            errors: [{ message: "FORBIDDEN: no access to job", room: `job:${jobId}` }],
+          });
+        }
       });
     });
 

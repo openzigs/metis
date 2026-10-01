@@ -23,7 +23,7 @@ import {
 } from "../lib/agents/pr-reviewer/state-repo.js";
 import { getPrReviewWorker } from "../lib/agents/pr-reviewer/worker-singleton.js";
 import type { PrReviewQueue } from "../lib/agents/pr-reviewer/queue.js";
-import { rememberJobScope } from "../lib/socket/job-events.js";
+import { recordJobScope } from "../lib/socket/job-scope-store.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -177,27 +177,32 @@ export function prReviewsRouter(deps: PrReviewsRouterDeps = {}): Router {
         res.status(503).json({ success: false, error: "WORKER_UNAVAILABLE" });
         return;
       }
-      const enqueueOut = queue.enqueue({
-        // No GitHub `X-Delivery` header on a manual re-run — the dedup
-        // table is keyed off this id so we use a synthesised one that
-        // includes the PR + timestamp + a short random suffix to stay
-        // unique even on sub-millisecond double-clicks (post-`e7eb006`
-        // re-review nit: timestamp alone collides under fast retries).
-        deliveryId: `manual-rerun-${row.repoOwner}-${row.repoName}-${row.prNumber}-${Date.now()}-${randomUUID().slice(0, 8)}`,
-        projectId: row.projectId,
-        owner: row.repoOwner,
-        repo: row.repoName,
-        prNumber: row.prNumber,
-        context: {
-          action: "manual_rerun",
-          headSha: row.lastReviewedSha,
-          actorUserId: (req as Request & { user?: { userId?: string } }).user?.userId ?? null,
+      // #655 — `subscribe:job` authorizes against the job's scope; #674 —
+      // durably, so the client's socket may live on another replica. The queue
+      // dispatches in the enqueue tick and `started` names the job on
+      // `project:{id}`, so the scope is written in the pre-dispatch hook:
+      // committed before the job's first event and before the 202. A
+      // shutdown-rejected enqueue records nothing.
+      const enqueueOut = await queue.enqueueAfter(
+        {
+          // No GitHub `X-Delivery` header on a manual re-run — the dedup
+          // table is keyed off this id so we use a synthesised one that
+          // includes the PR + timestamp + a short random suffix to stay
+          // unique even on sub-millisecond double-clicks (post-`e7eb006`
+          // re-review nit: timestamp alone collides under fast retries).
+          deliveryId: `manual-rerun-${row.repoOwner}-${row.repoName}-${row.prNumber}-${Date.now()}-${randomUUID().slice(0, 8)}`,
+          projectId: row.projectId,
+          owner: row.repoOwner,
+          repo: row.repoName,
+          prNumber: row.prNumber,
+          context: {
+            action: "manual_rerun",
+            headSha: row.lastReviewedSha,
+            actorUserId: (req as Request & { user?: { userId?: string } }).user?.userId ?? null,
+          },
         },
-      });
-      // #655 — `subscribe:job` authorizes against the job's scope. A review
-      // queued behind another emits nothing until it starts, so record the
-      // scope now, for the client that subscribes as soon as it has the id.
-      rememberJobScope(enqueueOut.jobId, "pr-review", row.projectId || null);
+        (jobId) => recordJobScope(jobId, "pr-review", row.projectId || null),
+      );
       res.status(202).json(
         ok({
           jobId: enqueueOut.jobId,

@@ -101,6 +101,23 @@ export interface PrReviewQueue {
    * same `(owner, repo)` are serialized through a small worker pool.
    */
   enqueue(payload: PrReviewJobPayload): { jobId: string; queueDepth: number };
+  /**
+   * #674 — enqueue, but run `beforeDispatch(jobId)` to completion BEFORE the
+   * job joins its lane. `enqueue` dispatches synchronously, so `started` (and
+   * its `project:{id}` broadcast) goes out in the same tick; anything that must
+   * be true before a client can learn the id — the durable `job_scopes` record —
+   * belongs in this hook instead of after the call.
+   *
+   * A queue already shutting down rejects with {@link SHUTDOWN_REJECTED_JOB_ID}
+   * and never calls the hook. If shutdown starts while the hook runs, the job
+   * is rejected the same way after it: the hook saw an id that is never
+   * returned, dispatched or broadcast. A hook that throws admits nothing and
+   * the error propagates.
+   */
+  enqueueAfter(
+    payload: PrReviewJobPayload,
+    beforeDispatch: (jobId: string) => Promise<void>,
+  ): Promise<{ jobId: string; queueDepth: number }>;
   /** Inspect queue depth (test introspection). */
   depth(): number;
   /** Inspect dead-letter queue contents (test introspection). */
@@ -129,6 +146,9 @@ export interface PrReviewQueue {
 interface InternalJob extends PrReviewJob {
   jobId: string;
 }
+
+/** The id an enqueue returns when the queue is shutting down; no job has it. */
+export const SHUTDOWN_REJECTED_JOB_ID = "prr-shutdown-rejected";
 
 const DEFAULT_BACKOFF_MS = [1_000, 4_000, 16_000];
 const DEFAULT_CONCURRENCY = 2;
@@ -267,34 +287,52 @@ export function createPrReviewQueue(opts: PrReviewQueueOptions): PrReviewQueue {
     }
   }
 
-  function enqueueInternal(payload: PrReviewJobPayload): {
-    jobId: string;
-    queueDepth: number;
-  } {
-    if (shuttingDown) {
-      // The webhook handler must never crash on a shutdown race — return
-      // a sentinel job id and depth=-1 so callers can log + drop without
-      // their request hanging. The dedup row is already persisted, so
-      // GitHub's redelivery on the next process will pick it up.
-      return { jobId: "prr-shutdown-rejected", queueDepth: -1 };
-    }
-    const key = laneKey(payload.owner, payload.repo);
-    const lane = getLane(key);
+  // The webhook handler must never crash on a shutdown race — return a
+  // sentinel job id and depth=-1 so callers can log + drop without their
+  // request hanging. The dedup row is already persisted, so GitHub's
+  // redelivery on the next process will pick it up.
+  const REJECTED = { jobId: SHUTDOWN_REJECTED_JOB_ID, queueDepth: -1 } as const;
+
+  function mintJob(payload: PrReviewJobPayload): InternalJob {
     nextJobSeq += 1;
-    const job: InternalJob = {
+    return {
       ...payload,
       attempt: 1,
       enqueuedAt: Date.now(),
       jobId: `prr-${nextJobSeq}-${payload.deliveryId || "no-delivery"}`,
     };
-    lane.pending.push(job);
+  }
+
+  function admit(job: InternalJob): { jobId: string; queueDepth: number } {
+    if (shuttingDown) return { ...REJECTED };
+    const key = laneKey(job.owner, job.repo);
+    getLane(key).pending.push(job);
     pendingTotal += 1;
     tryDispatch(key);
     return { jobId: job.jobId, queueDepth: pendingTotal };
   }
 
+  function enqueueInternal(payload: PrReviewJobPayload): {
+    jobId: string;
+    queueDepth: number;
+  } {
+    if (shuttingDown) return { ...REJECTED };
+    return admit(mintJob(payload));
+  }
+
+  async function enqueueAfter(
+    payload: PrReviewJobPayload,
+    beforeDispatch: (jobId: string) => Promise<void>,
+  ): Promise<{ jobId: string; queueDepth: number }> {
+    if (shuttingDown) return { ...REJECTED };
+    const job = mintJob(payload);
+    await beforeDispatch(job.jobId);
+    return admit(job);
+  }
+
   return {
     enqueue: enqueueInternal,
+    enqueueAfter,
     depth: () => pendingTotal,
     deadLetters: () => dlq.slice(),
     drain: async () => {

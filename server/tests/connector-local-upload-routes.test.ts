@@ -199,6 +199,16 @@ vi.mock("../src/lib/connectors/repo/connection-discovery.js", () => ({
   })),
 }));
 
+// #674 — the durable job-scope record; `settled` holds the ids whose write landed.
+const scopeStore = vi.hoisted(() => ({ settled: [] as string[] }));
+const recordJobScope = vi.hoisted(() =>
+  vi.fn(async (jobId: string) => {
+    await new Promise((r) => setTimeout(r, 5));
+    scopeStore.settled.push(jobId);
+  }),
+);
+vi.mock("../src/lib/socket/job-scope-store.js", () => ({ recordJobScope }));
+
 import request from "supertest";
 import { createApp } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
@@ -365,10 +375,15 @@ describe("generic POST /repos refuses non-git providers", () => {
 describe("provider routing on deep-ingest", () => {
   it("github connector shallow-clones (clone path), never resolveNonGitIngestRoot", async () => {
     const token = await login("admin");
+    scopeStore.settled = [];
+    recordJobScope.mockClear();
     const res = await request(app)
       .post("/api/projects/proj_1/connectors/repos/repo_github_x/deep-ingest")
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(202);
+    // #674 — the scope was committed durably before the 202 handed the id out.
+    expect(recordJobScope).toHaveBeenCalledWith(res.body.data.jobId, "repo-ingest", "proj_1");
+    expect(scopeStore.settled).toEqual([res.body.data.jobId]);
     await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
     expect(shallowCloneRepo).toHaveBeenCalledTimes(1);
     expect(resolveNonGitIngestRoot).not.toHaveBeenCalled();
@@ -592,6 +607,79 @@ describe("asynchronous deep-ingest (#373)", () => {
         "1 document created, 10 B cloned.",
     );
     expect(getLastJobLifecycle(jobId)!.failureCount).toBe(0);
+  });
+
+  // #674 panel — every job id a 409 names must already be durably scoped when
+  // the 409 is sent, or the UI's `subscribe:job` on it is refused on another
+  // replica. The scope write is awaited before the lease, so a click that lands
+  // while another's write is slow never learns an id whose record is pending.
+  it("a 409's job id is durably scoped before the 409 is sent, even with a slow scope write", async () => {
+    const token = await login("admin");
+    scopeStore.settled = [];
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let slowId: string | undefined;
+    recordJobScope.mockImplementationOnce(async (id: string) => {
+      slowId = id;
+      await held;
+      scopeStore.settled.push(id);
+    });
+    // Each response is paired with the durable records present when it arrived.
+    const send = () => deepIngest(token).then((res) => ({ res, settled: [...scopeStore.settled] }));
+    // Whichever request wins the lease keeps its run in flight until the end.
+    const open = gateSourceIngest();
+    let slow: Awaited<ReturnType<typeof send>>;
+    let other: Awaited<ReturnType<typeof send>>;
+    try {
+      const slowReq = send();
+      try {
+        await vi.waitFor(() => expect(slowId).toBeDefined());
+        other = await send();
+      } finally {
+        release();
+      }
+      slow = await slowReq;
+    } finally {
+      open();
+    }
+    const responses = [slow, other!];
+    const refused = responses.filter((r) => r.res.status === 409);
+    const started = responses.filter((r) => r.res.status === 202);
+    expect(refused).toHaveLength(1);
+    expect(started).toHaveLength(1);
+    const runningId = started[0].res.body.data.jobId as string;
+    expect(refused[0].res.body.error.code).toBe("INGEST_IN_PROGRESS");
+    // The 409 names the running job, whose record had landed when it was sent.
+    expect(refused[0].res.body.error.details).toEqual({ jobId: runningId });
+    expect(refused[0].settled).toContain(runningId);
+    expect(started[0].settled).toContain(runningId);
+    await vi.waitFor(() => expect(getLastJobLifecycle(runningId)?.status).toBe("completed"));
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+  });
+
+  it("a scope write that throws frees the connector and names no job", async () => {
+    const token = await login("admin");
+    recordJobScope.mockImplementationOnce(async () => {
+      throw new Error("scope write blew up");
+    });
+    const failed = await deepIngest(token);
+    expect(failed.status).toBe(500);
+    expect(isConnectorIngestActive("repo_github_x")).toBe(false);
+    // The aborted job's id is not left behind for another holder's 409.
+    const other = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
+    try {
+      const busy = await deepIngest(token);
+      expect(busy.status).toBe(409);
+      expect(busy.body.error.details).toBeUndefined();
+    } finally {
+      other.release();
+    }
+    // The connector is free, and the next click starts a fresh job.
+    const next = await deepIngest(token);
+    expect(next.status).toBe(202);
+    await vi.waitFor(() =>
+      expect(getLastJobLifecycle(next.body.data.jobId)?.status).toBe("completed"),
+    );
   });
 
   it("a 409 from another entry point's claim carries no job id", async () => {

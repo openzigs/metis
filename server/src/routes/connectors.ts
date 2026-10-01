@@ -111,6 +111,7 @@ import {
 import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js";
 import { createChildLogger } from "../lib/logger.js";
 import { genericFailureMessage, jobEvents } from "../lib/socket/job-events.js";
+import { recordJobScope } from "../lib/socket/job-scope-store.js";
 import {
   ingestConfluenceSpace,
   ingestJiraQuery,
@@ -702,10 +703,21 @@ export function connectorsRouter(): Router {
         // Project-scoped lookup first (#217 review): another project's caller
         // gets 404, never a 409 that reveals the id exists and is ingesting.
         const conn = await getRepoConnector(projectId, id);
+        const jobId = randomUUID();
+        // #674 — the scope is recorded durably BEFORE the lease is taken, so
+        // every id this route hands out — in the 202, or as the running job's
+        // `details.jobId` in a second click's 409 — is authorized for
+        // `subscribe:job` on any replica by the time a client holds it. Taking
+        // the lease first would publish the id to concurrent 409s during this
+        // await. Should the write throw, there is no lease or job name to leak.
+        await recordJobScope(jobId, "repo-ingest", projectId);
         // Concurrency guard — held by the background run, which releases it.
+        // A refused click is told the RUNNING job, whose scope was recorded
+        // when that job started; the scope just written for the refused id is
+        // inert — nothing returns or emits that id, and it expires on its TTL.
         const lease = tryAcquireConnectorIngest(id, "deep-ingest");
         if (!lease) throw deepIngestInProgress(id);
-        const jobId = randomUUID();
+        // Named in the same tick as the lease, so no 409 sees one without the other.
         activeDeepIngestJobs.set(id, jobId);
         jobEvents.started("repo-ingest", jobId, projectId, "Deep ingest started");
         void runDeepIngest(projectId, id, a, lease, { jobId, known: conn })
