@@ -135,8 +135,11 @@ describe("wirePresenceHandlers", () => {
       .mock.calls.find(([e]) => e === "connection")?.[1];
     connectionHandler!(mockSocket);
     for (const event of ["presence:join", "presence:leave"]) {
-      await expect(socketListeners[event]?.(null)).resolves.toBeUndefined();
-      await expect(socketListeners[event]?.()).resolves.toBeUndefined();
+      // A listener that is not registered must fail here, not resolve vacuously.
+      const listener = socketListeners[event];
+      expect(listener, `no listener registered for ${event}`).toBeTypeOf("function");
+      await expect(listener!(null)).resolves.toBeUndefined();
+      await expect(listener!()).resolves.toBeUndefined();
     }
     expect(mockSocket.join).not.toHaveBeenCalled();
     expect(mockSocket.leave).not.toHaveBeenCalled();

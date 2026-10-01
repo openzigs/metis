@@ -924,6 +924,10 @@ describe("#654 a null, missing or primitive payload never crashes the process", 
       for (const event of events) rawEmit.call(socket, event, ...args);
       await new Promise((r) => setTimeout(r, 150));
       expect(crashes).toEqual([]);
+      // A malformed payload is ignored silently, never answered with auth:error.
+      // The one reply is payload-independent: subscribe:mcp takes no payload and
+      // refuses this developer-role socket on permission alone (SEC-5).
+      expect(errors).toEqual(["FORBIDDEN: subscribe:mcp requires mcp.manage permission"]);
       // No room was joined from the bad payload.
       const joined = [...(io.sockets.adapter.sids.get(socket.id!) ?? [])];
       expect(joined.filter((room) => /:(undefined|null|42)$/.test(room))).toEqual([]);
