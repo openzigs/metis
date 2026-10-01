@@ -228,9 +228,9 @@ describeMaybe("Code Discovery — real-repo integration (#323)", () => {
     const byKind = new Map<string, number>();
     let resolved = 0;
     for (const e of codeEdges) {
-      const k = (e as { kind: string }).kind;
+      const k = String(e.kind);
       byKind.set(k, (byKind.get(k) ?? 0) + 1);
-      if ((e as { toSymbolId: string | null }).toSymbolId) resolved += 1;
+      if (e.toSymbolId) resolved += 1;
     }
     const calls = byKind.get("calls") ?? 0;
     const refs = byKind.get("references") ?? 0;

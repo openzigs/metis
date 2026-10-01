@@ -9,8 +9,10 @@ import { SecretNotFoundError } from "../../../src/lib/vault/vault-service.js";
 
 function vaultDouble() {
   return {
-    rotate: vi.fn(async (id: string) => ({ id })),
-    create: vi.fn(async (label: string) => ({ id: `new:${label}` })),
+    rotate: vi.fn(async (id: string, _value: string, _opts?: unknown) => ({ id })),
+    create: vi.fn(async (label: string, _value: string, _scope: string, _opts?: unknown) => ({
+      id: `new:${label}`,
+    })),
   };
 }
 const fresh = { label: "base", scope: "project" as const, description: "d", createdById: "u1" };

@@ -18,6 +18,7 @@
  *   AI_FIXTURE_DIR=/abs/path tsx server/scripts/e2e-build-clarify-fixtures.ts
  */
 /* eslint-disable no-console -- CLI script: progress to stdout, errors to stderr */
+import { FINDING_CATEGORIES, FINDING_SEVERITIES } from "@metis/shared";
 import { HAIKU_MODEL_ID, tierModelFor } from "../src/lib/ai/model-router.js";
 import { buildServerProvider } from "../src/lib/ai/server-provider.js";
 import {
@@ -49,6 +50,18 @@ import {
   SYNTHESIS_RESPONSE_JSON,
 } from "../../e2e/fixtures/clarify-loop.js";
 import { e2eServerAIEnv } from "../../e2e/fixtures/ai-mode.js";
+
+/**
+ * `SEED_FINDING` types its category and severity as plain strings; narrow them
+ * to the closed sets `formatFindingsTable` takes, failing loudly on drift.
+ */
+function oneOf<T extends string>(allowed: readonly T[], value: string, field: string): T {
+  const match = allowed.find((a) => a === value);
+  if (match === undefined) {
+    throw new Error(`SEED_FINDING.${field} "${value}" is not one of: ${allowed.join(", ")}`);
+  }
+  return match;
+}
 
 const usage = (tokens: number) => ({
   promptTokens: tokens,
@@ -153,8 +166,8 @@ export async function main(): Promise<void> {
   const findingsTable = formatFindingsTable([
     {
       agentKey: SEED_FINDING.agentKey,
-      category: SEED_FINDING.category,
-      severity: SEED_FINDING.severity,
+      category: oneOf(FINDING_CATEGORIES, SEED_FINDING.category, "category"),
+      severity: oneOf(FINDING_SEVERITIES, SEED_FINDING.severity, "severity"),
       title: SEED_FINDING.title,
       body: SEED_FINDING.body,
       tags: SEED_FINDING.tags,

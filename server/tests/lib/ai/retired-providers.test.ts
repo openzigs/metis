@@ -48,13 +48,12 @@ function primeOverlay(opts: {
 }) {
   const svc = getConfigService();
   for (const [k, v] of Object.entries(opts.secrets ?? {})) {
-    // @ts-expect-error — test seam: the vault preload cache.
+    // Test seam: the vault preload cache (bracket access reaches the private field).
     svc["secretCache"].set(k, v);
   }
   for (const [k, v] of Object.entries(opts.tunables ?? {})) {
-    // @ts-expect-error — test seam: the runtime_config preload cache.
+    // Test seam: the runtime_config preload cache (bracket access reaches the private field).
     svc["tunableCache"].set(k, v);
-    // @ts-expect-error — see above.
     svc["tunableDbBacked"].add(k);
   }
 }
@@ -132,9 +131,8 @@ describe("loadAIConfig refuses copilot-native by name (#149)", () => {
 
   it("a runtime-config row selecting copilot-native wins over env and is refused as such", () => {
     const svc = getConfigService();
-    // @ts-expect-error — test seam: prime the tunable cache as loadTunables() would.
+    // Test seam: prime the tunable cache as loadTunables() would (bracket access reaches the private field).
     svc["tunableCache"].set("AI_PROVIDER", "copilot-native");
-    // @ts-expect-error — see above.
     svc["tunableDbBacked"].add("AI_PROVIDER");
     const env = { AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "sk-ant" };
     expect(() => loadAIConfig(env)).toThrow(

@@ -72,7 +72,11 @@ describe("authenticateXray", () => {
   });
 
   it("strips a trailing slash from baseUrl before appending the path", async () => {
-    const fetchFn = vi.fn(async () => ({ ok: true, status: 200, text: async () => '"t"' }));
+    const fetchFn = vi.fn<Parameters<typeof authenticateXray>[3]>(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '"t"',
+    }));
     await authenticateXray("https://xray.example.com/", "a", "b", fetchFn);
     expect(String(fetchFn.mock.calls[0]![0])).toBe("https://xray.example.com/api/v2/authenticate");
   });

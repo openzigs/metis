@@ -44,8 +44,9 @@ describeIf("MCP docker-stdio runtime — end-to-end (#284)", () => {
 
   beforeAll(async () => {
     const cfg = getConfigService();
-    await cfg.set("MCP_IMAGE_ALLOWLIST", "ghcr.io/github/github-mcp-server", "test");
-    manager = new MCPLifecycleManager({});
+    await cfg.set("MCP_IMAGE_ALLOWLIST", "ghcr.io/github/github-mcp-server", { actorId: "test" });
+    // The config below carries no `${vault:...}` refs, so env passes through unchanged.
+    manager = new MCPLifecycleManager({ resolveEnv: async (env) => env });
   });
 
   afterAll(async () => {

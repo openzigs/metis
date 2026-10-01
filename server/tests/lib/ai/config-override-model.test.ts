@@ -50,13 +50,10 @@ describe("provider override and the deployment-wide model", () => {
 
   it("the deployment provider is the runtime one when Admin set AI_PROVIDER / AI_DEFAULT_MODEL", () => {
     const svc = getConfigService();
-    // @ts-expect-error — test seam: admin-set runtime_config values.
+    // Test seam: admin-set runtime_config values (bracket access reaches the private field).
     svc["tunableCache"].set("AI_PROVIDER", "anthropic");
-    // @ts-expect-error — see above.
     svc["tunableCache"].set("AI_DEFAULT_MODEL", "claude-admin-pick");
-    // @ts-expect-error — see above.
     svc["tunableDbBacked"].add("AI_PROVIDER");
-    // @ts-expect-error — see above.
     svc["tunableDbBacked"].add("AI_DEFAULT_MODEL");
 
     expect(loadAIConfig(base(), { provider: "anthropic" }).model).toBe("claude-admin-pick");

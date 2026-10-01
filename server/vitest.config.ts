@@ -32,11 +32,6 @@ export default defineConfig({
     // (a genuinely broken test fails all 3 attempts).
     retry: 2,
     pool: "forks",
-    poolOptions: {
-      forks: {
-        singleFork: false,
-      },
-    },
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "json-summary", "lcov"],

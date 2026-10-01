@@ -104,7 +104,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getProject).mockResolvedValue({ id: "proj-1", status: "active" } as never);
   vi.mocked(prisma.testCaseImport.create).mockImplementation(
-    async ({ data }: { data: Record<string, unknown> }) => ({ id: "imp-1", ...data }) as never,
+    ({ data }) => Promise.resolve({ id: "imp-1", ...data }) as never,
   );
   vi.mocked(prisma.testCaseDoc.upsert).mockResolvedValue({ id: "doc-1" } as never);
 });

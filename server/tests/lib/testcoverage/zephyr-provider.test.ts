@@ -100,7 +100,7 @@ describe("importZephyrCases", () => {
       jsonResponse(200, { values: [], isLast: true, startAt: 0, maxResults: 100, total: 0 }),
     ) as unknown as typeof fetch;
     await importZephyrCases(
-      { baseUrl: "https://zephyr.example.com", token: "t" },
+      { baseUrl: "https://zephyr.example.com", bearerToken: "t" },
       { projectKey: "P" },
       fetchFn,
     );

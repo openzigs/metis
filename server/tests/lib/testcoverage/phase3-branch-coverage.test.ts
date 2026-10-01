@@ -170,7 +170,7 @@ describe("provider importer branch fallbacks", () => {
       json(200, { values: [], isLast: true, startAt: 0, maxResults: 100, total: 0 }),
     ) as unknown as typeof fetch;
     const r = await importZephyrCases(
-      { baseUrl: "https://zephyr.example.com", token: "t" },
+      { baseUrl: "https://zephyr.example.com", bearerToken: "t" },
       { projectKey: "P" },
       fn,
     );
@@ -186,7 +186,7 @@ describe("provider importer branch fallbacks", () => {
     }) as unknown as typeof fetch;
     const r = await importXrayTests(
       { baseUrl: "https://xray.example.com", clientId: "id", clientSecret: "sec" },
-      { jql: "project = P" },
+      { projectKey: "P" },
       fn,
     );
     expect(r.cases).toEqual([]);
@@ -251,7 +251,7 @@ describe("non-ok throws / extra branch arms", () => {
     const fn = vi.fn(async () => json(500, { e: 1 })) as unknown as typeof fetch;
     await expect(
       importZephyrCases(
-        { baseUrl: "https://zep.example.com", token: "t" },
+        { baseUrl: "https://zep.example.com", bearerToken: "t" },
         { projectKey: "P" },
         fn,
       ),
@@ -271,7 +271,7 @@ describe("non-ok throws / extra branch arms", () => {
     }) as unknown as typeof fetch;
     await expect(
       importZephyrCases(
-        { baseUrl: "https://zep.example.com", token: "t" },
+        { baseUrl: "https://zep.example.com", bearerToken: "t" },
         { projectKey: "P" },
         fn,
       ),
@@ -472,7 +472,7 @@ describe("non-ok throws / extra branch arms", () => {
     }) as unknown as typeof fetch;
     // pageSize 0 → clampPageSize default branch
     const r = await importZephyrCases(
-      { baseUrl: "https://zep.example.com", token: "t" },
+      { baseUrl: "https://zep.example.com", bearerToken: "t" },
       { projectKey: "P", pageSize: 0 },
       fn,
     );

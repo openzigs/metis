@@ -199,6 +199,9 @@ describe("generateSuggestions", () => {
     vi.mocked(scorer.scoreGrounding).mockResolvedValueOnce({
       groundingScore: 0.2,
       hallucinationScore: 0.8,
+      citationOverlap: 0.2,
+      entailmentScore: 0.2,
+      claims: [],
     });
     const reqs = [req("r1", vec(1, 0, 0))];
     const out = await generateSuggestions({
