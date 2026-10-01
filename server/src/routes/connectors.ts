@@ -703,24 +703,22 @@ export function connectorsRouter(): Router {
         // Project-scoped lookup first (#217 review): another project's caller
         // gets 404, never a 409 that reveals the id exists and is ingesting.
         const conn = await getRepoConnector(projectId, id);
+        const jobId = randomUUID();
+        // #674 — the scope is recorded durably BEFORE the lease is taken, so
+        // every id this route hands out — in the 202, or as the running job's
+        // `details.jobId` in a second click's 409 — is authorized for
+        // `subscribe:job` on any replica by the time a client holds it. Taking
+        // the lease first would publish the id to concurrent 409s during this
+        // await. Should the write throw, there is no lease or job name to leak.
+        await recordJobScope(jobId, "repo-ingest", projectId);
         // Concurrency guard — held by the background run, which releases it.
+        // A refused click is told the RUNNING job, whose scope was recorded
+        // when that job started; the scope just written for the refused id is
+        // inert — nothing returns or emits that id, and it expires on its TTL.
         const lease = tryAcquireConnectorIngest(id, "deep-ingest");
         if (!lease) throw deepIngestInProgress(id);
-        const jobId = randomUUID();
-        // Named in the same tick as the lease, so a second click that lands
-        // during the scope write below still gets its 409 with this job id.
+        // Named in the same tick as the lease, so no 409 sees one without the other.
         activeDeepIngestJobs.set(id, jobId);
-        // #674 — durably, before the 202 hands the id out, so `subscribe:job`
-        // is authorized on any replica. It logs a database failure rather
-        // than throwing; should it throw anyway, the lease and the job name
-        // are given back rather than leaked.
-        try {
-          await recordJobScope(jobId, "repo-ingest", projectId);
-        } catch (err) {
-          if (activeDeepIngestJobs.get(id) === jobId) activeDeepIngestJobs.delete(id);
-          lease.release();
-          throw err;
-        }
         jobEvents.started("repo-ingest", jobId, projectId, "Deep ingest started");
         void runDeepIngest(projectId, id, a, lease, { jobId, known: conn })
           .catch(() => {

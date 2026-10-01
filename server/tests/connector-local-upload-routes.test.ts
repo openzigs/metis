@@ -609,31 +609,51 @@ describe("asynchronous deep-ingest (#373)", () => {
     expect(getLastJobLifecycle(jobId)!.failureCount).toBe(0);
   });
 
-  // #674 review — the scope write is awaited after the lease is taken; a click
-  // that lands during it must still be told which job holds the connector.
-  it("a second click during a slow scope write gets the 409 with the job id", async () => {
+  // #674 panel — every job id a 409 names must already be durably scoped when
+  // the 409 is sent, or the UI's `subscribe:job` on it is refused on another
+  // replica. The scope write is awaited before the lease, so a click that lands
+  // while another's write is slow never learns an id whose record is pending.
+  it("a 409's job id is durably scoped before the 409 is sent, even with a slow scope write", async () => {
     const token = await login("admin");
+    scopeStore.settled = [];
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
-    let writing: string | undefined;
+    let slowId: string | undefined;
     recordJobScope.mockImplementationOnce(async (id: string) => {
-      writing = id;
+      slowId = id;
       await held;
+      scopeStore.settled.push(id);
     });
-    const firstReq = deepIngest(token).then((r) => r);
+    // Each response is paired with the durable records present when it arrived.
+    const send = () => deepIngest(token).then((res) => ({ res, settled: [...scopeStore.settled] }));
+    // Whichever request wins the lease keeps its run in flight until the end.
+    const open = gateSourceIngest();
+    let slow: Awaited<ReturnType<typeof send>>;
+    let other: Awaited<ReturnType<typeof send>>;
     try {
-      await vi.waitFor(() => expect(writing).toBeDefined());
-      const second = await deepIngest(token);
-      expect(second.status).toBe(409);
-      expect(second.body.error.code).toBe("INGEST_IN_PROGRESS");
-      expect(second.body.error.details).toEqual({ jobId: writing });
+      const slowReq = send();
+      try {
+        await vi.waitFor(() => expect(slowId).toBeDefined());
+        other = await send();
+      } finally {
+        release();
+      }
+      slow = await slowReq;
     } finally {
-      release();
+      open();
     }
-    const first = await firstReq;
-    expect(first.status).toBe(202);
-    expect(first.body.data.jobId).toBe(writing);
-    await vi.waitFor(() => expect(getLastJobLifecycle(writing!)?.status).toBe("completed"));
+    const responses = [slow, other!];
+    const refused = responses.filter((r) => r.res.status === 409);
+    const started = responses.filter((r) => r.res.status === 202);
+    expect(refused).toHaveLength(1);
+    expect(started).toHaveLength(1);
+    const runningId = started[0].res.body.data.jobId as string;
+    expect(refused[0].res.body.error.code).toBe("INGEST_IN_PROGRESS");
+    // The 409 names the running job, whose record had landed when it was sent.
+    expect(refused[0].res.body.error.details).toEqual({ jobId: runningId });
+    expect(refused[0].settled).toContain(runningId);
+    expect(started[0].settled).toContain(runningId);
+    await vi.waitFor(() => expect(getLastJobLifecycle(runningId)?.status).toBe("completed"));
     await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
   });
 
