@@ -30,6 +30,7 @@ import type { PrReviewQueue } from "../lib/agents/pr-reviewer/queue.js";
 import { getPrReviewWorker } from "../lib/agents/pr-reviewer/worker-singleton.js";
 import { executePrReviewJob } from "../lib/agents/pr-reviewer/pr-review-job.js";
 import { createChildLogger } from "../lib/logger.js";
+import { recordJobScope } from "../lib/socket/job-scope-store.js";
 
 const log = createChildLogger("webhooks-github");
 
@@ -140,7 +141,7 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
         // review in production.
         const liveQueue = deps.queue ?? getPrReviewWorker()?.queue ?? null;
         if (liveQueue) {
-          liveQueue.enqueue({
+          const { jobId } = liveQueue.enqueue({
             deliveryId,
             projectId: project.id,
             owner,
@@ -158,6 +159,10 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
               skipGlobsRaw: project.prReviewSkipGlobs ?? null,
             },
           });
+          // #674 — durably, as `pr-reviews.ts` does for a manual re-review, so
+          // a socket on any replica that learns the id from `project:{id}` is
+          // authorized for `job:{id}` before the review's first event.
+          await recordJobScope(jobId, "pr-review", project.id);
           return;
         }
 

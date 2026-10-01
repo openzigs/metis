@@ -19,8 +19,24 @@ vi.mock("../src/lib/agents/pr-reviewer/webhook-dedup.js", () => ({
   purgeOldDeliveries: vi.fn(async () => 0),
 }));
 
+// #674 — the durable job-scope records the webhook writes for queued reviews.
+const jobScopes = vi.hoisted(() => new Map<string, { kind: string; projectId: string | null }>());
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
+    jobScopeRecord: {
+      upsert: vi.fn(
+        async ({
+          create,
+        }: {
+          create: { jobId: string; kind: string; projectId: string | null };
+        }) => {
+          jobScopes.set(create.jobId, { kind: create.kind, projectId: create.projectId });
+          return create;
+        },
+      ),
+      deleteMany: vi.fn(async () => ({ count: 0 })),
+    },
     publishedIssue: { findMany: vi.fn(async () => []) },
     requirement: { updateMany: vi.fn(async () => ({ count: 0 })) },
     requirementImplementation: {
@@ -53,6 +69,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 import { githubPrWebhookRouter } from "../src/routes/webhooks-github.js";
 import { createPrReviewQueue, type PrReviewQueue } from "../src/lib/agents/pr-reviewer/queue.js";
+import { _resetJobLifecycleMemory, getJobScope } from "../src/lib/socket/job-events.js";
 
 const SECRET = "test-secret";
 
@@ -175,6 +192,30 @@ describe("webhook dedup + queue", () => {
     expect((enqueued[0] as any).owner).toBe("acme");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((enqueued[0] as any).context.headSha).toBe("abc");
+  });
+
+  it("records the queued review's scope durably, under the project the webhook resolved", async () => {
+    jobScopes.clear();
+    _resetJobLifecycleMemory();
+    const queue: PrReviewQueue = {
+      enqueue: () => ({ jobId: "jq_scope", queueDepth: 1 }),
+      depth: () => 1,
+      deadLetters: () => [],
+      drain: async () => undefined,
+    };
+    const body = JSON.stringify(payload(104));
+    const resp = await request(makeApp(queue))
+      .post("/api/webhooks/github/pr")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", sign(body))
+      .set("X-GitHub-Delivery", "scope-1")
+      .set("X-GitHub-Event", "pull_request")
+      .send(body);
+    expect(resp.status).toBe(200);
+    // #674 — committed before the ACK, for a socket on any replica…
+    expect(jobScopes.get("jq_scope")).toEqual({ kind: "pr-review", projectId: "proj_1" });
+    // …and remembered on this one.
+    expect(getJobScope("jq_scope")).toEqual({ kind: "pr-review", projectId: "proj_1" });
   });
 
   it("skips dedup when skipDedup=true (test seam)", async () => {
