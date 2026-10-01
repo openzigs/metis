@@ -22,6 +22,7 @@ import { PausableLiveRegion } from "@/components/a11y/pausable-live-region";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { DraftDiffDialog } from "@/components/publishing/draft-diff-dialog";
 import {
@@ -366,7 +367,12 @@ export default function PublishingPage() {
 
   useEffect(() => {
     if (!socket || !liveBatchId) return;
-    socket.emit("subscribe:publish", { batchId: liveBatchId });
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    const release = keepSubscribed(
+      socket,
+      () => socket.emit("subscribe:publish", { batchId: liveBatchId }),
+      () => socket.emit("unsubscribe:publish", { batchId: liveBatchId }),
+    );
     const onStatus = (e: { status: string; message?: string | null }) => {
       setLiveLog((prev) => [...prev, `[${e.status}] ${e.message ?? ""}`]);
     };
@@ -400,7 +406,7 @@ export default function PublishingPage() {
     socket.on("publish:progress", onProgress);
     socket.on("publish:completed", onCompleted);
     return () => {
-      socket.emit("unsubscribe:publish", { batchId: liveBatchId });
+      release();
       socket.off("publish:status", onStatus);
       socket.off("publish:progress", onProgress);
       socket.off("publish:completed", onCompleted);

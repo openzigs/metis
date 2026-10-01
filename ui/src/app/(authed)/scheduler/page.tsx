@@ -22,6 +22,7 @@ import {
 import { queryKeys } from "@/lib/query-keys";
 import { computeSchedulerStats } from "@/lib/scheduler-stats";
 import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
@@ -61,11 +62,13 @@ export default function SchedulerPage() {
   // cheaper than maintaining client-side patches.
   useEffect(() => {
     if (!socket) return;
-    socket.emit("subscribe:scheduler");
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:scheduler"));
     const onAny = () => invalidate();
     socket.on("scheduler:status", onAny);
     socket.on("task:status", onAny);
     return () => {
+      release();
       socket.off("scheduler:status", onAny);
       socket.off("task:status", onAny);
     };

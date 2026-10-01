@@ -59,6 +59,45 @@ describe("useConnectorProgress (#664)", () => {
     unmount();
     expect(mockOff).toHaveBeenCalledWith("connector:progress", expect.any(Function));
   });
+
+  const progressHandler = () =>
+    mockOn.mock.calls.find((c) => c[0] === "connector:progress")?.[1] as (d: unknown) => void;
+  const progress = (over: Record<string, unknown> = {}) => ({
+    connectorId: "repo-1",
+    phase: "deep-ingest",
+    step: "Cloning repository",
+    current: 1,
+    total: 5,
+    ts: 0,
+    ...over,
+  });
+
+  it("drops a connector's progress on an error event", () => {
+    const { result } = renderHook(() => useConnectorProgress("proj-1"));
+    act(() => progressHandler()(progress()));
+    act(() => progressHandler()(progress({ status: "error" })));
+    expect(result.current.progressMap["repo-1"]).toBeUndefined();
+  });
+
+  it("clears a completed connector's progress after 2s", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useConnectorProgress("proj-1"));
+      act(() => progressHandler()(progress({ current: 5, total: 5 })));
+      expect(result.current.progressMap["repo-1"]).toBeDefined();
+      act(() => vi.advanceTimersByTime(2000));
+      expect(result.current.progressMap["repo-1"]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clearProgress removes one connector's progress", () => {
+    const { result } = renderHook(() => useConnectorProgress("proj-1"));
+    act(() => progressHandler()(progress()));
+    act(() => result.current.clearProgress("repo-1"));
+    expect(result.current.progressMap["repo-1"]).toBeUndefined();
+  });
 });
 
 describe("useConnectorDiscovery (#669)", () => {

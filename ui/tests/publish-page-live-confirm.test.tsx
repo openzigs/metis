@@ -12,7 +12,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act } from "react";
 import { makeWrapper } from "./test-utils";
+import { createFakeSocket } from "./helpers/fake-socket";
+import { useSocket } from "@/lib/socket-client";
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -303,5 +306,24 @@ describe("F — a stranded pending batch can be cleared", () => {
     fireEvent.click(button);
     await waitFor(() => expect(screen.getByText("running")).toBeInTheDocument());
     expect(cancelBatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("#642 — a watched batch keeps its live log across a reconnect", () => {
+  it("re-joins the publish room on reconnect and keeps appending events", async () => {
+    const socket = createFakeSocket();
+    vi.mocked(useSocket).mockReturnValue(socket as never);
+    listBatches.mockResolvedValue([makeBatch()]);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Watch" }));
+    const room = { batchId: "cms3u7y09003g259kej42fn4q" };
+    await waitFor(() => expect(socket.emitted("subscribe:publish", room)).toBe(1));
+
+    act(() => socket.reconnect());
+    expect(socket.emitted("subscribe:publish", room)).toBe(2);
+
+    act(() => socket.fire("publish:status", { status: "running", message: "after reconnect" }));
+    expect(await screen.findByText(/\[running\] after reconnect/)).toBeInTheDocument();
   });
 });

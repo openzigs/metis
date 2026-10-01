@@ -10,6 +10,8 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 import { ApiError } from "@/lib/api-client";
+import { act } from "react";
+import { createFakeSocket } from "./helpers/fake-socket";
 
 vi.mock("@/lib/socket-client", () => ({
   useSocket: vi.fn().mockReturnValue(null),
@@ -25,6 +27,7 @@ vi.mock("@/lib/scheduler-api", () => ({
 
 import TasksPage from "@/app/(authed)/tasks/page";
 import { tasksApi } from "@/lib/scheduler-api";
+import { useSocket } from "@/lib/socket-client";
 
 const listMock = tasksApi.list as unknown as ReturnType<typeof vi.fn>;
 const cancelMock = tasksApi.cancel as unknown as ReturnType<typeof vi.fn>;
@@ -293,5 +296,29 @@ describe("TasksPage — keyboard (#268)", () => {
     renderPage();
     await screen.findByRole("tab", { name: /Waiting/i });
     await expectApgTabKeyboard(user, "Task status");
+  });
+});
+
+describe("TasksPage — live updates survive a reconnect (#642)", () => {
+  it("re-joins the scheduler room on reconnect and keeps refetching on task events", async () => {
+    const socket = createFakeSocket();
+    vi.mocked(useSocket).mockReturnValue(socket as never);
+    try {
+      const { unmount } = renderPage();
+      await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+      expect(socket.emitted("subscribe:scheduler")).toBe(1);
+
+      act(() => socket.reconnect());
+      expect(socket.emitted("subscribe:scheduler")).toBe(2);
+
+      act(() => socket.fire("task:status", { taskId: "task-1", status: "completed" }));
+      await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+
+      unmount();
+      act(() => socket.reconnect());
+      expect(socket.emitted("subscribe:scheduler")).toBe(2);
+    } finally {
+      vi.mocked(useSocket).mockReturnValue(null);
+    }
   });
 });
