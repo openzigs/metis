@@ -375,8 +375,9 @@ describe("McpSettingsPage — Import result (#621)", () => {
       dryRun: false,
     });
     expect(result).toHaveAttribute("data-outcome", "partial");
-    expect(screen.getByTestId("import-result-status")).toHaveTextContent(
-      "Partially imported: 2 server(s) created, 1 with a warning, 0 failed",
+    // A zero count is left out of the summary (#624 review).
+    expect(screen.getByTestId("import-result-status").textContent).toBe(
+      "Partially imported: 2 server(s) created, 1 with a warning",
     );
     const warnings = screen.getAllByTestId("import-result-warning");
     expect(warnings).toHaveLength(1);
@@ -399,8 +400,8 @@ describe("McpSettingsPage — Import result (#621)", () => {
       dryRun: false,
     });
     expect(result).toHaveAttribute("data-outcome", "partial");
-    expect(screen.getByTestId("import-result-status")).toHaveTextContent(
-      "Partially imported: 1 server(s) created, 0 with a warning, 2 failed",
+    expect(screen.getByTestId("import-result-status").textContent).toBe(
+      "Partially imported: 1 server(s) created, 2 failed",
     );
     const failed = screen.getAllByTestId("import-result-failed");
     expect(failed).toHaveLength(2);
@@ -426,6 +427,18 @@ describe("McpSettingsPage — Import result (#621)", () => {
       "Import failed: 1 server(s) failed",
     );
     expect(screen.queryByTestId("import-result-created")).not.toBeInTheDocument();
+  });
+
+  it("announces only the summary line, not every listed entry", async () => {
+    await importWith({
+      plan,
+      created: [{ id: "s1", label: "fs" }],
+      errors: [{ label: "gh", message: "boom" }],
+      dryRun: false,
+    });
+    const status = screen.getByRole("status");
+    expect(status).toBe(screen.getByTestId("import-result-status"));
+    expect(status).not.toHaveTextContent("boom");
   });
 
   it("clears the previous result when a new file is chosen", async () => {
@@ -693,6 +706,17 @@ describe("McpSettingsPage — Import / Export edge paths (#529)", () => {
       click.mockRestore();
       error.mockRestore();
     }
+  });
+
+  it("does not offer to import a file whose servers object is empty", async () => {
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+    const content = JSON.stringify({ servers: {} });
+    const file = new File([content], "mcp.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: () => Promise.resolve(content) });
+    fireEvent.change(screen.getByTestId("import-file"), { target: { files: [file] } });
+    expect(await screen.findByTestId("import-error")).toHaveTextContent("No servers to import");
+    expect(screen.getByTestId("import-confirm")).toBeDisabled();
   });
 
   it("rejects a JSON file with no top-level servers object", async () => {

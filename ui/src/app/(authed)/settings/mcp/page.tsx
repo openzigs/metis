@@ -623,6 +623,11 @@ function ImportExportTab() {
         setPreview({ raw: text, parsed: null, error: "Missing top-level `servers` object" });
         return;
       }
+      // An empty `servers` object would import nothing and still read as a success.
+      if (Object.keys(parsed.servers).length === 0) {
+        setPreview({ raw: text, parsed: null, error: "No servers to import" });
+        return;
+      }
       setPreview({
         raw: text,
         parsed: { servers: parsed.servers },
@@ -720,18 +725,24 @@ function ImportResultSummary({ result }: { result: MCPImportResponse }) {
     outcome === "failed"
       ? `Import failed: ${failed} server(s) failed`
       : outcome === "partial"
-        ? `Partially imported: ${created} server(s) created, ${warned} with a warning, ${failed} failed`
+        ? `Partially imported: ${[
+            `${created} server(s) created`,
+            warned > 0 ? `${warned} with a warning` : null,
+            failed > 0 ? `${failed} failed` : null,
+          ]
+            .filter(Boolean)
+            .join(", ")}`
         : `Imported ${created} server(s)`;
   return (
     <div
       className="space-y-2 rounded border p-2 text-xs"
       data-testid="import-result"
       data-outcome={outcome}
-      role="status"
     >
       <div
         className={outcome === "success" ? "font-medium" : "font-medium text-destructive"}
         data-testid="import-result-status"
+        role="status"
       >
         {status}
       </div>
