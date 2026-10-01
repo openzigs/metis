@@ -8,9 +8,11 @@
  * that workspace's project-server events until it unsubscribed or reconnected.
  * The workspace routes call these right after the database write.
  *
- * `socketsLeave` goes through the adapter, so it reaches sockets on every node
- * of a multi-node deployment. With no registered server (tests, scripts) there
- * is no socket to evict and both are no-ops.
+ * `socketsLeave` reaches only sockets connected to THIS replica: `createSocketServer`
+ * uses Socket.IO's default in-memory adapter, so on a multi-replica deployment a
+ * socket held by another replica keeps the room until its next `subscribe:mcp`
+ * or reconnect (#622). With no registered server (tests, scripts) there is no
+ * socket to evict and both are no-ops.
  *
  * Both run after the database write has committed, so they are best-effort: an
  * adapter error is logged, never thrown, so the route cannot answer 500 for a
