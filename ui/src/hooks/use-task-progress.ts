@@ -25,7 +25,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { TaskProgressEvent, TaskStatusEvent } from "@metis/shared";
 import { useSocket } from "@/lib/socket-client";
-import { keepSubscribed } from "@/lib/socket-subscription";
+import { keepRoomSubscribed } from "@/lib/socket-subscription";
+import { taskFollow } from "@/lib/socket-rooms";
 
 export interface TaskProgressState {
   /** Latest in-flight progress tick, or null until the first arrives. */
@@ -72,10 +73,7 @@ export function useTaskProgress(
     // Reset when switching tasks so a previous task's progress never leaks.
     setState(EMPTY);
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:task", { taskId }), {
-      room: `task:${taskId}`,
-      unsubscribe: () => socket.emit("unsubscribe:task", { taskId }),
-    });
+    const release = keepRoomSubscribed(socket, taskFollow(socket, taskId));
 
     const onProgress = (data: TaskProgressEvent) => {
       if (data.taskId !== taskId) return;

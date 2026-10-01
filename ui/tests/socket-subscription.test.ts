@@ -1,9 +1,12 @@
 /**
  * #642 — `keepSubscribed` re-sends a room subscription on every reconnect.
- * #647 — and sends the unsubscribe only when the room's last follower releases.
+ * #647 — `keepRoomSubscribed` sends the unsubscribe only when the room's last
+ * follower releases.
+ * #672 — `followedRooms` exposes the live count per room key, so call-site
+ * tests can pin the key each one uses to the server's room name.
  */
 import { describe, it, expect, vi } from "vitest";
-import { keepSubscribed } from "@/lib/socket-subscription";
+import { followedRooms, keepRoomSubscribed, keepSubscribed } from "@/lib/socket-subscription";
 import { createFakeSocket } from "./helpers/fake-socket";
 
 describe("keepSubscribed", () => {
@@ -40,7 +43,7 @@ describe("keepSubscribed", () => {
     const s = createFakeSocket();
     const subscribe = vi.fn();
     const unsubscribe = vi.fn();
-    const release = keepSubscribed(s as never, subscribe, { room: "r:1", unsubscribe });
+    const release = keepRoomSubscribed(s as never, { room: "r:1", subscribe, unsubscribe });
     release();
     release();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
@@ -58,11 +61,11 @@ describe("keepSubscribed", () => {
   });
 });
 
-describe("keepSubscribed reference-counts a room per socket (#647)", () => {
+describe("keepRoomSubscribed reference-counts a room per socket (#647)", () => {
   function follow(s: ReturnType<typeof createFakeSocket>, room: string) {
     const subscribe = vi.fn();
     const unsubscribe = vi.fn();
-    const release = keepSubscribed(s as never, subscribe, { room, unsubscribe });
+    const release = keepRoomSubscribed(s as never, { room, subscribe, unsubscribe });
     return { subscribe, unsubscribe, release };
   }
 
@@ -122,5 +125,54 @@ describe("keepSubscribed reference-counts a room per socket (#647)", () => {
     expect(c.unsubscribe).not.toHaveBeenCalled();
     b.release();
     expect(b.unsubscribe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("followedRooms (#672)", () => {
+  it("reports the live follower count per room key on one socket", () => {
+    const s = createFakeSocket();
+    const other = createFakeSocket();
+    const a = keepRoomSubscribed(s as never, {
+      room: "thread:t1",
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+    });
+    keepRoomSubscribed(s as never, { room: "thread:t1", subscribe: vi.fn(), unsubscribe: vi.fn() });
+    keepRoomSubscribed(s as never, { room: "task:k1", subscribe: vi.fn(), unsubscribe: vi.fn() });
+    keepRoomSubscribed(other as never, {
+      room: "task:k9",
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+    });
+    keepSubscribed(s as never, vi.fn());
+    expect(followedRooms(s as never)).toEqual(
+      new Map([
+        ["thread:t1", 2],
+        ["task:k1", 1],
+      ]),
+    );
+    a();
+    expect(followedRooms(s as never).get("thread:t1")).toBe(1);
+  });
+
+  it("is empty for a socket nothing follows, and once every follower has released", () => {
+    const s = createFakeSocket();
+    expect(followedRooms(s as never).size).toBe(0);
+    const release = keepRoomSubscribed(s as never, {
+      room: "session:s1",
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+    });
+    release();
+    expect(followedRooms(s as never).size).toBe(0);
+  });
+
+  it("returns a snapshot the caller cannot use to corrupt the count", () => {
+    const s = createFakeSocket();
+    const unsubscribe = vi.fn();
+    const release = keepRoomSubscribed(s as never, { room: "r", subscribe: vi.fn(), unsubscribe });
+    (followedRooms(s as never) as Map<string, number>).set("r", 5);
+    release();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 });

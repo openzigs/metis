@@ -12,6 +12,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
+import { followedRooms } from "@/lib/socket-subscription";
+import { sessionRoom, taskRoom } from "@metis/shared";
 import { createFakeSocket, type FakeSocket } from "./helpers/fake-socket";
 
 let socket: FakeSocket;
@@ -30,6 +32,8 @@ describe("non-job rooms are reference-counted across hooks", () => {
     const first = renderHook(() => useSessionToolEvents("s1", vi.fn()));
     const onEvent = vi.fn();
     const second = renderHook(() => useSessionToolEvents("s1", onEvent));
+    // #672 — both counted under the server's room name, not a hand-typed key.
+    expect(followedRooms(socket as never)).toEqual(new Map([[sessionRoom("s1"), 2]]));
 
     first.unmount();
     expect(socket.emitted("unsubscribe:session", room)).toBe(0);
@@ -55,6 +59,8 @@ describe("non-job rooms are reference-counted across hooks", () => {
     const room = { taskId: "t1" };
     const first = renderHook(() => useTaskProgress("t1"));
     const second = renderHook(() => useTaskProgress("t1"));
+    // #672 — both counted under the server's room name, not a hand-typed key.
+    expect(followedRooms(socket as never)).toEqual(new Map([[taskRoom("t1"), 2]]));
 
     first.unmount();
     expect(socket.emitted("unsubscribe:task", room)).toBe(0);

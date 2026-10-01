@@ -191,6 +191,7 @@ import { issueTokens } from "../src/lib/auth/jwt.js";
 import { canJoinAnalysisRoom } from "../src/lib/socket/analysis-room-access.js";
 import { canJoinConnectorRoom } from "../src/lib/socket/room-access.js";
 import { wirePresenceHandlers } from "../src/lib/collaboration/presence.js";
+import { publishRoom, taskRoom } from "@metis/shared";
 import type { ClientToServerEvents, SocketAuthErrorEvent } from "@metis/shared";
 
 let httpServer: http.Server;
@@ -330,6 +331,39 @@ describe("Socket.IO server", () => {
     expect((await denied).message).toMatch(/FORBIDDEN/);
     expect(io.sockets.adapter.rooms.get("session:s1")?.size ?? 0).toBe(0);
     socket.close();
+  });
+
+  // #672 — the publish and task rooms are named by the shared factories the
+  // emitters use; a join under any other name would receive nothing.
+  describe("#672 publish and task rooms join the shared room names", () => {
+    const roomsOf = (socket: ClientSocket): string[] =>
+      [...(io.sockets.adapter.sids.get(socket.id!) ?? [])].sort();
+
+    it("subscribe:publish joins exactly publishRoom(batchId) and unsubscribe:publish leaves it", async () => {
+      const socket = await connectAs("u1", "u1");
+      const base = roomsOf(socket);
+      expect(base).toEqual([socket.id!, "user:u1"].sort());
+
+      socket.emit("subscribe:publish", { batchId: "b1" });
+      await vi.waitFor(() => expect(roomsOf(socket)).toEqual([...base, publishRoom("b1")].sort()));
+
+      socket.emit("unsubscribe:publish", { batchId: "b1" });
+      await vi.waitFor(() => expect(roomsOf(socket)).toEqual(base));
+      socket.close();
+    });
+
+    it("subscribe:task joins exactly taskRoom(taskId) and unsubscribe:task leaves it", async () => {
+      const socket = await connectAs("u1", "u1");
+      const base = roomsOf(socket);
+      expect(base).toEqual([socket.id!, "user:u1"].sort());
+
+      socket.emit("subscribe:task", { taskId: "t1" });
+      await vi.waitFor(() => expect(roomsOf(socket)).toEqual([...base, taskRoom("t1")].sort()));
+
+      socket.emit("unsubscribe:task", { taskId: "t1" });
+      await vi.waitFor(() => expect(roomsOf(socket)).toEqual(base));
+      socket.close();
+    });
   });
 
   describe("#645 subscribe:analysis authorizes against the analysis's project", () => {

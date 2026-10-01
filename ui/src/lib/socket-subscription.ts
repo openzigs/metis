@@ -30,19 +30,28 @@
  * follower of that room on this socket releases. Each follower still sends its
  * own subscribe (and re-subscribe on reconnect): the server joins idempotently,
  * and a follower that arrives later may need the server's response to it.
+ *
+ * #672 — the room key used to be a free-form string passed beside the
+ * unsubscribe, so a mistyped key, or two features sharing a key with different
+ * unsubscribe events, silently broke the count. A room follow now comes only
+ * from a factory in `socket-rooms.ts`, which derives the key from the
+ * `@metis/shared` room name the server joins and pairs it with that room's own
+ * subscribe and unsubscribe events.
  */
 import type { Socket } from "socket.io-client";
 
 /** The socket surface this helper needs; the typed app socket satisfies it. */
 type SubscriptionSocket = Pick<Socket, "on" | "off" | "connected">;
 
-/** How a subscription leaves its room, and which room that is. */
-export interface RoomRelease {
-  /**
-   * Identifies the room per socket, e.g. `thread:{id}`. Followers that share a
-   * key share one membership; the unsubscribe goes out when the last releases.
-   */
+/**
+ * One follower of a server room: how to join it, how to leave it, and the room
+ * it is. Build it with a factory from `socket-rooms.ts`, never by hand — the
+ * factories are what keep `room` equal to the room the events join (#672).
+ */
+export interface RoomFollow {
+  /** The server's room name; followers that share it share one membership. */
   room: string;
+  subscribe: () => void;
   unsubscribe: () => void;
 }
 
@@ -59,14 +68,17 @@ function countsFor(socket: SubscriptionSocket): Map<string, number> {
 }
 
 /**
- * Run `subscribe` now and again on every reconnect. Returns an idempotent
- * release that stops re-subscribing and, if `leave` is given, runs its
- * `unsubscribe` once the last follower of `leave.room` on this socket releases.
+ * #672 — a snapshot of the live follower count per room on `socket`. Lets a
+ * call site's test pin the room key it uses to the server's room name.
  */
-export function keepSubscribed(
+export function followedRooms(socket: SubscriptionSocket): ReadonlyMap<string, number> {
+  return new Map(followers.get(socket));
+}
+
+function follow(
   socket: SubscriptionSocket,
   subscribe: () => void,
-  leave?: RoomRelease,
+  leave: RoomFollow | undefined,
 ): () => void {
   if (leave) {
     const counts = countsFor(socket);
@@ -98,4 +110,22 @@ export function keepSubscribed(
     counts.delete(leave.room);
     leave.unsubscribe();
   };
+}
+
+/**
+ * Run `subscribe` now and again on every reconnect, for a subscription that is
+ * never left (it has no unsubscribe). Returns an idempotent release that stops
+ * re-subscribing.
+ */
+export function keepSubscribed(socket: SubscriptionSocket, subscribe: () => void): () => void {
+  return follow(socket, subscribe, undefined);
+}
+
+/**
+ * Join `room.room` now and again on every reconnect. Returns an idempotent
+ * release that stops re-joining and sends the unsubscribe once the last
+ * follower of that room on this socket releases (#647).
+ */
+export function keepRoomSubscribed(socket: SubscriptionSocket, room: RoomFollow): () => void {
+  return follow(socket, room.subscribe, room);
 }

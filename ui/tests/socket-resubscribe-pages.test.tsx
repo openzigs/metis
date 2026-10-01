@@ -6,6 +6,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { followedRooms } from "@/lib/socket-subscription";
+import { analysisRoom, presenceRoom } from "@metis/shared";
 import { createFakeSocket, type FakeSocket } from "./helpers/fake-socket";
 
 let socket: FakeSocket;
@@ -77,6 +79,8 @@ describe("ApprovalsPanel (#642, #648)", () => {
     // a ref those re-renders must not re-run the subscription effect.
     expect(socket.emitted("subscribe:analysis", room)).toBe(1);
     expect(socket.emitted("unsubscribe:analysis", room)).toBe(0);
+    // #672 — counted under the server's room name, not a hand-typed key.
+    expect(followedRooms(socket as never)).toEqual(new Map([[analysisRoom("ana-1"), 1]]));
 
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:analysis", room)).toBe(2);
@@ -130,6 +134,10 @@ describe("PresenceAvatars (#642)", () => {
     const { unmount } = render(<PresenceAvatars artifactType="discussion" artifactId="d1" />);
     const room = { artifactType: "discussion", artifactId: "d1" };
     expect(socket.emitted("presence:join", room)).toBe(1);
+    // #672 — counted under the server's room name, not a hand-typed key.
+    expect(followedRooms(socket as never)).toEqual(
+      new Map([[presenceRoom("discussion", "d1"), 1]]),
+    );
 
     // The server's disconnect handler dropped this socket from the room's
     // presence list, so without a re-join the user vanishes for everyone else.

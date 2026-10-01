@@ -48,7 +48,11 @@ import type { Server as HttpServer } from "node:http";
 import { Server as SocketIOServer, type ServerOptions, type Socket } from "socket.io";
 import jwt from "jsonwebtoken";
 import {
+  analysisRoom,
   hasPermission,
+  publishRoom,
+  sessionRoom,
+  taskRoom,
   type AuthPayload,
   type ClientToServerEvents,
   type ServerToClientEvents,
@@ -612,7 +616,7 @@ function attachHandlers(socket: MetisSocket): void {
       try {
         if (await canJoinAnalysisRoom(user, analysisId)) {
           if (analysisSubscription.get(analysisId) !== attempt) return;
-          await socket.join(`analysis:${analysisId}`);
+          await socket.join(analysisRoom(analysisId));
           return;
         }
       } catch (err) {
@@ -629,7 +633,7 @@ function attachHandlers(socket: MetisSocket): void {
     const analysisId: unknown = payload?.analysisId;
     if (!analysisId || typeof analysisId !== "string") return;
     bumpAnalysisSubscription(analysisId);
-    return socket.leave(`analysis:${analysisId}`);
+    return socket.leave(analysisRoom(analysisId));
   });
   // #142 — the session room now carries tool-approval prompts (with the tool's
   // arguments), so only the session's owner, who can still reach its project,
@@ -641,7 +645,7 @@ function attachHandlers(socket: MetisSocket): void {
     return (async () => {
       try {
         await loadAuthorizedSession(user, sessionId);
-        await socket.join(`session:${sessionId}`);
+        await socket.join(sessionRoom(sessionId));
       } catch {
         socket.emit("auth:error", { message: "FORBIDDEN: no access to session" });
       }
@@ -650,7 +654,7 @@ function attachHandlers(socket: MetisSocket): void {
   onClientEvent(socket, "unsubscribe:session", (payload) => {
     const sessionId: unknown = payload?.sessionId;
     if (!sessionId || typeof sessionId !== "string") return;
-    return socket.leave(`session:${sessionId}`);
+    return socket.leave(sessionRoom(sessionId));
   });
   // #562 — bumped by every subscribe/unsubscribe, so a subscribe whose
   // membership lookup resolves after a later unsubscribe does not join.
@@ -794,12 +798,12 @@ function attachHandlers(socket: MetisSocket): void {
       socket.emit("auth:error", { message: "FORBIDDEN" });
       return;
     }
-    return socket.join(`publish:${batchId}`);
+    return socket.join(publishRoom(batchId));
   });
   onClientEvent(socket, "unsubscribe:publish", (payload) => {
     const batchId: unknown = payload?.batchId;
     if (!batchId || typeof batchId !== "string") return;
-    return socket.leave(`publish:${batchId}`);
+    return socket.leave(publishRoom(batchId));
   });
 
   // Phase 11 — scheduler + tasks rooms.
@@ -822,12 +826,12 @@ function attachHandlers(socket: MetisSocket): void {
       socket.emit("auth:error", { message: "FORBIDDEN: subscribe:task requires task.read" });
       return;
     }
-    return socket.join(`task:${taskId}`);
+    return socket.join(taskRoom(taskId));
   });
   onClientEvent(socket, "unsubscribe:task", (payload) => {
     const taskId: unknown = payload?.taskId;
     if (!taskId || typeof taskId !== "string") return;
-    return socket.leave(`task:${taskId}`);
+    return socket.leave(taskRoom(taskId));
   });
 
   // Epic #238 (#239) — unified job-lifecycle rooms (`job:{jobId}`).

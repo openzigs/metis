@@ -20,7 +20,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSocket } from "@/lib/socket-client";
-import { keepSubscribed } from "@/lib/socket-subscription";
+import { keepRoomSubscribed } from "@/lib/socket-subscription";
+import { threadFollow } from "@/lib/socket-rooms";
 import {
   listMessages,
   postMessage,
@@ -133,10 +134,7 @@ export function DiscussionThreadView({
   useEffect(() => {
     if (!socket) return;
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:thread", { threadId }), {
-      room: `thread:${threadId}`,
-      unsubscribe: () => socket.emit("unsubscribe:thread", { threadId }),
-    });
+    const release = keepRoomSubscribed(socket, threadFollow(socket, threadId));
 
     function onNew(evt: DiscussionMessageNewEvent) {
       if (evt.threadId !== threadId) return;
