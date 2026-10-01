@@ -99,6 +99,7 @@ const MATRIX: TraceabilityMatrix = {
       requirementId: "req-1",
       title: "Users can log in",
       coverage: "grounded_in_code",
+      verdict: null,
       findings: [{ id: "f-1", title: "Login", severity: "high" }],
       codeLocations: [{ filePath: "auth.ts", startLine: 1, endLine: 9, source: "citation" }],
       tests: [],

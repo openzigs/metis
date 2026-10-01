@@ -35,10 +35,10 @@ async function makeCorpus(
 
 const goldenReq = (id = "R1") => ({
   id,
-  type: "feature",
+  type: "feature" as const,
   title: "Title",
   description: "a golden description",
-  priority: "high",
+  priority: "high" as const,
 });
 
 afterEach(async () => {

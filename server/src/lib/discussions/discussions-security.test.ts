@@ -64,8 +64,8 @@ vi.mock("../ai/index.js", async (importOriginal) => {
 const { canAccessThread } = await import("./access.js");
 const { streamAIReply } = await import("./ai-responder.js");
 
-const MEMBER = { id: "owner-of-p1", role: "member" as const };
-const NON_MEMBER = { id: "stranger", role: "member" as const };
+const MEMBER = { id: "owner-of-p1", role: "developer" as const };
+const NON_MEMBER = { id: "stranger", role: "developer" as const };
 const ADMIN = { id: "root", role: "admin" as const };
 
 beforeEach(() => {
@@ -147,7 +147,7 @@ describe("A01 Broken Access Control — discussion thread IDOR", () => {
 describe("A03 Injection — cross-user prompt-injection isolation in AI replies", () => {
   /** Capture the exact message array the responder hands to the provider. */
   function capturingProvider(): { provider: AIProvider; messagesOf: () => ChatMsg[] } {
-    const streamSpy = vi.fn(async function* () {
+    const streamSpy = vi.fn(async function* (_messages: ChatMsg[]) {
       yield { type: "delta", content: "ok" } as ChatChunk;
       yield { type: "done" } as ChatChunk;
     });

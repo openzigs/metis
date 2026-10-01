@@ -105,7 +105,7 @@ const mockGroupBy = vi.fn(
 );
 
 /** The advisory-lock seam (PR #803 review, M1). Default answer: lock granted. */
-const mockQueryRaw = vi.fn(async () => [{ locked: true }]);
+const mockQueryRaw = vi.fn(async (..._args: unknown[]) => [{ locked: true }]);
 const mockExecuteRaw = vi.fn(async () => 1);
 
 vi.mock("../prisma.js", () => ({
@@ -115,7 +115,7 @@ vi.mock("../prisma.js", () => ({
       updateMany: (...a: unknown[]) => mockUpdateMany(...(a as [never])),
       groupBy: (...a: unknown[]) => mockGroupBy(...(a as [never])),
     },
-    $queryRaw: (...a: unknown[]) => mockQueryRaw(...(a as [])),
+    $queryRaw: (...a: unknown[]) => mockQueryRaw(...a),
     $executeRaw: (...a: unknown[]) => mockExecuteRaw(...(a as [])),
   },
 }));
@@ -123,6 +123,17 @@ vi.mock("../prisma.js", () => ({
 // ---- Helpers --------------------------------------------------------------
 
 const MODEL = "fake-model-v1";
+
+/** `Promise.withResolvers`, which the server's ES2023 `lib` does not declare. */
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 const PROJECT = "p1";
 
 function embedder(model = MODEL): EmbedService & { model: string } {
@@ -412,7 +423,7 @@ describe("reindexProjectSymbols", () => {
 
 describe("the embed job guard", () => {
   it("refuses a second concurrent run for the same project", async () => {
-    const gate = Promise.withResolvers<void>();
+    const gate = deferred<void>();
     const slow: EmbedService & { model: string } = {
       model: MODEL,
       async embed(texts: string[]): Promise<EmbeddingResult> {
@@ -552,8 +563,8 @@ describe("the reindex fence", () => {
     // guard whatsoever, so an archive that dropped the table mid-run had it written
     // straight back: ~15k orphan vectors for a project that no longer exists.
     const be = new MemoryReindexLeaseBackend();
-    const gate = Promise.withResolvers<void>();
-    const reached = Promise.withResolvers<void>();
+    const gate = deferred<void>();
+    const reached = deferred<void>();
     const slow: EmbedService & { model: string } = {
       model: MODEL,
       async embed(texts: string[]): Promise<EmbeddingResult> {

@@ -30,7 +30,7 @@ function makeCorpus(): EmbedRetrievalCorpus {
       topic: t,
       order: i,
     })),
-    ...TOPICS.map((t, i) => ({
+    ...TOPICS.map((_t, i) => ({
       id: `distractor-${i}`,
       filePath: `misc-${i}.ts`,
       name: `helper${i}`,
@@ -213,7 +213,7 @@ function makeAltCorpus(): EmbedRetrievalCorpus {
       // ...but the embedded text is on-topic ⇒ the VECTOR channel can.
       text: `${ALT_MARKER} covering ${t} in companion-${i}.ts`,
     })),
-    ...TOPICS.map((t, i) => ({
+    ...TOPICS.map((_t, i) => ({
       id: `distractor-${i}`,
       filePath: `misc-${i}.ts`,
       name: `helper${i}`,

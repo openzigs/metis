@@ -32,7 +32,7 @@ const { clampLinkDepth, getRequirementChainWithLinks, getWorkspaceTraceabilitySu
   await import("./workspace-rollup.js");
 const { MAX_TRACEABILITY_LINK_DEPTH } = await import("@metis/shared");
 
-const actor = { id: "user-1", role: "member" as const };
+const actor = { id: "user-1", role: "developer" as const };
 
 function endpoint(id: string, projectId: string) {
   return { id, title: `req ${id}`, projectId, project: { name: `Project ${projectId}` } };

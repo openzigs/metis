@@ -31,7 +31,13 @@ vi.mock("../constitution-meta.js", () => ({
 
 const { runSpecKitAgent } = await import("./runner.js");
 
-const project = { id: "p1", name: "Proj", safetyMode: "standard" as const };
+const project = {
+  id: "p1",
+  name: "Proj",
+  description: "",
+  safetyMode: "standard" as const,
+  aiProviderId: null,
+};
 
 function capturingProvider(): {
   provider: AIProvider;
@@ -144,7 +150,7 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
   it("audits + rethrows an inbound safety denial before the provider call", async () => {
     const safety = await import("../../safety/index.js");
     const audit = (await import("../../audit/audit-service.js")).audit;
-    vi.mocked(safety.applySafety).mockRejectedValueOnce(new safety.SafetyDeniedError("blocked in"));
+    vi.mocked(safety.applySafety).mockRejectedValueOnce(new safety.SafetyDeniedError("input", []));
     const { provider, calls } = capturingProvider();
 
     await expect(
@@ -168,7 +174,7 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
     // First call (inbound) passes; second call (outbound) is denied.
     vi.mocked(safety.applySafety)
       .mockResolvedValueOnce({ text: "ok in", redacted: false } as never)
-      .mockRejectedValueOnce(new safety.SafetyDeniedError("blocked out"));
+      .mockRejectedValueOnce(new safety.SafetyDeniedError("output", []));
     const { provider } = capturingProvider();
 
     await expect(
@@ -188,7 +194,7 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
   it("propagates a budget denial before any provider call", async () => {
     const finops = await import("../../finops/index.js");
     vi.mocked(finops.assertWithinBudget).mockRejectedValueOnce(
-      new finops.BudgetExceededError("over budget"),
+      new finops.BudgetExceededError(101, 100),
     );
     const { provider, calls } = capturingProvider();
 

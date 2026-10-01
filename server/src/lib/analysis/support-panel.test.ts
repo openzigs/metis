@@ -21,6 +21,7 @@ import {
   renderEvidenceBlock,
   runSupportPanel,
   selectFindingEvidence,
+  type PanelableFinding,
   type PanelEvidence,
 } from "./support-panel.js";
 
@@ -398,7 +399,7 @@ describe("runSupportPanel", () => {
 });
 
 describe("applySupportPanel (#1109 — never fails a run, never drops a finding)", () => {
-  const findings = [
+  const findings: PanelableFinding[] = [
     { ...FINDING, citations: CITATIONS },
     { title: "Second", body: "Another claim", citations: CITATIONS },
   ];

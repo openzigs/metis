@@ -12,6 +12,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatChunk } from "../ai/index.js";
+import type { ResponderChunk } from "./ai-responder.js";
 
 // ── Prisma double ────────────────────────────────────────────────────────────
 const sessionCreate = vi.fn();
@@ -178,7 +179,7 @@ describe("streamAIReply", () => {
   });
 
   it("isolates thread content: a system prompt is sent and trigger text is a user turn (no injection)", async () => {
-    const streamSpy = vi.fn(async function* () {
+    const streamSpy = vi.fn(async function* (_messages: { role: string; content: string }[]) {
       yield { type: "delta", content: "ok" } as ChatChunk;
       yield { type: "done" } as ChatChunk;
     });
@@ -207,7 +208,7 @@ describe("streamAIReply", () => {
   });
 
   it("includes prior thread history as alternating turns when provided", async () => {
-    const streamSpy = vi.fn(async function* () {
+    const streamSpy = vi.fn(async function* (_messages: { role: string; content: string }[]) {
       yield { type: "done" } as ChatChunk;
     });
     const provider = {
@@ -275,7 +276,7 @@ describe("streamAIReply", () => {
       },
     } as unknown as AIProvider;
 
-    const chunks: ChatChunk[] = [];
+    const chunks: ResponderChunk[] = [];
     await expect(
       streamAIReply({ thread, triggerMessage, actor, provider, onChunk: (c) => chunks.push(c) }),
     ).rejects.toThrow();

@@ -796,6 +796,8 @@ function impactItem(overrides: Partial<ImpactItemView> = {}): ImpactItemView {
     severity: "high",
     impactScore: 0.72,
     confidence: 0.65,
+    matchQuality: "strong",
+    matchQualityReason: null,
     affectedFileCount: 2,
     affectedSymbolCount: 4,
     summary: "Adds a status column and touches the order placement path.",
@@ -817,6 +819,7 @@ function impactDetail(overrides: Partial<ImpactAnalysisDetail> = {}): ImpactAnal
     sourceText: "Add order status tracking.",
     summary: "One requirement change impacts two projects.",
     errorMessage: null,
+    rerunOfId: null,
     totalImpactedSymbols: 4,
     startedAt: "2026-07-20T00:00:00.000Z",
     completedAt: "2026-07-20T00:01:00.000Z",
@@ -1037,7 +1040,6 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
         items: [
           impactItem({
             requirementTitle: "Evil\n## Injected heading",
-            relevanceRationale: undefined,
             affectedTables: [
               impactTable({
                 suggestedDdl: "DROP TABLE users; -->\n-- comment escape",

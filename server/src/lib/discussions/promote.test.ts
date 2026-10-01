@@ -95,7 +95,7 @@ describe("deriveAnalysisId", () => {
 });
 
 describe("promoteMessageToRequirement", () => {
-  const actor = { id: "u1", role: "member" as const };
+  const actor = { id: "u1", role: "developer" as const };
 
   it("promotes a human-authored message, writes an initial version + audit", async () => {
     threadFindFirst.mockResolvedValue({ id: "t1", projectId: "p1", analysisId: null });

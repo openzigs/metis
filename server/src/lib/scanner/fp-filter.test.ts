@@ -102,13 +102,12 @@ describe("filterCandidate", () => {
       .fn()
       .mockRejectedValueOnce(new Error("boom"))
       .mockResolvedValueOnce({
-        role: "assistant",
         content: JSON.stringify({ keep: true, confidence: 0.9 }),
         finishReason: "stop",
-        usage: { totalTokens: 50 },
+        usage: { promptTokens: 30, completionTokens: 20, totalTokens: 50 },
         model: "m",
-        providerKey: "offline-stub",
-      } as ChatResponse)
+        provider: "offline-stub",
+      } satisfies ChatResponse)
       .mockRejectedValueOnce(new Error("boom"));
     const p = {
       key: "offline-stub",
@@ -138,13 +137,12 @@ describe("filterCandidate", () => {
     const chat = vi.fn().mockImplementation(async () => {
       ac.abort();
       return {
-        role: "assistant",
         content: JSON.stringify({ keep: true, confidence: 0.9 }),
         finishReason: "stop",
-        usage: { totalTokens: 50 },
+        usage: { promptTokens: 30, completionTokens: 20, totalTokens: 50 },
         model: "m",
-        providerKey: "offline-stub",
-      } as ChatResponse;
+        provider: "offline-stub",
+      } satisfies ChatResponse;
     });
     const p = {
       key: "offline-stub",

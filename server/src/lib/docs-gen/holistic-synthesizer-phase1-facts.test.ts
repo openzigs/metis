@@ -266,6 +266,7 @@ function scriptedProvider(
         usage: {
           promptTokens: 100,
           completionTokens: 8192,
+          totalTokens: 8292,
           cacheReadTokens: 0,
           cacheWriteTokens: 40,
         },
@@ -292,7 +293,6 @@ function tsModule(): ModuleGroup {
     syms: [
       {
         id: "t1",
-        codeGraphId: "graph-a",
         qualifiedName: "billing.ts::charge",
         kind: "function",
         language: "ts",

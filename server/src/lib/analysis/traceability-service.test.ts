@@ -23,9 +23,13 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
     crossDocFindings: null,
     capability: null,
     affectedCode: null,
+    escalation: null,
+    retrieval: null,
+    databaseAware: null,
     agents: [
       {
         agentKey: "code",
+        source: null,
         status: "completed",
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
@@ -35,7 +39,7 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
         findings: [
           {
             id: "f-1",
-            category: "gap",
+            category: "other",
             severity: "high",
             title: "Login handler present",
             body: "b",
@@ -64,6 +68,9 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
         evidenceFindingIds: ["f-1"],
         coverage: "grounded_in_code",
         version: 1,
+        verdict: null,
+        acceptanceCriteria: [],
+        supportConfidence: null,
       },
     ],
     ...overrides,

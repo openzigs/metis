@@ -74,7 +74,7 @@ describe("assertConfig", () => {
 
 describe("dispatchToHttp", () => {
   function fetchOk(body: unknown, status = 200): FetchLike {
-    return vi.fn(async () => ({
+    return vi.fn<FetchLike>(async () => ({
       status,
       ok: status >= 200 && status < 300,
       text: async () => JSON.stringify(body),
@@ -82,7 +82,7 @@ describe("dispatchToHttp", () => {
   }
 
   function fetchErr(body: unknown, status = 412): FetchLike {
-    return vi.fn(async () => ({
+    return vi.fn<FetchLike>(async () => ({
       status,
       ok: false,
       text: async () => JSON.stringify(body),
@@ -90,7 +90,7 @@ describe("dispatchToHttp", () => {
   }
 
   it("POSTs to the namespaced spec-kit commands endpoint with JSON body + bearer auth", async () => {
-    const fetchImpl = vi.fn(async () => ({
+    const fetchImpl = vi.fn<FetchLike>(async () => ({
       status: 200,
       ok: true,
       text: async () => JSON.stringify({ ok: true }),
@@ -98,7 +98,7 @@ describe("dispatchToHttp", () => {
     await dispatchToHttp(
       goodCfg,
       { command: "speckit.specify", input: "Build me a thing", body: { featureSlug: "001-thing" } },
-      fetchImpl as unknown as FetchLike,
+      fetchImpl,
     );
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0]!;
@@ -114,7 +114,7 @@ describe("dispatchToHttp", () => {
   });
 
   it("strips trailing slashes from apiBaseUrl when building the URL", async () => {
-    const fetchImpl = vi.fn(async () => ({
+    const fetchImpl = vi.fn<FetchLike>(async () => ({
       status: 200,
       ok: true,
       text: async () => "{}",
@@ -122,14 +122,14 @@ describe("dispatchToHttp", () => {
     await dispatchToHttp(
       { ...goodCfg, apiBaseUrl: "https://metis.local/" },
       { command: "speckit.tasks" },
-      fetchImpl as unknown as FetchLike,
+      fetchImpl,
     );
     const [url] = fetchImpl.mock.calls[0]!;
     expect(url).toBe("https://metis.local/api/projects/proj-1/spec-kit/commands/speckit.tasks");
   });
 
   it("forwards the X-Speckit-Force header when force=true", async () => {
-    const fetchImpl = vi.fn(async () => ({
+    const fetchImpl = vi.fn<FetchLike>(async () => ({
       status: 200,
       ok: true,
       text: async () => "{}",
@@ -137,7 +137,7 @@ describe("dispatchToHttp", () => {
     await dispatchToHttp(
       goodCfg,
       { command: "speckit.plan", body: { featureSlug: "x" }, force: true },
-      fetchImpl as unknown as FetchLike,
+      fetchImpl,
     );
     const [, init] = fetchImpl.mock.calls[0]!;
     expect(init.headers["x-speckit-force"]).toBe("true");
@@ -178,7 +178,7 @@ describe("dispatchToHttp", () => {
   });
 
   it("encodes projectId and command for the URL", async () => {
-    const fetchImpl = vi.fn(async () => ({
+    const fetchImpl = vi.fn<FetchLike>(async () => ({
       status: 200,
       ok: true,
       text: async () => "{}",
@@ -186,7 +186,7 @@ describe("dispatchToHttp", () => {
     await dispatchToHttp(
       { ...goodCfg, projectId: "proj id/with weird" },
       { command: "speckit.specify", input: "" },
-      fetchImpl as unknown as FetchLike,
+      fetchImpl,
     );
     const [url] = fetchImpl.mock.calls[0]!;
     expect(url).toContain("/projects/proj%20id%2Fwith%20weird/spec-kit/commands/speckit.specify");

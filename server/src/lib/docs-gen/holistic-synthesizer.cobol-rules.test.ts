@@ -11,7 +11,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatChunk } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
 import { synthesizeHolisticDocument } from "./holistic-synthesizer.js";
 import { parsePersistedMinedRules, type PersistedMinedRule } from "./fact-slices.js";
 
@@ -32,7 +32,7 @@ const provider = {
   model: "fixture",
   offline: false,
   chat: vi.fn(async () => ({ content: JSON.stringify({ claims: [] }) })),
-  async *stream(messages): AsyncGenerator<ChatChunk> {
+  async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
     const prompt = String(messages.at(-1)?.content);
     if (prompt.includes("section group now")) {
       const label = /Section group: \*\*(.+?)\*\*/.exec(prompt)![1];
@@ -43,7 +43,7 @@ const provider = {
     }
     yield { type: "done", finishReason: "stop" };
   },
-} as AIProvider;
+} as unknown as AIProvider;
 vi.mock("../ai/index.js", () => ({
   loadAIConfig: () => ({
     provider: "bedrock-gateway",

@@ -14,7 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import path from "node:path";
-import type { AIProvider, ChatChunk } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
 import { buildGroundingContext } from "./grounding/grounding-context.js";
 
 // ── prisma mock ─────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ function makeProvider(): AIProvider {
     embed: vi.fn(),
     models: vi.fn().mockResolvedValue(["mock"]),
     ping: vi.fn().mockResolvedValue(true),
-    async *stream(messages, _opts): AsyncGenerator<ChatChunk> {
+    async *stream(messages: ChatMessage[], _opts?: ChatOptions): AsyncGenerator<ChatChunk> {
       const user = String(messages[messages.length - 1]?.content ?? "");
       // Phase-2 section calls carry the section-group banner; capture them.
       if (user.includes("section group now")) {
@@ -338,6 +338,7 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
         actorId: "forged-admin",
         docType: "architecture",
       }),
+      // Nullable as the column is: a legacy row carries no policy.
       evidencePolicy: createEvidencePolicy(
         {
           userId: "alice",
@@ -346,7 +347,7 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
           permissions: ["project.update"],
         },
         { sharedDocumentIds: ["reference"] },
-      ),
+      ) as string | null,
     });
     let current: ReturnType<typeof doc>;
     const rows = () => [
@@ -570,7 +571,7 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
       expect(manifest.generation.model.phase2.model).toBe(
         resolvePhase2Router(1).primary.tuning.phase2Model,
       );
-      expect(manifest.graphFingerprint.fingerprint.length).toBeGreaterThan(0);
+      expect(manifest.graphFingerprint.fingerprint!.length).toBeGreaterThan(0);
       expect(manifest.generation.prompts.phase1.version).toBeGreaterThan(0);
       expect(manifest.selectedEvidence.primary.some((row) => row.documentId === "reference")).toBe(
         true,

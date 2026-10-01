@@ -431,9 +431,11 @@ describe("#15 runAgentLoop executes every call in a multi-call reply", () => {
     const next = seen[1] as ChatMessage[];
     const toolTurn = next[next.length - 1] as ChatMessage;
     expect(toolTurn.role).toBe("user");
-    const a = toolTurn.content.indexOf("RESULT(search_code_symbols:DNS rebinding SSRF)");
-    const b = toolTurn.content.indexOf("RESULT(search_code_symbols:pinned lookup)");
-    const c = toolTurn.content.indexOf("RESULT(search_code_graph:safeFetch)");
+    const text = toolTurn.content;
+    if (typeof text !== "string") throw new Error("expected the tool results as one text turn");
+    const a = text.indexOf("RESULT(search_code_symbols:DNS rebinding SSRF)");
+    const b = text.indexOf("RESULT(search_code_symbols:pinned lookup)");
+    const c = text.indexOf("RESULT(search_code_graph:safeFetch)");
     expect(a).toBeGreaterThanOrEqual(0);
     expect(b).toBeGreaterThan(a);
     expect(c).toBeGreaterThan(b);

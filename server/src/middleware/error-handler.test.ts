@@ -413,7 +413,13 @@ describe("errorHandler — body-parser client errors → 4xx (#35)", () => {
   function parserApp() {
     const app = express();
     app.use(express.json({ limit: "10b" }));
-    app.use(express.urlencoded({ extended: true, parameterLimit: 2, depth: 1 }));
+    // body-parser 2 honours `depth`; @types/body-parser does not declare it yet.
+    const urlencodedOptions: Parameters<typeof express.urlencoded>[0] & { depth: number } = {
+      extended: true,
+      parameterLimit: 2,
+      depth: 1,
+    };
+    app.use(express.urlencoded(urlencodedOptions));
     app.post("/echo", (req, res) => {
       res.json({ success: true, data: req.body });
     });

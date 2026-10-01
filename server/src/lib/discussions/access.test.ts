@@ -26,7 +26,7 @@ vi.mock("../audit/audit-service.js", () => ({ audit: (...a: unknown[]) => audit(
 
 const { canAccessThread, resolveThreadProjectId } = await import("./access.js");
 
-const member = { id: "u-member", role: "member" as const };
+const member = { id: "u-member", role: "developer" as const };
 const admin = { id: "u-admin", role: "admin" as const };
 
 describe("canAccessThread", () => {

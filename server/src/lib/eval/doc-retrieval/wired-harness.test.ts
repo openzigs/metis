@@ -279,6 +279,9 @@ describe("pickWinningArm", () => {
       perQuery: [],
       metrics: { queryCount: 0, recallAtK: {}, mrr: 0, ndcgAtK: { 10: ndcg }, hitRateAt10: 0 },
       meanSpanCoverage: 1,
+      spanCoverage: {},
+      realisedOverlapChars: 0,
+      expectedOverlapChars: 0,
       sensitiveQueryIds: [],
       uncoveredQueryIds: [],
     }) as ChunkArmResult;

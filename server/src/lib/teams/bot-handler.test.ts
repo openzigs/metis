@@ -64,7 +64,10 @@ describe("runFoundationTurn", () => {
 
   beforeEach(() => {
     store = makeStore();
-    ingest = vi.fn(async () => ({ outcome: "ingested", messageId: "m1" }));
+    ingest = vi.fn(async (_context: unknown, _input: unknown) => ({
+      outcome: "ingested",
+      messageId: "m1",
+    }));
   });
 
   it("captures the ConversationReference and delegates a message turn to ingestion", async () => {
@@ -127,7 +130,10 @@ describe("runFoundationTurn", () => {
   });
 
   it("routes a Promote Action.Submit to the promote handler, NOT ingestion (#553)", async () => {
-    const promote = vi.fn(async () => ({ outcome: "promoted", requirementId: "req-1" }));
+    const promote = vi.fn(async (_context: unknown, _input: unknown) => ({
+      outcome: "promoted",
+      requirementId: "req-1",
+    }));
     const { context } = fakeContext({
       text: "",
       value: { metisAction: "promote", threadId: "thread-1", messageId: "msg-1" },
@@ -146,7 +152,7 @@ describe("runFoundationTurn", () => {
   });
 
   it("treats a non-promote message value as a normal chat message (ingested)", async () => {
-    const promote = vi.fn(async () => ({ outcome: "promoted" }));
+    const promote = vi.fn(async (_context: unknown, _input: unknown) => ({ outcome: "promoted" }));
     const { context } = fakeContext({ text: "hi", value: { metisAction: "other" } });
     await runFoundationTurn(context, {
       workspaceId: "ws-1",
@@ -160,7 +166,10 @@ describe("runFoundationTurn", () => {
   });
 
   it("routes an Approve Action.Submit to the ChatOps approve-submit handler (#578)", async () => {
-    const approveSubmit = vi.fn(async () => ({ outcome: "approved", draftId: "draft-1" }));
+    const approveSubmit = vi.fn(async (_context: unknown, _input: unknown) => ({
+      outcome: "approved",
+      draftId: "draft-1",
+    }));
     const { context } = fakeContext({
       text: "",
       value: { metisAction: "approve", draftId: "draft-1" },
@@ -178,7 +187,10 @@ describe("runFoundationTurn", () => {
   });
 
   it("routes a `/metis status` message to the status command handler (#578)", async () => {
-    const statusCommand = vi.fn(async () => ({ outcome: "status-shown", projectId: "p1" }));
+    const statusCommand = vi.fn(async (_context: unknown, _input: unknown) => ({
+      outcome: "status-shown",
+      projectId: "p1",
+    }));
     const { context } = fakeContext({ text: "/metis status" });
     await runFoundationTurn(context, {
       workspaceId: "ws-1",
@@ -193,7 +205,10 @@ describe("runFoundationTurn", () => {
   });
 
   it("routes a `/metis approve <draft>` message to the approve command handler (#578)", async () => {
-    const approveCommand = vi.fn(async () => ({ outcome: "approve-prompted", draftId: "d1" }));
+    const approveCommand = vi.fn(async (_context: unknown, _input: unknown) => ({
+      outcome: "approve-prompted",
+      draftId: "d1",
+    }));
     const { context } = fakeContext({ text: "/metis approve d1" });
     await runFoundationTurn(context, {
       workspaceId: "ws-1",
@@ -234,7 +249,7 @@ describe("runFoundationTurn", () => {
 
   it("swallows a help-card send failure (never throws into the turn) (#578)", async () => {
     const { context } = fakeContext({ text: "/metis" });
-    (context.sendActivity as unknown) = vi.fn(async () => {
+    (context as { sendActivity: unknown }).sendActivity = vi.fn(async () => {
       throw new Error("channel gone");
     });
     await expect(
@@ -248,7 +263,9 @@ describe("runFoundationTurn", () => {
   });
 
   it("does NOT treat a normal chat message as a command — it is ingested (#578)", async () => {
-    const statusCommand = vi.fn(async () => ({ outcome: "status-shown" }));
+    const statusCommand = vi.fn(async (_context: unknown, _input: unknown) => ({
+      outcome: "status-shown",
+    }));
     const { context } = fakeContext({ text: "hello team, what is the status" });
     await runFoundationTurn(context, {
       workspaceId: "ws-1",

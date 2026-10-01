@@ -196,6 +196,7 @@ describe("UsageService", () => {
           totalTokens: 150,
           estimatedCostUsd: 0.001234,
           count: 3,
+          unpricedTokens: 0,
         },
       ];
 

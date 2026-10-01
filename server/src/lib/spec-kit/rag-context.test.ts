@@ -230,7 +230,7 @@ describe("buildSpecKitRagContext — expandDocuments (#20)", () => {
   // #547 — an upload stored before #540 under a source-file name is a
   // document like any other; its source, not its filename, says so.
   it("expands a connector-shaped upload: only a repo-sourced chunk is source code", async () => {
-    const legacy = { ...docHit, documentId: "legacy", chunkId: "l0", source: "upload" };
+    const legacy = { ...docHit, documentId: "legacy", chunkId: "l0", source: "upload" as const };
     const ks = pinningService([legacy], { legacy: [{ ...legacy, chunkId: "l1", position: 1 }] });
     await buildSpecKitRagContext("p1", "q", {
       knowledgeService: ks,

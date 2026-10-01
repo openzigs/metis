@@ -362,7 +362,7 @@ describe("runReindexJob — lifecycle streaming", () => {
   });
 
   it("treats a ReindexConflictError as a generic failure (never throws)", async () => {
-    reindexProject.mockRejectedValue(new ReindexConflictError());
+    reindexProject.mockRejectedValue(new ReindexConflictError("p1"));
     await expect(runReindexJob("job-3", "p1", {})).resolves.toBeUndefined();
     expect(jobEvents.failed).toHaveBeenCalledWith(
       "embeddings-reindex",

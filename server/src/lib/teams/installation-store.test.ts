@@ -119,7 +119,7 @@ class FakeDb {
   teamsAppInstallation = {
     upsert: async (args: {
       where: { workspaceId_appId: { workspaceId: string; appId: string } };
-      create: Partial<InstallRow>;
+      create: Pick<InstallRow, "workspaceId" | "appId" | "appPasswordRef"> & Partial<InstallRow>;
       update: Partial<InstallRow>;
     }): Promise<InstallRow> => {
       const { workspaceId, appId } = args.where.workspaceId_appId;
@@ -139,7 +139,7 @@ class FakeDb {
         createdById: null,
         createdAt: new Date(),
         updatedAt: new Date(),
-        ...(args.create as InstallRow),
+        ...args.create,
       };
       this.installs.push(row);
       return row;

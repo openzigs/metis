@@ -187,7 +187,7 @@ const RUN_DEPS = {
         requirementId: null,
         title: "Cancelled orders must record who cancelled them",
         body: "and when",
-        changeType: "modified",
+        changeType: "modified" as const,
         bodyDelta: 12,
       },
     ],
@@ -336,10 +336,8 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
       await deps.additiveColumnProposer!(requirement, [tableRow("orders")]);
       await deps.clauseCoverageReconciler!(requirement, "proj-1", ["orders"]);
       await deps.impactSummarizer!.summarizeItem(itemFacts());
-      await deps.mapRequirement!(
-        { requirementId: null, title: requirement, body: "", changeType: "modified", bodyDelta: 1 },
-        "proj-1",
-      );
+      // The engine maps a change with no tracked requirement as `id: ""`.
+      await deps.mapRequirement!({ id: "", title: requirement, body: "" }, "proj-1");
     });
     await flushTokenWrites();
 

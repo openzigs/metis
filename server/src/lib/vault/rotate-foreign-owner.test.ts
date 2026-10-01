@@ -68,6 +68,12 @@ beforeEach(() => {
 
 const SECRET = { id: "sec-1", name: "global:gh-token", createdById: "u-1" };
 
+/** #611's digest fields, which the message and diff helpers under test never read. */
+const DIGEST_FIELDS = {
+  bindingsDigest: "digest-unread",
+  maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
+};
+
 describe("describeForeignOwner", () => {
   it("queries every binding column by the secret id, live rows only", async () => {
     await describeForeignOwner(SECRET);
@@ -253,7 +259,10 @@ describe("#609 — describeForeignOwner lists test-management connections", () =
       expect(after.destination).toBe(before.destination);
       expect(after.routing, JSON.stringify(change)).not.toBe(before.routing);
       expect(
-        bindingsDiffer({ secretId: "s", owner: SECRET_OWNER, bindings: [after] }, [before]),
+        bindingsDiffer(
+          { secretId: "s", owner: SECRET_OWNER, bindings: [after], ...DIGEST_FIELDS },
+          [before],
+        ),
       ).toBe(true);
     }
   });
@@ -265,7 +274,7 @@ describe("#609 — describeForeignOwner lists test-management connections", () =
 });
 
 describe("foreignOwnerMessage", () => {
-  const base = { secretId: "s", bindings: [] };
+  const base = { secretId: "s", bindings: [], ...DIGEST_FIELDS };
 
   it("names the owner by display name, then username, then id", () => {
     expect(
@@ -294,9 +303,24 @@ describe("foreignOwnerMessage", () => {
       secretId: "s",
       owner: { id: "u", username: null, displayName: "Cora" },
       bindings: [
-        { type: "db_connector", id: "d", label: "DB", projectId: "p", destination: "pg://h" },
-        { type: "mcp_server", id: "m", label: "MCP", projectId: null, destination: null },
+        {
+          type: "db_connector",
+          id: "d",
+          label: "DB",
+          projectId: "p",
+          destination: "pg://h",
+          routing: "r-d",
+        },
+        {
+          type: "mcp_server",
+          id: "m",
+          label: "MCP",
+          projectId: null,
+          destination: null,
+          routing: "r-m",
+        },
       ],
+      ...DIGEST_FIELDS,
     });
     expect(msg).toContain("bound to DB (pg://h), MCP.");
     expect(msg).toContain("confirmForeignOwner");
@@ -319,6 +343,7 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
     secretId: "s",
     owner: { id: "u", username: "cora", displayName: null },
     bindings: ids.map(binding),
+    ...DIGEST_FIELDS,
   });
 
   // What the 409 showed: type, id and destination of each binding.
@@ -420,7 +445,10 @@ describe("#557 — routing digest over the full routing fields", () => {
     expect(after.destination).toBe(before.destination);
     expect(after.routing).not.toBe(before.routing);
     expect(
-      bindingsDiffer({ ...{ secretId: "s", owner: SECRET_OWNER }, bindings: [after] }, [before]),
+      bindingsDiffer(
+        { ...{ secretId: "s", owner: SECRET_OWNER }, bindings: [after], ...DIGEST_FIELDS },
+        [before],
+      ),
     ).toBe(true);
   });
 

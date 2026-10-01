@@ -129,7 +129,7 @@ describe("resolveSocketClusterAdapter", () => {
     // refuses immediately, so the DDL fails fast and the pool is ended.
     const refused = "postgres://u:p@127.0.0.1:1/metis";
     const RealPool = pg.Pool;
-    const Pool = vi.spyOn(pg, "Pool").mockImplementation(function (config) {
+    const Pool = vi.spyOn(pg, "Pool").mockImplementation(function (config?: pg.PoolConfig) {
       return new RealPool(config);
     } as never);
     try {
