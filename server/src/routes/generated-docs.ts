@@ -22,6 +22,10 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type { RequestHandler } from "express";
 import * as authMiddleware from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import {
+  generatedDocsPreAuthRateLimiter,
+  generatedDocsRateLimiter,
+} from "../middleware/generated-docs-rate-limit.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma, Prisma } from "../lib/prisma.js";
@@ -331,7 +335,11 @@ const refreshAuthenticatedUser: RequestHandler =
 
 export function generatedDocsRouter(): Router {
   const r = Router({ mergeParams: true });
+  // #632 (CodeQL js/missing-rate-limiting #202) — a per-IP ceiling ahead of JWT
+  // verification, then a per-user budget ahead of the DB-reading refresh.
+  r.use(generatedDocsPreAuthRateLimiter);
   r.use(authMiddleware.requireAuth);
+  r.use(generatedDocsRateLimiter);
   r.use(refreshAuthenticatedUser);
   // Epic #671 / #674 — object-level project scope (OWASP A01 / BOLA). Generate,
   // list, get, export and delete are all addressed under
