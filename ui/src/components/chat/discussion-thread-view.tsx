@@ -22,6 +22,7 @@ import { toast } from "sonner";
 import { useSocket } from "@/lib/socket-client";
 import { keepRoomSubscribed } from "@/lib/socket-subscription";
 import { threadFollow } from "@/lib/socket-rooms";
+import { useOnReconnect } from "@/hooks/use-on-reconnect";
 import {
   listMessages,
   postMessage,
@@ -129,6 +130,26 @@ export function DiscussionThreadView({
       cancelled = true;
     };
   }, [threadId]);
+
+  // #646 — a `message:new` sent while the socket was down is lost. Re-read the
+  // history on reconnect and merge it in, keeping local streaming placeholders.
+  const threadIdRef = useRef(threadId);
+  useEffect(() => {
+    threadIdRef.current = threadId;
+  });
+  useOnReconnect(() => {
+    const id = threadId;
+    listMessages(id, { limit: 100 })
+      .then((history) => {
+        if (threadIdRef.current !== id) return;
+        setMessages((prev) =>
+          history.reduce((acc, m) => upsert(acc, { ...m, streaming: false }), prev),
+        );
+      })
+      .catch(() => {
+        // Best-effort: the next live event or a reload converges the thread.
+      });
+  });
 
   // ---- 2. Subscribe to the realtime room -----------------------------------
   useEffect(() => {

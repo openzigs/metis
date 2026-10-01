@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useSocket } from "@/lib/socket-client";
+import { onReconnect } from "@/lib/socket-subscription";
 import {
   testCoverageApi,
   downloadBlob,
@@ -393,7 +394,11 @@ export default function TestCoveragePage() {
     };
     socket.on("testcoverage:run-update", onRunUpdate);
     socket.on("testcoverage:run-finished", onRunUpdate);
+    // #646 — a run update sent while the socket was down is lost; re-read the
+    // run state on each reconnect as if one had arrived.
+    const release = onReconnect(socket, onRunUpdate);
     return () => {
+      release();
       socket.off("testcoverage:run-update", onRunUpdate);
       socket.off("testcoverage:run-finished", onRunUpdate);
     };

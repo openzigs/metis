@@ -62,9 +62,10 @@ export default function SchedulerPage() {
   // cheaper than maintaining client-side patches.
   useEffect(() => {
     if (!socket) return;
-    // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:scheduler"));
     const onAny = () => invalidate();
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    // #646 — and refetch, for scheduler events sent while the socket was down.
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:scheduler"), onAny);
     socket.on("scheduler:status", onAny);
     socket.on("task:status", onAny);
     return () => {

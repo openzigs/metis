@@ -385,6 +385,68 @@ describe("DiscussionThreadView", () => {
     expect(live.emitted("subscribe:thread", { threadId: "t1" })).toBe(2);
   });
 
+  it("shows a message posted while the socket was down, once reconnected (#646)", async () => {
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    listMessagesMock.mockResolvedValue([humanMsg({ id: "m1", body: "before the gap" })]);
+    renderView();
+    expect(await screen.findByText("before the gap")).toBeInTheDocument();
+    // A message streaming in when the socket drops...
+    act(() =>
+      live.fire("message:stream", {
+        threadId: "t1",
+        messageId: "ai-gap",
+        delta: "Half",
+        done: false,
+      }),
+    );
+    expect(await screen.findByText("Half")).toBeInTheDocument();
+
+    act(() => live.disconnect());
+    // ...finishes, and a member posts; both `message:new` events are lost.
+    listMessagesMock.mockResolvedValue([
+      humanMsg({ id: "m1", body: "before the gap" }),
+      aiMsg({ id: "ai-gap", body: "Half and whole" }),
+      humanMsg({ id: "m2", body: "posted in the gap" }),
+    ]);
+    act(() => live.connect());
+
+    expect(await screen.findByText("posted in the gap")).toBeInTheDocument();
+    expect(await screen.findByText("Half and whole")).toBeInTheDocument();
+    expect(screen.getAllByText("before the gap")).toHaveLength(1);
+  });
+
+  it("ignores a reconnect re-read that settles after the thread changed (#646)", async () => {
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    const { rerender } = renderView();
+    await waitFor(() => expect(listMessagesMock).toHaveBeenCalledTimes(1));
+    let resolveStale: (m: DiscussionListMessage[]) => void = () => {};
+    listMessagesMock.mockReturnValueOnce(new Promise((r) => (resolveStale = r)));
+    act(() => live.reconnect());
+    const Wrapper = makeWrapper({});
+    rerender(
+      <Wrapper>
+        <DiscussionThreadView threadId="t2" currentUserId="u1" />
+      </Wrapper>,
+    );
+    await act(async () => resolveStale([humanMsg({ id: "stale", body: "from the old thread" })]));
+    expect(screen.queryByText("from the old thread")).not.toBeInTheDocument();
+  });
+
+  it("keeps the thread when the reconnect re-read fails (#646)", async () => {
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    listMessagesMock.mockResolvedValue([humanMsg({ id: "m1", body: "kept" })]);
+    renderView();
+    expect(await screen.findByText("kept")).toBeInTheDocument();
+    listMessagesMock.mockRejectedValueOnce(new Error("offline"));
+    act(() => live.reconnect());
+    await waitFor(() => expect(listMessagesMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("kept")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("renders a live message:new event from another member", async () => {
     renderView();
     await waitFor(() => expect(socketHandler("message:new")).toBeDefined());

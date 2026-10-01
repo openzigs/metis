@@ -37,6 +37,15 @@
  * from a factory in `socket-rooms.ts`, which derives the key from the
  * `@metis/shared` room name the server joins and pairs it with that room's own
  * subscribe and unsubscribe events.
+ *
+ * #646 — re-joining makes updates resume, but an event the server emitted while
+ * the socket was down is gone. A follower may pass a `reconcile` callback that
+ * runs on each reconnect, right after the re-subscribe, to re-read the state it
+ * may have missed (invalidate its queries, refetch a status). It does not run
+ * on the initial connect, nor on the connect that flushes a subscribe buffered
+ * while the socket was down: the view's own mount-time read covers both.
+ * Known window: a view mounted mid-gap reads on mount, so an event emitted
+ * between that read and the reconnect is still missed until the next one.
  */
 import type { Socket } from "socket.io-client";
 
@@ -79,6 +88,7 @@ function follow(
   socket: SubscriptionSocket,
   subscribe: () => void,
   leave: RoomFollow | undefined,
+  reconcile: (() => void) | undefined,
 ): () => void {
   if (leave) {
     const counts = countsFor(socket);
@@ -91,6 +101,7 @@ function follow(
       return;
     }
     subscribe();
+    reconcile?.();
   };
   subscribe();
   socket.on("connect", onConnect);
@@ -114,18 +125,38 @@ function follow(
 
 /**
  * Run `subscribe` now and again on every reconnect, for a subscription that is
- * never left (it has no unsubscribe). Returns an idempotent release that stops
- * re-subscribing.
+ * never left (it has no unsubscribe), then `reconcile` (#646). Returns an
+ * idempotent release that stops re-subscribing.
  */
-export function keepSubscribed(socket: SubscriptionSocket, subscribe: () => void): () => void {
-  return follow(socket, subscribe, undefined);
+export function keepSubscribed(
+  socket: SubscriptionSocket,
+  subscribe: () => void,
+  reconcile?: () => void,
+): () => void {
+  return follow(socket, subscribe, undefined, reconcile);
 }
 
 /**
- * Join `room.room` now and again on every reconnect. Returns an idempotent
- * release that stops re-joining and sends the unsubscribe once the last
- * follower of that room on this socket releases (#647).
+ * Join `room.room` now and again on every reconnect, then `reconcile` (#646).
+ * Returns an idempotent release that stops re-joining and sends the
+ * unsubscribe once the last follower of that room on this socket releases
+ * (#647).
  */
-export function keepRoomSubscribed(socket: SubscriptionSocket, room: RoomFollow): () => void {
-  return follow(socket, room.subscribe, room);
+export function keepRoomSubscribed(
+  socket: SubscriptionSocket,
+  room: RoomFollow,
+  reconcile?: () => void,
+): () => void {
+  return follow(socket, room.subscribe, room, reconcile);
+}
+
+const noop = () => {};
+
+/**
+ * #646 — run `reconcile` on every reconnect, for a view that listens to events
+ * delivered without a room subscription of its own. Same rules as the
+ * `reconcile` of `keepSubscribed`. Returns an idempotent release.
+ */
+export function onReconnect(socket: SubscriptionSocket, reconcile: () => void): () => void {
+  return follow(socket, noop, undefined, reconcile);
 }

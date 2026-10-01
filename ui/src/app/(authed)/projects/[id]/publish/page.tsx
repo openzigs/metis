@@ -369,7 +369,11 @@ export default function PublishingPage() {
   useEffect(() => {
     if (!socket || !liveBatchId) return;
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepRoomSubscribed(socket, publishFollow(socket, liveBatchId));
+    // #646 — and re-read the batches: a `publish:completed` sent while the
+    // socket was down would otherwise leave the batch showing as running.
+    const release = keepRoomSubscribed(socket, publishFollow(socket, liveBatchId), () =>
+      qc.invalidateQueries({ queryKey: keys.batches(projectId) }),
+    );
     const onStatus = (e: { status: string; message?: string | null }) => {
       setLiveLog((prev) => [...prev, `[${e.status}] ${e.message ?? ""}`]);
     };

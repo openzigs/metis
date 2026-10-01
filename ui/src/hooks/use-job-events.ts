@@ -111,6 +111,27 @@ function invalidationKeysFor(kind: JobKind, projectId: string): readonly (readon
 }
 
 /**
+ * #646 — every key a transition of any kind invalidates for `projectId`, plus
+ * the doc-detail caches a doc-generation completion refreshes. A reconnect
+ * cannot know which transitions it missed, so it refreshes all of them.
+ */
+// The three kinds with bespoke keys, and one (`scan`) that stands for every kind
+// on the generic default branch.
+const RECONCILED_KINDS: readonly JobKind[] = [
+  "analysis",
+  "doc-generation",
+  "impact-analysis",
+  "scan",
+];
+
+function reconnectInvalidationKeys(projectId: string): readonly (readonly unknown[])[] {
+  return [
+    ...RECONCILED_KINDS.flatMap((kind) => invalidationKeysFor(kind, projectId)),
+    queryKeys.documents.all,
+  ];
+}
+
+/**
  * Project-scoped consumer (#240): joins the `project:{id}` room and invalidates
  * the relevant TanStack Query caches whenever a job in that project transitions,
  * so analysis / doc-generation lists converge without polling or manual refresh.
@@ -126,8 +147,19 @@ export function useProjectJobEvents(
 
   useEffect(() => {
     if (!socket || !projectId) return;
+    // #646 — a transition sent while the socket was down names a kind we never
+    // saw, so refresh what every kind would have.
+    const reconcile = () => {
+      for (const key of reconnectInvalidationKeys(projectId)) {
+        void queryClient.invalidateQueries({ queryKey: key as unknown[] });
+      }
+    };
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:project", { projectId }));
+    const release = keepSubscribed(
+      socket,
+      () => socket.emit("subscribe:project", { projectId }),
+      reconcile,
+    );
 
     const onLifecycle = (data: JobLifecycleEvent) => {
       if (data.projectId && data.projectId !== projectId) return;

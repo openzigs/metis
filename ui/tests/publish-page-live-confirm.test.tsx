@@ -393,3 +393,27 @@ describe("#642 — ending a watch releases the publish room", () => {
     expect(socket.emitted("subscribe:publish", second)).toBe(2);
   });
 });
+
+describe("#646 — a watched batch reconciles events missed while disconnected", () => {
+  it("re-reads the batches on reconnect, so a batch that finished in the gap shows it", async () => {
+    const socket = createFakeSocket();
+    vi.mocked(useSocket).mockReturnValue(socket as never);
+    listBatches.mockResolvedValue([makeBatch({ status: "running" })]);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Watch" }));
+    const room = { batchId: "cms3u7y09003g259kej42fn4q" };
+    await waitFor(() => expect(socket.emitted("subscribe:publish", room)).toBe(1));
+    const readsBefore = listBatches.mock.calls.length;
+
+    act(() => socket.disconnect());
+    // The `publish:completed` is emitted now — and lost.
+    listBatches.mockResolvedValue([
+      makeBatch({ status: "completed", publishedCount: 14, completedAt: new Date().toISOString() }),
+    ]);
+    act(() => socket.connect());
+
+    await waitFor(() => expect(listBatches.mock.calls.length).toBe(readsBefore + 1));
+    expect(await screen.findByText("completed")).toBeInTheDocument();
+  });
+});

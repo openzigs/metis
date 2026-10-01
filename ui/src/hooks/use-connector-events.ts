@@ -100,7 +100,13 @@ export function useConnectorDiscovery(projectId: string, onDiscovery?: () => voi
     if (!socket || !projectId) return;
 
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:project", { projectId }));
+    // #646 — a discovery sent during the gap is not toasted after the fact, but
+    // the caller's refresh runs so the suggestions it would have shown appear.
+    const release = keepSubscribed(
+      socket,
+      () => socket.emit("subscribe:project", { projectId }),
+      () => callbackRef.current?.(),
+    );
 
     const onEvent = (data: ConnectorDiscovery) => {
       toast.info(

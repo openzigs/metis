@@ -39,11 +39,18 @@ export function useProjectDocuments(projectId: string) {
 
   useEffect(() => {
     if (!socket || !projectId) return;
+    const refresh = () =>
+      qc.invalidateQueries({ queryKey: queryKeys.documents.forProject(projectId) });
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:project", { projectId }));
+    // #646 — and re-read the list, for a `document:status` sent during the gap.
+    const release = keepSubscribed(
+      socket,
+      () => socket.emit("subscribe:project", { projectId }),
+      refresh,
+    );
     const onDocumentStatus = (data: { projectId: string }) => {
       if (data.projectId !== projectId) return;
-      qc.invalidateQueries({ queryKey: queryKeys.documents.forProject(projectId) });
+      refresh();
     };
     socket.on("document:status" as never, onDocumentStatus as never);
     return () => {
