@@ -45,8 +45,12 @@ interface ApprovalsPanelProps {
  * inferring it from polled metadata. Returns the latest blocked event (if any)
  * for the current analysis and refetches the approvals query on each event so
  * the counts/banner stay live without waiting for the poll interval.
+ *
+ * Exported only so a probe component can pin the #648 latest-callback ref
+ * (#661): the panel's own caller passes a stable `query.refetch`, so no test
+ * through the panel can tell whether a new `onBlocked` is ever picked up.
  */
-function usePromotionBlockedEvent(
+export function usePromotionBlockedEvent(
   analysisId: string,
   onBlocked: () => void,
 ): PromotionBlockedEvent | null {
