@@ -12,7 +12,8 @@
  *       make two `type:id` pairs share a room (#676)
  *     → only if the user could read the artifact through REST
  *       (`canJoinPresenceRoom`, #679); otherwise `auth:error { message, room }`,
- *       the same for an unknown id, a forbidden one and a failed lookup
+ *       the same for an unknown id, a forbidden one and a failed lookup; a
+ *       refused socket already in the room is removed from it as on a leave
  *     → broadcasts `presence:update` with current user list to the room
  *
  *   `presence:leave` { artifactType: PresenceArtifactType, artifactId: string }
@@ -70,6 +71,15 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
     const pendingJoins = new Map<string, number>();
     let joinSeq = 0;
 
+    /** Leaves `key` and broadcasts the shorter list to the viewers who remain. */
+    async function leaveRoom(key: string): Promise<void> {
+      await socket.leave(key);
+      joinedRooms.delete(key);
+      roomPresence.get(key)?.delete(socket.id);
+      broadcastPresenceUpdate(io, key);
+      if ((roomPresence.get(key)?.size ?? 0) === 0) roomPresence.delete(key);
+    }
+
     // #654 — the payload is read with `?.`, never destructured: a null or
     // missing payload rejected the handler's promise and crashed the process.
     onClientEvent(
@@ -101,6 +111,10 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
         if (pendingJoins.get(key) !== attempt) return;
         pendingJoins.delete(key);
         if (!allowed) {
+          // A socket already in the room (access revoked since it joined) is
+          // taken out of it, or it would keep receiving `presence:update` and
+          // stay on everyone's list while its UI follower drops the room.
+          if (joinedRooms.has(key)) await leaveRoom(key);
           socket.emit("auth:error", { message: PRESENCE_DENIAL, room: key });
           return;
         }
@@ -125,11 +139,7 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
         if (!isPresenceArtifactType(artifactType) || typeof artifactId !== "string") return;
         const key = roomKey(artifactType, artifactId);
         pendingJoins.delete(key);
-        await socket.leave(key);
-        joinedRooms.delete(key);
-        roomPresence.get(key)?.delete(socket.id);
-        broadcastPresenceUpdate(io, key);
-        if ((roomPresence.get(key)?.size ?? 0) === 0) roomPresence.delete(key);
+        await leaveRoom(key);
       },
     );
 

@@ -330,6 +330,77 @@ describe("presence:join access (#679)", () => {
     expect(getRoomPresence().get(ROOM)?.size).toBe(1);
   });
 
+  it("removes a member whose re-join is refused from the room and the viewer list", async () => {
+    // Two sockets on one io whose room emitter delivers only to members, so
+    // what each socket receives is what Socket.IO would send it.
+    const io = { on: vi.fn() } as unknown as MetisIOServer & { on: ReturnType<typeof vi.fn> };
+    const sockets: Array<ReturnType<typeof makeSocket>> = [];
+    function makeSocket(id: string, userId: string, username: string) {
+      const listeners: Record<string, (...args: unknown[]) => unknown> = {};
+      const rooms = new Set<string>();
+      const updates: Array<{ room: string; users: Array<{ userId: string }> }> = [];
+      const socket = {
+        id,
+        data: { user: { userId, username, role: "developer", permissions: [] as string[] } },
+        join: vi.fn(async (room: string) => void rooms.add(room)),
+        leave: vi.fn(async (room: string) => void rooms.delete(room)),
+        on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
+          listeners[event] = handler;
+        }),
+        emit: vi.fn(),
+      };
+      return { socket, listeners, rooms, updates };
+    }
+    (io as unknown as { local: unknown }).local = {
+      to: (room: string) => ({
+        emit: (event: string, data: { room: string; users: Array<{ userId: string }> }) => {
+          for (const s of sockets)
+            if (event === "presence:update" && s.rooms.has(room)) s.updates.push(data);
+        },
+      }),
+    };
+    wirePresenceHandlers(io);
+    const onConnect = io.on.mock.calls.find(([e]) => e === "connection")?.[1] as (
+      s: unknown,
+    ) => void;
+    const member = makeSocket("socket-m", "user-m", "mallory");
+    const viewer = makeSocket("socket-v", "user-v", "victor");
+    sockets.push(member, viewer);
+    onConnect(member.socket);
+    onConnect(viewer.socket);
+
+    access.check.mockResolvedValue(true);
+    await member.listeners["presence:join"]?.(ARTIFACT);
+    await viewer.listeners["presence:join"]?.(ARTIFACT);
+    expect(viewer.updates.at(-1)?.users.map((u) => u.userId)).toEqual(["user-m", "user-v"]);
+
+    // Access revoked: the member's re-join is refused.
+    access.check.mockResolvedValue(false);
+    await member.listeners["presence:join"]?.(ARTIFACT);
+
+    expect(member.socket.emit).toHaveBeenCalledWith("auth:error", {
+      message: "FORBIDDEN: no access to artifact",
+      room: ROOM,
+    });
+    expect(member.socket.leave).toHaveBeenCalledWith(ROOM);
+    expect(member.rooms.has(ROOM)).toBe(false);
+    expect(viewer.updates.at(-1)?.users.map((u) => u.userId)).toEqual(["user-v"]);
+    expect([...(getRoomPresence().get(ROOM)?.keys() ?? [])]).toEqual(["socket-v"]);
+
+    // No further presence:update reaches the refused socket.
+    const memberUpdates = member.updates.length;
+    access.check.mockResolvedValue(true);
+    await viewer.listeners["presence:leave"]?.(ARTIFACT);
+    await viewer.listeners["presence:join"]?.(ARTIFACT);
+    expect(viewer.updates.at(-1)?.users.map((u) => u.userId)).toEqual(["user-v"]);
+    expect(member.updates.length).toBe(memberUpdates);
+
+    // And it is out of `joinedRooms`: a disconnect broadcasts nothing for ROOM.
+    const viewerUpdates = viewer.updates.length;
+    member.listeners["disconnect"]?.("transport close");
+    expect(viewer.updates.length).toBe(viewerUpdates);
+  });
+
   it("counts joins still being checked against the room cap", async () => {
     access.check.mockImplementation(() => new Promise<boolean>(() => {}));
     const { mockSocket, socketListeners } = connect();
