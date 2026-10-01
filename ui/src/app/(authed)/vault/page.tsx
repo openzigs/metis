@@ -475,8 +475,9 @@ function EntryDetail({
             ) : null}
             {foreignOwner.bindings.length === 0 ? (
               <p>
-                No DB or repo connector, import source, MCP server or Jira connection uses it; other
-                references (test-management auth, notification channels) were not checked.
+                No DB or repo connector, import source, MCP server, Jira or test-management
+                connection uses it; other references (e.g. notification channels, BYOK) were not
+                checked.
               </p>
             ) : (
               <ul className="list-disc pl-4" data-testid="vault-entry-rotate-bindings">
