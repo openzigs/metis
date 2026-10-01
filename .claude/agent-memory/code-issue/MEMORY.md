@@ -51,3 +51,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [SQLite tests skip on Postgres](project_sqlite-tests-skip-on-postgres-adapter.md) — mocked sibling asserts controls; run a PG twin for raw SQL
 - [Parallel PR semantic conflicts](project_parallel-prs-semantic-conflicts.md) — clean merge can bypass a guard; updateMany bumps @updatedAt
 - [Time-bounded refs need recheck](project_time-dependent-refs-need-recheck.md) — one-shot retirement; test fakes miss new methods
+- [Test harness false greens](project_test-harness-false-greens.md) — pipe-to-tail exit codes; helper-only tests; fireEvent file input
