@@ -14,7 +14,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Socket as ClientSocket } from "socket.io-client";
-import { presenceRoom } from "@metis/shared";
+import { presenceRoom, threadRoom } from "@metis/shared";
 
 // #679 — every viewer here may read the artifact; the join's access rule is
 // covered in `socket.test.ts`.
@@ -262,11 +262,15 @@ describe("#651 thread presence spans every replica, gated on canAccessThread", (
     });
 
     const outsider = await connectUser(b, "outsider", open);
-    const denied = new Promise<{ message: string }>((resolve) =>
+    const denied = new Promise<{ message: string; room?: string }>((resolve) =>
       outsider.socket.once("auth:error", resolve),
     );
     const seenByOutsider = watchThread(outsider.socket);
-    expect((await denied).message).toBe("FORBIDDEN: no access to discussion thread");
+    // #685 — a room-scoped refusal, so the UI does not show it as a global error.
+    expect(await denied).toEqual({
+      message: "FORBIDDEN: no access to discussion thread",
+      room: threadRoom(THREAD_ID),
+    });
 
     // A later change is still listed without the outsider, who never receives it.
     onB.socket.emit("presence:thread:leave", { threadId: THREAD_ID });

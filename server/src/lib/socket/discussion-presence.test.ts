@@ -103,6 +103,22 @@ describe("presence:thread:join", () => {
     expect(getThreadPresence().has("thread:t1")).toBe(false);
     expect(emit).toHaveBeenCalledWith("auth:error", {
       message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:t1",
+    });
+  });
+
+  it("an unknown / deleted thread gets the same room-scoped refusal (#685)", async () => {
+    const notFound = () => Promise.resolve({ ok: false, reason: "not_found" });
+    const { socket, handlers, join, emit } = makeFakeSocket();
+    wireDiscussionPresenceHandlers(socket, { canAccessThread: notFound });
+
+    await fire(handlers, "presence:thread:join", { threadId: "gone" });
+
+    expect(join).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith("auth:error", {
+      message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:gone",
     });
   });
 
@@ -141,6 +157,7 @@ describe("presence:thread:join", () => {
     expect(getThreadPresence().has("thread:t1")).toBe(false);
     expect(emit).toHaveBeenCalledWith("auth:error", {
       message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:t1",
     });
   });
 });

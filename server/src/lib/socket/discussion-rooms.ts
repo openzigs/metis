@@ -46,6 +46,15 @@ export type ThreadRoomSocket = Pick<
 export { threadRoom };
 
 /**
+ * #685 — the one refusal for a thread room, whatever the cause: an unknown or
+ * deleted id, no access, or a failed lookup all read the same, so the message
+ * never tells a probe which ids exist. It is sent as `{ message, room }`, the
+ * room-scoped shape (#655), so the UI treats it as that room's refusal rather
+ * than a connection error.
+ */
+export const THREAD_DENIAL = "FORBIDDEN: no access to discussion thread";
+
+/**
  * Attach `subscribe:thread` / `unsubscribe:thread` handlers to `socket`.
  *
  * - `subscribe:thread { threadId }` joins `thread:{threadId}` ONLY after
@@ -73,12 +82,7 @@ export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
             threadId,
             reason: access.reason,
           });
-          socket.emit("auth:error", {
-            message:
-              access.reason === "not_found"
-                ? "NOT_FOUND: discussion thread not found"
-                : "FORBIDDEN: no access to discussion thread",
-          });
+          socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
           return;
         }
         await socket.join(threadRoom(threadId));
@@ -93,7 +97,7 @@ export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
           threadId,
           error: (err as Error).message,
         });
-        socket.emit("auth:error", { message: "FORBIDDEN: no access to discussion thread" });
+        socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
       }
     })();
   });

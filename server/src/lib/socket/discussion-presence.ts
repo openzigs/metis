@@ -32,7 +32,7 @@ import type {
   RoleKey,
 } from "@metis/shared";
 import { canAccessThread as defaultCanAccessThread } from "../discussions/access.js";
-import { threadRoom } from "./discussion-rooms.js";
+import { THREAD_DENIAL, threadRoom } from "./discussion-rooms.js";
 import { createChildLogger } from "../logger.js";
 import { onClientEvent, runDetached } from "./client-event-handler.js";
 import { createClusterPresence, type PresenceMember } from "./cluster-presence.js";
@@ -153,9 +153,7 @@ export function wireDiscussionPresenceHandlers(
       try {
         const result = await access({ id: user.userId, role: user.role as RoleKey }, threadId);
         if (!result.ok) {
-          socket.emit("auth:error", {
-            message: "FORBIDDEN: no access to discussion thread",
-          });
+          socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
           return;
         }
         const room = threadRoom(threadId);
@@ -174,7 +172,7 @@ export function wireDiscussionPresenceHandlers(
           threadId,
           error: (err as Error).message,
         });
-        socket.emit("auth:error", { message: "FORBIDDEN: no access to discussion thread" });
+        socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
       }
     })();
   });
