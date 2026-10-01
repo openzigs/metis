@@ -27,6 +27,8 @@ vi.mock("../prisma.js", () => ({ prisma: db }));
 vi.mock("../finops/index.js", () => ({ recordUsage: vi.fn() }));
 
 const phase1Prompts: string[] = [];
+// Partial double: implements only the methods the synthesizer calls (no embed/models/ping,
+// chat returns content only), so it cannot overlap AIProvider without an unknown hop.
 const provider = {
   key: "bedrock-gateway",
   model: "fixture",
@@ -43,7 +45,7 @@ const provider = {
     }
     yield { type: "done", finishReason: "stop" };
   },
-} as unknown as AIProvider;
+} as unknown as AIProvider; // see the partial-double note above
 vi.mock("../ai/index.js", () => ({
   loadAIConfig: () => ({
     provider: "bedrock-gateway",
