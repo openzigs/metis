@@ -95,7 +95,8 @@ export function wireDiscussionPresenceHandlers(
   /** Thread rooms this socket is currently present in. */
   const joined = new Set<string>();
 
-  socket.on("presence:thread:join", ({ threadId }) => {
+  socket.on("presence:thread:join", (payload) => {
+    const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
     void (async () => {
       try {
@@ -127,7 +128,8 @@ export function wireDiscussionPresenceHandlers(
     })();
   });
 
-  socket.on("presence:thread:leave", ({ threadId }) => {
+  socket.on("presence:thread:leave", (payload) => {
+    const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
     const room = threadRoom(threadId);
     void socket.leave(room);
@@ -152,8 +154,8 @@ export function wireDiscussionPresenceHandlers(
     });
   };
 
-  socket.on("typing:start", ({ threadId }) => broadcastTyping(threadId, true));
-  socket.on("typing:stop", ({ threadId }) => broadcastTyping(threadId, false));
+  socket.on("typing:start", (payload) => broadcastTyping(payload?.threadId, true));
+  socket.on("typing:stop", (payload) => broadcastTyping(payload?.threadId, false));
 
   socket.on("disconnect", () => {
     for (const room of joined) {
