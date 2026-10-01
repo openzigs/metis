@@ -29,6 +29,7 @@ import { threadRoom } from "@metis/shared";
 import { canAccessThread } from "../discussions/access.js";
 import { createChildLogger } from "../logger.js";
 import { onClientEvent } from "./client-event-handler.js";
+import { onRoomJoin, roomFromField } from "./join-rate-limit.js";
 
 const log = createChildLogger("socket:discussion");
 
@@ -56,7 +57,7 @@ export { threadRoom };
 export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
   const user = socket.data.user;
 
-  onClientEvent(socket, "subscribe:thread", (payload) => {
+  onRoomJoin(socket, "subscribe:thread", roomFromField("threadId", threadRoom), (payload) => {
     const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
     return (async () => {

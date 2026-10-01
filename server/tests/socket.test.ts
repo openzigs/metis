@@ -222,6 +222,12 @@ import { canJoinAnalysisRoom } from "../src/lib/socket/analysis-room-access.js";
 import { canJoinConnectorRoom, resolveJobRoomScope } from "../src/lib/socket/room-access.js";
 import { prisma } from "../src/lib/prisma.js";
 import { wirePresenceHandlers } from "../src/lib/collaboration/presence.js";
+import {
+  JOIN_RATE_LIMITED,
+  JoinRateLimiter,
+  setJoinRateLimiter,
+  type RoomJoinEvent,
+} from "../src/lib/socket/join-rate-limit.js";
 import { presenceRoom, publishRoom, taskRoom } from "@metis/shared";
 import type {
   ClientToServerEvents,
@@ -1500,5 +1506,98 @@ describe("#654 a null, missing or primitive payload never crashes the process", 
     await new Promise((r) => setTimeout(r, 150));
     expect(errors).toEqual([]);
     socket.close();
+  });
+});
+
+describe("#682 room joins are rate-limited per socket and per user", () => {
+  afterEach(() => setJoinRateLimiter(undefined));
+
+  /** A limiter whose buckets, once drained, do not refill within a test. */
+  const limiterWith = (socketBurst: number, userBurst: number) =>
+    new JoinRateLimiter({
+      socket: { burst: socketBurst, perSecond: 1e-9 },
+      user: { burst: userBurst, perSecond: 1e-9 },
+    });
+
+  // A `Record` over every join event, so a new `subscribe:*` fails typecheck
+  // until it is listed — and so proven to sit behind the limit — here too.
+  const JOINS: Record<RoomJoinEvent, [payload: unknown, room: string]> = {
+    "subscribe:project": [{ projectId: "p1" }, "project:p1"],
+    "subscribe:analysis": [{ analysisId: "a1" }, "analysis:a1"],
+    "subscribe:session": [{ sessionId: "s1" }, "session:s1"],
+    "subscribe:mcp": [undefined, "mcp:status"],
+    "subscribe:connector": [{ connectorId: "c-db" }, "connector:c-db"],
+    "subscribe:publish": [{ batchId: "b1" }, publishRoom("b1")],
+    "subscribe:scheduler": [undefined, "scheduler:status"],
+    "subscribe:task": [{ taskId: "t1" }, taskRoom("t1")],
+    "subscribe:job": [{ jobId: "rec-p1" }, "job:rec-p1"],
+    "subscribe:bg-run": [{ runId: "r1" }, "run:r1"],
+    "subscribe:thread": [{ threadId: "t1" }, "thread:t1"],
+    "presence:thread:join": [{ threadId: "t1" }, "thread:t1"],
+    "presence:join": [
+      { artifactType: "discussion", artifactId: "t1" },
+      presenceRoom("discussion", "t1"),
+    ],
+  };
+
+  it("refuses every room join over the limit with a room-scoped refusal, joining nothing", async () => {
+    setJoinRateLimiter(limiterWith(1, 1000));
+    const socket = await connectAs("u1", "u1");
+    const errors: SocketAuthErrorEvent[] = [];
+    socket.on("auth:error", (e: SocketAuthErrorEvent) => errors.push(e));
+    // The one token admits this join.
+    socket.emit("subscribe:connector", { connectorId: "c-repo" });
+    await vi.waitFor(() =>
+      expect(io.sockets.adapter.rooms.get("connector:c-repo")?.has(socket.id!) ?? false).toBe(true),
+    );
+    const roomsBefore = [...(io.sockets.adapter.sids.get(socket.id!) ?? [])].sort();
+    const rawEmit = socket.emit as (ev: string, ...rest: unknown[]) => void;
+    for (const [event, [payload]] of Object.entries(JOINS)) {
+      if (payload === undefined) rawEmit.call(socket, event);
+      else rawEmit.call(socket, event, payload);
+    }
+    const expected = Object.values(JOINS).map(([, room]) => ({
+      message: JOIN_RATE_LIMITED,
+      room,
+    }));
+    await vi.waitFor(() => expect(errors).toHaveLength(expected.length));
+    expect(errors).toEqual(expected);
+    expect([...(io.sockets.adapter.sids.get(socket.id!) ?? [])].sort()).toEqual(roomsBefore);
+    // Leaving is never limited.
+    socket.emit("unsubscribe:connector", { connectorId: "c-repo" });
+    await vi.waitFor(() =>
+      expect(io.sockets.adapter.rooms.get("connector:c-repo")?.has(socket.id!) ?? false).toBe(
+        false,
+      ),
+    );
+    socket.close();
+  });
+
+  it("bounds audit rows under a probe loop across several of one user's sockets", async () => {
+    const USER_BURST = 5;
+    setJoinRateLimiter(limiterWith(1000, USER_BURST));
+    const sockets = [await connectAs("u1", "u1"), await connectAs("u1", "u1")];
+    const errors: SocketAuthErrorEvent[] = [];
+    for (const s of sockets) s.on("auth:error", (e: SocketAuthErrorEvent) => errors.push(e));
+    const audits = vi.mocked(prisma.auditLog.create);
+    const auditsBefore = audits.mock.calls.length;
+    const PROBES = 20;
+    for (const s of sockets) {
+      for (let i = 0; i < PROBES; i++) {
+        const id = `t-probe-${Math.random().toString(36).slice(2)}`;
+        s.emit("presence:join", { artifactType: "discussion", artifactId: id });
+        s.emit("subscribe:thread", { threadId: id });
+      }
+    }
+    const total = sockets.length * PROBES * 2;
+    await vi.waitFor(() => expect(errors).toHaveLength(total));
+    const limited = errors.filter((e) => e.message === JOIN_RATE_LIMITED);
+    expect(limited).toHaveLength(total - USER_BURST);
+    expect(limited.every((e) => typeof e.room === "string" && e.room !== "")).toBe(true);
+    // Only the admitted probes reached `canAccessThread`, which audits each.
+    await vi.waitFor(() => expect(audits.mock.calls.length - auditsBefore).toBe(USER_BURST));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(audits.mock.calls.length - auditsBefore).toBe(USER_BURST);
+    for (const s of sockets) s.close();
   });
 });
