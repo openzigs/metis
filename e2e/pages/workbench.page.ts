@@ -18,6 +18,12 @@ export class WorkbenchPage {
   readonly chatInput: Locator;
   readonly sendButton: Locator;
   readonly resetLayoutButton: Locator;
+  /** #584 — the Documents panel's own scroll container (the virtualiser's viewport). */
+  readonly docScroll: Locator;
+  /** #584 — the tree rows currently mounted (the virtualiser renders only these). */
+  readonly docRows: Locator;
+  /** #584 — the divider between the Documents and Chat panes. */
+  readonly leftSeparator: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -31,6 +37,9 @@ export class WorkbenchPage {
     this.chatInput = page.getByLabel("Message");
     this.sendButton = page.getByTestId("workbench-send");
     this.resetLayoutButton = page.getByTestId("workbench-reset-layout");
+    this.docScroll = page.getByTestId("workbench-doc-scroll");
+    this.docRows = this.docScroll.getByRole("treeitem");
+    this.leftSeparator = page.getByRole("separator", { name: "Resize documents panel" });
   }
 
   async goto(): Promise<void> {

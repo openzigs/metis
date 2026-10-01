@@ -12,6 +12,12 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const SCRIPT = path.resolve(REPO_ROOT, "server", "scripts", "e2e-seed-requirement.ts");
 const DOCUMENT_SCRIPT = path.resolve(REPO_ROOT, "server", "scripts", "e2e-seed-document.ts");
+const DOCUMENTS_BULK_SCRIPT = path.resolve(
+  REPO_ROOT,
+  "server",
+  "scripts",
+  "e2e-seed-documents-bulk.ts",
+);
 const GROUNDING_SCRIPT = path.resolve(
   REPO_ROOT,
   "server",
@@ -132,6 +138,52 @@ export function seedDocumentViaCli(opts: {
     throw new Error(`e2e-seed-document.ts returned malformed payload: ${result.stdout}`);
   }
   return parsed.id;
+}
+
+/**
+ * #584 — insert `count` `ready` upload documents into one project in a single
+ * process (batched `createMany`), named `bulk-doc-00001.md` onwards. For specs
+ * that need a project with thousands of documents (the virtualised Workbench
+ * panel) without queueing thousands of ingests. Returns the number created.
+ */
+export function seedDocumentsBulkViaCli(opts: {
+  projectId: string;
+  uploadedById: string;
+  count: number;
+  databaseUrl: string;
+}): number {
+  const result = spawnSync(
+    "pnpm",
+    [
+      "--filter",
+      "@metis/server",
+      "exec",
+      "tsx",
+      DOCUMENTS_BULK_SCRIPT,
+      opts.projectId,
+      opts.uploadedById,
+      String(opts.count),
+    ],
+    {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        DATABASE_URL: opts.databaseUrl,
+        DATABASE_PROVIDER: "sqlite",
+      },
+      encoding: "utf8",
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `e2e-seed-documents-bulk.ts failed (status=${result.status}):\n${result.stderr}\n${result.stdout}`,
+    );
+  }
+  const parsed = JSON.parse(result.stdout) as { count?: number };
+  if (typeof parsed.count !== "number") {
+    throw new Error(`e2e-seed-documents-bulk.ts returned malformed payload: ${result.stdout}`);
+  }
+  return parsed.count;
 }
 
 /**
