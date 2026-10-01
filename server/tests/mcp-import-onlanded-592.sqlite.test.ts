@@ -127,10 +127,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         executeImport(blob(label), registry, { id: ADMIN, role: "admin" }),
       );
 
-      expect(r.value.created).toEqual([]);
-      expect(r.value.errors).toEqual([{ label, message: "view failed" }]);
       const rows = await db.mCPServer.findMany({ where: { label } });
       expect(rows).toHaveLength(1);
+      // #608 — the landed row is reported as created, with the failure as a warning.
+      expect(r.value.created).toEqual([
+        { id: rows[0]!.id, label, warning: { message: "view failed" } },
+      ]);
+      expect(r.value.errors).toEqual([]);
       expect(r.withdrawn).toEqual([]);
       expect(r.live).toHaveLength(1);
       // The surviving secret is the one the landed row names.
@@ -234,10 +237,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ),
       );
 
-      expect(r.value.created).toEqual([]);
-      expect(r.value.errors).toEqual([{ label, message: "view failed" }]);
       const rows = await db.mCPServer.findMany({ where: { label } });
       expect(rows).toHaveLength(1);
+      // #608 — the landed row is reported as created, with the failure as a warning.
+      expect(r.value.created).toEqual([
+        { id: rows[0]!.id, label, warning: { message: "view failed" } },
+      ]);
+      expect(r.value.errors).toEqual([]);
       expect(r.withdrawn).toEqual([]);
       expect(r.live).toHaveLength(1);
       // The surviving secret is the one the landed row's headers name.

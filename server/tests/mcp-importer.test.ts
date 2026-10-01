@@ -81,14 +81,23 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+// #608 review — observe the `mcp.import` audit record; calls still go through.
+vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/audit/audit-service.js")>();
+  return { ...actual, audit: vi.fn(actual.audit) };
+});
+
+import { audit } from "../src/lib/audit/audit-service.js";
 import {
   buildImportPlan,
   executeImport,
+  importStatus,
   SECRET_KEY_PATTERN,
   isSecretValue,
   isSecretHeaderName,
 } from "../src/lib/mcp/mcp-importer.js";
 import type { MCPRegistryService } from "../src/lib/mcp/mcp-service.js";
+import type { McpImportBindingCheck } from "../src/lib/mcp/secret-binding.js";
 import { expandVaultRefs } from "../src/lib/vault/env-manager.js";
 import { getVaultService } from "../src/lib/vault/vault-service.js";
 
@@ -341,5 +350,71 @@ describe("executeImport", () => {
     expect(r.errors[0].message).toBe("dup");
     expect(created).toHaveLength(1);
     expect(created[0].deletedAt).not.toBeNull();
+  });
+
+  it("audits landed-with-warning entries as a `warnings` count (#608 review)", async () => {
+    let n = 0;
+    const reg = {
+      create: vi.fn(
+        async (input: CreateInput, _actor: unknown, opts: { onLanded?: (id: string) => void }) => {
+          n += 1;
+          opts.onLanded?.(`mcp_${n}`);
+          if (input.label === "warned") throw new Error("view failed");
+          return { id: `mcp_${n}`, label: input.label };
+        },
+      ),
+    } as unknown as MCPRegistryService;
+    vi.mocked(audit).mockClear();
+
+    const r = await executeImport(
+      {
+        mcpServers: {
+          warned: { command: "node" },
+          clean: { command: "node" },
+          refused: { command: "node", env: { API_KEY: "abc-secret" } },
+        },
+      },
+      reg,
+      { id: "u1" },
+      {
+        secretBindings: {
+          bindings: new Map(),
+          failures: new Map([["refused", { message: "nope", code: "VAULT_REF_UNRESOLVED" }]]),
+          until: new Map(),
+        } as McpImportBindingCheck,
+      },
+    );
+
+    expect(r.created.map((c) => c.label)).toEqual(["warned", "clean"]);
+    const imports = vi.mocked(audit).mock.calls.filter(([e]) => e.action === "mcp.import");
+    expect(imports).toHaveLength(1);
+    expect(imports[0][0].metadata).toEqual({
+      created: 2,
+      warnings: 1,
+      errors: 1,
+      secrets: 1,
+      dryRun: false,
+    });
+  });
+});
+
+describe("importStatus (#608)", () => {
+  const base = { plan: { entries: [], totalSecrets: 0 }, dryRun: false };
+  it("is 200 only when every entry was created cleanly", () => {
+    expect(importStatus({ ...base, created: [{ id: "a", label: "a" }], errors: [] })).toBe(200);
+  });
+  it("is 207 when an entry failed", () => {
+    expect(importStatus({ ...base, created: [], errors: [{ label: "a", message: "x" }] })).toBe(
+      207,
+    );
+  });
+  it("is 207 when an entry landed with a warning", () => {
+    expect(
+      importStatus({
+        ...base,
+        created: [{ id: "a", label: "a", warning: { message: "x" } }],
+        errors: [],
+      }),
+    ).toBe(207);
   });
 });

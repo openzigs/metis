@@ -131,9 +131,10 @@ export interface CreateMCPOptions {
   /**
    * #574 — called the moment the row is written, before anything that can
    * still throw, so a caller undoing its own pre-write work (auto-vaulted
-   * secrets) knows the row now depends on it.
+   * secrets) knows the row now depends on it. #608 — with the written row's
+   * id, so a caller whose later step fails can still name the server.
    */
-  onLanded?: () => void;
+  onLanded?: (id: string) => void;
 }
 
 export function normalizeRuntimeForConfig(input: {
@@ -347,7 +348,7 @@ export class MCPRegistryService {
         data: { ...data, createdById: actor.id },
       });
     });
-    options.onLanded?.();
+    options.onLanded?.(row.id);
     auditMcpEvent("mcp.registered", {
       mcpId: row.id,
       name: row.label,
@@ -396,7 +397,7 @@ export class MCPRegistryService {
         createdById: actor.id,
       },
     });
-    options.onLanded?.();
+    options.onLanded?.(row.id);
     auditMcpEvent("mcp.registered", {
       mcpId: row.id,
       name: row.label,

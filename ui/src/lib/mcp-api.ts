@@ -124,8 +124,9 @@ export interface MCPImportPlan {
 
 export interface MCPImportResponse {
   plan: MCPImportPlan;
-  created: Array<{ id: string; label: string }>;
-  errors: Array<{ label: string; message: string }>;
+  /** #608 — `warning`: the server was registered, but a later step failed. */
+  created: Array<{ id: string; label: string; warning?: { message: string; code?: string } }>;
+  errors: Array<{ label: string; message: string; code?: string }>;
   dryRun: boolean;
 }
 

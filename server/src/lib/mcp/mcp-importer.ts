@@ -87,7 +87,11 @@ export interface ImportPlan {
 
 export interface ImportResult {
   plan: ImportPlan;
-  created: Array<{ id: string; label: string }>;
+  /**
+   * #608 — `warning` marks an entry whose row landed but a later step failed:
+   * the server exists (under `id`), so a re-import would only hit `LABEL_TAKEN`.
+   */
+  created: Array<{ id: string; label: string; warning?: { message: string; code?: string } }>;
   /** `code` is the failure's error code when it has one (e.g. `VAULT_REF_UNRESOLVED`). */
   errors: Array<{ label: string; message: string; code?: string }>;
   dryRun: boolean;
@@ -194,7 +198,11 @@ export async function executeImport(
     const written: string[] = [];
     // #592 — set the moment the entry's row is written (`onLanded`): from then
     // on the row names the secrets in `written`, so a later throw keeps them.
-    let landed = false;
+    // #608 — it holds the row's id, so the entry is still reported as created.
+    // The cast is load-bearing: TypeScript does not see the assignment inside
+    // the `onLanded` closure, so a plain `: string | null = null` would narrow
+    // `landedId` to `null` in the catch below and type the landed branch `never`.
+    let landedId = null as string | null;
     // #577 review — an entry the check could not bind (unresolved or
     // ambiguous reference) fails alone, before it vaults anything.
     const failure = opts.secretBindings?.failures.get(entry.label);
@@ -280,8 +288,8 @@ export async function executeImport(
         actor,
         {
           secretBindings: bound,
-          onLanded: () => {
-            landed = true;
+          onLanded: (id) => {
+            landedId = id;
           },
         },
       );
@@ -289,7 +297,7 @@ export async function executeImport(
     } catch (err) {
       // #592 — withdraw (audited as `vault.delete`) only when the row never
       // landed; a landed row names these secrets, so they stay.
-      if (!landed) {
+      if (landedId === null) {
         await withdrawCreatedSecrets(vault, written, {
           actorId: actor.id,
           resource: { type: "mcp_server" },
@@ -298,11 +306,14 @@ export async function executeImport(
         });
       }
       const code = (err as { code?: unknown }).code;
-      result.errors.push({
-        label: entry.label,
+      const outcome = {
         message: (err as Error).message,
         ...(typeof code === "string" ? { code } : {}),
-      });
+      };
+      // #608 — a landed row is a registered server: report it as created, with
+      // the failure as a warning, rather than as an error a retry cannot fix.
+      if (landedId === null) result.errors.push({ label: entry.label, ...outcome });
+      else result.created.push({ id: landedId, label: entry.label, warning: outcome });
     }
   }
   audit({
@@ -311,12 +322,22 @@ export async function executeImport(
     target: { type: "mcp_server", id: "n/a" },
     metadata: {
       created: result.created.length,
+      // #608 review — of `created`, the entries that landed with a warning.
+      warnings: result.created.filter((c) => c.warning).length,
       errors: result.errors.length,
       secrets: plan.totalSecrets,
       dryRun: false,
     },
   });
   return result;
+}
+
+/**
+ * #608 — the HTTP status for an executed import: 207 when any entry failed or
+ * landed with a warning, 200 only when every entry was created cleanly.
+ */
+export function importStatus(result: ImportResult): 200 | 207 {
+  return result.errors.length > 0 || result.created.some((c) => c.warning) ? 207 : 200;
 }
 
 function getOriginalSecret(
