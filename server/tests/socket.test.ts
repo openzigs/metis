@@ -666,11 +666,20 @@ describe("#617 the handshake trusts live user state, not the token", () => {
       socket.on("auth:ok", () => resolve());
       socket.on("connect_error", reject);
     });
-    const err = await new Promise<{ message: string }>((resolve) => {
-      socket.on("auth:error", resolve);
-      socket.emit("subscribe:mcp");
-    });
-    expect(err.message).toMatch(/FORBIDDEN/);
+    // Bounded: if the gate regresses the server emits no auth:error at all, and
+    // an unbounded wait would hang to the suite timeout (x retries) instead of
+    // failing fast with this message.
+    const authErrors: string[] = [];
+    socket.on("auth:error", ({ message }) => authErrors.push(message));
+    socket.emit("subscribe:mcp");
+    await vi.waitFor(
+      () =>
+        expect(
+          authErrors,
+          "a demoted admin's subscribe:mcp must be refused with auth:error FORBIDDEN",
+        ).toEqual([expect.stringMatching(/FORBIDDEN/)]),
+      { timeout: 2000 },
+    );
     expect(io.sockets.adapter.rooms.get("mcp:status")?.has(socket.id!) ?? false).toBe(false);
     socket.close();
   });
