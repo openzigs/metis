@@ -40,6 +40,8 @@ const { audit } = await import("../src/lib/audit/audit-service.js");
 const jira = await import("../src/lib/connectors/jira/jira-service.js");
 const testmgmt = await import("../src/lib/connectors/testmgmt/connection-service.js");
 const { TASK_RETRY_WINDOW_MS } = await import("../src/lib/scheduler/task-retry-window.js");
+const { markBindingWrite, BINDING_WRITE_WINDOW_MS } =
+  await import("../src/lib/vault/binding-write-mark.js");
 
 const MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
 const OWNER = "owner";
@@ -535,19 +537,89 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     const ctx = { actorId: COORD, target: { type: "t", id: "x" }, projectId: "p1" };
 
+    const markOf = async (id: string) =>
+      (await db.secret.findUniqueOrThrow({ where: { id } })).replacedKeptAt;
+    const sweepAudits = () =>
+      vi
+        .mocked(audit)
+        .mock.calls.map(([e]) => e)
+        .filter((e) => e.action === "vault.delete");
+    /** A sweep with the per-secret throttle off, so a just-marked secret is due. */
+    const sweepDue = (now?: Date) => sweepReplacedSecrets(now, { recheckAfterMs: 0 });
+
     it("an already-deleted secret is not retired again", async () => {
       const s = await freshSecret();
       await vault.delete(s.id);
-      const del = vi.fn();
-      expect(await retireReplacedSecret({ delete: del }, s.id, ctx)).toBe(false);
-      expect(del).not.toHaveBeenCalled();
+      const { deletedAt } = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
+      vi.mocked(audit).mockClear();
+      expect(await retireReplacedSecret(s.id, ctx)).toBe(false);
+      // The original deletion time stands, and no second retirement is audited.
+      const after = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
+      expect(after.deletedAt).toEqual(deletedAt);
+      expect(vi.mocked(audit)).not.toHaveBeenCalled();
     });
 
-    it("a vault failure leaves the secret live and does not throw", async () => {
+    it("a database failure leaves the secret live and does not throw", async () => {
       const s = await freshSecret();
-      const del = vi.fn().mockRejectedValue(new Error("vault down"));
-      expect(await retireReplacedSecret({ delete: del }, s.id, ctx)).toBe(false);
+      const spy = vi.spyOn(db.secret, "updateMany").mockRejectedValueOnce(new Error("db down"));
+      try {
+        expect(await retireReplacedSecret(s.id, ctx)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
       expect(await isLive(s.id)).toBe(true);
+    });
+
+    it("#614 — a replaced secret with a binding write in flight is kept and marked, not deleted", async () => {
+      const s = await freshSecret();
+      const now = new Date();
+      // The owner's binding write stamps the secret before its ownership check.
+      const until = await markBindingWrite([{ id: s.id }], OWNER, now);
+      expect(until).not.toBeNull();
+      vi.mocked(audit).mockClear();
+
+      expect(await retireReplacedSecret(s.id, ctx, now)).toBe(false);
+
+      const row = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
+      expect(row.deletedAt).toBeNull();
+      expect(row.replacedKeptAt).toEqual(now);
+      expect(vi.mocked(audit)).not.toHaveBeenCalled();
+    });
+
+    it("#614 — the immediate retirement goes through once the binding window has closed", async () => {
+      const s = await freshSecret();
+      const now = new Date();
+      await markBindingWrite(
+        [{ id: s.id }],
+        OWNER,
+        new Date(now.getTime() - BINDING_WRITE_WINDOW_MS),
+      );
+      expect(await retireReplacedSecret(s.id, ctx, now)).toBe(true);
+      expect(await isLive(s.id)).toBe(false);
+    });
+
+    it("#614 — Jira: a replacement during the owner's binding write keeps the old secret until the sweep", async () => {
+      const before = await ownerJira();
+      const stampedAt = new Date();
+      // The owner is binding their token secret somewhere new while a
+      // coordinator replaces it on the connection.
+      const until = await markBindingWrite([{ id: before.secretId }], OWNER, stampedAt);
+
+      await jira.updateJiraConnection(before.id, { apiToken: "coord-token" }, COORD);
+
+      // Nothing else references it, but the in-flight write may: kept and marked.
+      expect(await isLive(before.secretId)).toBe(true);
+      expect(await markOf(before.secretId)).toBeInstanceOf(Date);
+      expect(await isSecretReferenced(before.secretId, await nameOf(before.secretId))).toBe(false);
+
+      // While the window is open the sweep leaves it alone too.
+      expect((await sweepDue(stampedAt)).retired).not.toContain(before.secretId);
+      expect(await isLive(before.secretId)).toBe(true);
+
+      // Once the window has closed and nothing references it, the sweep retires it.
+      const result = await sweepDue(new Date(until!.getTime() + 1));
+      expect(result.retired).toContain(before.secretId);
+      expect(await isLive(before.secretId)).toBe(false);
     });
 
     // ---- withdrawCreatedSecrets (#495) --------------------------------------
@@ -603,16 +675,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     // ---- #591 — the replaced-secret sweep -----------------------------------
 
-    const markOf = async (id: string) =>
-      (await db.secret.findUniqueOrThrow({ where: { id } })).replacedKeptAt;
-    const sweepAudits = () =>
-      vi
-        .mocked(audit)
-        .mock.calls.map(([e]) => e)
-        .filter((e) => e.action === "vault.delete");
-    /** A sweep with the per-secret throttle off, so a just-marked secret is due. */
-    const sweepDue = (now?: Date) => sweepReplacedSecrets(now, { recheckAfterMs: 0 });
-
     it("#591 — a replaced secret that is kept is marked, and its Updated time is untouched", async () => {
       const s = await freshSecret();
       await db.databaseConnection.create({
@@ -620,7 +682,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const before = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
 
-      expect(await retireReplacedSecret(vault, s.id, ctx)).toBe(false);
+      expect(await retireReplacedSecret(s.id, ctx)).toBe(false);
 
       const after = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
       expect(after.replacedKeptAt).toBeInstanceOf(Date);
@@ -630,7 +692,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("#591 — a retired replacement is not marked", async () => {
       const s = await freshSecret();
-      expect(await retireReplacedSecret(vault, s.id, ctx)).toBe(true);
+      expect(await retireReplacedSecret(s.id, ctx)).toBe(true);
       expect(await markOf(s.id)).toBeNull();
     });
 

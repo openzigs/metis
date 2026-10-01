@@ -118,18 +118,52 @@ export interface RetireContext {
 }
 
 /**
+ * Soft-delete `id` in ONE conditional UPDATE that re-states "still live" and
+ * "no binding write in flight" (#552 `bindingWriteUntil`): a write that binds
+ * the secret somewhere new stamps that column before its ownership check, so
+ * either the stamp lands first and this delete is refused, or the delete lands
+ * first and the binding check no longer finds a live secret. Returns whether
+ * the delete landed.
+ */
+async function softDeleteIfUnbound(id: string, now: Date): Promise<boolean> {
+  const { count } = await prisma.secret.updateMany({
+    where: {
+      id,
+      deletedAt: null,
+      OR: [{ bindingWriteUntil: null }, { bindingWriteUntil: { lte: now } }],
+    },
+    data: { deletedAt: now },
+  });
+  return count > 0;
+}
+
+/**
+ * #591 — mark a live replaced secret as kept, for {@link sweepReplacedSecrets}.
+ * Raw SQL so the vault page's "Updated" (`updatedAt`) is not moved by a marker
+ * nobody edited.
+ */
+async function markKept(id: string, at: Date): Promise<void> {
+  await prisma.$executeRaw`UPDATE "secrets" SET "replacedKeptAt" = ${at} WHERE "id" = ${id} AND "deletedAt" IS NULL`;
+}
+
+/**
  * Soft-delete `secretId` if it is still live and nothing references it.
  * Call AFTER the resource row has been repointed at the replacement secret.
  * Returns true when the secret was retired.
+ *
+ * #614 — the delete is the sweep's guarded one ({@link softDeleteIfUnbound}),
+ * so a binding write in flight on the secret refuses it. A secret kept for
+ * either reason is marked `replacedKeptAt`, and the sweep retires it once the
+ * window has closed and nothing references it.
  *
  * Failure here never fails the caller's update, which has already committed:
  * the worst outcome is the pre-#481 state (the old secret stays live), which is
  * logged so it can be cleaned up from the vault page.
  */
 export async function retireReplacedSecret(
-  vault: Pick<VaultService, "delete">,
   secretId: string,
   ctx: RetireContext,
+  now: Date = new Date(),
 ): Promise<boolean> {
   try {
     const row = await prisma.secret.findFirst({
@@ -137,13 +171,13 @@ export async function retireReplacedSecret(
       select: { id: true, name: true },
     });
     if (!row) return false;
-    if (await isSecretReferenced(row.id, row.name)) {
-      // #591 — kept for now; the sweep re-checks it. Raw SQL so the vault
-      // page's "Updated" (`updatedAt`) is not moved by a marker nobody edited.
-      await prisma.$executeRaw`UPDATE "secrets" SET "replacedKeptAt" = ${new Date()} WHERE "id" = ${row.id} AND "deletedAt" IS NULL`;
+    if (
+      (await isSecretReferenced(row.id, row.name, now)) ||
+      !(await softDeleteIfUnbound(row.id, now))
+    ) {
+      await markKept(row.id, now);
       return false;
     }
-    await vault.delete(row.id);
     audit({
       actor: { id: ctx.actorId },
       action: "vault.secret_retired",
@@ -309,11 +343,8 @@ export interface ReplacedSecretSweepOptions {
  * MCP server) costs one check per interval and goes to the back of the queue.
  * `replacedKeptAt` therefore reads "last found still referenced".
  *
- * The soft-delete is ONE conditional UPDATE that re-states "still live" and
- * "no binding write in flight" (#552 `bindingWriteUntil`): a write that binds
- * the secret somewhere new stamps that column before its ownership check, so
- * either the stamp lands first and this delete is refused, or the delete lands
- * first and the binding check no longer finds a live secret.
+ * The soft-delete is the guarded one ({@link softDeleteIfUnbound}), shared
+ * with {@link retireReplacedSecret}: refused while a binding write is in flight.
  *
  * A failure on one secret is logged and the rest still run; it is not
  * re-stamped, so it is picked up again on the next run.
@@ -336,20 +367,11 @@ export async function sweepReplacedSecrets(
   for (const row of rows) {
     try {
       if (await isSecretReferenced(row.id, row.name, now)) {
-        // Throttle: not due again for another interval. Raw SQL so the vault
-        // page's "Updated" is not moved, as in retireReplacedSecret.
-        await prisma.$executeRaw`UPDATE "secrets" SET "replacedKeptAt" = ${now} WHERE "id" = ${row.id} AND "deletedAt" IS NULL`;
+        // Throttle: not due again for another interval.
+        await markKept(row.id, now);
         continue;
       }
-      const { count } = await prisma.secret.updateMany({
-        where: {
-          id: row.id,
-          deletedAt: null,
-          OR: [{ bindingWriteUntil: null }, { bindingWriteUntil: { lte: now } }],
-        },
-        data: { deletedAt: now },
-      });
-      if (count === 0) continue;
+      if (!(await softDeleteIfUnbound(row.id, now))) continue;
       retired.push(row.id);
       audit({
         actor: { id: "system" },
