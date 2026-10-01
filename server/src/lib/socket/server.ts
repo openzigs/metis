@@ -43,6 +43,7 @@ import {
 import { verifyAccessToken } from "../auth/jwt.js";
 import { actorCanAccessProject } from "../scheduler/project-access.js";
 import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
+import { canJoinAnalysisRoom } from "./analysis-room-access.js";
 import { getLastDocSections, getLastJobLifecycle } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
@@ -294,10 +295,29 @@ function attachHandlers(
   // Presence joins are authz-gated via `canAccessThread`; typing broadcasts are
   // scoped to other members of the thread room (never echoed to the sender).
   wireDiscussionPresenceHandlers(socket);
+  // #645 — the analysis room carries promotion-blocked counts and failure
+  // reasons, so only a user who can read the analysis's project may join it —
+  // the same rule as `GET /api/analyses/:id`. It used to join any id named.
   socket.on("subscribe:analysis", ({ analysisId }) => {
-    void socket.join(`analysis:${analysisId}`);
+    if (!analysisId || typeof analysisId !== "string") return;
+    void (async () => {
+      try {
+        if (await canJoinAnalysisRoom(user, analysisId)) {
+          await socket.join(`analysis:${analysisId}`);
+          return;
+        }
+      } catch (err) {
+        log.warn("Socket subscribe:analysis failed", {
+          socketId: socket.id,
+          analysisId,
+          error: (err as Error).message,
+        });
+      }
+      socket.emit("auth:error", { message: "FORBIDDEN: no access to analysis" });
+    })();
   });
   socket.on("unsubscribe:analysis", ({ analysisId }) => {
+    if (!analysisId || typeof analysisId !== "string") return;
     void socket.leave(`analysis:${analysisId}`);
   });
   // #142 — the session room now carries tool-approval prompts (with the tool's

@@ -55,7 +55,24 @@ vi.mock("../src/lib/prisma.js", () => ({
         },
       ]),
     },
-    workspaceMember: { findMany: vi.fn(async () => []) },
+    // #645 — `u1` is a live member of workspace `w1`; nobody else is in one.
+    workspaceMember: {
+      findMany: vi.fn(async (args?: { where?: { userId?: string } }) =>
+        args?.where?.userId === "u1" ? [{ workspaceId: "w1" }] : [],
+      ),
+    },
+    // #645 — `subscribe:analysis` authorizes like the REST read: `a1` belongs
+    // to `p1` in workspace `w1`; `a-deleted` is soft-deleted; nothing else exists.
+    analysis: {
+      findFirst: vi.fn(async (args?: { where?: { id?: string; deletedAt?: null } }) => {
+        if (args?.where?.id === "a-boom") throw new Error("db down");
+        if (args?.where?.id === "a1") return { id: "a1", projectId: "p1", deletedAt: null };
+        if (args?.where?.id === "a-deleted" && args.where.deletedAt !== null) {
+          return { id: "a-deleted", projectId: "p1", deletedAt: new Date() };
+        }
+        return null;
+      }),
+    },
     auditLog: { create: vi.fn(async () => ({})) },
     // #142 — `subscribe:session` authorises like every session read: `u1`
     // owns the unscoped session `s1`; nobody else owns anything.
@@ -75,6 +92,21 @@ vi.mock("../src/lib/prisma.js", () => ({
         if (createdById === "u1") return [{ id: "p1", name: "P1" }];
         return [];
       }),
+      // #645 — `assertProjectAccess`: `p1` sits in workspace `w1`, whose only
+      // member is `u1`.
+      findUnique: vi.fn(
+        async (args: {
+          where: { id: string };
+          select?: { workspace?: { select?: { members?: { where?: { userId?: string } } } } };
+        }) => {
+          if (args.where.id !== "p1") return null;
+          const memberId = args.select?.workspace?.select?.members?.where?.userId;
+          return {
+            workspaceId: "w1",
+            workspace: { deletedAt: null, members: memberId === "u1" ? [{ id: "m1" }] : [] },
+          };
+        },
+      ),
     },
   },
 }));
@@ -218,6 +250,67 @@ describe("Socket.IO server", () => {
     expect((await denied).message).toMatch(/FORBIDDEN/);
     expect(io.sockets.adapter.rooms.get("session:s1")?.size ?? 0).toBe(0);
     socket.close();
+  });
+
+  describe("#645 subscribe:analysis authorizes against the analysis's project", () => {
+    async function subscribeAnalysis(
+      userId: string,
+      analysisId: unknown,
+    ): Promise<{ socket: ClientSocket; errors: string[] }> {
+      const socket = await connectAs(userId, userId);
+      const errors: string[] = [];
+      socket.on("auth:error", ({ message }: { message: string }) => errors.push(message));
+      socket.emit("subscribe:analysis", { analysisId } as { analysisId: string });
+      await new Promise((r) => setTimeout(r, 100));
+      return { socket, errors };
+    }
+    const inRoom = (analysisId: string, socket: ClientSocket): boolean =>
+      io.sockets.adapter.rooms.get(`analysis:${analysisId}`)?.has(socket.id!) ?? false;
+
+    it("joins a member of the analysis's project workspace", async () => {
+      const { socket, errors } = await subscribeAnalysis("u1", "a1");
+      expect(errors).toEqual([]);
+      expect(inRoom("a1", socket)).toBe(true);
+      socket.close();
+    });
+
+    it("refuses a user outside the analysis's project and emits auth:error", async () => {
+      const { socket, errors } = await subscribeAnalysis("u2", "a1");
+      expect(errors).toEqual(["FORBIDDEN: no access to analysis"]);
+      expect(inRoom("a1", socket)).toBe(false);
+      socket.close();
+    });
+
+    it("refuses an unknown or soft-deleted analysis id with the same error", async () => {
+      for (const id of ["a-missing", "a-deleted"]) {
+        const { socket, errors } = await subscribeAnalysis("u1", id);
+        expect(errors).toEqual(["FORBIDDEN: no access to analysis"]);
+        expect(inRoom(id, socket)).toBe(false);
+        socket.close();
+      }
+    });
+
+    it("fails closed when the analysis lookup throws", async () => {
+      const { socket, errors } = await subscribeAnalysis("u1", "a-boom");
+      expect(errors).toEqual(["FORBIDDEN: no access to analysis"]);
+      expect(inRoom("a-boom", socket)).toBe(false);
+      socket.close();
+    });
+
+    it("ignores a missing or non-string analysisId without touching the database", async () => {
+      const { prisma } = await import("../src/lib/prisma.js");
+      const findFirst = vi.mocked(prisma.analysis.findFirst);
+      findFirst.mockClear();
+      for (const bad of [undefined, "", 42, { id: "a1" }]) {
+        const { socket } = await subscribeAnalysis("u1", bad);
+        expect(io.sockets.adapter.rooms.get("analysis:undefined")).toBeUndefined();
+        expect(io.sockets.adapter.rooms.get("analysis:")).toBeUndefined();
+        expect(io.sockets.adapter.rooms.get("analysis:42")).toBeUndefined();
+        expect(io.sockets.adapter.rooms.get("analysis:[object Object]")).toBeUndefined();
+        socket.close();
+      }
+      expect(findFirst).not.toHaveBeenCalled();
+    });
   });
 
   /**
