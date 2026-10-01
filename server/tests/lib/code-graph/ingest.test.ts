@@ -444,7 +444,7 @@ describe("ingestCodeGraph (#308)", () => {
     );
     // Constructors of a Kotlin class and of a Java class stay constructor references...
     expect(refs.map((e: any) => e.toQualifiedName).sort()).toEqual(["Invoice", "Order"]);
-    expect(refs.find((e: any) => e.toQualifiedName === "Order").toSymbolId).toBe(
+    expect(refs.find((e: any) => e.toQualifiedName === "Order")!.toSymbolId).toBe(
       symbolId(store, "src/main/kotlin/com/acme/Order.kt", "Order"),
     );
     // ...a project composable and an external one are calls, and the project one resolves.

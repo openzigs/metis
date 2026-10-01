@@ -95,12 +95,12 @@ describe("testcoverage/normaliser", () => {
 
   describe("assertMappingOrThrow", () => {
     it("throws ColumnMappingRequiredError under threshold w/ no overrides", () => {
-      const match = { mapping: { Foo: null as const }, confidence: 0.4 };
+      const match = { mapping: { Foo: null }, confidence: 0.4 };
       expect(() => assertMappingOrThrow(match)).toThrow(ColumnMappingRequiredError);
     });
 
     it("returns mapping when overrides are supplied", () => {
-      const match = { mapping: { Foo: null as const }, confidence: 0.4 };
+      const match = { mapping: { Foo: null }, confidence: 0.4 };
       const result = assertMappingOrThrow(match, { Foo: "title" });
       expect(result.Foo).toBe("title");
     });

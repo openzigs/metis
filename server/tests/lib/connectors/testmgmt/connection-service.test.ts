@@ -11,8 +11,9 @@
  *  - Soft-delete semantics.
  *  - Connectivity test wiring for each kind.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
+  type TestManagementServiceDeps,
   createTestManagementConnection,
   deleteTestManagementConnection,
   getTestManagementConnection,
@@ -114,7 +115,7 @@ function makeDb() {
             createdAt: new Date(),
             updatedAt: new Date(),
             deletedAt: null,
-            ...(data as Row),
+            ...data,
           };
           rows.set(row.id, row);
           return row;
@@ -206,18 +207,25 @@ function makeVault() {
 
 // ---- Test fixtures ---------------------------------------------------------
 
-function depsFor(opts?: {
-  assertHost?: ReturnType<typeof vi.fn>;
-  fetchFn?: ReturnType<typeof vi.fn>;
-}) {
+type FetchFn = NonNullable<TestManagementServiceDeps["fetchFn"]>;
+type AssertHostFn = NonNullable<TestManagementServiceDeps["assertHost"]>;
+
+function depsFor(opts?: { assertHost?: Mock<AssertHostFn>; fetchFn?: Mock<FetchFn> }) {
   const { db, rows } = makeDb();
   const { vault, secrets } = makeVault();
-  const assertHost = opts?.assertHost ?? vi.fn(async () => undefined);
+  const assertHost = opts?.assertHost ?? vi.fn<AssertHostFn>(async () => undefined);
   const fetchFn =
     opts?.fetchFn ??
-    vi.fn(async () => ({ ok: true, status: 200, text: async () => '"jwt.value"' }));
+    vi.fn<FetchFn>(async () => ({ ok: true, status: 200, text: async () => '"jwt.value"' }));
+  const deps: TestManagementServiceDeps = {
+    // The in-memory stub implements only the four delegate methods the service calls.
+    prisma: db as unknown as NonNullable<TestManagementServiceDeps["prisma"]>,
+    vault,
+    assertHost,
+    fetchFn,
+  };
   return {
-    deps: { prisma: db, vault, assertHost, fetchFn },
+    deps,
     db,
     rows,
     vault,
@@ -339,7 +347,7 @@ describe("createTestManagementConnection", () => {
   });
 
   it("rejects baseUrls whose host fails the SSRF allow-list", async () => {
-    const assertHost = vi.fn(async (host: string) => {
+    const assertHost = vi.fn<AssertHostFn>(async (host: string) => {
       if (host === "internal.local") {
         throw new ConnectorError(403, "HOST_NOT_ALLOWED", "blocked");
       }
@@ -464,7 +472,7 @@ describe("listTestManagementConnections / getTestManagementConnection", () => {
 
 describe("updateTestManagementConnection", () => {
   it("re-asserts the SSRF allow-list when baseUrl changes and resets status", async () => {
-    const assertHost = vi.fn(async (host: string) => {
+    const assertHost = vi.fn<AssertHostFn>(async (host: string) => {
       if (host === "blocked.example.com") {
         throw new ConnectorError(403, "HOST_NOT_ALLOWED", "blocked");
       }
@@ -834,7 +842,7 @@ describe("re-using a deleted connection's label (#258)", () => {
 
 describe("testTestManagementConnection", () => {
   it("performs the Xray JWT exchange and records ok status", async () => {
-    const fetchFn = vi.fn(async () => ({
+    const fetchFn = vi.fn<FetchFn>(async () => ({
       ok: true,
       status: 200,
       text: async () => '"xray.jwt.token"',
@@ -864,7 +872,7 @@ describe("testTestManagementConnection", () => {
   });
 
   it("sends a Bearer header when testing Zephyr", async () => {
-    const fetchFn = vi.fn(async () => ({ ok: true, status: 200, text: async () => "ok" }));
+    const fetchFn = vi.fn<FetchFn>(async () => ({ ok: true, status: 200, text: async () => "ok" }));
     const { deps } = depsFor({ fetchFn });
     const created = await createTestManagementConnection(
       PROJECT,
@@ -886,7 +894,7 @@ describe("testTestManagementConnection", () => {
   });
 
   it("sends a Basic header (base64 of email:apiKey) when testing TestRail", async () => {
-    const fetchFn = vi.fn(async () => ({ ok: true, status: 200, text: async () => "ok" }));
+    const fetchFn = vi.fn<FetchFn>(async () => ({ ok: true, status: 200, text: async () => "ok" }));
     const { deps } = depsFor({ fetchFn });
     const created = await createTestManagementConnection(
       PROJECT,
@@ -908,9 +916,9 @@ describe("testTestManagementConnection", () => {
   });
 
   it("re-asserts the SSRF allow-list on every test (defence-in-depth)", async () => {
-    const fetchFn = vi.fn(async () => ({ ok: true, status: 200, text: async () => "ok" }));
+    const fetchFn = vi.fn<FetchFn>(async () => ({ ok: true, status: 200, text: async () => "ok" }));
     let allow = true;
-    const assertHost = vi.fn(async () => {
+    const assertHost = vi.fn<AssertHostFn>(async () => {
       if (!allow) throw new ConnectorError(403, "HOST_NOT_ALLOWED", "blocked");
     });
     const { deps, rows } = depsFor({ fetchFn, assertHost });
@@ -936,7 +944,7 @@ describe("testTestManagementConnection", () => {
   });
 
   it("records error status when the upstream returns non-2xx", async () => {
-    const fetchFn = vi.fn(async () => ({
+    const fetchFn = vi.fn<FetchFn>(async () => ({
       ok: false,
       status: 503,
       text: async () => "down",
@@ -988,7 +996,7 @@ describe("loadResolvedTestManagementConnection", () => {
 
   it("re-asserts SSRF on resolve (callers may use the loaded creds to dial out)", async () => {
     let allow = true;
-    const assertHost = vi.fn(async () => {
+    const assertHost = vi.fn<AssertHostFn>(async () => {
       if (!allow) throw new ConnectorError(403, "HOST_NOT_ALLOWED", "blocked");
     });
     const { deps } = depsFor({ assertHost });
@@ -1101,7 +1109,7 @@ describe("edge cases & error branches", () => {
   });
 
   it("records error status when Xray auth returns non-2xx", async () => {
-    const fetchFn = vi.fn(async () => ({
+    const fetchFn = vi.fn<FetchFn>(async () => ({
       ok: false,
       status: 401,
       text: async () => "bad creds",
@@ -1124,7 +1132,7 @@ describe("edge cases & error branches", () => {
   });
 
   it("records error status when TestRail returns non-2xx", async () => {
-    const fetchFn = vi.fn(async () => ({
+    const fetchFn = vi.fn<FetchFn>(async () => ({
       ok: false,
       status: 403,
       text: async () => "forbidden",

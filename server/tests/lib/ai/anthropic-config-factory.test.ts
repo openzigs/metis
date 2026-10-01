@@ -112,7 +112,7 @@ describe("loadAIConfig — native anthropic (#285)", () => {
     process.env.ANTHROPIC_AUTH_TOKEN = "oauth-tok";
     const cfg = loadAIConfig(process.env);
     expect(cfg.sdkProvider).toMatchObject({ type: "anthropic", authToken: "oauth-tok" });
-    expect((cfg.sdkProvider as Record<string, unknown>).apiKey).toBeUndefined();
+    expect(cfg.sdkProvider?.apiKey).toBeUndefined();
   });
 
   it("does NOT fall back to COPILOT_PROVIDER_API_KEY when ANTHROPIC_API_KEY is absent", () => {

@@ -9,7 +9,7 @@ vi.mock("../../../src/lib/config/config-service.js", () => ({
   getConfigService: () => ({
     getBool: (k: string, def: boolean) => cfgState.booleans.get(k) ?? def,
     get: (k: string) => cfgState.strings.get(k),
-    getNumber: (k: string, def: number) => def,
+    getNumber: (_k: string, def: number) => def,
   }),
 }));
 

@@ -144,7 +144,7 @@ import {
 
 function createApp(
   authUser: { userId: string; role: string } | undefined,
-  enqueueRun?: ReturnType<typeof vi.fn>,
+  enqueueRun?: NonNullable<Parameters<typeof testCoverageRouter>[0]>["enqueueRun"],
 ): Express {
   const app = express();
   app.use(express.json());
@@ -190,7 +190,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getProject).mockResolvedValue(stubProject as never);
   vi.mocked(prisma.testCaseImport.create).mockImplementation(
-    async ({ data }: { data: Record<string, unknown> }) => ({ id: "imp-1", ...data }) as never,
+    ({ data }) => Promise.resolve({ id: "imp-1", ...data }) as never,
   );
   vi.mocked(prisma.testCaseDoc.upsert).mockResolvedValue({ id: "doc-1" } as never);
   // #619 approval gate off by default so pre-existing tests keep their

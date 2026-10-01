@@ -55,11 +55,9 @@ describe("csvProvider", () => {
 });
 
 describe("markdownProvider", () => {
-  it("parses ## blocks into test cases", () => {
+  it("parses ## blocks into test cases", async () => {
     const md = `# Suite\n\n## Login flow\n\n**Preconditions:**\nUser exists\n\n**Steps:**\n1. Open app\n2. Type creds -> Form valid\n\n**Expected:**\nDashboard\n\n**Tags:**\nsmoke, auth\n\n## Logout flow\n\n**Steps:**\nClick logout\n\n**Expected:**\nLogin page\n`;
-    const result = markdownProvider.parse(md, { label: "tests.md" }) as ReturnType<
-      typeof markdownProvider.parse
-    > & { cases: { title: string }[] };
+    const result = await markdownProvider.parse(md, { label: "tests.md" });
     expect(result.cases.length).toBe(2);
     expect(result.cases[0].title).toBe("Login flow");
     expect(result.cases[0].tags).toEqual(["smoke", "auth"]);
@@ -73,11 +71,9 @@ describe("markdownProvider", () => {
 });
 
 describe("gherkinProvider", () => {
-  it("parses a feature file with tags + multiple scenarios", () => {
+  it("parses a feature file with tags + multiple scenarios", async () => {
     const feature = `@regression\nFeature: Login\n\n  @smoke\n  Scenario: Successful login\n    Given a user "alice"\n    When she submits the form\n    And clicks submit\n    Then she sees the dashboard\n\n  Scenario: Failed login\n    Given a user "bob"\n    When he submits invalid creds\n    Then he sees an error\n`;
-    const result = gherkinProvider.parse(feature, { label: "x.feature" }) as ReturnType<
-      typeof gherkinProvider.parse
-    > & { cases: { title: string; tags: string[] }[] };
+    const result = await gherkinProvider.parse(feature, { label: "x.feature" });
     expect(result.cases).toHaveLength(2);
     expect(result.cases[0].title).toBe("Successful login");
     expect(result.cases[0].tags).toContain("smoke");

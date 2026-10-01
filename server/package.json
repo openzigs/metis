@@ -136,6 +136,7 @@
   },
   "devDependencies": {
     "@huggingface/transformers": "^4.3.0",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/compression": "^1.8.1",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",

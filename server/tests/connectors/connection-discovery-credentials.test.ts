@@ -58,7 +58,7 @@ vi.mock("../../src/lib/prisma.js", () => ({
           const k = JSON.stringify(where.projectId_driverType_host_port_database);
           const prior = existingRows.get(k);
           const id = prior?.id ?? `sc_${existingRows.size + 1}`;
-          const row = { id, ...create, ...(prior ? update : {}) };
+          const row: Record<string, unknown> = { id, ...create, ...(prior ? update : {}) };
           upserted.push(row);
           existingRows.set(k, {
             id,

@@ -11,6 +11,8 @@
  */
 import { vi } from "vitest";
 
+// Row shapes below are `type` aliases rather than interfaces: an alias gets an
+// implicit index signature, so it is assignable to `AnyRow`.
 type AnyRow = Record<string, unknown>;
 
 let counter = 0;
@@ -19,7 +21,7 @@ function id(prefix: string): string {
   return `${prefix}_${counter}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-interface SkillRow {
+type SkillRow = {
   id: string;
   key: string;
   name: string;
@@ -38,8 +40,8 @@ interface SkillRow {
   updatedAt: Date;
   archivedAt: Date | null;
   deletedAt: Date | null;
-}
-interface SkillVersionRow {
+};
+type SkillVersionRow = {
   id: string;
   skillId: string;
   version: string;
@@ -48,8 +50,8 @@ interface SkillVersionRow {
   contentSha256: string;
   createdById: string | null;
   createdAt: Date;
-}
-interface AgentRow {
+};
+type AgentRow = {
   id: string;
   key: string;
   name: string;
@@ -70,8 +72,8 @@ interface AgentRow {
   updatedAt: Date;
   archivedAt: Date | null;
   deletedAt: Date | null;
-}
-interface AgentVersionRow {
+};
+type AgentVersionRow = {
   id: string;
   agentId: string;
   version: string;
@@ -80,8 +82,8 @@ interface AgentVersionRow {
   contentSha256: string;
   createdById: string | null;
   createdAt: Date;
-}
-interface ProjectRow {
+};
+type ProjectRow = {
   id: string;
   name: string;
   slug: string;
@@ -89,8 +91,8 @@ interface ProjectRow {
   createdById: string;
   createdAt: Date;
   deletedAt: Date | null;
-}
-interface AISessionRow {
+};
+type AISessionRow = {
   id: string;
   userId: string;
   projectId: string | null;
@@ -106,27 +108,27 @@ interface AISessionRow {
   createdAt: Date;
   updatedAt: Date;
   deletedAt: Date | null;
-}
+};
 type AuditRow = AnyRow;
 
-interface AgentSkillRow {
+type AgentSkillRow = {
   agentId: string;
   skillId: string;
-}
-interface ProjectSkillAllow {
+};
+type ProjectSkillAllow = {
   projectId: string;
   skillId: string;
   enabled: boolean;
   addedById: string | null;
   createdAt: Date;
-}
-interface ProjectAgentAllow {
+};
+type ProjectAgentAllow = {
   projectId: string;
   agentId: string;
   enabled: boolean;
   addedById: string | null;
   createdAt: Date;
-}
+};
 
 export interface FakeStore {
   skills: SkillRow[];
@@ -170,25 +172,6 @@ export function resetStore(): void {
   store.projectSkillAllow.length = 0;
   store.projectAgentAllow.length = 0;
   counter = 0;
-}
-
-function _matchString(field: string | null | undefined, criterion: unknown): boolean {
-  if (criterion === undefined) return true;
-  if (criterion === null) return field === null || field === undefined;
-  if (typeof criterion === "string") return field === criterion;
-  if (typeof criterion === "object" && criterion) {
-    const c = criterion as { contains?: string; in?: string[]; equals?: string };
-    if (
-      c.contains !== undefined &&
-      (field ?? "").toString().toLowerCase().includes(c.contains.toLowerCase())
-    )
-      return true;
-    if (c.in && c.in.includes(field as string)) return true;
-    if (c.equals !== undefined) return field === c.equals;
-    if (c.contains === undefined && c.in === undefined && c.equals === undefined) return true;
-    return false;
-  }
-  return false;
 }
 
 function matchWhere<T extends AnyRow>(row: T, where: AnyRow | undefined): boolean {
@@ -246,7 +229,7 @@ function sortRows<T extends AnyRow>(rows: T[], orderBy: AnyRow | undefined): T[]
 }
 
 function applyData<T extends AnyRow>(row: T, data: AnyRow): T {
-  const out = { ...row };
+  const out: AnyRow = { ...row };
   for (const [k, v] of Object.entries(data)) {
     if (v === undefined) continue;
     if (k === "createdBy") {
@@ -257,10 +240,10 @@ function applyData<T extends AnyRow>(row: T, data: AnyRow): T {
     }
     if (k === "versions") continue; // handled by callers
     if (k === "skills") continue; // handled by callers
-    out[k] = v as never;
+    out[k] = v;
   }
   out.updatedAt = new Date();
-  return out;
+  return out as T;
 }
 
 function withInclude<T extends AnyRow>(
@@ -561,7 +544,7 @@ const fake = {
     upsert: vi.fn(
       async (args: {
         where: { projectId_skillId: { projectId: string; skillId: string } };
-        create: ProjectSkillAllow;
+        create: Omit<ProjectSkillAllow, "createdAt"> & { createdAt?: Date };
         update: { enabled: boolean };
       }) => {
         const existing = store.projectSkillAllow.find(
@@ -606,7 +589,7 @@ const fake = {
     upsert: vi.fn(
       async (args: {
         where: { projectId_agentId: { projectId: string; agentId: string } };
-        create: ProjectAgentAllow;
+        create: Omit<ProjectAgentAllow, "createdAt"> & { createdAt?: Date };
         update: { enabled: boolean };
       }) => {
         const existing = store.projectAgentAllow.find(

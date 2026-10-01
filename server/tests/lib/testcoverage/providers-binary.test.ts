@@ -44,7 +44,10 @@ describe("docxProvider", () => {
     const { docxProvider } =
       await import("../../../src/lib/testcoverage/providers/docx-provider.js");
     expect(() =>
-      docxProvider.parse("not a buffer" as unknown as Buffer, { columnOverrides: {} }),
+      docxProvider.parse("not a buffer" as unknown as Buffer, {
+        label: "fixture",
+        columnOverrides: {},
+      }),
     ).toThrow(TypeError);
   });
 
@@ -52,6 +55,7 @@ describe("docxProvider", () => {
     const { docxProvider } =
       await import("../../../src/lib/testcoverage/providers/docx-provider.js");
     const result = await docxProvider.parse(Buffer.from("ignored"), {
+      label: "fixture",
       columnOverrides: {},
     });
     expect(result.cases.length).toBeGreaterThan(0);
@@ -64,7 +68,10 @@ describe("excelProvider", () => {
     const { excelProvider } =
       await import("../../../src/lib/testcoverage/providers/excel-provider.js");
     expect(() =>
-      excelProvider.parse("not a buffer" as unknown as Buffer, { columnOverrides: {} }),
+      excelProvider.parse("not a buffer" as unknown as Buffer, {
+        label: "fixture",
+        columnOverrides: {},
+      }),
     ).toThrow(TypeError);
   });
 
@@ -72,6 +79,7 @@ describe("excelProvider", () => {
     const { excelProvider } =
       await import("../../../src/lib/testcoverage/providers/excel-provider.js");
     const result = await excelProvider.parse(Buffer.from("xlsx-bytes"), {
+      label: "fixture",
       columnOverrides: {},
     });
     expect(result.cases).toHaveLength(2);

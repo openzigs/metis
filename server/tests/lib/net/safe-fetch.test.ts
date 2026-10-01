@@ -399,7 +399,7 @@ describe("safeFetch — redirects", () => {
 describe("safeFetch — request-init pass-through", () => {
   it("forwards method/headers/body to the underlying fetch", async () => {
     const resolver = publicResolver();
-    const fetchImpl = vi.fn(async () => mkResponse("ok"));
+    const fetchImpl = vi.fn<typeof fetch>(async () => mkResponse("ok"));
     await safeFetch("https://api.example/", {
       method: "PUT",
       headers: { "x-marker": "abc" },
@@ -420,7 +420,7 @@ describe("safeFetch — request-init pass-through", () => {
 
   it("does not allow callers to override the dispatcher", async () => {
     const resolver = publicResolver();
-    const fetchImpl = vi.fn(async () => mkResponse("ok"));
+    const fetchImpl = vi.fn<typeof fetch>(async () => mkResponse("ok"));
     const evil = { close: async () => undefined };
     // Cast: the public type intentionally omits `dispatcher`, but a sloppy
     // caller could try to sneak it through with `as any`. Verify it's

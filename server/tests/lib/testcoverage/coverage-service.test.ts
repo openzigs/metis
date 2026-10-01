@@ -711,7 +711,7 @@ describe("runCoverageScoring — embedding cost follow-ups (#72, #73, #77)", () 
     for (const row of embedding) {
       expect(row.provider).toBe("embed:openai");
       expect(row.model).toBe("text-embedding-3-large");
-      expect(Number(row.estimatedCostUsd)).toBeCloseTo(row.totalTokens * perToken, 12);
+      expect(Number(row.estimatedCostUsd)).toBeCloseTo(row.totalTokens! * perToken, 12);
     }
     // None of it is guesswork the budget has to disclaim.
     expect(report.cost.unpricedEmbeddingTokens).toBe(0);

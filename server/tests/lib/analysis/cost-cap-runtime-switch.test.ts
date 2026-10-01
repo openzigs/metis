@@ -47,18 +47,16 @@ describe("cost-cap runtime switching (#258)", () => {
   it("tunable cache wins over env value", () => {
     process.env.ANALYSIS_MONTHLY_TOKEN_CAP = "12345";
     const svc = getConfigService();
-    // @ts-expect-error — test seam: bypass the DB and prime the cache.
+    // Test seam: bypass the DB and prime the cache (bracket access reaches the private field).
     svc["tunableCache"].set("ANALYSIS_MONTHLY_TOKEN_CAP", "999000");
-    // @ts-expect-error — see above.
     svc["tunableDbBacked"].add("ANALYSIS_MONTHLY_TOKEN_CAP");
     expect(getMonthlyTokenCap()).toBe(999000);
   });
 
   it("agent cap honours the tunable cache", () => {
     const svc = getConfigService();
-    // @ts-expect-error — test seam.
+    // Test seam: bracket access reaches the private field.
     svc["tunableCache"].set("ANALYSIS_AGENT_TOKEN_CAP", "42000");
-    // @ts-expect-error — test seam.
     svc["tunableDbBacked"].add("ANALYSIS_AGENT_TOKEN_CAP");
     expect(getAgentTokenCap()).toBe(42000);
   });

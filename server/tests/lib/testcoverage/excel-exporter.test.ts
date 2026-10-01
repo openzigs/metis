@@ -61,7 +61,9 @@ async function loadExported(report: CoverageReport): Promise<ExcelJS.Workbook> {
   expect(filename).toBe("coverage-report-run-1.xlsx");
   expect(Buffer.isBuffer(data)).toBe(true);
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(data);
+  // exceljs declares its own global `Buffer extends ArrayBuffer`, which Node's
+  // Buffer does not satisfy; same cast as src/lib/connectors/jira/attachment-extractor.ts.
+  await wb.xlsx.load(data as unknown as ArrayBuffer);
   return wb;
 }
 

@@ -193,11 +193,14 @@ describe("runTestCoverageJob", () => {
 
     it("shares ONE tracker across the index phase and the scoring service (#72)", async () => {
       const { db, updates } = dbWithOneCase();
-      db.requirement = {
-        findMany: vi
-          .fn()
-          .mockResolvedValue([{ id: "r1", title: "X", body: "body content", priority: "low" }]),
-      } as never;
+      // `makeDb` has no `requirement` delegate; add one for the scoring phase.
+      Object.assign(db, {
+        requirement: {
+          findMany: vi
+            .fn()
+            .mockResolvedValue([{ id: "r1", title: "X", body: "body content", priority: "low" }]),
+        },
+      });
       db.coverageMapping = {
         count: vi.fn().mockResolvedValue(0),
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
