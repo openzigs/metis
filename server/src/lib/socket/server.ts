@@ -41,11 +41,18 @@ import { isMcpStatusRoom, mcpStatusRoomsFor } from "../mcp/status-rooms.js";
 import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
 import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
+import { mcpStatusEvictionEpoch } from "./mcp-status-eviction.js";
+import { userSocketRevocationEpoch } from "./user-disconnect.js";
 
 const log = createChildLogger("socket");
 
 interface SocketData {
   user: AuthPayload;
+  /**
+   * #613 — `userSocketRevocationEpoch()` taken before the handshake read the
+   * live user; compared once the socket is in its `user:{id}` room.
+   */
+  revocationEpoch: number;
 }
 
 export type MetisIOServer = SocketIOServer<
@@ -79,12 +86,15 @@ export function createSocketServer(
   // outside the try, so a throw from it is never re-routed into a second call.
   io.use(async (socket, next) => {
     let user: AuthPayload;
+    // #613 — taken BEFORE the live-user read (see `attachHandlers`).
+    const revocationEpoch = userSocketRevocationEpoch();
     try {
       user = await authenticateHandshake(socket);
     } catch (err) {
       return next(err as Error);
     }
     socket.data.user = user;
+    socket.data.revocationEpoch = revocationEpoch;
     next();
   });
 
@@ -154,6 +164,34 @@ async function authenticateHandshake(
   return live;
 }
 
+/**
+ * #613 — re-read the live user of a socket that may have missed a revocation,
+ * and apply the one it missed: a user no longer live is disconnected (as
+ * `disconnectUserSockets` would), and a changed role re-handshakes (as
+ * `reconnectUserSockets` would). A failed lookup disconnects (fail closed).
+ */
+async function recheckLiveUser(
+  socket: Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>,
+): Promise<void> {
+  const { userId, role } = socket.data.user;
+  let live: AuthPayload | null;
+  try {
+    live = await loadLiveAuthPayload(userId);
+  } catch (err) {
+    log.warn("Socket live-user re-check failed — disconnecting", {
+      socketId: socket.id,
+      userId,
+      error: (err as Error).message,
+    });
+    live = null;
+  }
+  if (!live) {
+    socket.disconnect(true);
+  } else if (live.role !== role) {
+    socket.conn.close();
+  }
+}
+
 function attachHandlers(
   socket: Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>,
 ): void {
@@ -171,6 +209,13 @@ function attachHandlers(
     socketId: socket.id,
     room: `user:${user.userId}`,
   });
+  // #613 — a role change or deprovision that committed after the handshake read
+  // the live user, but whose `reconnectUserSockets` / `disconnectUserSockets`
+  // ran before the join above, found no socket in `user:{id}` and missed this
+  // one. Any such revocation moved the epoch, so re-read the user once.
+  if (userSocketRevocationEpoch() !== socket.data.revocationEpoch) {
+    void recheckLiveUser(socket);
+  }
 
   socket.on("subscribe:project", ({ projectId }) => {
     // #255 — per-project authorization. The `project:{id}` room fans out
@@ -273,7 +318,7 @@ function attachHandlers(
     // workspace deleted (or left) after the token was issued. A failed lookup
     // joins no workspace room (fail closed).
     const attempt = ++mcpSubscription;
-    void (async () => {
+    const liveMcpStatusRooms = async (): Promise<string[]> => {
       let liveWorkspaceIds: string[] = [];
       try {
         liveWorkspaceIds = await readLiveWorkspaceIds(user.userId);
@@ -284,14 +329,30 @@ function attachHandlers(
           error: (err as Error).message,
         });
       }
-      if (attempt !== mcpSubscription) return;
-      // #588 — a repeat subscribe also LEAVES rooms no longer in the live set
-      // (a workspace deleted or left since the last one), not only joins.
-      const rooms = mcpStatusRoomsFor(user, liveWorkspaceIds);
+      return mcpStatusRoomsFor(user, liveWorkspaceIds);
+    };
+    // #588 — a repeat subscribe also LEAVES rooms no longer in the live set
+    // (a workspace deleted or left since the last one), not only joins.
+    const leaveMcpStatusRoomsNotIn = (rooms: string[]): void => {
       for (const room of [...socket.rooms]) {
         if (isMcpStatusRoom(room) && !rooms.includes(room)) void socket.leave(room);
       }
+    };
+    void (async () => {
+      // #613 — taken BEFORE the membership read: an eviction that lands between
+      // the read and the join finds this socket not yet in the room.
+      const evictionEpoch = mcpStatusEvictionEpoch();
+      const rooms = await liveMcpStatusRooms();
+      if (attempt !== mcpSubscription) return;
+      leaveMcpStatusRoomsNotIn(rooms);
       await socket.join(rooms);
+      if (mcpStatusEvictionEpoch() === evictionEpoch) return;
+      // An eviction ran since the read. Its write committed before it ran, so a
+      // read started now sees it; one that commits later evicts this socket,
+      // which is in the rooms now. One re-read therefore closes the window.
+      const current = await liveMcpStatusRooms();
+      if (attempt !== mcpSubscription) return;
+      leaveMcpStatusRoomsNotIn(current);
     })();
   });
   socket.on("unsubscribe:mcp", () => {

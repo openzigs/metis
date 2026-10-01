@@ -25,8 +25,21 @@ import { getSocketServer } from "./registry.js";
 
 const log = createChildLogger("mcp-status-eviction");
 
+/**
+ * #613 — bumped by every eviction below, before it evicts. `subscribe:mcp`
+ * reads memberships, then joins: an eviction landing between the two finds the
+ * socket not yet in the room and misses it. The handler snapshots this before
+ * the read and, when it has moved by the time the join is done, re-reads the
+ * memberships and leaves any room it lost.
+ */
+let evictions = 0;
+
+/** #613 — moves whenever any MCP status workspace room is evicted on this replica. */
+export const mcpStatusEvictionEpoch = (): number => evictions;
+
 /** Every socket leaves the workspace's room — the workspace was deleted. */
 export function evictWorkspaceMcpStatusRoom(workspaceId: string): void {
+  evictions++;
   try {
     getSocketServer()?.socketsLeave(mcpStatusWorkspaceRoom(workspaceId));
   } catch (err) {
@@ -42,6 +55,7 @@ export function evictWorkspaceMcpStatusRoom(workspaceId: string): void {
  * from the verified JWT) leaves the workspace's room — the user was removed.
  */
 export function evictMemberMcpStatusRoom(userId: string, workspaceId: string): void {
+  evictions++;
   try {
     getSocketServer()?.in(`user:${userId}`).socketsLeave(mcpStatusWorkspaceRoom(workspaceId));
   } catch (err) {
