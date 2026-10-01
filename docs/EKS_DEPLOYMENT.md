@@ -675,9 +675,11 @@ removal) take sockets out of the room on every pod, and room emits are delivered
 cluster-wide. It relays over Postgres `LISTEN` / `NOTIFY` on the same database —
 no new managed service.
 
-- **Presence is the exception:** "who is viewing" avatars still show only the
-  users connected to the same pod as the viewer, as before the adapter. Each pod
-  knows only its own viewers, so their lists are not relayed (#651).
+- **Presence spans every pod (#651):** "who is viewing" avatars list the users
+  connected to every pod. Each pod asks the others for their viewers on each
+  change and sends the merged list to its own viewers. A pod that dies without
+  its connections closing drops off every list within about 11 seconds (the
+  adapter's 10-second heartbeat timeout plus its 1-second sweep).
 
 - **Cost:** a pool of at most 2 extra connections per pod, one of which is held
   for `LISTEN`. Count them against the database's connection limit.
