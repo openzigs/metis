@@ -76,7 +76,7 @@ describe("keysFilledWhenAbsent (#346)", () => {
 
 /** Every exported update/patch object schema of @metis/shared. */
 function exportedPatchSchemas(): Array<[string, z.ZodObject]> {
-  return Object.entries(shared).filter(
+  return Object.entries(shared as Record<string, unknown>).filter(
     (entry): entry is [string, z.ZodObject] =>
       /^(update|patch)\w*Schema$/i.test(entry[0]) && entry[1] instanceof z.ZodObject,
   );
