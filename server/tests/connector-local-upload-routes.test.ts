@@ -609,6 +609,59 @@ describe("asynchronous deep-ingest (#373)", () => {
     expect(getLastJobLifecycle(jobId)!.failureCount).toBe(0);
   });
 
+  // #674 review — the scope write is awaited after the lease is taken; a click
+  // that lands during it must still be told which job holds the connector.
+  it("a second click during a slow scope write gets the 409 with the job id", async () => {
+    const token = await login("admin");
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let writing: string | undefined;
+    recordJobScope.mockImplementationOnce(async (id: string) => {
+      writing = id;
+      await held;
+    });
+    const firstReq = deepIngest(token).then((r) => r);
+    try {
+      await vi.waitFor(() => expect(writing).toBeDefined());
+      const second = await deepIngest(token);
+      expect(second.status).toBe(409);
+      expect(second.body.error.code).toBe("INGEST_IN_PROGRESS");
+      expect(second.body.error.details).toEqual({ jobId: writing });
+    } finally {
+      release();
+    }
+    const first = await firstReq;
+    expect(first.status).toBe(202);
+    expect(first.body.data.jobId).toBe(writing);
+    await vi.waitFor(() => expect(getLastJobLifecycle(writing!)?.status).toBe("completed"));
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+  });
+
+  it("a scope write that throws frees the connector and names no job", async () => {
+    const token = await login("admin");
+    recordJobScope.mockImplementationOnce(async () => {
+      throw new Error("scope write blew up");
+    });
+    const failed = await deepIngest(token);
+    expect(failed.status).toBe(500);
+    expect(isConnectorIngestActive("repo_github_x")).toBe(false);
+    // The aborted job's id is not left behind for another holder's 409.
+    const other = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
+    try {
+      const busy = await deepIngest(token);
+      expect(busy.status).toBe(409);
+      expect(busy.body.error.details).toBeUndefined();
+    } finally {
+      other.release();
+    }
+    // The connector is free, and the next click starts a fresh job.
+    const next = await deepIngest(token);
+    expect(next.status).toBe(202);
+    await vi.waitFor(() =>
+      expect(getLastJobLifecycle(next.body.data.jobId)?.status).toBe("completed"),
+    );
+  });
+
   it("a 409 from another entry point's claim carries no job id", async () => {
     const token = await login("admin");
     const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");

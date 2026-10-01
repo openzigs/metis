@@ -707,11 +707,20 @@ export function connectorsRouter(): Router {
         const lease = tryAcquireConnectorIngest(id, "deep-ingest");
         if (!lease) throw deepIngestInProgress(id);
         const jobId = randomUUID();
+        // Named in the same tick as the lease, so a second click that lands
+        // during the scope write below still gets its 409 with this job id.
+        activeDeepIngestJobs.set(id, jobId);
         // #674 — durably, before the 202 hands the id out, so `subscribe:job`
         // is authorized on any replica. It logs a database failure rather
-        // than throwing, so the lease taken above is always handed on.
-        await recordJobScope(jobId, "repo-ingest", projectId);
-        activeDeepIngestJobs.set(id, jobId);
+        // than throwing; should it throw anyway, the lease and the job name
+        // are given back rather than leaked.
+        try {
+          await recordJobScope(jobId, "repo-ingest", projectId);
+        } catch (err) {
+          if (activeDeepIngestJobs.get(id) === jobId) activeDeepIngestJobs.delete(id);
+          lease.release();
+          throw err;
+        }
         jobEvents.started("repo-ingest", jobId, projectId, "Deep ingest started");
         void runDeepIngest(projectId, id, a, lease, { jobId, known: conn })
           .catch(() => {
