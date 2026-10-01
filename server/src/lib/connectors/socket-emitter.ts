@@ -5,7 +5,7 @@
  * `connector:<id>` room so the UI can render live ingestion + test progress
  * without polling. Wired in `server.ts` immediately after `createSocketServer`.
  */
-import { connectorRoom, type ConnectorStatus } from "@metis/shared";
+import { connectorRoom, projectRoom, type ConnectorStatus } from "@metis/shared";
 import type { MetisIOServer } from "../socket/server.js";
 import type { ConnectorEmitter } from "./types.js";
 
@@ -38,11 +38,11 @@ export function createSocketConnectorEmitter(io: MetisIOServer): ConnectorEmitte
       io.to(connectorRoom(event.connectorId)).emit("connector:progress", payload);
       // Also emit to project room so project-level listeners receive progress
       if (event.projectId) {
-        io.to(`project:${event.projectId}`).emit("connector:progress", payload);
+        io.to(projectRoom(event.projectId)).emit("connector:progress", payload);
       }
     },
     discovery(event) {
-      io.to(`project:${event.projectId}`).emit("connector:discovery", {
+      io.to(projectRoom(event.projectId)).emit("connector:discovery", {
         projectId: event.projectId,
         connectorId: event.connectorId,
         repoLabel: event.repoLabel,

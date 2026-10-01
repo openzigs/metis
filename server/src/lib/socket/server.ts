@@ -58,6 +58,7 @@ import {
   SCHEDULER_STATUS_ROOM,
   sessionRoom,
   taskRoom,
+  userRoom,
   type AuthPayload,
   type ClientToServerEvents,
   type ServerToClientEvents,
@@ -556,10 +557,10 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   // This intentionally does NOT expose any `subscribe:user` handler — there is
   // no client-supplied room id, so cross-user room injection is structurally
   // impossible. Every (re)connection triggers this so reconnect is covered.
-  runDetached(socket.join(`user:${user.userId}`), "join user room", socket.id);
+  runDetached(socket.join(userRoom(user.userId)), "join user room", socket.id);
   log.debug("Socket auto-joined personal room", {
     socketId: socket.id,
-    room: `user:${user.userId}`,
+    room: userRoom(user.userId),
   });
   // #613 — a role change or deprovision that committed after the handshake read
   // the live user, but whose `reconnectUserSockets` / `disconnectUserSockets`

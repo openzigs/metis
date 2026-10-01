@@ -13,10 +13,13 @@ import {
   jobRoom,
   PRESENCE_ARTIFACT_TYPES,
   presenceRoom,
+  projectRoom,
   publishRoom,
+  SCHEDULER_STATUS_ROOM,
   sessionRoom,
   taskRoom,
   threadRoom,
+  userRoom,
 } from "./socket-rooms.js";
 
 describe("socket room names (#672)", () => {
@@ -30,6 +33,9 @@ describe("socket room names (#672)", () => {
     ["job", jobRoom("j1"), "job:j1"],
     ["bg-run", bgRunRoom("r1"), "run:r1"],
     ["presence", presenceRoom("discussion", "d1"), "presence:discussion:d1"],
+    ["project", projectRoom("p1"), "project:p1"],
+    ["user", userRoom("u1"), "user:u1"],
+    ["scheduler", SCHEDULER_STATUS_ROOM, "scheduler:status"],
   ])("%s room", (_kind, actual, expected) => {
     expect(actual).toBe(expected);
   });
@@ -44,6 +50,8 @@ describe("socket room names (#672)", () => {
       connectorRoom("x"),
       jobRoom("x"),
       bgRunRoom("x"),
+      projectRoom("x"),
+      userRoom("x"),
       ...PRESENCE_ARTIFACT_TYPES.map((type) => presenceRoom(type, "x")),
     ];
     expect(new Set(rooms).size).toBe(rooms.length);

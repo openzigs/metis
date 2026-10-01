@@ -28,6 +28,7 @@
  *   - **Never throws.** Fan-out is a fire-and-forget side effect; a failure here
  *     can never break message creation (the #281 lesson).
  */
+import { userRoom } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
@@ -234,7 +235,7 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
             // Deliver to the user's personal room (joined from the verified JWT
             // only — OWASP A01, never a client-supplied room id).
             if (io) {
-              io.to(`user:${u.id}`).emit("discussion:mention", payload);
+              io.to(userRoom(u.id)).emit("discussion:mention", payload);
             }
           } catch (err) {
             log.warn("Failed to fan out discussion mention", { threadId, userId: u.id, err });

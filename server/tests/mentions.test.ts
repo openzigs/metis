@@ -13,10 +13,10 @@ const mockPrisma = {
 };
 
 vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
+const mockEmit = vi.fn();
+const mockIoTo = vi.fn(() => ({ emit: mockEmit }));
 vi.mock("../src/lib/socket/registry.js", () => ({
-  getSocketServer: vi.fn(() => ({
-    to: vi.fn(() => ({ emit: vi.fn() })),
-  })),
+  getSocketServer: vi.fn(() => ({ to: mockIoTo })),
 }));
 
 const { parseMentions, resolveUsernames, fanOutMentions, dispatchMentions } =
@@ -153,6 +153,12 @@ describe("fanOutMentions", () => {
         where: { commentId: "comment-1", mentionedUserId: "user-2" },
         data: { notified: true },
       }),
+    );
+    // #686 — the mention reaches the mentioned user's personal room.
+    expect(mockIoTo).toHaveBeenCalledWith("user:user-2");
+    expect(mockEmit).toHaveBeenCalledWith(
+      "comment:mention",
+      expect.objectContaining({ commentId: "comment-1", mentionedUserId: "user-2" }),
     );
   });
 
