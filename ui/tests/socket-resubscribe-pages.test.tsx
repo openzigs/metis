@@ -68,19 +68,21 @@ describe("SchedulerPage (#642)", () => {
   });
 });
 
-describe("ApprovalsPanel (#642)", () => {
+describe("ApprovalsPanel (#642, #648)", () => {
   it("re-joins the analysis room on reconnect and keeps surfacing promotion blocks", async () => {
     const { unmount } = renderWithClient(<ApprovalsPanel projectId="proj-1" analysisId="ana-1" />);
     await waitFor(() => expect(screen.getByTestId("approvals-panel")).toBeInTheDocument());
     const room = { analysisId: "ana-1" };
-    // The effect may re-run while the panel settles (its callback dep changes),
-    // so count relative to the state just before the drop.
-    const before = socket.emitted("subscribe:analysis", room);
-    expect(before).toBeGreaterThan(0);
+    // #648 — the panel re-renders as its query settles; with `onBlocked` held in
+    // a ref those re-renders must not re-run the subscription effect.
+    expect(socket.emitted("subscribe:analysis", room)).toBe(1);
+    expect(socket.emitted("unsubscribe:analysis", room)).toBe(0);
 
     act(() => socket.reconnect());
-    expect(socket.emitted("subscribe:analysis", room)).toBe(before + 1);
+    expect(socket.emitted("subscribe:analysis", room)).toBe(2);
+    expect(socket.emitted("unsubscribe:analysis", room)).toBe(0);
 
+    const fetchesBefore = listApprovals.mock.calls.length;
     act(() =>
       socket.fire("analysis:promotion-blocked", {
         analysisId: "ana-1",
@@ -93,12 +95,33 @@ describe("ApprovalsPanel (#642)", () => {
     expect(await screen.findByTestId("promotion-blocked-live")).toHaveTextContent(
       "Blocked after reconnect",
     );
+    // The ref-held callback still runs: the event refetches the approvals.
+    await waitFor(() => expect(listApprovals.mock.calls.length).toBe(fetchesBefore + 1));
+    // ...and the refetch-driven re-renders did not churn the room either.
+    expect(socket.emitted("subscribe:analysis", room)).toBe(2);
+    expect(socket.emitted("unsubscribe:analysis", room)).toBe(0);
 
-    const subscribed = socket.emitted("subscribe:analysis", room);
     unmount();
-    expect(socket.emitted("unsubscribe:analysis", room)).toBeGreaterThan(0);
+    expect(socket.emitted("unsubscribe:analysis", room)).toBe(1);
     act(() => socket.reconnect());
-    expect(socket.emitted("subscribe:analysis", room)).toBe(subscribed);
+    expect(socket.emitted("subscribe:analysis", room)).toBe(2);
+  });
+
+  it("does not re-subscribe when the parent re-renders the panel", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (metadata: Record<string, unknown>) => (
+      <QueryClientProvider client={qc}>
+        <ApprovalsPanel projectId="proj-1" analysisId="ana-1" metadata={metadata} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree({ a: 1 }));
+    await waitFor(() => expect(screen.getByTestId("approvals-panel")).toBeInTheDocument());
+    rerender(tree({ a: 2 }));
+    rerender(tree({ a: 3 }));
+    const room = { analysisId: "ana-1" };
+    expect(socket.emitted("subscribe:analysis", room)).toBe(1);
+    expect(socket.emitted("unsubscribe:analysis", room)).toBe(0);
+    expect(socket.listeners("analysis:promotion-blocked")).toBe(1);
   });
 });
 
