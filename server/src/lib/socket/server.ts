@@ -175,6 +175,7 @@ export function createSocketServer(
     );
     sweep.unref();
     // `io.close()` closes the HTTP server, which ends the sweep with it.
+    // eslint-disable-next-line no-restricted-syntax -- #658: the HTTP server's own `close`, not a socket.io listener; no client reaches it and clearInterval cannot throw
     httpServer.once("close", () => clearInterval(sweep));
   }
   return io;
