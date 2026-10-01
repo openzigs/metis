@@ -61,6 +61,7 @@ vi.mock("sonner", () => ({
 }));
 
 import { useSocket, useSocketStatus, __resetSocketStatusForTests } from "@/lib/socket-client";
+import { jobRoom } from "@metis/shared";
 import { joinJobRoom } from "@/lib/job-rooms";
 import { useFollowJobs, __resetActiveJobsForTests } from "@/hooks/use-active-jobs";
 import { ConnectionStatus } from "@/components/realtime/connection-status";
@@ -100,7 +101,10 @@ describe("a followed job refused after a server restart (#655)", () => {
 
     fake.restart();
     expect(subscribes("job-forgotten")).toBe(2);
-    fake.fire("auth:error", { message: "FORBIDDEN: no access to job", room: "job:job-forgotten" });
+    fake.fire("auth:error", {
+      message: "FORBIDDEN: no access to job",
+      room: jobRoom("job-forgotten"),
+    });
 
     expect(status.result.current.error).toBeNull();
     expect(toastError).not.toHaveBeenCalled();
@@ -117,7 +121,7 @@ describe("a followed job refused after a server restart (#655)", () => {
     await waitFor(() => expect(subscribes("ingest-1")).toBe(1));
 
     fake.restart();
-    fake.fire("auth:error", { message: "FORBIDDEN: no access to job", room: "job:ingest-1" });
+    fake.fire("auth:error", { message: "FORBIDDEN: no access to job", room: jobRoom("ingest-1") });
     expect(status.result.current.error).toBeNull();
     expect(toastError).not.toHaveBeenCalled();
 

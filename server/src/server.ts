@@ -4,6 +4,7 @@
  * when to start accepting connections.
  */
 import http from "node:http";
+import { bgRunRoom } from "@metis/shared";
 import { createApp, type CreateAppOptions } from "./app.js";
 import { bootstrapMCP, type MCPBootstrap } from "./lib/mcp/index.js";
 import { createSocketServer, type MetisIOServer } from "./lib/socket/server.js";
@@ -435,7 +436,7 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
       });
     },
     step: (e) => {
-      io.to(`run:${e.runId}`).emit("bg-run:step", e);
+      io.to(bgRunRoom(e.runId)).emit("bg-run:step", e);
     },
   };
   const runner = configureAsyncRunner({ emitter: bgEmitter });

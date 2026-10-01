@@ -36,7 +36,7 @@
  * for a replay (`useFollowJobs`) forgets the job when none arrives.
  */
 import type { Socket } from "socket.io-client";
-import type { SocketAuthErrorEvent } from "@metis/shared";
+import { jobRoom, type SocketAuthErrorEvent } from "@metis/shared";
 
 /** The socket surface this module needs; the typed app socket satisfies it. */
 type JobRoomSocket = Pick<Socket, "emit" | "on" | "off" | "connected">;
@@ -54,8 +54,6 @@ interface SocketRooms {
   onConnect: () => void;
   onAuthError: (data: SocketAuthErrorEvent) => void;
 }
-
-const JOB_ROOM_PREFIX = "job:";
 
 const rooms = new WeakMap<JobRoomSocket, SocketRooms>();
 
@@ -82,9 +80,12 @@ function roomsFor(socket: JobRoomSocket): SocketRooms {
     onConnect,
     onAuthError: (data) => {
       const room = data?.room;
-      if (!room?.startsWith(JOB_ROOM_PREFIX)) return;
-      const jobId = room.slice(JOB_ROOM_PREFIX.length);
-      if (!follows.delete(jobId)) return;
+      if (!room) return;
+      // #676 — matched against the server's own room factory, never parsed.
+      let refused: string | undefined;
+      for (const jobId of follows.keys()) if (jobRoom(jobId) === room) refused = jobId;
+      if (refused === undefined) return;
+      follows.delete(refused);
       if (follows.size === 0) detach(socket, state);
     },
   };

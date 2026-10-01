@@ -87,6 +87,8 @@ function countsFor(socket: SubscriptionSocket): Map<string, number> {
 /**
  * #672 — a snapshot of the live follower count per room on `socket`. Lets a
  * call site's test pin the room key it uses to the server's room name.
+ *
+ * @internal Test-only; production code follows rooms through `keepRoomSubscribed`.
  */
 export function followedRooms(socket: SubscriptionSocket): ReadonlyMap<string, number> {
   return new Map(followers.get(socket));

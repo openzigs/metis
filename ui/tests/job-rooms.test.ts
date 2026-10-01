@@ -3,6 +3,7 @@
  * follower leaving does not cut off another follower of the same job.
  */
 import { describe, it, expect, vi } from "vitest";
+import { bgRunRoom, connectorRoom, jobRoom } from "@metis/shared";
 import { joinJobRoom } from "@/lib/job-rooms";
 
 const fakeSocket = (connected = true) => {
@@ -191,7 +192,7 @@ describe("joinJobRoom after the server refuses a room", () => {
     join(s, "j1");
     join(s, "j2");
     s.reconnect();
-    refuse(s, "job:j1");
+    refuse(s, jobRoom("j1"));
     s.emit.mockClear();
     s.reconnect();
     expect(subscribes(s, "j1")).toBe(0);
@@ -203,7 +204,7 @@ describe("joinJobRoom after the server refuses a room", () => {
     join(s, "j2");
     s.connected = false;
     join(s, "j1");
-    refuse(s, "job:j1");
+    refuse(s, jobRoom("j1"));
     s.emit.mockClear();
     s.connected = true;
     s.fire("connect");
@@ -215,8 +216,9 @@ describe("joinJobRoom after the server refuses a room", () => {
   it("ignores a refusal of a room it does not follow, of another kind, or with no room", () => {
     const s = fakeSocket();
     join(s, "j1");
-    refuse(s, "job:other");
-    refuse(s, "connector:j1");
+    refuse(s, jobRoom("other"));
+    refuse(s, connectorRoom("j1"));
+    refuse(s, bgRunRoom("j1"));
     s.fire("auth:error", { message: "UNAUTHORIZED" });
     s.fire("auth:error", undefined);
     s.emit.mockClear();
@@ -227,7 +229,7 @@ describe("joinJobRoom after the server refuses a room", () => {
   it("makes the refused room's releases no-ops, even after it is followed afresh", () => {
     const s = fakeSocket();
     const stale = join(s, "j1");
-    refuse(s, "job:j1");
+    refuse(s, jobRoom("j1"));
     const fresh = join(s, "j1");
     stale();
     expect(s.emit).not.toHaveBeenCalledWith("unsubscribe:job", expect.anything());
@@ -242,7 +244,7 @@ describe("joinJobRoom after the server refuses a room", () => {
     const s = fakeSocket();
     join(s, "j1");
     expect(s.listeners("auth:error")).toBe(1);
-    refuse(s, "job:j1");
+    refuse(s, jobRoom("j1"));
     expect(s.listeners("connect")).toBe(0);
     expect(s.listeners("auth:error")).toBe(0);
   });

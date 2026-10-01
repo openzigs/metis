@@ -24,6 +24,27 @@ const LISTENER_IN_SOCKET_MODULES = {
   selector: `CallExpression[callee.property.name=${LISTENER_METHODS}]:not([callee.object.callee.name='asRelayServer'])`,
   message: SOCKET_LISTENER_MESSAGE,
 };
+// #676 — every room a server emitter addresses is built by its @metis/shared
+// factory (threadRoom, sessionRoom, taskRoom, analysisRoom, publishRoom,
+// presenceRoom, connectorRoom, jobRoom, bgRunRoom), the same one the join
+// handler and the UI use, so the room a client joins and the room the server
+// sends to cannot drift apart. Caught: a template literal or a `+` whose
+// leading string is exactly one of those room prefixes (`job:${id}`,
+// "run:" + id). Event names such as `job:lifecycle` do not match.
+// A heuristic, not a proof: `${kind}:${id}`, `job:x${id}`, a `.join(":")`, a
+// concatenated const prefix or a separator typo (`publish-${id}`) all pass it.
+// The per-emitter room tests (#676) are what pin the actual room names.
+const ROOM_PREFIXES = "/^(thread|session|task|analysis|publish|presence|connector|job|run):$/";
+const HAND_WRITTEN_ROOM_MESSAGE =
+  "Build a socket room name with its factory from @metis/shared (threadRoom, sessionRoom, taskRoom, analysisRoom, publishRoom, presenceRoom, connectorRoom, jobRoom, bgRunRoom): a hand-written room can drift from the room the client joins (#676).";
+const HAND_WRITTEN_ROOM_TEMPLATE = {
+  selector: `TemplateLiteral > TemplateElement:first-child[value.raw=${ROOM_PREFIXES}]`,
+  message: HAND_WRITTEN_ROOM_MESSAGE,
+};
+const HAND_WRITTEN_ROOM_CONCAT = {
+  selector: `BinaryExpression[operator='+'] > Literal.left[value=${ROOM_PREFIXES}]`,
+  message: HAND_WRITTEN_ROOM_MESSAGE,
+};
 const ZERO_ARG_PARTIAL = {
   selector: "CallExpression[callee.property.name='partial'][arguments.length=0]",
   message:
@@ -80,6 +101,23 @@ export default tseslint.config(
     },
   },
   {
+    // #676 — server/src only: packages/shared/src/socket-rooms.ts is where the
+    // room factories write the names. This block REPLACES the one above for
+    // server/src (flat config), so it repeats both of its rules; the routes and
+    // socket-module blocks below replace it in turn and repeat the room rules.
+    files: ["server/src/**/*.ts"],
+    ignores: ["**/*.test.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ZERO_ARG_PARTIAL,
+        SOCKET_LISTENER_ANYWHERE,
+        HAND_WRITTEN_ROOM_TEMPLATE,
+        HAND_WRITTEN_ROOM_CONCAT,
+      ],
+    },
+  },
+  {
     // #346 review round 2 — a KEYED `.partial({ k: true })` over a defaulted
     // key fills it just the same. Route files hold no keyed partial today, so
     // ban every `.partial(` there. packages/shared keeps its keyed create/
@@ -97,6 +135,8 @@ export default tseslint.config(
             "Use patchSchemaOf(schema) from @metis/shared instead of .partial() / .partial({...}) in a route: under zod 4 .partial() still applies inner .default()s, so a PATCH overwrites omitted fields (#346).",
         },
         SOCKET_LISTENER_ANYWHERE,
+        HAND_WRITTEN_ROOM_TEMPLATE,
+        HAND_WRITTEN_ROOM_CONCAT,
       ],
     },
   },
@@ -115,7 +155,13 @@ export default tseslint.config(
       "server/src/lib/socket/cluster-adapter.ts",
     ],
     rules: {
-      "no-restricted-syntax": ["error", ZERO_ARG_PARTIAL, LISTENER_IN_SOCKET_MODULES],
+      "no-restricted-syntax": [
+        "error",
+        ZERO_ARG_PARTIAL,
+        LISTENER_IN_SOCKET_MODULES,
+        HAND_WRITTEN_ROOM_TEMPLATE,
+        HAND_WRITTEN_ROOM_CONCAT,
+      ],
     },
   },
   {

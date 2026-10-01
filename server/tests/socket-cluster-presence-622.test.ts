@@ -14,6 +14,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Socket as ClientSocket } from "socket.io-client";
+import { presenceRoom } from "@metis/shared";
 
 vi.mock("../src/lib/prisma.js", async () =>
   (await import("./helpers/two-replica-prisma.js")).prismaModuleMock(),
@@ -27,8 +28,8 @@ import {
   type SocketClusterAdapter,
 } from "../src/lib/socket/cluster-adapter.js";
 
-const ARTIFACT = { artifactType: "requirement", artifactId: "req-622" };
-const ROOM = `presence:${ARTIFACT.artifactType}:${ARTIFACT.artifactId}`;
+const ARTIFACT = { artifactType: "discussion", artifactId: "req-622" } as const;
+const ROOM = presenceRoom(ARTIFACT.artifactType, ARTIFACT.artifactId);
 
 interface PresenceUpdate {
   room: string;
