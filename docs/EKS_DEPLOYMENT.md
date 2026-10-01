@@ -697,9 +697,39 @@ no new managed service.
   disconnect whose `NOTIFY` (or attachments `INSERT`) fails does not reach
   sockets on other pods, and is not retried. When the outage also drops the
   other pods' `LISTEN` connections — a failover or restart does — their
-  re-check on reconnect (below, #649) applies the revocations they missed; a
-  publish that fails while the other pods stay connected is still lost to them.
-  The pod logs a warning for each.
+  re-check on reconnect (below, #649) applies the revocations they missed. A
+  publish that fails while the other pods stay connected (only the publishing
+  pod's pool timing out, say) gives them no reconnect to react to, so every pod
+  also re-checks its sockets once a minute (#659, below). The pod logs a warning
+  for each failed publish.
+- **Revocation bound (#659):** every pod re-checks every socket it holds against
+  the database every **60 s** (`SOCKET_REVALIDATE_INTERVAL_MS`), exactly as it
+  does after a `LISTEN` reconnect. A SCIM deprovision, role change or workspace
+  membership removal whose cross-replica publish failed therefore reaches every
+  pod's sockets within **60 s plus up to two re-check passes** (users re-read
+  four at a time): a tick that fires while a pass is running only queues one
+  more pass, so the worst case is the interval, plus the rest of the running
+  pass, plus one full pass. The cost, per pod per interval, is one pass: the
+  handshake's live-identity read for each connected user. Once a pass takes
+  longer than the interval, passes run back to back, a constant four reads at a
+  time per pod.
+- **Sweep interval override:** set `METIS_SOCKET_REVALIDATE_INTERVAL_MS` on the
+  server (`server.env` in the Helm values) to change the 60 s interval. It takes
+  plain decimal milliseconds, minimum `10000` (10 s); any other value is ignored
+  with a warning and the pod keeps 60 s. A shorter interval tightens the bound
+  above and raises the read load in proportion; the setting has no effect
+  without the cluster adapter.
+- **Failed lookups — the sweep fails open, a reconnect fails closed:** a user
+  lookup that fails during a pass a `LISTEN` reconnect asked for closes that
+  user's transports, so the client re-handshakes; a publish may really have been
+  missed then, and while the database is unreachable that handshake is refused,
+  as it would be anyway. A lookup that fails during a pass only the periodic
+  sweep asked for keeps the user's sockets and logs a warning, and the next
+  sweep retries: a failed read on a timer is not evidence of revocation, and
+  closing every socket a database blip reaches would have them all reconnect
+  at once against the same struggling database. For that user the bound above
+  stretches by however long the lookups keep failing. A pass that serves both
+  triggers fails closed.
 - **Timeouts:** the adapter's pool gives up on a connection attempt, a query or
   a statement after 5 s, so a hung database connection fails those cross-replica
   publishes within seconds instead of queueing every later one behind it.

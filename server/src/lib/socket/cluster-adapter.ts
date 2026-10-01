@@ -52,7 +52,9 @@
  * returned offset is `""`, which is what the Postgres adapter's `doPublish`
  * always returns (it does not support connection state recovery). The cost: a
  * publish that fails is lost to the OTHER replicas — cross-replica delivery
- * misses the outage window, as with a dropped `LISTEN` connection (#649).
+ * misses the outage window, as with a dropped `LISTEN` connection (#649). A lost
+ * revocation still lands there: every clustered replica re-validates its sockets
+ * on an interval (`SOCKET_REVALIDATE_INTERVAL_MS` in `server.ts`, #659).
  *
  * Reconnect window (#649): while a replica's `LISTEN` connection is down — the
  * ~1-3 s before the adapter reconnects after a failover, restart or

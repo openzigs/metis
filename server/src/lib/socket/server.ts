@@ -30,6 +30,15 @@
  *     `revalidateLocalSockets` each time the adapter's `LISTEN` connection is
  *     (re)established, so a revocation published while it was down — and so
  *     never delivered here — is applied from the database instead.
+ *   - #659 — on a clustered server `revalidateLocalSockets` also runs every
+ *     `resolveSocketRevalidateIntervalMs()` (60 s, or
+ *     `METIS_SOCKET_REVALIDATE_INTERVAL_MS`), because a revocation whose PUBLISH
+ *     fails (only the publishing replica's pool times out, say) reaches no other
+ *     replica and gives them no reconnect to react to. A sweep-only pass keeps a
+ *     socket whose lookup failed (a blip is not a revocation, and closing would
+ *     storm the database with reconnects); a pass a `LISTEN` reconnect asked for
+ *     still closes it. Every pass bumps both #613 epochs, so a handshake or
+ *     `subscribe:mcp` in flight at a tick re-reads once more — by design.
  *
  * Heartbeat:
  *   - The Socket.IO ping/pong cycle is configured to fire every 30s; idle
@@ -58,6 +67,7 @@ import { createChildLogger } from "../logger.js";
 import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status-eviction.js";
 import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
 import { bumpEpoch } from "./revocation-relay.js";
+import { MAX_TIMEOUT_MS, envMs } from "../config/env-ms.js";
 
 const log = createChildLogger("socket");
 
@@ -87,6 +97,16 @@ export interface CreateSocketServerOptions {
    * re-validated.
    */
   onAdapterListening?: (listener: () => void) => void;
+  /**
+   * #659 — how often every local socket is re-validated against the database
+   * (`revalidateLocalSockets`). Defaults to `resolveSocketRevalidateIntervalMs()`
+   * when `adapter` is set, and to no sweep without it (one replica: every
+   * revocation runs here, against these sockets, with no publish to lose). Must
+   * be a positive, finite number of milliseconds no larger than `MAX_TIMEOUT_MS`;
+   * anything else throws a `RangeError`, because Node would fire such a timer
+   * about every millisecond.
+   */
+  revalidateIntervalMs?: number;
 }
 
 type MetisSocket = Socket<
@@ -100,6 +120,10 @@ export function createSocketServer(
   httpServer: HttpServer,
   opts: CreateSocketServerOptions = {},
 ): MetisIOServer {
+  // Before anything attaches to `httpServer`, so a bad interval leaves it untouched.
+  if (opts.revalidateIntervalMs !== undefined) {
+    assertRevalidateInterval(opts.revalidateIntervalMs);
+  }
   const io: MetisIOServer = new SocketIOServer(httpServer, {
     cors: {
       origin: opts.corsOrigin ?? process.env.CORS_ORIGIN ?? "http://localhost:3000",
@@ -136,8 +160,59 @@ export function createSocketServer(
   // this replica's transports (see `reconnectUserSockets`).
   wireUserRevocationRelay(io, Boolean(opts.adapter));
   wireMcpStatusEvictionRelay(io, Boolean(opts.adapter));
-  opts.onAdapterListening?.(() => void revalidateLocalSockets(io));
+  opts.onAdapterListening?.(() => void revalidateLocalSockets(io, "listen"));
+  const sweepEvery =
+    opts.revalidateIntervalMs ?? (opts.adapter ? resolveSocketRevalidateIntervalMs() : undefined);
+  if (sweepEvery !== undefined) {
+    const sweep = setInterval(() => void revalidateLocalSockets(io, "sweep"), sweepEvery);
+    sweep.unref();
+    // `io.close()` closes the HTTP server, which ends the sweep with it.
+    httpServer.once("close", () => clearInterval(sweep));
+  }
   return io;
+}
+
+/**
+ * #659 — the default re-validation sweep interval on a clustered server, and so
+ * the documented bound on a revocation whose cross-replica publish failed:
+ * every replica applies it from the database by the end of the first pass that
+ * starts after the revocation committed. A tick that fires while a pass is
+ * running only queues one more pass, so the worst case is this interval plus
+ * the rest of the running pass plus one full pass: up to two passes on top of
+ * the interval (`REVALIDATE_CONCURRENCY` users re-read at a time). The cost is
+ * one pass per replica per interval: the handshake's live-identity read per
+ * connected user (docs/EKS_DEPLOYMENT.md §9f.1). A user whose lookup fails in a
+ * sweep-only pass keeps their sockets until a later pass reads them, so a
+ * database outage extends the bound for that user by the outage.
+ *
+ * Overridden by `METIS_SOCKET_REVALIDATE_INTERVAL_MS`
+ * (`resolveSocketRevalidateIntervalMs`).
+ */
+export const SOCKET_REVALIDATE_INTERVAL_MS = 60_000;
+
+/** Smallest accepted `METIS_SOCKET_REVALIDATE_INTERVAL_MS`: 10 s. */
+export const SOCKET_REVALIDATE_MIN_INTERVAL_MS = 10_000;
+
+/**
+ * #659 — the sweep interval from `METIS_SOCKET_REVALIDATE_INTERVAL_MS`: plain
+ * decimal milliseconds from `SOCKET_REVALIDATE_MIN_INTERVAL_MS` to
+ * `MAX_TIMEOUT_MS`. Unset or blank keeps `SOCKET_REVALIDATE_INTERVAL_MS`; any
+ * other value keeps it too, with a warning naming the setting.
+ */
+export function resolveSocketRevalidateIntervalMs(): number {
+  return envMs("METIS_SOCKET_REVALIDATE_INTERVAL_MS", SOCKET_REVALIDATE_INTERVAL_MS, {
+    min: SOCKET_REVALIDATE_MIN_INTERVAL_MS,
+    warning: "Ignoring invalid socket re-validation interval; keeping the 60 s default",
+  });
+}
+
+/** Reject an explicit `revalidateIntervalMs` that Node would run as a ~1 ms timer. */
+function assertRevalidateInterval(ms: number): void {
+  if (!Number.isFinite(ms) || ms <= 0 || ms > MAX_TIMEOUT_MS) {
+    throw new RangeError(
+      `revalidateIntervalMs must be a positive number of milliseconds up to ${MAX_TIMEOUT_MS}; got ${ms}`,
+    );
+  }
 }
 
 /** Users re-read at once by `revalidateLocalSockets`, so a failover cannot flood the database pool. */
@@ -149,6 +224,8 @@ const MCP_STATUS_WORKSPACE_ROOM_PREFIX = mcpStatusWorkspaceRoom("");
 interface RevalidationState {
   /** Set by a call that arrived while this pass ran: run one more pass. */
   dirty: boolean;
+  /** The trigger the next pass logs as: `listen` if any call it serves was one. */
+  next: RevalidationTrigger;
   done: Promise<void>;
 }
 
@@ -159,11 +236,18 @@ const revalidations = new WeakMap<MetisIOServer, RevalidationState>();
  * #649 — re-validate every socket connected to this replica against the
  * database, applying any revocation it missed while the cluster adapter's
  * `LISTEN` connection was down:
- *   - a user no longer live is disconnected, a changed role re-handshakes, and
- *     a failed lookup closes the transport (`applyLiveUser`, as #613's re-check);
+ *   - a user no longer live is disconnected, and a changed role re-handshakes
+ *     (`applyLiveUser`, as #613's re-check);
  *   - a socket still in an `mcp:status` workspace room it no longer has a live
- *     membership of leaves it (#588). A failed membership lookup closes the
- *     transport, so the client re-handshakes and re-subscribes from live state.
+ *     membership of leaves it (#588).
+ * What a failed lookup (either one) does depends on the trigger. A pass that
+ * serves a `LISTEN` (re)connect fails closed: a publish may really have been
+ * missed, so the transport closes and the client re-handshakes and
+ * re-subscribes from live state. A sweep-only pass (#659) fails open: a lookup
+ * failure on a tick is not evidence of revocation, and closing every socket a
+ * database blip reaches would have them all reconnect at once against the same
+ * database. It keeps the user's sockets, warns, and leaves the user to the next
+ * pass.
  * Both #613 epochs are bumped first, so a handshake or `subscribe:mcp` in
  * flight re-reads too. Each user is read once, `REVALIDATE_CONCURRENCY` users
  * at a time. Never rejects.
@@ -173,20 +257,31 @@ const revalidations = new WeakMap<MetisIOServer, RevalidationState>();
  * finishes, which also sees a revocation committed after the running pass read
  * that user. A flapping `LISTEN` connection therefore never multiplies the read
  * bound. The returned promise settles once no pass is left to run.
+ *
+ * `trigger` sets how a failed lookup is handled (above) and how loudly a pass
+ * is logged: a `LISTEN` (re)connect is rare and worth an info line, the #659
+ * periodic sweep is not. A pass that serves both a sweep and a `LISTEN` signal
+ * runs as `listen`, so it fails closed.
  */
-export function revalidateLocalSockets(io: MetisIOServer): Promise<void> {
+export function revalidateLocalSockets(
+  io: MetisIOServer,
+  trigger: RevalidationTrigger = "listen",
+): Promise<void> {
   const running = revalidations.get(io);
   if (running) {
     running.dirty = true;
+    running.next = running.next === "listen" ? "listen" : trigger;
     return running.done;
   }
-  const state: RevalidationState = { dirty: false, done: Promise.resolve() };
+  const state: RevalidationState = { dirty: false, next: trigger, done: Promise.resolve() };
   revalidations.set(io, state);
   state.done = (async () => {
     try {
       do {
+        const pass = state.next;
         state.dirty = false;
-        await revalidateOnce(io);
+        state.next = "sweep";
+        await revalidateOnce(io, pass);
       } while (state.dirty);
     } finally {
       revalidations.delete(io);
@@ -195,8 +290,11 @@ export function revalidateLocalSockets(io: MetisIOServer): Promise<void> {
   return state.done;
 }
 
+/** What started a `revalidateLocalSockets` pass. */
+export type RevalidationTrigger = "listen" | "sweep";
+
 /** One full `revalidateLocalSockets` pass. */
-async function revalidateOnce(io: MetisIOServer): Promise<void> {
+async function revalidateOnce(io: MetisIOServer, trigger: RevalidationTrigger): Promise<void> {
   bumpEpoch(io, "revocation");
   bumpEpoch(io, "eviction");
   const byUser = new Map<string, MetisSocket[]>();
@@ -207,28 +305,44 @@ async function revalidateOnce(io: MetisIOServer): Promise<void> {
     else byUser.set(userId, [socket]);
   }
   if (byUser.size === 0) return;
-  log.info(
-    "Re-validating sockets after the cluster adapter's LISTEN connection was (re)established",
-    {
-      users: byUser.size,
-    },
-  );
+  if (trigger === "listen") {
+    log.info(
+      "Re-validating sockets after the cluster adapter's LISTEN connection was (re)established",
+      { users: byUser.size },
+    );
+  } else {
+    log.debug("Periodic socket re-validation sweep", { users: byUser.size });
+  }
   const queue = [...byUser.values()];
   const worker = async (): Promise<void> => {
     for (let sockets = queue.shift(); sockets; sockets = queue.shift()) {
-      await revalidateUserSockets(sockets);
+      await revalidateUserSockets(sockets, trigger);
     }
   };
   await Promise.all(Array.from({ length: REVALIDATE_CONCURRENCY }, worker));
 }
 
-/** Re-validate one user's sockets (`revalidateLocalSockets`). */
-async function revalidateUserSockets(sockets: MetisSocket[]): Promise<void> {
+/**
+ * Re-validate one user's sockets (`revalidateLocalSockets`). On a failed
+ * lookup, a `listen` pass closes the transports and a `sweep` pass keeps them.
+ */
+async function revalidateUserSockets(
+  sockets: MetisSocket[],
+  trigger: RevalidationTrigger,
+): Promise<void> {
   const userId = sockets[0].data.user.userId;
+  const failClosed = trigger === "listen";
   let live: AuthPayload | null | undefined;
   try {
     live = await loadLiveAuthPayload(userId);
   } catch (err) {
+    if (!failClosed) {
+      log.warn(
+        "Socket re-validation sweep: live-user lookup failed — keeping sockets until the next pass",
+        { userId, error: (err as Error).message },
+      );
+      return;
+    }
     live = undefined;
     log.warn("Socket re-validation: live-user lookup failed — closing transports to re-handshake", {
       userId,
@@ -251,6 +365,13 @@ async function revalidateUserSockets(sockets: MetisSocket[]): Promise<void> {
   try {
     allowed = new Set((await readLiveWorkspaceIds(userId)).map(mcpStatusWorkspaceRoom));
   } catch (err) {
+    if (!failClosed) {
+      log.warn(
+        "Socket re-validation sweep: membership lookup failed — keeping workspace rooms until the next pass",
+        { userId, error: (err as Error).message },
+      );
+      return;
+    }
     log.warn(
       "Socket re-validation: membership lookup failed — closing transports to re-handshake",
       {

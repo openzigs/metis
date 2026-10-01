@@ -14,9 +14,11 @@
  * `LISTEN` / `NOTIFY` so it closes the user's sockets on EVERY replica. Without
  * it (SQLite dev, or `NODE_ENV=test`) the in-memory adapter reaches only the
  * sockets on this replica — which is all there is in a single-replica setup.
- * A replica whose adapter is cut off from Postgres at that moment misses the
- * relay and keeps that socket until it disconnects; a reconnect is refused by
- * the live-user handshake (#617).
+ * A replica that misses the relay applies it from the database instead: after
+ * its own `LISTEN` connection drops, on the reconnect re-check (#649); when the
+ * publish itself failed, on its next periodic sweep (#659,
+ * `SOCKET_REVALIDATE_INTERVAL_MS`). A reconnect is refused by the live-user
+ * handshake (#617).
  *
  * Every disconnect / reconnect here bumps the revocation epoch first (#613), on
  * this replica and — through `wireUserRevocationRelay` — on every other one, so
