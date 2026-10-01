@@ -1,0 +1,16 @@
+{
+  // Issue #694 — type-checks tests/** (and vitest.config.ts), which tsconfig.json excludes
+  // so that `build` emits only src/ to dist/. Vitest transpiles without type-checking, so
+  // without this a type error in a test reaches main unnoticed. Never used by `build`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // `..`, not `.`: tests/model-config-parity.test.ts imports the server's copy,
+    // server/src/lib/rag/embed-model-config.ts. noEmit makes rootDir a layout check only.
+    "rootDir": "..",
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*", "tests/**/*", "vitest.config.ts"],
+  "exclude": ["dist", "node_modules"]
+}
