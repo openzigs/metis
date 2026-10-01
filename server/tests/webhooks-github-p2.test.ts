@@ -31,6 +31,8 @@ vi.mock("../src/lib/prisma.js", () => ({
         }: {
           create: { jobId: string; kind: string; projectId: string | null };
         }) => {
+          // Lands late, so a write the webhook does not await is not seen by the ACK.
+          await new Promise((r) => setTimeout(r, 5));
           jobScopes.set(create.jobId, { kind: create.kind, projectId: create.projectId });
           return create;
         },
