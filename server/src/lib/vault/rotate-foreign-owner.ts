@@ -363,6 +363,10 @@ export async function describeForeignOwner(secret: {
       routing: routingDigest("jira_connection", j.id, routingFields.jira_connection(j), key),
     })),
     ...testMgmts
+      // Matches by id OR label (`reaches`), like MCP. The service itself only
+      // writes and resolves `${vault:<id>}`, so a hand-placed label ref is listed
+      // even though it would not resolve — the safe direction for a confirm list.
+      // Do not tighten this to id-only.
       .filter((t) =>
         [...refBodiesInJson(t.authConfigJson), ...refBodiesInJson(t.tlsConfigJson)].some((ref) =>
           reaches(ref, secret),
@@ -400,7 +404,7 @@ export async function describeForeignOwner(secret: {
  */
 export const UNBOUND_NOTE =
   "No DB or repo connector, import source, MCP server, Jira or test-management connection " +
-  "uses it; other references (notification channels, BYOK) were not checked.";
+  "uses it; other references (e.g. notification channels, BYOK) were not checked.";
 
 function whoOwns(details: ForeignOwnerDetails): string {
   return details.owner.displayName ?? details.owner.username ?? `user ${details.owner.id}`;
