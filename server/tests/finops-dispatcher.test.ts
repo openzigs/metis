@@ -24,6 +24,7 @@ import type { AlertNotification, AlertChannelRow } from "../src/lib/finops/alert
 const notification: AlertNotification = {
   workspaceId: "w1",
   workspaceName: "Acme",
+  ruleId: "rule-1",
   ruleName: "80% projected",
   thresholdPct: 80,
   basis: "projected",

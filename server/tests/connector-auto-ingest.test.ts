@@ -83,7 +83,7 @@ describe("Auto-ingest on repo creation (#667)", () => {
   describe("Auto-ingest trigger logic", () => {
     it("first repo triggers auto-ingest regardless of autoIngest flag", () => {
       // Logic: existingRepos.length === 1 means this is the first (just created)
-      const existingReposCount = 1;
+      const existingReposCount: number = 1;
       const autoIngest = undefined;
       const isFirstRepo = existingReposCount === 1;
       const shouldAutoIngest = autoIngest === true || isFirstRepo;
@@ -91,7 +91,7 @@ describe("Auto-ingest on repo creation (#667)", () => {
     });
 
     it("subsequent repo does NOT trigger unless autoIngest=true", () => {
-      const existingReposCount = 2;
+      const existingReposCount: number = 2;
       const autoIngest = undefined;
       const isFirstRepo = existingReposCount === 1;
       const shouldAutoIngest = autoIngest === true || isFirstRepo;
@@ -99,7 +99,7 @@ describe("Auto-ingest on repo creation (#667)", () => {
     });
 
     it("subsequent repo triggers when autoIngest=true", () => {
-      const existingReposCount = 3;
+      const existingReposCount: number = 3;
       const autoIngest = true;
       const isFirstRepo = existingReposCount === 1;
       const shouldAutoIngest = autoIngest === true || isFirstRepo;

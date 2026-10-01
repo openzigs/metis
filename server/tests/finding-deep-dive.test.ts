@@ -212,7 +212,7 @@ describe("deepDiveFinding — model on the active provider (#532)", () => {
     content: JSON.stringify(VALID_DRAFT),
     usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
     model: "m",
-    provider: "p",
+    provider: "offline-stub",
   });
 
   it("sends the provider's configured model when it cannot serve the Haiku tier id", async () => {

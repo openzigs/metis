@@ -311,7 +311,12 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
   getAuditService: vi.fn(),
 }));
 
-import type { AIProvider, ChatMessage, ChatResponse } from "../src/lib/ai/types.js";
+import {
+  messageText,
+  type AIProvider,
+  type ChatMessage,
+  type ChatResponse,
+} from "../src/lib/ai/types.js";
 import { runAgent } from "../src/lib/analysis/agent-runner.js";
 import { persistAgentResult } from "../src/lib/analysis/analysis-service.js";
 import {
@@ -2142,7 +2147,7 @@ function makeCapturingProvider(): { provider: AIProvider; userPrompts: string[] 
       chatOpts?: { signal?: AbortSignal; systemMessage?: string },
     ): Promise<ChatResponse> {
       const sys = chatOpts?.systemMessage ?? "";
-      const userMsg = messages[0]?.content ?? "";
+      const userMsg = messages[0] ? messageText(messages[0]) : "";
       userPrompts.push(userMsg);
       let detected = "synthesis";
       if (sys.includes("Mary")) detected = "document";
@@ -2532,7 +2537,7 @@ describe("runEnhancementPipeline (Epic #922)", () => {
         messages: ChatMessage[],
         chatOpts?: { systemMessage?: string },
       ): Promise<ChatResponse> {
-        const sys = chatOpts?.systemMessage ?? messages[0]?.content ?? "";
+        const sys = chatOpts?.systemMessage ?? (messages[0] ? messageText(messages[0]) : "");
         if (sys.includes("requirements analyst")) {
           return stubResponse(
             JSON.stringify({
@@ -3152,7 +3157,11 @@ describe("AnalysisOrchestrator derived source-code retrieval queries (#731)", ()
   const makeKnowledge = () => ({
     // Empty hits ⇒ no quarantine fallback is triggered; we only assert on the
     // QUERY strings the source-code half passes to `search`.
-    search: vi.fn(async () => ({ hits: [], embeddingModel: "stub", elapsedMs: 1 })),
+    search: vi.fn(async (_projectId: string, _query: string) => ({
+      hits: [],
+      embeddingModel: "stub",
+      elapsedMs: 1,
+    })),
   });
 
   // Invoke the private `retrieveContext` directly. With NO `documentIds` and no

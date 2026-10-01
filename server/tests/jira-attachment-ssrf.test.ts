@@ -96,7 +96,7 @@ function harness(
   let idx = 0;
 
   const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-    const headers = ((init?.headers ?? {}) as Record<string, string>) ?? {};
+    const headers = (init?.headers ?? {}) as Record<string, string>;
     calls.push({ url: String(url), headers: { ...headers } });
     const make = responses[Math.min(idx, responses.length - 1)];
     idx += 1;

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { AzureDevopsImporter } from "../src/lib/importers/azure-devops-importer.js";
-import type { ExternalIssue } from "../src/lib/importers/types.js";
+import type { ExternalIssue, FetchFn } from "../src/lib/importers/types.js";
 
 function res(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   const h = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
@@ -23,7 +23,7 @@ const filter = { organization: "org", project: "proj" };
 
 describe("AzureDevopsImporter", () => {
   it("count() runs the WIQL query and counts ids", async () => {
-    const fetchFn = vi.fn(async () => res(200, { workItems: [{ id: 1 }, { id: 2 }] }));
+    const fetchFn = vi.fn<FetchFn>(async () => res(200, { workItems: [{ id: 1 }, { id: 2 }] }));
     const imp = new AzureDevopsImporter({
       token: "pat",
       fetchFn,
@@ -82,7 +82,7 @@ describe("AzureDevopsImporter", () => {
   });
 
   it("uses a custom WIQL when provided and honours baseUrl", async () => {
-    const fetchFn = vi.fn(async () => res(200, { workItems: [] }));
+    const fetchFn = vi.fn<FetchFn>(async () => res(200, { workItems: [] }));
     const imp = new AzureDevopsImporter({
       token: "pat",
       baseUrl: "https://ado.corp.local",

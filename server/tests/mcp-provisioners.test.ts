@@ -217,7 +217,7 @@ describe("DockerStdioProvisioner", () => {
   });
 
   it("cleanup hook invokes the configured runner with the container name", async () => {
-    const cleanupRunner = vi.fn(async () => undefined);
+    const cleanupRunner = vi.fn(async (_containerName: string) => undefined);
     const p = new DockerStdioProvisioner({ cleanupRunner });
     const out = await p.provision(
       baseConfig({ runtime: "docker-stdio", command: "ghcr.io/metis-mcps/x", args: [] }),

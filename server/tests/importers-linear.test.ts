@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { LinearImporter } from "../src/lib/importers/linear-importer.js";
-import type { ExternalIssue } from "../src/lib/importers/types.js";
+import type { ExternalIssue, FetchFn } from "../src/lib/importers/types.js";
 
 function res(status: number, body: unknown): Response {
   return {
@@ -45,7 +45,7 @@ const fast = { sleep: async () => undefined, now: () => 0, random: () => 0 };
 
 describe("LinearImporter", () => {
   it("authorises with the raw token (no Bearer prefix)", async () => {
-    const fetchFn = vi.fn(async () => res(200, page([node("A-1")])));
+    const fetchFn = vi.fn<FetchFn>(async () => res(200, page([node("A-1")])));
     const imp = new LinearImporter({
       token: "lin_tok",
       fetchFn,

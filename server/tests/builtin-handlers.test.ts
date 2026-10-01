@@ -1,25 +1,29 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Tests for the built-in hook handlers (#114). We install them into a fresh
  * HookBus and verify they audit/log via mocked services.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { HookSubscriptionDto, SdkHookEvent } from "@metis/shared";
 
 const auditSpy = vi.fn();
 vi.mock("../src/lib/audit/audit-service.js", () => ({
   audit: (args: unknown) => auditSpy(args),
 }));
 
-const subsSpy = vi.fn(async () => []);
-const runWebhookSpy = vi.fn(async () => true);
+const subsSpy = vi.fn(
+  async (_projectId: string, _event: SdkHookEvent): Promise<HookSubscriptionDto[]> => [],
+);
+const runWebhookSpy = vi.fn(
+  async (_url: string, _body: unknown, _headers?: Record<string, string>) => true,
+);
 vi.mock("../src/lib/hooks/subscriptions.js", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/hooks/subscriptions.js")>(
     "../src/lib/hooks/subscriptions.js",
   );
   return {
     ...actual,
-    listEnabledFor: (...args: any[]) => subsSpy(...args),
-    runWebhook: (...args: any[]) => runWebhookSpy(...args),
+    listEnabledFor: (...args: Parameters<typeof subsSpy>) => subsSpy(...args),
+    runWebhook: (...args: Parameters<typeof runWebhookSpy>) => runWebhookSpy(...args),
   };
 });
 
@@ -71,7 +75,13 @@ describe("installBuiltinHandlers (#114)", () => {
       model: "x",
       projectId: null,
     });
-    await bus.emit("sessionEnd", { sessionId: "s1", userId: "u1", totalTokens: 0, status: "ok" });
+    await bus.emit("sessionEnd", {
+      sessionId: "s1",
+      userId: "u1",
+      projectId: null,
+      totalTokens: 0,
+      status: "ok",
+    });
     await bus.emit("userPromptSubmit", {
       sessionId: "s1",
       userId: "u1",
@@ -81,13 +91,16 @@ describe("installBuiltinHandlers (#114)", () => {
     await bus.emit("preToolUse", {
       sessionId: "s1",
       toolName: "read",
+      args: {},
       projectId: "p1",
       riskLevel: "low",
     });
     await bus.emit("postToolUse", {
       sessionId: "s1",
       toolName: "read",
+      args: {},
       projectId: "p1",
+      result: null,
       durationMs: 5,
       promptTokens: 1,
       completionTokens: 2,
@@ -98,9 +111,24 @@ describe("installBuiltinHandlers (#114)", () => {
   it("notification routes by level", async () => {
     const bus = new HookBus();
     installBuiltinHandlers(bus);
-    await bus.emit("notification", { sessionId: "s1", level: "info", message: "i" });
-    await bus.emit("notification", { sessionId: "s1", level: "warn", message: "w" });
-    await bus.emit("notification", { sessionId: "s1", level: "error", message: "e" });
+    await bus.emit("notification", {
+      sessionId: "s1",
+      projectId: null,
+      level: "info",
+      message: "i",
+    });
+    await bus.emit("notification", {
+      sessionId: "s1",
+      projectId: null,
+      level: "warn",
+      message: "w",
+    });
+    await bus.emit("notification", {
+      sessionId: "s1",
+      projectId: null,
+      level: "error",
+      message: "e",
+    });
     // No throw + no audit (notification is logger-only)
     expect(true).toBe(true);
   });
@@ -131,6 +159,7 @@ describe("installBuiltinHandlers (#114)", () => {
     await bus.emit("preToolUse", {
       sessionId: "s1",
       toolName: "read",
+      args: {},
       projectId: "p1",
       riskLevel: "low",
     });

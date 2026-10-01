@@ -71,7 +71,6 @@ describe("buildUsageClassificationSection", () => {
         tableName: "public.legacy",
         usageClass: "uncertain",
         uncertainReason: "table-not-found",
-        existsInSchema: false as never,
       }),
       view({
         id: "c3",

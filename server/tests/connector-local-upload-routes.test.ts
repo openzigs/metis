@@ -195,7 +195,7 @@ vi.mock("../src/lib/connectors/repo/connection-discovery.js", () => ({
     filesScanned: 0,
     connectionsFound: 0,
     suggestionsUpserted: 0,
-    errors: [],
+    errors: 0,
   })),
 }));
 
@@ -787,6 +787,7 @@ describe("auto-ingest failure progress event", () => {
       id: "repo_github_x",
       provider: input.provider,
       label: input.label,
+      localPath: input.localPath,
     }));
     vi.mocked(ingestSourceAsKnowledge).mockRejectedValueOnce(new Error(RAW));
     const finished = new Promise<void>((resolve) => h.finished.mockImplementation(resolve));
@@ -837,7 +838,6 @@ describe("manual connector regeneration callers (#1356)", () => {
         id: "doc_manual",
         projectId: "proj_1",
         title: "Manual regeneration",
-        docType: "architecture",
         scope: "full",
         scopeFilter: "{}",
         evidencePolicy: JSON.stringify({
@@ -852,7 +852,7 @@ describe("manual connector regeneration callers (#1356)", () => {
       filesScanned: 1,
       connectionsFound: 1,
       suggestionsUpserted: 1,
-      errors: [],
+      errors: 0,
     });
     token = await login("admin");
   });

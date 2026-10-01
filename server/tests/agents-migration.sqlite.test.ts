@@ -15,7 +15,7 @@
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
-import Database from "better-sqlite3";
+import { createRequire } from "node:module";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
@@ -23,6 +23,17 @@ import {
   type MigratedSqlite,
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
 } from "./helpers/sqlite-migrated-db.js";
+
+// `better-sqlite3` ships no type declarations and `@types/better-sqlite3` is not a
+// dependency, so the import is typed by hand with only the surface this file uses.
+interface ReadonlySqlite {
+  prepare(sql: string): { all(): unknown[] };
+  close(): void;
+}
+const Database = createRequire(import.meta.url)("better-sqlite3") as new (
+  file: string,
+  options: { readonly: boolean },
+) => ReadonlySqlite;
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("../src/lib/prisma.js", async () => {

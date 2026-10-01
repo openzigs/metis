@@ -55,8 +55,7 @@ const { __resetToolApprovalBroker, getToolApprovalBroker } =
   await import("../src/lib/ai/tool-runtime/approval-broker.js");
 type Stub = InstanceType<typeof OfflineStubProvider>;
 type Turn = NonNullable<ConstructorParameters<typeof OfflineStubProvider>[0]>["script"] extends
-  | Array<infer T>
-  | undefined
+  Array<infer T> | undefined
   ? T
   : never;
 
@@ -399,13 +398,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await send(sid, "SCN-BLOCKED go");
         const [first] = parentRequests("SCN-BLOCKED");
         expect(systemText(first!.messages)).not.toContain("blocked-skill");
-        const tools = (first!.opts.tools ?? []) as Array<{
-          name: string;
-          parameters: { properties: { name: { enum: string[] } } };
-        }>;
-        expect(tools.find((t) => t.name === "load_skill")!.parameters.properties.name.enum).toEqual(
-          ["style-guide"],
-        );
+        const tools = first!.opts.tools ?? [];
+        // `parameters` is an open JSON Schema record; narrow to the load_skill shape.
+        const loadSkillParams = tools.find((t) => t.name === "load_skill")!.parameters as {
+          properties: { name: { enum: string[] } };
+        };
+        expect(loadSkillParams.properties.name.enum).toEqual(["style-guide"]);
         const [part] = await toolParts(sid);
         expect(String(part!.text)).toContain('no skill named "blocked-skill"');
         expect(String(part!.text)).not.toContain(bodyMarker("blocked-skill"));

@@ -45,12 +45,13 @@ import {
   makeColdStartWakeup,
   scaleDeployment,
 } from "../src/lib/mcp/k8s-cold-start-reaper.js";
+import type { K8sApis } from "../src/lib/mcp/provisioners/k8s-sse.js";
 
-function makeApis(readyReplicas = 1) {
+function makeApis(readyReplicas = 1): K8sApis {
   return {
     apps: {
       readNamespacedDeployment: vi.fn(async () => ({
-        spec: {},
+        spec: { selector: {}, template: {} },
         status: { readyReplicas },
       })),
       patchNamespacedDeployment: vi.fn(async () => ({})),
@@ -63,6 +64,9 @@ function makeApis(readyReplicas = 1) {
       createNamespacedServiceAccount: vi.fn(),
       deleteNamespacedServiceAccount: vi.fn(),
       readNamespacedService: vi.fn(),
+      createNamespacedSecret: vi.fn(),
+      deleteNamespacedSecret: vi.fn(),
+      listNamespacedPod: vi.fn(),
     },
     networking: {
       createNamespacedNetworkPolicy: vi.fn(),

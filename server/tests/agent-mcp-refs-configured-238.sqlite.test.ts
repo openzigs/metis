@@ -107,7 +107,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     let n = 0;
     const save = (tools: string[], projectId = "p-1") =>
-      createAgent({ projectId, name: `a-${++n}`, systemPrompt: "x", tools }, "u-1");
+      createAgent(
+        { projectId, name: `a-${++n}`, description: "", systemPrompt: "x", tools },
+        "u-1",
+      );
 
     it("accepts a stopped, configured server's tools by name and by server wildcard", async () => {
       const a = await save([

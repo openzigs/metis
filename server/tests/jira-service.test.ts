@@ -101,7 +101,7 @@ vi.mock("../src/lib/prisma.js", () => ({
           createdAt: new Date(),
           updatedAt: new Date(),
           deletedAt: null,
-          ...(data as JiraRow),
+          ...data,
         };
         rows.set(row.id, row);
         return row;

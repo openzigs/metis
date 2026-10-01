@@ -8,6 +8,7 @@
  * real `MCPRegistryService`; the only thing faked is the failure each test
  * forces. The reported id is checked against a fresh read of the database.
  */
+import { createMCPServerSchema } from "@metis/shared";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -154,7 +155,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const onLanded = vi.fn();
       const label = uniq("svc");
       const view = await registry.create(
-        { scope: "global", label, transport: "stdio", runtime: "native", command: "node" },
+        createMCPServerSchema.parse({
+          scope: "global",
+          label,
+          transport: "stdio",
+          runtime: "native",
+          command: "node",
+        }),
         { id: ADMIN, role: "admin" },
         { onLanded },
       );
@@ -170,7 +177,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const onLanded = vi.fn();
       const label = uniq("usr");
       await registry.create(
-        { scope: "user", label, transport: "stdio", runtime: "native", command: "node" },
+        createMCPServerSchema.parse({
+          scope: "user",
+          label,
+          transport: "stdio",
+          runtime: "native",
+          command: "node",
+        }),
         { id: ADMIN, role: "admin" },
         { onLanded },
       );

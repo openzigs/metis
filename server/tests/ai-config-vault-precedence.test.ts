@@ -59,9 +59,9 @@ function installConfigServiceWithVaultValue(key: string, value: string): void {
   const svc = new ConfigService({ vault, env: process.env });
   // Reach into the cache directly — ConfigService exposes a test seam.
   // (Keeping the test focused on the precedence rule, not vault crypto.)
-  // @ts-expect-error — accessing a private field for test seeding.
+  // accessing a private field for test seeding.
   svc["secretCache"].set(key, value);
-  // @ts-expect-error — accessing a private field for test seeding.
+  // accessing a private field for test seeding.
   svc["secretSummaries"].set(key, {
     id: "v1",
     label: key,
@@ -74,7 +74,7 @@ function installConfigServiceWithVaultValue(key: string, value: string): void {
   });
   // Replace the ConfigService singleton with our stubbed instance.
   __resetConfigSingleton();
-  // @ts-expect-error — module-internal singleton swap for tests.
+  // module-internal singleton swap for tests.
   (getConfigService as unknown as { __setForTests?: (s: ConfigService) => void }).__setForTests?.(
     svc,
   );
@@ -82,9 +82,9 @@ function installConfigServiceWithVaultValue(key: string, value: string): void {
   // fresh instance otherwise. We patch by monkey-replacing the module export
   // through the singleton accessor pattern: simply call get and overwrite.
   const live = getConfigService();
-  // @ts-expect-error — direct private-field write to seed the singleton cache.
+  // direct private-field write to seed the singleton cache.
   live["secretCache"].set(key, value);
-  // @ts-expect-error — direct private-field write to seed the singleton cache.
+  // direct private-field write to seed the singleton cache.
   live["secretSummaries"].set(key, {
     id: "v1",
     label: key,
@@ -150,7 +150,7 @@ describe("loadAIConfig vault → env precedence (#251)", () => {
 
     // Rotate the vault value out-of-band, mimicking an admin clicking "Save".
     const live = getConfigService();
-    // @ts-expect-error — direct cache write for the test rotation.
+    // direct cache write for the test rotation.
     live["secretCache"].set("BEDROCK_GATEWAY_API_KEY", "second");
 
     const cfg2 = loadAIConfig(env);

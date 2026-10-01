@@ -182,7 +182,8 @@ function mcpTransport(): MCPTransportClient {
     start: vi.fn(async () => undefined),
     stop: vi.fn(async () => undefined),
     notify: vi.fn(async () => undefined),
-    closed: vi.fn(() => new Promise(() => undefined)),
+    closed: vi.fn(() => new Promise<{ code: number | null; reason: string }>(() => undefined)),
+    // The stub answers each JSON-RPC method with its own payload; `TResult` is the caller's.
     request: vi.fn(async (m: string, params?: unknown) => {
       if (m === "initialize") return { protocolVersion: "2025-06-18" };
       if (m === "tools/list") {
@@ -206,7 +207,7 @@ function mcpTransport(): MCPTransportClient {
         return { content: "3 open issues", isError: false };
       }
       throw new Error(`unexpected ${m}`);
-    }),
+    }) as MCPTransportClient["request"],
   };
 }
 function mcpConfig(id: string, label: string): MCPServerConfig {

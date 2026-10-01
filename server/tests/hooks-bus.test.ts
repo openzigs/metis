@@ -1,15 +1,10 @@
 /**
  * Unit tests for the lifecycle hook bus.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { HookBus } from "../src/lib/hooks/bus.js";
 
 describe("HookBus", () => {
-  let _captured: string[] = [];
-  afterEach(() => {
-    _captured = [];
-  });
-
   it("fires handlers in registration order", async () => {
     const bus = new HookBus();
     const order: number[] = [];
@@ -220,6 +215,5 @@ describe("HookBus", () => {
       "userPromptSubmit",
       "notification",
     ]);
-    _captured = events;
   });
 });

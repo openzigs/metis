@@ -576,6 +576,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       class UsageThenFail implements AIProvider {
         readonly key = "openai" as const;
         readonly model = "gpt-4.1";
+        readonly offline = false;
         async chat(): Promise<never> {
           throw new Error("not used");
         }

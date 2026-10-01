@@ -37,12 +37,16 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 const { importsRouter } = await import("../src/routes/imports.js");
 const { errorHandler } = await import("../src/middleware/error-handler.js");
-type ImportService = Parameters<typeof importsRouter>[0];
+type ImportService = NonNullable<Parameters<typeof importsRouter>[0]>;
 
-function buildApp(service: Partial<ImportService>) {
+/** A route stub: any subset of the service, returning only the fields a test reads. */
+type ImportServiceStub = { [K in keyof ImportService]?: (...args: never[]) => Promise<unknown> };
+
+function buildApp(service: ImportServiceStub) {
   const app = express();
   app.use(express.json());
-  app.use("/api/projects/:projectId/imports", importsRouter(service as ImportService));
+  // The route only serialises the stub's partial views.
+  app.use("/api/projects/:projectId/imports", importsRouter(service as unknown as ImportService));
   app.use(errorHandler);
   return app;
 }

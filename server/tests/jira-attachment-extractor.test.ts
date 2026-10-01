@@ -4,15 +4,15 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { MAX_PDF_PAGES } from "@metis/shared";
-import type { JiraClient } from "../../src/lib/connectors/jira/jira-client.js";
-import type { AIProvider, ChatResponse } from "../../src/lib/ai/types.js";
+import type { JiraClient } from "../src/lib/connectors/jira/jira-client.js";
+import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
 import {
   extractAttachments,
   renderAttachmentMarkdown,
   MAX_ATTACHMENT_SIZE,
   type AttachmentMeta,
   type AttachmentExtraction,
-} from "../../src/lib/connectors/jira/attachment-extractor.js";
+} from "../src/lib/connectors/jira/attachment-extractor.js";
 
 // ---- Mocks -----------------------------------------------------------------
 
@@ -106,14 +106,12 @@ function createMockAIProvider(response = "A diagram showing system architecture"
     key: "offline-stub",
     model: "test-model",
     offline: true,
-    chat: vi.fn(
-      async (): Promise<ChatResponse> => ({
-        content: response,
-        usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
-        model: "test-model",
-        provider: "offline-stub",
-      }),
-    ),
+    chat: vi.fn(async (): Promise<ChatResponse> => ({
+      content: response,
+      usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+      model: "test-model",
+      provider: "offline-stub",
+    })),
     stream: vi.fn(),
     embed: vi.fn(),
     models: vi.fn(async () => ["test-model"]),

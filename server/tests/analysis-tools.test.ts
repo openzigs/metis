@@ -29,7 +29,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 import { prisma } from "../src/lib/prisma.js";
-const mockPrisma = vi.mocked(prisma);
+const mockPrisma = vi.mocked(prisma, true);
 
 // ── Shared context ──────────────────────────────────────────────────────
 const baseContext: ToolContext = { projectId: "proj-123" };

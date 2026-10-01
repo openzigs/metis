@@ -42,21 +42,27 @@ vi.mock("../src/lib/prisma.js", () => ({
         }
         return null;
       }),
-      create: vi.fn(async ({ data }: { data: Partial<Row> }) => {
-        nextId += 1;
-        const row: Row = {
-          id: `repo_${nextId}`,
-          ownerOrOrg: null,
-          repoName: null,
-          localPath: null,
-          uploadPath: null,
-          isPrimary: false,
-          deletedAt: null,
-          ...(data as Row),
-        };
-        rows.set(row.id, row);
-        return row;
-      }),
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: Partial<Row> & Pick<Row, "projectId" | "label" | "provider">;
+        }) => {
+          nextId += 1;
+          const row: Row = {
+            id: `repo_${nextId}`,
+            ownerOrOrg: null,
+            repoName: null,
+            localPath: null,
+            uploadPath: null,
+            isPrimary: false,
+            deletedAt: null,
+            ...data,
+          };
+          rows.set(row.id, row);
+          return row;
+        },
+      ),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<Row> }) => {
         const r = rows.get(where.id)!;
         const next = { ...r, ...data };
