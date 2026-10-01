@@ -2835,7 +2835,14 @@ The `/vault` page is split into two panels:
      missing or malformed one is a `400`); if those no longer match the live bindings —
      including a binding re-pointed under the same id, whether at a new host or
      at new args or a new database behind the same destination — it is refused with
-     `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. While the
+     `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. A
+     `confirmedBindings` list holds at most `maxConfirmedBindings` (1,000)
+     entries, so a secret bound to more is confirmed by
+     `confirmedBindingsDigest` instead: echo the `bindingsDigest` from the
+     409, one digest over the whole list that changes whenever any binding is
+     added, removed or re-pointed (a stale one gets the same
+     `409 VAULT_ROTATE_BINDINGS_CHANGED`). The page does this for you and
+     says so when the list is that long. While the
      owner is binding the secret somewhere new — from the moment their change
      is checked until it is saved, and for at most a minute — the rotation is
      refused with `409 VAULT_ROTATE_BINDING_IN_PROGRESS` instead; retry, and

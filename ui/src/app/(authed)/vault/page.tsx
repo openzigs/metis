@@ -6,7 +6,8 @@
  *   • create — new entry; plaintext sent over TLS, never stored client-side
  *   • rotate — replace plaintext under the same id; another user's secret
  *     shows its owner and bindings and needs an explicit "Rotate anyway" (#482),
- *     which is tied to the bindings shown and makes the admin the owner (#502)
+ *     which is tied to the bindings shown and makes the admin the owner (#502);
+ *     a list over the server's cap is confirmed by its digest instead (#611)
  *   • audit — per-entry audit trail (read/write/rotate/delete)
  *
  * Permissions: requires `vault.read` (server enforces). Roles without it see a
@@ -33,8 +34,8 @@ import {
   VAULT_ROTATE_FOREIGN_OWNER,
   type VaultEntry,
   type VaultAuditEntry,
-  type VaultConfirmedBinding,
   type VaultForeignOwner,
+  type VaultRotateConfirm,
 } from "@/lib/vault-api";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 import { PageHeader } from "@/components/ui/page-header";
@@ -294,6 +295,9 @@ function EntryDetail({
   const [foreignOwner, setForeignOwner] = useState<VaultForeignOwner | null>(null);
   const [bindingsChanged, setBindingsChanged] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // #611 — too many bindings to echo back: confirm by the digest of the whole list.
+  const overCap =
+    foreignOwner !== null && foreignOwner.bindings.length > foreignOwner.maxConfirmedBindings;
 
   const auditQuery = useQuery({
     queryKey: ["vault", "audit", entry.id],
@@ -312,10 +316,11 @@ function EntryDetail({
   });
 
   const rotate = useMutation({
-    // #502 — a confirm carries the bindings (type, id, destination; #557 routing) the admin was shown.
-    mutationFn: (confirmedBindings: VaultConfirmedBinding[] | null) =>
-      confirmedBindings
-        ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true, confirmedBindings })
+    // #502 — a confirm carries the bindings (type, id, destination; #557 routing) the admin was shown;
+    // #611 — or, over the cap, the digest of that whole list.
+    mutationFn: (confirm: VaultRotateConfirm | null) =>
+      confirm
+        ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true, ...confirm })
         : vaultApi.rotate(entry.id, rotateValue),
     onSuccess: () => {
       setRotateValue("");
@@ -473,6 +478,14 @@ function EntryDetail({
                 again.
               </p>
             ) : null}
+            {overCap ? (
+              <p className="font-semibold" data-testid="vault-entry-rotate-over-cap">
+                It is bound to {foreignOwner.bindings.length} resources, more than the{" "}
+                {foreignOwner.maxConfirmedBindings} a confirmation can list one by one. Rotate
+                anyway confirms the whole list below as one, so review all of it first: if any
+                binding changes before you confirm, you will be shown the new list.
+              </p>
+            ) : null}
             {foreignOwner.bindings.length === 0 ? (
               <p>
                 No DB or repo connector, import source, MCP server, Jira or test-management
@@ -497,12 +510,18 @@ function EntryDetail({
                 variant="destructive"
                 onClick={() =>
                   rotate.mutate(
-                    foreignOwner.bindings.map(({ type, id, destination, routing }) => ({
-                      type,
-                      id,
-                      destination,
-                      routing,
-                    })),
+                    overCap
+                      ? { confirmedBindingsDigest: foreignOwner.bindingsDigest }
+                      : {
+                          confirmedBindings: foreignOwner.bindings.map(
+                            ({ type, id, destination, routing }) => ({
+                              type,
+                              id,
+                              destination,
+                              routing,
+                            }),
+                          ),
+                        },
                   )
                 }
                 disabled={rotate.isPending}

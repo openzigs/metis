@@ -222,6 +222,8 @@ describe("<VaultPage />", () => {
           routing: "rt-m1",
         },
       ],
+      bindingsDigest: "d".repeat(64),
+      maxConfirmedBindings: 1000,
     };
     const refuse = (details: unknown = foreign) =>
       new ApiError(
@@ -367,6 +369,53 @@ describe("<VaultPage />", () => {
       await waitFor(() =>
         expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument(),
       );
+    });
+
+    it("#611 — over the cap, says so and confirms by the list digest instead of echoing the list", async () => {
+      const bindings = Array.from({ length: 3 }, (_, i) => ({
+        type: "db_connector",
+        id: `db${i}`,
+        label: `DB ${i}`,
+        projectId: "p1",
+        destination: `postgres://h${i}`,
+        routing: `rt-${i}`,
+      }));
+      rotateMock
+        .mockRejectedValueOnce(refuse({ ...foreign, bindings, maxConfirmedBindings: 2 }))
+        .mockResolvedValueOnce(entry({ keyVersion: 2 }));
+      await submitRotate();
+      const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(within(panel).getByTestId("vault-entry-rotate-over-cap")).toHaveTextContent(
+        "It is bound to 3 resources, more than the 2 a confirmation can list one by one.",
+      );
+      // Every binding is still shown for review.
+      expect(within(panel).getByTestId("vault-entry-rotate-bindings")).toHaveTextContent(
+        "DB 2 — postgres://h2",
+      );
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
+          confirmForeignOwner: true,
+          confirmedBindingsDigest: "d".repeat(64),
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument(),
+      );
+    });
+
+    it("#611 — at the cap, no over-cap notice and the list itself is confirmed", async () => {
+      rotateMock
+        .mockRejectedValueOnce(refuse({ ...foreign, maxConfirmedBindings: 2 }))
+        .mockResolvedValueOnce(entry({ keyVersion: 2 }));
+      await submitRotate();
+      await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(screen.queryByTestId("vault-entry-rotate-over-cap")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() => expect(rotateMock).toHaveBeenCalledTimes(2));
+      const opts = rotateMock.mock.calls[1]![2] as Record<string, unknown>;
+      expect(opts.confirmedBindings).toHaveLength(2);
+      expect(opts).not.toHaveProperty("confirmedBindingsDigest");
     });
 
     it("any other rotate error is shown as a plain message", async () => {
