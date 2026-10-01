@@ -25,6 +25,7 @@ import type {
   ServerToClientEvents,
   RoleKey,
 } from "@metis/shared";
+import { threadRoom } from "@metis/shared";
 import { canAccessThread } from "../discussions/access.js";
 import { createChildLogger } from "../logger.js";
 import { onClientEvent } from "./client-event-handler.js";
@@ -37,10 +38,11 @@ export type ThreadRoomSocket = Pick<
   "id" | "on" | "join" | "leave" | "emit" | "data"
 >;
 
-/** The room name for a discussion thread's realtime fan-out. */
-export function threadRoom(threadId: string): string {
-  return `thread:${threadId}`;
-}
+/**
+ * The room name for a discussion thread's realtime fan-out. Defined in
+ * `@metis/shared` so the UI's reference count keys on the same name (#672).
+ */
+export { threadRoom };
 
 /**
  * Attach `subscribe:thread` / `unsubscribe:thread` handlers to `socket`.

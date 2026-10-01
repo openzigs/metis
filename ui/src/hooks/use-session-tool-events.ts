@@ -12,7 +12,8 @@
 import { useEffect, useRef } from "react";
 import type { AiToolEvent } from "@metis/shared";
 import { useSocket } from "@/lib/socket-client";
-import { keepSubscribed } from "@/lib/socket-subscription";
+import { keepRoomSubscribed } from "@/lib/socket-subscription";
+import { sessionFollow } from "@/lib/socket-rooms";
 import { parseToolEvent } from "@/lib/ai-client";
 
 export function useSessionToolEvents(
@@ -26,10 +27,7 @@ export function useSessionToolEvents(
   useEffect(() => {
     if (!socket || !sessionId) return;
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:session", { sessionId }), {
-      room: `session:${sessionId}`,
-      unsubscribe: () => socket.emit("unsubscribe:session", { sessionId }),
-    });
+    const release = keepRoomSubscribed(socket, sessionFollow(socket, sessionId));
     const onToolEvent = (data: unknown) => {
       const ev = parseToolEvent(data);
       if (!ev || ev.sessionId !== sessionId) return;

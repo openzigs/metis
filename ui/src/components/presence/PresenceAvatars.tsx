@@ -8,7 +8,9 @@
  */
 import { useEffect, useState } from "react";
 import { useSocket } from "@/lib/socket-client";
-import { keepSubscribed } from "@/lib/socket-subscription";
+import { keepRoomSubscribed } from "@/lib/socket-subscription";
+import { presenceFollow } from "@/lib/socket-rooms";
+import { presenceRoom } from "@metis/shared";
 import { cn } from "@/lib/utils";
 
 interface PresenceUser {
@@ -69,19 +71,12 @@ export function PresenceAvatars({
     // reconnect (#642): the server's disconnect handler drops this socket from
     // the room's presence list, so a one-shot join would leave this user
     // invisible to other members and deaf to `presence:update`.
-    const release = keepSubscribed(
-      socket,
-      () => socket.emit("presence:join", { artifactType, artifactId }),
-      {
-        room: `presence:${artifactType}:${artifactId}`,
-        unsubscribe: () => socket.emit("presence:leave", { artifactType, artifactId }),
-      },
-    );
+    const release = keepRoomSubscribed(socket, presenceFollow(socket, artifactType, artifactId));
 
     // The server broadcasts `presence:update` keyed by `room` (it does not echo
     // artifactType/artifactId), so match on the room key we expect for this
     // artifact instead of the absent identity fields.
-    const expectedRoom = `presence:${artifactType}:${artifactId}`;
+    const expectedRoom = presenceRoom(artifactType, artifactId);
 
     function handleUpdate(update: PresenceUpdate) {
       if (update.room === expectedRoom) {

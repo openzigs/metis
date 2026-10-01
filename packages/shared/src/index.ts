@@ -18,6 +18,7 @@ export * from "./mcp-validators.js";
 export * from "./rbac.js";
 export * from "./http.js";
 export * from "./socket.js";
+export * from "./socket-rooms.js";
 export * from "./connectors.js";
 export * from "./jira.js";
 export * from "./import.js";

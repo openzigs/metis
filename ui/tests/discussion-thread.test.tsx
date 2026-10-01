@@ -46,6 +46,8 @@ vi.mock("@/lib/api-client", () => ({
 }));
 
 import { useSocket } from "@/lib/socket-client";
+import { followedRooms } from "@/lib/socket-subscription";
+import { presenceRoom, threadRoom } from "@metis/shared";
 import { createFakeSocket } from "./helpers/fake-socket";
 import { listMessages, postMessage, streamAiReply } from "@/lib/discussions-api";
 import { toast } from "sonner";
@@ -346,8 +348,17 @@ describe("DiscussionThreadView", () => {
     await waitFor(() =>
       expect(socket.emit).toHaveBeenCalledWith("subscribe:thread", { threadId: "t1" }),
     );
+    // #672 — counted under the server's room names, not hand-typed keys. The
+    // view also mounts PresenceAvatars for the thread.
+    expect(followedRooms(socket as never)).toEqual(
+      new Map([
+        [threadRoom("t1"), 1],
+        [presenceRoom("discussion", "t1"), 1],
+      ]),
+    );
     unmount();
     expect(socket.emit).toHaveBeenCalledWith("unsubscribe:thread", { threadId: "t1" });
+    expect(followedRooms(socket as never).size).toBe(0);
   });
 
   it("re-joins the thread room after a reconnect and keeps rendering live messages (#642)", async () => {

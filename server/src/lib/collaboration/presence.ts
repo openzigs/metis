@@ -16,6 +16,7 @@
  *   disconnect
  *     → leaves all presence rooms for that socket, broadcasts updates
  */
+import { presenceRoom } from "@metis/shared";
 import type { MetisIOServer } from "../socket/server.js";
 import { onClientEvent, onConnection } from "../socket/client-event-handler.js";
 
@@ -25,9 +26,8 @@ const roomPresence = new Map<
   Map<string, { userId: string; username: string; displayName: string }>
 >();
 
-function roomKey(artifactType: string, artifactId: string): string {
-  return `presence:${artifactType}:${artifactId}`;
-}
+/** #672 — shared with the UI, which reference-counts followers by this name. */
+const roomKey = presenceRoom;
 
 /**
  * #622 — `local`: the list is THIS replica's sockets only, and the client
