@@ -129,6 +129,18 @@ describe("ApprovalsPanel — promotion-blocked socket event (#256)", () => {
     expect(screen.queryByTestId("promotion-blocked-live")).not.toBeInTheDocument();
     expect(screen.queryByText("Promotion blocked: another analysis")).not.toBeInTheDocument();
     expect(listApprovals).toHaveBeenCalledTimes(1);
+
+    // Positive control: the same subscription does react to this panel's own
+    // analysis, so the negative assertions above cannot pass vacuously.
+    pushBlocked({
+      analysisId: "ana-1",
+      pendingCount: 1,
+      rejectedCount: 0,
+      reason: "Promotion blocked: this analysis",
+      ts: Date.now(),
+    });
+    await waitFor(() => expect(screen.getByTestId("promotion-blocked-live")).toBeInTheDocument());
+    await waitFor(() => expect(listApprovals).toHaveBeenCalledTimes(2));
   });
 });
 
