@@ -15,9 +15,11 @@
  * never `supertest`. supertest calls `app.listen(0)`, which binds the WILDCARD (`:::P`),
  * then dials `127.0.0.1:P`. On macOS (SO_REUSEADDR, which Node sets) another process can
  * bind the more specific `127.0.0.1:P` on top of that listener, and the kernel routes the
- * dial to it. Reproduced: a foreign 401 server bound that way answered our `GET /readyz`
- * with 401, which `/readyz` cannot return because it carries no auth. That was the "401
- * instead of 503" flake. The 20 s timeout was the same dependency on loopback sockets
+ * dial to it. The mechanism was reproduced synthetically (a foreign 401 server bound that
+ * way answered our `GET /readyz` with 401, which `/readyz` cannot return because it carries
+ * no auth), so it is the inferred cause of the "401 instead of 503" flake; the process that
+ * took the port in the wild was never identified, and the fix does not depend on which it
+ * was. The 20 s timeout was the same dependency on loopback sockets
  * and ports while the monorepo fan-out contends for them (#1379). In process, there is
  * no port to steal and nothing to time out on. The `listen` spy below keeps it that way.
  */
@@ -53,13 +55,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  expect(
-    listen,
-    "a test bound a TCP port — use invoke(), not supertest (#689)",
-  ).not.toHaveBeenCalled();
+  // Capture, restore, THEN assert: a throwing assertion before the restore would
+  // leave the spy (and its call count) in place and fail every later test too.
+  const listenCalls = listen.mock.calls.length;
   if (ORIGINAL_TOKEN === undefined) delete process.env.EMBEDDINGS_TOKEN;
   else process.env.EMBEDDINGS_TOKEN = ORIGINAL_TOKEN;
   vi.restoreAllMocks();
+  expect(listenCalls, "a test bound a TCP port — use invoke(), not supertest (#689)").toBe(0);
 });
 
 async function loadApp() {
