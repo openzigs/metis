@@ -22,6 +22,7 @@ import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import {
   type MCPHiddenCharRange,
+  type MCPImportResponse,
   type MCPRegistryEntry,
   type MCPSchemaDiff,
   type MCPServerView,
@@ -589,6 +590,14 @@ interface ImportPreview {
 function ImportExportTab() {
   const qc = useQueryClient();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const importMutation = useMutation({
+    mutationFn: (mcpJson: NonNullable<ImportPreview["parsed"]>) =>
+      mcpPlatformApi.importCopilot({ mcpJson }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.admin.mcp() });
+      setPreview(null);
+    },
+  });
   const exportClick = async () => {
     try {
       const data = await mcpPlatformApi.exportJson();
@@ -605,11 +614,18 @@ function ImportExportTab() {
     }
   };
   const onFile = async (file: File) => {
+    // #621 — a new file starts a new import; the last one's result no longer applies.
+    importMutation.reset();
     const text = await file.text();
     try {
       const parsed = JSON.parse(text) as { servers?: Record<string, unknown> };
       if (!parsed.servers || typeof parsed.servers !== "object") {
         setPreview({ raw: text, parsed: null, error: "Missing top-level `servers` object" });
+        return;
+      }
+      // An empty `servers` object would import nothing and still read as a success.
+      if (Object.keys(parsed.servers).length === 0) {
+        setPreview({ raw: text, parsed: null, error: "No servers to import" });
         return;
       }
       setPreview({
@@ -621,14 +637,6 @@ function ImportExportTab() {
       setPreview({ raw: text, parsed: null, error: (err as Error).message });
     }
   };
-  const importMutation = useMutation({
-    mutationFn: (mcpJson: NonNullable<ImportPreview["parsed"]>) =>
-      mcpPlatformApi.importCopilot({ mcpJson }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.admin.mcp() });
-      setPreview(null);
-    },
-  });
   return (
     <div className="space-y-6" data-testid="import-export-tab">
       <Card className="p-4 space-y-3">
@@ -696,7 +704,80 @@ function ImportExportTab() {
             {errorMessage(importMutation.error)}
           </p>
         ) : null}
+        {importMutation.data ? <ImportResultSummary result={importMutation.data} /> : null}
       </Card>
+    </div>
+  );
+}
+
+/**
+ * #621 — what an executed import did. The server answers 207 when any entry
+ * failed or landed with a warning (#608); `apiFetch` resolves a 207 like a 200,
+ * so the outcome is read from the body, which is what the status is derived from.
+ */
+function ImportResultSummary({ result }: { result: MCPImportResponse }) {
+  const warned = result.created.filter((c) => c.warning).length;
+  const failed = result.errors.length;
+  const created = result.created.length;
+  const outcome =
+    failed > 0 && created === 0 ? "failed" : failed > 0 || warned > 0 ? "partial" : "success";
+  const status =
+    outcome === "failed"
+      ? `Import failed: ${failed} server(s) failed`
+      : outcome === "partial"
+        ? `Partially imported: ${[
+            `${created} server(s) created`,
+            warned > 0 ? `${warned} with a warning` : null,
+            failed > 0 ? `${failed} failed` : null,
+          ]
+            .filter(Boolean)
+            .join(", ")}`
+        : `Imported ${created} server(s)`;
+  return (
+    <div
+      className="space-y-2 rounded border p-2 text-xs"
+      data-testid="import-result"
+      data-outcome={outcome}
+    >
+      <div
+        className={outcome === "success" ? "font-medium" : "font-medium text-destructive"}
+        data-testid="import-result-status"
+        role="status"
+      >
+        {status}
+      </div>
+      {created > 0 ? (
+        <div>
+          <div className="font-medium">Created</div>
+          <ul className="list-disc pl-5">
+            {result.created.map((c) => (
+              <li key={c.id} data-testid="import-result-created">
+                {c.label}
+                {c.warning ? (
+                  <span className="text-destructive" data-testid="import-result-warning">
+                    {" "}
+                    — saved with a warning: {c.warning.message}
+                    {c.warning.code ? ` (${c.warning.code})` : null}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {failed > 0 ? (
+        <div>
+          <div className="font-medium">Failed</div>
+          <ul className="list-disc pl-5">
+            {result.errors.map((e) => (
+              <li key={e.label} className="text-destructive" data-testid="import-result-failed">
+                {e.label}: {e.message}
+                {e.code ? ` (${e.code})` : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }
