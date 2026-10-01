@@ -43,6 +43,7 @@ import {
 import { verifyAccessToken } from "../auth/jwt.js";
 import { actorCanAccessProject } from "../scheduler/project-access.js";
 import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
+import { canJoinAnalysisRoom } from "./analysis-room-access.js";
 import { getLastDocSections, getLastJobLifecycle } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
@@ -294,10 +295,45 @@ function attachHandlers(
   // Presence joins are authz-gated via `canAccessThread`; typing broadcasts are
   // scoped to other members of the thread room (never echoed to the sender).
   wireDiscussionPresenceHandlers(socket);
-  socket.on("subscribe:analysis", ({ analysisId }) => {
-    void socket.join(`analysis:${analysisId}`);
+  // #645 — the analysis room carries promotion-blocked counts and failure
+  // reasons, so only a user who can read the analysis's project may join it —
+  // the same rule as `GET /api/analyses/:id`. It used to join any id named.
+  // Review of #652 — the payload is read with `?.`, never destructured: a null
+  // or missing payload threw inside socket.io's nextTick dispatch, an uncaught
+  // exception that took the whole API process down.
+  // Bumped per id by every subscribe/unsubscribe (as `subscribe:mcp` does,
+  // #562), so an access check that resolves after a later unsubscribe does not join.
+  const analysisSubscription = new Map<string, number>();
+  const bumpAnalysisSubscription = (analysisId: string): number => {
+    const attempt = (analysisSubscription.get(analysisId) ?? 0) + 1;
+    analysisSubscription.set(analysisId, attempt);
+    return attempt;
+  };
+  socket.on("subscribe:analysis", (payload) => {
+    const analysisId: unknown = payload?.analysisId;
+    if (!analysisId || typeof analysisId !== "string") return;
+    const attempt = bumpAnalysisSubscription(analysisId);
+    void (async () => {
+      try {
+        if (await canJoinAnalysisRoom(user, analysisId)) {
+          if (analysisSubscription.get(analysisId) !== attempt) return;
+          await socket.join(`analysis:${analysisId}`);
+          return;
+        }
+      } catch (err) {
+        log.warn("Socket subscribe:analysis failed", {
+          socketId: socket.id,
+          analysisId,
+          error: (err as Error).message,
+        });
+      }
+      socket.emit("auth:error", { message: "FORBIDDEN: no access to analysis" });
+    })();
   });
-  socket.on("unsubscribe:analysis", ({ analysisId }) => {
+  socket.on("unsubscribe:analysis", (payload) => {
+    const analysisId: unknown = payload?.analysisId;
+    if (!analysisId || typeof analysisId !== "string") return;
+    bumpAnalysisSubscription(analysisId);
     void socket.leave(`analysis:${analysisId}`);
   });
   // #142 — the session room now carries tool-approval prompts (with the tool's
