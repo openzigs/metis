@@ -163,6 +163,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(shown.bindingsDigest).toMatch(/^[0-9a-f]{64}$/);
 
       // Echoing the listed bindings is not the whole set: refused, which is why the digest exists.
+      // #629 (PR #635 review) — refused as a list over the cap, not as a change.
       const echoed = await rotate(id, {
         value: ADMIN_VALUE,
         confirmForeignOwner: true,
@@ -171,7 +172,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ),
       });
       expect(echoed.status).toBe(409);
-      expect(echoed.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
+      expect(echoed.body.error.code).toBe("VAULT_ROTATE_CONFIRM_BY_DIGEST");
       expect(await plaintextOf(id)).toBe(OWNER_VALUE);
 
       const res = await rotate(id, {

@@ -33,6 +33,7 @@ const {
   bindingsDiffer,
   bindingsSetDigest,
   canonicalBindings,
+  confirmByDigestMessage,
   confirmedBindingsAudit,
   countBindings,
   describeForeignOwner,
@@ -373,6 +374,17 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
     expect(msg).toContain("bound to A (pg://a), B (pg://b).");
     expect(msg).toContain("confirmedBindings");
     expect(bindingsChangedMessage(details())).toContain(UNBOUND_NOTE);
+  });
+
+  it("#629 (PR #635 review): over the cap, says to confirm by digest, never that anything changed", () => {
+    const ids = Array.from({ length: MAX_CONFIRMED_BINDINGS + 1 }, (_, i) => `b${i}`);
+    const msg = confirmByDigestMessage(details(...ids));
+    expect(msg).toContain("owned by cora");
+    expect(msg).toContain(`has ${MAX_CONFIRMED_BINDINGS + 1} bindings`);
+    expect(msg).toContain(`more than the ${MAX_CONFIRMED_BINDINGS}`);
+    expect(msg).toContain("bindingsDigest listed here as confirmedBindingsDigest");
+    expect(msg).toContain(`and ${MAX_CONFIRMED_BINDINGS + 1 - MAX_NAMED_BINDINGS} more.`);
+    expect(msg).not.toContain("changed");
   });
 });
 

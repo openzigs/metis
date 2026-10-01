@@ -31,6 +31,7 @@ function asRole(role: Role) {
 vi.mock("@/lib/vault-api", () => ({
   VAULT_ROTATE_FOREIGN_OWNER: "VAULT_ROTATE_FOREIGN_OWNER",
   VAULT_ROTATE_BINDINGS_CHANGED: "VAULT_ROTATE_BINDINGS_CHANGED",
+  VAULT_ROTATE_CONFIRM_BY_DIGEST: "VAULT_ROTATE_CONFIRM_BY_DIGEST",
   vaultApi: {
     list: vi.fn(),
     create: vi.fn(),
@@ -410,6 +411,56 @@ describe("<VaultPage />", () => {
         expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
           confirmForeignOwner: true,
           confirmedBindingsDigest: "d".repeat(64),
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument(),
+      );
+    });
+
+    it("#629 (PR #635 review) — a list confirm refused as over the cap re-shows the set and confirms by digest", async () => {
+      const bindings = Array.from({ length: 3 }, (_, i) => ({
+        type: "db_connector",
+        id: `db${i}`,
+        label: `DB ${i}`,
+        projectId: "p1",
+        destination: `postgres://h${i}`,
+        routing: `rt-${i}`,
+      }));
+      // Shown within the cap, so the page confirms by list; the set grows past it meanwhile.
+      rotateMock
+        .mockRejectedValueOnce(refuse({ ...foreign, maxConfirmedBindings: 2 }))
+        .mockRejectedValueOnce(
+          new ApiError(409, "over the cap", "VAULT_ROTATE_CONFIRM_BY_DIGEST", {
+            ...foreign,
+            bindings: bindings.slice(0, 2),
+            bindingsTotal: 3,
+            bindingsTruncated: true,
+            maxConfirmedBindings: 2,
+            bindingsDigest: "e".repeat(64),
+          }),
+        )
+        .mockResolvedValueOnce(entry({ keyVersion: 2 }));
+      await submitRotate();
+      await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(screen.queryByTestId("vault-entry-rotate-over-cap")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith(
+          "sec_1",
+          "ghp_admin",
+          expect.objectContaining({ confirmedBindings: expect.any(Array) }),
+        ),
+      );
+
+      // The refusal is not a dead end: the live set is shown again, over the cap.
+      expect(await screen.findByTestId("vault-entry-rotate-bindings-changed")).toBeInTheDocument();
+      expect(screen.getByTestId("vault-entry-rotate-over-cap")).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
+          confirmForeignOwner: true,
+          confirmedBindingsDigest: "e".repeat(64),
         }),
       );
       await waitFor(() =>

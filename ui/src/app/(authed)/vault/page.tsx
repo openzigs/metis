@@ -31,6 +31,7 @@ import { useAuth } from "@/lib/auth-context";
 import {
   vaultApi,
   VAULT_ROTATE_BINDINGS_CHANGED,
+  VAULT_ROTATE_CONFIRM_BY_DIGEST,
   VAULT_ROTATE_FOREIGN_OWNER,
   type VaultEntry,
   type VaultAuditEntry,
@@ -378,7 +379,10 @@ function EntryDetail({
       // #482 — another user's secret: show who owns it and where it is bound,
       // and let the admin confirm rather than failing outright.
       // #502 — if the bindings changed since, show the live list to confirm again.
-      const changed = err.code === VAULT_ROTATE_BINDINGS_CHANGED;
+      // #629 (PR #635 review) — the page lists one by one only a set it saw within the cap,
+      // so a set now over it has changed too; showing it re-arms the confirm by digest.
+      const changed =
+        err.code === VAULT_ROTATE_BINDINGS_CHANGED || err.code === VAULT_ROTATE_CONFIRM_BY_DIGEST;
       if ((err.code === VAULT_ROTATE_FOREIGN_OWNER || changed) && err.details) {
         setRotateError(null);
         setForeignOwner(err.details as VaultForeignOwner);

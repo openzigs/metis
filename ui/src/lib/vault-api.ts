@@ -33,6 +33,11 @@ export interface VaultAuditEntry {
 export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
 /** #502 — the confirmed bindings no longer match; `details` is the live list. */
 export const VAULT_ROTATE_BINDINGS_CHANGED = "VAULT_ROTATE_BINDINGS_CHANGED";
+/**
+ * #629 (PR #635 review) — a list confirm of a set now over `maxConfirmedBindings`;
+ * `details` is the live (capped) list with the digest to confirm by.
+ */
+export const VAULT_ROTATE_CONFIRM_BY_DIGEST = "VAULT_ROTATE_CONFIRM_BY_DIGEST";
 
 export interface VaultForeignOwner {
   secretId: string;

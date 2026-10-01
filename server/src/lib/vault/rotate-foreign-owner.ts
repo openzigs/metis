@@ -69,6 +69,11 @@ export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
 export const VAULT_ROTATE_BINDINGS_CHANGED = "VAULT_ROTATE_BINDINGS_CHANGED";
 /** #552 — the owner is binding the secret somewhere right now. */
 export const VAULT_ROTATE_BINDING_IN_PROGRESS = "VAULT_ROTATE_BINDING_IN_PROGRESS";
+/**
+ * #629 (PR #635 review) — a list confirm of a set over {@link MAX_CONFIRMED_BINDINGS}:
+ * the list cannot name every binding, so it is refused as such, not as CHANGED.
+ */
+export const VAULT_ROTATE_CONFIRM_BY_DIGEST = "VAULT_ROTATE_CONFIRM_BY_DIGEST";
 
 export interface SecretOwnerView {
   id: string;
@@ -486,6 +491,21 @@ export function bindingsChangedMessage(details: ForeignOwnerDetails): string {
   return (
     `The bindings of this secret, owned by ${whoOwns(details)}, changed since you confirmed. ` +
     `${whereBound(details)} Review them and confirm again. ${TO_CONFIRM}`
+  );
+}
+
+/**
+ * #629 (PR #635 review) — the refusal of a list confirm when the live set is
+ * over the cap. Its bindings need not have changed, and resending the same list
+ * would be refused again, so it says to confirm by the digest instead.
+ */
+export function confirmByDigestMessage(details: ForeignOwnerDetails): string {
+  return (
+    `This secret, owned by ${whoOwns(details)}, has ${details.bindings.length} bindings, more ` +
+    `than the ${MAX_CONFIRMED_BINDINGS} a confirmedBindings list can carry, so a list cannot ` +
+    `confirm them. ${whereBound(details)} To rotate it anyway, set confirmForeignOwner and send ` +
+    "the bindingsDigest listed here as confirmedBindingsDigest, without confirmedBindings; the " +
+    "secret then becomes yours, so they can no longer bind it anywhere new."
   );
 }
 

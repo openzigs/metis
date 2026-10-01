@@ -2845,7 +2845,12 @@ The `/vault` page is split into two panels:
      the first 1,000 bindings, with `bindingsTotal`, `bindingsTruncated: true`
      and `bindingCounts` (per type, the ten busiest destination hosts, the
      rest summed) over the whole set, so its size stays bounded however many
-     bindings the owner adds; the digest still covers every one. The page does
+     bindings the owner adds; the digest still covers every one. A
+     `confirmedBindings` list sent for a set over the cap — such as the 1,000
+     bindings the 409 listed, echoed back — cannot name every binding, so it
+     is refused with `409 VAULT_ROTATE_CONFIRM_BY_DIGEST` (the same capped
+     details, `bindingsDigest` included) rather than as a change: resending
+     the list is refused again, so confirm with the digest. The page does
      this for you, says so when the list is that long, and shows those counts
      above the listed bindings so the review starts from a few rows. While the
      owner is binding the secret somewhere new — from the moment their change

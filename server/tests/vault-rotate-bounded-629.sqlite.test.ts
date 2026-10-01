@@ -42,9 +42,11 @@ const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getVaultService, __resetVaultSingleton } =
   await import("../src/lib/vault/vault-service.js");
 const { getAuditService } = await import("../src/lib/audit/audit-service.js");
+const { assertSecretBindingAllowed } = await import("../src/lib/vault/secret-binding.js");
 
 const OWNER_VALUE = "owner-own-token-629";
 const ADMIN_VALUE = "admin-real-token-629";
+const OWNER = { userId: "u-owner", role: "coordinator" as const };
 const CAP = MAX_CONFIRMED_BINDINGS;
 /** Large enough that an unbounded listing would be several times the capped one. */
 const HUGE = 5 * CAP;
@@ -217,6 +219,169 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // And the over-cap audit row is a small fraction of the per-binding one at the cap.
       expect(audit).toBeLessThan(2000);
       expect(audit * 10).toBeLessThan(sizes.cap!.audit);
+    });
+
+    // -- PR #635 review: a list confirm over the cap, and the capped body on
+    // every other refusal that lists the bindings. --
+
+    /** The listing a client would echo: `{type, id, destination, routing}` of each listed binding. */
+    const echoList = (view: View) =>
+      view.bindings.map(({ type, id, destination, routing }) => ({
+        type,
+        id,
+        destination,
+        routing,
+      }));
+    /** The whole-set shape every over-cap 409 carries, whatever its code. */
+    const expectCapped = (view: View, total: number) => {
+      expect(view.bindings).toHaveLength(CAP);
+      expect(view.bindingsTotal).toBe(total);
+      expect(view.bindingsTruncated).toBe(true);
+      expect(view.bindingsDigest).toMatch(/^[0-9a-f]{64}$/);
+      expect(view.bindingCounts.byType).toEqual([{ type: "db_connector", count: total }]);
+      expect(view.bindingCounts.byHost).toHaveLength(MAX_HOST_ROWS);
+      expect(view.bindingCounts.moreHosts).toEqual({
+        hosts: total - MAX_HOST_ROWS,
+        bindings: total - MAX_HOST_ROWS,
+      });
+    };
+    /** Nothing moved: the owner's value and ownership stand, and nothing was audited. */
+    const expectUntouched = async (id: string) => {
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+      expect((await db.secret.findUniqueOrThrow({ where: { id } })).createdById).toBe("u-owner");
+      expect(await rotateAudit(id)).toHaveLength(0);
+    };
+    /** The owner's binding check: stamps the secret's binding-write window. */
+    const ownerChecks = (secretId: string) =>
+      assertSecretBindingAllowed(
+        OWNER,
+        { before: [], after: [secretId], destinationChanged: true },
+        { target: { type: "db_connector", id: "new" } },
+      );
+    /** Run `between` inside the rotation, after its bindings read and before its UPDATE. */
+    const betweenReadAndWrite = (between: () => Promise<void>) => {
+      const svc = getVaultService();
+      const real = svc.rotate.bind(svc);
+      return vi.spyOn(svc, "rotate").mockImplementationOnce(async (...args) => {
+        await between();
+        return real(...args);
+      });
+    };
+    const confirmByDigest = (id: string, digest: string) =>
+      rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindingsDigest: digest,
+      });
+
+    it("at cap+1, echoing the listed bindings is told to confirm by digest (not CHANGED), and that digest rotates it", async () => {
+      const id = await newSecret("u-owner");
+      await bindMany(id, CAP + 1, "echo");
+      const { view: first } = await refusal(id);
+
+      // The listing is within the schema's maximum, but cannot name the whole set.
+      const list = echoList(first);
+      expect(list).toHaveLength(CAP);
+      const res = await rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: list,
+      });
+      expect(res.status, JSON.stringify(res.body).slice(0, 500)).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_CONFIRM_BY_DIGEST");
+      expect(res.body.error.message).toContain("confirmedBindingsDigest");
+      expect(res.body.error.message).not.toContain("changed");
+      const view = res.body.error.details as View;
+      expectCapped(view, CAP + 1);
+      // Nothing changed, so it is the same digest the first 409 issued.
+      expect(view.bindingsDigest).toBe(first.bindingsDigest);
+      await expectUntouched(id);
+
+      // Following the refusal — confirming with its digest — rotates the secret.
+      const { meta } = await confirmAndAudit(id, view.bindingsDigest);
+      expect(meta.confirmedBindingsDigest).toBe(view.bindingsDigest);
+      expect(meta.confirmedBindingsTotal).toBe(CAP + 1);
+    });
+
+    it("at cap+1, a list sent with a stale digest is CHANGED: the digest says the set moved", async () => {
+      const id = await newSecret("u-owner");
+      await bindMany(id, CAP + 1, "echo-stale");
+      const { view: first } = await refusal(id);
+      const res = await rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: echoList(first),
+        confirmedBindingsDigest: "ab".repeat(32),
+      });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
+      expectCapped(res.body.error.details as View, CAP + 1);
+      await expectUntouched(id);
+    });
+
+    it("an over-cap IN_PROGRESS refusal (the owner's check stamped before the rotation) is capped", async () => {
+      const id = await newSecret("u-owner");
+      await bindMany(id, CAP + 1, "ip-pre");
+      const { view: first } = await refusal(id);
+      await ownerChecks(id);
+
+      const res = await confirmByDigest(id, first.bindingsDigest);
+      expect(res.status, JSON.stringify(res.body).slice(0, 500)).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_BINDING_IN_PROGRESS");
+      expectCapped(res.body.error.details as View, CAP + 1);
+      await expectUntouched(id);
+    });
+
+    it("an over-cap race-path CHANGED refusal (a stamped write lands mid-rotation) is capped", async () => {
+      const id = await newSecret("u-owner");
+      await bindMany(id, CAP + 1, "race-ch");
+      const { view: first } = await refusal(id);
+
+      const spy = betweenReadAndWrite(async () => {
+        await ownerChecks(id);
+        await db.databaseConnection.create({
+          data: {
+            id: "race-ch-late",
+            projectId: "proj-629",
+            label: "race-ch-late",
+            driver: "postgres",
+            host: "late.owner.example",
+            secretId: id,
+          },
+        });
+      });
+      let res: request.Response;
+      try {
+        res = await confirmByDigest(id, first.bindingsDigest);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(res.status, JSON.stringify(res.body).slice(0, 500)).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
+      const view = res.body.error.details as View;
+      expectCapped(view, CAP + 2);
+      expect(view.bindingsDigest).not.toBe(first.bindingsDigest);
+      await expectUntouched(id);
+    });
+
+    it("an over-cap race-path IN_PROGRESS refusal (stamped mid-rotation, write not landed) is capped", async () => {
+      const id = await newSecret("u-owner");
+      await bindMany(id, CAP + 1, "race-ip");
+      const { view: first } = await refusal(id);
+
+      const spy = betweenReadAndWrite(() => ownerChecks(id));
+      let res: request.Response;
+      try {
+        res = await confirmByDigest(id, first.bindingsDigest);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(res.status, JSON.stringify(res.body).slice(0, 500)).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_BINDING_IN_PROGRESS");
+      expectCapped(res.body.error.details as View, CAP + 1);
+      await expectUntouched(id);
     });
   },
 );
