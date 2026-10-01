@@ -26,25 +26,42 @@ const LISTENER_IN_SOCKET_MODULES = {
 };
 // #676 — every room a server emitter addresses is built by its @metis/shared
 // factory (threadRoom, sessionRoom, taskRoom, analysisRoom, publishRoom,
-// presenceRoom, connectorRoom, jobRoom, bgRunRoom), the same one the join
-// handler and the UI use, so the room a client joins and the room the server
-// sends to cannot drift apart. Caught: a template literal or a `+` whose
+// presenceRoom, connectorRoom, jobRoom, bgRunRoom, projectRoom, userRoom), the
+// same one the join handler and the UI use, so the room a client joins and the
+// room the server sends to cannot drift apart. Caught: a template literal or a `+` whose
 // leading string is exactly one of those room prefixes (`job:${id}`,
 // "run:" + id). Event names such as `job:lifecycle` do not match.
 // A heuristic, not a proof: `${kind}:${id}`, `job:x${id}`, a `.join(":")`, a
 // concatenated const prefix or a separator typo (`publish-${id}`) all pass it.
 // The per-emitter room tests (#676) are what pin the actual room names.
-const ROOM_PREFIXES = "/^(thread|session|task|analysis|publish|presence|connector|job|run):$/";
+// #686 — `project` and `user` joined the list. Both prefixes also name things
+// that are not rooms: every rate limiter's per-user bucket key (`user:{id}`)
+// and a project-scoped vault secret (`project:{label}`). The files holding
+// those (NON_ROOM_KEY_FILES) keep the guard for every other room kind.
+const ROOM_KINDS = "thread|session|task|analysis|publish|presence|connector|job|run";
 const HAND_WRITTEN_ROOM_MESSAGE =
-  "Build a socket room name with its factory from @metis/shared (threadRoom, sessionRoom, taskRoom, analysisRoom, publishRoom, presenceRoom, connectorRoom, jobRoom, bgRunRoom): a hand-written room can drift from the room the client joins (#676).";
-const HAND_WRITTEN_ROOM_TEMPLATE = {
-  selector: `TemplateLiteral > TemplateElement:first-child[value.raw=${ROOM_PREFIXES}]`,
-  message: HAND_WRITTEN_ROOM_MESSAGE,
+  "Build a socket room name with its factory from @metis/shared (threadRoom, sessionRoom, taskRoom, analysisRoom, publishRoom, presenceRoom, connectorRoom, jobRoom, bgRunRoom, projectRoom, userRoom): a hand-written room can drift from the room the client joins (#676).";
+const handWrittenRoomRules = (kinds) => {
+  const prefixes = `/^(${kinds}):$/`;
+  return [
+    {
+      selector: `TemplateLiteral > TemplateElement:first-child[value.raw=${prefixes}]`,
+      message: HAND_WRITTEN_ROOM_MESSAGE,
+    },
+    {
+      selector: `BinaryExpression[operator='+'] > Literal.left[value=${prefixes}]`,
+      message: HAND_WRITTEN_ROOM_MESSAGE,
+    },
+  ];
 };
-const HAND_WRITTEN_ROOM_CONCAT = {
-  selector: `BinaryExpression[operator='+'] > Literal.left[value=${ROOM_PREFIXES}]`,
-  message: HAND_WRITTEN_ROOM_MESSAGE,
-};
+const HAND_WRITTEN_ROOM = handWrittenRoomRules(`${ROOM_KINDS}|project|user`);
+const HAND_WRITTEN_ROOM_EXCEPT_KEYS = handWrittenRoomRules(ROOM_KINDS);
+const NON_ROOM_KEY_FILES = [
+  "server/src/middleware/*-rate-limit.ts",
+  "server/src/lib/pagerduty/service-config-store.ts",
+  "server/src/lib/slack/installation-store.ts",
+  "server/src/lib/teams/installation-store.ts",
+];
 const ZERO_ARG_PARTIAL = {
   selector: "CallExpression[callee.property.name='partial'][arguments.length=0]",
   message:
@@ -112,8 +129,22 @@ export default tseslint.config(
         "error",
         ZERO_ARG_PARTIAL,
         SOCKET_LISTENER_ANYWHERE,
-        HAND_WRITTEN_ROOM_TEMPLATE,
-        HAND_WRITTEN_ROOM_CONCAT,
+        ...HAND_WRITTEN_ROOM,
+      ],
+    },
+  },
+  {
+    // #686 — rate limiters and vault secret stores write `user:{id}` /
+    // `project:{label}` as keys, not rooms. This block REPLACES the server/src
+    // one above for these files (flat config), so it repeats its other rules.
+    files: NON_ROOM_KEY_FILES,
+    ignores: ["**/*.test.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ZERO_ARG_PARTIAL,
+        SOCKET_LISTENER_ANYWHERE,
+        ...HAND_WRITTEN_ROOM_EXCEPT_KEYS,
       ],
     },
   },
@@ -135,8 +166,7 @@ export default tseslint.config(
             "Use patchSchemaOf(schema) from @metis/shared instead of .partial() / .partial({...}) in a route: under zod 4 .partial() still applies inner .default()s, so a PATCH overwrites omitted fields (#346).",
         },
         SOCKET_LISTENER_ANYWHERE,
-        HAND_WRITTEN_ROOM_TEMPLATE,
-        HAND_WRITTEN_ROOM_CONCAT,
+        ...HAND_WRITTEN_ROOM,
       ],
     },
   },
@@ -159,8 +189,7 @@ export default tseslint.config(
         "error",
         ZERO_ARG_PARTIAL,
         LISTENER_IN_SOCKET_MODULES,
-        HAND_WRITTEN_ROOM_TEMPLATE,
-        HAND_WRITTEN_ROOM_CONCAT,
+        ...HAND_WRITTEN_ROOM,
       ],
     },
   },

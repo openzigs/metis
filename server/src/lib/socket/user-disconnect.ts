@@ -29,6 +29,7 @@
  * adapter error is logged, never thrown, so the route cannot answer 500 for a
  * change that already landed.
  */
+import { userRoom } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "./registry.js";
 import type { MetisIOServer } from "./server.js";
@@ -61,7 +62,7 @@ export function disconnectUserSockets(userId: string): void {
   if (!io) return;
   bumpEpoch(io, "revocation");
   try {
-    io.in(`user:${userId}`).disconnectSockets(true);
+    io.in(userRoom(userId)).disconnectSockets(true);
   } catch (err) {
     log.warn("could not disconnect a deprovisioned user's sockets", {
       userId,
@@ -127,12 +128,12 @@ export function wireUserRevocationRelay(io: MetisIOServer, clustered: boolean): 
   });
   onRelayedRevocation(io, clustered, DISCONNECT_USER_EVENT, 1, (userId) => {
     bumpEpoch(io, "revocation");
-    io.local.in(`user:${userId}`).disconnectSockets(true);
+    io.local.in(userRoom(userId)).disconnectSockets(true);
   });
 }
 
 /** Close the transport of every socket of `userId` connected to this replica. */
 function closeLocalUserTransports(io: MetisIOServer, userId: string): void {
-  const sids = io.sockets.adapter.rooms.get(`user:${userId}`);
+  const sids = io.sockets.adapter.rooms.get(userRoom(userId));
   for (const sid of [...(sids ?? [])]) io.sockets.sockets.get(sid)?.conn.close();
 }

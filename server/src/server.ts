@@ -4,7 +4,6 @@
  * when to start accepting connections.
  */
 import http from "node:http";
-import { bgRunRoom } from "@metis/shared";
 import { createApp, type CreateAppOptions } from "./app.js";
 import { bootstrapMCP, type MCPBootstrap } from "./lib/mcp/index.js";
 import { createSocketServer, type MetisIOServer } from "./lib/socket/server.js";
@@ -22,6 +21,7 @@ import { configureTestCoverageRuntime } from "./lib/testcoverage/task-runner.js"
 import { createProviderJudgeCaller } from "./lib/testcoverage/judge-caller.js";
 import { createSocketTestCoverageEmitter } from "./lib/testcoverage/socket-emitter.js";
 import { setUsageEmitter } from "./lib/finops/index.js";
+import { createSocketUsageEmitter } from "./lib/finops/socket-emitter.js";
 import { autoDiscoverFromWorkspace } from "./lib/library/index.js";
 import { bootstrapScheduler, subscribeSchedulerToConfig } from "./lib/scheduler/index.js";
 import { resolveLeaderElection, type LeaderElector } from "./lib/scheduler/leader-election.js";
@@ -38,7 +38,8 @@ import { registerPostgresSamlRequestIdCache } from "./lib/auth/saml-request-id-c
 import { registerS3Storage } from "./lib/documents/storage-backend-s3.js";
 import { registerPgVectorStore } from "./lib/rag/vector-store-pgvector.js";
 import { ensureBuiltInAgents } from "./lib/custom-agents/index.js";
-import { configureAsyncRunner, type RunnerEmitter } from "./lib/async/runner.js";
+import { configureAsyncRunner } from "./lib/async/runner.js";
+import { createSocketRunnerEmitter } from "./lib/async/socket-emitter.js";
 import { registerBuiltinRunHandlers } from "./lib/async/handlers.js";
 import { attachAcpServer, type AcpServerHandle } from "./lib/acp/server.js";
 import { getToolRegistry } from "./lib/ai/tool-registry.js";
@@ -355,9 +356,7 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // Epic #164 — wire the FinOps usage emitter so `recordUsage` ticks fan
   // out to the `project:{id}` Socket.IO room and the UI usage page can
   // re-render without polling.
-  setUsageEmitter((projectId, payload) => {
-    io.to(`project:${projectId}`).emit("usage:tick", payload);
-  });
+  setUsageEmitter(createSocketUsageEmitter(io));
 
   // Phase 11 — bootstrap scheduler + task queue. Cron registration is
   // started asynchronously; failures are non-fatal so the API stays up.
@@ -431,18 +430,7 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
 
   // Epic #156 \u2014 wire the async background runner with a socket emitter so
   // bg-run:status / bg-run:step events broadcast into project rooms.
-  const bgEmitter: RunnerEmitter = {
-    status: (run) => {
-      io.to(`project:${run.projectId}`).emit("bg-run:status", {
-        ...run,
-        ts: Date.now(),
-      });
-    },
-    step: (e) => {
-      io.to(bgRunRoom(e.runId)).emit("bg-run:step", e);
-    },
-  };
-  const runner = configureAsyncRunner({ emitter: bgEmitter });
+  const runner = configureAsyncRunner({ emitter: createSocketRunnerEmitter(io) });
   registerBuiltinRunHandlers(runner);
   // Epic #195 — register the morph-apply diff editor as a regular AI tool.
   // Idempotent so test reloads don't crash the registry.

@@ -10,6 +10,7 @@
  * Fan-out is fire-and-forget (non-blocking). Failures are logged but never
  * propagate to the caller.
  */
+import { userRoom } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
@@ -123,7 +124,7 @@ export async function fanOutMentions(
             // room (user:{userId}). The room is auto-joined on connect from the
             // verified JWT only (OWASP A01 — no client-supplied room id).
             if (io) {
-              io.to(`user:${u.id}`).emit("comment:mention", mentionPayload);
+              io.to(userRoom(u.id)).emit("comment:mention", mentionPayload);
             }
 
             // Issue #416 — persist the notification so the drawer hydrates

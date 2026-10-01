@@ -10,6 +10,7 @@
  *
  * Wired in `server.ts` once the live `io` is ready.
  */
+import { projectRoom } from "@metis/shared";
 import type { MetisIOServer } from "../socket/server.js";
 import type { TestCoverageEmitter, TestCoverageEvent } from "./task-runner.js";
 
@@ -19,7 +20,7 @@ export function createSocketTestCoverageEmitter(io: MetisIOServer): TestCoverage
       event.type === "run:completed" || event.type === "run:failed"
         ? "testcoverage:run-finished"
         : "testcoverage:run-update";
-    io.to(`project:${event.projectId}`).emit(channel, {
+    io.to(projectRoom(event.projectId)).emit(channel, {
       type: event.type,
       runId: event.runId,
       projectId: event.projectId,

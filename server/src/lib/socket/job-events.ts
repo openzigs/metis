@@ -31,6 +31,7 @@
  */
 import {
   jobRoom,
+  projectRoom,
   type DocSectionProgressEvent,
   type JobKind,
   type JobLifecycleEvent,
@@ -255,7 +256,7 @@ export function createJobEventEmitter(io: MetisIOServer | null): JobEventEmitter
     try {
       io.to(jobRoom(payload.jobId)).emit("job:lifecycle", payload);
       if (payload.projectId) {
-        io.to(`project:${payload.projectId}`).emit("job:lifecycle", payload);
+        io.to(projectRoom(payload.projectId)).emit("job:lifecycle", payload);
       }
     } catch (err) {
       log.warn("job lifecycle emit failed", { error: (err as Error).message });
@@ -269,7 +270,7 @@ export function createJobEventEmitter(io: MetisIOServer | null): JobEventEmitter
     if (!io) return;
     try {
       io.to(jobRoom(payload.jobId)).emit("job:doc-section", payload);
-      io.to(`project:${payload.projectId}`).emit("job:doc-section", payload);
+      io.to(projectRoom(payload.projectId)).emit("job:doc-section", payload);
     } catch (err) {
       log.warn("job doc-section emit failed", { error: (err as Error).message });
     }

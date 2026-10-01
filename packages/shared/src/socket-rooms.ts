@@ -20,6 +20,14 @@
  */
 export const projectRoom = (projectId: string): string => `project:${projectId}`;
 
+/**
+ * #686 — a user's personal room. The server joins every socket to its own
+ * user's room on connect, from the verified token only (there is no
+ * `subscribe:user`), and sends mentions, review and SLA notifications to it;
+ * revocation finds a user's sockets through it.
+ */
+export const userRoom = (userId: string): string => `user:${userId}`;
+
 /** #682 — the scheduler's status room (`subscribe:scheduler`); one per deployment. */
 export const SCHEDULER_STATUS_ROOM = "scheduler:status";
 
