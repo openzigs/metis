@@ -95,6 +95,7 @@ import pg from "pg";
 import type { Pool, PoolClient, PoolConfig } from "pg";
 import { createAdapter } from "@socket.io/postgres-adapter";
 import { createChildLogger } from "../logger.js";
+import { ADAPTER_NODE_REMOVED_EVENT } from "./cluster-presence.js";
 
 const log = createChildLogger("socket-cluster-adapter");
 
@@ -159,11 +160,20 @@ export async function ensureSocketClusterAttachmentsTable(pool: Pool): Promise<v
   );
 }
 
+/** The adapter's peer heartbeat (#651 tests shorten it); omitted, upstream's 5 s / 10 s. */
+export type SocketClusterHeartbeat = Pick<
+  NonNullable<Parameters<typeof createAdapter>[1]>,
+  "heartbeatInterval" | "heartbeatTimeout"
+>;
+
 /**
  * Build the cluster adapter over `pool`, which it owns from here on. The
  * attachments table must already exist (`ensureSocketClusterAttachmentsTable`).
  */
-export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
+export function createPostgresClusterAdapter(
+  pool: Pool,
+  heartbeat: SocketClusterHeartbeat = {},
+): SocketClusterAdapter {
   pool.on("error", (err) => {
     log.warn("socket cluster adapter pool error", { error: err.message });
   });
@@ -196,6 +206,7 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   }) as Pool["connect"];
 
   const createNamespaceAdapter = createAdapter(pool, {
+    ...heartbeat,
     tableName: SOCKET_IO_ATTACHMENTS_TABLE,
     errorHandler: (err: Error) => {
       log.warn("socket cluster adapter error", { error: err.message });
@@ -204,7 +215,7 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   // A `function`, not an arrow: Socket.IO calls it with `new`, and a
   // constructor that returns an object yields that object.
   const adapter = function (nsp: Parameters<typeof createNamespaceAdapter>[0]) {
-    return deliverLocallyFirst(createNamespaceAdapter(nsp));
+    return announceNodeRemoval(deliverLocallyFirst(createNamespaceAdapter(nsp)));
   } as typeof createNamespaceAdapter;
 
   let ended: Promise<void> | undefined;
@@ -244,6 +255,55 @@ export function deliverLocallyFirst<T extends object>(adapter: T): T {
       );
     });
     return Promise.resolve("");
+  };
+  return adapter;
+}
+
+/** The protected `ClusterAdapterWithHeartbeat` method that drops a peer replica. */
+interface NodeRemover {
+  removeNode(uid: string): void;
+  emit(event: string, ...args: unknown[]): boolean;
+}
+
+/**
+ * #651 — emit `ADAPTER_NODE_REMOVED_EVENT` on `adapter` each time it drops a
+ * peer replica: socket.io-adapter 2.5.6 `ClusterAdapterWithHeartbeat.removeNode`
+ * runs when a peer's heartbeat lapses (`heartbeatTimeout`, swept every second)
+ * or the peer closes its adapter, and announces nothing. Presence
+ * (`cluster-presence.ts`) re-lists its rooms on it, so a replica that died
+ * without its sockets disconnecting stops counting. A throw from a listener is
+ * logged: the adapter's own sweep timer calls this.
+ *
+ * `removeNode` is protected, not public API, and `@socket.io/postgres-adapter`
+ * 0.5.0 accepts `socket.io-adapter` `^2.5.4`. If an upgrade drops it, the
+ * adapter is returned unpatched with a warning: everything works except the
+ * dead-replica re-list (a dead replica's viewers then stay listed until the
+ * room's next change, or the next partition heal). `socket.io-adapter` is
+ * deliberately NOT pinned (no direct dependency, no pnpm override): the
+ * lockfile already fixes 2.5.6 under `--frozen-lockfile`, so it moves only in a
+ * reviewed lockfile change, where the "is installed on every namespace adapter"
+ * test fails if the method is gone — and a pin would hold back that package's
+ * security fixes.
+ */
+export function announceNodeRemoval<T extends object>(adapter: T): T {
+  const target = adapter as unknown as Partial<NodeRemover> & Pick<NodeRemover, "emit">;
+  if (typeof target.removeNode !== "function") {
+    log.warn(
+      "socket cluster adapter has no removeNode (written against socket.io-adapter 2.5.6) — a dead replica's presence is not re-listed until the room's next change",
+      { removeNode: typeof target.removeNode },
+    );
+    return adapter;
+  }
+  const removeNode = target.removeNode.bind(adapter);
+  target.removeNode = (uid) => {
+    removeNode(uid);
+    try {
+      target.emit(ADAPTER_NODE_REMOVED_EVENT, uid);
+    } catch (err) {
+      log.warn("socket cluster adapter node-removal listener failed", {
+        error: (err as Error).message,
+      });
+    }
   };
   return adapter;
 }

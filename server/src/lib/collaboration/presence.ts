@@ -1,9 +1,9 @@
 /**
  * Epic #728 / Issue #732 — Socket.IO presence rooms per artifact.
  *
- * Rooms are ephemeral (in-memory, no DB persistence), and per replica: with
- * the cluster adapter (#622) a viewer sees only the users connected to the same
- * replica, because `presence:update` is emitted locally (see below).
+ * Rooms are ephemeral (in-memory, no DB persistence). Each replica holds its
+ * own sockets' entries; with the cluster adapter (#622) every `presence:update`
+ * carries the members on EVERY replica (#651, `socket/cluster-presence.ts`).
  *
  * Client events:
  *   `presence:join`  { artifactType: PresenceArtifactType, artifactId: string }
@@ -14,7 +14,7 @@
  *       (`canJoinPresenceRoom`, #679); otherwise `auth:error { message, room }`,
  *       the same for an unknown id, a forbidden one and a failed lookup; a
  *       refused socket already in the room is removed from it as on a leave
- *     → broadcasts `presence:update` with current user list to the room
+ *     → broadcasts `presence:update` with the cluster-wide user list to the room
  *
  *   `presence:leave` { artifactType: PresenceArtifactType, artifactId: string }
  *     → leaves room (or drops a join still being checked), broadcasts updated list
@@ -26,6 +26,7 @@ import { isPresenceArtifactType, presenceRoom } from "@metis/shared";
 import type { MetisIOServer } from "../socket/server.js";
 import { onClientEvent, onConnection } from "../socket/client-event-handler.js";
 import { canJoinPresenceRoom } from "../socket/room-access.js";
+import { createClusterPresence, type PresenceMember } from "../socket/cluster-presence.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("socket:presence");
@@ -38,27 +39,32 @@ const log = createChildLogger("socket:presence");
 const PRESENCE_DENIAL = "FORBIDDEN: no access to artifact";
 
 /** In-memory map: room key → Set of socket.data.user descriptors. */
-const roomPresence = new Map<
-  string,
-  Map<string, { userId: string; username: string; displayName: string }>
->();
+const roomPresence = new Map<string, Map<string, PresenceMember>>();
 
 /** #672 — shared with the UI, which reference-counts followers by this name. */
 const roomKey = presenceRoom;
 
-/**
- * #622 — `local`: the list is THIS replica's sockets only, and the client
- * replaces its whole list with each update, so relaying it through the cluster
- * adapter would make every viewer's avatars flip between replicas' partial
- * lists. Kept per-replica (the pre-adapter behaviour) until presence state is
- * shared across replicas (#651).
- */
-function broadcastPresenceUpdate(io: MetisIOServer, key: string): void {
-  const users = [...(roomPresence.get(key)?.values() ?? [])];
-  io.local.to(key).emit("presence:update", { room: key, users, ts: Date.now() });
+export interface WirePresenceOptions {
+  /**
+   * #651 — the server runs the cluster adapter: each list is merged from every
+   * replica. Omitted, the list is this replica's alone (one replica).
+   */
+  clustered?: boolean;
+  /**
+   * #651 — the cluster adapter's `onListening` (#649): each re-established
+   * `LISTEN` connection re-merges every list, repairing a healed partition.
+   */
+  onAdapterListening?: (listener: () => void) => void;
 }
 
-export function wirePresenceHandlers(io: MetisIOServer): void {
+export function wirePresenceHandlers(io: MetisIOServer, opts: WirePresenceOptions = {}): void {
+  const presence = createClusterPresence(io, {
+    kind: "artifact",
+    clustered: opts.clustered ?? false,
+    localMembers: (key) => [...(roomPresence.get(key)?.values() ?? [])],
+    onAdapterListening: opts.onAdapterListening,
+  });
+
   onConnection(io, (socket) => {
     const user = socket.data.user;
     /** Tracks which presence rooms this socket has joined. */
@@ -76,7 +82,7 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
       await socket.leave(key);
       joinedRooms.delete(key);
       roomPresence.get(key)?.delete(socket.id);
-      broadcastPresenceUpdate(io, key);
+      presence.changed(key);
       if ((roomPresence.get(key)?.size ?? 0) === 0) roomPresence.delete(key);
     }
 
@@ -126,7 +132,7 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
           username: user.username,
           displayName: user.username,
         });
-        broadcastPresenceUpdate(io, key);
+        presence.changed(key);
       },
     );
 
@@ -147,7 +153,7 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
       pendingJoins.clear();
       for (const key of joinedRooms) {
         roomPresence.get(key)?.delete(socket.id);
-        broadcastPresenceUpdate(io, key);
+        presence.changed(key);
         if ((roomPresence.get(key)?.size ?? 0) === 0) roomPresence.delete(key);
       }
       joinedRooms.clear();
@@ -156,10 +162,7 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
 }
 
 /** Exposed for testing: inspect presence map state. */
-export function getRoomPresence(): Map<
-  string,
-  Map<string, { userId: string; username: string; displayName: string }>
-> {
+export function getRoomPresence(): Map<string, Map<string, PresenceMember>> {
   return roomPresence;
 }
 

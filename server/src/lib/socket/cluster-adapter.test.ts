@@ -22,8 +22,11 @@ import pg from "pg";
 import { createServer as createHttpServer } from "node:http";
 import { Server as SocketIOServer } from "socket.io";
 import { io as ioClient } from "socket.io-client";
+import { EventEmitter } from "node:events";
+import { ADAPTER_NODE_REMOVED_EVENT } from "./cluster-presence.js";
 import {
   SOCKET_IO_ATTACHMENTS_TABLE,
+  announceNodeRemoval,
   createPostgresClusterAdapter,
   deliverLocallyFirst,
   ensureSocketClusterAttachmentsTable,
@@ -662,5 +665,80 @@ describe("local delivery never depends on the cluster publish", () => {
         expect.objectContaining({ type: 3, error: "boom" }),
       ),
     );
+  });
+});
+
+// #651 — presence re-lists its rooms when the adapter drops a dead peer replica.
+describe("announceNodeRemoval", () => {
+  it("emits ADAPTER_NODE_REMOVED_EVENT after the adapter drops a peer", () => {
+    const order: string[] = [];
+    const adapter = Object.assign(new EventEmitter(), {
+      removeNode: vi.fn((uid: string) => void order.push(`removed ${uid}`)),
+    });
+    announceNodeRemoval(adapter);
+    adapter.on(ADAPTER_NODE_REMOVED_EVENT, (uid: string) => order.push(`announced ${uid}`));
+
+    adapter.removeNode("peer-1");
+
+    expect(order).toEqual(["removed peer-1", "announced peer-1"]);
+  });
+
+  it("logs a listener that throws, so the adapter's sweep timer never sees it", () => {
+    const adapter = Object.assign(new EventEmitter(), { removeNode: vi.fn() });
+    announceNodeRemoval(adapter);
+    adapter.on(ADAPTER_NODE_REMOVED_EVENT, () => {
+      throw new Error("listener broke");
+    });
+
+    expect(() => adapter.removeNode("peer-1")).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("node-removal listener failed"), {
+      error: "listener broke",
+    });
+  });
+
+  it.each([
+    ["missing", {}],
+    ["not a function", { removeNode: "renamed" }],
+  ])(
+    "leaves an adapter whose removeNode is %s unpatched, and warns naming the version",
+    (_label, extra) => {
+      warn.mockClear();
+      const adapter = Object.assign(new EventEmitter(), extra);
+
+      expect(() => announceNodeRemoval(adapter)).not.toThrow();
+      expect(announceNodeRemoval(adapter)).toBe(adapter);
+      expect((adapter as { removeNode?: unknown }).removeNode).toBe(
+        (extra as { removeNode?: unknown }).removeNode,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("socket.io-adapter 2.5.6"),
+        expect.any(Object),
+      );
+    },
+  );
+
+  it("is installed on every namespace adapter createPostgresClusterAdapter builds", async () => {
+    const bus = new FakePgNotifyBus();
+    const cluster = createPostgresClusterAdapter(bus.pool(), {
+      heartbeatInterval: 50,
+      heartbeatTimeout: 100,
+    });
+    const peer = createPostgresClusterAdapter(bus.pool());
+    const httpA = createHttpServer();
+    const httpB = createHttpServer();
+    const ioA = new SocketIOServer(httpA, { adapter: cluster.adapter });
+    const ioB = new SocketIOServer(httpB, { adapter: peer.adapter });
+    try {
+      const removed = vi.fn();
+      (ioA.of("/").adapter as unknown as EventEmitter).on(ADAPTER_NODE_REMOVED_EVENT, removed);
+      await vi.waitFor(async () => expect(await ioA.of("/").adapter.serverCount()).toBe(2));
+
+      await ioB.close();
+
+      await vi.waitFor(() => expect(removed).toHaveBeenCalledOnce());
+    } finally {
+      await ioA.close();
+      await Promise.all([cluster.close(), peer.close()]);
+    }
   });
 });

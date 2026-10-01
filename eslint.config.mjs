@@ -17,9 +17,9 @@ const SOCKET_LISTENER_ANYWHERE = {
 };
 // In the socket modules: a listener registered on ANY object, whatever it is
 // called (`s.on`, `client.once`, `io.on("connection")`, `socket.onAny`). One
-// allowlisted receiver: `asRelayServer(io).on(...)` in revocation-relay.ts, the
-// replica-to-replica `serverSideEmit` relay, which no client can reach and
-// whose listener catches its own throw.
+// allowlisted receiver: `asRelayServer(io).on(...)` in revocation-relay.ts and
+// cluster-presence.ts (#651), the replica-to-replica `serverSideEmit` relay,
+// which no client can reach and whose listener cannot throw.
 const LISTENER_IN_SOCKET_MODULES = {
   selector: `CallExpression[callee.property.name=${LISTENER_METHODS}]:not([callee.object.callee.name='asRelayServer'])`,
   message: SOCKET_LISTENER_MESSAGE,

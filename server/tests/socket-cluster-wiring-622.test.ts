@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakePgNotifyBus } from "./helpers/fake-pg-notify-bus.js";
 import { bootServer, createServer, type MetisServer } from "../src/server.js";
 import { createPostgresClusterAdapter } from "../src/lib/socket/cluster-adapter.js";
+import { presenceRelayEvents } from "../src/lib/socket/cluster-presence.js";
 
 const PG_URL = "postgres://u:p@db:5432/metis";
 let server: MetisServer | undefined;
@@ -75,7 +76,25 @@ describe("#622 bootServer selects and installs the cluster adapter", () => {
     const cluster = createPostgresClusterAdapter(new FakePgNotifyBus().pool());
     const onListening = vi.spyOn(cluster, "onListening");
     server = createServer({ skipMCPBootstrap: true, socketCluster: cluster });
-    expect(onListening).toHaveBeenCalledTimes(1);
+    // #649 re-validation, then #651's re-merge of thread and artifact presence.
+    expect(onListening).toHaveBeenCalledTimes(3);
     expect(onListening).toHaveBeenCalledWith(expect.any(Function));
   });
+
+  // #651 — artifact and thread presence answer peers' gathers only when clustered.
+  it.each(["artifact", "thread"])(
+    "#651 createServer merges %s presence across replicas only with the adapter",
+    (kind) => {
+      const { members, changed, resync } = presenceRelayEvents(kind);
+      server = createServer({ skipMCPBootstrap: true });
+      expect(server.io.of("/").listeners(members)).toHaveLength(0);
+      void server.io.close();
+
+      const cluster = createPostgresClusterAdapter(new FakePgNotifyBus().pool());
+      server = createServer({ skipMCPBootstrap: true, socketCluster: cluster });
+      expect(server.io.of("/").listeners(members)).toHaveLength(1);
+      expect(server.io.of("/").listeners(changed)).toHaveLength(1);
+      expect(server.io.of("/").listeners(resync)).toHaveLength(1);
+    },
+  );
 });

@@ -23,9 +23,9 @@
  *     only) relays room operations — evictions and emits — to every replica,
  *     and relays role-change reconnects and the #613 epochs through
  *     `wireUserRevocationRelay` / `wireMcpStatusEvictionRelay`. Presence
- *     lists are the exception: each replica emits its own list locally only
- *     (`collaboration/presence.ts`). Unset, Socket.IO's in-memory adapter
- *     reaches this replica only.
+ *     lists are merged from every replica and each replica emits the merged
+ *     list to its own sockets (#651, `cluster-presence.ts`). Unset, Socket.IO's
+ *     in-memory adapter reaches this replica only.
  *   - #649 — `opts.onAdapterListening` (the adapter's `onListening`) runs
  *     `revalidateLocalSockets` each time the adapter's `LISTEN` connection is
  *     (re)established, so a revocation published while it was down — and so
@@ -67,7 +67,11 @@ import { canJoinAnalysisRoom } from "./analysis-room-access.js";
 import { canJoinBgRunRoom, canJoinConnectorRoom, resolveJobRoomScope } from "./room-access.js";
 import { getLastDocSections, getLastJobLifecycle, type JobScope } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
-import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
+import {
+  createThreadPresence,
+  wireDiscussionPresenceHandlers,
+  type ThreadPresence,
+} from "./discussion-presence.js";
 import { isMcpStatusRoom, mcpStatusRoomsFor, mcpStatusWorkspaceRoom } from "../mcp/status-rooms.js";
 import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
 import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
@@ -164,7 +168,10 @@ export function createSocketServer(
 
   // #658 — a throw from `attachHandlers` is logged and drops this one socket;
   // unwrapped, socket.io's nextTick connect would make it an uncaughtException.
-  onConnection(io, attachHandlers);
+  // #651 — thread presence lists span every replica on a clustered server.
+  // A re-established LISTEN connection re-merges them (a healed partition).
+  const threadPresence = createThreadPresence(io, Boolean(opts.adapter), opts.onAdapterListening);
+  onConnection(io, (socket) => attachHandlers(socket, threadPresence));
   // #622 — with the cluster adapter, a revocation or eviction handled on another
   // replica moves THIS replica's #613 epochs too, so a handshake or
   // `subscribe:mcp` in flight here re-reads; a role-change reconnect also closes
@@ -516,7 +523,7 @@ function applyLiveUser(socket: MetisSocket, live: AuthPayload | null | undefined
   return false;
 }
 
-function attachHandlers(socket: MetisSocket): void {
+function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): void {
   const user = socket.data.user;
   log.info("Socket connected", { socketId: socket.id, userId: user.userId });
   socket.emit("auth:ok", { userId: user.userId, username: user.username });
@@ -596,7 +603,7 @@ function attachHandlers(socket: MetisSocket): void {
   // Epic #475 (Phase 2, #482) — per-thread presence + typing indicators.
   // Presence joins are authz-gated via `canAccessThread`; typing broadcasts are
   // scoped to other members of the thread room (never echoed to the sender).
-  wireDiscussionPresenceHandlers(socket);
+  wireDiscussionPresenceHandlers(socket, { presence: threadPresence });
   // #645 — the analysis room carries promotion-blocked counts and failure
   // reasons, so only a user who can read the analysis's project may join it —
   // the same rule as `GET /api/analyses/:id`. It used to join any id named.
