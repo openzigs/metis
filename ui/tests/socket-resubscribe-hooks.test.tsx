@@ -18,6 +18,10 @@ vi.mock("@/lib/projects-api", () => ({
   documentsApi: { list: vi.fn().mockResolvedValue({ items: [] }) },
 }));
 vi.mock("sonner", () => ({ toast: { info: vi.fn() } }));
+// #646 — useTaskProgress re-reads the task on reconnect.
+vi.mock("@/lib/scheduler-api", () => ({
+  tasksApi: { get: vi.fn().mockResolvedValue({ id: "t1", status: "running" }) },
+}));
 
 import { useProjectDocuments } from "@/hooks/use-project-documents";
 import { useProjectDriftCount } from "@/hooks/use-drift-count";
@@ -106,8 +110,10 @@ describe("project-room hooks re-subscribe after a reconnect", () => {
     const { unmount } = renderHook(() => useConnectorDiscovery("p1", onDiscovery));
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:project", project)).toBe(2);
-    act(() => socket.fire("connector:discovery", { connectionsFound: 1, repoLabel: "r" }));
+    // #646 — the reconnect itself runs the refresh once.
     expect(onDiscovery).toHaveBeenCalledTimes(1);
+    act(() => socket.fire("connector:discovery", { connectionsFound: 1, repoLabel: "r" }));
+    expect(onDiscovery).toHaveBeenCalledTimes(2);
     unmount();
     expect(socket.listeners("connect")).toBe(0);
   });

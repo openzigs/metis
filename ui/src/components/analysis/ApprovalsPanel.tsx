@@ -25,6 +25,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
 import { keepRoomSubscribed } from "@/lib/socket-subscription";
 import { analysisFollow } from "@/lib/socket-rooms";
+import { useOnReconnect } from "@/hooks/use-on-reconnect";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -348,6 +349,11 @@ export function ApprovalsPanel({
   // approvals so the banner + counts update immediately when the server gates
   // promotion, rather than inferring it from the next poll of metadata.
   const blockedEvent = usePromotionBlockedEvent(analysisId, () => {
+    void query.refetch();
+  });
+  // #646 — a promotion-blocked event sent while the socket was down is lost;
+  // re-read the approvals on reconnect so the banner and counts catch up.
+  useOnReconnect(() => {
     void query.refetch();
   });
 

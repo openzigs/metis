@@ -45,9 +45,10 @@ export default function TasksPage() {
 
   useEffect(() => {
     if (!socket) return;
-    // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:scheduler"));
     const onChange = () => invalidate();
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    // #646 — and refetch, for task events sent while the socket was down.
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:scheduler"), onChange);
     socket.on("task:status", onChange);
     socket.on("task:progress", onChange);
     return () => {

@@ -13,6 +13,7 @@ import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { useSocket } from "@/lib/socket-client";
+import { onReconnect } from "@/lib/socket-subscription";
 import {
   getNotificationStore,
   mentionEventToNotification,
@@ -22,6 +23,29 @@ import {
   type SlaDeadlineEventPayload,
 } from "@/lib/notifications";
 import { apiFetch } from "@/lib/api-client";
+
+type NotificationsResponse = {
+  notifications: Array<{
+    id: string;
+    type: string;
+    title: string;
+    message: string;
+    href?: string | null;
+    read: boolean;
+    createdAt: string;
+  }>;
+};
+
+/** Merge the persisted notification history into the store. Best-effort. */
+function hydrateFromServer(store: ReturnType<typeof getNotificationStore>): void {
+  apiFetch<NotificationsResponse>("/notifications")
+    .then((data) => {
+      store.hydrate(data.notifications ?? []);
+    })
+    .catch(() => {
+      // Best-effort: ignore fetch errors (offline / unauthenticated).
+    });
+}
 
 export function NotificationsDrawer() {
   const socket = useSocket();
@@ -50,8 +74,12 @@ export function NotificationsDrawer() {
 
     socket.on("comment:mention", onMention);
     socket.on("sla:deadline_expired", onSlaExpired);
+    // #646 — a mention sent while the socket was down is lost; it is persisted
+    // server-side, so re-read the history on reconnect (hydrate merges by id).
+    const release = onReconnect(socket, () => hydrateFromServer(store));
 
     return () => {
+      release();
       socket.off("comment:mention", onMention);
       socket.off("sla:deadline_expired", onSlaExpired);
     };
@@ -59,24 +87,7 @@ export function NotificationsDrawer() {
 
   // Hydrate from persisted history on mount so items survive reload/reconnect.
   useEffect(() => {
-    type NotificationsResponse = {
-      notifications: Array<{
-        id: string;
-        type: string;
-        title: string;
-        message: string;
-        href?: string | null;
-        read: boolean;
-        createdAt: string;
-      }>;
-    };
-    apiFetch<NotificationsResponse>("/notifications")
-      .then((data) => {
-        store.hydrate(data.notifications ?? []);
-      })
-      .catch(() => {
-        // Best-effort: ignore fetch errors (offline / unauthenticated).
-      });
+    hydrateFromServer(store);
   }, [store]);
 
   const unread = items.reduce((acc, n) => (n.read ? acc : acc + 1), 0);

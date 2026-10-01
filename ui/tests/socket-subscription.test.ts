@@ -6,7 +6,12 @@
  * tests can pin the key each one uses to the server's room name.
  */
 import { describe, it, expect, vi } from "vitest";
-import { followedRooms, keepRoomSubscribed, keepSubscribed } from "@/lib/socket-subscription";
+import {
+  followedRooms,
+  keepRoomSubscribed,
+  keepSubscribed,
+  onReconnect,
+} from "@/lib/socket-subscription";
 import { createFakeSocket } from "./helpers/fake-socket";
 
 describe("keepSubscribed", () => {
@@ -174,5 +179,80 @@ describe("followedRooms (#672)", () => {
     (followedRooms(s as never) as Map<string, number>).set("r", 5);
     release();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("reconcile on reconnect (#646)", () => {
+  it("keepSubscribed runs reconcile after each re-subscribe, never on mount", () => {
+    const s = createFakeSocket();
+    const order: string[] = [];
+    keepSubscribed(
+      s as never,
+      () => order.push("subscribe"),
+      () => order.push("reconcile"),
+    );
+    expect(order).toEqual(["subscribe"]);
+    s.reconnect();
+    expect(order).toEqual(["subscribe", "subscribe", "reconcile"]);
+    s.reconnect();
+    expect(order.filter((o) => o === "reconcile")).toHaveLength(2);
+  });
+
+  it("reconciles on the connect that flushes a buffered subscribe, without re-subscribing", () => {
+    const s = createFakeSocket(false);
+    const subscribe = vi.fn();
+    const reconcile = vi.fn();
+    keepSubscribed(s as never, subscribe, reconcile);
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(reconcile).not.toHaveBeenCalled();
+    // socket.io-client flushes the buffered subscribe itself; the view mounted
+    // mid-gap still re-reads what it may have missed since its mount-time read.
+    s.connect();
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    s.reconnect();
+    expect(subscribe).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it("onReconnect on a socket that was still down reconciles on its first connect", () => {
+    const s = createFakeSocket(false);
+    const reconcile = vi.fn();
+    onReconnect(s as never, reconcile);
+    expect(reconcile).not.toHaveBeenCalled();
+    s.connect();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(s.emit).not.toHaveBeenCalled();
+  });
+
+  it("keepRoomSubscribed reconciles on reconnect and stops once released", () => {
+    const s = createFakeSocket();
+    const reconcile = vi.fn();
+    const release = keepRoomSubscribed(
+      s as never,
+      { room: "task:t1", subscribe: vi.fn(), unsubscribe: vi.fn() },
+      reconcile,
+    );
+    s.reconnect();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    release();
+    s.reconnect();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it("onReconnect reconciles on each reconnect and joins no room", () => {
+    const s = createFakeSocket();
+    const reconcile = vi.fn();
+    const release = onReconnect(s as never, reconcile);
+    expect(reconcile).not.toHaveBeenCalled();
+    s.reconnect();
+    s.reconnect();
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(s.emit).not.toHaveBeenCalled();
+    expect(followedRooms(s as never).size).toBe(0);
+    release();
+    expect(s.listeners("connect")).toBe(0);
+    s.reconnect();
+    expect(reconcile).toHaveBeenCalledTimes(2);
   });
 });

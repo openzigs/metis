@@ -27,6 +27,7 @@ import type { TaskProgressEvent, TaskStatusEvent } from "@metis/shared";
 import { useSocket } from "@/lib/socket-client";
 import { keepRoomSubscribed } from "@/lib/socket-subscription";
 import { taskFollow } from "@/lib/socket-rooms";
+import { tasksApi, type TaskRow } from "@/lib/scheduler-api";
 
 export interface TaskProgressState {
   /** Latest in-flight progress tick, or null until the first arrives. */
@@ -40,6 +41,21 @@ const EMPTY: TaskProgressState = { progress: null, status: null };
 /** A terminal task status the scans row should react to (toast + refetch). */
 export function isTerminalTaskStatus(status: TaskStatusEvent["status"]): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/** #646 — the status event a task row stands for, as a reconnect reconciles it. */
+function statusEventFromRow(row: TaskRow): TaskStatusEvent {
+  return {
+    taskId: row.id,
+    scheduledJobId: row.scheduledJobId,
+    projectId: row.projectId,
+    type: row.type,
+    status: row.status,
+    attempts: row.attempts,
+    maxAttempts: row.maxAttempts,
+    errorMessage: row.errorMessage,
+    ts: Date.parse(row.updatedAt),
+  };
 }
 
 /**
@@ -72,8 +88,15 @@ export function useTaskProgress(
     }
     // Reset when switching tasks so a previous task's progress never leaks.
     setState(EMPTY);
-    // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepRoomSubscribed(socket, taskFollow(socket, taskId));
+    let active = true;
+    // The status last applied, so a reconnect that re-reads an unchanged task
+    // (say, one whose terminal event did arrive) does not fire `onTerminal` twice.
+    let lastStatus: TaskStatusEvent["status"] | null = null;
+    // ...and when it happened, so a slow re-read that the server answered BEFORE
+    // a newer live event (a stale "running" landing after a live "completed")
+    // cannot overwrite it. Server-stamped on both sides: an event's `ts` is taken
+    // after the write the row's `updatedAt` records.
+    let lastTs: number | null = null;
 
     const onProgress = (data: TaskProgressEvent) => {
       if (data.taskId !== taskId) return;
@@ -81,13 +104,35 @@ export function useTaskProgress(
     };
     const onStatus = (data: TaskStatusEvent) => {
       if (data.taskId !== taskId) return;
+      lastStatus = data.status;
+      lastTs = typeof data.ts === "number" ? data.ts : null;
       setState((prev) => ({ ...prev, status: data }));
       if (isTerminalTaskStatus(data.status)) onTerminalRef.current?.(data);
     };
+    // #646 — a `task:status` sent while the socket was down is lost, and a task
+    // that finished in the gap would read as running until the next event.
+    // Re-read the task on reconnect and apply its status as if it had arrived.
+    const reconcile = () => {
+      tasksApi
+        .get(taskId)
+        .then((row) => {
+          if (!active || row.status === lastStatus) return;
+          const event = statusEventFromRow(row);
+          // Not newer than the status already applied: the reply is stale.
+          if (lastTs !== null && !(event.ts > lastTs)) return;
+          onStatus(event);
+        })
+        .catch(() => {
+          // Best-effort: the page's poll is the fallback for a failed read.
+        });
+    };
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    const release = keepRoomSubscribed(socket, taskFollow(socket, taskId), reconcile);
 
     socket.on("task:progress" as never, onProgress as never);
     socket.on("task:status" as never, onStatus as never);
     return () => {
+      active = false;
       release();
       socket.off("task:progress" as never, onProgress as never);
       socket.off("task:status" as never, onStatus as never);

@@ -60,9 +60,11 @@ describe("SchedulerPage (#642)", () => {
 
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:scheduler")).toBe(2);
+    // #646 — the reconnect itself refetches once.
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
 
     act(() => socket.fire("scheduler:status", {}));
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
 
     unmount();
     act(() => socket.reconnect());
@@ -85,6 +87,8 @@ describe("ApprovalsPanel (#642, #648)", () => {
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:analysis", room)).toBe(2);
     expect(socket.emitted("unsubscribe:analysis", room)).toBe(0);
+    // #646 — the reconnect itself re-reads the approvals once.
+    await waitFor(() => expect(listApprovals).toHaveBeenCalledTimes(2));
 
     const fetchesBefore = listApprovals.mock.calls.length;
     act(() =>
@@ -157,5 +161,41 @@ describe("PresenceAvatars (#642)", () => {
     expect(socket.emitted("presence:leave", room)).toBe(1);
     act(() => socket.reconnect());
     expect(socket.emitted("presence:join", room)).toBe(2);
+  });
+});
+
+describe("missed events are reconciled after a reconnect (#646)", () => {
+  it("SchedulerPage shows a job change made while the socket was down", async () => {
+    list.mockResolvedValue([]);
+    renderWithClient(<SchedulerPage />);
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+
+    act(() => socket.disconnect());
+    // The `scheduler:status` for this change is emitted now — and lost.
+    list.mockResolvedValue([{ id: "j1", name: "Nightly gap job" }]);
+    act(() => socket.connect());
+
+    expect(await screen.findByText("Nightly gap job")).toBeInTheDocument();
+  });
+
+  it("ApprovalsPanel shows a promotion block made while the socket was down", async () => {
+    listApprovals.mockResolvedValue({
+      items: [],
+      ticketStatus: { allowed: true, pendingCount: 0, rejectedCount: 0 },
+    });
+    renderWithClient(<ApprovalsPanel projectId="proj-1" analysisId="ana-1" />);
+    await waitFor(() => expect(listApprovals).toHaveBeenCalledTimes(1));
+
+    act(() => socket.disconnect());
+    // The `analysis:promotion-blocked` is emitted now — and lost.
+    listApprovals.mockResolvedValue({
+      items: [{ id: "ap-1", type: "requirement", itemId: "r1", status: "pending" }],
+      ticketStatus: { allowed: false, pendingCount: 1, rejectedCount: 0 },
+    });
+
+    expect(screen.queryByTestId("approvals-panel")).not.toBeInTheDocument();
+    act(() => socket.connect());
+
+    expect(await screen.findByTestId("approvals-panel")).toBeInTheDocument();
   });
 });

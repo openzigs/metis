@@ -200,6 +200,33 @@ describe("TestCoveragePage", () => {
     expect(events).toContain("testcoverage:run-finished");
   });
 
+  it("re-reads the runs after a reconnect, for a run update missed while down (#646)", async () => {
+    const stub = socketStub as typeof socketStub & { connected?: boolean };
+    stub.connected = true;
+    try {
+      renderPage();
+      expect(await screen.findByTestId("tc-runs-empty")).toBeInTheDocument();
+      const onConnect = socketStub.on.mock.calls.find((c) => c[0] === "connect")?.[1] as
+        (() => void) | undefined;
+      expect(onConnect).toBeDefined();
+      // The `testcoverage:run-finished` is emitted while the socket is down — and lost.
+      api.listRuns.mockResolvedValue([
+        {
+          id: "run-gap",
+          projectId: "p1",
+          status: "succeeded",
+          triggeredById: null,
+          modelTag: null,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+      onConnect!();
+      await waitFor(() => expect(screen.queryByTestId("tc-runs-empty")).not.toBeInTheDocument());
+    } finally {
+      delete stub.connected;
+    }
+  });
+
   it("uploads a file via the file input", async () => {
     const user = userEvent.setup();
     api.uploadImport.mockResolvedValue({

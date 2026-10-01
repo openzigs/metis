@@ -310,13 +310,37 @@ describe("TasksPage — live updates survive a reconnect (#642)", () => {
 
       act(() => socket.reconnect());
       expect(socket.emitted("subscribe:scheduler")).toBe(2);
+      // #646 — the reconnect itself refetches once.
+      await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
 
       act(() => socket.fire("task:status", { taskId: "task-1", status: "completed" }));
-      await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(listMock).toHaveBeenCalledTimes(3));
 
       unmount();
       act(() => socket.reconnect());
       expect(socket.emitted("subscribe:scheduler")).toBe(2);
+    } finally {
+      vi.mocked(useSocket).mockReturnValue(null);
+    }
+  });
+});
+
+describe("TasksPage — reconciles events missed while disconnected (#646)", () => {
+  it("shows a task that finished while the socket was down", async () => {
+    const socket = createFakeSocket();
+    vi.mocked(useSocket).mockReturnValue(socket as never);
+    listMock.mockResolvedValue({ items: [makeTask({ id: "task-1", type: "gap.task" })] });
+    try {
+      renderPage();
+      expect(await screen.findByText("gap.task")).toBeInTheDocument();
+
+      act(() => socket.disconnect());
+      // The task's `task:status` is emitted now — and lost.
+      listMock.mockResolvedValue({ items: [] });
+      act(() => socket.connect());
+
+      await waitFor(() => expect(screen.queryByText("gap.task")).not.toBeInTheDocument());
+      expect(listMock).toHaveBeenCalledTimes(2);
     } finally {
       vi.mocked(useSocket).mockReturnValue(null);
     }
