@@ -83,8 +83,8 @@ vi.mock("../src/lib/auth/live-auth-payload.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../src/lib/prisma.js", () => ({
-  prisma: {
+vi.mock("../src/lib/prisma.js", () => {
+  const prisma = {
     user: {
       findFirst: vi.fn(async ({ where }: { where: { id: string; status?: string } }) =>
         where.status === "active" && db.inactive.has(where.id)
@@ -137,8 +137,13 @@ vi.mock("../src/lib/prisma.js", () => ({
         return workspaceId ? { workspaceId } : null;
       }),
     },
-  },
-}));
+    // #601 — workspace delete voids outstanding invites in the same interactive
+    // transaction as the soft delete; run the callback against this mock.
+    workspaceInvite: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
+  };
+  return { prisma };
+});
 
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../src/middleware/auth.js", () => ({
