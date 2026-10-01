@@ -199,8 +199,20 @@ test.describe("Workbench virtualised document list (#584)", () => {
       });
     }
 
-    await test.step("the page itself never scrolled", async () => {
-      expect(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0)).toBe(0);
+    await test.step("only the list scrolled — not the page or any wrapper around it", async () => {
+      // #584 — the risk is the left panel's own overflow-y-auto wrapper scrolling
+      // instead of the virtualised list; document.scrollingElement alone misses it.
+      const scrolled = await page.evaluate(() => {
+        const list = document.querySelector('[data-testid="workbench-doc-scroll"]');
+        const out: { el: string; scrollTop: number }[] = [];
+        for (let el = list?.parentElement ?? null; el; el = el.parentElement) {
+          if (el.scrollTop !== 0) out.push({ el: el.id || el.className, scrollTop: el.scrollTop });
+        }
+        const doc = document.scrollingElement;
+        if (doc && doc.scrollTop !== 0) out.push({ el: "document", scrollTop: doc.scrollTop });
+        return out;
+      });
+      expect(scrolled).toEqual([]);
     });
   });
 
