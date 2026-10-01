@@ -39,7 +39,7 @@ vi.mock("../../prisma.js", () => ({
 
 // ── web-research-augmenter mock — guards against any live network ────────
 const mockAugment = vi.fn();
-const mockCreateSearchProvider = vi.fn(() => ({ search: vi.fn() }));
+const mockCreateSearchProvider = vi.fn((..._a: unknown[]) => ({ search: vi.fn() }));
 vi.mock("../../analysis/web-research-augmenter.js", () => ({
   WebResearchAugmenter: class {
     augment(...a: unknown[]) {

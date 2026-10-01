@@ -425,7 +425,7 @@ describe("crossToSchema — additive-intent ADD COLUMN without a live schema (#9
     const account = rows.find((r) => r.tableName === "account")!;
     expect(account.changeKind).toBe("add-column");
     expect(account.suggestedDdl).toContain("ALTER TABLE account ADD COLUMN status BOOLEAN;");
-    expect(account.suggestedDdl.toUpperCase()).toContain("SUGGESTED");
+    expect(account.suggestedDdl!.toUpperCase()).toContain("SUGGESTED");
     // Suggestion confidence stays in the low/medium band.
     expect(account.confidence).toBeLessThanOrEqual(0.6);
   });

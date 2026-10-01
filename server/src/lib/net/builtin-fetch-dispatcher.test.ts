@@ -176,9 +176,9 @@ describe("a wrapped dispatcher, driven by the built-in fetch over loopback", () 
     const d = track(agentForBuiltinFetch({ bodyTimeout: 0 }));
     const ac = new AbortController();
     const res = await globalThis.fetch(`http://127.0.0.1:${port}/`, {
-      dispatcher: d,
+      ...({ dispatcher: d } as Init),
       signal: ac.signal,
-    } as Init);
+    });
     const reader = res.body!.getReader();
     await reader.read();
     const pending = reader.read();

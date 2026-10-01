@@ -28,7 +28,7 @@ vi.mock("../finops/index.js", async (importOriginal) => {
 });
 
 import { AIProviderError } from "../ai/errors.js";
-import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage, ChatOptions, TokenUsage } from "../ai/types.js";
 import { summarizeWarnings } from "./grounding/degraded-warnings.js";
 import type { GroundingContext } from "./grounding/grounding-context.js";
 import type { FaithfulnessResult } from "./grounding/citation-validator.js";
@@ -132,7 +132,7 @@ interface FakeOptions {
   /** #208 — milliseconds between a call's first chunk and its end. */
   tailMs?: (call: Call) => number;
   /** #178 — report token usage for every call. */
-  usage?: { promptTokens: number; completionTokens: number; cacheReadTokens?: number };
+  usage?: TokenUsage;
 }
 
 /** #178 — what a fake model observed about concurrency. */
@@ -242,7 +242,7 @@ function routerFor(provider: AIProvider, supportsCaching = false): Phase2Router 
     factsCharCap: tuning.factsCharCap,
     tuning,
   };
-  return { primary: bundle };
+  return { primary: bundle, hybrid: null };
 }
 
 const META = {
@@ -1089,6 +1089,7 @@ function localRouter(provider: AIProvider): Phase2Router {
   const tuning = { ...docsGenTuning("local", provider.model), refine: true };
   return {
     primary: { kind: "local", provider, supportsCaching: false, factsCharCap: 150_000, tuning },
+    hybrid: null,
   };
 }
 
@@ -1452,6 +1453,7 @@ describe("#178 — every Phase-2 call's recorded usage counts toward the run's c
       usage: {
         promptTokens: 1_000,
         completionTokens: 200,
+        totalTokens: 1_200,
         cacheReadTokens: 300,
         cacheWriteTokens: 50,
       },

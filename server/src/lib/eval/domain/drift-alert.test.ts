@@ -133,7 +133,7 @@ describe("dispatchDriftAlert", () => {
   });
 
   it("POSTs the alert through safeFetch on drift", async () => {
-    const fetchImpl = vi.fn(async () => fakeResponse(200));
+    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => fakeResponse(200));
     const out = await dispatchDriftAlert(makeRun(true), {
       webhookUrl: "http://127.0.0.1:65535/webhook",
       allowLoopback: true,

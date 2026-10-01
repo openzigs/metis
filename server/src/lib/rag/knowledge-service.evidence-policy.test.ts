@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import type { Prisma } from "@prisma/client";
 import { KnowledgeService, type KnowledgeServiceDeps } from "./knowledge-service.js";
 import type { EvidencePolicy } from "../docs-gen/evidence-policy.js";
 
@@ -9,6 +10,7 @@ const policy: EvidencePolicy = {
   projectId: "p1",
   generatedDocumentId: "self",
   actor: { userId: "alice", role: "coordinator" },
+  aclSubjects: [{ kind: "user", value: "alice" }],
   repoConnectorId: "a",
   codeGraphId: "graph-a",
   sharedDocumentIds: ["reference"],
@@ -57,9 +59,13 @@ function fixture(extra: FixtureRecord[] = []) {
     embeddingModel: "fake",
     position: 0,
   }));
-  vi.mocked(prisma.knowledgeChunk.findMany).mockImplementation(async (args) => {
+  // The mocked client resolves a plain Promise, not Prisma's lazy PrismaPromise.
+  const findMany = prisma.knowledgeChunk.findMany as unknown as Mock<
+    (args?: Prisma.KnowledgeChunkFindManyArgs) => Promise<unknown>
+  >;
+  findMany.mockImplementation(async (args) => {
     const ids = (args?.where?.id as { in: string[] }).in;
-    return rows.filter((r) => ids.includes(r.id)) as never;
+    return rows.filter((r) => ids.includes(r.id));
   });
   const embed = vi.fn(async () => ({ vectors: [[1, 0]], model: "fake", dimension: 2 }));
   const search = vi.fn(async () =>

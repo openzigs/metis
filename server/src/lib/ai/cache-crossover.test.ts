@@ -168,10 +168,10 @@ describe("pricing reuse (no divergent rate copy)", () => {
     // Sonnet cached: 50k input at f=0.4 (20k read / 30k fresh) + 2k output.
     const shape = { inputTokens: 50_000, outputTokens: 2_000, cacheReadFraction: 0.4 };
     const direct = estimateCostUsd("sonnet", 30_000, 2_000, { cacheReadTokens: 20_000 });
-    expect(sonnetCachedCostUsd(shape)).toBeCloseTo(direct, 12);
+    expect(sonnetCachedCostUsd(shape)).toBeCloseTo(direct!, 12);
     // Haiku uncached mirrors a plain estimateCostUsd with no cache.
     expect(haikuUncachedCostUsd(shape)).toBeCloseTo(
-      estimateCostUsd("haiku", 50_000, 2_000, {}),
+      estimateCostUsd("haiku", 50_000, 2_000, {})!,
       12,
     );
   });

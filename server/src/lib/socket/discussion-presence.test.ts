@@ -27,7 +27,7 @@ import {
 const USER: AuthPayload = {
   userId: "u1",
   username: "alice",
-  role: "member",
+  role: "developer",
   permissions: [],
 };
 

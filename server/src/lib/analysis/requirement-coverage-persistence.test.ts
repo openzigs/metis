@@ -115,6 +115,7 @@ function synthesis(): SynthesisOutput {
         priority: "high",
         labels: [],
         evidenceFindingIndexes: [0],
+        acceptanceCriteria: [],
       },
       {
         type: "feature",
@@ -123,6 +124,7 @@ function synthesis(): SynthesisOutput {
         priority: "medium",
         labels: [],
         evidenceFindingIndexes: [1],
+        acceptanceCriteria: [],
       },
       {
         type: "feature",
@@ -131,6 +133,7 @@ function synthesis(): SynthesisOutput {
         priority: "low",
         labels: [],
         evidenceFindingIndexes: [2],
+        acceptanceCriteria: [],
       },
     ],
   };

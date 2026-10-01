@@ -86,7 +86,7 @@ vi.mock("../lib/products/per-service-doc-generator.js", () => ({
 }));
 // Contract-doc versioning is exercised in its own unit tests; here we stub the
 // orchestrator so the analyze route test stays focused on route behaviour.
-const mockRecordContractDocVersion = vi.fn(async () => ({
+const mockRecordContractDocVersion = vi.fn(async (..._args: unknown[]) => ({
   version: 1,
   created: true,
   contentHash: "hash-1",

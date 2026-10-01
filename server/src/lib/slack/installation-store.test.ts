@@ -123,7 +123,7 @@ class FakeDb {
   slackAppInstallation = {
     upsert: async (args: {
       where: { workspaceId_slackTeamId: { workspaceId: string; slackTeamId: string } };
-      create: Partial<InstallRow>;
+      create: Pick<InstallRow, "workspaceId" | "slackTeamId" | "botTokenRef"> & Partial<InstallRow>;
       update: Partial<InstallRow>;
     }): Promise<InstallRow> => {
       const { workspaceId, slackTeamId } = args.where.workspaceId_slackTeamId;
@@ -143,7 +143,7 @@ class FakeDb {
         createdById: null,
         createdAt: new Date(),
         updatedAt: new Date(),
-        ...(args.create as InstallRow),
+        ...args.create,
       };
       this.installs.push(row);
       return row;

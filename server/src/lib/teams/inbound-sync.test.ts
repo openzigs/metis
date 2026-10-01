@@ -17,7 +17,13 @@
  *   - end-to-end loop guard: teams-origin passed to createMessage
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ActivityTypes, type Activity, type TurnContext } from "botbuilder";
+import {
+  ActivityTypes,
+  type Activity,
+  type ChannelAccount,
+  type ConversationAccount,
+  type TurnContext,
+} from "botbuilder";
 
 import {
   ingestTeamsActivity,
@@ -58,7 +64,14 @@ function user(): ResolvedMetisUser {
   return { userId: "u-99", username: "alice", email: "alice@example.com" };
 }
 
-function fakeContext(activity: Partial<Activity>): {
+/** An inbound activity's overrides: the account objects carry only the fields under test. */
+type ActivityOverrides = Omit<Partial<Activity>, "from" | "recipient" | "conversation"> & {
+  from?: Partial<ChannelAccount>;
+  recipient?: Partial<ChannelAccount>;
+  conversation?: Partial<ConversationAccount>;
+};
+
+function fakeContext(activity: ActivityOverrides): {
   context: TurnContext;
   sent: string[];
 } {

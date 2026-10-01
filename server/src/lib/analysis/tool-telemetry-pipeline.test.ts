@@ -27,7 +27,7 @@ const state = {
 /** Everything `persistAgentResult` was called with during the run. */
 const persistedAgentResults: Array<Record<string, unknown>> = [];
 
-const mockCodeSymbolFindMany = vi.fn(async () => [
+const mockCodeSymbolFindMany = vi.fn(async (_args?: unknown) => [
   {
     qualifiedName: "server/src/drift/severity.ts::computeSeverity",
     kind: "function",

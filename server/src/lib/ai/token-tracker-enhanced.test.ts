@@ -158,7 +158,7 @@ describe("estimateUsageCostUsd — both provider usage conventions", () => {
     );
     // Uncached baseline: all 1000 prompt tokens billed at full input rate.
     const uncached = estimateCostUsd("sonnet", 1000, 500);
-    expect(cached).toBeLessThan(uncached);
+    expect(cached).toBeLessThan(uncached!);
   });
 
   it("zero-cache usage matches the plain input-rate estimate (regression guard)", () => {
@@ -213,9 +213,9 @@ describe("estimateUsageCostUsd — both provider usage conventions", () => {
       { promptTokens: 1000, completionTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0 },
       "anthropic",
     );
-    expect(withWrite).toBeGreaterThan(withoutWrite);
+    expect(withWrite).toBeGreaterThan(withoutWrite!);
     // write premium = 500 * 3 * 1.25 / 1e6
-    expect(withWrite - withoutWrite).toBeCloseTo((500 * 3 * 1.25) / 1_000_000, 12);
+    expect(withWrite! - withoutWrite!).toBeCloseTo((500 * 3 * 1.25) / 1_000_000, 12);
   });
 });
 
@@ -235,7 +235,7 @@ describe("estimateUsageCostUsd — config-gated 1h write multiplier (#702)", () 
     const oneHour = estimateUsageCostUsd("sonnet", usage, "anthropic", "1h");
     const fiveMin = estimateUsageCostUsd("sonnet", usage, "anthropic", "5m");
     // Only the write term changes: 500 * 3 * (2 - 1.25) / 1e6.
-    expect(oneHour - fiveMin).toBeCloseTo((500 * 3 * (2 - 1.25)) / 1_000_000, 12);
+    expect(oneHour! - fiveMin!).toBeCloseTo((500 * 3 * (2 - 1.25)) / 1_000_000, 12);
     // Absolute: fresh 1000@3 + output 500@15 + write 500@3@2× = (3000 + 7500 + 3000)/1e6.
     expect(oneHour).toBeCloseTo(0.0135, 12);
   });
@@ -257,10 +257,10 @@ describe("estimateUsageCostUsd — config-gated 1h write multiplier (#702)", () 
     expect(bedrock1h).toBe(bedrock5m);
   });
 
-  it("gates on the anthropic provider key, not just the ttl (copilot path stays 1.25×)", () => {
-    const copilot1h = estimateUsageCostUsd("sonnet", usage, "copilot-native", "1h");
-    const copilot5m = estimateUsageCostUsd("sonnet", usage, "copilot-native", "5m");
-    expect(copilot1h).toBe(copilot5m);
+  it("gates on the anthropic provider key, not just the ttl (openai path stays 1.25×)", () => {
+    const openai1h = estimateUsageCostUsd("sonnet", usage, "openai", "1h");
+    const openai5m = estimateUsageCostUsd("sonnet", usage, "openai", "5m");
+    expect(openai1h).toBe(openai5m);
   });
 });
 
@@ -281,7 +281,7 @@ describe("TokenTracker — enhanced fields", () => {
     await tracker.recordAndFlush({
       sessionId: "sess-1",
       userId: "user-1",
-      provider: "bedrock",
+      provider: "bedrock-gateway",
       model: "us.anthropic.claude-sonnet-4-20250514-v1:0",
       usage: { promptTokens: 100, completionTokens: 50 },
       projectId: "proj-1",
@@ -307,7 +307,7 @@ describe("TokenTracker — enhanced fields", () => {
     await tracker.recordAndFlush({
       sessionId: "sess-2",
       userId: "user-1",
-      provider: "bedrock",
+      provider: "bedrock-gateway",
       model: "unknown-model",
       usage: { promptTokens: 10, completionTokens: 5 },
     });
@@ -351,14 +351,14 @@ describe("TokenTracker — enhanced fields", () => {
     tracker.record({
       sessionId: "sess-3",
       userId: "user-1",
-      provider: "bedrock",
+      provider: "bedrock-gateway",
       model: "haiku",
       usage: { promptTokens: 100, completionTokens: 50 },
     });
     tracker.record({
       sessionId: "sess-3",
       userId: "user-1",
-      provider: "bedrock",
+      provider: "bedrock-gateway",
       model: "haiku",
       usage: { promptTokens: 200, completionTokens: 100 },
     });
@@ -374,7 +374,7 @@ describe("TokenTracker — enhanced fields", () => {
     tracker.record({
       sessionId: "sess-4",
       userId: "user-1",
-      provider: "bedrock",
+      provider: "bedrock-gateway",
       model: "haiku",
       usage: { promptTokens: 0, completionTokens: 0 },
     });

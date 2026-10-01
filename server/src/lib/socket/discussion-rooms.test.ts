@@ -23,7 +23,7 @@ vi.mock("../discussions/access.js", () => ({
 const USER: AuthPayload = {
   userId: "u1",
   username: "alice",
-  role: "member",
+  role: "developer",
   permissions: [],
 };
 
@@ -87,7 +87,7 @@ describe("wireThreadRoomHandlers — subscribe:thread", () => {
 
     await fire(handlers, "subscribe:thread", { threadId: "t1" });
 
-    expect(canAccessThread).toHaveBeenCalledWith({ id: "u1", role: "member" }, "t1");
+    expect(canAccessThread).toHaveBeenCalledWith({ id: "u1", role: "developer" }, "t1");
     expect(join).toHaveBeenCalledWith("thread:t1");
     expect(emit).not.toHaveBeenCalled();
   });

@@ -7,7 +7,7 @@
  * it can never reach the categorical gate.
  */
 import { describe, expect, it, vi } from "vitest";
-import type { Citation } from "@metis/shared";
+import type { Citation, FindingFaithfulness } from "@metis/shared";
 import type { GroundingContext } from "../docs-gen/grounding/grounding-context.js";
 import {
   analysisFaithfulnessMetricEnabled,
@@ -31,6 +31,8 @@ function makeProvider(reply = "{}"): AIProvider {
     chat: vi.fn(async (): Promise<ChatResponse> => ({
       content: reply,
       usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      model: "test-model",
+      provider: "anthropic",
     })),
     stream: vi.fn(),
     embed: vi.fn(),
@@ -42,14 +44,16 @@ function makeProvider(reply = "{}"): AIProvider {
 /** A claim extractor double: returns one atomic claim per line of the text. */
 const extractorOf = (claims: string[]) => ({
   decompose: vi.fn(async (_t: string, _c: GroundingContext) => ({
-    claims: claims.map((claim) => ({ claim })),
+    claims: claims.map((claim) => ({ claim, sourceIds: [] })),
   })),
 });
 
 /** A judge double: `supported` flags, in order, or `null` for "no usable verdict". */
 const judgeOf = (supported: boolean[] | null) => ({
   judge: vi.fn(async (claims: string[]) =>
-    supported === null ? null : claims.map((claim, i) => ({ claim, supported: supported[i] })),
+    supported === null
+      ? null
+      : claims.map((claim, i) => ({ claim, supported: supported[i]!, sourceIds: [] })),
   ),
 });
 
@@ -251,7 +255,7 @@ describe("scoreFindingFaithfulness", () => {
     let seen: GroundingContext | undefined;
     extractor.decompose.mockImplementation(async (_t: string, ctx: GroundingContext) => {
       seen = ctx;
-      return { claims: [{ claim: "c1" }] };
+      return { claims: [{ claim: "c1", sourceIds: [] }] };
     });
     await scoreFindingFaithfulness(
       makeProvider(),
@@ -271,7 +275,7 @@ interface TestFinding {
   body: string;
   citations: Citation[];
   verificationStatus?: string | null;
-  faithfulness?: unknown;
+  faithfulness?: FindingFaithfulness | null;
 }
 
 const findingsFixture = (): TestFinding[] => [

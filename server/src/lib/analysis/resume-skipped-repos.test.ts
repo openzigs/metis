@@ -77,13 +77,16 @@ function readCapability(): AnalysisCapability | null {
   return parsed.capability ?? null;
 }
 
+/** A private orchestrator collaborator, typed as a callable so `vi.spyOn` can see it. */
+type Spyable<K extends string> = Record<K, (...args: unknown[]) => Promise<unknown>>;
+
 function makeOrch(provider: object = {}) {
   const orch = new AnalysisOrchestrator({ provider: provider as never });
   // Heavy / provider-backed collaborators — spied so the resume orchestration is
   // isolated. `runAgenticCodeAgent` returns canned usage; the append-merge it
   // performs is proven separately in resume-persistence.test.ts.
   const runAgenticCodeAgent = vi
-    .spyOn(orch as never as { runAgenticCodeAgent: unknown }, "runAgenticCodeAgent")
+    .spyOn(orch as never as Spyable<"runAgenticCodeAgent">, "runAgenticCodeAgent")
     .mockResolvedValue({
       agentKey: "code",
       output: { agentKey: "code", summary: "", notes: [], findings: [] },
@@ -91,20 +94,19 @@ function makeOrch(provider: object = {}) {
       durationMs: 1,
     } as never);
   const runSynthesisAndPersist = vi
-    .spyOn(orch as never as { runSynthesisAndPersist: unknown }, "runSynthesisAndPersist")
+    .spyOn(orch as never as Spyable<"runSynthesisAndPersist">, "runSynthesisAndPersist")
     .mockResolvedValue(undefined as never);
   vi.spyOn(
-    orch as never as { extractRequirementsFromDocAgent: unknown },
+    orch as never as Spyable<"extractRequirementsFromDocAgent">,
     "extractRequirementsFromDocAgent",
   ).mockResolvedValue([{ id: "REQ-001", text: "req" }] as never);
   vi.spyOn(
-    orch as never as { computeAffectedCode: unknown },
+    orch as never as Spyable<"computeAffectedCode">,
     "computeAffectedCode",
   ).mockResolvedValue({ block: "", tokens: 0, filePaths: [], result: { candidates: [] } } as never);
-  vi.spyOn(
-    orch as never as { computeEscalations: unknown },
-    "computeEscalations",
-  ).mockResolvedValue(undefined as never);
+  vi.spyOn(orch as never as Spyable<"computeEscalations">, "computeEscalations").mockResolvedValue(
+    undefined as never,
+  );
   return { orch, runAgenticCodeAgent, runSynthesisAndPersist };
 }
 

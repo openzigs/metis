@@ -20,7 +20,7 @@
  * Prisma and the provider are mocked; no DB, no network, no live model.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatChunk } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
 
 const mockPrisma = {
   project: { findUnique: vi.fn() },
@@ -75,7 +75,7 @@ function makeProvider(): AIProvider {
     embed: vi.fn(),
     models: vi.fn().mockResolvedValue(["mock"]),
     ping: vi.fn().mockResolvedValue(true),
-    async *stream(messages, opts): AsyncGenerator<ChatChunk> {
+    async *stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk> {
       const user = String(messages[messages.length - 1]?.content ?? "");
       if (user.includes("section group now")) {
         requestedMaxTokens.push((opts as { maxTokens?: number } | undefined)?.maxTokens ?? -1);

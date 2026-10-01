@@ -79,7 +79,7 @@ function fakeProvider(key: ProviderKey, marker: string): AIProvider & { streamCa
       };
       yield {
         type: "usage",
-        usage: { promptTokens: 100, completionTokens: 200, cacheReadTokens: 0 },
+        usage: { promptTokens: 100, completionTokens: 200, totalTokens: 300, cacheReadTokens: 0 },
       };
     },
     async chat(): Promise<never> {

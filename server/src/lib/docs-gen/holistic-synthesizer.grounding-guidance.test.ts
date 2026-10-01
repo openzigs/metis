@@ -18,7 +18,7 @@
  *     capturing each section's SYSTEM prompt to assert the guidance is wired.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatChunk } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
 
 // ── prisma mock ─────────────────────────────────────────────────────────
 const mockPrisma = {
@@ -68,7 +68,7 @@ function makeProvider(): AIProvider {
     embed: vi.fn(),
     models: vi.fn().mockResolvedValue(["mock"]),
     ping: vi.fn().mockResolvedValue(true),
-    async *stream(messages, _opts): AsyncGenerator<ChatChunk> {
+    async *stream(messages: ChatMessage[], _opts?: ChatOptions): AsyncGenerator<ChatChunk> {
       const system = String(messages[0]?.content ?? "");
       const user = String(messages[messages.length - 1]?.content ?? "");
       if (user.includes("section group now")) {

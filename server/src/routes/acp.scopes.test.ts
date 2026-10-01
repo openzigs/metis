@@ -14,7 +14,7 @@ vi.mock("../middleware/auth.js", () => ({
   },
 }));
 
-const createApiToken = vi.fn(async () => ({ id: "tok-1", token: "metis_x" }));
+const createApiToken = vi.fn(async (..._args: unknown[]) => ({ id: "tok-1", token: "metis_x" }));
 vi.mock("../lib/acp/api-tokens.js", () => ({
   ApiTokenError: class ApiTokenError extends Error {
     status = 400;

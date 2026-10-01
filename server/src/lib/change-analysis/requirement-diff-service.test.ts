@@ -54,6 +54,7 @@ function gapReportWith(
   return {
     analysisId,
     projectId: "proj-1",
+    retrieval: null,
     requirements: [
       {
         requirementId,
@@ -69,6 +70,8 @@ function gapReportWith(
           citedFindingCount: cites.length,
         },
         gapFindings: [],
+        unverifiedFindings: [],
+        verdict: null,
         noEvidence: cites.length === 0,
       },
     ],

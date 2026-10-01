@@ -247,6 +247,7 @@ describe("#773 — could-not-verify is split out of the gap narrative", () => {
         successfulSearches: 3,
         failedSearches: 1,
         totalCalls: 4,
+        erroredCalls: 0,
         requirementCount: 2,
         starved: false,
         degraded: false,

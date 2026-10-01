@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { SPEC_KIT_TOOLS, findTool } from "./tools.js";
+import { SPEC_KIT_TOOLS, findTool, type SpecKitToolDef } from "./tools.js";
 
 describe("SPEC_KIT_TOOLS", () => {
   it("exposes the nine canonical commands as snake_case MCP tools", () => {
@@ -33,7 +33,9 @@ describe("SPEC_KIT_TOOLS", () => {
   });
 
   it("each tool's toDispatchInput returns a canonical speckit.* command", () => {
-    for (const tool of SPEC_KIT_TOOLS) {
+    // Widened to the shared shape: each entry's own args type differs per tool.
+    const tools: readonly SpecKitToolDef[] = SPEC_KIT_TOOLS;
+    for (const tool of tools) {
       // Use the schema's defaults / .parse({}) on tools that accept zero args.
       const schema = z.object(tool.inputSchema);
       const parsed = schema.safeParse({});

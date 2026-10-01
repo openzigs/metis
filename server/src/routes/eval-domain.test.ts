@@ -61,6 +61,9 @@ function makeRun(runId: string, startedAt: string, f1 = 0.9): DomainEvalRunResul
       thresholdPct: 0.05,
       alert: false,
       reason: "NO_BASELINE",
+      baselineRunId: null,
+      baselineAgeDays: null,
+      staleBaseline: false,
     },
     items: [],
   };

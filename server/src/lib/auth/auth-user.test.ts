@@ -26,7 +26,7 @@ describe("toAuthUser", () => {
   it("never exposes a userId key on the client object", () => {
     const user = toAuthUser(identity, { displayName: "Alice", email: "alice@example.com" });
     expect(Object.keys(user)).not.toContain("userId");
-    expect((user as Record<string, unknown>).userId).toBeUndefined();
+    expect(Reflect.get(user, "userId")).toBeUndefined();
   });
 
   it("produces exactly the AuthUser key set", () => {

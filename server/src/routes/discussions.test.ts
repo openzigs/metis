@@ -698,7 +698,7 @@ describe("discussions routes", () => {
     function makeProbedApp(probe: Probe, opts: { listenForErrors: boolean }) {
       const probed = express();
       probed.use(express.json());
-      probed.use((req, res, next) => {
+      probed.use((_req, res, next) => {
         probe.res = res;
         const write = res.write.bind(res) as (...args: unknown[]) => boolean;
         res.write = ((chunk: unknown, ...rest: unknown[]) => {

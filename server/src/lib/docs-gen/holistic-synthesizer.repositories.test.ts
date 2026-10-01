@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, writeFile, rm, symlink } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatChunk } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
 
 const db = vi.hoisted(() => ({
   project: { findUnique: vi.fn() },
@@ -19,11 +19,13 @@ vi.mock("../finops/index.js", () => ({ recordUsage: vi.fn() }));
 const phase1Prompts: string[] = [];
 const sectionPrompts: string[] = [];
 const judgePrompts: string[] = [];
+// Partial double: implements only the methods the synthesizer calls (no embed/models/ping,
+// chat returns content only), so it cannot overlap AIProvider without an unknown hop.
 const provider: AIProvider = {
   key: "bedrock-gateway",
   model: "fixture",
   offline: false,
-  chat: vi.fn(async (messages) => {
+  chat: vi.fn(async (messages: ChatMessage[]) => {
     const user = messages.map((m) => String(m.content)).join("\n");
     if (user.includes("SOURCE EVIDENCE")) {
       judgePrompts.push(user);
@@ -35,7 +37,7 @@ const provider: AIProvider = {
     }
     return { content: JSON.stringify({ claims: [{ claim: "Repository rules.", sourceIds: [] }] }) };
   }),
-  async *stream(messages): AsyncGenerator<ChatChunk> {
+  async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
     const user = String(messages.at(-1)?.content);
     if (user.includes("section group now")) {
       sectionPrompts.push(user);
@@ -52,7 +54,7 @@ const provider: AIProvider = {
     }
     yield { type: "done" };
   },
-} as AIProvider;
+} as unknown as AIProvider; // see the partial-double note above
 vi.mock("../ai/index.js", () => ({
   loadAIConfig: () => ({ provider: "bedrock-gateway", model: "fixture" }),
   buildProvider: () => provider,

@@ -37,7 +37,10 @@ function makeTarget(over: Partial<ResolvedNotificationTarget> = {}): ResolvedNot
     createdById: null,
     createdAt: new Date(),
     updatedAt: new Date(),
-    reference: { conversation: { id: "convo-1" }, serviceUrl: "https://svc" },
+    reference: {
+      conversation: { id: "convo-1", isGroup: true, conversationType: "channel", name: "General" },
+      serviceUrl: "https://svc",
+    },
     ...over,
   };
 }
@@ -103,7 +106,7 @@ describe("sendEventNotification (#67)", () => {
     // appId from resolved creds, stored reference passed through.
     expect(h.continueSpy.mock.calls[0][0]).toBe("app-1");
     expect(h.continueSpy.mock.calls[0][1]).toEqual({
-      conversation: { id: "convo-1" },
+      conversation: { id: "convo-1", isGroup: true, conversationType: "channel", name: "General" },
       serviceUrl: "https://svc",
     });
     expect(h.sentActivities).toEqual([activity]);
