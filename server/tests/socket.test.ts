@@ -85,10 +85,15 @@ vi.mock("../src/lib/prisma.js", () => ({
     auditLog: { create: vi.fn(async () => ({})) },
     // #655 — connector, background-run and job rooms authorize like their REST
     // reads. Every row below lives in `p1` (workspace `w1`, member `u1`); a
-    // `*-boom` id makes the lookup throw; `*-slow` resolves late.
+    // `*-boom` id makes the lookup throw; `*-slow` resolves late; a
+    // `*-deleted` row is soft-deleted, so a lookup filtering on
+    // `deletedAt: null` does not see it.
     repoConnection: {
-      findFirst: vi.fn(async (args: { where: { id: string } }) => {
+      findFirst: vi.fn(async (args: { where: { id: string; deletedAt?: null } }) => {
         if (args.where.id === "c-boom") throw new Error("db down");
+        if (args.where.id === "c-repo-deleted" && args.where.deletedAt !== null) {
+          return { projectId: "p1" };
+        }
         if (args.where.id === "c-slow") {
           await new Promise((r) => setTimeout(r, 50));
           return { projectId: "p1" };
@@ -99,9 +104,12 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     databaseConnection: {
-      findFirst: vi.fn(async (args: { where: { id: string } }) =>
-        args.where.id === "c-db" ? { projectId: "p1" } : null,
-      ),
+      findFirst: vi.fn(async (args: { where: { id: string; deletedAt?: null } }) => {
+        if (args.where.id === "c-db-deleted" && args.where.deletedAt !== null) {
+          return { projectId: "p1" };
+        }
+        return args.where.id === "c-db" ? { projectId: "p1" } : null;
+      }),
     },
     backgroundRun: {
       findUnique: vi.fn(async (args: { where: { id: string } }) => {
@@ -110,9 +118,12 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     generatedDocument: {
-      findFirst: vi.fn(async (args: { where: { id: string } }) =>
-        args.where.id === "d1" ? { projectId: "p1" } : null,
-      ),
+      findFirst: vi.fn(async (args: { where: { id: string; deletedAt?: null } }) => {
+        if (args.where.id === "d-deleted" && args.where.deletedAt !== null) {
+          return { projectId: "p1" };
+        }
+        return args.where.id === "d1" ? { projectId: "p1" } : null;
+      }),
     },
     importRun: {
       findFirst: vi.fn(async (args: { where: { id: string } }) =>
@@ -768,6 +779,22 @@ describe("Socket.IO server", () => {
         expect(await subscribe("u1", event, boomId)).toEqual(denied(boomId));
       },
     );
+
+    // A soft-deleted connector or job is refused to a member of its project,
+    // exactly as the REST read 404s it. Each mock only hides its `*-deleted`
+    // row when the lookup filters on `deletedAt: null`, so dropping that
+    // filter from any lookup in `room-access.ts` turns its row red here.
+    it.each<[RoomEvent, string]>([
+      ["subscribe:connector", "c-repo-deleted"],
+      ["subscribe:connector", "c-db-deleted"],
+      ["subscribe:job", "d-deleted"],
+      ["subscribe:job", "a-deleted"],
+    ])("%s %s refuses a soft-deleted resource to a project member", async (event, id) => {
+      expect(await subscribe("u1", event, id)).toEqual({
+        joined: false,
+        errors: [{ message: DENIAL[event], room: `${ROOM[event]}:${id}` }],
+      });
+    });
 
     // A denial answers `false`; only a failure that is not an access decision
     // (the database) propagates, so the handler logs it as a failed check.
