@@ -9,7 +9,7 @@
  * clear "promotion blocked" banner derived from the server's `ticketStatus`
  * (Epic #202 #216) so the user always knows why artifacts have not promoted.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PromotionBlockedEvent } from "@metis/shared";
 import {
@@ -52,6 +52,13 @@ function usePromotionBlockedEvent(
 ): PromotionBlockedEvent | null {
   const socket = useSocket();
   const [blocked, setBlocked] = useState<PromotionBlockedEvent | null>(null);
+  // #648 — hold the latest callback in a ref so a new `onBlocked` identity on
+  // every render does not re-run the subscription effect (which emitted an
+  // unsubscribe/subscribe pair to the server each time).
+  const onBlockedRef = useRef(onBlocked);
+  useEffect(() => {
+    onBlockedRef.current = onBlocked;
+  });
 
   useEffect(() => {
     if (!socket || !analysisId) return;
@@ -64,7 +71,7 @@ function usePromotionBlockedEvent(
     const handler = (event: PromotionBlockedEvent): void => {
       if (event.analysisId !== analysisId) return;
       setBlocked(event);
-      onBlocked();
+      onBlockedRef.current();
     };
     // The browser socket is loosely typed — same escape hatch the other
     // analysis/job-event consumers use.
@@ -73,7 +80,7 @@ function usePromotionBlockedEvent(
       socket.off("analysis:promotion-blocked" as never, handler as never);
       release();
     };
-  }, [socket, analysisId, onBlocked]);
+  }, [socket, analysisId]);
 
   return blocked;
 }
