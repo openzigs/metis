@@ -1,7 +1,9 @@
 /**
  * Epic #728 / Issue #732 — Socket.IO presence rooms per artifact.
  *
- * Rooms are ephemeral (in-memory, no DB persistence).
+ * Rooms are ephemeral (in-memory, no DB persistence), and per replica: with
+ * the cluster adapter (#622) a viewer sees only the users connected to the same
+ * replica, because `presence:update` is emitted locally (see below).
  *
  * Client events:
  *   `presence:join`  { artifactType: string, artifactId: string }
@@ -26,9 +28,16 @@ function roomKey(artifactType: string, artifactId: string): string {
   return `presence:${artifactType}:${artifactId}`;
 }
 
+/**
+ * #622 — `local`: the list is THIS replica's sockets only, and the client
+ * replaces its whole list with each update, so relaying it through the cluster
+ * adapter would make every viewer's avatars flip between replicas' partial
+ * lists. Kept per-replica (the pre-adapter behaviour) until presence state is
+ * shared across replicas (#651).
+ */
 function broadcastPresenceUpdate(io: MetisIOServer, key: string): void {
   const users = [...(roomPresence.get(key)?.values() ?? [])];
-  io.to(key).emit("presence:update", { room: key, users, ts: Date.now() });
+  io.local.to(key).emit("presence:update", { room: key, users, ts: Date.now() });
 }
 
 export function wirePresenceHandlers(io: MetisIOServer): void {

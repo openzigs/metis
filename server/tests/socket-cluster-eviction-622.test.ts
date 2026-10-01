@@ -13,6 +13,9 @@
  * The control arm builds the same two replicas with NO adapter (single-replica
  * dev mode) and shows the eviction then does not reach B: the cross-replica
  * assertions are owed to the adapter, not to the harness.
+ *
+ * The degraded arm: when the adapter's attachments table cannot be created, the
+ * adapter is not installed, so a large emit still reaches this replica's sockets.
  */
 import express, { type Express } from "express";
 import request from "supertest";
@@ -33,9 +36,11 @@ import { connectUser, startReplica, type Replica } from "./helpers/two-replica-s
 import { FakePgNotifyBus } from "./helpers/fake-pg-notify-bus.js";
 import {
   createPostgresClusterAdapter,
+  resolveSocketClusterAdapter,
   type SocketClusterAdapter,
 } from "../src/lib/socket/cluster-adapter.js";
 import { registerSocketServer } from "../src/lib/socket/registry.js";
+import { reconnectUserSockets } from "../src/lib/socket/user-disconnect.js";
 import {
   evictMemberMcpStatusRoom,
   evictWorkspaceMcpStatusRoom,
@@ -173,6 +178,68 @@ describe("#622 evictions reach every replica through the cluster adapter", () =>
   });
 });
 
+describe("#622 role-change reconnects reach every replica through the cluster adapter", () => {
+  it("a role change handled on A closes the transport of the user's socket on B, which reconnects", async () => {
+    await startPair(true);
+    seed(["u-role", "u-other"], []);
+    const onB = await connectUser(b, "u-role", open, { reconnection: true });
+    const onA = await connectUser(a, "u-role", open, { reconnection: true });
+    const otherOnB = await connectUser(b, "u-other", open);
+
+    // What `role-reconciliation` / `durable-roles` call once the role write commits.
+    reconnectUserSockets("u-role");
+
+    await vi.waitFor(() => {
+      for (const s of [onB, onA]) {
+        // "transport close", not the final "io server disconnect": the client's
+        // reconnect loop runs and the user comes back with the new role.
+        expect(s.disconnectReason).toBe("transport close");
+        expect(s.handshakes).toBe(2);
+        expect(s.socket.connected).toBe(true);
+      }
+    });
+    expect(b.io.sockets.sockets.has(onB.sid)).toBe(false);
+    expect(otherOnB.disconnectReason).toBeNull();
+    expect(otherOnB.socket.connected).toBe(true);
+  });
+});
+
+describe("#622 degraded mode — the attachments table cannot be created", () => {
+  it("installs no adapter, so a 9,000-character emit still reaches a socket on the same replica", async () => {
+    const bus = new FakePgNotifyBus();
+    // A database user without CREATE: the DDL fails, and so would every
+    // attachment INSERT the adapter makes for a payload over NOTIFY's 8000 bytes.
+    const noCreate = () => {
+      const pool = bus.pool();
+      const query = pool.query.bind(pool) as (sql: string, params?: unknown[]) => Promise<unknown>;
+      pool.query = (async (sql: string, params?: unknown[]) => {
+        if (/CREATE|INSERT/.test(sql)) throw new Error("permission denied for schema public");
+        return query(sql, params);
+      }) as never;
+      return pool;
+    };
+    const cluster = await resolveSocketClusterAdapter(
+      { NODE_ENV: "production", DATABASE_URL: "postgres://u:p@db:5432/metis" },
+      noCreate,
+    );
+    if (cluster) adapters.push(cluster);
+    a = await startReplica(cluster?.adapter);
+    b = await startReplica();
+    seed(["u-big"], []);
+    const onA = await connectUser(a, "u-big", open);
+    const received: string[] = [];
+    onA.socket.on("heartbeat", (e: { pad?: string }) => {
+      if (e.pad) received.push(e.pad);
+    });
+    const pad = "x".repeat(9_000);
+
+    a.io.to("user:u-big").emit("heartbeat", { ts: Date.now(), pad } as never);
+
+    await vi.waitFor(() => expect(received).toEqual([pad]));
+    expect(cluster).toBeNull();
+  });
+});
+
 describe("#622 control arm — no adapter (single-replica dev mode)", () => {
   it("an eviction on A does not reach B, so the cross-replica reach above is the adapter's", async () => {
     await startPair(false);
@@ -190,5 +257,18 @@ describe("#622 control arm — no adapter (single-replica dev mode)", () => {
     // B never heard about either eviction.
     expect(onB.socket.connected).toBe(true);
     expect(b.roomHas(ROOM, onB.sid)).toBe(true);
+  });
+
+  it("a role-change reconnect on A does not reach B, so the cross-replica reconnect above is the adapter's", async () => {
+    await startPair(false);
+    seed(["u-role"], []);
+    const onB = await connectUser(b, "u-role", open);
+    const onA = await connectUser(a, "u-role", open);
+
+    reconnectUserSockets("u-role");
+
+    await vi.waitFor(() => expect(onA.disconnectReason).toBe("transport close"));
+    expect(onB.disconnectReason).toBeNull();
+    expect(onB.socket.connected).toBe(true);
   });
 });

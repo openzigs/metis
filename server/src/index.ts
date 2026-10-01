@@ -12,7 +12,7 @@
 // Issue #109 — initialize OpenTelemetry BEFORE any other import so the
 // HTTP / Express auto-instrumentation can patch their targets.
 import "./lib/otel/init.js";
-import { createServer } from "./server.js";
+import { bootServer } from "./server.js";
 import { createChildLogger } from "./lib/logger.js";
 import { prisma } from "./lib/prisma.js";
 import { ensureSchemaUpToDate } from "./lib/db/migration-guard.js";
@@ -301,7 +301,9 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
     );
   }
 
-  const { http: httpServer, io, acp, prReviewWorker, socketCluster } = createServer();
+  // #622 — `bootServer` resolves the Socket.IO cluster adapter (awaiting its
+  // attachments table) before building the server on it.
+  const { http: httpServer, io, acp, prReviewWorker, socketCluster } = await bootServer();
   httpServer.listen(PORT, () => {
     log.info("METIS server listening", { port: PORT, env: process.env.NODE_ENV });
   });

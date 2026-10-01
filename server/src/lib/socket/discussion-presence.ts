@@ -70,8 +70,11 @@ function broadcastPresence(socket: PresenceSocket, room: string): void {
   // Emit to the room INCLUDING the sender via socket.to + a self-emit, so a
   // newly-joined member sees themselves. `socket.to(room)` excludes the sender,
   // so we additionally emit to the sender directly.
+  // `local` (#622): the list is this replica's members only, and a client
+  // replaces its list with each update — relayed cluster-wide it would flip
+  // between replicas' partial lists. Typing events stay cluster-wide.
   const payload = { room, users: membersOf(room), ts: Date.now() };
-  socket.to(room).emit("presence:update", payload);
+  socket.to(room).local.emit("presence:update", payload);
   socket.emit("presence:update", payload);
 }
 

@@ -43,13 +43,20 @@ export interface Connected {
   socket: ClientSocket;
   sid: string;
   disconnectReason: string | null;
+  /** How many times the server has accepted this client's handshake. */
+  handshakes: number;
 }
 
-/** Connect `userId` to `replica`, subscribe to MCP status, and wait for its rooms. */
+/**
+ * Connect `userId` to `replica`, subscribe to MCP status, and wait for its rooms.
+ * `reconnection: true` keeps the client's own reconnect loop running, as the
+ * UI's does.
+ */
 export async function connectUser(
   replica: Replica,
   userId: string,
   open: ClientSocket[],
+  { reconnection = false }: { reconnection?: boolean } = {},
 ): Promise<Connected> {
   const { accessToken } = issueTokens({
     userId,
@@ -61,15 +68,28 @@ export async function connectUser(
   const socket = ioClient(`http://127.0.0.1:${replica.port}`, {
     auth: { token: accessToken },
     transports: ["websocket"],
-    reconnection: false,
+    reconnection,
+    reconnectionDelay: 50,
+    reconnectionDelayMax: 50,
     timeout: 2000,
   });
   open.push(socket);
-  await new Promise<void>((resolve, reject) => {
-    socket.on("auth:ok", () => resolve());
-    socket.on("connect_error", reject);
+  let handshakes = 0;
+  socket.on("auth:ok", () => {
+    handshakes += 1;
   });
-  const conn: Connected = { socket, sid: socket.id!, disconnectReason: null };
+  await new Promise<void>((resolve, reject) => {
+    socket.once("auth:ok", () => resolve());
+    socket.once("connect_error", reject);
+  });
+  const conn: Connected = {
+    socket,
+    sid: socket.id!,
+    disconnectReason: null,
+    get handshakes() {
+      return handshakes;
+    },
+  };
   socket.on("disconnect", (reason) => {
     conn.disconnectReason = reason;
   });

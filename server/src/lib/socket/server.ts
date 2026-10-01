@@ -20,8 +20,11 @@
  *
  * Cluster adapter (#622):
  *   - `opts.adapter` (from `resolveSocketClusterAdapter`, Postgres datasources
- *     only) relays room operations — evictions and emits — to every replica.
- *     Unset, Socket.IO's in-memory adapter reaches this replica only.
+ *     only) relays room operations — evictions and emits — to every replica,
+ *     and role-change reconnects through `wireReconnectUserRelay`. Presence
+ *     lists are the exception: each replica emits its own list locally only
+ *     (`collaboration/presence.ts`). Unset, Socket.IO's in-memory adapter
+ *     reaches this replica only.
  *
  * Heartbeat:
  *   - The Socket.IO ping/pong cycle is configured to fire every 30s; idle
@@ -47,7 +50,7 @@ import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
 import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
 import { mcpStatusEvictionEpoch } from "./mcp-status-eviction.js";
-import { userSocketRevocationEpoch } from "./user-disconnect.js";
+import { userSocketRevocationEpoch, wireReconnectUserRelay } from "./user-disconnect.js";
 
 const log = createChildLogger("socket");
 
@@ -107,6 +110,9 @@ export function createSocketServer(
   });
 
   io.on("connection", (socket) => attachHandlers(socket));
+  // #622 — with the cluster adapter, a role-change reconnect on another replica
+  // closes this replica's transports too (see `reconnectUserSockets`).
+  wireReconnectUserRelay(io, Boolean(opts.adapter));
   return io;
 }
 

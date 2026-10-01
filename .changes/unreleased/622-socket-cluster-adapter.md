@@ -3,11 +3,11 @@ issue: 622
 section: Security
 ---
 
-- On a multi-replica deployment, deprovisioning a user through SCIM now closes
-  that user's open live connections on every server replica, not only the one
-  that handled the request. Removing a member from a workspace, or deleting a
-  workspace, likewise stops MCP status updates to that member on every replica.
-  Live updates sent to a room also reach users connected to any replica. This
-  is automatic on a Postgres database and needs no new setting; it uses up to
-  two extra database connections per replica. Single-replica setups on SQLite
-  are unchanged.
+- On a multi-replica Postgres deployment, a SCIM deprovision now closes the
+  user's live connections on every replica, and a role change makes them
+  reconnect with the new role on every replica; workspace member removal and
+  deletion stop MCP status updates on every replica too. Most room updates now
+  reach every replica, but presence avatars still show only users on the
+  viewer's own replica. No new setting; up to two extra database connections
+  per replica. Without CREATE on the schema the server logs an error and keeps
+  single-replica behaviour.

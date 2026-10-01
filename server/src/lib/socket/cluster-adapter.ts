@@ -9,15 +9,22 @@
  * relays those operations over Postgres `LISTEN` / `NOTIFY` on the database the
  * deployment already shares — no new managed service.
  *
- * Selection follows the datasource, as the reindex lease's does:
- * a Postgres `DATABASE_URL` gets the cluster adapter, anything else (SQLite dev,
- * unset) keeps the in-memory adapter with no new config. A single-replica
- * Postgres deployment pays one held `LISTEN` connection and a small pool
- * (`POOL_MAX` connections per replica).
+ * Selection (`selectSocketClusterAdapter`) follows the datasource, as the
+ * reindex lease's does: a Postgres `DATABASE_URL` gets the cluster adapter,
+ * anything else (SQLite dev, unset) keeps the in-memory adapter with no new
+ * config. `NODE_ENV=test` never selects it, so a Postgres `DATABASE_URL` in the
+ * unit suite opens no pool. A single-replica Postgres deployment pays one held
+ * `LISTEN` connection and a small pool (`POOL_MAX` connections per replica).
  *
  * The adapter stores a message over Postgres' 8000-byte NOTIFY limit, or one
  * carrying binary, in an attachments table. Like the other shared Postgres
  * backends it is self-created (UNLOGGED, behind an advisory lock), not migrated.
+ * The table is created BEFORE the adapter is installed, and if that fails the
+ * adapter is not installed at all: socket.io-adapter's `broadcast` returns
+ * before its local delivery when the publish rejects, so an adapter without its
+ * table would drop every large or binary emit even for sockets on the same
+ * replica. The process keeps the in-memory adapter and logs that cross-replica
+ * eviction is disabled.
  *
  * Every adapter, pool and connection error is logged, never thrown: evictions
  * run after the database write has committed (#588, #612), and a pg client's
@@ -30,9 +37,15 @@
  * but never releases the dead client, which would keep its slot — with
  * `POOL_MAX` 2, the new `LISTEN` client then fills the pool and every NOTIFY
  * queues forever.
+ *
+ * Timeouts (`socketClusterPoolConfig`): a broadcast awaits its NOTIFY before the
+ * local delivery, so a connection attempt or a query that never answers would
+ * stall every emit on this replica. A bounded connect, a client-side query
+ * timeout and a server-side statement timeout turn that hang into a rejected
+ * publish — logged by the error handler — within seconds.
  */
 import pg from "pg";
-import type { Pool, PoolClient } from "pg";
+import type { Pool, PoolClient, PoolConfig } from "pg";
 import { createAdapter } from "@socket.io/postgres-adapter";
 import { createChildLogger } from "../logger.js";
 
@@ -47,6 +60,26 @@ const TABLE_LOCK_ID = 622_000_001;
 /** One connection held for `LISTEN`, one for `NOTIFY` / attachment I/O. */
 const POOL_MAX = 2;
 
+/**
+ * The adapter pool's bounds (see the module header). A NOTIFY, an attachment
+ * INSERT / SELECT and the 30 s cleanup DELETE are all single-row or indexed
+ * statements on an UNLOGGED table, so 5 s is generous for each while still
+ * failing a hung connection well inside a client's patience. The idle timeout
+ * applies to the NOTIFY connection only — the `LISTEN` client is never idle in
+ * the pool.
+ */
+export const SOCKET_CLUSTER_POOL_TIMEOUTS = Object.freeze({
+  connectionTimeoutMillis: 5_000,
+  idleTimeoutMillis: 30_000,
+  query_timeout: 5_000,
+  statement_timeout: 5_000,
+});
+
+/** The `pg.Pool` config for the adapter's pool. */
+export function socketClusterPoolConfig(connectionString: string): PoolConfig {
+  return { connectionString, max: POOL_MAX, ...SOCKET_CLUSTER_POOL_TIMEOUTS };
+}
+
 export interface SocketClusterAdapter {
   /** Pass as `new Server(httpServer, { adapter })`. */
   adapter: ReturnType<typeof createAdapter>;
@@ -54,7 +87,30 @@ export interface SocketClusterAdapter {
   close(): Promise<void>;
 }
 
-/** Build the cluster adapter over `pool`, which it owns from here on. */
+/**
+ * Create the adapter's attachments table if it is missing. Rejects when it
+ * cannot be created (typically: the database user lacks CREATE on the schema).
+ */
+export async function ensureSocketClusterAttachmentsTable(pool: Pool): Promise<void> {
+  await pool.query(
+    `DO $$
+     BEGIN
+       PERFORM pg_advisory_xact_lock(${TABLE_LOCK_ID});
+       CREATE UNLOGGED TABLE IF NOT EXISTS ${SOCKET_IO_ATTACHMENTS_TABLE} (
+         id         bigserial UNIQUE,
+         created_at timestamptz DEFAULT NOW(),
+         payload    bytea
+       );
+     EXCEPTION WHEN duplicate_table OR duplicate_object THEN
+       NULL;
+     END $$;`,
+  );
+}
+
+/**
+ * Build the cluster adapter over `pool`, which it owns from here on. The
+ * attachments table must already exist (`ensureSocketClusterAttachmentsTable`).
+ */
 export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   pool.on("error", (err) => {
     log.warn("socket cluster adapter pool error", { error: err.message });
@@ -64,29 +120,6 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   const connect = pool.connect.bind(pool) as (...args: unknown[]) => Promise<PoolClient>;
   pool.connect = ((...args: unknown[]) =>
     args.length > 0 ? connect(...args) : connect().then(holdListenClient)) as Pool["connect"];
-
-  pool
-    .query(
-      `DO $$
-       BEGIN
-         PERFORM pg_advisory_xact_lock(${TABLE_LOCK_ID});
-         CREATE UNLOGGED TABLE IF NOT EXISTS ${SOCKET_IO_ATTACHMENTS_TABLE} (
-           id         bigserial UNIQUE,
-           created_at timestamptz DEFAULT NOW(),
-           payload    bytea
-         );
-       EXCEPTION WHEN duplicate_table OR duplicate_object THEN
-         NULL;
-       END $$;`,
-    )
-    .catch((err: Error) => {
-      // Once, at boot: without the table the adapter's 30 s cleanup DELETE warns
-      // on every tick, which reads as a transient fault rather than a grant.
-      log.error(
-        "could not create the socket cluster adapter attachments table — the database user needs CREATE on the schema",
-        { table: SOCKET_IO_ATTACHMENTS_TABLE, error: err.message },
-      );
-    });
 
   const adapter = createAdapter(pool, {
     tableName: SOCKET_IO_ATTACHMENTS_TABLE,
@@ -116,17 +149,44 @@ function holdListenClient(client: PoolClient): PoolClient {
 }
 
 /**
- * The cluster adapter for this process: Postgres when the datasource is
- * Postgres, otherwise `null` (keep the in-memory adapter).
+ * The Postgres URL the cluster adapter should use in this process, or `null`
+ * to keep the in-memory adapter: not under `NODE_ENV=test`, and only for a
+ * Postgres datasource.
  */
-export function resolveSocketClusterAdapter(
-  env: NodeJS.ProcessEnv = process.env,
-  makePool: (connectionString: string) => Pool = (connectionString) =>
-    new pg.Pool({ connectionString, max: POOL_MAX }),
-): SocketClusterAdapter | null {
+export function selectSocketClusterAdapter(env: NodeJS.ProcessEnv): string | null {
+  if (env.NODE_ENV === "test") return null;
   // Trimmed, as `resolveDatabaseProvider` (lib/prisma.ts) trims it: otherwise a
   // stray leading space puts Prisma on Postgres and the sockets in memory.
   const url = (env.DATABASE_URL ?? "").trim();
   if (!url.startsWith("postgres://") && !url.startsWith("postgresql://")) return null;
-  return createPostgresClusterAdapter(makePool(url));
+  return url;
+}
+
+/**
+ * The cluster adapter for this process, ready to install: Postgres when
+ * `selectSocketClusterAdapter` picks it and its attachments table is in place,
+ * otherwise `null` (keep the in-memory adapter). Never rejects.
+ */
+export async function resolveSocketClusterAdapter(
+  env: NodeJS.ProcessEnv = process.env,
+  makePool: (connectionString: string) => Pool = (connectionString) =>
+    new pg.Pool(socketClusterPoolConfig(connectionString)),
+): Promise<SocketClusterAdapter | null> {
+  const url = selectSocketClusterAdapter(env);
+  if (!url) return null;
+  const pool = makePool(url);
+  try {
+    await ensureSocketClusterAttachmentsTable(pool);
+  } catch (err) {
+    log.error(
+      "could not create the socket cluster adapter attachments table — the database user needs " +
+        "CREATE on the schema. Cross-replica socket eviction is DISABLED: this replica keeps the " +
+        "in-memory adapter, so SCIM deprovisions, role changes and MCP status evictions reach " +
+        "only the sockets connected to it",
+      { table: SOCKET_IO_ATTACHMENTS_TABLE, error: (err as Error).message },
+    );
+    await pool.end().catch(() => {});
+    return null;
+  }
+  return createPostgresClusterAdapter(pool);
 }

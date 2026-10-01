@@ -3,7 +3,12 @@
  * adapter error must be logged, never thrown into the SCIM route.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { disconnectUserSockets, reconnectUserSockets } from "./user-disconnect.js";
+import {
+  RECONNECT_USER_EVENT,
+  disconnectUserSockets,
+  reconnectUserSockets,
+  wireReconnectUserRelay,
+} from "./user-disconnect.js";
 import { registerSocketServer } from "./registry.js";
 import type { MetisIOServer } from "./server.js";
 
@@ -84,6 +89,87 @@ describe("reconnectUserSockets", () => {
 
   it("is a no-op with no registered server", () => {
     registerSocketServer(null as unknown as MetisIOServer);
+    expect(() => reconnectUserSockets("u-1")).not.toThrow();
+  });
+});
+
+// #622 — with the cluster adapter, the other replicas close their own transports.
+describe("reconnectUserSockets relay", () => {
+  afterEach(() => registerSocketServer(null as unknown as MetisIOServer));
+
+  function relayServer(rooms: Map<string, Set<string>>, sids: string[]) {
+    const conns = new Map(sids.map((sid) => [sid, { close: vi.fn() }]));
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const io = {
+      sockets: {
+        adapter: { rooms },
+        sockets: new Map(sids.map((sid) => [sid, { conn: conns.get(sid) }])),
+      },
+      on: vi.fn((event: string, fn: (...args: unknown[]) => void) => listeners.set(event, fn)),
+      serverSideEmit: vi.fn(),
+    };
+    return { io, server: io as unknown as MetisIOServer, conns, listeners };
+  }
+
+  it("relays the reconnect to the other replicas when the server is clustered", () => {
+    const { io, server, conns } = relayServer(new Map([["user:u-1", new Set(["a"])]]), ["a"]);
+    wireReconnectUserRelay(server, true);
+    registerSocketServer(server);
+    reconnectUserSockets("u-1");
+    expect(conns.get("a")!.close).toHaveBeenCalledOnce();
+    expect(io.serverSideEmit).toHaveBeenCalledWith(RECONNECT_USER_EVENT, "u-1");
+  });
+
+  it("neither relays nor listens without the cluster adapter, where serverSideEmit is unsupported", () => {
+    const { io, server } = relayServer(new Map(), []);
+    wireReconnectUserRelay(server, false);
+    registerSocketServer(server);
+    reconnectUserSockets("u-1");
+    expect(io.on).not.toHaveBeenCalled();
+    expect(io.serverSideEmit).not.toHaveBeenCalled();
+  });
+
+  it("a relayed reconnect closes the transports of that user's local sockets only", () => {
+    const { server, conns, listeners } = relayServer(
+      new Map([
+        ["user:u-1", new Set(["a"])],
+        ["user:u-2", new Set(["b"])],
+      ]),
+      ["a", "b"],
+    );
+    wireReconnectUserRelay(server, true);
+    listeners.get(RECONNECT_USER_EVENT)!("u-1");
+    expect(conns.get("a")!.close).toHaveBeenCalledOnce();
+    expect(conns.get("b")!.close).not.toHaveBeenCalled();
+  });
+
+  it("ignores a malformed relay and never throws from a failing close", () => {
+    const { server, conns, listeners } = relayServer(new Map([["user:u-1", new Set(["a"])]]), [
+      "a",
+    ]);
+    wireReconnectUserRelay(server, true);
+    const onRelay = listeners.get(RECONNECT_USER_EVENT)!;
+    onRelay(42);
+    onRelay("");
+    expect(conns.get("a")!.close).not.toHaveBeenCalled();
+    conns.get("a")!.close.mockImplementation(() => {
+      throw new Error("transport gone");
+    });
+    expect(() => onRelay("u-1")).not.toThrow();
+  });
+
+  it("still relays when a local close fails, and never throws when the relay does", () => {
+    const { io, server, conns } = relayServer(new Map([["user:u-1", new Set(["a"])]]), ["a"]);
+    conns.get("a")!.close.mockImplementation(() => {
+      throw new Error("transport gone");
+    });
+    wireReconnectUserRelay(server, true);
+    registerSocketServer(server);
+    reconnectUserSockets("u-1");
+    expect(io.serverSideEmit).toHaveBeenCalledOnce();
+    io.serverSideEmit.mockImplementation(() => {
+      throw new Error("adapter down");
+    });
     expect(() => reconnectUserSockets("u-1")).not.toThrow();
   });
 });

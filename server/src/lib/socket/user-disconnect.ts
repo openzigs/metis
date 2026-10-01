@@ -24,6 +24,7 @@
  */
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "./registry.js";
+import type { MetisIOServer } from "./server.js";
 
 const log = createChildLogger("socket-user-disconnect");
 
@@ -59,9 +60,8 @@ export function disconnectUserSockets(userId: string): void {
 }
 
 /**
- * #633 — make every socket of `userId` on this replica re-handshake after a role
- * change, so it picks up the new durable role (#617) and every room gate runs
- * again.
+ * #633 — make every socket of `userId` re-handshake after a role change, so it
+ * picks up the new durable role (#617) and every room gate runs again.
  *
  * A socket keeps the role it had at connect time: a demoted admin otherwise
  * stays in `mcp:status:admin` for the life of the connection. Closing the
@@ -70,20 +70,82 @@ export function disconnectUserSockets(userId: string): void {
  * so a user who is still active comes back with the new role instead of being
  * parked disconnected. Leaving the socket drops every room it held.
  *
- * Same reach (this replica only, #622) and best-effort contract as
- * `disconnectUserSockets`: call it after the role write commits.
+ * Reach (#622): a remote socket cannot have its transport closed from another
+ * replica — Socket.IO's `RemoteSocket` offers only `disconnect()`, which is the
+ * final "io server disconnect". So this replica closes its own sockets, and
+ * when the cluster adapter is installed it relays `RECONNECT_USER_EVENT` with
+ * `serverSideEmit`; every other replica's `wireReconnectUserRelay` handler then
+ * closes the transports of the user's sockets it holds. With the in-memory
+ * adapter it reaches this replica only.
+ *
+ * Same best-effort contract as `disconnectUserSockets`: call it after the role
+ * write commits.
  */
 export function reconnectUserSockets(userId: string): void {
   revocations++;
+  const io = getSocketServer();
+  if (!io) return;
   try {
-    const io = getSocketServer();
-    if (!io) return;
-    const sids = io.sockets.adapter.rooms.get(`user:${userId}`);
-    for (const sid of [...(sids ?? [])]) io.sockets.sockets.get(sid)?.conn.close();
+    closeLocalUserTransports(io, userId);
   } catch (err) {
     log.warn("could not reconnect a user's sockets after a role change", {
       userId,
       error: (err as Error).message,
     });
   }
+  if (!relayed.has(io)) return;
+  try {
+    asRelayServer(io).serverSideEmit(RECONNECT_USER_EVENT, userId);
+  } catch (err) {
+    log.warn("could not relay a role-change reconnect to the other replicas", {
+      userId,
+      error: (err as Error).message,
+    });
+  }
+}
+
+/** The server-side event a replica relays to make the others close a user's transports. */
+export const RECONNECT_USER_EVENT = "metis:user:reconnect";
+
+/** Servers built with the cluster adapter, whose reconnects are relayed. */
+const relayed = new WeakSet<object>();
+
+/**
+ * The server-side-event surface. `MetisIOServer` declares no server-side
+ * events, and widening its generic would ripple through every typed `Socket`.
+ */
+interface RelayServer {
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
+  serverSideEmit(event: string, ...args: unknown[]): unknown;
+}
+function asRelayServer(io: MetisIOServer): RelayServer {
+  return io as unknown as RelayServer;
+}
+
+/**
+ * #622 — on a server built with the cluster adapter, close the transports of a
+ * user's local sockets when another replica relays `RECONNECT_USER_EVENT`, and
+ * relay this replica's own `reconnectUserSockets`. A no-op without the adapter,
+ * where `serverSideEmit` is unsupported.
+ */
+export function wireReconnectUserRelay(io: MetisIOServer, clustered: boolean): void {
+  if (!clustered) return;
+  relayed.add(io);
+  asRelayServer(io).on(RECONNECT_USER_EVENT, (userId: unknown) => {
+    if (typeof userId !== "string" || userId.length === 0) return;
+    try {
+      closeLocalUserTransports(io, userId);
+    } catch (err) {
+      log.warn("could not reconnect a user's sockets for a relayed role change", {
+        userId,
+        error: (err as Error).message,
+      });
+    }
+  });
+}
+
+/** Close the transport of every socket of `userId` connected to this replica. */
+function closeLocalUserTransports(io: MetisIOServer, userId: string): void {
+  const sids = io.sockets.adapter.rooms.get(`user:${userId}`);
+  for (const sid of [...(sids ?? [])]) io.sockets.sockets.get(sid)?.conn.close();
 }

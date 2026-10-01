@@ -46,7 +46,11 @@ function createMockIo() {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(handler);
     }),
-    to: vi.fn((_room: string) => roomEmitter as ReturnType<MetisIOServer["to"]>),
+    // #622 — presence lists are emitted to this replica only (`io.local.to`); no
+    // `to` here, so a cluster-wide `io.to(...).emit` would throw.
+    local: {
+      to: vi.fn((_room: string) => roomEmitter as ReturnType<MetisIOServer["to"]>),
+    } as unknown as MetisIOServer["local"],
   };
 
   return { mockIo: mockIo as MetisIOServer, mockSocket, socketListeners, emittedEvents, rooms };

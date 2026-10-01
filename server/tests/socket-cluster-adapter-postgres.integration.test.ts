@@ -4,7 +4,8 @@
  * Postgres `LISTEN` / `NOTIFY`.
  *
  * Two real Socket.IO servers, each with its OWN pool built by the production
- * `resolveSocketClusterAdapter(process.env)` — two replicas sharing one
+ * `resolveSocketClusterAdapter` (with `NODE_ENV=production`, which the unit
+ * runner's `test` would otherwise rule out) — two replicas sharing one
  * database. The registry (what the SCIM and workspace routes reach for) holds
  * replica A; the evicted user is connected to B. Users and memberships come from
  * the shared Prisma mock: what is under test is the adapter's reach, not the
@@ -37,6 +38,7 @@ import {
   type SocketClusterAdapter,
 } from "../src/lib/socket/cluster-adapter.js";
 import { registerSocketServer } from "../src/lib/socket/registry.js";
+import { reconnectUserSockets } from "../src/lib/socket/user-disconnect.js";
 import {
   evictMemberMcpStatusRoom,
   evictWorkspaceMcpStatusRoom,
@@ -63,10 +65,12 @@ describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integr
     await admin
       .query(`DROP TABLE IF EXISTS ${SOCKET_IO_ATTACHMENTS_TABLE}`)
       .finally(() => admin.end());
-    clusters = [
-      resolveSocketClusterAdapter(process.env)!,
-      resolveSocketClusterAdapter(process.env)!,
-    ];
+    const env = { ...process.env, NODE_ENV: "production" };
+    clusters = (await Promise.all([
+      resolveSocketClusterAdapter(env),
+      resolveSocketClusterAdapter(env),
+    ])) as SocketClusterAdapter[];
+    expect(clusters.every(Boolean)).toBe(true);
     a = await startReplica(clusters[0].adapter);
     b = await startReplica(clusters[1].adapter);
     registerSocketServer(a.io);
@@ -138,6 +142,24 @@ describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integr
     });
     expect(b.io.sockets.sockets.has(goneOnB.sid)).toBe(false);
     expect(keptOnB.socket.connected).toBe(true);
+  });
+
+  it("a role-change reconnect on A closes the transport of the user's socket on B, which reconnects", async () => {
+    seed(["u-role", "u-other"], []);
+    const onB = await connectUser(b, "u-role", open, { reconnection: true });
+    const otherOnB = await connectUser(b, "u-other", open);
+
+    reconnectUserSockets("u-role");
+
+    await vi.waitFor(
+      () => {
+        expect(onB.disconnectReason).toBe("transport close");
+        expect(onB.handshakes).toBe(2);
+        expect(onB.socket.connected).toBe(true);
+      },
+      { timeout: 10_000 },
+    );
+    expect(otherOnB.disconnectReason).toBeNull();
   });
 
   it("a workspace delete evicted on A takes B's socket out of the workspace room", async () => {

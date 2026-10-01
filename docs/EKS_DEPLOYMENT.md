@@ -669,18 +669,30 @@ No setting. When `DATABASE_URL` is Postgres, every server pod installs the
 Socket.IO Postgres cluster adapter (`@socket.io/postgres-adapter`,
 `server/src/lib/socket/cluster-adapter.ts`, #622), so room operations reach
 sockets on **every** replica: a SCIM deprovision closes the user's sockets
-wherever they are connected, MCP status evictions (workspace delete, member
+wherever they are connected, a role change makes the user's sockets on every pod
+reconnect with the new role, MCP status evictions (workspace delete, member
 removal) take sockets out of the room on every pod, and room emits are delivered
 cluster-wide. It relays over Postgres `LISTEN` / `NOTIFY` on the same database —
 no new managed service.
+
+- **Presence is the exception:** "who is viewing" avatars still show only the
+  users connected to the same pod as the viewer, as before the adapter. Each pod
+  knows only its own viewers, so their lists are not relayed (#651).
 
 - **Cost:** a pool of at most 2 extra connections per pod, one of which is held
   for `LISTEN`. Count them against the database's connection limit.
 - **Table:** messages over NOTIFY's 8000-byte limit (or carrying binary) go
   through the UNLOGGED `socket_io_attachments` table, which the server creates
   itself behind an advisory lock (no migration), so the database user needs
-  `CREATE` on the schema — as for the other self-created shared tables. Without
-  it the server logs one error at boot naming the missing privilege.
+  `CREATE` on the schema — as for the other self-created shared tables.
+  **Without it the adapter is not installed:** the pod logs one error at boot
+  naming the missing privilege and saying cross-replica socket eviction is
+  disabled, and keeps the single-replica in-memory adapter, so SCIM
+  deprovisions, role changes and MCP evictions reach only that pod's sockets.
+  Grant `CREATE` and restart the pods to restore it.
+- **Timeouts:** the adapter's pool gives up on a connection attempt, a query or
+  a statement after 5 s, so an unresponsive database delays live updates by at
+  most that long instead of stalling them.
 - **Failover:** when Postgres drops the `LISTEN` connection (failover, restart,
   `pg_terminate_backend`, TCP timeout) the pod logs a warning, frees the dead
   connection and LISTENs again on a fresh one within about 3 s. Cross-replica
