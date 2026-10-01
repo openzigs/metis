@@ -1,4 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 import {
   ARMS,
@@ -392,6 +397,101 @@ describe("MODULE_PROBES", () => {
         expect(probesFor(arm).map((p) => p.name)).toContain(name);
       }
     }
+  });
+});
+
+/**
+ * #650 — the `socket-cluster` probe, RUN rather than string-matched: its code is
+ * executed by a real `node --input-type=module -e`, as `docker exec` runs it, in a
+ * directory whose `node_modules/pg` is a fake. The fake answers the probe's
+ * `pg_stat_activity` count from `FAKE_LISTENERS` (comma-separated, one per poll,
+ * the last repeating) and prints every query it receives, so a test can check what
+ * was asked as well as what the probe concluded.
+ */
+describe("socket-cluster probe (#650)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "metis-smoke-650-"));
+  mkdirSync(join(dir, "node_modules", "pg"), { recursive: true });
+  writeFileSync(
+    join(dir, "node_modules", "pg", "package.json"),
+    JSON.stringify({ name: "pg", version: "0.0.0-fake", main: "index.js" }),
+  );
+  writeFileSync(
+    join(dir, "node_modules", "pg", "index.js"),
+    [
+      "const seq = (process.env.FAKE_LISTENERS || '0').split(',').map(Number);",
+      "let polls = 0;",
+      "class Client {",
+      "  constructor(o) { this.o = o; }",
+      "  async connect() { console.log('CONNECT ' + this.o.connectionString); }",
+      "  async query(text, values) {",
+      "    console.log('QUERY ' + JSON.stringify({ text, values }));",
+      "    const n = seq[Math.min(polls, seq.length - 1)];",
+      "    polls += 1;",
+      "    return { rows: [{ n }] };",
+      "  }",
+      "  async end() { console.log('END'); }",
+      "}",
+      "module.exports = { Client };",
+    ].join("\n"),
+  );
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  const probe = MODULE_PROBES.find((p) => p.name === "socket-cluster");
+
+  /** @param {string} listeners */
+  const runProbe = (listeners) => {
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", probe?.code ?? ""], {
+      cwd: dir,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        DATABASE_URL: "postgresql://m:p@db:5432/metis",
+        FAKE_LISTENERS: listeners,
+      },
+    });
+    const queries = r.stdout
+      .split("\n")
+      .filter((l) => l.startsWith("QUERY "))
+      .map((l) => JSON.parse(l.slice("QUERY ".length)));
+    return { ...r, queries };
+  };
+
+  it("runs on the Postgres arm only — the cluster adapter is never selected without Postgres", () => {
+    expect(probe?.arms).toEqual(["postgres"]);
+    expect(probesFor("postgres").map((p) => p.name)).toContain("socket-cluster");
+    expect(probesFor("sqlite").map((p) => p.name)).not.toContain("socket-cluster");
+    expect(probesFor("helm-default").map((p) => p.name)).not.toContain("socket-cluster");
+  });
+
+  it("passes when another connection is LISTENing on a socket.io channel", () => {
+    const r = runProbe("1");
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("CONNECT postgresql://m:p@db:5432/metis");
+    expect(r.stdout).toContain("END");
+  });
+
+  it("asks pg_stat_activity for OTHER backends whose last query LISTENs on a socket.io# channel", () => {
+    const [q] = runProbe("1").queries;
+    expect(q.text).toMatch(/from pg_stat_activity/i);
+    expect(q.text).toMatch(/pid <> pg_backend_pid\(\)/);
+    expect(q.text).toMatch(/datname = current_database\(\)/);
+    expect(q.text).toMatch(/query like \$1/i);
+    expect(q.values).toEqual(['LISTEN "socket.io#%']);
+  });
+
+  it("fails, naming the adapter, when nothing LISTENs — the adapter is not attached", () => {
+    const r = runProbe("0");
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("Socket.IO cluster adapter is not attached");
+    expect(r.queries.length).toBeGreaterThan(1);
+    expect(r.stdout).toContain("END");
+  });
+
+  it("waits for a LISTEN the adapter has not issued yet, then passes", () => {
+    const r = runProbe("0,0,2");
+    expect(r.status).toBe(0);
+    expect(r.queries).toHaveLength(3);
   });
 });
 
