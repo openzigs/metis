@@ -710,8 +710,10 @@ no new managed service.
   re-checks every socket it holds against the database (#649): a user
   deprovisioned meanwhile is disconnected, a changed role re-handshakes, and a
   lost workspace membership leaves its MCP status room. Users are re-read four
-  at a time, so the cost of a failover is one user lookup per connected user
-  on each pod. A reconnect during a running re-check does not start a second
+  at a time, so the cost of a failover on each pod is, per connected user, the
+  live-identity read the handshake also does (the user row, their workspace
+  memberships, and their role authority and assignments), plus one more
+  membership read when any of their sockets is in a workspace MCP status room. A reconnect during a running re-check does not start a second
   one alongside it; it queues one more pass after it.
 - **PgBouncer:** `LISTEN` needs a session-pooled connection. A transaction-mode
   pooler between the pods and Postgres silently drops notifications.

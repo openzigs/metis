@@ -385,7 +385,7 @@ describe("createPostgresClusterAdapter", () => {
       await cluster.close();
     }, 10_000);
 
-    it("fires only after every LISTEN statement has succeeded, once per connection", async () => {
+    it("fires once per connection, not again when a later namespace LISTENs on it", async () => {
       const bus = new FakePgNotifyBus();
       const { cluster, io, listening } = await start(bus);
       // A second namespace LISTENs on the same, already-listening client.
@@ -395,6 +395,50 @@ describe("createPostgresClusterAdapter", () => {
       await flush();
       await flush();
       expect(listening).toHaveBeenCalledTimes(1);
+      await io.close();
+      await cluster.close();
+    });
+
+    it("waits for every LISTEN on a new connection, not just the first to succeed", async () => {
+      // Both namespaces exist before the LISTEN client connects, so the adapter
+      // issues both LISTENs on that one client, one after the other. Hold the
+      // second open after the first has succeeded: nothing may fire until it does.
+      const bus = new FakePgNotifyBus();
+      const pool = bus.pool();
+      let releaseSecond!: () => void;
+      const secondHeld = new Promise<void>((r) => (releaseSecond = r));
+      let secondIssued = false;
+      const connect = pool.connect.bind(pool) as () => Promise<{
+        query: (sql: string) => Promise<unknown>;
+      }>;
+      pool.connect = (async () => {
+        const client = await connect();
+        const query = client.query.bind(client);
+        client.query = async (sql: string) => {
+          if (sql.includes("/second")) {
+            secondIssued = true;
+            await secondHeld;
+          }
+          return query(sql);
+        };
+        return client;
+      }) as unknown as Pool["connect"];
+      const { cluster, io, listening } = await start(bus, pool);
+      io.of("/second");
+
+      await vi.waitFor(() => expect(secondIssued).toBe(true));
+      const [client] = bus.clients;
+      // The first LISTEN has completed; the second is still held.
+      expect(client.channels.size).toBe(1);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(listening).not.toHaveBeenCalled();
+
+      releaseSecond();
+      await vi.waitFor(() => expect(client.channels.size).toBe(2));
+      await vi.waitFor(() => expect(listening).toHaveBeenCalledTimes(1));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(listening).toHaveBeenCalledTimes(1);
+      expect(bus.clients.size).toBe(1);
       await io.close();
       await cluster.close();
     });
