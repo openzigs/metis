@@ -15,6 +15,7 @@
  *     navigable page.
  *
  * Socket event contract (server: src/lib/collaboration/presence.ts):
+ *   (#679: a join is admitted only if the user could read the artifact)
  *   Client → Server:
  *     presence:join   { artifactType: PresenceArtifactType, artifactId: string }
  *     presence:leave  { artifactType: PresenceArtifactType, artifactId: string }
@@ -123,13 +124,23 @@ test.describe("Epic #728 / Issue #738 — Presence indicators (Socket.IO)", () =
     ]);
   });
 
+  /**
+   * #679 — a presence room is joined only by a user who could read the
+   * artifact, so each test names `spec.md` of a fresh project both seeded users
+   * can reach (as the Spec Kit page does), never a made-up id.
+   */
+  async function readableArtifactId(): Promise<string> {
+    const project = await createProjectViaApi(API_BASE, adminToken, "e2e-presence");
+    return `${project.id}:spec.md`;
+  }
+
   // AC3 — socket server broadcasts presence:update when a user joins
   test("broadcasts presence:update when User A joins an artifact room", async () => {
     const adminSocket = await connectSocket(adminToken);
 
     try {
       const artifactType = "spec-kit-artifact";
-      const artifactId = `e2e-presence-${Date.now()}`;
+      const artifactId = await readableArtifactId();
 
       // Listen BEFORE emitting join so we don't race.
       const updatePromise = waitForPresenceUpdate(
@@ -150,7 +161,7 @@ test.describe("Epic #728 / Issue #738 — Presence indicators (Socket.IO)", () =
   // AC3 — second user joining same room causes first user to see them
   test("AC3: User B joining the same room appears in presence list within 2 s", async () => {
     const artifactType = "spec-kit-artifact";
-    const artifactId = `e2e-presence-two-${Date.now()}`;
+    const artifactId = await readableArtifactId();
 
     const [adminSocket, coordinatorSocket] = await Promise.all([
       connectSocket(adminToken),
@@ -194,7 +205,7 @@ test.describe("Epic #728 / Issue #738 — Presence indicators (Socket.IO)", () =
   // AC3 — user leaving the room is removed from the presence list
   test("removes User A from presence list after they leave the artifact room", async () => {
     const artifactType = "spec-kit-artifact";
-    const artifactId = `e2e-presence-leave-${Date.now()}`;
+    const artifactId = await readableArtifactId();
 
     const [adminSocket, coordinatorSocket] = await Promise.all([
       connectSocket(adminToken),
@@ -234,7 +245,7 @@ test.describe("Epic #728 / Issue #738 — Presence indicators (Socket.IO)", () =
   // AC3 — socket disconnect triggers presence cleanup automatically
   test("presence list clears when a user's socket disconnects without explicit leave", async () => {
     const artifactType = "spec-kit-artifact";
-    const artifactId = `e2e-presence-disconnect-${Date.now()}`;
+    const artifactId = await readableArtifactId();
 
     const [adminSocket, coordinatorSocket] = await Promise.all([
       connectSocket(adminToken),
@@ -266,6 +277,29 @@ test.describe("Epic #728 / Issue #738 — Presence indicators (Socket.IO)", () =
       expect(afterDisconnect.users.map((u) => u.username)).not.toContain(ADMIN_USER.username);
     } finally {
       if (coordinatorSocket.connected) coordinatorSocket.disconnect();
+    }
+  });
+
+  // #679 — an artifact the user cannot read is refused with a room-scoped
+  // auth:error, and the socket receives no presence list for it.
+  test("refuses presence:join for an artifact of an unknown project", async () => {
+    const coordinatorSocket = await connectSocket(coordinatorToken);
+    try {
+      const artifactType = "spec-kit-artifact";
+      const artifactId = `e2e-presence-missing-${Date.now()}:spec.md`;
+      const room = `presence:${artifactType}:${artifactId}`;
+      let updates = 0;
+      coordinatorSocket.on("presence:update", (u: { room: string }) => {
+        if (u.room === room) updates++;
+      });
+      const refused = new Promise<{ message: string; room?: string }>((resolve) =>
+        coordinatorSocket.once("auth:error", resolve),
+      );
+      coordinatorSocket.emit("presence:join", { artifactType, artifactId });
+      expect(await refused).toEqual({ message: "FORBIDDEN: no access to artifact", room });
+      expect(updates).toBe(0);
+    } finally {
+      coordinatorSocket.disconnect();
     }
   });
 
