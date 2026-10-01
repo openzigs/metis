@@ -23,6 +23,9 @@ import { AppError } from "../../middleware/error-handler.js";
 import { loadAccessibleImpactDetail } from "../impact-analysis/impact-detail-access.js";
 import { getJobScope, type JobScope } from "./job-events.js";
 import { readJobScope } from "./job-scope-store.js";
+import { createChildLogger } from "../logger.js";
+
+const log = createChildLogger("socket:room-access");
 
 async function passes(check: () => Promise<unknown>): Promise<boolean> {
   try {
@@ -73,21 +76,32 @@ export async function canJoinBgRunRoom(user: AuthPayload, runId: string): Promis
  * the client subscribes before the job's first event. A row-less job is scoped
  * from the record its trigger wrote to `job_scopes` (#674), which every
  * replica reads.
+ *
+ * `job_scopes` is read only once every row lookup has missed, so a job with a
+ * row never depends on it. A failure to read it is logged and treated as a
+ * miss: the id is then unknown, and the join is refused.
  */
 async function lookupJobScope(jobId: string): Promise<JobScope | null> {
   const select = { projectId: true };
-  const [analysis, doc, importRun, impact, recorded] = await Promise.all([
+  const [analysis, doc, importRun, impact] = await Promise.all([
     prisma.analysis.findFirst({ where: { id: jobId, deletedAt: null }, select }),
     prisma.generatedDocument.findFirst({ where: { id: jobId, deletedAt: null }, select }),
     prisma.importRun.findFirst({ where: { id: jobId }, select }),
     prisma.impactAnalysis.findFirst({ where: { id: jobId }, select: { id: true } }),
-    readJobScope(jobId),
   ]);
   if (analysis) return { kind: "analysis", projectId: analysis.projectId };
   if (doc) return { kind: "doc-generation", projectId: doc.projectId };
   if (importRun) return { kind: "import-sync", projectId: importRun.projectId };
   if (impact) return { kind: "impact-analysis", projectId: null };
-  return recorded;
+  try {
+    return await readJobScope(jobId);
+  } catch (err) {
+    log.warn("could not read a recorded job scope; treating the job as unknown", {
+      jobId,
+      error: (err as Error).message,
+    });
+    return null;
+  }
 }
 
 /**
