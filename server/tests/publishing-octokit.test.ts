@@ -19,7 +19,11 @@ import {
   verifyAuthScope,
 } from "../src/lib/publishing/octokit-factory.js";
 import { PublishError } from "../src/lib/publishing/types.js";
-import type { PublishOctokitLike } from "../src/lib/publishing/types.js";
+import type {
+  OctokitRequestArgs,
+  OctokitResponseLike,
+  PublishOctokitLike,
+} from "../src/lib/publishing/types.js";
 
 afterEach(() => {
   __setPublishOctokitFactory(null);
@@ -29,8 +33,12 @@ afterEach(() => {
   delete process.env.PUBLISH_RATE_LIMIT_JITTER_MS;
 });
 
-function fakeClient(impl: PublishOctokitLike["request"]): PublishOctokitLike {
-  return { request: impl };
+function fakeClient(
+  impl: (args: OctokitRequestArgs) => Promise<OctokitResponseLike>,
+): PublishOctokitLike {
+  // `request<T>` is caller-typed, as on the real client: `T` is what the caller
+  // asserts the body holds, so a fake can only hand back `unknown` data.
+  return { request: impl as PublishOctokitLike["request"] };
 }
 
 describe("rateLimitConfigFromEnv", () => {

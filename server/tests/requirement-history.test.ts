@@ -11,9 +11,17 @@ import request from "supertest";
 // ---- Mocks -----------------------------------------------------------------
 
 const mockPrisma = {
-  requirement: { findUnique: vi.fn(), update: vi.fn(), findMany: vi.fn(async () => []) },
+  requirement: {
+    findUnique: vi.fn(),
+    update: vi.fn(),
+    findMany: vi.fn(async (): Promise<Array<{ id: string; version: number }>> => []),
+  },
   requirementVersion: { findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
-  reviewRequestItem: { findMany: vi.fn(async () => []) },
+  reviewRequestItem: {
+    findMany: vi.fn(
+      async (): Promise<Array<{ requirementId: string; pinnedVersion: number }>> => [],
+    ),
+  },
   // #619 — approval gate off by default; gated-export cases flip this.
   project: { findUnique: vi.fn(async () => ({ requireApprovedReview: false })) },
   $transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(mockPrisma)),

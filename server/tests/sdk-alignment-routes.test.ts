@@ -268,8 +268,8 @@ beforeAll(() => {
   userToken = issueTokens({
     userId: "u2",
     username: "user",
-    role: "user",
-    permissions: getPermissionsForRole("user"),
+    role: "reader",
+    permissions: getPermissionsForRole("reader"),
   }).accessToken;
 });
 

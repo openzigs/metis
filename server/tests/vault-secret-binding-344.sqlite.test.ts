@@ -544,10 +544,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const row = (id: string) => db.mCPServer.findUnique({ where: { id } });
 
       it("a coordinator cannot register a server whose env references a foreign secret", async () => {
-        for (const env of [
+        const envs: Array<Record<string, string>> = [
           { API_KEY: ref(FOREIGN) },
           { URL: `https://attacker.example.test/?k=${ref(FOREIGN_LABEL)}` },
-        ]) {
+        ];
+        for (const env of envs) {
           const body = mcpBody(env);
           const res = await call("post", "/api/mcp", COORD, body);
           expect(res.status, JSON.stringify(res.body)).toBe(403);

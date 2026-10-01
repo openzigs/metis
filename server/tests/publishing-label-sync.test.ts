@@ -7,10 +7,18 @@ import {
   DEFAULT_PUBLISH_LABELS,
   syncLabels,
 } from "../src/lib/publishing/label-sync.js";
-import type { PublishOctokitLike } from "../src/lib/publishing/types.js";
+import type {
+  OctokitRequestArgs,
+  OctokitResponseLike,
+  PublishOctokitLike,
+} from "../src/lib/publishing/types.js";
 
-function client(impl: PublishOctokitLike["request"]): PublishOctokitLike {
-  return { request: impl };
+function client(
+  impl: (args: OctokitRequestArgs) => Promise<OctokitResponseLike>,
+): PublishOctokitLike {
+  // `request<T>` is caller-typed, as on the real client: `T` is what the caller
+  // asserts the body holds, so a fake can only hand back `unknown` data.
+  return { request: impl as PublishOctokitLike["request"] };
 }
 
 describe("syncLabels", () => {

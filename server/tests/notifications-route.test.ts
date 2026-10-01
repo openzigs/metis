@@ -41,7 +41,8 @@ vi.mock("../src/middleware/auth.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 
 // Typed handles to the mock functions.
-const mockNotification = prisma.notification as {
+// `prisma` is vi.mock'ed: these delegates are the in-memory mocks, not the fluent client.
+const mockNotification = prisma.notification as unknown as {
   findMany: ReturnType<typeof vi.fn>;
   count: ReturnType<typeof vi.fn>;
   findFirst: ReturnType<typeof vi.fn>;

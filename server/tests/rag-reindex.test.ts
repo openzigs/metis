@@ -801,7 +801,14 @@ describe("LocalVectorStore.swapTable", () => {
       {
         id: "old",
         vector: [1, 0, 0, 0],
-        metadata: { chunkId: "old", documentId: "d", filename: "a", position: 0, text: "old" },
+        metadata: {
+          chunkId: "old",
+          documentId: "d",
+          filename: "a",
+          position: 0,
+          text: "old",
+          embeddingModel: "m",
+        },
       },
     ]);
     const shadow = reindexShadowId("p1");
@@ -810,7 +817,14 @@ describe("LocalVectorStore.swapTable", () => {
       {
         id: "new",
         vector: [0, 1, 0, 0, 0, 0],
-        metadata: { chunkId: "new", documentId: "d", filename: "a", position: 0, text: "new" },
+        metadata: {
+          chunkId: "new",
+          documentId: "d",
+          filename: "a",
+          position: 0,
+          text: "new",
+          embeddingModel: "m",
+        },
       },
     ]);
 

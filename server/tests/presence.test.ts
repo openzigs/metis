@@ -51,7 +51,7 @@ function createMockIo() {
     },
   };
 
-  const mockIo: Partial<MetisIOServer> = {
+  const mockIo = {
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(handler);
@@ -63,7 +63,9 @@ function createMockIo() {
     } as unknown as MetisIOServer["local"],
   };
 
-  return { mockIo: mockIo as MetisIOServer, mockSocket, socketListeners, emittedEvents, rooms };
+  // A two-member double of the server: only `on` and `local.to` are exercised.
+  const io = mockIo as unknown as MetisIOServer;
+  return { mockIo: io, mockSocket, socketListeners, emittedEvents, rooms };
 }
 
 // ---- Tests -----------------------------------------------------------------

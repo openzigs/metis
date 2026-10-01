@@ -142,6 +142,16 @@ import {
   isConnectorIngestActive,
 } from "../src/lib/connectors/ingest-guard.js";
 
+/**
+ * Prisma delegates return a fluent `PrismaPromise` that no in-memory double can
+ * construct; the code under test only awaits the result, so a plain async
+ * function stands in for it. Asserting the delegate's type here is the double's
+ * one cast.
+ */
+function prismaImpl<F>(impl: (...args: never[]) => Promise<unknown>): F {
+  return impl as F;
+}
+
 afterEach(() => {
   repoConnections.clear();
   dbConnections.clear();
@@ -434,7 +444,9 @@ describe("buildSchedulerHandlerOverrides", () => {
   it("rerun-analysis uses autopilot rails when the project enables them", async () => {
     const { prisma } = await import("../src/lib/prisma.js");
     const { runAutopilot } = await import("../src/lib/autopilot/index.js");
-    vi.mocked(prisma.project.findUnique).mockResolvedValueOnce({ autopilotEnabled: true });
+    vi.mocked(prisma.project.findUnique).mockImplementationOnce(
+      prismaImpl(async () => ({ autopilotEnabled: true })),
+    );
     vi.mocked(runAutopilot).mockResolvedValueOnce({
       status: "completed",
       result: { id: "analysis_auto" },
@@ -451,7 +463,9 @@ describe("buildSchedulerHandlerOverrides", () => {
   it("rerun-analysis surfaces autopilot aborts as errors", async () => {
     const { prisma } = await import("../src/lib/prisma.js");
     const { runAutopilot } = await import("../src/lib/autopilot/index.js");
-    vi.mocked(prisma.project.findUnique).mockResolvedValueOnce({ autopilotEnabled: true });
+    vi.mocked(prisma.project.findUnique).mockImplementationOnce(
+      prismaImpl(async () => ({ autopilotEnabled: true })),
+    );
     vi.mocked(runAutopilot).mockResolvedValueOnce({
       status: "aborted",
       reason: "budget-exceeded",

@@ -615,7 +615,7 @@ describe("TaskQueue concurrency + priority", () => {
     const { store } = makeStore();
     const registry = new InMemoryTaskHandlerRegistry();
     const order: string[] = [];
-    let release: (() => void) | null = null;
+    let release: (() => void) | undefined;
     registry.register({
       type: "blocker",
       description: "",
@@ -750,7 +750,7 @@ describe("TaskQueue cancellation", () => {
   it("cancels a queued task before it runs", async () => {
     const { store, rows } = makeStore();
     const registry = new InMemoryTaskHandlerRegistry();
-    let release: (() => void) | null = null;
+    let release: (() => void) | undefined;
     registry.register({
       type: "blocker",
       description: "",
@@ -785,7 +785,7 @@ describe("TaskQueue cancellation", () => {
       type: "long",
       description: "",
       handler: async (ctx) => {
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((_resolve, reject) => {
           ctx.signal.addEventListener("abort", () => {
             aborted = true;
             reject(new Error("aborted"));

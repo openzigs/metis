@@ -241,9 +241,8 @@ describe("resolveProjectProvider — override routing (#254)", () => {
   it("an Admin runtime AI_DEFAULT_MODEL does not leak into a provider-only override either", async () => {
     delete process.env.AI_MODEL;
     const svc = getConfigService();
-    // @ts-expect-error — test seam: an admin-set runtime_config value.
+    // Test seam: an admin-set runtime_config value (bracket access reaches the private cache).
     svc["tunableCache"].set("AI_DEFAULT_MODEL", "gpt-admin-runtime");
-    // @ts-expect-error — see above.
     svc["tunableDbBacked"].add("AI_DEFAULT_MODEL");
     projectFindFirst.mockResolvedValue({ aiProviderId: "anthropic", aiModel: null });
 

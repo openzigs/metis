@@ -141,7 +141,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       try {
         const created = await Promise.all(
           ["a", "b"].map((label) =>
-            createRepoConnector("p2", { label, ownerOrOrg: "o", repoName: label }, "u1"),
+            createRepoConnector(
+              "p2",
+              { label, provider: "github", ownerOrOrg: "o", repoName: label },
+              "u1",
+            ),
           ),
         );
         expect(created.map((c) => c.isPrimary).sort()).toEqual([false, true]);
@@ -173,7 +177,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("still marks a lone first repository primary and later ones not", async () => {
       const first = await createRepoConnector(
         "p5",
-        { label: "one", ownerOrOrg: "o", repoName: "one" },
+        { label: "one", provider: "github", ownerOrOrg: "o", repoName: "one" },
         "u1",
       );
       const second = await createUploadRepoConnector("p5", "two", await zipBuf(), "u1");
@@ -190,7 +194,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const insertedLabels: string[] = [];
       let raced = false;
       const race = () =>
-        createRepoConnector("p6", { label: "good", ownerOrOrg: "o", repoName: "good" }, "u1");
+        createRepoConnector(
+          "p6",
+          { label: "good", provider: "github", ownerOrOrg: "o", repoName: "good" },
+          "u1",
+        );
       state.db = overrideRepoConnection(db, {
         create: async (args: Parameters<typeof real.create>[0]) => {
           insertedLabels.push(String(args.data.label));
@@ -260,7 +268,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       try {
         await expect(
-          createRepoConnector("p8", { label: "old", ownerOrOrg: "o", repoName: "old" }, "u1"),
+          createRepoConnector(
+            "p8",
+            { label: "old", provider: "github", ownerOrOrg: "o", repoName: "old" },
+            "u1",
+          ),
         ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
       } finally {
         state.db = db;

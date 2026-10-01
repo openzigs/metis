@@ -259,7 +259,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         { target: { type: "db_connector", id: "new" } },
       );
     /** Run `between` inside the rotation, after its bindings read and before its UPDATE. */
-    const betweenReadAndWrite = (between: () => Promise<void>) => {
+    const betweenReadAndWrite = (between: () => Promise<unknown>) => {
       const svc = getVaultService();
       const real = svc.rotate.bind(svc);
       return vi.spyOn(svc, "rotate").mockImplementationOnce(async (...args) => {

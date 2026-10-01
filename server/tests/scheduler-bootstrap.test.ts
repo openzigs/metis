@@ -136,19 +136,39 @@ describe("createSchedulerEmitter()", () => {
     const to = vi.fn(() => ({ emit }));
     const io = { to } as unknown as Parameters<typeof createSchedulerEmitter>[0];
     const e = createSchedulerEmitter(io);
-    e.schedulerStatus({ jobId: "j1", status: "registered" });
+    e.schedulerStatus({ jobId: "j1", key: "k1", status: "registered", enabled: true, ts: 0 });
     expect(to).toHaveBeenLastCalledWith("scheduler:status");
-    e.taskStatus({ taskId: "t1", status: "running", attempts: 1 });
+    e.taskStatus({
+      taskId: "t1",
+      type: "noop",
+      status: "running",
+      attempts: 1,
+      maxAttempts: 3,
+      ts: 0,
+    });
     expect(to).toHaveBeenCalledWith("task:t1");
-    e.taskProgress({ taskId: "t1", step: "go" });
+    e.taskProgress({ taskId: "t1", step: "go", ts: 0 });
     expect(to).toHaveBeenLastCalledWith("task:t1");
   });
 
   it("NOOP_SCHEDULER_EMITTER is a no-op", () => {
     expect(() => {
-      NOOP_SCHEDULER_EMITTER.schedulerStatus({ jobId: "j1", status: "registered" });
-      NOOP_SCHEDULER_EMITTER.taskStatus({ taskId: "t1", status: "pending", attempts: 0 });
-      NOOP_SCHEDULER_EMITTER.taskProgress({ taskId: "t1", step: "x" });
+      NOOP_SCHEDULER_EMITTER.schedulerStatus({
+        jobId: "j1",
+        key: "k1",
+        status: "registered",
+        enabled: true,
+        ts: 0,
+      });
+      NOOP_SCHEDULER_EMITTER.taskStatus({
+        taskId: "t1",
+        type: "noop",
+        status: "pending",
+        attempts: 0,
+        maxAttempts: 3,
+        ts: 0,
+      });
+      NOOP_SCHEDULER_EMITTER.taskProgress({ taskId: "t1", step: "x", ts: 0 });
     }).not.toThrow();
   });
 });

@@ -90,23 +90,25 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
       create: vi.fn(async ({ data }: { data: Partial<Draft> }) => {
         nextId += 1;
-        const row: Draft = {
-          id: `draft_${nextId}`,
-          projectId: fakeProject.id,
-          requirementId: null,
-          parentDraftId: null,
-          draftType: "feature",
-          title: "",
-          body: "",
-          labels: "[]",
-          assignees: "[]",
-          storyPoints: 1,
-          status: "draft",
-          dedupHash: null,
-          metadata: null,
-          deletedAt: null,
-          ...(data as Draft),
-        };
+        const row: Draft = Object.assign(
+          {
+            id: `draft_${nextId}`,
+            projectId: fakeProject.id,
+            requirementId: null,
+            parentDraftId: null,
+            draftType: "feature",
+            title: "",
+            body: "",
+            labels: "[]",
+            assignees: "[]",
+            storyPoints: 1,
+            status: "draft",
+            dedupHash: null,
+            metadata: null,
+            deletedAt: null,
+          },
+          data,
+        );
         drafts.set(row.id, row);
         return row;
       }),

@@ -6,7 +6,7 @@
  * database rather than trusting the object the service returned.
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
@@ -64,7 +64,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#481 — a replaced foreign secret is retired unless still referenced (real SQLite)",
   () => {
     let sqlite: MigratedSqlite;
-    let db: PrismaClient;
+    let db: PrismaClient<Prisma.PrismaClientOptions, "query">;
     let vault: InstanceType<typeof VaultService>;
     const prevKey = process.env.VAULT_MASTER_KEY;
     let seq = 0;
@@ -520,7 +520,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const plan = raw
           .prepare(`EXPLAIN QUERY PLAN ${sql}`)
           .all(...params)
-          .map((r) => (r as { detail: string }).detail)
+          .map((r: unknown) => (r as { detail: string }).detail)
           .join("\n");
         expect(plan).toMatch(/SEARCH .*tasks USING INDEX tasks_type_status_idx/);
         expect(plan).not.toMatch(/SCAN .*tasks/);

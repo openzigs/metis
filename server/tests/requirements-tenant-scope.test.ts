@@ -39,6 +39,12 @@ const REQUIREMENT_ROW = {
   reviewStatus: null,
 };
 
+/** The project row the access seam reads; pre-migration rows have no workspace. */
+interface ProjectAccessRow {
+  workspaceId: string | null;
+  workspace?: { deletedAt: Date | null; members: Array<{ id: string }> };
+}
+
 const { prismaMock } = vi.hoisted(() => ({
   prismaMock: {
     $queryRawUnsafe: vi.fn(async () => 1),
@@ -64,11 +70,14 @@ const { prismaMock } = vi.hoisted(() => ({
           ({
             workspaceId: "ws_a",
             workspace: { deletedAt: null, members: [{ id: "member-row" }] },
-          }) as { workspaceId: string | null } | null,
+          }) as ProjectAccessRow | null,
       ),
     },
     requirement: {
-      findUnique: vi.fn(async () => ({ ...REQUIREMENT_ROW }) as Record<string, unknown> | null),
+      findUnique: vi.fn(
+        async (_args: { where: Record<string, unknown> }) =>
+          ({ ...REQUIREMENT_ROW }) as Record<string, unknown> | null,
+      ),
       update: vi.fn(async () => ({ id: "req_1", version: 3, updatedAt: new Date() })),
     },
     requirementVersion: { findMany: vi.fn(async () => []), create: vi.fn(async () => ({})) },
@@ -95,14 +104,14 @@ vi.mock("../src/lib/reviews/approval-gate.js", () => ({
   assertRequirementsExportable: vi.fn(async () => undefined),
 }));
 
-const mockUpdateWithHistory = vi.fn(async () => ({
+const mockUpdateWithHistory = vi.fn(async (..._args: unknown[]) => ({
   id: "req_1",
   version: 3,
   updatedAt: new Date("2026-07-28T00:00:00Z"),
   changed: true,
   changedFields: {},
 }));
-const mockRestoreVersion = vi.fn(async () => ({
+const mockRestoreVersion = vi.fn(async (..._args: unknown[]) => ({
   id: "req_1",
   version: 4,
   updatedAt: new Date("2026-07-28T00:00:00Z"),
@@ -115,11 +124,12 @@ vi.mock("../src/lib/requirements/requirement-version-service.js", async (importO
     await importOriginal<typeof import("../src/lib/requirements/requirement-version-service.js")>();
   return {
     ...actual,
-    updateRequirementWithHistory: (...args: unknown[]) => mockUpdateWithHistory(...(args as [])),
-    restoreRequirementVersion: (...args: unknown[]) => mockRestoreVersion(...(args as [])),
+    updateRequirementWithHistory: (...args: unknown[]) => mockUpdateWithHistory(...args),
+    restoreRequirementVersion: (...args: unknown[]) => mockRestoreVersion(...args),
   };
 });
 
+import type { AuthPayload } from "@metis/shared";
 import request from "supertest";
 import type { Test } from "supertest";
 import { createApp } from "../src/app.js";
@@ -343,9 +353,7 @@ describe("same-workspace access still works", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ version: 2, title: "New title" });
     // The last requirement lookup is the lock loader — it must carry the scope.
-    const calls = prismaMock.requirement.findUnique.mock.calls as Array<
-      [{ where: Record<string, unknown> }]
-    >;
+    const calls = prismaMock.requirement.findUnique.mock.calls;
     const loaderCall = calls[calls.length - 1][0];
     expect(loaderCall.where.projectId).toBe("proj_a");
   });
@@ -377,7 +385,7 @@ describe("system admin bypass", () => {
 });
 
 describe("assertRequirementAccessible (direct)", () => {
-  const coordinator = {
+  const coordinator: AuthPayload = {
     userId: "user_1",
     username: "coordinator",
     role: "coordinator",

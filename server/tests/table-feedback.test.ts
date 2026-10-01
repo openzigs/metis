@@ -9,6 +9,7 @@ import {
   deleteTableFeedback,
   findFeedbackTargetItem,
   upsertTableFeedback,
+  type TableFeedbackPrisma,
 } from "../src/lib/impact-analysis/table-feedback.js";
 
 interface ItemRow {
@@ -30,14 +31,14 @@ interface FeedbackRow {
   updatedAt: Date;
 }
 
-function makeFakePrisma() {
+function makeFakePrisma(): TableFeedbackPrisma & { rows: FeedbackRow[] } {
   const items: ItemRow[] = [
     { id: "item-1", impactAnalysisId: "ia-1", projectId: "project-001" },
     { id: "item-2", impactAnalysisId: "ia-2", projectId: "project-002" },
   ];
   const rows: FeedbackRow[] = [];
   let seq = 0;
-  return {
+  const fake = {
     rows,
     impactItem: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -95,6 +96,9 @@ function makeFakePrisma() {
       },
     },
   };
+  // Prisma delegates return a fluent `PrismaPromise` no in-memory double can
+  // construct; the service only awaits each call, so plain Promises stand in.
+  return fake as unknown as TableFeedbackPrisma & { rows: FeedbackRow[] };
 }
 
 let prisma: ReturnType<typeof makeFakePrisma>;
