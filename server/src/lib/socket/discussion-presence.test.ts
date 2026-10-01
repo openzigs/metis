@@ -11,6 +11,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthPayload } from "@metis/shared";
+
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock("../logger.js", () => ({
+  createChildLogger: () => ({ warn, info: vi.fn(), debug: vi.fn(), error: vi.fn() }),
+}));
+
 import {
   clearThreadPresence,
   getThreadPresence,
@@ -120,6 +126,19 @@ describe("presence:thread:join", () => {
       message: "FORBIDDEN: no access to discussion thread",
       room: "thread:gone",
     });
+  });
+
+  it("logs a refusal at warn with userId, threadId and reason (OWASP A09)", async () => {
+    const forbidden = () => Promise.resolve({ ok: false, reason: "forbidden" });
+    const { socket, handlers } = makeFakeSocket();
+    wireDiscussionPresenceHandlers(socket, { canAccessThread: forbidden });
+
+    await fire(handlers, "presence:thread:join", { threadId: "t1" });
+
+    expect(warn).toHaveBeenCalledWith(
+      "Socket presence:thread:join rejected",
+      expect.objectContaining({ userId: "u1", threadId: "t1", reason: "forbidden" }),
+    );
   });
 
   it("the member list aggregates multiple sockets in the same thread", async () => {

@@ -106,7 +106,7 @@ export type PresenceSocket = Pick<
 type AccessChecker = (
   actor: { id: string; role: RoleKey },
   threadId: string,
-) => Promise<{ ok: boolean }>;
+) => Promise<{ ok: boolean; reason?: string }>;
 
 /** Snapshot the current members of a thread room. */
 function membersOf(members: PresenceMap, room: string): PresenceMember[] {
@@ -153,6 +153,12 @@ export function wireDiscussionPresenceHandlers(
       try {
         const result = await access({ id: user.userId, role: user.role as RoleKey }, threadId);
         if (!result.ok) {
+          log.warn("Socket presence:thread:join rejected", {
+            socketId: socket.id,
+            userId: user.userId,
+            threadId,
+            reason: result.reason,
+          });
           socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
           return;
         }

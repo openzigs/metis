@@ -28,8 +28,8 @@ export interface ThreadRoomEvent {
 /**
  * #655 — the payload of `auth:error`. Without `room` it is a connection-level
  * failure the user must see. With `room` it is the refusal of one room join
- * (`connector:{id}`, `run:{id}`, `job:{id}`, and `presence:{type}:{id}` since
- * #679): the client re-subscribes to those rooms on its own, after every
+ * (`connector:{id}`, `run:{id}`, `job:{id}`, `presence:{type}:{id}` since
+ * #679, and `thread:{id}` since #685): the client re-subscribes to those rooms on its own, after every
  * reconnect, so a refusal there is not an error to show — the follower drops
  * the room instead (a presence follower just shows no viewers). The payload is the same for
  * an unknown id, a foreign id and a failed lookup, so it is no existence oracle.
@@ -38,7 +38,8 @@ export interface SocketAuthErrorEvent {
   message: string;
   /**
    * The room whose join was refused, named by its `@metis/shared` factory
-   * (`connectorRoom`, `bgRunRoom`, `jobRoom`, `presenceRoom`) so a client
+   * (`connectorRoom`, `bgRunRoom`, `jobRoom`, `presenceRoom`, and `threadRoom`
+   * since #685) so a client
    * compares it against the same factory's output (#676). A rate-limited
    * refusal (#682) names the room of any rate-limited join, including
    * `projectRoom` and `SCHEDULER_STATUS_ROOM`.

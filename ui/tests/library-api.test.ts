@@ -9,7 +9,9 @@ vi.mock("@/lib/api-client", () => ({
 import { apiFetch } from "@/lib/api-client";
 const mockApi = apiFetch as unknown as ReturnType<typeof vi.fn>;
 
-beforeEach(() => mockApi.mockClear());
+beforeEach(() => {
+  mockApi.mockClear();
+});
 
 describe("skillsApi wrapper", () => {
   it("forwards filters as query params", async () => {

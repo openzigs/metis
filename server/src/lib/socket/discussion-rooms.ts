@@ -25,7 +25,7 @@ import type {
   ServerToClientEvents,
   RoleKey,
 } from "@metis/shared";
-import { threadRoom } from "@metis/shared";
+import { THREAD_DENIAL, threadRoom } from "@metis/shared";
 import { canAccessThread } from "../discussions/access.js";
 import { createChildLogger } from "../logger.js";
 import { onClientEvent } from "./client-event-handler.js";
@@ -46,13 +46,14 @@ export type ThreadRoomSocket = Pick<
 export { threadRoom };
 
 /**
- * #685 — the one refusal for a thread room, whatever the cause: an unknown or
- * deleted id, no access, or a failed lookup all read the same, so the message
- * never tells a probe which ids exist. It is sent as `{ message, room }`, the
+ * #685 — the one refusal for a thread room, whatever the cause. Defined in
+ * `@metis/shared` beside `threadRoom`; sent as `{ message, room }`, the
  * room-scoped shape (#655), so the UI treats it as that room's refusal rather
- * than a connection error.
+ * than a connection error. No thread follower handles that refusal, so a thread
+ * revoked or deleted while open silently stops receiving live updates until the
+ * next REST load — deliberately, as #685 asks.
  */
-export const THREAD_DENIAL = "FORBIDDEN: no access to discussion thread";
+export { THREAD_DENIAL };
 
 /**
  * Attach `subscribe:thread` / `unsubscribe:thread` handlers to `socket`.

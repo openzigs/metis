@@ -20,7 +20,9 @@ const encoder = new TextEncoder();
 const frame = (event: string, data: unknown) =>
   encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-beforeEach(() => streamFetch.mockReset());
+beforeEach(() => {
+  streamFetch.mockReset();
+});
 
 describe("queue frames (#204)", () => {
   it("parses waiting and acquired", () => {

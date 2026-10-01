@@ -22,7 +22,9 @@ const apiFetchMock = apiFetch as unknown as ReturnType<typeof vi.fn>;
 import { dataMappingsApi } from "@/lib/data-mappings-api";
 
 describe("dataMappingsApi", () => {
-  beforeEach(() => apiFetchMock.mockReset());
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+  });
 
   it("list calls correct URL", () => {
     apiFetchMock.mockResolvedValueOnce([]);
@@ -67,7 +69,9 @@ describe("dataMappingsApi", () => {
 import { libraryApi, skillsApi, agentsApi } from "@/lib/library-api";
 
 describe("libraryApi branches", () => {
-  beforeEach(() => apiFetchMock.mockReset());
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+  });
 
   it("libraryApi.search calls /library", () => {
     apiFetchMock.mockResolvedValueOnce({ items: [] });
@@ -171,7 +175,9 @@ import { specKitApi } from "@/lib/spec-kit-api";
 import type { SpecKitArtifactName } from "@metis/shared";
 
 describe("specKitApi branches", () => {
-  beforeEach(() => apiFetchMock.mockReset());
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+  });
 
   it("getEnabled calls correct URL", () => {
     apiFetchMock.mockResolvedValueOnce({ enabled: true });
@@ -310,7 +316,9 @@ describe("plugins-api branches", () => {
 import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 
 describe("WorkspaceSwitcher", () => {
-  beforeEach(() => apiFetchMock.mockReset());
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+  });
 
   it("renders loading null while query is in-flight (no workspace data yet)", () => {
     apiFetchMock.mockImplementationOnce(() => new Promise(() => {})); // never resolves
@@ -540,7 +548,9 @@ describe("SSOButtons", () => {
 import { productsApi } from "@/lib/products-api";
 
 describe("productsApi.listRepoConnections branches", () => {
-  beforeEach(() => apiFetchMock.mockReset());
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+  });
 
   it("listRepoConnections with search param includes search in params", () => {
     apiFetchMock.mockResolvedValueOnce([]);
@@ -564,7 +574,9 @@ describe("productsApi.listRepoConnections branches", () => {
 // ─── spec-kit-api constitution endpoint ─────────────────────────────────────
 
 describe("specKitApi.generateConstitution branches", () => {
-  beforeEach(() => apiFetchMock.mockReset());
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+  });
 
   it("generateConstitution with projectOverrides includes body with overrides", () => {
     apiFetchMock.mockResolvedValueOnce({});
@@ -630,7 +642,9 @@ import { AuditLogTab } from "@/app/(authed)/settings/api-keys/AuditLogTab";
 const auditMock = configApi.audit as unknown as ReturnType<typeof vi.fn>;
 
 describe("AuditLogTab — RedactedCell branches", () => {
-  beforeEach(() => auditMock.mockReset());
+  beforeEach(() => {
+    auditMock.mockReset();
+  });
 
   it.skip("renders [unset] value with muted foreground (unset branch)", async () => {
     auditMock.mockResolvedValueOnce([
@@ -709,7 +723,9 @@ vi.mock("@tanstack/react-query", async () => {
 import { ModelRecommendation } from "@/components/analysis/ModelRecommendation";
 
 describe("ModelRecommendation", () => {
-  beforeEach(() => apiFetchMock.mockReset());
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+  });
 
   it("renders loading state when isLoading=true", () => {
     apiFetchMock.mockImplementationOnce(() => new Promise(() => {}));
@@ -1017,7 +1033,9 @@ const makeDigest = (over = {}) => ({
 });
 
 describe("EvidenceReview", () => {
-  beforeEach(() => reviewApprovalMock.mockReset());
+  beforeEach(() => {
+    reviewApprovalMock.mockReset();
+  });
 
   it("renders empty state when no digests", () => {
     const Wrapper = makeWrapper({});

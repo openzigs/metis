@@ -13,7 +13,9 @@ vi.mock("@/lib/api-client", () => ({
 
 const { scannerApi } = await import("../src/lib/scanner-api");
 
-beforeEach(() => mockApiFetch.mockReset());
+beforeEach(() => {
+  mockApiFetch.mockReset();
+});
 
 describe("scannerApi", () => {
   it("listRuleSets fetches the rule-sets collection", async () => {

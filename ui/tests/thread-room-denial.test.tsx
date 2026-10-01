@@ -6,6 +6,10 @@
  * the thread view, so it must not become the app-wide connection error or a
  * global toast.
  *
+ * The client cannot tell which of the two events a refusal answers, and the UI
+ * never sends `presence:thread:join`, so the subscribe case covers both; the
+ * server-side presence tests pin the presence payload.
+ *
  * Wires the real socket client, `keepRoomSubscribed(threadFollow(...))` and
  * `<ConnectionStatus />` to one fake socket that keeps every listener.
  */
@@ -46,13 +50,10 @@ vi.mock("sonner", () => ({
 }));
 
 import { useSocket, useSocketStatus, __resetSocketStatusForTests } from "@/lib/socket-client";
-import { threadRoom } from "@metis/shared";
+import { THREAD_DENIAL, threadRoom } from "@metis/shared";
 import { keepRoomSubscribed } from "@/lib/socket-subscription";
 import { threadFollow } from "@/lib/socket-rooms";
 import { ConnectionStatus } from "@/components/realtime/connection-status";
-
-/** The refusal the server sends for every thread denial cause (#685). */
-const THREAD_DENIAL = "FORBIDDEN: no access to discussion thread";
 
 async function mountApp() {
   render(<ConnectionStatus />);
@@ -77,15 +78,6 @@ describe("a refused thread room (#685)", () => {
     expect(fake.socket.emit).toHaveBeenCalledWith("subscribe:thread", { threadId: "t-gone" });
 
     fake.fire("auth:error", { message: THREAD_DENIAL, room: threadRoom("t-gone") });
-
-    expect(status.result.current.error).toBeNull();
-    expect(toastError).not.toHaveBeenCalled();
-  });
-
-  it("a presence:thread:join refusal (same room) stores no global error", async () => {
-    const status = await mountApp();
-
-    fake.fire("auth:error", { message: THREAD_DENIAL, room: threadRoom("t-revoked") });
 
     expect(status.result.current.error).toBeNull();
     expect(toastError).not.toHaveBeenCalled();

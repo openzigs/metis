@@ -26,6 +26,15 @@ export const SCHEDULER_STATUS_ROOM = "scheduler:status";
 /** A discussion thread's realtime fan-out (`subscribe:thread`). */
 export const threadRoom = (threadId: string): string => `thread:${threadId}`;
 
+/**
+ * #685 — the one `auth:error` message for a refused thread room, whatever the
+ * cause: an unknown or deleted id, no access, or a failed lookup all read the
+ * same, so the message never tells a probe which ids exist. The server sends it
+ * as `{ message, room: threadRoom(id) }`; shared so the UI's tests assert the
+ * value the server actually sends.
+ */
+export const THREAD_DENIAL = "FORBIDDEN: no access to discussion thread";
+
 /** A chat session's tool-event and approval room (`subscribe:session`). */
 export const sessionRoom = (sessionId: string): string => `session:${sessionId}`;
 

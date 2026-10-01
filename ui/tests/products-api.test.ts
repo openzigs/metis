@@ -13,7 +13,9 @@ vi.mock("@/lib/api-client", () => ({
 
 const { productsApi } = await import("../src/lib/products-api");
 
-beforeEach(() => mockApiFetch.mockReset());
+beforeEach(() => {
+  mockApiFetch.mockReset();
+});
 
 describe("productsApi", () => {
   it("list passes params", async () => {

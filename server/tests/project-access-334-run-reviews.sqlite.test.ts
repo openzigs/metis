@@ -151,7 +151,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    beforeEach(() => budgetCheck.mockClear());
+    beforeEach(() => {
+      budgetCheck.mockClear();
+    });
 
     it("the real role map grants pr.review / pr.review.read to admin only (why the gate is widened here)", () => {
       for (const p of ["pr.review", "pr.review.read"] as const) {

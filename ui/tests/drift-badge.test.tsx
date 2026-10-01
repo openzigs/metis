@@ -14,7 +14,9 @@ vi.mock("next/navigation", () => ({
 }));
 
 describe("DriftBadge", () => {
-  beforeEach(() => PUSH_MOCK.mockClear());
+  beforeEach(() => {
+    PUSH_MOCK.mockClear();
+  });
 
   it("renders nothing when count is 0", () => {
     const { container } = render(<DriftBadge projectId="p1" count={0} />);

@@ -47,7 +47,9 @@ const withheld = {
 };
 
 describe("InviteAcceptPage — deleted-workspace, expired and used invites (#579, #597)", () => {
-  beforeEach(() => push.mockReset());
+  beforeEach(() => {
+    push.mockReset();
+  });
   afterEach(() => vi.unstubAllGlobals());
 
   it("shows the gone state, with no accept button, for a deleted workspace", async () => {

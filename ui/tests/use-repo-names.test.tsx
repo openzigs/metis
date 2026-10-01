@@ -14,7 +14,9 @@ import { repoNamesById, useRepoNames, useRepoNamesForProjects } from "@/hooks/us
 
 const list = repoConnectorsApi.list as unknown as ReturnType<typeof vi.fn>;
 
-beforeEach(() => list.mockReset());
+beforeEach(() => {
+  list.mockReset();
+});
 
 describe("repoNamesById", () => {
   it("maps each connector id to its repository name, else its label", () => {

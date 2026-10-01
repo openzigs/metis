@@ -82,7 +82,9 @@ describe("applyHttpKeepAliveTimeout (#221)", () => {
 });
 
 describe("0 in production warns at boot (review of PR #326)", () => {
-  beforeEach(() => logWarn.mockReset());
+  beforeEach(() => {
+    logWarn.mockReset();
+  });
 
   it("warns, naming the setting, and still applies 0", () => {
     const server = http.createServer();

@@ -11,7 +11,9 @@ vi.mock("@/lib/api-client", () => ({
 const { inferenceProfileApi } = await import("../src/lib/inference-profile-api");
 
 describe("inferenceProfileApi", () => {
-  beforeEach(() => mockApiFetch.mockReset());
+  beforeEach(() => {
+    mockApiFetch.mockReset();
+  });
 
   it("get calls the correct endpoint", async () => {
     mockApiFetch.mockResolvedValue({ profile: null });

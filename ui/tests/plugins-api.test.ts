@@ -69,7 +69,9 @@ describe("pluginsApi.exportPlugin", () => {
 });
 
 describe("pluginsApi.importPlugin", () => {
-  beforeEach(() => mockApiFetch.mockReset());
+  beforeEach(() => {
+    mockApiFetch.mockReset();
+  });
 
   it("posts the envelope through apiFetch", async () => {
     mockApiFetch.mockResolvedValue({
