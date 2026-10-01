@@ -71,7 +71,10 @@ export function usePromotionBlockedEvent(
     const release = keepSubscribed(
       socket,
       () => socket.emit("subscribe:analysis", { analysisId }),
-      () => socket.emit("unsubscribe:analysis", { analysisId }),
+      {
+        room: `analysis:${analysisId}`,
+        unsubscribe: () => socket.emit("unsubscribe:analysis", { analysisId }),
+      },
     );
     const handler = (event: PromotionBlockedEvent): void => {
       if (event.analysisId !== analysisId) return;

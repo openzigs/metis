@@ -133,11 +133,10 @@ export function DiscussionThreadView({
   useEffect(() => {
     if (!socket) return;
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(
-      socket,
-      () => socket.emit("subscribe:thread", { threadId }),
-      () => socket.emit("unsubscribe:thread", { threadId }),
-    );
+    const release = keepSubscribed(socket, () => socket.emit("subscribe:thread", { threadId }), {
+      room: `thread:${threadId}`,
+      unsubscribe: () => socket.emit("unsubscribe:thread", { threadId }),
+    });
 
     function onNew(evt: DiscussionMessageNewEvent) {
       if (evt.threadId !== threadId) return;
