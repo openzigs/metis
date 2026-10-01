@@ -23,10 +23,11 @@
  * and ports while the monorepo fan-out contends for them (#1379). In process, there is
  * no port to steal and nothing to time out on. The `listen` spy below keeps it that way.
  */
-import { Server } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import type { Express } from "express";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetReadinessForTests, beginWarmup } from "../src/readiness.js";
-import { invoke } from "./helpers/invoke-app.js";
+import { send, type Reply } from "./helpers/invoke-app.js";
+import { createListenGuard } from "./helpers/listen-guard.js";
 import { MAX_EMBED_TEXT_CHARS, MAX_EMBED_TEXTS_PER_REQUEST } from "../src/model-config.js";
 
 const TOKEN = "test-secret-token-12345";
@@ -46,22 +47,19 @@ vi.mock("../src/pipelines.js", () => ({
 }));
 
 // Issue #689 — no test in this file may open a TCP listener. See the header.
-let listen: MockInstance<Server["listen"]>;
+const listenGuard = createListenGuard("#689");
 
 beforeEach(() => {
   process.env.EMBEDDINGS_TOKEN = TOKEN;
   __resetReadinessForTests();
-  listen = vi.spyOn(Server.prototype, "listen");
+  listenGuard.arm();
 });
 
 afterEach(() => {
-  // Capture, restore, THEN assert: a throwing assertion before the restore would
-  // leave the spy (and its call count) in place and fail every later test too.
-  const listenCalls = listen.mock.calls.length;
   if (ORIGINAL_TOKEN === undefined) delete process.env.EMBEDDINGS_TOKEN;
   else process.env.EMBEDDINGS_TOKEN = ORIGINAL_TOKEN;
   vi.restoreAllMocks();
-  expect(listenCalls, "a test bound a TCP port — use invoke(), not supertest (#689)").toBe(0);
+  listenGuard.check();
 });
 
 async function loadApp() {
@@ -69,24 +67,14 @@ async function loadApp() {
   return createApp();
 }
 
-type App = Awaited<ReturnType<typeof loadApp>>;
-type Reply = { status: number; body: Record<string, unknown> };
-
 /** An unauthenticated GET — what kubelet's probes send. In process, no socket (#689). */
-async function get(app: App, url: string): Promise<Reply> {
-  const res = await invoke(app, { url });
-  return { status: res.status, body: (res.body ?? {}) as Record<string, unknown> };
+function get(app: Express, url: string): Promise<Reply> {
+  return send(app, "GET", url);
 }
 
 /** An authenticated POST /embed. In process, no socket (#689). */
-async function embed(app: App, json: unknown): Promise<Reply> {
-  const res = await invoke(app, {
-    method: "POST",
-    url: "/embed",
-    json,
-    headers: { authorization: `Bearer ${TOKEN}` },
-  });
-  return { status: res.status, body: (res.body ?? {}) as Record<string, unknown> };
+function embed(app: Express, json: unknown): Promise<Reply> {
+  return send(app, "POST", "/embed", json, { authorization: `Bearer ${TOKEN}` });
 }
 
 describe("GET /readyz — warm-at-boot readiness (#786)", () => {
