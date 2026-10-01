@@ -10,10 +10,21 @@
  *   2. `/healthz` is 200 throughout — including while the model is still loading
  *      AND after a permanent load failure. `livenessProbe` points here, so a 503
  *      would have kubelet kill a pod whose only problem is that it is honest.
+ *
+ * Issue #689 — every request here goes through `invoke()` (tests/helpers/invoke-app.ts),
+ * never `supertest`. supertest calls `app.listen(0)`, which binds the WILDCARD (`:::P`),
+ * then dials `127.0.0.1:P`. On macOS (SO_REUSEADDR, which Node sets) another process can
+ * bind the more specific `127.0.0.1:P` on top of that listener, and the kernel routes the
+ * dial to it. Reproduced: a foreign 401 server bound that way answered our `GET /readyz`
+ * with 401, which `/readyz` cannot return because it carries no auth. That was the "401
+ * instead of 503" flake. The 20 s timeout was the same dependency on loopback sockets
+ * and ports while the monorepo fan-out contends for them (#1379). In process, there is
+ * no port to steal and nothing to time out on. The `listen` spy below keeps it that way.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import request from "supertest";
+import { Server } from "node:net";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { __resetReadinessForTests, beginWarmup } from "../src/readiness.js";
+import { invoke } from "./helpers/invoke-app.js";
 import { MAX_EMBED_TEXT_CHARS, MAX_EMBED_TEXTS_PER_REQUEST } from "../src/model-config.js";
 
 const TOKEN = "test-secret-token-12345";
@@ -32,12 +43,20 @@ vi.mock("../src/pipelines.js", () => ({
   __resetPipelinesForTests() {},
 }));
 
+// Issue #689 — no test in this file may open a TCP listener. See the header.
+let listen: MockInstance<Server["listen"]>;
+
 beforeEach(() => {
   process.env.EMBEDDINGS_TOKEN = TOKEN;
   __resetReadinessForTests();
+  listen = vi.spyOn(Server.prototype, "listen");
 });
 
 afterEach(() => {
+  expect(
+    listen,
+    "a test bound a TCP port — use invoke(), not supertest (#689)",
+  ).not.toHaveBeenCalled();
   if (ORIGINAL_TOKEN === undefined) delete process.env.EMBEDDINGS_TOKEN;
   else process.env.EMBEDDINGS_TOKEN = ORIGINAL_TOKEN;
   vi.restoreAllMocks();
@@ -48,12 +67,32 @@ async function loadApp() {
   return createApp();
 }
 
+type App = Awaited<ReturnType<typeof loadApp>>;
+type Reply = { status: number; body: Record<string, unknown> };
+
+/** An unauthenticated GET — what kubelet's probes send. In process, no socket (#689). */
+async function get(app: App, url: string): Promise<Reply> {
+  const res = await invoke(app, { url });
+  return { status: res.status, body: (res.body ?? {}) as Record<string, unknown> };
+}
+
+/** An authenticated POST /embed. In process, no socket (#689). */
+async function embed(app: App, json: unknown): Promise<Reply> {
+  const res = await invoke(app, {
+    method: "POST",
+    url: "/embed",
+    json,
+    headers: { authorization: `Bearer ${TOKEN}` },
+  });
+  return { status: res.status, body: (res.body ?? {}) as Record<string, unknown> };
+}
+
 describe("GET /readyz — warm-at-boot readiness (#786)", () => {
   it("503s while the model is still warming", async () => {
     const app = await loadApp();
     beginWarmup(() => new Promise(() => {})); // never resolves — still loading
 
-    const res = await request(app).get("/readyz");
+    const res = await get(app, "/readyz");
     expect(res.status).toBe(503);
     expect(res.body.status).toBe("warming");
     expect(res.body.model).toBe("Alibaba-NLP/gte-modernbert-base");
@@ -63,7 +102,7 @@ describe("GET /readyz — warm-at-boot readiness (#786)", () => {
 
   it("503s before warm-up has even been kicked off", async () => {
     const app = await loadApp();
-    const res = await request(app).get("/readyz");
+    const res = await get(app, "/readyz");
     expect(res.status).toBe(503);
     expect(res.body.status).toBe("warming");
   });
@@ -72,7 +111,7 @@ describe("GET /readyz — warm-at-boot readiness (#786)", () => {
     const app = await loadApp();
     await beginWarmup(async () => ({}));
 
-    const res = await request(app).get("/readyz");
+    const res = await get(app, "/readyz");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("ready");
     expect(res.body.durationMs).toBeTypeOf("number");
@@ -85,7 +124,7 @@ describe("GET /readyz — warm-at-boot readiness (#786)", () => {
       throw new Error("Could not locate file: onnx/model_quantized.onnx");
     });
 
-    const res = await request(app).get("/readyz");
+    const res = await get(app, "/readyz");
     expect(res.status).toBe(503);
     expect(res.body.status).toBe("error");
     expect(res.body.error).toBeTypeOf("string");
@@ -104,7 +143,7 @@ describe("GET /readyz — warm-at-boot readiness (#786)", () => {
       throw new Error("Could not locate file: /home/node/.cache/hf/onnx/model_quantized.onnx");
     });
 
-    const res = await request(app).get("/readyz"); // no Authorization header
+    const res = await get(app, "/readyz"); // no Authorization header
     expect(res.status).toBe(503);
     const body = JSON.stringify(res.body);
     expect(body).not.toContain("/home/node/.cache");
@@ -117,7 +156,7 @@ describe("GET /readyz — warm-at-boot readiness (#786)", () => {
   it("needs no bearer token — kubelet does not carry one", async () => {
     const app = await loadApp();
     await beginWarmup(async () => ({}));
-    const res = await request(app).get("/readyz"); // no Authorization header
+    const res = await get(app, "/readyz"); // no Authorization header
     expect(res.status).toBe(200);
   });
 });
@@ -127,7 +166,7 @@ describe("GET /healthz — liveness stays 200 (#786)", () => {
     const app = await loadApp();
     beginWarmup(() => new Promise(() => {}));
 
-    const res = await request(app).get("/healthz");
+    const res = await get(app, "/healthz");
     expect(res.status).toBe(200);
     expect(res.body.ready).toBe(false);
   });
@@ -139,7 +178,7 @@ describe("GET /healthz — liveness stays 200 (#786)", () => {
       throw new Error("weights missing");
     });
 
-    const res = await request(app).get("/healthz");
+    const res = await get(app, "/healthz");
     expect(res.status).toBe(200);
     expect(res.body.ready).toBe(false);
   });
@@ -147,7 +186,7 @@ describe("GET /healthz — liveness stays 200 (#786)", () => {
   it("reports ready=true once warm", async () => {
     const app = await loadApp();
     await beginWarmup(async () => ({}));
-    const res = await request(app).get("/healthz");
+    const res = await get(app, "/healthz");
     expect(res.status).toBe(200);
     expect(res.body.ready).toBe(true);
   });
@@ -162,20 +201,14 @@ describe("POST /embed — batch cap of 64 (#786)", () => {
 
   it("accepts exactly 64 texts", async () => {
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set("Authorization", `Bearer ${TOKEN}`)
-      .send({ texts: texts(64) });
+    const res = await embed(app, { texts: texts(64) });
     expect(res.status).toBe(200);
     expect(res.body.vectors).toHaveLength(64);
   });
 
   it("rejects 65 texts with 400 and a message that says what to do", async () => {
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set("Authorization", `Bearer ${TOKEN}`)
-      .send({ texts: texts(65) });
+    const res = await embed(app, { texts: texts(65) });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("bad_request");
     expect(JSON.stringify(res.body.details)).toContain("at most 64");
@@ -183,19 +216,13 @@ describe("POST /embed — batch cap of 64 (#786)", () => {
 
   it("rejects the OLD 256 limit — the whole point of the cap", async () => {
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set("Authorization", `Bearer ${TOKEN}`)
-      .send({ texts: texts(256) });
+    const res = await embed(app, { texts: texts(256) });
     expect(res.status).toBe(400);
   });
 
   it("does not silently truncate an oversized batch", async () => {
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set("Authorization", `Bearer ${TOKEN}`)
-      .send({ texts: texts(100) });
+    const res = await embed(app, { texts: texts(100) });
     // A 200 with 64 vectors for 100 texts would mis-align every downstream chunk.
     expect(res.status).toBe(400);
     expect(res.body.vectors).toBeUndefined();
@@ -205,10 +232,7 @@ describe("POST /embed — batch cap of 64 (#786)", () => {
   // arbitrarily long string clears it. Bound each entry too (OWASP A05).
   it("rejects a single text longer than the per-entry cap", async () => {
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set("Authorization", `Bearer ${TOKEN}`)
-      .send({ texts: ["x".repeat(MAX_EMBED_TEXT_CHARS + 1)] });
+    const res = await embed(app, { texts: ["x".repeat(MAX_EMBED_TEXT_CHARS + 1)] });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("bad_request");
     expect(JSON.stringify(res.body.details)).toContain("text too long");
@@ -216,10 +240,7 @@ describe("POST /embed — batch cap of 64 (#786)", () => {
 
   it("accepts a text at exactly the per-entry cap", async () => {
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set("Authorization", `Bearer ${TOKEN}`)
-      .send({ texts: ["x".repeat(MAX_EMBED_TEXT_CHARS)] });
+    const res = await embed(app, { texts: ["x".repeat(MAX_EMBED_TEXT_CHARS)] });
     expect(res.status).toBe(200);
     expect(res.body.vectors).toHaveLength(1);
   });
@@ -228,10 +249,7 @@ describe("POST /embed — batch cap of 64 (#786)", () => {
     const app = await loadApp();
     // 64 texts: legal by count, but each one far past the per-entry cap. Before
     // the per-string cap this was a 200 and ~6 MB of tokenizer work.
-    const res = await request(app)
-      .post("/embed")
-      .set("Authorization", `Bearer ${TOKEN}`)
-      .send({ texts: Array.from({ length: 64 }, () => "x".repeat(100_000)) });
+    const res = await embed(app, { texts: Array.from({ length: 64 }, () => "x".repeat(100_000)) });
     expect(res.status).toBe(400);
     expect(res.body.vectors).toBeUndefined();
   });
