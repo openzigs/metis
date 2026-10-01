@@ -64,7 +64,7 @@ describe("user domain", () => {
           username: "jane",
           displayName: "Jane",
           email: "jane@example.com",
-          // @ts-expect-error — testing runtime validation of unknown key
+          // testing runtime validation of an unknown role key
           roleKeys: ["super-admin"],
         }),
       ).toThrow();

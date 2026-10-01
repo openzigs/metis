@@ -156,7 +156,7 @@ describe("project domain", () => {
         createRepoConnectionSchema.parse({
           projectId: validId,
           label: "primary",
-          // @ts-expect-error — runtime check
+          // runtime check: parse() takes unknown, so this is not a type error
           provider: "bitbucket",
           ownerOrOrg: "acme",
           repoName: "core",
