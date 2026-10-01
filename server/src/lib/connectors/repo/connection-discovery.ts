@@ -15,8 +15,9 @@ import * as path from "node:path";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { prisma } from "../../prisma.js";
-import { getVaultService } from "../../vault/vault-service.js";
-import { rotateOrCreate } from "../../vault/secret-rotation.js";
+import { type RotationUndo, getVaultService } from "../../vault/vault-service.js";
+import { rotateOrCreateUndoable } from "../../vault/secret-rotation.js";
+import { undoRotations } from "../../vault/secret-retirement.js";
 import { scanFileForConnections, type DiscoveredConnection } from "./connection-scanner.js";
 
 const log = createChildLogger("suggested-connector-discovery");
@@ -146,6 +147,10 @@ export async function discoverAndUpsertConnections(
   const vault = extractCredentials ? getVaultService() : null;
 
   for (const conn of deduped) {
+    // #610 — an in-place rotation of the row's secret, undone if the upsert
+    // below fails, so a suggestion that was not written keeps its old password.
+    const undos: RotationUndo[] = [];
+    let suggestionId: string | undefined;
     try {
       // Existing row lookup so we can reconcile any prior vault secret with
       // the freshly-scanned plaintext (idempotency requirement).
@@ -161,6 +166,7 @@ export async function discoverAndUpsertConnections(
         },
         select: { id: true, passwordVaultRef: true },
       });
+      suggestionId = existing?.id;
 
       // Resolve passwordVaultRef. Only touch vault when we both have a fresh
       // discovered password AND extraction is enabled (sanity: the scanner
@@ -194,11 +200,17 @@ export async function discoverAndUpsertConnections(
           // skipped and kept its stale reference.
           const safeHost = sanitizeLabelFragment(conn.host ?? "");
           const safeDb = sanitizeLabelFragment(conn.database ?? "");
-          const written = await rotateOrCreate(vault, existing?.passwordVaultRef, conn.password, {
-            label: `discovered-cred:project:${projectId}:${conn.driverType}:${safeHost}:${conn.port ?? 0}:${safeDb}`,
-            scope: "project",
-            description: `Auto-discovered dev DB password from ${conn.credentialSourceFile ?? conn.sourceFile}`,
-          });
+          const written = await rotateOrCreateUndoable(
+            vault,
+            existing?.passwordVaultRef,
+            conn.password,
+            {
+              label: `discovered-cred:project:${projectId}:${conn.driverType}:${safeHost}:${conn.port ?? 0}:${safeDb}`,
+              scope: "project",
+              description: `Auto-discovered dev DB password from ${conn.credentialSourceFile ?? conn.sourceFile}`,
+            },
+            undos,
+          );
           passwordVaultRef = written.id;
           vaultMutated = written.created ? "created" : "rotated";
         }
@@ -247,6 +259,7 @@ export async function discoverAndUpsertConnections(
             : {}),
         },
       });
+      undos.length = 0; // #610 — the row landed: its secret keeps the new value.
       summary.suggestionsUpserted++;
 
       if (vault && conn.devCredsDetected) {
@@ -266,6 +279,14 @@ export async function discoverAndUpsertConnections(
         });
       }
     } catch (err) {
+      if (vault && undos.length > 0) {
+        await undoRotations(vault, undos, {
+          actorId: null,
+          resource: { type: "suggested_connector", ...(suggestionId ? { id: suggestionId } : {}) },
+          projectId,
+          cause: err,
+        });
+      }
       // SECURITY: never serialise the full `conn` — it carries the plaintext
       // `password` field when extraction is enabled. Only log non-sensitive
       // identifiers + a boolean flag indicating whether creds were attached.

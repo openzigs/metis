@@ -51,7 +51,7 @@ const vaultRead = vi.fn();
 const vaultCreate = vi.fn();
 const vaultRotate = vi.fn();
 vi.mock("../src/lib/vault/vault-service.js", () => ({
-  getVaultService: () => ({ read: vaultRead, create: vaultCreate, rotate: vaultRotate }),
+  getVaultService: () => ({ read: vaultRead, create: vaultCreate, rotateUndoable: vaultRotate }),
 }));
 
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));

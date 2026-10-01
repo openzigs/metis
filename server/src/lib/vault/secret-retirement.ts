@@ -162,7 +162,8 @@ export async function retireReplacedSecret(
 }
 
 export interface WithdrawContext {
-  actorId: string;
+  /** `null` for a system writer such as credential discovery (#610). */
+  actorId: string | null;
   /**
    * The resource whose write created the secrets, e.g. `{ type: "jira_connection", id }`.
    * No `id` on a create that never produced a row (#574).
