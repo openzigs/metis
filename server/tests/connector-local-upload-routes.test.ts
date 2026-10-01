@@ -199,6 +199,16 @@ vi.mock("../src/lib/connectors/repo/connection-discovery.js", () => ({
   })),
 }));
 
+// #674 — the durable job-scope record; `settled` holds the ids whose write landed.
+const scopeStore = vi.hoisted(() => ({ settled: [] as string[] }));
+const recordJobScope = vi.hoisted(() =>
+  vi.fn(async (jobId: string) => {
+    await new Promise((r) => setTimeout(r, 5));
+    scopeStore.settled.push(jobId);
+  }),
+);
+vi.mock("../src/lib/socket/job-scope-store.js", () => ({ recordJobScope }));
+
 import request from "supertest";
 import { createApp } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
@@ -365,10 +375,15 @@ describe("generic POST /repos refuses non-git providers", () => {
 describe("provider routing on deep-ingest", () => {
   it("github connector shallow-clones (clone path), never resolveNonGitIngestRoot", async () => {
     const token = await login("admin");
+    scopeStore.settled = [];
+    recordJobScope.mockClear();
     const res = await request(app)
       .post("/api/projects/proj_1/connectors/repos/repo_github_x/deep-ingest")
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(202);
+    // #674 — the scope was committed durably before the 202 handed the id out.
+    expect(recordJobScope).toHaveBeenCalledWith(res.body.data.jobId, "repo-ingest", "proj_1");
+    expect(scopeStore.settled).toEqual([res.body.data.jobId]);
     await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
     expect(shallowCloneRepo).toHaveBeenCalledTimes(1);
     expect(resolveNonGitIngestRoot).not.toHaveBeenCalled();

@@ -104,6 +104,16 @@ vi.mock("../../lib/rag/embedder.js", () => ({
   listBackendDescriptors: () => [],
 }));
 
+// #674 — the durable scope record; `settled` flips only once the write lands.
+const scopeStore = vi.hoisted(() => ({ settled: [] as string[] }));
+const recordJobScope = vi.hoisted(() =>
+  vi.fn(async (jobId: string) => {
+    await new Promise((r) => setTimeout(r, 5));
+    scopeStore.settled.push(jobId);
+  }),
+);
+vi.mock("../../lib/socket/job-scope-store.js", () => ({ recordJobScope }));
+
 import { embeddingsAdminRouter, runReindexJob } from "./embeddings.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { ReindexConflictError } from "../../lib/rag/knowledge-service.js";
@@ -129,6 +139,7 @@ function makeApp() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  scopeStore.settled = [];
   embedderMock.capabilities.mockReturnValue({});
   embedderMock.health.mockResolvedValue({ ok: true });
 });
@@ -256,6 +267,9 @@ describe("POST /admin/embeddings/projects/:id/reindex — enqueue", () => {
       expect.any(String),
     );
     expect(jobEvents.completed).not.toHaveBeenCalled();
+    // #674 — the scope was committed before the 202 handed the id out.
+    expect(recordJobScope).toHaveBeenCalledWith(res.body.data.jobId, "embeddings-reindex", "p1");
+    expect(scopeStore.settled).toEqual([res.body.data.jobId]);
     resolveReindex({ reindexedChunks: 0, totalChunks: 0, currentModel: "m", currentDimension: 1 });
   });
 
@@ -268,6 +282,7 @@ describe("POST /admin/embeddings/projects/:id/reindex — enqueue", () => {
       .send({});
     expect(res.status).toBe(400);
     expect(jobEvents.started).not.toHaveBeenCalled();
+    expect(recordJobScope).not.toHaveBeenCalled();
   });
 });
 

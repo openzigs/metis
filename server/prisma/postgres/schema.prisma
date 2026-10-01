@@ -1571,6 +1571,22 @@ model ImportRun {
   @@map("import_runs")
 }
 
+/// #674 — the scope (kind + project) of a job id that names no row of its own
+/// (repo ingest, spec-kit, overview regenerate, embeddings reindex, PR review),
+/// written before the id is handed to a client so `subscribe:job` can authorize
+/// the join on any replica, after a restart, and after the in-process scope
+/// store evicted it. A row past `expiresAt` is ignored and pruned on write.
+model JobScopeRecord {
+  jobId     String   @id
+  kind      String
+  projectId String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@map("job_scopes")
+}
+
 // ============================================================================
 // Publishing — IssueDraft -> PublishBatch -> PublishedIssue
 // ============================================================================

@@ -72,6 +72,7 @@ import { AIProviderError } from "../lib/ai/errors.js";
 import { isRetiredProviderError } from "../lib/ai/retired-providers.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
+import { recordJobScope } from "../lib/socket/job-scope-store.js";
 import { createChildLogger } from "../lib/logger.js";
 import { randomUUID } from "node:crypto";
 
@@ -144,6 +145,9 @@ export async function runSpecKitCommandJob(
   label: string,
   dispatch: () => Promise<unknown>,
 ): Promise<unknown> {
+  // #674 — durably, before the response carries the id, so `subscribe:job`
+  // is authorized on any replica.
+  await recordJobScope(jobId, "spec-kit", projectId);
   jobEvents.started("spec-kit", jobId, projectId, `Running ${label}`);
   // A single coarse progress tick: the LLM command is one opaque step, so we
   // mark it in-progress immediately (the UI shows an indeterminate bar) and the

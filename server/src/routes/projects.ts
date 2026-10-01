@@ -73,6 +73,7 @@ import { generateOverview, OverviewError } from "../lib/code-graph/overview.js";
 import { createDefaultCodeSearcher } from "../lib/code-graph/project-code-searcher.js";
 import { codeSearchRateLimiter } from "../middleware/code-search-rate-limit.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
+import { recordJobScope } from "../lib/socket/job-scope-store.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
@@ -1064,6 +1065,9 @@ export function projectsRouter(): Router {
       if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
 
       const jobId = randomUUID();
+      // #674 — durably, before the id leaves the server, so `subscribe:job`
+      // is authorized on any replica.
+      await recordJobScope(jobId, "overview-regenerate", projectId);
       jobEvents.started("overview-regenerate", jobId, projectId, "Regenerating project overview");
       try {
         const result = await generateOverview(prisma, projectId);

@@ -19,9 +19,24 @@ interface Row {
   updatedAt: Date;
 }
 const rows: Row[] = [];
+// #674 — the durable job-scope records the re-review route writes.
+const jobScopes = vi.hoisted(() => new Map<string, { kind: string; projectId: string | null }>());
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
+    jobScopeRecord: {
+      upsert: vi.fn(
+        async ({
+          create,
+        }: {
+          create: { jobId: string; kind: string; projectId: string | null };
+        }) => {
+          jobScopes.set(create.jobId, { kind: create.kind, projectId: create.projectId });
+          return create;
+        },
+      ),
+      deleteMany: vi.fn(async () => ({ count: 0 })),
+    },
     prReviewState: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       findUnique: vi.fn(async ({ where }: any) => {
@@ -82,6 +97,7 @@ function makeApp(opts: { resolveQueue?: () => unknown } = {}) {
 
 beforeEach(() => {
   rows.length = 0;
+  jobScopes.clear();
 });
 
 function seed(over: Partial<Row> = {}): Row {
@@ -203,6 +219,8 @@ describe("POST /api/projects/:projectId/pr-reviews/:prNumber/re-review", () => {
     expect(fq.enqueued).toHaveLength(1);
     // #655 — the queued job's scope is recorded for its `subscribe:job`.
     expect(getJobScope("job-1")).toEqual({ kind: "pr-review", projectId: "p1" });
+    // #674 — and durably, before the 202, for a socket on another replica.
+    expect(jobScopes.get("job-1")).toEqual({ kind: "pr-review", projectId: "p1" });
     const payload = fq.enqueued[0] as {
       projectId: string;
       owner: string;

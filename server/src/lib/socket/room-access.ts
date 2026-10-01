@@ -22,6 +22,7 @@ import { assertProjectAccess } from "../custom-agents/authz.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { loadAccessibleImpactDetail } from "../impact-analysis/impact-detail-access.js";
 import { getJobScope, type JobScope } from "./job-events.js";
+import { readJobScope } from "./job-scope-store.js";
 
 async function passes(check: () => Promise<unknown>): Promise<boolean> {
   try {
@@ -69,21 +70,24 @@ export async function canJoinBgRunRoom(user: AuthPayload, runId: string): Promis
 /**
  * A job id that no event on this process has named yet is the id of a row for
  * the kinds that have one, so it can still be scoped after a restart or when
- * the client subscribes before the job's first event.
+ * the client subscribes before the job's first event. A row-less job is scoped
+ * from the record its trigger wrote to `job_scopes` (#674), which every
+ * replica reads.
  */
 async function lookupJobScope(jobId: string): Promise<JobScope | null> {
   const select = { projectId: true };
-  const [analysis, doc, importRun, impact] = await Promise.all([
+  const [analysis, doc, importRun, impact, recorded] = await Promise.all([
     prisma.analysis.findFirst({ where: { id: jobId, deletedAt: null }, select }),
     prisma.generatedDocument.findFirst({ where: { id: jobId, deletedAt: null }, select }),
     prisma.importRun.findFirst({ where: { id: jobId }, select }),
     prisma.impactAnalysis.findFirst({ where: { id: jobId }, select: { id: true } }),
+    readJobScope(jobId),
   ]);
   if (analysis) return { kind: "analysis", projectId: analysis.projectId };
   if (doc) return { kind: "doc-generation", projectId: doc.projectId };
   if (importRun) return { kind: "import-sync", projectId: importRun.projectId };
   if (impact) return { kind: "impact-analysis", projectId: null };
-  return null;
+  return recorded;
 }
 
 /**

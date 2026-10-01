@@ -147,6 +147,20 @@ vi.mock("../src/lib/prisma.js", () => ({
         args.where.id === "ia1" ? { id: "ia1" } : null,
       ),
     },
+    // #674 — the durable scope of a row-less job: `rec-p1` is a spec-kit job
+    // in `p1`; `rec-expired` lapsed; `rec-bogus` names no known kind.
+    jobScopeRecord: {
+      findFirst: vi.fn(async (args: { where: { jobId: string; expiresAt?: { gt: Date } } }) => {
+        const rows: Record<string, { kind: string; projectId: string; expiresAt: Date }> = {
+          "rec-p1": { kind: "spec-kit", projectId: "p1", expiresAt: new Date(8.64e15) },
+          "rec-expired": { kind: "spec-kit", projectId: "p1", expiresAt: new Date(0) },
+          "rec-bogus": { kind: "not-a-kind", projectId: "p1", expiresAt: new Date(8.64e15) },
+        };
+        const row = rows[args.where.jobId];
+        const after = args.where.expiresAt?.gt;
+        return row && (!after || row.expiresAt > after) ? row : null;
+      }),
+    },
     // #142 — `subscribe:session` authorises like every session read: `u1`
     // owns the unscoped session `s1`; nobody else owns anything.
     aISession: {
@@ -916,6 +930,25 @@ describe("Socket.IO server", () => {
         joined: false,
         errors: [{ message: "FORBIDDEN: no access to job", room: "job:prr-1-manual" }],
       });
+    });
+
+    it("authorizes a row-less job from its durable scope record when this process remembers none", async () => {
+      // #674 — another replica (or this one before a restart) recorded the scope.
+      _resetJobLifecycleMemory();
+      expect(await subscribe("u1", "subscribe:job", "rec-p1")).toEqual({
+        joined: true,
+        errors: [],
+      });
+      expect(await subscribe("u2", "subscribe:job", "rec-p1")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:rec-p1" }],
+      });
+      for (const jobId of ["rec-expired", "rec-bogus"]) {
+        expect(await subscribe("u1", "subscribe:job", jobId)).toEqual({
+          joined: false,
+          errors: [{ message: "FORBIDDEN: no access to job", room: `job:${jobId}` }],
+        });
+      }
     });
 
     it("authorizes an impact-analysis job by the impact analysis's read rule", async () => {

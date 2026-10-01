@@ -63,6 +63,10 @@ vi.mock("../lib/spec-kit/commands/specify.js", () => ({
   runSpecify: vi.fn(async () => ({ artifact: { version: 1 }, message: grounded, tokensUsed: 900 })),
 }));
 
+// #674 — the durable job-scope record the command job writes first.
+const recordJobScope = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../lib/socket/job-scope-store.js", () => ({ recordJobScope }));
+
 import { specKitRouter } from "./spec-kit.js";
 import { AppError } from "../middleware/error-handler.js";
 
@@ -104,6 +108,8 @@ describe("POST /spec-kit/commands/:cmd — job + grounded-line preservation", ()
     expect(res.body.data.command).toBe("specify");
     // The grounded-completion line is preserved in the HTTP payload too.
     expect(res.body.data.message).toBe(grounded);
+    // #674 — the job's scope is recorded for `subscribe:job` on any replica.
+    expect(recordJobScope).toHaveBeenCalledWith(res.body.data.jobId, "spec-kit", "p1");
     // started fires for the job, and completed carries the grounded line verbatim.
     expect(jobEvents.started).toHaveBeenCalledWith(
       "spec-kit",

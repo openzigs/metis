@@ -111,6 +111,7 @@ import {
 import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js";
 import { createChildLogger } from "../lib/logger.js";
 import { genericFailureMessage, jobEvents } from "../lib/socket/job-events.js";
+import { recordJobScope } from "../lib/socket/job-scope-store.js";
 import {
   ingestConfluenceSpace,
   ingestJiraQuery,
@@ -706,6 +707,10 @@ export function connectorsRouter(): Router {
         const lease = tryAcquireConnectorIngest(id, "deep-ingest");
         if (!lease) throw deepIngestInProgress(id);
         const jobId = randomUUID();
+        // #674 — durably, before the 202 hands the id out, so `subscribe:job`
+        // is authorized on any replica. It logs a database failure rather
+        // than throwing, so the lease taken above is always handed on.
+        await recordJobScope(jobId, "repo-ingest", projectId);
         activeDeepIngestJobs.set(id, jobId);
         jobEvents.started("repo-ingest", jobId, projectId, "Deep ingest started");
         void runDeepIngest(projectId, id, a, lease, { jobId, known: conn })
