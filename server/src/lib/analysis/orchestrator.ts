@@ -32,6 +32,7 @@ import {
   type AnalysisSpecialistAgentKey,
   type AgentOutput,
   ANALYSIS_RETRIEVE_K,
+  analysisRoom,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
   deriveCapabilityReasons,
   isCodeCitation,
@@ -1036,7 +1037,7 @@ export class AnalysisOrchestrator {
     if (!this.deps.io) return;
     const event: AnalysisCapabilityEvent = { analysisId, capability: next, ts: Date.now() };
     try {
-      this.deps.io.to(`analysis:${analysisId}`).emit("analysis:capability", event);
+      this.deps.io.to(analysisRoom(analysisId)).emit("analysis:capability", event);
     } catch (err) {
       log.warn("Socket emit failed", { error: (err as Error).message });
     }
@@ -3845,7 +3846,7 @@ export class AnalysisOrchestrator {
       ts: Date.now(),
     };
     try {
-      this.deps.io.to(`analysis:${analysisId}`).emit("analysis:capability", event);
+      this.deps.io.to(analysisRoom(analysisId)).emit("analysis:capability", event);
     } catch (err) {
       log.warn("Socket emit failed", { error: (err as Error).message });
     }
@@ -3866,7 +3867,7 @@ export class AnalysisOrchestrator {
       ts: Date.now(),
     };
     try {
-      this.deps.io.to(`analysis:${analysisId}`).emit("analysis:repos-skipped", event);
+      this.deps.io.to(analysisRoom(analysisId)).emit("analysis:repos-skipped", event);
     } catch (err) {
       log.warn("Socket emit failed", { error: (err as Error).message });
     }
@@ -3875,7 +3876,7 @@ export class AnalysisOrchestrator {
   private emit(event: AnalysisAgentEvent): void {
     if (!this.deps.io) return;
     try {
-      this.deps.io.to(`analysis:${event.analysisId}`).emit("analysis:agent", event);
+      this.deps.io.to(analysisRoom(event.analysisId)).emit("analysis:agent", event);
     } catch (err) {
       log.warn("Socket emit failed", { error: (err as Error).message });
     }
@@ -3884,7 +3885,7 @@ export class AnalysisOrchestrator {
   private emitCompleted(analysisId: string): void {
     if (!this.deps.io) return;
     try {
-      this.deps.io.to(`analysis:${analysisId}`).emit("analysis:completed", { analysisId });
+      this.deps.io.to(analysisRoom(analysisId)).emit("analysis:completed", { analysisId });
     } catch (err) {
       log.warn("Socket emit failed", { error: (err as Error).message });
     }
@@ -3900,7 +3901,7 @@ export class AnalysisOrchestrator {
   ): void {
     if (!this.deps.io) return;
     try {
-      this.deps.io.to(`analysis:${analysisId}`).emit("analysis:promotion-blocked", {
+      this.deps.io.to(analysisRoom(analysisId)).emit("analysis:promotion-blocked", {
         analysisId,
         pendingCount: detail.pendingCount,
         rejectedCount: detail.rejectedCount,
@@ -3923,7 +3924,7 @@ export class AnalysisOrchestrator {
     if (!this.deps.io) return;
     try {
       this.deps.io
-        .to(`analysis:${analysisId}`)
+        .to(analysisRoom(analysisId))
         .emit("analysis:failed", { analysisId, errorMessage });
     } catch (err) {
       log.warn("Socket emit failed", { error: (err as Error).message });
@@ -3933,7 +3934,7 @@ export class AnalysisOrchestrator {
   private emitCancelled(analysisId: string): void {
     if (!this.deps.io) return;
     try {
-      this.deps.io.to(`analysis:${analysisId}`).emit("analysis:cancelled", { analysisId });
+      this.deps.io.to(analysisRoom(analysisId)).emit("analysis:cancelled", { analysisId });
     } catch (err) {
       log.warn("Socket emit failed", { error: (err as Error).message });
     }

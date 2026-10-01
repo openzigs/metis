@@ -29,7 +29,12 @@
  * the job's critical path. This mirrors the existing analysis orchestrator
  * `emit()` contract.
  */
-import type { DocSectionProgressEvent, JobKind, JobLifecycleEvent } from "@metis/shared";
+import {
+  jobRoom,
+  type DocSectionProgressEvent,
+  type JobKind,
+  type JobLifecycleEvent,
+} from "@metis/shared";
 import { getSocketServer } from "./registry.js";
 import type { MetisIOServer } from "./server.js";
 import { createChildLogger } from "../logger.js";
@@ -248,7 +253,7 @@ export function createJobEventEmitter(io: MetisIOServer | null): JobEventEmitter
     rememberLifecycle(payload);
     if (!io) return;
     try {
-      io.to(`job:${payload.jobId}`).emit("job:lifecycle", payload);
+      io.to(jobRoom(payload.jobId)).emit("job:lifecycle", payload);
       if (payload.projectId) {
         io.to(`project:${payload.projectId}`).emit("job:lifecycle", payload);
       }
@@ -263,7 +268,7 @@ export function createJobEventEmitter(io: MetisIOServer | null): JobEventEmitter
     rememberDocSection(payload);
     if (!io) return;
     try {
-      io.to(`job:${payload.jobId}`).emit("job:doc-section", payload);
+      io.to(jobRoom(payload.jobId)).emit("job:doc-section", payload);
       io.to(`project:${payload.projectId}`).emit("job:doc-section", payload);
     } catch (err) {
       log.warn("job doc-section emit failed", { error: (err as Error).message });

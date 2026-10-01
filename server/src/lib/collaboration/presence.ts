@@ -6,17 +6,19 @@
  * replica, because `presence:update` is emitted locally (see below).
  *
  * Client events:
- *   `presence:join`  { artifactType: string, artifactId: string }
- *     → joins room `presence:{artifactType}:{artifactId}`
+ *   `presence:join`  { artifactType: PresenceArtifactType, artifactId: string }
+ *     → joins room `presence:{artifactType}:{artifactId}`; an artifact type
+ *       outside `PRESENCE_ARTIFACT_TYPES` is ignored, so no free-form type can
+ *       make two `type:id` pairs share a room (#676)
  *     → broadcasts `presence:update` with current user list to the room
  *
- *   `presence:leave` { artifactType: string, artifactId: string }
+ *   `presence:leave` { artifactType: PresenceArtifactType, artifactId: string }
  *     → leaves room, broadcasts updated list
  *
  *   disconnect
  *     → leaves all presence rooms for that socket, broadcasts updates
  */
-import { presenceRoom } from "@metis/shared";
+import { isPresenceArtifactType, presenceRoom } from "@metis/shared";
 import type { MetisIOServer } from "../socket/server.js";
 import { onClientEvent, onConnection } from "../socket/client-event-handler.js";
 
@@ -55,7 +57,7 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
       async (payload?: { artifactType?: unknown; artifactId?: unknown } | null) => {
         const artifactType = payload?.artifactType;
         const artifactId = payload?.artifactId;
-        if (typeof artifactType !== "string" || typeof artifactId !== "string") return;
+        if (!isPresenceArtifactType(artifactType) || typeof artifactId !== "string") return;
         // Cap rooms per socket to prevent unbounded growth.
         if (joinedRooms.size >= 50) {
           socket.emit("presence:error", { message: "Maximum room limit reached" });
@@ -80,7 +82,7 @@ export function wirePresenceHandlers(io: MetisIOServer): void {
       async (payload?: { artifactType?: unknown; artifactId?: unknown } | null) => {
         const artifactType = payload?.artifactType;
         const artifactId = payload?.artifactId;
-        if (typeof artifactType !== "string" || typeof artifactId !== "string") return;
+        if (!isPresenceArtifactType(artifactType) || typeof artifactId !== "string") return;
         const key = roomKey(artifactType, artifactId);
         await socket.leave(key);
         joinedRooms.delete(key);

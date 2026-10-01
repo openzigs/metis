@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import type { PresenceArtifactType } from "@metis/shared";
 import { makeWrapper } from "./test-utils";
 
 // ---- Mocks -----------------------------------------------------------------
@@ -77,7 +78,7 @@ describe("PresenceAvatars", () => {
     PresenceAvatars = mod.PresenceAvatars;
   });
 
-  function renderAvatars(artifactType = "requirement", artifactId = "req1") {
+  function renderAvatars(artifactType: PresenceArtifactType = "discussion", artifactId = "req1") {
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
@@ -89,7 +90,7 @@ describe("PresenceAvatars", () => {
   it("emits presence:join on mount", () => {
     renderAvatars();
     expect(mockSocket.emit).toHaveBeenCalledWith("presence:join", {
-      artifactType: "requirement",
+      artifactType: "discussion",
       artifactId: "req1",
     });
   });
@@ -145,12 +146,12 @@ describe("PresenceAvatars", () => {
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
-        <PresenceAvatars artifactType="requirement" artifactId="req1" maxVisible={2} />
+        <PresenceAvatars artifactType="discussion" artifactId="req1" maxVisible={2} />
       </Wrapper>,
     );
     const handler = getUpdateHandler();
     handler?.({
-      room: "presence:requirement:req1",
+      room: "presence:discussion:req1",
       users: [
         { userId: "u1", username: "alice" },
         { userId: "u2", username: "bob" },
@@ -168,10 +169,10 @@ describe("PresenceAvatars", () => {
   });
 
   it("ignores presence:update events for a different room", async () => {
-    renderAvatars("requirement", "req1");
+    renderAvatars("discussion", "req1");
     const handler = getUpdateHandler();
     handler?.({
-      room: "presence:requirement:OTHER",
+      room: "presence:discussion:OTHER",
       users: [{ userId: "u1", username: "alice" }],
       ts: Date.now(),
     });
@@ -191,10 +192,10 @@ describe("PresenceAvatars", () => {
   // DISTINCT users.
   it("does not emit a duplicate-key warning when one user has two connections", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    renderAvatars("requirement", "req1");
+    renderAvatars("discussion", "req1");
     const handler = getUpdateHandler();
     handler?.({
-      room: "presence:requirement:req1",
+      room: "presence:discussion:req1",
       users: [
         { userId: "u1", username: "alice" },
         { userId: "u1", username: "alice" }, // same user, second tab
@@ -214,10 +215,10 @@ describe("PresenceAvatars", () => {
   });
 
   it("renders one avatar per distinct user even with multiple connections", async () => {
-    renderAvatars("requirement", "req1");
+    renderAvatars("discussion", "req1");
     const handler = getUpdateHandler();
     handler?.({
-      room: "presence:requirement:req1",
+      room: "presence:discussion:req1",
       users: [
         { userId: "u1", username: "alice" },
         { userId: "u1", username: "alice" },

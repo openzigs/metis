@@ -76,11 +76,11 @@ describe("wirePresenceHandlers", () => {
     connectionHandler!(mockSocket);
 
     // Simulate presence:join
-    await socketListeners["presence:join"]?.({ artifactType: "requirement", artifactId: "req-1" });
+    await socketListeners["presence:join"]?.({ artifactType: "discussion", artifactId: "req-1" });
 
-    expect(mockSocket.join).toHaveBeenCalledWith("presence:requirement:req-1");
+    expect(mockSocket.join).toHaveBeenCalledWith("presence:discussion:req-1");
     expect(emittedEvents.some((e) => e.event === "presence:update")).toBe(true);
-    expect(getRoomPresence().get("presence:requirement:req-1")?.size).toBe(1);
+    expect(getRoomPresence().get("presence:discussion:req-1")?.size).toBe(1);
   });
 
   it("removes user from room on presence:leave", async () => {
@@ -90,11 +90,11 @@ describe("wirePresenceHandlers", () => {
       .mocked(mockIo.on)
       .mock.calls.find(([e]) => e === "connection")?.[1];
     connectionHandler!(mockSocket);
-    await socketListeners["presence:join"]?.({ artifactType: "requirement", artifactId: "req-1" });
-    await socketListeners["presence:leave"]?.({ artifactType: "requirement", artifactId: "req-1" });
+    await socketListeners["presence:join"]?.({ artifactType: "discussion", artifactId: "req-1" });
+    await socketListeners["presence:leave"]?.({ artifactType: "discussion", artifactId: "req-1" });
 
-    expect(mockSocket.leave).toHaveBeenCalledWith("presence:requirement:req-1");
-    expect(getRoomPresence().has("presence:requirement:req-1")).toBe(false);
+    expect(mockSocket.leave).toHaveBeenCalledWith("presence:discussion:req-1");
+    expect(getRoomPresence().has("presence:discussion:req-1")).toBe(false);
   });
 
   it("removes user from all rooms on disconnect", async () => {
@@ -104,8 +104,8 @@ describe("wirePresenceHandlers", () => {
       .mocked(mockIo.on)
       .mock.calls.find(([e]) => e === "connection")?.[1];
     connectionHandler!(mockSocket);
-    await socketListeners["presence:join"]?.({ artifactType: "requirement", artifactId: "req-1" });
-    await socketListeners["presence:join"]?.({ artifactType: "requirement", artifactId: "req-2" });
+    await socketListeners["presence:join"]?.({ artifactType: "discussion", artifactId: "req-1" });
+    await socketListeners["presence:join"]?.({ artifactType: "discussion", artifactId: "req-2" });
 
     expect(getRoomPresence().size).toBe(2);
     socketListeners["disconnect"]?.("transport close");
@@ -123,6 +123,42 @@ describe("wirePresenceHandlers", () => {
 
     expect(mockSocket.join).not.toHaveBeenCalled();
     expect(getRoomPresence().size).toBe(0);
+  });
+
+  // #676 — a free-form artifact type could make two `type:id` pairs share one
+  // room (`a:b` + `c` and `a` + `b:c`), so only a listed type is honoured.
+  it.each([["requirement"], ["discussion:x"], ["spec-kit"]])(
+    "ignores presence:join and presence:leave with the unlisted artifact type %j",
+    async (artifactType) => {
+      const { mockIo, mockSocket, socketListeners, emittedEvents } = createMockIo();
+      wirePresenceHandlers(mockIo);
+      const connectionHandler = vi
+        .mocked(mockIo.on)
+        .mock.calls.find(([e]) => e === "connection")?.[1];
+      connectionHandler!(mockSocket);
+      await socketListeners["presence:join"]?.({ artifactType, artifactId: "x" });
+      await socketListeners["presence:leave"]?.({ artifactType, artifactId: "x" });
+
+      expect(mockSocket.join).not.toHaveBeenCalled();
+      expect(mockSocket.leave).not.toHaveBeenCalled();
+      expect(emittedEvents.some((e) => e.event === "presence:update")).toBe(false);
+      expect(getRoomPresence().size).toBe(0);
+    },
+  );
+
+  it("joins the room for every listed artifact type", async () => {
+    const { mockIo, mockSocket, socketListeners } = createMockIo();
+    wirePresenceHandlers(mockIo);
+    const connectionHandler = vi
+      .mocked(mockIo.on)
+      .mock.calls.find(([e]) => e === "connection")?.[1];
+    connectionHandler!(mockSocket);
+    await socketListeners["presence:join"]?.({
+      artifactType: "spec-kit-artifact",
+      artifactId: "p:a",
+    });
+
+    expect(mockSocket.join).toHaveBeenCalledWith("presence:spec-kit-artifact:p:a");
   });
 
   // #654 — a destructured null payload rejected the async handler, an
@@ -156,13 +192,19 @@ describe("wirePresenceHandlers", () => {
 
     // Join 50 distinct rooms.
     for (let i = 0; i < 50; i++) {
-      await socketListeners["presence:join"]?.({ artifactType: "req", artifactId: String(i) });
+      await socketListeners["presence:join"]?.({
+        artifactType: "discussion",
+        artifactId: String(i),
+      });
     }
     expect(mockSocket.join).toHaveBeenCalledTimes(50);
 
     // 51st join should be rejected.
     vi.clearAllMocks();
-    await socketListeners["presence:join"]?.({ artifactType: "req", artifactId: "overflow" });
+    await socketListeners["presence:join"]?.({
+      artifactType: "discussion",
+      artifactId: "overflow",
+    });
     expect(mockSocket.join).not.toHaveBeenCalled();
     expect(mockSocket.emit).toHaveBeenCalledWith(
       "presence:error",

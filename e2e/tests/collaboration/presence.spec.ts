@@ -16,8 +16,9 @@
  *
  * Socket event contract (server: src/lib/collaboration/presence.ts):
  *   Client → Server:
- *     presence:join   { artifactType: string, artifactId: string }
- *     presence:leave  { artifactType: string, artifactId: string }
+ *     presence:join   { artifactType: PresenceArtifactType, artifactId: string }
+ *     presence:leave  { artifactType: PresenceArtifactType, artifactId: string }
+ *   (PresenceArtifactType = "discussion" | "spec-kit-artifact", @metis/shared #676)
  *   Server → Client:
  *     presence:update { room: string, users: Array<{userId, username, displayName}>, ts: number }
  *
@@ -127,7 +128,7 @@ test.describe("Epic #728 / Issue #738 — Presence indicators (Socket.IO)", () =
     const adminSocket = await connectSocket(adminToken);
 
     try {
-      const artifactType = "spec-kit";
+      const artifactType = "spec-kit-artifact";
       const artifactId = `e2e-presence-${Date.now()}`;
 
       // Listen BEFORE emitting join so we don't race.
@@ -148,7 +149,7 @@ test.describe("Epic #728 / Issue #738 — Presence indicators (Socket.IO)", () =
 
   // AC3 — second user joining same room causes first user to see them
   test("AC3: User B joining the same room appears in presence list within 2 s", async () => {
-    const artifactType = "spec-kit";
+    const artifactType = "spec-kit-artifact";
     const artifactId = `e2e-presence-two-${Date.now()}`;
 
     const [adminSocket, coordinatorSocket] = await Promise.all([
@@ -192,7 +193,7 @@ test.describe("Epic #728 / Issue #738 — Presence indicators (Socket.IO)", () =
 
   // AC3 — user leaving the room is removed from the presence list
   test("removes User A from presence list after they leave the artifact room", async () => {
-    const artifactType = "spec-kit";
+    const artifactType = "spec-kit-artifact";
     const artifactId = `e2e-presence-leave-${Date.now()}`;
 
     const [adminSocket, coordinatorSocket] = await Promise.all([
@@ -232,7 +233,7 @@ test.describe("Epic #728 / Issue #738 — Presence indicators (Socket.IO)", () =
 
   // AC3 — socket disconnect triggers presence cleanup automatically
   test("presence list clears when a user's socket disconnects without explicit leave", async () => {
-    const artifactType = "spec-kit";
+    const artifactType = "spec-kit-artifact";
     const artifactId = `e2e-presence-disconnect-${Date.now()}`;
 
     const [adminSocket, coordinatorSocket] = await Promise.all([

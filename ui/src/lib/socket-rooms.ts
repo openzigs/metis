@@ -15,16 +15,21 @@ import {
   sessionRoom,
   taskRoom,
   threadRoom,
+  type ClientToServerEvents,
+  type PresenceArtifactType,
 } from "@metis/shared";
 import type { RoomFollow } from "./socket-subscription";
 
 type EmitSocket = Pick<Socket, "emit">;
 
+/** #676 — a client event the server handles, so a typo is a type error. */
+type ClientEvent = keyof ClientToServerEvents;
+
 function roomFollow(
   socket: EmitSocket,
   room: string,
-  subscribeEvent: string,
-  unsubscribeEvent: string,
+  subscribeEvent: ClientEvent,
+  unsubscribeEvent: ClientEvent,
   payload: Record<string, string>,
 ): RoomFollow {
   return {
@@ -55,7 +60,7 @@ export const publishFollow = (socket: EmitSocket, batchId: string): RoomFollow =
 
 export const presenceFollow = (
   socket: EmitSocket,
-  artifactType: string,
+  artifactType: PresenceArtifactType,
   artifactId: string,
 ): RoomFollow =>
   roomFollow(socket, presenceRoom(artifactType, artifactId), "presence:join", "presence:leave", {

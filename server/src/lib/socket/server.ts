@@ -49,7 +49,10 @@ import { Server as SocketIOServer, type ServerOptions, type Socket } from "socke
 import jwt from "jsonwebtoken";
 import {
   analysisRoom,
+  bgRunRoom,
+  connectorRoom,
   hasPermission,
+  jobRoom,
   publishRoom,
   sessionRoom,
   taskRoom,
@@ -780,7 +783,7 @@ function attachHandlers(socket: MetisSocket): void {
     const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
     return joinIfAuthorized(
-      `connector:${connectorId}`,
+      connectorRoom(connectorId),
       () => canJoinConnectorRoom(user, connectorId),
       "FORBIDDEN: no access to connector",
     );
@@ -788,7 +791,7 @@ function attachHandlers(socket: MetisSocket): void {
   onClientEvent(socket, "unsubscribe:connector", (payload) => {
     const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
-    return leaveRoom(`connector:${connectorId}`);
+    return leaveRoom(connectorRoom(connectorId));
   });
 
   onClientEvent(socket, "subscribe:publish", (payload) => {
@@ -862,7 +865,7 @@ function attachHandlers(socket: MetisSocket): void {
       }
     };
     return joinIfAuthorized(
-      `job:${jobId}`,
+      jobRoom(jobId),
       async () => (scope = await resolveJobRoomScope(user, jobId)) !== null,
       "FORBIDDEN: no access to job",
       replay,
@@ -871,7 +874,7 @@ function attachHandlers(socket: MetisSocket): void {
   onClientEvent(socket, "unsubscribe:job", (payload) => {
     const jobId: unknown = payload?.jobId;
     if (!jobId || typeof jobId !== "string") return;
-    return leaveRoom(`job:${jobId}`);
+    return leaveRoom(jobRoom(jobId));
   });
 
   // Epic #156 — async background run rooms (`run:{runId}`).
@@ -879,7 +882,7 @@ function attachHandlers(socket: MetisSocket): void {
     const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
     return joinIfAuthorized(
-      `run:${runId}`,
+      bgRunRoom(runId),
       () => canJoinBgRunRoom(user, runId),
       "FORBIDDEN: no access to background run",
     );
@@ -887,7 +890,7 @@ function attachHandlers(socket: MetisSocket): void {
   onClientEvent(socket, "unsubscribe:bg-run", (payload) => {
     const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
-    return leaveRoom(`run:${runId}`);
+    return leaveRoom(bgRunRoom(runId));
   });
 
   onClientEvent(socket, "disconnect", (reason) => {

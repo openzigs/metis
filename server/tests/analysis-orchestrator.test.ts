@@ -323,7 +323,7 @@ import { RETRIEVAL_QUERIES } from "../src/lib/analysis/retrieval.js";
 import { __resetConfigSingleton } from "../src/lib/config/config-service.js";
 import { genericFailureMessage } from "../src/lib/socket/job-events.js";
 import type { KnowledgeService } from "../src/lib/rag/knowledge-service.js";
-import { isAnalysisDegraded, type DbTableInfo } from "@metis/shared";
+import { analysisRoom, isAnalysisDegraded, type DbTableInfo } from "@metis/shared";
 
 /**
  * #750 — a no-op knowledge service so the agentic code path can assemble its
@@ -683,6 +683,11 @@ describe("AnalysisOrchestrator.start", () => {
     expect(evtTypes.filter((t) => t.startsWith("analysis:agent/started"))).toHaveLength(5);
     expect(evtTypes.filter((t) => t.startsWith("analysis:agent/completed"))).toHaveLength(5);
     expect(evtTypes).toContain("analysis:completed/");
+
+    // #676 — every analysis event goes to the room `subscribe:analysis` joins.
+    const analysisEvents = io.events.filter((e) => e.event.startsWith("analysis:"));
+    expect(analysisEvents.length).toBeGreaterThan(0);
+    expect(new Set(analysisEvents.map((e) => e.room))).toEqual(new Set([analysisRoom(analysisId)]));
   });
 
   it("runs cross-doc detection post-synthesis and persists findings (#203/#221)", async () => {
