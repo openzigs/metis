@@ -5,7 +5,7 @@
  * without type-checking. tsconfig.test.json closes that gap, and this test stops the
  * wiring being dropped silently: the gap it closes produces no failure of its own.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import ts from "typescript";
@@ -31,16 +31,22 @@ const rel = (files: string[]) => files.map((f) => f.slice(PKG_DIR.length + 1));
 
 describe("pnpm typecheck covers embeddings-svc tests (#694)", () => {
   it("the typecheck script runs tsconfig.test.json", () => {
-    expect(scripts().typecheck).toMatch(/\btsc -p tsconfig\.test\.json\b/);
+    // Pinned exactly: a regex would also accept `... || true` or `...; tsc -p ...`,
+    // either of which neuters the gate while the guard stays green.
+    expect(scripts().typecheck).toBe("tsc --noEmit -p tsconfig.json && tsc -p tsconfig.test.json");
   });
 
   it("tsconfig.test.json includes every test file and emits nothing", () => {
     const cfg = parsed("tsconfig.test.json");
     expect(cfg.errors).toEqual([]);
     expect(cfg.options.noEmit).toBe(true);
-    const files = rel(cfg.fileNames);
-    expect(files).toContain("tests/typecheck-covers-tests.test.ts");
-    expect(files).toContain("tests/helpers/invoke-app.ts");
+    const files = new Set(rel(cfg.fileNames));
+    // Every .ts under tests/ (enumerated, so narrowing `include` cannot drop one silently).
+    const testFiles = (readdirSync(join(PKG_DIR, "tests"), { recursive: true }) as string[])
+      .filter((f) => f.endsWith(".ts"))
+      .map((f) => `tests/${f.split("\\").join("/")}`);
+    expect(testFiles.length).toBeGreaterThan(10);
+    for (const f of testFiles) expect(files, f).toContain(f);
     expect(files).toContain("src/app.ts");
   });
 

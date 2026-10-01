@@ -7,9 +7,7 @@
     // `..`, not `.`: tests/model-config-parity.test.ts imports the server's copy,
     // server/src/lib/rag/embed-model-config.ts. noEmit makes rootDir a layout check only.
     "rootDir": "..",
-    "noEmit": true,
-    "declaration": false,
-    "sourceMap": false
+    "noEmit": true
   },
   "include": ["src/**/*", "tests/**/*", "vitest.config.ts"],
   "exclude": ["dist", "node_modules"]
