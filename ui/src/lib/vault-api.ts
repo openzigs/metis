@@ -50,6 +50,22 @@ export interface VaultForeignOwner {
   bindingsDigest: string;
   /** #611 — the most bindings `confirmedBindings` may carry; over it, confirm by digest. */
   maxConfirmedBindings: number;
+  /** #629 — how many bindings there are; `bindings` lists at most `maxConfirmedBindings`. */
+  bindingsTotal: number;
+  /** #629 — true when `bindings` lists fewer than `bindingsTotal`. */
+  bindingsTruncated: boolean;
+  /** #629 — counts over the whole set, by type and by destination host (bounded rows). */
+  bindingCounts: VaultBindingCounts;
+}
+
+/** #629 — mirrors `BindingCounts` in `server/src/lib/vault/rotate-foreign-owner.ts`. */
+export interface VaultBindingCounts {
+  byType: Array<{ type: string; count: number }>;
+  byHost: Array<{ host: string; count: number }>;
+  /** Distinct hosts beyond `byHost`, and how many bindings they hold. */
+  moreHosts: { hosts: number; bindings: number };
+  /** Bindings whose destination names no network host (a driver, provider or command). */
+  withoutHost: number;
 }
 
 /**

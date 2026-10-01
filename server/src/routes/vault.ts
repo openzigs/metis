@@ -13,7 +13,8 @@
  *                            needs `confirmForeignOwner: true` and the
  *                            `confirmedBindings` it was shown — or #611
  *                            their `confirmedBindingsDigest` — else 409 —
- *                            #482/#502; the admin then owns it)
+ *                            #482/#502; the admin then owns it; #629 the
+ *                            409 lists at most 1,000 bindings, with counts)
  *   GET    /:id/reveal      decrypt one (vault.reveal — admin only, audited, #324)
  *   DELETE /:id             soft-delete   (vault.write)
  *   GET    /:id/audit       audit log entries for this secret (vault.read)
@@ -41,10 +42,11 @@ import {
   bindingInProgressMessage,
   bindingsChangedMessage,
   bindingsDiffer,
-  canonicalBindings,
   type ConfirmedBinding,
+  confirmedBindingsAudit,
   describeForeignOwner,
   foreignOwnerMessage,
+  foreignOwnerView,
   MAX_CONFIRMED_BINDINGS,
   secretOwnerOf,
   VAULT_ROTATE_BINDING_IN_PROGRESS,
@@ -186,7 +188,7 @@ async function refuseIfBindingsMoved(
     409,
     changed ? VAULT_ROTATE_BINDINGS_CHANGED : VAULT_ROTATE_BINDING_IN_PROGRESS,
     changed ? bindingsChangedMessage(details) : bindingInProgressMessage(details),
-    details as unknown as Record<string, unknown>,
+    foreignOwnerView(details) as unknown as Record<string, unknown>,
   );
 }
 
@@ -253,6 +255,7 @@ export function vaultRouter(): Router {
     const foreignOwnerId =
       secret?.createdById && secret.createdById !== aId ? secret.createdById : null;
     let confirmedBindings: ConfirmedBinding[] | null = null;
+    let confirmedSetDigest = "";
     if (secret && foreignOwnerId) {
       const details = await describeForeignOwner({
         id,
@@ -269,7 +272,7 @@ export function vaultRouter(): Router {
           409,
           VAULT_ROTATE_FOREIGN_OWNER,
           foreignOwnerMessage(details),
-          details as unknown as Record<string, unknown>,
+          foreignOwnerView(details) as unknown as Record<string, unknown>,
         );
       }
       // #552 — a binding write stamped this secret and may still be landing,
@@ -279,7 +282,7 @@ export function vaultRouter(): Router {
           409,
           VAULT_ROTATE_BINDING_IN_PROGRESS,
           bindingInProgressMessage(details),
-          details as unknown as Record<string, unknown>,
+          foreignOwnerView(details) as unknown as Record<string, unknown>,
         );
       }
       // #611 — whichever form the confirm takes must match the live set; both, if both are sent.
@@ -291,11 +294,12 @@ export function vaultRouter(): Router {
           409,
           VAULT_ROTATE_BINDINGS_CHANGED,
           bindingsChangedMessage(details),
-          details as unknown as Record<string, unknown>,
+          foreignOwnerView(details) as unknown as Record<string, unknown>,
         );
       }
       // A digest matched the live set exactly, so the live list is what was confirmed.
-      confirmedBindings = canonicalBindings(confirmed ?? details.bindings);
+      confirmedBindings = confirmed ?? details.bindings;
+      confirmedSetDigest = details.bindingsDigest;
     }
     let summary: SecretSummary;
     try {
@@ -342,7 +346,8 @@ export function vaultRouter(): Router {
           ? {
               foreignOwnerConfirmed: true,
               ownerId: foreignOwnerId,
-              confirmedBindings,
+              // #629 — every binding up to the cap; over it, the digest, total and counts.
+              ...confirmedBindingsAudit(confirmedBindings ?? [], confirmedSetDigest),
               ownershipTransferredTo: aId,
             }
           : {}),

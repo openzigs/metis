@@ -7,6 +7,6 @@ section: Security
   1,000 bindings. Before, "Rotate anyway" was rejected, so an owner could add
   bindings to block a takeover. The Vault page says when the list is too long to
   confirm one by one, counts the bindings by type and destination host above
-  the full list, and confirms the whole list as one. API clients may send `confirmedBindingsDigest` (the 409's
+  the listed bindings, and confirms the whole set as one. API clients may send `confirmedBindingsDigest` (the 409's
   `bindingsDigest`) instead of `confirmedBindings`; a stale digest returns
   `409 VAULT_ROTATE_BINDINGS_CHANGED`.
