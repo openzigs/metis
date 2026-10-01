@@ -298,11 +298,25 @@ function attachHandlers(
   // #645 — the analysis room carries promotion-blocked counts and failure
   // reasons, so only a user who can read the analysis's project may join it —
   // the same rule as `GET /api/analyses/:id`. It used to join any id named.
-  socket.on("subscribe:analysis", ({ analysisId }) => {
+  // Review of #652 — the payload is read with `?.`, never destructured: a null
+  // or missing payload threw inside socket.io's nextTick dispatch, an uncaught
+  // exception that took the whole API process down.
+  // Bumped per id by every subscribe/unsubscribe (as `subscribe:mcp` does,
+  // #562), so an access check that resolves after a later unsubscribe does not join.
+  const analysisSubscription = new Map<string, number>();
+  const bumpAnalysisSubscription = (analysisId: string): number => {
+    const attempt = (analysisSubscription.get(analysisId) ?? 0) + 1;
+    analysisSubscription.set(analysisId, attempt);
+    return attempt;
+  };
+  socket.on("subscribe:analysis", (payload) => {
+    const analysisId: unknown = payload?.analysisId;
     if (!analysisId || typeof analysisId !== "string") return;
+    const attempt = bumpAnalysisSubscription(analysisId);
     void (async () => {
       try {
         if (await canJoinAnalysisRoom(user, analysisId)) {
+          if (analysisSubscription.get(analysisId) !== attempt) return;
           await socket.join(`analysis:${analysisId}`);
           return;
         }
@@ -316,8 +330,10 @@ function attachHandlers(
       socket.emit("auth:error", { message: "FORBIDDEN: no access to analysis" });
     })();
   });
-  socket.on("unsubscribe:analysis", ({ analysisId }) => {
+  socket.on("unsubscribe:analysis", (payload) => {
+    const analysisId: unknown = payload?.analysisId;
     if (!analysisId || typeof analysisId !== "string") return;
+    bumpAnalysisSubscription(analysisId);
     void socket.leave(`analysis:${analysisId}`);
   });
   // #142 — the session room now carries tool-approval prompts (with the tool's

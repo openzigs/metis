@@ -10,11 +10,14 @@
  * to any authenticated user, otherwise a live member of the project's workspace.
  *
  * Every denial — unknown id, deleted run, another project — answers `false`, so
- * the socket cannot be used as an existence oracle for analysis ids.
+ * the socket cannot be used as an existence oracle for analysis ids. Anything
+ * that is not an `AppError` (a database failure) is rethrown, so the caller
+ * logs it as it does a failed analysis lookup, and still refuses the socket.
  */
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { assertProjectAccess } from "../custom-agents/authz.js";
+import { AppError } from "../../middleware/error-handler.js";
 
 export async function canJoinAnalysisRoom(user: AuthPayload, analysisId: string): Promise<boolean> {
   const analysis = await prisma.analysis.findFirst({
@@ -25,7 +28,8 @@ export async function canJoinAnalysisRoom(user: AuthPayload, analysisId: string)
   try {
     await assertProjectAccess(user, analysis.projectId);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    if (err instanceof AppError) return false;
+    throw err;
   }
 }

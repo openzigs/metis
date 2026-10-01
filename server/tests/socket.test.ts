@@ -67,6 +67,15 @@ vi.mock("../src/lib/prisma.js", () => ({
       findFirst: vi.fn(async (args?: { where?: { id?: string; deletedAt?: null } }) => {
         if (args?.where?.id === "a-boom") throw new Error("db down");
         if (args?.where?.id === "a1") return { id: "a1", projectId: "p1", deletedAt: null };
+        // Review of #652 — resolves late, so an unsubscribe can land first.
+        if (args?.where?.id === "a-slow") {
+          await new Promise((r) => setTimeout(r, 50));
+          return { id: "a-slow", projectId: "p1", deletedAt: null };
+        }
+        // Review of #652 — the project lookup behind this one throws.
+        if (args?.where?.id === "a-projboom") {
+          return { id: "a-projboom", projectId: "p-boom", deletedAt: null };
+        }
         if (args?.where?.id === "a-deleted" && args.where.deletedAt !== null) {
           return { id: "a-deleted", projectId: "p1", deletedAt: new Date() };
         }
@@ -99,6 +108,7 @@ vi.mock("../src/lib/prisma.js", () => ({
           where: { id: string };
           select?: { workspace?: { select?: { members?: { where?: { userId?: string } } } } };
         }) => {
+          if (args.where.id === "p-boom") throw new Error("db down");
           if (args.where.id !== "p1") return null;
           const memberId = args.select?.workspace?.select?.members?.where?.userId;
           return {
@@ -114,6 +124,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 import { createSocketServer, type MetisIOServer } from "../src/lib/socket/server.js";
 import { createJobEventEmitter, _resetJobLifecycleMemory } from "../src/lib/socket/job-events.js";
 import { issueTokens } from "../src/lib/auth/jwt.js";
+import { canJoinAnalysisRoom } from "../src/lib/socket/analysis-room-access.js";
 
 let httpServer: http.Server;
 let io: MetisIOServer;
@@ -310,6 +321,61 @@ describe("Socket.IO server", () => {
         socket.close();
       }
       expect(findFirst).not.toHaveBeenCalled();
+    });
+
+    // Review of #652 — destructuring a null payload threw inside socket.io's
+    // nextTick dispatch, an uncaught exception that killed the API process.
+    it("survives a null or missing payload on subscribe and unsubscribe", async () => {
+      const uncaught: unknown[] = [];
+      const onUncaught = (err: unknown): void => {
+        uncaught.push(err);
+      };
+      process.on("uncaughtException", onUncaught);
+      try {
+        const socket = await connectAs("u1", "u1");
+        for (const event of ["subscribe:analysis", "unsubscribe:analysis"] as const) {
+          (socket.emit as (ev: string, ...args: unknown[]) => void)(event, null);
+          (socket.emit as (ev: string, ...args: unknown[]) => void)(event);
+        }
+        await new Promise((r) => setTimeout(r, 100));
+        expect(uncaught).toEqual([]);
+        // The same socket still subscribes normally afterwards.
+        socket.emit("subscribe:analysis", { analysisId: "a1" });
+        await new Promise((r) => setTimeout(r, 100));
+        expect(inRoom("a1", socket)).toBe(true);
+        socket.close();
+      } finally {
+        process.off("uncaughtException", onUncaught);
+      }
+    });
+
+    // Review of #652 — an unsubscribe that lands while the access check is in
+    // flight must win; the late check must not join the socket afterwards.
+    it("does not join when unsubscribed before the access check resolves", async () => {
+      const socket = await connectAs("u1", "u1");
+      socket.emit("subscribe:analysis", { analysisId: "a-slow" });
+      socket.emit("unsubscribe:analysis", { analysisId: "a-slow" });
+      await new Promise((r) => setTimeout(r, 150));
+      expect(inRoom("a-slow", socket)).toBe(false);
+      // A later subscribe to the same id still joins.
+      socket.emit("subscribe:analysis", { analysisId: "a-slow" });
+      await new Promise((r) => setTimeout(r, 150));
+      expect(inRoom("a-slow", socket)).toBe(true);
+      socket.close();
+    });
+
+    // Review of #652 — a database failure behind the project check is not a
+    // denial: it propagates so the handler logs it, and the socket still fails closed.
+    it("rethrows a non-AppError from the project check and still refuses the socket", async () => {
+      const user = { userId: "u1", username: "u1", role: "developer", permissions: [] } as never;
+      await expect(canJoinAnalysisRoom(user, "a-projboom")).rejects.toThrow("db down");
+      await expect(
+        canJoinAnalysisRoom({ ...(user as object), userId: "u2" } as never, "a1"),
+      ).resolves.toBe(false);
+      const { socket, errors } = await subscribeAnalysis("u1", "a-projboom");
+      expect(errors).toEqual(["FORBIDDEN: no access to analysis"]);
+      expect(inRoom("a-projboom", socket)).toBe(false);
+      socket.close();
     });
   });
 
