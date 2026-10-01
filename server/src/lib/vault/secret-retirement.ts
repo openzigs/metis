@@ -26,6 +26,13 @@
  * substring. Both are high-entropy (a cuid; a label ending in a ulid), and an
  * over-broad match only ever keeps a secret alive — never deletes a live one.
  * Soft-deleted referencing rows count too, for the same reason.
+ *
+ * #591 — the check runs once, at replacement time, but one reference it
+ * honours is time-bounded (a Task's retry window, #574). A secret kept then is
+ * marked `replacedKeptAt`, and {@link sweepReplacedSecrets} — a leader-only
+ * interval job ({@link startReplacedSecretSweep}) — re-runs the check on marked
+ * live secrets (a bounded batch, each at most once per interval) and retires
+ * the ones nothing references any more.
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
@@ -47,10 +54,14 @@ function labelOf(name: string): string {
 }
 
 /** Does any stored reference still name secret `id` (by id or by label)? */
-export async function isSecretReferenced(id: string, name: string): Promise<boolean> {
+export async function isSecretReferenced(
+  id: string,
+  name: string,
+  now: Date = new Date(),
+): Promise<boolean> {
   const needles = [...new Set([id, labelOf(name)])];
   const containsAny = (field: string) => needles.map((n) => ({ [field]: { contains: n } }));
-  const cutoff = retryWindowCutoff();
+  const cutoff = retryWindowCutoff(now);
   const counts = await Promise.all([
     prisma.repoConnection.count({ where: { secretId: id } }),
     prisma.databaseConnection.count({ where: { secretId: id } }),
@@ -126,7 +137,12 @@ export async function retireReplacedSecret(
       select: { id: true, name: true },
     });
     if (!row) return false;
-    if (await isSecretReferenced(row.id, row.name)) return false;
+    if (await isSecretReferenced(row.id, row.name)) {
+      // #591 — kept for now; the sweep re-checks it. Raw SQL so the vault
+      // page's "Updated" (`updatedAt`) is not moved by a marker nobody edited.
+      await prisma.$executeRaw`UPDATE "secrets" SET "replacedKeptAt" = ${new Date()} WHERE "id" = ${row.id} AND "deletedAt" IS NULL`;
+      return false;
+    }
     await vault.delete(row.id);
     audit({
       actor: { id: ctx.actorId },
@@ -258,4 +274,133 @@ export async function undoRotations(
       });
     }
   }
+}
+
+export interface ReplacedSecretSweepResult {
+  /** Marked live secrets whose references were re-checked. */
+  checked: number;
+  /** Ids retired by this run. */
+  retired: string[];
+}
+
+/** Default sweep cadence: hourly. The retry window is days, so an hour late is nothing. */
+const REPLACED_SECRET_SWEEP_INTERVAL_MS = 60 * 60 * 1_000;
+/** Most marked secrets one run re-checks; the rest wait for a later run, oldest first. */
+const REPLACED_SECRET_SWEEP_BATCH = 100;
+/** Delay before the first run after gaining leadership, so boot is not blocked. */
+const REPLACED_SECRET_SWEEP_INITIAL_DELAY_MS = 60 * 1_000;
+
+export interface ReplacedSecretSweepOptions {
+  /** Most marked secrets to re-check in this run (oldest `replacedKeptAt` first). */
+  batchSize?: number;
+  /** A secret is re-checked only once its `replacedKeptAt` is at least this old. */
+  recheckAfterMs?: number;
+}
+
+/**
+ * #591 — re-run the reference check on replaced secrets that were kept
+ * (`replacedKeptAt` set, still live) and retire the ones nothing references
+ * any more, each audited as `vault.delete` by the system.
+ *
+ * Bounded and throttled: a run takes at most `batchSize` secrets, oldest
+ * `replacedKeptAt` first, and only those whose `replacedKeptAt` is at least
+ * `recheckAfterMs` old. A secret found still referenced is re-stamped
+ * `replacedKeptAt = now`, so one kept by a durable binding (a DB connector, an
+ * MCP server) costs one check per interval and goes to the back of the queue.
+ * `replacedKeptAt` therefore reads "last found still referenced".
+ *
+ * The soft-delete is ONE conditional UPDATE that re-states "still live" and
+ * "no binding write in flight" (#552 `bindingWriteUntil`): a write that binds
+ * the secret somewhere new stamps that column before its ownership check, so
+ * either the stamp lands first and this delete is refused, or the delete lands
+ * first and the binding check no longer finds a live secret.
+ *
+ * A failure on one secret is logged and the rest still run; it is not
+ * re-stamped, so it is picked up again on the next run.
+ */
+export async function sweepReplacedSecrets(
+  now: Date = new Date(),
+  {
+    batchSize = REPLACED_SECRET_SWEEP_BATCH,
+    recheckAfterMs = REPLACED_SECRET_SWEEP_INTERVAL_MS,
+  }: ReplacedSecretSweepOptions = {},
+): Promise<ReplacedSecretSweepResult> {
+  const dueBy = new Date(now.getTime() - recheckAfterMs);
+  const rows = await prisma.secret.findMany({
+    where: { replacedKeptAt: { lte: dueBy }, deletedAt: null },
+    select: { id: true, name: true },
+    orderBy: [{ replacedKeptAt: "asc" }, { id: "asc" }],
+    take: batchSize,
+  });
+  const retired: string[] = [];
+  for (const row of rows) {
+    try {
+      if (await isSecretReferenced(row.id, row.name, now)) {
+        // Throttle: not due again for another interval. Raw SQL so the vault
+        // page's "Updated" is not moved, as in retireReplacedSecret.
+        await prisma.$executeRaw`UPDATE "secrets" SET "replacedKeptAt" = ${now} WHERE "id" = ${row.id} AND "deletedAt" IS NULL`;
+        continue;
+      }
+      const { count } = await prisma.secret.updateMany({
+        where: {
+          id: row.id,
+          deletedAt: null,
+          OR: [{ bindingWriteUntil: null }, { bindingWriteUntil: { lte: now } }],
+        },
+        data: { deletedAt: now },
+      });
+      if (count === 0) continue;
+      retired.push(row.id);
+      audit({
+        actor: { id: "system" },
+        action: "vault.delete",
+        target: { type: "secret", id: row.id },
+        metadata: { source: "replaced_secret_sweep", reason: "replaced_no_longer_referenced" },
+      });
+    } catch (err) {
+      log.warn("Could not re-check a replaced secret; it stays live until the next sweep", {
+        secretId: row.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (retired.length > 0) {
+    log.info("Retired replaced secrets no longer referenced", { count: retired.length });
+  }
+  return { checked: rows.length, retired };
+}
+
+/**
+ * #591 — run {@link sweepReplacedSecrets} once `initialDelayMs` after start,
+ * then every `intervalMs`. The first run is not left for a whole interval: a
+ * cluster that restarts or changes leader more often than that would never
+ * sweep. A cluster singleton: registered in `SingletonJobs` (server.ts) so it
+ * runs on the leader only. Follows the FinOps / revocation lifecycle pattern
+ * (`setInterval` + `unref` + a handle with `stop()`); a failed run is logged
+ * and the timer survives.
+ */
+export function startReplacedSecretSweep(
+  intervalMs = REPLACED_SECRET_SWEEP_INTERVAL_MS,
+  sweep: () => Promise<ReplacedSecretSweepResult> = sweepReplacedSecrets,
+  initialDelayMs = REPLACED_SECRET_SWEEP_INITIAL_DELAY_MS,
+): { stop(): void } {
+  const run = () => {
+    sweep().catch((err: unknown) => {
+      log.error("Replaced-secret sweep failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  };
+  const first = setTimeout(run, initialDelayMs);
+  first.unref();
+  const timer = setInterval(run, intervalMs);
+  timer.unref();
+  log.info("replaced-secret sweep started", { intervalMs, initialDelayMs });
+  return {
+    stop() {
+      clearTimeout(first);
+      clearInterval(timer);
+      log.info("replaced-secret sweep stopped");
+    },
+  };
 }

@@ -335,6 +335,9 @@ model Secret {
   // #552 — set by a write that binds this secret somewhere new (its window
   // end); a confirmed foreign-owner rotation is conditional on it.
   bindingWriteUntil DateTime?
+  // #591 — set when a non-owner replaced this secret and it was kept because
+  // something still referenced it; the replaced-secret sweep re-checks it.
+  replacedKeptAt    DateTime?
 
   createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
 

@@ -66,6 +66,7 @@ import { createDispatcher } from "./lib/finops/channels/dispatcher.js";
 import { startChargebackScheduler } from "./lib/finops/chargeback-scheduler.js";
 import { startWorkspaceUsageRollup } from "./lib/workspaces/usage-rollup.js";
 import { startInterruptedGenerationSweeper } from "./lib/docs-gen/interrupted-generations.js";
+import { startReplacedSecretSweep } from "./lib/vault/secret-retirement.js";
 import { reconcileStrandedGeneratedDocPublications } from "./lib/docs-gen/generated-doc-publication-recovery.js";
 import { backfillSecretBindings } from "./lib/vault/secret-binding-backfill.js";
 
@@ -145,6 +146,9 @@ export class SingletonJobs {
       startAlertEngine(),
       startChargebackScheduler(),
       startRevocationPruner(),
+      // #591 — retire replaced secrets that were kept only for a reference
+      // that has since lapsed (a Task past its retry window, #574).
+      startReplacedSecretSweep(),
     ];
   }
 

@@ -1,0 +1,17 @@
+-- Issue #591 — re-check replaced secrets that were kept because something
+-- still referenced them.
+--
+-- `retireReplacedSecret` runs once, when a non-owner's credential write
+-- replaces a secret. Since #574 one of the references it honours is
+-- time-bounded (a failed or cancelled http-webhook Task pins a secret only
+-- inside its 7-day retry window), so a secret kept for that reason used to
+-- stay live for ever. `replacedKeptAt` records that the secret was replaced
+-- and kept; the leader-only sweep (`sweepReplacedSecrets`) re-runs the
+-- reference check on every marked live secret and retires the unreferenced.
+--
+-- Additive only: NULLABLE, not backfilled (NULL = not a kept replacement).
+--
+-- Rollback (documentation): `ALTER TABLE "secrets" DROP COLUMN "replacedKeptAt";`
+-- (SQLite 3.35+). Lossy only for the marker: secrets kept before the rollback
+-- are no longer re-checked, which is the pre-#591 behaviour.
+ALTER TABLE "secrets" ADD COLUMN "replacedKeptAt" DATETIME;

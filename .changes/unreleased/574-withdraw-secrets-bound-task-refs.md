@@ -12,4 +12,4 @@ section: Security
   `POST /api/tasks/:id/retry` answers 409 `TASK_RETRY_EXPIRED`. Other task types, whose payloads
   name no vault credential, stay retryable without a limit. A webhook credential replaced
   after a task's window has passed is no longer pinned by it; one replaced while the window is
-  still open is kept and not re-checked later (periodic re-check: follow-up #591).
+  still open is kept, and retired by an hourly re-check once the window has passed (#591).
