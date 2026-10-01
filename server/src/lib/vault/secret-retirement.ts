@@ -178,6 +178,12 @@ export async function retireReplacedSecret(
       await markKept(row.id, now);
       return false;
     }
+    // The line `VaultService.delete` wrote before #614, so a search of the
+    // operational logs for soft-deletes still finds immediate retirements.
+    log.info("Secret soft-deleted: retired a replaced secret", {
+      secretId: row.id,
+      target: ctx.target,
+    });
     audit({
       actor: { id: ctx.actorId },
       action: "vault.secret_retired",
@@ -373,6 +379,9 @@ export async function sweepReplacedSecrets(
       }
       if (!(await softDeleteIfUnbound(row.id, now))) continue;
       retired.push(row.id);
+      log.info("Secret soft-deleted: swept a replaced secret no longer referenced", {
+        secretId: row.id,
+      });
       audit({
         actor: { id: "system" },
         action: "vault.delete",

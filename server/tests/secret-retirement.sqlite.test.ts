@@ -27,6 +27,19 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+/** The `secret-retirement` logger's info calls, for the soft-delete log line (#614). */
+const retirementLog = vi.hoisted(() => ({ info: vi.fn() }));
+vi.mock("../src/lib/logger.js", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../src/lib/logger.js")>();
+  return {
+    ...orig,
+    createChildLogger: (name: string) => {
+      const real = orig.createChildLogger(name);
+      if (name !== "secret-retirement") return real;
+      return Object.assign(Object.create(real) as typeof real, { info: retirementLog.info });
+    },
+  };
+});
 
 const { VaultService, __resetVaultSingleton } = await import("../src/lib/vault/vault-service.js");
 const {
@@ -594,8 +607,34 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         OWNER,
         new Date(now.getTime() - BINDING_WRITE_WINDOW_MS),
       );
+      retirementLog.info.mockClear();
       expect(await retireReplacedSecret(s.id, ctx, now)).toBe(true);
       expect(await isLive(s.id)).toBe(false);
+      // The soft-delete line `VaultService.delete` used to write is still written.
+      expect(retirementLog.info).toHaveBeenCalledWith(
+        expect.stringContaining("Secret soft-deleted"),
+        expect.objectContaining({ secretId: s.id }),
+      );
+    });
+
+    it("#614 — the immediate retirement is refused one millisecond before the window closes", async () => {
+      const s = await freshSecret();
+      const now = new Date();
+      // Stamped 1 ms later than the test above: `until` is now + 1 ms.
+      const until = await markBindingWrite(
+        [{ id: s.id }],
+        OWNER,
+        new Date(now.getTime() - BINDING_WRITE_WINDOW_MS + 1),
+      );
+      expect(until!.getTime()).toBe(now.getTime() + 1);
+      retirementLog.info.mockClear();
+
+      expect(await retireReplacedSecret(s.id, ctx, now)).toBe(false);
+
+      const row = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
+      expect(row.deletedAt).toBeNull();
+      expect(row.replacedKeptAt).toEqual(now);
+      expect(retirementLog.info).not.toHaveBeenCalled();
     });
 
     it("#614 — Jira: a replacement during the owner's binding write keeps the old secret until the sweep", async () => {
@@ -617,9 +656,46 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await isLive(before.secretId)).toBe(true);
 
       // Once the window has closed and nothing references it, the sweep retires it.
+      retirementLog.info.mockClear();
       const result = await sweepDue(new Date(until!.getTime() + 1));
       expect(result.retired).toContain(before.secretId);
       expect(await isLive(before.secretId)).toBe(false);
+      expect(retirementLog.info).toHaveBeenCalledWith(
+        expect.stringContaining("Secret soft-deleted"),
+        { secretId: before.secretId },
+      );
+    });
+
+    it("#614 — test management: a replacement during the owner's binding write keeps the old secret until the sweep", async () => {
+      const before = await ownerZephyr();
+      const stampedAt = new Date();
+      // The owner is binding their bearer-token secret somewhere new while a
+      // coordinator replaces the credential on the connection.
+      const until = await markBindingWrite([{ id: before.bearerId }], OWNER, stampedAt);
+      expect(until).not.toBeNull();
+
+      await testmgmt.updateTestManagementConnection(
+        before.id,
+        { auth: { kind: "zephyr", bearerToken: "coord-bearer" } },
+        COORD,
+        undefined,
+        tmDeps(),
+      );
+
+      // The connection was repointed, but the old secret is kept and marked.
+      expect(await storedBearerId(before.id)).not.toBe(before.bearerId);
+      expect(await isLive(before.bearerId)).toBe(true);
+      expect(await markOf(before.bearerId)).toBeInstanceOf(Date);
+      expect(await isSecretReferenced(before.bearerId, await nameOf(before.bearerId))).toBe(false);
+
+      // While the window is open the sweep leaves it alone.
+      expect((await sweepDue(stampedAt)).retired).not.toContain(before.bearerId);
+      expect(await isLive(before.bearerId)).toBe(true);
+
+      // Once the window has closed, the sweep retires it.
+      const result = await sweepDue(new Date(until!.getTime() + 1));
+      expect(result.retired).toContain(before.bearerId);
+      expect(await isLive(before.bearerId)).toBe(false);
     });
 
     // ---- withdrawCreatedSecrets (#495) --------------------------------------
