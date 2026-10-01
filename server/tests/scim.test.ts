@@ -25,6 +25,11 @@ const { db, revoke, audit } = vi.hoisted(() => ({
 vi.mock("../src/lib/prisma.js", () => ({ prisma: db }));
 vi.mock("../src/lib/auth/jwt.js", () => ({ revokeAllUserSessions: revoke }));
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit }));
+const reconnect = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/socket/user-disconnect.js", () => ({
+  disconnectUserSockets: vi.fn(),
+  reconnectUserSockets: reconnect,
+}));
 
 import {
   addScimToken,
@@ -364,6 +369,7 @@ describe("SCIM role authority persistence", () => {
       for (const source of [null, "local", "scim"]) {
         db.user.update.mockClear();
         db.userRole.deleteMany.mockClear();
+        reconnect.mockClear();
         db.userRole.findUnique.mockResolvedValue(
           source ? { userId: user.id, roleId: group.id, source } : null,
         );
@@ -371,9 +377,11 @@ describe("SCIM role authority persistence", () => {
         if (source === "scim") {
           expect(db.user.update).toHaveBeenCalledWith({ where: { id: user.id }, data: authority });
           expectProviderCleanup();
+          expect(reconnect).toHaveBeenCalledExactlyOnceWith(user.id);
         } else {
           expect(db.user.update).not.toHaveBeenCalled();
           expect(db.userRole.deleteMany).not.toHaveBeenCalled();
+          expect(reconnect).not.toHaveBeenCalled();
         }
       }
     },
@@ -400,6 +408,11 @@ describe("SCIM role authority persistence", () => {
     expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "Serializable",
     });
+    // #633 — every former member's open sockets re-handshake, after the commit.
+    expect(reconnect.mock.calls).toEqual([[user.id], ["legacy"]]);
+    expect(reconnect.mock.invocationCallOrder[0]).toBeGreaterThan(
+      db.role.delete.mock.invocationCallOrder[0],
+    );
   });
 
   it("refuses group deletion without changing any grant if a local assignment exists", async () => {
@@ -415,6 +428,7 @@ describe("SCIM role authority persistence", () => {
     expect(db.userRole.deleteMany).not.toHaveBeenCalled();
     expect(db.role.delete).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
+    expect(reconnect).not.toHaveBeenCalled();
   });
 
   it("still refuses deletion of built-in roles without changing authority", async () => {

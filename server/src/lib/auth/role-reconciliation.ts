@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
+import { reconnectUserSockets } from "../socket/user-disconnect.js";
 import { resolveEffectiveRoleFromRows } from "./durable-roles.js";
 
 const identity = z.string().trim().min(1).max(200);
@@ -23,8 +24,7 @@ export type ReconciliationInput = z.infer<typeof reconciliationSchema>;
 export type ReconciliationTarget = z.infer<typeof reconciliationTargetSchema>;
 type Tx = Prisma.TransactionClient;
 export type ReconciliationActor =
-  | { kind: "admin"; id: string }
-  | { kind: "host-operator"; name: string };
+  { kind: "admin"; id: string } | { kind: "host-operator"; name: string };
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const conflict = () =>
   new AppError(409, "RECONCILIATION_CONFLICT", "State changed or request ID reused; inspect again");
@@ -85,7 +85,7 @@ export async function inspectRoleState(actor: ReconciliationActor, target: Recon
 }
 
 export async function confirmRoleState(actor: ReconciliationActor, input: ReconciliationInput) {
-  return prisma.$transaction(
+  const result = await prisma.$transaction(
     async (tx) => {
       await authorize(tx, actor, input.targetId);
       const before = await snapshot(tx, input);
@@ -173,6 +173,10 @@ export async function confirmRoleState(actor: ReconciliationActor, input: Reconc
     },
     { isolationLevel: "Serializable" },
   );
+  // #633 — the target's open sockets keep their connect-time role; after the
+  // commit, make them re-handshake. A replay changed nothing.
+  if (!result.replayed) reconnectUserSockets(input.targetId);
+  return result;
 }
 
 // The HTTP adapter only calls these wrappers: caller input cannot select host mode.
