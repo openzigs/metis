@@ -39,9 +39,12 @@ import {
 } from "../src/lib/socket/cluster-adapter.js";
 import {
   SOCKET_REVALIDATE_INTERVAL_MS,
+  SOCKET_REVALIDATE_MIN_INTERVAL_MS,
   createSocketServer,
+  resolveSocketRevalidateIntervalMs,
   type MetisIOServer,
 } from "../src/lib/socket/server.js";
+import { logger } from "../src/lib/logger.js";
 import { readEpoch } from "../src/lib/socket/revocation-relay.js";
 import { registerSocketServer } from "../src/lib/socket/registry.js";
 import { __resetScimTokens, addScimToken, scimRouter } from "../src/routes/scim.js";
@@ -65,6 +68,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const s of open.splice(0)) s.close();
   registerSocketServer(null as never);
   __resetScimTokens();
@@ -107,6 +111,65 @@ describe("#659 periodic re-validation sweep — wiring", () => {
     expect(SOCKET_REVALIDATE_INTERVAL_MS).toBe(60_000);
     expect(setInterval).toHaveBeenCalledWith(expect.any(Function), SOCKET_REVALIDATE_INTERVAL_MS);
   });
+
+  it("takes the clustered interval from METIS_SOCKET_REVALIDATE_INTERVAL_MS", () => {
+    // Not 30000: Socket.IO's own 30 s ping timer would match that.
+    vi.stubEnv("METIS_SOCKET_REVALIDATE_INTERVAL_MS", "45678");
+    const setInterval = vi.spyOn(globalThis, "setInterval");
+    const cluster = createPostgresClusterAdapter(new FakePgNotifyBus().pool());
+    adapters.push(cluster);
+    const io: MetisIOServer = createSocketServer(http.createServer(), { adapter: cluster.adapter });
+    replicas.push({ io, port: 0, roomHas: () => false, close: () => io.close() });
+
+    expect(setInterval).toHaveBeenCalledWith(expect.any(Function), 45_678);
+    expect(setInterval).not.toHaveBeenCalledWith(
+      expect.any(Function),
+      SOCKET_REVALIDATE_INTERVAL_MS,
+    );
+  });
+
+  it.each([["0"], ["-5000"], ["abc"], ["1.5e4"], ["30_000"], ["9999"], ["99999999999"]])(
+    "keeps the 60 s default and warns on METIS_SOCKET_REVALIDATE_INTERVAL_MS=%s",
+    (raw) => {
+      vi.stubEnv("METIS_SOCKET_REVALIDATE_INTERVAL_MS", raw);
+      const write = vi.spyOn(logger, "write");
+
+      expect(resolveSocketRevalidateIntervalMs()).toBe(SOCKET_REVALIDATE_INTERVAL_MS);
+      const warnings = write.mock.calls
+        .map(([info]) => info as { level: string; message: string; env?: string })
+        .filter((i) => i.level === "warn" && i.env === "METIS_SOCKET_REVALIDATE_INTERVAL_MS");
+      expect(warnings).toHaveLength(1);
+    },
+  );
+
+  it("accepts the 10 s minimum and keeps the default silently when unset or blank", () => {
+    vi.stubEnv("METIS_SOCKET_REVALIDATE_INTERVAL_MS", String(SOCKET_REVALIDATE_MIN_INTERVAL_MS));
+    expect(SOCKET_REVALIDATE_MIN_INTERVAL_MS).toBe(10_000);
+    expect(resolveSocketRevalidateIntervalMs()).toBe(10_000);
+
+    const write = vi.spyOn(logger, "write");
+    vi.stubEnv("METIS_SOCKET_REVALIDATE_INTERVAL_MS", "");
+    expect(resolveSocketRevalidateIntervalMs()).toBe(SOCKET_REVALIDATE_INTERVAL_MS);
+    vi.stubEnv("METIS_SOCKET_REVALIDATE_INTERVAL_MS", undefined);
+    expect(resolveSocketRevalidateIntervalMs()).toBe(SOCKET_REVALIDATE_INTERVAL_MS);
+    expect(
+      write.mock.calls.filter(([info]) => (info as { level: string }).level === "warn"),
+    ).toEqual([]);
+  });
+
+  it.each([[0], [-1], [Number.NaN], [Number.POSITIVE_INFINITY], [2 ** 31]])(
+    "rejects revalidateIntervalMs=%s before touching the HTTP server",
+    (ms) => {
+      const setInterval = vi.spyOn(globalThis, "setInterval");
+      const httpServer = http.createServer();
+
+      expect(() => createSocketServer(httpServer, { revalidateIntervalMs: ms })).toThrow(
+        RangeError,
+      );
+      expect(setInterval).not.toHaveBeenCalled();
+      expect(httpServer.listenerCount("request")).toBe(0);
+    },
+  );
 });
 
 describe("#659 a revocation whose publish fails on A, while B stays listening", () => {

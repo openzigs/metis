@@ -10,3 +10,6 @@ section: Security
   disconnected, reconnected with the new role, or taken out of that workspace's MCP status
   updates on every other replica within about a minute. Before, those replicas kept that
   access until the connection next reconnected.
+- A failed database lookup during that periodic check keeps the connection and retries on
+  the next check, so a brief database blip no longer disconnects everyone at once. Set
+  `METIS_SOCKET_REVALIDATE_INTERVAL_MS` (minimum 10 s) to change the one-minute interval.
