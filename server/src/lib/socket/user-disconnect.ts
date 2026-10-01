@@ -30,6 +30,11 @@ const log = createChildLogger("socket-user-disconnect");
  * user. A revocation committing inside that gap would miss the socket, so the
  * socket server snapshots this before the read and re-reads the user when it
  * has moved by the time the socket is in its room.
+ *
+ * The counter is process-wide, not per user: it counts EVERY revocation on this
+ * replica, so any handshake in flight during any user's revocation does one
+ * extra live-user read. That bounded cost is a deliberate trade-off against
+ * keeping (and pruning) a per-user map.
  */
 let revocations = 0;
 

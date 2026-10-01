@@ -489,7 +489,7 @@ describe("#613 handshake — a revocation between the live-user read and the use
     expect(io.sockets.sockets.has(c.sids[0])).toBe(false);
   });
 
-  it("a failed re-read disconnects the socket (fail closed)", async () => {
+  it("a failed re-read closes the transport so the client re-handshakes (fail closed, recoverable)", async () => {
     seed([], { "u-lookup": "admin" });
     const read = hold("liveUser", "u-lookup");
     const c = await connect("u-lookup", { awaitConnect: false });
@@ -501,7 +501,35 @@ describe("#613 handshake — a revocation between the live-user read and the use
     await reRead.reached.promise;
     reRead.release.resolve();
 
+    // Not `io server disconnect`, which the client treats as final: a transient
+    // lookup failure must not park a legitimate user until they reload.
+    await vi.waitFor(() => {
+      expect(c.disconnectReasons).toEqual(["transport close"]);
+      expect(c.sids).toHaveLength(2);
+      expect(c.socket.connected).toBe(true);
+    });
+    expect(io.sockets.sockets.has(c.sids[0])).toBe(false);
+    // The reconnect went through a fresh handshake read of the live user.
+    expect(db.liveUserReads).toEqual(["u-lookup", "u-lookup", "u-lookup"]);
+  });
+
+  it("a re-read that succeeds and finds the user inactive disconnects for good", async () => {
+    seed([], { "u-lapsed": "admin" });
+    const read = hold("liveUser", "u-lapsed");
+    const c = await connect("u-lapsed", { awaitConnect: false });
+    await read.reached.promise;
+
+    // The handshake read already returned a live user; the account lapses
+    // after it, and an unrelated revocation moves the epoch.
+    db.inactive.add("u-lapsed");
+    reconnectUserSockets("u-someone-else");
+    read.release.resolve();
+
     await vi.waitFor(() => expect(c.disconnectReasons).toEqual(["io server disconnect"]));
+    await settle();
+    expect(c.sids).toHaveLength(1);
+    expect(c.socket.connected).toBe(false);
+    expect(db.liveUserReads).toEqual(["u-lapsed", "u-lapsed"]);
   });
 
   it("another user's revocation during the read re-reads but leaves the socket alone", async () => {

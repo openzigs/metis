@@ -31,6 +31,11 @@ const log = createChildLogger("mcp-status-eviction");
  * socket not yet in the room and misses it. The handler snapshots this before
  * the read and, when it has moved by the time the join is done, re-reads the
  * memberships and leaves any room it lost.
+ *
+ * The counter is process-wide, not per user or workspace: it counts EVERY
+ * eviction on this replica, so any `subscribe:mcp` in flight during any
+ * eviction does one extra membership read. That bounded cost is a deliberate
+ * trade-off against keeping (and pruning) a per-user map.
  */
 let evictions = 0;
 

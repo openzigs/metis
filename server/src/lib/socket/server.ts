@@ -168,7 +168,13 @@ async function authenticateHandshake(
  * #613 — re-read the live user of a socket that may have missed a revocation,
  * and apply the one it missed: a user no longer live is disconnected (as
  * `disconnectUserSockets` would), and a changed role re-handshakes (as
- * `reconnectUserSockets` would). A failed lookup disconnects (fail closed).
+ * `reconnectUserSockets` would).
+ *
+ * A FAILED lookup closes the transport rather than disconnecting: the client
+ * treats `disconnect(true)` as final, so a transient database blip during an
+ * unrelated revocation would park a legitimate user until they reload. A
+ * transport close makes the client re-handshake, and `authenticateHandshake`
+ * rejects that while the database is still down — fail closed, but recoverable.
  */
 async function recheckLiveUser(
   socket: Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>,
@@ -178,13 +184,16 @@ async function recheckLiveUser(
   try {
     live = await loadLiveAuthPayload(userId);
   } catch (err) {
-    log.warn("Socket live-user re-check failed — disconnecting", {
+    log.warn("Socket live-user re-check failed — closing transport to re-handshake", {
       socketId: socket.id,
       userId,
       error: (err as Error).message,
     });
-    live = null;
+    socket.conn.close();
+    return;
   }
+  // Only the role is compared: workspaces are re-read live by `subscribe:mcp`,
+  // and the username is not security-relevant.
   if (!live) {
     socket.disconnect(true);
   } else if (live.role !== role) {
