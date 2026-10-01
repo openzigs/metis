@@ -4275,3 +4275,13 @@ ALTER TABLE "code_symbol_embeddings" ADD CONSTRAINT "code_symbol_embeddings_symb
 
 -- AddForeignKey
 ALTER TABLE "code_symbol_embeddings" ADD CONSTRAINT "code_symbol_embeddings_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Issue #637 — the vault binding epoch. Its row and triggers are created by
+-- migration 20261009000637_issue637_vault_binding_epoch, not here.
+-- CreateTable
+CREATE TABLE "vault_binding_epochs" (
+    "id" INTEGER NOT NULL,
+    "epoch" BIGINT NOT NULL DEFAULT 0,
+
+    CONSTRAINT "vault_binding_epochs_pkey" PRIMARY KEY ("id")
+);

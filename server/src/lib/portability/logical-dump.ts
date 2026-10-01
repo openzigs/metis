@@ -328,7 +328,8 @@ export interface ExclusionEntry {
 /**
  * Models that are intentionally NOT exported by the logical dump.
  *
- * As of this schema there are NO whole-model exclusions: all 132 models hold
+ * As of this schema there is ONE whole-model exclusion, `VaultBindingEpoch`
+ * (#637, a cache key, not data); every other model holds
  * DB-resident data that round-trips 1:1 (verified — every scalar type is
  * String/Int/Boolean/Float/DateTime/Json, no on-disk-only blob columns live in
  * the relational DB; LanceDB vectors are stored OUTSIDE the DB, on the
@@ -340,7 +341,12 @@ export interface ExclusionEntry {
  * a reason, logged at export time, and documented — never silently dropped.
  */
 export const EXCLUDED_MODELS: Readonly<Record<string, ExclusionEntry>> = Object.freeze({
-  // (intentionally empty — see doc comment)
+  // #637 — not data: a cache key the target database's own migration seeds
+  // (one row, id 1) and its own triggers advance. Importing the source's row
+  // would collide with that seed, and its value means nothing on another database.
+  VaultBindingEpoch: {
+    reason: "#637 binding-summary cache key; seeded and advanced by the target's own migration",
+  },
 });
 
 /**

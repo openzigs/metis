@@ -351,6 +351,21 @@ model Secret {
   @@map("secrets")
 }
 
+/// #637 — the vault binding epoch: one row (id 1), bumped by database
+/// triggers (migration 20261009000637) on every insert, delete or
+/// binding-relevant update of the six tables that bind a vault secret. A
+/// foreign-owner rotation caches each secret's binding summary (digest, total,
+/// counts, capped listing) against it, so an unchanged set is not reloaded and
+/// rehashed on every attempt (`lib/vault/rotate-foreign-owner.ts`). The row is
+/// written only by the migration: a database built by `prisma db push` has the
+/// table but no row and no triggers, and then nothing is cached.
+model VaultBindingEpoch {
+  id    Int    @id
+  epoch BigInt @default(0)
+
+  @@map("vault_binding_epochs")
+}
+
 // ============================================================================
 // Projects, Documents, Knowledge
 // ============================================================================

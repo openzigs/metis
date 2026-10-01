@@ -13,6 +13,7 @@ const db = vi.hoisted(() => ({
   mCPServer: { findMany: vi.fn() },
   jiraConnection: { findMany: vi.fn() },
   testManagementConnection: { findMany: vi.fn() },
+  vaultBindingEpoch: { findUnique: vi.fn() },
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
 // #557 — a pass-through spy, so a test can count the HKDF derivations.
@@ -40,6 +41,7 @@ const {
   destinationHost,
   foreignOwnerMessage,
   foreignOwnerView,
+  MAX_CACHED_SUMMARIES,
   MAX_CONFIRMED_BINDINGS,
   MAX_HOST_ROWS,
   MAX_LISTED_BINDINGS,
@@ -47,6 +49,7 @@ const {
   routingDigest,
   routingFields,
   UNBOUND_NOTE,
+  __resetForeignOwnerSummaries,
 } = await import("./rotate-foreign-owner.js");
 
 beforeEach(() => {
@@ -54,6 +57,9 @@ beforeEach(() => {
     for (const fn of Object.values(model)) (fn as ReturnType<typeof vi.fn>).mockReset();
   }
   db.user.findUnique.mockResolvedValue(null);
+  // #637 — no epoch row (a `db push` database): nothing is cached.
+  db.vaultBindingEpoch.findUnique.mockResolvedValue(null);
+  __resetForeignOwnerSummaries();
   for (const m of [
     db.databaseConnection,
     db.repoConnection,
@@ -67,6 +73,23 @@ beforeEach(() => {
 });
 
 const SECRET = { id: "sec-1", name: "global:gh-token", createdById: "u-1" };
+
+/**
+ * #637 — details as `describeForeignOwner` summarises a whole binding set: the
+ * listing capped at MAX_LISTED_BINDINGS, the total and counts over all of it.
+ */
+function summarised<T extends { bindings: Array<Parameters<typeof countBindings>[0][number]> }>(
+  d: T,
+) {
+  return {
+    bindingsDigest: "0".repeat(64),
+    maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
+    ...d,
+    bindings: d.bindings.slice(0, MAX_LISTED_BINDINGS) as T["bindings"],
+    bindingsTotal: d.bindings.length,
+    bindingCounts: countBindings(d.bindings),
+  };
+}
 
 describe("describeForeignOwner", () => {
   it("queries every binding column by the secret id, live rows only", async () => {
@@ -253,7 +276,9 @@ describe("#609 — describeForeignOwner lists test-management connections", () =
       expect(after.destination).toBe(before.destination);
       expect(after.routing, JSON.stringify(change)).not.toBe(before.routing);
       expect(
-        bindingsDiffer({ secretId: "s", owner: SECRET_OWNER, bindings: [after] }, [before]),
+        bindingsDiffer(summarised({ secretId: "s", owner: SECRET_OWNER, bindings: [after] }), [
+          before,
+        ]),
       ).toBe(true);
     }
   });
@@ -269,35 +294,45 @@ describe("foreignOwnerMessage", () => {
 
   it("names the owner by display name, then username, then id", () => {
     expect(
-      foreignOwnerMessage({ ...base, owner: { id: "u", username: "cora", displayName: "Cora" } }),
+      foreignOwnerMessage(
+        summarised({ ...base, owner: { id: "u", username: "cora", displayName: "Cora" } }),
+      ),
     ).toContain("belongs to Cora.");
     expect(
-      foreignOwnerMessage({ ...base, owner: { id: "u", username: "cora", displayName: null } }),
+      foreignOwnerMessage(
+        summarised({ ...base, owner: { id: "u", username: "cora", displayName: null } }),
+      ),
     ).toContain("belongs to cora.");
     expect(
-      foreignOwnerMessage({ ...base, owner: { id: "u-9", username: null, displayName: null } }),
+      foreignOwnerMessage(
+        summarised({ ...base, owner: { id: "u-9", username: null, displayName: null } }),
+      ),
     ).toContain("belongs to user u-9.");
   });
 
   it("with no bindings says only what was checked, never that it is bound nowhere", () => {
-    const msg = foreignOwnerMessage({
-      ...base,
-      owner: { id: "u", username: "c", displayName: null },
-    });
+    const msg = foreignOwnerMessage(
+      summarised({
+        ...base,
+        owner: { id: "u", username: "c", displayName: null },
+      }),
+    );
     expect(msg).toContain(UNBOUND_NOTE);
     expect(msg).toContain("were not checked");
     expect(msg).not.toContain("not bound");
   });
 
   it("lists each binding with its destination when it has one", () => {
-    const msg = foreignOwnerMessage({
-      secretId: "s",
-      owner: { id: "u", username: null, displayName: "Cora" },
-      bindings: [
-        { type: "db_connector", id: "d", label: "DB", projectId: "p", destination: "pg://h" },
-        { type: "mcp_server", id: "m", label: "MCP", projectId: null, destination: null },
-      ],
-    });
+    const msg = foreignOwnerMessage(
+      summarised({
+        secretId: "s",
+        owner: { id: "u", username: null, displayName: "Cora" },
+        bindings: [
+          { type: "db_connector", id: "d", label: "DB", projectId: "p", destination: "pg://h" },
+          { type: "mcp_server", id: "m", label: "MCP", projectId: null, destination: null },
+        ],
+      }),
+    );
     expect(msg).toContain("bound to DB (pg://h), MCP.");
     expect(msg).toContain("confirmForeignOwner");
     // #502 — the API text says what a confirm needs and what it does.
@@ -315,11 +350,12 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
     destination: `pg://${id}`,
     routing: `r-${id}`,
   });
-  const details = (...ids: string[]) => ({
-    secretId: "s",
-    owner: { id: "u", username: "cora", displayName: null },
-    bindings: ids.map(binding),
-  });
+  const details = (...ids: string[]) =>
+    summarised({
+      secretId: "s",
+      owner: { id: "u", username: "cora", displayName: null },
+      bindings: ids.map(binding),
+    });
 
   // What the 409 showed: type, id and destination of each binding.
   const shown = (...ids: string[]) =>
@@ -607,13 +643,13 @@ describe("#611 — bindingsSetDigest: one confirm over the whole binding set", (
   });
 
   it("the refusal names the digest as the alternative confirm", () => {
-    const msg = foreignOwnerMessage({
-      secretId: "s",
-      owner: { id: "u", username: "c", displayName: null },
-      bindings: [],
-      bindingsDigest: "0".repeat(64),
-      maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
-    });
+    const msg = foreignOwnerMessage(
+      summarised({
+        secretId: "s",
+        owner: { id: "u", username: "c", displayName: null },
+        bindings: [],
+      }),
+    );
     expect(msg).toContain("confirmedBindingsDigest");
     expect(msg).toContain(`at most ${MAX_CONFIRMED_BINDINGS}`);
   });
@@ -631,13 +667,13 @@ describe("#629 — the 409 listing, message and audit row are bounded for any bi
       destination: `pg://h${i}.owner.example:5432`,
       routing: "r".repeat(64),
     }));
-  const detailsOf = (bindings: ReturnType<typeof many>) => ({
-    secretId: "s",
-    owner: { id: "u", username: "cora", displayName: null },
-    bindings,
-    bindingsDigest: "d".repeat(64),
-    maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
-  });
+  const detailsOf = (bindings: ReturnType<typeof many>) =>
+    summarised({
+      secretId: "s",
+      owner: { id: "u", username: "cora", displayName: null },
+      bindings,
+      bindingsDigest: "d".repeat(64),
+    });
   const size = (v: unknown) => JSON.stringify(v).length;
 
   it("lists every binding at the cap, untruncated", () => {
@@ -726,19 +762,24 @@ describe("#629 — the 409 listing, message and audit row are bounded for any bi
 
   it("the audit row keeps every binding up to the cap", () => {
     const at = many(MAX_CONFIRMED_BINDINGS);
-    const row = confirmedBindingsAudit(at, "d".repeat(64));
-    expect(row).toEqual({ confirmedBindings: canonicalBindings(at) });
+    expect(confirmedBindingsAudit(detailsOf(at), at)).toEqual({
+      confirmedBindings: canonicalBindings(at),
+    });
+    // #637 — a digest confirm (no list) records the live set it matched.
+    expect(confirmedBindingsAudit(detailsOf(at))).toEqual({
+      confirmedBindings: canonicalBindings(at),
+    });
   });
 
   it("over the cap the audit row records the digest, total and counts instead of every binding", () => {
     const over = many(MAX_CONFIRMED_BINDINGS + 1);
-    const row = confirmedBindingsAudit(over, "d".repeat(64));
+    const row = confirmedBindingsAudit(detailsOf(over));
     expect(row).not.toHaveProperty("confirmedBindings");
     expect(row.confirmedBindingsDigest).toBe("d".repeat(64));
     expect(row.confirmedBindingsTotal).toBe(MAX_CONFIRMED_BINDINGS + 1);
     expect(row.confirmedBindingCounts).toEqual(countBindings(over));
     // A very large set: the row stays the size of the one just over the cap.
-    const huge = confirmedBindingsAudit(many(50_000), "d".repeat(64));
+    const huge = confirmedBindingsAudit(detailsOf(many(50_000)));
     expect(huge.confirmedBindingsTotal).toBe(50_000);
     expect(size(huge) - size(row)).toBeLessThan(32);
     expect(size(huge)).toBeLessThan(2000);
@@ -746,7 +787,137 @@ describe("#629 — the 409 listing, message and audit row are bounded for any bi
 
   it("counts duplicates in a confirm once, as the digest and the diff do", () => {
     const over = many(MAX_CONFIRMED_BINDINGS);
-    const row = confirmedBindingsAudit([...over, over[0]!], "d".repeat(64));
-    expect(row).toHaveProperty("confirmedBindings");
+    const row = confirmedBindingsAudit(detailsOf(over), [...over, over[0]!]);
+    expect(row).toEqual({ confirmedBindings: canonicalBindings(over) });
+  });
+});
+
+describe("#637 — the whole-set summary is cached against the vault binding epoch", () => {
+  const dbRow = (id: string, host = "h.example") => ({
+    id,
+    label: id.toUpperCase(),
+    projectId: "p",
+    driver: "postgres",
+    host,
+    port: 5432,
+    databaseName: null,
+    options: null,
+  });
+  const epoch = (value: bigint | null) =>
+    db.vaultBindingEpoch.findUnique.mockResolvedValue(value === null ? null : { epoch: value });
+  const loads = () => db.databaseConnection.findMany.mock.calls.length;
+
+  it("reuses the summary while the epoch has not moved, without loading a binding", async () => {
+    epoch(7n);
+    db.databaseConnection.findMany.mockResolvedValue([dbRow("a"), dbRow("b")]);
+    const first = await describeForeignOwner(SECRET);
+    expect(loads()).toBe(1);
+    db.databaseConnection.findMany.mockResolvedValue([dbRow("a"), dbRow("b", "evil.example")]);
+    const again = await describeForeignOwner(SECRET);
+    expect(loads()).toBe(1);
+    expect(again.bindingsDigest).toBe(first.bindingsDigest);
+    expect(again.bindingsTotal).toBe(2);
+    expect(again.bindings).toEqual(first.bindings);
+    // The owner's name is read live, not cached.
+    expect(db.user.findUnique).toHaveBeenCalledTimes(2);
+  });
+
+  it("recomputes once the epoch moves, and the digest follows the content", async () => {
+    epoch(7n);
+    db.databaseConnection.findMany.mockResolvedValue([dbRow("a")]);
+    const first = await describeForeignOwner(SECRET);
+    epoch(8n);
+    db.databaseConnection.findMany.mockResolvedValue([dbRow("a", "evil.example")]);
+    const moved = await describeForeignOwner(SECRET);
+    expect(loads()).toBe(2);
+    expect(moved.bindingsDigest).not.toBe(first.bindingsDigest);
+    expect(moved.bindings[0]!.destination).toBe("postgres://evil.example:5432");
+    // The fresh summary is cached in turn.
+    await describeForeignOwner(SECRET);
+    expect(loads()).toBe(2);
+  });
+
+  it("an epoch that moved but a set that did not gives the same digest", async () => {
+    epoch(1n);
+    db.databaseConnection.findMany.mockResolvedValue([dbRow("a")]);
+    const first = await describeForeignOwner(SECRET);
+    epoch(2n);
+    expect((await describeForeignOwner(SECRET)).bindingsDigest).toBe(first.bindingsDigest);
+    expect(loads()).toBe(2);
+  });
+
+  it("is keyed by the owner and the name, which the digest and the ref match depend on", async () => {
+    epoch(3n);
+    db.databaseConnection.findMany.mockResolvedValue([dbRow("a")]);
+    const first = await describeForeignOwner(SECRET);
+    const otherOwner = await describeForeignOwner({ ...SECRET, createdById: "u-2" });
+    expect(loads()).toBe(2);
+    expect(otherOwner.bindingsDigest).not.toBe(first.bindingsDigest);
+    await describeForeignOwner({ ...SECRET, createdById: "u-2", name: "global:renamed" });
+    expect(loads()).toBe(3);
+  });
+
+  it("is keyed by the routing key, so a new server secret recomputes", async () => {
+    epoch(3n);
+    db.databaseConnection.findMany.mockResolvedValue([dbRow("a")]);
+    const first = await describeForeignOwner(SECRET);
+    const prev = process.env.JWT_SECRET;
+    process.env.JWT_SECRET = "a-different-test-signing-secret-of-enough-length-637";
+    try {
+      const rekeyed = await describeForeignOwner(SECRET);
+      expect(loads()).toBe(2);
+      expect(rekeyed.bindingsDigest).not.toBe(first.bindingsDigest);
+    } finally {
+      if (prev === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = prev;
+    }
+  });
+
+  it("caches nothing without an epoch row, or when the epoch cannot be read", async () => {
+    epoch(null);
+    db.databaseConnection.findMany.mockResolvedValue([dbRow("a")]);
+    await describeForeignOwner(SECRET);
+    await describeForeignOwner(SECRET);
+    expect(loads()).toBe(2);
+    db.vaultBindingEpoch.findUnique.mockRejectedValue(new Error("no such table"));
+    await describeForeignOwner(SECRET);
+    await describeForeignOwner(SECRET);
+    expect(loads()).toBe(4);
+  });
+
+  it("keeps at most MAX_CACHED_SUMMARIES secrets, evicting the least recently used", async () => {
+    epoch(5n);
+    db.databaseConnection.findMany.mockResolvedValue([dbRow("a")]);
+    const secretN = (i: number) => ({ id: `sec-${i}`, name: `global:s${i}`, createdById: "u-1" });
+    for (let i = 0; i < MAX_CACHED_SUMMARIES; i += 1) await describeForeignOwner(secretN(i));
+    expect(loads()).toBe(MAX_CACHED_SUMMARIES);
+    // Touch secret 0, so secret 1 is now the least recently used.
+    await describeForeignOwner(secretN(0));
+    expect(loads()).toBe(MAX_CACHED_SUMMARIES);
+    await describeForeignOwner(secretN(MAX_CACHED_SUMMARIES));
+    expect(loads()).toBe(MAX_CACHED_SUMMARIES + 1);
+    await describeForeignOwner(secretN(0));
+    expect(loads()).toBe(MAX_CACHED_SUMMARIES + 1);
+    await describeForeignOwner(secretN(1));
+    expect(loads()).toBe(MAX_CACHED_SUMMARIES + 2);
+  });
+
+  it("caches the listing capped, with the total, counts and digest of the whole set", async () => {
+    epoch(9n);
+    const rows = Array.from({ length: MAX_LISTED_BINDINGS + 5 }, (_, i) =>
+      dbRow(`d${i}`, `h${i}.example`),
+    );
+    db.databaseConnection.findMany.mockResolvedValue(rows);
+    const out = await describeForeignOwner(SECRET);
+    expect(out.bindings).toHaveLength(MAX_LISTED_BINDINGS);
+    expect(out.bindingsTotal).toBe(MAX_LISTED_BINDINGS + 5);
+    expect(out.bindingCounts.byType).toEqual([
+      { type: "db_connector", count: MAX_LISTED_BINDINGS + 5 },
+    ]);
+    // The digest covers the unlisted bindings too.
+    const listedOnly = bindingsSetDigest(SECRET.id, SECRET.createdById, out.bindings);
+    expect(out.bindingsDigest).not.toBe(listedOnly);
+    // Over the cap no list can match the listing, even one naming every listed binding.
+    expect(bindingsDiffer(out, out.bindings)).toBe(true);
   });
 });

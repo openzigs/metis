@@ -256,8 +256,9 @@ describe("serializeRow / deserializeRow", () => {
 // ════════════════════════════════════════════════════════════════════════════
 
 describe("exclusion registry", () => {
-  it("has no whole-model exclusions in the current schema", () => {
-    expect(Object.keys(EXCLUDED_MODELS)).toEqual([]);
+  it("excludes only the #637 vault binding epoch, a cache key, as a whole model", () => {
+    expect(Object.keys(EXCLUDED_MODELS)).toEqual(["VaultBindingEpoch"]);
+    expect(isModelExcluded("VaultBindingEpoch")).toBe(true);
     expect(isModelExcluded("KnowledgeChunk")).toBe(false);
   });
 

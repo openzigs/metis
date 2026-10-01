@@ -54,6 +54,14 @@
  * {@link MAX_NAMED_BINDINGS}, and the audit row of a confirm over the cap
  * records the set digest, total and counts instead of every binding
  * ({@link confirmedBindingsAudit}). The digest still covers every binding.
+ * #637 — and what the server does per attempt is bounded too. The summary of
+ * the whole set (digest, total, counts, the capped listing) is cached per
+ * secret against the vault binding epoch, a counter that database triggers
+ * bump on every write that can change any secret's bindings (migration
+ * 20261009000637). An attempt reads the epoch and, while it has not moved,
+ * reuses the summary instead of loading and hashing every binding again; the
+ * first attempt after a binding write recomputes it once. The digest is still
+ * over the content of every binding, so it changes exactly when it did before.
  * A confirmed rotation also transfers ownership (`createdById`) to the admin,
  * so the previous owner can no longer bind the secret, now holding the
  * admin's value, to a new destination (rule 1 of `secret-binding.ts`); their
@@ -215,8 +223,16 @@ export const MAX_NAMED_BINDINGS = 10;
 export interface ForeignOwnerDetails {
   secretId: string;
   owner: SecretOwnerView;
+  /**
+   * #637 — the first {@link MAX_LISTED_BINDINGS} bindings; every one when
+   * `bindingsTotal` is within the cap, which is when a list confirm is allowed.
+   */
   bindings: SecretBindingView[];
-  /** #611 — {@link bindingsSetDigest} of `bindings`; a confirm may echo it instead of the list. */
+  /** #629 / #637 — how many live bindings the whole set has. */
+  bindingsTotal: number;
+  /** #629 — the per-type / per-host counts of the whole set. */
+  bindingCounts: BindingCounts;
+  /** #611 — {@link bindingsSetDigest} of the WHOLE set; a confirm may echo it instead of the list. */
   bindingsDigest: string;
   /** #611 — the most bindings a `confirmedBindings` list may carry. */
   maxConfirmedBindings: number;
@@ -254,17 +270,204 @@ function refBodiesInJson(json: string | null): string[] {
   }
 }
 
+/**
+ * #637 — every column of the six binding tables the summary reads: the ones
+ * that select a binding (the secret reference, `deletedAt`) and the ones it
+ * lists or digests. The epoch triggers fire on an update of exactly these
+ * columns, so they must stay equal; `rotate-foreign-owner-epoch.test.ts`
+ * fails when a select or filter reads a column missing here, or when the
+ * latest trigger definitions in either migration chain differ from this list.
+ */
+export const BINDING_SUMMARY_COLUMNS = {
+  database_connections: [
+    "id",
+    "projectId",
+    "label",
+    "secretId",
+    "deletedAt",
+    "driver",
+    "host",
+    "port",
+    "databaseName",
+    "options",
+  ],
+  repo_connections: ["id", "projectId", "label", "secretId", "deletedAt", "provider", "apiBaseUrl"],
+  import_sources: [
+    "id",
+    "projectId",
+    "label",
+    "secretId",
+    "deletedAt",
+    "source",
+    "baseUrl",
+    "jiraConnectionId",
+    "filter",
+  ],
+  mcp_servers: [
+    "id",
+    "projectId",
+    "label",
+    "deletedAt",
+    "envSecretId",
+    "envJson",
+    "headers",
+    "transport",
+    "runtime",
+    "command",
+    "args",
+    "url",
+    "egressAllowlist",
+  ],
+  jira_connections: [
+    "id",
+    "projectId",
+    "label",
+    "secretId",
+    "tlsCaSecretId",
+    "deletedAt",
+    "baseUrl",
+    "proxyUrl",
+    "tlsRejectUnauthorized",
+  ],
+  test_management_connections: [
+    "id",
+    "projectId",
+    "label",
+    "deletedAt",
+    "authConfigJson",
+    "tlsConfigJson",
+    "kind",
+    "baseUrl",
+    "proxyConfigJson",
+  ],
+} as const;
+
+/** #637 — the whole-set summary cached against the epoch, keyed by secret id. */
+interface CachedSummary {
+  epoch: string;
+  ownerId: string;
+  name: string;
+  /** Fingerprint of the routing key the digests were made under. */
+  keyId: string;
+  bindings: SecretBindingView[];
+  bindingsTotal: number;
+  bindingCounts: BindingCounts;
+  bindingsDigest: string;
+}
+
+/**
+ * #637 — how many secrets' summaries are kept. Each holds at most
+ * {@link MAX_LISTED_BINDINGS} listed bindings, so the cache is bounded too;
+ * the least recently used summary is evicted first.
+ */
+export const MAX_CACHED_SUMMARIES = 16;
+
+const summaries = new Map<string, CachedSummary>();
+
+/** Test hook: forget every cached summary. */
+export function __resetForeignOwnerSummaries(): void {
+  summaries.clear();
+}
+
+/**
+ * #637 — the vault binding epoch, or null when this database does not keep one
+ * (built by `prisma db push`, so no row) or it cannot be read. Null disables
+ * the cache: the summary is then computed in full, as before #637.
+ */
+async function bindingEpoch(): Promise<string | null> {
+  try {
+    const row = await prisma.vaultBindingEpoch.findUnique({
+      where: { id: 1 },
+      select: { epoch: true },
+    });
+    return row ? String(row.epoch) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The owner and live bindings of a secret, for the 409 body and the UI. */
 export async function describeForeignOwner(secret: {
   id: string;
   name: string;
   createdById: string;
 }): Promise<ForeignOwnerDetails> {
-  const [user, dbs, repos, imports, mcps, jiras, testMgmts] = await Promise.all([
+  const [user, summary] = await Promise.all([
     prisma.user.findUnique({
       where: { id: secret.createdById },
       select: { username: true, displayName: true },
     }),
+    bindingSummary(secret),
+  ]);
+  return {
+    secretId: secret.id,
+    owner: {
+      id: secret.createdById,
+      username: user?.username ?? null,
+      displayName: user?.displayName ?? null,
+    },
+    bindings: summary.bindings,
+    bindingsTotal: summary.bindingsTotal,
+    bindingCounts: summary.bindingCounts,
+    bindingsDigest: summary.bindingsDigest,
+    maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
+  };
+}
+
+/**
+ * #637 — the whole-set summary of a secret's bindings: reused while the epoch
+ * has not moved since it was computed, recomputed (and cached) otherwise. The
+ * epoch is read BEFORE the bindings are loaded, so a binding write that commits
+ * in between leaves the entry tagged with an epoch already behind the live one.
+ */
+async function bindingSummary(secret: {
+  id: string;
+  name: string;
+  createdById: string;
+}): Promise<Omit<CachedSummary, "epoch" | "ownerId" | "name" | "keyId">> {
+  const key = routingKey();
+  const keyId = createHmac("sha256", key).update("metis:vault-rotate-key-id").digest("hex");
+  const epoch = await bindingEpoch();
+  const hit = summaries.get(secret.id);
+  if (
+    epoch !== null &&
+    hit &&
+    hit.epoch === epoch &&
+    hit.ownerId === secret.createdById &&
+    hit.name === secret.name &&
+    hit.keyId === keyId
+  ) {
+    summaries.delete(secret.id);
+    summaries.set(secret.id, hit);
+    return hit;
+  }
+  const all = await loadBindings(secret, key);
+  const summary: CachedSummary = {
+    epoch: epoch ?? "",
+    ownerId: secret.createdById,
+    name: secret.name,
+    keyId,
+    bindings: all.slice(0, MAX_LISTED_BINDINGS),
+    bindingsTotal: all.length,
+    bindingCounts: countBindings(all),
+    bindingsDigest: bindingsSetDigest(secret.id, secret.createdById, all, key),
+  };
+  if (epoch !== null) {
+    summaries.delete(secret.id);
+    summaries.set(secret.id, summary);
+    if (summaries.size > MAX_CACHED_SUMMARIES) {
+      summaries.delete(summaries.keys().next().value as string);
+    }
+  }
+  return summary;
+}
+
+/** Every live binding of a secret, each with its routing digest under `key`. */
+async function loadBindings(
+  secret: { id: string; name: string },
+  key: Buffer,
+): Promise<SecretBindingView[]> {
+  const [dbs, repos, imports, mcps, jiras, testMgmts] = await Promise.all([
     prisma.databaseConnection.findMany({
       where: { secretId: secret.id, deletedAt: null },
       select: {
@@ -358,8 +561,7 @@ export async function describeForeignOwner(secret: {
     }),
   ]);
 
-  const key = routingKey();
-  const bindings: SecretBindingView[] = [
+  return [
     ...dbs.map((d) => ({
       type: "db_connector" as const,
       id: d.id,
@@ -432,18 +634,6 @@ export async function describeForeignOwner(secret: {
         ),
       })),
   ];
-
-  return {
-    secretId: secret.id,
-    owner: {
-      id: secret.createdById,
-      username: user?.username ?? null,
-      displayName: user?.displayName ?? null,
-    },
-    bindings,
-    bindingsDigest: bindingsSetDigest(secret.id, secret.createdById, bindings, key),
-    maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
-  };
 }
 
 /**
@@ -459,16 +649,16 @@ function whoOwns(details: ForeignOwnerDetails): string {
 }
 
 function whereBound(details: ForeignOwnerDetails): string {
-  const { bindings } = details;
-  if (bindings.length === 0) return UNBOUND_NOTE;
+  const { bindings, bindingsTotal } = details;
+  if (bindingsTotal === 0) return UNBOUND_NOTE;
   // #629 — name a bounded few; the 409's counts and listing carry the rest.
   const named = bindings
     .slice(0, MAX_NAMED_BINDINGS)
     .map((b) => `${b.label}${b.destination ? ` (${b.destination})` : ""}`)
     .join(", ");
-  const more = bindings.length - MAX_NAMED_BINDINGS;
+  const more = bindingsTotal - MAX_NAMED_BINDINGS;
   return more > 0
-    ? `It is bound to ${bindings.length} resources, including ${named} and ${more} more.`
+    ? `It is bound to ${bindingsTotal} resources, including ${named} and ${more} more.`
     : `It is bound to ${named}.`;
 }
 
@@ -501,7 +691,7 @@ export function bindingsChangedMessage(details: ForeignOwnerDetails): string {
  */
 export function confirmByDigestMessage(details: ForeignOwnerDetails): string {
   return (
-    `This secret, owned by ${whoOwns(details)}, has ${details.bindings.length} bindings, more ` +
+    `This secret, owned by ${whoOwns(details)}, has ${details.bindingsTotal} bindings, more ` +
     `than the ${MAX_CONFIRMED_BINDINGS} a confirmedBindings list can carry, so a list cannot ` +
     `confirm them. ${whereBound(details)} To rotate it anyway, set confirmForeignOwner and send ` +
     "the bindingsDigest listed here as confirmedBindingsDigest, without confirmedBindings; the " +
@@ -569,6 +759,8 @@ export function bindingsDiffer(
   details: ForeignOwnerDetails,
   confirmed: ConfirmedBinding[],
 ): boolean {
+  // #637 — over the cap the listing is not the whole set, so no list matches it.
+  if (details.bindingsTotal > details.bindings.length) return true;
   const live = new Set(details.bindings.map(bindingKey));
   const shown = new Set(confirmed.map(bindingKey));
   return live.size !== shown.size || [...live].some((k) => !shown.has(k));
@@ -630,12 +822,8 @@ export function countBindings(
 
 /** #629 — the `details` a 409 carries: the listing capped, with the whole set's total and counts. */
 export interface ForeignOwnerView extends ForeignOwnerDetails {
-  /** At most {@link MAX_LISTED_BINDINGS}; `bindingsTotal` says how many there are. */
-  bindings: SecretBindingView[];
-  bindingsTotal: number;
   /** True when `bindings` lists fewer than `bindingsTotal`. */
   bindingsTruncated: boolean;
-  bindingCounts: BindingCounts;
 }
 
 /**
@@ -648,9 +836,7 @@ export function foreignOwnerView(details: ForeignOwnerDetails): ForeignOwnerView
   return {
     ...details,
     bindings: details.bindings.slice(0, MAX_LISTED_BINDINGS),
-    bindingsTotal: details.bindings.length,
-    bindingsTruncated: details.bindings.length > MAX_LISTED_BINDINGS,
-    bindingCounts: countBindings(details.bindings),
+    bindingsTruncated: details.bindingsTotal > MAX_LISTED_BINDINGS,
   };
 }
 
@@ -659,17 +845,21 @@ export function foreignOwnerView(details: ForeignOwnerDetails): ForeignOwnerView
  * bindings. Up to {@link MAX_CONFIRMED_BINDINGS}, every one (canonical, as
  * #502 records them); over it, the set digest, the total and the counts
  * instead — the digest pins exactly which set was confirmed.
+ * #637 — `details` is the live set the confirm matched; `confirmed` is the
+ * list the admin sent, if any (it then equals the live set).
  */
 export function confirmedBindingsAudit(
-  confirmed: ConfirmedBinding[],
-  bindingsDigest: string,
+  details: Pick<
+    ForeignOwnerDetails,
+    "bindings" | "bindingsTotal" | "bindingCounts" | "bindingsDigest"
+  >,
+  confirmed?: ConfirmedBinding[],
 ): Record<string, unknown> {
-  const bindings = canonicalBindings(confirmed);
-  return bindings.length > MAX_CONFIRMED_BINDINGS
+  return details.bindingsTotal > MAX_CONFIRMED_BINDINGS
     ? {
-        confirmedBindingsDigest: bindingsDigest,
-        confirmedBindingsTotal: bindings.length,
-        confirmedBindingCounts: countBindings(bindings),
+        confirmedBindingsDigest: details.bindingsDigest,
+        confirmedBindingsTotal: details.bindingsTotal,
+        confirmedBindingCounts: details.bindingCounts,
       }
-    : { confirmedBindings: bindings };
+    : { confirmedBindings: canonicalBindings(confirmed ?? details.bindings) };
 }

@@ -48,6 +48,7 @@ import {
   type ConfirmedBinding,
   confirmedBindingsAudit,
   describeForeignOwner,
+  type ForeignOwnerDetails,
   foreignOwnerMessage,
   foreignOwnerView,
   MAX_CONFIRMED_BINDINGS,
@@ -176,7 +177,7 @@ async function refuseIfBindingsMoved(
   id: string,
   seen: { bindingWriteUntil: Date | null },
   ownerId: string,
-  confirmed: ConfirmedBinding[],
+  confirmedDigest: string,
 ): Promise<void> {
   const fresh = await secretOwnerOf(id);
   if (
@@ -187,7 +188,9 @@ async function refuseIfBindingsMoved(
     return;
   }
   const details = await describeForeignOwner({ id, name: fresh.name, createdById: ownerId });
-  const changed = bindingsDiffer(details, confirmed);
+  // #637 — the confirm (list or digest) matched a set whose digest is
+  // `confirmedDigest`, and the digest changes exactly when the set does.
+  const changed = !digestsEqual(confirmedDigest, details.bindingsDigest);
   throw new AppError(
     409,
     changed ? VAULT_ROTATE_BINDINGS_CHANGED : VAULT_ROTATE_BINDING_IN_PROGRESS,
@@ -258,8 +261,8 @@ export function vaultRouter(): Router {
     const secret = await secretOwnerOf(id);
     const foreignOwnerId =
       secret?.createdById && secret.createdById !== aId ? secret.createdById : null;
-    let confirmedBindings: ConfirmedBinding[] | null = null;
-    let confirmedSetDigest = "";
+    let confirmedDetails: ForeignOwnerDetails | null = null;
+    let confirmedBindings: ConfirmedBinding[] | undefined;
     if (secret && foreignOwnerId) {
       const details = await describeForeignOwner({
         id,
@@ -297,7 +300,7 @@ export function vaultRouter(): Router {
       if (
         !digestStale &&
         confirmed !== undefined &&
-        details.bindings.length > MAX_CONFIRMED_BINDINGS
+        details.bindingsTotal > MAX_CONFIRMED_BINDINGS
       ) {
         throw new AppError(
           409,
@@ -315,9 +318,9 @@ export function vaultRouter(): Router {
           foreignOwnerView(details) as unknown as Record<string, unknown>,
         );
       }
-      // A digest matched the live set exactly, so the live list is what was confirmed.
-      confirmedBindings = confirmed ?? details.bindings;
-      confirmedSetDigest = details.bindingsDigest;
+      // A digest matched the live set exactly, so the live set is what was confirmed.
+      confirmedDetails = details;
+      confirmedBindings = confirmed;
     }
     let summary: SecretSummary;
     try {
@@ -332,8 +335,8 @@ export function vaultRouter(): Router {
           : {}),
       });
     } catch (err) {
-      if (secret && foreignOwnerId && confirmedBindings && err instanceof SecretNotFoundError) {
-        await refuseIfBindingsMoved(id, secret, foreignOwnerId, confirmedBindings);
+      if (secret && foreignOwnerId && confirmedDetails && err instanceof SecretNotFoundError) {
+        await refuseIfBindingsMoved(id, secret, foreignOwnerId, confirmedDetails.bindingsDigest);
       }
       // Issue #580 — a key rotation FAILURE is a sev-1 operational event. Fire a
       // best-effort PagerDuty incident to the designated ops workspace (env
@@ -365,7 +368,9 @@ export function vaultRouter(): Router {
               foreignOwnerConfirmed: true,
               ownerId: foreignOwnerId,
               // #629 — every binding up to the cap; over it, the digest, total and counts.
-              ...confirmedBindingsAudit(confirmedBindings ?? [], confirmedSetDigest),
+              ...(confirmedDetails
+                ? confirmedBindingsAudit(confirmedDetails, confirmedBindings)
+                : {}),
               ownershipTransferredTo: aId,
             }
           : {}),
