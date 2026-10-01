@@ -711,7 +711,8 @@ no new managed service.
   deprovisioned meanwhile is disconnected, a changed role re-handshakes, and a
   lost workspace membership leaves its MCP status room. Users are re-read four
   at a time, so the cost of a failover is one user lookup per connected user
-  on each pod.
+  on each pod. A reconnect during a running re-check does not start a second
+  one alongside it; it queues one more pass after it.
 - **PgBouncer:** `LISTEN` needs a session-pooled connection. A transaction-mode
   pooler between the pods and Postgres silently drops notifications.
 - With SQLite (single-replica dev) the in-memory adapter is kept unchanged.

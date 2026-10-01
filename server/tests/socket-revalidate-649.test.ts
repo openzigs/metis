@@ -15,12 +15,20 @@ const live = vi.hoisted(() => ({
   workspaces: new Map<string, string[] | Error>(),
   inFlight: 0,
   maxInFlight: 0,
+  /** While set, every live-user read waits on it — a slow pass. */
+  userGate: undefined as Promise<void> | undefined,
+  /**
+   * While set, the NEXT membership read takes its answer at once and then
+   * waits on it before returning — a stale read held open. Cleared by that read.
+   */
+  membershipGate: undefined as Promise<void> | undefined,
 }));
 vi.mock("../src/lib/auth/live-auth-payload.js", () => ({
   loadLiveAuthPayload: vi.fn(async (userId: string) => {
     live.inFlight++;
     live.maxInFlight = Math.max(live.maxInFlight, live.inFlight);
     await new Promise((r) => setTimeout(r, 5));
+    if (live.userGate) await live.userGate;
     live.inFlight--;
     const user = live.users.get(userId);
     if (user instanceof Error) throw user;
@@ -30,6 +38,9 @@ vi.mock("../src/lib/auth/live-auth-payload.js", () => ({
 vi.mock("../src/lib/auth/live-workspace-ids.js", () => ({
   readLiveWorkspaceIds: vi.fn(async (userId: string) => {
     const ids = live.workspaces.get(userId) ?? [];
+    const gate = live.membershipGate;
+    live.membershipGate = undefined;
+    if (gate) await gate;
     if (ids instanceof Error) throw ids;
     return ids;
   }),
@@ -65,6 +76,8 @@ beforeEach(async () => {
   live.users.clear();
   live.workspaces.clear();
   live.maxInFlight = 0;
+  live.userGate = undefined;
+  live.membershipGate = undefined;
   listeners = [];
   httpServer = http.createServer();
   io = createSocketServer(httpServer, { onAdapterListening: (l) => listeners.push(l) });
@@ -208,5 +221,81 @@ describe("#649 revalidateLocalSockets", () => {
     listeners[0]();
 
     await vi.waitFor(() => expect(gone.reason).toBe("io server disconnect"));
+  });
+
+  it("coalesces signals during a running pass into one more pass, never exceeding the read bound", async () => {
+    // A flapping LISTEN connection fires the hook again while a slow pass runs.
+    // Each pass bumps the revocation epoch once, so the epoch counts passes.
+    const users = Array.from({ length: REVALIDATE_CONCURRENCY * 3 }, (_, i) => `u-flap-${i}`);
+    for (const u of users) await connect(u);
+    vi.mocked(loadLiveAuthPayload).mockClear();
+    live.maxInFlight = 0;
+    let unblock!: () => void;
+    live.userGate = new Promise<void>((r) => (unblock = r));
+    const epoch = readEpoch(io, "revocation");
+
+    listeners[0]();
+    await vi.waitFor(() => expect(loadLiveAuthPayload).toHaveBeenCalled());
+    listeners[0]();
+    listeners[0]();
+    listeners[0]();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(live.maxInFlight).toBeLessThanOrEqual(REVALIDATE_CONCURRENCY);
+    unblock();
+    live.userGate = undefined;
+
+    // Exactly one trailing pass, which re-reads every user once.
+    await vi.waitFor(() => expect(loadLiveAuthPayload).toHaveBeenCalledTimes(users.length * 2));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(readEpoch(io, "revocation") - epoch).toBe(2);
+    expect(loadLiveAuthPayload).toHaveBeenCalledTimes(users.length * 2);
+    expect(live.maxInFlight).toBeLessThanOrEqual(REVALIDATE_CONCURRENCY);
+  });
+
+  it("joins the call in flight, and runs afresh once it has settled", async () => {
+    const first = revalidateLocalSockets(io);
+    const joined = revalidateLocalSockets(io);
+    expect(joined).toBe(first);
+    await first;
+    const epoch = readEpoch(io, "revocation");
+    await revalidateLocalSockets(io);
+    expect(readEpoch(io, "revocation")).toBe(epoch + 1);
+  });
+
+  it("keeps a workspace room a subscribe joined while the membership read was in flight", async () => {
+    // The pass's membership read predates the grant of ws-new; the subscribe
+    // that joins ws-new finishes before it returns. ws-new was never in the
+    // room set that read was judging, so it must not be left.
+    const c = await connect("u-race", ["ws-old"]);
+    let release!: () => void;
+    live.membershipGate = new Promise<void>((r) => (release = r));
+    vi.mocked(readLiveWorkspaceIds).mockClear();
+
+    const pass = revalidateLocalSockets(io);
+    await vi.waitFor(() => expect(readLiveWorkspaceIds).toHaveBeenCalledWith("u-race"));
+    live.workspaces.set("u-race", ["ws-old", "ws-new"]);
+    c.socket.emit("subscribe:mcp");
+    await vi.waitFor(() => expect(inRoom("ws-new", c)).toBe(true));
+    release();
+    await pass;
+
+    expect(inRoom("ws-new", c)).toBe(true);
+    expect(inRoom("ws-old", c)).toBe(true);
+  });
+
+  it("still leaves a room held before the read that the read no longer allows", async () => {
+    const c = await connect("u-race-lost", ["ws-old", "ws-gone"]);
+    let release!: () => void;
+    live.membershipGate = new Promise<void>((r) => (release = r));
+    live.workspaces.set("u-race-lost", ["ws-old"]);
+    vi.mocked(readLiveWorkspaceIds).mockClear();
+
+    const pass = revalidateLocalSockets(io);
+    await vi.waitFor(() => expect(readLiveWorkspaceIds).toHaveBeenCalledWith("u-race-lost"));
+    release();
+    await pass;
+
+    expect(inRoom("ws-gone", c)).toBe(false);
+    expect(inRoom("ws-old", c)).toBe(true);
   });
 });

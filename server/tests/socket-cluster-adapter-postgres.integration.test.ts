@@ -341,6 +341,11 @@ describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integr
       expect(res.status).toBe(204);
       // The deprovision's NOTIFY went out while B was not listening (the
       // adapter waits at least 1 s before reconnecting), so B never hears it.
+      // This assertion depends on that delay — `2000 * (0.5 + random)` ms in
+      // upstream `PubSubClient.scheduleReconnection` (@socket.io/postgres-adapter
+      // 0.5.0, dist/util.js L58): a runner slow enough to spend over 1 s between
+      // the termination and here sees B listening again and fails RED. It can
+      // flake, but cannot pass falsely: it only ever passes with B deaf.
       expect(await listenPidsOfB()).toEqual([]);
       expect(gone.socket.connected).toBe(true);
 

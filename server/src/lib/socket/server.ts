@@ -146,6 +146,15 @@ export const REVALIDATE_CONCURRENCY = 4;
 /** Prefix of every `mcp:status` workspace room. */
 const MCP_STATUS_WORKSPACE_ROOM_PREFIX = mcpStatusWorkspaceRoom("");
 
+interface RevalidationState {
+  /** Set by a call that arrived while this pass ran: run one more pass. */
+  dirty: boolean;
+  done: Promise<void>;
+}
+
+/** The `revalidateLocalSockets` pass in flight for each server, if any. */
+const revalidations = new WeakMap<MetisIOServer, RevalidationState>();
+
 /**
  * #649 — re-validate every socket connected to this replica against the
  * database, applying any revocation it missed while the cluster adapter's
@@ -158,8 +167,36 @@ const MCP_STATUS_WORKSPACE_ROOM_PREFIX = mcpStatusWorkspaceRoom("");
  * Both #613 epochs are bumped first, so a handshake or `subscribe:mcp` in
  * flight re-reads too. Each user is read once, `REVALIDATE_CONCURRENCY` users
  * at a time. Never rejects.
+ *
+ * Single-flight per `io`: a call while a pass is running starts no second one.
+ * It marks the pass dirty, and exactly one more full pass runs when it
+ * finishes, which also sees a revocation committed after the running pass read
+ * that user. A flapping `LISTEN` connection therefore never multiplies the read
+ * bound. The returned promise settles once no pass is left to run.
  */
-export async function revalidateLocalSockets(io: MetisIOServer): Promise<void> {
+export function revalidateLocalSockets(io: MetisIOServer): Promise<void> {
+  const running = revalidations.get(io);
+  if (running) {
+    running.dirty = true;
+    return running.done;
+  }
+  const state: RevalidationState = { dirty: false, done: Promise.resolve() };
+  revalidations.set(io, state);
+  state.done = (async () => {
+    try {
+      do {
+        state.dirty = false;
+        await revalidateOnce(io);
+      } while (state.dirty);
+    } finally {
+      revalidations.delete(io);
+    }
+  })();
+  return state.done;
+}
+
+/** One full `revalidateLocalSockets` pass. */
+async function revalidateOnce(io: MetisIOServer): Promise<void> {
   bumpEpoch(io, "revocation");
   bumpEpoch(io, "eviction");
   const byUser = new Map<string, MetisSocket[]>();
@@ -199,10 +236,17 @@ async function revalidateUserSockets(sockets: MetisSocket[]): Promise<void> {
     });
   }
   const kept = sockets.filter((socket) => applyLiveUser(socket, live));
-  const inWorkspaceRooms = kept.filter((socket) =>
-    [...socket.rooms].some((room) => room.startsWith(MCP_STATUS_WORKSPACE_ROOM_PREFIX)),
-  );
-  if (inWorkspaceRooms.length === 0) return;
+  // Each socket's workspace rooms BEFORE the membership read. A `subscribe:mcp`
+  // that finishes during the read can join a workspace granted after the read's
+  // snapshot, so only rooms held before the read are judged by it.
+  const roomsBefore = new Map<MetisSocket, string[]>();
+  for (const socket of kept) {
+    const rooms = [...socket.rooms].filter((room) =>
+      room.startsWith(MCP_STATUS_WORKSPACE_ROOM_PREFIX),
+    );
+    if (rooms.length > 0) roomsBefore.set(socket, rooms);
+  }
+  if (roomsBefore.size === 0) return;
   let allowed: Set<string>;
   try {
     allowed = new Set((await readLiveWorkspaceIds(userId)).map(mcpStatusWorkspaceRoom));
@@ -214,14 +258,12 @@ async function revalidateUserSockets(sockets: MetisSocket[]): Promise<void> {
         error: (err as Error).message,
       },
     );
-    for (const socket of inWorkspaceRooms) socket.conn.close();
+    for (const socket of roomsBefore.keys()) socket.conn.close();
     return;
   }
-  for (const socket of inWorkspaceRooms) {
-    for (const room of [...socket.rooms]) {
-      if (room.startsWith(MCP_STATUS_WORKSPACE_ROOM_PREFIX) && !allowed.has(room)) {
-        void socket.leave(room);
-      }
+  for (const [socket, rooms] of roomsBefore) {
+    for (const room of rooms) {
+      if (!allowed.has(room)) void socket.leave(room);
     }
   }
 }

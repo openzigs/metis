@@ -259,6 +259,83 @@ describe("createPostgresClusterAdapter", () => {
     await cluster.close();
   });
 
+  it("discards a LISTEN client the adapter abandoned after a failed LISTEN on a live connection", async () => {
+    // Upstream initClient retries on a new client when a LISTEN rejects, but
+    // never releases the old one, and a live connection never emits `end`.
+    // Held, it keeps a slot and the retry's client fills the 2-connection pool.
+    const bus = new FakePgNotifyBus();
+    const pool = bus.pool();
+    type Client = Awaited<ReturnType<typeof bus.pool>["connect"]> & {
+      query: (sql: string) => Promise<unknown>;
+      release: (err?: Error) => void;
+      released: boolean;
+      releasedWith: Error | undefined;
+      emit: (event: string) => boolean;
+    };
+    const checkedOut: Client[] = [];
+    const connect = pool.connect.bind(pool) as unknown as () => Promise<Client>;
+    pool.connect = (async () => {
+      const client = await connect();
+      if (checkedOut.length === 0) {
+        client.query = async () => {
+          throw new Error("canceling statement due to statement timeout");
+        };
+      }
+      // pg-pool ends a client released with an error, which emits `end`.
+      const release = client.release.bind(client);
+      client.release = (err?: Error) => {
+        release(err);
+        if (err) setImmediate(() => client.emit("end"));
+      };
+      checkedOut.push(client);
+      return client;
+    }) as unknown as Pool["connect"];
+    const cluster = createPostgresClusterAdapter(pool);
+    const listening = vi.fn();
+    cluster.onListening(listening);
+    // Synchronously, so the namespace's channel is registered before the first
+    // client's LISTEN loop runs — the LISTEN then fails inside initClient.
+    const io = new SocketIOServer(createHttpServer(), { adapter: cluster.adapter });
+
+    await vi.waitFor(() => expect(listening).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    const [abandoned, retry] = checkedOut;
+    expect(abandoned.released).toBe(true);
+    expect(abandoned.releasedWith).toBeInstanceOf(Error);
+    expect([...bus.clients]).toEqual([retry]);
+    // Discarding it must not set the adapter's own reconnect off again (its
+    // `end` listener would), which would discard the healthy retry in turn.
+    await new Promise((r) => setTimeout(r, 3_200));
+    expect(checkedOut).toHaveLength(2);
+    expect(retry.released).toBe(false);
+
+    await io.close();
+    // The adapter's close() released the retry, healthy, exactly once.
+    expect(retry.released).toBe(true);
+    expect(retry.releasedWith).toBeUndefined();
+    await cluster.close();
+  }, 15_000);
+
+  it("lets the adapter release a LISTEN client already discarded as superseded, without a double release", async () => {
+    // Two overlapping upstream reconnects (a failed LISTEN's retry and the same
+    // connection's `end`) can leave the adapter's `client` pointing at one this
+    // module discarded; its close() then releases it again.
+    const bus = new FakePgNotifyBus();
+    const pool = bus.pool();
+    const cluster = createPostgresClusterAdapter(pool);
+    const first = (await pool.connect()) as unknown as {
+      release: () => void;
+      released: boolean;
+      releasedWith: Error | undefined;
+    };
+    await pool.connect();
+
+    expect(first.released).toBe(true);
+    expect(first.releasedWith).toBeInstanceOf(Error);
+    // The fake, like pg-pool, throws on a second release.
+    expect(() => first.release()).not.toThrow();
+    await cluster.close();
+  });
+
   it("routes an adapter publish failure to the log", async () => {
     const pool = new FakePgNotifyBus().pool();
     const cluster = createPostgresClusterAdapter(pool);
