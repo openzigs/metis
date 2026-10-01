@@ -127,12 +127,17 @@ describe("trusted generation evidence policy #1353", () => {
   it.each([[[]], [[{ role: { key: "reader" } }]], [[{ role: { key: "unknown" } }]]])(
     "rejects revoked or unknown role %j",
     async (roles) => {
+      // A valid id and membership so the call reaches the role guard, and the exact
+      // denial message so an earlier "Project not found" cannot satisfy the test.
       vi.mocked(prisma.user.findFirst).mockResolvedValue({
+        id: "alice",
         username: "alice",
         roles,
-        workspaceMemberships: [],
+        workspaceMemberships: [{ workspaceId: "w1" }],
       } as never);
-      await expect(resolveEvidencePolicy(record)).rejects.toThrow();
+      await expect(resolveEvidencePolicy(record)).rejects.toThrow(
+        "Generation authorization unavailable",
+      );
     },
   );
   it("denies background execution after a formerly-admin principal is revoked to reader", async () => {
