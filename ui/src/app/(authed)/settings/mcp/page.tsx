@@ -582,6 +582,8 @@ function InstallDialog({
 // ── Import / Export tab ───────────────────────────────────────────────────────
 
 interface ImportPreview {
+  /** The chosen file's name — the input is emptied after each pick (#630), so it can't show it. */
+  fileName: string;
   raw: string;
   parsed: { servers: Record<string, unknown> } | null;
   error: string | null;
@@ -617,24 +619,31 @@ function ImportExportTab() {
     // #621 — a new file starts a new import; the last one's result no longer applies.
     importMutation.reset();
     const text = await file.text();
+    const fileName = file.name;
     try {
       const parsed = JSON.parse(text) as { servers?: Record<string, unknown> };
       if (!parsed.servers || typeof parsed.servers !== "object") {
-        setPreview({ raw: text, parsed: null, error: "Missing top-level `servers` object" });
+        setPreview({
+          fileName,
+          raw: text,
+          parsed: null,
+          error: "Missing top-level `servers` object",
+        });
         return;
       }
       // An empty `servers` object would import nothing and still read as a success.
       if (Object.keys(parsed.servers).length === 0) {
-        setPreview({ raw: text, parsed: null, error: "No servers to import" });
+        setPreview({ fileName, raw: text, parsed: null, error: "No servers to import" });
         return;
       }
       setPreview({
+        fileName,
         raw: text,
         parsed: { servers: parsed.servers },
         error: null,
       });
     } catch (err) {
-      setPreview({ raw: text, parsed: null, error: (err as Error).message });
+      setPreview({ fileName, raw: text, parsed: null, error: (err as Error).message });
     }
   };
   return (
@@ -660,11 +669,18 @@ function ImportExportTab() {
           data-testid="import-file"
           onChange={(e) => {
             const f = e.target.files?.[0];
+            // #630 — empty the input only after capturing the File above (clearing
+            // first empties `files`), so choosing the same file again after an import
+            // or Clear still fires `change`. The preview shows the file's name instead.
+            e.target.value = "";
             if (f) void onFile(f);
           }}
         />
         {preview ? (
           <div className="rounded border bg-muted p-2 text-xs">
+            <div className="text-muted-foreground" data-testid="import-file-name">
+              {preview.fileName}
+            </div>
             {preview.error ? (
               <div className="text-destructive" data-testid="import-error">
                 {preview.error}
