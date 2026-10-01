@@ -34,3 +34,32 @@ export function disconnectUserSockets(userId: string): void {
     });
   }
 }
+
+/**
+ * #633 — make every socket of `userId` on this replica re-handshake after a role
+ * change, so it picks up the new durable role (#617) and every room gate runs
+ * again.
+ *
+ * A socket keeps the role it had at connect time: a demoted admin otherwise
+ * stays in `mcp:status:admin` for the life of the connection. Closing the
+ * transport (rather than `disconnectSockets`, which sends a disconnect packet
+ * the client treats as final) leaves the client's own reconnect loop running,
+ * so a user who is still active comes back with the new role instead of being
+ * parked disconnected. Leaving the socket drops every room it held.
+ *
+ * Same reach (this replica only, #622) and best-effort contract as
+ * `disconnectUserSockets`: call it after the role write commits.
+ */
+export function reconnectUserSockets(userId: string): void {
+  try {
+    const io = getSocketServer();
+    if (!io) return;
+    const sids = io.sockets.adapter.rooms.get(`user:${userId}`);
+    for (const sid of [...(sids ?? [])]) io.sockets.sockets.get(sid)?.conn.close();
+  } catch (err) {
+    log.warn("could not reconnect a user's sockets after a role change", {
+      userId,
+      error: (err as Error).message,
+    });
+  }
+}

@@ -7,6 +7,8 @@ const db = vi.hoisted(() => ({
   $transaction: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
+const reconnect = vi.hoisted(() => vi.fn());
+vi.mock("../socket/user-disconnect.js", () => ({ reconnectUserSockets: reconnect }));
 import {
   reconcileTrustedLoginRole,
   resolveEffectiveRole,
@@ -80,6 +82,40 @@ describe("durable auth provenance", () => {
       expect(db.user.update).not.toHaveBeenCalled();
     },
   );
+
+  // #633 — a login that moves the provider grant re-handshakes the user's
+  // other open sockets, which still carry the old role.
+  it.each([
+    ["admin", "reader", true],
+    ["reader", "admin", true],
+    ["admin", "admin", false],
+  ] as const)(
+    "provider %s -> %s at login re-handshakes sockets: %s",
+    async (from, to, expected) => {
+      db.user.findFirst.mockResolvedValue({ authRolesInitializedAt: initialized });
+      db.userRole.findMany.mockResolvedValue([row(from)]);
+      let inTransaction = false;
+      db.$transaction.mockImplementation(async (fn) => {
+        inTransaction = true;
+        try {
+          return await fn(db);
+        } finally {
+          inTransaction = false;
+        }
+      });
+      reconnect.mockImplementation(() => expect(inTransaction).toBe(false));
+      expect(await reconcileTrustedLoginRole({ ...login, providerRole: to })).toBe(to);
+      if (expected) expect(reconnect).toHaveBeenCalledExactlyOnceWith("u1");
+      else expect(reconnect).not.toHaveBeenCalled();
+    },
+  );
+
+  it("a first login or an explicit override re-handshakes no socket", async () => {
+    await reconcileTrustedLoginRole(login);
+    db.userRole.findMany.mockResolvedValue([row("reader", "local"), row("admin")]);
+    await reconcileTrustedLoginRole({ ...login, providerRole: "reader" });
+    expect(reconnect).not.toHaveBeenCalled();
+  });
 
   it("initializes a first provider grant and records provider provenance", async () => {
     expect(await reconcileTrustedLoginRole(login)).toBe("admin");
