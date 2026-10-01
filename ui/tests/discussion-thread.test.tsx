@@ -419,17 +419,23 @@ describe("DiscussionThreadView", () => {
   it("ignores a reconnect re-read that settles after the thread changed (#646)", async () => {
     const live = createFakeSocket();
     useSocketMock.mockReturnValue(live);
-    const { rerender } = renderView();
+    // One Wrapper for both renders, so the view re-renders rather than remounts.
+    const Wrapper = makeWrapper({});
+    const { rerender } = render(
+      <Wrapper>
+        <DiscussionThreadView threadId="t1" currentUserId="u1" />
+      </Wrapper>,
+    );
     await waitFor(() => expect(listMessagesMock).toHaveBeenCalledTimes(1));
     let resolveStale: (m: DiscussionListMessage[]) => void = () => {};
     listMessagesMock.mockReturnValueOnce(new Promise((r) => (resolveStale = r)));
     act(() => live.reconnect());
-    const Wrapper = makeWrapper({});
     rerender(
       <Wrapper>
         <DiscussionThreadView threadId="t2" currentUserId="u1" />
       </Wrapper>,
     );
+    await waitFor(() => expect(listMessagesMock).toHaveBeenCalledWith("t2", { limit: 100 }));
     await act(async () => resolveStale([humanMsg({ id: "stale", body: "from the old thread" })]));
     expect(screen.queryByText("from the old thread")).not.toBeInTheDocument();
   });
