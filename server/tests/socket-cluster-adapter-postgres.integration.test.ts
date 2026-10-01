@@ -176,4 +176,46 @@ describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integr
     await vi.waitFor(() => expect(b.roomHas(room, removed.sid)).toBe(false), { timeout: 10_000 });
     expect(b.roomHas(room, stays.sid)).toBe(true);
   });
+
+  // Last: it drops every replica's LISTEN connection. Before the client-level
+  // 'error' listener, pg emitted the termination on the checked-out client with
+  // nothing listening and the process died (exit 1, "Unhandled error event").
+  it("survives Postgres terminating the LISTEN connections, and relays evictions again", async () => {
+    const admin = new pg.Pool({ connectionString: databaseUrl, max: 1 });
+    const listenPids = async () =>
+      (
+        await admin.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity
+            WHERE datname = current_database() AND pid <> pg_backend_pid()
+              AND query LIKE 'LISTEN "socket.io#%'`,
+        )
+      ).rows.map((r) => r.pid);
+    try {
+      const before = await listenPids();
+      expect(before.length).toBeGreaterThanOrEqual(2);
+      await admin.query("SELECT pg_terminate_backend(pid) FROM unnest($1::int[]) AS pid", [before]);
+
+      // The adapter reconnects ~1-3 s later on a fresh backend.
+      await vi.waitFor(
+        async () => {
+          const after = await listenPids();
+          expect(after.length).toBeGreaterThanOrEqual(2);
+          for (const pid of after) expect(before).not.toContain(pid);
+        },
+        { timeout: 15_000, interval: 250 },
+      );
+
+      seed(["u-after-drop"], []);
+      const onB = await connectUser(b, "u-after-drop", open);
+      const res = await request(app)
+        .delete("/scim/v2/Users/u-after-drop")
+        .set("Authorization", SCIM_AUTH);
+      expect(res.status).toBe(204);
+      await vi.waitFor(() => expect(onB.disconnectReason).toBe("io server disconnect"), {
+        timeout: 10_000,
+      });
+    } finally {
+      await admin.end();
+    }
+  });
 });

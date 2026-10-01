@@ -19,12 +19,20 @@
  * carrying binary, in an attachments table. Like the other shared Postgres
  * backends it is self-created (UNLOGGED, behind an advisory lock), not migrated.
  *
- * Every adapter and pool error is logged, never thrown: evictions run after the
- * database write has committed (#588, #612), and an idle pool client's error
- * with no listener would crash the process.
+ * Every adapter, pool and connection error is logged, never thrown: evictions
+ * run after the database write has committed (#588, #612), and a pg client's
+ * `error` with no listener crashes the process. `pool.on("error")` covers idle
+ * clients only — pg-pool removes its idle listener from a client it hands out —
+ * and the adapter's `LISTEN` client is held checked out for the process's life.
+ * Postgres drops that connection on a failover, restart, `pg_terminate_backend`
+ * or TCP timeout, so `holdListenClient` gives it its own `error` listener, and on
+ * its `end` releases it to the pool as broken: the adapter reconnects on `end`
+ * but never releases the dead client, which would keep its slot — with
+ * `POOL_MAX` 2, the new `LISTEN` client then fills the pool and every NOTIFY
+ * queues forever.
  */
 import pg from "pg";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { createAdapter } from "@socket.io/postgres-adapter";
 import { createChildLogger } from "../logger.js";
 
@@ -51,6 +59,11 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   pool.on("error", (err) => {
     log.warn("socket cluster adapter pool error", { error: err.message });
   });
+  // The adapter takes its LISTEN client with a bare `pool.connect()`; pg-pool's
+  // own `pool.query` passes a callback and manages its client itself.
+  const connect = pool.connect.bind(pool) as (...args: unknown[]) => Promise<PoolClient>;
+  pool.connect = ((...args: unknown[]) =>
+    args.length > 0 ? connect(...args) : connect().then(holdListenClient)) as Pool["connect"];
 
   pool
     .query(
@@ -67,10 +80,12 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
        END $$;`,
     )
     .catch((err: Error) => {
-      log.warn("could not create the socket cluster adapter attachments table", {
-        table: SOCKET_IO_ATTACHMENTS_TABLE,
-        error: err.message,
-      });
+      // Once, at boot: without the table the adapter's 30 s cleanup DELETE warns
+      // on every tick, which reads as a transient fault rather than a grant.
+      log.error(
+        "could not create the socket cluster adapter attachments table — the database user needs CREATE on the schema",
+        { table: SOCKET_IO_ATTACHMENTS_TABLE, error: err.message },
+      );
     });
 
   const adapter = createAdapter(pool, {
@@ -87,6 +102,19 @@ export function createPostgresClusterAdapter(pool: Pool): SocketClusterAdapter {
   };
 }
 
+/** Guard the adapter's long-held `LISTEN` client; see the module header. */
+function holdListenClient(client: PoolClient): PoolClient {
+  client.on("error", (err) => {
+    log.warn("socket cluster adapter connection error", { error: err.message });
+  });
+  // The adapter's own close() strips every `end` listener before it releases
+  // the client, so this fires only for a connection lost while held.
+  client.once("end", () => {
+    client.release(new Error("socket cluster adapter LISTEN connection ended"));
+  });
+  return client;
+}
+
 /**
  * The cluster adapter for this process: Postgres when the datasource is
  * Postgres, otherwise `null` (keep the in-memory adapter).
@@ -96,7 +124,9 @@ export function resolveSocketClusterAdapter(
   makePool: (connectionString: string) => Pool = (connectionString) =>
     new pg.Pool({ connectionString, max: POOL_MAX }),
 ): SocketClusterAdapter | null {
-  const url = env.DATABASE_URL ?? "";
+  // Trimmed, as `resolveDatabaseProvider` (lib/prisma.ts) trims it: otherwise a
+  // stray leading space puts Prisma on Postgres and the sockets in memory.
+  const url = (env.DATABASE_URL ?? "").trim();
   if (!url.startsWith("postgres://") && !url.startsWith("postgresql://")) return null;
   return createPostgresClusterAdapter(makePool(url));
 }

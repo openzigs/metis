@@ -679,7 +679,12 @@ no new managed service.
 - **Table:** messages over NOTIFY's 8000-byte limit (or carrying binary) go
   through the UNLOGGED `socket_io_attachments` table, which the server creates
   itself behind an advisory lock (no migration), so the database user needs
-  `CREATE` on the schema — as for the other self-created shared tables.
+  `CREATE` on the schema — as for the other self-created shared tables. Without
+  it the server logs one error at boot naming the missing privilege.
+- **Failover:** when Postgres drops the `LISTEN` connection (failover, restart,
+  `pg_terminate_backend`, TCP timeout) the pod logs a warning, frees the dead
+  connection and LISTENs again on a fresh one within about 3 s. Cross-replica
+  evictions issued in that window are lost.
 - **PgBouncer:** `LISTEN` needs a session-pooled connection. A transaction-mode
   pooler between the pods and Postgres silently drops notifications.
 - With SQLite (single-replica dev) the in-memory adapter is kept unchanged.

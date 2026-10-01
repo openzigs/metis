@@ -4,6 +4,9 @@
  * hands out a listening client, `query("SELECT pg_notify($1, $2)")` delivers the
  * payload to every client LISTENing on that channel, and every other statement
  * (the attachments table DDL and cleanup) is recorded and answered empty.
+ * A client is a real EventEmitter — so an `error` emitted on a checked-out
+ * client with no listener throws, as a dropped real `LISTEN` connection's does —
+ * and, like pg-pool's, its `release` throws when called twice.
  *
  * One bus with one pool per replica stands for one shared database, so the real
  * adapter and real Socket.IO servers can be driven across "replicas" in the
@@ -16,6 +19,8 @@ import type { Pool } from "pg";
 class FakeListenClient extends EventEmitter {
   readonly channels = new Set<string>();
   released = false;
+  /** The error passed to `release`, which tells pg-pool to discard the client. */
+  releasedWith: Error | undefined;
 
   constructor(private readonly bus: FakePgNotifyBus) {
     super();
@@ -27,8 +32,11 @@ class FakeListenClient extends EventEmitter {
     return { rows: [] };
   }
 
-  release(): void {
+  release(err?: Error): void {
+    if (this.released)
+      throw new Error("Release called on client which has already been released to the pool.");
     this.released = true;
+    this.releasedWith = err;
     this.bus.clients.delete(this);
   }
 }

@@ -6,9 +6,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 
-const warn = vi.hoisted(() => vi.fn());
+const { warn, error } = vi.hoisted(() => ({ warn: vi.fn(), error: vi.fn() }));
 vi.mock("../logger.js", () => ({
-  createChildLogger: () => ({ warn, info: vi.fn(), debug: vi.fn(), error: vi.fn() }),
+  createChildLogger: () => ({ warn, info: vi.fn(), debug: vi.fn(), error }),
 }));
 
 import {
@@ -49,6 +49,18 @@ describe("resolveSocketClusterAdapter", () => {
       expect(typeof resolved!.adapter).toBe("function");
     },
   );
+
+  it("trims DATABASE_URL as Prisma's provider resolution does", () => {
+    const bus = new FakePgNotifyBus();
+    const makePool = vi.fn(() => bus.pool());
+    const resolved = resolveSocketClusterAdapter(
+      { DATABASE_URL: "  postgres://u:p@db:5432/metis\n" },
+      makePool,
+    );
+    expect(resolved).not.toBeNull();
+    made.push(resolved!);
+    expect(makePool).toHaveBeenCalledWith("postgres://u:p@db:5432/metis");
+  });
 });
 
 describe("createPostgresClusterAdapter", () => {
@@ -66,18 +78,20 @@ describe("createPostgresClusterAdapter", () => {
     await cluster.close();
   });
 
-  it("logs, never throws, when the attachments table cannot be created", async () => {
+  it("logs once, naming the CREATE privilege, never throws, when the attachments table cannot be created", async () => {
+    error.mockReset();
     const pool = new FakePgNotifyBus().pool();
     pool.query = vi.fn(async () => {
-      throw new Error("permission denied");
+      throw new Error("permission denied for schema public");
     }) as unknown as Pool["query"];
     const cluster = createPostgresClusterAdapter(pool);
     await vi.waitFor(() =>
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("attachments table"),
-        expect.objectContaining({ error: "permission denied" }),
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/attachments table.*needs CREATE/),
+        expect.objectContaining({ error: "permission denied for schema public" }),
       ),
     );
+    expect(error).toHaveBeenCalledTimes(1);
     await cluster.close();
   });
 
@@ -90,6 +104,66 @@ describe("createPostgresClusterAdapter", () => {
       expect.stringContaining("pool"),
       expect.objectContaining({ error: "connection reset" }),
     );
+    await cluster.close();
+  });
+
+  it("logs an error on the checked-out LISTEN client instead of crashing the process", async () => {
+    // pg-pool drops its idle 'error' listener from a client it hands out, so a
+    // dropped LISTEN connection (failover, restart, pg_terminate_backend) emits
+    // 'error' on the client itself — never on the pool.
+    const bus = new FakePgNotifyBus();
+    const pool = bus.pool();
+    const cluster = createPostgresClusterAdapter(pool);
+    const { Server } = await import("socket.io");
+    const { createServer } = await import("node:http");
+    const io = new Server(createServer(), { adapter: cluster.adapter });
+    await vi.waitFor(() => expect(bus.clients.size).toBe(1));
+    const [listenClient] = bus.clients;
+
+    expect(() =>
+      listenClient.emit("error", new Error("terminating connection due to administrator command")),
+    ).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("connection error"),
+      expect.objectContaining({ error: "terminating connection due to administrator command" }),
+    );
+    await io.close();
+    await cluster.close();
+  });
+
+  it("releases a LISTEN client whose connection ended, so its pool slot is freed", async () => {
+    // The adapter reconnects on 'end' but never releases the dead client; held,
+    // it keeps a slot and the next LISTEN client fills the 2-connection pool.
+    const bus = new FakePgNotifyBus();
+    const cluster = createPostgresClusterAdapter(bus.pool());
+    const { Server } = await import("socket.io");
+    const { createServer } = await import("node:http");
+    const io = new Server(createServer(), { adapter: cluster.adapter });
+    await vi.waitFor(() => expect(bus.clients.size).toBe(1));
+    const [dropped] = bus.clients;
+
+    dropped.emit("end");
+
+    expect(dropped.released).toBe(true);
+    expect(dropped.releasedWith).toBeInstanceOf(Error);
+    await io.close();
+    await cluster.close();
+  });
+
+  it("leaves releasing a healthy LISTEN client to the adapter's own close()", async () => {
+    const bus = new FakePgNotifyBus();
+    const cluster = createPostgresClusterAdapter(bus.pool());
+    const { Server } = await import("socket.io");
+    const { createServer } = await import("node:http");
+    const io = new Server(createServer(), { adapter: cluster.adapter });
+    await vi.waitFor(() => expect(bus.clients.size).toBe(1));
+    const [held] = bus.clients;
+
+    await io.close();
+    // Released once, healthy — the fake throws on a second release.
+    expect(held.released).toBe(true);
+    expect(held.releasedWith).toBeUndefined();
+    expect(() => held.emit("end")).not.toThrow();
     await cluster.close();
   });
 
