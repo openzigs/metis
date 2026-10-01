@@ -194,7 +194,7 @@ describe("classifyReconciledObjects", () => {
 describe("persistUsageClassification", () => {
   it("deletes prior rows then bulk-creates the new classification within a txn", async () => {
     const deleteMany = vi.fn(async () => ({ count: 3 }));
-    const createMany = vi.fn(async () => ({ count: 2 }));
+    const createMany = vi.fn(async (_args: unknown) => ({ count: 2 }));
     const tx = { schemaUsageClassification: { deleteMany, createMany } };
     const prisma = {
       $transaction: vi.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)),

@@ -97,7 +97,7 @@ vi.mock("../src/lib/prisma.js", async () => {
           if (!select) return p;
           const out: Record<string, unknown> = {};
           for (const k of Object.keys(select)) {
-            if (select[k]) out[k] = (p as Record<string, unknown>)[k];
+            if (select[k]) out[k] = p[k as keyof MockProject];
           }
           return out;
         }),

@@ -98,7 +98,9 @@ describe("getProxyDispatcherUrl", () => {
 
 describe("createProxyFetch", () => {
   it("routes through a dispatcher when a proxy is selected", async () => {
-    const baseFetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const baseFetch = vi.fn(
+      async (_input: unknown, _init?: RequestInit) => new Response("{}", { status: 200 }),
+    );
     const dispatcher = { marker: "proxy-agent" };
     const dispatcherFactory = vi.fn(async () => dispatcher);
     const fetchImpl = createProxyFetch({
@@ -117,7 +119,9 @@ describe("createProxyFetch", () => {
   });
 
   it("goes direct (no dispatcher) when no proxy applies", async () => {
-    const baseFetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const baseFetch = vi.fn(
+      async (_input: unknown, _init?: RequestInit) => new Response("{}", { status: 200 }),
+    );
     const dispatcherFactory = vi.fn();
     const fetchImpl = createProxyFetch({ env: {}, baseFetch, dispatcherFactory });
 
@@ -130,7 +134,9 @@ describe("createProxyFetch", () => {
   });
 
   it("goes direct when NO_PROXY exempts the target host", async () => {
-    const baseFetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const baseFetch = vi.fn(
+      async (_input: unknown, _init?: RequestInit) => new Response("{}", { status: 200 }),
+    );
     const dispatcherFactory = vi.fn();
     const fetchImpl = createProxyFetch({
       env: { HTTPS_PROXY: "http://proxy:3128", NO_PROXY: "example.com" },

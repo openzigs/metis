@@ -84,33 +84,35 @@ vi.mock("../src/lib/prisma.js", () => ({
     publishBatch: {
       create: vi.fn(async ({ data }: { data: Partial<BatchRow> }) => {
         nextId += 1;
-        const row: BatchRow = {
-          id: `batch_${nextId}`,
-          projectId: "proj_1",
-          status: "pending",
-          targetOwner: "acme",
-          targetRepo: "metis",
-          targetBaseUrl: null,
-          provider: "github",
-          dryRun: false,
-          totalDrafts: 0,
-          publishedCount: 0,
-          failedCount: 0,
-          dedupSkipped: 0,
-          archived: false,
-          archivedAt: null,
-          archiveReason: null,
-          archivedById: null,
-          dryRunPlan: null,
-          startedById: "user_1",
-          startedAt: new Date(),
-          completedAt: null,
-          errorMessage: null,
-          metadata: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          ...(data as BatchRow),
-        };
+        const row: BatchRow = Object.assign(
+          {
+            id: `batch_${nextId}`,
+            projectId: "proj_1",
+            status: "pending",
+            targetOwner: "acme",
+            targetRepo: "metis",
+            targetBaseUrl: null,
+            provider: "github",
+            dryRun: false,
+            totalDrafts: 0,
+            publishedCount: 0,
+            failedCount: 0,
+            dedupSkipped: 0,
+            archived: false,
+            archivedAt: null,
+            archiveReason: null,
+            archivedById: null,
+            dryRunPlan: null,
+            startedById: "user_1",
+            startedAt: new Date(),
+            completedAt: null,
+            errorMessage: null,
+            metadata: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          data,
+        );
         batches.set(row.id, row);
         return row;
       }),
@@ -145,6 +147,7 @@ vi.mock("../src/lib/vault/bound-secret.js", () => ({
 
 import { audit } from "../src/lib/audit/audit-service.js";
 import { approveDraft, createBatch } from "../src/lib/publishing/publishing-service.js";
+import type { CreatePublishBatchInput } from "@metis/shared";
 import { PublishError } from "../src/lib/publishing/types.js";
 
 beforeEach(() => {
@@ -167,12 +170,10 @@ describe("createBatch", () => {
           projectId: "proj_1",
           targetOwner: "acme",
           targetRepo: "metis",
-          targetBaseUrl: null,
           provider: "github",
           dryRun: false,
           draftIds: ["d1", "d-missing"],
           additionalLabels: [],
-          milestone: null,
           secretRef: "${vault:gh}",
         },
       }),
@@ -188,12 +189,10 @@ describe("createBatch", () => {
           projectId: "proj_1",
           targetOwner: "acme",
           targetRepo: "metis",
-          targetBaseUrl: null,
           provider: "github",
           dryRun: false,
           draftIds: ["d1"],
           additionalLabels: [],
-          milestone: null,
           secretRef: "${vault:gh}",
         },
       }),
@@ -208,12 +207,10 @@ describe("createBatch", () => {
         projectId: "proj_1",
         targetOwner: "acme",
         targetRepo: "metis",
-        targetBaseUrl: null,
         provider: "github",
         dryRun: true,
         draftIds: ["d1"],
         additionalLabels: [],
-        milestone: null,
         secretRef: "${vault:gh}",
       },
     });
@@ -340,12 +337,10 @@ describe("F6 — cross-project guard at the service layer", () => {
           projectId: "proj_1",
           targetOwner: "acme",
           targetRepo: "metis",
-          targetBaseUrl: null,
           provider: "github",
           dryRun: false,
           draftIds: ["d_cp"],
           additionalLabels: [],
-          milestone: null,
           secretRef: "${vault:gh}",
         },
       }),
@@ -364,12 +359,10 @@ describe("F6 — cross-project guard at the service layer", () => {
         projectId: "proj_1",
         targetOwner: "acme",
         targetRepo: "metis",
-        targetBaseUrl: null,
         provider: "github",
         dryRun: false,
         draftIds: ["d_cp"],
         additionalLabels: [],
-        milestone: null,
         secretRef: "${vault:gh}",
       },
     });
@@ -384,18 +377,16 @@ describe("F6 — cross-project guard at the service layer", () => {
 import { executeBatch } from "../src/lib/publishing/publishing-service.js";
 
 describe("approval gate (#619) at the service layer", () => {
-  const liveInput = {
+  const liveInput: CreatePublishBatchInput = {
     projectId: "proj_1",
     targetOwner: "acme",
     targetRepo: "metis",
-    targetBaseUrl: null,
     provider: "github",
     dryRun: false,
     draftIds: ["d1"],
     additionalLabels: [],
-    milestone: null,
     secretRef: "${vault:gh}",
-  } as const;
+  };
 
   async function flipGateOn(): Promise<void> {
     const { prisma } = (await import("../src/lib/prisma.js")) as unknown as {

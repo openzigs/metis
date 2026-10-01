@@ -153,7 +153,7 @@ describe("webhook→worker integration (post-e7eb006 regression fix)", () => {
         }),
       ),
     };
-    const createReview = vi.fn(async () => ({
+    const createReview = vi.fn(async (_params: unknown) => ({
       data: { id: 999, html_url: "https://github.com/acme/proj/pull/77#review-999" },
     }));
     const octokit = {

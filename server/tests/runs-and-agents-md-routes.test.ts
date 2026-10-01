@@ -3,6 +3,21 @@
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+/** The run row the routes read: a system run has no project and may be unfinished. */
+interface AgentRunRow {
+  id: string;
+  sessionId: string;
+  projectId: string | null;
+  kind: string;
+  status: string;
+  startedAt: Date;
+  completedAt: Date | null;
+  latencyMs: number | null;
+  totalTokens: number;
+  costCents: number;
+  steps: unknown[];
+}
+
 const {
   findUniqueProject,
   findManyKnown,
@@ -30,33 +45,34 @@ const {
       _count: { steps: 3 },
     },
   ]),
-  agentRunFindUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
-    where.id === "run_1"
-      ? {
-          id: "run_1",
-          sessionId: "s1",
-          projectId: "p1",
-          kind: "analysis",
-          status: "completed",
-          startedAt: new Date("2026-04-01"),
-          completedAt: new Date("2026-04-01"),
-          latencyMs: 100,
-          totalTokens: 50,
-          costCents: 1,
-          steps: [
-            {
-              id: "step_1",
-              ord: 0,
-              kind: "agent_phase",
-              content: '{"agentKey":"document"}',
-              spanId: null,
-              traceId: null,
-              latencyMs: null,
-              createdAt: new Date(),
-            },
-          ],
-        }
-      : null,
+  agentRunFindUnique: vi.fn(
+    async ({ where }: { where: { id: string } }): Promise<AgentRunRow | null> =>
+      where.id === "run_1"
+        ? {
+            id: "run_1",
+            sessionId: "s1",
+            projectId: "p1",
+            kind: "analysis",
+            status: "completed",
+            startedAt: new Date("2026-04-01"),
+            completedAt: new Date("2026-04-01"),
+            latencyMs: 100,
+            totalTokens: 50,
+            costCents: 1,
+            steps: [
+              {
+                id: "step_1",
+                ord: 0,
+                kind: "agent_phase",
+                content: '{"agentKey":"document"}',
+                spanId: null,
+                traceId: null,
+                latencyMs: null,
+                createdAt: new Date(),
+              },
+            ],
+          }
+        : null,
   ),
 }));
 

@@ -34,6 +34,16 @@ import {
   ROLLUP_CATCHUP_DAYS,
 } from "../src/lib/workspaces/usage-rollup.js";
 
+/**
+ * Prisma delegates return a fluent `PrismaPromise` that no in-memory double can
+ * construct; the code under test only awaits the result, so a plain async
+ * function stands in for it. Asserting the delegate's type here is the double's
+ * one cast.
+ */
+function prismaImpl<F>(impl: (...args: never[]) => Promise<unknown>): F {
+  return impl as F;
+}
+
 const DAY_MS = 86_400_000;
 
 /** UTC `YYYY-MM-DD` of every day the rollup aggregated, in call order. */
@@ -63,18 +73,18 @@ describe("rollupWorkspaceUsage", () => {
     ] as never);
 
     vi.mocked(prisma.tokenUsage.aggregate).mockImplementation(
-      async (args: { where: { project: { workspaceId: string } } }) => {
+      prismaImpl(async (args: { where: { project: { workspaceId: string } } }) => {
         if (args.where.project.workspaceId === "ws-1") {
           return {
             _sum: { totalTokens: 5000, costCents: 100 },
             _count: { sessionId: 3 },
-          } as never;
+          };
         }
         return {
           _sum: { totalTokens: 0, costCents: 0 },
           _count: { sessionId: 0 },
-        } as never;
-      },
+        };
+      }),
     );
 
     vi.mocked(prisma.workspaceUsageDaily.upsert).mockResolvedValue({} as never);

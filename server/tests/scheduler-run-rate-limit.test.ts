@@ -17,9 +17,8 @@ function makeApp(): ReturnType<typeof express> {
   const app = express();
   // Inject a fake user so the limiter keys per-user, not per-IP.
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    (req as Request & { user: { userId: string } }).user = {
-      userId: req.headers["x-uid"] as string,
-    };
+    const userId = req.headers["x-uid"] as string;
+    req.user = { userId, username: userId, role: "reader", permissions: [] };
     next();
   });
   app.post("/run", runNowRateLimiter, (_req, res) => {

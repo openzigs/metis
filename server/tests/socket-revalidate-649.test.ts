@@ -6,9 +6,9 @@
  * is `socket-cluster-reconnect-649.test.ts`.
  */
 import http from "node:http";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
-import type { AuthPayload } from "@metis/shared";
+import type { AuthPayload, RoleKey } from "@metis/shared";
 
 const live = vi.hoisted(() => ({
   users: new Map<string, AuthPayload | Error | null>(),
@@ -59,7 +59,7 @@ import { readEpoch } from "../src/lib/socket/revocation-relay.js";
 import { logger } from "../src/lib/logger.js";
 import { mcpStatusWorkspaceRoom } from "../src/lib/mcp/status-rooms.js";
 
-const payload = (userId: string, role = "coordinator"): AuthPayload => ({
+const payload = (userId: string, role: RoleKey = "coordinator"): AuthPayload => ({
   userId,
   username: userId,
   role,
@@ -149,7 +149,7 @@ describe("#649 revalidateLocalSockets", () => {
 
   it("closes the transport of a socket whose role changed", async () => {
     const demoted = await connect("u-role");
-    live.users.set("u-role", payload("u-role", "viewer"));
+    live.users.set("u-role", payload("u-role", "reader"));
 
     await revalidateLocalSockets(io);
 
@@ -303,7 +303,7 @@ describe("#649 revalidateLocalSockets", () => {
 
 describe("#659 revalidateLocalSockets log level by trigger", () => {
   /** The level of each re-validation pass logged by the socket module. */
-  function passLevels(write: ReturnType<typeof vi.spyOn>): string[] {
+  function passLevels(write: MockInstance<typeof logger.write>): string[] {
     return write.mock.calls
       .map(([info]) => info as { level: string; message: string; module?: string })
       .filter((i) => i.module === "socket" && /re-validat/i.test(i.message))
@@ -365,7 +365,7 @@ describe("#659 a failed lookup: a sweep keeps the socket, a LISTEN pass closes i
   const settle = () => new Promise((r) => setTimeout(r, 100));
 
   /** The warnings the socket module logged. */
-  function socketWarnings(write: ReturnType<typeof vi.spyOn>): string[] {
+  function socketWarnings(write: MockInstance<typeof logger.write>): string[] {
     return write.mock.calls
       .map(([info]) => info as { level: string; message: string; module?: string })
       .filter((i) => i.module === "socket" && i.level === "warn")
@@ -472,7 +472,7 @@ describe("#659 a failed lookup: a sweep keeps the socket, a LISTEN pass closes i
 
     it(`a ${trigger} pass still closes the transport of a socket whose role changed`, async () => {
       const demoted = await connect(`u-role-${trigger}`);
-      live.users.set(`u-role-${trigger}`, payload(`u-role-${trigger}`, "viewer"));
+      live.users.set(`u-role-${trigger}`, payload(`u-role-${trigger}`, "reader"));
 
       await revalidateLocalSockets(io, trigger);
 

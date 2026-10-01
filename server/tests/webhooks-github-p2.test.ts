@@ -187,6 +187,8 @@ describe("webhook dedup + queue", () => {
       depth: () => enqueued.length,
       deadLetters: () => [],
       drain: async () => undefined,
+      shutdown: async () => undefined,
+      isShuttingDown: () => false,
     };
     const app = makeApp(queue);
     const body = JSON.stringify(payload(102));
@@ -217,6 +219,8 @@ describe("webhook dedup + queue", () => {
       depth: () => 1,
       deadLetters: () => [],
       drain: async () => undefined,
+      shutdown: async () => undefined,
+      isShuttingDown: () => false,
     };
     const body = JSON.stringify(payload(104));
     const resp = await request(makeApp(queue))

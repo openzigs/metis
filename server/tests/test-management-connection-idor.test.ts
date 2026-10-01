@@ -7,6 +7,12 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+/** The project row the access seam reads; pre-migration rows have no workspace. */
+interface ProjectAccessRow {
+  workspaceId: string | null;
+  workspace?: { deletedAt: Date | null; members: Array<{ id: string }> };
+}
+
 const { prismaMock } = vi.hoisted(() => ({
   prismaMock: {
     $queryRawUnsafe: vi.fn(async () => 1),
@@ -31,7 +37,7 @@ const { prismaMock } = vi.hoisted(() => ({
           ({
             workspaceId: "ws_a",
             workspace: { deletedAt: null, members: [{ id: "member-row" }] },
-          }) as { workspaceId: string | null } | null,
+          }) as ProjectAccessRow | null,
       ),
     },
     testManagementConnection: {

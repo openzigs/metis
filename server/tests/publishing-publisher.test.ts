@@ -10,7 +10,7 @@
  *   - GHE base URL routing
  *   - missing token rejection
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 interface BatchRow {
   id: string;
@@ -218,21 +218,23 @@ vi.mock("../src/lib/prisma.js", () => ({
             return next;
           }
           issueCounter += 1;
-          const row: PublishedIssueRow = {
-            id: `pi_${issueCounter}`,
-            batchId: where.batchId_draftId_destination.batchId,
-            draftId: where.batchId_draftId_destination.draftId,
-            issueNumber: 0,
-            issueId: "",
-            htmlUrl: "",
-            status: "created",
-            parentIssueNumber: null,
-            dedupHash: null,
-            bodyHash: null,
-            errorMessage: null,
-            publishedAt: new Date(),
-            ...(create as PublishedIssueRow),
-          };
+          const row: PublishedIssueRow = Object.assign(
+            {
+              id: `pi_${issueCounter}`,
+              batchId: where.batchId_draftId_destination.batchId,
+              draftId: where.batchId_draftId_destination.draftId,
+              issueNumber: 0,
+              issueId: "",
+              htmlUrl: "",
+              status: "created",
+              parentIssueNumber: null,
+              dedupHash: null,
+              bodyHash: null,
+              errorMessage: null,
+              publishedAt: new Date(),
+            },
+            create,
+          );
           issues.set(key, row);
           return row;
         },
@@ -269,8 +271,21 @@ import { prisma } from "../src/lib/prisma.js";
 import { resolveVaultRef } from "../src/lib/connectors/vault-resolver.js";
 import { computeDedupHash } from "../src/lib/publishing/dedup.js";
 import { rollbackOutcomeMessage } from "../src/lib/publishing/publisher.js";
-import type { GhIssue, PublishOctokitLike } from "../src/lib/publishing/types.js";
+import type {
+  GhIssue,
+  OctokitRequestArgs,
+  OctokitResponseLike,
+  PublishOctokitLike,
+} from "../src/lib/publishing/types.js";
 import realIssueFixture from "./fixtures/github-rest-issue.json" with { type: "json" };
+
+/** `request<T>` is caller-typed, as on the real client: `T` is what the caller
+ * asserts the body holds, so a fake can only hand back `unknown` data. */
+function fakeOctokit(client: {
+  request: (args: OctokitRequestArgs) => Promise<OctokitResponseLike>;
+}): PublishOctokitLike {
+  return client as PublishOctokitLike;
+}
 
 let nextRemoteIssue = 100;
 
@@ -306,7 +321,7 @@ function makeFakeOctokit(opts?: {
   alwaysFailCreate?: boolean;
 }): PublishOctokitLike {
   let createCount = 0;
-  return {
+  return fakeOctokit({
     request: async (args) => {
       const url = args.url ?? "";
       const method = args.method ?? "GET";
@@ -371,7 +386,7 @@ function makeFakeOctokit(opts?: {
       }
       return { status: 200, headers: {}, data: {} };
     },
-  };
+  });
 }
 
 function seedDraft(over: Partial<DraftRow>): DraftRow {
@@ -494,7 +509,10 @@ describe("#1091 — issue identifiers (recorded GitHub REST shape)", () => {
    * un-restored override would leak into every later test in this file.
    */
   async function withFailingPersistence(message: string, fn: () => Promise<void>): Promise<void> {
-    const upsert = prisma.publishedIssue.upsert as ReturnType<typeof vi.fn>;
+    // `prisma` is vi.mock'ed: this delegate is the in-memory mock, not the fluent client.
+    const upsert = prisma.publishedIssue.upsert as unknown as Mock<
+      (args: { create?: { status?: string } }) => Promise<unknown>
+    >;
     const real = upsert.getMockImplementation()!;
     upsert.mockImplementation(async (args: { create?: { status?: string } }) => {
       if (args.create?.status !== "failed") throw new Error(message);
@@ -724,7 +742,7 @@ describe("#1091 — issue identifiers (recorded GitHub REST shape)", () => {
     });
     __setPublishOctokitFactory(async () => {
       const base = makeFakeOctokit();
-      return {
+      return fakeOctokit({
         request: async (args) => {
           if ((args.method ?? "GET") === "GET" && /\/issues\?/.test(args.url ?? "")) {
             return {
@@ -743,7 +761,7 @@ describe("#1091 — issue identifiers (recorded GitHub REST shape)", () => {
           }
           return base.request(args);
         },
-      };
+      });
     });
     const result = await runBatch({
       batchId: "batch_1",
@@ -1110,14 +1128,14 @@ import { resolvePublishTarget } from "../src/lib/publishing/host-allowlist.js";
 describe("F1 — sub-issue retry uses full backoff (no /100 divider)", () => {
   it("passes the documented exponential backoff into sleep", async () => {
     const calls: number[] = [];
-    const failingClient = {
+    const failingClient = fakeOctokit({
       request: vi.fn(async (args: { url?: string; method?: string }) => {
         if ((args.method ?? "GET") === "POST" && /sub_issues$/.test(args.url ?? "")) {
           throw new Error("sub-issue attach failure");
         }
         return { status: 200, headers: {}, data: {} };
       }),
-    };
+    });
     await expect(
       publisherTesting.attachSubIssueWithRetry({
         client: failingClient,
@@ -1178,7 +1196,7 @@ describe("F2 — rollback only closes batch-CREATED issues, not pre-existing upd
       publishedAt: new Date(),
     });
     const closedIssues: number[] = [];
-    const client = {
+    const client = fakeOctokit({
       request: vi.fn(async (args: { method?: string; url?: string; data?: unknown }) => {
         if (args.method === "PATCH" && /\/issues\/\d+$/.test(args.url ?? "")) {
           const num = Number((args.url ?? "").split("/").pop());
@@ -1187,7 +1205,7 @@ describe("F2 — rollback only closes batch-CREATED issues, not pre-existing upd
         }
         return { status: 200, headers: {}, data: {} };
       }),
-    };
+    });
     await publisherTesting.rollbackBatch({
       batchId: "batch_x",
       client,
@@ -1210,12 +1228,12 @@ describe("F2 — rollback only closes batch-CREATED issues, not pre-existing upd
 
   it("#1091 — counts close failures so the batch message can admit them", async () => {
     seedBatch({ id: "batch_x" });
-    const client = {
+    const client = fakeOctokit({
       request: vi.fn(async (args: { method?: string; url?: string }) => {
         if (args.method === "PATCH") throw new Error("github 500");
         return { status: 200, headers: {}, data: {} };
       }),
-    };
+    });
     const outcome = await publisherTesting.rollbackBatch({
       batchId: "batch_x",
       client,
@@ -1253,14 +1271,14 @@ describe("F2 — rollback only closes batch-CREATED issues, not pre-existing upd
       publishedAt: new Date(),
     });
     const closed: number[] = [];
-    const client = {
+    const client = fakeOctokit({
       request: vi.fn(async (args: { method?: string; url?: string; data?: unknown }) => {
         if (args.method === "PATCH" && (args.data as { state?: string })?.state === "closed") {
           closed.push(Number((args.url ?? "").split("/").pop()));
         }
         return { status: 200, headers: {}, data: {} };
       }),
-    };
+    });
     const outcome = await publisherTesting.rollbackBatch({
       batchId: "batch_x",
       client,
@@ -1296,29 +1314,31 @@ describe("F3 — marker recovery cross-checks DB and ignores forged markers", ()
     });
     seedBatch({});
     let postedBody = "";
-    __setPublishOctokitFactory(async () => ({
-      request: vi.fn(async (args: { method?: string; url?: string; data?: unknown }) => {
-        if ((args.method ?? "GET") === "GET" && /^\/repos\/[^/]+\/[^/]+$/.test(args.url ?? "")) {
-          return {
-            status: 200,
-            headers: {},
-            data: { permissions: { push: true }, full_name: "acme/metis" },
-          };
-        }
-        if (/labels/.test(args.url ?? "")) {
-          return { status: 200, headers: {}, data: { name: "ok" } };
-        }
-        if (args.method === "GET" && /\/issues\?/.test(args.url ?? "")) {
-          return { status: 200, headers: {}, data: [] };
-        }
-        if (args.method === "POST" && /\/issues$/.test(args.url ?? "")) {
-          postedBody = String((args.data as { body?: string })?.body ?? "");
-          nextRemoteIssue += 1;
-          return { status: 201, headers: {}, data: makeRemoteIssue(nextRemoteIssue, "") };
-        }
-        return { status: 200, headers: {}, data: {} };
+    __setPublishOctokitFactory(async () =>
+      fakeOctokit({
+        request: vi.fn(async (args: { method?: string; url?: string; data?: unknown }) => {
+          if ((args.method ?? "GET") === "GET" && /^\/repos\/[^/]+\/[^/]+$/.test(args.url ?? "")) {
+            return {
+              status: 200,
+              headers: {},
+              data: { permissions: { push: true }, full_name: "acme/metis" },
+            };
+          }
+          if (/labels/.test(args.url ?? "")) {
+            return { status: 200, headers: {}, data: { name: "ok" } };
+          }
+          if (args.method === "GET" && /\/issues\?/.test(args.url ?? "")) {
+            return { status: 200, headers: {}, data: [] };
+          }
+          if (args.method === "POST" && /\/issues$/.test(args.url ?? "")) {
+            postedBody = String((args.data as { body?: string })?.body ?? "");
+            nextRemoteIssue += 1;
+            return { status: 201, headers: {}, data: makeRemoteIssue(nextRemoteIssue, "") };
+          }
+          return { status: 200, headers: {}, data: {} };
+        }),
       }),
-    }));
+    );
     await runBatch({
       batchId: "batch_1",
       dryRun: false,

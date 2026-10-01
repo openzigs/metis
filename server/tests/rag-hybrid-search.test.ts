@@ -124,13 +124,19 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     knowledgeChunk: {
-      create: vi.fn(async ({ data }: { data: Omit<MockChunk, "id"> & { id?: string } }) => {
-        nextChunkId += 1;
-        const id = data.id ?? `chunk_${nextChunkId}`;
-        const row: MockChunk = { id, vectorRef: null, ...data } as MockChunk;
-        chunks.set(id, row);
-        return row;
-      }),
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: Omit<MockChunk, "id" | "vectorRef"> & { id?: string; vectorRef?: string | null };
+        }) => {
+          nextChunkId += 1;
+          const id = data.id ?? `chunk_${nextChunkId}`;
+          const row: MockChunk = { id, vectorRef: null, ...data } as MockChunk;
+          chunks.set(id, row);
+          return row;
+        },
+      ),
       update: vi.fn(
         async ({ where, data }: { where: { id: string }; data: Partial<MockChunk> }) => {
           const c = chunks.get(where.id);

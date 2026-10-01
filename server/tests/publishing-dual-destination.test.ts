@@ -5,7 +5,7 @@
  * creates both a GitHub and a Jira PublishedIssue row for the same batch+draft
  * without violating the unique constraint.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 // ── In-memory stores ────────────────────────────────────────────────────────
 interface PublishedIssueRow {
@@ -190,7 +190,7 @@ describe("executeBatch — destination=both", () => {
 
     // Same batchId+draftId, different destination — must NOT throw
     const { prisma } = (await import("../src/lib/prisma.js")) as unknown as {
-      prisma: { publishedIssue: { create: ReturnType<typeof vi.fn> } };
+      prisma: { publishedIssue: { create: Mock<(args: unknown) => Promise<unknown>> } };
     };
     await expect(
       prisma.publishedIssue.create({

@@ -7,14 +7,14 @@ import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
 
 function mockProvider(content: string): AIProvider {
   return {
-    key: "test",
+    key: "offline-stub",
     model: "test-model",
     offline: true,
     chat: vi.fn().mockResolvedValue({
       content,
       usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
       model: "test-model",
-      provider: "test",
+      provider: "offline-stub",
     } as ChatResponse),
     stream: vi.fn(),
     embed: vi.fn(),

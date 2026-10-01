@@ -11,7 +11,14 @@
  * message the provider receives.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatMessage, ChatResponse } from "../src/lib/ai/types.js";
+import type {
+  AIProvider,
+  ChatChunk,
+  ChatMessage,
+  ChatResponse,
+  EmbedResult,
+  ProviderKey,
+} from "../src/lib/ai/types.js";
 
 const projects = new Map<string, any>();
 const constitutionRows = new Map<string, any>();
@@ -82,7 +89,22 @@ import { SpecKitArtifactError } from "../src/lib/spec-kit/artifacts.js";
 
 /** Captures the system message the runner assembles. */
 class CapturingProvider implements AIProvider {
-  readonly key: any = "offline-stub";
+  readonly key: ProviderKey = "offline-stub";
+  // Members the runners never call; present so the double satisfies AIProvider.
+  readonly model = "fake-model";
+  readonly offline = false;
+  async *stream(): AsyncGenerator<ChatChunk> {
+    throw new Error("stream is not used by this test");
+  }
+  async embed(): Promise<EmbedResult> {
+    throw new Error("embed is not used by this test");
+  }
+  async models(): Promise<string[]> {
+    return [this.model];
+  }
+  async ping(): Promise<boolean> {
+    return true;
+  }
   systemMessage = "";
   async chat(_m: ChatMessage[], o: any): Promise<ChatResponse> {
     this.systemMessage = String(o?.systemMessage ?? "");

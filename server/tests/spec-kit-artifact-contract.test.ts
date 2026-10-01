@@ -19,7 +19,14 @@
  *      reference AC ids).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatMessage, ChatResponse } from "../src/lib/ai/types.js";
+import type {
+  AIProvider,
+  ChatChunk,
+  ChatMessage,
+  ChatResponse,
+  EmbedResult,
+  ProviderKey,
+} from "../src/lib/ai/types.js";
 
 // ── Prisma mock (reused by artifacts service + runner.loadProjectContext) ──
 const artifactRows = new Map<string, any>();
@@ -108,7 +115,22 @@ import {
 
 /** Fixture provider returning a fixed body regardless of the prompt. */
 class FixtureProvider implements AIProvider {
-  readonly key: any = "offline-stub";
+  readonly key: ProviderKey = "offline-stub";
+  // Members the runners never call; present so the double satisfies AIProvider.
+  readonly model = "fixture-model";
+  readonly offline = false;
+  async *stream(): AsyncGenerator<ChatChunk> {
+    throw new Error("stream is not used by this test");
+  }
+  async embed(): Promise<EmbedResult> {
+    throw new Error("embed is not used by this test");
+  }
+  async models(): Promise<string[]> {
+    return [this.model];
+  }
+  async ping(): Promise<boolean> {
+    return true;
+  }
   constructor(private readonly text: string) {}
   async chat(_m: ChatMessage[], _o: unknown): Promise<ChatResponse> {
     return {

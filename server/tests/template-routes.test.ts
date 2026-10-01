@@ -58,19 +58,21 @@ vi.mock("../src/lib/prisma.js", async () => {
       count: vi.fn(async () => 0),
       create: vi.fn(async ({ data }: { data: Partial<TemplateRow> }) => {
         nextId++;
-        const row: TemplateRow = {
-          id: `tpl_${nextId}`,
-          projectId: "",
-          name: "",
-          platform: "universal",
-          templateType: "feature",
-          schema: "{}",
-          defaultValues: "{}",
-          isDefault: false,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          ...(data as TemplateRow),
-        };
+        const row: TemplateRow = Object.assign(
+          {
+            id: `tpl_${nextId}`,
+            projectId: "",
+            name: "",
+            platform: "universal",
+            templateType: "feature",
+            schema: "{}",
+            defaultValues: "{}",
+            isDefault: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          data,
+        );
         templates.set(row.id, row);
         return row;
       }),
