@@ -39,7 +39,7 @@ export const REQMAP_EVAL_THRESHOLDS = {
   hitRate: 0.8,
 } as const;
 
-export type ReqMapThresholds = typeof REQMAP_EVAL_THRESHOLDS;
+export type ReqMapThresholds = { readonly [K in keyof typeof REQMAP_EVAL_THRESHOLDS]: number };
 
 export interface ThresholdCheck {
   metric: keyof ReqMapThresholds;
