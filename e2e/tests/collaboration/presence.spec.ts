@@ -16,8 +16,9 @@
  *
  * Socket event contract (server: src/lib/collaboration/presence.ts):
  *   Client → Server:
- *     presence:join   { artifactType: string, artifactId: string }
- *     presence:leave  { artifactType: string, artifactId: string }
+ *     presence:join   { artifactType: PresenceArtifactType, artifactId: string }
+ *     presence:leave  { artifactType: PresenceArtifactType, artifactId: string }
+ *   (PresenceArtifactType = "discussion" | "spec-kit-artifact", @metis/shared #676)
  *   Server → Client:
  *     presence:update { room: string, users: Array<{userId, username, displayName}>, ts: number }
  *

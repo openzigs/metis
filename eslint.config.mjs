@@ -31,6 +31,9 @@ const LISTENER_IN_SOCKET_MODULES = {
 // sends to cannot drift apart. Caught: a template literal or a `+` whose
 // leading string is exactly one of those room prefixes (`job:${id}`,
 // "run:" + id). Event names such as `job:lifecycle` do not match.
+// A heuristic, not a proof: `${kind}:${id}`, `job:x${id}`, a `.join(":")`, a
+// concatenated const prefix or a separator typo (`publish-${id}`) all pass it.
+// The per-emitter room tests (#676) are what pin the actual room names.
 const ROOM_PREFIXES = "/^(thread|session|task|analysis|publish|presence|connector|job|run):$/";
 const HAND_WRITTEN_ROOM_MESSAGE =
   "Build a socket room name with its factory from @metis/shared (threadRoom, sessionRoom, taskRoom, analysisRoom, publishRoom, presenceRoom, connectorRoom, jobRoom, bgRunRoom): a hand-written room can drift from the room the client joins (#676).";
