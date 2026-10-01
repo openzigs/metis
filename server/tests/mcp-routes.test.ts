@@ -837,3 +837,34 @@ describe("/api/mcp", () => {
     expect(res.status).toBe(404);
   });
 });
+
+// #608 review — the routes, not just `importStatus`, must answer 207 when an
+// entry's row landed and a later step failed: a route reverted to
+// `errors.length > 0 ? 207 : 200` would say 200 to a partial success.
+describe.each([
+  ["/api/mcp/import", "mcpServers"],
+  ["/api/mcp/import-copilot", "servers"],
+])("%s — an entry that lands and then fails (#608)", (url, key) => {
+  it("answers 207 and names the landed row's id with the warning", async () => {
+    const { getMCPRegistry } = await import("../src/lib/mcp/mcp-service.js");
+    const toView = vi
+      .spyOn(getMCPRegistry() as unknown as { toView: (row: unknown) => unknown }, "toView")
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error("view failed"), { code: "VIEW_FAILED" });
+      });
+
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ dryRun: false, mcpJson: { [key]: { landed: { command: "node" } } } });
+    toView.mockRestore();
+
+    const rows = [...servers.values()].filter((r) => r.label === "landed");
+    expect(rows).toHaveLength(1);
+    expect(res.status).toBe(207);
+    expect(res.body.data.errors).toEqual([]);
+    expect(res.body.data.created).toEqual([
+      { id: rows[0].id, label: "landed", warning: { message: "view failed", code: "VIEW_FAILED" } },
+    ]);
+  });
+});

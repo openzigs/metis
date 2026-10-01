@@ -199,6 +199,9 @@ export async function executeImport(
     // #592 — set the moment the entry's row is written (`onLanded`): from then
     // on the row names the secrets in `written`, so a later throw keeps them.
     // #608 — it holds the row's id, so the entry is still reported as created.
+    // The cast is load-bearing: TypeScript does not see the assignment inside
+    // the `onLanded` closure, so a plain `: string | null = null` would narrow
+    // `landedId` to `null` in the catch below and type the landed branch `never`.
     let landedId = null as string | null;
     // #577 review — an entry the check could not bind (unresolved or
     // ambiguous reference) fails alone, before it vaults anything.
@@ -319,6 +322,8 @@ export async function executeImport(
     target: { type: "mcp_server", id: "n/a" },
     metadata: {
       created: result.created.length,
+      // #608 review — of `created`, the entries that landed with a warning.
+      warnings: result.created.filter((c) => c.warning).length,
       errors: result.errors.length,
       secrets: plan.totalSecrets,
       dryRun: false,
