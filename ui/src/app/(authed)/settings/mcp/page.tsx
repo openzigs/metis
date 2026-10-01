@@ -660,6 +660,9 @@ function ImportExportTab() {
           data-testid="import-file"
           onChange={(e) => {
             const f = e.target.files?.[0];
+            // #630 — empty the input once the file is read, so choosing the same
+            // file again (after an import or Clear) still fires `change`.
+            e.target.value = "";
             if (f) void onFile(f);
           }}
         />

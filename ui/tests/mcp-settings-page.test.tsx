@@ -450,6 +450,52 @@ describe("McpSettingsPage — Import result (#621)", () => {
     await screen.findByTestId("import-preview");
     expect(screen.queryByTestId("import-result")).not.toBeInTheDocument();
   });
+
+  // #630 — a browser fires no `change` when the chosen file equals the input's
+  // current one; `userEvent.upload` models that, where `fireEvent.change` does not.
+  it("re-selecting the same file after an import re-runs the preview and clears the result", async () => {
+    const user = userEvent.setup();
+    importCopilotMock.mockResolvedValue({
+      plan,
+      created: [{ id: "s1", label: "fs" }],
+      errors: [],
+      dryRun: false,
+    });
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+    const content = JSON.stringify({ servers: { fs: { command: "npx" } } });
+    const file = new File([content], "mcp.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: () => Promise.resolve(content) });
+    const input = screen.getByTestId("import-file") as HTMLInputElement;
+
+    await user.upload(input, file);
+    await screen.findByTestId("import-preview");
+    await user.click(screen.getByTestId("import-confirm"));
+    await screen.findByTestId("import-result");
+    expect(screen.queryByTestId("import-preview")).not.toBeInTheDocument();
+
+    await user.upload(input, file);
+    expect(await screen.findByTestId("import-preview")).toHaveTextContent("fs");
+    expect(screen.queryByTestId("import-result")).not.toBeInTheDocument();
+  });
+
+  it("re-selecting the same file after Clear brings its preview back", async () => {
+    const user = userEvent.setup();
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+    const content = JSON.stringify({ servers: { fs: { command: "npx" } } });
+    const file = new File([content], "mcp.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: () => Promise.resolve(content) });
+    const input = screen.getByTestId("import-file") as HTMLInputElement;
+
+    await user.upload(input, file);
+    await screen.findByTestId("import-preview");
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.queryByTestId("import-preview")).not.toBeInTheDocument();
+
+    await user.upload(input, file);
+    expect(await screen.findByTestId("import-preview")).toHaveTextContent("fs");
+  });
 });
 
 describe("McpApprovalPrompt", () => {
