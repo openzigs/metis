@@ -37,6 +37,7 @@ import {
   type VaultForeignOwner,
   type VaultRotateConfirm,
 } from "@/lib/vault-api";
+import { summarizeBindings } from "@/lib/vault-binding-summary";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -274,6 +275,46 @@ function CreateEntryCard({ onCreated }: { onCreated: () => void }) {
   );
 }
 
+/**
+ * #611 (PR #627 review) — over the confirm cap, counts by binding type and by
+ * destination host, so reviewing 1,000+ bindings starts from a few rows.
+ */
+function OverCapSummary({ bindings }: { bindings: VaultForeignOwner["bindings"] }) {
+  const { byType, byHost, moreHosts, withoutHost } = summarizeBindings(bindings);
+  return (
+    <div className="grid gap-2 sm:grid-cols-2" data-testid="vault-entry-rotate-over-cap-summary">
+      <div>
+        <p className="font-semibold">By type</p>
+        <ul data-testid="vault-entry-rotate-counts-by-type">
+          {byType.map((t) => (
+            <li key={t.key}>
+              {t.label}: {t.count}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div>
+        <p className="font-semibold">By destination host</p>
+        <ul data-testid="vault-entry-rotate-counts-by-host">
+          {byHost.map((h) => (
+            <li key={h.key}>
+              {h.label}: {h.count}
+            </li>
+          ))}
+          {moreHosts.hosts > 0 ? (
+            <li>
+              {moreHosts.hosts} more hosts: {moreHosts.bindings}
+            </li>
+          ) : null}
+          {withoutHost > 0 ? (
+            <li>No network host (driver, provider or command): {withoutHost}</li>
+          ) : null}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function EntryDetail({
   entry,
   onClose,
@@ -479,12 +520,17 @@ function EntryDetail({
               </p>
             ) : null}
             {overCap ? (
-              <p className="font-semibold" data-testid="vault-entry-rotate-over-cap">
-                It is bound to {foreignOwner.bindings.length} resources, more than the{" "}
-                {foreignOwner.maxConfirmedBindings} a confirmation can list one by one. Rotate
-                anyway confirms the whole list below as one, so review all of it first: if any
-                binding changes before you confirm, you will be shown the new list.
-              </p>
+              <>
+                <p className="font-semibold" data-testid="vault-entry-rotate-over-cap">
+                  It is bound to {foreignOwner.bindings.length} resources, more than the{" "}
+                  {foreignOwner.maxConfirmedBindings} a confirmation can list one by one. Rotate
+                  anyway confirms the whole list below as one. Start from the counts: if every
+                  binding type and destination host is one you expect, the full list only needs a
+                  scan for names you do not recognise. If any binding changes before you confirm,
+                  you will be shown the new list.
+                </p>
+                <OverCapSummary bindings={foreignOwner.bindings} />
+              </>
             ) : null}
             {foreignOwner.bindings.length === 0 ? (
               <p>

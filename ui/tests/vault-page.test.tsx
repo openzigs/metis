@@ -404,6 +404,72 @@ describe("<VaultPage />", () => {
       );
     });
 
+    it("#611 — over the cap, counts the bindings by type and by destination host above the full list", async () => {
+      const b = (type: string, id: string, destination: string | null) => ({
+        type,
+        id,
+        label: id,
+        projectId: "p1",
+        destination,
+        routing: `rt-${id}`,
+      });
+      const bindings = [
+        b("db_connector", "db0", "postgres://h0.owner.example:5432"),
+        b("db_connector", "db1", "postgres://H0.owner.example"),
+        b("db_connector", "db2", "postgres://h1.owner.example"),
+        b("mcp_server", "m0", "npx evil-mcp"),
+        b("mcp_server", "m1", "https://mcp.owner.example/sse"),
+        b("jira_connection", "j0", "https://h1.owner.example"),
+        b("repo_connector", "r0", "github"),
+        // More distinct hosts than the summary lists one by one.
+        ...Array.from({ length: 11 }, (_, i) =>
+          b(
+            "test_management_connection",
+            `t${i}`,
+            `https://tm${String(i).padStart(2, "0")}.example`,
+          ),
+        ),
+      ];
+      rotateMock.mockRejectedValueOnce(refuse({ ...foreign, bindings, maxConfirmedBindings: 5 }));
+      await submitRotate();
+      const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      const items = (testId: string) =>
+        within(within(panel).getByTestId(testId))
+          .getAllByRole("listitem")
+          .map((li) => li.textContent);
+      expect(items("vault-entry-rotate-counts-by-type")).toEqual([
+        "Test-management connection: 11",
+        "DB connector: 3",
+        "MCP server: 2",
+        "Jira connection: 1",
+        "Repo connector: 1",
+      ]);
+      // Hosts case-folded, the port ignored; the eleven one-off hosts past the
+      // first ten rows summed; non-URL destinations counted apart.
+      expect(items("vault-entry-rotate-counts-by-host")).toEqual([
+        "h0.owner.example: 2",
+        "h1.owner.example: 2",
+        "mcp.owner.example: 1",
+        "tm00.example: 1",
+        "tm01.example: 1",
+        "tm02.example: 1",
+        "tm03.example: 1",
+        "tm04.example: 1",
+        "tm05.example: 1",
+        "tm06.example: 1",
+        "4 more hosts: 4",
+        "No network host (driver, provider or command): 2",
+      ]);
+      // The summary sits above the full list, which is still all there.
+      const summary = within(panel).getByTestId("vault-entry-rotate-over-cap-summary");
+      const list = within(panel).getByTestId("vault-entry-rotate-bindings");
+      expect(summary.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(within(list).getAllByRole("listitem")).toHaveLength(bindings.length);
+      expect(within(panel).getByTestId("vault-entry-rotate-over-cap")).toHaveTextContent(
+        "Start from the counts",
+      );
+    });
+
     it("#611 — at the cap, no over-cap notice and the list itself is confirmed", async () => {
       rotateMock
         .mockRejectedValueOnce(refuse({ ...foreign, maxConfirmedBindings: 2 }))

@@ -20,6 +20,7 @@
  *
  * Epic #196 / #222 — wires the standalone /vault admin UI to the service.
  */
+import { timingSafeEqual } from "node:crypto";
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { hasPermission, type ApiResponse } from "@metis/shared";
@@ -123,6 +124,17 @@ const rotateSchema = z.object({
     .regex(/^[0-9a-f]{64}$/, "confirmedBindingsDigest must be the digest the 409 issued")
     .optional(),
 });
+
+/**
+ * #611 (PR #627 review) — compare a confirmed bindings digest with the live one
+ * in constant time. The schema admits only 64 lowercase hex characters, but the
+ * lengths are checked first because `timingSafeEqual` throws on unequal buffers.
+ */
+export function digestsEqual(confirmed: string, live: string): boolean {
+  const a = Buffer.from(confirmed, "utf8");
+  const b = Buffer.from(live, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 function summaryToView(s: SecretSummary): {
   id: string;
@@ -273,7 +285,7 @@ export function vaultRouter(): Router {
       // #611 — whichever form the confirm takes must match the live set; both, if both are sent.
       if (
         (confirmed !== undefined && bindingsDiffer(details, confirmed)) ||
-        (confirmedDigest !== undefined && confirmedDigest !== details.bindingsDigest)
+        (confirmedDigest !== undefined && !digestsEqual(confirmedDigest, details.bindingsDigest))
       ) {
         throw new AppError(
           409,

@@ -36,7 +36,9 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 
-const { vaultRouter, MAX_CONFIRMED_BINDINGS } = await import("../src/routes/vault.js");
+const { vaultRouter, MAX_CONFIRMED_BINDINGS, digestsEqual } =
+  await import("../src/routes/vault.js");
+const { assertSecretBindingAllowed } = await import("../src/lib/vault/secret-binding.js");
 const { JSON_LIMIT_BYTES } = await import("../src/lib/config/json-limit.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
@@ -47,6 +49,19 @@ const { getAuditService } = await import("../src/lib/audit/audit-service.js");
 const OWNER_VALUE = "owner-own-token-611";
 const ADMIN_VALUE = "admin-real-token-611";
 const OVER_CAP = MAX_CONFIRMED_BINDINGS + 1;
+const OWNER = { userId: "u-owner", role: "coordinator" as const };
+
+describe("#611 — digestsEqual (PR #627 review: constant-time compare)", () => {
+  const digest = "ab".repeat(32);
+  it("is true only for the identical digest", () => {
+    expect(digestsEqual(digest, digest)).toBe(true);
+    expect(digestsEqual(`${"ab".repeat(31)}ac`, digest)).toBe(false);
+  });
+  it("is false, not a throw, for digests of unequal length", () => {
+    expect(digestsEqual(digest.slice(1), digest)).toBe(false);
+    expect(digestsEqual("", digest)).toBe(false);
+  });
+});
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#611 — a foreign secret over the list-confirm cap is confirmed by its bindings digest",
@@ -275,6 +290,84 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe("VAULT_ROTATE_FOREIGN_OWNER");
       expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+      expect(await rotateAudit(id)).toHaveLength(0);
+    });
+
+    // -- PR #627 review: a digest-only confirm through the #552 race path. The
+    // compare-and-swap misses on the write, and `refuseIfBindingsMoved`
+    // re-checks the live set against what the digest stood for. --
+    /** Run `between` inside the rotation, after its bindings read and before its UPDATE. */
+    const betweenReadAndWrite = (between: () => Promise<void>) => {
+      const svc = getVaultService();
+      const real = svc.rotate.bind(svc);
+      return vi.spyOn(svc, "rotate").mockImplementationOnce(async (...args) => {
+        await between();
+        return real(...args);
+      });
+    };
+    /** The owner's binding check: stamps the secret's binding-write window. */
+    const ownerChecks = (secretId: string) =>
+      assertSecretBindingAllowed(
+        OWNER,
+        { before: [], after: [secretId], destinationChanged: true },
+        { target: { type: "db_connector", id: "new" } },
+      );
+
+    it("a digest-only confirm whose bindings move mid-rotation (a stamped binding write lands) is CHANGED", async () => {
+      const id = await newSecret("u-owner");
+      await bindMany(id, OVER_CAP, "race");
+      const first = listed(await rotate(id, { value: ADMIN_VALUE }));
+
+      // The owner's stamped binding write lands between the rotation's read and its write.
+      const spy = betweenReadAndWrite(async () => {
+        await ownerChecks(id);
+        await bindMany(id, 1, "race-late");
+      });
+      let res: request.Response;
+      try {
+        res = await rotate(id, {
+          value: ADMIN_VALUE,
+          confirmForeignOwner: true,
+          confirmedBindingsDigest: first.bindingsDigest,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(res.status, JSON.stringify(res.body).slice(0, 500)).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
+      const fresh = listed(res);
+      expect(fresh.bindings).toHaveLength(OVER_CAP + 1);
+      expect(fresh.bindingsDigest).not.toBe(first.bindingsDigest);
+      // Read back: the owner's value and ownership are unchanged, nothing audited.
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+      expect((await db.secret.findUniqueOrThrow({ where: { id } })).createdById).toBe("u-owner");
+      expect(await rotateAudit(id)).toHaveLength(0);
+    });
+
+    it("a digest-only confirm whose binding check stamps mid-rotation, write not landed, is IN_PROGRESS", async () => {
+      const id = await newSecret("u-owner");
+      await bindMany(id, 2, "race-ip");
+      const first = listed(await rotate(id, { value: ADMIN_VALUE }));
+
+      const spy = betweenReadAndWrite(async () => {
+        await ownerChecks(id);
+      });
+      let res: request.Response;
+      try {
+        res = await rotate(id, {
+          value: ADMIN_VALUE,
+          confirmForeignOwner: true,
+          confirmedBindingsDigest: first.bindingsDigest,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(res.status, JSON.stringify(res.body).slice(0, 500)).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_BINDING_IN_PROGRESS");
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+      expect((await db.secret.findUniqueOrThrow({ where: { id } })).createdById).toBe("u-owner");
       expect(await rotateAudit(id)).toHaveLength(0);
     });
 
