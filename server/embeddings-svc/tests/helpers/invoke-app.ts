@@ -157,3 +157,24 @@ export function invoke(app: Express, options: InvokeOptions): Promise<InvokeResu
     req.push(null);
   });
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- response bodies are asserted field by field
+export type Reply = { status: number; body: Record<string, any> };
+
+/**
+ * One request, in process, reduced to what the app tests assert on (#692).
+ *
+ * An empty or non-JSON body reads as `{}`, matching what `supertest` gave these tests, so
+ * moving off it changed no assertion. A test that needs to tell "no body" from "empty
+ * object" should call `invoke()` and read `body`/`text` directly.
+ */
+export async function send(
+  app: Express,
+  method: string,
+  url: string,
+  json?: unknown,
+  headers?: Record<string, string>,
+): Promise<Reply> {
+  const res = await invoke(app, { method, url, json, headers });
+  return { status: res.status, body: (res.body ?? {}) as Reply["body"] };
+}

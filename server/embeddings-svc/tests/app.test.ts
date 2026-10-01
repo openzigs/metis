@@ -11,9 +11,9 @@
  * `127.0.0.1:<port>` and receive the request instead (the #689 flake mechanism). In
  * process there is no port to steal. The `listen` spy below keeps it that way.
  */
-import { Server } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { invoke } from "./helpers/invoke-app.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { send } from "./helpers/invoke-app.js";
+import { createListenGuard } from "./helpers/listen-guard.js";
 
 const ORIGINAL_TOKEN = process.env.EMBEDDINGS_TOKEN;
 
@@ -41,43 +41,23 @@ vi.mock("../src/pipelines.js", () => {
 });
 
 // Issue #692 — no test in this file may open a TCP listener. See the header.
-let listen: MockInstance<Server["listen"]>;
+const listenGuard = createListenGuard("#692");
 
 beforeEach(() => {
-  listen = vi.spyOn(Server.prototype, "listen");
+  listenGuard.arm();
   process.env.EMBEDDINGS_TOKEN = "test-secret-token-12345";
 });
 
 afterEach(() => {
-  // Capture, restore, THEN assert: a throwing assertion before the restore would
-  // leave the spy (and its call count) in place and fail every later test too.
-  const listenCalls = listen.mock.calls.length;
-  listen.mockRestore();
   if (ORIGINAL_TOKEN === undefined) delete process.env.EMBEDDINGS_TOKEN;
   else process.env.EMBEDDINGS_TOKEN = ORIGINAL_TOKEN;
   vi.restoreAllMocks();
-  expect(listenCalls, "a test bound a TCP port — use invoke(), not supertest (#692)").toBe(0);
+  listenGuard.check();
 });
 
 async function loadApp() {
   const { createApp } = await import("../src/app.js");
   return createApp();
-}
-
-type App = Awaited<ReturnType<typeof loadApp>>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- response bodies are asserted field by field
-type Reply = { status: number; body: Record<string, any> };
-
-/** One request, in process — no socket, no port (#692). */
-async function send(
-  app: App,
-  method: string,
-  url: string,
-  json?: unknown,
-  headers?: Record<string, string>,
-): Promise<Reply> {
-  const res = await invoke(app, { method, url, json, headers });
-  return { status: res.status, body: (res.body ?? {}) as Reply["body"] };
 }
 
 describe("embeddings sidecar HTTP surface", () => {
