@@ -52,3 +52,8 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Parallel PR semantic conflicts](project_parallel-prs-semantic-conflicts.md) — clean merge can bypass a guard; updateMany bumps @updatedAt
 - [Time-bounded refs need recheck](project_time-dependent-refs-need-recheck.md) — one-shot retirement; test fakes miss new methods
 - [Test harness false greens](project_test-harness-false-greens.md) — pipe-to-tail exit codes; helper-only tests; fireEvent file input
+- [beforeEach return is cleanup](project_vitest-beforeeach-return-is-cleanup.md) — block body; a returned mock runs after every test (#685)
+- [Socket handler patterns](project_socket-handler-patterns.md) — payload?.x, onClientEvent/onRoomJoin, {message, room} refusals
+- [Prune misses squash merges](project_worktree-prune-misses-squash-merges.md) — alias/squash branches read active; remove by hand
+- [Stuck CI run](project_stuck-ci-run-update-branch.md) — no steps for hours: gh pr update-branch, re-gate the new SHA
+- [Panel on full PR diff](project_panel-required-on-full-pr-diff.md) — shouldRunAdversarialPass on origin/main...tip, not the fix
