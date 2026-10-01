@@ -108,6 +108,7 @@ const rotateSchema = z.object({
             "import_source",
             "mcp_server",
             "jira_connection",
+            "test_management_connection",
           ]),
           id: z.string().min(1).max(CONFIRMED_BINDING_ID_MAX),
           destination: z.string().max(CONFIRMED_BINDING_DESTINATION_MAX).nullable(),

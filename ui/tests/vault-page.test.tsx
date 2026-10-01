@@ -277,6 +277,10 @@ describe("<VaultPage />", () => {
       await submitRotate();
       const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
       expect(panel).toHaveTextContent("were not checked");
+      // #609 — test-management connections are now enumerated, so they are named
+      // among what was checked, not among what was not.
+      expect(panel).toHaveTextContent("Jira or test-management connection");
+      expect(panel).not.toHaveTextContent("test-management auth");
       expect(panel).not.toHaveTextContent("not bound");
       fireEvent.click(screen.getByTestId("vault-entry-rotate-cancel"));
       expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument();

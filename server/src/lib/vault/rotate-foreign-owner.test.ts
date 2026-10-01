@@ -12,6 +12,7 @@ const db = vi.hoisted(() => ({
   importSource: { findMany: vi.fn() },
   mCPServer: { findMany: vi.fn() },
   jiraConnection: { findMany: vi.fn() },
+  testManagementConnection: { findMany: vi.fn() },
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
 // #557 — a pass-through spy, so a test can count the HKDF derivations.
@@ -49,6 +50,7 @@ beforeEach(() => {
     db.importSource,
     db.mCPServer,
     db.jiraConnection,
+    db.testManagementConnection,
   ]) {
     m.findMany.mockResolvedValue([]);
   }
@@ -82,6 +84,14 @@ describe("describeForeignOwner", () => {
     expect(db.jiraConnection.findMany.mock.calls[0]![0].where).toEqual({
       deletedAt: null,
       OR: [{ secretId: "sec-1" }, { tlsCaSecretId: "sec-1" }],
+    });
+    // #609 — candidates only: any live connection holding a vault ref at all.
+    expect(db.testManagementConnection.findMany.mock.calls[0]![0].where).toEqual({
+      deletedAt: null,
+      OR: [
+        { authConfigJson: { contains: "${vault:" } },
+        { tlsConfigJson: { contains: "${vault:" } },
+      ],
     });
   });
 
@@ -154,6 +164,93 @@ describe("describeForeignOwner — MCP env/header ${vault:x} refs", () => {
     ]);
     const out = await describeForeignOwner(SECRET);
     expect(out.bindings.map((b) => b.id)).toEqual(["byLabel", "byScoped", "byName", "byId"]);
+  });
+});
+
+function tm(over: Record<string, unknown>) {
+  return {
+    projectId: "p",
+    kind: "zephyr",
+    baseUrl: "https://tm.example",
+    authConfigJson: "{}",
+    proxyConfigJson: null,
+    tlsConfigJson: null,
+    ...over,
+  };
+}
+
+describe("#609 — describeForeignOwner lists test-management connections", () => {
+  it("keeps connections whose auth or TLS config reaches the secret by id or label, and drops the rest", async () => {
+    db.testManagementConnection.findMany.mockResolvedValue([
+      tm({
+        id: "zBearer",
+        label: "Z",
+        authConfigJson: JSON.stringify({ bearerTokenRef: "${vault:sec-1}" }),
+      }),
+      tm({
+        id: "xClient",
+        label: "X",
+        kind: "xray",
+        baseUrl: "https://xray.example",
+        authConfigJson: JSON.stringify({
+          clientIdRef: "${vault:other}",
+          clientSecretRef: "${vault:global:gh-token}",
+        }),
+      }),
+      tm({
+        id: "tCa",
+        label: "T",
+        kind: "testrail",
+        authConfigJson: JSON.stringify({ email: "a@b", apiKeyRef: "${vault:other}" }),
+        tlsConfigJson: JSON.stringify({ rejectUnauthorized: true, caCertRef: "${vault:gh-token}" }),
+      }),
+      tm({
+        id: "other",
+        label: "O",
+        authConfigJson: JSON.stringify({ bearerTokenRef: "${vault:other}" }),
+      }),
+      tm({
+        id: "wrongScope",
+        label: "W",
+        authConfigJson: JSON.stringify({ bearerTokenRef: "${vault:project:gh-token}" }),
+      }),
+      tm({ id: "badJson", label: "B", authConfigJson: "{not json ${vault:sec-1}" }),
+      tm({ id: "nullTls", label: "N", tlsConfigJson: "null" }),
+    ]);
+    const out = await describeForeignOwner(SECRET);
+    expect(out.bindings.map((b) => [b.type, b.id, b.label, b.projectId, b.destination])).toEqual([
+      ["test_management_connection", "zBearer", "Z", "p", "https://tm.example"],
+      ["test_management_connection", "xClient", "X", "p", "https://xray.example"],
+      ["test_management_connection", "tCa", "T", "p", "https://tm.example"],
+    ]);
+    for (const b of out.bindings) expect(b.routing).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("shows the same baseUrl but a different routing when only the proxy or TLS config changes", async () => {
+    const auth = JSON.stringify({ bearerTokenRef: "${vault:sec-1}" });
+    const row = tm({ id: "z", label: "Z", authConfigJson: auth });
+    db.testManagementConnection.findMany.mockResolvedValueOnce([row]);
+    const before = (await describeForeignOwner(SECRET)).bindings[0]!;
+    for (const change of [
+      { proxyConfigJson: JSON.stringify({ url: "http://evil-proxy:8080" }) },
+      {
+        tlsConfigJson: JSON.stringify({ rejectUnauthorized: true, caCertRef: "${vault:owner-ca}" }),
+      },
+      { kind: "xray" },
+    ]) {
+      db.testManagementConnection.findMany.mockResolvedValueOnce([{ ...row, ...change }]);
+      const after = (await describeForeignOwner(SECRET)).bindings[0]!;
+      expect(after.destination).toBe(before.destination);
+      expect(after.routing, JSON.stringify(change)).not.toBe(before.routing);
+      expect(
+        bindingsDiffer({ secretId: "s", owner: SECRET_OWNER, bindings: [after] }, [before]),
+      ).toBe(true);
+    }
+  });
+
+  it("an empty-binding message no longer claims test-management auth went unchecked", () => {
+    expect(UNBOUND_NOTE).toContain("test-management connection");
+    expect(UNBOUND_NOTE).not.toContain("test-management auth");
   });
 });
 
@@ -333,6 +430,15 @@ describe("#557 — routing digest over the full routing fields", () => {
         "jira_connection",
         { baseUrl: "https://j", proxyUrl: null, tlsRejectUnauthorized: true, tlsCaSecretId: null },
       ],
+      [
+        "test_management_connection",
+        {
+          kind: "zephyr",
+          baseUrl: "https://tm",
+          proxyConfigJson: JSON.stringify({ url: "http://p" }),
+          tlsConfigJson: JSON.stringify({ rejectUnauthorized: true, caCertRef: null }),
+        },
+      ],
     ];
     for (const [type, row] of cases) {
       const fields = routingFields[type] as (r: Record<string, unknown>) => unknown[];
@@ -365,9 +471,16 @@ describe("#557 — routing digest over the full routing fields", () => {
         tlsCaSecretId: null,
       },
     ]);
+    db.testManagementConnection.findMany.mockResolvedValueOnce([
+      tm({
+        id: "t",
+        label: "T",
+        authConfigJson: JSON.stringify({ bearerTokenRef: "${vault:sec-1}" }),
+      }),
+    ]);
     hkdf.calls = 0;
     const { bindings } = await describeForeignOwner(SECRET);
-    expect(bindings).toHaveLength(4);
+    expect(bindings).toHaveLength(5);
     expect(hkdf.calls).toBe(1);
     // …and the shared key gives the same digest a standalone call derives.
     expect(bindings[0]!.routing).toBe(
