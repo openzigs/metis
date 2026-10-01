@@ -1,0 +1,428 @@
+/**
+ * #622 — the Socket.IO cluster adapter is selected by the datasource: Postgres
+ * gets the shared `LISTEN` / `NOTIFY` adapter, anything else (SQLite dev, unset)
+ * keeps the default in-memory adapter with no new config, and so does a
+ * Postgres database where its attachments table cannot be created.
+ */
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Pool } from "pg";
+
+const { warn, error } = vi.hoisted(() => ({ warn: vi.fn(), error: vi.fn() }));
+vi.mock("../logger.js", () => ({
+  createChildLogger: () => ({ warn, info: vi.fn(), debug: vi.fn(), error }),
+}));
+
+import {
+  createServer as createNetServer,
+  type AddressInfo,
+  type Server,
+  type Socket,
+} from "node:net";
+import pg from "pg";
+import { createServer as createHttpServer } from "node:http";
+import { Server as SocketIOServer } from "socket.io";
+import { io as ioClient } from "socket.io-client";
+import {
+  SOCKET_IO_ATTACHMENTS_TABLE,
+  createPostgresClusterAdapter,
+  deliverLocallyFirst,
+  ensureSocketClusterAttachmentsTable,
+  resolveSocketClusterAdapter,
+  selectSocketClusterAdapter,
+  socketClusterPoolConfig,
+} from "./cluster-adapter.js";
+import { FakePgNotifyBus } from "../../../tests/helpers/fake-pg-notify-bus.js";
+
+const flush = () => new Promise((r) => setImmediate(r));
+
+const PG_URL = "postgres://u:p@db:5432/metis";
+const PROD = { NODE_ENV: "production" } as const;
+
+describe("selectSocketClusterAdapter", () => {
+  it.each([undefined, "", "file:./dev.db", "sqlite:./dev.db", "mysql://u:p@db/metis"])(
+    "keeps the in-memory adapter for DATABASE_URL=%s",
+    (url) => {
+      const env = url === undefined ? { ...PROD } : { ...PROD, DATABASE_URL: url };
+      expect(selectSocketClusterAdapter(env)).toBeNull();
+    },
+  );
+
+  it.each([PG_URL, "postgresql://u:p@db:5432/metis"])("selects Postgres for %s", (url) => {
+    expect(selectSocketClusterAdapter({ ...PROD, DATABASE_URL: url })).toBe(url);
+  });
+
+  it.each(["production", "development", undefined])(
+    "selects Postgres under NODE_ENV=%s",
+    (nodeEnv) => {
+      const env =
+        nodeEnv === undefined
+          ? { DATABASE_URL: PG_URL }
+          : { NODE_ENV: nodeEnv, DATABASE_URL: PG_URL };
+      expect(selectSocketClusterAdapter(env)).toBe(PG_URL);
+    },
+  );
+
+  it("never selects Postgres under NODE_ENV=test, so the unit suite opens no pool", () => {
+    expect(selectSocketClusterAdapter({ NODE_ENV: "test", DATABASE_URL: PG_URL })).toBeNull();
+  });
+
+  it("trims DATABASE_URL as Prisma's provider resolution does", () => {
+    expect(selectSocketClusterAdapter({ ...PROD, DATABASE_URL: `  ${PG_URL}\n` })).toBe(PG_URL);
+  });
+});
+
+describe("resolveSocketClusterAdapter", () => {
+  const made: Array<{ close(): Promise<void> }> = [];
+  afterEach(async () => {
+    await Promise.all(made.splice(0).map((m) => m.close()));
+    warn.mockReset();
+    error.mockReset();
+  });
+
+  it("builds no pool when the in-memory adapter is selected", async () => {
+    const makePool = vi.fn();
+    expect(
+      await resolveSocketClusterAdapter({ NODE_ENV: "test", DATABASE_URL: PG_URL }, makePool),
+    ).toBeNull();
+    expect(
+      await resolveSocketClusterAdapter({ ...PROD, DATABASE_URL: "file:./dev.db" }, makePool),
+    ).toBeNull();
+    expect(makePool).not.toHaveBeenCalled();
+  });
+
+  it("creates the attachments table, then builds the adapter on that pool", async () => {
+    const bus = new FakePgNotifyBus();
+    const makePool = vi.fn(() => bus.pool());
+    const resolved = await resolveSocketClusterAdapter({ ...PROD, DATABASE_URL: PG_URL }, makePool);
+    expect(resolved).not.toBeNull();
+    made.push(resolved!);
+    expect(makePool).toHaveBeenCalledWith(PG_URL);
+    expect(typeof resolved!.adapter).toBe("function");
+    expect(bus.statements.some((s) => s.includes("CREATE UNLOGGED TABLE"))).toBe(true);
+  });
+
+  it("falls back to the in-memory adapter, ends the pool and says eviction is disabled, when the table cannot be created", async () => {
+    const pool = new FakePgNotifyBus().pool();
+    pool.query = vi.fn(async () => {
+      throw new Error("permission denied for schema public");
+    }) as unknown as Pool["query"];
+
+    const resolved = await resolveSocketClusterAdapter(
+      { ...PROD, DATABASE_URL: PG_URL },
+      () => pool,
+    );
+
+    expect(resolved).toBeNull();
+    expect(pool.ended).toBe(true);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringMatching(/needs CREATE.*Cross-replica socket eviction is DISABLED/s),
+      expect.objectContaining({ error: "permission denied for schema public" }),
+    );
+  });
+
+  it("builds its default pool with bounded connect, query and statement timeouts", async () => {
+    // The default factory is the production one: reach it through a URL that
+    // refuses immediately, so the DDL fails fast and the pool is ended.
+    const refused = "postgres://u:p@127.0.0.1:1/metis";
+    const RealPool = pg.Pool;
+    const Pool = vi.spyOn(pg, "Pool").mockImplementation(function (config) {
+      return new RealPool(config);
+    } as never);
+    try {
+      const resolved = await resolveSocketClusterAdapter({ ...PROD, DATABASE_URL: refused });
+      expect(resolved).toBeNull();
+      expect(Pool).toHaveBeenCalledTimes(1);
+      expect(Pool).toHaveBeenCalledWith(socketClusterPoolConfig(refused));
+    } finally {
+      Pool.mockRestore();
+    }
+    expect(socketClusterPoolConfig(PG_URL)).toEqual({
+      connectionString: PG_URL,
+      max: 2,
+      connectionTimeoutMillis: 5_000,
+      idleTimeoutMillis: 30_000,
+      query_timeout: 5_000,
+      statement_timeout: 5_000,
+    });
+  });
+});
+
+describe("socket cluster adapter pool timeouts", () => {
+  let silent: Server | undefined;
+  afterEach(async () => {
+    await new Promise<void>((r) => (silent ? silent.close(() => r()) : r()));
+    silent = undefined;
+  });
+
+  it("fails a connection that never answers instead of hanging the publish", async () => {
+    // A TCP peer that accepts and then says nothing: without
+    // connectionTimeoutMillis, pg waits for its startup reply forever and every
+    // emit waiting on NOTIFY waits with it.
+    const sockets: Socket[] = [];
+    silent = createNetServer((s) => sockets.push(s));
+    const port = await new Promise<number>((resolve) =>
+      silent!.listen(0, "127.0.0.1", () => resolve((silent!.address() as AddressInfo).port)),
+    );
+    const config = socketClusterPoolConfig(`postgres://u:p@127.0.0.1:${port}/metis`);
+    const pool = new pg.Pool({ ...config, connectionTimeoutMillis: 200 });
+    const started = Date.now();
+    await expect(pool.query("SELECT 1")).rejects.toThrow(/timeout/i);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    await pool.end();
+    for (const s of sockets) s.destroy();
+  });
+});
+
+describe("createPostgresClusterAdapter", () => {
+  afterEach(() => warn.mockReset());
+
+  it("ensureSocketClusterAttachmentsTable creates the table the adapter needs, under an advisory lock", async () => {
+    const bus = new FakePgNotifyBus();
+    await ensureSocketClusterAttachmentsTable(bus.pool());
+    const ddl = bus.statements.find((s) => s.includes("CREATE"));
+    expect(ddl).toBeDefined();
+    expect(ddl).toContain("pg_advisory_xact_lock");
+    expect(ddl).toContain(`CREATE UNLOGGED TABLE IF NOT EXISTS ${SOCKET_IO_ATTACHMENTS_TABLE}`);
+    for (const col of ["id", "created_at", "payload"]) expect(ddl).toContain(col);
+  });
+
+  it("logs an idle-client pool error instead of crashing the process", async () => {
+    const pool = new FakePgNotifyBus().pool();
+    const cluster = createPostgresClusterAdapter(pool);
+    // An EventEmitter with no 'error' listener throws on emit.
+    expect(() => pool.emit("error", new Error("connection reset"))).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("pool"),
+      expect.objectContaining({ error: "connection reset" }),
+    );
+    await cluster.close();
+  });
+
+  it("logs an error on the checked-out LISTEN client instead of crashing the process", async () => {
+    // pg-pool drops its idle 'error' listener from a client it hands out, so a
+    // dropped LISTEN connection (failover, restart, pg_terminate_backend) emits
+    // 'error' on the client itself — never on the pool.
+    const bus = new FakePgNotifyBus();
+    const pool = bus.pool();
+    const cluster = createPostgresClusterAdapter(pool);
+    const { Server } = await import("socket.io");
+    const { createServer } = await import("node:http");
+    const io = new Server(createServer(), { adapter: cluster.adapter });
+    await vi.waitFor(() => expect(bus.clients.size).toBe(1));
+    const [listenClient] = bus.clients;
+
+    expect(() =>
+      listenClient.emit("error", new Error("terminating connection due to administrator command")),
+    ).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("connection error"),
+      expect.objectContaining({ error: "terminating connection due to administrator command" }),
+    );
+    await io.close();
+    await cluster.close();
+  });
+
+  it("releases a LISTEN client whose connection ended, so its pool slot is freed", async () => {
+    // The adapter reconnects on 'end' but never releases the dead client; held,
+    // it keeps a slot and the next LISTEN client fills the 2-connection pool.
+    const bus = new FakePgNotifyBus();
+    const cluster = createPostgresClusterAdapter(bus.pool());
+    const { Server } = await import("socket.io");
+    const { createServer } = await import("node:http");
+    const io = new Server(createServer(), { adapter: cluster.adapter });
+    await vi.waitFor(() => expect(bus.clients.size).toBe(1));
+    const [dropped] = bus.clients;
+
+    dropped.emit("end");
+
+    expect(dropped.released).toBe(true);
+    expect(dropped.releasedWith).toBeInstanceOf(Error);
+    await io.close();
+    await cluster.close();
+  });
+
+  it("leaves releasing a healthy LISTEN client to the adapter's own close()", async () => {
+    const bus = new FakePgNotifyBus();
+    const cluster = createPostgresClusterAdapter(bus.pool());
+    const { Server } = await import("socket.io");
+    const { createServer } = await import("node:http");
+    const io = new Server(createServer(), { adapter: cluster.adapter });
+    await vi.waitFor(() => expect(bus.clients.size).toBe(1));
+    const [held] = bus.clients;
+
+    await io.close();
+    // Released once, healthy — the fake throws on a second release.
+    expect(held.released).toBe(true);
+    expect(held.releasedWith).toBeUndefined();
+    expect(() => held.emit("end")).not.toThrow();
+    await cluster.close();
+  });
+
+  it("routes an adapter publish failure to the log", async () => {
+    const pool = new FakePgNotifyBus().pool();
+    const cluster = createPostgresClusterAdapter(pool);
+    await flush();
+    pool.query = vi.fn(async () => {
+      throw new Error("notify failed");
+    }) as unknown as Pool["query"];
+    const { Server } = await import("socket.io");
+    const { createServer } = await import("node:http");
+    const io = new Server(createServer(), { adapter: cluster.adapter });
+    io.in("user:u-1").disconnectSockets(true);
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("cluster adapter"),
+        expect.objectContaining({ error: "notify failed" }),
+      ),
+    );
+    await io.close();
+    await cluster.close();
+  });
+
+  it("close() ends the pool, once", async () => {
+    const pool = new FakePgNotifyBus().pool();
+    const end = vi.spyOn(pool, "end");
+    const cluster = createPostgresClusterAdapter(pool);
+    await cluster.close();
+    await cluster.close();
+    expect(pool.ended).toBe(true);
+    expect(end).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("local delivery never depends on the cluster publish", () => {
+  // socket.io-adapter's ClusterAdapter awaits the publish before every local
+  // operation, and its broadcast returns WITHOUT delivering when the publish
+  // rejects — which a large or binary emit's attachments INSERT does on a
+  // dropped connection or a statement timeout. A hung query stalls it outright.
+  type Fault = "rejects" | "hangs";
+  const faults: Fault[] = ["rejects", "hangs"];
+
+  let teardown: Array<() => Promise<void> | void> = [];
+  afterEach(async () => {
+    for (const t of teardown.reverse()) await t();
+    teardown = [];
+    warn.mockReset();
+  });
+
+  /** One replica on the fake bus, a client connected to it, its pool then broken. */
+  async function replicaWithBrokenPool(fault: Fault) {
+    const bus = new FakePgNotifyBus();
+    const pool = bus.pool();
+    const cluster = createPostgresClusterAdapter(pool);
+    const httpServer = createHttpServer();
+    const io = new SocketIOServer(httpServer, { adapter: cluster.adapter });
+    teardown.push(() => cluster.close());
+    teardown.push(() => io.close());
+    await vi.waitFor(() => expect(bus.clients.size).toBe(1));
+    io.on("connection", (s) => void s.join("room:r"));
+    const port = await new Promise<number>((resolve) =>
+      httpServer.listen(0, "127.0.0.1", () => resolve((httpServer.address() as AddressInfo).port)),
+    );
+    const client = ioClient(`http://127.0.0.1:${port}`, {
+      transports: ["websocket"],
+      reconnection: false,
+    });
+    teardown.push(() => void client.close());
+    await new Promise<void>((resolve, reject) => {
+      client.once("connect", () => resolve());
+      client.once("connect_error", reject);
+    });
+    await vi.waitFor(() => expect(io.sockets.adapter.rooms.get("room:r")?.size).toBe(1));
+    const sid = client.id!;
+    pool.query = vi.fn(() =>
+      fault === "rejects"
+        ? Promise.reject(new Error("Connection terminated unexpectedly"))
+        : new Promise(() => {}),
+    ) as unknown as Pool["query"];
+    return { io, client, sid, pool };
+  }
+
+  const payloads: Array<[string, () => unknown]> = [
+    ["a small", () => ({ n: 1 })],
+    ["a large (over NOTIFY's 8000 bytes)", () => ({ pad: "x".repeat(10_000) })],
+    ["a binary", () => ({ blob: Buffer.from([1, 2, 3]) })],
+  ];
+
+  for (const fault of faults) {
+    for (const [label, make] of payloads) {
+      it(`delivers ${label} room emit to a socket on the same replica when the publish ${fault}`, async () => {
+        const { io, client, pool } = await replicaWithBrokenPool(fault);
+        const received: unknown[] = [];
+        client.on("evt", (e: unknown) => received.push(e));
+
+        io.to("room:r").emit("evt", make());
+
+        await vi.waitFor(() => expect(received).toHaveLength(1), { timeout: 1_000 });
+        expect(pool.query).toHaveBeenCalled();
+      });
+    }
+
+    it(`disconnects a socket on the same replica when the publish ${fault}`, async () => {
+      const { io, client } = await replicaWithBrokenPool(fault);
+      let reason: string | null = null;
+      client.on("disconnect", (r) => (reason = r));
+
+      io.in("room:r").disconnectSockets(true);
+
+      await vi.waitFor(() => expect(reason).toBe("io server disconnect"), { timeout: 1_000 });
+    });
+
+    it(`takes a socket on the same replica out of a room when the publish ${fault}`, async () => {
+      const { io, sid } = await replicaWithBrokenPool(fault);
+
+      io.in("room:r").socketsLeave("room:r");
+
+      await vi.waitFor(
+        () => expect(io.sockets.adapter.rooms.get("room:r")?.has(sid) ?? false).toBe(false),
+        {
+          timeout: 1_000,
+        },
+      );
+    });
+
+    it(`puts a socket on the same replica into a room when the publish ${fault}`, async () => {
+      const { io, sid } = await replicaWithBrokenPool(fault);
+
+      io.in("room:r").socketsJoin("room:joined");
+
+      await vi.waitFor(
+        () => expect(io.sockets.adapter.rooms.get("room:joined")?.has(sid)).toBe(true),
+        {
+          timeout: 1_000,
+        },
+      );
+    });
+  }
+
+  it("logs a rejected publish as a warning", async () => {
+    const { io } = await replicaWithBrokenPool("rejects");
+
+    io.to("room:r").emit("evt", { pad: "x".repeat(10_000) });
+
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("this replica's sockets only"),
+        expect.objectContaining({ error: "Connection terminated unexpectedly" }),
+      ),
+    );
+  });
+
+  it("deliverLocallyFirst logs a publish that throws synchronously and still resolves", async () => {
+    const adapter = {
+      publishAndReturnOffset: vi.fn((_m: { type?: number }): Promise<string> => {
+        throw new Error("boom");
+      }),
+    };
+    deliverLocallyFirst(adapter);
+
+    await expect(adapter.publishAndReturnOffset({ type: 3 })).resolves.toBe("");
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("publish failed"),
+        expect.objectContaining({ type: 3, error: "boom" }),
+      ),
+    );
+  });
+});

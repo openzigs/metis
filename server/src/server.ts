@@ -58,6 +58,10 @@ import {
 import { setPrReviewWorker } from "./lib/agents/pr-reviewer/worker-singleton.js";
 import { findProjectForRepo } from "./routes/webhooks-github.js";
 import { registerSocketServer } from "./lib/socket/registry.js";
+import {
+  resolveSocketClusterAdapter,
+  type SocketClusterAdapter,
+} from "./lib/socket/cluster-adapter.js";
 import { wirePresenceHandlers } from "./lib/collaboration/presence.js";
 import { startSlaChecker } from "./lib/collaboration/sla-checker.js";
 import { startForecastRecompute } from "./lib/finops/forecast-service.js";
@@ -181,11 +185,21 @@ export interface MetisServer {
    * shutdown can call `prReviewWorker.shutdown()` unconditionally.
    */
   prReviewWorker: PrReviewWorkerHandle;
+  /**
+   * #622 — the Socket.IO cluster adapter, present on a Postgres datasource
+   * outside tests (see `bootServer`). Shutdown closes it after `io.close()`.
+   */
+  socketCluster: SocketClusterAdapter | null;
 }
 
 export interface CreateServerOptions extends CreateAppOptions {
   /** Skip MCP health-monitor + lifecycle bootstrap (used by tests). */
   skipMCPBootstrap?: boolean;
+  /**
+   * #622 — the Socket.IO cluster adapter to install, as resolved by
+   * `bootServer`; omitted or `null` keeps the in-memory adapter.
+   */
+  socketCluster?: SocketClusterAdapter | null;
   /**
    * Epic #394 P2 review (post-`e7eb006`) — wire the real PR-review
    * processor. When supplied, the worker resolves judge + octokit per
@@ -254,7 +268,15 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   const httpServer = http.createServer(app);
   // #221 — `HTTP_KEEP_ALIVE_TIMEOUT_MS`; unset keeps Node's default.
   applyHttpKeepAliveTimeout(httpServer);
-  const io = createSocketServer(httpServer, opts);
+  // #622 — the Socket.IO cluster adapter `bootServer` resolved (Postgres
+  // datasource, attachments table in place) relays room operations (SCIM
+  // deprovision disconnects, role-change reconnects, MCP status evictions,
+  // emits) to every replica. Absent, the in-memory adapter reaches this one.
+  const socketCluster = opts.socketCluster ?? null;
+  const io = createSocketServer(httpServer, {
+    corsOrigin: opts.corsOrigin,
+    ...(socketCluster ? { adapter: socketCluster.adapter } : {}),
+  });
   // Epic #728 — register IO in the global registry so lib code (e.g.
   // @mention fan-out, presence) can access it without DI threading.
   registerSocketServer(io);
@@ -472,7 +494,23 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   const prReviewWorker = startWorker({ processorDeps });
   setPrReviewWorker(prReviewWorker);
 
-  return { http: httpServer, io, mcp, acp, prReviewWorker };
+  return { http: httpServer, io, mcp, acp, prReviewWorker, socketCluster };
+}
+
+/**
+ * #622 — the production entry point: resolve the Socket.IO cluster adapter for
+ * `env` (`resolveSocketClusterAdapter`: Postgres outside `NODE_ENV=test`, and
+ * only once its attachments table exists), then build the server on it.
+ * `makePool` is injectable so a test can drive the real selection without a
+ * database.
+ */
+export async function bootServer(
+  opts: Omit<CreateServerOptions, "socketCluster"> = {},
+  env: NodeJS.ProcessEnv = process.env,
+  makePool?: Parameters<typeof resolveSocketClusterAdapter>[1],
+): Promise<MetisServer> {
+  const socketCluster = await resolveSocketClusterAdapter(env, makePool);
+  return createServer({ ...opts, socketCluster });
 }
 
 function createNoopAcpHandle(): AcpServerHandle {

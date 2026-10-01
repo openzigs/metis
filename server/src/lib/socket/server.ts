@@ -18,12 +18,21 @@
  *   - `analysis:{id}` — analysis run progress.
  *   - `session:{id}` — chat / agent session events.
  *
+ * Cluster adapter (#622):
+ *   - `opts.adapter` (from `resolveSocketClusterAdapter`, Postgres datasources
+ *     only) relays room operations — evictions and emits — to every replica,
+ *     and relays role-change reconnects and the #613 epochs through
+ *     `wireUserRevocationRelay` / `wireMcpStatusEvictionRelay`. Presence
+ *     lists are the exception: each replica emits its own list locally only
+ *     (`collaboration/presence.ts`). Unset, Socket.IO's in-memory adapter
+ *     reaches this replica only.
+ *
  * Heartbeat:
  *   - The Socket.IO ping/pong cycle is configured to fire every 30s; idle
  *     sockets are evicted after 60s.
  */
 import type { Server as HttpServer } from "node:http";
-import { Server as SocketIOServer, type Socket } from "socket.io";
+import { Server as SocketIOServer, type ServerOptions, type Socket } from "socket.io";
 import jwt from "jsonwebtoken";
 import {
   hasPermission,
@@ -41,15 +50,15 @@ import { isMcpStatusRoom, mcpStatusRoomsFor } from "../mcp/status-rooms.js";
 import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
 import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
-import { mcpStatusEvictionEpoch } from "./mcp-status-eviction.js";
-import { userSocketRevocationEpoch } from "./user-disconnect.js";
+import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status-eviction.js";
+import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
 
 const log = createChildLogger("socket");
 
 interface SocketData {
   user: AuthPayload;
   /**
-   * #613 — `userSocketRevocationEpoch()` taken before the handshake read the
+   * #613 — `userSocketRevocationEpoch(io)` taken before the handshake read the
    * live user; compared once the socket is in its `user:{id}` room.
    */
   revocationEpoch: number;
@@ -64,6 +73,8 @@ export type MetisIOServer = SocketIOServer<
 
 export interface CreateSocketServerOptions {
   corsOrigin?: string;
+  /** #622 — the cluster adapter; omit for the single-replica in-memory adapter. */
+  adapter?: ServerOptions["adapter"];
 }
 
 export function createSocketServer(
@@ -77,6 +88,7 @@ export function createSocketServer(
     },
     pingInterval: 30_000,
     pingTimeout: 60_000,
+    ...(opts.adapter ? { adapter: opts.adapter } : {}),
   });
 
   // One async middleware with a single exit: `authenticateHandshake` either
@@ -87,7 +99,7 @@ export function createSocketServer(
   io.use(async (socket, next) => {
     let user: AuthPayload;
     // #613 — taken BEFORE the live-user read (see `attachHandlers`).
-    const revocationEpoch = userSocketRevocationEpoch();
+    const revocationEpoch = userSocketRevocationEpoch(io);
     try {
       user = await authenticateHandshake(socket);
     } catch (err) {
@@ -99,6 +111,12 @@ export function createSocketServer(
   });
 
   io.on("connection", (socket) => attachHandlers(socket));
+  // #622 — with the cluster adapter, a revocation or eviction handled on another
+  // replica moves THIS replica's #613 epochs too, so a handshake or
+  // `subscribe:mcp` in flight here re-reads; a role-change reconnect also closes
+  // this replica's transports (see `reconnectUserSockets`).
+  wireUserRevocationRelay(io, Boolean(opts.adapter));
+  wireMcpStatusEvictionRelay(io, Boolean(opts.adapter));
   return io;
 }
 
@@ -222,7 +240,7 @@ function attachHandlers(
   // the live user, but whose `reconnectUserSockets` / `disconnectUserSockets`
   // ran before the join above, found no socket in `user:{id}` and missed this
   // one. Any such revocation moved the epoch, so re-read the user once.
-  if (userSocketRevocationEpoch() !== socket.data.revocationEpoch) {
+  if (userSocketRevocationEpoch(socket.nsp.server) !== socket.data.revocationEpoch) {
     void recheckLiveUser(socket);
   }
 
@@ -350,12 +368,12 @@ function attachHandlers(
     void (async () => {
       // #613 — taken BEFORE the membership read: an eviction that lands between
       // the read and the join finds this socket not yet in the room.
-      const evictionEpoch = mcpStatusEvictionEpoch();
+      const evictionEpoch = mcpStatusEvictionEpoch(socket.nsp.server);
       const rooms = await liveMcpStatusRooms();
       if (attempt !== mcpSubscription) return;
       leaveMcpStatusRoomsNotIn(rooms);
       await socket.join(rooms);
-      if (mcpStatusEvictionEpoch() === evictionEpoch) return;
+      if (mcpStatusEvictionEpoch(socket.nsp.server) === evictionEpoch) return;
       // An eviction ran since the read. Its write committed before it ran, so a
       // read started now sees it; one that commits later evicts this socket,
       // which is in the rooms now. One re-read therefore closes the window.

@@ -663,6 +663,53 @@ env:
 
 ---
 
+## 9f.1 Socket.IO cluster adapter (multi-replica) — automatic on Postgres
+
+No setting. When `DATABASE_URL` is Postgres, every server pod installs the
+Socket.IO Postgres cluster adapter (`@socket.io/postgres-adapter`,
+`server/src/lib/socket/cluster-adapter.ts`, #622), so room operations reach
+sockets on **every** replica: a SCIM deprovision closes the user's sockets
+wherever they are connected, a role change makes the user's sockets on every pod
+reconnect with the new role, MCP status evictions (workspace delete, member
+removal) take sockets out of the room on every pod, and room emits are delivered
+cluster-wide. It relays over Postgres `LISTEN` / `NOTIFY` on the same database —
+no new managed service.
+
+- **Presence is the exception:** "who is viewing" avatars still show only the
+  users connected to the same pod as the viewer, as before the adapter. Each pod
+  knows only its own viewers, so their lists are not relayed (#651).
+
+- **Cost:** a pool of at most 2 extra connections per pod, one of which is held
+  for `LISTEN`. Count them against the database's connection limit.
+- **Table:** messages over NOTIFY's 8000-byte limit (or carrying binary) go
+  through the UNLOGGED `socket_io_attachments` table, which the server creates
+  itself behind an advisory lock (no migration), so the database user needs
+  `CREATE` on the schema — as for the other self-created shared tables.
+  **Without it the adapter is not installed:** the pod logs one error at boot
+  naming the missing privilege and saying cross-replica socket eviction is
+  disabled, and keeps the single-replica in-memory adapter, so SCIM
+  deprovisions, role changes and MCP evictions reach only that pod's sockets.
+  Grant `CREATE` and restart the pods to restore it.
+- **Database outage:** sockets on the pod that emits never depend on the
+  database — live updates, room leaves and disconnects reach them at once even
+  when Postgres is down, slow or failing over, single-replica deployments
+  included. What is lost is the *cross-replica* copy: an emit, eviction or
+  disconnect whose `NOTIFY` (or attachments `INSERT`) fails does not reach
+  sockets on other pods, and is not retried — the same window as a dropped
+  `LISTEN` connection, below (#649). The pod logs a warning for each.
+- **Timeouts:** the adapter's pool gives up on a connection attempt, a query or
+  a statement after 5 s, so a hung database connection fails those cross-replica
+  publishes within seconds instead of queueing every later one behind it.
+- **Failover:** when Postgres drops the `LISTEN` connection (failover, restart,
+  `pg_terminate_backend`, TCP timeout) the pod logs a warning, frees the dead
+  connection and LISTENs again on a fresh one within about 3 s. Cross-replica
+  evictions issued in that window are lost.
+- **PgBouncer:** `LISTEN` needs a session-pooled connection. A transaction-mode
+  pooler between the pods and Postgres silently drops notifications.
+- With SQLite (single-replica dev) the in-memory adapter is kept unchanged.
+
+---
+
 ## 9g. Cross-region Disaster Recovery — Postgres standby + S3 CRR (Epic #70)
 
 DR is a **cross-Region** concern layered on top of the multi-replica backends

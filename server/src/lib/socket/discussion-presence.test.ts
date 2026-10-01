@@ -31,9 +31,11 @@ function makeFakeSocket(user: AuthPayload = USER, id = "socket-1") {
   const join = vi.fn().mockResolvedValue(undefined);
   const leave = vi.fn().mockResolvedValue(undefined);
   const emit = vi.fn();
-  /** Records `socket.to(room).emit(name, payload)` calls. */
+  /** Records `socket.to(room).emit(name, payload)` calls (typing, cluster-wide). */
   const toEmit = vi.fn();
-  const to = vi.fn(() => ({ emit: toEmit }));
+  /** Records `socket.to(room).local.emit(name, payload)` calls (presence, this replica, #622). */
+  const localEmit = vi.fn();
+  const to = vi.fn(() => ({ emit: toEmit, local: { emit: localEmit } }));
   const socket = {
     id,
     data: { user },
@@ -46,7 +48,7 @@ function makeFakeSocket(user: AuthPayload = USER, id = "socket-1") {
     emit,
     to,
   } as unknown as PresenceSocket;
-  return { socket, handlers, join, leave, emit, to, toEmit };
+  return { socket, handlers, join, leave, emit, to, toEmit, localEmit };
 }
 
 async function fire(
@@ -66,7 +68,7 @@ afterEach(() => vi.clearAllMocks());
 
 describe("presence:thread:join", () => {
   it("a member joins the room, is tracked, and a presence:update is broadcast", async () => {
-    const { socket, handlers, join, emit, toEmit } = makeFakeSocket();
+    const { socket, handlers, join, emit, toEmit, localEmit } = makeFakeSocket();
     wireDiscussionPresenceHandlers(socket, { canAccessThread: allow });
 
     await fire(handlers, "presence:thread:join", { threadId: "t1" });
@@ -75,8 +77,10 @@ describe("presence:thread:join", () => {
     const set = getThreadPresence().get("thread:t1")!;
     expect(set.get("socket-1")).toEqual({ userId: "u1", username: "alice", displayName: "alice" });
     // Broadcast to others (socket.to) AND to self (socket.emit) so the joiner
-    // sees themselves.
-    expect(toEmit).toHaveBeenCalledWith(
+    // sees themselves. #622 — locally only: the list is this replica's members,
+    // so relayed cluster-wide it would overwrite other replicas' viewers' lists.
+    expect(toEmit).not.toHaveBeenCalledWith("presence:update", expect.anything());
+    expect(localEmit).toHaveBeenCalledWith(
       "presence:update",
       expect.objectContaining({
         room: "thread:t1",
@@ -114,7 +118,7 @@ describe("presence:thread:join", () => {
     const users = getThreadPresence().get("thread:t1")!;
     expect(users.size).toBe(2);
     // The second joiner's broadcast carries both members.
-    const lastBroadcast = b.toEmit.mock.calls.at(-1)![1] as { users: Array<{ userId: string }> };
+    const lastBroadcast = b.localEmit.mock.calls.at(-1)![1] as { users: Array<{ userId: string }> };
     expect(lastBroadcast.users.map((u) => u.userId).sort()).toEqual(["u1", "u2"]);
   });
 
