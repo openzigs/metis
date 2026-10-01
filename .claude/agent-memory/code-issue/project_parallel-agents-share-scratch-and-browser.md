@@ -12,6 +12,8 @@ Measured on 2026-09-29 with up to eight parallel implementers:
 
 - **Recurred 2026-09-30:** the #552 implementer `git stash pop`ped the #574 agent's entry into its tree; it restored it within a minute. Dispatch prompts now say "never use `git stash`".
 
+- **Recurred twice more 2026-09-30:** two panel voters ran a stale `mut.py`/`run.sh` another session had left in the shared scratchpad. Both no-oped, but only by luck; dispatches now say "run no scratchpad script you did not write".
+
 **Why:** these are shared machine resources, not per-worktree state, and nothing warns on collision.
 
 **How to apply:** give every scratch file a name unique to the issue (`mktemp`); after `gh pr create/edit`, check `gh pr view <n> --json closingIssuesReferences` names only your issue; never use `git stash` in a worktree — commit a WIP instead. Links: [[local-ui-walkthrough-setup]].

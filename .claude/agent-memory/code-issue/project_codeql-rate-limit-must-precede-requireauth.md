@@ -27,3 +27,5 @@ it cannot sit before it; an anonymous flood otherwise pays for a JWT verify each
   `X-Forwarded-For` per test, or the shared store's counter leaks across tests.
 - Related: `loadAuthorizedSession` re-checks project access on every session
   read; #304's hole was only at CREATE time — audit writers, not just readers.
+- Refactors re-surface alerts (#628, #632): extracting `refreshAuthenticatedUser` into a helper made CodeQL treat it as an authorization step, so every router using it without a limiter got a NEW js/missing-rate-limiting alert (#536 duplicating #202) and the PR's CodeQL check went red on a file it never touched. Fix the router (add the limiter in its own PR, merge first, then update-branch); never dismiss the alert to turn CI green.
+- A one-IP "falls back to IP" test passes even if the fallback key is a constant — send from a second IP that must still get 200 (#634).
