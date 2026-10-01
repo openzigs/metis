@@ -11,14 +11,19 @@
  *   POST   /                create entry  (vault.write)
  *   POST   /:id/rotate      rotate value  (vault.write; another user's secret
  *                            needs `confirmForeignOwner: true` and the
- *                            `confirmedBindings` it was shown, else 409 —
- *                            #482/#502; the admin then owns it)
+ *                            `confirmedBindings` it was shown — or #611
+ *                            their `confirmedBindingsDigest` — else 409 —
+ *                            #482/#502; the admin then owns it; #629 the
+ *                            409 lists at most 1,000 bindings, with counts,
+ *                            and a list confirm over them is refused with
+ *                            VAULT_ROTATE_CONFIRM_BY_DIGEST)
  *   GET    /:id/reveal      decrypt one (vault.reveal — admin only, audited, #324)
  *   DELETE /:id             soft-delete   (vault.write)
  *   GET    /:id/audit       audit log entries for this secret (vault.read)
  *
  * Epic #196 / #222 — wires the standalone /vault admin UI to the service.
  */
+import { timingSafeEqual } from "node:crypto";
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { hasPermission, type ApiResponse } from "@metis/shared";
@@ -39,13 +44,17 @@ import {
   bindingInProgressMessage,
   bindingsChangedMessage,
   bindingsDiffer,
-  canonicalBindings,
+  confirmByDigestMessage,
   type ConfirmedBinding,
+  confirmedBindingsAudit,
   describeForeignOwner,
   foreignOwnerMessage,
+  foreignOwnerView,
+  MAX_CONFIRMED_BINDINGS,
   secretOwnerOf,
   VAULT_ROTATE_BINDING_IN_PROGRESS,
   VAULT_ROTATE_BINDINGS_CHANGED,
+  VAULT_ROTATE_CONFIRM_BY_DIGEST,
   VAULT_ROTATE_FOREIGN_OWNER,
 } from "../lib/vault/rotate-foreign-owner.js";
 import { pagerDutyVaultRotationFailure } from "../lib/pagerduty/alerting-hooks.js";
@@ -78,15 +87,8 @@ const createSchema = z.object({
 export const SECRET_VALUE_MAX = 64 * 1024;
 export const CONFIRMED_BINDING_ID_MAX = 200;
 export const CONFIRMED_BINDING_DESTINATION_MAX = 8192;
-/**
- * #502 — the most bindings a foreign-owner confirm may echo back. The 409 lists
- * every live binding and the UI echoes all of them, so lowering this strands a
- * secret with more bindings than the cap: an admin could never rotate it.
- * A realistic confirm at this cap is well under the 10 MiB JSON limit
- * (`JSON_LIMIT_BYTES`); a pathological one (max-length, all-escaped fields)
- * can exceed it and gets the structured `413 PAYLOAD_TOO_LARGE`.
- */
-export const MAX_CONFIRMED_BINDINGS = 1000;
+/** #502 / #611 — re-exported: the cap now lives with the digest that lifts it. */
+export { MAX_CONFIRMED_BINDINGS };
 
 const rotateSchema = z.object({
   value: z.string().min(1).max(SECRET_VALUE_MAX),
@@ -119,7 +121,26 @@ const rotateSchema = z.object({
     )
     .max(MAX_CONFIRMED_BINDINGS)
     .optional(),
+  /**
+   * #611 — the `bindingsDigest` the 409 issued, in place of (or alongside)
+   * `confirmedBindings`: the only way to confirm a list over the cap.
+   */
+  confirmedBindingsDigest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/, "confirmedBindingsDigest must be the digest the 409 issued")
+    .optional(),
 });
+
+/**
+ * #611 (PR #627 review) — compare a confirmed bindings digest with the live one
+ * in constant time. The schema admits only 64 lowercase hex characters, but the
+ * lengths are checked first because `timingSafeEqual` throws on unequal buffers.
+ */
+export function digestsEqual(confirmed: string, live: string): boolean {
+  const a = Buffer.from(confirmed, "utf8");
+  const b = Buffer.from(live, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 function summaryToView(s: SecretSummary): {
   id: string;
@@ -171,7 +192,7 @@ async function refuseIfBindingsMoved(
     409,
     changed ? VAULT_ROTATE_BINDINGS_CHANGED : VAULT_ROTATE_BINDING_IN_PROGRESS,
     changed ? bindingsChangedMessage(details) : bindingInProgressMessage(details),
-    details as unknown as Record<string, unknown>,
+    foreignOwnerView(details) as unknown as Record<string, unknown>,
   );
 }
 
@@ -238,6 +259,7 @@ export function vaultRouter(): Router {
     const foreignOwnerId =
       secret?.createdById && secret.createdById !== aId ? secret.createdById : null;
     let confirmedBindings: ConfirmedBinding[] | null = null;
+    let confirmedSetDigest = "";
     if (secret && foreignOwnerId) {
       const details = await describeForeignOwner({
         id,
@@ -245,12 +267,16 @@ export function vaultRouter(): Router {
         createdById: foreignOwnerId,
       });
       const confirmed = parsed.data.confirmedBindings;
-      if (parsed.data.confirmForeignOwner !== true || confirmed === undefined) {
+      const confirmedDigest = parsed.data.confirmedBindingsDigest;
+      if (
+        parsed.data.confirmForeignOwner !== true ||
+        (confirmed === undefined && confirmedDigest === undefined)
+      ) {
         throw new AppError(
           409,
           VAULT_ROTATE_FOREIGN_OWNER,
           foreignOwnerMessage(details),
-          details as unknown as Record<string, unknown>,
+          foreignOwnerView(details) as unknown as Record<string, unknown>,
         );
       }
       // #552 — a binding write stamped this secret and may still be landing,
@@ -260,18 +286,38 @@ export function vaultRouter(): Router {
           409,
           VAULT_ROTATE_BINDING_IN_PROGRESS,
           bindingInProgressMessage(details),
-          details as unknown as Record<string, unknown>,
+          foreignOwnerView(details) as unknown as Record<string, unknown>,
         );
       }
-      if (bindingsDiffer(details, confirmed)) {
+      const digestStale =
+        confirmedDigest !== undefined && !digestsEqual(confirmedDigest, details.bindingsDigest);
+      // #629 (PR #635 review) — over the cap a list cannot name every binding, so
+      // its mismatch says nothing about a change: refuse it as a list, so a client
+      // that echoes the 409's listing is told to send the digest, not to resend.
+      if (
+        !digestStale &&
+        confirmed !== undefined &&
+        details.bindings.length > MAX_CONFIRMED_BINDINGS
+      ) {
+        throw new AppError(
+          409,
+          VAULT_ROTATE_CONFIRM_BY_DIGEST,
+          confirmByDigestMessage(details),
+          foreignOwnerView(details) as unknown as Record<string, unknown>,
+        );
+      }
+      // #611 — whichever form the confirm takes must match the live set; both, if both are sent.
+      if (digestStale || (confirmed !== undefined && bindingsDiffer(details, confirmed))) {
         throw new AppError(
           409,
           VAULT_ROTATE_BINDINGS_CHANGED,
           bindingsChangedMessage(details),
-          details as unknown as Record<string, unknown>,
+          foreignOwnerView(details) as unknown as Record<string, unknown>,
         );
       }
-      confirmedBindings = canonicalBindings(confirmed);
+      // A digest matched the live set exactly, so the live list is what was confirmed.
+      confirmedBindings = confirmed ?? details.bindings;
+      confirmedSetDigest = details.bindingsDigest;
     }
     let summary: SecretSummary;
     try {
@@ -318,7 +364,8 @@ export function vaultRouter(): Router {
           ? {
               foreignOwnerConfirmed: true,
               ownerId: foreignOwnerId,
-              confirmedBindings,
+              // #629 — every binding up to the cap; over it, the digest, total and counts.
+              ...confirmedBindingsAudit(confirmedBindings ?? [], confirmedSetDigest),
               ownershipTransferredTo: aId,
             }
           : {}),

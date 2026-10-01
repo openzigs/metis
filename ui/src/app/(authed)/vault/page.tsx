@@ -6,7 +6,8 @@
  *   • create — new entry; plaintext sent over TLS, never stored client-side
  *   • rotate — replace plaintext under the same id; another user's secret
  *     shows its owner and bindings and needs an explicit "Rotate anyway" (#482),
- *     which is tied to the bindings shown and makes the admin the owner (#502)
+ *     which is tied to the bindings shown and makes the admin the owner (#502);
+ *     a list over the server's cap is confirmed by its digest instead (#611)
  *   • audit — per-entry audit trail (read/write/rotate/delete)
  *
  * Permissions: requires `vault.read` (server enforces). Roles without it see a
@@ -30,12 +31,14 @@ import { useAuth } from "@/lib/auth-context";
 import {
   vaultApi,
   VAULT_ROTATE_BINDINGS_CHANGED,
+  VAULT_ROTATE_CONFIRM_BY_DIGEST,
   VAULT_ROTATE_FOREIGN_OWNER,
   type VaultEntry,
   type VaultAuditEntry,
-  type VaultConfirmedBinding,
   type VaultForeignOwner,
+  type VaultRotateConfirm,
 } from "@/lib/vault-api";
+import { bindingTypeLabel } from "@/lib/vault-binding-summary";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -273,6 +276,47 @@ function CreateEntryCard({ onCreated }: { onCreated: () => void }) {
   );
 }
 
+/**
+ * #611 (PR #627 review) — over the confirm cap, counts by binding type and by
+ * destination host, so reviewing 1,000+ bindings starts from a few rows.
+ * #629 — the server counts the WHOLE set, including bindings past the listing.
+ */
+function OverCapSummary({ counts }: { counts: VaultForeignOwner["bindingCounts"] }) {
+  const { byType, byHost, moreHosts, withoutHost } = counts;
+  return (
+    <div className="grid gap-2 sm:grid-cols-2" data-testid="vault-entry-rotate-over-cap-summary">
+      <div>
+        <p className="font-semibold">By type</p>
+        <ul data-testid="vault-entry-rotate-counts-by-type">
+          {byType.map((t) => (
+            <li key={t.type}>
+              {bindingTypeLabel(t.type)}: {t.count}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div>
+        <p className="font-semibold">By destination host</p>
+        <ul data-testid="vault-entry-rotate-counts-by-host">
+          {byHost.map((h) => (
+            <li key={h.host}>
+              {h.host}: {h.count}
+            </li>
+          ))}
+          {moreHosts.hosts > 0 ? (
+            <li>
+              {moreHosts.hosts} more hosts: {moreHosts.bindings}
+            </li>
+          ) : null}
+          {withoutHost > 0 ? (
+            <li>No network host (driver, provider or command): {withoutHost}</li>
+          ) : null}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function EntryDetail({
   entry,
   onClose,
@@ -294,6 +338,10 @@ function EntryDetail({
   const [foreignOwner, setForeignOwner] = useState<VaultForeignOwner | null>(null);
   const [bindingsChanged, setBindingsChanged] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // #611 — too many bindings to echo back: confirm by the digest of the whole list.
+  // #629 — judged on the total: the listing itself stops at the cap.
+  const overCap =
+    foreignOwner !== null && foreignOwner.bindingsTotal > foreignOwner.maxConfirmedBindings;
 
   const auditQuery = useQuery({
     queryKey: ["vault", "audit", entry.id],
@@ -312,10 +360,11 @@ function EntryDetail({
   });
 
   const rotate = useMutation({
-    // #502 — a confirm carries the bindings (type, id, destination; #557 routing) the admin was shown.
-    mutationFn: (confirmedBindings: VaultConfirmedBinding[] | null) =>
-      confirmedBindings
-        ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true, confirmedBindings })
+    // #502 — a confirm carries the bindings (type, id, destination; #557 routing) the admin was shown;
+    // #611 — or, over the cap, the digest of that whole list.
+    mutationFn: (confirm: VaultRotateConfirm | null) =>
+      confirm
+        ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true, ...confirm })
         : vaultApi.rotate(entry.id, rotateValue),
     onSuccess: () => {
       setRotateValue("");
@@ -330,7 +379,10 @@ function EntryDetail({
       // #482 — another user's secret: show who owns it and where it is bound,
       // and let the admin confirm rather than failing outright.
       // #502 — if the bindings changed since, show the live list to confirm again.
-      const changed = err.code === VAULT_ROTATE_BINDINGS_CHANGED;
+      // #629 (PR #635 review) — the page lists one by one only a set it saw within the cap,
+      // so a set now over it has changed too; showing it re-arms the confirm by digest.
+      const changed =
+        err.code === VAULT_ROTATE_BINDINGS_CHANGED || err.code === VAULT_ROTATE_CONFIRM_BY_DIGEST;
       if ((err.code === VAULT_ROTATE_FOREIGN_OWNER || changed) && err.details) {
         setRotateError(null);
         setForeignOwner(err.details as VaultForeignOwner);
@@ -473,6 +525,19 @@ function EntryDetail({
                 again.
               </p>
             ) : null}
+            {overCap ? (
+              <>
+                <p className="font-semibold" data-testid="vault-entry-rotate-over-cap">
+                  It is bound to {foreignOwner.bindingsTotal} resources, more than the{" "}
+                  {foreignOwner.maxConfirmedBindings} a confirmation can list one by one. Rotate
+                  anyway confirms all of them as one. Start from the counts, which cover every
+                  binding: if every binding type and destination host is one you expect, the list
+                  only needs a scan for names you do not recognise. If any binding changes before
+                  you confirm, you will be shown the new list.
+                </p>
+                <OverCapSummary counts={foreignOwner.bindingCounts} />
+              </>
+            ) : null}
             {foreignOwner.bindings.length === 0 ? (
               <p>
                 No DB or repo connector, import source, MCP server, Jira or test-management
@@ -491,18 +556,31 @@ function EntryDetail({
                 ))}
               </ul>
             )}
+            {foreignOwner.bindingsTruncated ? (
+              <p data-testid="vault-entry-rotate-bindings-truncated">
+                Showing the first {foreignOwner.bindings.length} of {foreignOwner.bindingsTotal}{" "}
+                bindings. The counts above cover all of them, and Rotate anyway confirms all of
+                them.
+              </p>
+            ) : null}
             <div className="flex gap-2">
               <Button
                 size="sm"
                 variant="destructive"
                 onClick={() =>
                   rotate.mutate(
-                    foreignOwner.bindings.map(({ type, id, destination, routing }) => ({
-                      type,
-                      id,
-                      destination,
-                      routing,
-                    })),
+                    overCap
+                      ? { confirmedBindingsDigest: foreignOwner.bindingsDigest }
+                      : {
+                          confirmedBindings: foreignOwner.bindings.map(
+                            ({ type, id, destination, routing }) => ({
+                              type,
+                              id,
+                              destination,
+                              routing,
+                            }),
+                          ),
+                        },
                   )
                 }
                 disabled={rotate.isPending}

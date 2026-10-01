@@ -31,9 +31,19 @@ vi.mock("node:crypto", async (importOriginal) => {
 const {
   bindingsChangedMessage,
   bindingsDiffer,
+  bindingsSetDigest,
   canonicalBindings,
+  confirmByDigestMessage,
+  confirmedBindingsAudit,
+  countBindings,
   describeForeignOwner,
+  destinationHost,
   foreignOwnerMessage,
+  foreignOwnerView,
+  MAX_CONFIRMED_BINDINGS,
+  MAX_HOST_ROWS,
+  MAX_LISTED_BINDINGS,
+  MAX_NAMED_BINDINGS,
   routingDigest,
   routingFields,
   UNBOUND_NOTE,
@@ -365,6 +375,17 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
     expect(msg).toContain("confirmedBindings");
     expect(bindingsChangedMessage(details())).toContain(UNBOUND_NOTE);
   });
+
+  it("#629 (PR #635 review): over the cap, says to confirm by digest, never that anything changed", () => {
+    const ids = Array.from({ length: MAX_CONFIRMED_BINDINGS + 1 }, (_, i) => `b${i}`);
+    const msg = confirmByDigestMessage(details(...ids));
+    expect(msg).toContain("owned by cora");
+    expect(msg).toContain(`has ${MAX_CONFIRMED_BINDINGS + 1} bindings`);
+    expect(msg).toContain(`more than the ${MAX_CONFIRMED_BINDINGS}`);
+    expect(msg).toContain("bindingsDigest listed here as confirmedBindingsDigest");
+    expect(msg).toContain(`and ${MAX_CONFIRMED_BINDINGS + 1 - MAX_NAMED_BINDINGS} more.`);
+    expect(msg).not.toContain("changed");
+  });
 });
 
 describe("#557 — routing digest over the full routing fields", () => {
@@ -516,3 +537,216 @@ describe("#557 — routing digest over the full routing fields", () => {
 });
 
 const SECRET_OWNER = { id: "u-1", username: null, displayName: null };
+
+describe("#611 — bindingsSetDigest: one confirm over the whole binding set", () => {
+  const b = (id: string, destination = `pg://${id}`, routing = "r".repeat(64)) => ({
+    type: "db_connector" as const,
+    id,
+    destination,
+    routing,
+  });
+  const digest = (...bs: ReturnType<typeof b>[]) => bindingsSetDigest("sec-1", "u-1", bs);
+
+  it("is 64 lowercase hex, and the same for the same set in any order or with duplicates", () => {
+    const d = digest(b("a"), b("b"));
+    expect(d).toMatch(/^[0-9a-f]{64}$/);
+    expect(digest(b("b"), b("a"))).toBe(d);
+    expect(digest(b("a"), b("b"), b("a"))).toBe(d);
+  });
+
+  it("changes when a binding is added, removed, re-pointed or re-routed", () => {
+    const d = digest(b("a"), b("b"));
+    expect(digest(b("a"))).not.toBe(d);
+    expect(digest(b("a"), b("b"), b("c"))).not.toBe(d);
+    expect(digest(b("a"), b("b", "pg://evil"))).not.toBe(d);
+    expect(digest(b("a"), b("b", "pg://b", "s".repeat(64)))).not.toBe(d);
+  });
+
+  it("is bound to the secret and its owner, so one secret's digest never confirms another", () => {
+    const bs = [b("a")];
+    const d = bindingsSetDigest("sec-1", "u-1", bs);
+    expect(bindingsSetDigest("sec-2", "u-1", bs)).not.toBe(d);
+    expect(bindingsSetDigest("sec-1", "u-2", bs)).not.toBe(d);
+    expect(bindingsSetDigest("sec-1", "u-1", [])).not.toBe(bindingsSetDigest("sec-2", "u-1", []));
+  });
+
+  it("ignores display-only fields (label, project), like bindingsDiffer", () => {
+    const shown = { ...b("a"), label: "A", projectId: "p" };
+    expect(bindingsSetDigest("sec-1", "u-1", [shown])).toBe(digest(b("a")));
+  });
+
+  it("is keyed off the server secret, not a plain hash", () => {
+    const d = digest(b("a"));
+    const prev = process.env.JWT_SECRET;
+    process.env.JWT_SECRET = "a-different-test-signing-secret-of-enough-length-611";
+    try {
+      expect(digest(b("a"))).not.toBe(d);
+    } finally {
+      if (prev === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = prev;
+    }
+  });
+
+  it("describeForeignOwner issues the digest of the listed bindings and the list cap", async () => {
+    db.databaseConnection.findMany.mockResolvedValueOnce([
+      {
+        id: "d1",
+        label: "D1",
+        projectId: "p",
+        driver: "postgres",
+        host: "h",
+        port: 5432,
+        databaseName: null,
+        options: null,
+      },
+    ]);
+    const out = await describeForeignOwner(SECRET);
+    expect(out.bindingsDigest).toBe(bindingsSetDigest(SECRET.id, SECRET.createdById, out.bindings));
+    expect(out.maxConfirmedBindings).toBe(MAX_CONFIRMED_BINDINGS);
+    expect(MAX_CONFIRMED_BINDINGS).toBe(1000);
+  });
+
+  it("the refusal names the digest as the alternative confirm", () => {
+    const msg = foreignOwnerMessage({
+      secretId: "s",
+      owner: { id: "u", username: "c", displayName: null },
+      bindings: [],
+      bindingsDigest: "0".repeat(64),
+      maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
+    });
+    expect(msg).toContain("confirmedBindingsDigest");
+    expect(msg).toContain(`at most ${MAX_CONFIRMED_BINDINGS}`);
+  });
+});
+
+describe("#629 — the 409 listing, message and audit row are bounded for any binding count", () => {
+  type Kind = "db_connector" | "mcp_server";
+  /** `count` bindings, each on its own host — the worst case for host counts. */
+  const many = (count: number, type: Kind = "db_connector") =>
+    Array.from({ length: count }, (_, i) => ({
+      type,
+      id: `${type}-${i}`,
+      label: `L${i}`,
+      projectId: "p",
+      destination: `pg://h${i}.owner.example:5432`,
+      routing: "r".repeat(64),
+    }));
+  const detailsOf = (bindings: ReturnType<typeof many>) => ({
+    secretId: "s",
+    owner: { id: "u", username: "cora", displayName: null },
+    bindings,
+    bindingsDigest: "d".repeat(64),
+    maxConfirmedBindings: MAX_CONFIRMED_BINDINGS,
+  });
+  const size = (v: unknown) => JSON.stringify(v).length;
+
+  it("lists every binding at the cap, untruncated", () => {
+    const view = foreignOwnerView(detailsOf(many(MAX_LISTED_BINDINGS)));
+    expect(MAX_LISTED_BINDINGS).toBe(MAX_CONFIRMED_BINDINGS);
+    expect(view.bindings).toHaveLength(MAX_LISTED_BINDINGS);
+    expect(view.bindingsTotal).toBe(MAX_LISTED_BINDINGS);
+    expect(view.bindingsTruncated).toBe(false);
+  });
+
+  it("at cap+1 lists the first cap bindings, with the total, counts and digest of the whole set", () => {
+    const all = many(MAX_LISTED_BINDINGS + 1);
+    const view = foreignOwnerView(detailsOf(all));
+    expect(view.bindings).toEqual(all.slice(0, MAX_LISTED_BINDINGS));
+    expect(view.bindingsTotal).toBe(MAX_LISTED_BINDINGS + 1);
+    expect(view.bindingsTruncated).toBe(true);
+    expect(view.bindingsDigest).toBe("d".repeat(64));
+    expect(view.bindingCounts.byType).toEqual([
+      { type: "db_connector", count: MAX_LISTED_BINDINGS + 1 },
+    ]);
+    // Every binding is counted, the unlisted one included.
+    const { byHost, moreHosts } = view.bindingCounts;
+    expect(byHost.reduce((n, h) => n + h.count, 0) + moreHosts.bindings).toBe(
+      MAX_LISTED_BINDINGS + 1,
+    );
+  });
+
+  it("a very large set is no bigger on the wire than one just over the cap", () => {
+    const overCap = size(foreignOwnerView(detailsOf(many(MAX_LISTED_BINDINGS + 1))));
+    const huge = foreignOwnerView(detailsOf(many(50_000)));
+    expect(huge.bindings).toHaveLength(MAX_LISTED_BINDINGS);
+    expect(huge.bindingsTotal).toBe(50_000);
+    expect(huge.bindingCounts.byHost).toHaveLength(MAX_HOST_ROWS);
+    expect(huge.bindingCounts.moreHosts).toEqual({
+      hosts: 50_000 - MAX_HOST_ROWS,
+      bindings: 50_000 - MAX_HOST_ROWS,
+    });
+    // Only the digits of the totals grow.
+    expect(size(huge) - overCap).toBeLessThan(32);
+  });
+
+  it("the refusal message names at most MAX_NAMED_BINDINGS bindings, then the total", () => {
+    const at = foreignOwnerMessage(detailsOf(many(MAX_NAMED_BINDINGS)));
+    expect(at).toContain(`bound to L0 (pg://h0.owner.example:5432), `);
+    expect(at).not.toContain("more.");
+    const huge = foreignOwnerMessage(detailsOf(many(50_000)));
+    expect(huge).toContain(`bound to 50000 resources, including L0 `);
+    expect(huge).toContain(`L${MAX_NAMED_BINDINGS - 1} (`);
+    expect(huge).not.toContain(`L${MAX_NAMED_BINDINGS} (`);
+    expect(huge).toContain(`and ${50_000 - MAX_NAMED_BINDINGS} more.`);
+    expect(huge.length).toBeLessThan(2000);
+  });
+
+  it("counts by type and by host, most first, summing hosts past MAX_HOST_ROWS", () => {
+    const bindings = [
+      ...many(3, "mcp_server").map((b) => ({ ...b, destination: "https://B.example/x" })),
+      ...many(2).map((b) => ({ ...b, destination: "pg://a.example" })),
+      ...many(MAX_HOST_ROWS + 2).map((b, i) => ({ ...b, destination: `pg://z${i}.example` })),
+      { ...many(1)[0]!, destination: "postgres" },
+      { ...many(1)[0]!, destination: null },
+      { ...many(1)[0]!, destination: "npx some-server" },
+    ];
+    const counts = countBindings(bindings);
+    expect(counts.byType).toEqual([
+      { type: "db_connector", count: MAX_HOST_ROWS + 7 },
+      { type: "mcp_server", count: 3 },
+    ]);
+    expect(counts.byHost[0]).toEqual({ host: "b.example", count: 3 });
+    expect(counts.byHost[1]).toEqual({ host: "a.example", count: 2 });
+    expect(counts.byHost).toHaveLength(MAX_HOST_ROWS);
+    // Ties order by host name, so the rows are stable between calls.
+    expect(counts.byHost[2]).toEqual({ host: "z0.example", count: 1 });
+    expect(counts.byHost[3]).toEqual({ host: "z1.example", count: 1 });
+    expect(counts.moreHosts).toEqual({ hosts: 4, bindings: 4 });
+    expect(counts.withoutHost).toBe(3);
+  });
+
+  it("destinationHost reads a URL's host and nothing else", () => {
+    expect(destinationHost("postgres://DB.example:5432")).toBe("db.example");
+    expect(destinationHost("https://x.example/a")).toBe("x.example");
+    expect(destinationHost(null)).toBeNull();
+    expect(destinationHost("postgres")).toBeNull();
+    expect(destinationHost("file:///tmp/x")).toBeNull();
+    expect(destinationHost("http://[bad")).toBeNull();
+  });
+
+  it("the audit row keeps every binding up to the cap", () => {
+    const at = many(MAX_CONFIRMED_BINDINGS);
+    const row = confirmedBindingsAudit(at, "d".repeat(64));
+    expect(row).toEqual({ confirmedBindings: canonicalBindings(at) });
+  });
+
+  it("over the cap the audit row records the digest, total and counts instead of every binding", () => {
+    const over = many(MAX_CONFIRMED_BINDINGS + 1);
+    const row = confirmedBindingsAudit(over, "d".repeat(64));
+    expect(row).not.toHaveProperty("confirmedBindings");
+    expect(row.confirmedBindingsDigest).toBe("d".repeat(64));
+    expect(row.confirmedBindingsTotal).toBe(MAX_CONFIRMED_BINDINGS + 1);
+    expect(row.confirmedBindingCounts).toEqual(countBindings(over));
+    // A very large set: the row stays the size of the one just over the cap.
+    const huge = confirmedBindingsAudit(many(50_000), "d".repeat(64));
+    expect(huge.confirmedBindingsTotal).toBe(50_000);
+    expect(size(huge) - size(row)).toBeLessThan(32);
+    expect(size(huge)).toBeLessThan(2000);
+  });
+
+  it("counts duplicates in a confirm once, as the digest and the diff do", () => {
+    const over = many(MAX_CONFIRMED_BINDINGS);
+    const row = confirmedBindingsAudit([...over, over[0]!], "d".repeat(64));
+    expect(row).toHaveProperty("confirmedBindings");
+  });
+});

@@ -15,7 +15,7 @@ const { db, revoke, audit } = vi.hoisted(() => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
-    userRole: { findUnique: vi.fn(), findMany: vi.fn(), upsert: vi.fn(), deleteMany: vi.fn() },
+    userRole: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), deleteMany: vi.fn() },
     role: { findUnique: vi.fn(), delete: vi.fn() },
     $transaction: vi.fn(),
   },
@@ -25,6 +25,11 @@ const { db, revoke, audit } = vi.hoisted(() => ({
 vi.mock("../src/lib/prisma.js", () => ({ prisma: db }));
 vi.mock("../src/lib/auth/jwt.js", () => ({ revokeAllUserSessions: revoke }));
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit }));
+const reconnect = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/socket/user-disconnect.js", () => ({
+  disconnectUserSockets: vi.fn(),
+  reconnectUserSockets: reconnect,
+}));
 
 import {
   addScimToken,
@@ -129,6 +134,7 @@ describe("SCIM role authority persistence", () => {
     db.role.findUnique.mockResolvedValue(group);
     db.userRole.findMany.mockResolvedValue([]);
     db.userRole.findUnique.mockResolvedValue(null);
+    db.userRole.deleteMany.mockResolvedValue({ count: 0 });
   });
 
   function expectProviderCleanup(userId = user.id) {
@@ -213,7 +219,7 @@ describe("SCIM role authority persistence", () => {
       },
     });
     expect(db.userRole.deleteMany).not.toHaveBeenCalled();
-    expect(db.userRole.upsert).not.toHaveBeenCalled();
+    expect(db.userRole.create).not.toHaveBeenCalled();
     expect(revoke).not.toHaveBeenCalled();
   });
 
@@ -295,7 +301,7 @@ describe("SCIM role authority persistence", () => {
       expect(db.user.update).toHaveBeenNthCalledWith(1, { where: { id: user.id }, data });
       expect(db.user.update).toHaveBeenNthCalledWith(2, { where: { id: user.id }, data });
       expect(db.userRole.deleteMany).not.toHaveBeenCalled();
-      expect(db.userRole.upsert).not.toHaveBeenCalled();
+      expect(db.userRole.create).not.toHaveBeenCalled();
       expect(revoke).not.toHaveBeenCalled();
     },
   );
@@ -338,12 +344,75 @@ describe("SCIM role authority persistence", () => {
     expect((await membership("add")).status).toBe(200);
     expect(db.user.update).toHaveBeenCalledWith({ where: { id: user.id }, data: authority });
     expectProviderCleanup();
-    expect(db.userRole.upsert).toHaveBeenCalledWith({
-      where: { userId_roleId: { userId: user.id, roleId: group.id } },
-      create: { userId: user.id, roleId: group.id, source: "scim" },
-      update: {},
-    });
+    expect(db.userRole.create).not.toHaveBeenCalled();
   });
+
+  it("creates a first-time SCIM membership and re-handshakes the user's sockets", async () => {
+    db.user.findUnique.mockResolvedValue({ authRoleAuthority: "scim" });
+    expect((await membership("add")).status).toBe(200);
+    expect(db.userRole.create).toHaveBeenCalledExactlyOnceWith({
+      data: { userId: user.id, roleId: group.id, source: "scim" },
+    });
+    expect(reconnect).toHaveBeenCalledExactlyOnceWith(user.id);
+  });
+
+  it("replaces a same-role provider row with a SCIM row", async () => {
+    db.user.findUnique.mockResolvedValue({ authRoleAuthority: "scim" });
+    db.userRole.findUnique.mockResolvedValue({
+      userId: user.id,
+      roleId: group.id,
+      source: "provider",
+    });
+    db.userRole.deleteMany.mockResolvedValue({ count: 1 });
+    expect((await membership("add")).status).toBe(200);
+    expect(db.userRole.create).toHaveBeenCalledExactlyOnceWith({
+      data: { userId: user.id, roleId: group.id, source: "scim" },
+    });
+    expect(reconnect).toHaveBeenCalledExactlyOnceWith(user.id);
+  });
+
+  // #633 — IdPs re-send unchanged memberships on every sync. Only a real change
+  // (a row created or deleted, or the authority moved to SCIM) re-handshakes.
+  it.each([
+    ["an unchanged existing membership", "scim", 0, "scim", false],
+    ["an unchanged local membership", "local", 0, "scim", false],
+    ["an existing membership that clears a provider grant", "scim", 1, "scim", true],
+    ["an existing membership that moves authority to SCIM", "scim", 0, "provider", true],
+    ["an existing membership for a user with unknown authority", "scim", 0, "unknown", true],
+  ] as const)(
+    "a repeated add of %s re-handshakes sockets only on a real change",
+    async (_label, source, providerRowsDeleted, authorityBefore, expected) => {
+      db.user.findUnique.mockResolvedValue({ authRoleAuthority: authorityBefore });
+      db.userRole.findUnique.mockResolvedValue({ userId: user.id, roleId: group.id, source });
+      db.userRole.deleteMany.mockResolvedValue({ count: providerRowsDeleted });
+      expect((await membership("add")).status).toBe(200);
+      expect(db.userRole.create).not.toHaveBeenCalled();
+      if (expected) expect(reconnect).toHaveBeenCalledExactlyOnceWith(user.id);
+      else expect(reconnect).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [0, 0, false],
+    [1, 0, true],
+    [0, 1, true],
+  ] as const)(
+    "a SCIM removal (provider rows deleted %i, target rows deleted %i) re-handshakes: %s",
+    async (providerRowsDeleted, targetRowsDeleted, expected) => {
+      db.user.findUnique.mockResolvedValue({ authRoleAuthority: "scim" });
+      db.userRole.findUnique.mockResolvedValue({
+        userId: user.id,
+        roleId: group.id,
+        source: "scim",
+      });
+      db.userRole.deleteMany
+        .mockResolvedValueOnce({ count: providerRowsDeleted })
+        .mockResolvedValueOnce({ count: targetRowsDeleted });
+      expect((await membership("remove")).status).toBe(200);
+      if (expected) expect(reconnect).toHaveBeenCalledExactlyOnceWith(user.id);
+      else expect(reconnect).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["scim", "unknown", "provider"])(
     "persists authority after revoking the last %s membership",
@@ -364,6 +433,7 @@ describe("SCIM role authority persistence", () => {
       for (const source of [null, "local", "scim"]) {
         db.user.update.mockClear();
         db.userRole.deleteMany.mockClear();
+        reconnect.mockClear();
         db.userRole.findUnique.mockResolvedValue(
           source ? { userId: user.id, roleId: group.id, source } : null,
         );
@@ -371,9 +441,11 @@ describe("SCIM role authority persistence", () => {
         if (source === "scim") {
           expect(db.user.update).toHaveBeenCalledWith({ where: { id: user.id }, data: authority });
           expectProviderCleanup();
+          expect(reconnect).toHaveBeenCalledExactlyOnceWith(user.id);
         } else {
           expect(db.user.update).not.toHaveBeenCalled();
           expect(db.userRole.deleteMany).not.toHaveBeenCalled();
+          expect(reconnect).not.toHaveBeenCalled();
         }
       }
     },
@@ -400,6 +472,11 @@ describe("SCIM role authority persistence", () => {
     expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "Serializable",
     });
+    // #633 — every former member's open sockets re-handshake, after the commit.
+    expect(reconnect.mock.calls).toEqual([[user.id], ["legacy"]]);
+    expect(reconnect.mock.invocationCallOrder[0]).toBeGreaterThan(
+      db.role.delete.mock.invocationCallOrder[0],
+    );
   });
 
   it("refuses group deletion without changing any grant if a local assignment exists", async () => {
@@ -415,6 +492,7 @@ describe("SCIM role authority persistence", () => {
     expect(db.userRole.deleteMany).not.toHaveBeenCalled();
     expect(db.role.delete).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
+    expect(reconnect).not.toHaveBeenCalled();
   });
 
   it("still refuses deletion of built-in roles without changing authority", async () => {

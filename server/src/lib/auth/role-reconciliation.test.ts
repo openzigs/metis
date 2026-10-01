@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({ $transaction: vi.fn() }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
+const reconnect = vi.hoisted(() => vi.fn());
+vi.mock("../socket/user-disconnect.js", () => ({ reconnectUserSockets: reconnect }));
 
 import {
   confirmRolesForAdmin,
@@ -349,6 +351,31 @@ describe("role reconciliation confirmation", () => {
     expect(db.$transaction).toHaveBeenLastCalledWith(expect.any(Function), {
       isolationLevel: "Serializable",
     });
+  });
+
+  // #633 — the target's open sockets carry the pre-reconciliation role.
+  it("re-handshakes the target's sockets only after a committed, non-replayed decision", async () => {
+    const input = await inputFor();
+    let committedAtCall: State | null = null;
+    reconnect.mockImplementation(() => {
+      committedAtCall = structuredClone(committed);
+    });
+    await confirmRolesForAdmin(admin.id, input);
+    expect(reconnect).toHaveBeenCalledExactlyOnceWith(target.targetId);
+    // Called after the transaction committed, never from inside it.
+    expect(committedAtCall!.audits).toHaveLength(1);
+
+    reconnect.mockClear();
+    expect((await confirmRolesForAdmin(admin.id, input)).replayed).toBe(true);
+    expect(reconnect).not.toHaveBeenCalled();
+
+    await expect(
+      confirmRolesForAdmin(admin.id, {
+        ...input,
+        requestId: "123e4567-e89b-42d3-a456-426614174009",
+      }),
+    ).rejects.toMatchObject({ code: "RECONCILIATION_CONFLICT" });
+    expect(reconnect).not.toHaveBeenCalled();
   });
 
   it("preserves initialization and uses current time when it is later than updatedAt", async () => {

@@ -33,6 +33,11 @@ export interface VaultAuditEntry {
 export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
 /** #502 — the confirmed bindings no longer match; `details` is the live list. */
 export const VAULT_ROTATE_BINDINGS_CHANGED = "VAULT_ROTATE_BINDINGS_CHANGED";
+/**
+ * #629 (PR #635 review) — a list confirm of a set now over `maxConfirmedBindings`;
+ * `details` is the live (capped) list with the digest to confirm by.
+ */
+export const VAULT_ROTATE_CONFIRM_BY_DIGEST = "VAULT_ROTATE_CONFIRM_BY_DIGEST";
 
 export interface VaultForeignOwner {
   secretId: string;
@@ -46,7 +51,34 @@ export interface VaultForeignOwner {
     /** #557 — server-issued digest of every field that routes the secret; echo it back. */
     routing: string;
   }>;
+  /** #611 — server-issued digest of the whole `bindings` list; confirms a list over the cap. */
+  bindingsDigest: string;
+  /** #611 — the most bindings `confirmedBindings` may carry; over it, confirm by digest. */
+  maxConfirmedBindings: number;
+  /** #629 — how many bindings there are; `bindings` lists at most `maxConfirmedBindings`. */
+  bindingsTotal: number;
+  /** #629 — true when `bindings` lists fewer than `bindingsTotal`. */
+  bindingsTruncated: boolean;
+  /** #629 — counts over the whole set, by type and by destination host (bounded rows). */
+  bindingCounts: VaultBindingCounts;
 }
+
+/** #629 — mirrors `BindingCounts` in `server/src/lib/vault/rotate-foreign-owner.ts`. */
+export interface VaultBindingCounts {
+  byType: Array<{ type: string; count: number }>;
+  byHost: Array<{ host: string; count: number }>;
+  /** Distinct hosts beyond `byHost`, and how many bindings they hold. */
+  moreHosts: { hosts: number; bindings: number };
+  /** Bindings whose destination names no network host (a driver, provider or command). */
+  withoutHost: number;
+}
+
+/**
+ * #611 — how "Rotate anyway" confirms what it was shown: the bindings
+ * themselves, or (over `maxConfirmedBindings`) the digest of the whole list.
+ */
+export type VaultRotateConfirm =
+  { confirmedBindings: VaultConfirmedBinding[] } | { confirmedBindingsDigest: string };
 
 /** #502 — a binding as the admin confirmed it: what it is and where it sends (#557: and its routing digest). */
 export type VaultConfirmedBinding = Pick<
@@ -68,12 +100,17 @@ export const vaultApi = {
   /**
    * #482 — `confirmForeignOwner` is required to rotate a secret another user
    * owns; #502 — with `confirmedBindings`, the type, id and destination of
-   * every binding the 409 showed (#557 — and its `routing` digest).
+   * every binding the 409 showed (#557 — and its `routing` digest), or (#611)
+   * `confirmedBindingsDigest`, the 409's digest of that whole list.
    */
   rotate: (
     id: string,
     value: string,
-    opts: { confirmForeignOwner?: boolean; confirmedBindings?: VaultConfirmedBinding[] } = {},
+    opts: {
+      confirmForeignOwner?: boolean;
+      confirmedBindings?: VaultConfirmedBinding[];
+      confirmedBindingsDigest?: string;
+    } = {},
   ) =>
     apiFetch<VaultEntry>(`/vault/${id}/rotate`, {
       method: "POST",
@@ -82,6 +119,9 @@ export const vaultApi = {
             value,
             confirmForeignOwner: true,
             ...(opts.confirmedBindings ? { confirmedBindings: opts.confirmedBindings } : {}),
+            ...(opts.confirmedBindingsDigest
+              ? { confirmedBindingsDigest: opts.confirmedBindingsDigest }
+              : {}),
           }
         : { value },
     }),

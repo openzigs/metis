@@ -31,6 +31,7 @@ function asRole(role: Role) {
 vi.mock("@/lib/vault-api", () => ({
   VAULT_ROTATE_FOREIGN_OWNER: "VAULT_ROTATE_FOREIGN_OWNER",
   VAULT_ROTATE_BINDINGS_CHANGED: "VAULT_ROTATE_BINDINGS_CHANGED",
+  VAULT_ROTATE_CONFIRM_BY_DIGEST: "VAULT_ROTATE_CONFIRM_BY_DIGEST",
   vaultApi: {
     list: vi.fn(),
     create: vi.fn(),
@@ -222,6 +223,19 @@ describe("<VaultPage />", () => {
           routing: "rt-m1",
         },
       ],
+      bindingsDigest: "d".repeat(64),
+      maxConfirmedBindings: 1000,
+      bindingsTotal: 2,
+      bindingsTruncated: false,
+      bindingCounts: {
+        byType: [
+          { type: "db_connector", count: 1 },
+          { type: "mcp_server", count: 1 },
+        ],
+        byHost: [{ host: "db.coord.example", count: 1 }],
+        moreHosts: { hosts: 0, bindings: 0 },
+        withoutHost: 1,
+      },
     };
     const refuse = (details: unknown = foreign) =>
       new ApiError(
@@ -367,6 +381,168 @@ describe("<VaultPage />", () => {
       await waitFor(() =>
         expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument(),
       );
+    });
+
+    it("#611 — over the cap, says so and confirms by the list digest instead of echoing the list", async () => {
+      const bindings = Array.from({ length: 3 }, (_, i) => ({
+        type: "db_connector",
+        id: `db${i}`,
+        label: `DB ${i}`,
+        projectId: "p1",
+        destination: `postgres://h${i}`,
+        routing: `rt-${i}`,
+      }));
+      rotateMock
+        .mockRejectedValueOnce(
+          refuse({ ...foreign, bindings, bindingsTotal: 3, maxConfirmedBindings: 2 }),
+        )
+        .mockResolvedValueOnce(entry({ keyVersion: 2 }));
+      await submitRotate();
+      const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(within(panel).getByTestId("vault-entry-rotate-over-cap")).toHaveTextContent(
+        "It is bound to 3 resources, more than the 2 a confirmation can list one by one.",
+      );
+      // Every binding is still shown for review.
+      expect(within(panel).getByTestId("vault-entry-rotate-bindings")).toHaveTextContent(
+        "DB 2 — postgres://h2",
+      );
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
+          confirmForeignOwner: true,
+          confirmedBindingsDigest: "d".repeat(64),
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument(),
+      );
+    });
+
+    it("#629 (PR #635 review) — a list confirm refused as over the cap re-shows the set and confirms by digest", async () => {
+      const bindings = Array.from({ length: 3 }, (_, i) => ({
+        type: "db_connector",
+        id: `db${i}`,
+        label: `DB ${i}`,
+        projectId: "p1",
+        destination: `postgres://h${i}`,
+        routing: `rt-${i}`,
+      }));
+      // Shown within the cap, so the page confirms by list; the set grows past it meanwhile.
+      rotateMock
+        .mockRejectedValueOnce(refuse({ ...foreign, maxConfirmedBindings: 2 }))
+        .mockRejectedValueOnce(
+          new ApiError(409, "over the cap", "VAULT_ROTATE_CONFIRM_BY_DIGEST", {
+            ...foreign,
+            bindings: bindings.slice(0, 2),
+            bindingsTotal: 3,
+            bindingsTruncated: true,
+            maxConfirmedBindings: 2,
+            bindingsDigest: "e".repeat(64),
+          }),
+        )
+        .mockResolvedValueOnce(entry({ keyVersion: 2 }));
+      await submitRotate();
+      await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(screen.queryByTestId("vault-entry-rotate-over-cap")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith(
+          "sec_1",
+          "ghp_admin",
+          expect.objectContaining({ confirmedBindings: expect.any(Array) }),
+        ),
+      );
+
+      // The refusal is not a dead end: the live set is shown again, over the cap.
+      expect(await screen.findByTestId("vault-entry-rotate-bindings-changed")).toBeInTheDocument();
+      expect(screen.getByTestId("vault-entry-rotate-over-cap")).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
+          confirmForeignOwner: true,
+          confirmedBindingsDigest: "e".repeat(64),
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument(),
+      );
+    });
+
+    it("#629 — over the cap, renders the server's counts of the whole set above the capped list", async () => {
+      // The server listed 2 of 5,000 bindings; the counts cover all 5,000.
+      const counts = {
+        byType: [
+          { type: "test_management_connection", count: 4000 },
+          { type: "db_connector", count: 990 },
+          { type: "some_future_type", count: 10 },
+        ],
+        byHost: [
+          { host: "h0.owner.example", count: 3000 },
+          { host: "h1.owner.example", count: 1000 },
+        ],
+        moreHosts: { hosts: 980, bindings: 990 },
+        withoutHost: 10,
+      };
+      rotateMock.mockRejectedValueOnce(
+        refuse({
+          ...foreign,
+          bindingsTotal: 5000,
+          bindingsTruncated: true,
+          bindingCounts: counts,
+          maxConfirmedBindings: 2,
+        }),
+      );
+      await submitRotate();
+      const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      const items = (testId: string) =>
+        within(within(panel).getByTestId(testId))
+          .getAllByRole("listitem")
+          .map((li) => li.textContent);
+      expect(items("vault-entry-rotate-counts-by-type")).toEqual([
+        "Test-management connection: 4000",
+        "DB connector: 990",
+        // A type the UI has no name for shows as itself.
+        "some_future_type: 10",
+      ]);
+      expect(items("vault-entry-rotate-counts-by-host")).toEqual([
+        "h0.owner.example: 3000",
+        "h1.owner.example: 1000",
+        "980 more hosts: 990",
+        "No network host (driver, provider or command): 10",
+      ]);
+      expect(within(panel).getByTestId("vault-entry-rotate-over-cap")).toHaveTextContent(
+        "It is bound to 5000 resources, more than the 2 a confirmation can list one by one.",
+      );
+      // The summary sits above the capped list, which says it is capped.
+      const summary = within(panel).getByTestId("vault-entry-rotate-over-cap-summary");
+      const list = within(panel).getByTestId("vault-entry-rotate-bindings");
+      expect(summary.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+      expect(within(panel).getByTestId("vault-entry-rotate-bindings-truncated")).toHaveTextContent(
+        "Showing the first 2 of 5000 bindings.",
+      );
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
+          confirmForeignOwner: true,
+          confirmedBindingsDigest: "d".repeat(64),
+        }),
+      );
+    });
+
+    it("#611 — at the cap, no over-cap notice and the list itself is confirmed", async () => {
+      rotateMock
+        .mockRejectedValueOnce(refuse({ ...foreign, maxConfirmedBindings: 2 }))
+        .mockResolvedValueOnce(entry({ keyVersion: 2 }));
+      await submitRotate();
+      await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(screen.queryByTestId("vault-entry-rotate-over-cap")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("vault-entry-rotate-bindings-truncated")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() => expect(rotateMock).toHaveBeenCalledTimes(2));
+      const opts = rotateMock.mock.calls[1]![2] as Record<string, unknown>;
+      expect(opts.confirmedBindings).toHaveLength(2);
+      expect(opts).not.toHaveProperty("confirmedBindingsDigest");
     });
 
     it("any other rotate error is shown as a plain message", async () => {

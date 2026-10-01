@@ -2,7 +2,7 @@
  * Socket.IO server: handshake auth + room subscription smoke test.
  */
 import http from "node:http";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
 
 /**
@@ -12,11 +12,50 @@ import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
  * cross-project isolation can be asserted: `p1` joins, `p-other` is rejected.
  * Admins bypass the DB check entirely.
  */
+/**
+ * #617 — the handshake re-reads the user and the durable role. Every user is
+ * live unless listed in `accounts`; `u-admin` holds a durable admin role,
+ * everyone else developer unless `roles` says otherwise.
+ */
+const authDb = vi.hoisted(() => ({
+  accounts: new Map<string, { username: string; status: string; deletedAt: Date | null }>(),
+  roles: new Map<string, string>(),
+  lookupError: null as Error | null,
+}));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     $queryRawUnsafe: vi.fn(async () => 1),
-    user: { upsert: vi.fn() },
-    userRole: { findFirst: vi.fn(async () => null) },
+    user: {
+      upsert: vi.fn(),
+      findFirst: vi.fn(
+        async ({ where }: { where: { id: string; status?: string; deletedAt?: null } }) => {
+          if (authDb.lookupError) throw authDb.lookupError;
+          const row = authDb.accounts.get(where.id) ?? {
+            username: `db-${where.id}`,
+            status: "active",
+            deletedAt: null,
+          };
+          if (where.status !== undefined && row.status !== where.status) return null;
+          if (where.deletedAt === null && row.deletedAt !== null) return null;
+          return { id: where.id, username: row.username, authRoleAuthority: null };
+        },
+      ),
+    },
+    userRole: {
+      findFirst: vi.fn(async () => null),
+      findMany: vi.fn(async ({ where }: { where: { userId: string } }) => [
+        {
+          source: "local",
+          role: {
+            key:
+              authDb.roles.get(where.userId) ??
+              (where.userId === "u-admin" ? "admin" : "developer"),
+          },
+        },
+      ]),
+    },
+    workspaceMember: { findMany: vi.fn(async () => []) },
     auditLog: { create: vi.fn(async () => ({})) },
     // #142 — `subscribe:session` authorises like every session read: `u1`
     // owns the unscoped session `s1`; nobody else owns anything.
@@ -563,6 +602,104 @@ describe("Socket.IO server", () => {
     socket.emit("subscribe:project", { projectId: "p-other" });
     await new Promise((r) => setTimeout(r, 50));
     expect(io.sockets.adapter.rooms.get("project:p-other")?.size ?? 0).toBe(1);
+    socket.close();
+  });
+});
+
+describe("#617 the handshake trusts live user state, not the token", () => {
+  afterEach(() => {
+    authDb.accounts.clear();
+    authDb.roles.clear();
+    authDb.lookupError = null;
+  });
+
+  function tokenFor(userId: string, role: "admin" | "developer" | "reader" = "developer") {
+    return issueTokens({ userId, username: userId, role, permissions: [] }).accessToken;
+  }
+
+  it.each([
+    ["soft-deleted", { status: "active", deletedAt: new Date() }],
+    ["disabled", { status: "disabled", deletedAt: null }],
+  ])("rejects a %s user's unexpired token with UNAUTHORIZED", async (_label, state) => {
+    authDb.accounts.set("u-gone", { username: "gone", ...state });
+    const { ok, err, socket } = await makeClient({ token: tokenFor("u-gone") });
+    expect(ok).toBe(false);
+    expect(err).toBe("UNAUTHORIZED");
+    // No server socket ever ran `attachHandlers` for the user.
+    expect(io.sockets.adapter.rooms.get("user:u-gone")).toBeUndefined();
+    socket.close();
+  });
+
+  it("fails closed when the user lookup throws", async () => {
+    authDb.lookupError = new Error("db down");
+    const { ok, err, socket } = await makeClient({ token: tokenFor("u-flaky") });
+    expect(ok).toBe(false);
+    expect(err).toBe("UNAUTHORIZED");
+    socket.close();
+  });
+
+  it("emits auth:ok with the username stored on the user row", async () => {
+    authDb.accounts.set("u-renamed", { username: "renamed", status: "active", deletedAt: null });
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: tokenFor("u-renamed") },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 1500,
+    });
+    const ok = await new Promise<{ userId: string; username: string }>((resolve, reject) => {
+      socket.on("auth:ok", resolve);
+      socket.on("connect_error", reject);
+    });
+    expect(ok).toEqual({ userId: "u-renamed", username: "renamed" });
+    socket.close();
+  });
+
+  it("gates rooms on the durable role: a demoted admin's token cannot subscribe:mcp", async () => {
+    authDb.roles.set("u-demoted", "developer");
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: tokenFor("u-demoted", "admin") },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 1500,
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on("auth:ok", () => resolve());
+      socket.on("connect_error", reject);
+    });
+    // Bounded: if the gate regresses the server emits no auth:error at all, and
+    // an unbounded wait would hang to the suite timeout (x retries) instead of
+    // failing fast with this message.
+    const authErrors: string[] = [];
+    socket.on("auth:error", ({ message }) => authErrors.push(message));
+    socket.emit("subscribe:mcp");
+    await vi.waitFor(
+      () =>
+        expect(
+          authErrors,
+          "a demoted admin's subscribe:mcp must be refused with auth:error FORBIDDEN",
+        ).toEqual([expect.stringMatching(/FORBIDDEN/)]),
+      { timeout: 2000 },
+    );
+    expect(io.sockets.adapter.rooms.get("mcp:status")?.has(socket.id!) ?? false).toBe(false);
+    socket.close();
+  });
+
+  it("gates rooms on the durable role: a promoted reader's token may subscribe:mcp", async () => {
+    authDb.roles.set("u-promoted", "admin");
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: tokenFor("u-promoted", "reader") },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 1500,
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on("auth:ok", () => resolve());
+      socket.on("connect_error", reject);
+    });
+    socket.emit("subscribe:mcp");
+    await vi.waitFor(() =>
+      expect(io.sockets.adapter.rooms.get("mcp:status")?.has(socket.id!) ?? false).toBe(true),
+    );
     socket.close();
   });
 });

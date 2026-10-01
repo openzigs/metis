@@ -78,6 +78,21 @@ describe("vaultApi", () => {
     });
   });
 
+  it("#611 — a confirmed rotate() can send the list digest instead of the list", async () => {
+    const confirmedBindingsDigest = "ab".repeat(32);
+    await vaultApi.rotate("sec_1", "fresh", { confirmForeignOwner: true, confirmedBindingsDigest });
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/vault/sec_1/rotate", {
+      method: "POST",
+      body: { value: "fresh", confirmForeignOwner: true, confirmedBindingsDigest },
+    });
+    // Never sent without the confirm it belongs to.
+    await vaultApi.rotate("sec_1", "fresh", { confirmedBindingsDigest });
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/vault/sec_1/rotate", {
+      method: "POST",
+      body: { value: "fresh" },
+    });
+  });
+
   it("reveal() hits the canonical reveal path", async () => {
     await vaultApi.reveal("sec_1");
     expect(apiFetchMock).toHaveBeenCalledWith("/vault/sec_1/reveal");

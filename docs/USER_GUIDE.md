@@ -2835,7 +2835,24 @@ The `/vault` page is split into two panels:
      missing or malformed one is a `400`); if those no longer match the live bindings —
      including a binding re-pointed under the same id, whether at a new host or
      at new args or a new database behind the same destination — it is refused with
-     `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. While the
+     `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. A
+     `confirmedBindings` list holds at most `maxConfirmedBindings` (1,000)
+     entries, so a secret bound to more is confirmed by
+     `confirmedBindingsDigest` instead: echo the `bindingsDigest` from the
+     409, one digest over the whole list that changes whenever any binding is
+     added, removed or re-pointed (a stale one gets the same
+     `409 VAULT_ROTATE_BINDINGS_CHANGED`). Over that cap the 409 lists only
+     the first 1,000 bindings, with `bindingsTotal`, `bindingsTruncated: true`
+     and `bindingCounts` (per type, the ten busiest destination hosts, the
+     rest summed) over the whole set, so its size stays bounded however many
+     bindings the owner adds; the digest still covers every one. A
+     `confirmedBindings` list sent for a set over the cap — such as the 1,000
+     bindings the 409 listed, echoed back — cannot name every binding, so it
+     is refused with `409 VAULT_ROTATE_CONFIRM_BY_DIGEST` (the same capped
+     details, `bindingsDigest` included) rather than as a change: resending
+     the list is refused again, so confirm with the digest. The page does
+     this for you, says so when the list is that long, and shows those counts
+     above the listed bindings so the review starts from a few rows. While the
      owner is binding the secret somewhere new — from the moment their change
      is checked until it is saved, and for at most a minute — the rotation is
      refused with `409 VAULT_ROTATE_BINDING_IN_PROGRESS` instead; retry, and
@@ -2850,7 +2867,10 @@ The `/vault` page is split into two panels:
      late entry fails) — retry it. Checking a binding does not change the
      secret's **Updated** time. The
      `vault.rotate` audit row records `foreignOwnerConfirmed`, `ownerId`,
-     `confirmedBindings` and `ownershipTransferredTo`.
+     `confirmedBindings` and `ownershipTransferredTo`; for a confirm over
+     1,000 bindings it records `confirmedBindingsDigest`,
+     `confirmedBindingsTotal` and `confirmedBindingCounts` instead of every
+     binding.
    - **Audit** — lists the recent `vault.{reveal,read,rotate,delete,write}`
      rows for the entry.
    - **Delete** — soft-removes the entry (terminal — restoring requires a

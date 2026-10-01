@@ -1,5 +1,6 @@
 import type { RoleKey } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { reconnectUserSockets } from "../socket/user-disconnect.js";
 
 export const EXPLICIT_ROLE_SOURCES = ["local", "scim", "unknown"] as const;
 export const DURABLE_ROLE_SOURCES = ["local", "scim", "provider", "unknown"] as const;
@@ -88,8 +89,8 @@ export async function reconcileTrustedLoginRole(input: {
   // The caller's marker is only a login-time snapshot. Read the authoritative
   // marker AND roles together; a redundant pre-transaction guard hides races.
   // Serializable conflicts fail the login closed rather than overwrite grants.
-  return prisma.$transaction(
-    async (tx) => {
+  const outcome = await prisma.$transaction(
+    async (tx): Promise<{ role: RoleKey; providerRoleChanged: boolean }> => {
       const user = await tx.user.findFirst({
         where: { id: input.userId, status: "active", deletedAt: null },
         select: { authRolesInitializedAt: true, authRoleAuthority: true },
@@ -107,9 +108,11 @@ export async function reconcileTrustedLoginRole(input: {
             data: { authRolesInitializedAt: new Date() },
           });
         }
-        return effective.role;
+        return { role: effective.role, providerRoleChanged: false };
       }
-      if (user.authRolesInitializedAt && roles.length === 0) return "reader";
+      if (user.authRolesInitializedAt && roles.length === 0) {
+        return { role: "reader", providerRoleChanged: false };
+      }
 
       // The role vocabulary is the fixed RoleKey set, but nothing seeds `roles`
       // on a fresh database — throwing here 500s the very first login.
@@ -137,8 +140,16 @@ export async function reconcileTrustedLoginRole(input: {
         where: { id: input.userId },
         data: { authRolesInitializedAt: new Date() },
       });
-      return input.providerRole;
+      // A first grant (no rows yet) is no change: there is no older role to drop.
+      return {
+        role: input.providerRole,
+        providerRoleChanged: roles.length > 0 && effective.role !== input.providerRole,
+      };
     },
     { isolationLevel: "Serializable" },
   );
+  // #633 — the user's other open sockets still carry the previous provider
+  // role; after the commit, make them re-handshake.
+  if (outcome.providerRoleChanged) reconnectUserSockets(input.userId);
+  return outcome.role;
 }
