@@ -19,18 +19,37 @@ import express, { type Express } from "express";
 import request from "supertest";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Socket as ClientSocket } from "socket.io-client";
+import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
 
 vi.mock("../src/lib/prisma.js", async () =>
   (await import("./helpers/two-replica-prisma.js")).prismaModuleMock(),
 );
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// #613 × #622 — one handshake read can be held open; every other read passes through.
+const liveUserGate = vi.hoisted(() => ({
+  userId: null as string | null,
+  reached: null as (() => void) | null,
+  release: null as Promise<void> | null,
+}));
+vi.mock("../src/lib/auth/live-auth-payload.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/auth/live-auth-payload.js")>();
+  return {
+    loadLiveAuthPayload: async (userId: string) => {
+      const result = await actual.loadLiveAuthPayload(userId);
+      if (liveUserGate.userId !== userId) return result;
+      liveUserGate.userId = null;
+      liveUserGate.reached?.();
+      await liveUserGate.release;
+      return result;
+    },
+  };
+});
 vi.mock("../src/lib/auth/jwt.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/auth/jwt.js")>()),
   revokeAllUserSessions: vi.fn(async () => {}),
 }));
 
-import { seed } from "./helpers/two-replica-prisma.js";
+import { db, seed } from "./helpers/two-replica-prisma.js";
 import { connectUser, startReplica, type Replica } from "./helpers/two-replica-sockets.js";
 import {
   SOCKET_IO_ATTACHMENTS_TABLE,
@@ -38,7 +57,8 @@ import {
   type SocketClusterAdapter,
 } from "../src/lib/socket/cluster-adapter.js";
 import { registerSocketServer } from "../src/lib/socket/registry.js";
-import { reconnectUserSockets } from "../src/lib/socket/user-disconnect.js";
+import { disconnectUserSockets, reconnectUserSockets } from "../src/lib/socket/user-disconnect.js";
+import { issueTokens } from "../src/lib/auth/jwt.js";
 import {
   evictMemberMcpStatusRoom,
   evictWorkspaceMcpStatusRoom,
@@ -197,6 +217,55 @@ describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integr
 
     await vi.waitFor(() => expect(b.roomHas(room, removed.sid)).toBe(false), { timeout: 10_000 });
     expect(b.roomHas(room, stays.sid)).toBe(true);
+  });
+
+  // #613 × #622 — B's handshake read the user as active and is held before the
+  // join; the deprovision on A misses B's not-yet-joined socket, so only the
+  // relayed revocation epoch makes B re-read the user once the socket joins.
+  it("a deprovision on A while B's handshake live-user read is held disconnects B's socket", async () => {
+    seed(["u-race"], []);
+    let reached!: () => void;
+    const atGate = new Promise<void>((r) => (reached = r));
+    let release!: () => void;
+    Object.assign(liveUserGate, {
+      userId: "u-race",
+      reached,
+      release: new Promise<void>((r) => (release = r)),
+    });
+    const { accessToken } = issueTokens({
+      userId: "u-race",
+      username: "u-race",
+      role: "coordinator",
+      permissions: [],
+      workspaces: [],
+    });
+    const socket = ioClient(`http://127.0.0.1:${b.port}`, {
+      auth: { token: accessToken },
+      transports: ["websocket"],
+      reconnection: false,
+    });
+    open.push(socket);
+    let disconnectReason: string | null = null;
+    socket.on("disconnect", (reason) => {
+      disconnectReason = reason;
+    });
+    const authOk = new Promise<void>((r) => socket.once("auth:ok", () => r()));
+    await atGate;
+
+    db.users.get("u-race")!.status = "inactive";
+    disconnectUserSockets("u-race");
+    // A barrier relayed after the revocation: once B has it, B has the revocation.
+    const landed = new Promise<void>((r) =>
+      (b.io as unknown as { on(e: string, f: () => void): void }).on("metis:test:barrier", r),
+    );
+    (a.io as unknown as { serverSideEmit(e: string): void }).serverSideEmit("metis:test:barrier");
+    await landed;
+
+    release();
+    await authOk;
+    await vi.waitFor(() => expect(disconnectReason).toBe("io server disconnect"), {
+      timeout: 10_000,
+    });
   });
 
   // Last: it drops every replica's LISTEN connection. Before the client-level

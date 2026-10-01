@@ -4,10 +4,12 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  DISCONNECT_USER_EVENT,
   RECONNECT_USER_EVENT,
   disconnectUserSockets,
   reconnectUserSockets,
-  wireReconnectUserRelay,
+  userSocketRevocationEpoch,
+  wireUserRevocationRelay,
 } from "./user-disconnect.js";
 import { registerSocketServer } from "./registry.js";
 import type { MetisIOServer } from "./server.js";
@@ -113,7 +115,7 @@ describe("reconnectUserSockets relay", () => {
 
   it("relays the reconnect to the other replicas when the server is clustered", () => {
     const { io, server, conns } = relayServer(new Map([["user:u-1", new Set(["a"])]]), ["a"]);
-    wireReconnectUserRelay(server, true);
+    wireUserRevocationRelay(server, true);
     registerSocketServer(server);
     reconnectUserSockets("u-1");
     expect(conns.get("a")!.close).toHaveBeenCalledOnce();
@@ -122,7 +124,7 @@ describe("reconnectUserSockets relay", () => {
 
   it("neither relays nor listens without the cluster adapter, where serverSideEmit is unsupported", () => {
     const { io, server } = relayServer(new Map(), []);
-    wireReconnectUserRelay(server, false);
+    wireUserRevocationRelay(server, false);
     registerSocketServer(server);
     reconnectUserSockets("u-1");
     expect(io.on).not.toHaveBeenCalled();
@@ -137,7 +139,7 @@ describe("reconnectUserSockets relay", () => {
       ]),
       ["a", "b"],
     );
-    wireReconnectUserRelay(server, true);
+    wireUserRevocationRelay(server, true);
     listeners.get(RECONNECT_USER_EVENT)!("u-1");
     expect(conns.get("a")!.close).toHaveBeenCalledOnce();
     expect(conns.get("b")!.close).not.toHaveBeenCalled();
@@ -147,7 +149,7 @@ describe("reconnectUserSockets relay", () => {
     const { server, conns, listeners } = relayServer(new Map([["user:u-1", new Set(["a"])]]), [
       "a",
     ]);
-    wireReconnectUserRelay(server, true);
+    wireUserRevocationRelay(server, true);
     const onRelay = listeners.get(RECONNECT_USER_EVENT)!;
     onRelay(42);
     onRelay("");
@@ -163,7 +165,7 @@ describe("reconnectUserSockets relay", () => {
     conns.get("a")!.close.mockImplementation(() => {
       throw new Error("transport gone");
     });
-    wireReconnectUserRelay(server, true);
+    wireUserRevocationRelay(server, true);
     registerSocketServer(server);
     reconnectUserSockets("u-1");
     expect(io.serverSideEmit).toHaveBeenCalledOnce();
@@ -171,5 +173,90 @@ describe("reconnectUserSockets relay", () => {
       throw new Error("adapter down");
     });
     expect(() => reconnectUserSockets("u-1")).not.toThrow();
+  });
+});
+
+// #622 / #613 — every revocation moves the revocation epoch on every replica,
+// so a handshake in flight on another replica re-reads the live user.
+describe("user revocation epochs across replicas", () => {
+  afterEach(() => registerSocketServer(null as unknown as MetisIOServer));
+
+  function clusterServer() {
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const disconnectSockets = vi.fn();
+    const localDisconnect = vi.fn();
+    const localIn = vi.fn(() => ({ disconnectSockets: localDisconnect }));
+    const io = {
+      in: vi.fn(() => ({ disconnectSockets })),
+      local: { in: localIn },
+      sockets: { adapter: { rooms: new Map() }, sockets: new Map() },
+      on: vi.fn((event: string, fn: (...args: unknown[]) => void) => listeners.set(event, fn)),
+      serverSideEmit: vi.fn(),
+    };
+    const server = io as unknown as MetisIOServer;
+    return { io, server, listeners, disconnectSockets, localDisconnect, localIn };
+  }
+
+  it("a disconnect bumps the epoch before it disconnects, and relays when clustered", () => {
+    const { io, server, disconnectSockets } = clusterServer();
+    wireUserRevocationRelay(server, true);
+    registerSocketServer(server);
+    let epochAtDisconnect = -1;
+    disconnectSockets.mockImplementation(() => {
+      epochAtDisconnect = userSocketRevocationEpoch(server);
+    });
+    disconnectUserSockets("u-1");
+    expect(epochAtDisconnect).toBe(1);
+    expect(io.serverSideEmit).toHaveBeenCalledWith(DISCONNECT_USER_EVENT, "u-1");
+    reconnectUserSockets("u-1");
+    expect(userSocketRevocationEpoch(server)).toBe(2);
+  });
+
+  it("does not relay a disconnect without the cluster adapter, but still bumps the epoch", () => {
+    const { io, server } = clusterServer();
+    wireUserRevocationRelay(server, false);
+    registerSocketServer(server);
+    disconnectUserSockets("u-1");
+    expect(io.serverSideEmit).not.toHaveBeenCalled();
+    expect(userSocketRevocationEpoch(server)).toBe(1);
+  });
+
+  it("a relayed disconnect bumps this replica's epoch and disconnects the local sockets", () => {
+    const { server, listeners, localDisconnect, localIn } = clusterServer();
+    wireUserRevocationRelay(server, true);
+    listeners.get(DISCONNECT_USER_EVENT)!("u-1");
+    expect(userSocketRevocationEpoch(server)).toBe(1);
+    expect(localIn).toHaveBeenCalledWith("user:u-1");
+    expect(localDisconnect).toHaveBeenCalledWith(true);
+  });
+
+  it("a relayed reconnect bumps this replica's epoch", () => {
+    const { server, listeners } = clusterServer();
+    wireUserRevocationRelay(server, true);
+    listeners.get(RECONNECT_USER_EVENT)!("u-1");
+    expect(userSocketRevocationEpoch(server)).toBe(1);
+  });
+
+  it("ignores a malformed relayed disconnect and never throws from a failing one", () => {
+    const { server, listeners, localDisconnect } = clusterServer();
+    wireUserRevocationRelay(server, true);
+    const onRelay = listeners.get(DISCONNECT_USER_EVENT)!;
+    onRelay(undefined);
+    onRelay("");
+    expect(userSocketRevocationEpoch(server)).toBe(0);
+    expect(localDisconnect).not.toHaveBeenCalled();
+    localDisconnect.mockImplementation(() => {
+      throw new Error("adapter down");
+    });
+    expect(() => onRelay("u-1")).not.toThrow();
+  });
+
+  it("keeps each server's epoch separate", () => {
+    const a = clusterServer();
+    const b = clusterServer();
+    registerSocketServer(a.server);
+    disconnectUserSockets("u-1");
+    expect(userSocketRevocationEpoch(a.server)).toBe(1);
+    expect(userSocketRevocationEpoch(b.server)).toBe(0);
   });
 });
