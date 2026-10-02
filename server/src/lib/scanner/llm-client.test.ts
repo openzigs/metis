@@ -129,4 +129,17 @@ describe("callJsonLlm", () => {
     expect(onUsage).toHaveBeenCalledTimes(2);
     expect(onUsage.mock.calls[1][0].content).toBe("not-json");
   });
+
+  it("a metering hook that throws does not fail the call", async () => {
+    const onUsage = vi.fn(() => {
+      throw new Error("usage store down");
+    });
+    const res = await callJsonLlm<{ a: number }>(makeProvider('{"a":1}'), {
+      systemPrompt: "s",
+      userPrompt: "u",
+      onUsage,
+    });
+    expect(onUsage).toHaveBeenCalledTimes(1);
+    expect(res.parsed).toEqual({ a: 1 });
+  });
 });

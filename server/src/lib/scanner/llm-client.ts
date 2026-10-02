@@ -12,6 +12,9 @@
  * unit tests without booting the real provider singleton.
  */
 import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
+import { createChildLogger } from "../logger.js";
+
+const log = createChildLogger("scanner-llm-client");
 
 export interface ScannerJsonCallInput {
   systemPrompt: string;
@@ -126,7 +129,15 @@ export async function callJsonLlm<T = unknown>(
     reasoningEffort: input.reasoningEffort,
     signal: input.signal,
   });
-  input.onUsage?.(response);
+  // Metering is bookkeeping: a throw here must not read as a failed call, or the
+  // orchestrator would abort the whole scan over it (the shape #718 removed).
+  try {
+    input.onUsage?.(response);
+  } catch (err) {
+    log.warn("Scanner usage metering failed; continuing", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
   const raw = response.content;
   let parsed: T;
   try {

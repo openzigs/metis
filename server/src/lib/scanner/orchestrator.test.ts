@@ -148,6 +148,8 @@ describe("runScan", () => {
     expect(res.bailedOnFreshness).toBe(true);
     expect(res.candidatesKept).toBe(0);
     expect(r.state.failed).not.toBeNull();
+    // The failed row keeps the run's summary rather than resetting counters to 0/0.
+    expect(r.state.failed?.summary).toMatchObject({ bailedOnFreshness: true });
     expect(r.ports.listSymbols).not.toHaveBeenCalled();
   });
 
