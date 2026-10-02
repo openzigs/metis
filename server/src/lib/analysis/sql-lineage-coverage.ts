@@ -43,6 +43,18 @@ import {
  */
 const SCHEMA_LINEAGE_EDGE_KINDS = ["reads", "writes", "persists-to", "calls"] as const;
 
+/**
+ * #721 — whether a row is schema lineage at all. `reads`/`writes`/`persists-to`
+ * are schema kinds by definition, but `calls` is shared with the ordinary code
+ * graph: a tree-sitter code→code call (or a MyBatis call-site hop) carries
+ * `source` null, and only a routine/catalog `calls` edge has a provenance.
+ * Counting the former made a project with no lineage at all read "100%
+ * resolved" over thousands of code calls.
+ */
+export function isSchemaLineageEdge(row: Pick<CoverageEdgeRow, "kind" | "source">): boolean {
+  return row.kind !== "calls" || row.source !== null;
+}
+
 /** The provenance that marks a coarse, Tier-1-only (object-level) dependency edge (#890). */
 const COARSE_CATALOG_SOURCE = "catalog-deps";
 
@@ -167,7 +179,8 @@ export async function computeSqlLineageCoverage(
  * in-memory caller) can drive it without a Prisma fake. Returns `null` for an
  * empty input.
  */
-export function buildSqlLineageCoverage(rows: CoverageEdgeRow[]): SqlLineageCoverage | null {
+export function buildSqlLineageCoverage(allRows: CoverageEdgeRow[]): SqlLineageCoverage | null {
+  const rows = allRows.filter(isSchemaLineageEdge);
   if (rows.length === 0) return null;
 
   let resolvedEdges = 0;

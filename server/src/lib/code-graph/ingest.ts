@@ -216,6 +216,14 @@ export interface IngestStats {
    * ingest and on an incremental one that changed nothing they reference.
    */
   filesRebound: number;
+  /**
+   * #721 — true when an incremental ingest re-parsed every file because the
+   * SQL-lineage inputs (lineage decision or introspected schema) differ from
+   * the ones the graph was last built with, so lineage backfills over files
+   * whose content did not change. False on a fresh graph, an unchanged run and
+   * an explicitly non-incremental one.
+   */
+  lineageBackfill: boolean;
   languageStats: Record<string, number>;
   durationMs: number;
 }
@@ -241,6 +249,29 @@ export function stripNulBytes(s: string): string {
   return s.includes("\u0000") ? s.replace(/\u0000/g, "") : s;
 }
 
+/**
+ * #721 — fingerprint of the inputs that decide what the SQL-lineage pass
+ * (Step 6) writes for a file: whether lineage is enabled and, when it is, the
+ * introspected schema. With lineage off the schema is irrelevant, so it is left
+ * out — adding a DB connector then does not force a re-parse. Schema keys are
+ * sorted, so the same schema introspected in another order hashes the same.
+ */
+export function lineageFingerprint(
+  lineageEnabled: boolean,
+  schema: IntrospectedSchema | null | undefined,
+): string {
+  if (!lineageEnabled) return "off";
+  const sortKeys = (v: unknown): unknown =>
+    v && typeof v === "object"
+      ? Object.fromEntries(
+          Object.keys(v as Record<string, unknown>)
+            .sort()
+            .map((k) => [k, sortKeys((v as Record<string, unknown>)[k])]),
+        )
+      : v;
+  return `on:${sha256(JSON.stringify(sortKeys(schema ?? null)))}`;
+}
+
 export async function ingestCodeGraph(
   prisma: PrismaClient,
   options: IngestOptions,
@@ -261,6 +292,15 @@ export async function ingestCodeGraph(
   // Step 1 — locate or create the CodeGraph row.
   const graph = await upsertCodeGraph(prisma, projectId, repoConnectionId, commitSha);
 
+  // #721 — Step 6 runs only over re-parsed files, so an incremental run whose
+  // lineage inputs changed would leave every unchanged file without lineage.
+  // Re-parse everything when they differ. A graph built before #721 has no
+  // fingerprint: re-parse once if lineage is on now, since it may predate it.
+  const fingerprint = lineageFingerprint(
+    isSqlLineageEnabled(options.sqlLineageOverride),
+    options.introspectedSchema,
+  );
+
   // Step 2 — load .metisignore (file or default).
   const metisignorePath = path.join(rootDir, ".metisignore");
   let ignoreContent = DEFAULT_METISIGNORE;
@@ -274,6 +314,9 @@ export async function ingestCodeGraph(
   // Step 3 — load the graph's existing files: their hashes drive the
   // incremental skip, and a file no longer in the tree is pruned (#313).
   const existingFiles = await loadExistingFiles(prisma, graph.id);
+  const lineageBackfill =
+    incremental && existingFiles.size > 0 && (graph.lineageFingerprint ?? "off") !== fingerprint;
+  const skipUnchanged = incremental && !lineageBackfill;
 
   // Step 4 — walk the tree.
   const stats: IngestStats = {
@@ -287,6 +330,7 @@ export async function ingestCodeGraph(
     schemaEdges: 0,
     routineEdges: 0,
     filesRebound: 0,
+    lineageBackfill,
     languageStats: {},
     durationMs: 0,
   };
@@ -378,7 +422,7 @@ export async function ingestCodeGraph(
     const fileHash = sha256(source);
     const relPath = path.relative(rootDir, filePath).split(path.sep).join("/");
     const existing = existingFiles.get(relPath);
-    if (incremental && existing?.contentHash === fileHash) {
+    if (skipUnchanged && existing?.contentHash === fileHash) {
       unchangedFiles.set(relPath, { language: existing.language });
       stats.filesSkipped += 1;
       continue;
@@ -597,6 +641,7 @@ export async function ingestCodeGraph(
       edgeCount: totalEdges,
       languageStats: JSON.stringify(langStatsRecord),
       lastIndexedAt: new Date(),
+      lineageFingerprint: fingerprint,
     },
   });
 
@@ -639,7 +684,7 @@ async function upsertCodeGraph(
   projectId: string,
   repoConnectionId: string | undefined,
   commitSha: string | undefined,
-): Promise<{ id: string }> {
+): Promise<{ id: string; lineageFingerprint: string | null }> {
   const existing = await prisma.codeGraph.findFirst({
     where: { projectId, repoConnectionId: repoConnectionId ?? null },
   });
@@ -655,8 +700,8 @@ async function upsertCodeGraph(
       repoConnectionId: repoConnectionId ?? null,
       commitSha: commitSha ?? null,
     },
-    select: { id: true },
-  }) as Promise<{ id: string }>;
+    select: { id: true, lineageFingerprint: true },
+  });
 }
 
 async function loadExistingFiles(
