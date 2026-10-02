@@ -21,7 +21,7 @@
  *   • `gateway` — bedrock-access-gateway: OpenAI shape with Bedrock prompt-cache
  *                 reads in `usage.prompt_tokens_details.cached_tokens`.
  */
-import { vi } from "vitest";
+import { vi, type Mock } from "vitest";
 import type { AIProvider, ChatToolCall } from "../../../../src/lib/ai/types.js";
 import { OfflineStubProvider } from "../../../../src/lib/ai/providers/offline-stub-provider.js";
 import type { ContractHarness, ContractRequestView, ContractUsage } from "./suite.js";
@@ -268,8 +268,17 @@ function anthropicMessage(r: QueuedReply, model: string): Record<string, unknown
   };
 }
 
+/** The slice of the SDK's `MessageStream` the Anthropic provider reads. */
+export interface FakeAnthropicStream extends AsyncIterable<{
+  type: string;
+  delta: { type: string; text: string };
+}> {
+  controller: { abort: Mock<() => void> };
+  finalMessage: () => Promise<Record<string, unknown>>;
+}
+
 /** A fake `messages.stream()` handle: text deltas, then the SDK-assembled final message. */
-export function fakeAnthropicStream(message: Record<string, unknown>) {
+export function fakeAnthropicStream(message: Record<string, unknown>): FakeAnthropicStream {
   const content = message.content as Array<{ type: string; text?: string }>;
   const events = content
     .filter((b) => b.type === "text")
@@ -282,7 +291,7 @@ export function fakeAnthropicStream(message: Record<string, unknown>) {
       }));
     });
   return {
-    controller: { abort: vi.fn() },
+    controller: { abort: vi.fn<() => void>() },
     async *[Symbol.asyncIterator]() {
       for (const e of events) yield e;
     },
