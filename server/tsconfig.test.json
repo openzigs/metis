@@ -1,0 +1,17 @@
+{
+  // Issue #698 — type-checks tests/** and co-located src/**/*.test.ts (and the vitest
+  // configs), which tsconfig.json excludes so that `build` emits only src/ to dist/.
+  // Vitest transpiles without type-checking, so without this a test type error reaches
+  // main. A superset of tsconfig.json's files, but `typecheck` still runs the src-only
+  // pass first: its `rootDir: "src"` rejects a src file importing from outside src/
+  // (TS6059, which breaks `build`), and the `..` below cannot. Never used by `build`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // `..`, not `.`: tests/lib/code-graph/queries.test.ts reaches
+    // ../images/mcp-wrappers/. noEmit makes rootDir a layout check only.
+    "rootDir": "..",
+    "noEmit": true
+  },
+  "include": ["src/**/*", "tests/**/*", "vitest.config.ts", "vitest.integration.config.ts"],
+  "exclude": ["dist", "node_modules"]
+}
