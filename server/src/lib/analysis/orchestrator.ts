@@ -69,6 +69,7 @@ import {
   type DroppedCitation,
 } from "./code-citations.js";
 import { getPersona } from "./personas.js";
+import { meterAnalysisProvider, runInAnalysisUsageScope } from "./analysis-usage.js";
 import { withInvokeAgentSpan } from "../otel/genai-spans.js";
 import {
   startRun as startReplayRun,
@@ -561,7 +562,9 @@ export class AnalysisOrchestrator {
   private readonly retrievalHealths = new Map<string, AnalysisRetrievalHealth[]>();
 
   constructor(deps: OrchestratorDeps) {
-    this.deps = deps;
+    // #724 — every model call the analysis family makes through this provider
+    // is recorded as project usage while a run's usage scope is active.
+    this.deps = { ...deps, provider: meterAnalysisProvider(deps.provider) };
   }
 
   /** Issue #178 — expose the configured AI provider for one-shot helpers (deep-dive). */
@@ -624,13 +627,17 @@ export class AnalysisOrchestrator {
     // Issue #855 (Epic #852) \u2014 thread the project's `databaseAwareAnalysis`
     // setting through (already loaded above, no extra query) so the run path
     // can resolve it via #854's resolver instead of the bare env flag.
-    void this.runPipeline(
-      row.id,
-      project.name,
-      project.description,
-      agentKeys,
-      resolvedOpts,
-      project.databaseAwareAnalysis,
+    // #724 — bill every model call of the run to the project; the analysis id
+    // is the session the replay run's cost (`computeRunCost`) reads back.
+    void runInAnalysisUsageScope({ projectId: opts.projectId, sessionId: row.id }, () =>
+      this.runPipeline(
+        row.id,
+        project.name,
+        project.description,
+        agentKeys,
+        resolvedOpts,
+        project.databaseAwareAnalysis,
+      ),
     );
 
     return { id: row.id };
@@ -682,7 +689,19 @@ export class AnalysisOrchestrator {
     agentKey: AnalysisSpecialistAgentKey;
     actorId: string;
   }): Promise<void> {
-    const { analysis: maybeAnalysis } = await this.assertCanRegenerate(opts.analysisId);
+    const { analysis } = await this.assertCanRegenerate(opts.analysisId);
+    // #724 — bill the regenerated agent and the re-synthesis to the project.
+    const scope = {
+      projectId: (analysis as { projectId: string }).projectId,
+      sessionId: opts.analysisId,
+    };
+    return runInAnalysisUsageScope(scope, () => this.regenerateLoadedAgent(opts, analysis));
+  }
+
+  private async regenerateLoadedAgent(
+    opts: { analysisId: string; agentKey: AnalysisSpecialistAgentKey; actorId: string },
+    maybeAnalysis: Awaited<ReturnType<AnalysisOrchestrator["assertCanRegenerate"]>>["analysis"],
+  ): Promise<void> {
     const analysis = maybeAnalysis as NonNullable<typeof maybeAnalysis> & {
       project: { name: string; description: string; status: string };
       projectId: string;
@@ -846,9 +865,20 @@ export class AnalysisOrchestrator {
     analysisId: string;
     actorId: string;
   }): Promise<ResumeSkippedReposResult> {
-    const { analysis: maybeAnalysis, skippedRepos } = await this.assertCanResumeRepos(
-      opts.analysisId,
-    );
+    const loaded = await this.assertCanResumeRepos(opts.analysisId);
+    // #724 — bill the resumed repos and the re-synthesis to the project.
+    const scope = {
+      projectId: (loaded.analysis as { projectId: string }).projectId,
+      sessionId: opts.analysisId,
+    };
+    return runInAnalysisUsageScope(scope, () => this.resumeLoadedRepos(opts, loaded));
+  }
+
+  private async resumeLoadedRepos(
+    opts: { analysisId: string; actorId: string },
+    loaded: Awaited<ReturnType<AnalysisOrchestrator["assertCanResumeRepos"]>>,
+  ): Promise<ResumeSkippedReposResult> {
+    const { analysis: maybeAnalysis, skippedRepos } = loaded;
     // Idempotent no-op: nothing was skipped (or it was already resumed).
     if (skippedRepos.length === 0) {
       return { resumed: [], remaining: [], noop: true };

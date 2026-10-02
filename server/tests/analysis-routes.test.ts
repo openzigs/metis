@@ -205,6 +205,13 @@ const providerChat = vi.fn(async () => ({
   offline: true,
 }));
 
+// #724 — observe project-usage writes without touching the ledger.
+const recordUsageSpy = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/finops/token-tracker.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/finops/token-tracker.js")>()),
+  recordUsage: recordUsageSpy,
+}));
+
 vi.mock("../src/lib/ai/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/ai/index.js")>();
   return {
@@ -875,6 +882,77 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
     expect(meta.structuredRequirements!.requirements[0]!.id).toBe("req-1");
   });
 
+  // #724 — a clarify round's model calls (question generation on start, the
+  // resolution pass on submit) are billed to the project, under the analysis.
+  it("bills a round's model calls to the project, under the analysis", async () => {
+    const structuredRequirements = {
+      requirements: [
+        {
+          id: "req-1",
+          title: "Audit logging",
+          description: "Retain logs",
+          type: "non-functional",
+          stakeholders: [],
+          priority: "must-have",
+          ambiguities: [{ field: "retention", description: "how long?", suggestedQuestion: "?" }],
+          evidenceNeeds: [],
+          rawSource: "raw",
+        },
+      ],
+      totalAmbiguities: 1,
+      totalEvidenceNeeds: 0,
+    };
+    const aId = seedAnalysis({ agentKeys: ["document"], structuredRequirements });
+    const original = providerChat.getMockImplementation();
+    // One question on start (so submit has a real id to answer); `{}` thereafter.
+    const QUESTIONS = JSON.stringify({
+      questions: [{ requirementId: "req-1", ambiguityField: "retention", question: "How long?" }],
+    });
+    providerChat.mockImplementation(async () => ({
+      content: providerChat.mock.calls.length === 1 ? QUESTIONS : "{}",
+      // The real `TokenUsage` shape (the shared stub above uses other names).
+      usage: { promptTokens: 50, completionTokens: 5, totalTokens: 55 } as never,
+      model: "offline-stub",
+      provider: "offline-stub",
+      offline: true,
+    }));
+    const billed = () => {
+      expect(providerChat.mock.calls.length).toBeGreaterThan(0);
+      expect(recordUsageSpy).toHaveBeenCalledTimes(providerChat.mock.calls.length);
+      for (const [arg] of recordUsageSpy.mock.calls) {
+        expect(arg).toMatchObject({
+          projectId: "proj-abcdefghij",
+          sessionId: aId,
+          inputTokens: 50,
+        });
+      }
+      recordUsageSpy.mockClear();
+      providerChat.mockClear();
+    };
+    try {
+      recordUsageSpy.mockClear();
+      providerChat.mockClear();
+      const start = await request(app)
+        .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ requirements: structuredRequirements });
+      expect(start.status).toBe(200);
+      billed();
+      const questions = start.body.data.rounds.at(-1).questions as Array<{ id: string }>;
+      const submit = await request(app)
+        .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({
+          requirements: structuredRequirements,
+          answers: [{ questionId: questions[0]!.id, answer: "30 days" }],
+        });
+      expect(submit.status).toBe(200);
+      billed();
+    } finally {
+      providerChat.mockImplementation(original!);
+    }
+  });
+
   // Issue #382 — older stored requirements (and model output that omits the
   // field) carry no `ambiguities` array. Such a requirement has no open
   // questions; it must not turn the clarify endpoint into a 500.
@@ -1339,6 +1417,12 @@ describe("Clarify CSV export/import", () => {
       // stub, so exactly one provider.chat happened — proving the path is exercised
       // for real (not silently no-op'd by the route's try/catch) yet LLM-free.
       expect(providerChat).toHaveBeenCalledTimes(1);
+      // #724 — and that call is billed to the project, under the analysis.
+      expect(recordUsageSpy).toHaveBeenCalledTimes(1);
+      expect(recordUsageSpy.mock.calls[0]![0]).toMatchObject({
+        projectId: "proj-abcdefghij",
+        sessionId: aId,
+      });
     });
 
     it("skips blank-answer rows and reports unmatched questionIds", async () => {

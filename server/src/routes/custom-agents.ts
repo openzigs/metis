@@ -33,6 +33,7 @@ import {
   parseAgentImport,
 } from "../lib/custom-agents/portability.js";
 import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
+import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/analysis-usage.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import type { CustomAgentDto } from "@metis/shared";
 
@@ -343,12 +344,15 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     }
 
     try {
-      const result = await invokeCustomAgent({
-        provider: makeProvider(),
-        agent,
-        input,
-        projectId,
-      });
+      // #724 — playground spend is the project's: meter it and bill it there.
+      const result = await runInAnalysisUsageScope({ projectId, sessionId: agentId }, () =>
+        invokeCustomAgent({
+          provider: meterAnalysisProvider(makeProvider()),
+          agent,
+          input,
+          projectId,
+        }),
+      );
       auditInvocation({
         actorId: req.user.userId,
         agentId,
