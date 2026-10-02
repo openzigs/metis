@@ -15,12 +15,17 @@
  *       become updates rather than duplicates.
  *   6.  Enforce a per-scan token budget (`Scan.budgetCapTokens`) and
  *       bail out gracefully if exceeded.
+ *   7.  #718 — a symbol whose model reply is not parseable JSON is skipped,
+ *       not fatal; only {@link MAX_CONSECUTIVE_SYMBOL_FAILURES} in a row (a
+ *       model that never answers in JSON) fail the scan. Any other error
+ *       still aborts, and progress so far is persisted either way.
  *
  * I/O ports keep the orchestrator unit-testable without a database,
  * filesystem, or LLM in the loop.
  */
 import type { CandidateFinding, Severity, TriageStatus } from "./types.js";
 import { DEFAULT_SCAN_TOKEN_BUDGET, SCANNER_SUPPORTED_LANGUAGES } from "./types.js";
+import { ScannerJsonParseError } from "./llm-client.js";
 import { computeFingerprint } from "./validators.js";
 
 export interface ScanRecordSnapshot {
@@ -56,6 +61,10 @@ export interface ScanRunResult {
   scanId: string;
   totalSymbols: number;
   symbolsScanned: number;
+  /** #718 — symbols skipped because the model's reply was not parseable JSON. */
+  symbolsFailed: number;
+  /** #718 — the most recent per-symbol failure, `qualifiedName: reason`. */
+  lastSymbolError: string | null;
   candidatesProduced: number;
   candidatesKept: number;
   tokenSpend: number;
@@ -86,7 +95,12 @@ export interface ScannerPorts {
     signal: AbortSignal;
   }): Promise<{ candidates: CandidateFinding[]; totalTokens: number }>;
   /** Second-pass FP filter. */
-  runFpFilter(args: { candidate: CandidateFinding; body: string; signal: AbortSignal }): Promise<{
+  runFpFilter(args: {
+    scan: ScanRecordSnapshot;
+    candidate: CandidateFinding;
+    body: string;
+    signal: AbortSignal;
+  }): Promise<{
     keep: boolean;
     finalConfidence: number;
     rationales: string[];
@@ -96,7 +110,8 @@ export interface ScannerPorts {
   upsertFinding(scanId: string, finding: ScanPersistedFinding): Promise<void>;
   /** Lifecycle. */
   markRunning(scanId: string, commitSha: string): Promise<void>;
-  markFailed(scanId: string, reason: string): Promise<void>;
+  /** `summary` (#718) carries the progress made before the failure, when any. */
+  markFailed(scanId: string, reason: string, summary?: ScanRunResult): Promise<void>;
   markCompleted(scanId: string, summary: ScanRunResult): Promise<void>;
   /** Audit hook — best-effort. */
   audit(event: string, scanId: string, meta?: Record<string, unknown>): Promise<void>;
@@ -107,6 +122,13 @@ export interface RunScanInput {
   signal: AbortSignal;
   reportProgress?: (p: { step: string; pct?: number; current?: number; total?: number }) => void;
 }
+
+/**
+ * #718 — unparseable replies in a row that fail the scan. One bad reply skips
+ * one symbol; a run of them means the model is not answering in JSON at all,
+ * and scanning thousands more symbols would only burn tokens to learn that.
+ */
+export const MAX_CONSECUTIVE_SYMBOL_FAILURES = 5;
 
 const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
 
@@ -136,6 +158,8 @@ export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise
     scanId: scan.id,
     totalSymbols: 0,
     symbolsScanned: 0,
+    symbolsFailed: 0,
+    lastSymbolError: null,
     candidatesProduced: 0,
     candidatesKept: 0,
     tokenSpend: 0,
@@ -150,9 +174,9 @@ export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise
     if (graphSha && graphSha !== scan.commitSha) {
       result.bailedOnFreshness = true;
       const reason = `code-graph commit ${graphSha} does not match scan commit ${scan.commitSha}`;
-      await ports.markFailed(scan.id, reason);
-      await ports.audit("scanner.scan.stale", scan.id, { graphSha, scanSha: scan.commitSha });
       result.durationMs = Date.now() - t0;
+      await ports.markFailed(scan.id, reason, result);
+      await ports.audit("scanner.scan.stale", scan.id, { graphSha, scanSha: scan.commitSha });
       return result;
     }
 
@@ -163,12 +187,12 @@ export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise
     result.totalSymbols = symbols.length;
 
     const budget = scan.budgetCapTokens || DEFAULT_SCAN_TOKEN_BUDGET;
-    let tokenSpend = 0;
     let bailedOnBudget = false;
+    let consecutiveFailures = 0;
 
     for (let i = 0; i < symbols.length; i++) {
       if (input.signal.aborted) break;
-      if (tokenSpend >= budget) {
+      if (result.tokenSpend >= budget) {
         bailedOnBudget = true;
         break;
       }
@@ -189,26 +213,43 @@ export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise
       }
       if (!body || body.trim().length === 0) continue;
 
-      const firstPass = await ports.runFirstPass({
-        scan,
-        symbol: sym,
-        body,
-        ruleInstructions,
-        signal: input.signal,
-      });
-      tokenSpend += firstPass.totalTokens;
+      let firstPass: Awaited<ReturnType<ScannerPorts["runFirstPass"]>>;
+      try {
+        firstPass = await ports.runFirstPass({
+          scan,
+          symbol: sym,
+          body,
+          ruleInstructions,
+          signal: input.signal,
+        });
+      } catch (err) {
+        if (!(err instanceof ScannerJsonParseError)) throw err;
+        // The call ran and cost tokens; only its answer was unusable.
+        result.tokenSpend += err.response.usage?.totalTokens ?? 0;
+        result.symbolsFailed += 1;
+        result.lastSymbolError = `${sym.qualifiedName}: ${err.message}`;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= MAX_CONSECUTIVE_SYMBOL_FAILURES) {
+          throw new Error(
+            `model reply was not parseable JSON for ${consecutiveFailures} consecutive symbols; last: ${result.lastSymbolError}`,
+          );
+        }
+        continue;
+      }
+      consecutiveFailures = 0;
+      result.tokenSpend += firstPass.totalTokens;
       result.symbolsScanned += 1;
 
       for (const candidate of firstPass.candidates) {
         result.candidatesProduced += 1;
         if (!shouldKeepCandidate(candidate)) continue;
-        if (tokenSpend >= budget) {
+        if (result.tokenSpend >= budget) {
           bailedOnBudget = true;
           break;
         }
 
-        const fp = await ports.runFpFilter({ candidate, body, signal: input.signal });
-        tokenSpend += fp.totalTokens;
+        const fp = await ports.runFpFilter({ scan, candidate, body, signal: input.signal });
+        result.tokenSpend += fp.totalTokens;
         if (!fp.keep) continue;
 
         const fingerprint = computeFingerprint({
@@ -230,7 +271,6 @@ export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise
       if (bailedOnBudget) break;
     }
 
-    result.tokenSpend = tokenSpend;
     result.bailedOnBudget = bailedOnBudget;
     result.durationMs = Date.now() - t0;
     await ports.markCompleted(scan.id, result);
@@ -239,11 +279,13 @@ export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise
       candidatesKept: result.candidatesKept,
       tokenSpend: result.tokenSpend,
       bailedOnBudget: result.bailedOnBudget,
+      symbolsFailed: result.symbolsFailed,
     });
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await ports.markFailed(scan.id, message);
+    result.durationMs = Date.now() - t0;
+    await ports.markFailed(scan.id, message, result);
     await ports.audit("scanner.scan.failed", scan.id, { error: message });
     throw err;
   }

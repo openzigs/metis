@@ -12,6 +12,9 @@
  * unit tests without booting the real provider singleton.
  */
 import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
+import { createChildLogger } from "../logger.js";
+
+const log = createChildLogger("scanner-llm-client");
 
 export interface ScannerJsonCallInput {
   systemPrompt: string;
@@ -26,6 +29,11 @@ export interface ScannerJsonCallInput {
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   /** Cancellation signal. */
   signal?: AbortSignal;
+  /**
+   * #718 — called with every provider response BEFORE its content is parsed,
+   * so a reply that fails to parse is still metered: the tokens were spent.
+   */
+  onUsage?: (response: ChatResponse) => void;
 }
 
 export interface ScannerJsonCallResult<T> {
@@ -36,7 +44,8 @@ export interface ScannerJsonCallResult<T> {
 
 /**
  * Strip markdown code fences and prose around a JSON object/array, then
- * parse. Throws when no JSON-looking substring is present.
+ * parse. Throws when no JSON-looking substring is present. `callJsonLlm`
+ * rethrows any such failure as a {@link ScannerJsonParseError}.
  */
 export function extractJson<T = unknown>(raw: string): T {
   const trimmed = raw.trim();
@@ -78,6 +87,24 @@ export function extractJson<T = unknown>(raw: string): T {
   return JSON.parse(trimmed.slice(firstBrace, lastTail + 1)) as T;
 }
 
+/**
+ * #718 — the model replied, but not with parseable JSON. Carries the response
+ * so the caller can charge its tokens to the scan and decide whether the
+ * failure is per-symbol (skip) rather than per-scan (abort). The message names
+ * `finishReason` and the reply length: an empty reply with
+ * `finishReason=max_tokens` is a model that spent its output cap reasoning.
+ */
+export class ScannerJsonParseError extends Error {
+  constructor(
+    reason: string,
+    readonly raw: string,
+    readonly response: ChatResponse,
+  ) {
+    super(`${reason} (finishReason=${response.finishReason ?? "unknown"}, ${raw.length} chars)`);
+    this.name = "ScannerJsonParseError";
+  }
+}
+
 const STRICT_JSON_REMINDER =
   "Respond with a single JSON object only. No prose, no markdown code fences, no commentary.";
 
@@ -102,7 +129,25 @@ export async function callJsonLlm<T = unknown>(
     reasoningEffort: input.reasoningEffort,
     signal: input.signal,
   });
+  // Metering is bookkeeping: a throw here must not read as a failed call, or the
+  // orchestrator would abort the whole scan over it (the shape #718 removed).
+  try {
+    input.onUsage?.(response);
+  } catch (err) {
+    log.warn("Scanner usage metering failed; continuing", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
   const raw = response.content;
-  const parsed = extractJson<T>(raw);
+  let parsed: T;
+  try {
+    parsed = extractJson<T>(raw);
+  } catch (err) {
+    throw new ScannerJsonParseError(
+      err instanceof Error ? err.message : String(err),
+      raw,
+      response,
+    );
+  }
   return { parsed, raw, response };
 }

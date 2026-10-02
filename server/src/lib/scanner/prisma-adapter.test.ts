@@ -23,7 +23,7 @@ const mockPrisma = {
   codeGraph: { findFirst: vi.fn() },
   codeSymbol: { findMany: vi.fn() },
   ruleSet: { findMany: vi.fn() },
-  scan: { findUnique: vi.fn() },
+  scan: { findUnique: vi.fn(), update: vi.fn() },
   repoConnection: { findFirst: vi.fn() },
   jiraConnection: { findFirst: vi.fn() },
   project: { findUnique: vi.fn() },
@@ -36,6 +36,10 @@ const mockPrisma = {
 vi.mock("../prisma.js", () => ({ prisma: mockPrisma }));
 
 vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+
+// #718 — scanner LLM calls are metered into the project's usage ledger.
+const mockRecordUsage = vi.fn();
+vi.mock("../finops/token-tracker.js", () => ({ recordUsage: mockRecordUsage }));
 
 // #532 — one provider object for the whole file: the adapter caches the first
 // provider it builds, so tests reshape this object rather than swap it.
@@ -108,6 +112,8 @@ const {
 } = await import("./prisma-adapter.js");
 const { PublishError } = await import("./finding-publisher.js");
 const { HAIKU_MODEL_ID, SONNET_MODEL_ID } = await import("../ai/model-router.js");
+const { scannerMaxOutputTokens } = await import("./output-budget.js");
+const { ScannerJsonParseError } = await import("./llm-client.js");
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -1152,7 +1158,12 @@ describe("buildScannerPorts — model on the active provider (#532)", () => {
 
   async function fpFilterModel(): Promise<unknown> {
     await buildScannerPorts()
-      .runFpFilter({ candidate, body: "function bar() {}", signal: new AbortController().signal })
+      .runFpFilter({
+        scan,
+        candidate,
+        body: "function bar() {}",
+        signal: new AbortController().signal,
+      })
       .catch(() => undefined);
     expect(mockProvider.chat).toHaveBeenCalled();
     return (mockProvider.chat.mock.calls[0] as unknown[])[1];
@@ -1180,5 +1191,188 @@ describe("buildScannerPorts — model on the active provider (#532)", () => {
   it("FP filter sends the Sonnet tier id to a provider that serves it", async () => {
     mockProvider.servesRouterModel = (id) => id === SONNET_MODEL_ID;
     expect(await fpFilterModel()).toMatchObject({ model: SONNET_MODEL_ID });
+  });
+});
+
+// ----------------------------------------------------------------------------
+// #718 — scanner calls are metered, sized for reasoning models, and a scan's
+// progress + failure reason are persisted where the UI reads them.
+// ----------------------------------------------------------------------------
+
+describe("buildScannerPorts — metering, output caps, lifecycle (#718)", () => {
+  const scan = {
+    id: "scan-9",
+    projectId: "proj-9",
+    repoConnectionId: "repo-9",
+    commitSha: "abc",
+    mode: "heuristic" as const,
+    budgetCapTokens: 100_000,
+    createdById: "user-9",
+  };
+  const symbol = {
+    id: "sym-9",
+    qualifiedName: "lib/foo.go::Bar",
+    kind: "function",
+    language: "go",
+    filePath: "lib/foo.go",
+    startLine: 1,
+    endLine: 2,
+  };
+  const candidate = {
+    ruleId: null,
+    symbolId: "sym-9",
+    qualifiedName: "lib/foo.go::Bar",
+    filePath: "lib/foo.go",
+    title: "t",
+    body: "b",
+    severity: "low" as const,
+    category: "bug",
+    evidenceLines: [1],
+    confidence: 0.9,
+  };
+  const emptyReasoningReply = {
+    content: "",
+    finishReason: "max_tokens",
+    usage: {
+      promptTokens: 1200,
+      completionTokens: 2048,
+      totalTokens: 3248,
+      cacheReadTokens: 7,
+      cacheWriteTokens: 3,
+    },
+    model: "deepseek-flash",
+    provider: "anthropic",
+  };
+  const originalModel = mockProvider.model;
+
+  beforeEach(() => {
+    mockPrisma.codeEdge.findMany.mockResolvedValue([]);
+    mockKnowledgeSearch.mockResolvedValue({ hits: [], mode: "hybrid" });
+    mockRecordUsage.mockReset();
+    mockProvider.chat.mockReset();
+    mockPrisma.scan.update.mockReset().mockResolvedValue({});
+  });
+  afterEach(() => {
+    mockProvider.model = originalModel;
+  });
+
+  function firstPass() {
+    return buildScannerPorts().runFirstPass({
+      scan,
+      symbol,
+      body: "func Bar() {}",
+      ruleInstructions: "",
+      signal: new AbortController().signal,
+    });
+  }
+
+  it("meters a first-pass call that returned no JSON against the scan's project", async () => {
+    mockProvider.chat.mockResolvedValue(emptyReasoningReply);
+    await expect(firstPass()).rejects.toBeInstanceOf(ScannerJsonParseError);
+    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+    expect(mockRecordUsage).toHaveBeenCalledWith({
+      projectId: "proj-9",
+      sessionId: "scan-scan-9",
+      provider: "anthropic",
+      model: "deepseek-flash",
+      inputTokens: 1200,
+      outputTokens: 2048,
+      cacheReadTokens: 7,
+      cacheWriteTokens: 3,
+    });
+  });
+
+  it("meters every FP-filter vote", async () => {
+    mockProvider.chat.mockResolvedValue({
+      ...emptyReasoningReply,
+      content: '{"keep":true,"confidence":0.9}',
+    });
+    await buildScannerPorts().runFpFilter({
+      scan,
+      candidate,
+      body: "func Bar() {}",
+      signal: new AbortController().signal,
+    });
+    expect(mockRecordUsage).toHaveBeenCalledTimes(2);
+    expect(mockRecordUsage.mock.calls[0][0]).toMatchObject({
+      projectId: "proj-9",
+      sessionId: "scan-scan-9",
+    });
+  });
+
+  it("gives a reasoning-by-default model room to think on both passes", async () => {
+    mockProvider.model = "deepseek-flash";
+    mockProvider.chat.mockResolvedValue({ ...emptyReasoningReply, content: "{}" });
+    await firstPass();
+    await buildScannerPorts().runFpFilter({
+      scan,
+      candidate,
+      body: "func Bar() {}",
+      signal: new AbortController().signal,
+    });
+    const firstCap = mockProvider.chat.mock.calls[0][1].maxTokens;
+    const fpCap = mockProvider.chat.mock.calls[1][1].maxTokens;
+    expect(firstCap).toBe(scannerMaxOutputTokens(2048, "deepseek-flash"));
+    expect(firstCap).toBeGreaterThan(2048);
+    expect(fpCap).toBe(scannerMaxOutputTokens(512, "deepseek-flash"));
+    expect(fpCap).toBeGreaterThan(512);
+  });
+
+  it("keeps the answer-only caps for a model that does not reason by default", async () => {
+    mockProvider.chat.mockResolvedValue({ ...emptyReasoningReply, content: "{}" });
+    await firstPass();
+    expect(mockProvider.chat.mock.calls[0][1].maxTokens).toBe(2048);
+  });
+
+  const summary = {
+    scanId: "scan-9",
+    totalSymbols: 3533,
+    symbolsScanned: 0,
+    symbolsFailed: 5,
+    lastSymbolError: "lib/foo.go::Bar: no JSON",
+    candidatesProduced: 0,
+    candidatesKept: 0,
+    tokenSpend: 16_240,
+    bailedOnBudget: false,
+    bailedOnFreshness: false,
+    durationMs: 9000,
+  };
+
+  it("markFailed persists the progress so the scan does not read 0/0 symbols, 0 tokens", async () => {
+    await buildScannerPorts().markFailed("scan-9", "boom", summary);
+    const data = mockPrisma.scan.update.mock.calls[0][0].data;
+    expect(mockPrisma.scan.update.mock.calls[0][0].where).toEqual({ id: "scan-9" });
+    expect(data).toMatchObject({
+      status: "failed",
+      errorMessage: "boom",
+      totalSymbols: 3533,
+      scannedSymbols: 0,
+      totalTokens: 16_240,
+    });
+  });
+
+  it("markFailed without a summary only records the failure", async () => {
+    await buildScannerPorts().markFailed("scan-9", "x".repeat(2000));
+    const data = mockPrisma.scan.update.mock.calls[0][0].data;
+    expect(data.errorMessage).toHaveLength(1000);
+    expect(data).not.toHaveProperty("totalSymbols");
+  });
+
+  it("markCompleted records skipped symbols in errorMessage so the UI can show them", async () => {
+    await buildScannerPorts().markCompleted("scan-9", { ...summary, symbolsScanned: 3528 });
+    const data = mockPrisma.scan.update.mock.calls[0][0].data;
+    expect(data.status).toBe("completed");
+    expect(data.errorMessage).toBe(
+      "5 of 3533 symbols skipped: the model reply was not parseable JSON. Last: lib/foo.go::Bar: no JSON",
+    );
+  });
+
+  it("markCompleted leaves errorMessage empty on a clean run", async () => {
+    await buildScannerPorts().markCompleted("scan-9", {
+      ...summary,
+      symbolsFailed: 0,
+      lastSymbolError: null,
+    });
+    expect(mockPrisma.scan.update.mock.calls[0][0].data.errorMessage).toBeNull();
   });
 });

@@ -68,6 +68,22 @@ export default function ScanTriagePage() {
         ) : null}
       </PageHeader>
 
+      {/* #718 — why a scan failed, or which symbols a completed scan skipped. */}
+      {scanQuery.data?.errorMessage ? (
+        <p
+          role={scanQuery.data.status === "failed" ? "alert" : "status"}
+          className={
+            scanQuery.data.status === "failed"
+              ? "rounded border border-destructive/50 p-3 text-xs text-destructive"
+              : "rounded border p-3 text-xs text-muted-foreground"
+          }
+          data-testid="scanner-triage-error"
+        >
+          {scanQuery.data.status === "failed" ? "Scan failed: " : null}
+          {scanQuery.data.errorMessage}
+        </p>
+      ) : null}
+
       <Card className="p-4" data-testid="scanner-triage-card">
         {findingsQuery.isLoading ? (
           <p className="text-xs text-muted-foreground">Loading findings…</p>

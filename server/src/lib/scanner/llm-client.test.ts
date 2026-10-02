@@ -1,7 +1,7 @@
 /** Epic #708 — llm-client extractJson + callJsonLlm tests. */
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
-import { callJsonLlm, extractJson } from "./llm-client.js";
+import { ScannerJsonParseError, callJsonLlm, extractJson } from "./llm-client.js";
 
 function makeProvider(content: string): AIProvider {
   const response: ChatResponse = {
@@ -88,5 +88,58 @@ describe("callJsonLlm", () => {
   it("propagates JSON parse errors", async () => {
     const provider = makeProvider("not-json");
     await expect(callJsonLlm(provider, { systemPrompt: "s", userPrompt: "u" })).rejects.toThrow();
+  });
+
+  // #718 — a parse failure must carry the response that cost tokens, so the
+  // caller can meter it and charge it to the scan budget instead of losing it.
+  it("throws ScannerJsonParseError carrying the raw reply and the response", async () => {
+    const provider = makeProvider("");
+    const err = await callJsonLlm(provider, { systemPrompt: "s", userPrompt: "u" }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ScannerJsonParseError);
+    const parseErr = err as ScannerJsonParseError;
+    expect(parseErr.raw).toBe("");
+    expect(parseErr.response.usage.totalTokens).toBe(15);
+    expect(parseErr.message).toMatch(/no JSON object\/array found in model output/);
+    expect(parseErr.message).toContain("finishReason=stop");
+    expect(parseErr.message).toContain("0 chars");
+  });
+
+  it("reports finishReason=unknown when the adapter does not surface one", async () => {
+    const provider = makeProvider("prose only");
+    const chat = provider.chat as ReturnType<typeof vi.fn>;
+    const res = (await provider.chat([])) as ChatResponse;
+    chat.mockResolvedValue({ ...res, finishReason: undefined });
+    const err = (await callJsonLlm(provider, { systemPrompt: "s", userPrompt: "u" }).catch(
+      (e: unknown) => e,
+    )) as Error;
+    expect(err.message).toContain("finishReason=unknown");
+    expect(err.message).toContain("10 chars");
+  });
+
+  it("hands every response to onUsage — including one that fails to parse", async () => {
+    const onUsage = vi.fn();
+    await callJsonLlm(makeProvider('{"a":1}'), { systemPrompt: "s", userPrompt: "u", onUsage });
+    await callJsonLlm(makeProvider("not-json"), {
+      systemPrompt: "s",
+      userPrompt: "u",
+      onUsage,
+    }).catch(() => undefined);
+    expect(onUsage).toHaveBeenCalledTimes(2);
+    expect(onUsage.mock.calls[1][0].content).toBe("not-json");
+  });
+
+  it("a metering hook that throws does not fail the call", async () => {
+    const onUsage = vi.fn(() => {
+      throw new Error("usage store down");
+    });
+    const res = await callJsonLlm<{ a: number }>(makeProvider('{"a":1}'), {
+      systemPrompt: "s",
+      userPrompt: "u",
+      onUsage,
+    });
+    expect(onUsage).toHaveBeenCalledTimes(1);
+    expect(res.parsed).toEqual({ a: 1 });
   });
 });

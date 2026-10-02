@@ -5,9 +5,12 @@ import {
   type ScanRecordSnapshot,
   type ScannerPorts,
   type SymbolToScan,
+  MAX_CONSECUTIVE_SYMBOL_FAILURES,
   runScan,
 } from "./orchestrator.js";
 import type { CandidateFinding } from "./types.js";
+import type { ChatResponse } from "../ai/types.js";
+import { ScannerJsonParseError } from "./llm-client.js";
 
 function makeScan(overrides: Partial<ScanRecordSnapshot> = {}): ScanRecordSnapshot {
   return {
@@ -56,7 +59,7 @@ interface Recorder {
   state: {
     running: { id: string; sha: string } | null;
     completed: { id: string; summary: unknown } | null;
-    failed: { id: string; reason: string } | null;
+    failed: { id: string; reason: string; summary?: unknown } | null;
     audit: Array<{ event: string; meta?: Record<string, unknown> }>;
     upserts: ScanPersistedFinding[];
   };
@@ -108,9 +111,11 @@ function recorder(opts: {
     markRunning: vi.fn().mockImplementation(async (id: string, sha: string) => {
       state.running = { id, sha };
     }),
-    markFailed: vi.fn().mockImplementation(async (id: string, reason: string) => {
-      state.failed = { id, reason };
-    }),
+    markFailed: vi
+      .fn()
+      .mockImplementation(async (id: string, reason: string, summary?: unknown) => {
+        state.failed = { id, reason, summary };
+      }),
     markCompleted: vi.fn().mockImplementation(async (id: string, summary: unknown) => {
       state.completed = { id, summary };
     }),
@@ -143,6 +148,8 @@ describe("runScan", () => {
     expect(res.bailedOnFreshness).toBe(true);
     expect(res.candidatesKept).toBe(0);
     expect(r.state.failed).not.toBeNull();
+    // The failed row keeps the run's summary rather than resetting counters to 0/0.
+    expect(r.state.failed?.summary).toMatchObject({ bailedOnFreshness: true });
     expect(r.ports.listSymbols).not.toHaveBeenCalled();
   });
 
@@ -218,5 +225,98 @@ describe("runScan", () => {
     });
     const res = await runScan(r.ports, { scanId: "scan-1", signal: ac.signal });
     expect(res.symbolsScanned).toBe(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // #718 — one unparseable model reply must not abort the whole scan.
+  // ---------------------------------------------------------------------------
+
+  function parseError(totalTokens = 40): ScannerJsonParseError {
+    return new ScannerJsonParseError("no JSON object/array found in model output", "", {
+      content: "",
+      usage: { promptTokens: 30, completionTokens: 10, totalTokens },
+    } as ChatResponse);
+  }
+
+  it("skips a symbol whose reply is unparseable and completes the scan", async () => {
+    const r = recorder({
+      symbols: [makeSym({ id: "a" }), makeSym({ id: "b" }), makeSym({ id: "c" })],
+      fpTokens: 0,
+    });
+    r.ports.runFirstPass = vi.fn().mockImplementation(async ({ symbol }) => {
+      if (symbol.id === "b") throw parseError(40);
+      return { candidates: [candidate({ symbolId: symbol.id })], totalTokens: 100 };
+    });
+    const res = await runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal });
+    expect(r.state.failed).toBeNull();
+    expect(r.state.completed?.id).toBe("scan-1");
+    expect(res.symbolsScanned).toBe(2);
+    expect(res.symbolsFailed).toBe(1);
+    expect(res.candidatesKept).toBe(2);
+    // The failed call still cost tokens — they count against the budget.
+    expect(res.tokenSpend).toBe(240);
+    expect(res.lastSymbolError).toMatch(/src\/foo\.ts::bar: no JSON object/);
+  });
+
+  it("resets the consecutive-failure streak after a parseable reply", async () => {
+    const ids = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+    const r = recorder({ symbols: ids.map((id) => makeSym({ id })), firstPassTokens: 1 });
+    // 4 failures, a success, 4 more failures: never 5 in a row.
+    r.ports.runFirstPass = vi.fn().mockImplementation(async ({ symbol }) => {
+      if (symbol.id !== "e") throw parseError(0);
+      return { candidates: [], totalTokens: 1 };
+    });
+    const res = await runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal });
+    expect(r.state.failed).toBeNull();
+    expect(res.symbolsFailed).toBe(8);
+    expect(res.symbolsScanned).toBe(1);
+  });
+
+  it("fails the scan after MAX_CONSECUTIVE_SYMBOL_FAILURES unparseable replies in a row", async () => {
+    const ids = ["a", "b", "c", "d", "e", "f", "g"];
+    const r = recorder({ symbols: ids.map((id) => makeSym({ id })) });
+    r.ports.runFirstPass = vi.fn().mockRejectedValue(parseError(10));
+    await expect(
+      runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal }),
+    ).rejects.toThrow(/5 consecutive symbols/);
+    expect(r.ports.runFirstPass).toHaveBeenCalledTimes(MAX_CONSECUTIVE_SYMBOL_FAILURES);
+    expect(r.state.failed?.reason).toMatch(/no JSON object\/array found/);
+    // Persisted on failure, so the UI does not read 0/0 symbols, 0 tokens.
+    expect(r.state.failed?.summary).toMatchObject({
+      totalSymbols: 7,
+      symbolsScanned: 0,
+      symbolsFailed: 5,
+      tokenSpend: 50,
+    });
+  });
+
+  it("still aborts on a non-parse error (provider down) — no silent per-symbol swallow", async () => {
+    const r = recorder({ symbols: [makeSym({ id: "a" }), makeSym({ id: "b" })] });
+    r.ports.runFirstPass = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+    await expect(
+      runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal }),
+    ).rejects.toThrow(/ECONNREFUSED/);
+    expect(r.ports.runFirstPass).toHaveBeenCalledTimes(1);
+    expect(r.state.failed?.summary).toMatchObject({ totalSymbols: 2 });
+  });
+
+  it("persists the progress made before a failure", async () => {
+    const r = recorder({ symbols: [makeSym({ id: "a" }), makeSym({ id: "b" })], fpTokens: 0 });
+    r.ports.runFirstPass = vi.fn().mockImplementation(async ({ symbol }) => {
+      if (symbol.id === "b") throw new Error("boom");
+      return { candidates: [], totalTokens: 70 };
+    });
+    await expect(
+      runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal }),
+    ).rejects.toThrow(/boom/);
+    expect(r.state.failed?.summary).toMatchObject({ symbolsScanned: 1, tokenSpend: 70 });
+  });
+
+  it("passes the scan to the FP filter so its calls can be metered against it", async () => {
+    const r = recorder({});
+    await runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal });
+    expect((r.ports.runFpFilter as ReturnType<typeof vi.fn>).mock.calls[0][0].scan.id).toBe(
+      "scan-1",
+    );
   });
 });

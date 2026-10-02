@@ -12,7 +12,7 @@
  * bug report we can't anchor in source.
  */
 import type { AIProvider } from "../ai/types.js";
-import { callJsonLlm } from "./llm-client.js";
+import { callJsonLlm, type ScannerJsonCallInput } from "./llm-client.js";
 import {
   type AssembledContext,
   type AssembledSymbol,
@@ -31,7 +31,17 @@ export interface ScanSymbolInput {
   modelOverride?: string;
   /** Cancellation. */
   signal?: AbortSignal;
+  /**
+   * #718 — OUTPUT cap for the call. Defaults to {@link SCAN_SYMBOL_ANSWER_TOKENS};
+   * a model that reasons by default needs that plus a reasoning allowance.
+   */
+  maxTokens?: number;
+  /** #718 — metering hook, called for every response (parseable or not). */
+  onUsage?: ScannerJsonCallInput["onUsage"];
 }
+
+/** Output tokens a per-symbol findings answer needs, before any reasoning. */
+export const SCAN_SYMBOL_ANSWER_TOKENS = 2048;
 
 export interface ScanSymbolResult {
   candidates: CandidateFinding[];
@@ -120,9 +130,10 @@ export async function scanSymbol(
     systemPrompt: ctx.systemPrompt,
     userPrompt: ctx.userPrompt,
     modelOverride: input.modelOverride,
-    maxTokens: 2048,
+    maxTokens: input.maxTokens ?? SCAN_SYMBOL_ANSWER_TOKENS,
     promptCaching: true,
     signal: input.signal,
+    onUsage: input.onUsage,
   });
   return {
     candidates: parseCandidates(parsed, input.symbol),

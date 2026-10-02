@@ -1,7 +1,7 @@
 /** Epic #708 / Issue #713 — fp-filter tests. */
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatResponse } from "../ai/types.js";
-import { combineVerdicts, filterCandidate } from "./fp-filter.js";
+import { FP_FILTER_ANSWER_TOKENS, combineVerdicts, filterCandidate } from "./fp-filter.js";
 import type { CandidateFinding } from "./types.js";
 
 function provider(replies: string[]): AIProvider {
@@ -161,5 +161,31 @@ describe("filterCandidate", () => {
       signal: ac.signal,
     });
     expect(out.verdicts.length).toBeLessThan(3);
+  });
+
+  // #718 — a vote whose reply did not parse still spent tokens.
+  it("counts the tokens of votes whose reply fails to parse", async () => {
+    const p = provider(["not json", JSON.stringify({ keep: true, confidence: 0.9 })]);
+    const out = await filterCandidate(p, { candidate, symbolBody: "code", votes: 2 });
+    expect(out.verdicts.length).toBe(1);
+    expect(out.totalTokens).toBe(160);
+  });
+
+  it("defaults maxTokens to the answer budget and forwards an override + onUsage", async () => {
+    const p = provider(["{}", "{}", "{}"]);
+    const onUsage = vi.fn();
+    await filterCandidate(p, { candidate, symbolBody: "code", votes: 1 });
+    await filterCandidate(p, {
+      candidate,
+      symbolBody: "code",
+      votes: 2,
+      maxTokens: 33_280,
+      onUsage,
+    });
+    const calls = (p.chat as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0][1].maxTokens).toBe(FP_FILTER_ANSWER_TOKENS);
+    expect(FP_FILTER_ANSWER_TOKENS).toBe(512);
+    expect(calls[1][1].maxTokens).toBe(33_280);
+    expect(onUsage).toHaveBeenCalledTimes(2);
   });
 });
