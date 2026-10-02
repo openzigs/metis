@@ -29,7 +29,12 @@ import { createJiraClient } from "../connectors/jira/jira-client.js";
 import { getKnowledgeService } from "../rag/knowledge-service.js";
 import { acquirePublishOctokit } from "../publishing/octokit-factory.js";
 import { getPersona } from "../analysis/personas.js";
-import type { AnalysisAgentKey, CodeCitation, FindingIssueDraft } from "@metis/shared";
+import type {
+  AnalysisAgentKey,
+  AnalysisAgentSource,
+  CodeCitation,
+  FindingIssueDraft,
+} from "@metis/shared";
 
 import { assembleContext } from "./context-assembler.js";
 import type { AssembledNeighbour, AssembledRagHit, AssembledSymbol } from "./context-assembler.js";
@@ -761,10 +766,11 @@ function analysisFindingFingerprint(findingId: string): string {
 export function buildAnalysisFindingBody(args: {
   analysisId: string;
   agentKey: AnalysisAgentKey;
+  /** #338 — set for an agent-phase finding; wins over the `agentKey` persona. */
+  agentSource?: AnalysisAgentSource | null;
   draft: FindingIssueDraft;
 }): string {
-  const { analysisId, agentKey, draft } = args;
-  const persona = getPersona(agentKey);
+  const { analysisId, agentKey, agentSource, draft } = args;
   const lines: string[] = [draft.problemStatement.trim()];
   if (draft.affected.files.length > 0) {
     lines.push("", "### Affected files");
@@ -781,9 +787,32 @@ export function buildAnalysisFindingBody(args: {
   lines.push(
     "",
     "---",
-    `From METIS analysis \`${analysisId}\` · reported by **${persona.name}** (${persona.role}).`,
+    `From METIS analysis \`${analysisId}\` · reported by ${reporterAttribution(agentKey, agentSource)}.`,
   );
   return lines.join("\n");
+}
+
+/**
+ * #338 — who reported the finding, for the published footer. An agent-phase
+ * finding names its custom/library agent; a specialist finding names its
+ * persona exactly as before. The agent name is operator-authored, so it is
+ * collapsed to one line and every markdown/HTML metacharacter (and `@`, so it
+ * cannot mention anyone) is backslash-escaped. The ref is validated by
+ * `isAgentPhaseResultKey` upstream and sits in a code span.
+ */
+function reporterAttribution(
+  agentKey: AnalysisAgentKey,
+  agentSource: AnalysisAgentSource | null | undefined,
+): string {
+  if (!agentSource) {
+    const persona = getPersona(agentKey);
+    return `**${persona.name}** (${persona.role})`;
+  }
+  const name = agentSource.name
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[\\`*_{}[\]()<>#+\-.!|~@&]/g, "\\$&");
+  return `**${name}** (${agentSource.kind} agent \`${agentSource.ref}\`)`;
 }
 
 /**
@@ -835,6 +864,8 @@ export interface PublishAnalysisFindingInput {
   analysisId: string;
   findingId: string;
   agentKey: AnalysisAgentKey;
+  /** #338 — the custom/library agent an agent-phase finding came from. */
+  agentSource?: AnalysisAgentSource | null;
   severity: Severity;
   category: string;
   draft: FindingIssueDraft;
@@ -874,6 +905,7 @@ export async function publishAnalysisFinding(
   const body = buildAnalysisFindingBody({
     analysisId: input.analysisId,
     agentKey: input.agentKey,
+    agentSource: input.agentSource,
     draft: input.draft,
   });
 

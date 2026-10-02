@@ -1236,6 +1236,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             analysisId,
             findingId,
             agentKey: finding.agentKey,
+            agentSource: finding.agentSource,
             severity: finding.severity,
             category: finding.category,
             draft: parsed.data.draft,

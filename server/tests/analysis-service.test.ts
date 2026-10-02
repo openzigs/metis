@@ -198,6 +198,44 @@ vi.mock("../src/lib/prisma.js", () => ({
         }
         return out;
       }),
+      // #338 — the Deep Dive → Issue lookup. Honours the
+      // `Finding → AgentResult → Analysis → Project` scoping join and returns
+      // the `include` shape `loadFindingForDeepDive` asks for.
+      findFirst: vi.fn(
+        async ({
+          where,
+          include,
+        }: {
+          where: {
+            id: string;
+            agentResult: {
+              analysis: { id: string; deletedAt: null; project: { id: string } };
+            };
+          };
+          include: { agentResult: { select: { agentKey?: boolean; output?: boolean } } };
+        }) => {
+          // Like Prisma, only the selected AgentResult columns come back.
+          const sel = include.agentResult.select;
+          for (const ar of agentResults.values()) {
+            const f = ar.findings.find((x) => x.id === where.id);
+            if (!f) continue;
+            const an = analyses.get(ar.analysisId);
+            const scope = where.agentResult.analysis;
+            if (!an || an.deletedAt || an.id !== scope.id || an.projectId !== scope.project.id) {
+              return null;
+            }
+            return {
+              ...f,
+              agentResult: {
+                ...(sel.agentKey ? { agentKey: ar.agentKey } : {}),
+                ...(sel.output ? { output: ar.output } : {}),
+                analysis: { project: { name: "Acme" } },
+              },
+            };
+          }
+          return null;
+        },
+      ),
     },
     requirement: {
       deleteMany: vi.fn(async ({ where }: { where: { analysisId: string } }) => {
@@ -281,6 +319,7 @@ import {
   getAnalysisSnapshot,
   getStructuredRequirements,
   listAnalysesForProject,
+  loadFindingForDeepDive,
   markAnalysisCancelled,
   markAnalysisCompleted,
   markAnalysisFailed,
@@ -387,6 +426,116 @@ describe("persistAgentResult + readFlattenedFindings", () => {
     });
     expect(second.id).not.toBe(first.id);
     expect(agentResults.size).toBe(1);
+  });
+});
+
+describe("loadFindingForDeepDive — agent attribution (#338)", () => {
+  const FINDING = {
+    category: "security" as const,
+    severity: "high" as const,
+    title: "Unauthenticated admin route",
+    body: "The /admin route has no auth guard.",
+    tags: [],
+    citations: [],
+  };
+  const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+  async function seedAnalysis() {
+    return createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["code"],
+    });
+  }
+
+  it.each([
+    ["custom", "custom:c1", "Threat Modeller"],
+    ["library", "library:owasp-auditor", "OWASP Auditor"],
+  ] as const)(
+    "attributes a %s agent-phase finding to its agent, not the code specialist",
+    async (kind, ref, name) => {
+      const a = await seedAnalysis();
+      const ar = await persistAgentResult({
+        analysisId: a.id,
+        agentKey: ref,
+        status: "completed",
+        output: { summary: "s", findings: [FINDING], notes: [], source: { kind, ref, name } },
+        startedAt: new Date(),
+        completedAt: new Date(),
+        usage,
+      });
+
+      const loaded = await loadFindingForDeepDive({
+        projectId: "proj-abcdefghij",
+        analysisId: a.id,
+        findingId: ar.findingIds[0],
+      });
+
+      expect(loaded?.agentSource).toEqual({ kind, ref, name });
+    },
+  );
+
+  it("falls back to the ref when the persisted blob carries no agent name", async () => {
+    const a = await seedAnalysis();
+    const ar = await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "custom:c2",
+      status: "completed",
+      output: {
+        summary: "s",
+        findings: [FINDING],
+        notes: [],
+        source: { kind: "custom", ref: "custom:c2", name: "   " },
+      },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage,
+    });
+    const loaded = await loadFindingForDeepDive({
+      projectId: "proj-abcdefghij",
+      analysisId: a.id,
+      findingId: ar.findingIds[0],
+    });
+    expect(loaded?.agentSource).toEqual({ kind: "custom", ref: "custom:c2", name: "custom:c2" });
+  });
+
+  it("keeps a specialist finding's agent key and gives it no agent source", async () => {
+    const a = await seedAnalysis();
+    const ar = await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "database",
+      status: "completed",
+      output: { agentKey: "database", summary: "s", findings: [FINDING], notes: [] },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage,
+    });
+    const loaded = await loadFindingForDeepDive({
+      projectId: "proj-abcdefghij",
+      analysisId: a.id,
+      findingId: ar.findingIds[0],
+    });
+    expect(loaded).toMatchObject({ agentKey: "database", agentSource: null, projectName: "Acme" });
+  });
+
+  it("returns null for a finding addressed through another project", async () => {
+    const a = await seedAnalysis();
+    const ar = await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "database",
+      status: "completed",
+      output: { agentKey: "database", summary: "s", findings: [FINDING], notes: [] },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage,
+    });
+    expect(
+      await loadFindingForDeepDive({
+        projectId: "proj-otherproject",
+        analysisId: a.id,
+        findingId: ar.findingIds[0],
+      }),
+    ).toBeNull();
   });
 });
 
