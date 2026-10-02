@@ -275,9 +275,17 @@ export function stripNulBytes(s: string): string {
 export function lineageFingerprint(
   lineageEnabled: boolean,
   schema: IntrospectedSchema | null | undefined,
+  opts: {
+    /** A stored schema component to keep instead of hashing `schema` — the
+     *  connector could not be introspected, so `schema` says nothing. */
+    preservedSchema?: string;
+    /** Lineage was on but the sidecar never answered: record `unreached`. */
+    sidecarUnreached?: boolean;
+  } = {},
 ): string {
   if (!lineageEnabled) return "off";
-  return `on:${schemaFingerprint(schema)}`;
+  const schemaPart = opts.preservedSchema ?? schemaFingerprint(schema);
+  return `${opts.sidecarUnreached ? "unreached" : "on"}:${schemaPart}`;
 }
 
 /** The schema component of a {@link lineageFingerprint}. */
@@ -335,11 +343,10 @@ export async function ingestCodeGraph(
   // so keep the stored schema component rather than fingerprinting "no schema".
   const lineageOn = isSqlLineageEnabled(options.sqlLineageOverride);
   const stored = parseLineageFingerprint(graph.lineageFingerprint);
-  const schemaPart =
-    options.introspectionFailed && stored
-      ? stored.schema
-      : schemaFingerprint(options.introspectedSchema);
-  const fingerprint = lineageOn ? `on:${schemaPart}` : "off";
+  const preservedSchema = options.introspectionFailed ? stored?.schema : undefined;
+  const fingerprint = lineageFingerprint(lineageOn, options.introspectedSchema, {
+    preservedSchema,
+  });
 
   // Step 2 — load .metisignore (file or default).
   const metisignorePath = path.join(rootDir, ".metisignore");
@@ -648,7 +655,12 @@ export async function ingestCodeGraph(
   // a reachable sidecar re-parses everything.
   const sidecarUnreached =
     lineageOn && (sidecarStillDown || (reachability.unreachable > 0 && reachability.reached === 0));
-  const recordedFingerprint = sidecarUnreached ? `unreached:${schemaPart}` : fingerprint;
+  const recordedFingerprint = sidecarUnreached
+    ? lineageFingerprint(lineageOn, options.introspectedSchema, {
+        preservedSchema,
+        sidecarUnreached,
+      })
+    : fingerprint;
 
   // Step 6.5 — reconcile the project's schema graph into canonical cross-project
   // SchemaObjectIdentity rows (#955). The identity service (#308) shipped with

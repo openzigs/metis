@@ -999,4 +999,16 @@ describe("lineageFingerprint (#721)", () => {
       lineageFingerprint(true, { s: { t: { a: "TEXT" } } }),
     );
   });
+
+  it("keeps a preserved schema part, and records an unreachable sidecar as unreached", async () => {
+    const { lineageFingerprint } = await import("../../../src/lib/code-graph/ingest.js");
+    const schema = { s: { t: { a: "INT" } } };
+    const built = lineageFingerprint(true, schema);
+    const schemaPart = built.slice("on:".length);
+    expect(lineageFingerprint(true, null, { preservedSchema: schemaPart })).toBe(built);
+    expect(lineageFingerprint(true, schema, { sidecarUnreached: true })).toBe(
+      `unreached:${schemaPart}`,
+    );
+    expect(lineageFingerprint(false, schema, { sidecarUnreached: true })).toBe("off");
+  });
 });
