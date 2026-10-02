@@ -1327,18 +1327,17 @@ describe("#714 — the clone records the commit it checked out", () => {
     rows.get(c.id)!.lastCommitSha = SHA2; // what the current graph is labelled with
     const target = nodePath.join(dir, c.id);
     await writeGit(target, { HEAD: "ref: refs/heads/main\n", "refs/heads/main": `${SHA2}\n` });
-    const fakeGit = {
-      pull: vi.fn(async () => {
-        throw new Error("fatal: Not possible to fast-forward, aborting.");
-      }),
-      clone: vi.fn(async (_url: string, cloneTarget: string) => {
-        await writeGit(cloneTarget, { HEAD: `${SHA}\n` });
-      }),
-    } as unknown as SimpleGitLike;
+    const pull = vi.fn(async () => {
+      throw new Error("fatal: Not possible to fast-forward, aborting.");
+    });
+    const clone = vi.fn(async (_url: string, cloneTarget: string) => {
+      await writeGit(cloneTarget, { HEAD: `${SHA}\n` });
+    });
+    const fakeGit = { pull, clone } as unknown as SimpleGitLike;
     __setSimpleGitFactory(() => fakeGit);
     const out = await pullOrCloneRepo("proj_1", c.id, "user_1", { recordCommit: false });
-    expect(fakeGit.pull).toHaveBeenCalledTimes(1);
-    expect(fakeGit.clone).toHaveBeenCalledTimes(1);
+    expect(pull).toHaveBeenCalledTimes(1);
+    expect(clone).toHaveBeenCalledTimes(1);
     expect(out.pulled).toBe(false);
     expect(out.commitSha).toBe(SHA);
     expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
