@@ -32,7 +32,12 @@ import {
 } from "../providers/local-concurrency-limiter.js";
 import type { ApprovalPolicy } from "../types.js";
 import { ToolApprovalBroker } from "./approval-broker.js";
-import { composeReplyText, runChatToolTurn, type ChatToolRecord } from "./chat-turn.js";
+import {
+  CHAT_TOOL_MAX_APPROVAL_REFUNDS,
+  composeReplyText,
+  runChatToolTurn,
+  type ChatToolRecord,
+} from "./chat-turn.js";
 import { brokerPrompter } from "./prompter.js";
 import { collectGuardedStream } from "./stream-collect.js";
 import { makeToolset } from "./toolset.js";
@@ -522,5 +527,80 @@ describe("replyText keeps every native turn's text (#128 review)", () => {
     });
     expect(out.finalResponse).toBe("It is 42.");
     expect(out.replyText).toBe("Let me look.\n\nIt is 42.");
+  });
+});
+
+describe("an unanswered approval does not spend the step budget (#736)", () => {
+  function expiringGate(tools: RuntimeTool[]) {
+    const broker = new ToolApprovalBroker();
+    const toolset = makeToolset(tools);
+    const gate = new ApprovalGateService({
+      sessionId: CTX.sessionId,
+      userId: CTX.userId,
+      policy: ALWAYS,
+      // Nobody answers: every prompt expires.
+      prompter: brokerPrompter({ broker, toolset, projectId: CTX.projectId, timeoutMs: 5 }),
+    });
+    return { toolset, gate };
+  }
+
+  it("a turn whose every call expired is refunded, so the model still gets to answer", async () => {
+    const lookup = tool("inspect_schema", () => "3 tables");
+    const { toolset, gate } = expiringGate([lookup]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "inspect_schema", args: {} }] },
+        { content: "I could not check the schema; here is what I know." },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+    expect(lookup.execute).not.toHaveBeenCalled();
+    expect(out.loop.hasFinalAnswer).toBe(true);
+    expect(out.finalResponse).toBe("I could not check the schema; here is what I know.");
+    expect(out.turnsUsed).toBe(2);
+  });
+
+  it("refunds at most CHAT_TOOL_MAX_APPROVAL_REFUNDS turns, so an unattended session still ends", async () => {
+    const lookup = tool("inspect_schema", () => "3 tables");
+    const { toolset, gate } = expiringGate([lookup]);
+    const call = (id: string) => ({ toolCalls: [{ id, name: "inspect_schema", args: { id } }] });
+    const provider = new OfflineStubProvider({
+      script: [call("c1"), call("c2"), call("c3"), call("c4"), { content: "never reached" }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+    expect(out.turnsUsed).toBe(1 + CHAT_TOOL_MAX_APPROVAL_REFUNDS);
+    expect(out.loop.turnsExhausted).toBe(true);
+  });
+
+  it("a turn with a call that RAN is not refunded", async () => {
+    const lookup = tool("inspect_schema", () => "3 tables");
+    const { toolset } = expiringGate([lookup]);
+    const allow = new ApprovalGateService({
+      sessionId: CTX.sessionId,
+      userId: CTX.userId,
+      policy: { low: "auto", medium: "auto", high: "auto" },
+    });
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "inspect_schema", args: {} }] },
+        { content: "never reached" },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate: allow },
+      { maxTurns: 1 },
+    );
+    expect(lookup.execute).toHaveBeenCalledTimes(1);
+    expect(out.turnsUsed).toBe(1);
+    expect(out.loop.turnsExhausted).toBe(true);
   });
 });
