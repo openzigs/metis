@@ -55,7 +55,7 @@ fails if the two schema bodies diverge or if regeneration would produce a diff.
 | `Analysis` | 1, 4 | Multi-agent analysis run. | `analysis.ts` |
 | `AgentResult` | 1, 4 | Per-specialist output within an Analysis. | `analysis.ts` |
 | `Finding` | 1, 4 | Atomic finding emitted by an AgentResult. Carries `derivation` (`extracted` \| `inferred` \| `ambiguous`) and `confidence` (0.0–1.0) per Epic #298. | `analysis.ts` |
-| `CodeGraph` | 7 (Epic #298) | One per Project / RepoConnection. Tracks `commitSha`, aggregate `symbolCount` / `edgeCount`, JSON `languageStats`, `lastIndexedAt`. | — (server-only) |
+| `CodeGraph` | 7 (Epic #298) | One per Project / RepoConnection. Tracks `commitSha`, aggregate `symbolCount` / `edgeCount`, JSON `languageStats`, `lastIndexedAt`, and nullable `lineageFingerprint` (#721): the SQL-lineage inputs the graph was built with (`off`, `on:<schema hash>`, or `unreached:<schema hash>` when lineage was on but the sidecar could not be reached). An incremental ingest whose inputs differ re-parses every file. | — (server-only) |
 | `CodeSymbol` | 7 (Epic #298) | One row per AST-extracted definition (`function` \| `class` \| `interface` \| `type` \| `module` \| `method`). Carries `qualifiedName`, file path, line range, `language`, `contentHash` for incremental ingest. | — |
 | `CodeEdge` | 7 (Epic #298) | One row per AST-extracted relationship (`calls` \| `imports` \| `defines` \| `references`). Nullable `toSymbolId` (with `toQualifiedName`) for unresolved external refs. JSON `metadata` carries edge-specific data such as `{ "typeOnly": true }` for TS type-only imports. | — |
 | `Requirement` | 1, 4 | Synthesized requirement; supports parent/child hierarchy. | `analysis.ts` |
@@ -164,6 +164,7 @@ erDiagram
         int    edgeCount
         string languageStats "JSON {lang: count}"
         datetime lastIndexedAt
+        string lineageFingerprint "nullable — SQL-lineage inputs (#721)"
     }
 ```
 

@@ -1,0 +1,15 @@
+-- Issue #721 — SQL lineage never backfilled on an already-ingested repo.
+--
+-- An incremental ingest skips files whose content hash is unchanged, and the
+-- SQL-lineage pass runs only over re-parsed files, so turning lineage on or
+-- adding a DB connector after the first ingest produced no reads/writes edges.
+-- `lineageFingerprint` records the lineage inputs (resolved lineage decision +
+-- introspected-schema hash) the graph was built with; when they differ, the
+-- ingest re-parses every file.
+--
+-- Additive only: NULLABLE, not backfilled. NULL = built before #721; the next
+-- ingest with lineage enabled re-parses once and records the fingerprint.
+--
+-- Rollback (documentation): `ALTER TABLE "code_graphs" DROP COLUMN "lineageFingerprint";`
+-- (SQLite 3.35+). Lossless: the column is a derived cache key.
+ALTER TABLE "code_graphs" ADD COLUMN "lineageFingerprint" TEXT;

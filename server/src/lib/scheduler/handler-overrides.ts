@@ -119,6 +119,7 @@ export function buildSchedulerHandlerOverrides(
             rootDir: clone.path,
             repoConnectionId: connectorId,
             introspectedSchema: schemaWiring.introspectedSchema,
+            introspectionFailed: schemaWiring.introspectionFailed,
             routines: schemaWiring.routines,
             fetchRoutineBody: schemaWiring.fetchRoutineBody,
             routineDialect: schemaWiring.routineDialect,

@@ -15,6 +15,7 @@
  * The introspected schema is passed through on EVERY call — it is the documented
  * ~20%->~90% column-accuracy lever (SELECT * expansion needs the schema).
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { request as undiciRequest } from "undici";
 import { createChildLogger } from "../logger.js";
 
@@ -455,15 +456,80 @@ export async function extractUsageSafe(
       log.warn("sql-lineage client unavailable; skipping extraction", {
         error: (err as Error).message,
       });
+      recordSqlLineageOutcome(false);
       return null;
     }
   }
   try {
-    return await c.extractUsage(params);
+    const result = await c.extractUsage(params);
+    recordSqlLineageOutcome(true);
+    return result;
   } catch (err) {
     log.warn("sql-lineage extraction failed; degrading gracefully", {
       error: (err as Error).message,
     });
+    recordSqlLineageOutcome(!isSidecarUnreachableError(err));
     return null;
+  }
+}
+
+/**
+ * #721 — how often the sidecar answered during one tracked scope (an ingest's
+ * SQL-lineage pass). `reached` counts calls the sidecar served, including a
+ * per-statement rejection (400/413): the sidecar is up, that statement is just
+ * not parseable. `unreachable` counts calls that never got a usable answer: no
+ * client (no token), a network failure, 401/403, or a 5xx/503 (unconfigured).
+ */
+export interface SqlLineageReachability {
+  reached: number;
+  unreachable: number;
+}
+
+const reachabilityScope = new AsyncLocalStorage<SqlLineageReachability>();
+
+/**
+ * True when a failed {@link SqlLineageClient.extractUsage} call means the
+ * sidecar could not be used at all, rather than that it rejected one statement.
+ */
+export function isSidecarUnreachableError(err: unknown): boolean {
+  if (!(err instanceof SqlLineageClientError)) return true;
+  const s = err.status;
+  return s === 0 || s === 401 || s === 403 || s >= 500;
+}
+
+/**
+ * Count one sidecar outcome into the enclosing {@link trackSqlLineageReachability}
+ * scope. A no-op outside one, so callers other than ingest are unaffected.
+ */
+export function recordSqlLineageOutcome(reached: boolean): void {
+  const scope = reachabilityScope.getStore();
+  if (!scope) return;
+  if (reached) scope.reached += 1;
+  else scope.unreachable += 1;
+}
+
+/**
+ * Run `fn` and report how the sidecar answered every {@link extractUsageSafe}
+ * call made inside it. Scoped per call (AsyncLocalStorage), so two ingests
+ * running at once never see each other's counts.
+ */
+export async function trackSqlLineageReachability<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; reachability: SqlLineageReachability }> {
+  const reachability: SqlLineageReachability = { reached: 0, unreachable: 0 };
+  const result = await reachabilityScope.run(reachability, fn);
+  return { result, reachability };
+}
+
+/**
+ * #721 — one cheap liveness check (`GET /healthz`, at most 5 s). True only when
+ * the sidecar answers `ok` with its shared secret configured. Never throws.
+ */
+export async function probeSqlLineageSidecar(client?: SqlLineageClient): Promise<boolean> {
+  try {
+    const health = await (client ?? getSqlLineageClient()).healthz();
+    return health?.status === "ok" && health.tokenConfigured !== false;
+  } catch {
+    return false;
   }
 }

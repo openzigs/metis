@@ -174,6 +174,12 @@ vi.mock("../src/lib/code-graph/ingest.js", () => ({
   })),
 }));
 
+// #721 — the real SQL-lineage wiring runs unless a test overrides one call.
+vi.mock("../src/lib/connectors/db/db-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/connectors/db/db-service.js")>();
+  return { ...actual, buildCodeGraphSchemaWiring: vi.fn(actual.buildCodeGraphSchemaWiring) };
+});
+
 vi.mock("../src/lib/connectors/connector-ingest.js", () => ({
   ingestSourceAsKnowledge: vi.fn(async () => ({
     documentsCreated: 1,
@@ -230,6 +236,8 @@ import {
   isConnectorIngestActive,
 } from "../src/lib/connectors/ingest-guard.js";
 import { discoverAndUpsertConnections } from "../src/lib/connectors/repo/connection-discovery.js";
+import { ingestCodeGraph } from "../src/lib/code-graph/ingest.js";
+import { buildCodeGraphSchemaWiring } from "../src/lib/connectors/db/db-service.js";
 import { getLastJobLifecycle, genericFailureMessage } from "../src/lib/socket/job-events.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
 import {
@@ -471,6 +479,34 @@ describe("per-connector ingest guard on the sync routes (#217)", () => {
       await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
       expect(leaseSeen).toMatchObject({ connectorId: "repo_github_x", held: true });
       expect(isConnectorIngestActive("repo_github_x")).toBe(false);
+    });
+  }
+});
+
+// #721 — a DB connector that could not be introspected must reach the lineage
+// fingerprint as an outage, not as "no schema", from Deep Ingest and from Sync.
+describe("SQL-lineage introspection outage reaches the code-graph ingest (#721)", () => {
+  for (const route of ["deep-ingest", "refresh-ingest"] as const) {
+    it(`${route} passes introspectionFailed from the wiring to ingestCodeGraph`, async () => {
+      const token = await login("admin");
+      vi.mocked(buildCodeGraphSchemaWiring).mockResolvedValueOnce({
+        introspectedSchema: null,
+        introspectionFailed: true,
+        routines: [],
+        packages: [],
+        dependencies: [],
+        sqlLineageOverride: true,
+      });
+      const res = await request(app)
+        .post(`/api/projects/proj_1/connectors/repos/repo_github_x/${route}`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(route === "deep-ingest" ? 202 : 200);
+      await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+      expect(buildCodeGraphSchemaWiring).toHaveBeenCalledTimes(1);
+      expect(ingestCodeGraph).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ repoConnectionId: "repo_github_x", introspectionFailed: true }),
+      );
     });
   }
 });
