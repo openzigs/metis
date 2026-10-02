@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { DERIVED_EVIDENCE_CLASS, formatDerivedLabel, readDerivedLabel } from "./derived-label.js";
 
 describe("readDerivedLabel (#199)", () => {
+  it("keeps the stamp value already stored on indexed chunks", () => {
+    // Existing rows carry this literal; changing it would silently unlabel them.
+    expect(DERIVED_EVIDENCE_CLASS).toBe("derived-generated-doc");
+  });
   it("reads the #189 stamp with status and scope", () => {
     const meta = JSON.stringify({
       evidenceClass: DERIVED_EVIDENCE_CLASS,
