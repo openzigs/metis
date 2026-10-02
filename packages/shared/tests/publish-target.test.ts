@@ -5,6 +5,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  createPublishBatchSchema,
+  githubOwnerSchema,
   githubPublishTargetSchema,
   publishDestinationConfigSchema,
   publishFindingSchema,
@@ -122,4 +124,43 @@ describe("publishFindingSchema — target (#733)", () => {
         .success,
     ).toBe(false);
   });
+});
+
+describe("githubOwnerSchema — one owner rule for every publish path (#733)", () => {
+  const validId = "clxxxxxxxx0000abcd1234efgh";
+  const batch = (targetOwner: string) =>
+    createPublishBatchSchema.safeParse({
+      projectId: validId,
+      targetOwner,
+      targetRepo: "core",
+      draftIds: [validId],
+    }).success;
+  const deepDive = (owner: string) =>
+    publishFindingSchema.safeParse({ draft: DRAFT, target: { owner, repo: "app" } }).success;
+  const saveTarget = (githubOwner: string) =>
+    publishDestinationConfigSchema.safeParse({
+      publishDestination: "github",
+      githubOwner,
+      githubRepo: "app",
+    }).success;
+
+  it.each(["octo_shortcode", "my-handle_acme", "a_b", "x".repeat(30) + "_" + "y".repeat(8)])(
+    "accepts the Enterprise Managed User owner %s on every path",
+    (owner) => {
+      expect(githubOwnerSchema.safeParse(owner).success).toBe(true);
+      expect(deepDive(owner)).toBe(true);
+      expect(saveTarget(owner)).toBe(true);
+      expect(batch(owner)).toBe(true);
+    },
+  );
+
+  it.each(["", "-bad", "_bad", "bad-", "ba--d", "x".repeat(40), "a/b", "has space"])(
+    "rejects %j on every path",
+    (owner) => {
+      expect(githubOwnerSchema.safeParse(owner).success).toBe(false);
+      expect(deepDive(owner)).toBe(false);
+      expect(saveTarget(owner)).toBe(false);
+      expect(batch(owner)).toBe(false);
+    },
+  );
 });

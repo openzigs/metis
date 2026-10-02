@@ -65,8 +65,10 @@ export interface FindingPayload {
   ruleId: string | null;
   commitSha: string;
   /**
-   * #733 — the GitHub repository to file into. Absent = the repo connector's
-   * own repository (a scanner finding is filed against the repo it was found in).
+   * #733 — the GitHub repository to file into: the caller's explicit choice or
+   * the project's saved publish target. Absent = a GitHub publish is REFUSED
+   * (`ERR_NO_PUBLISH_TARGET`); it never falls back to the repo connector's own
+   * repository, which for an analysed project is its upstream.
    */
   target?: GitHubIssueTarget;
 }
@@ -107,7 +109,10 @@ export interface PublisherPorts {
     title: string;
     body: string;
     labels: string[];
-    /** #733 — overrides the connector's own owner/repo; the token is still the connector's. */
+    /**
+     * #733 — the repository to file into; the token is still the connector's.
+     * Absent = refused with `ERR_NO_PUBLISH_TARGET`, never the connector's repo.
+     */
     target?: GitHubIssueTarget;
   }): Promise<CreatedIssue>;
   createJiraIssue(args: {

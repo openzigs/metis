@@ -2221,9 +2221,10 @@ METIS can publish issues to GitHub, Jira, or both simultaneously.
 
    Publishing never defaults to the repository the project *analyses*: for an
    analysed open-source project that is its upstream. With no saved target the
-   fields start empty, a Deep Dive publish without a target is refused with
-   `ERR_NO_PUBLISH_TARGET`, and a target equal to the analysed repository shows
-   a warning. The **New publish batch** form takes the target the selected
+   fields start empty, a Deep Dive or Scans-page publish without a target is
+   refused with `ERR_NO_PUBLISH_TARGET` (a scanner finding is filed into the saved
+   target, never the scanned repository), and a target equal to the analysed
+   repository shows a warning. The **New publish batch** form takes the target the selected
    drafts were generated for.
 
 #### How It Works

@@ -64,11 +64,16 @@ export const updateIssueDraftSchema = z.object({
 export type UpdateIssueDraftInput = z.infer<typeof updateIssueDraftSchema>;
 
 // ---- GitHub publish target (#733) ------------------------------------------
-/** A GitHub user or organisation name: alphanumerics and single inner hyphens, ≤ 39. */
+/**
+ * A GitHub user or organisation name, ≤ 39: starts with an alphanumeric, then
+ * alphanumerics, underscores and single inner hyphens. The underscore admits
+ * Enterprise Managed User handles (`handle_shortcode`). The ONE owner schema for
+ * every publish path — Deep Dive, the project's saved target and batch publish.
+ */
 export const githubOwnerSchema = z
   .string()
   .trim()
-  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/, "Not a valid GitHub owner");
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9_]|-(?=[A-Za-z0-9_])){0,38}$/, "Not a valid GitHub owner");
 /** A GitHub repository name: `[A-Za-z0-9._-]`, ≤ 100, and never `.` or `..`. */
 export const githubRepoSchema = z
   .string()
@@ -116,7 +121,7 @@ export type PublishBatch = z.infer<typeof publishBatchSchema>;
 
 export const createPublishBatchSchema = z.object({
   projectId: idSchema,
-  targetOwner: z.string().min(1).max(128),
+  targetOwner: githubOwnerSchema,
   targetRepo: z.string().min(1).max(128),
   targetBaseUrl: z.string().url().optional(),
   provider: z.enum(PUBLISH_PROVIDERS).default("github"),

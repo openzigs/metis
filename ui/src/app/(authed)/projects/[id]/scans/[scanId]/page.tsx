@@ -27,6 +27,15 @@ function publishErrorMessage(e: unknown): string {
   return (e as Error).message;
 }
 
+/**
+ * #733 — a GitHub publish with no saved target is refused (400) rather than
+ * filed into the scanned repository, which for an analysed project is its
+ * upstream. The operator fixes it on the Publishing page.
+ */
+function isNoPublishTarget(e: unknown): boolean {
+  return e instanceof ApiError && e.code === "ERR_NO_PUBLISH_TARGET";
+}
+
 export default function ScanTriagePage() {
   const params = useParams<{ id: string; scanId: string }>();
   const projectId = params.id;
@@ -103,6 +112,7 @@ function FindingRow({
   const qc = useQueryClient();
   const [note, setNote] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [needsTarget, setNeedsTarget] = useState(false);
 
   const triageMutation = useMutation({
     mutationFn: (decision: "approved" | "rejected" | "deferred") =>
@@ -123,9 +133,13 @@ function FindingRow({
       scannerApi.publish(projectId, scanId, finding.id, { provider }),
     onSuccess: () => {
       setErr(null);
+      setNeedsTarget(false);
       qc.invalidateQueries({ queryKey: ["scanner", "findings", projectId, scanId] });
     },
-    onError: (e: unknown) => setErr(publishErrorMessage(e)),
+    onError: (e: unknown) => {
+      setErr(publishErrorMessage(e));
+      setNeedsTarget(isNoPublishTarget(e));
+    },
   });
 
   const isApproved = finding.triageStatus === "approved";
@@ -235,6 +249,18 @@ function FindingRow({
       {err ? (
         <p role="alert" className="text-xs text-destructive">
           {err}
+          {needsTarget ? (
+            <>
+              {" "}
+              <Link
+                href={`/projects/${projectId}/publish`}
+                className="underline"
+                data-testid={`scanner-finding-set-target-${finding.id}`}
+              >
+                Open the Publish page to save a target.
+              </Link>
+            </>
+          ) : null}
         </p>
       ) : null}
     </div>

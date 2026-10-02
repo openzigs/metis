@@ -575,15 +575,13 @@ export function buildPublisherPorts(): PublisherPorts {
       if (!conn) {
         throw new Error(`repo connection ${repoConnectionId} not found`);
       }
-      // #733 — an explicit target (an analysis finding's configured or chosen
-      // repository) wins; the connector only supplies the credential.
-      const owner = target?.owner ?? conn.ownerOrOrg;
-      const repo = target?.repo ?? conn.repoName;
-      if (!owner || !repo) {
-        // Issue #288 — local/upload connectors have no owner/repo and cannot
-        // publish GitHub issues.
-        throw new Error("repo connection is not a GitHub repo (missing owner/repo)");
-      }
+      // #733 — the issue goes to the resolved target (the caller's choice or the
+      // project's saved publish target); the connector only supplies the
+      // credential. There is deliberately NO fallback to `conn.ownerOrOrg/
+      // conn.repoName`: for an analysed project that is its upstream, and every
+      // publish path — scanner and analysis alike — funnels through here.
+      if (!target) throw noPublishTargetError();
+      const { owner, repo } = target;
       // #480 — the connector's bound secret by id, never re-resolved by label.
       const token = conn.secretId ? await readBoundSecret(conn.secretId, getVaultService()) : null;
       if (!token) {
@@ -694,6 +692,8 @@ export interface PublishScanFindingInput {
   scanFindingId: string;
   provider: Publisher;
   extraLabels?: readonly string[];
+  /** #733 — the GitHub repository to file into; else the project's saved target. */
+  target?: GitHubIssueTarget;
 }
 
 export async function publishScanFinding(
@@ -734,6 +734,15 @@ export async function publishScanFinding(
     ruleId: sf.ruleId,
     commitSha: sf.scan.commitSha,
   };
+
+  // #733 — like the Deep Dive: the caller's explicit target, else the project's
+  // saved one. Resolved without throwing so an already-published finding still
+  // returns its existing link; with neither, `createGitHubIssue` refuses with
+  // ERR_NO_PUBLISH_TARGET rather than filing into the scanned (upstream) repo.
+  if (input.provider === "github") {
+    const target = input.target ?? (await findSavedGitHubTarget(sf.scan.projectId));
+    if (target) payload.target = target;
+  }
 
   const ports = buildPublisherPorts();
   const outcome = await publishFinding(ports, {
@@ -893,6 +902,13 @@ async function resolveFindingGitHubTarget(
   explicit: GitHubIssueTarget | undefined,
 ): Promise<GitHubIssueTarget> {
   if (explicit) return explicit;
+  const saved = await findSavedGitHubTarget(projectId);
+  if (saved) return saved;
+  throw noPublishTargetError();
+}
+
+/** #733 — the project's saved GitHub publish target, or null (a half-set pair is none). */
+async function findSavedGitHubTarget(projectId: string): Promise<GitHubIssueTarget | null> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { publishGithubOwner: true, publishGithubRepo: true },
@@ -900,9 +916,13 @@ async function resolveFindingGitHubTarget(
   if (project?.publishGithubOwner && project.publishGithubRepo) {
     return { owner: project.publishGithubOwner, repo: project.publishGithubRepo };
   }
-  throw new PublishError(
+  return null;
+}
+
+function noPublishTargetError(): PublishError {
+  return new PublishError(
     "ERR_NO_PUBLISH_TARGET",
-    "No GitHub publish target is configured for this project — choose a target repository, or set one on the Publishing page.",
+    "No GitHub publish target is configured for this project — choose a target repository, or set one on the Publishing page (Save as project target).",
   );
 }
 

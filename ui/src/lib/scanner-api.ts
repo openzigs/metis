@@ -182,7 +182,12 @@ export const scannerApi = {
     projectId: string,
     scanId: string,
     findingId: string,
-    body: { provider: "github" | "jira"; extraLabels?: string[] },
+    body: {
+      provider: "github" | "jira";
+      extraLabels?: string[];
+      /** #733 — the GitHub repository to file into; omitted = the project's saved target. */
+      target?: { owner: string; repo: string };
+    },
   ) =>
     apiFetch<IssueLink>(`/projects/${projectId}/scans/${scanId}/findings/${findingId}/publish`, {
       method: "POST",

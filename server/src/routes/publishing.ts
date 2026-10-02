@@ -17,6 +17,7 @@ import {
   archivePublishBatchSchema,
   createPublishBatchSchema,
   generateDraftsSchema,
+  githubOwnerSchema,
   hasPermission,
   type ApiResponse,
   type RoleKey,
@@ -135,7 +136,8 @@ export function publishingRouter(): Router {
       const projectId = projectIdOf(req);
       const body = generateDraftsSchema
         .extend({
-          targetOwner: z.string().min(1).max(128),
+          // #733 — the one shared owner schema, as batch publish and Deep Dive use.
+          targetOwner: githubOwnerSchema,
           targetRepo: z.string().min(1).max(128),
         })
         .parse(req.body);
