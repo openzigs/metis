@@ -31,9 +31,10 @@ using a **real headed Chrome browser**. The user can watch every action live.
 ## Playwright MCP tool reference
 
 Use the `playwright` MCP server's `browser_*` tools (Chromium driven by the
-Playwright MCP server). Note: this is the standard `playwright` server, not
-`playwright-headed` — the tool names are identical, only the backing server
-differs.
+Playwright MCP server). `@playwright/mcp` runs **headed by default**; pass
+`--headless` to opt out. There is no separate headed server: the old
+`playwright-headed` entry passed `--headed`, which current `@playwright/mcp` rejects
+as an unknown option, so it never connected (#707).
 
 | Tool | Purpose |
 |------|---------|
