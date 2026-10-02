@@ -41,7 +41,8 @@ const PROJECT = "p-724";
 const OTHER = "p-724-other";
 const USER = "u-724";
 const MODEL = "claude-sonnet-4-6";
-const CALL = { promptTokens: 1_000, completionTokens: 400, totalTokens: 1_400 };
+// Exactly 3 cents a call at the Sonnet 4 rate, so per-row and per-run pricing agree to the cent.
+const CALL = { promptTokens: 5_000, completionTokens: 1_000, totalTokens: 6_000 };
 
 const agentJson = JSON.stringify({
   summary: "summary",
@@ -85,13 +86,54 @@ function scriptedProvider(): AIProvider & { calls: number } {
   return p as AIProvider & { calls: number };
 }
 
+/**
+ * The client the code under test sees: the real one, except that every
+ * `token_usages` insert lands {@link USAGE_WRITE_DELAY_MS} late. `recordUsage`
+ * writes asynchronously, so this makes deterministic the race a slow database
+ * (Postgres) loses at random — a run that prices itself before its own last
+ * writes land reports a low `AgentRun.costCents`.
+ */
+const USAGE_WRITE_DELAY_MS = 250;
+function withSlowUsageWrites(client: PrismaClient): PrismaClient {
+  const tokenUsage = new Proxy(client.tokenUsage, {
+    get(target, prop) {
+      if (prop === "create") {
+        return async (args: Parameters<typeof target.create>[0]) => {
+          await new Promise((r) => setTimeout(r, USAGE_WRITE_DELAY_MS));
+          return target.create(args);
+        };
+      }
+      return Reflect.get(target, prop, target);
+    },
+  });
+  return new Proxy(client, {
+    get(target, prop) {
+      if (prop === "tokenUsage") return tokenUsage;
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === "function"
+        ? (value as (...a: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  });
+}
+
 const stubKnowledge = { search: async () => ({ hits: [] }) } as unknown as KnowledgeService;
+
+/**
+ * Wait for every queued `token_usages` write, then for the clock to move on:
+ * `summarizeUsage` bounds its window with an exclusive `lt: now`, so a row that
+ * landed in this very millisecond would otherwise be read as not there yet.
+ */
+async function drainUsageWrites(): Promise<void> {
+  while (getPendingUsageWrites() > 0) await new Promise((r) => setTimeout(r, 5));
+  await new Promise((r) => setTimeout(r, 2));
+}
 
 async function settled(db: PrismaClient, analysisId: string): Promise<string> {
   for (let i = 0; i < 400; i++) {
     const row = await db.analysis.findUnique({ where: { id: analysisId } });
     if (row && ["completed", "failed", "cancelled"].includes(row.status)) {
-      while (getPendingUsageWrites() > 0) await new Promise((r) => setTimeout(r, 5));
+      await drainUsageWrites();
       return row.status;
     }
     await new Promise((r) => setTimeout(r, 25));
@@ -111,7 +153,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       delete process.env.ANTHROPIC_BASE_URL;
       sqlite = createMigratedSqlite("724-analysis-usage");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
-      state.db = db;
+      state.db = withSlowUsageWrites(db);
       await db.user.create({
         data: { id: USER, username: USER, displayName: USER, email: `${USER}@example.test` },
       });
@@ -156,12 +198,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const rows = await db.tokenUsage.findMany({ where: { projectId: PROJECT } });
       expect(rows).toHaveLength(runCalls);
       expect(new Set(rows.map((r) => r.sessionId))).toEqual(new Set([id]));
-      // …so the Agent Runs view now prices the run instead of showing "Cost —".
+      // …so the Agent Runs view now prices the run instead of showing "Cost —",
+      // and prices ALL of it: the run waits for its own (slow) usage writes
+      // before reading them back, so its cost is exactly the summary's.
       const replayRun = await db.agentRun.findFirst({ where: { sessionId: id, kind: "analysis" } });
-      expect(replayRun?.costCents).toBeGreaterThan(0);
+      expect(afterRun.costCents).toBeGreaterThan(0);
+      expect(replayRun?.costCents).toBe(afterRun.costCents);
 
       await orch.regenerateAgent({ analysisId: id, agentKey: "web", actorId: USER });
-      while (getPendingUsageWrites() > 0) await new Promise((r) => setTimeout(r, 5));
+      await drainUsageWrites();
       const regenCalls = provider.calls - runCalls;
       expect(regenCalls).toBeGreaterThan(0);
       const afterRegen = await summarizeUsage(PROJECT);
@@ -176,7 +221,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const orch = new AnalysisOrchestrator({ provider });
       const before = await db.tokenUsage.count();
       await orch.provider.chat([{ role: "user", content: "hi" }]);
-      while (getPendingUsageWrites() > 0) await new Promise((r) => setTimeout(r, 5));
+      await drainUsageWrites();
       expect(await db.tokenUsage.count()).toBe(before);
     });
   },

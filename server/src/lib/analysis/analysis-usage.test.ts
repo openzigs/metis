@@ -6,8 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const recordUsage = vi.hoisted(() => vi.fn());
 vi.mock("../finops/token-tracker.js", () => ({ recordUsage }));
 
-const { meterAnalysisProvider, runInAnalysisUsageScope, currentAnalysisUsageScope } =
-  await import("./analysis-usage.js");
+const {
+  meterAnalysisProvider,
+  runInAnalysisUsageScope,
+  currentAnalysisUsageScope,
+  flushAnalysisUsage,
+} = await import("./analysis-usage.js");
 import type { AIProvider, ChatChunk, ChatResponse } from "../ai/types.js";
 
 const USAGE = {
@@ -118,6 +122,20 @@ describe("meterAnalysisProvider", () => {
     });
   });
 
+  it("prices a stream against the model its usage chunk reports, not the one requested", async () => {
+    const inner = new FakeProvider();
+    inner.stream = async function* () {
+      yield { type: "usage", usage: USAGE, model: "served-stream" } as ChatChunk;
+      yield { type: "done" } as ChatChunk;
+    };
+    const metered = meterAnalysisProvider(inner);
+    await runInAnalysisUsageScope(SCOPE, async () => {
+      for await (const _ of metered.stream([], { model: "asked" })) void _;
+    });
+    expect(recordUsage).toHaveBeenCalledTimes(1);
+    expect(recordUsage.mock.calls[0]![0]).toMatchObject({ model: "served-stream" });
+  });
+
   it("attributes concurrent scopes to their own project", async () => {
     const metered = meterAnalysisProvider(new FakeProvider());
     await Promise.all([
@@ -162,5 +180,75 @@ describe("meterAnalysisProvider", () => {
     expect(await runInAnalysisUsageScope(SCOPE, () => metered.ping())).toBe(true);
     expect(inner.chatCalls).toBe(1);
     expect(recordUsage).not.toHaveBeenCalled();
+  });
+});
+
+describe("flushAnalysisUsage", () => {
+  /** A `recordUsage` whose row lands only when the test says so. */
+  function delayedWrites() {
+    const releases: Array<() => void> = [];
+    recordUsage.mockImplementation(() => ({
+      totalTokens: 1,
+      costCents: 1,
+      persisted: new Promise<void>((res) => releases.push(res)),
+    }));
+    return releases;
+  }
+
+  async function settledWithin(p: Promise<unknown>, ticks = 20): Promise<boolean> {
+    let done = false;
+    void p.then(() => (done = true));
+    for (let i = 0; i < ticks; i++) await new Promise((r) => setImmediate(r));
+    return done;
+  }
+
+  it("does not resolve until the scope's pending usage writes have landed", async () => {
+    const releases = delayedWrites();
+    const metered = meterAnalysisProvider(new FakeProvider());
+    await runInAnalysisUsageScope(SCOPE, async () => {
+      await metered.chat([]);
+      for await (const _ of metered.stream([])) void _;
+    });
+    expect(releases).toHaveLength(2);
+
+    const drained = flushAnalysisUsage(SCOPE.sessionId);
+    expect(await settledWithin(drained)).toBe(false);
+    releases[0]!();
+    expect(await settledWithin(drained)).toBe(false);
+    releases[1]!();
+    expect(await settledWithin(drained)).toBe(true);
+  });
+
+  it("waits only for the named session, and for every session when none is named", async () => {
+    const releases = delayedWrites();
+    const metered = meterAnalysisProvider(new FakeProvider());
+    await runInAnalysisUsageScope({ projectId: "A", sessionId: "a" }, () => metered.chat([]));
+    await runInAnalysisUsageScope({ projectId: "B", sessionId: "b" }, () => metered.chat([]));
+
+    expect(await settledWithin(flushAnalysisUsage("b"))).toBe(false);
+    const all = flushAnalysisUsage();
+    releases[1]!();
+    expect(await settledWithin(flushAnalysisUsage("b"))).toBe(true);
+    expect(await settledWithin(all)).toBe(false);
+    releases[0]!();
+    expect(await settledWithin(all)).toBe(true);
+  });
+
+  it("resolves even when a usage write rejects while it is draining", async () => {
+    let fail!: (err: Error) => void;
+    recordUsage.mockImplementationOnce(() => ({
+      totalTokens: 1,
+      costCents: 1,
+      persisted: new Promise<void>((_, rej) => (fail = rej)),
+    }));
+    const metered = meterAnalysisProvider(new FakeProvider());
+    await runInAnalysisUsageScope(SCOPE, () => metered.chat([]));
+    const drained = flushAnalysisUsage(SCOPE.sessionId);
+    fail(new Error("insert failed"));
+    await expect(drained).resolves.toBeUndefined();
+  });
+
+  it("resolves at once when nothing is pending", async () => {
+    await expect(flushAnalysisUsage("never-used")).resolves.toBeUndefined();
   });
 });

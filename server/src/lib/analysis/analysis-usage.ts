@@ -28,6 +28,11 @@
  * Accounting must never sink a run: `recordUsage` persists on a microtask and
  * swallows its own write errors, and anything it throws synchronously is
  * logged here and dropped.
+ *
+ * Because that write is asynchronous, a run that reads its own spend back
+ * (`computeRunCost` over `token_usages`) must first await
+ * {@link flushAnalysisUsage} — otherwise the last calls' rows may not have
+ * landed yet and the run's cost comes out low.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { recordUsage } from "../finops/token-tracker.js";
@@ -39,7 +44,7 @@ const log = createChildLogger("analysis-usage");
 /** Who an analysis-family model call is billed to. */
 export interface AnalysisUsageScope {
   readonly projectId: string;
-  /** The analysis id for run-scoped calls; the agent id for a playground invoke. */
+  /** The analysis id for run-scoped calls; `playground:<agentId>:<projectId>` for a playground invoke. */
   readonly sessionId: string;
 }
 
@@ -57,11 +62,47 @@ export function currentAnalysisUsageScope(): AnalysisUsageScope | null {
 
 const METERED = Symbol.for("metis.analysisUsageMetered");
 
+/** In-flight `token_usages` writes, keyed by the scope's session id. */
+const inFlight = new Map<string, Set<Promise<void>>>();
+
+function track(sessionId: string, persisted: Promise<void>): void {
+  let writes = inFlight.get(sessionId);
+  if (!writes) {
+    writes = new Set();
+    inFlight.set(sessionId, writes);
+  }
+  const settled = persisted
+    .catch((err: unknown) => {
+      log.warn("analysis usage write failed", { sessionId, error: (err as Error).message });
+    })
+    .finally(() => {
+      writes.delete(settled);
+      if (writes.size === 0 && inFlight.get(sessionId) === writes) inFlight.delete(sessionId);
+    });
+  writes.add(settled);
+}
+
+/**
+ * Wait until every usage write recorded so far has settled — for `sessionId`
+ * only, or for every session when omitted. Never rejects: a failed write was
+ * already logged, and accounting must not fail the caller.
+ */
+export async function flushAnalysisUsage(sessionId?: string): Promise<void> {
+  for (;;) {
+    const writes =
+      sessionId === undefined
+        ? [...inFlight.values()].flatMap((set) => [...set])
+        : [...(inFlight.get(sessionId) ?? [])];
+    if (writes.length === 0) return;
+    await Promise.all(writes);
+  }
+}
+
 function record(provider: string, model: string, usage: TokenUsage | undefined): void {
   const scope = storage.getStore();
   if (!scope || !usage) return;
   try {
-    recordUsage({
+    const result = recordUsage({
       projectId: scope.projectId,
       sessionId: scope.sessionId,
       provider,
@@ -71,6 +112,8 @@ function record(provider: string, model: string, usage: TokenUsage | undefined):
       cacheReadTokens: usage.cacheReadTokens,
       cacheWriteTokens: usage.cacheWriteTokens,
     });
+    // `persisted` is absent only where `recordUsage` is test-mocked.
+    if (result?.persisted) track(scope.sessionId, result.persisted);
   } catch (err) {
     log.warn("analysis usage could not be recorded", {
       projectId: scope.projectId,
@@ -100,7 +143,11 @@ export function meterAnalysisProvider(provider: AIProvider): AIProvider {
 
   async function* stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk> {
     for await (const chunk of provider.stream(messages, opts)) {
-      if (chunk.type === "usage") record(provider.key, opts?.model ?? provider.model, chunk.usage);
+      // The model the stream reports it ran, as `chat()` prices `res.model`;
+      // the requested model only when the adapter does not say.
+      if (chunk.type === "usage") {
+        record(provider.key, chunk.model ?? opts?.model ?? provider.model, chunk.usage);
+      }
       yield chunk;
     }
   }

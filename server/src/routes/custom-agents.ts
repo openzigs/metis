@@ -345,7 +345,10 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
 
     try {
       // #724 — playground spend is the project's: meter it and bill it there.
-      const result = await runInAnalysisUsageScope({ projectId, sessionId: agentId }, () =>
+      // The session is per agent AND project — an agent enabled in several
+      // projects must not pool every project's invocations into one session.
+      const sessionId = `playground:${agentId}:${projectId}`;
+      const result = await runInAnalysisUsageScope({ projectId, sessionId }, () =>
         invokeCustomAgent({
           provider: meterAnalysisProvider(makeProvider()),
           agent,

@@ -285,7 +285,8 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     expect(recordUsageSpy).toHaveBeenCalledTimes(1);
     expect(recordUsageSpy.mock.calls[0]![0]).toMatchObject({
       projectId: "p1",
-      sessionId: agent.id,
+      // Per agent AND project, so projects sharing an agent do not share a session.
+      sessionId: `playground:${agent.id}:p1`,
       inputTokens: 3,
       outputTokens: 4,
     });

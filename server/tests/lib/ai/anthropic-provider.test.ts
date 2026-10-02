@@ -287,6 +287,8 @@ describe("AnthropicProvider.stream", () => {
         cacheReadTokens: 7,
         cacheWriteTokens: 2,
       },
+      // #724 — the served model, so a metered stream is priced against it.
+      model: "claude-sonnet-4-6",
     });
     expect(chunks[chunks.length - 1]).toEqual({ type: "done" });
     // streaming requests a larger budget by default

@@ -519,7 +519,8 @@ export class AnthropicProvider implements AIProvider {
       // #1257 — streaming is NOT subject to the SDK's non-streaming bound, but
       // it spends thinking from the same budget, so the accounting is the same.
       logOutputBudget("stream", params.max_tokens, usage, final.stop_reason);
-      yield { type: "usage", usage };
+      // #724 — the served model, so a metered stream is priced as `chat()` is.
+      yield final.model ? { type: "usage", usage, model: final.model } : { type: "usage", usage };
       // #1226 — forward the stop reason so callers can tell a cap-truncated
       // answer (`"max_tokens"`) from a cleanly-completed one. #198 — and the
       // turn's reasoning blocks, when a tool loop must replay them.
