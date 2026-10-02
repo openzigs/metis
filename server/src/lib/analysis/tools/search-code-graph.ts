@@ -10,6 +10,8 @@ import { describeReceivedKeys } from "./arg-errors.js";
 import { prisma } from "../../prisma.js";
 
 const MAX_RESULTS = 30;
+/** #740 — cap on the unresolved-callee names listed alongside the results. */
+const MAX_UNRESOLVED_NAMES = 20;
 
 /** Every filter this tool understands. At least one is required (#774). */
 const FILTERS = ["query", "kind", "filePath", "calledBy", "calls"] as const;
@@ -35,6 +37,31 @@ function unfilteredGuidance(args: unknown): string {
     'Retry with: {"tool":"search_code_graph","args":{"query":"computeSeverity"}} ' +
     "— or use search_code_symbols for a fuzzy/semantic search."
   );
+}
+
+/**
+ * #740 — describe the `calls` edges from `callerId` whose target the parser could
+ * not resolve (NULL `toSymbolId`), so the model knows they exist rather than
+ * concluding the function calls nothing. Returns "" when there are none.
+ * `toQualifiedName` carries the textual reference for an unresolved edge.
+ */
+async function describeUnresolvedCallees(callerId: string): Promise<string> {
+  const where = { fromSymbolId: callerId, kind: "calls", toSymbolId: null };
+  const count = await prisma.codeEdge.count({ where });
+  if (count === 0) return "";
+  const named = await prisma.codeEdge.findMany({
+    where: { ...where, toQualifiedName: { not: null } },
+    select: { toQualifiedName: true },
+    distinct: ["toQualifiedName"],
+    orderBy: { toQualifiedName: "asc" },
+    take: MAX_UNRESOLVED_NAMES + 1,
+  });
+  const names = named.flatMap((e) => (e.toQualifiedName ? [e.toQualifiedName] : []));
+  const shown = names.slice(0, MAX_UNRESOLVED_NAMES);
+  const more = names.length > MAX_UNRESOLVED_NAMES ? ", …" : "";
+  const noun = count === 1 ? "call" : "calls";
+  const list = shown.length > 0 ? `: ${shown.join(", ")}${more}` : "";
+  return `${count} ${noun} to external or unresolved symbols (not in the code graph)${list}`;
 }
 
 export interface SearchCodeGraphArgs {
@@ -115,6 +142,7 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   if (filePath) where.filePath = { contains: filePath };
 
   // Handle edge-based queries (calledBy / calls)
+  let unresolvedNote = "";
   if (calledBy) {
     const caller = await prisma.codeSymbol.findFirst({
       where: { codeGraphId: codeGraph.id, qualifiedName: { contains: calledBy } },
@@ -123,13 +151,26 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     if (!caller) {
       return { content: `No symbol matching "${calledBy}" found.`, resultCount: 0 };
     }
+    // #740 — a callee the parser could not resolve (stdlib, third-party) is
+    // stored with toSymbolId = NULL, and Prisma rejects a NULL member of `in`.
+    // Filter in the query so `take` caps RESOLVED edges, not the first N edges
+    // (which for Go are mostly `fmt`/`errors` calls).
     const edges = await prisma.codeEdge.findMany({
-      where: { fromSymbolId: caller.id, kind: "calls" },
+      where: { fromSymbolId: caller.id, kind: "calls", toSymbolId: { not: null } },
       select: { toSymbolId: true },
+      distinct: ["toSymbolId"],
+      orderBy: { toSymbolId: "asc" },
       take: MAX_RESULTS,
     });
-    const targetIds = edges.map((e) => e.toSymbolId);
+    const targetIds = edges.flatMap((e) => (e.toSymbolId ? [e.toSymbolId] : []));
+    unresolvedNote = await describeUnresolvedCallees(caller.id);
     if (targetIds.length === 0) {
+      if (unresolvedNote) {
+        return {
+          content: `"${calledBy}" calls no symbols resolved in this code graph; ${unresolvedNote}`,
+          resultCount: 0,
+        };
+      }
       return { content: `"${calledBy}" does not call any other symbols.`, resultCount: 0 };
     }
     where.id = { in: targetIds };
@@ -146,6 +187,8 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     const edges = await prisma.codeEdge.findMany({
       where: { toSymbolId: callee.id, kind: "calls" },
       select: { fromSymbolId: true },
+      distinct: ["fromSymbolId"],
+      orderBy: { fromSymbolId: "asc" },
       take: MAX_RESULTS,
     });
     const callerIds = edges.map((e) => e.fromSymbolId);
@@ -153,6 +196,8 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
       return { content: `No symbols call "${calls}".`, resultCount: 0 };
     }
     where.id = { in: callerIds };
+    // `calls` replaces the id filter set by `calledBy`, so its note no longer applies.
+    unresolvedNote = "";
   }
 
   const symbols = await prisma.codeSymbol.findMany({
@@ -170,7 +215,8 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   });
 
   if (symbols.length === 0) {
-    return { content: "No symbols found matching the query.", resultCount: 0 };
+    const none = "No symbols found matching the query.";
+    return { content: unresolvedNote ? `${none}\n${unresolvedNote}` : none, resultCount: 0 };
   }
 
   const truncated = symbols.length === MAX_RESULTS;
@@ -178,6 +224,7 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     (s) =>
       `${s.kind} ${s.qualifiedName} — ${s.filePath}:${s.startLine}-${s.endLine} [${s.language}]`,
   );
+  if (unresolvedNote) lines.push(`(plus ${unresolvedNote})`);
 
   return {
     content: lines.join("\n"),
