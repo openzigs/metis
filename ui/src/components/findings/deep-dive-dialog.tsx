@@ -16,6 +16,10 @@
  *    destination for `both`) plus a success toast.
  *  - On any deep-dive / publish error the dialog stays open with an inline
  *    error so the user can retry without losing their edits.
+ *  - #733 — a GitHub publish names its target repository in the dialog,
+ *    pre-filled from the project's saved publish target and editable. It is
+ *    never defaulted to the analysed repo connector's (upstream) repository,
+ *    and a target that IS that repository is called out.
  */
 import * as React from "react";
 import { toast } from "sonner";
@@ -35,6 +39,9 @@ import { PersonaTag, type PersonaTagPersona } from "@/components/findings/person
 import { ApiError } from "@/lib/api-client";
 import { triggerDownload } from "@/lib/plugins-api";
 import { analysisApi, type FindingIssueDraft, type PublishedIssueLink } from "@/lib/analysis-api";
+import { publishDestinationApi } from "@/lib/change-analysis-api";
+import { repoConnectorsApi } from "@/lib/connectors-api";
+import { AnalysedRepoWarning } from "@/components/publishing/analysed-repo-warning";
 
 export interface DeepDiveDialogFinding {
   id: string;
@@ -92,6 +99,18 @@ export function DeepDiveDialog({
   const [criteria, setCriteria] = React.useState("");
   const [labels, setLabels] = React.useState("");
 
+  // #733 — the GitHub repository the issue is filed into.
+  const [targetOwner, setTargetOwner] = React.useState("");
+  const [targetRepo, setTargetRepo] = React.useState("");
+  const [destinationKind, setDestinationKind] = React.useState<string | null>(null);
+  const [connector, setConnector] = React.useState<{
+    ownerOrOrg?: string | null;
+    repoName?: string | null;
+  } | null>(null);
+  // Jira-only projects file nothing to GitHub; an unknown destination (the
+  // lookup failed) still shows the field, so GitHub is never chosen silently.
+  const publishesToGitHub = destinationKind !== "jira";
+
   // Auto-load the draft once per (open, finding). A ref guards against the
   // effect re-firing into an infinite loop after a failed load — the user
   // re-triggers explicitly via the Retry button.
@@ -130,6 +149,32 @@ export function DeepDiveDialog({
     void runDeepDive(finding.id);
   }, [open, finding, runDeepDive]);
 
+  // #733 — load the saved publish target (the pre-fill) and the analysed repo
+  // (for the warning) once per open. Either may fail; the field then starts
+  // empty, which blocks a GitHub publish until the user names a repository.
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void Promise.allSettled([
+      publishDestinationApi.get(projectId),
+      repoConnectorsApi.getPrimary(projectId),
+    ]).then(([dest, primary]) => {
+      if (cancelled) return;
+      if (dest.status === "fulfilled") {
+        setDestinationKind(dest.value.publishDestination);
+        const { githubOwner, githubRepo } = dest.value;
+        if (githubOwner && githubRepo) {
+          setTargetOwner((o) => o || githubOwner);
+          setTargetRepo((r) => r || githubRepo);
+        }
+      }
+      if (primary.status === "fulfilled") setConnector(primary.value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectId]);
+
   // Reset all transient state when the dialog closes so the next open starts
   // clean (and the draft re-loads).
   React.useEffect(() => {
@@ -138,6 +183,10 @@ export function DeepDiveDialog({
     setPhase("idle");
     setError(null);
     setLinks([]);
+    setTargetOwner("");
+    setTargetRepo("");
+    setDestinationKind(null);
+    setConnector(null);
   }, [open]);
 
   // Reconstruct the FindingIssueDraft from the current (possibly edited) fields —
@@ -193,7 +242,12 @@ export function DeepDiveDialog({
     setError(null);
     const draft = currentDraft();
     try {
-      const res = await analysisApi.publishFinding(projectId, analysisId, finding.id, { draft });
+      const res = await analysisApi.publishFinding(projectId, analysisId, finding.id, {
+        draft,
+        ...(publishesToGitHub && {
+          target: { owner: targetOwner.trim(), repo: targetRepo.trim() },
+        }),
+      });
       setLinks(res.links);
       setPhase("published");
       toast.success(res.links.length > 1 ? `Created ${res.links.length} issues` : "Issue created");
@@ -205,6 +259,7 @@ export function DeepDiveDialog({
 
   const showForm = phase === "editing" || phase === "publishing" || phase === "published";
   const publishing = phase === "publishing";
+  const targetMissing = publishesToGitHub && (!targetOwner.trim() || !targetRepo.trim());
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -249,6 +304,44 @@ export function DeepDiveDialog({
 
         {showForm ? (
           <div className="space-y-4">
+            {publishesToGitHub ? (
+              <div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="dd-target-owner">Target owner</Label>
+                    <Input
+                      id="dd-target-owner"
+                      data-testid="deep-dive-target-owner"
+                      value={targetOwner}
+                      onChange={(e) => setTargetOwner(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="dd-target-repo">Target repo</Label>
+                    <Input
+                      id="dd-target-repo"
+                      data-testid="deep-dive-target-repo"
+                      value={targetRepo}
+                      onChange={(e) => setTargetRepo(e.target.value)}
+                    />
+                  </div>
+                </div>
+                {targetMissing ? (
+                  <p
+                    className="mt-2 text-xs text-muted-foreground"
+                    data-testid="deep-dive-target-hint"
+                  >
+                    Name the GitHub repository to file this issue into. Save a project target on the
+                    Publishing page to pre-fill it.
+                  </p>
+                ) : null}
+                <AnalysedRepoWarning
+                  testId="deep-dive-target-upstream-warning"
+                  target={{ owner: targetOwner.trim(), repo: targetRepo.trim() }}
+                  connector={connector}
+                />
+              </div>
+            ) : null}
             <div className="space-y-1.5">
               <Label htmlFor="dd-title">Title</Label>
               <Input
@@ -370,7 +463,7 @@ export function DeepDiveDialog({
             <Button
               data-testid="deep-dive-publish"
               onClick={() => void handlePublish()}
-              disabled={publishing || title.trim().length === 0}
+              disabled={publishing || title.trim().length === 0 || targetMissing}
             >
               {publishing ? "Creating…" : "Create Issue"}
             </Button>

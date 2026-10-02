@@ -156,6 +156,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       analysisId: opts.analysisId,
       requirementIds: requirements.map((r) => r.id),
       generator: "draft-generator/v1",
+      ...draftTarget(opts),
     },
   });
   const epicTitle = epic.title;
@@ -214,6 +215,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
           analysisId: opts.analysisId,
           type: req.type,
           requirementKey: key,
+          ...draftTarget(opts),
         },
       },
       { requirementKey: key, reservedKeys },
@@ -284,6 +286,15 @@ async function claimTitle(
       fallback = { title, hash };
     }
   }
+}
+
+/**
+ * #733 — the repository a draft was generated for (its dedup hash is keyed on
+ * it), recorded so the publish batch form can inherit it instead of
+ * defaulting to the repo connector's own repository.
+ */
+function draftTarget(opts: GenerateDraftsOptions): { targetOwner: string; targetRepo: string } {
+  return { targetOwner: opts.targetOwner, targetRepo: opts.targetRepo };
 }
 
 /** #490 — how a feature requirement recognises the draft generated from it. */

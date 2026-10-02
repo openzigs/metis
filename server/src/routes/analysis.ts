@@ -1242,6 +1242,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             draft: parsed.data.draft,
             provider,
             extraLabels: parsed.data.extraLabels,
+            target: parsed.data.target,
           });
           links.push({ provider, url: link.externalUrl, issueKey: link.externalId });
         }
@@ -1264,7 +1265,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           const msg = err.message?.slice(0, 1000) ?? "publish failed";
           // Missing/incomplete destination config is a client-actionable 400
           // for the analysis publish flow (mirrors the Jira preflight above).
-          if (err.code === "ERR_NOT_IMPLEMENTED") {
+          // #733 — no explicit or configured GitHub target is the same kind
+          // of client-actionable gap.
+          if (err.code === "ERR_NOT_IMPLEMENTED" || err.code === "ERR_NO_PUBLISH_TARGET") {
             throw new AppError(400, err.code, msg);
           }
           if (err.code === "ERR_STALE_COMMIT") {

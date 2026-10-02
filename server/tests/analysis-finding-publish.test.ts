@@ -25,6 +25,9 @@ const issueLink = {
 const repoConnection = {
   findFirst: vi.fn(),
 };
+const project = {
+  findUnique: vi.fn(),
+};
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -33,6 +36,9 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     get repoConnection() {
       return repoConnection;
+    },
+    get project() {
+      return project;
     },
   },
 }));
@@ -76,6 +82,12 @@ beforeEach(() => {
   issueLink.findFirst.mockReset();
   issueLink.upsert.mockReset();
   repoConnection.findFirst.mockReset();
+  project.findUnique.mockReset();
+  // #733 — a configured GitHub publish target, unless a test says otherwise.
+  project.findUnique.mockResolvedValue({
+    publishGithubOwner: "openzigs",
+    publishGithubRepo: "flux-v2",
+  });
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -203,6 +215,63 @@ describe("publishAnalysisFinding", () => {
     expect(input.finding.title).toBe(DRAFT.title);
     // Suggested labels + caller extras are merged.
     expect(input.extraLabels).toEqual(["security", "compliance", "triaged"]);
+    // #733 — filed into the configured target, not the connector's repo.
+    expect(input.finding.target).toEqual({ owner: "openzigs", repo: "flux-v2" });
+    expect(project.findUnique.mock.calls[0][0].where).toEqual({ id: "proj_1" });
+  });
+
+  it("#733 — an explicit target wins over the configured one", async () => {
+    repoConnection.findFirst.mockResolvedValue({ id: "repo_1" });
+    await publishAnalysisFinding({
+      projectId: "proj_1",
+      analysisId: "ana_1",
+      findingId: "find_1",
+      agentKey: "code",
+      severity: "high",
+      category: "security",
+      draft: DRAFT,
+      provider: "github",
+      target: { owner: "me", repo: "sandbox" },
+    });
+    expect(captured!.input.finding.target).toEqual({ owner: "me", repo: "sandbox" });
+    expect(project.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("#733 — refuses a GitHub publish with no explicit or configured target (no connector fallback)", async () => {
+    repoConnection.findFirst.mockResolvedValue({ id: "repo_1" });
+    project.findUnique.mockResolvedValue({ publishGithubOwner: null, publishGithubRepo: null });
+    await expect(
+      publishAnalysisFinding({
+        projectId: "proj_1",
+        analysisId: "ana_1",
+        findingId: "find_1",
+        agentKey: "code",
+        severity: "high",
+        category: "security",
+        draft: DRAFT,
+        provider: "github",
+      }),
+    ).rejects.toMatchObject({ code: "ERR_NO_PUBLISH_TARGET" });
+    expect(captured).toBeNull();
+  });
+
+  it("#733 — a half-configured target is no target", async () => {
+    project.findUnique.mockResolvedValue({
+      publishGithubOwner: "openzigs",
+      publishGithubRepo: null,
+    });
+    await expect(
+      publishAnalysisFinding({
+        projectId: "proj_1",
+        analysisId: "ana_1",
+        findingId: "find_1",
+        agentKey: "code",
+        severity: "high",
+        category: "security",
+        draft: DRAFT,
+        provider: "github",
+      }),
+    ).rejects.toMatchObject({ code: "ERR_NO_PUBLISH_TARGET" });
   });
 
   it("#338 — carries an agent-phase finding's agent into the published body", async () => {
@@ -250,6 +319,8 @@ describe("publishAnalysisFinding", () => {
       provider: "jira",
     });
     expect(repoConnection.findFirst).not.toHaveBeenCalled();
+    expect(project.findUnique).not.toHaveBeenCalled();
+    expect(captured!.input.finding.target).toBeUndefined();
     expect(captured!.input.finding.repoConnectionId).toBe("");
     expect(captured!.input.provider).toBe("jira");
   });

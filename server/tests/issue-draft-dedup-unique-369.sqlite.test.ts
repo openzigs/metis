@@ -111,6 +111,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Same hash in another project is not a duplicate.
       draft("d_other", "p2", "h1", "draft", T0);
       sqlite.apply(MIGRATION);
+      // The generateDrafts cases below run today's generator, whose client
+      // selects every project column — so the file must reach the head schema.
+      // No later migration touches the rows seeded above (#402 repoints only
+      // parentDraftId, null on every row here).
+      sqlite.applyRemaining();
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);

@@ -30,6 +30,7 @@ import type {
   RequirementVerdict,
 } from "./constants.js";
 import { dateSchema, idSchema, timestampsSchema } from "./common.js";
+import { githubPublishTargetSchema } from "./publishing.js";
 import type { DocumentSource } from "./project.js";
 import type { AgentKind, AgentRef } from "./agents.js";
 import type { CrossDocFindings } from "./cross-doc.js";
@@ -952,6 +953,12 @@ export const publishFindingSchema = z
     provider: z.enum(["github", "jira"]).optional(),
     draft: findingIssueDraftSchema,
     extraLabels: z.array(z.string().min(1).max(64)).max(20).optional(),
+    /**
+     * #733 — the GitHub repository to file into. Omitted = the project's
+     * configured publish target; with neither, a GitHub publish is refused
+     * rather than defaulting to the analysed repo connector's repository.
+     */
+    target: githubPublishTargetSchema.optional(),
   })
   .strict();
 export type PublishFindingInput = z.infer<typeof publishFindingSchema>;

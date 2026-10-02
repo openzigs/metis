@@ -75,6 +75,23 @@ describe("marker helpers", () => {
 });
 
 describe("publishFinding", () => {
+  it("#733 — hands an explicit target to createGitHubIssue", async () => {
+    const p = ports();
+    await publishFinding(p, {
+      finding: payload({ target: { owner: "openzigs", repo: "flux-v2" } }),
+      provider: "github",
+    });
+    const args = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(args.target).toEqual({ owner: "openzigs", repo: "flux-v2" });
+  });
+
+  it("#733 — passes no target when the finding carries none (scanner findings)", async () => {
+    const p = ports();
+    await publishFinding(p, { finding: payload(), provider: "github" });
+    const args = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect("target" in args).toBe(false);
+  });
+
   it("creates a GitHub issue and saves IssueLink", async () => {
     const p = ports();
     const out = await publishFinding(p, { finding: payload(), provider: "github" });

@@ -332,6 +332,39 @@ describe("POST /api/projects/:projectId/analyses/:id/findings/:findingId/publish
     expect(res.body.error.code).toBe("ERR_NOT_IMPLEMENTED");
   });
 
+  it("#733 — forwards an explicit GitHub target to the publisher", async () => {
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ draft: VALID_DRAFT, target: { owner: "openzigs", repo: "flux-v2" } });
+    expect(res.status).toBe(200);
+    expect(publishAnalysisFindingMock.mock.calls[0][0].target).toEqual({
+      owner: "openzigs",
+      repo: "flux-v2",
+    });
+  });
+
+  it("#733 — rejects a malformed target (400) before publishing", async () => {
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ draft: VALID_DRAFT, target: { owner: "openzigs", repo: "../issues" } });
+    expect(res.status).toBe(400);
+    expect(publishAnalysisFindingMock).not.toHaveBeenCalled();
+  });
+
+  it("#733 — maps ERR_NO_PUBLISH_TARGET to 400", async () => {
+    publishAnalysisFindingMock.mockRejectedValue(
+      new PublishError("ERR_NO_PUBLISH_TARGET", "no target configured"),
+    );
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ draft: VALID_DRAFT });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("ERR_NO_PUBLISH_TARGET");
+  });
+
   it("maps ERR_STALE_COMMIT to 409", async () => {
     publishAnalysisFindingMock.mockRejectedValue(new PublishError("ERR_STALE_COMMIT", "stale"));
     const res = await request(app)

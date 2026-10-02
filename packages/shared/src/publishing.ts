@@ -63,6 +63,25 @@ export const updateIssueDraftSchema = z.object({
 });
 export type UpdateIssueDraftInput = z.infer<typeof updateIssueDraftSchema>;
 
+// ---- GitHub publish target (#733) ------------------------------------------
+/** A GitHub user or organisation name: alphanumerics and single inner hyphens, ≤ 39. */
+export const githubOwnerSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/, "Not a valid GitHub owner");
+/** A GitHub repository name: `[A-Za-z0-9._-]`, ≤ 100, and never `.` or `..`. */
+export const githubRepoSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9._-]{1,100}$/, "Not a valid GitHub repository name")
+  .refine((s) => s !== "." && s !== "..", "Not a valid GitHub repository name");
+/** An explicit `owner/repo` an issue is filed into. */
+export const githubPublishTargetSchema = z.object({
+  owner: githubOwnerSchema,
+  repo: githubRepoSchema,
+});
+export type GithubPublishTarget = z.infer<typeof githubPublishTargetSchema>;
+
 // ---- PublishBatch ----------------------------------------------------------
 export const PUBLISH_PROVIDERS = ["github", "github_enterprise"] as const;
 export type PublishProvider = (typeof PUBLISH_PROVIDERS)[number];

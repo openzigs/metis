@@ -495,6 +495,56 @@ describe("buildPublisherPorts.createGitHubIssue", () => {
     expect(resolveVaultRef).not.toHaveBeenCalled();
   });
 
+  it("#733 — files into an explicit target with the connector's credential", async () => {
+    mockPrisma.repoConnection.findFirst.mockResolvedValue({
+      id: "repo-1",
+      ownerOrOrg: "miniflux",
+      repoName: "v2",
+      apiBaseUrl: "https://api.github.com",
+      secretId: "sec-1",
+      lastCommitSha: "abc",
+    });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    const ports = buildPublisherPorts();
+    await ports.createGitHubIssue({
+      projectId: "proj-1",
+      repoConnectionId: "repo-1",
+      title: "T",
+      body: "B",
+      labels: [],
+      target: { owner: "openzigs", repo: "flux-v2" },
+    });
+    const factory = vi.mocked(acquirePublishOctokit);
+    const client = await factory.mock.results.at(-1)!.value;
+    expect(factory.mock.calls.at(-1)![0]).toMatchObject({
+      owner: "openzigs",
+      token: expect.any(String),
+    });
+    expect(client.request.mock.calls.at(-1)[0].url).toBe("/repos/openzigs/flux-v2/issues");
+  });
+
+  it("#733 — files into the connector's repo when no target is given", async () => {
+    mockPrisma.repoConnection.findFirst.mockResolvedValue({
+      id: "repo-1",
+      ownerOrOrg: "o",
+      repoName: "r",
+      apiBaseUrl: "https://api.github.com",
+      secretId: "sec-1",
+      lastCommitSha: "abc",
+    });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    const ports = buildPublisherPorts();
+    await ports.createGitHubIssue({
+      projectId: "proj-1",
+      repoConnectionId: "repo-1",
+      title: "T",
+      body: "B",
+      labels: [],
+    });
+    const client = await vi.mocked(acquirePublishOctokit).mock.results.at(-1)!.value;
+    expect(client.request.mock.calls.at(-1)[0].url).toBe("/repos/o/r/issues");
+  });
+
   it("throws when the repo connection is missing", async () => {
     mockPrisma.repoConnection.findFirst.mockResolvedValue(null);
     const ports = buildPublisherPorts();

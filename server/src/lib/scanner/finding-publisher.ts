@@ -64,6 +64,17 @@ export interface FindingPayload {
   qualifiedName: string;
   ruleId: string | null;
   commitSha: string;
+  /**
+   * #733 — the GitHub repository to file into. Absent = the repo connector's
+   * own repository (a scanner finding is filed against the repo it was found in).
+   */
+  target?: GitHubIssueTarget;
+}
+
+/** #733 — an explicit `owner/repo` a GitHub issue is created in. */
+export interface GitHubIssueTarget {
+  owner: string;
+  repo: string;
 }
 
 export interface ExistingIssueLink {
@@ -96,6 +107,8 @@ export interface PublisherPorts {
     title: string;
     body: string;
     labels: string[];
+    /** #733 — overrides the connector's own owner/repo; the token is still the connector's. */
+    target?: GitHubIssueTarget;
   }): Promise<CreatedIssue>;
   createJiraIssue(args: {
     projectId: string;
@@ -205,6 +218,7 @@ export async function publishFinding(
           title: finding.title,
           body: stampedBody,
           labels,
+          ...(finding.target && { target: finding.target }),
         })
       : await ports.createJiraIssue({
           projectId: finding.projectId,

@@ -45,6 +45,7 @@ import type {
   CreatedIssue,
   ExistingIssueLink,
   FindingPayload,
+  GitHubIssueTarget,
   PublisherPorts,
 } from "./finding-publisher.js";
 import { runScan as runScanPure, type ScannerPorts } from "./orchestrator.js";
@@ -566,6 +567,7 @@ export function buildPublisherPorts(): PublisherPorts {
       title,
       body,
       labels,
+      target,
     }): Promise<CreatedIssue> {
       const conn = await prisma.repoConnection.findFirst({
         where: { id: repoConnectionId, projectId, deletedAt: null },
@@ -573,7 +575,11 @@ export function buildPublisherPorts(): PublisherPorts {
       if (!conn) {
         throw new Error(`repo connection ${repoConnectionId} not found`);
       }
-      if (!conn.ownerOrOrg || !conn.repoName) {
+      // #733 — an explicit target (an analysis finding's configured or chosen
+      // repository) wins; the connector only supplies the credential.
+      const owner = target?.owner ?? conn.ownerOrOrg;
+      const repo = target?.repo ?? conn.repoName;
+      if (!owner || !repo) {
         // Issue #288 — local/upload connectors have no owner/repo and cannot
         // publish GitHub issues.
         throw new Error("repo connection is not a GitHub repo (missing owner/repo)");
@@ -585,13 +591,13 @@ export function buildPublisherPorts(): PublisherPorts {
       }
       const baseUrl = conn.apiBaseUrl ?? "https://api.github.com";
       const client = await acquirePublishOctokit({
-        owner: conn.ownerOrOrg,
+        owner,
         baseUrl,
         token,
       });
       const res = await client.request<GhIssueResponse>({
         method: "POST",
-        url: `/repos/${conn.ownerOrOrg}/${conn.repoName}/issues`,
+        url: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`,
         data: { title, body, labels },
       });
       const data = res.data;
@@ -871,19 +877,49 @@ export interface PublishAnalysisFindingInput {
   draft: FindingIssueDraft;
   provider: Publisher;
   extraLabels?: readonly string[];
+  /** #733 — the GitHub repository to file into; else the project's configured target. */
+  target?: GitHubIssueTarget;
+}
+
+/**
+ * #733 — the GitHub repository an analysis finding is filed into: the caller's
+ * explicit target, else the project's configured publish target. There is
+ * deliberately no fallback to the repo connector's own repository — for an
+ * analysed open-source project that is its upstream, and filing there by
+ * default is exactly the walkthrough's safety failure.
+ */
+async function resolveFindingGitHubTarget(
+  projectId: string,
+  explicit: GitHubIssueTarget | undefined,
+): Promise<GitHubIssueTarget> {
+  if (explicit) return explicit;
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { publishGithubOwner: true, publishGithubRepo: true },
+  });
+  if (project?.publishGithubOwner && project.publishGithubRepo) {
+    return { owner: project.publishGithubOwner, repo: project.publishGithubRepo };
+  }
+  throw new PublishError(
+    "ERR_NO_PUBLISH_TARGET",
+    "No GitHub publish target is configured for this project — choose a target repository, or set one on the Publishing page.",
+  );
 }
 
 /**
  * Publish a single analysis finding (with an operator-edited draft) to GitHub
  * or Jira via the shared finding-publisher. Idempotent per (findingId,
- * provider). For GitHub, resolves the project's primary/active repo
- * connection; Jira requires no repo connection.
+ * provider). For GitHub, the issue goes to the explicit or configured target
+ * (#733) using the project's primary/active repo connection's credential; Jira
+ * requires no repo connection.
  */
 export async function publishAnalysisFinding(
   input: PublishAnalysisFindingInput,
 ): Promise<ExistingIssueLink> {
   let repoConnectionId = "";
+  let target: GitHubIssueTarget | undefined;
   if (input.provider === "github") {
+    target = await resolveFindingGitHubTarget(input.projectId, input.target);
     const conn = await prisma.repoConnection.findFirst({
       where: {
         projectId: input.projectId,
@@ -926,6 +962,7 @@ export async function publishAnalysisFinding(
     qualifiedName: "",
     ruleId: null,
     commitSha: ANALYSIS_PUBLISH_ANCHOR,
+    ...(target && { target }),
   };
 
   const extraLabels = [...input.draft.suggestedLabels, ...(input.extraLabels ?? [])];
