@@ -190,9 +190,16 @@ describe("computeSqlLineageCoverage", () => {
     const cov = await computeSqlLineageCoverage("proj-1", prisma);
     expect(cov!.totalEdges).toBe(2);
     expect(cov!.unresolvedEdges).toBe(1);
-    // Only the schema lineage edge kinds are queried (denominator = table/object edges).
+    // Only the schema lineage edge kinds are queried (denominator = table/object
+    // edges); a `calls` edge only with a provenance, so code calls are not loaded.
     expect(findMany).toHaveBeenCalledWith({
-      where: { projectId: "proj-1", kind: { in: ["reads", "writes", "persists-to", "calls"] } },
+      where: {
+        projectId: "proj-1",
+        OR: [
+          { kind: { in: ["reads", "writes", "persists-to"] } },
+          { kind: "calls", source: { not: null } },
+        ],
+      },
       select: {
         id: true,
         kind: true,

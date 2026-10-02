@@ -81,6 +81,8 @@ import {
 import {
   buildIntrospectedSchemaFromSymbols,
   isSqlLineageEnabled,
+  probeSqlLineageSidecar,
+  trackSqlLineageReachability,
   type IntrospectedSchema,
   type SqlLineageClient,
 } from "./sql-lineage-client.js";
@@ -121,6 +123,15 @@ export interface IngestOptions {
    * `driver.introspect()` via `buildIntrospectedSchema`.
    */
   introspectedSchema?: IntrospectedSchema | null;
+  /**
+   * #721 — true when the project HAS a DB connector but introspecting it failed
+   * (an outage, missing grants), so {@link introspectedSchema} is null for want
+   * of an answer rather than because there is no database. The lineage
+   * fingerprint then keeps the schema component it was last built with: a
+   * transient outage neither forces a re-parse nor makes the DB's return force
+   * a second one. Omit (false) when there is no connector, or it was read.
+   */
+  introspectionFailed?: boolean;
   /**
    * Live-introspected routines (procedures & functions) whose BODIES should be
    * parsed for `calls` edges — Epic #294 (#316B). Supplied together with
@@ -222,6 +233,11 @@ export interface IngestStats {
    * the ones the graph was last built with, so lineage backfills over files
    * whose content did not change. False on a fresh graph, an unchanged run and
    * an explicitly non-incremental one.
+   *
+   * Turning lineage OFF also changes the inputs, so it too forces one full
+   * re-parse — the one that removes the lineage edges every file carried — and
+   * reports `true` here. So does the first ingest with a reachable sidecar
+   * after one where lineage was on but the sidecar could not be reached.
    */
   lineageBackfill: boolean;
   languageStats: Record<string, number>;
@@ -261,6 +277,11 @@ export function lineageFingerprint(
   schema: IntrospectedSchema | null | undefined,
 ): string {
   if (!lineageEnabled) return "off";
+  return `on:${schemaFingerprint(schema)}`;
+}
+
+/** The schema component of a {@link lineageFingerprint}. */
+function schemaFingerprint(schema: IntrospectedSchema | null | undefined): string {
   const sortKeys = (v: unknown): unknown =>
     v && typeof v === "object"
       ? Object.fromEntries(
@@ -269,7 +290,20 @@ export function lineageFingerprint(
             .map((k) => [k, sortKeys((v as Record<string, unknown>)[k])]),
         )
       : v;
-  return `on:${sha256(JSON.stringify(sortKeys(schema ?? null)))}`;
+  return sha256(JSON.stringify(sortKeys(schema ?? null)));
+}
+
+/**
+ * #721 — split a stored fingerprint. `on:<schema>` means lineage ran against
+ * that schema; `unreached:<schema>` means lineage was on but the sidecar could
+ * not be reached, so no file got lineage and the next reachable run must
+ * backfill. `off` and a pre-#721 `null` carry no schema component.
+ */
+function parseLineageFingerprint(
+  stored: string | null,
+): { state: "on" | "unreached"; schema: string } | null {
+  const m = /^(on|unreached):(.+)$/.exec(stored ?? "");
+  return m ? { state: m[1] as "on" | "unreached", schema: m[2] } : null;
 }
 
 export async function ingestCodeGraph(
@@ -296,10 +330,16 @@ export async function ingestCodeGraph(
   // lineage inputs changed would leave every unchanged file without lineage.
   // Re-parse everything when they differ. A graph built before #721 has no
   // fingerprint: re-parse once if lineage is on now, since it may predate it.
-  const fingerprint = lineageFingerprint(
-    isSqlLineageEnabled(options.sqlLineageOverride),
-    options.introspectedSchema,
-  );
+  //
+  // A connector that could not be introspected says nothing about the schema,
+  // so keep the stored schema component rather than fingerprinting "no schema".
+  const lineageOn = isSqlLineageEnabled(options.sqlLineageOverride);
+  const stored = parseLineageFingerprint(graph.lineageFingerprint);
+  const schemaPart =
+    options.introspectionFailed && stored
+      ? stored.schema
+      : schemaFingerprint(options.introspectedSchema);
+  const fingerprint = lineageOn ? `on:${schemaPart}` : "off";
 
   // Step 2 — load .metisignore (file or default).
   const metisignorePath = path.join(rootDir, ".metisignore");
@@ -314,8 +354,15 @@ export async function ingestCodeGraph(
   // Step 3 — load the graph's existing files: their hashes drive the
   // incremental skip, and a file no longer in the tree is pruned (#313).
   const existingFiles = await loadExistingFiles(prisma, graph.id);
-  const lineageBackfill =
+  let lineageBackfill =
     incremental && existingFiles.size > 0 && (graph.lineageFingerprint ?? "off") !== fingerprint;
+  // The last run had lineage on but no sidecar. Re-parsing everything against a
+  // sidecar that is still down would write nothing, so check it answers first.
+  let sidecarStillDown = false;
+  if (lineageBackfill && lineageOn && stored?.state === "unreached") {
+    sidecarStillDown = !(await probeSqlLineageSidecar());
+    if (sidecarStillDown) lineageBackfill = false;
+  }
   const skipUnchanged = incremental && !lineageBackfill;
 
   // Step 4 — walk the tree.
@@ -583,16 +630,25 @@ export async function ingestCodeGraph(
   // (routine→object) edges (#316), feeding the introspected schema (#317).
   // Feature-gated on SQL_LINEAGE_MODE and degrades gracefully when the sidecar is
   // absent — never throws, never blocks ingest.
-  await extractSchemaUsage(prisma, graph.id, projectId, parsedFiles, sourceByRelPath, stats, {
-    schema: options.introspectedSchema ?? null,
-    routines: options.routines,
-    fetchRoutineBody: options.fetchRoutineBody,
-    routineDialect: options.routineDialect,
-    packages: options.packages,
-    fetchPackageBody: options.fetchPackageBody,
-    dependencies: options.dependencies,
-    sqlLineageOverride: options.sqlLineageOverride,
-  });
+  const { reachability } = await trackSqlLineageReachability(() =>
+    extractSchemaUsage(prisma, graph.id, projectId, parsedFiles, sourceByRelPath, stats, {
+      schema: options.introspectedSchema ?? null,
+      routines: options.routines,
+      fetchRoutineBody: options.fetchRoutineBody,
+      routineDialect: options.routineDialect,
+      packages: options.packages,
+      fetchPackageBody: options.fetchPackageBody,
+      dependencies: options.dependencies,
+      sqlLineageOverride: options.sqlLineageOverride,
+    }),
+  );
+  // #721 — record lineage as "on" only if the sidecar actually served this run
+  // (or nothing needed it). If every call failed, or a due backfill was skipped
+  // because the sidecar was still down, record `unreached` so the next run with
+  // a reachable sidecar re-parses everything.
+  const sidecarUnreached =
+    lineageOn && (sidecarStillDown || (reachability.unreachable > 0 && reachability.reached === 0));
+  const recordedFingerprint = sidecarUnreached ? `unreached:${schemaPart}` : fingerprint;
 
   // Step 6.5 — reconcile the project's schema graph into canonical cross-project
   // SchemaObjectIdentity rows (#955). The identity service (#308) shipped with
@@ -641,7 +697,7 @@ export async function ingestCodeGraph(
       edgeCount: totalEdges,
       languageStats: JSON.stringify(langStatsRecord),
       lastIndexedAt: new Date(),
-      lineageFingerprint: fingerprint,
+      lineageFingerprint: recordedFingerprint,
     },
   });
 

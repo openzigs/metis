@@ -32,6 +32,10 @@ import type { DbRoutineInfo, DbTableInfo } from "@metis/shared";
 // us a scripted sidecar with no HTTP, and a toggleable feature gate.
 let sidecarEnabled = true;
 let sidecarResponder: (params: ExtractUsageParams) => ExtractUsageResult | null = () => null;
+// #721 — when true the sidecar is UNREACHABLE: extraction goes through the real
+// `extractUsageSafe` with a client whose every call fails at the network, so the
+// real reachability accounting runs, and the health probe reports it down.
+let sidecarDown = false;
 
 vi.mock("../../../src/lib/code-graph/sql-lineage-client.js", async (importOriginal) => {
   const actual =
@@ -39,8 +43,19 @@ vi.mock("../../../src/lib/code-graph/sql-lineage-client.js", async (importOrigin
   return {
     ...actual,
     isSqlLineageEnabled: () => sidecarEnabled,
-    extractUsageSafe: async (params: ExtractUsageParams) =>
-      sidecarEnabled ? sidecarResponder(params) : null,
+    extractUsageSafe: async (params: ExtractUsageParams) => {
+      if (!sidecarEnabled) return null;
+      if (sidecarDown) {
+        const unreachable = {
+          extractUsage: async () => {
+            throw new actual.SqlLineageClientError("connect ECONNREFUSED", 0, true);
+          },
+        } as unknown as InstanceType<typeof actual.SqlLineageClient>;
+        return actual.extractUsageSafe(params, unreachable, true);
+      }
+      return sidecarResponder(params);
+    },
+    probeSqlLineageSidecar: async () => !sidecarDown,
   };
 });
 
@@ -253,11 +268,13 @@ function sqlglotEdges(store: { codeEdges: Row[] }): Row[] {
 beforeEach(() => {
   vi.clearAllMocks();
   sidecarEnabled = true;
+  sidecarDown = false;
   sidecarResponder = () => null;
 });
 
 afterEach(() => {
   sidecarEnabled = true;
+  sidecarDown = false;
   sidecarResponder = () => null;
 });
 
@@ -853,6 +870,99 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
     const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
 
     expect(stats.filesParsed).toBe(0);
+  });
+
+  it("turning lineage OFF re-parses once to drop the lineage edges, and reports it", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(sqlglotEdges(store).length).toBeGreaterThan(0);
+
+    sidecarEnabled = false;
+    const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+
+    expect(stats.filesParsed).toBe(1);
+    expect(stats.lineageBackfill).toBe(true);
+    expect(sqlglotEdges(store)).toHaveLength(0);
+  });
+
+  // Review of PR #752 — a connector that exists but cannot be read is an outage,
+  // not "no database": it must not look like a schema change.
+  it("a failed DB introspection keeps the stored schema: no re-parse, fingerprint preserved", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+    const schema = { public: { users: { id: "INT" } } };
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root, introspectedSchema: schema });
+    const built = (store.codeGraphs[0] as any).lineageFingerprint;
+
+    const outage = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: null,
+      introspectionFailed: true,
+    });
+    expect(outage.filesParsed).toBe(0);
+    expect(outage.lineageBackfill).toBe(false);
+    expect((store.codeGraphs[0] as any).lineageFingerprint).toBe(built);
+
+    const recovered = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: schema,
+    });
+    expect(recovered.filesParsed).toBe(0);
+    expect(recovered.lineageBackfill).toBe(false);
+  });
+
+  it("no DB connector at all (null schema, not a failure) is still a schema change", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: { public: { users: { id: "INT" } } },
+    });
+    const stats = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: null,
+    });
+
+    expect(stats.filesParsed).toBe(1);
+    expect(stats.lineageBackfill).toBe(true);
+  });
+
+  // Review of PR #752 — the issue's own reproduction: lineage on, sidecar not
+  // yet running. That ingest must not record lineage as done, or starting the
+  // sidecar later never backfills.
+  it("lineage on with the sidecar unreachable backfills once the sidecar is reachable", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+
+    sidecarDown = true;
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(sqlglotEdges(store)).toHaveLength(0);
+    // Still down: no point re-parsing everything against it.
+    const stillDown = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(stillDown.filesParsed).toBe(0);
+
+    sidecarDown = false;
+    const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+
+    expect(stats.filesParsed).toBe(1);
+    expect(stats.lineageBackfill).toBe(true);
+    const edge = sqlglotEdges(store).find((e) => (e as any).toQualifiedName === "users");
+    expect((edge as any)?.kind).toBe("reads");
+
+    const settled = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(settled.filesParsed).toBe(0);
   });
 
   it("an explicit incremental:false ingest is a full parse but not reported as a backfill", async () => {

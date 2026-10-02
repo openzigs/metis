@@ -3,12 +3,10 @@ issue: 721
 section: Fixed
 ---
 
-- SQL lineage now backfills on a repository that was already ingested. Turning SQL lineage on,
-  or adding a database connector whose schema changes what lineage resolves, used to have no
-  effect until a file's content changed, because Deep Ingest and Sync skip unchanged files. The
-  next ingest now re-parses every file when the lineage settings or the database schema differ
-  from those the code graph was built with. A graph built before this release is re-parsed once
-  on its next ingest if lineage is on.
+- SQL lineage now backfills on an already-ingested repository. Turning lineage on, adding a database
+  whose schema changes what lineage resolves, or first reaching the SQL-lineage service after it was
+  unreachable re-parses every file on the next ingest instead of waiting for files to change.
+  Turning lineage off re-parses once too, which removes the lineage edges; ingest stats report both
+  as a lineage backfill. A database that briefly cannot be read does not trigger a re-parse.
 - The Gap Report's SQL-lineage coverage no longer counts ordinary code-to-code calls as table
-  edges. A project with no SQL lineage used to read "100% resolved" over thousands of code calls;
-  it now shows no coverage section.
+  edges. A project with no SQL lineage used to read "100% resolved" over thousands of code calls.
