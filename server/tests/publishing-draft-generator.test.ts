@@ -173,6 +173,21 @@ describe("generateDrafts", () => {
     expect(drafts.size).toBe(3);
   });
 
+  it("#733 — records the target each draft was generated for, epic and features alike", async () => {
+    await generateDrafts({
+      projectId: "proj_1",
+      analysisId: "analysis_1",
+      targetOwner: "openzigs",
+      targetRepo: "flux-v2",
+    });
+    expect(drafts.size).toBe(3);
+    for (const d of drafts.values()) {
+      const meta = JSON.parse(d.metadata ?? "{}");
+      expect(meta.targetOwner).toBe("openzigs");
+      expect(meta.targetRepo).toBe("flux-v2");
+    }
+  });
+
   // #23 — the epic is titled from the analysed feature, never the analysis id.
   it("titles the epic from the analysed feature and names it as each feature's parent", async () => {
     await generateDrafts({

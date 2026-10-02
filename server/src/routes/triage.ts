@@ -9,6 +9,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
+import { githubPublishTargetSchema } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -36,6 +37,12 @@ const triageSchema = z.object({
 const publishSchema = z.object({
   provider: z.enum(PUBLISHER_VALUES as unknown as [Publisher, ...Publisher[]]),
   extraLabels: z.array(z.string().min(1).max(64)).max(20).optional(),
+  /**
+   * #733 — the GitHub repository to file into. Omitted = the project's saved
+   * publish target; with neither, a GitHub publish is refused (400) rather than
+   * filed into the scanned repository.
+   */
+  target: githubPublishTargetSchema.optional(),
 });
 
 function projectIdOf(req: Request): string {
@@ -222,6 +229,7 @@ export function triageRouter(): Router {
           scanFindingId: findingId,
           provider: parsed.data.provider,
           extraLabels: parsed.data.extraLabels,
+          ...(parsed.data.target && { target: parsed.data.target }),
         });
         audit({
           actor: { id: actor(req) },
@@ -248,6 +256,10 @@ export function triageRouter(): Router {
           // project just needs configuration — and consistent with ERR_STALE_COMMIT.
           if (err.code === "ERR_JIRA_NOT_CONFIGURED") {
             throw new AppError(409, err.code, msg);
+          }
+          // #733 — no explicit or saved GitHub target: the caller must choose one.
+          if (err.code === "ERR_NO_PUBLISH_TARGET") {
+            throw new AppError(400, err.code, msg);
           }
           if (err.code === "ERR_NOT_IMPLEMENTED") {
             throw new AppError(501, err.code, msg);

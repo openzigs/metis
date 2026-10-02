@@ -69,6 +69,11 @@ import {
   type DroppedCitation,
 } from "./code-citations.js";
 import { getPersona } from "./personas.js";
+import {
+  flushAnalysisUsage,
+  meterAnalysisProvider,
+  runInAnalysisUsageScope,
+} from "./analysis-usage.js";
 import { withInvokeAgentSpan } from "../otel/genai-spans.js";
 import {
   startRun as startReplayRun,
@@ -235,6 +240,19 @@ import { TaskProfiler } from "../ai/task-profiler.js";
 import { ModelRouter, type ModelPreferences } from "../ai/model-router.js";
 
 const log = createChildLogger("analysis-orchestrator");
+
+/**
+ * #724 — a replay run's cost is summed from `token_usages`, and the meter
+ * writes those rows asynchronously. Drain this analysis's pending writes first,
+ * or the last calls' spend is missing from `AgentRun.costCents`.
+ */
+async function replayRunCostAfterUsage(
+  analysisId: string,
+  replayRunId: string,
+): ReturnType<typeof computeReplayRunCost> {
+  await flushAnalysisUsage(analysisId);
+  return computeReplayRunCost(replayRunId);
+}
 
 /**
  * #734 — build the `onDrop` sink for {@link groundCodeCitations}. A dropped code
@@ -561,7 +579,9 @@ export class AnalysisOrchestrator {
   private readonly retrievalHealths = new Map<string, AnalysisRetrievalHealth[]>();
 
   constructor(deps: OrchestratorDeps) {
-    this.deps = deps;
+    // #724 — every model call the analysis family makes through this provider
+    // is recorded as project usage while a run's usage scope is active.
+    this.deps = { ...deps, provider: meterAnalysisProvider(deps.provider) };
   }
 
   /** Issue #178 — expose the configured AI provider for one-shot helpers (deep-dive). */
@@ -624,13 +644,17 @@ export class AnalysisOrchestrator {
     // Issue #855 (Epic #852) \u2014 thread the project's `databaseAwareAnalysis`
     // setting through (already loaded above, no extra query) so the run path
     // can resolve it via #854's resolver instead of the bare env flag.
-    void this.runPipeline(
-      row.id,
-      project.name,
-      project.description,
-      agentKeys,
-      resolvedOpts,
-      project.databaseAwareAnalysis,
+    // #724 — bill every model call of the run to the project; the analysis id
+    // is the session the replay run's cost (`computeRunCost`) reads back.
+    void runInAnalysisUsageScope({ projectId: opts.projectId, sessionId: row.id }, () =>
+      this.runPipeline(
+        row.id,
+        project.name,
+        project.description,
+        agentKeys,
+        resolvedOpts,
+        project.databaseAwareAnalysis,
+      ),
     );
 
     return { id: row.id };
@@ -644,7 +668,7 @@ export class AnalysisOrchestrator {
    * off the long-running pipeline.
    */
   async assertCanRegenerate(analysisId: string): Promise<{
-    analysis: Awaited<ReturnType<typeof prisma.analysis.findFirst>>;
+    analysis: NonNullable<Awaited<ReturnType<typeof prisma.analysis.findFirst>>>;
   }> {
     await assertCanStartAnalysis();
     const analysis = await prisma.analysis.findFirst({
@@ -682,7 +706,19 @@ export class AnalysisOrchestrator {
     agentKey: AnalysisSpecialistAgentKey;
     actorId: string;
   }): Promise<void> {
-    const { analysis: maybeAnalysis } = await this.assertCanRegenerate(opts.analysisId);
+    const { analysis } = await this.assertCanRegenerate(opts.analysisId);
+    // #724 — bill the regenerated agent and the re-synthesis to the project.
+    const scope = {
+      projectId: analysis.projectId,
+      sessionId: opts.analysisId,
+    };
+    return runInAnalysisUsageScope(scope, () => this.regenerateLoadedAgent(opts, analysis));
+  }
+
+  private async regenerateLoadedAgent(
+    opts: { analysisId: string; agentKey: AnalysisSpecialistAgentKey; actorId: string },
+    maybeAnalysis: Awaited<ReturnType<AnalysisOrchestrator["assertCanRegenerate"]>>["analysis"],
+  ): Promise<void> {
     const analysis = maybeAnalysis as NonNullable<typeof maybeAnalysis> & {
       project: { name: string; description: string; status: string };
       projectId: string;
@@ -846,9 +882,20 @@ export class AnalysisOrchestrator {
     analysisId: string;
     actorId: string;
   }): Promise<ResumeSkippedReposResult> {
-    const { analysis: maybeAnalysis, skippedRepos } = await this.assertCanResumeRepos(
-      opts.analysisId,
-    );
+    const loaded = await this.assertCanResumeRepos(opts.analysisId);
+    // #724 — bill the resumed repos and the re-synthesis to the project.
+    const scope = {
+      projectId: loaded.analysis.projectId,
+      sessionId: opts.analysisId,
+    };
+    return runInAnalysisUsageScope(scope, () => this.resumeLoadedRepos(opts, loaded));
+  }
+
+  private async resumeLoadedRepos(
+    opts: { analysisId: string; actorId: string },
+    loaded: Awaited<ReturnType<AnalysisOrchestrator["assertCanResumeRepos"]>>,
+  ): Promise<ResumeSkippedReposResult> {
+    const { analysis: maybeAnalysis, skippedRepos } = loaded;
     // Idempotent no-op: nothing was skipped (or it was already resumed).
     if (skippedRepos.length === 0) {
       return { resumed: [], remaining: [], noop: true };
@@ -1576,9 +1623,11 @@ export class AnalysisOrchestrator {
         if (replayRunId) {
           // A cancelled analysis may still have incurred spend before the
           // cancel landed; attribute whatever usage is in-window.
-          const { costCents } = await computeReplayRunCost(replayRunId).catch(() => ({
-            costCents: 0,
-          }));
+          const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(
+            () => ({
+              costCents: 0,
+            }),
+          );
           await finishReplayRun({
             runId: replayRunId,
             status: "cancelled",
@@ -1640,9 +1689,11 @@ export class AnalysisOrchestrator {
           metadata: { error: summary, agentCount: agentKeys.length },
         });
         if (replayRunId) {
-          const { costCents } = await computeReplayRunCost(replayRunId).catch(() => ({
-            costCents: 0,
-          }));
+          const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(
+            () => ({
+              costCents: 0,
+            }),
+          );
           await finishReplayRun({
             runId: replayRunId,
             status: "failed",
@@ -1701,7 +1752,7 @@ export class AnalysisOrchestrator {
       });
       if (replayRunId) {
         // Attribute real LLM cost from in-window TokenUsage rows for this run.
-        const { costCents } = await computeReplayRunCost(replayRunId).catch(() => ({
+        const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(() => ({
           costCents: 0,
         }));
         await finishReplayRun({
@@ -1731,7 +1782,7 @@ export class AnalysisOrchestrator {
       if (replayRunId) {
         // A failed analysis may still have incurred spend before throwing;
         // attribute whatever usage landed in-window.
-        const { costCents } = await computeReplayRunCost(replayRunId).catch(() => ({
+        const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(() => ({
           costCents: 0,
         }));
         await finishReplayRun({

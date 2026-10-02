@@ -122,6 +122,7 @@ export function buildSchedulerHandlerOverrides(
             // lastCommitSha; otherwise findings fail the stale-commit publish gate.
             commitSha: clone.commitSha ?? undefined,
             introspectedSchema: schemaWiring.introspectedSchema,
+            introspectionFailed: schemaWiring.introspectionFailed,
             routines: schemaWiring.routines,
             fetchRoutineBody: schemaWiring.fetchRoutineBody,
             routineDialect: schemaWiring.routineDialect,

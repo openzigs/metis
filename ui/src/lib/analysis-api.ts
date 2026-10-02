@@ -708,6 +708,8 @@ export interface PublishFindingInput {
   provider?: "github" | "jira";
   draft: FindingIssueDraft;
   extraLabels?: string[];
+  /** #733 — the GitHub repository to file into; else the project's saved target. */
+  target?: { owner: string; repo: string };
 }
 
 export interface PublishedIssueLink {

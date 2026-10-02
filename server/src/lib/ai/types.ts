@@ -228,7 +228,11 @@ export type ChatChunk =
       toolCallId?: string;
       native?: boolean;
     }
-  | { type: "usage"; usage: TokenUsage }
+  /**
+   * `model` (#724) — the model the provider reports it actually served, when
+   * the adapter knows it; usage is priced against it, as for {@link ChatResponse.model}.
+   */
+  | { type: "usage"; usage: TokenUsage; model?: string }
   /**
    * Terminal chunk. `finishReason` (#1226) is the streaming counterpart of
    * {@link ChatResponse.finishReason} — verbatim from the upstream API (e.g.
