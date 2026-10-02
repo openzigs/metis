@@ -22,6 +22,7 @@ import {
   type RetrievedChunk,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { readDerivedLabel } from "./derived-label.js";
 import { withVectorSql, type ProjectVectorWrite } from "./project-vector-write.js";
 import {
   chunkMarkdown,
@@ -719,13 +720,18 @@ export class KnowledgeService {
     // #547 — the same live-row read carries each hit's `documents.source`, so
     // a reader classifies on the row rather than on the vector store's filename.
     const sourceByChunk = new Map<string, DocumentSource>();
+    // #199 — derived (generated-document) chunks carry their publication status/scope.
+    const derivedByChunk = new Map<string, NonNullable<RetrievedChunk["derived"]>>();
     if (chosen.length > 0) {
       const liveChunkRows = await prisma.knowledgeChunk.findMany({
         where: { id: { in: chosen.map((c) => c.chunkId) }, projectId },
-        select: { id: true, document: { select: { source: true } } },
+        select: { id: true, metadata: true, document: { select: { source: true } } },
       });
-      for (const row of liveChunkRows)
+      for (const row of liveChunkRows) {
         sourceByChunk.set(row.id, asDocumentSource(row.document.source));
+        const derived = readDerivedLabel(row.metadata, row.document.source);
+        if (derived) derivedByChunk.set(row.id, derived);
+      }
       chosen = chosen.filter((chunk) => sourceByChunk.has(chunk.chunkId));
     }
 
@@ -797,6 +803,7 @@ export class KnowledgeService {
       // Every chosen chunk passed the live-row read above; "upload" (never a
       // connector kind) only satisfies the Map's type.
       source: sourceByChunk.get(m.chunkId) ?? "upload",
+      ...(derivedByChunk.has(m.chunkId) ? { derived: derivedByChunk.get(m.chunkId) } : {}),
     }));
 
     const coverage = await this.store.modelCoverage(projectId);

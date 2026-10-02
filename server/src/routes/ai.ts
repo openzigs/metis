@@ -16,6 +16,7 @@
  * Provider construction is centralised in {@link getProvider}; tests can
  * inject a stub via {@link setAIProviderForTests}.
  */
+import { formatDerivedLabel } from "../lib/rag/derived-label.js";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
@@ -563,7 +564,9 @@ export async function buildAutoRagContext(
       });
       const projectName = project?.name?.trim() || "this project";
       const chunkList = hits.map(
-        (h, i) => `[${i + 1}] ${h.filename}#${h.position} (score=${h.score.toFixed(3)})\n${h.text}`,
+        (h, i) =>
+          `[${i + 1}] ${h.filename}#${h.position}${formatDerivedLabel(h.derived)} ` +
+          `(score=${h.score.toFixed(3)})\n${h.text}`,
       );
       if (capture) {
         capture.contexts.push(...chunkList);
@@ -573,10 +576,12 @@ export async function buildAutoRagContext(
       ragBlock =
         `## Retrieved Knowledge (project-scoped RAG)\n` +
         `This chat session is scoped to the project "${projectName}". The excerpts below were ` +
-        `retrieved from "${projectName}"'s own knowledge base and are the authoritative source for ` +
+        `retrieved from "${projectName}"'s own knowledge base and are the primary source for ` +
         `any question about "the project" or "this project" — that phrase always means "${projectName}", ` +
         `never METIS (the platform this chat runs on) and never any other topic raised earlier in this ` +
-        `conversation. Prefer these excerpts over your own background knowledge or earlier chat history:\n\n${chunks}`;
+        `conversation. Prefer these excerpts over your own background knowledge or earlier chat history. ` +
+        `An excerpt marked DERIVED is generated documentation about the project, not a primary source: ` +
+        `use it as a pointer, prefer an unmarked excerpt when they disagree, and say so when you rely on one:\n\n${chunks}`;
       // #547/#573 — only a repo-sourced chunk can stand in for a code symbol;
       // `fuseCodeContext` enforces that on the `source` carried here.
       ragChunks = hits.map((h) => ({ filename: h.filename, source: h.source }));

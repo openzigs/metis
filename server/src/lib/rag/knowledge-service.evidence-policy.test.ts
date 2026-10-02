@@ -22,6 +22,7 @@ type FixtureRecord = {
   filename: string;
   acl: string;
   source?: string;
+  metadata?: string;
 };
 function fixture(extra: FixtureRecord[] = []) {
   // Extra records lead, so they fall inside the default top-k.
@@ -47,7 +48,7 @@ function fixture(extra: FixtureRecord[] = []) {
     id: r.id,
     documentId: r.documentId,
     text: `LIVE-${r.id}`,
-    metadata: "{}",
+    metadata: r.metadata ?? "{}",
     chunkerIdentity: null,
     aclSubjects: "[]",
     document: {
@@ -136,6 +137,31 @@ describe("KnowledgeService primary evidence before reranking #1353", () => {
       ]);
     },
   );
+
+  // #199 — a generated document's chunk reaches the caller labelled as derived,
+  // read from the live row's metadata; a primary chunk carries no label.
+  it("hits for a generated document carry the derived label from the live row (#199)", async () => {
+    const { service } = fixture([
+      {
+        id: "gen",
+        documentId: "gendoc-other",
+        filename: "generated-doc-other.md",
+        acl: "[]",
+        source: "generated",
+        metadata: JSON.stringify({
+          evidenceClass: "derived-generated-doc",
+          generatedDocumentStatus: "degraded",
+          generatedDocumentScope: "module",
+        }),
+      },
+    ]);
+    const result = await service.search("p1", "query", { mode: "dense", k: 10 });
+    expect(result.hits.find((h) => h.chunkId === "gen")?.derived).toEqual({
+      status: "degraded",
+      scope: "module",
+    });
+    expect(result.hits.find((h) => h.chunkId === "allowed")).not.toHaveProperty("derived");
+  });
 
   // #547 — an upload stored under a repo-shaped name keeps its stored source:
   // a hit classified by filename prefix would read "repo" here.
