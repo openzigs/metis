@@ -237,22 +237,24 @@ describe("publishAnalysisFinding", () => {
     expect(project.findUnique).not.toHaveBeenCalled();
   });
 
-  it("#733 — refuses a GitHub publish with no explicit or configured target (no connector fallback)", async () => {
+  // The refusal itself happens in createGitHubIssue, AFTER the engine's existing-link
+  // check, so a re-publish still gets its link back. This suite mocks the engine, so
+  // it pins what reaches it: no target at all — never the connector's repository.
+  // End-to-end refusal + re-publish: prisma-adapter.test.ts.
+  it("#733 — with no explicit or configured target, hands the engine NO target (no connector fallback)", async () => {
     repoConnection.findFirst.mockResolvedValue({ id: "repo_1" });
     project.findUnique.mockResolvedValue({ publishGithubOwner: null, publishGithubRepo: null });
-    await expect(
-      publishAnalysisFinding({
-        projectId: "proj_1",
-        analysisId: "ana_1",
-        findingId: "find_1",
-        agentKey: "code",
-        severity: "high",
-        category: "security",
-        draft: DRAFT,
-        provider: "github",
-      }),
-    ).rejects.toMatchObject({ code: "ERR_NO_PUBLISH_TARGET" });
-    expect(captured).toBeNull();
+    await publishAnalysisFinding({
+      projectId: "proj_1",
+      analysisId: "ana_1",
+      findingId: "find_1",
+      agentKey: "code",
+      severity: "high",
+      category: "security",
+      draft: DRAFT,
+      provider: "github",
+    });
+    expect(captured!.input.finding.target).toBeUndefined();
   });
 
   it("#733 — a half-configured target is no target", async () => {
@@ -260,18 +262,18 @@ describe("publishAnalysisFinding", () => {
       publishGithubOwner: "openzigs",
       publishGithubRepo: null,
     });
-    await expect(
-      publishAnalysisFinding({
-        projectId: "proj_1",
-        analysisId: "ana_1",
-        findingId: "find_1",
-        agentKey: "code",
-        severity: "high",
-        category: "security",
-        draft: DRAFT,
-        provider: "github",
-      }),
-    ).rejects.toMatchObject({ code: "ERR_NO_PUBLISH_TARGET" });
+    repoConnection.findFirst.mockResolvedValue({ id: "repo_1" });
+    await publishAnalysisFinding({
+      projectId: "proj_1",
+      analysisId: "ana_1",
+      findingId: "find_1",
+      agentKey: "code",
+      severity: "high",
+      category: "security",
+      draft: DRAFT,
+      provider: "github",
+    });
+    expect(captured!.input.finding.target).toBeUndefined();
   });
 
   it("#338 — carries an agent-phase finding's agent into the published body", async () => {

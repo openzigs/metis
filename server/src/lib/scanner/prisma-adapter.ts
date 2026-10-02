@@ -890,23 +890,6 @@ export interface PublishAnalysisFindingInput {
   target?: GitHubIssueTarget;
 }
 
-/**
- * #733 — the GitHub repository an analysis finding is filed into: the caller's
- * explicit target, else the project's configured publish target. There is
- * deliberately no fallback to the repo connector's own repository — for an
- * analysed open-source project that is its upstream, and filing there by
- * default is exactly the walkthrough's safety failure.
- */
-async function resolveFindingGitHubTarget(
-  projectId: string,
-  explicit: GitHubIssueTarget | undefined,
-): Promise<GitHubIssueTarget> {
-  if (explicit) return explicit;
-  const saved = await findSavedGitHubTarget(projectId);
-  if (saved) return saved;
-  throw noPublishTargetError();
-}
-
 /** #733 — the project's saved GitHub publish target, or null (a half-set pair is none). */
 async function findSavedGitHubTarget(projectId: string): Promise<GitHubIssueTarget | null> {
   const project = await prisma.project.findUnique({
@@ -939,7 +922,13 @@ export async function publishAnalysisFinding(
   let repoConnectionId = "";
   let target: GitHubIssueTarget | undefined;
   if (input.provider === "github") {
-    target = await resolveFindingGitHubTarget(input.projectId, input.target);
+    // #733 — the caller's explicit target, else the project's saved one. There is
+    // deliberately no fallback to the connector's own (upstream) repository.
+    // Resolved WITHOUT throwing, exactly like the scan path: an already-published
+    // finding must still get its existing link back (the engine's idempotency
+    // check runs first), and with no target `createGitHubIssue` refuses with
+    // ERR_NO_PUBLISH_TARGET before any request leaves.
+    target = input.target ?? (await findSavedGitHubTarget(input.projectId)) ?? undefined;
     const conn = await prisma.repoConnection.findFirst({
       where: {
         projectId: input.projectId,

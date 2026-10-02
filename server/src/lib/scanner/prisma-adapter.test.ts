@@ -103,6 +103,7 @@ const {
   loadNeighboursForScan,
   loadRagHitsForScan,
   publishScanFinding,
+  publishAnalysisFinding,
   publishImpactAnalysisToJira,
   materializeTriagedFinding,
 } = await import("./prisma-adapter.js");
@@ -729,6 +730,56 @@ describe("publishScanFinding", () => {
     });
     const link = await publishScanFinding({ scanFindingId: "sf-1", provider: "github" });
     expect(link.externalId).toBe("999");
+  });
+
+  const ANALYSIS_DRAFT = {
+    title: "Error limit excludes failing feeds",
+    problemStatement: "p",
+    affected: { files: [], requirementIds: [] },
+    acceptanceCriteria: [],
+    suggestedLabels: [],
+  };
+  const analysisInput: Parameters<typeof publishAnalysisFinding>[0] = {
+    projectId: "proj-1",
+    analysisId: "ana-1",
+    findingId: "fnd-1",
+    agentKey: "code",
+    severity: "high",
+    category: "bug",
+    draft: ANALYSIS_DRAFT,
+    provider: "github",
+  };
+
+  it("#733 — an analysis re-publish with no target still returns the existing link", async () => {
+    upstreamConnector();
+    mockPrisma.project.findUnique.mockResolvedValue(null);
+    mockPrisma.issueLink.findFirst.mockResolvedValue({
+      id: "L7",
+      findingId: "fnd-1",
+      provider: "github",
+      externalId: "77",
+      externalUrl: "https://github.com/openzigs/flux-v2/issues/77",
+    });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    vi.mocked(acquirePublishOctokit).mockClear();
+    const link = await publishAnalysisFinding(analysisInput);
+    expect(link.externalId).toBe("77");
+    expect(acquirePublishOctokit).not.toHaveBeenCalled();
+  });
+
+  it("#733 — a first analysis publish with no target refuses before any GitHub call", async () => {
+    upstreamConnector();
+    mockPrisma.project.findUnique.mockResolvedValue({
+      publishGithubOwner: null,
+      publishGithubRepo: null,
+    });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    vi.mocked(acquirePublishOctokit).mockClear();
+    await expect(publishAnalysisFinding(analysisInput)).rejects.toMatchObject({
+      code: "ERR_NO_PUBLISH_TARGET",
+    });
+    expect(acquirePublishOctokit).not.toHaveBeenCalled();
+    expect(mockPrisma.issueLink.upsert).not.toHaveBeenCalled();
   });
 
   it("#733 — a Jira publish needs no GitHub target", async () => {
