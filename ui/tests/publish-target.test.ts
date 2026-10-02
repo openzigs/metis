@@ -1,6 +1,11 @@
 /** #733 — publish-target helpers. */
 import { describe, expect, it } from "vitest";
-import { commonDraftTarget, isAnalysedRepo, sameTarget } from "@/lib/publish-target";
+import {
+  commonDraftTarget,
+  draftTargetsConflict,
+  isAnalysedRepo,
+  sameTarget,
+} from "@/lib/publish-target";
 
 const m = (o: unknown, r: unknown) => JSON.stringify({ targetOwner: o, targetRepo: r });
 
@@ -34,6 +39,24 @@ describe("commonDraftTarget", () => {
     [m("owner", 3)],
   ])("is null when any draft records no usable target (%s)", (metadata) => {
     expect(commonDraftTarget([{ metadata: m("a", "b") }, { metadata }])).toBeNull();
+  });
+});
+
+describe("draftTargetsConflict", () => {
+  it("is false for no drafts, one shared target, or only legacy drafts", () => {
+    expect(draftTargetsConflict([])).toBe(false);
+    expect(draftTargetsConflict([{ metadata: m("a", "b") }, { metadata: m("A", "B") }])).toBe(
+      false,
+    );
+    expect(draftTargetsConflict([{ metadata: null }, { metadata: undefined }])).toBe(false);
+  });
+
+  it("is true when the drafts record different targets", () => {
+    expect(draftTargetsConflict([{ metadata: m("a", "b") }, { metadata: m("a", "c") }])).toBe(true);
+  });
+
+  it("is true when a recorded target is mixed with a draft that records none", () => {
+    expect(draftTargetsConflict([{ metadata: m("a", "b") }, { metadata: null }])).toBe(true);
   });
 });
 

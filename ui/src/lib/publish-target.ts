@@ -43,6 +43,15 @@ export function commonDraftTarget(
   return common;
 }
 
+/**
+ * True when the drafts cannot share one inherited target: at least one records
+ * a target and they do not all record the same one. Falling back to some other
+ * target then would publish drafts deduplicated against repository A into B.
+ */
+export function draftTargetsConflict(drafts: ReadonlyArray<{ metadata?: string | null }>): boolean {
+  return drafts.some((d) => readTarget(d.metadata)) && !commonDraftTarget(drafts);
+}
+
 /** GitHub owner and repository names are case-insensitive. */
 export function sameTarget(a: PublishTarget, b: PublishTarget): boolean {
   return (

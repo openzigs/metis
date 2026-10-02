@@ -256,6 +256,27 @@ describe("<DeepDiveDialog /> — publish target (#733)", () => {
     expect(screen.getByTestId("deep-dive-publish")).toBeDisabled();
   });
 
+  it("pre-fills owner and repo only as a pair, never into a half-typed target", async () => {
+    let resolveDest!: (v: unknown) => void;
+    getDestination.mockReturnValue(new Promise((r) => (resolveDest = r)));
+    renderDialog();
+    await screen.findByTestId("deep-dive-title");
+    // The user starts typing before the saved target arrives.
+    fireEvent.change(screen.getByTestId("deep-dive-target-owner"), { target: { value: "me" } });
+    resolveDest({
+      publishDestination: "github",
+      jiraProjectKey: null,
+      jiraConnectionId: null,
+      githubOwner: "openzigs",
+      githubRepo: "flux-v2",
+    });
+    await waitFor(() => expect(getPrimary).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByTestId("deep-dive-target-owner")).toHaveValue("me");
+    // Not me/flux-v2 — a repository the user never chose under that owner.
+    expect(screen.getByTestId("deep-dive-target-repo")).toHaveValue("");
+  });
+
   it("warns when the target is the analysed (connector) repository", async () => {
     renderDialog();
     await screen.findByTestId("deep-dive-title");

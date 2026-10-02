@@ -27,7 +27,7 @@ import { publishFollow } from "@/lib/socket-rooms";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { publishDestinationApi } from "@/lib/change-analysis-api";
 import { queryKeys } from "@/lib/query-keys";
-import { commonDraftTarget } from "@/lib/publish-target";
+import { commonDraftTarget, draftTargetsConflict } from "@/lib/publish-target";
 import { AnalysedRepoWarning } from "@/components/publishing/analysed-repo-warning";
 import { DraftDiffDialog } from "@/components/publishing/draft-diff-dialog";
 import {
@@ -165,15 +165,21 @@ export default function PublishingPage() {
     // Deliberately keyed on data arrival only; the ref makes it one-shot.
   }, [destination.data]);
 
+  // The PATCH replaces the destination's Jira settings outright, so it is only
+  // ever built from a LOADED destination: defaulting them while the GET is in
+  // flight or has failed would silently erase a Jira or 'both' configuration.
   const saveTarget = useMutation({
-    mutationFn: () =>
-      publishDestinationApi.update(projectId, {
-        publishDestination: destination.data?.publishDestination ?? "github",
-        jiraProjectKey: destination.data?.jiraProjectKey ?? null,
-        jiraConnectionId: destination.data?.jiraConnectionId ?? null,
+    mutationFn: () => {
+      const current = destination.data;
+      if (!current) throw new Error("The saved publish target has not loaded.");
+      return publishDestinationApi.update(projectId, {
+        publishDestination: current.publishDestination,
+        jiraProjectKey: current.jiraProjectKey,
+        jiraConnectionId: current.jiraConnectionId,
         githubOwner: targetOwner.trim(),
         githubRepo: targetRepo.trim(),
-      }),
+      });
+    },
     onSuccess: (saved) =>
       qc.setQueryData(queryKeys.publishDestination.forProject(projectId), saved),
   });
@@ -271,10 +277,13 @@ export default function PublishingPage() {
     }
   }, [primaryRepo.data]);
 
-  const inheritedTarget = commonDraftTarget(selectedDraftRows) ?? {
-    owner: targetOwner,
-    repo: targetRepo,
-  };
+  // Drafts that record different targets inherit NOTHING — not the Generate
+  // form's target, which would publish drafts deduplicated against one
+  // repository into another. The fields stay empty until the user names one.
+  const draftTargetConflict = draftTargetsConflict(selectedDraftRows);
+  const inheritedTarget = draftTargetConflict
+    ? { owner: "", repo: "" }
+    : (commonDraftTarget(selectedDraftRows) ?? { owner: targetOwner, repo: targetRepo });
   // The one request body, shared by the publish itself and by the plan the
   // confirmation renders — so the confirmation can never describe a different
   // batch from the one that runs (#1104 D).
@@ -507,7 +516,16 @@ export default function PublishingPage() {
             />
           </div>
         </div>
-        {!destination.isLoading && !savedOwner ? (
+        {destination.isError ? (
+          <p
+            className="mt-2 text-xs text-destructive"
+            role="alert"
+            data-testid="publish-target-load-error"
+          >
+            Could not load this project&apos;s saved publish target, so it cannot be saved here
+            right now. Reload the page to try again.
+          </p>
+        ) : destination.data && !savedOwner ? (
           <p className="mt-2 text-xs text-muted-foreground" data-testid="publish-target-unset">
             No publish target is saved for this project. Enter the repository issues should be filed
             into and save it, so every publish starts from it.
@@ -524,7 +542,11 @@ export default function PublishingPage() {
             data-testid="publish-target-save"
             onClick={() => saveTarget.mutate()}
             disabled={
-              !targetOwner.trim() || !targetRepo.trim() || targetIsSaved || saveTarget.isPending
+              !destination.data ||
+              !targetOwner.trim() ||
+              !targetRepo.trim() ||
+              targetIsSaved ||
+              saveTarget.isPending
             }
           >
             {targetIsSaved ? "Saved as project target" : "Save as project target"}
@@ -755,6 +777,16 @@ export default function PublishingPage() {
             <Label htmlFor="projectsV2">Add to GitHub Projects v2 board</Label>
           </div>
         </div>
+        {draftTargetConflict ? (
+          <p
+            className="mt-2 text-xs text-warning"
+            role="status"
+            data-testid="batch-target-conflict"
+          >
+            The selected drafts target different repositories, so no target is filled in. Enter one,
+            or select only drafts generated for the same repository.
+          </p>
+        ) : null}
         <AnalysedRepoWarning
           testId="batch-target-upstream-warning"
           target={{ owner: effectiveOwner, repo: effectiveRepo }}

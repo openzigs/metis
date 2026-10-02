@@ -140,19 +140,25 @@ describe("batch form inherits the drafts' target (#733)", () => {
     });
   });
 
-  it("falls back to the Generate form's target when the selected drafts disagree", async () => {
+  it("inherits no target when the selected drafts disagree, and says so", async () => {
     listDrafts.mockResolvedValue([
       draft("d1", "One", meta("openzigs", "flux-v2")),
       draft("d2", "Two", meta("other", "repo")),
     ]);
     renderPage();
     await select("One");
+    expect(screen.queryByTestId("batch-target-conflict")).not.toBeInTheDocument();
     await select("Two");
-    expect(screen.getByLabelText("Owner")).toHaveValue("");
+    // A Generate-form target must not stand in for the drafts' own: they were
+    // deduplicated against openzigs/flux-v2 and other/repo, not against it.
     fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "me" } });
     fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "sandbox" } });
-    expect(screen.getByLabelText("Owner")).toHaveValue("me");
-    expect(screen.getByLabelText("Repo")).toHaveValue("sandbox");
+    expect(screen.getByLabelText("Owner")).toHaveValue("");
+    expect(screen.getByLabelText("Repo")).toHaveValue("");
+    expect(screen.getByTestId("batch-target-conflict")).toHaveTextContent(
+      "The selected drafts target different repositories",
+    );
+    expect(screen.getByRole("button", { name: "Run dry-run" })).toBeDisabled();
   });
 
   it("follows the Generate form's target for drafts that predate #733", async () => {
@@ -209,6 +215,29 @@ describe("saving the project's publish target (#733)", () => {
         "Saved as project target",
       ),
     );
+    expect(screen.getByTestId("publish-target-save")).toBeDisabled();
+    expect(screen.queryByTestId("publish-target-unset")).not.toBeInTheDocument();
+  });
+
+  it("never saves while the destination GET has failed — it would erase the Jira settings", async () => {
+    getDest.mockRejectedValue(new Error("down"));
+    renderPage();
+    expect(await screen.findByTestId("publish-target-load-error")).toBeInTheDocument();
+    expect(screen.queryByTestId("publish-target-unset")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "openzigs" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "flux-v2" } });
+    const save = screen.getByTestId("publish-target-save");
+    expect(save).toBeDisabled();
+    fireEvent.click(save);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(updateDest).not.toHaveBeenCalled();
+  });
+
+  it("keeps Save disabled while the destination GET is still loading", async () => {
+    getDest.mockReturnValue(new Promise(() => {}));
+    renderPage();
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "openzigs" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "flux-v2" } });
     expect(screen.getByTestId("publish-target-save")).toBeDisabled();
     expect(screen.queryByTestId("publish-target-unset")).not.toBeInTheDocument();
   });

@@ -102,6 +102,9 @@ export function DeepDiveDialog({
   // #733 — the GitHub repository the issue is filed into.
   const [targetOwner, setTargetOwner] = React.useState("");
   const [targetRepo, setTargetRepo] = React.useState("");
+  // The latest typed target, read by the async pre-fill below.
+  const typedTarget = React.useRef({ owner: "", repo: "" });
+  typedTarget.current = { owner: targetOwner, repo: targetRepo };
   const [destinationKind, setDestinationKind] = React.useState<string | null>(null);
   const [connector, setConnector] = React.useState<{
     ownerOrOrg?: string | null;
@@ -163,9 +166,13 @@ export function DeepDiveDialog({
       if (dest.status === "fulfilled") {
         setDestinationKind(dest.value.publishDestination);
         const { githubOwner, githubRepo } = dest.value;
-        if (githubOwner && githubRepo) {
-          setTargetOwner((o) => o || githubOwner);
-          setTargetRepo((r) => r || githubRepo);
+        // Pre-fill as ONE pair, and only while BOTH fields are still empty:
+        // filling them independently paired an owner the user had already
+        // typed with the saved target's repository.
+        const typed = typedTarget.current;
+        if (githubOwner && githubRepo && !typed.owner && !typed.repo) {
+          setTargetOwner(githubOwner);
+          setTargetRepo(githubRepo);
         }
       }
       if (primary.status === "fulfilled") setConnector(primary.value);
