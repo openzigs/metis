@@ -158,6 +158,8 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     const edges = await prisma.codeEdge.findMany({
       where: { fromSymbolId: caller.id, kind: "calls", toSymbolId: { not: null } },
       select: { toSymbolId: true },
+      distinct: ["toSymbolId"],
+      orderBy: { toSymbolId: "asc" },
       take: MAX_RESULTS,
     });
     const targetIds = edges.flatMap((e) => (e.toSymbolId ? [e.toSymbolId] : []));
@@ -185,6 +187,8 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     const edges = await prisma.codeEdge.findMany({
       where: { toSymbolId: callee.id, kind: "calls" },
       select: { fromSymbolId: true },
+      distinct: ["fromSymbolId"],
+      orderBy: { fromSymbolId: "asc" },
       take: MAX_RESULTS,
     });
     const callerIds = edges.map((e) => e.fromSymbolId);
@@ -192,6 +196,8 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
       return { content: `No symbols call "${calls}".`, resultCount: 0 };
     }
     where.id = { in: callerIds };
+    // `calls` replaces the id filter set by `calledBy`, so its note no longer applies.
+    unresolvedNote = "";
   }
 
   const symbols = await prisma.codeSymbol.findMany({

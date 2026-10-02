@@ -272,9 +272,9 @@ function useEdgeTable(rows: EdgeRow[]): void {
           (a.toQualifiedName ?? "").localeCompare(b.toQualifiedName ?? ""),
         );
       }
-      if (q.distinct?.includes("toQualifiedName")) {
+      for (const field of (q.distinct ?? []) as (keyof EdgeRow)[]) {
         const seen = new Set<string | null>();
-        out = out.filter((e) => !seen.has(e.toQualifiedName) && !!seen.add(e.toQualifiedName));
+        out = out.filter((e) => !seen.has(e[field]) && !!seen.add(e[field]));
       }
       return q.take === undefined ? out : out.slice(0, q.take);
     },
@@ -406,6 +406,73 @@ describe("search_code_graph calledBy — unresolved callees (#740)", () => {
     expect(res.content).toContain("No symbols found matching the query.");
     expect(res.content).toContain("1 call to external or unresolved symbols");
     expect(res.content).toContain("fmt.Errorf");
+  });
+
+  it("caps DISTINCT callees: repeated calls to one callee do not use up the slots, and truncation is flagged", async () => {
+    const many: Record<string, { qualifiedName: string; startLine: number }> = {};
+    const rows: EdgeRow[] = [];
+    for (let i = 0; i < 40; i++) {
+      const id = `m${i}`;
+      many[id] = { qualifiedName: `pkg.go::F${i}`, startLine: i };
+      // every callee is called 5 times
+      for (let k = 0; k < 5; k++) rows.push(call(id, `pkg.go::F${i}`));
+    }
+    useEdgeTable(rows);
+    mockCodeSymbol.findMany.mockImplementation(
+      async (q: { where: { id: { in: string[] } }; take?: number }) =>
+        [...new Set(q.where.id.in)]
+          .map((id) => ({
+            qualifiedName: many[id].qualifiedName,
+            kind: "function",
+            filePath: "pkg.go",
+            startLine: many[id].startLine,
+            endLine: many[id].startLine + 1,
+            language: "go",
+          }))
+          .slice(0, q.take),
+    );
+
+    const res = await searchCodeGraphTool.execute({ calledBy: "Chatty" }, ctx);
+
+    expect(res.resultCount).toBe(30);
+    expect(res.truncated).toBe(true);
+  });
+
+  it("calls: repeated calls from one caller do not use up the slots", async () => {
+    const callers = Array.from({ length: 3 }, (_, i) => `c${i}`);
+    const rows: EdgeRow[] = [];
+    for (let k = 0; k < 40; k++)
+      rows.push({
+        fromSymbolId: "c0",
+        kind: "calls",
+        toSymbolId: "caller1",
+        toQualifiedName: null,
+      });
+    rows.push({ fromSymbolId: "c1", kind: "calls", toSymbolId: "caller1", toQualifiedName: null });
+    rows.push({ fromSymbolId: "c2", kind: "calls", toSymbolId: "caller1", toQualifiedName: null });
+    useEdgeTable(rows);
+    mockCodeSymbol.findMany.mockImplementation(async (q: { where: { id: { in: string[] } } }) =>
+      [...new Set(q.where.id.in)].map((id) => ({
+        qualifiedName: id,
+        kind: "function",
+        filePath: "a.go",
+        startLine: 1,
+        endLine: 2,
+        language: "go",
+      })),
+    );
+    const res = await searchCodeGraphTool.execute({ calls: "x" }, ctx);
+    expect(res.resultCount).toBe(callers.length);
+  });
+
+  it("calledBy + calls: the calledBy unresolved note is not attached to the calls result", async () => {
+    useEdgeTable([
+      call("r1", "internal/storage.go::Storage.Get"),
+      call(null, "fmt.Errorf"),
+      { fromSymbolId: "r2", kind: "calls", toSymbolId: "caller1", toQualifiedName: null },
+    ]);
+    const res = await searchCodeGraphTool.execute({ calledBy: "A", calls: "B" }, ctx);
+    expect(res.content).not.toContain("external or unresolved");
   });
 
   it("a caller with no call edges at all still reports that it calls nothing", async () => {
