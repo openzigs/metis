@@ -22,6 +22,8 @@ interface FindingRow {
   severity: string;
   evidence: string | null;
   projectName: string;
+  /** #338 — the AgentResult output blob (an agent-phase row carries `source`). */
+  output?: string | null;
 }
 
 interface ProjectRow {
@@ -100,6 +102,7 @@ vi.mock("../src/lib/prisma.js", async () => {
             evidence: f.evidence,
             agentResult: {
               agentKey: f.agentKey,
+              output: f.output ?? null,
               analysis: { project: { name: f.projectName } },
             },
           };
@@ -228,6 +231,41 @@ describe("POST /api/projects/:projectId/analyses/:id/findings/:findingId/publish
       provider: "github",
       agentKey: "code",
       severity: "high",
+    });
+  });
+
+  it("#338 — attributes an agent-phase finding to its agent, not the code specialist", async () => {
+    findings.set(FINDING_ID, {
+      ...findings.get(FINDING_ID)!,
+      agentKey: "custom:c1",
+      output: JSON.stringify({
+        summary: "s",
+        findings: [],
+        notes: [],
+        source: { kind: "custom", ref: "custom:c1", name: "Threat Modeller" },
+      }),
+    });
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ draft: VALID_DRAFT });
+
+    expect(res.status).toBe(200);
+    expect(publishAnalysisFindingMock.mock.calls[0][0].agentSource).toEqual({
+      kind: "custom",
+      ref: "custom:c1",
+      name: "Threat Modeller",
+    });
+  });
+
+  it("#338 — a specialist finding publishes with no agent source", async () => {
+    await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ draft: VALID_DRAFT });
+    expect(publishAnalysisFindingMock.mock.calls[0][0]).toMatchObject({
+      agentKey: "code",
+      agentSource: null,
     });
   });
 

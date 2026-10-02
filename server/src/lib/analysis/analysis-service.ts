@@ -999,7 +999,14 @@ export async function loadFindingForDeepDive(input: {
   body: string;
   category: FindingCategory;
   severity: FindingSeverity;
+  /**
+   * The built-in persona for the deep-dive prompt. An agent-phase row (#289)
+   * has none of its own and borrows `code`; publish attribution comes from
+   * {@link agentSource}, never from this key (#338).
+   */
   agentKey: AnalysisAgentKey;
+  /** #338 — the custom/library agent the finding came from; null for specialists. */
+  agentSource: AnalysisAgentSource | null;
   citations: Citation[];
   requirementId: string | null;
   projectName: string;
@@ -1017,7 +1024,11 @@ export async function loadFindingForDeepDive(input: {
     },
     include: {
       agentResult: {
-        select: { agentKey: true, analysis: { select: { project: { select: { name: true } } } } },
+        select: {
+          agentKey: true,
+          output: true,
+          analysis: { select: { project: { select: { name: true } } } },
+        },
       },
     },
   });
@@ -1032,6 +1043,10 @@ export async function loadFindingForDeepDive(input: {
   const agentKey = SAFE_AGENT_KEYS.has(row.agentResult.agentKey)
     ? (row.agentResult.agentKey as AnalysisAgentKey)
     : "code";
+  const agentSource = agentPhaseSource(
+    row.agentResult.agentKey,
+    parseAgentOutputBlob(row.agentResult.output).sourceName,
+  );
 
   return {
     id: row.id,
@@ -1040,6 +1055,7 @@ export async function loadFindingForDeepDive(input: {
     category: row.category as FindingCategory,
     severity: row.severity as FindingSeverity,
     agentKey,
+    agentSource,
     citations: ev.citations,
     requirementId: ev.requirementId,
     projectName: row.agentResult.analysis.project.name,

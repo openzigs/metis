@@ -99,6 +99,49 @@ describe("buildAnalysisFindingBody", () => {
     expect(body).toContain("Winston");
   });
 
+  it("#338 — attributes an agent-phase finding to its agent, not the code persona", () => {
+    const body = buildAnalysisFindingBody({
+      analysisId: "ana_3",
+      agentKey: "code",
+      agentSource: { kind: "custom", ref: "custom:c1", name: "Threat Modeller" },
+      draft: DRAFT,
+    });
+    expect(body).toContain(
+      "From METIS analysis `ana_3` · reported by **Threat Modeller** (custom agent `custom:c1`).",
+    );
+    expect(body).not.toContain("Winston");
+  });
+
+  it("#338 — names a library agent as one", () => {
+    const body = buildAnalysisFindingBody({
+      analysisId: "ana_4",
+      agentKey: "code",
+      agentSource: { kind: "library", ref: "library:owasp", name: "OWASP Auditor" },
+      draft: DRAFT,
+    });
+    expect(body).toContain("reported by **OWASP Auditor** (library agent `library:owasp`).");
+  });
+
+  it("#338 — neutralises markdown in the operator-authored agent name", () => {
+    const body = buildAnalysisFindingBody({
+      analysisId: "ana_5",
+      agentKey: "code",
+      agentSource: {
+        kind: "custom",
+        ref: "custom:c9",
+        name: "Evil** [click](https://x.example) @team\n# Heading <img src=x>",
+      },
+      draft: DRAFT,
+    });
+    const footer = body.split("\n").at(-1)!;
+    // Every metacharacter is backslash-escaped, so none survives unescaped.
+    expect(footer).not.toMatch(/(^|[^\\])\[click\]/);
+    expect(footer).not.toMatch(/(^|[^\\])<img/);
+    expect(footer).not.toMatch(/(^|[^\\])@team/);
+    expect(body).not.toContain("\n# Heading");
+    expect(footer).toContain("\\*\\*");
+  });
+
   it("omits empty sections", () => {
     const body = buildAnalysisFindingBody({
       analysisId: "ana_2",
@@ -147,6 +190,22 @@ describe("publishAnalysisFinding", () => {
     expect(input.finding.title).toBe(DRAFT.title);
     // Suggested labels + caller extras are merged.
     expect(input.extraLabels).toEqual(["security", "compliance", "triaged"]);
+  });
+
+  it("#338 — carries an agent-phase finding's agent into the published body", async () => {
+    await publishAnalysisFinding({
+      projectId: "proj_1",
+      analysisId: "ana_1",
+      findingId: "find_1",
+      agentKey: "code",
+      agentSource: { kind: "library", ref: "library:owasp", name: "OWASP Auditor" },
+      severity: "high",
+      category: "security",
+      draft: DRAFT,
+      provider: "jira",
+    });
+    expect(captured!.input.finding.body).toContain("reported by **OWASP Auditor**");
+    expect(captured!.input.finding.body).not.toContain("Winston");
   });
 
   it("throws ERR_NOT_IMPLEMENTED when the project has no connected repo (github)", async () => {
