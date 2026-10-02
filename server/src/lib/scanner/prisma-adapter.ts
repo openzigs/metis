@@ -811,7 +811,7 @@ function reporterAttribution(
   const name = agentSource.name
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/[\\`*_{}[\]()<>#+\-.!|~@]/g, "\\$&");
+    .replace(/[\\`*_{}[\]()<>#+\-.!|~@&]/g, "\\$&");
   return `**${name}** (${agentSource.kind} agent \`${agentSource.ref}\`)`;
 }
 

@@ -142,6 +142,19 @@ describe("buildAnalysisFindingBody", () => {
     expect(footer).toContain("\\*\\*");
   });
 
+  it("#338 — escapes & so an HTML entity cannot spell a mention", () => {
+    const body = buildAnalysisFindingBody({
+      analysisId: "ana_6",
+      agentKey: "code",
+      agentSource: { kind: "custom", ref: "custom:c9", name: "&#64;org/team" },
+      draft: DRAFT,
+    });
+    const footer = body.split("\n").at(-1)!;
+    // GitHub decodes entities before mention parsing: &#64; would become @.
+    expect(footer).not.toMatch(/(^|[^\\])&#64;/);
+    expect(footer).toContain("\\&\\#64;");
+  });
+
   it("omits empty sections", () => {
     const body = buildAnalysisFindingBody({
       analysisId: "ana_2",
