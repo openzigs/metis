@@ -24,6 +24,8 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     codeEdge: {
       findMany: vi.fn(),
+      // #740 — calledBy also counts unresolved (NULL toSymbolId) callees.
+      count: vi.fn(async () => 0),
     },
   },
 }));

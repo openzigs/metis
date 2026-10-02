@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCodeGraph = { findFirst: vi.fn() };
 const mockCodeSymbol = { findMany: vi.fn(), findFirst: vi.fn() };
-const mockCodeEdge = { findMany: vi.fn() };
+const mockCodeEdge = { findMany: vi.fn(), count: vi.fn() };
 
 vi.mock("../../prisma.js", () => ({
   prisma: {
@@ -20,7 +20,10 @@ vi.mock("../../prisma.js", () => ({
       findMany: (...a: unknown[]) => mockCodeSymbol.findMany(...a),
       findFirst: (...a: unknown[]) => mockCodeSymbol.findFirst(...a),
     },
-    codeEdge: { findMany: (...a: unknown[]) => mockCodeEdge.findMany(...a) },
+    codeEdge: {
+      findMany: (...a: unknown[]) => mockCodeEdge.findMany(...a),
+      count: (...a: unknown[]) => mockCodeEdge.count(...a),
+    },
   },
 }));
 
@@ -34,6 +37,8 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
     mockCodeSymbol.findMany.mockReset();
     mockCodeSymbol.findFirst.mockReset();
     mockCodeEdge.findMany.mockReset();
+    mockCodeEdge.count.mockReset();
+    mockCodeEdge.count.mockResolvedValue(0);
   });
 
   it("renders each symbol with its authoritative filePath:startLine-endLine locator", async () => {
@@ -215,5 +220,197 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
     const res = await searchCodeGraphTool.execute({ kind: "class" }, ctx);
     expect(res.truncated).toBe(true);
     expect(res.content).toContain("server/src/f0.ts:1-2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #740 — `calledBy` on a symbol with UNRESOLVED callees (NULL toSymbolId).
+//
+// The mocks below behave like Prisma rather than like stubs: the edge table is a
+// fixture filtered by the `where` the tool actually sends (including the
+// `toSymbolId` null / not-null filter and `take`), and `codeSymbol.findMany`
+// rejects a NULL member of `id.in` exactly as Prisma does ("Argument `in` is
+// missing."). So a regression to passing nulls through is a thrown error here,
+// as it was in production.
+// ---------------------------------------------------------------------------
+
+interface EdgeRow {
+  fromSymbolId: string;
+  kind: string;
+  toSymbolId: string | null;
+  toQualifiedName: string | null;
+}
+
+interface EdgeWhere {
+  fromSymbolId?: string;
+  toSymbolId?: string | null | { not: null };
+  kind?: string;
+}
+
+function matchEdge(e: EdgeRow, where: EdgeWhere): boolean {
+  if (where.fromSymbolId !== undefined && e.fromSymbolId !== where.fromSymbolId) return false;
+  if (where.kind !== undefined && e.kind !== where.kind) return false;
+  const t = where.toSymbolId;
+  if (t === null && e.toSymbolId !== null) return false;
+  if (t && typeof t === "object" && e.toSymbolId === null) return false;
+  if (typeof t === "string" && e.toSymbolId !== t) return false;
+  return true;
+}
+
+function useEdgeTable(rows: EdgeRow[]): void {
+  mockCodeEdge.findMany.mockImplementation(
+    async (q: {
+      where: EdgeWhere & { toQualifiedName?: { not: null } };
+      take?: number;
+      distinct?: string[];
+      orderBy?: { toQualifiedName?: "asc" };
+    }) => {
+      let out = rows.filter((e) => matchEdge(e, q.where));
+      if (q.where.toQualifiedName) out = out.filter((e) => e.toQualifiedName !== null);
+      if (q.orderBy?.toQualifiedName) {
+        out = [...out].sort((a, b) =>
+          (a.toQualifiedName ?? "").localeCompare(b.toQualifiedName ?? ""),
+        );
+      }
+      if (q.distinct?.includes("toQualifiedName")) {
+        const seen = new Set<string | null>();
+        out = out.filter((e) => !seen.has(e.toQualifiedName) && !!seen.add(e.toQualifiedName));
+      }
+      return q.take === undefined ? out : out.slice(0, q.take);
+    },
+  );
+  mockCodeEdge.count.mockImplementation(
+    async (q: { where: EdgeWhere }) => rows.filter((e) => matchEdge(e, q.where)).length,
+  );
+}
+
+const SYMBOLS: Record<string, { qualifiedName: string; startLine: number }> = {
+  r1: { qualifiedName: "internal/storage.go::Storage.Get", startLine: 10 },
+  r2: { qualifiedName: "internal/storage.go::Storage.Put", startLine: 30 },
+};
+
+function useSymbolTable(): void {
+  mockCodeSymbol.findMany.mockImplementation(async (q: { where: { id?: { in: unknown[] } } }) => {
+    const ids = q.where.id?.in ?? [];
+    if (ids.some((id) => id === null || id === undefined)) {
+      // What Prisma does with a NULL member of `in` (#740 production error).
+      throw new Error(
+        "Invalid `prisma.codeSymbol.findMany()` invocation: Argument `in` is missing.",
+      );
+    }
+    return (ids as string[])
+      .filter((id) => SYMBOLS[id])
+      .map((id) => ({
+        qualifiedName: SYMBOLS[id].qualifiedName,
+        kind: "method",
+        filePath: "internal/storage.go",
+        startLine: SYMBOLS[id].startLine,
+        endLine: SYMBOLS[id].startLine + 5,
+        language: "go",
+      }));
+  });
+}
+
+const call = (toSymbolId: string | null, toQualifiedName: string | null): EdgeRow => ({
+  fromSymbolId: "caller1",
+  kind: "calls",
+  toSymbolId,
+  toQualifiedName,
+});
+
+describe("search_code_graph calledBy — unresolved callees (#740)", () => {
+  beforeEach(() => {
+    mockCodeGraph.findFirst.mockReset();
+    mockCodeSymbol.findMany.mockReset();
+    mockCodeSymbol.findFirst.mockReset();
+    mockCodeEdge.findMany.mockReset();
+    mockCodeEdge.count.mockReset();
+    mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
+    mockCodeSymbol.findFirst.mockResolvedValue({ id: "caller1" });
+    useSymbolTable();
+  });
+
+  it("returns the resolved callees of a mixed caller, with no Prisma error, and names the unresolved ones", async () => {
+    useEdgeTable([
+      call(null, "fmt.Sprintf"),
+      call("r1", "internal/storage.go::Storage.Get"),
+      call(null, "errors.New"),
+      call("r2", "internal/storage.go::Storage.Put"),
+      call(null, "fmt.Sprintf"),
+    ]);
+
+    const res = await searchCodeGraphTool.execute({ calledBy: "Handler.Serve" }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content).toContain(
+      "method internal/storage.go::Storage.Get — internal/storage.go:10-15 [go]",
+    );
+    expect(res.content).toContain(
+      "method internal/storage.go::Storage.Put — internal/storage.go:30-35 [go]",
+    );
+    expect(res.resultCount).toBe(2);
+    // The model is told the external calls exist — three call edges, two names.
+    expect(res.content).toContain("plus 3 calls to external or unresolved symbols");
+    expect(res.content).toContain("fmt.Sprintf");
+    expect(res.content).toContain("errors.New");
+  });
+
+  it("all-unresolved callees: a non-error result that says so, not 'does not call any other symbols'", async () => {
+    useEdgeTable([call(null, "fmt.Println"), call(null, "database/sql.Open")]);
+
+    const res = await searchCodeGraphTool.execute({ calledBy: "main" }, ctx);
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content).not.toContain("does not call any other symbols");
+    expect(res.content).toContain("2 calls to external or unresolved symbols");
+    expect(res.content).toContain("fmt.Println");
+    expect(res.content).toContain("database/sql.Open");
+    expect(res.resultCount).toBe(0);
+    expect(mockCodeSymbol.findMany).not.toHaveBeenCalled();
+  });
+
+  it("applies the result cap AFTER dropping unresolved edges (first N edges all external)", async () => {
+    const external = Array.from({ length: 40 }, (_, i) =>
+      call(null, `pkg.F${String(39 - i).padStart(2, "0")}`),
+    );
+    useEdgeTable([...external, call("r1", "internal/storage.go::Storage.Get")]);
+
+    const res = await searchCodeGraphTool.execute({ calledBy: "Big" }, ctx);
+
+    expect(res.content).toContain("internal/storage.go::Storage.Get");
+    expect(res.resultCount).toBe(1);
+    expect(res.content).toContain("plus 40 calls to external or unresolved symbols");
+    // The name list is capped too, and says it was cut.
+    // Listed alphabetically, first 20 only: F00..F19 shown, F20 onward cut.
+    expect(res.content).toContain("pkg.F00");
+    expect(res.content).toContain("pkg.F19");
+    expect(res.content).not.toContain("pkg.F20");
+    expect(res.content).not.toContain("pkg.F39");
+    expect(res.content).toMatch(/…|and more/);
+  });
+
+  it("an unresolved edge with no recorded name is still counted", async () => {
+    useEdgeTable([call(null, null)]);
+    const res = await searchCodeGraphTool.execute({ calledBy: "Anon" }, ctx);
+    expect(res.isError).toBeFalsy();
+    expect(res.content).toContain("1 call to external or unresolved symbols");
+    expect(res.content).not.toContain("null");
+  });
+
+  it("keeps the unresolved note when the other filters exclude every resolved callee", async () => {
+    // r-gone is a resolved edge whose symbol the symbol query does not return
+    // (e.g. excluded by a `kind` filter alongside `calledBy`).
+    useEdgeTable([call("r-gone", "x::Gone"), call(null, "fmt.Errorf")]);
+    const res = await searchCodeGraphTool.execute({ calledBy: "Mixed", kind: "class" }, ctx);
+    expect(res.isError).toBeFalsy();
+    expect(res.content).toContain("No symbols found matching the query.");
+    expect(res.content).toContain("1 call to external or unresolved symbols");
+    expect(res.content).toContain("fmt.Errorf");
+  });
+
+  it("a caller with no call edges at all still reports that it calls nothing", async () => {
+    useEdgeTable([]);
+    const res = await searchCodeGraphTool.execute({ calledBy: "Leaf" }, ctx);
+    expect(res.content).toBe('"Leaf" does not call any other symbols.');
   });
 });
