@@ -60,7 +60,7 @@
     "import": "node scripts/import.mjs"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^26.6.2",
     "eslint": "^10.11.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.5.1",
