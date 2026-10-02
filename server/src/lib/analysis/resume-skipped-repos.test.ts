@@ -205,6 +205,31 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     expect(cap?.reasons).toContain("repos-skipped-budget");
   });
 
+  // #724 — the resumed repos' and the re-synthesis's model calls are billed to
+  // the analysis's project: both run inside its usage scope.
+  it("runs the resumed passes inside the analysis's project usage scope", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { orch, runAgenticCodeAgent, runSynthesisAndPersist } = makeOrch();
+    const { currentAnalysisUsageScope } = await import("./analysis-usage.js");
+    const scopes: unknown[] = [];
+    const capture = <T>(value: T) => {
+      scopes.push(currentAnalysisUsageScope());
+      return value;
+    };
+    const agentResult = await runAgenticCodeAgent.getMockImplementation()!();
+    runAgenticCodeAgent.mockImplementation(async () => capture(agentResult));
+    runSynthesisAndPersist.mockImplementation(async () => capture(undefined));
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    expect(scopes).toEqual([
+      { projectId: PROJECT_ID, sessionId: ANALYSIS_ID },
+      { projectId: PROJECT_ID, sessionId: ANALYSIS_ID },
+    ]);
+    expect(currentAnalysisUsageScope()).toBeNull();
+  });
+
   it("is an idempotent no-op when nothing was skipped (never registers a run)", async () => {
     state.metadata = capabilityMeta([]);
     const { orch, runAgenticCodeAgent, runSynthesisAndPersist } = makeOrch();

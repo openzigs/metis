@@ -33,6 +33,12 @@ export interface RecordUsageResult {
   totalTokens: number;
   /** `null` = the model is UNPRICED (#22) — unknown spend, not zero spend. */
   costCents: number | null;
+  /**
+   * Settles once the row is written (or the write failed — `persist` logs and
+   * swallows). Never rejects. #724 — lets a caller that reads `token_usages`
+   * back (a run's cost) wait for its own writes instead of racing them.
+   */
+  persisted: Promise<void>;
 }
 
 // Socket emitter — set via `setUsageEmitter()` so we don't pull a transitive
@@ -175,10 +181,14 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
   const costCents = priceCanonicalTokens(resolveRate(input.provider, input.model), canonical);
 
   if (totalTokens === 0) {
-    return { totalTokens, costCents };
+    return { totalTokens, costCents, persisted: Promise.resolve() };
   }
 
   pending += 1;
+  let settle!: () => void;
+  const persisted = new Promise<void>((res) => {
+    settle = res;
+  });
   queueMicrotask(() => {
     void persist({
       projectId: input.projectId,
@@ -193,6 +203,7 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
       costCents,
     }).finally(() => {
       pending -= 1;
+      settle();
     });
   });
 
@@ -214,7 +225,7 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
     }
   }
 
-  return { totalTokens, costCents };
+  return { totalTokens, costCents, persisted };
 }
 
 /** Awaitable variant for tests. */

@@ -83,6 +83,7 @@ import {
 import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-service.js";
 import type { StructuredRequirements } from "../lib/analysis/types/requirements.js";
 import { clarifyRequestSchema } from "../lib/analysis/clarify-request-schema.js";
+import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/analysis-usage.js";
 // Issue #1116 — carry the submitted answers into the persisted requirement rows
 // (and therefore into the drafts/issues they become), not just the metadata the
 // approval view reads.
@@ -561,7 +562,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const body = parsed.data;
 
       const config = loadAIConfig();
-      const provider = buildProvider({ config });
+      // #724 — clarify rounds are project spend: meter them, billed below.
+      const provider = meterAnalysisProvider(buildProvider({ config }));
+      const usageScope = { projectId, sessionId: analysisId };
       // Self-resolution (clarify-self-resolve): give the dialog a retriever +
       // projectId so it can ground each clarifying question against the
       // project's ingested knowledge before asking. Grounding only runs on the
@@ -596,7 +599,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             "requirements field is required to submit clarification answers",
           );
         }
-        const result = await dialog.submitAnswers(analysisId, body.answers, requirements);
+        const answers = body.answers;
+        const result = await runInAnalysisUsageScope(usageScope, () =>
+          dialog.submitAnswers(analysisId, answers, requirements),
+        );
         // Epic #201 (#211) — close the feedback loop: persist the refined
         // requirements via the existing enhancement path so they reach
         // `Analysis.metadata` and flow downstream into synthesis (#212).
@@ -621,7 +627,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             "requirements field is required to start clarification",
           );
         }
-        const state = await dialog.startOrContinue(analysisId, requirements);
+        const state = await runInAnalysisUsageScope(usageScope, () =>
+          dialog.startOrContinue(analysisId, requirements),
+        );
         res.json(ok(state));
       }
     },
@@ -929,13 +937,16 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           );
         }
         const config = loadAIConfig();
-        const provider = buildProvider({ config });
+        // #724 — a CSV-imported round is clarify spend too.
+        const provider = meterAnalysisProvider(buildProvider({ config }));
         const dialog = new ClarificationDialog({
           provider,
           retriever: getKnowledgeService(),
           projectId,
         });
-        const result = await dialog.submitAnswers(analysisId, applied, requirements);
+        const result = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
+          dialog.submitAnswers(analysisId, applied, requirements),
+        );
         await persistAnalysisEnhancement(analysisId, {
           structuredRequirements: result.updatedRequirements,
         });
@@ -1088,19 +1099,22 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       }
 
       const actor = actorFromReq(req);
-      const result = await deepDiveFinding(ensureOrch().provider, {
-        projectName: finding.projectName,
-        agentKey: finding.agentKey,
-        finding: {
-          title: finding.title,
-          body: finding.body,
-          category: finding.category,
-          severity: finding.severity,
-          citations: finding.citations,
-          requirementId: finding.requirementId,
-        },
-        instructions: parsed.data.instructions,
-      });
+      // #724 — the orchestrator's provider is metered; bill this call to the project.
+      const result = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
+        deepDiveFinding(ensureOrch().provider, {
+          projectName: finding.projectName,
+          agentKey: finding.agentKey,
+          finding: {
+            title: finding.title,
+            body: finding.body,
+            category: finding.category,
+            severity: finding.severity,
+            citations: finding.citations,
+            requirementId: finding.requirementId,
+          },
+          instructions: parsed.data.instructions,
+        }),
+      );
 
       audit({
         actor: { id: actor.id },
