@@ -22,14 +22,20 @@ const mockPrisma = {
   issueLink: { findFirst: vi.fn(), upsert: vi.fn() },
 };
 vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
-vi.mock("../src/middleware/auth.js", () => ({
-  requireAuth: (req: unknown, _res: unknown, next: () => void) => {
-    (req as { user: { userId: string } }).user = { userId: "user-1" };
-    next();
+// The real `requirePermission` runs: only the identity is stubbed, and the role
+// is per-test so a non-publisher and a cross-project caller are both exercised.
+const auth = vi.hoisted(() => ({
+  user: { userId: "user-1", role: "coordinator", workspaces: ["ws-1"] } as {
+    userId: string;
+    role: string;
+    workspaces: string[];
   },
 }));
-vi.mock("../src/middleware/require-permission.js", () => ({
-  requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+vi.mock("../src/middleware/auth.js", () => ({
+  requireAuth: (req: unknown, _res: unknown, next: () => void) => {
+    (req as { user: unknown }).user = { ...auth.user };
+    next();
+  },
 }));
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../src/lib/connectors/vault-resolver.js", () => ({
@@ -78,6 +84,7 @@ function filedInto(): string[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  auth.user = { userId: "user-1", role: "coordinator", workspaces: ["ws-1"] };
   mockPrisma.scanFinding.findFirst.mockResolvedValue({
     id: "sf-1",
     triageStatus: "approved",
@@ -158,5 +165,33 @@ describe("POST /scans/:scanId/findings/:findingId/publish — target (#733)", ()
     saveTarget(owner, repo);
     await request(createApp()).post(URL_PATH).send({ provider: "github" });
     expect(filedInto()).not.toContain(`/repos/${UPSTREAM.ownerOrOrg}/${UPSTREAM.repoName}/issues`);
+  });
+});
+
+describe("authorization on the Scans-page publish route", () => {
+  it("403s a caller whose role cannot publish, before any lookup or GitHub call", async () => {
+    auth.user = { userId: "u", role: "reader", workspaces: ["ws-other"] };
+    saveTarget("openzigs", "flux-v2");
+    const res = await request(createApp()).post(URL_PATH).send({ provider: "github" });
+    expect(res.status).toBe(403);
+    expect(mockPrisma.scanFinding.findFirst).not.toHaveBeenCalled();
+    expect(acquirePublishOctokit).not.toHaveBeenCalled();
+    expect(filedInto()).toEqual([]);
+  });
+
+  it("404s a finding that is not in the path project, and files nothing", async () => {
+    saveTarget("openzigs", "flux-v2");
+    mockPrisma.scanFinding.findFirst.mockResolvedValue(null);
+    const res = await request(createApp())
+      .post("/projects/proj-victim/scans/scan-1/findings/sf-1/publish")
+      .send({ provider: "github" });
+    expect(res.status).toBe(404);
+    expect(mockPrisma.scanFinding.findFirst.mock.calls[0][0].where).toMatchObject({
+      id: "sf-1",
+      scanId: "scan-1",
+      scan: { projectId: "proj-victim" },
+    });
+    expect(acquirePublishOctokit).not.toHaveBeenCalled();
+    expect(filedInto()).toEqual([]);
   });
 });
