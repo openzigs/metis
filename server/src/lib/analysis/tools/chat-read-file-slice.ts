@@ -11,8 +11,12 @@
  *     (filtered on `projectId` — never on a connector id alone), primary first;
  *   • a clone that is not on disk is skipped (`resolveExistingCloneDir`, #777);
  *   • the file is read from the first clone that has it. Only "file not found"
- *     moves on to the next repo — a traversal refusal or bad args returns at once.
+ *     moves on to the next repo — a traversal refusal or bad args returns at once;
+ *   • git internals and credential files (`.git/**`, `.env*`, `.netrc`, …) are refused
+ *     before any read. A chat result goes to the model provider and is kept in full
+ *     in the transcript, and a committed secret file should not travel that way.
  */
+import path from "node:path";
 import { prisma } from "../../prisma.js";
 import { resolveExistingCloneDir } from "../clone-availability.js";
 import { readFileSliceTool } from "./read-file-slice.js";
@@ -42,6 +46,23 @@ function hasFilePath(args: unknown): boolean {
 
 const NOT_FOUND = "Error: File not found:";
 
+/** Basenames never returned to chat, matched case-insensitively. */
+const SECRET_FILES = new Set([".netrc", ".npmrc", ".pypirc", ".git-credentials"]);
+/** `.env` templates carry no values, so they stay readable. */
+const ENV_TEMPLATE = /^\.env\.(example|sample|template|dist)$/;
+
+/** True when `filePath` names git internals or a credential file. */
+export function isSensitiveRepoPath(filePath: string): boolean {
+  const segments = path.posix
+    .normalize(filePath.replace(/\\/g, "/"))
+    .split("/")
+    .map((s) => s.toLowerCase());
+  if (segments.includes(".git")) return true;
+  const base = segments[segments.length - 1] ?? "";
+  if (SECRET_FILES.has(base)) return true;
+  return (base === ".env" || base.startsWith(".env.")) && !ENV_TEMPLATE.test(base);
+}
+
 export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): AgentTool {
   const listRepoIds = deps.listRepoIds ?? projectRepoIds;
   const resolveCloneDir = deps.resolveCloneDir ?? resolveExistingCloneDir;
@@ -57,6 +78,13 @@ export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): A
       if (!hasFilePath(args)) return readFileSliceTool.execute(args, { projectId: ctx.projectId });
       if (!ctx.projectId) {
         return { content: "Error: reading a file needs a project-scoped session.", isError: true };
+      }
+      const filePath = (args as { filePath: string }).filePath;
+      if (isSensitiveRepoPath(filePath)) {
+        return {
+          content: `Error: ${filePath} is git metadata or a credential file and is not readable from chat.`,
+          isError: true,
+        };
       }
       const dirs: string[] = [];
       for (const id of await listRepoIds(ctx.projectId)) {

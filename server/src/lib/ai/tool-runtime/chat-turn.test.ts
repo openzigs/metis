@@ -603,4 +603,65 @@ describe("an unanswered approval does not spend the step budget (#736)", () => {
     expect(out.turnsUsed).toBe(1);
     expect(out.loop.turnsExhausted).toBe(true);
   });
+
+  // Low-risk calls run unprompted; anything above prompts and, unanswered, expires.
+  function mixedGate(tools: RuntimeTool[]) {
+    const broker = new ToolApprovalBroker();
+    const toolset = makeToolset(tools);
+    const gate = new ApprovalGateService({
+      sessionId: CTX.sessionId,
+      userId: CTX.userId,
+      policy: { low: "auto", medium: "always-prompt", high: "always-prompt" },
+      prompter: brokerPrompter({ broker, toolset, projectId: CTX.projectId, timeoutMs: 5 }),
+    });
+    return { toolset, gate };
+  }
+
+  it("a turn where one call expired but another RAN is not refunded", async () => {
+    const cheap = { ...tool("list_files", () => "a.go"), risk: "low" as const };
+    const gated = tool("inspect_schema", () => "3 tables");
+    const { toolset, gate } = mixedGate([cheap, gated]);
+    const provider = new OfflineStubProvider({
+      script: [
+        {
+          toolCalls: [
+            { id: "c1", name: "list_files", args: {} },
+            { id: "c2", name: "inspect_schema", args: {} },
+          ],
+        },
+        { content: "never reached" },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+    expect(cheap.execute).toHaveBeenCalledTimes(1);
+    expect(gated.execute).not.toHaveBeenCalled();
+    expect(out.turnsUsed).toBe(1);
+    expect(out.loop.turnsExhausted).toBe(true);
+  });
+
+  it("judges each turn on its own calls: an earlier turn's ran call does not block a later refund", async () => {
+    const cheap = { ...tool("list_files", () => "a.go"), risk: "low" as const };
+    const gated = tool("inspect_schema", () => "3 tables");
+    const { toolset, gate } = mixedGate([cheap, gated]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "list_files", args: {} }] },
+        { toolCalls: [{ id: "c2", name: "inspect_schema", args: {} }] },
+        { content: "answered after the refund" },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 2 },
+    );
+    expect(cheap.execute).toHaveBeenCalledTimes(1);
+    expect(out.loop.hasFinalAnswer).toBe(true);
+    expect(out.finalResponse).toBe("answered after the refund");
+    expect(out.turnsUsed).toBe(3);
+  });
 });

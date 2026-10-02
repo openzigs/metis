@@ -9,7 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { findMany } = vi.hoisted(() => ({ findMany: vi.fn() }));
 vi.mock("../../prisma.js", () => ({ prisma: { repoConnection: { findMany } } }));
-import { createChatReadFileSliceTool, type ChatReadFileSliceDeps } from "./chat-read-file-slice.js";
+import {
+  createChatReadFileSliceTool,
+  isSensitiveRepoPath,
+  type ChatReadFileSliceDeps,
+} from "./chat-read-file-slice.js";
 import { getChatCodeTools, CHAT_CODE_TOOL_NAMES } from "./index.js";
 
 let root: string;
@@ -184,5 +188,67 @@ describe("chat read_file_slice — the default repo lookup (#736)", () => {
       }),
     );
     expect(resolved).toEqual(["conn-x"]);
+  });
+
+  it("refuses git internals and credential files that exist in the clone, without reading them", async () => {
+    await repo("conn-a", {
+      ".git/config": "[remote] url = https://x-access-token:SECRET@github.com/o/r",
+      ".env": "DB_PASSWORD=SECRET",
+      "deploy/.ENV.local": "TOKEN=SECRET",
+      ".netrc": "machine github.com password SECRET",
+    });
+    const tool = createChatReadFileSliceTool(deps({ p1: ["conn-a"] }));
+    for (const filePath of [
+      ".git/config",
+      ".env",
+      "deploy/.ENV.local",
+      ".netrc",
+      "deploy/../.git/config",
+    ]) {
+      const r = await tool.execute({ filePath }, { projectId: "p1" });
+      expect(r.isError, filePath).toBe(true);
+      expect(r.content, filePath).toContain("not readable from chat");
+      expect(r.content, filePath).not.toContain("SECRET");
+    }
+  });
+
+  it("still reads env templates and ordinary files whose names merely contain env or git", async () => {
+    await repo("conn-a", {
+      ".env.example": "DB_PASSWORD=",
+      "internal/config/env.go": "package config",
+      ".github/workflows/ci.yml": "on: push",
+      ".gitignore": "*.db",
+    });
+    const tool = createChatReadFileSliceTool(deps({ p1: ["conn-a"] }));
+    for (const filePath of [
+      ".env.example",
+      "internal/config/env.go",
+      ".github/workflows/ci.yml",
+      ".gitignore",
+    ]) {
+      const r = await tool.execute({ filePath }, { projectId: "p1" });
+      expect(r.isError, filePath).toBeUndefined();
+    }
+  });
+});
+
+describe("isSensitiveRepoPath", () => {
+  it.each([
+    [".git/HEAD", true],
+    ["sub\\.git\\config", true],
+    [".GIT/config", true],
+    [".env", true],
+    [".env.production", true],
+    ["a/b/.env.local", true],
+    [".git-credentials", true],
+    [".npmrc", true],
+    [".env.example", false],
+    [".env.sample", false],
+    [".gitignore", false],
+    [".gitattributes", false],
+    ["environment.go", false],
+    ["docs/.github/CODEOWNERS", false],
+  ])("%s -> %s", (p, expected) => {
+    expect(isSensitiveRepoPath(p)).toBe(expected);
   });
 });
