@@ -16,7 +16,12 @@ import type { Task } from "@prisma/client";
 const h = vi.hoisted(() => ({
   tasks: new Map<string, Task>(),
   finished: vi.fn(),
-  shallowCloneRepo: vi.fn(async () => ({ path: "/tmp/clone", sizeBytes: 10 })),
+  shallowCloneRepo: vi.fn(
+    async (): Promise<{ path: string; sizeBytes: number; commitSha?: string }> => ({
+      path: "/tmp/clone",
+      sizeBytes: 10,
+    }),
+  ),
   resolveNonGitIngestRoot: vi.fn(async () => ({ path: "/tmp/extract" })),
   createRepoConnector: vi.fn(async (_p: string, input: Record<string, unknown>) => ({
     id: "repo_local_1",
@@ -210,6 +215,7 @@ const recordJobScope = vi.hoisted(() =>
 vi.mock("../src/lib/socket/job-scope-store.js", () => ({ recordJobScope }));
 
 import request from "supertest";
+import { ingestCodeGraph } from "../src/lib/code-graph/ingest.js";
 import { createApp } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
 import {
@@ -387,6 +393,21 @@ describe("provider routing on deep-ingest", () => {
     await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
     expect(shallowCloneRepo).toHaveBeenCalledTimes(1);
     expect(resolveNonGitIngestRoot).not.toHaveBeenCalled();
+  });
+
+  it("#714 — labels the code graph with the commit the clone checked out", async () => {
+    const SHA = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+    shallowCloneRepo.mockResolvedValueOnce({ path: "/tmp/clone", sizeBytes: 10, commitSha: SHA });
+    const token = await login("admin");
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos/repo_github_x/deep-ingest")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+    expect(vi.mocked(ingestCodeGraph)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ repoConnectionId: "repo_github_x", commitSha: SHA }),
+    );
   });
 
   it("local connector skips the clone (resolveNonGitIngestRoot, never shallowCloneRepo)", async () => {

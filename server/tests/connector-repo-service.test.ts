@@ -150,6 +150,8 @@ import {
   getRepoConnector,
   listRepoConnectors,
   resolveRepoCloneMaxBytes,
+  pullOrCloneRepo,
+  readCloneHeadSha,
   shallowCloneRepo,
   testRepoConnector,
   updateRepoConnector,
@@ -157,6 +159,9 @@ import {
   type SimpleGitLike,
 } from "../src/lib/connectors/repo/repo-service.js";
 import { MAX_REPO_CLONE_BYTES } from "@metis/shared";
+import { promises as fsp } from "node:fs";
+import os from "node:os";
+import nodePath from "node:path";
 
 describe("resolveRepoCloneMaxBytes (REPO_CLONE_MAX_BYTES override)", () => {
   const original = process.env.REPO_CLONE_MAX_BYTES;
@@ -189,11 +194,18 @@ function makeOctokit(
     listLanguages: () => Promise<unknown>;
     getReadme: () => Promise<unknown>;
     getContent: (params: { path: string }) => Promise<unknown>;
-    listCommits: () => Promise<unknown>;
+    listCommits: (params: Record<string, unknown>) => Promise<unknown>;
+    getRef: (params: { ref: string }) => Promise<unknown>;
   }> = {},
 ): OctokitLike {
   return {
     rest: {
+      git: {
+        getRef: vi.fn(
+          (overrides.getRef ??
+            (async ({ ref }: { ref: string }) => ({ data: { ref: `refs/${ref}` } }))) as never,
+        ),
+      },
       repos: {
         get: vi.fn(
           (overrides.get ??
@@ -1007,5 +1019,255 @@ describe("Repo connector service — shallowCloneRepo", () => {
     await shallowCloneRepo("proj_1", c.id, "user_1");
     // env() never called when there's no token
     expect(envApplied).toBeNull();
+  });
+});
+
+// #714 — a connector pinned to a tag or ref keeps that ref through Test, and
+// the connector reports the commit the ingest actually cloned.
+describe("#714 — pinned ref survives Test", () => {
+  const notFound = async () => {
+    throw Object.assign(new Error("Not Found"), { status: 404 });
+  };
+
+  it("keeps a pinned tag that resolves upstream (does not overwrite with default_branch)", async () => {
+    const getRef = vi.fn(async ({ ref }: { ref: string }) => {
+      if (ref === "tags/v2.3.3") return { data: { ref: "refs/tags/v2.3.3" } };
+      return notFound();
+    });
+    __setOctokitFactory(() => makeOctokit({ getRef }));
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "pin", ownerOrOrg: "o", repoName: "r", defaultBranch: "v2.3.3" },
+      "user_1",
+    );
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.ok).toBe(true);
+    expect(result.defaultBranch).toBe("main");
+    expect(result.ref).toBe("v2.3.3");
+    // Read back through the same path the UI uses.
+    expect((await getRepoConnector("proj_1", c.id)).defaultBranch).toBe("v2.3.3");
+  });
+
+  it("keeps a pinned non-default branch that resolves as a branch", async () => {
+    const getRef = vi.fn(async ({ ref }: { ref: string }) =>
+      ref === "heads/release/1.x" ? { data: { ref: `refs/${ref}` } } : notFound(),
+    );
+    __setOctokitFactory(() => makeOctokit({ getRef }));
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label: "pin-b",
+        ownerOrOrg: "o",
+        repoName: "r",
+        defaultBranch: "release/1.x",
+      },
+      "user_1",
+    );
+    await testRepoConnector("proj_1", c.id, "user_1");
+    expect((await getRepoConnector("proj_1", c.id)).defaultBranch).toBe("release/1.x");
+  });
+
+  it("adopts the upstream default when the implicit `main` does not exist upstream", async () => {
+    __setOctokitFactory(() =>
+      makeOctokit({
+        get: async () => ({
+          data: {
+            full_name: "o/r",
+            default_branch: "master",
+            private: false,
+            archived: false,
+            size: 1,
+          },
+        }),
+        getRef: notFound,
+      }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "legacy", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.ref).toBe("master");
+    expect((await getRepoConnector("proj_1", c.id)).defaultBranch).toBe("master");
+  });
+
+  it("fails the test with REF_NOT_FOUND for a pinned ref that does not exist, keeping the ref", async () => {
+    __setOctokitFactory(() => makeOctokit({ getRef: notFound }));
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label: "typo",
+        ownerOrOrg: "o",
+        repoName: "r",
+        defaultBranch: "v9.9.9",
+      },
+      "user_1",
+    );
+    await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
+      code: "REF_NOT_FOUND",
+    });
+    const after = await getRepoConnector("proj_1", c.id);
+    expect(after.defaultBranch).toBe("v9.9.9");
+    expect(after.status).toBe("error");
+  });
+
+  it("keeps the pinned ref when the ref lookup fails for a reason other than 404", async () => {
+    __setOctokitFactory(() =>
+      makeOctokit({
+        getRef: async () => {
+          throw Object.assign(new Error("rate limited"), { status: 403 });
+        },
+      }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "rl", ownerOrOrg: "o", repoName: "r", defaultBranch: "v2.3.3" },
+      "user_1",
+    );
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.ok).toBe(true);
+    expect((await getRepoConnector("proj_1", c.id)).defaultBranch).toBe("v2.3.3");
+  });
+});
+
+describe("#714 — metadata reads the commit at the configured ref", () => {
+  it("asks listCommits for the configured ref, not the repo default branch", async () => {
+    const listCommits = vi.fn(async () => ({ data: [{ sha: "c4d54f8" }] }));
+    __setOctokitFactory(() => makeOctokit({ listCommits }));
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label: "meta-pin",
+        ownerOrOrg: "o",
+        repoName: "r",
+        defaultBranch: "v2.3.3",
+      },
+      "user_1",
+    );
+    const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
+    expect(listCommits).toHaveBeenCalledWith(expect.objectContaining({ sha: "v2.3.3" }));
+    expect(meta.headSha).toBe("c4d54f8");
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe("c4d54f8");
+  });
+
+  it("does not wipe a known lastCommitSha when listCommits fails", async () => {
+    __setOctokitFactory(() =>
+      makeOctokit({
+        listCommits: async () => {
+          throw new Error("network");
+        },
+      }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "meta-keep", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+    await fetchRepoMetadata("proj_1", c.id, "user_1");
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(
+      "c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+    );
+  });
+});
+
+describe("#714 — the clone records the commit it checked out", () => {
+  const SHA = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+  const SHA2 = "703fe82693ef91054f1163435e2495ed118b3f25";
+  let dir: string;
+  const original = process.env.REPO_CLONE_DIR;
+
+  beforeEach(async () => {
+    dir = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "metis-714-"));
+    process.env.REPO_CLONE_DIR = dir;
+  });
+  afterEach(async () => {
+    if (original === undefined) delete process.env.REPO_CLONE_DIR;
+    else process.env.REPO_CLONE_DIR = original;
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  async function writeGit(target: string, files: Record<string, string>) {
+    for (const [rel, body] of Object.entries(files)) {
+      const p = nodePath.join(target, ".git", rel);
+      await fsp.mkdir(nodePath.dirname(p), { recursive: true });
+      await fsp.writeFile(p, body);
+    }
+  }
+
+  it("readCloneHeadSha reads a detached HEAD (a tag clone)", async () => {
+    await writeGit(dir, { HEAD: `${SHA}\n` });
+    expect(await readCloneHeadSha(dir)).toBe(SHA);
+  });
+
+  it("readCloneHeadSha follows a loose branch ref", async () => {
+    await writeGit(dir, { HEAD: "ref: refs/heads/main\n", "refs/heads/main": `${SHA2}\n` });
+    expect(await readCloneHeadSha(dir)).toBe(SHA2);
+  });
+
+  it("readCloneHeadSha follows a packed branch ref", async () => {
+    await writeGit(dir, {
+      HEAD: "ref: refs/heads/main\n",
+      "packed-refs": `# pack-refs with: peeled fully-peeled sorted\n${SHA} refs/heads/dev\n${SHA2} refs/heads/main\n`,
+    });
+    expect(await readCloneHeadSha(dir)).toBe(SHA2);
+  });
+
+  it("readCloneHeadSha returns null for a missing or malformed HEAD", async () => {
+    expect(await readCloneHeadSha(dir)).toBeNull();
+    await writeGit(dir, { HEAD: "garbage\n" });
+    expect(await readCloneHeadSha(dir)).toBeNull();
+    await writeGit(dir, { HEAD: "ref: refs/heads/gone\n" });
+    expect(await readCloneHeadSha(dir)).toBeNull();
+  });
+
+  it("shallowCloneRepo returns and persists the cloned commit as lastCommitSha", async () => {
+    const fakeGit = {
+      clone: vi.fn(async (_url: string, target: string) => {
+        await writeGit(target, { HEAD: `${SHA}\n` });
+      }),
+    } as unknown as SimpleGitLike;
+    __setSimpleGitFactory(() => fakeGit);
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label: "clone-sha",
+        ownerOrOrg: "o",
+        repoName: "r",
+        defaultBranch: "v2.3.3",
+      },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = SHA2; // stale, from an earlier ingest of main
+    const out = await shallowCloneRepo("proj_1", c.id, "user_1");
+    expect(out.commitSha).toBe(SHA);
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA);
+  });
+
+  it("pullOrCloneRepo records the commit an existing clone was fast-forwarded to", async () => {
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "pull-sha", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    const target = nodePath.join(dir, c.id);
+    await writeGit(target, { HEAD: "ref: refs/heads/main\n", "refs/heads/main": `${SHA2}\n` });
+    const fakeGit = {
+      clone: vi.fn(),
+      pull: vi.fn(async () => {
+        await writeGit(target, { "refs/heads/main": `${SHA}\n` });
+        return { files: ["a.go"] };
+      }),
+    } as unknown as SimpleGitLike;
+    __setSimpleGitFactory(() => fakeGit);
+    const out = await pullOrCloneRepo("proj_1", c.id, "user_1");
+    expect(out.pulled).toBe(true);
+    expect(out.commitSha).toBe(SHA);
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA);
   });
 });

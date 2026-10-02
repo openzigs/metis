@@ -214,14 +214,26 @@ async function resolveIngestSource(
   userId: string,
   /** The connector, when the caller already looked it up in this project. */
   known?: Awaited<ReturnType<typeof getRepoConnector>>,
-): Promise<{ path: string; sizeBytes: number; boundary?: string; isGit: boolean }> {
+): Promise<{
+  path: string;
+  sizeBytes: number;
+  boundary?: string;
+  isGit: boolean;
+  /** #714 — the commit a git clone checked out. */
+  commitSha?: string;
+}> {
   const conn = known ?? (await getRepoConnector(projectId, connectorId));
   if (conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD) {
     const root = await resolveNonGitIngestRoot(projectId, connectorId);
     return { path: root.path, sizeBytes: 0, boundary: root.boundary, isGit: false };
   }
   const clone = await shallowCloneRepo(projectId, connectorId, userId);
-  return { path: clone.path, sizeBytes: clone.sizeBytes, isGit: true };
+  return {
+    path: clone.path,
+    sizeBytes: clone.sizeBytes,
+    isGit: true,
+    commitSha: clone.commitSha ?? undefined,
+  };
 }
 
 /**
@@ -295,6 +307,8 @@ async function runDeepIngest(
       projectId,
       rootDir: source.path,
       repoConnectionId: connectorId,
+      // #714 — label the graph with the commit it was built from.
+      commitSha: source.commitSha,
       triggeredByUserId: userId,
       introspectedSchema: deepSchemaWiring.introspectedSchema,
       routines: deepSchemaWiring.routines,
