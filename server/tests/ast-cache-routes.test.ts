@@ -66,6 +66,7 @@ vi.mock("../src/lib/connectors/repo/repo-service.js", () => ({
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
+import { pullOrCloneRepo } from "../src/lib/connectors/repo/repo-service.js";
 import {
   rebuildCacheFromCloneDir,
   getASTSummaryCache,
@@ -151,5 +152,14 @@ describe("POST /api/projects/:projectId/repositories/:repoId/rebuild-cache", () 
     expect(res.body.data.message).toBe("Cache rebuild complete");
     expect(res.body.data.stats.indexedFiles).toBeGreaterThanOrEqual(1);
     expect(res.body.data.stats.totalSymbols).toBeGreaterThanOrEqual(2);
+    // #757 — the rebuild only reads the checkout, so it must not move lastCommitSha.
+    expect(vi.mocked(pullOrCloneRepo)).toHaveBeenCalledWith(
+      "proj_1",
+      "repo_1",
+      expect.any(String),
+      {
+        recordCommit: false,
+      },
+    );
   });
 });

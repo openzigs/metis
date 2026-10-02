@@ -179,7 +179,12 @@ export async function loadNeighboursForScan(
   if (outgoing.length === 0 && incoming.length === 0) return [];
 
   const actorId = scan.createdById ?? "system";
-  const { path: repoPath } = await pullOrCloneRepo(scan.projectId, scan.repoConnectionId, actorId);
+  // The scanner only reads snippets from the checkout. Recording the pulled
+  // commit would move lastCommitSha past the graph's label and this scan's own
+  // anchor, making its findings unpublishable (#757).
+  const { path: repoPath } = await pullOrCloneRepo(scan.projectId, scan.repoConnectionId, actorId, {
+    recordCommit: false,
+  });
 
   const neighbours: AssembledNeighbour[] = [];
   for (const edge of outgoing) {
@@ -345,6 +350,7 @@ export function buildScannerPorts(): ScannerPorts {
         scan.projectId,
         scan.repoConnectionId,
         actorId,
+        { recordCommit: false }, // read-only use — see loadNeighboursForScan (#757)
       );
       if (!symbol.filePath) return "";
       const abs = path.resolve(repoPath, symbol.filePath);

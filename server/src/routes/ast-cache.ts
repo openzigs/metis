@@ -45,19 +45,21 @@ export function astCacheRouter(): Router {
         });
 
         if (!repo) {
-          res
-            .status(404)
-            .json({
-              success: false,
-              error: { code: "NOT_FOUND", message: "Repository not found" },
-            });
+          res.status(404).json({
+            success: false,
+            error: { code: "NOT_FOUND", message: "Repository not found" },
+          });
           return;
         }
 
         // Pull (or clone) the repo into the connector's clone dir, then rebuild
         // the AST summary cache from the on-disk source files.
         const cache = getASTSummaryCache();
-        const { path: cloneDir } = await pullOrCloneRepo(projectId, repoId, actorId);
+        // Reads the checkout only — no graph ingest — so it must not move
+        // lastCommitSha past the code graph's commit label (#757).
+        const { path: cloneDir } = await pullOrCloneRepo(projectId, repoId, actorId, {
+          recordCommit: false,
+        });
         const result = await rebuildCacheFromCloneDir(cache, cloneDir);
 
         res.json(

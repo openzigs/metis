@@ -38,7 +38,9 @@ import { RebuildCacheButton } from "@/components/projects/rebuild-cache-button";
 import { PageHeader } from "@/components/ui/page-header";
 import {
   isNonGitRepoProvider,
+  isRepoRefOrEmpty,
   repoStatusLabel,
+  shortCommitSha,
   repoStatusTone,
   type RepoConnectorWithIngest,
   type RepoStatusTone,
@@ -262,6 +264,8 @@ export default function ConnectionsPage() {
   const [repoOwner, setRepoOwner] = useState("");
   const [repoName, setRepoName] = useState("");
   const [repoApiBase, setRepoApiBase] = useState("");
+  // #714 — the branch or tag to ingest; empty means the server default.
+  const [repoRef, setRepoRef] = useState("");
   const [repoSecretRef, setRepoSecretRef] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
   // Issue #288 — non-git source types: GitHub | Local server path | Upload .zip
@@ -320,6 +324,7 @@ export default function ConnectionsPage() {
         ownerOrOrg: repoOwner.trim(),
         repoName: repoName.trim(),
         apiBaseUrl: repoApiBase.trim() || undefined,
+        defaultBranch: repoRef.trim() || undefined,
         secretRef: repoSecretRef.trim() || undefined,
       }),
     onSuccess: () => {
@@ -327,6 +332,7 @@ export default function ConnectionsPage() {
       setRepoOwner("");
       setRepoName("");
       setRepoApiBase("");
+      setRepoRef("");
       setRepoSecretRef("");
       setRepoError(null);
       qc.invalidateQueries({ queryKey: repoKeys.list(projectId) });
@@ -501,6 +507,7 @@ export default function ConnectionsPage() {
     repoLabel.trim().length > 0 &&
     repoOwner.trim().length > 0 &&
     repoName.trim().length > 0 &&
+    isRepoRefOrEmpty(repoRef) &&
     isVaultRefOrEmpty(repoSecretRef);
 
   if (!projectId) return <div className="p-6">Invalid project id.</div>;
@@ -649,7 +656,16 @@ export default function ConnectionsPage() {
                     placeholder="https://git.example.com"
                   />
                 </div>
-                <div className="col-span-2">
+                <div>
+                  <Label htmlFor="repo-ref">Branch or tag</Label>
+                  <Input
+                    id="repo-ref"
+                    value={repoRef}
+                    onChange={(e) => setRepoRef(e.target.value)}
+                    placeholder="main"
+                  />
+                </div>
+                <div>
                   <Label htmlFor="repo-secret">Secret ref (vault)</Label>
                   <VaultPicker
                     id="repo-secret"
@@ -724,6 +740,11 @@ export default function ConnectionsPage() {
                 Upload folder
               </Button>
             )}
+            {repoSource === "github" && !isRepoRefOrEmpty(repoRef) ? (
+              <span className="text-sm text-destructive">
+                &quot;{repoRef.trim()}&quot; is not a valid branch or tag name.
+              </span>
+            ) : null}
             {repoSource === "github" && !isVaultRefOrEmpty(repoSecretRef) ? (
               <span className="text-sm text-destructive">
                 Secret ref must look like ${"${vault:name}"}.
@@ -810,6 +831,15 @@ export default function ConnectionsPage() {
                             {r.defaultBranch}
                           </button>
                         )}
+                        {/* #714 — which commit the code graph and RAG reflect. */}
+                        {r.lastCommitSha ? (
+                          <span
+                            data-testid="repo-commit-sha"
+                            title={`Last cloned commit ${r.lastCommitSha}`}
+                          >
+                            · {shortCommitSha(r.lastCommitSha)}
+                          </span>
+                        ) : null}
                       </div>
                     )}
                     {r.errorMessage ? (

@@ -2667,8 +2667,9 @@ Open any project and click **Connections** in the left nav (`/projects/{id}/conn
 1. **Label** — what to call the connector (e.g. `monorepo`, `legacy-svc`).
 2. **Owner / org** + **Repo name** — `octocat` / `demo` for `https://github.com/octocat/demo`.
 3. **API base URL** — leave blank for `github.com`; for GitHub Enterprise paste the HTTPS URL (e.g. `https://github.example.com/api/v3`). Plain `http://` is rejected.
-4. **Secret ref** — write your PAT to the Secret Vault first, then paste its reference here as `${vault:my-token-label}`. Plaintext tokens are never accepted.
-5. Click **Add repo connector**, then **Test** to verify reachability, then **Ingest** to feed repo metadata into RAG.
+4. **Branch or tag** — optional; the ref to ingest, e.g. `release/1.x` or `v2.3.3`. Leave blank for `main` (a repository whose default branch is something else, such as `master`, is switched to it by **Test**). Set it here rather than afterwards: the first repository connector is ingested as soon as it is created.
+5. **Secret ref** — write your PAT to the Secret Vault first, then paste its reference here as `${vault:my-token-label}`. Plaintext tokens are never accepted.
+6. Click **Add repo connector**, then **Test** to verify reachability, then **Ingest** to feed repo metadata into RAG. **Test** keeps the branch or tag you chose, and fails if it does not exist in the repository. After an ingest, the short commit SHA beside the ref is the commit the code graph and RAG reflect.
 
 **Database connectors**
 
@@ -4527,8 +4528,8 @@ METIS automatically ingests your first connected repository so you can start ana
 
 ### 36.1 Auto-Ingest on First Repository
 
-When you connect your first Git repository to a project, METIS automatically begins deep ingestion:
-1. **Cloning** — A shallow clone of the repository is created.
+When you connect your first Git repository to a project, METIS automatically begins deep ingestion of the **Branch or tag** you entered (or `main`):
+1. **Cloning** — A shallow clone of the repository is created at that ref.
 2. **Code Graph** — Source files are parsed into symbols, edges, and rationale.
 3. **RAG Ingestion** — File content is indexed into the knowledge base for retrieval.
 4. **Metadata** — Repository metadata (languages, contributors, structure) is indexed.

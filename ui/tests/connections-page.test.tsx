@@ -283,6 +283,74 @@ describe("ConnectionsPage — create repo form", () => {
     );
   });
 
+  it("#714 — sends the branch or tag typed into the create form as defaultBranch", async () => {
+    const user = userEvent.setup();
+    repoCreate.mockResolvedValueOnce({ id: "r2" });
+    repoList.mockResolvedValue([]);
+    renderPage();
+    await waitFor(() => expect(screen.getAllByLabelText(/^Label$/i)[0]).toBeInTheDocument());
+    await user.type(screen.getAllByLabelText(/^Label$/i)[0], "Pinned");
+    await user.type(screen.getByLabelText(/Owner/i), "miniflux");
+    await user.type(screen.getByLabelText(/Repo name/i), "v2");
+    await user.type(screen.getByLabelText(/Branch or tag/i), "v2.3.3");
+    await user.click(screen.getByRole("button", { name: /Add repo connector/i }));
+    await waitFor(() =>
+      expect(repoCreate).toHaveBeenCalledWith(
+        "proj-1",
+        expect.objectContaining({ repoName: "v2", defaultBranch: "v2.3.3" }),
+      ),
+    );
+  });
+
+  it("#714 — omits defaultBranch when the ref field is left empty", async () => {
+    const user = userEvent.setup();
+    repoCreate.mockResolvedValueOnce({ id: "r2" });
+    repoList.mockResolvedValue([]);
+    renderPage();
+    await waitFor(() => expect(screen.getAllByLabelText(/^Label$/i)[0]).toBeInTheDocument());
+    await user.type(screen.getAllByLabelText(/^Label$/i)[0], "Unpinned");
+    await user.type(screen.getByLabelText(/Owner/i), "o");
+    await user.type(screen.getByLabelText(/Repo name/i), "r");
+    await user.click(screen.getByRole("button", { name: /Add repo connector/i }));
+    await waitFor(() => expect(repoCreate).toHaveBeenCalled());
+    expect(repoCreate.mock.calls.at(-1)![1].defaultBranch).toBeUndefined();
+  });
+
+  it("#714 — rejects an invalid ref and disables the create button", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getAllByLabelText(/^Label$/i)[0]).toBeInTheDocument());
+    await user.type(screen.getAllByLabelText(/^Label$/i)[0], "Bad");
+    await user.type(screen.getByLabelText(/Owner/i), "o");
+    await user.type(screen.getByLabelText(/Repo name/i), "r");
+    await user.type(screen.getByLabelText(/Branch or tag/i), "-bad ref");
+    expect(screen.getByText(/not a valid branch or tag name/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Add repo connector/i })).toBeDisabled();
+  });
+
+  it("#714 — shows the commit the connector last ingested next to its ref", async () => {
+    repoList.mockResolvedValue([
+      makeRepo({
+        defaultBranch: "v2.3.3",
+        lastCommitSha: "c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+      }),
+    ]);
+    renderPage();
+    const sha = await screen.findByTestId("repo-commit-sha");
+    expect(sha.textContent).toBe("· c4d54f8");
+    expect(sha).toHaveAttribute(
+      "title",
+      expect.stringContaining("c4d54f87a81b30aa173fddf05d7ff83ae7da5796"),
+    );
+  });
+
+  it("#714 — shows no commit when the connector has never been ingested", async () => {
+    repoList.mockResolvedValue([makeRepo({ lastCommitSha: null })]);
+    renderPage();
+    await screen.findByText("Main Repo");
+    expect(screen.queryByTestId("repo-commit-sha")).toBeNull();
+  });
+
   it("shows error when repo create fails", async () => {
     const user = userEvent.setup();
     repoCreate.mockRejectedValueOnce(new Error("Duplicate"));
