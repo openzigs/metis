@@ -111,9 +111,24 @@ const defaultDispatcherFactory: DispatcherFactory = async (pinned) => {
   const fam = pinned.family;
   const lookup = (
     _hostname: string,
-    _options: unknown,
+    options: unknown,
     cb: (err: Error | null, address: string, family: number) => void,
   ): void => {
+    // Node's `net.connect` asks for EVERY address (`{ all: true }`) whenever
+    // `autoSelectFamily` is on — the default from Node 20 — and expects an
+    // array of `{ address, family }` back. Answering with the single-address
+    // form makes Node read `undefined` as the IP ("Invalid IP address:
+    // undefined"), which failed every default-dispatcher `safeFetch` (#716;
+    // same class as #13's `makePinnedLookup`). Answer in the shape asked for.
+    if (options && typeof options === "object" && (options as { all?: unknown }).all === true) {
+      (
+        cb as unknown as (
+          err: Error | null,
+          addresses: { address: string; family: number }[],
+        ) => void
+      )(null, [{ address: pinned.address, family: fam }]);
+      return;
+    }
     cb(null, pinned.address, fam);
   };
   // Wrapped for Node's built-in `fetch`, which cannot drive a bare undici 8
