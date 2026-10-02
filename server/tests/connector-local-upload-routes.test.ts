@@ -225,6 +225,7 @@ import {
 import {
   fetchRepoMetadata,
   getRepoConnectorEmitter,
+  pullOrCloneRepo,
 } from "../src/lib/connectors/repo/repo-service.js";
 import { REPO_INGEST_FAILED_MESSAGE } from "../src/routes/connectors.js";
 import {
@@ -404,6 +405,28 @@ describe("provider routing on deep-ingest", () => {
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(202);
     await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+    expect(vi.mocked(ingestCodeGraph)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ repoConnectionId: "repo_github_x", commitSha: SHA }),
+    );
+  });
+
+  it("#757 — refresh-ingest (the Sync button) labels the code graph with the pulled commit", async () => {
+    // The pull records this SHA as lastCommitSha; an unlabelled graph would keep
+    // the old commit and every finding would fail the stale-commit publish gate.
+    const SHA = "703fe82693ef91054f1163435e2495ed118b3f25";
+    vi.mocked(pullOrCloneRepo).mockResolvedValueOnce({
+      path: "/tmp/clone",
+      sizeBytes: 10,
+      pulled: true,
+      filesChanged: 2,
+      commitSha: SHA,
+    });
+    const token = await login("admin");
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos/repo_github_x/refresh-ingest")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
     expect(vi.mocked(ingestCodeGraph)).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ repoConnectionId: "repo_github_x", commitSha: SHA }),

@@ -771,7 +771,13 @@ export function connectorsRouter(): Router {
         if (!lease) throw ingestInProgress();
         const isNonGit =
           conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD;
-        let clone: { path: string; sizeBytes: number; pulled: boolean; filesChanged: number };
+        let clone: {
+          path: string;
+          sizeBytes: number;
+          pulled: boolean;
+          filesChanged: number;
+          commitSha?: string | null;
+        };
         let boundary: string | undefined;
         if (isNonGit) {
           const root = await resolveNonGitIngestRoot(projectId, id);
@@ -788,6 +794,9 @@ export function connectorsRouter(): Router {
           projectId,
           rootDir: clone.path,
           repoConnectionId: id,
+          // #714/#757 — the pull just recorded this commit as lastCommitSha; label
+          // the graph with it too, or every finding fails the stale-commit gate.
+          commitSha: clone.commitSha ?? undefined,
           triggeredByUserId: a,
           introspectedSchema: refreshSchemaWiring.introspectedSchema,
           routines: refreshSchemaWiring.routines,
@@ -901,7 +910,9 @@ export function connectorsRouter(): Router {
           conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD;
         const clone = isNonGit
           ? await resolveNonGitIngestRoot(projectId, id)
-          : await pullOrCloneRepo(projectId, id, a);
+          : // Reads the checkout without re-ingesting the graph, so it must not
+            // move lastCommitSha past the graph's label (#757).
+            await pullOrCloneRepo(projectId, id, a, { recordCommit: false });
         const discovery = await discoverAndUpsertConnections(projectId, clone.path);
         if (discovery.connectionsFound > 0) {
           const connector = await getRepoConnector(projectId, id);

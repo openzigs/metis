@@ -110,6 +110,7 @@ const {
   publishImpactAnalysisToJira,
   materializeTriagedFinding,
 } = await import("./prisma-adapter.js");
+const { pullOrCloneRepo } = await import("../connectors/repo/repo-service.js");
 const { PublishError } = await import("./finding-publisher.js");
 const { HAIKU_MODEL_ID, SONNET_MODEL_ID } = await import("../ai/model-router.js");
 const { scannerMaxOutputTokens } = await import("./output-budget.js");
@@ -190,6 +191,31 @@ describe("loadNeighboursForScan", () => {
       expect(typeof n.snippet).toBe("string");
       expect(n.snippet.length).toBeGreaterThan(0);
     }
+  });
+
+  it("#757 — pulls the checkout without recording its commit as lastCommitSha", async () => {
+    // A scan that pulls a moved branch must not advance lastCommitSha past the
+    // graph's label and its own anchor, or its findings fail the stale-commit gate.
+    mockPrisma.codeEdge.findMany
+      .mockResolvedValueOnce([
+        {
+          id: "e1",
+          toSymbol: {
+            id: "callee-1",
+            qualifiedName: "lib/foo.ts::callee",
+            filePath: "lib/foo.ts",
+            startLine: 1,
+            endLine: 2,
+            language: "ts",
+            kind: "function",
+          },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    await loadNeighboursForScan(scan, "sym-1");
+    expect(vi.mocked(pullOrCloneRepo)).toHaveBeenCalledWith("proj-1", "repo-1", "user-1", {
+      recordCommit: false,
+    });
   });
 
   it("skips edges whose joined symbol is missing (unresolved external)", async () => {
@@ -1009,6 +1035,31 @@ describe("buildScannerPorts wrappers", () => {
       startLine: 1,
       endLine: 1,
     });
+  });
+
+  it("#757 — readSymbolBody pulls without recording the commit as lastCommitSha", async () => {
+    const ports = buildScannerPorts();
+    await ports.readSymbolBody(
+      {
+        id: "s",
+        projectId: "p",
+        repoConnectionId: "r",
+        commitSha: "c",
+        mode: "both",
+        budgetCapTokens: 1,
+        createdById: "u",
+      },
+      {
+        id: "sym-1",
+        qualifiedName: "qn",
+        kind: "function",
+        language: "ts",
+        filePath: "lib/foo.ts",
+        startLine: 2,
+        endLine: 3,
+      },
+    );
+    expect(vi.mocked(pullOrCloneRepo)).toHaveBeenCalledWith("p", "r", "u", { recordCommit: false });
   });
 
   it("readSymbolBody returns empty string when symbol has no filePath", async () => {

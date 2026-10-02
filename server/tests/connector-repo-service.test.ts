@@ -1271,4 +1271,48 @@ describe("#714 — the clone records the commit it checked out", () => {
     expect(out.commitSha).toBe(SHA);
     expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA);
   });
+
+  // #757 — a read-only caller (the bug scanner) must not move lastCommitSha past
+  // the code graph's label, or every finding fails the stale-commit publish gate.
+  it("pullOrCloneRepo with recordCommit:false fast-forwards but leaves lastCommitSha alone", async () => {
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "pull-no-record", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = SHA2; // what the current graph is labelled with
+    const target = nodePath.join(dir, c.id);
+    await writeGit(target, { HEAD: "ref: refs/heads/main\n", "refs/heads/main": `${SHA2}\n` });
+    const fakeGit = {
+      clone: vi.fn(),
+      pull: vi.fn(async () => {
+        await writeGit(target, { "refs/heads/main": `${SHA}\n` });
+        return { files: ["a.go"] };
+      }),
+    } as unknown as SimpleGitLike;
+    __setSimpleGitFactory(() => fakeGit);
+    const out = await pullOrCloneRepo("proj_1", c.id, "user_1", { recordCommit: false });
+    expect(out.pulled).toBe(true);
+    expect(out.commitSha).toBe(SHA);
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
+  });
+
+  it("pullOrCloneRepo with recordCommit:false carries the opt-out into its fresh-clone fallback", async () => {
+    const fakeGit = {
+      clone: vi.fn(async (_url: string, target: string) => {
+        await writeGit(target, { HEAD: `${SHA}\n` });
+      }),
+    } as unknown as SimpleGitLike;
+    __setSimpleGitFactory(() => fakeGit);
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "clone-no-record", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = SHA2;
+    const out = await pullOrCloneRepo("proj_1", c.id, "user_1", { recordCommit: false });
+    expect(out.pulled).toBe(false);
+    expect(out.commitSha).toBe(SHA);
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
+  });
 });
