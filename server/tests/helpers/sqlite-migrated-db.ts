@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -44,6 +45,13 @@ export interface MigratedSqlite {
   url: string;
   /** Apply one more migration (by directory name) with `prisma migrate deploy`. */
   apply(migration: string): void;
+  /**
+   * Apply every migration not yet applied, bringing the file to the head schema.
+   * A test that drives CURRENT code (whose Prisma client selects every column)
+   * against a `stopBefore` database needs this once its migration-specific
+   * assertions are set up — otherwise any later column breaks it (#733).
+   */
+  applyRemaining(): void;
   /** Run one raw SQL statement against the file (legacy-shape inserts). */
   exec(sql: string, params?: unknown[]): void;
   cleanup(): void;
@@ -104,6 +112,12 @@ export function createMigratedSqlite(
     url: `file:${dbFile}`,
     apply: (name) => {
       copy(name);
+      deploy();
+    },
+    applyRemaining: () => {
+      for (const name of migrationNames()) {
+        if (!existsSync(path.join(migrations, name))) copy(name);
+      }
       deploy();
     },
     exec: (sql, params = []) => {

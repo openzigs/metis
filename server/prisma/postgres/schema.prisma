@@ -486,6 +486,11 @@ model Project {
   jiraProjectKey     String?
   /// Epic #556 — FK to JiraConnection used for issue publishing.
   jiraConnectionId   String?
+  /// #733 — the GitHub repository issues are published to. Set together or not
+  /// at all; null means no target is configured, and publishing never falls
+  /// back silently to the analysed repo connector's (possibly upstream) repo.
+  publishGithubOwner String?
+  publishGithubRepo  String?
 
   /// Epic #544 — optional product grouping for multi-repo docs.
   productId             String?

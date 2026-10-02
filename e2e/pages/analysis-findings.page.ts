@@ -34,6 +34,9 @@ export class AnalysisFindingsPage {
   readonly criteriaInput: Locator;
   readonly labelsInput: Locator;
   readonly publishButton: Locator;
+  /** #733 — the GitHub repository the issue is filed into. */
+  readonly targetOwnerInput: Locator;
+  readonly targetRepoInput: Locator;
   readonly cancelButton: Locator;
   readonly links: Locator;
   readonly linkItems: Locator;
@@ -58,6 +61,8 @@ export class AnalysisFindingsPage {
     this.criteriaInput = page.getByTestId("deep-dive-criteria");
     this.labelsInput = page.getByTestId("deep-dive-labels");
     this.publishButton = page.getByTestId("deep-dive-publish");
+    this.targetOwnerInput = page.getByTestId("deep-dive-target-owner");
+    this.targetRepoInput = page.getByTestId("deep-dive-target-repo");
     this.cancelButton = this.dialog.getByRole("button", { name: /Cancel|Close/ });
     this.links = page.getByTestId("deep-dive-links");
     this.linkItems = page.getByTestId("deep-dive-link");

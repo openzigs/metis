@@ -1135,6 +1135,8 @@ export function projectsRouter(): Router {
           publishDestination: project.publishDestination ?? "github",
           jiraProjectKey: project.jiraProjectKey ?? null,
           jiraConnectionId: project.jiraConnectionId ?? null,
+          githubOwner: project.publishGithubOwner ?? null,
+          githubRepo: project.publishGithubRepo ?? null,
         }),
       );
     },
@@ -1191,6 +1193,12 @@ export function projectsRouter(): Router {
           publishDestination: parsed.data.publishDestination,
           jiraProjectKey: parsed.data.jiraProjectKey ?? null,
           jiraConnectionId: parsed.data.jiraConnectionId ?? null,
+          // #733 — omitted leaves the stored target alone (a Jira-only edit
+          // must not erase it); the schema pairs owner and repo.
+          ...(parsed.data.githubOwner !== undefined && {
+            publishGithubOwner: parsed.data.githubOwner,
+            publishGithubRepo: parsed.data.githubRepo ?? null,
+          }),
         },
       });
       audit({
@@ -1200,6 +1208,8 @@ export function projectsRouter(): Router {
         metadata: {
           publishDestination: parsed.data.publishDestination,
           jiraProjectKey: parsed.data.jiraProjectKey ?? null,
+          githubOwner: updated.publishGithubOwner,
+          githubRepo: updated.publishGithubRepo,
         },
       });
       res.json(
@@ -1207,6 +1217,8 @@ export function projectsRouter(): Router {
           publishDestination: updated.publishDestination,
           jiraProjectKey: updated.jiraProjectKey,
           jiraConnectionId: updated.jiraConnectionId,
+          githubOwner: updated.publishGithubOwner,
+          githubRepo: updated.publishGithubRepo,
         }),
       );
     },

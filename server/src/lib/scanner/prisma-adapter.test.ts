@@ -107,6 +107,7 @@ const {
   loadNeighboursForScan,
   loadRagHitsForScan,
   publishScanFinding,
+  publishAnalysisFinding,
   publishImpactAnalysisToJira,
   materializeTriagedFinding,
 } = await import("./prisma-adapter.js");
@@ -491,6 +492,7 @@ describe("buildPublisherPorts.createGitHubIssue", () => {
       title: "T",
       body: "B",
       labels: ["bug"],
+      target: { owner: "o", repo: "r" },
     });
     expect(issue.externalId).toBe("7");
     expect(issue.externalUrl).toBe("https://github.com/o/r/issues/7");
@@ -499,6 +501,58 @@ describe("buildPublisherPorts.createGitHubIssue", () => {
     const { readBoundSecret, resolveVaultRef } = await import("../connectors/vault-resolver.js");
     expect(readBoundSecret).toHaveBeenCalledWith("sec-1", expect.anything());
     expect(resolveVaultRef).not.toHaveBeenCalled();
+  });
+
+  it("#733 — files into an explicit target with the connector's credential", async () => {
+    mockPrisma.repoConnection.findFirst.mockResolvedValue({
+      id: "repo-1",
+      ownerOrOrg: "miniflux",
+      repoName: "v2",
+      apiBaseUrl: "https://api.github.com",
+      secretId: "sec-1",
+      lastCommitSha: "abc",
+    });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    const ports = buildPublisherPorts();
+    await ports.createGitHubIssue({
+      projectId: "proj-1",
+      repoConnectionId: "repo-1",
+      title: "T",
+      body: "B",
+      labels: [],
+      target: { owner: "openzigs", repo: "flux-v2" },
+    });
+    const factory = vi.mocked(acquirePublishOctokit);
+    const client = await factory.mock.results.at(-1)!.value;
+    expect(factory.mock.calls.at(-1)![0]).toMatchObject({
+      owner: "openzigs",
+      token: expect.any(String),
+    });
+    expect(client.request.mock.calls.at(-1)[0].url).toBe("/repos/openzigs/flux-v2/issues");
+  });
+
+  it("#733 — refuses with no target instead of filing into the connector's repo", async () => {
+    mockPrisma.repoConnection.findFirst.mockResolvedValue({
+      id: "repo-1",
+      ownerOrOrg: "o",
+      repoName: "r",
+      apiBaseUrl: "https://api.github.com",
+      secretId: "sec-1",
+      lastCommitSha: "abc",
+    });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    vi.mocked(acquirePublishOctokit).mockClear();
+    const ports = buildPublisherPorts();
+    await expect(
+      ports.createGitHubIssue({
+        projectId: "proj-1",
+        repoConnectionId: "repo-1",
+        title: "T",
+        body: "B",
+        labels: [],
+      }),
+    ).rejects.toMatchObject({ code: "ERR_NO_PUBLISH_TARGET" });
+    expect(acquirePublishOctokit).not.toHaveBeenCalled();
   });
 
   it("throws when the repo connection is missing", async () => {
@@ -521,6 +575,14 @@ describe("buildPublisherPorts.createGitHubIssue", () => {
 // ----------------------------------------------------------------------------
 
 describe("publishScanFinding", () => {
+  beforeEach(() => {
+    // #733 — a saved GitHub publish target, unless a test says otherwise.
+    mockPrisma.project.findUnique.mockResolvedValue({
+      publishGithubOwner: "o",
+      publishGithubRepo: "r",
+    });
+  });
+
   function scanFindingRow(overrides: Record<string, unknown> = {}) {
     return {
       id: "sf-1",
@@ -597,6 +659,157 @@ describe("publishScanFinding", () => {
     });
     expect(link.externalId).toBe("7");
     expect(mockPrisma.issueLink.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  // #733 — the scanner path resolves its target like the Deep Dive does; the
+  // connector (`miniflux/v2`, the analysed upstream) is never filed into.
+  function upstreamConnector() {
+    mockPrisma.repoConnection.findFirst.mockResolvedValue({
+      id: "repo-1",
+      ownerOrOrg: "miniflux",
+      repoName: "v2",
+      apiBaseUrl: "https://api.github.com",
+      secretId: "sec-1",
+      lastCommitSha: "abc123",
+    });
+    mockPrisma.issueLink.findFirst.mockResolvedValue(null);
+    mockPrisma.issueLink.upsert.mockImplementation(
+      async (args: { create: Record<string, unknown> }) => ({ id: "L1", ...args.create }),
+    );
+  }
+  async function lastIssueUrl(): Promise<string> {
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    const client = await vi.mocked(acquirePublishOctokit).mock.results.at(-1)!.value;
+    return client.request.mock.calls.at(-1)[0].url;
+  }
+
+  it("#733 — files into the project's saved target, not the scanned repo", async () => {
+    mockPrisma.scanFinding.findUnique.mockResolvedValue(scanFindingRow());
+    upstreamConnector();
+    mockPrisma.project.findUnique.mockResolvedValue({
+      publishGithubOwner: "openzigs",
+      publishGithubRepo: "flux-v2",
+    });
+    await publishScanFinding({ scanFindingId: "sf-1", provider: "github" });
+    expect(mockPrisma.project.findUnique.mock.calls[0][0].where).toEqual({ id: "proj-1" });
+    expect(await lastIssueUrl()).toBe("/repos/openzigs/flux-v2/issues");
+  });
+
+  it("#733 — an explicit target wins over the saved one", async () => {
+    mockPrisma.scanFinding.findUnique.mockResolvedValue(scanFindingRow());
+    upstreamConnector();
+    await publishScanFinding({
+      scanFindingId: "sf-1",
+      provider: "github",
+      target: { owner: "me", repo: "sandbox" },
+    });
+    expect(mockPrisma.project.findUnique).not.toHaveBeenCalled();
+    expect(await lastIssueUrl()).toBe("/repos/me/sandbox/issues");
+  });
+
+  it("#733 — refuses with no saved or explicit target (no connector fallback)", async () => {
+    mockPrisma.scanFinding.findUnique.mockResolvedValue(scanFindingRow());
+    upstreamConnector();
+    mockPrisma.project.findUnique.mockResolvedValue({
+      publishGithubOwner: null,
+      publishGithubRepo: null,
+    });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    vi.mocked(acquirePublishOctokit).mockClear();
+    await expect(
+      publishScanFinding({ scanFindingId: "sf-1", provider: "github" }),
+    ).rejects.toMatchObject({ code: "ERR_NO_PUBLISH_TARGET" });
+    expect(acquirePublishOctokit).not.toHaveBeenCalled();
+    expect(mockPrisma.issueLink.upsert).not.toHaveBeenCalled();
+  });
+
+  it("#733 — a re-publish with no target still returns the existing link", async () => {
+    mockPrisma.scanFinding.findUnique.mockResolvedValue(scanFindingRow());
+    upstreamConnector();
+    mockPrisma.project.findUnique.mockResolvedValue(null);
+    mockPrisma.issueLink.findFirst.mockResolvedValue({
+      id: "L1",
+      scanFindingId: "sf-1",
+      provider: "github",
+      externalId: "999",
+      externalUrl: "https://github.com/openzigs/flux-v2/issues/999",
+    });
+    const link = await publishScanFinding({ scanFindingId: "sf-1", provider: "github" });
+    expect(link.externalId).toBe("999");
+  });
+
+  const ANALYSIS_DRAFT = {
+    title: "Error limit excludes failing feeds",
+    problemStatement: "p",
+    affected: { files: [], requirementIds: [] },
+    acceptanceCriteria: [],
+    suggestedLabels: [],
+  };
+  const analysisInput: Parameters<typeof publishAnalysisFinding>[0] = {
+    projectId: "proj-1",
+    analysisId: "ana-1",
+    findingId: "fnd-1",
+    agentKey: "code",
+    severity: "high",
+    category: "bug",
+    draft: ANALYSIS_DRAFT,
+    provider: "github",
+  };
+
+  it("#733 — an analysis re-publish with no target still returns the existing link", async () => {
+    upstreamConnector();
+    mockPrisma.project.findUnique.mockResolvedValue(null);
+    mockPrisma.issueLink.findFirst.mockResolvedValue({
+      id: "L7",
+      findingId: "fnd-1",
+      provider: "github",
+      externalId: "77",
+      externalUrl: "https://github.com/openzigs/flux-v2/issues/77",
+    });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    vi.mocked(acquirePublishOctokit).mockClear();
+    const link = await publishAnalysisFinding(analysisInput);
+    expect(link.externalId).toBe("77");
+    expect(acquirePublishOctokit).not.toHaveBeenCalled();
+  });
+
+  it("#733 — a first analysis publish with no target refuses before any GitHub call", async () => {
+    upstreamConnector();
+    mockPrisma.project.findUnique.mockResolvedValue({
+      publishGithubOwner: null,
+      publishGithubRepo: null,
+    });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    vi.mocked(acquirePublishOctokit).mockClear();
+    await expect(publishAnalysisFinding(analysisInput)).rejects.toMatchObject({
+      code: "ERR_NO_PUBLISH_TARGET",
+    });
+    expect(acquirePublishOctokit).not.toHaveBeenCalled();
+    expect(mockPrisma.issueLink.upsert).not.toHaveBeenCalled();
+  });
+
+  it("#733 — a Jira publish needs no GitHub target", async () => {
+    mockPrisma.scanFinding.findUnique.mockResolvedValue(scanFindingRow());
+    upstreamConnector();
+    mockPrisma.project.findUnique.mockResolvedValue({
+      jiraConnectionId: "jc-1",
+      jiraProjectKey: "IMP",
+    });
+    mockPrisma.jiraConnection.findFirst.mockResolvedValue({
+      id: "jc-1",
+      baseUrl: "https://jira.example.com",
+      edition: "cloud",
+      username: "u",
+      secretId: "s",
+      proxyUrl: null,
+      tlsRejectUnauthorized: true,
+      tlsCaSecretId: null,
+      status: "connected",
+    });
+    const link = await publishScanFinding({ scanFindingId: "sf-1", provider: "jira" });
+    expect(link.externalId).toBe("PROJ-42");
+    // Only the Jira destination lookup — no GitHub target resolution.
+    expect(mockPrisma.project.findUnique).toHaveBeenCalledTimes(1);
   });
 
   it("rejects when scan commit SHA is empty (stale-gate)", async () => {

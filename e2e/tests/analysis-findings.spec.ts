@@ -31,6 +31,8 @@
  *   #180-4  ticketStatus disallows → action disabled with explanatory tooltip
  *   #180-5  deep-dive / publish error → inline error, dialog stays open, retry keeps edits
  *   #180-6  data-testid hooks + keyboard-accessible dialog (Escape closes)
+ *   #733    the dialog names the saved publish target and sends it; with no
+ *           saved target, Create Issue waits for one to be entered
  */
 import { test, expect, request, type Route } from "@playwright/test";
 import { primeAdminUser } from "../fixtures/seed-user.js";
@@ -234,11 +236,36 @@ function publishUrl(projectId: string, findingId = CODE_FINDING_ID): string {
   return `**/api/projects/${projectId}/analyses/${ANALYSIS_ID}/findings/${findingId}/publish`;
 }
 
+/** #733 — the project's saved GitHub publish target (null clears it). */
+const SAVED_TARGET = { owner: "openzigs", repo: "metis-sandbox" };
+
+async function setPublishTarget(
+  accessToken: string,
+  projectId: string,
+  target: { owner: string; repo: string } | null,
+): Promise<void> {
+  const ctx = await request.newContext({
+    baseURL: API_BASE,
+    extraHTTPHeaders: { Authorization: `Bearer ${accessToken}` },
+  });
+  const res = await ctx.patch(`/api/projects/${projectId}/publish-destination`, {
+    data: {
+      publishDestination: "github",
+      githubOwner: target?.owner ?? null,
+      githubRepo: target?.repo ?? null,
+    },
+  });
+  expect(res.status()).toBe(200);
+  await ctx.dispose();
+}
+
 test.describe("Analysis findings — persona attribution + Deep Dive → Issue (#176)", () => {
   let projectId: string;
+  let adminToken: string;
 
   test.beforeEach(async ({ page }) => {
     const { accessToken } = await primeAdminUser(API_BASE);
+    adminToken = accessToken;
     const ctx = await request.newContext({
       baseURL: API_BASE,
       extraHTTPHeaders: { Authorization: `Bearer ${accessToken}` },
@@ -252,6 +279,8 @@ test.describe("Analysis findings — persona attribution + Deep Dive → Issue (
     projectId = (body.data?.id ?? body.id) as string;
     expect(projectId).toBeTruthy();
     await ctx.dispose();
+    // #733 — a GitHub publish needs a target; the dialog pre-fills it from here.
+    await setPublishTarget(accessToken, projectId, SAVED_TARGET);
 
     const loginPage = new LoginPage(page);
     await loginPage.goto();
@@ -403,9 +432,14 @@ test.describe("Analysis findings — persona attribution + Deep Dive → Issue (
     );
 
     let publishedTitle: string | null = null;
+    let publishedTarget: unknown = null;
     await page.route(publishUrl(projectId), (route) => {
-      const payload = route.request().postDataJSON() as { draft?: { title?: string } };
+      const payload = route.request().postDataJSON() as {
+        draft?: { title?: string };
+        target?: unknown;
+      };
       publishedTitle = payload.draft?.title ?? null;
+      publishedTarget = payload.target ?? null;
       return route.fulfill(
         json({
           links: [
@@ -426,6 +460,11 @@ test.describe("Analysis findings — persona attribution + Deep Dive → Issue (
     await pom.openDeepDive(CODE_FINDING_TITLE);
     await expect(pom.titleInput).toHaveValue(DEEP_DIVE_DRAFT.title);
 
+    await test.step("the dialog names the saved publish target (#733)", async () => {
+      await expect(pom.targetOwnerInput).toHaveValue(SAVED_TARGET.owner);
+      await expect(pom.targetRepoInput).toHaveValue(SAVED_TARGET.repo);
+    });
+
     await pom.fillDraft({ title: "Decouple billing — final" });
     await pom.publish();
 
@@ -445,6 +484,48 @@ test.describe("Analysis findings — persona attribution + Deep Dive → Issue (
     await test.step("the edited draft title is what was published", async () => {
       expect(publishedTitle).toBe("Decouple billing — final");
     });
+
+    await test.step("the issue is filed into the saved target (#733)", async () => {
+      expect(publishedTarget).toEqual(SAVED_TARGET);
+    });
+  });
+
+  // #733: with no saved target nothing defaults to the analysed repository —
+  // Create Issue waits until the user names one, and that one is sent.
+  test("with no saved target, Create Issue waits for a target to be entered", async ({ page }) => {
+    await setPublishTarget(adminToken, projectId, null);
+    await mockAnalysisReads(page, projectId);
+    await page.route(deepDiveUrl(projectId), (route) =>
+      route.fulfill(json({ draft: DEEP_DIVE_DRAFT, meta: { tokensUsed: 512, model: "stub" } })),
+    );
+    let publishedTarget: unknown = null;
+    await page.route(publishUrl(projectId), (route) => {
+      publishedTarget = (route.request().postDataJSON() as { target?: unknown }).target ?? null;
+      return route.fulfill(
+        json({
+          links: [
+            { provider: "github", url: "https://github.com/me/sandbox/issues/1", issueKey: "#1" },
+          ],
+        }),
+      );
+    });
+
+    const pom = new AnalysisFindingsPage(page);
+    await pom.goto(projectId);
+    await expect(pom.findingsHeading).toBeVisible({ timeout: 30_000 });
+    await pom.openDeepDive(CODE_FINDING_TITLE);
+    await expect(pom.titleInput).toHaveValue(DEEP_DIVE_DRAFT.title);
+
+    await expect(pom.targetOwnerInput).toHaveValue("");
+    await expect(pom.targetRepoInput).toHaveValue("");
+    await expect(pom.publishButton).toBeDisabled();
+
+    await pom.targetOwnerInput.fill("me");
+    await pom.targetRepoInput.fill("sandbox");
+    await expect(pom.publishButton).toBeEnabled();
+    await pom.publish();
+    await expect(pom.link("github: #1")).toBeVisible();
+    expect(publishedTarget).toEqual({ owner: "me", repo: "sandbox" });
   });
 
   // AC #180-3 (variant): a project whose publishDestination is `both` returns

@@ -64,6 +64,19 @@ export interface FindingPayload {
   qualifiedName: string;
   ruleId: string | null;
   commitSha: string;
+  /**
+   * #733 — the GitHub repository to file into: the caller's explicit choice or
+   * the project's saved publish target. Absent = a GitHub publish is REFUSED
+   * (`ERR_NO_PUBLISH_TARGET`); it never falls back to the repo connector's own
+   * repository, which for an analysed project is its upstream.
+   */
+  target?: GitHubIssueTarget;
+}
+
+/** #733 — an explicit `owner/repo` a GitHub issue is created in. */
+export interface GitHubIssueTarget {
+  owner: string;
+  repo: string;
 }
 
 export interface ExistingIssueLink {
@@ -96,6 +109,11 @@ export interface PublisherPorts {
     title: string;
     body: string;
     labels: string[];
+    /**
+     * #733 — the repository to file into; the token is still the connector's.
+     * Absent = refused with `ERR_NO_PUBLISH_TARGET`, never the connector's repo.
+     */
+    target?: GitHubIssueTarget;
   }): Promise<CreatedIssue>;
   createJiraIssue(args: {
     projectId: string;
@@ -205,6 +223,7 @@ export async function publishFinding(
           title: finding.title,
           body: stampedBody,
           labels,
+          ...(finding.target && { target: finding.target }),
         })
       : await ports.createJiraIssue({
           projectId: finding.projectId,

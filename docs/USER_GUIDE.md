@@ -2213,6 +2213,19 @@ METIS can publish issues to GitHub, Jira, or both simultaneously.
 3. For Jira destinations, you must also provide:
    - **Jira Connection** — a configured Jira connection (see Section 17 — Jira)
    - **Jira Project Key** — the Jira project key (e.g., `PROJ`)
+4. For GitHub destinations, save the **publish target** — the repository issues
+   are filed into. On the **Publishing** page, enter Target owner / Target repo
+   and click **Save as project target**, or send `githubOwner` and `githubRepo`
+   (together, or both `null` to clear) on the same `PATCH`. The saved target
+   pre-fills the Publishing page and the **Deep Dive → Issue** dialog.
+
+   Publishing never defaults to the repository the project *analyses*: for an
+   analysed open-source project that is its upstream. With no saved target the
+   fields start empty, a Deep Dive or Scans-page publish without a target is
+   refused with `ERR_NO_PUBLISH_TARGET` (a scanner finding is filed into the saved
+   target, never the scanned repository), and a target equal to the analysed
+   repository shows a warning. The **New publish batch** form takes the target the selected
+   drafts were generated for.
 
 #### How It Works
 

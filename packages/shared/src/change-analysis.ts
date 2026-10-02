@@ -12,6 +12,7 @@ import {
   PUBLISH_DESTINATIONS,
 } from "./constants.js";
 import { dateSchema, idSchema, timestampsSchema } from "./common.js";
+import { githubOwnerSchema, githubRepoSchema } from "./publishing.js";
 
 // ---- ChangeAnalysis --------------------------------------------------------
 
@@ -76,9 +77,26 @@ export interface ChangeAnalysisDetail extends ChangeAnalysis {
 
 // ---- Publishing destination config -----------------------------------------
 
-export const publishDestinationConfigSchema = z.object({
-  publishDestination: z.enum(PUBLISH_DESTINATIONS),
-  jiraProjectKey: z.string().min(1).max(32).nullable().optional(),
-  jiraConnectionId: idSchema.nullable().optional(),
-});
+export const publishDestinationConfigSchema = z
+  .object({
+    publishDestination: z.enum(PUBLISH_DESTINATIONS),
+    jiraProjectKey: z.string().min(1).max(32).nullable().optional(),
+    jiraConnectionId: idSchema.nullable().optional(),
+    /**
+     * #733 — the GitHub repository issues are published to. Omitted = left as
+     * stored; `null` = cleared. Owner and repo are set or cleared together, so a
+     * stored target always names one repository.
+     */
+    githubOwner: githubOwnerSchema.nullable().optional(),
+    githubRepo: githubRepoSchema.nullable().optional(),
+  })
+  .refine(
+    (c) =>
+      (c.githubOwner === undefined) === (c.githubRepo === undefined) &&
+      (c.githubOwner === null) === (c.githubRepo === null),
+    {
+      message: "githubOwner and githubRepo must be set (or cleared) together",
+      path: ["githubRepo"],
+    },
+  );
 export type PublishDestinationConfig = z.infer<typeof publishDestinationConfigSchema>;

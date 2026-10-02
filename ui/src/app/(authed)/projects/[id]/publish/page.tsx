@@ -25,6 +25,10 @@ import { useSocket } from "@/lib/socket-client";
 import { keepRoomSubscribed } from "@/lib/socket-subscription";
 import { publishFollow } from "@/lib/socket-rooms";
 import { repoConnectorsApi } from "@/lib/connectors-api";
+import { publishDestinationApi } from "@/lib/change-analysis-api";
+import { queryKeys } from "@/lib/query-keys";
+import { commonDraftTarget, draftTargetsConflict } from "@/lib/publish-target";
+import { AnalysedRepoWarning } from "@/components/publishing/analysed-repo-warning";
 import { DraftDiffDialog } from "@/components/publishing/draft-diff-dialog";
 import {
   BulkApproveDialog,
@@ -130,28 +134,57 @@ export default function PublishingPage() {
     [analyses.data],
   );
 
-  // Epic #640 — pre-fill owner/repo from primary repo connector
+  // The primary repo connector is the repository being ANALYSED. #733 — it is
+  // no longer a publish default (for an open-source project it is upstream);
+  // it is read only to warn when a target names it, and for the GHE base URL.
   const primaryRepo = useQuery({
     queryKey: ["connectors", "repos", projectId, "primary"],
     queryFn: () => repoConnectorsApi.getPrimary(projectId),
     enabled: Boolean(projectId),
   });
+  // #733 — the persisted per-project publish target is the only pre-fill.
+  const destination = useQuery({
+    queryKey: queryKeys.publishDestination.forProject(projectId),
+    queryFn: () => publishDestinationApi.get(projectId),
+    enabled: Boolean(projectId),
+  });
+  const savedOwner = destination.data?.githubOwner ?? "";
+  const savedRepo = destination.data?.githubRepo ?? "";
   // #364 — a one-time pre-fill, not a reset. Owner and repo are filled together
   // and only when BOTH are still empty: filling them independently could pair
-  // the user's owner with the primary's repo (naming no repository), and a
-  // refetch used to refill a field the user had deliberately cleared.
-  const prefilledFromPrimary = useRef(false);
+  // the user's owner with another repository, and a refetch used to refill a
+  // field the user had deliberately cleared.
+  const prefilledFromDestination = useRef(false);
   useEffect(() => {
-    if (!primaryRepo.data || prefilledFromPrimary.current) return;
-    prefilledFromPrimary.current = true;
-    const { ownerOrOrg, repoName } = primaryRepo.data;
-    // A local/upload primary connector (#288) has no owner or repo to offer.
-    if (!ownerOrOrg || !repoName) return;
+    if (!destination.data || prefilledFromDestination.current) return;
+    prefilledFromDestination.current = true;
+    if (!savedOwner || !savedRepo) return;
     if (targetOwner || targetRepo) return;
-    setTargetOwner(ownerOrOrg);
-    setTargetRepo(repoName);
+    setTargetOwner(savedOwner);
+    setTargetRepo(savedRepo);
     // Deliberately keyed on data arrival only; the ref makes it one-shot.
-  }, [primaryRepo.data]);
+  }, [destination.data]);
+
+  // The PATCH replaces the destination's Jira settings outright, so it is only
+  // ever built from a LOADED destination: defaulting them while the GET is in
+  // flight or has failed would silently erase a Jira or 'both' configuration.
+  const saveTarget = useMutation({
+    mutationFn: () => {
+      const current = destination.data;
+      if (!current) throw new Error("The saved publish target has not loaded.");
+      return publishDestinationApi.update(projectId, {
+        publishDestination: current.publishDestination,
+        jiraProjectKey: current.jiraProjectKey,
+        jiraConnectionId: current.jiraConnectionId,
+        githubOwner: targetOwner.trim(),
+        githubRepo: targetRepo.trim(),
+      });
+    },
+    onSuccess: (saved) =>
+      qc.setQueryData(queryKeys.publishDestination.forProject(projectId), saved),
+  });
+  const targetIsSaved =
+    Boolean(savedOwner) && savedOwner === targetOwner.trim() && savedRepo === targetRepo.trim();
 
   const generate = useMutation({
     mutationFn: () =>
@@ -221,8 +254,11 @@ export default function PublishingPage() {
   }
 
   // ── Publish batch form ─────────────────────────────────────────────────
-  const [batchOwner, setBatchOwner] = useState("");
-  const [batchRepo, setBatchRepo] = useState("");
+  // #733 — `null` = inherit: the batch follows the target the selected drafts
+  // were generated for (else the Generate form's), and shows it as a value,
+  // not a placeholder. Typing in a field makes it the user's own.
+  const [batchOwner, setBatchOwner] = useState<string | null>(null);
+  const [batchRepo, setBatchRepo] = useState<string | null>(null);
   const [batchBaseUrl, setBatchBaseUrl] = useState("");
   const [batchSecret, setBatchSecret] = useState("");
   const [batchLabels, setBatchLabels] = useState("");
@@ -233,20 +269,26 @@ export default function PublishingPage() {
   const [copilotWorkspace, setCopilotWorkspace] = useState(false);
   const [projectsV2, setProjectsV2] = useState(false);
 
-  // Epic #640 — pre-fill batch owner/repo from primary repo connector
+  // Epic #640 — pre-fill the GHE base URL from the primary repo connector.
+  // #733 — owner/repo are no longer taken from it (see `inheritedTarget`).
   useEffect(() => {
     if (primaryRepo.data) {
-      setBatchOwner(primaryRepo.data.ownerOrOrg ?? "");
-      setBatchRepo(primaryRepo.data.repoName ?? "");
       setBatchBaseUrl(primaryRepo.data.apiBaseUrl ?? "");
     }
   }, [primaryRepo.data]);
 
+  // Drafts that record different targets inherit NOTHING — not the Generate
+  // form's target, which would publish drafts deduplicated against one
+  // repository into another. The fields stay empty until the user names one.
+  const draftTargetConflict = draftTargetsConflict(selectedDraftRows);
+  const inheritedTarget = draftTargetConflict
+    ? { owner: "", repo: "" }
+    : (commonDraftTarget(selectedDraftRows) ?? { owner: targetOwner, repo: targetRepo });
   // The one request body, shared by the publish itself and by the plan the
   // confirmation renders — so the confirmation can never describe a different
   // batch from the one that runs (#1104 D).
-  const effectiveOwner = batchOwner || targetOwner;
-  const effectiveRepo = batchRepo || targetRepo;
+  const effectiveOwner = (batchOwner ?? inheritedTarget.owner).trim();
+  const effectiveRepo = (batchRepo ?? inheritedTarget.repo).trim();
   const batchBody = () => ({
     targetOwner: effectiveOwner,
     targetRepo: effectiveRepo,
@@ -474,7 +516,52 @@ export default function PublishingPage() {
             />
           </div>
         </div>
+        {destination.isError ? (
+          <p
+            className="mt-2 text-xs text-destructive"
+            role="alert"
+            data-testid="publish-target-load-error"
+          >
+            Could not load this project&apos;s saved publish target, so it cannot be saved here
+            right now. Reload the page to try again.
+          </p>
+        ) : destination.data && !savedOwner ? (
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="publish-target-unset">
+            No publish target is saved for this project. Enter the repository issues should be filed
+            into and save it, so every publish starts from it.
+          </p>
+        ) : null}
+        <AnalysedRepoWarning
+          testId="publish-target-upstream-warning"
+          target={{ owner: targetOwner.trim(), repo: targetRepo.trim() }}
+          connector={primaryRepo.data}
+        />
         <div className="mt-3 flex items-center gap-3">
+          <Button
+            variant="outline"
+            data-testid="publish-target-save"
+            onClick={() => saveTarget.mutate()}
+            disabled={
+              !destination.data ||
+              !targetOwner.trim() ||
+              !targetRepo.trim() ||
+              targetIsSaved ||
+              saveTarget.isPending
+            }
+          >
+            {targetIsSaved ? "Saved as project target" : "Save as project target"}
+          </Button>
+          {saveTarget.error ? (
+            <span
+              className="text-xs text-destructive"
+              role="alert"
+              data-testid="publish-target-save-error"
+            >
+              {saveTarget.error instanceof ApiError
+                ? saveTarget.error.message
+                : "Could not save the publish target."}
+            </span>
+          ) : null}
           <Button
             onClick={() => generate.mutate()}
             disabled={!analysisId || !targetOwner || !targetRepo || generate.isPending}
@@ -610,8 +697,7 @@ export default function PublishingPage() {
             <Label htmlFor="batchOwner">Owner</Label>
             <Input
               id="batchOwner"
-              placeholder={targetOwner}
-              value={batchOwner}
+              value={batchOwner ?? inheritedTarget.owner}
               onChange={(e) => setBatchOwner(e.target.value)}
             />
           </div>
@@ -619,8 +705,7 @@ export default function PublishingPage() {
             <Label htmlFor="batchRepo">Repo</Label>
             <Input
               id="batchRepo"
-              placeholder={targetRepo}
-              value={batchRepo}
+              value={batchRepo ?? inheritedTarget.repo}
               onChange={(e) => setBatchRepo(e.target.value)}
             />
           </div>
@@ -692,14 +777,29 @@ export default function PublishingPage() {
             <Label htmlFor="projectsV2">Add to GitHub Projects v2 board</Label>
           </div>
         </div>
+        {draftTargetConflict ? (
+          <p
+            className="mt-2 text-xs text-warning"
+            role="status"
+            data-testid="batch-target-conflict"
+          >
+            The selected drafts target different repositories, so no target is filled in. Enter one,
+            or select only drafts generated for the same repository.
+          </p>
+        ) : null}
+        <AnalysedRepoWarning
+          testId="batch-target-upstream-warning"
+          target={{ owner: effectiveOwner, repo: effectiveRepo }}
+          connector={primaryRepo.data}
+        />
         <div className="mt-4 flex items-center gap-3">
           <Button
             onClick={onPublishClick}
             disabled={
               publish.isPending ||
               selectedDrafts.size === 0 ||
-              (!batchOwner && !targetOwner) ||
-              (!batchRepo && !targetRepo) ||
+              !effectiveOwner ||
+              !effectiveRepo ||
               (!dryRun && !batchSecret)
             }
           >
