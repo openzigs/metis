@@ -66,6 +66,7 @@
       },
       {
         "type": "usage",
+        "model": "deepseek-v4-pro",
         "usage": {
           "promptTokens": 25,
           "completionTokens": 4,

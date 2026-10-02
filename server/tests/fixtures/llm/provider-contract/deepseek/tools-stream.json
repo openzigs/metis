@@ -116,6 +116,7 @@
       },
       {
         "type": "usage",
+        "model": "deepseek-v4-pro",
         "usage": {
           "promptTokens": 111,
           "completionTokens": 77,
