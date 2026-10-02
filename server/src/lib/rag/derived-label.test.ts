@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatDerivedLabel, readDerivedLabel } from "./derived-label.js";
+import { DERIVED_EVIDENCE_CLASS, formatDerivedLabel, readDerivedLabel } from "./derived-label.js";
 
 describe("readDerivedLabel (#199)", () => {
   it("reads the #189 stamp with status and scope", () => {
     const meta = JSON.stringify({
-      evidenceClass: "derived-generated-doc",
+      evidenceClass: DERIVED_EVIDENCE_CLASS,
       generatedDocumentStatus: "degraded",
       generatedDocumentScope: "module",
     });
@@ -23,7 +23,7 @@ describe("readDerivedLabel (#199)", () => {
   });
   it("honours the stamp even when the document source is not generated", () => {
     expect(
-      readDerivedLabel(JSON.stringify({ evidenceClass: "derived-generated-doc" }), "upload"),
+      readDerivedLabel(JSON.stringify({ evidenceClass: DERIVED_EVIDENCE_CLASS }), "upload"),
     ).toEqual({});
   });
 });

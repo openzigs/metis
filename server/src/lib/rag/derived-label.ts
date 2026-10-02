@@ -4,6 +4,11 @@
  */
 import type { RetrievedChunk } from "@metis/shared";
 
+/**
+ * The one definition of the generated-doc `evidenceClass` stamp. The #189 writer
+ * (`docs-gen/generated-doc-publication.ts`) re-exports it as
+ * `GENERATED_DOC_EVIDENCE_CLASS`, so writer and reader cannot drift apart.
+ */
 export const DERIVED_EVIDENCE_CLASS = "derived-generated-doc";
 
 /**

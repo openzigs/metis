@@ -11,6 +11,7 @@ import { DEFAULT_RETRIEVE_K, MAX_RETRIEVE_K } from "@metis/shared";
 import type { ToolDefinition } from "../ai/types.js";
 import { getToolRegistry } from "../ai/tool-registry.js";
 import { getKnowledgeService, type KnowledgeService } from "./knowledge-service.js";
+import { formatDerivedLabel } from "./derived-label.js";
 
 const argsSchema = z.object({
   projectId: z.string().min(1).max(120),
@@ -48,7 +49,8 @@ export function buildSearchKnowledgeTool(
         documentIds: args.documentIds,
       });
       const lines = hits.map(
-        (h, i) => `[${i + 1}] (score=${h.score.toFixed(4)}) ${h.filename}#${h.position}\n${h.text}`,
+        (h, i) =>
+          `[${i + 1}] (score=${h.score.toFixed(4)}) ${h.filename}#${h.position}${formatDerivedLabel(h.derived)}\n${h.text}`,
       );
       const header = coverageWarning
         ? `⚠️ Partial coverage: ${coverageWarning.matchingChunks}/${coverageWarning.totalChunks} chunks match the current model '${coverageWarning.currentModel}'. Other models present: ${coverageWarning.mismatchedModels.join(", ")}.\n\n`

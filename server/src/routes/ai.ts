@@ -16,7 +16,6 @@
  * Provider construction is centralised in {@link getProvider}; tests can
  * inject a stub via {@link setAIProviderForTests}.
  */
-import { formatDerivedLabel } from "../lib/rag/derived-label.js";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
@@ -115,6 +114,7 @@ import { messageText } from "../lib/ai/index.js";
 import { AIError, AIOfflineError, AIProviderError } from "../lib/ai/errors.js";
 import { getSemanticCache, shouldSkipCache } from "../lib/ai/semantic-cache.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
+import { formatDerivedLabel } from "../lib/rag/derived-label.js";
 import {
   countProjectToolReads,
   describeGrounding,
