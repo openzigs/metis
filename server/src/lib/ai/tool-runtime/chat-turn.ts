@@ -23,6 +23,14 @@ import type { RuntimeToolContext, ToolEvent, ToolSource } from "./types.js";
 /** Model turns per chat turn: a few rounds of tool calls plus the answer. */
 export const CHAT_TOOL_MAX_TURNS = 6;
 
+/**
+ * #736 — how many turns one chat turn may get back because every call in them
+ * expired waiting for the user's approval. A tool call that nobody answered is
+ * not the model's spent step, so it should not cost one; the bound keeps an
+ * unattended session from waiting out approval timeouts indefinitely.
+ */
+export const CHAT_TOOL_MAX_APPROVAL_REFUNDS = 2;
+
 /** One call as the transcript records it (full result, never capped). */
 export interface ChatToolRecord {
   callId: string;
@@ -127,6 +135,9 @@ export async function runChatToolTurn(
   const turnTexts: string[] = [];
   const callModel =
     options.callModel ?? ((m: ChatMessage[], o: ChatOptions) => provider.chat(m, o));
+  // #736 — the error codes of the reply's calls, read and reset by `refundTurn`.
+  let batchCodes: Array<string | undefined> = [];
+  let refunds = 0;
 
   const result = await withInvokeAgentSpan("chat", async (span) => {
     span.setAttribute("metis.session.id", input.ctx.sessionId);
@@ -154,6 +165,14 @@ export async function runChatToolTurn(
         initialMessages: input.messages,
         providerChatOptions: options.providerChatOptions,
         fenceToolResults: true,
+        refundTurn: () => {
+          const expired =
+            batchCodes.length > 0 && batchCodes.every((c) => c === "TOOL_APPROVAL_EXPIRED");
+          batchCodes = [];
+          if (!expired || refunds >= CHAT_TOOL_MAX_APPROVAL_REFUNDS) return false;
+          refunds++;
+          return true;
+        },
         ...(input.native ? { native: { tools: input.toolset.specs() } } : {}),
         callModel: async (m, o) => {
           const r = await callModel(m, o);
@@ -178,6 +197,7 @@ export async function runChatToolTurn(
               onEvent: options.onToolEvent,
             },
           );
+          batchCodes.push(executed.errorCode);
           const record: ChatToolRecord = {
             callId: executed.callId,
             tool: executed.tool,

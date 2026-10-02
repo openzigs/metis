@@ -173,6 +173,14 @@ export interface AgentLoopOptions {
     args: unknown;
   }) => Promise<ToolResult & { tool?: string; fullText?: string }>;
   /**
+   * #736 — asked once after each reply's tool calls have all run. `true` means
+   * the turn does not count against `maxTurns` (it still counts in
+   * `turnsUsed`). The caller owns the policy AND its bound — the chat surface
+   * refunds a turn in which no call ran because nobody answered its approval
+   * prompt, a bounded number of times.
+   */
+  refundTurn?: () => boolean;
+  /**
    * #140 — make one model call. Defaults to `provider.chat`. The chat stream
    * route supplies a streaming caller so native tool turns still stream their
    * text to the user as it arrives.
@@ -1205,12 +1213,7 @@ function buildBudgetExhaustedMessage(
  * spending a bounded syntax-repair call on.
  */
 export type FinalAnswerKind =
-  | "valid-json"
-  | "truncated-json"
-  | "malformed-json"
-  | "tool-call"
-  | "prose"
-  | "empty";
+  "valid-json" | "truncated-json" | "malformed-json" | "tool-call" | "prose" | "empty";
 
 export function classifyFinalAnswer(text: string): FinalAnswerKind {
   const trimmed = (text ?? "").trim();
@@ -1681,6 +1684,7 @@ export async function runAgentLoop(
       });
       messages.push(...toolMessages);
       lastAppended = true;
+      if (options.refundTurn?.()) turn--;
       continue;
     }
 
@@ -1695,6 +1699,7 @@ export async function runAgentLoop(
     // A single call produces exactly the pre-#15 message, byte for byte.
     messages.push({ role: "assistant", content: response.content });
     messages.push({ role: "user", content: resultSections.join("\n\n") });
+    if (options.refundTurn?.()) turn--;
   }
 
   let finalResponse = lastResponse;
