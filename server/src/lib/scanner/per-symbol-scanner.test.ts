@@ -1,7 +1,7 @@
 /** Epic #708 / Issue #712 — per-symbol-scanner tests. */
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatResponse } from "../ai/types.js";
-import { parseCandidates, scanSymbol } from "./per-symbol-scanner.js";
+import { SCAN_SYMBOL_ANSWER_TOKENS, parseCandidates, scanSymbol } from "./per-symbol-scanner.js";
 
 const symbol = {
   symbolId: "s1",
@@ -144,5 +144,19 @@ describe("scanSymbol", () => {
     const p = provider(JSON.stringify({ findings: [] }));
     const out = await scanSymbol(p, { symbol, ruleInstructions: "rules" });
     expect(out.candidates).toEqual([]);
+  });
+
+  // #718 — the caller sizes the output cap (a reasoning-by-default model needs
+  // room to think) and meters every call; the default stays the answer budget.
+  it("defaults maxTokens to the answer budget and forwards an override + onUsage", async () => {
+    const p = provider(JSON.stringify({ findings: [] }));
+    const onUsage = vi.fn();
+    await scanSymbol(p, { symbol, ruleInstructions: "rules" });
+    await scanSymbol(p, { symbol, ruleInstructions: "rules", maxTokens: 40_000, onUsage });
+    const calls = (p.chat as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0][1].maxTokens).toBe(SCAN_SYMBOL_ANSWER_TOKENS);
+    expect(SCAN_SYMBOL_ANSWER_TOKENS).toBe(2048);
+    expect(calls[1][1].maxTokens).toBe(40_000);
+    expect(onUsage).toHaveBeenCalledTimes(1);
   });
 });

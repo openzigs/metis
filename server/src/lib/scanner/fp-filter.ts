@@ -10,7 +10,7 @@
  * instability that produces a long tail of low-quality false positives.
  */
 import type { AIProvider } from "../ai/types.js";
-import { callJsonLlm } from "./llm-client.js";
+import { ScannerJsonParseError, callJsonLlm, type ScannerJsonCallInput } from "./llm-client.js";
 import { SCANNER_SYSTEM_PROMPT_GUARD, fenceRepoContent } from "./prompt-fence.js";
 import {
   FP_FILTER_MIN_CONFIDENCE,
@@ -31,7 +31,17 @@ export interface FilterInput {
   minConfidence?: number;
   /** Cancellation. */
   signal?: AbortSignal;
+  /**
+   * #718 — OUTPUT cap per vote. Defaults to {@link FP_FILTER_ANSWER_TOKENS};
+   * a model that reasons by default needs that plus a reasoning allowance.
+   */
+  maxTokens?: number;
+  /** #718 — metering hook, called for every vote's response (parseable or not). */
+  onUsage?: ScannerJsonCallInput["onUsage"];
 }
+
+/** Output tokens one FP-filter verdict needs, before any reasoning. */
+export const FP_FILTER_ANSWER_TOKENS = 512;
 
 export interface FilterOutcome {
   verdicts: FpFilterVerdict[];
@@ -136,16 +146,21 @@ export async function filterCandidate(
         systemPrompt: SYSTEM_PROMPT,
         userPrompt,
         modelOverride: input.modelOverride,
-        maxTokens: 512,
+        maxTokens: input.maxTokens ?? FP_FILTER_ANSWER_TOKENS,
         reasoningEffort: "medium",
         promptCaching: true,
         signal: input.signal,
+        onUsage: input.onUsage,
       });
       verdicts.push(normaliseVerdict(parsed));
       totalTokens += response.usage?.totalTokens ?? 0;
-    } catch {
+    } catch (err) {
       // Treat parse / provider failures as "abstain": do not push a verdict.
-      // If every vote fails, the combine step returns keep=false.
+      // If every vote fails, the combine step returns keep=false. #718 — an
+      // unparseable reply still spent tokens, so charge them to the scan.
+      if (err instanceof ScannerJsonParseError) {
+        totalTokens += err.response.usage?.totalTokens ?? 0;
+      }
     }
   }
   const { keep, finalConfidence } = combineVerdicts(verdicts, minConfidence);

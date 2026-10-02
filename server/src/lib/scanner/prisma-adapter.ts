@@ -20,7 +20,8 @@ import { Prisma, prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID, tierModelFor } from "../ai/model-router.js";
-import type { AIProvider } from "../ai/types.js";
+import type { AIProvider, ChatResponse } from "../ai/types.js";
+import { recordUsage } from "../finops/token-tracker.js";
 import { pullOrCloneRepo } from "../connectors/repo/repo-service.js";
 import { readBoundSecret } from "../connectors/vault-resolver.js";
 import { getVaultService } from "../vault/vault-service.js";
@@ -48,7 +49,9 @@ import type {
   PublisherPorts,
 } from "./finding-publisher.js";
 import { runScan as runScanPure, type ScannerPorts } from "./orchestrator.js";
-import { scanSymbol } from "./per-symbol-scanner.js";
+import { SCAN_SYMBOL_ANSWER_TOKENS, scanSymbol } from "./per-symbol-scanner.js";
+import { FP_FILTER_ANSWER_TOKENS } from "./fp-filter.js";
+import { scannerMaxOutputTokens } from "./output-budget.js";
 import type { Publisher, Severity, TriageStatus } from "./types.js";
 import type { MaterialisedFindingInput } from "./triage-service.js";
 
@@ -62,6 +65,26 @@ function getProvider(): AIProvider {
   if (cachedProvider) return cachedProvider;
   cachedProvider = buildProvider({ config: loadAIConfig() });
   return cachedProvider;
+}
+
+/**
+ * #718 — meter one scanner LLM call into the project's usage ledger
+ * (`usage-summary`, budgets). Called for every response, including one whose
+ * reply then fails to parse: those tokens were spent all the same.
+ */
+function meterScanCall(scan: { id: string; projectId: string }) {
+  return (response: ChatResponse): void => {
+    recordUsage({
+      projectId: scan.projectId,
+      sessionId: `scan-${scan.id}`,
+      provider: response.provider,
+      model: response.model,
+      inputTokens: response.usage.promptTokens,
+      outputTokens: response.usage.completionTokens,
+      cacheReadTokens: response.usage.cacheReadTokens,
+      cacheWriteTokens: response.usage.cacheWriteTokens,
+    });
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -403,22 +426,29 @@ export function buildScannerPorts(): ScannerPorts {
         ruleInstructions,
         specMode: scan.mode === "spec",
       });
+      // #532 — a Claude tier id only on a provider that serves it.
+      const model = tierModelFor(provider, HAIKU_MODEL_ID);
       const result = await scanSymbol(provider, {
         symbol: assembled,
         context: ctx,
-        // #532 — a Claude tier id only on a provider that serves it.
-        modelOverride: tierModelFor(provider, HAIKU_MODEL_ID),
+        modelOverride: model,
+        // #718 — room to reason on a thinking-by-default model.
+        maxTokens: scannerMaxOutputTokens(SCAN_SYMBOL_ANSWER_TOKENS, model),
+        onUsage: meterScanCall(scan),
         signal,
       });
       return { candidates: result.candidates, totalTokens: result.totalTokens };
     },
 
-    async runFpFilter({ candidate, body, signal }) {
+    async runFpFilter({ scan, candidate, body, signal }) {
       const provider = getProvider();
+      const model = tierModelFor(provider, SONNET_MODEL_ID);
       const result = await filterCandidate(provider, {
         candidate,
         symbolBody: body,
-        modelOverride: tierModelFor(provider, SONNET_MODEL_ID),
+        modelOverride: model,
+        maxTokens: scannerMaxOutputTokens(FP_FILTER_ANSWER_TOKENS, model),
+        onUsage: meterScanCall(scan),
         signal,
       });
       return {
@@ -467,10 +497,23 @@ export function buildScannerPorts(): ScannerPorts {
       });
     },
 
-    async markFailed(scanId, reason) {
+    async markFailed(scanId, reason, summary) {
       await prisma.scan.update({
         where: { id: scanId },
-        data: { status: "failed", errorMessage: reason.slice(0, 1000), completedAt: new Date() },
+        data: {
+          status: "failed",
+          errorMessage: reason.slice(0, 1000),
+          completedAt: new Date(),
+          // #718 — keep the progress made before the failure, so a failed
+          // scan does not read "0/0 symbols · 0 tokens".
+          ...(summary
+            ? {
+                totalSymbols: summary.totalSymbols,
+                scannedSymbols: summary.symbolsScanned,
+                totalTokens: summary.tokenSpend,
+              }
+            : {}),
+        },
       });
     },
 
@@ -482,6 +525,14 @@ export function buildScannerPorts(): ScannerPorts {
           totalSymbols: summary.totalSymbols,
           totalTokens: summary.tokenSpend,
           scannedSymbols: summary.symbolsScanned,
+          // #718 — a completed scan can still have skipped symbols; say so.
+          errorMessage:
+            summary.symbolsFailed > 0
+              ? `${summary.symbolsFailed} of ${summary.totalSymbols} symbols skipped: the model reply was not parseable JSON. Last: ${summary.lastSymbolError ?? "unknown"}`.slice(
+                  0,
+                  1000,
+                )
+              : null,
           completedAt: new Date(),
         },
       });
