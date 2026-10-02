@@ -88,6 +88,7 @@ vi.mock("../src/lib/connectors/repo/repo-service.js", () => ({
     pulled: true,
     filesChanged: 3,
     headSha: "abc",
+    commitSha: "sha-after-pull",
   })),
 }));
 vi.mock("../src/lib/connectors/db/db-service.js", () => ({
@@ -189,6 +190,18 @@ describe("scheduled repo refresh takes the per-connector ingest guard (#217)", (
     );
     expect(heldDuringSource).toBe(true);
     expect(isConnectorIngestActive("rc1")).toBe(false);
+  });
+
+  it("labels the code graph with the commit the pull landed on (#714)", async () => {
+    repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
+    await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+      "rc1",
+      new AbortController().signal,
+    );
+    expect(mocks.ingestCodeGraph).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ commitSha: "sha-after-pull" }),
+    );
   });
 
   it("releases the guard when the refresh fails", async () => {

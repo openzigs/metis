@@ -118,6 +118,9 @@ export function buildSchedulerHandlerOverrides(
             projectId,
             rootDir: clone.path,
             repoConnectionId: connectorId,
+            // #714 — label the graph with the pulled commit so it agrees with
+            // lastCommitSha; otherwise findings fail the stale-commit publish gate.
+            commitSha: clone.commitSha ?? undefined,
             introspectedSchema: schemaWiring.introspectedSchema,
             routines: schemaWiring.routines,
             fetchRoutineBody: schemaWiring.fetchRoutineBody,

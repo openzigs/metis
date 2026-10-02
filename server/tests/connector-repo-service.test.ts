@@ -1107,6 +1107,7 @@ describe("#714 — pinned ref survives Test", () => {
       "user_1",
     );
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
+      status: 422,
       code: "REF_NOT_FOUND",
     });
     const after = await getRepoConnector("proj_1", c.id);

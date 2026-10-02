@@ -835,7 +835,7 @@ export default function ConnectionsPage() {
                         {r.lastCommitSha ? (
                           <span
                             data-testid="repo-commit-sha"
-                            title={`Last ingested commit ${r.lastCommitSha}`}
+                            title={`Last cloned commit ${r.lastCommitSha}`}
                           >
                             · {shortCommitSha(r.lastCommitSha)}
                           </span>

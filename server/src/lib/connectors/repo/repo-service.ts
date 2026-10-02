@@ -862,7 +862,7 @@ async function resolveConfiguredRef(
   if (await refExistsUpstream(octokit, git, configured)) return configured;
   if (configured === IMPLICIT_DEFAULT_REF) return upstreamDefault;
   throw new ConnectorError(
-    404,
+    422,
     "REF_NOT_FOUND",
     `Branch or tag "${configured}" was not found in ${git.ownerOrOrg}/${git.repoName}`,
   );
