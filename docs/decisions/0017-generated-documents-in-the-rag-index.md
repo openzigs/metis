@@ -55,10 +55,11 @@ rule 1 already stops the self-reinforcing loop, and it is enforced in SQL.
 
 ## Consequences
 
-- **Known gap:** chat's system prompt (`routes/ai.ts`) calls every retrieved excerpt
-  "the authoritative source". It does not yet print the derived label next to a
-  generated-document excerpt. The label is persisted by this change, so fixing the gap
-  is display work only. It is left to a follow-up because `routes/ai.ts` is under
-  active change in another PR.
+- **Chat shows the label (#199).** `routes/ai.ts` (fused retrieval) and the chat
+  `search-knowledge` tool both print
+  `[DERIVED: generated documentation, not a primary source; status=…; scope=…]` beside
+  each generated-document excerpt (status only when not `ready`, scope only when not `full`),
+  and its system prompt no longer calls excerpts authoritative. Retrieval reads the label
+  from the live chunk row (`rag/derived-label.ts`).
 - A generated document that is `degraded` is still published. It is labelled, not
   withheld.

@@ -22,6 +22,7 @@ type FixtureRecord = {
   filename: string;
   acl: string;
   source?: string;
+  metadata?: string;
 };
 function fixture(extra: FixtureRecord[] = []) {
   // Extra records lead, so they fall inside the default top-k.
@@ -47,7 +48,7 @@ function fixture(extra: FixtureRecord[] = []) {
     id: r.id,
     documentId: r.documentId,
     text: `LIVE-${r.id}`,
-    metadata: "{}",
+    metadata: r.metadata ?? "{}",
     chunkerIdentity: null,
     aclSubjects: "[]",
     document: {
@@ -136,6 +137,66 @@ describe("KnowledgeService primary evidence before reranking #1353", () => {
       ]);
     },
   );
+
+  // #199 — a generated document's chunk reaches the caller labelled as derived,
+  // read from the live row's metadata; a primary chunk carries no label.
+  it("hits for a generated document carry the derived label from the live row (#199)", async () => {
+    const { service } = fixture([
+      {
+        id: "gen",
+        documentId: "gendoc-other",
+        filename: "generated-doc-other.md",
+        acl: "[]",
+        source: "generated",
+        metadata: JSON.stringify({
+          evidenceClass: "derived-generated-doc",
+          generatedDocumentStatus: "degraded",
+          generatedDocumentScope: "module",
+        }),
+      },
+    ]);
+    const result = await service.search("p1", "query", { mode: "dense", k: 10 });
+    expect(result.hits.find((h) => h.chunkId === "gen")?.derived).toEqual({
+      status: "degraded",
+      scope: "module",
+    });
+    expect(result.hits.find((h) => h.chunkId === "allowed")).not.toHaveProperty("derived");
+  });
+
+  // #199 panel — pin each detection path on its own, so neither the stamp nor the
+  // document-source fallback can stand in for the other and hide a broken wire.
+  it("labels a stamped chunk from its metadata alone, by the stored literal (#199)", async () => {
+    const { service } = fixture([
+      {
+        id: "stamped",
+        documentId: "gendoc-stamped",
+        filename: "generated-doc-stamped.md",
+        acl: "[]",
+        // Not "generated": only the stamp can make this hit derived.
+        source: "upload",
+        // The literal stored on existing chunks, not the constant: a renamed
+        // constant would stop matching rows already in the index.
+        metadata: JSON.stringify({ evidenceClass: "derived-generated-doc" }),
+      },
+    ]);
+    const result = await service.search("p1", "query", { mode: "dense", k: 10 });
+    expect(result.hits.find((h) => h.chunkId === "stamped")?.derived).toEqual({});
+  });
+
+  it("labels a legacy unstamped chunk from the live row's document source (#199)", async () => {
+    const { service } = fixture([
+      {
+        id: "legacy",
+        documentId: "gendoc-legacy",
+        filename: "generated-doc-legacy.md",
+        acl: "[]",
+        source: "generated",
+        metadata: "{}",
+      },
+    ]);
+    const result = await service.search("p1", "query", { mode: "dense", k: 10 });
+    expect(result.hits.find((h) => h.chunkId === "legacy")?.derived).toEqual({});
+  });
 
   // #547 — an upload stored under a repo-shaped name keeps its stored source:
   // a hit classified by filename prefix would read "repo" here.

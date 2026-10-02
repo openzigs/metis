@@ -169,6 +169,12 @@ export const retrievedChunkSchema = z.object({
    * prefix: an upload may be named `connector:repo:…` or `jira:ABC-1`.
    */
   source: documentSourceSchema,
+  /**
+   * #199 — present only for a chunk of a generated document (derived material, never a
+   * primary source). `status` is `ready`/`degraded` and `scope` is `full`/`module`/…
+   * as recorded at publication (#189); either may be absent on a legacy chunk.
+   */
+  derived: z.object({ status: z.string().optional(), scope: z.string().optional() }).optional(),
 });
 export type RetrievedChunk = z.infer<typeof retrievedChunkSchema>;
 
