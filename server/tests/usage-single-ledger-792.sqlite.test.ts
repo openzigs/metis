@@ -42,6 +42,7 @@ const { createImpactLlmRuntime, IMPACT_LLM_AGENT_STEP } =
   await import("../src/lib/impact-analysis/impact-llm-runtime.js");
 const { runInImpactProjectScope } = await import("../src/lib/impact-analysis/impact-llm-scope.js");
 const { UsageService } = await import("../src/lib/usage/usage-service.js");
+const { TokenBudgetController } = await import("../src/lib/ai/token-budget-controller.js");
 const { getTokenTracker } = await import("../src/lib/ai/token-tracker.js");
 
 const PROJECT = "p-792";
@@ -167,6 +168,33 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // The per-user store still gets its row (the runtime's #1021 contract).
       const perUser = await db.aITokenUsage.findMany({ where: { projectId: PROJECT } });
       expect(perUser.map((r) => r.agentStep)).toEqual([IMPACT_LLM_AGENT_STEP["table-filter"]]);
+    });
+
+    it("the budget gauge counts the same ledger as the cards", async () => {
+      // Written directly to the per-user store only: the gauge must NOT see it.
+      await db.aISession.create({
+        data: { id: "legacy", userId: USER, provider: "anthropic", model: MODEL },
+      });
+      await db.aITokenUsage.create({
+        data: {
+          sessionId: "legacy",
+          userId: USER,
+          provider: "anthropic",
+          model: MODEL,
+          totalTokens: 500_000,
+          dayBucket: new Date().toISOString().slice(0, 10),
+          projectId: PROJECT,
+        },
+      });
+      await db.tokenBudget.create({
+        data: { projectId: PROJECT, dailyTokenLimit: 100_000, monthlyTokenLimit: 1_000_000 },
+      });
+      const cards = await summarizeUsage(PROJECT);
+      const gauge = await new TokenBudgetController().check(PROJECT);
+      // Daily limit 100k; ledger holds 28k (impact included) => 28% used.
+      expect(cards.totalTokens).toBe(28_000);
+      expect(gauge.remainingTokens).toBe(100_000 - 28_000);
+      expect(gauge.percentUsed).toBeCloseTo(0.28, 10);
     });
   },
 );
