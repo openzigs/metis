@@ -33,6 +33,7 @@ import {
 import type { ApprovalPolicy } from "../types.js";
 import { ToolApprovalBroker } from "./approval-broker.js";
 import {
+  CHAT_FINAL_SYNTHESIS_INSTRUCTION,
   CHAT_TOOL_MAX_APPROVAL_REFUNDS,
   composeReplyText,
   runChatToolTurn,
@@ -663,5 +664,140 @@ describe("an unanswered approval does not spend the step budget (#736)", () => {
     expect(out.loop.hasFinalAnswer).toBe(true);
     expect(out.finalResponse).toBe("answered after the refund");
     expect(out.turnsUsed).toBe(3);
+  });
+});
+
+describe("a spent step budget still ends in an answer (#772)", () => {
+  const AUTO: ApprovalPolicy = { low: "auto", medium: "auto", high: "auto" };
+  const readCall = (id: string) => ({
+    toolCalls: [{ id, name: "read_file_slice", args: { path: `f${id}.go` } }],
+  });
+
+  it("native: one tool-free synthesis call answers from the evidence already gathered", async () => {
+    const read = tool(
+      "read_file_slice",
+      (args) => `contents of ${(args as { path: string }).path}`,
+    );
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [
+        readCall("c1"),
+        readCall("c2"),
+        { content: "Feeds are disabled after 3 parse errors (fc1.go)." },
+      ],
+    });
+    const usages: number[] = [];
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 2, onUsage: (u) => usages.push(u.totalTokens) },
+    );
+
+    expect(out.finalResponse).toBe("Feeds are disabled after 3 parse errors (fc1.go).");
+    expect(out.replyText).toBe("Feeds are disabled after 3 parse errors (fc1.go).");
+    expect(out.loop).toEqual({ turnsExhausted: true, hasFinalAnswer: true });
+    expect(read.execute).toHaveBeenCalledTimes(2);
+    // Bounded: exactly ONE extra call, and it is metered like every other.
+    expect(provider.requests).toHaveLength(3);
+    expect(usages).toHaveLength(3);
+    const synthesis = provider.requests[2]!;
+    expect(synthesis.opts.toolChoice).toBe("none");
+    // It sees every result the investigation produced, then the instruction.
+    const [results, instruction] = synthesis.messages.slice(-2);
+    expect(results).toMatchObject({ role: "tool", toolCallId: "c2" });
+    expect(String(results!.content)).toContain("contents of fc2.go");
+    expect(instruction).toEqual({ role: "user", content: CHAT_FINAL_SYNTHESIS_INSTRUCTION });
+  });
+
+  it("text protocol: the synthesis prompt ends on the results, not a re-sent unexecuted call", async () => {
+    const read = tool("read_file_slice", () => "line 50: parsing_error_count < $n");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const call = '{"tool":"read_file_slice","args":{"path":"batch.go"}}';
+    const provider = new OfflineStubProvider({
+      script: [{ content: call }, { content: "Refresh skips a feed past the error limit." }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: false, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+
+    expect(out.finalResponse).toBe("Refresh skips a feed past the error limit.");
+    expect(out.loop.hasFinalAnswer).toBe(true);
+    const msgs = provider.requests[1]!.messages;
+    expect(msgs.at(-1)).toEqual({ role: "user", content: CHAT_FINAL_SYNTHESIS_INSTRUCTION });
+    expect(msgs.at(-2)!.role).toBe("user");
+    expect(String(msgs.at(-2)!.content)).toContain("parsing_error_count");
+    expect(msgs.filter((m) => m.role === "assistant")).toHaveLength(1);
+  });
+
+  it("a synthesis reply that is still only a tool call falls back, and nothing more is spent", async () => {
+    const read = tool("read_file_slice", () => "x");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [readCall("c1"), readCall("c2"), { content: "unreachable" }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+
+    expect(provider.requests).toHaveLength(2);
+    expect(read.execute).toHaveBeenCalledTimes(1);
+    expect(out.loop.hasFinalAnswer).toBe(false);
+    expect(out.finalResponse).toMatch(/^I reached the tool-call limit/);
+  });
+
+  it("an empty synthesis reply is not an answer", async () => {
+    const read = tool("read_file_slice", () => "x");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({ script: [readCall("c1"), { content: "  " }] });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+    expect(out.loop.hasFinalAnswer).toBe(false);
+    expect(out.finalResponse).toMatch(/^I reached the tool-call limit/);
+  });
+
+  it("an answer inside the budget costs no extra call", async () => {
+    const read = tool("read_file_slice", () => "x");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [readCall("c1"), { content: "Done." }, { content: "unreachable" }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 2 },
+    );
+    expect(out.finalResponse).toBe("Done.");
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it("a model that types search_knowledge reaches the search-knowledge tool", async () => {
+    const search = tool("search-knowledge", () => "doc hit");
+    const { toolset, gate } = setup(AUTO, [search]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "search_knowledge", args: { query: "sign in" } }] },
+        { content: "OIDC and passwords." },
+      ],
+    });
+    const records: ChatToolRecord[] = [];
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { onToolRecord: (r) => records.push(r) },
+    );
+    expect(search.execute).toHaveBeenCalledTimes(1);
+    expect(records[0]).toMatchObject({
+      tool: "search-knowledge",
+      executed: true,
+      result: "doc hit",
+    });
+    expect(out.finalResponse).toBe("OIDC and passwords.");
   });
 });

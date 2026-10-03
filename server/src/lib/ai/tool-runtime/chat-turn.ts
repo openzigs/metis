@@ -13,7 +13,7 @@
  * still records what already ran — nothing is silently dropped.
  */
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse, TokenUsage } from "../types.js";
-import { runAgentLoop, type AgentLoopResult } from "../../analysis/agent-loop.js";
+import { isToolCallReply, runAgentLoop, type AgentLoopResult } from "../../analysis/agent-loop.js";
 import { withInvokeAgentSpan } from "../../otel/genai-spans.js";
 import type { ApprovalGateService } from "../approval-policy.js";
 import type { RuntimeToolset } from "./toolset.js";
@@ -30,6 +30,22 @@ export const CHAT_TOOL_MAX_TURNS = 6;
  * unattended session from waiting out approval timeouts indefinitely.
  */
 export const CHAT_TOOL_MAX_APPROVAL_REFUNDS = 2;
+
+/**
+ * #772 — the last user turn of the ONE tool-free call a chat turn makes when
+ * its step budget ran out mid-investigation. Before it, everything the tools
+ * had read was discarded for a canned "reached the tool-call limit" message
+ * the user was still billed for.
+ */
+export const CHAT_FINAL_SYNTHESIS_INSTRUCTION =
+  "You have used every tool call available for this question, and no more tools can be run. " +
+  "Answer the user's question now, using only the evidence already gathered above, and cite " +
+  "the files and line ranges it came from. Say plainly what you could not verify.";
+
+/** A synthesis reply counts only if it says something and is not tool protocol. */
+function isChatAnswer(text: string, toolNames: readonly string[]): boolean {
+  return text.trim().length > 0 && !isToolCallReply(text, toolNames);
+}
 
 /** One call as the transcript records it (full result, never capped). */
 export interface ChatToolRecord {
@@ -139,6 +155,8 @@ export async function runChatToolTurn(
   let batchCodes: Array<string | undefined> = [];
   let refunds = 0;
 
+  const wireNames = input.toolset.tools.map((t) => t.wireName);
+
   const result = await withInvokeAgentSpan("chat", async (span) => {
     span.setAttribute("metis.session.id", input.ctx.sessionId);
     span.setAttribute("metis.tools.offered", input.toolset.tools.length);
@@ -165,6 +183,12 @@ export async function runChatToolTurn(
         initialMessages: input.messages,
         providerChatOptions: options.providerChatOptions,
         fenceToolResults: true,
+        // #772 — a spent step budget still ends in an answer: one bounded,
+        // tool-free call over what the tools already returned.
+        finalAnswerRetry: {
+          instruction: CHAT_FINAL_SYNTHESIS_INSTRUCTION,
+          isValidFinalAnswer: (text) => isChatAnswer(text, wireNames),
+        },
         refundTurn: () => {
           const expired =
             batchCodes.length > 0 && batchCodes.every((c) => c === "TOOL_APPROVAL_EXPIRED");

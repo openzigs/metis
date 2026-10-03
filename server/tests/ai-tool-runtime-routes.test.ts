@@ -713,6 +713,40 @@ describe("#142 the approval gate through the routes", () => {
     expect(text).toMatch(/tool-call limit/);
   });
 
+  // #772 — a spent step budget ends in ONE tool-free call whose answer the user
+  // sees streamed and is billed for, not the canned "tool-call limit" message.
+  it("/stream: a turn that runs out of steps streams and meters a synthesized answer (#772)", async () => {
+    const { setUsageEmitter } = await import("../src/lib/finops/token-tracker.js");
+    const ticks: Array<Record<string, unknown>> = [];
+    setUsageEmitter((_projectId, payload) => ticks.push(payload));
+    try {
+      const usage = { promptTokens: 10, completionTokens: 1, totalTokens: 11 };
+      const calls = Array.from({ length: 6 }, (_, i) => ({
+        toolCalls: [{ id: `c${i}`, name: "count_rows", args: { table: `t${i}` } }],
+        usage,
+      }));
+      const model = stubModel([
+        ...calls,
+        { content: "There are 7 rows; t5 was not checked.", usage },
+        { content: "unreachable" },
+      ]);
+      const app = makeApp();
+      const sid = await newSession(app, { policy: { high: "auto" } });
+      const res = await stream(app, sid);
+      const text = frames(res.text, "delta")
+        .map((d) => d.content)
+        .join("");
+      expect(text).toBe("There are 7 rows; t5 was not checked.");
+      expect(text).not.toMatch(/tool-call limit/);
+      expect(model.requests).toHaveLength(7);
+      expect(model.requests[6]!.opts.toolChoice).toBe("none");
+      expect(ticks).toHaveLength(1);
+      expect(ticks[0]).toMatchObject({ totalTokens: 7 * 11 });
+    } finally {
+      setUsageEmitter(null);
+    }
+  });
+
   it("MCP requireApproval forces a prompt even under auto — asked once, run once", async () => {
     mcpRegistry.readGovernance.mockResolvedValue({ allowlist: null, requireApproval: true });
     try {

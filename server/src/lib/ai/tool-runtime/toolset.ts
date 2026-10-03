@@ -90,23 +90,42 @@ export function makeToolset(
 ): RuntimeToolset {
   const byWire = new Map(tools.map((t) => [t.wireName, t]));
   const byName = new Map(tools.map((t) => [t.name, t]));
+  // #772 — chat tools mix `search-knowledge` with `read_file_slice`, and a model
+  // that guesses the other separator wasted a step on "Unknown tool". Either
+  // spelling resolves, unless two tools share it (then neither does).
+  const bySpelling = new Map<string, RuntimeTool | null>();
+  for (const t of tools) {
+    for (const n of new Set([separatorFree(t.name), separatorFree(t.wireName)])) {
+      const seen = bySpelling.get(n);
+      bySpelling.set(n, seen === undefined || seen === t ? t : null);
+    }
+  }
   const withheldByName = new Map<string, WithheldTool>();
   for (const w of withheld) {
     if (byName.has(w.name)) continue;
     withheldByName.set(w.name, w);
     withheldByName.set(toWireName(w.name, new Set()), w);
   }
+  // A name the agent's allowlist withheld is never respelt into an offered tool.
+  const resolve = (name: string): RuntimeTool | undefined =>
+    byWire.get(name) ??
+    byName.get(name) ??
+    (withheldByName.has(name) ? undefined : (bySpelling.get(separatorFree(name)) ?? undefined));
   return {
     tools,
     withheldTools: withheld,
-    withheld: (name) =>
-      byWire.has(name) || byName.has(name) ? undefined : withheldByName.get(name),
-    resolve: (name) => byWire.get(name) ?? byName.get(name),
+    withheld: (name) => (resolve(name) ? undefined : withheldByName.get(name)),
+    resolve,
     specs: () =>
       [...tools]
         .sort((a, b) => a.wireName.localeCompare(b.wireName, "en"))
         .map((t) => ({ name: t.wireName, description: t.description, parameters: t.parameters })),
   };
+}
+
+/** #772 — a tool name with `-` and `_` treated alike. */
+function separatorFree(name: string): string {
+  return name.replace(/-/g, "_");
 }
 
 function allowedByAgent(name: string, allowlist: readonly string[] | null | undefined): boolean {
