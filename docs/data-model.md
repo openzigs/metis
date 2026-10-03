@@ -376,8 +376,9 @@ Unique: `(projectId, featureSlug, taskId)`.
 ## Retired AI bug-scanner tables (awaiting #806)
 
 The AI bug scanner was removed in #799 ([ADR 0018](decisions/0018-remove-the-ai-bug-scanner.md)).
-Its tables are **kept in the schema, unused, for one release** so the drop can be
-reverted cleanly: `Scan`, `ScanFinding`, `RuleSet`, `Rule`, plus the
+Its tables are **kept in the schema, unused, for one release** so operators have one upgrade
+in which to export the data before #806's destructive drop (export guidance is in #806),
+and so the removal can be reverted cleanly: `Scan`, `ScanFinding`, `RuleSet`, `Rule`, plus the
 `Finding.scanFindingId` and `IssueLink.scanFindingId` columns. Nothing writes
 them. The one remaining read is the project-scope lookup in `POST
 /findings/:id/review-ack` (`server/src/routes/findings.ts`), which reaches a

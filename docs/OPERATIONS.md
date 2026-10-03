@@ -1555,8 +1555,11 @@ upgrading:
 type is not in `DURABLE_TASK_TYPES`, and `TaskQueue.resume()` returns early on
 an unregistered type, so the row stays `pending` or `running` indefinitely. It
 does no work and holds no worker. Only a retry or a new enqueue of that type is
-refused, and that attempt is saved as `failed` with `UNKNOWN_TASK_TYPE`. Leave
-the rows alone: #806 drops the scanner's tables and clears them with it.
+refused, and that attempt is saved as `failed` with `UNKNOWN_TASK_TYPE`. #806
+does **not** clear them: the `tasks` table is not a scanner table, and #806 leaves
+old `scanner.run-scan` rows in place as history. They are harmless; if you want them
+out of the pending/running lists, set `status = 'cancelled'` on the rows with
+`type = 'scanner.run-scan'` by hand.
 
 ### Publish audit actions
 

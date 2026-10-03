@@ -50,14 +50,17 @@ The tables are **kept for one release**, then dropped in
 [#806](https://github.com/openzigs/metis/issues/806):
 
 - `Scan`, `ScanFinding`, `RuleSet` and `Rule`, with their migrations, stay in the schema
-  unused, so the removal can be reverted without a data migration.
+  unused for one release, so operators have one upgrade in which the data can still be
+  exported before #806's destructive drop (see the export guidance in #806). It also
+  means the removal can be reverted without a data migration.
 - `Finding.scanFindingId` and `IssueLink.scanFindingId` stay too. Nothing writes either
   any more. `IssueLink` itself stays: it is the idempotency record for Deep Dive and
   Impact Analysis publishes, and #806 drops only its `scanFindingId` column.
 - `Finding` rows materialised from approved scan findings (ADR 0011's `scanFindingId`
   provenance branch) remain until #806 decides their fate, because dropping the link
   leaves them with no provenance.
-- Leftover `scanner.run-scan` task rows are inert; #806's drop clears them. See
+- Leftover `scanner.run-scan` task rows are inert and stay as history: #806 does not
+  clear them (the `tasks` table is not a scanner table). See
   `docs/OPERATIONS.md` for what an operator sees in the meantime.
 
 ## Consequences
