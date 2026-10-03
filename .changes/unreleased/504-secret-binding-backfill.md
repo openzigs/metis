@@ -8,7 +8,5 @@ section: Security
   did not create (#344; `vault.reveal` holders and `api.github.com` batches exempt) is flagged
   (`vault.binding_backfill_flagged`), not bound: re-save the server; the batch cannot publish.
   One row's unexpected error is logged and skipped, never stopping the rest.
-- Test-management connections read their stored secret by id only (409 `VAULT_BINDING_STALE` when
-  it is gone — re-enter the credential); other vault failures surface unchanged.
 - MCP header vault references (such as an imported `Authorization` header) are expanded at connect
   through the server's bindings only, never by label: an unbound server with one will not start.

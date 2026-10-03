@@ -3,8 +3,8 @@ issue: 574
 section: Security
 ---
 
-- A Jira, test-management or MCP server create or update that fails part-way — a later vault
-  write (the TLS CA certificate after the API token, the second Xray credential) or the row write
+- A Jira or MCP server create or update that fails part-way — a later vault
+  write (the TLS CA certificate after the API token) or the row write
   itself — no longer leaves the secrets it had already written in the vault. They are withdrawn
   and audited as `vault.delete`. An MCP server create refused after auto-vaulting a plaintext env
   or header value (label taken, image denied, quota reached) withdraws those values too.
