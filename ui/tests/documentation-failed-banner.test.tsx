@@ -40,6 +40,7 @@ import { apiFetch } from "@/lib/api-client";
 import DocumentationPage, {
   FailedGenerationBanner,
   generationStopCause,
+  generationStopStage,
   isPartialGeneration,
 } from "@/app/(authed)/projects/[id]/documentation/page";
 
@@ -170,6 +171,7 @@ describe("#782 — why a generation stopped is shown, not left in the server log
       <FailedGenerationBanner
         interrupted={false}
         cause={STOP.message}
+        stage="assembly"
         onRegenerate={vi.fn()}
         regenerating={false}
       />,
@@ -177,6 +179,27 @@ describe("#782 — why a generation stopped is shown, not left in the server log
     expect(screen.getByTestId("generation-stop-cause")).toHaveTextContent("(TypeError)");
     expect(screen.getByRole("alert")).toHaveTextContent(/reuses every section/i);
     expect(screen.getByRole("alert")).not.toHaveTextContent(/server logs/i);
+  });
+
+  it("makes no reuse claim when it stopped before any section could finish", () => {
+    const early = { ...STOP, stage: "facts", message: "Stopped while extracting facts (Error)." };
+    render(
+      <FailedGenerationBanner
+        interrupted={false}
+        cause={early.message}
+        stage={early.stage}
+        onRegenerate={vi.fn()}
+        regenerating={false}
+      />,
+    );
+    expect(screen.getByTestId("generation-stop-cause")).toHaveTextContent("extracting facts");
+    expect(screen.getByRole("alert")).not.toHaveTextContent(/reuses/i);
+  });
+
+  it("reads the stage from the warning that carries one", () => {
+    expect(generationStopStage([STOP])).toBe("assembly");
+    expect(generationStopStage([])).toBeNull();
+    expect(generationStopStage(null)).toBeNull();
   });
 
   describe("on the page", () => {

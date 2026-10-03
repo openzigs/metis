@@ -841,6 +841,7 @@ else its checkpointed sections. It has no version and no publication, and the re
 route accepts it. A document with a published version stays `failed` and keeps that
 version. A failed commit and the commit-boundary refusals (inputs changed, superseded,
 aborted) are never salvaged; by then every section is checkpointed anyway.
+Limit: when the shared hybrid escalation budget is on, no reuse records are produced, so nothing is checkpointed. A failure before assembly then saves nothing and a regenerate resumes nothing.
 
 **Publication and scope limits.** A committed version queues the separate shared
 publication lifecycle described above. Generation `ready`/`degraded`/`failed`

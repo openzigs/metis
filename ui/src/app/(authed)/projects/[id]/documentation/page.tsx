@@ -518,6 +518,7 @@ export default function DocumentationPage(): React.ReactElement {
             <FailedGenerationBanner
               interrupted={docDetail.data.interrupted === true}
               cause={generationStopCause(docDetail.data.warnings)}
+              stage={generationStopStage(docDetail.data.warnings)}
               regenerating={regenerateMutation.isPending}
               onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
             />
@@ -1419,6 +1420,14 @@ export function generationStopCause(warnings: DocWarning[] | null | undefined): 
   return warnings?.find((w) => typeof w.stage === "string")?.message ?? null;
 }
 
+/** #782 — the stage the stop warning records, or null. */
+export function generationStopStage(warnings: DocWarning[] | null | undefined): string | null {
+  return warnings?.find((w) => typeof w.stage === "string")?.stage ?? null;
+}
+
+/** Stages at which at least one section may have finished and been checkpointed. */
+const REUSABLE_STAGES = new Set(["sections", "assembly", "commit"]);
+
 /**
  * #782 — a `degraded` document that never published a version is a generation
  * that stopped early and kept the sections it finished.
@@ -1436,12 +1445,15 @@ export function isPartialGeneration(
 export function FailedGenerationBanner({
   interrupted,
   cause,
+  stage,
   regenerating,
   onRegenerate,
 }: {
   interrupted: boolean;
   /** #782 — why it stopped (stage, section, error class), when the server recorded it. */
   cause?: string | null;
+  /** #782 — the stage it stopped in; the reuse claim is made only once sections can exist. */
+  stage?: string | null;
   regenerating: boolean;
   onRegenerate: () => void;
 }): React.ReactElement {
@@ -1454,7 +1466,9 @@ export function FailedGenerationBanner({
         {interrupted
           ? "The server restarted or stopped while this document was being generated, so it never finished. Regenerating reuses the modules already analysed before the interruption."
           : cause
-            ? "This document could not be generated. Regenerating reuses every section that already finished."
+            ? stage && REUSABLE_STAGES.has(stage)
+              ? "This document could not be generated. Regenerating reuses every section that already finished, where its inputs have not changed."
+              : "This document could not be generated. You can try again."
             : "This document could not be generated. You can try again; if it keeps failing, check the server logs."}
       </p>
       {cause && !interrupted && (
