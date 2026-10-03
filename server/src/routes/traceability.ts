@@ -111,8 +111,10 @@ export function traceabilityRouter(): Router {
   // ---- #814 requirements with mapped code but no linked test -------------
   r.get(
     "/traceability/test-gaps",
-    requireAuth,
+    // In front of every per-route auth check (CodeQL js/missing-rate-limiting);
+    // the router-level requireAuth above has already set req.user for keying.
     traceabilityGapsRateLimiter,
+    requireAuth,
     requirePermission("analysis.read"),
     async (req, res) => {
       const parsed = traceabilityTestGapsQuerySchema.safeParse(req.query);
