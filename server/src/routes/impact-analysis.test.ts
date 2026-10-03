@@ -85,7 +85,7 @@ vi.mock("../lib/prisma.js", () => ({
 
 const publishImpactAnalysisToJira = vi.fn(async () => ({
   id: "link-1",
-  scanFindingId: "ia-1",
+  sourceId: "ia-1",
   provider: "jira",
   externalId: "IMP-1",
   externalUrl: "https://jira.example.com/browse/IMP-1",
@@ -143,7 +143,7 @@ describe("impact-analyses router", () => {
     jiraConfiguredIds = ["project-001", "project-002"];
     publishImpactAnalysisToJira.mockResolvedValue({
       id: "link-1",
-      scanFindingId: "ia-1",
+      sourceId: "ia-1",
       provider: "jira",
       externalId: "IMP-1",
       externalUrl: "https://jira.example.com/browse/IMP-1",

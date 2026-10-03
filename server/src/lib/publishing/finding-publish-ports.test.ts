@@ -11,12 +11,12 @@ const mockPrisma = {
   repoConnection: { findFirst: vi.fn() },
   jiraConnection: { findFirst: vi.fn() },
   project: { findUnique: vi.fn() },
-  scanFinding: { findUnique: vi.fn() },
   issueLink: { upsert: vi.fn(), findFirst: vi.fn() },
 };
 vi.mock("../prisma.js", () => ({ prisma: mockPrisma }));
 
-vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+const mockAudit = vi.fn();
+vi.mock("../audit/audit-service.js", () => ({ audit: mockAudit }));
 
 vi.mock("../connectors/vault-resolver.js", () => ({
   resolveVaultRef: vi.fn().mockResolvedValue("ghp_fake"),
@@ -45,7 +45,8 @@ vi.mock("./octokit-factory.js", () => ({
   }),
 }));
 
-const { buildSharedFindingPublisherPorts } = await import("./finding-publish-ports.js");
+const { buildSharedFindingPublisherPorts, PUBLISH_AUDIT_SUBJECTS } =
+  await import("./finding-publish-ports.js");
 const { PublishError } = await import("./finding-publisher.js");
 
 afterEach(() => {
@@ -57,7 +58,7 @@ describe("buildSharedFindingPublisherPorts.createJiraIssue", () => {
     projectId: "proj-1",
     title: "Null deref in foo",
     body: "Body",
-    labels: ["bug", "metis-scanner"],
+    labels: ["bug", "metis-analysis"],
     severity: "high" as const,
   };
 
@@ -66,11 +67,14 @@ describe("buildSharedFindingPublisherPorts.createJiraIssue", () => {
       jiraConnectionId: null,
       jiraProjectKey: null,
     });
-    const ports = buildSharedFindingPublisherPorts();
+    const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
     await expect(ports.createJiraIssue(args)).rejects.toMatchObject({
       code: "ERR_JIRA_NOT_CONFIGURED",
+      message: expect.stringMatching(/no Jira connection or project key/),
     });
     await expect(ports.createJiraIssue(args)).rejects.toBeInstanceOf(PublishError);
+    // #804 — the project-level guard refuses on its own, before any lookup.
+    expect(mockPrisma.jiraConnection.findFirst).not.toHaveBeenCalled();
   });
 
   it("throws ERR_JIRA_NOT_CONFIGURED when the configured Jira connection is missing or disabled", async () => {
@@ -79,7 +83,7 @@ describe("buildSharedFindingPublisherPorts.createJiraIssue", () => {
       jiraProjectKey: "PROJ",
     });
     mockPrisma.jiraConnection.findFirst.mockResolvedValue(null);
-    const ports = buildSharedFindingPublisherPorts();
+    const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
     await expect(ports.createJiraIssue(args)).rejects.toMatchObject({
       code: "ERR_JIRA_NOT_CONFIGURED",
     });
@@ -101,7 +105,7 @@ describe("buildSharedFindingPublisherPorts.createJiraIssue", () => {
       tlsRejectUnauthorized: true,
       status: "error",
     });
-    const ports = buildSharedFindingPublisherPorts();
+    const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
     await expect(ports.createJiraIssue(args)).rejects.toMatchObject({
       code: "ERR_JIRA_NOT_CONFIGURED",
     });
@@ -124,7 +128,7 @@ describe("buildSharedFindingPublisherPorts.createJiraIssue", () => {
       tlsRejectUnauthorized: true,
       status: "active",
     });
-    const ports = buildSharedFindingPublisherPorts();
+    const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
     const issue = await ports.createJiraIssue(args);
     expect(issue.externalId).toBe("PROJ-42");
     expect(issue.externalUrl).toContain("/browse/PROJ-42");
@@ -133,7 +137,7 @@ describe("buildSharedFindingPublisherPorts.createJiraIssue", () => {
     expect(fields.project).toEqual({ key: "PROJ" });
     expect(fields.issuetype).toEqual({ name: "Bug" });
     expect(fields.summary).toBe("Null deref in foo");
-    expect(fields.labels).toEqual(expect.arrayContaining(["bug", "metis-scanner"]));
+    expect(fields.labels).toEqual(expect.arrayContaining(["bug", "metis-analysis"]));
   });
 });
 
@@ -151,7 +155,7 @@ describe("buildSharedFindingPublisherPorts.createGitHubIssue", () => {
       secretId: "sec-1",
       lastCommitSha: "abc",
     });
-    const ports = buildSharedFindingPublisherPorts();
+    const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
     const issue = await ports.createGitHubIssue({
       projectId: "proj-1",
       repoConnectionId: "repo-1",
@@ -179,7 +183,7 @@ describe("buildSharedFindingPublisherPorts.createGitHubIssue", () => {
       lastCommitSha: "abc",
     });
     const { acquirePublishOctokit } = await import("./octokit-factory.js");
-    const ports = buildSharedFindingPublisherPorts();
+    const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
     await ports.createGitHubIssue({
       projectId: "proj-1",
       repoConnectionId: "repo-1",
@@ -208,7 +212,7 @@ describe("buildSharedFindingPublisherPorts.createGitHubIssue", () => {
     });
     const { acquirePublishOctokit } = await import("./octokit-factory.js");
     vi.mocked(acquirePublishOctokit).mockClear();
-    const ports = buildSharedFindingPublisherPorts();
+    const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
     await expect(
       ports.createGitHubIssue({
         projectId: "proj-1",
@@ -223,7 +227,7 @@ describe("buildSharedFindingPublisherPorts.createGitHubIssue", () => {
 
   it("throws when the repo connection is missing", async () => {
     mockPrisma.repoConnection.findFirst.mockResolvedValue(null);
-    const ports = buildSharedFindingPublisherPorts();
+    const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
     await expect(
       ports.createGitHubIssue({
         projectId: "proj-1",
@@ -233,5 +237,36 @@ describe("buildSharedFindingPublisherPorts.createGitHubIssue", () => {
         labels: [],
       }),
     ).rejects.toThrow(/repo connection .* not found/);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// buildSharedFindingPublisherPorts.audit — #804
+// ----------------------------------------------------------------------------
+
+describe("buildSharedFindingPublisherPorts.audit", () => {
+  it.each([
+    ["analysis", "finding", "analysis"],
+    ["impactAnalysis", "impact_analysis", "impact-analysis"],
+  ] as const)(
+    "#804 — a %s publish is audited with a truthful target and never reads ScanFinding",
+    async (subject, targetType, source) => {
+      const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS[subject]);
+      await ports.audit("publish.jira.created", "src-1", { provider: "jira", externalId: "P-1" });
+      expect(mockAudit).toHaveBeenCalledExactlyOnceWith({
+        actor: { id: "system" },
+        action: "publish.jira.created",
+        target: { type: targetType, id: "src-1" },
+        metadata: { source, provider: "jira", externalId: "P-1" },
+      });
+      // The mocked Prisma has no scanFinding delegate: any lookup would throw.
+      expect("scanFinding" in mockPrisma).toBe(false);
+    },
+  );
+
+  it("#804 — caller metadata cannot overwrite the recorded source", async () => {
+    const ports = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
+    await ports.audit("publish.github.reused", "f-1", { source: "scanner" });
+    expect(mockAudit.mock.calls[0][0].metadata.source).toBe("analysis");
   });
 });

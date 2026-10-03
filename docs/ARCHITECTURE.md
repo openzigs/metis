@@ -1086,11 +1086,11 @@ Beyond the analysis-specific events above, every long-running flow shares a sing
 ```ts
 import { jobEvents, genericFailureMessage } from "../socket/job-events.js";
 
-jobEvents.started("scan", jobId, projectId, "queued");
-jobEvents.progress("scan", jobId, projectId, 55, "scanning files"); // progress is 0–100
-jobEvents.completed("scan", jobId, projectId);                       // progress pinned to 100
+jobEvents.started("pr-review", jobId, projectId, "queued");
+jobEvents.progress("pr-review", jobId, projectId, 55, "reviewing files"); // progress is 0–100
+jobEvents.completed("pr-review", jobId, projectId);                        // progress pinned to 100
 // #254 invariant: NEVER pass a raw err.message — resolve a user-safe string:
-jobEvents.failed("scan", jobId, projectId, genericFailureMessage("scan"));
+jobEvents.failed("pr-review", jobId, projectId, genericFailureMessage("pr-review"));
 ```
 
 Pass `projectId: null` for cross-project jobs (the `project:{id}` broadcast is then skipped). `genericFailureMessage(kind)` returns a stable, user-safe string for every kind — the `GENERIC_FAILURE_MESSAGE` record is `Record<JobKind, string>`, so adding a kind without a message is a compile error (the #254 no-raw-leak invariant stays total over the union). `JOB_KINDS` exports the exhaustive kind list for iteration. Use `NOOP_JOB_EMITTER` in tests / non-socket contexts.

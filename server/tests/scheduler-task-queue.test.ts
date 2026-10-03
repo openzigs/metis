@@ -1035,7 +1035,7 @@ describe("TaskQueue retry()", () => {
     await expect(queue.retry(t.id, row)).rejects.toMatchObject({ code: "TASK_RETRY_EXPIRED" });
   });
 
-  it.each(["rerun-analysis", "publish-batch", "refresh-repo-connector", "scanner.run-scan"])(
+  it.each(["rerun-analysis", "publish-batch", "refresh-repo-connector"])(
     "#574 — still retries a %s task that ended long before the window: only webhooks are bounded",
     async (type) => {
       const { store, rows } = makeStore();

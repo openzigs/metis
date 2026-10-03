@@ -114,21 +114,6 @@ export const PROJECT_ACCESS_BASELINE: readonly BaselineEntry[] = [
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
   },
   {
-    path: "/projects/:projectId/rule-sets",
-    expression: "rulesRouter()",
-    note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
-  },
-  {
-    path: "/projects/:projectId",
-    expression: "scansRouter()",
-    note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
-  },
-  {
-    path: "/projects/:projectId",
-    expression: "triageRouter()",
-    note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
-  },
-  {
     path: "/projects/:projectId",
     expression: "dataMappingsRouter()",
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",

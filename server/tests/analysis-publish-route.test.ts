@@ -366,15 +366,6 @@ describe("POST /api/projects/:projectId/analyses/:id/findings/:findingId/publish
     expect(res.body.error.code).toBe("ERR_NO_PUBLISH_TARGET");
   });
 
-  it("maps ERR_STALE_COMMIT to 409", async () => {
-    publishAnalysisFindingMock.mockRejectedValue(new PublishError("ERR_STALE_COMMIT", "stale"));
-    const res = await request(app)
-      .post(url)
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ draft: VALID_DRAFT });
-    expect(res.status).toBe(409);
-  });
-
   it("maps an unexpected publisher failure to 502", async () => {
     publishAnalysisFindingMock.mockRejectedValue(new PublishError("ERR_GITHUB", "boom"));
     const res = await request(app)

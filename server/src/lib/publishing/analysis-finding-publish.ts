@@ -1,6 +1,5 @@
 /**
  * Epic #176 / #179 — publish a Deep Dive analysis finding to GitHub or Jira.
- * Moved unchanged out of the bug scanner's Prisma adapter by #800.
  */
 import { createHash } from "node:crypto";
 
@@ -18,19 +17,15 @@ import type {
 } from "./finding-publisher.js";
 import type { Publisher, Severity } from "./finding-publish-types.js";
 import {
-  ANALYSIS_PUBLISH_ANCHOR,
   buildSharedFindingPublisherPorts,
+  PUBLISH_AUDIT_SUBJECTS,
 } from "./finding-publish-ports.js";
 
 // ---------------------------------------------------------------------------
 // Epic #176 / #179 — analysis-finding publishing.
 //
-// Analysis findings reuse the SAME generic `publishFinding` engine (marker
-// dedup + idempotent IssueLink). The only differences from the scanner flow
-// are the persistence key (`IssueLink.findingId` instead of `scanFindingId`)
-// and the stale-commit gate, which is N/A for analysis findings (they are not
-// anchored to a scanned repo commit). We satisfy the gate with a constant
-// anchor on both sides rather than forking the publisher.
+// Analysis findings use the generic `publishFinding` engine (marker dedup +
+// idempotent IssueLink), keyed on `IssueLink.findingId`.
 // ---------------------------------------------------------------------------
 
 /** Deterministic 64-hex fingerprint for an analysis finding (marker dedup). */
@@ -98,40 +93,33 @@ function reporterAttribution(
 
 /**
  * Publisher ports for analysis findings. Reuses the shared ports for issue
- * creation + audit, but keys idempotency on `IssueLink.findingId` and short-
- * circuits the stale-commit gate (analysis findings carry no scan commit).
+ * creation + audit, and keys idempotency on `IssueLink.findingId`: the engine's
+ * `sourceId` is the analysis finding id.
  */
 function buildAnalysisPublisherPorts(): PublisherPorts {
-  const base = buildSharedFindingPublisherPorts();
+  const base = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
   return {
     ...base,
-    // Stale-commit gate is N/A for analysis findings — return the same
-    // sentinel the payload carries so the gate is a no-op.
-    async currentRepoCommitSha() {
-      return ANALYSIS_PUBLISH_ANCHOR;
-    },
-    // The generic engine threads the analysis finding id through the
-    // `scanFindingId` slot; here it is the `IssueLink.findingId`.
     async findExistingLink(findingId, provider) {
       const row = await prisma.issueLink.findFirst({ where: { findingId, provider } });
       if (!row) return null;
       return {
         id: row.id,
-        scanFindingId: row.findingId ?? findingId,
+        sourceId: row.findingId ?? findingId,
         provider: row.provider as Publisher,
         externalId: row.externalId,
         externalUrl: row.externalUrl,
       };
     },
-    async saveLink({ scanFindingId, provider, externalId, externalUrl, fingerprint }) {
+    async saveLink({ sourceId, provider, externalId, externalUrl, fingerprint }) {
       const row = await prisma.issueLink.upsert({
-        where: { findingId_provider: { findingId: scanFindingId, provider } },
+        where: { findingId_provider: { findingId: sourceId, provider } },
         update: { externalId, externalUrl, fingerprint },
-        create: { findingId: scanFindingId, provider, externalId, externalUrl, fingerprint },
+        create: { findingId: sourceId, provider, externalId, externalUrl, fingerprint },
       });
       return {
         id: row.id,
-        scanFindingId: row.findingId ?? scanFindingId,
+        sourceId: row.findingId ?? sourceId,
         provider: row.provider as Publisher,
         externalId: row.externalId,
         externalUrl: row.externalUrl,
@@ -171,7 +159,7 @@ export async function publishAnalysisFinding(
   if (input.provider === "github") {
     // #733 — the caller's explicit target, else the project's saved one. There is
     // deliberately no fallback to the connector's own (upstream) repository.
-    // Resolved WITHOUT throwing, exactly like the scan path: an already-published
+    // Resolved WITHOUT throwing: an already-published
     // finding must still get its existing link back (the engine's idempotency
     // check runs first), and with no target `createGitHubIssue` refuses with
     // ERR_NO_PUBLISH_TARGET before any request leaves.
@@ -203,21 +191,14 @@ export async function publishAnalysisFinding(
 
   const payload: FindingPayload = {
     fingerprint: analysisFindingFingerprint(input.findingId),
-    // The generic engine uses this slot as the idempotency id; our analysis
-    // ports persist it as IssueLink.findingId.
-    scanFindingId: input.findingId,
-    scanId: input.analysisId,
+    // Persisted by the analysis ports as IssueLink.findingId.
+    sourceId: input.findingId,
     projectId: input.projectId,
     repoConnectionId,
     title: input.draft.title,
     body,
     severity: input.severity,
     category: input.category,
-    filePath: "",
-    evidenceLines: [],
-    qualifiedName: "",
-    ruleId: null,
-    commitSha: ANALYSIS_PUBLISH_ANCHOR,
     ...(target && { target }),
   };
 

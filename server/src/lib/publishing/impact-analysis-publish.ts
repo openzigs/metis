@@ -1,6 +1,5 @@
 /**
  * Issue #963 (Epic #960) — publish an Impact Analysis run to Jira.
- * Moved unchanged out of the bug scanner's Prisma adapter by #800.
  */
 import { createHash } from "node:crypto";
 
@@ -9,17 +8,15 @@ import { publishFinding } from "./finding-publisher.js";
 import type { ExistingIssueLink, FindingPayload, PublisherPorts } from "./finding-publisher.js";
 import type { Publisher, Severity } from "./finding-publish-types.js";
 import {
-  ANALYSIS_PUBLISH_ANCHOR,
   buildSharedFindingPublisherPorts,
+  PUBLISH_AUDIT_SUBJECTS,
 } from "./finding-publish-ports.js";
 
 // ---------------------------------------------------------------------------
 // Issue #963 (Epic #960) — publish a whole ImpactAnalysis RUN as one external
-// issue (Jira). Reuses the SAME generic `publishFinding` engine (marker dedup +
-// idempotent IssueLink) as the scanner + analysis-finding flows. The ONLY
-// differences are the persistence key (`IssueLink.impactAnalysisId`) and the
-// stale-commit gate, which is N/A for an impact run (not anchored to a scanned
-// repo commit) — satisfied with a constant anchor on both sides, never forked.
+// issue (Jira). Uses the same generic `publishFinding` engine (marker dedup +
+// idempotent IssueLink) as the analysis-finding flow, keyed on
+// `IssueLink.impactAnalysisId`.
 // ---------------------------------------------------------------------------
 
 /** Deterministic 64-hex fingerprint for an impact-analysis run (marker dedup). */
@@ -29,37 +26,33 @@ function impactAnalysisFingerprint(analysisId: string): string {
 
 /**
  * Publisher ports for an impact-analysis run. Reuses the shared ports for issue
- * creation + audit, but keys idempotency on `IssueLink.impactAnalysisId` and
- * short-circuits the stale-commit gate (an impact run carries no scan commit).
- * The generic engine threads the analysis id through the `scanFindingId` slot.
+ * creation + audit, and keys idempotency on `IssueLink.impactAnalysisId`: the
+ * engine's `sourceId` is the run id.
  */
 function buildImpactAnalysisPublisherPorts(): PublisherPorts {
-  const base = buildSharedFindingPublisherPorts();
+  const base = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.impactAnalysis);
   return {
     ...base,
-    async currentRepoCommitSha() {
-      return ANALYSIS_PUBLISH_ANCHOR;
-    },
     async findExistingLink(impactAnalysisId, provider) {
       const row = await prisma.issueLink.findFirst({ where: { impactAnalysisId, provider } });
       if (!row) return null;
       return {
         id: row.id,
-        scanFindingId: row.impactAnalysisId ?? impactAnalysisId,
+        sourceId: row.impactAnalysisId ?? impactAnalysisId,
         provider: row.provider as Publisher,
         externalId: row.externalId,
         externalUrl: row.externalUrl,
       };
     },
-    async saveLink({ scanFindingId, provider, externalId, externalUrl, fingerprint }) {
+    async saveLink({ sourceId, provider, externalId, externalUrl, fingerprint }) {
       const row = await prisma.issueLink.upsert({
-        where: { impactAnalysisId_provider: { impactAnalysisId: scanFindingId, provider } },
+        where: { impactAnalysisId_provider: { impactAnalysisId: sourceId, provider } },
         update: { externalId, externalUrl, fingerprint },
-        create: { impactAnalysisId: scanFindingId, provider, externalId, externalUrl, fingerprint },
+        create: { impactAnalysisId: sourceId, provider, externalId, externalUrl, fingerprint },
       });
       return {
         id: row.id,
-        scanFindingId: row.impactAnalysisId ?? scanFindingId,
+        sourceId: row.impactAnalysisId ?? sourceId,
         provider: row.provider as Publisher,
         externalId: row.externalId,
         externalUrl: row.externalUrl,
@@ -97,21 +90,14 @@ export async function publishImpactAnalysisToJira(
 ): Promise<ExistingIssueLink> {
   const payload: FindingPayload = {
     fingerprint: impactAnalysisFingerprint(input.analysisId),
-    // The generic engine uses this slot as the idempotency id; our impact ports
-    // persist it as IssueLink.impactAnalysisId.
-    scanFindingId: input.analysisId,
-    scanId: input.analysisId,
+    // Persisted by the impact ports as IssueLink.impactAnalysisId.
+    sourceId: input.analysisId,
     projectId: input.jiraProjectId,
     repoConnectionId: "",
     title: input.title,
     body: input.body,
     severity: input.severity ?? "medium",
     category: "impact-analysis",
-    filePath: "",
-    evidenceLines: [],
-    qualifiedName: "",
-    ruleId: null,
-    commitSha: ANALYSIS_PUBLISH_ANCHOR,
   };
 
   const ports = buildImpactAnalysisPublisherPorts();

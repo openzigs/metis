@@ -10,12 +10,12 @@ const mockPrisma = {
   repoConnection: { findFirst: vi.fn() },
   jiraConnection: { findFirst: vi.fn() },
   project: { findUnique: vi.fn() },
-  scanFinding: { findUnique: vi.fn() },
   issueLink: { upsert: vi.fn(), findFirst: vi.fn() },
 };
 vi.mock("../prisma.js", () => ({ prisma: mockPrisma }));
 
-vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+const mockAudit = vi.fn();
+vi.mock("../audit/audit-service.js", () => ({ audit: mockAudit }));
 
 vi.mock("../connectors/vault-resolver.js", () => ({
   resolveVaultRef: vi.fn().mockResolvedValue("ghp_fake"),
@@ -170,6 +170,14 @@ describe("publishAnalysisFinding", () => {
     expect(fields.labels).toContain("metis");
     expect(fields.labels).toContain("metis-analysis");
     expect(fields.labels).not.toContain("metis-scanner");
+    // #804 — the audit names the analysis finding, not a scan finding.
+    expect(mockAudit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        action: "publish.jira.created",
+        target: { type: "finding", id: analysisInput.findingId },
+        metadata: expect.objectContaining({ source: "analysis", provider: "jira" }),
+      }),
+    );
   });
 
   it("#802 — hostile suggested and extra labels cannot claim another source", async () => {

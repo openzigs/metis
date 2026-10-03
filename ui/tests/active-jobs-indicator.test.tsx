@@ -5,7 +5,7 @@
  *  - hidden entirely when no jobs are running,
  *  - shows "N jobs running" with the right count + accessible live region,
  *  - opens a drawer listing active jobs (kind, project, progress),
- *  - a NON-doc-gen kind (scan / analysis) also appears (any JobKind),
+ *  - a NON-doc-gen kind (pr-review / analysis) also appears (any JobKind),
  *  - clears (unmounts) when all jobs reach a terminal state.
  *
  * The `useActiveJobs` store itself is exercised in use-active-jobs.test.tsx; here
@@ -56,7 +56,10 @@ describe("<ActiveJobsIndicator />", () => {
   });
 
   it("shows the running count in an accessible live region", () => {
-    useActiveJobsMock.mockReturnValue([job({ jobId: "a" }), job({ jobId: "b", kind: "scan" })]);
+    useActiveJobsMock.mockReturnValue([
+      job({ jobId: "a" }),
+      job({ jobId: "b", kind: "pr-review" }),
+    ]);
     render(<ActiveJobsIndicator />);
 
     const region = screen.getByTestId("active-jobs-indicator");
@@ -86,16 +89,16 @@ describe("<ActiveJobsIndicator />", () => {
     expect(within(row).getByText("25%")).toBeInTheDocument();
   });
 
-  it("lists a NON-doc-gen kind (scan) in the drawer — any JobKind, not just doc-gen", () => {
+  it("lists a NON-doc-gen kind (pr-review) in the drawer — any JobKind, not just doc-gen", () => {
     useActiveJobsMock.mockReturnValue([
-      job({ jobId: "scan-1", kind: "scan", projectId: "proj-Z", progress: 60 }),
+      job({ jobId: "review-1", kind: "pr-review", projectId: "proj-Z", progress: 60 }),
       job({ jobId: "an-1", kind: "analysis", projectId: "proj-Y", progress: 10 }),
     ]);
     render(<ActiveJobsIndicator />);
 
     fireEvent.click(screen.getByTestId("active-jobs-button"));
     const drawer = screen.getByTestId("active-jobs-drawer");
-    expect(within(drawer).getByText("Security scan")).toBeInTheDocument();
+    expect(within(drawer).getByText("PR review")).toBeInTheDocument();
     expect(within(drawer).getByText("Analysis")).toBeInTheDocument();
   });
 

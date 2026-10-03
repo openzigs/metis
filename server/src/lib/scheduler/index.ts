@@ -14,7 +14,6 @@ import { createPrismaTaskStore, readTaskRecord } from "./task-store.js";
 import { SchedulerService } from "./scheduler-service.js";
 import { createSchedulerEmitter, NOOP_SCHEDULER_EMITTER } from "./socket-emitter.js";
 import { createHttpWebhookHandler } from "./webhook-handler.js";
-import { runScanWithPrismaPorts } from "../scanner/prisma-adapter.js";
 import type { BuiltInHandlerDeps } from "./task-handlers.js";
 import type { SchedulerConfig, SchedulerEmitter } from "./types.js";
 
@@ -84,12 +83,6 @@ export function bootstrapScheduler(opts: BootstrapSchedulerOptions = {}): Schedu
       opts.handlerOverrides?.settleCancelledGeneratedDocPublication,
     regenerateGeneratedDocument: opts.handlerOverrides?.regenerateGeneratedDocument,
     retryRegenerationScheduling: opts.handlerOverrides?.retryRegenerationScheduling,
-    runScannerScan:
-      opts.handlerOverrides?.runScannerScan ??
-      (async (scanId, signal, attempt) => {
-        await runScanWithPrismaPorts(scanId, signal, attempt);
-        return { scanId };
-      }),
   };
   registerBuiltInHandlers(registry, handlerDeps);
   const store = createPrismaTaskStore();

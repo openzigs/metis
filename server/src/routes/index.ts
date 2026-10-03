@@ -61,9 +61,6 @@ import { projectUsageRouter, projectTokenBudgetRouter } from "./usage.js";
 import { inferenceProfileRouter } from "./inference-profile.js";
 import { templatesRouter } from "./templates.js";
 import { astCacheRouter } from "./ast-cache.js";
-import { rulesRouter } from "./rules.js";
-import { scansRouter } from "./scans.js";
-import { triageRouter } from "./triage.js";
 import { ssoRouter } from "./sso.js";
 import { scimRouter } from "./scim.js";
 import { workspacesRouter } from "./workspaces.js";
@@ -192,10 +189,6 @@ export function apiRouter(): Router {
   r.use("/test-management", testManagementRouter());
   // Epic #249 — runtime configuration management (Phase 1).
   r.use("/admin", mcpAdminRateLimiter, adminRouter());
-  // Epic #708 — AI bug scanner: rule authoring, scans, triage + publish.
-  r.use("/projects/:projectId/rule-sets", rulesRouter());
-  r.use("/projects/:projectId", scansRouter());
-  r.use("/projects/:projectId", triageRouter());
   // Epic #739 — Bidirectional Issue Sync.
   r.use("/webhooks", syncWebhookRouter());
   r.use("/sync", syncDriftRouter());

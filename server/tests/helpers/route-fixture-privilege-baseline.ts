@@ -108,19 +108,7 @@ export const ROUTE_FIXTURE_BASELINE: readonly FixtureBaselineEntry[] = [
     note: "project-scoped /projects/:projectId/pr-reviews; no role literal",
   },
   {
-    file: "src/routes/rules.test.ts",
-    note: "project-scoped /projects/:projectId/rule-sets; no role literal",
-  },
-  {
-    file: "src/routes/scans.test.ts",
-    note: "project-scoped /projects/:projectId scans; no role literal",
-  },
-  {
     file: "src/routes/spec-kit-route.test.ts",
     note: "project-scoped spec-kit; admin-only caller",
-  },
-  {
-    file: "src/routes/triage.test.ts",
-    note: "project-scoped /projects/:projectId triage; no role literal",
   },
 ];

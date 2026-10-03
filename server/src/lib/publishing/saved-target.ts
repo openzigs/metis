@@ -1,8 +1,8 @@
 /**
  * #733 / #784 — the project's saved GitHub publish target.
  *
- * The one place both publish paths read it from: the finding publishers (the
- * bug scanner's `publishScanFinding` and `./analysis-finding-publish.ts`) and Spec Kit's
+ * The one place both publish paths read it from: the Deep Dive finding
+ * publisher (`./analysis-finding-publish.ts`) and Spec Kit's
  * `/speckit.taskstoissues`. Keeping a single reader means the two cannot drift
  * on what counts as "configured".
  *

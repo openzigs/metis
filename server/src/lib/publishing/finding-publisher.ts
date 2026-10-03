@@ -1,23 +1,21 @@
 /**
- * Epic #708 / Issue #715 — Finding publisher.
+ * Epic #708 / Issue #715 / #804 — the generic finding publisher.
  *
- * Publishes an approved ScanFinding as a GitHub issue or Jira ticket and
- * records the mapping in IssueLink for idempotency. Reuses the
- * marker-comment dedup pattern from Epic #556/#557, but with a scanner-
- * specific prefix so the two flows never collide.
+ * Publishes one METIS result — a Deep Dive analysis finding or an Impact
+ * Analysis run — as a GitHub issue or Jira ticket, and records the mapping in
+ * IssueLink for idempotency. Each caller supplies the ports that key that
+ * record on its own column; the engine itself knows nothing about the source.
  *
  * Idempotency contract:
- *   - One IssueLink per (scanFindingId, provider). Re-publish returns
- *     the existing link untouched.
+ *   - One IssueLink per (sourceId, provider). Re-publish returns the existing
+ *     link untouched, with no external call.
  *   - The marker `<!-- metis-finding: fingerprint=<hex> -->` is injected
  *     into the published body so the link can be reconstructed if the
  *     IssueLink row is lost.
- *   - The stale-commit gate refuses to publish when the repo's current
- *     commitSha differs from the scan's snapshot — operators must
- *     re-scan against fresh code before pushing to external trackers.
  */
 import {
-  SCANNER_PUBLISH_MARKER_PREFIX,
+  FINDING_MARKER_PREFIX,
+  RETIRED_SOURCE_LABELS,
   SOURCE_LABELS,
   UMBRELLA_LABEL,
   type Publisher,
@@ -25,7 +23,7 @@ import {
   type SourceLabel,
 } from "./finding-publish-types.js";
 
-const MARKER_PREFIX = `<!-- ${SCANNER_PUBLISH_MARKER_PREFIX}:`;
+const MARKER_PREFIX = `<!-- ${FINDING_MARKER_PREFIX}:`;
 
 export function buildFindingMarker(fingerprint: string): string {
   return `${MARKER_PREFIX} fingerprint=${fingerprint} -->`;
@@ -58,19 +56,17 @@ export function injectFindingMarker(body: string, fingerprint: string): string {
 
 export interface FindingPayload {
   fingerprint: string;
-  scanFindingId: string;
-  scanId: string;
+  /**
+   * The idempotency key: the analysis finding id or the impact-analysis run id.
+   * The caller's ports persist it in the matching IssueLink column.
+   */
+  sourceId: string;
   projectId: string;
   repoConnectionId: string;
   title: string;
   body: string;
   severity: Severity;
   category: string;
-  filePath: string;
-  evidenceLines: number[];
-  qualifiedName: string;
-  ruleId: string | null;
-  commitSha: string;
   /**
    * #733 — the GitHub repository to file into: the caller's explicit choice or
    * the project's saved publish target. Absent = a GitHub publish is REFUSED
@@ -88,7 +84,7 @@ export interface GitHubIssueTarget {
 
 export interface ExistingIssueLink {
   id: string;
-  scanFindingId: string;
+  sourceId: string;
   provider: Publisher;
   externalId: string;
   externalUrl: string;
@@ -100,15 +96,8 @@ export interface CreatedIssue {
 }
 
 export interface PublisherPorts {
-  /**
-   * Returns the repo's current commit SHA (origin/HEAD, post-pull) or
-   * `null` when none is recorded. The stale-commit gate rejects null
-   * explicitly — adapters MUST NOT coerce missing values to `""` because
-   * that would let a scan with an empty `commitSha` bypass the check.
-   */
-  currentRepoCommitSha(projectId: string, repoConnectionId: string): Promise<string | null>;
-  /** Lookup existing link for (scanFindingId, provider). */
-  findExistingLink(scanFindingId: string, provider: Publisher): Promise<ExistingIssueLink | null>;
+  /** Lookup existing link for (sourceId, provider). */
+  findExistingLink(sourceId: string, provider: Publisher): Promise<ExistingIssueLink | null>;
   /** Provider-specific issue creation. */
   createGitHubIssue(args: {
     projectId: string;
@@ -131,22 +120,26 @@ export interface PublisherPorts {
   }): Promise<CreatedIssue>;
   /** Persist the new link row. */
   saveLink(args: {
-    scanFindingId: string;
+    sourceId: string;
     provider: Publisher;
     externalId: string;
     externalUrl: string;
     fingerprint: string;
   }): Promise<ExistingIssueLink>;
-  /** Best-effort audit. */
-  audit(event: string, scanFindingId: string, meta?: Record<string, unknown>): Promise<void>;
+  /**
+   * Best-effort audit. `action` is source-neutral — `publish.<provider>.created`
+   * or `publish.<provider>.reused` (epic #799 decision 2); the port records
+   * which source it was.
+   */
+  audit(action: string, sourceId: string, meta?: Record<string, unknown>): Promise<void>;
 }
 
 export interface PublishInput {
   finding: FindingPayload;
   provider: Publisher;
   /**
-   * #802 — the label naming where the finding came from (`metis-scanner`,
-   * `metis-analysis`, `metis-impact-analysis`). Required so a new caller
+   * #802 — the label naming where the finding came from (`metis-analysis`,
+   * `metis-impact-analysis`). Required so a new caller
    * cannot silently inherit a wrong default. The umbrella `metis` label is
    * always added alongside it.
    */
@@ -162,10 +155,6 @@ export interface PublishOutcome {
   link: ExistingIssueLink;
   /** True when the existing link was returned without a new external issue. */
   reused: boolean;
-  /** True when the stale-commit gate vetoed the publish. */
-  staleCommit: boolean;
-  /** Reason describing the stale-commit veto, when applicable. */
-  staleCommitReason?: string;
 }
 
 export class PublishError extends Error {
@@ -180,10 +169,14 @@ export class PublishError extends Error {
 
 /**
  * #802 — labels an extra may not carry: every source label (the caller's own
- * is already present) and the umbrella label. Compared case-insensitively,
+ * is already present), the retired scanner label, and the umbrella label. Compared case-insensitively,
  * because GitHub treats labels that differ only in case as the same label.
  */
-const RESERVED_LABELS: ReadonlySet<string> = new Set([UMBRELLA_LABEL, ...SOURCE_LABELS]);
+const RESERVED_LABELS: ReadonlySet<string> = new Set([
+  UMBRELLA_LABEL,
+  ...SOURCE_LABELS,
+  ...RETIRED_SOURCE_LABELS,
+]);
 
 function defaultLabels(
   finding: FindingPayload,
@@ -196,7 +189,6 @@ function defaultLabels(
     `severity:${finding.severity}`,
     `category:${finding.category.toLowerCase().replace(/\s+/g, "-")}`,
   ]);
-  if (finding.ruleId) labels.add(`rule:${finding.ruleId}`);
   for (const l of extras) {
     const t = l.trim();
     if (RESERVED_LABELS.has(t.toLowerCase())) continue;
@@ -212,34 +204,13 @@ export async function publishFinding(
   const { finding, provider } = input;
 
   // Idempotency: existing link wins, no external call.
-  const existing = await ports.findExistingLink(finding.scanFindingId, provider);
+  const existing = await ports.findExistingLink(finding.sourceId, provider);
   if (existing) {
-    await ports.audit("scanner.publish.reused", finding.scanFindingId, {
+    await ports.audit(`publish.${provider}.reused`, finding.sourceId, {
       provider,
       externalUrl: existing.externalUrl,
     });
-    return { link: existing, reused: true, staleCommit: false };
-  }
-
-  // Stale-commit gate. Reject when either side is missing OR when they
-  // differ. Empty-vs-empty must NOT bypass the gate — an empty scan commit
-  // anchor means we have no way to verify provenance.
-  const currentSha = await ports.currentRepoCommitSha(finding.projectId, finding.repoConnectionId);
-  const scanSha = finding.commitSha;
-  const missingScanSha = !scanSha || scanSha.trim().length === 0;
-  const missingCurrentSha = !currentSha || currentSha.trim().length === 0;
-  if (missingScanSha || missingCurrentSha || currentSha !== scanSha) {
-    const reason = missingScanSha
-      ? `scan has no captured commit SHA — refuse to anchor a published issue`
-      : missingCurrentSha
-        ? `repo connection has no current commit SHA — cannot verify scan provenance`
-        : `repo HEAD ${currentSha} has moved past scan commit ${scanSha}`;
-    await ports.audit("scanner.publish.stale", finding.scanFindingId, {
-      provider,
-      currentSha,
-      scanCommitSha: scanSha,
-    });
-    throw new PublishError("ERR_STALE_COMMIT", reason);
+    return { link: existing, reused: true };
   }
 
   const stampedBody = injectFindingMarker(finding.body, finding.fingerprint);
@@ -264,16 +235,16 @@ export async function publishFinding(
         });
 
   const link = await ports.saveLink({
-    scanFindingId: finding.scanFindingId,
+    sourceId: finding.sourceId,
     provider,
     externalId: created.externalId,
     externalUrl: created.externalUrl,
     fingerprint: finding.fingerprint,
   });
-  await ports.audit("scanner.publish.created", finding.scanFindingId, {
+  await ports.audit(`publish.${provider}.created`, finding.sourceId, {
     provider,
     externalId: created.externalId,
     externalUrl: created.externalUrl,
   });
-  return { link, reused: false, staleCommit: false };
+  return { link, reused: false };
 }

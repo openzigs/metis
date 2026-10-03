@@ -249,11 +249,13 @@ describe("audit sink — every /token/i key it persists is classified (#1268)", 
   const normalize = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, "");
 
   it("finds the token-shaped audit keys at all", () => {
-    // Anti-vacuity — 14 when #1268 landed.
+    // Anti-vacuity — 14 when #1268 landed. #804 lowered the floor from 10 to
+    // the measured 9: deleting the bug scanner removed its audit writers (the
+    // `tokenSpend` key among them), so the corpus genuinely shrank.
     expect(
       discovered.size,
       "the source scan found almost no /token/i audit keys — the scanner is broken, not the repo",
-    ).toBeGreaterThanOrEqual(10);
+    ).toBeGreaterThanOrEqual(9);
   });
 
   it("classifies each one as a count or as a credential", () => {

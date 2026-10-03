@@ -1,7 +1,19 @@
-/** Epic #708 — llm-client extractJson + callJsonLlm tests. */
+/** Epic #708 / #804 — json-llm-client extractJson + callJsonLlm tests. */
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatResponse } from "./types.js";
-import { ScannerJsonParseError, callJsonLlm, extractJson } from "./json-llm-client.js";
+
+const logger = vi.hoisted(() => ({
+  warn: vi.fn(),
+  names: [] as string[],
+}));
+vi.mock("../logger.js", () => ({
+  createChildLogger: (name: string) => {
+    logger.names.push(name);
+    return { warn: logger.warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  },
+}));
+
+import { JsonLlmParseError, callJsonLlm, extractJson } from "./json-llm-client.js";
 
 function makeProvider(content: string): AIProvider {
   const response: ChatResponse = {
@@ -92,13 +104,13 @@ describe("callJsonLlm", () => {
 
   // #718 — a parse failure must carry the response that cost tokens, so the
   // caller can meter it and charge it to the scan budget instead of losing it.
-  it("throws ScannerJsonParseError carrying the raw reply and the response", async () => {
+  it("throws JsonLlmParseError carrying the raw reply and the response", async () => {
     const provider = makeProvider("");
     const err = await callJsonLlm(provider, { systemPrompt: "s", userPrompt: "u" }).catch(
       (e: unknown) => e,
     );
-    expect(err).toBeInstanceOf(ScannerJsonParseError);
-    const parseErr = err as ScannerJsonParseError;
+    expect(err).toBeInstanceOf(JsonLlmParseError);
+    const parseErr = err as JsonLlmParseError;
     expect(parseErr.raw).toBe("");
     expect(parseErr.response.usage.totalTokens).toBe(15);
     expect(parseErr.message).toMatch(/no JSON object\/array found in model output/);
@@ -141,5 +153,10 @@ describe("callJsonLlm", () => {
     });
     expect(onUsage).toHaveBeenCalledTimes(1);
     expect(res.parsed).toEqual({ a: 1 });
+    // #804 — the seam no longer logs as scanner traffic.
+    expect(logger.names).toEqual(["json-llm-client"]);
+    expect(logger.warn).toHaveBeenCalledExactlyOnceWith("Usage metering failed; continuing", {
+      error: "usage store down",
+    });
   });
 });
