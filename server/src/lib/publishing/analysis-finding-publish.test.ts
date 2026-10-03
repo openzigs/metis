@@ -124,6 +124,7 @@ describe("publishAnalysisFinding", () => {
     expect(acquirePublishOctokit).not.toHaveBeenCalled();
     expect(mockPrisma.issueLink.upsert).not.toHaveBeenCalled();
   });
+
   it("#802 — a GitHub publish is labelled metis-analysis, never metis-scanner", async () => {
     upstreamConnector();
     const { acquirePublishOctokit } = await import("./octokit-factory.js");
@@ -136,6 +137,7 @@ describe("publishAnalysisFinding", () => {
       draft: { ...ANALYSIS_DRAFT, suggestedLabels: ["bug"] },
     });
     const labels = (request.mock.calls[0][0] as { data: { labels: string[] } }).data.labels;
+    expect(labels).toContain("metis");
     expect(labels).toContain("metis-analysis");
     expect(labels).not.toContain("metis-scanner");
     expect(labels).toContain("severity:high");
@@ -165,7 +167,25 @@ describe("publishAnalysisFinding", () => {
     );
     await publishAnalysisFinding({ ...analysisInput, provider: "jira" });
     const fields = mockJiraCreateIssue.mock.calls[0][0] as { labels: string[] };
+    expect(fields.labels).toContain("metis");
     expect(fields.labels).toContain("metis-analysis");
     expect(fields.labels).not.toContain("metis-scanner");
+  });
+
+  it("#802 — hostile suggested and extra labels cannot claim another source", async () => {
+    upstreamConnector();
+    const { acquirePublishOctokit } = await import("./octokit-factory.js");
+    const request = vi.fn().mockResolvedValue({
+      data: { number: 7, html_url: "https://github.com/o/r/issues/7" },
+    });
+    vi.mocked(acquirePublishOctokit).mockResolvedValueOnce({ request } as never);
+    await publishAnalysisFinding({
+      ...analysisInput,
+      draft: { ...ANALYSIS_DRAFT, suggestedLabels: ["metis-scanner", "bug"] },
+      extraLabels: ["metis-impact-analysis", "metis"],
+    });
+    const labels = (request.mock.calls[0][0] as { data: { labels: string[] } }).data.labels;
+    expect(labels.filter((l) => l.startsWith("metis"))).toEqual(["metis", "metis-analysis"]);
+    expect(labels).toContain("bug");
   });
 });

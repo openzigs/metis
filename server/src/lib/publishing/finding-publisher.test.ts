@@ -111,6 +111,7 @@ describe("publishFinding", () => {
     expect(body).toContain("metis-finding");
     expect(body).toContain(FP);
     const labels = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0].labels;
+    expect(labels).toContain("metis");
     expect(labels).toContain("metis-scanner");
     expect(labels).toContain("severity:high");
     expect(labels).toContain("rule:rule-1");
@@ -215,6 +216,37 @@ describe("publishFinding", () => {
     const count = labels.filter((l: string) => l === "metis-scanner").length;
     expect(count).toBe(1);
     expect(labels).toContain("bug");
+  });
+
+  it("#802 — always adds the umbrella metis label next to the source label, once", async () => {
+    const p = ports();
+    await publishFinding(p, {
+      finding: payload(),
+      provider: "jira",
+      sourceLabel: "metis-impact-analysis",
+      extraLabels: ["metis", " metis ", "METIS"],
+    });
+    const labels = (p.createJiraIssue as ReturnType<typeof vi.fn>).mock.calls[0][0].labels;
+    expect(labels.filter((l: string) => l.toLowerCase() === "metis")).toEqual(["metis"]);
+    expect(labels.slice(0, 2)).toEqual(["metis", "metis-impact-analysis"]);
+  });
+
+  it("#802 — drops reserved source labels from extras: only the caller's own survives", async () => {
+    const p = ports();
+    await publishFinding(p, {
+      finding: payload({ ruleId: null }),
+      provider: "github",
+      sourceLabel: "metis-analysis",
+      extraLabels: ["metis-scanner", "metis-impact-analysis", " METIS-Scanner ", "bug"],
+    });
+    const labels = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0].labels;
+    expect(labels).toEqual([
+      "metis",
+      "metis-analysis",
+      "severity:high",
+      "category:security",
+      "bug",
+    ]);
   });
 
   it("audits create + reuse paths", async () => {

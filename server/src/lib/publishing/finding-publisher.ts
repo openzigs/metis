@@ -18,8 +18,11 @@
  */
 import {
   SCANNER_PUBLISH_MARKER_PREFIX,
+  SOURCE_LABELS,
+  UMBRELLA_LABEL,
   type Publisher,
   type Severity,
+  type SourceLabel,
 } from "./finding-publish-types.js";
 
 const MARKER_PREFIX = `<!-- ${SCANNER_PUBLISH_MARKER_PREFIX}:`;
@@ -144,10 +147,14 @@ export interface PublishInput {
   /**
    * #802 — the label naming where the finding came from (`metis-scanner`,
    * `metis-analysis`, `metis-impact-analysis`). Required so a new caller
-   * cannot silently inherit a wrong default.
+   * cannot silently inherit a wrong default. The umbrella `metis` label is
+   * always added alongside it.
    */
-  sourceLabel: string;
-  /** Caller-supplied additional labels. */
+  sourceLabel: SourceLabel;
+  /**
+   * Caller-supplied additional labels. Reserved source labels and the
+   * umbrella label are dropped from these: only `sourceLabel` names the source.
+   */
   extraLabels?: readonly string[];
 }
 
@@ -171,12 +178,20 @@ export class PublishError extends Error {
   }
 }
 
+/**
+ * #802 — labels an extra may not carry: every source label (the caller's own
+ * is already present) and the umbrella label. Compared case-insensitively,
+ * because GitHub treats labels that differ only in case as the same label.
+ */
+const RESERVED_LABELS: ReadonlySet<string> = new Set([UMBRELLA_LABEL, ...SOURCE_LABELS]);
+
 function defaultLabels(
   finding: FindingPayload,
-  sourceLabel: string,
+  sourceLabel: SourceLabel,
   extras: readonly string[],
 ): string[] {
   const labels = new Set<string>([
+    UMBRELLA_LABEL,
     sourceLabel,
     `severity:${finding.severity}`,
     `category:${finding.category.toLowerCase().replace(/\s+/g, "-")}`,
@@ -184,6 +199,7 @@ function defaultLabels(
   if (finding.ruleId) labels.add(`rule:${finding.ruleId}`);
   for (const l of extras) {
     const t = l.trim();
+    if (RESERVED_LABELS.has(t.toLowerCase())) continue;
     if (t.length > 0 && t.length <= 64) labels.add(t);
   }
   return [...labels];

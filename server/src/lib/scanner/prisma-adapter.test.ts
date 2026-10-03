@@ -529,7 +529,7 @@ describe("publishScanFinding", () => {
     return client.request.mock.calls.at(-1)[0].url;
   }
 
-  it("#802 — a scanner publish still carries metis-scanner and rule:<id>", async () => {
+  it("#802 — a scanner publish carries metis, metis-scanner and rule:<id>", async () => {
     mockPrisma.scanFinding.findUnique.mockResolvedValue(scanFindingRow());
     upstreamConnector();
     mockPrisma.project.findUnique.mockResolvedValue({
@@ -540,6 +540,7 @@ describe("publishScanFinding", () => {
     const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
     const client = await vi.mocked(acquirePublishOctokit).mock.results.at(-1)!.value;
     const labels = client.request.mock.calls.at(-1)[0].data.labels as string[];
+    expect(labels).toContain("metis");
     expect(labels).toContain("metis-scanner");
     expect(labels).toContain("rule:rule-1");
     expect(labels).not.toContain("metis-analysis");
