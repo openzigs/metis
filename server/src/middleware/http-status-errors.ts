@@ -80,8 +80,8 @@ export const HTTP_STATUS_ERROR_CLASSES: Readonly<Record<string, StatusProvenance
   ProjectError: "own",
   // NOTE: two unrelated classes are named `PublishError` —
   // `lib/publishing/types.ts` (carries a status) and
-  // `lib/scanner/finding-publisher.ts` (code only, no status). Since the
-  // structural check below also requires a numeric status, the scanner one
+  // `lib/publishing/finding-publisher.ts` (code only, no status). Since the
+  // structural check below also requires a numeric status, the finding one
   // still falls through to the 500 branch exactly as it does today.
   PublishError: "own",
   SafetyDeniedError: "own",

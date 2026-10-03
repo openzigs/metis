@@ -90,7 +90,7 @@ const publishImpactAnalysisToJira = vi.fn(async () => ({
   externalId: "IMP-1",
   externalUrl: "https://jira.example.com/browse/IMP-1",
 }));
-vi.mock("../lib/scanner/prisma-adapter.js", () => ({ publishImpactAnalysisToJira }));
+vi.mock("../lib/publishing/impact-analysis-publish.js", () => ({ publishImpactAnalysisToJira }));
 
 // Issue #958 — connector plumbing behind `defaultLiveIndexIntrospectorFor`.
 // Mocked here (not `../lib/impact-analysis/live-schema-ingest.js`) so the real
@@ -546,7 +546,7 @@ describe("impact-analyses router", () => {
 
     it("maps a downstream PublishError to a 400", async () => {
       getImpactAnalysisDetail.mockResolvedValue(detail);
-      const { PublishError } = await import("../lib/scanner/finding-publisher.js");
+      const { PublishError } = await import("../lib/publishing/finding-publisher.js");
       publishImpactAnalysisToJira.mockRejectedValueOnce(
         new PublishError("ERR_JIRA_NOT_CONFIGURED", "Jira connection is in error state"),
       );

@@ -12,13 +12,16 @@
  * imports.
  */
 
+import type { Publisher, Severity } from "../publishing/finding-publish-types.js";
+
+// #800 — defined in `lib/publishing/` (the finding publisher's home); re-used here.
+export type { Publisher, Severity };
+
 export type ScanMode = "rules" | "heuristic" | "both" | "spec";
 export type ScanStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type RuleStatus = "draft" | "compiling" | "awaiting_grading" | "active" | "failed";
 export type TriageStatus = "pending" | "approved" | "rejected" | "deferred";
-export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type ExemplarGrade = "positive" | "negative" | "unsure";
-export type Publisher = "github" | "jira";
 
 export interface CompiledRuleMeta {
   /** Lower-case keyword bag used as a coarse retrieval pre-filter. */
@@ -134,5 +137,5 @@ export const SCANNER_SUPPORTED_LANGUAGES_ARRAY: readonly string[] = [
   "kotlin",
 ] as const;
 
-/** Marker injected into published issue bodies for idempotency lookups. */
-export const SCANNER_PUBLISH_MARKER_PREFIX = "metis-finding";
+// #800 — the publish marker prefix (`SCANNER_PUBLISH_MARKER_PREFIX`) moved to
+// `lib/publishing/finding-publish-types.ts`, alongside the engine that reads it.

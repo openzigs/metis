@@ -5,16 +5,15 @@
  *   - Prisma (Scan, Rule, RuleSet, ScanFinding, IssueLink, CodeSymbol, CodeGraph)
  *   - The repo clone cache (`pullOrCloneRepo`)
  *   - The LLM provider (`buildProvider` / `loadAIConfig`)
- *   - GitHub publishing (`acquirePublishOctokit`)
+ *   - GitHub / Jira publishing (the shared ports in `../publishing/finding-publish-ports`)
  *
  * The pure modules in `./orchestrator`, `./per-symbol-scanner`,
- * `./fp-filter`, `./context-assembler`, and `./finding-publisher` are
- * unit-tested in isolation. This adapter is intentionally thin so the
+ * `./fp-filter` and `./context-assembler` (plus the publishing engine in
+ * `../publishing/finding-publisher`) are unit-tested in isolation. This adapter is intentionally thin so the
  * integration surface area stays auditable.
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
 
 import { Prisma, prisma } from "../prisma.js";
 import { findSavedGitHubTarget } from "../publishing/saved-target.js";
@@ -24,37 +23,29 @@ import { HAIKU_MODEL_ID, SONNET_MODEL_ID, tierModelFor } from "../ai/model-route
 import type { AIProvider, ChatResponse } from "../ai/types.js";
 import { recordUsage } from "../finops/token-tracker.js";
 import { pullOrCloneRepo } from "../connectors/repo/repo-service.js";
-import { readBoundSecret } from "../connectors/vault-resolver.js";
-import { getVaultService } from "../vault/vault-service.js";
-import { assertConnectorHostAllowed } from "../connectors/network-allowlist.js";
-import { createJiraClient } from "../connectors/jira/jira-client.js";
 import { getKnowledgeService } from "../rag/knowledge-service.js";
-import { acquirePublishOctokit } from "../publishing/octokit-factory.js";
-import { getPersona } from "../analysis/personas.js";
+import {
+  buildFindingMarker,
+  injectFindingMarker,
+  publishFinding,
+} from "../publishing/finding-publisher.js";
 import type {
-  AnalysisAgentKey,
-  AnalysisAgentSource,
-  CodeCitation,
-  FindingIssueDraft,
-} from "@metis/shared";
-
-import { assembleContext } from "./context-assembler.js";
-import type { AssembledNeighbour, AssembledRagHit, AssembledSymbol } from "./context-assembler.js";
-import { filterCandidate } from "./fp-filter.js";
-import { buildFindingMarker, injectFindingMarker, publishFinding } from "./finding-publisher.js";
-import { PublishError } from "./finding-publisher.js";
-import type {
-  CreatedIssue,
   ExistingIssueLink,
   FindingPayload,
   GitHubIssueTarget,
   PublisherPorts,
-} from "./finding-publisher.js";
+} from "../publishing/finding-publisher.js";
+import { buildSharedFindingPublisherPorts } from "../publishing/finding-publish-ports.js";
+import type { CodeCitation } from "@metis/shared";
+
+import { assembleContext } from "./context-assembler.js";
+import type { AssembledNeighbour, AssembledRagHit, AssembledSymbol } from "./context-assembler.js";
+import { filterCandidate } from "./fp-filter.js";
 import { runScan as runScanPure, type ScannerPorts, type ScanRunResult } from "./orchestrator.js";
 import { SCAN_SYMBOL_ANSWER_TOKENS, scanSymbol } from "./per-symbol-scanner.js";
 import { FP_FILTER_ANSWER_TOKENS } from "./fp-filter.js";
 import { scannerMaxOutputTokens } from "./output-budget.js";
-import type { Publisher, Severity, TriageStatus } from "./types.js";
+import type { Publisher, TriageStatus } from "./types.js";
 import type { MaterialisedFindingInput } from "./triage-service.js";
 
 // ---------------------------------------------------------------------------
@@ -666,34 +657,14 @@ export async function runScanWithPrismaPorts(
 }
 
 // ---------------------------------------------------------------------------
-// Publisher ports — Prisma + GitHub.
+// Publisher ports — Prisma + GitHub. Issue creation and audit are shared with
+// the non-scanner publish flows (`lib/publishing/finding-publish-ports.ts`,
+// #800); only the ScanFinding-keyed halves are defined here.
 // ---------------------------------------------------------------------------
-
-interface GhIssueResponse {
-  number: number;
-  html_url: string;
-}
-
-function publisherStateForUpsert(): Pick<PublisherPorts, "audit"> {
-  return {
-    async audit(event, scanFindingId, meta) {
-      const sf = await prisma.scanFinding.findUnique({
-        where: { id: scanFindingId },
-        select: { scan: { select: { createdById: true } } },
-      });
-      audit({
-        actor: { id: sf?.scan.createdById ?? "system" },
-        action: `scanner.${event}`,
-        target: { type: "scan_finding", id: scanFindingId },
-        metadata: { ...meta },
-      });
-    },
-  };
-}
 
 /** Build production PublisherPorts. */
 export function buildPublisherPorts(): PublisherPorts {
-  const base = publisherStateForUpsert();
+  const base = buildSharedFindingPublisherPorts();
   return {
     async currentRepoCommitSha(projectId, repoConnectionId) {
       const conn = await prisma.repoConnection.findFirst({
@@ -720,110 +691,9 @@ export function buildPublisherPorts(): PublisherPorts {
       };
     },
 
-    async createGitHubIssue({
-      projectId,
-      repoConnectionId,
-      title,
-      body,
-      labels,
-      target,
-    }): Promise<CreatedIssue> {
-      const conn = await prisma.repoConnection.findFirst({
-        where: { id: repoConnectionId, projectId, deletedAt: null },
-      });
-      if (!conn) {
-        throw new Error(`repo connection ${repoConnectionId} not found`);
-      }
-      // #733 — the issue goes to the resolved target (the caller's choice or the
-      // project's saved publish target); the connector only supplies the
-      // credential. There is deliberately NO fallback to `conn.ownerOrOrg/
-      // conn.repoName`: for an analysed project that is its upstream, and every
-      // publish path — scanner and analysis alike — funnels through here.
-      if (!target) throw noPublishTargetError();
-      const { owner, repo } = target;
-      // #480 — the connector's bound secret by id, never re-resolved by label.
-      const token = conn.secretId ? await readBoundSecret(conn.secretId, getVaultService()) : null;
-      if (!token) {
-        throw new Error("repo connection missing vault-resolved token");
-      }
-      const baseUrl = conn.apiBaseUrl ?? "https://api.github.com";
-      const client = await acquirePublishOctokit({
-        owner,
-        baseUrl,
-        token,
-      });
-      const res = await client.request<GhIssueResponse>({
-        method: "POST",
-        url: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`,
-        data: { title, body, labels },
-      });
-      const data = res.data;
-      return {
-        externalId: String(data.number),
-        externalUrl: data.html_url,
-      };
-    },
+    createGitHubIssue: base.createGitHubIssue,
 
-    async createJiraIssue({ projectId, title, body, labels, severity }): Promise<CreatedIssue> {
-      // Resolve the project's Jira destination — single-finding publishing
-      // reuses the same connection + project key configured by the
-      // batch-publishing pipeline (Epic #557).
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { jiraConnectionId: true, jiraProjectKey: true },
-      });
-      if (!project?.jiraConnectionId || !project?.jiraProjectKey) {
-        throw new PublishError(
-          "ERR_JIRA_NOT_CONFIGURED",
-          "Project has no Jira connection or project key configured — wire one in project settings before publishing to Jira.",
-        );
-      }
-      const conn = await prisma.jiraConnection.findFirst({
-        where: { id: project.jiraConnectionId, deletedAt: null },
-      });
-      if (!conn) {
-        throw new PublishError(
-          "ERR_JIRA_NOT_CONFIGURED",
-          `Jira connection ${project.jiraConnectionId} not found`,
-        );
-      }
-      if (conn.status === "error") {
-        throw new PublishError(
-          "ERR_JIRA_NOT_CONFIGURED",
-          "Jira connection is in error state — re-test it before publishing",
-        );
-      }
-      const { hostname } = new URL(conn.baseUrl);
-      await assertConnectorHostAllowed(hostname, "jira");
-      const vault = getVaultService();
-      const { plaintext: apiToken } = await vault.read(conn.secretId);
-      let tlsCaCert: string | null = null;
-      if (conn.tlsCaSecretId) {
-        const ca = await vault.read(conn.tlsCaSecretId);
-        tlsCaCert = ca.plaintext;
-      }
-      const client = createJiraClient({
-        edition: conn.edition as "cloud" | "datacenter",
-        baseUrl: conn.baseUrl,
-        username: conn.username,
-        apiToken,
-        proxyUrl: conn.proxyUrl,
-        tlsRejectUnauthorized: conn.tlsRejectUnauthorized,
-        tlsCaCert,
-      });
-      const created = await client.createIssue({
-        project: { key: project.jiraProjectKey },
-        summary: title.slice(0, 255),
-        issuetype: { name: "Bug" },
-        description: `${body}\n\n_Severity: ${severity}_`,
-        labels: Array.from(new Set(labels.filter(Boolean))).slice(0, 25),
-      });
-      const baseUrl = conn.baseUrl.replace(/\/$/, "");
-      return {
-        externalId: created.key,
-        externalUrl: `${baseUrl}/browse/${created.key}`,
-      };
-    },
+    createJiraIssue: base.createJiraIssue,
 
     async saveLink({ scanFindingId, provider, externalId, externalUrl, fingerprint }) {
       const row = await prisma.issueLink.upsert({
@@ -908,335 +778,6 @@ export async function publishScanFinding(
     finding: payload,
     provider: input.provider,
     extraLabels: input.extraLabels,
-  });
-  return outcome.link;
-}
-
-// ---------------------------------------------------------------------------
-// Epic #176 / #179 — analysis-finding publishing.
-//
-// Analysis findings reuse the SAME generic `publishFinding` engine (marker
-// dedup + idempotent IssueLink). The only differences from the scanner flow
-// are the persistence key (`IssueLink.findingId` instead of `scanFindingId`)
-// and the stale-commit gate, which is N/A for analysis findings (they are not
-// anchored to a scanned repo commit). We satisfy the gate with a constant
-// anchor on both sides rather than forking the publisher.
-// ---------------------------------------------------------------------------
-
-/** Sentinel commit anchor — analysis findings have no scanned commit SHA. */
-const ANALYSIS_PUBLISH_ANCHOR = "analysis-finding-anchor";
-
-/** Deterministic 64-hex fingerprint for an analysis finding (marker dedup). */
-function analysisFindingFingerprint(findingId: string): string {
-  return createHash("sha256").update(`analysis-finding:${findingId}`).digest("hex");
-}
-
-/**
- * Build the published issue body for an analysis finding. Adds the
- * analysis back-link and persona attribution required by Epic #176 / #179.
- * The draft is operator-edited content; it is length-bounded by
- * `findingIssueDraftSchema` at the route boundary.
- */
-export function buildAnalysisFindingBody(args: {
-  analysisId: string;
-  agentKey: AnalysisAgentKey;
-  /** #338 — set for an agent-phase finding; wins over the `agentKey` persona. */
-  agentSource?: AnalysisAgentSource | null;
-  draft: FindingIssueDraft;
-}): string {
-  const { analysisId, agentKey, agentSource, draft } = args;
-  const lines: string[] = [draft.problemStatement.trim()];
-  if (draft.affected.files.length > 0) {
-    lines.push("", "### Affected files");
-    for (const f of draft.affected.files) lines.push(`- \`${f}\``);
-  }
-  if (draft.affected.requirementIds.length > 0) {
-    lines.push("", "### Related requirements");
-    for (const r of draft.affected.requirementIds) lines.push(`- ${r}`);
-  }
-  if (draft.acceptanceCriteria.length > 0) {
-    lines.push("", "### Acceptance criteria");
-    for (const a of draft.acceptanceCriteria) lines.push(`- [ ] ${a}`);
-  }
-  lines.push(
-    "",
-    "---",
-    `From METIS analysis \`${analysisId}\` · reported by ${reporterAttribution(agentKey, agentSource)}.`,
-  );
-  return lines.join("\n");
-}
-
-/**
- * #338 — who reported the finding, for the published footer. An agent-phase
- * finding names its custom/library agent; a specialist finding names its
- * persona exactly as before. The agent name is operator-authored, so it is
- * collapsed to one line and every markdown/HTML metacharacter (and `@`, so it
- * cannot mention anyone) is backslash-escaped. The ref is validated by
- * `isAgentPhaseResultKey` upstream and sits in a code span.
- */
-function reporterAttribution(
-  agentKey: AnalysisAgentKey,
-  agentSource: AnalysisAgentSource | null | undefined,
-): string {
-  if (!agentSource) {
-    const persona = getPersona(agentKey);
-    return `**${persona.name}** (${persona.role})`;
-  }
-  const name = agentSource.name
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[\\`*_{}[\]()<>#+\-.!|~@&]/g, "\\$&");
-  return `**${name}** (${agentSource.kind} agent \`${agentSource.ref}\`)`;
-}
-
-/**
- * Publisher ports for analysis findings. Reuses the scanner ports for issue
- * creation + audit, but keys idempotency on `IssueLink.findingId` and short-
- * circuits the stale-commit gate (analysis findings carry no scan commit).
- */
-function buildAnalysisPublisherPorts(): PublisherPorts {
-  const base = buildPublisherPorts();
-  return {
-    ...base,
-    // Stale-commit gate is N/A for analysis findings — return the same
-    // sentinel the payload carries so the gate is a no-op.
-    async currentRepoCommitSha() {
-      return ANALYSIS_PUBLISH_ANCHOR;
-    },
-    // The generic engine threads the analysis finding id through the
-    // `scanFindingId` slot; here it is the `IssueLink.findingId`.
-    async findExistingLink(findingId, provider) {
-      const row = await prisma.issueLink.findFirst({ where: { findingId, provider } });
-      if (!row) return null;
-      return {
-        id: row.id,
-        scanFindingId: row.findingId ?? findingId,
-        provider: row.provider as Publisher,
-        externalId: row.externalId,
-        externalUrl: row.externalUrl,
-      };
-    },
-    async saveLink({ scanFindingId, provider, externalId, externalUrl, fingerprint }) {
-      const row = await prisma.issueLink.upsert({
-        where: { findingId_provider: { findingId: scanFindingId, provider } },
-        update: { externalId, externalUrl, fingerprint },
-        create: { findingId: scanFindingId, provider, externalId, externalUrl, fingerprint },
-      });
-      return {
-        id: row.id,
-        scanFindingId: row.findingId ?? scanFindingId,
-        provider: row.provider as Publisher,
-        externalId: row.externalId,
-        externalUrl: row.externalUrl,
-      };
-    },
-  };
-}
-
-export interface PublishAnalysisFindingInput {
-  projectId: string;
-  analysisId: string;
-  findingId: string;
-  agentKey: AnalysisAgentKey;
-  /** #338 — the custom/library agent an agent-phase finding came from. */
-  agentSource?: AnalysisAgentSource | null;
-  severity: Severity;
-  category: string;
-  draft: FindingIssueDraft;
-  provider: Publisher;
-  extraLabels?: readonly string[];
-  /** #733 — the GitHub repository to file into; else the project's configured target. */
-  target?: GitHubIssueTarget;
-}
-
-function noPublishTargetError(): PublishError {
-  return new PublishError(
-    "ERR_NO_PUBLISH_TARGET",
-    "No GitHub publish target is configured for this project — choose a target repository, or set one on the Publishing page (Save as project target).",
-  );
-}
-
-/**
- * Publish a single analysis finding (with an operator-edited draft) to GitHub
- * or Jira via the shared finding-publisher. Idempotent per (findingId,
- * provider). For GitHub, the issue goes to the explicit or configured target
- * (#733) using the project's primary/active repo connection's credential; Jira
- * requires no repo connection.
- */
-export async function publishAnalysisFinding(
-  input: PublishAnalysisFindingInput,
-): Promise<ExistingIssueLink> {
-  let repoConnectionId = "";
-  let target: GitHubIssueTarget | undefined;
-  if (input.provider === "github") {
-    // #733 — the caller's explicit target, else the project's saved one. There is
-    // deliberately no fallback to the connector's own (upstream) repository.
-    // Resolved WITHOUT throwing, exactly like the scan path: an already-published
-    // finding must still get its existing link back (the engine's idempotency
-    // check runs first), and with no target `createGitHubIssue` refuses with
-    // ERR_NO_PUBLISH_TARGET before any request leaves.
-    target = input.target ?? (await findSavedGitHubTarget(input.projectId)) ?? undefined;
-    const conn = await prisma.repoConnection.findFirst({
-      where: {
-        projectId: input.projectId,
-        deletedAt: null,
-        status: { in: ["connected", "pending"] },
-      },
-      orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
-      select: { id: true },
-    });
-    if (!conn) {
-      throw new PublishError(
-        "ERR_NOT_IMPLEMENTED",
-        "Project has no connected GitHub repository — connect a repo before publishing.",
-      );
-    }
-    repoConnectionId = conn.id;
-  }
-
-  const body = buildAnalysisFindingBody({
-    analysisId: input.analysisId,
-    agentKey: input.agentKey,
-    agentSource: input.agentSource,
-    draft: input.draft,
-  });
-
-  const payload: FindingPayload = {
-    fingerprint: analysisFindingFingerprint(input.findingId),
-    // The generic engine uses this slot as the idempotency id; our analysis
-    // ports persist it as IssueLink.findingId.
-    scanFindingId: input.findingId,
-    scanId: input.analysisId,
-    projectId: input.projectId,
-    repoConnectionId,
-    title: input.draft.title,
-    body,
-    severity: input.severity,
-    category: input.category,
-    filePath: "",
-    evidenceLines: [],
-    qualifiedName: "",
-    ruleId: null,
-    commitSha: ANALYSIS_PUBLISH_ANCHOR,
-    ...(target && { target }),
-  };
-
-  const extraLabels = [...input.draft.suggestedLabels, ...(input.extraLabels ?? [])];
-  const ports = buildAnalysisPublisherPorts();
-  const outcome = await publishFinding(ports, {
-    finding: payload,
-    provider: input.provider,
-    extraLabels,
-  });
-  return outcome.link;
-}
-
-// ---------------------------------------------------------------------------
-// Issue #963 (Epic #960) — publish a whole ImpactAnalysis RUN as one external
-// issue (Jira). Reuses the SAME generic `publishFinding` engine (marker dedup +
-// idempotent IssueLink) as the scanner + analysis-finding flows. The ONLY
-// differences are the persistence key (`IssueLink.impactAnalysisId`) and the
-// stale-commit gate, which is N/A for an impact run (not anchored to a scanned
-// repo commit) — satisfied with a constant anchor on both sides, never forked.
-// ---------------------------------------------------------------------------
-
-/** Deterministic 64-hex fingerprint for an impact-analysis run (marker dedup). */
-function impactAnalysisFingerprint(analysisId: string): string {
-  return createHash("sha256").update(`impact-analysis:${analysisId}`).digest("hex");
-}
-
-/**
- * Publisher ports for an impact-analysis run. Reuses the scanner ports for issue
- * creation + audit, but keys idempotency on `IssueLink.impactAnalysisId` and
- * short-circuits the stale-commit gate (an impact run carries no scan commit).
- * The generic engine threads the analysis id through the `scanFindingId` slot.
- */
-function buildImpactAnalysisPublisherPorts(): PublisherPorts {
-  const base = buildPublisherPorts();
-  return {
-    ...base,
-    async currentRepoCommitSha() {
-      return ANALYSIS_PUBLISH_ANCHOR;
-    },
-    async findExistingLink(impactAnalysisId, provider) {
-      const row = await prisma.issueLink.findFirst({ where: { impactAnalysisId, provider } });
-      if (!row) return null;
-      return {
-        id: row.id,
-        scanFindingId: row.impactAnalysisId ?? impactAnalysisId,
-        provider: row.provider as Publisher,
-        externalId: row.externalId,
-        externalUrl: row.externalUrl,
-      };
-    },
-    async saveLink({ scanFindingId, provider, externalId, externalUrl, fingerprint }) {
-      const row = await prisma.issueLink.upsert({
-        where: { impactAnalysisId_provider: { impactAnalysisId: scanFindingId, provider } },
-        update: { externalId, externalUrl, fingerprint },
-        create: { impactAnalysisId: scanFindingId, provider, externalId, externalUrl, fingerprint },
-      });
-      return {
-        id: row.id,
-        scanFindingId: row.impactAnalysisId ?? scanFindingId,
-        provider: row.provider as Publisher,
-        externalId: row.externalId,
-        externalUrl: row.externalUrl,
-      };
-    },
-  };
-}
-
-export interface PublishImpactAnalysisInput {
-  /** The impact-analysis run id (idempotency key together with the provider). */
-  analysisId: string;
-  /**
-   * The RUN project whose configured Jira connection + project key are used to
-   * create the issue. Resolved by the route from the run's projects; the
-   * createJiraIssue port throws ERR_JIRA_NOT_CONFIGURED when it is unconfigured.
-   */
-  jiraProjectId: string;
-  /** Pre-serialized issue title (plain text) and body (sanitized markdown). */
-  title: string;
-  body: string;
-  /** Run-level severity for the Jira issue footer; defaults to `medium`. */
-  severity?: Severity;
-  extraLabels?: readonly string[];
-}
-
-/**
- * Publish a single ImpactAnalysis run to Jira as ONE issue via the shared
- * finding-publisher. Idempotent per (analysisId, `jira`): a re-publish returns
- * the existing IssueLink untouched (no duplicate Jira issue). The body is
- * produced by the caller (the deterministic {@link serializeImpactAnalysisMarkdown}
- * export) so this function makes no LLM call and never fabricates content.
- */
-export async function publishImpactAnalysisToJira(
-  input: PublishImpactAnalysisInput,
-): Promise<ExistingIssueLink> {
-  const payload: FindingPayload = {
-    fingerprint: impactAnalysisFingerprint(input.analysisId),
-    // The generic engine uses this slot as the idempotency id; our impact ports
-    // persist it as IssueLink.impactAnalysisId.
-    scanFindingId: input.analysisId,
-    scanId: input.analysisId,
-    projectId: input.jiraProjectId,
-    repoConnectionId: "",
-    title: input.title,
-    body: input.body,
-    severity: input.severity ?? "medium",
-    category: "impact-analysis",
-    filePath: "",
-    evidenceLines: [],
-    qualifiedName: "",
-    ruleId: null,
-    commitSha: ANALYSIS_PUBLISH_ANCHOR,
-  };
-
-  const ports = buildImpactAnalysisPublisherPorts();
-  const outcome = await publishFinding(ports, {
-    finding: payload,
-    provider: "jira",
-    extraLabels: ["metis-impact-analysis", ...(input.extraLabels ?? [])],
   });
   return outcome.link;
 }

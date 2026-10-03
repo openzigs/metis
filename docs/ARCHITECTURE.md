@@ -1917,7 +1917,7 @@ Batch statuses: `pending` → `in-progress` → `completed` | `partial` | `faile
 
 ### 11.4 Per-Finding Deep Dive → Issue (Epic #176)
 
-Alongside the requirement-level batch pipeline above, a single analysis **finding** can be turned into one issue on demand. This is a thin, additive layer that **reuses** the existing scanner finding-publisher and the project's `publishDestination` plumbing rather than introducing a second publishing stack.
+Alongside the requirement-level batch pipeline above, a single analysis **finding** can be turned into one issue on demand. This is a thin, additive layer that **reuses** the shared finding-publisher (`server/src/lib/publishing/`) and the project's `publishDestination` plumbing rather than introducing a second publishing stack.
 
 Two scoped endpoints back the UI dialog (`ui/src/components/findings/deep-dive-dialog.tsx`):
 
@@ -1926,7 +1926,7 @@ Two scoped endpoints back the UI dialog (`ui/src/components/findings/deep-dive-d
 | `POST /projects/:id/analyses/:analysisId/findings/:findingId/deep-dive` | One bounded LLM call (`server/src/lib/analysis/finding-deep-dive.ts`) expands the finding into an editable `FindingIssueDraft` (title, problem statement, affected files, related requirements, acceptance criteria, suggested labels) plus token/model metadata. The finding is loaded IDOR-scoped to the analysis, and the call is rate-limited and gated by the `analysis.run` permission. |
 | `POST /projects/:id/analyses/:analysisId/findings/:findingId/publish` | Publishes the (reviewed) draft to GitHub, Jira, or both. Gated by the `issue.publish` permission and the approval-checkpoint state (`canCreateTickets`). |
 
-The publish route delegates to `publishAnalysisFinding` in `server/src/lib/scanner/prisma-adapter.ts`, which constructs an analysis-flavoured set of `PublisherPorts` and calls the **same** generic `publishFinding` used by the security scanner (`server/src/lib/scanner/finding-publisher.ts`). Destination selection reuses the project's `publishDestination` (`github` | `jira` | `both`) and `JiraConnection`. Idempotency is recorded on `IssueLink` (keyed on `findingId` + provider), and the rendered issue body carries the originating persona for traceability back to the analysis.
+The publish route delegates to `publishAnalysisFinding` in `server/src/lib/publishing/analysis-finding-publish.ts`, which constructs an analysis-flavoured set of `PublisherPorts` on top of the shared GitHub/Jira issue-creation ports (`server/src/lib/publishing/finding-publish-ports.ts`) and calls the **same** generic `publishFinding` (`server/src/lib/publishing/finding-publisher.ts`) used by the security scanner and by Impact Analysis → Jira (`server/src/lib/publishing/impact-analysis-publish.ts`). `lib/publishing/` does not import `lib/scanner/`; the scanner depends on it (#800). Destination selection reuses the project's `publishDestination` (`github` | `jira` | `both`) and `JiraConnection`. Idempotency is recorded on `IssueLink` (keyed on `findingId` + provider), and the rendered issue body carries the originating persona for traceability back to the analysis.
 
 ```mermaid
 flowchart LR
