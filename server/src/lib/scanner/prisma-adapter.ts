@@ -49,7 +49,7 @@ import type {
   GitHubIssueTarget,
   PublisherPorts,
 } from "./finding-publisher.js";
-import { runScan as runScanPure, type ScannerPorts } from "./orchestrator.js";
+import { runScan as runScanPure, type ScannerPorts, type ScanRunResult } from "./orchestrator.js";
 import { SCAN_SYMBOL_ANSWER_TOKENS, scanSymbol } from "./per-symbol-scanner.js";
 import { FP_FILTER_ANSWER_TOKENS } from "./fp-filter.js";
 import { scannerMaxOutputTokens } from "./output-budget.js";
@@ -75,7 +75,7 @@ function getProvider(): AIProvider {
  */
 function meterScanCall(scan: { id: string; projectId: string }) {
   return (response: ChatResponse): void => {
-    recordUsage({
+    const { persisted } = recordUsage({
       projectId: scan.projectId,
       sessionId: `scan-${scan.id}`,
       provider: response.provider,
@@ -85,7 +85,81 @@ function meterScanCall(scan: { id: string; projectId: string }) {
       cacheReadTokens: response.usage.cacheReadTokens,
       cacheWriteTokens: response.usage.cacheWriteTokens,
     });
+    trackScanUsageWrite(scan.id, persisted);
   };
+}
+
+/** #759 — in-flight `token_usages` writes per scan, so totals can wait for them. */
+const pendingScanUsage = new Map<string, Set<Promise<void>>>();
+
+function trackScanUsageWrite(scanId: string, persisted: Promise<void>): void {
+  let writes = pendingScanUsage.get(scanId);
+  if (!writes) {
+    writes = new Set();
+    pendingScanUsage.set(scanId, writes);
+  }
+  writes.add(persisted);
+  void persisted.finally(() => {
+    writes.delete(persisted);
+    if (writes.size === 0 && pendingScanUsage.get(scanId) === writes) {
+      pendingScanUsage.delete(scanId);
+    }
+  });
+}
+
+/**
+ * #759 — the scan's spend as the usage ledger metered it, across every
+ * attempt, so the scan row agrees with `usage-summary`. `null` when the ledger
+ * holds nothing for the scan (the orchestrator's own count then stands).
+ */
+async function meteredScanSpend(
+  scanId: string,
+): Promise<{ totalTokens: number; costCents: number } | null> {
+  const writes = pendingScanUsage.get(scanId);
+  if (writes) await Promise.all([...writes]);
+  const scan = await prisma.scan.findUnique({
+    where: { id: scanId },
+    select: { projectId: true },
+  });
+  if (!scan) return null;
+  const agg = await prisma.tokenUsage.aggregate({
+    where: { projectId: scan.projectId, sessionId: `scan-${scanId}` },
+    _sum: { totalTokens: true, costCents: true },
+    _count: { _all: true },
+  });
+  if (!agg._count._all) return null;
+  return { totalTokens: agg._sum.totalTokens ?? 0, costCents: agg._sum.costCents ?? 0 };
+}
+
+/**
+ * A scan that ended without completing: `failed`, or (#759) `cancelled` by a
+ * user. Either way the progress made is kept.
+ */
+async function markEnded(
+  scanId: string,
+  status: "failed" | "cancelled",
+  reason: string,
+  summary?: ScanRunResult,
+): Promise<void> {
+  const metered = summary ? await meteredScanSpend(scanId) : null;
+  await prisma.scan.update({
+    where: { id: scanId },
+    data: {
+      status,
+      errorMessage: reason.slice(0, 1000),
+      completedAt: new Date(),
+      // #718 — keep the progress made before the failure, so a failed
+      // scan does not read "0/0 symbols · 0 tokens".
+      ...(summary
+        ? {
+            totalSymbols: summary.totalSymbols,
+            scannedSymbols: summary.symbolsScanned,
+            totalTokens: summary.tokenSpend,
+          }
+        : {}),
+      ...(metered ?? {}),
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +359,16 @@ export function buildScannerPorts(): ScannerPorts {
         mode: row.mode as "rules" | "heuristic" | "both" | "spec",
         budgetCapTokens: row.budgetCapTokens,
         createdById: row.createdById,
+        // #759 — where an earlier attempt stopped. `tokenSpend` is the row's
+        // totalTokens, which markFailed/markCompleted re-sync from the usage
+        // ledger (canonical: includes cache reads). The live counter then adds
+        // per-response totals, so the two can drift until the next mark call
+        // re-syncs it from the ledger.
+        resume: {
+          symbolCursor: row.symbolCursor,
+          symbolsScanned: row.scannedSymbols,
+          tokenSpend: row.totalTokens,
+        },
       };
     },
 
@@ -319,7 +403,9 @@ export function buildScannerPorts(): ScannerPorts {
         // Cap so a 100k-symbol repo cannot wedge a scan worker; budget gate
         // will stop sooner anyway.
         take: 10000,
-        orderBy: { qualifiedName: "asc" },
+        // #759 — a total order: the resume cursor is an index into this list,
+        // and qualifiedName alone can tie (overloads).
+        orderBy: [{ qualifiedName: "asc" }, { id: "asc" }],
       });
       return rows.map(
         (r: {
@@ -497,6 +583,26 @@ export function buildScannerPorts(): ScannerPorts {
       });
     },
 
+    async recordProgress(scanId, progress) {
+      await prisma.scan.update({
+        where: { id: scanId },
+        data: {
+          symbolCursor: progress.symbolCursor,
+          totalSymbols: progress.totalSymbols,
+          scannedSymbols: progress.symbolsScanned,
+          totalTokens: progress.tokenSpend,
+        },
+      });
+    },
+
+    async discardSymbolFindings(scanId, symbolId) {
+      // Scoped to this scan; a finding already triaged is a user's decision
+      // and is kept.
+      await prisma.scanFinding.deleteMany({
+        where: { scanId, symbolId, triageStatus: "pending" },
+      });
+    },
+
     async markRunning(scanId, commitSha) {
       await prisma.scan.update({
         where: { id: scanId },
@@ -505,26 +611,15 @@ export function buildScannerPorts(): ScannerPorts {
     },
 
     async markFailed(scanId, reason, summary) {
-      await prisma.scan.update({
-        where: { id: scanId },
-        data: {
-          status: "failed",
-          errorMessage: reason.slice(0, 1000),
-          completedAt: new Date(),
-          // #718 — keep the progress made before the failure, so a failed
-          // scan does not read "0/0 symbols · 0 tokens".
-          ...(summary
-            ? {
-                totalSymbols: summary.totalSymbols,
-                scannedSymbols: summary.symbolsScanned,
-                totalTokens: summary.tokenSpend,
-              }
-            : {}),
-        },
-      });
+      await markEnded(scanId, "failed", reason, summary);
+    },
+
+    async markCancelled(scanId, reason, summary) {
+      await markEnded(scanId, "cancelled", reason, summary);
     },
 
     async markCompleted(scanId, summary) {
+      const metered = await meteredScanSpend(scanId);
       await prisma.scan.update({
         where: { id: scanId },
         data: {
@@ -541,6 +636,7 @@ export function buildScannerPorts(): ScannerPorts {
                 )
               : null,
           completedAt: new Date(),
+          ...(metered ?? {}),
         },
       });
     },
@@ -558,9 +654,13 @@ export function buildScannerPorts(): ScannerPorts {
 }
 
 /** Convenience wrapper used by the scheduler. */
-export async function runScanWithPrismaPorts(scanId: string, signal: AbortSignal): Promise<void> {
+export async function runScanWithPrismaPorts(
+  scanId: string,
+  signal: AbortSignal,
+  attempt?: { attempts: number; maxAttempts: number },
+): Promise<void> {
   const ports = buildScannerPorts();
-  await runScanPure(ports, { scanId, signal });
+  await runScanPure(ports, { scanId, signal, attempt });
 }
 
 // ---------------------------------------------------------------------------
