@@ -799,16 +799,23 @@ export class KnowledgeService {
         chosen.map((c) => ({ chunkId: c.chunkId, text: c.text, score: c.score })),
       );
       const map = new Map(chosen.map((c) => [c.chunkId, c]));
+      // Every reranker fallback (warm failure, no scorer, short query, inference
+      // or remote error) hands the candidates back with their input score. Only
+      // a score that differs from the input is a cross-encoder verdict; without
+      // one the fused rankScore stands and the list is not "reranked".
+      const scored = reorder.some(
+        (r) => r.score !== undefined && r.score !== map.get(r.chunkId)?.score,
+      );
       chosen = reorder
         .map((r) => {
           const base = map.get(r.chunkId);
           if (!base) return null;
           // #717 — the reranker now decides the order, so its score is the rank score.
-          if (r.score !== undefined) rankScoreByChunk.set(r.chunkId, r.score);
+          if (scored && r.score !== undefined) rankScoreByChunk.set(r.chunkId, r.score);
           return { ...base, score: r.score ?? base.score };
         })
         .filter((c): c is NonNullable<typeof c> => Boolean(c));
-      reranked = true;
+      reranked = scored;
     }
 
     const top = chosen.slice(0, k);

@@ -121,7 +121,10 @@ function tokenize(text: string): string[] {
  * chunk shares), the filename otherwise.
  */
 function indexedPath(filename: string): string {
-  return repoDocumentPath(filename) ?? filename;
+  const repoPath = repoDocumentPath(filename);
+  // The extension is dropped: with prefix matching a query word like "go" would
+  // otherwise lift every `.go` file, the class of hit #717 aims to demote.
+  return repoPath ? repoPath.replace(/\.[A-Za-z0-9]+$/, "") : filename;
 }
 
 interface IndexedDoc extends BM25Doc {

@@ -128,6 +128,14 @@ describe("BM25 over code (#717)", () => {
     expect(hits.map((h) => h.chunkId)).toEqual(["path-only"]);
   });
 
+  it("does not match every file of a language because the query says its extension", async () => {
+    const idx = new BM25Index();
+    await idx.upsertDocumentChunks(PROJECT, "d1", "connector:repo:c1:src/internal/a.go", [
+      { id: "a", position: 0, text: "func a() {}" },
+    ]);
+    expect(await idx.search(PROJECT, "go", 5)).toEqual([]);
+  });
+
   it("does not match the connector key or the src/ marker of every repository file", async () => {
     const idx = new BM25Index();
     await idx.upsertDocumentChunks(PROJECT, "d1", "connector:repo:c1:src/internal/a.go", [

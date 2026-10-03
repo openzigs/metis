@@ -172,6 +172,10 @@ const REPO_SOURCE_MARKER = "src/";
  * `OVERVIEW.md`, manifests) carry no marker and are returned as-is. Anything
  * that is not a repository key returns `undefined`.
  *
+ * The result is a display label, not a unique key: the metadata unit
+ * `connector:repo:X:README.md` and the source file `connector:repo:X:src/README.md`
+ * both map to `README.md`. Keep the raw key where identity matters.
+ *
  * The filename alone does not prove the row is a repository file (#547 — an
  * upload may carry the name): callers decide on `documents.source` first.
  */

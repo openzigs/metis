@@ -584,6 +584,35 @@ describe("hybrid retrieval", () => {
     );
   });
 
+  it("a reranker that falls back keeps the fused rankScore and is not reported as reranked", async () => {
+    const seedAndSearch = async (reranker: Reranker | undefined) => {
+      svc = new KnowledgeService({
+        storage,
+        vectorStore: store,
+        embedder: new Embedder(),
+        chunkOptions: { chunkSize: 80, overlap: 0 },
+        bm25,
+        ...(reranker ? { reranker } : {}),
+      });
+      return svc.search("prfb", "alpha");
+    };
+    await seedDocument("d1", "prfb", "alpha alpha alpha");
+    await seedDocument("d2", "prfb", "alpha bravo", "b.md");
+    await seedDocument("d3", "prfb", "zulu yankee xray", "c.md");
+    for (const id of ["d1", "d2", "d3"]) await svc.ingestDocument(id);
+    const baseline = await seedAndSearch(undefined);
+    // Every reranker fallback path returns the candidates untouched.
+    const fallback: Reranker = {
+      enabled: true,
+      async rerank(_query, cands) {
+        return cands;
+      },
+    };
+    const res = await seedAndSearch(fallback);
+    expect(res.reranked).toBe(false);
+    expect(res.hits.map((h) => h.rankScore)).toEqual(baseline.hits.map((h) => h.rankScore));
+  });
+
   // #717 — a repository file's stored key carries the ingester's `src/` marker.
   it("a repo-sourced hit carries its repository-relative path; an upload never does", async () => {
     await seedDocument(
