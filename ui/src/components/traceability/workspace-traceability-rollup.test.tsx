@@ -42,6 +42,9 @@ const SUMMARY: WorkspaceTraceabilitySummary = {
       linkedCrossProject: 1,
       specCoverage: 0.5,
       codeCoverage: 0.25,
+      codeMappedRequirements: 1,
+      testCoverage: 0,
+      strictTestCoverage: 0,
     },
     {
       projectId: "projB",
@@ -50,6 +53,9 @@ const SUMMARY: WorkspaceTraceabilitySummary = {
       linkedCrossProject: 1,
       specCoverage: 1,
       codeCoverage: 0,
+      codeMappedRequirements: 0,
+      testCoverage: 0,
+      strictTestCoverage: 0,
     },
   ],
   crossProjectLinks: [
@@ -115,6 +121,9 @@ describe("buildCrossProjectLinkMermaid", () => {
           linkedCrossProject: 1,
           specCoverage: 0,
           codeCoverage: 0,
+          codeMappedRequirements: 0,
+          testCoverage: 0,
+          strictTestCoverage: 0,
         },
       ],
       crossProjectLinks: [
