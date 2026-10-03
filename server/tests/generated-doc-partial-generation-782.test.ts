@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   symbols: [] as Array<Record<string, unknown>>,
   stream: vi.fn(),
   failIndexWarnings: false,
+  failManifest: false,
   failAfterSynthesis: false,
   failCommit: false,
   changeInputs: false,
@@ -151,6 +152,26 @@ vi.mock("../src/lib/connectors/source-ingest-state.js", async (importOriginal) =
     }),
   };
 });
+// The provenance manifest is built inside synthesis, after the last section:
+// a schema rejection there is the walkthrough's shape (the final section's
+// grounding call, then failure 0.6 s later).
+vi.mock("../src/lib/docs-gen/generated-doc-provenance.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/docs-gen/generated-doc-provenance.js")>();
+  return {
+    ...actual,
+    buildGeneratedDocVersionManifest: vi.fn(
+      (...args: Parameters<typeof actual.buildGeneratedDocVersionManifest>) => {
+        if (state.failManifest) {
+          const err = new Error("label: String must contain at least 1 character(s)");
+          err.name = "ZodError";
+          throw err;
+        }
+        return actual.buildGeneratedDocVersionManifest(...args);
+      },
+    ),
+  };
+});
 vi.mock("../src/lib/logger.js", () => ({
   createChildLogger: () => ({ info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
@@ -183,6 +204,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.versions.length = 0;
   state.failIndexWarnings = false;
+  state.failManifest = false;
   state.failAfterSynthesis = false;
   state.failCommit = false;
   state.changeInputs = false;
@@ -305,6 +327,20 @@ describe("#782 — a late failure keeps what was finished", () => {
     for (const group of GROUPS) expect(content).toContain(`## ${group.label}`);
     expect(cause()).toMatchObject({ stage: "assembly", errorClass: "RangeError" });
     expect(String(cause()!.message)).not.toContain("Invalid array length");
+  });
+
+  it("a failure inside synthesis after the last section names assembly, not that section", async () => {
+    state.failManifest = true;
+    await generateDocumentAsync("d", "p");
+
+    expect(state.doc.status).toBe("degraded");
+    for (const group of GROUPS) expect(state.doc.content).toContain(`## ${group.label}`);
+    expect(cause()).toMatchObject({
+      section: "Document",
+      stage: "assembly",
+      errorClass: "ZodError",
+    });
+    expect(String(cause()!.message)).not.toContain("at least 1 character");
   });
 
   it("never overwrites a published version with a partial one", async () => {
