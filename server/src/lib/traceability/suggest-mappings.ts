@@ -20,7 +20,7 @@ import type { SuggestDataMappingsResult, SuggestedDataMappingCandidate } from "@
 import type { PrismaClient } from "@prisma/client";
 import type { AIProvider } from "../ai/types.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
-import { callJsonLlm } from "../scanner/llm-client.js";
+import { callJsonLlm } from "../ai/json-llm-client.js";
 import { getKnowledgeService } from "../rag/knowledge-service.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";

@@ -119,7 +119,7 @@ const {
 const { pullOrCloneRepo } = await import("../connectors/repo/repo-service.js");
 const { HAIKU_MODEL_ID, SONNET_MODEL_ID } = await import("../ai/model-router.js");
 const { scannerMaxOutputTokens } = await import("./output-budget.js");
-const { ScannerJsonParseError } = await import("./llm-client.js");
+const { ScannerJsonParseError } = await import("../ai/json-llm-client.js");
 
 afterEach(() => {
   vi.clearAllMocks();
