@@ -675,6 +675,13 @@ model TokenUsage {
   /// (no built-in price and no MODEL_PRICES entry). NULL is unknown spend,
   /// never zero spend.
   costCents        Int?
+  /// #792 — the user the call is billed to, when the caller knows one. Plain
+  /// column, no FK: spend must survive the user's deletion. NULL = unattributed.
+  userId           String?
+  /// #792 — pipeline step that spent the tokens (`chat`, `analysis`,
+  /// `impact.table-filter`, …) for the usage page's "by agent step" view.
+  /// NULL on rows written before #792 and by callers that set none.
+  agentStep        String?
   createdAt        DateTime @default(now())
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)

@@ -222,3 +222,21 @@ describe("extractRoutineUsage", () => {
     }
   });
 });
+
+describe("extractRoutineUsage — enclosing-function origin (#760)", () => {
+  it("originates the executes edge from the enclosing function, not exec@line", async () => {
+    const { prisma, recorded } = fakePrisma();
+    const writer = new SchemaGraphWriter(prisma, "g1", "p1");
+    const src = `export function restock() {\n  return db.query("CALL update_inventory(5, 10)");\n}\n`;
+    const client = stubClient(() => routineResult([{ name: "update_inventory" }]));
+
+    const res = await extractRoutineUsage(writer, "src/svc.ts", src, {
+      client,
+      enclosingSymbols: [{ id: "fn-restock", startLine: 1, endLine: 3 }],
+    });
+
+    expect(res.edges).toBe(1);
+    expect(recorded.edges[0].fromSymbolId).toBe("fn-restock");
+    expect(recorded.symbols.some((s) => s.name.startsWith("exec@"))).toBe(false);
+  });
+});

@@ -121,6 +121,46 @@ describe("extractJooqSchema wiring (#897)", () => {
     expect(s.schemaEdges).toBe(edges.length);
   });
 
+  // Review of PR #807 — a MyBatis annotation statement is persisted as a
+  // one-line `method` symbol with `language: "sql"`. Without the shared
+  // exclusion it is always the narrowest span and wins over the real method.
+  it("never anchors an edge on a one-line `sql`-language synthetic method symbol", async () => {
+    const synthetic = {
+      id: "sql-stmt-12",
+      kind: "method",
+      language: "sql",
+      filePath: "src/BookDao.java",
+      startLine: 12,
+      endLine: 12,
+    };
+    const { prisma, edges } = fakePrisma([
+      ...bookDaoMethodSymbols.map((m) => ({ ...m, language: "java" })),
+      synthetic,
+    ]);
+    await extractJooqSchema(
+      prisma as never,
+      "g1",
+      "p1",
+      new Map([
+        ["src/tables/Book.java", bookSrc],
+        ["src/BookDao.java", bookDaoSrc],
+      ]),
+      [
+        { filePath: "src/tables/Book.java", language: "java" },
+        { filePath: "src/BookDao.java", language: "java" },
+      ] as never,
+      stats(),
+      new Map([
+        ["src/tables/Book.java", bookSrc],
+        ["src/BookDao.java", bookDaoSrc],
+      ]),
+    );
+    expect(edges.length).toBeGreaterThan(0);
+    expect(edges.some((e: any) => e.fromSymbolId === "sql-stmt-12")).toBe(false);
+    // The line-12 call site (`findAllBooks`) still lands on the real method.
+    expect(edges.some((e: any) => e.fromSymbolId === "m-findAllBooks" && e.line === 12)).toBe(true);
+  });
+
   it("skips call sites with no enclosing persisted method symbol", async () => {
     const { prisma, edges } = fakePrisma(); // no existing method symbols
     await extractJooqSchema(

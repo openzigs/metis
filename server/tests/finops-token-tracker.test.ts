@@ -19,6 +19,8 @@ interface PersistedRow {
   cacheWriteTokens: number;
   totalTokens: number;
   costCents: number | null;
+  userId?: string;
+  agentStep?: string;
 }
 
 const persisted: PersistedRow[] = [];
@@ -46,6 +48,33 @@ afterEach(() => {
 });
 
 describe("recordUsage", () => {
+  it("#792 — persists who and which step a call is billed to, so the usage page can group the ledger", async () => {
+    await recordUsageAndFlush({
+      projectId: "proj-1",
+      sessionId: "sess-1",
+      provider: "openai",
+      model: "gpt-4o",
+      inputTokens: 10,
+      outputTokens: 5,
+      userId: "user-7",
+      agentStep: "impact.table-filter",
+    });
+    expect(persisted[0]).toMatchObject({ userId: "user-7", agentStep: "impact.table-filter" });
+  });
+
+  it("#792 — a caller that knows neither writes no attribution columns", async () => {
+    await recordUsageAndFlush({
+      projectId: "proj-1",
+      sessionId: "sess-1",
+      provider: "openai",
+      model: "gpt-4o",
+      inputTokens: 10,
+      outputTokens: 5,
+    });
+    expect(persisted[0]).not.toHaveProperty("userId");
+    expect(persisted[0]).not.toHaveProperty("agentStep");
+  });
+
   it("computes cost from provider rates and persists a row", async () => {
     const r = await recordUsageAndFlush({
       projectId: "proj-1",

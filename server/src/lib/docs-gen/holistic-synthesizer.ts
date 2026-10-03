@@ -253,6 +253,9 @@ import {
 
 const log = createChildLogger("docs-gen:holistic");
 
+/** #792 — `agentStep` on the project-ledger rows of docs-generation calls. */
+export const DOCS_GEN_AGENT_STEP = "docs-gen";
+
 export type DocType = "business-requirements" | "architecture" | "user-guide";
 
 /**
@@ -3006,6 +3009,7 @@ async function streamPhase1Facts(
         recordUsage({
           projectId: opts.projectId,
           sessionId,
+          agentStep: DOCS_GEN_AGENT_STEP,
           provider: provider.key,
           model: provider.model,
           inputTokens: usage.promptTokens,
@@ -3974,7 +3978,12 @@ export async function synthesizeFinalDocument(
       cacheReadTokens: event.cacheReadTokens,
       cacheWriteTokens: event.cacheWriteTokens,
     };
-    recordUsage({ projectId, sessionId: groundingSessionId, ...tokens });
+    recordUsage({
+      projectId,
+      sessionId: groundingSessionId,
+      agentStep: DOCS_GEN_AGENT_STEP,
+      ...tokens,
+    });
     noteRunUsage(tokens);
   };
   // #166 — every mined rule's code line, for the judge (built once per run).
@@ -5918,6 +5927,7 @@ async function streamSectionContent(
     recordUsage({
       projectId: opts.projectId,
       sessionId: opts.sessionId,
+      agentStep: DOCS_GEN_AGENT_STEP,
       provider: provider.key,
       model: provider.model,
       inputTokens: promptTokens,

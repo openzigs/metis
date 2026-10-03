@@ -28,6 +28,7 @@ import type { SchemaRoutineKind } from "@metis/shared";
 import type { Language } from "./parsers.js";
 import { detectLanguage } from "./parsers.js";
 import { findEmbeddedSqlCandidates } from "./embedded-sql-extractor.js";
+import { enclosingSymbolFor, type EnclosingSymbol } from "./orm-callsite-extractor.js";
 import type { SchemaGraphWriter } from "./schema-graph.js";
 import {
   extractUsageSafe,
@@ -58,6 +59,12 @@ export interface RoutineUsageOptions {
   client?: SqlLineageClient;
   /** Epic #882 (#894) — resolved per-project SQL-lineage override. */
   sqlLineageOverride?: boolean | null;
+  /**
+   * #760 — the file's persisted function/method symbols; an invocation inside
+   * one originates from the narrowest enclosing symbol instead of a synthetic
+   * `exec@<line>` origin.
+   */
+  enclosingSymbols?: readonly EnclosingSymbol[];
 }
 
 export interface RoutineUsageResult {
@@ -69,12 +76,18 @@ export interface RoutineUsageResult {
   routines: number;
 }
 
-/** Build the `from` (calling code) symbol id for a routine invocation site. */
+/**
+ * Build the `from` (calling code) symbol id for a routine invocation site: the
+ * enclosing function/method when there is one (#760), else `exec@<line>`.
+ */
 async function originFor(
   writer: SchemaGraphWriter,
   filePath: string,
   line: number,
+  enclosingSymbols: readonly EnclosingSymbol[],
 ): Promise<string> {
+  const enclosing = enclosingSymbolFor(enclosingSymbols, line);
+  if (enclosing) return enclosing.id;
   return writer.createOriginSymbol(
     "method",
     `exec@${line}`,
@@ -116,7 +129,7 @@ export async function extractRoutineUsage(
     );
     if (!extraction || extraction.routines.length === 0) continue;
 
-    const fromId = await originFor(writer, filePath, candidate.line);
+    const fromId = await originFor(writer, filePath, candidate.line, opts.enclosingSymbols ?? []);
     for (const routine of extraction.routines) {
       const dedupeKey = `${candidate.line}::${routine.qualifiedName}`;
       if (seen.has(dedupeKey)) continue;

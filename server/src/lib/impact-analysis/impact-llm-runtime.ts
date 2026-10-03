@@ -23,7 +23,9 @@
  * The decorator returned by {@link ImpactLlmRuntime.instrument} therefore does
  * three things and nothing else:
  *
- *   1. **Meters** every completed call into `AITokenUsage` with `projectId`
+ *   1. **Meters** every completed call into the project ledger `TokenUsage`
+ *      (what `usage-summary`, the budget and the usage page read, #792) and into
+ *      `AITokenUsage` with `projectId`
  *      (from the {@link runInImpactProjectScope} scope the engine publishes)
  *      and a per-stage `agentStep`, so spend is attributable per project AND
  *      per stage.
@@ -42,6 +44,7 @@
 import { createChildLogger } from "../logger.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { getTokenTracker } from "../ai/token-tracker.js";
+import { recordUsage, type RecordUsageInput } from "../finops/token-tracker.js";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
 import { currentImpactProjectId } from "./impact-llm-scope.js";
 
@@ -99,9 +102,7 @@ const STAGE_LABEL: Record<ImpactLlmStage, string> = {
 
 /** Why a stage never got to make a call. */
 export type ImpactStageUnavailableReason =
-  | "no-provider"
-  | "provider-offline"
-  | "provider-build-failed";
+  "no-provider" | "provider-offline" | "provider-build-failed";
 
 export interface ImpactLlmStageSnapshot {
   stage: ImpactLlmStage;
@@ -167,9 +168,12 @@ export interface ImpactLlmRuntimeOptions {
   timeoutMs?: number;
   /** Token recorder seam (tests). */
   tracker?: TokenRecorder;
+  /** Project-ledger (`token_usages`) recorder seam (tests). */
+  recordProjectUsage?: (input: RecordUsageInput) => { persisted: Promise<void> };
   /**
    * Backing-session factory seam. Returns the `AISession` id to hang usage rows
-   * off, or `null` when one cannot be created (usage is then skipped, loudly).
+   * off, or `null` when one cannot be created (the per-user row is then
+   * skipped, loudly; the project-ledger row is still written, #792).
    */
   createSession?: (input: {
     actorId: string;
@@ -206,6 +210,7 @@ function defaultCreateSession(input: {
 export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlmRuntime {
   const timeoutMs = opts.timeoutMs ?? impactLlmTimeoutMs();
   const tracker = opts.tracker ?? getTokenTracker();
+  const recordProjectUsage = opts.recordProjectUsage ?? recordUsage;
   const createSession = opts.createSession ?? defaultCreateSession;
   const fallbackProjectId = opts.projectIds[0] ?? null;
 
@@ -230,9 +235,10 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
         provider,
         model,
       }).catch((err: unknown) => {
-        // No session ⇒ no FK target ⇒ no usage rows. Say so once, loudly: an
-        // operator reading "unmetered" needs the reason, not silence.
-        log.error("impact LLM usage session could not be created; calls stay unmetered", {
+        // No session ⇒ no FK target ⇒ no per-user usage rows (the project
+        // ledger needs none, #792). Say so once, loudly: an operator missing
+        // those rows needs the reason, not silence.
+        log.error("impact LLM usage session could not be created; calls reach token_usages only", {
           error: String(err),
         });
         return null;
@@ -256,16 +262,36 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
 
     const task = (async () => {
       const sessionId = await ensureSession(providerKey, model);
-      if (!sessionId) return;
-      tracker.record({
-        sessionId,
-        userId: opts.actorId,
-        provider: providerKey,
-        model,
-        usage,
-        ...(projectId ? { projectId } : {}),
-        agentStep: IMPACT_LLM_AGENT_STEP[stage],
-      });
+      // #792 — the project ledger `usage-summary`, the budget and the usage
+      // page read. Before this, impact spend reached only `ai_token_usages`,
+      // so it never counted against the project's budget. It needs no
+      // AISession (no FK), so it is written even when none could be created.
+      const ledgerWrite = projectId
+        ? recordProjectUsage({
+            projectId,
+            sessionId: sessionId ?? "",
+            userId: opts.actorId,
+            provider: providerKey,
+            model,
+            inputTokens: promptTokens,
+            outputTokens: completionTokens,
+            cacheReadTokens: usage?.cacheReadTokens ?? 0,
+            cacheWriteTokens: usage?.cacheWriteTokens ?? 0,
+            agentStep: IMPACT_LLM_AGENT_STEP[stage],
+          }).persisted
+        : null;
+      if (sessionId) {
+        tracker.record({
+          sessionId,
+          userId: opts.actorId,
+          provider: providerKey,
+          model,
+          usage,
+          ...(projectId ? { projectId } : {}),
+          agentStep: IMPACT_LLM_AGENT_STEP[stage],
+        });
+      }
+      await ledgerWrite;
     })().catch((err: unknown) => {
       log.warn("impact LLM usage recording failed", { stage, error: String(err) });
     });

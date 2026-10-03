@@ -74,6 +74,7 @@ import {
 } from "../lib/ai/tool-runtime/session-tools.js";
 import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/chat-turn.js";
 import {
+  CHAT_TURN_AGENT_STEP,
   ESTIMATED_TURN_AGENT_STEP,
   TurnUsageMeter,
   billableTurnUsage,
@@ -115,6 +116,7 @@ import { AIError, AIOfflineError, AIProviderError } from "../lib/ai/errors.js";
 import { getSemanticCache, shouldSkipCache } from "../lib/ai/semantic-cache.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
 import { formatDerivedLabel } from "../lib/rag/derived-label.js";
+import { formatHitLocator, formatHitScore } from "../lib/rag/hit-locator.js";
 import {
   countProjectToolReads,
   describeGrounding,
@@ -565,8 +567,8 @@ export async function buildAutoRagContext(
       const projectName = project?.name?.trim() || "this project";
       const chunkList = hits.map(
         (h, i) =>
-          `[${i + 1}] ${h.filename}#${h.position}${formatDerivedLabel(h.derived)} ` +
-          `(score=${h.score.toFixed(3)})\n${h.text}`,
+          `[${i + 1}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
+          `(${formatHitScore(h, 3)})\n${h.text}`,
       );
       if (capture) {
         capture.contexts.push(...chunkList);
@@ -835,6 +837,8 @@ function bindSubAgents(
       recordProjectUsage({
         projectId: live.meter.projectId,
         sessionId: live.meter.sessionId,
+        userId: live.meter.userId,
+        agentStep: "subagent",
         provider: ctx.provider.key,
         model,
         inputTokens: usage.promptTokens,
@@ -1596,6 +1600,8 @@ export function aiRouter(): Router {
         recordProjectUsage({
           projectId: session.projectId,
           sessionId: session.id,
+          userId,
+          agentStep: billed.estimated ? ESTIMATED_TURN_AGENT_STEP : CHAT_TURN_AGENT_STEP,
           provider: response.provider,
           model: response.model,
           inputTokens: billed.usage.promptTokens,
@@ -2309,6 +2315,8 @@ export function aiRouter(): Router {
         recordProjectUsage({
           projectId: session.projectId,
           sessionId: session.id,
+          userId,
+          agentStep: billed.estimated ? ESTIMATED_TURN_AGENT_STEP : CHAT_TURN_AGENT_STEP,
           provider: streamProvider.key,
           model,
           inputTokens: billed.usage.promptTokens,
