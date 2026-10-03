@@ -19,6 +19,11 @@ import {
 
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
+import {
+  testCoveragePreAuthRateLimiter,
+  testCoverageRateLimiter,
+} from "../middleware/test-coverage-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { getProject } from "../lib/projects/project-service.js";
@@ -118,6 +123,18 @@ export interface TestCoverageRouterDeps {
 
 export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
   const r = Router({ mergeParams: true });
+  // #795 — the #674 object-level chokepoint: every handler below is reachable
+  // only by a caller who can access `:projectId` (404 otherwise, no oracle).
+  // Under the real `apiRouter()` this is a second check: `projectsRouter()`'s
+  // `/:id/:sub` catch-all (projects.ts) already runs `requireAuth` and
+  // `requireProjectAccess` for this path before this router (and so these
+  // limiters) is reached. The limiters below therefore bound only this router's own
+  // auth/access work (and any mount without that upstream guard); they do not
+  // shield the upstream project read (CodeQL js/missing-rate-limiting).
+  r.use(testCoveragePreAuthRateLimiter);
+  r.use(requireAuth);
+  r.use(testCoverageRateLimiter);
+  r.use(requireProjectAccess());
   const enqueueRun =
     deps.enqueueRun ?? createDefaultEnqueueRun({ emitter: deps.emitter, caller: deps.caller });
 
@@ -395,14 +412,25 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
       try {
         const body = OverrideMappingBodySchema.parse(req.body);
         const actor = actorFromReq(req);
-        const updated = await prisma.coverageMapping.update({
-          where: { id: String(req.params.mappingId) },
+        const projectId = String(req.params.projectId);
+        const id = String(req.params.mappingId);
+        // #795 — scope the write to the URL project through the run; a mapping
+        // id from another project matches zero rows and reads as not found.
+        const { count } = await prisma.coverageMapping.updateMany({
+          where: { id, run: { projectId } },
           data: {
             status: body.status === "COVERED" ? "OVERRIDDEN" : body.status,
             overriddenById: actor.id,
             overrideReason: body.reason,
           },
         });
+        if (count === 0) throw new AppError(404, "MAPPING_NOT_FOUND", "Mapping not found");
+        // Re-read under the same scope: a run deleted between the two
+        // statements yields null (404), never a P2025 throw (500).
+        const updated = await prisma.coverageMapping.findFirst({
+          where: { id, run: { projectId } },
+        });
+        if (!updated) throw new AppError(404, "MAPPING_NOT_FOUND", "Mapping not found");
         audit({
           actor: { id: actor.id },
           action: "test-coverage.mapping.override",
@@ -424,10 +452,22 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
       try {
         const body = AcceptSuggestionBodySchema.parse(req.body);
         const actor = actorFromReq(req);
-        const updated = await prisma.suggestion.update({
-          where: { id: String(req.params.suggestionId) },
+        const projectId = String(req.params.projectId);
+        const id = String(req.params.suggestionId);
+        // #795 — scoped to the URL project, as for mappings above.
+        const { count } = await prisma.suggestion.updateMany({
+          where: { id, run: { projectId } },
           data: { status: body.status },
         });
+        if (count === 0) {
+          throw new AppError(404, "SUGGESTION_NOT_FOUND", "Suggestion not found");
+        }
+        const updated = await prisma.suggestion.findFirst({
+          where: { id, run: { projectId } },
+        });
+        if (!updated) {
+          throw new AppError(404, "SUGGESTION_NOT_FOUND", "Suggestion not found");
+        }
         audit({
           actor: { id: actor.id },
           action: "test-coverage.suggestion.update",

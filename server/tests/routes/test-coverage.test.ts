@@ -30,6 +30,8 @@ vi.mock("../../src/lib/prisma.js", () => ({
     },
     coverageMapping: {
       findMany: vi.fn(),
+      findFirst: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -38,7 +40,10 @@ vi.mock("../../src/lib/prisma.js", () => ({
     },
     suggestion: {
       findMany: vi.fn(),
+      findFirst: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     requirement: {
       findMany: vi.fn(),
@@ -129,6 +134,11 @@ import { prisma } from "../../src/lib/prisma.js";
 import { audit } from "../../src/lib/audit/audit-service.js";
 import { getProject } from "../../src/lib/projects/project-service.js";
 import { testCoverageRouter } from "../../src/routes/test-coverage.js";
+import { requireAuth } from "../../src/middleware/auth.js";
+import {
+  testCoveragePreAuthRateLimiter,
+  testCoverageRateLimiter,
+} from "../../src/middleware/test-coverage-rate-limit.js";
 import { AppError, errorHandler } from "../../src/middleware/error-handler.js";
 import { DEFAULT_BUDGET_CENTS } from "../../src/lib/testcoverage/cost-tracker.js";
 import {
@@ -324,7 +334,8 @@ describe("GET /projects/:projectId/test-coverage/runs/:runId/report", () => {
 
 describe("PATCH /mappings/:mappingId", () => {
   it("maps COVERED override to DB status OVERRIDDEN", async () => {
-    vi.mocked(prisma.coverageMapping.update).mockResolvedValue({
+    vi.mocked(prisma.coverageMapping.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.coverageMapping.findFirst).mockResolvedValue({
       id: "m-1",
       status: "OVERRIDDEN",
     } as never);
@@ -333,18 +344,23 @@ describe("PATCH /mappings/:mappingId", () => {
       .patch("/projects/proj-1/test-coverage/mappings/m-1")
       .send({ status: "COVERED", reason: "human review" });
     expect(res.status).toBe(200);
-    expect(prisma.coverageMapping.update).toHaveBeenCalledWith({
-      where: { id: "m-1" },
+    expect(res.body.data).toEqual({ id: "m-1", status: "OVERRIDDEN" });
+    expect(prisma.coverageMapping.updateMany).toHaveBeenCalledWith({
+      where: { id: "m-1", run: { projectId: "proj-1" } },
       data: expect.objectContaining({
         status: "OVERRIDDEN",
         overriddenById: "user-1",
         overrideReason: "human review",
       }),
     });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "test-coverage.mapping.override" }),
+    );
   });
 
   it("passes through UNCOVERED/AMBIGUOUS verbatim", async () => {
-    vi.mocked(prisma.coverageMapping.update).mockResolvedValue({
+    vi.mocked(prisma.coverageMapping.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.coverageMapping.findFirst).mockResolvedValue({
       id: "m-1",
       status: "UNCOVERED",
     } as never);
@@ -353,17 +369,54 @@ describe("PATCH /mappings/:mappingId", () => {
       .patch("/projects/proj-1/test-coverage/mappings/m-1")
       .send({ status: "UNCOVERED", reason: "false positive" });
     expect(res.status).toBe(200);
-    expect(prisma.coverageMapping.update).toHaveBeenCalledWith(
+    expect(prisma.coverageMapping.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: "UNCOVERED" }),
       }),
     );
   });
+
+  it("404s a mapping that belongs to another project's run, writing nothing (#795)", async () => {
+    // The run-scoped where matches zero rows for a foreign mapping id.
+    vi.mocked(prisma.coverageMapping.updateMany).mockResolvedValue({ count: 0 } as never);
+    const app = createApp(mockUser);
+    const res = await request(app)
+      .patch("/projects/proj-other/test-coverage/mappings/m-1")
+      .send({ status: "COVERED", reason: "cross-project" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("MAPPING_NOT_FOUND");
+    expect(prisma.coverageMapping.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "m-1", run: { projectId: "proj-other" } } }),
+    );
+    expect(prisma.coverageMapping.update).not.toHaveBeenCalled();
+    expect(prisma.coverageMapping.findFirst).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("404s (not 500s) when the run vanishes between the scoped update and the re-read", async () => {
+    // The update matched, then a concurrent run delete cascaded the mapping
+    // away. An unscoped findUniqueOrThrow would raise P2025 here -> 500.
+    vi.mocked(prisma.coverageMapping.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.coverageMapping.findFirst).mockResolvedValue(null as never);
+    vi.mocked(prisma.coverageMapping.findUniqueOrThrow).mockRejectedValue(
+      Object.assign(new Error("No CoverageMapping found"), { code: "P2025" }),
+    );
+    const res = await request(createApp(mockUser))
+      .patch("/projects/proj-1/test-coverage/mappings/m-1")
+      .send({ status: "COVERED", reason: "raced" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("MAPPING_NOT_FOUND");
+    expect(prisma.coverageMapping.findFirst).toHaveBeenCalledWith({
+      where: { id: "m-1", run: { projectId: "proj-1" } },
+    });
+    expect(audit).not.toHaveBeenCalled();
+  });
 });
 
 describe("PATCH /suggestions/:suggestionId", () => {
   it("accepts a suggestion and records audit", async () => {
-    vi.mocked(prisma.suggestion.update).mockResolvedValue({
+    vi.mocked(prisma.suggestion.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.suggestion.findFirst).mockResolvedValue({
       id: "s-1",
       status: "accepted",
     } as never);
@@ -372,10 +425,185 @@ describe("PATCH /suggestions/:suggestionId", () => {
       .patch("/projects/proj-1/test-coverage/suggestions/s-1")
       .send({ status: "accepted", reason: "covers gap" });
     expect(res.status).toBe(200);
-    expect(prisma.suggestion.update).toHaveBeenCalledWith({
-      where: { id: "s-1" },
+    expect(res.body.data).toEqual({ id: "s-1", status: "accepted" });
+    expect(prisma.suggestion.updateMany).toHaveBeenCalledWith({
+      where: { id: "s-1", run: { projectId: "proj-1" } },
       data: { status: "accepted" },
     });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "test-coverage.suggestion.update" }),
+    );
+  });
+
+  it("404s a suggestion that belongs to another project's run, writing nothing (#795)", async () => {
+    vi.mocked(prisma.suggestion.updateMany).mockResolvedValue({ count: 0 } as never);
+    const app = createApp(mockUser);
+    const res = await request(app)
+      .patch("/projects/proj-other/test-coverage/suggestions/s-1")
+      .send({ status: "rejected", reason: "cross-project" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SUGGESTION_NOT_FOUND");
+    expect(prisma.suggestion.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "s-1", run: { projectId: "proj-other" } } }),
+    );
+    expect(prisma.suggestion.update).not.toHaveBeenCalled();
+    expect(prisma.suggestion.findFirst).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("404s (not 500s) when the run vanishes between the scoped update and the re-read", async () => {
+    vi.mocked(prisma.suggestion.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.suggestion.findFirst).mockResolvedValue(null as never);
+    vi.mocked(prisma.suggestion.findUniqueOrThrow).mockRejectedValue(
+      Object.assign(new Error("No Suggestion found"), { code: "P2025" }),
+    );
+    const res = await request(createApp(mockUser))
+      .patch("/projects/proj-1/test-coverage/suggestions/s-1")
+      .send({ status: "accepted", reason: "raced" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SUGGESTION_NOT_FOUND");
+    expect(prisma.suggestion.findFirst).toHaveBeenCalledWith({
+      where: { id: "s-1", run: { projectId: "proj-1" } },
+    });
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #795 — the router mounts the #674 `requireProjectAccess()` chokepoint, so a
+ * caller outside the project's workspace gets 404 from EVERY handler before any
+ * role check or data access. These run the real middleware and the real
+ * `assertProjectAccess`; only the `project.findUnique` row is stubbed.
+ */
+describe("project access chokepoint on the test-coverage router (#795)", () => {
+  const outsider = { userId: "user-b", role: "developer", workspaces: ["ws-B"] };
+  const member = { userId: "user-a", role: "developer", workspaces: ["ws-A"] };
+
+  function projectInWorkspaceA(callerIsMember: boolean) {
+    vi.mocked(prisma.project.findUnique).mockResolvedValue({
+      workspaceId: "ws-A",
+      workspace: { deletedAt: null, members: callerIsMember ? [{ id: "mem-1" }] : [] },
+      requireApprovedReview: false,
+    } as never);
+  }
+
+  const routes: Array<[string, (app: Express) => request.Test]> = [
+    ["GET /imports", (app) => request(app).get("/projects/proj-A/test-coverage/imports")],
+    ["GET /runs", (app) => request(app).get("/projects/proj-A/test-coverage/runs")],
+    [
+      "POST /runs",
+      (app) =>
+        request(app)
+          .post("/projects/proj-A/test-coverage/runs")
+          .send({ importIds: ["i"] }),
+    ],
+    [
+      "POST /exports",
+      (app) =>
+        request(app)
+          .post("/projects/proj-A/test-coverage/exports")
+          .send({ runId: "run-1", target: "excel" }),
+    ],
+    [
+      "PATCH /mappings/:id",
+      (app) =>
+        request(app)
+          .patch("/projects/proj-A/test-coverage/mappings/m-1")
+          .send({ status: "COVERED", reason: "x" }),
+    ],
+    [
+      "PATCH /suggestions/:id",
+      (app) =>
+        request(app)
+          .patch("/projects/proj-A/test-coverage/suggestions/s-1")
+          .send({ status: "accepted", reason: "x" }),
+    ],
+  ];
+
+  for (const [label, send] of routes) {
+    it(`404s ${label} for a caller outside the project's workspace`, async () => {
+      projectInWorkspaceA(false);
+      const res = await send(createApp(outsider));
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("NOT_FOUND");
+      expect(prisma.project.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "proj-A" } }),
+      );
+      expect(prisma.testCaseImport.findMany).not.toHaveBeenCalled();
+      expect(prisma.testCoverageRun.findMany).not.toHaveBeenCalled();
+      expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+      expect(prisma.testCoverageRun.findFirst).not.toHaveBeenCalled();
+      expect(prisma.coverageMapping.updateMany).not.toHaveBeenCalled();
+      expect(prisma.suggestion.updateMany).not.toHaveBeenCalled();
+    });
+  }
+
+  it("admits a workspace member through to the handler", async () => {
+    projectInWorkspaceA(true);
+    vi.mocked(prisma.coverageMapping.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.coverageMapping.findFirst).mockResolvedValue({
+      id: "m-1",
+      status: "OVERRIDDEN",
+    } as never);
+    const res = await request(createApp(member))
+      .patch("/projects/proj-A/test-coverage/mappings/m-1")
+      .send({ status: "COVERED", reason: "x" });
+    expect(res.status).toBe(200);
+    expect(prisma.coverageMapping.updateMany).toHaveBeenCalled();
+  });
+});
+
+describe("router-level rate limiting (#795, CodeQL js/missing-rate-limiting)", () => {
+  afterEach(() => {
+    delete process.env.TEST_COVERAGE_RATE_LIMIT_MAX;
+    delete process.env.TEST_COVERAGE_PREAUTH_RATE_LIMIT_MAX;
+  });
+
+  it("mounts the per-IP limiter before requireAuth, and the per-user one before the access check", () => {
+    // `requireAuth` is mocked as a pass-through in this file, so a 401 seen by
+    // a request test comes from requireProjectAccess, not from authentication.
+    // The ordering guarantee is asserted structurally on the router stack.
+    const stack = (
+      testCoverageRouter() as unknown as { stack: Array<{ handle: unknown; route?: unknown }> }
+    ).stack.filter((layer) => !layer.route);
+    const at = (pred: (h: unknown) => boolean) => stack.findIndex((l) => pred(l.handle));
+    const preAuth = at((h) => h === testCoveragePreAuthRateLimiter);
+    const auth = at((h) => h === requireAuth);
+    const perUser = at((h) => h === testCoverageRateLimiter);
+    const access = at((h) => (h as { name?: string }).name === "requireProjectAccessMiddleware");
+    expect([preAuth, auth, perUser, access].every((i) => i >= 0)).toBe(true);
+    expect(preAuth).toBeLessThan(auth);
+    expect(auth).toBeLessThan(perUser);
+    expect(perUser).toBeLessThan(access);
+  });
+
+  it("refuses an unauthenticated flood per IP with 429 (the first 401 is the access check's)", async () => {
+    process.env.TEST_COVERAGE_PREAUTH_RATE_LIMIT_MAX = "1";
+    const app = createApp(undefined);
+    // A source IP of its own: every other test in this file shares loopback.
+    app.set("trust proxy", true);
+    const ip = "198.51.100.79";
+    const first = await request(app)
+      .get("/projects/proj-1/test-coverage/runs")
+      .set("X-Forwarded-For", ip);
+    expect(first.status).toBe(401);
+    const limited = await request(app)
+      .get("/projects/proj-1/test-coverage/runs")
+      .set("X-Forwarded-For", ip);
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("TEST_COVERAGE_RATE_LIMITED");
+  });
+
+  it("refuses a caller over the per-user budget with 429 before the access check", async () => {
+    process.env.TEST_COVERAGE_RATE_LIMIT_MAX = "1";
+    vi.mocked(prisma.testCaseImport.findMany).mockResolvedValue([] as never);
+    const app = createApp({ userId: "tc-router-limit", role: "developer" });
+    expect((await request(app).get("/projects/proj-1/test-coverage/imports")).status).toBe(200);
+    vi.mocked(prisma.project.findUnique).mockClear();
+    const limited = await request(app).get("/projects/proj-1/test-coverage/imports");
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("TEST_COVERAGE_RATE_LIMITED");
+    expect(prisma.project.findUnique).not.toHaveBeenCalled();
   });
 });
 

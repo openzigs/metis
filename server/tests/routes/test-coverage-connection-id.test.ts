@@ -29,6 +29,11 @@ vi.mock("../../src/lib/projects/project-service.js", () => ({
 vi.mock("../../src/middleware/auth.js", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
+// #795 — the router's project-access chokepoint is exercised in
+// test-coverage.test.ts; this file isolates the connectionId plumbing.
+vi.mock("../../src/middleware/require-project-access.js", () => ({
+  requireProjectAccess: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
 vi.mock("../../src/middleware/require-permission.js", () => ({
   requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
