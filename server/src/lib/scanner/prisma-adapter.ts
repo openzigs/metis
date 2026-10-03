@@ -79,6 +79,7 @@ function meterScanCall(scan: { id: string; projectId: string }) {
     const { persisted } = recordUsage({
       projectId: scan.projectId,
       sessionId: `scan-${scan.id}`,
+      agentStep: "bug-scan",
       provider: response.provider,
       model: response.model,
       inputTokens: response.usage.promptTokens,

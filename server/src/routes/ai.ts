@@ -74,6 +74,7 @@ import {
 } from "../lib/ai/tool-runtime/session-tools.js";
 import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/chat-turn.js";
 import {
+  CHAT_TURN_AGENT_STEP,
   ESTIMATED_TURN_AGENT_STEP,
   TurnUsageMeter,
   billableTurnUsage,
@@ -835,6 +836,8 @@ function bindSubAgents(
       recordProjectUsage({
         projectId: live.meter.projectId,
         sessionId: live.meter.sessionId,
+        userId: live.meter.userId,
+        agentStep: "subagent",
         provider: ctx.provider.key,
         model,
         inputTokens: usage.promptTokens,
@@ -1596,6 +1599,8 @@ export function aiRouter(): Router {
         recordProjectUsage({
           projectId: session.projectId,
           sessionId: session.id,
+          userId,
+          agentStep: billed.estimated ? ESTIMATED_TURN_AGENT_STEP : CHAT_TURN_AGENT_STEP,
           provider: response.provider,
           model: response.model,
           inputTokens: billed.usage.promptTokens,
@@ -2309,6 +2314,8 @@ export function aiRouter(): Router {
         recordProjectUsage({
           projectId: session.projectId,
           sessionId: session.id,
+          userId,
+          agentStep: billed.estimated ? ESTIMATED_TURN_AGENT_STEP : CHAT_TURN_AGENT_STEP,
           provider: streamProvider.key,
           model,
           inputTokens: billed.usage.promptTokens,

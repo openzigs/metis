@@ -68,6 +68,7 @@ describe("meterAnalysisProvider", () => {
     expect(recordUsage).toHaveBeenCalledWith({
       projectId: "proj-1",
       sessionId: "ana-1",
+      agentStep: "analysis",
       provider: "anthropic",
       model: "served-model",
       inputTokens: 100,

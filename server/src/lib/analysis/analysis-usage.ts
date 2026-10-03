@@ -48,6 +48,9 @@ export interface AnalysisUsageScope {
   readonly sessionId: string;
 }
 
+/** #792 — `agentStep` on the project-ledger rows of analysis-family calls. */
+export const ANALYSIS_AGENT_STEP = "analysis";
+
 const storage = new AsyncLocalStorage<AnalysisUsageScope>();
 
 /** Run `fn` with every metered model call it makes billed to `scope`. */
@@ -105,6 +108,7 @@ function record(provider: string, model: string, usage: TokenUsage | undefined):
     const result = recordUsage({
       projectId: scope.projectId,
       sessionId: scope.sessionId,
+      agentStep: ANALYSIS_AGENT_STEP,
       provider,
       model,
       inputTokens: usage.promptTokens,
