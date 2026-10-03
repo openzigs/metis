@@ -5,6 +5,13 @@
 - **Issue**: [#1325](https://github.com/openzigs/metis-private/issues/1325)
 - **Supersedes the enforcement claims in**: `server/prisma/schema.prisma`,
   `docs/data-model.md` (both corrected by #1303/#1323 and again here)
+- **Update (#799, #804)**: the scanner write site this record measures,
+  `materializeTriagedFinding` in `server/src/lib/scanner/prisma-adapter.ts`, was
+  deleted with the AI bug scanner
+  ([ADR 0018](0018-remove-the-ai-bug-scanner.md)). The ratchet now measures
+  **6 call sites across 4 files**, and its canary set names those four files;
+  the "7" and "five files" below are the counts at the time of writing.
+  `DEFAULTED_FINDING_WRITERS` is empty. The decision itself is unchanged.
 
 ## Context
 
