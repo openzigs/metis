@@ -843,8 +843,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const sid = await newSession({ projectId: IDS.project, policy: { medium: "auto" } });
         await send(sid, "SCN-BUDGET go");
         // Recording is queued (non-blocking): wait for the rows to land.
-        let session: Array<{ totalTokens: number }> = [];
-        let project: Array<{ inputTokens: number; outputTokens: number }> = [];
+        let session: Array<{ totalTokens: number; userId: string }> = [];
+        let project: Array<{
+          inputTokens: number;
+          outputTokens: number;
+          agentStep: string | null;
+          userId: string | null;
+        }> = [];
         for (let i = 0; i < 200; i++) {
           session = await db.aITokenUsage.findMany({
             where: { sessionId: sid, agentStep: "subagent" },
@@ -858,6 +863,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // Two delegations of 500 tokens each (400 in / 100 out).
         expect(session.reduce((n, r) => n + r.totalTokens, 0)).toBe(1000);
         expect(project).toHaveLength(2);
+        // #792 — the project ledger rows name the sub-agent step and the user.
+        for (const row of project) {
+          expect(row.agentStep).toBe("subagent");
+          expect(row.userId).toBe(session[0]!.userId);
+        }
       });
 
       it("an agent of ANOTHER project is never offered, and naming it runs nothing", async () => {

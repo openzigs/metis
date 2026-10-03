@@ -13,6 +13,12 @@ const readFileMock = vi.hoisted(() => vi.fn());
 const readdirMock = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 const upsertMock = vi.hoisted(() => vi.fn().mockResolvedValue({}));
 const findUniqueMock = vi.hoisted(() => vi.fn().mockResolvedValue(null));
+const recordUsageMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../finops/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../finops/index.js")>();
+  return { ...actual, recordUsage: recordUsageMock };
+});
 
 vi.mock("../prisma.js", () => ({
   prisma: {
@@ -329,6 +335,19 @@ describe("#155 a TypeScript module's guard clauses reach the Rules section input
 
     const [source] = buildSectionFactsSources([f!], rulesGroup(), "business-requirements");
     expect(source.text).toMatch(/\(src\/billing\/billing\.ts:2\)/);
+  });
+
+  it("#792 — a Phase-1 call's project-ledger row carries the docs-gen step", async () => {
+    const provider = scriptedProvider([{ text: "PURPOSE\nx", finishReason: "stop" }]);
+    await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
+    expect(recordUsageMock).toHaveBeenCalledTimes(1);
+    expect(recordUsageMock.mock.calls[0][0]).toMatchObject({
+      projectId: "p1",
+      sessionId: expect.stringMatching(/^docs-facts-p1-/),
+      agentStep: "docs-gen",
+      inputTokens: 100,
+      outputTokens: 8192,
+    });
   });
 
   it("labels each mined rule in the Phase-1 prompt with file:line, not a bare line number", async () => {

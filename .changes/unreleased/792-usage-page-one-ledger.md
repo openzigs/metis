@@ -7,6 +7,7 @@ section: Fixed
   the Token Budget Status gauge used to read a different table from the cards (10.8M tokens / $5.57
   beside 290k / $0.14); they now count the same calls. Per-user budgets still read the per-user
   store. Each CSV row now names its project.
-- Impact-analysis LLM spend now counts toward the project usage summary and token budget.
+- Impact-analysis and chat `apply_diff` (Morph) spend now count toward the project usage page and budget.
+- Known gap: test-coverage spend is not on the project ledger; that subsystem is being removed (#812).
 - Usage recorded before this release shows under an "unknown" step and an "unattributed" user.
   PR-review spend appears under the "pr-review" step.

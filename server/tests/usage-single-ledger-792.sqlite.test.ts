@@ -44,9 +44,14 @@ const { runInImpactProjectScope } = await import("../src/lib/impact-analysis/imp
 const { UsageService } = await import("../src/lib/usage/usage-service.js");
 const { TokenBudgetController } = await import("../src/lib/ai/token-budget-controller.js");
 const { getTokenTracker } = await import("../src/lib/ai/token-tracker.js");
+const { createApplyDiffTool, APPLY_DIFF_AGENT_STEP } =
+  await import("../src/lib/ai/tools/apply-diff.js");
 
 const PROJECT = "p-792";
 const OTHER = "p-792-other";
+const MORPH = "p-792-morph";
+const DAILY = "p-792-daily";
+const MONTHLY = "p-792-monthly";
 const USER = "u-792";
 const MODEL = "claude-sonnet-4-6";
 
@@ -101,7 +106,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.user.create({
         data: { id: USER, username: USER, displayName: USER, email: `${USER}@example.test` },
       });
-      for (const id of [PROJECT, OTHER]) {
+      for (const id of [PROJECT, OTHER, MORPH, DAILY, MONTHLY]) {
         await db.project.create({ data: { id, name: id, slug: id, createdById: USER } });
       }
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
@@ -195,6 +200,99 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(cards.totalTokens).toBe(28_000);
       expect(gauge.remainingTokens).toBe(100_000 - 28_000);
       expect(gauge.percentUsed).toBeCloseTo(0.28, 10);
+    });
+    it("apply_diff (morph) spend reaches the session project's analytics and CSV", async () => {
+      // A chat session in MORPH; the tool context carries no projectId, as the
+      // chat tool runtime builds it — the project comes from the session.
+      await db.aISession.create({
+        data: { id: "morph-sess", userId: USER, projectId: MORPH, provider: "openai", model: "x" },
+      });
+      const apply = vi.fn(async () => ({
+        content: "patched",
+        provider: "morph" as const,
+        model: "morph-v3",
+        usage: { promptTokens: 700, completionTokens: 300, totalTokens: 1_000 },
+        durationMs: 1,
+      }));
+      const tool = createApplyDiffTool({ isEnabled: () => true, client: { apply } as never });
+      await tool.exec({ original: "a", patch: "b" }, { sessionId: "morph-sess", userId: USER });
+      await drain();
+
+      const svc = new UsageService();
+      const byStep = await svc.projectUsage(MORPH, { range: "7d", groupBy: "agentStep" });
+      expect(byStep.totalTokens).toBe(1_000);
+      expect(byStep.rows).toEqual([
+        expect.objectContaining({ agentStep: APPLY_DIFF_AGENT_STEP, totalTokens: 1_000 }),
+      ]);
+      const byUser = await svc.projectUsage(MORPH, { range: "7d", groupBy: "user" });
+      expect(byUser.rows).toEqual([expect.objectContaining({ userId: USER, totalTokens: 1_000 })]);
+
+      const byDay = await svc.projectUsage(MORPH, { range: "7d", groupBy: "day" });
+      const csv = svc.toCSV(byDay.rows).split("\n");
+      expect(csv).toHaveLength(2);
+      const cells = csv[1].split(",");
+      expect(cells[2]).toBe("morph:morph-v3");
+      expect(cells[4]).toBe(MORPH);
+      expect(Number(cells[7])).toBe(1_000);
+
+      // Counted once on each ledger: one project row, one per-user row.
+      expect(await db.tokenUsage.count({ where: { projectId: MORPH } })).toBe(1);
+      expect(await db.aITokenUsage.count({ where: { sessionId: "morph-sess" } })).toBe(1);
+      expect((await summarizeUsage(MORPH)).totalTokens).toBe(1_000);
+    });
+
+    describe("project budget window (token-budget-controller createdAt bounds)", () => {
+      // Fixed clock: mid-day 2026-03-15 UTC. Only `Date` is faked, so the
+      // database driver's timers keep running.
+      const NOW = new Date("2026-03-15T12:00:00.000Z");
+      const row = (projectId: string, iso: string, totalTokens: number) =>
+        db.tokenUsage.create({
+          data: {
+            projectId,
+            provider: "anthropic",
+            model: MODEL,
+            totalTokens,
+            createdAt: new Date(iso),
+          },
+        });
+
+      it("the daily sum counts only today's rows, with an exclusive day+24h bound", async () => {
+        await row(DAILY, "2026-02-15T12:00:00.000Z", 1); // last month
+        await row(DAILY, "2026-03-14T23:59:59.999Z", 10); // yesterday, last ms
+        await row(DAILY, "2026-03-15T00:00:00.000Z", 100); // today, first ms
+        await row(DAILY, "2026-03-15T11:00:00.000Z", 1_000); // today
+        await row(DAILY, "2026-03-16T00:00:00.000Z", 10_000); // day+24h — excluded
+        await db.tokenBudget.create({ data: { projectId: DAILY, dailyTokenLimit: 1_000_000 } });
+
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(NOW);
+        try {
+          const gauge = await new TokenBudgetController().check(DAILY);
+          expect(gauge.remainingTokens).toBe(1_000_000 - 1_100);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("the monthly sum counts month-to-date rows only, not last month's", async () => {
+        await row(MONTHLY, "2026-02-28T23:59:59.999Z", 1); // last month, last ms
+        await row(MONTHLY, "2026-02-10T09:00:00.000Z", 1); // last month
+        await row(MONTHLY, "2026-03-01T00:00:00.000Z", 10); // month start, first ms
+        await row(MONTHLY, "2026-03-14T08:00:00.000Z", 100); // yesterday
+        await row(MONTHLY, "2026-03-15T08:00:00.000Z", 1_000); // today
+        await db.tokenBudget.create({
+          data: { projectId: MONTHLY, monthlyTokenLimit: 1_000_000 },
+        });
+
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(NOW);
+        try {
+          const gauge = await new TokenBudgetController().check(MONTHLY);
+          expect(gauge.remainingTokens).toBe(1_000_000 - 1_110);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
   },
 );
