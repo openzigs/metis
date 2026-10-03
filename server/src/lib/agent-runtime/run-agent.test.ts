@@ -12,6 +12,10 @@ import {
   runAgent,
 } from "./run-agent.js";
 import type { PrismaClient } from "@prisma/client";
+import { OfflineStubProvider } from "../ai/providers/offline-stub-provider.js";
+import { makeToolset } from "../ai/tool-runtime/toolset.js";
+import type { RuntimeTool } from "../ai/tool-runtime/types.js";
+import type { ApprovalGateService } from "../ai/approval-policy.js";
 
 const def: AgentDefinitionDto = {
   ref: "custom:a1",
@@ -194,5 +198,50 @@ describe("#289 — output contract and the bounded final-answer retry (text only
     const res = await runAgent({ provider, definition: def, input: "x", frame: "user-input" });
     expect(calls).toHaveLength(1);
     expect(res.finalAnswerRetry).toBeUndefined();
+  });
+});
+
+describe("PR #783 review — a tool run's final synthesis keeps the output contract", () => {
+  it("passes outputContract to the chat tool loop's synthesis call", async () => {
+    const read: RuntimeTool = {
+      name: "read_file_slice",
+      wireName: "read_file_slice",
+      description: "read",
+      parameters: { type: "object" },
+      risk: "low",
+      source: "metis",
+      validate: (args) => ({ ok: true, args }),
+      execute: async () => ({ text: "evidence" }),
+    };
+    const gate = {
+      evaluate: vi.fn(async () => ({ allowed: true, decision: "allow" })),
+      recordRefusal: vi.fn(async () => ({ allowed: false, decision: "deny" })),
+    } as unknown as ApprovalGateService;
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "read_file_slice", args: {} }] },
+        { content: '{"findings":[]}' },
+      ],
+    });
+    const res = await runAgent({
+      provider,
+      definition: def,
+      input: "x",
+      frame: "user-input",
+      outputContract: "ANSWER FORMAT: findings JSON",
+      tools: {
+        toolset: makeToolset([read]),
+        gate,
+        ctx: { sessionId: "s1", userId: "u1", projectId: "p1" },
+        toolNote: "TOOLS",
+        maxTurns: 1,
+      },
+    });
+    expect(res.content).toBe('{"findings":[]}');
+    expect(provider.requests).toHaveLength(2);
+    const last = provider.requests[1]!.messages.at(-1)!;
+    expect(last.role).toBe("user");
+    expect(String(last.content)).toContain("Keep the required output format");
+    expect(String(last.content).endsWith("ANSWER FORMAT: findings JSON")).toBe(true);
   });
 });

@@ -76,6 +76,12 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+// #759 — the default scanner wiring is asserted against this double.
+const mockRunScanWithPrismaPorts = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../src/lib/scanner/prisma-adapter.js", () => ({
+  runScanWithPrismaPorts: mockRunScanWithPrismaPorts,
+}));
+
 import { loadSchedulerConfig, SCHEDULER_DEFAULTS } from "../src/lib/scheduler/config.js";
 import {
   createSchedulerEmitter,
@@ -272,6 +278,27 @@ describe("bootstrapScheduler()", () => {
     expect(await readTaskRecord(task.id)).toMatchObject({
       status: "completed",
       result: { generatedDocumentId: "d1", status: "published", chunkCount: 3 },
+    });
+    await boot.shutdown();
+  });
+
+  it("default scanner wiring hands the task's attempt counter to the scan (#759)", async () => {
+    const boot = bootstrapScheduler({});
+    const task = await boot.queue.enqueue({
+      type: "scanner.run-scan",
+      projectId: "p1",
+      payload: { scanId: "scan-1" },
+      maxAttempts: 4,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockRunScanWithPrismaPorts).toHaveBeenCalledExactlyOnceWith(
+      "scan-1",
+      expect.any(AbortSignal),
+      { attempts: 1, maxAttempts: 4 },
+    );
+    expect(await readTaskRecord(task.id)).toMatchObject({
+      status: "completed",
+      result: { scanId: "scan-1" },
     });
     await boot.shutdown();
   });

@@ -19,6 +19,7 @@ import type {
   RequirementSupportConfidence,
   RequirementVerdict,
   SynthesisDegradation,
+  RequirementReplacementWithheld,
   TraceabilityMatrix,
   GapReport,
   RequirementDiff,
@@ -908,6 +909,12 @@ export interface EnhancementMetadata {
    * typed "feature" and carries no acceptance criteria.
    */
   synthesisDegraded?: SynthesisDegradation;
+  /**
+   * Issue #769 — present when a re-synthesis was refused permission to replace
+   * the requirement set (reviewed work, or a degraded result over a healthy
+   * one). Cleared by the next replacement that is allowed.
+   */
+  requirementReplacementWithheld?: RequirementReplacementWithheld;
 }
 
 /** Narrow a snapshot's untyped `metadata` blob into the enhancement view. */

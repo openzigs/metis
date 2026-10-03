@@ -3162,11 +3162,12 @@ export class AnalysisOrchestrator {
       // already polls `metadata` (that is how #1104's gated-requirements notice
       // reaches the screen), and the alternative was inventing an
       // `AnalysisAgentEventType` for a state the user reads after the run ends.
-      if (result.degraded) {
-        await persistAnalysisEnhancement(input.analysisId, {
-          synthesisDegraded: result.degraded,
-        });
-      }
+      //
+      // Issue #769 — the marker describes the PERSISTED requirement set, so on
+      // the promotion path it is written by `persistRequirements` together with
+      // the set it describes (a degraded synthesis may be refused there and must
+      // not relabel the kept, healthy set). Only the gate-blocked branch below
+      // writes it here, because no set is persisted on that branch.
 
       // Epic #202 (#216) — gate artifact promotion on resolved approvals.
       // Synthesis still runs (so the agent result is captured), but promotion
@@ -3188,6 +3189,13 @@ export class AnalysisOrchestrator {
           rejectedCount: ticketStatus.rejectedCount,
           awaitingRequirementCount,
         });
+        // Issue #769 — the marker describes the PERSISTED set. When a (healthy,
+        // possibly reviewed) set is already persisted, this run's degradation
+        // describes nothing that exists, and writing it would let the next
+        // degraded run replace that set as if it were itself degraded.
+        const persistedRequirementCount = result.degraded
+          ? await prisma.requirement.count({ where: { analysisId: input.analysisId } })
+          : 0;
         await persistAnalysisEnhancement(input.analysisId, {
           promotionBlocked: {
             blocked: true,
@@ -3199,6 +3207,9 @@ export class AnalysisOrchestrator {
           // #258 — record the coarse outcome in the SAME metadata patch as the
           // marker (one DB write, not two).
           promotionStatus: "blocked",
+          ...(result.degraded && persistedRequirementCount === 0
+            ? { synthesisDegraded: result.degraded }
+            : {}),
         });
         this.emit({
           analysisId: input.analysisId,
@@ -3274,6 +3285,8 @@ export class AnalysisOrchestrator {
         findingIdsByIndex,
         coverages,
         verdicts,
+        // Issue #769 — a degraded set never replaces a healthy one.
+        degraded: result.degraded ?? null,
       });
 
       // feat/req-code-traceability — auto-seed the requirement→code spine from
@@ -3304,7 +3317,8 @@ export class AnalysisOrchestrator {
         agentKey: "synthesis",
         type: "completed",
         status: "completed",
-        findingCount: result.output.requirements.length,
+        // #769 — a withheld replacement persists nothing; report what was written.
+        findingCount: requirementIds.length,
         ts: Date.now(),
       });
       return {};

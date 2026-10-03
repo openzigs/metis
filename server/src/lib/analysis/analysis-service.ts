@@ -61,6 +61,7 @@ import {
   REQUIREMENT_VERDICTS,
   parseAcceptanceCriteria,
   type SynthesisDegradation,
+  type RequirementReplacementWithheld,
 } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
@@ -622,11 +623,112 @@ export interface PersistRequirementsInput {
    * persist `null` (rendered as a neutral state).
    */
   verdicts?: Array<RequirementVerdict | null>;
+  /**
+   * Issue #769 \u2014 the synthesis health: the degradation record when synthesis
+   * fell back to the keyword clusterer, `null` when it was healthy, omitted
+   * when the caller does not know (the #1104 promotion path). A degraded set
+   * never replaces a healthy one.
+   */
+  degraded?: SynthesisDegradation | null;
+}
+
+/**
+ * Issue #769 \u2014 a requirement carries HUMAN work that a set replacement would
+ * hard-delete (every relation below is `onDelete: Cascade`, including the pins
+ * of an "immutable" baseline). Scoped by `analysisId` so another analysis's
+ * reviewed rows can never protect, or fail to protect, this one.
+ */
+function reviewedRequirementWhere(analysisId: string): Prisma.RequirementWhereInput {
+  return {
+    analysisId,
+    OR: [
+      // `draft` is the initial state, not a review decision.
+      { AND: [{ reviewStatus: { not: null } }, { reviewStatus: { not: "draft" } }] },
+      // An edit bumps `version` and appends a `RequirementVersion` row (#770).
+      { version: { gt: 0 } },
+      { versions: { some: {} } },
+      { outgoingLinks: { some: {} } },
+      { incomingLinks: { some: {} } },
+      { dataMappings: { some: { deletedAt: null } } },
+      { baselineItems: { some: {} } },
+      { reviewItems: { some: {} } },
+      { commentThreads: { some: {} } },
+      { assignments: { some: {} } },
+    ],
+  };
+}
+
+/**
+ * Issue #769 \u2014 decide whether a new synthesis may replace the analysis's
+ * existing requirement set. Returns the refusal to record, or null to proceed.
+ *
+ * `degraded === undefined` means the caller does not know the synthesis health
+ * (the #1104 promotion path); only the reviewed-work rule applies then.
+ */
+async function assessRequirementReplacement(
+  input: PersistRequirementsInput,
+  metadata: Record<string, unknown>,
+): Promise<RequirementReplacementWithheld | null> {
+  const existingCount = await prisma.requirement.count({
+    where: { analysisId: input.analysisId },
+  });
+  if (existingCount === 0) return null;
+  const reviewedCount = await prisma.requirement.count({
+    where: reviewedRequirementWhere(input.analysisId),
+  });
+  const base = {
+    existingCount,
+    reviewedCount,
+    proposedCount: input.synthesis.requirements.length,
+    at: new Date().toISOString(),
+  };
+  if (reviewedCount > 0) return { reason: "reviewed-work", ...base };
+  // A degraded result never overwrites a successful one. The existing set was
+  // healthy unless its own synthesis was recorded as degraded.
+  if (input.degraded && !metadata.synthesisDegraded) {
+    return { reason: "degraded-synthesis", ...base };
+  }
+  return null;
 }
 
 export async function persistRequirements(input: PersistRequirementsInput): Promise<string[]> {
-  // Drop any prior synthesis output \u2014 #57 says re-runs replace the
-  // requirement set for the same Analysis.
+  const analysisRow = await prisma.analysis.findFirst({
+    where: { id: input.analysisId },
+    select: { metadata: true },
+  });
+  const metadata = parseMetadata(analysisRow?.metadata ?? null);
+
+  // Issue #769 \u2014 #57 says re-runs replace the requirement set, but never at the
+  // cost of human review work, and never with a degraded result over a good one.
+  const withheld = await assessRequirementReplacement(input, metadata);
+  if (withheld) {
+    log.warn("Requirement set replacement withheld", {
+      analysisId: input.analysisId,
+      ...withheld,
+    });
+    await prisma.analysis.update({
+      where: { id: input.analysisId },
+      data: { metadata: JSON.stringify({ ...metadata, requirementReplacementWithheld: withheld }) },
+    });
+    return [];
+  }
+
+  // Replacement allowed: a stale refusal no longer describes the set, and when
+  // the caller reports the synthesis health, this set's degradation marker is
+  // rewritten to match it (the orchestrator no longer writes it beforehand).
+  const next: Record<string, unknown> = { ...metadata };
+  delete next.requirementReplacementWithheld;
+  if (input.degraded !== undefined) {
+    if (input.degraded) next.synthesisDegraded = input.degraded;
+    else delete next.synthesisDegraded;
+  }
+  if (analysisRow && JSON.stringify(next) !== JSON.stringify(metadata)) {
+    await prisma.analysis.update({
+      where: { id: input.analysisId },
+      data: { metadata: JSON.stringify(next) },
+    });
+  }
+
   await prisma.requirement.deleteMany({ where: { analysisId: input.analysisId } });
 
   const ids: string[] = [];

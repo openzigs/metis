@@ -54,6 +54,7 @@ import { GenerateIssuesAction } from "@/components/analysis/GenerateIssuesAction
 // Issue #1104 — a gated run's empty requirements list must explain itself.
 import { RequirementsEmptyState } from "@/components/analysis/RequirementsEmptyState";
 import { SynthesisDegradedNotice } from "@/components/analysis/SynthesisDegradedNotice";
+import { RequirementReplacementWithheldNotice } from "@/components/analysis/RequirementReplacementWithheldNotice";
 import { AddDocumentsPanel } from "@/components/analysis/add-documents-panel";
 import { formatSourceLabel } from "@/lib/format-source-label";
 import { useRepoNames } from "@/hooks/use-repo-names";
@@ -992,6 +993,9 @@ export default function AnalysisPage(): React.ReactElement {
                       acceptance criteria because the fallback cannot classify.
                       Rendered above the list so it is read before them. */}
                       <SynthesisDegradedNotice metadata={detail.data.metadata} />
+                      {/* Issue #769 — a re-synthesis was refused permission to
+                      replace this (reviewed or healthy) set; say so. */}
+                      <RequirementReplacementWithheldNotice metadata={detail.data.metadata} />
                       {detail.data.requirements.length === 0 ? (
                         /* Issue #1104 (finding B) — distinguish "produced nothing"
                        from "produced N and the approval gate is holding them". */
