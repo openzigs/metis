@@ -40,6 +40,8 @@ export interface FederatedHit {
   projectName: string;
   documentId: string;
   filename: string;
+  /** #717 — a repository file's real path, set only for a `repo` row. */
+  path?: string;
   position: number;
   text: string;
   score: number;
@@ -102,6 +104,8 @@ export class FederatedSearchService {
         projectName: string;
         documentId: string;
         filename: string;
+        /** #717 — a repository file's real path (`repo` rows only). */
+        path?: string;
         position: number;
         text: string;
         score: number;
@@ -125,6 +129,7 @@ export class FederatedSearchService {
           projectName,
           documentId: h.documentId,
           filename: h.filename,
+          ...(h.path ? { path: h.path } : {}),
           position: h.position,
           text: h.text,
           score: h.score,
@@ -160,6 +165,8 @@ export class FederatedSearchService {
         chunkId: string;
         documentId: string;
         filename: string;
+        /** #717 — a repository file's real path (`repo` rows only). */
+        path?: string;
         position: number;
         text: string;
         score: number;
@@ -198,6 +205,8 @@ export class FederatedSearchService {
         projectName: string;
         documentId: string;
         filename: string;
+        /** #717 — a repository file's real path (`repo` rows only). */
+        path?: string;
         position: number;
         text: string;
         score: number;

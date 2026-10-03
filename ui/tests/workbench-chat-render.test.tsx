@@ -168,8 +168,10 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
         {
           id: "doc-repo",
           source: "repo",
+          // #717 — keyed as connector-ingest.ts keys the repo file
+          // `src/main/java/…`: the first `src/` is the ingester's marker.
           filename:
-            "connector:repo:cmexample0000000000acmerp:src/main/java/com/acme/wms/common/vo/ShipmentSourceVO.java",
+            "connector:repo:cmexample0000000000acmerp:src/src/main/java/com/acme/wms/common/vo/ShipmentSourceVO.java",
           status: "ready",
         },
       ],

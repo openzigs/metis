@@ -21,7 +21,7 @@ import {
   type ScanFindingForTriage,
 } from "../lib/scanner/triage-service.js";
 import { materializeTriagedFinding, publishScanFinding } from "../lib/scanner/prisma-adapter.js";
-import { PublishError } from "../lib/scanner/finding-publisher.js";
+import { PublishError } from "../lib/publishing/finding-publisher.js";
 import {
   PUBLISHER_VALUES,
   type Publisher,

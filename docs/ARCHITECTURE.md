@@ -1321,9 +1321,8 @@ Search Query: "What are the authentication requirements?"
                    │
                    ▼
           ┌────────────────┐
-          │  Hybrid Merge  │  Combines both results
-          │  70% vector +  │  with weighted scoring
-          │  30% keyword   │
+          │  Hybrid Merge  │  Reciprocal rank fusion
+          │  (RRF, k = 60) │  of the two ranked lists
           └────────┬───────┘
                    │
                    ▼
@@ -1331,6 +1330,10 @@ Search Query: "What are the authentication requirements?"
 ```
 
 This hybrid approach catches both semantically related content (even when different words are used) and exact keyword matches (for technical terms that need precise matching).
+
+**Keyword terms are code-aware (#717).** `rag/bm25-index.ts` indexes each token whole *and* split at camelCase / `snake_case` boundaries, folds simple plurals and tenses, drops question stop words, and indexes a repository file's path as its own field. Code spells concepts as identifiers (`PollingScheduler`) while tests and config spell them as strings (`"POLLING_SCHEDULER"`); keeping identifiers whole meant only the strings could match, so a question retrieved the tests and never the definition. The index is in-memory and rebuilt from `KnowledgeChunk` rows on first search, so a tokenizer change needs no reindex.
+
+**Scores (#717).** A hit's `score` is the dense cosine (thresholds such as `RAG_SCORE_THRESHOLD` read it, and a keyword-only hit has none, so `0`). `rankScore` is the score the list is ordered by: RRF normalised to 0..1 in `hybrid` (1 = ranked first by both retrievers, 0.5 = first by one), the cosine in `dense`, the reranker's score when reranked. `matchedBy` says which retriever(s) found it. A `repo`-sourced hit also carries `path`, its repository-relative path: the stored filename `connector:repo:<id>:src/<relPath>` carries the ingester's `src/` marker, which is not a directory, and `repoDocumentPath` (`@metis/shared`) is the display-side helper that strips it (`fused-code-context.ts` keeps its own matcher for de-duplication). Model-facing text names a hit through `rag/hit-locator.ts` — chat, both `search-knowledge` tools, the analysis `search_knowledge` tool and the analysis agents' retrieved context (`displayFilename`, which renames only a `repo`-sourced row, #547).
 
 ### 8.4 Components
 
@@ -1917,7 +1920,7 @@ Batch statuses: `pending` → `in-progress` → `completed` | `partial` | `faile
 
 ### 11.4 Per-Finding Deep Dive → Issue (Epic #176)
 
-Alongside the requirement-level batch pipeline above, a single analysis **finding** can be turned into one issue on demand. This is a thin, additive layer that **reuses** the existing scanner finding-publisher and the project's `publishDestination` plumbing rather than introducing a second publishing stack.
+Alongside the requirement-level batch pipeline above, a single analysis **finding** can be turned into one issue on demand. This is a thin, additive layer that **reuses** the shared finding-publisher (`server/src/lib/publishing/`) and the project's `publishDestination` plumbing rather than introducing a second publishing stack.
 
 Two scoped endpoints back the UI dialog (`ui/src/components/findings/deep-dive-dialog.tsx`):
 
@@ -1926,7 +1929,7 @@ Two scoped endpoints back the UI dialog (`ui/src/components/findings/deep-dive-d
 | `POST /projects/:id/analyses/:analysisId/findings/:findingId/deep-dive` | One bounded LLM call (`server/src/lib/analysis/finding-deep-dive.ts`) expands the finding into an editable `FindingIssueDraft` (title, problem statement, affected files, related requirements, acceptance criteria, suggested labels) plus token/model metadata. The finding is loaded IDOR-scoped to the analysis, and the call is rate-limited and gated by the `analysis.run` permission. |
 | `POST /projects/:id/analyses/:analysisId/findings/:findingId/publish` | Publishes the (reviewed) draft to GitHub, Jira, or both. Gated by the `issue.publish` permission and the approval-checkpoint state (`canCreateTickets`). |
 
-The publish route delegates to `publishAnalysisFinding` in `server/src/lib/scanner/prisma-adapter.ts`, which constructs an analysis-flavoured set of `PublisherPorts` and calls the **same** generic `publishFinding` used by the security scanner (`server/src/lib/scanner/finding-publisher.ts`). Destination selection reuses the project's `publishDestination` (`github` | `jira` | `both`) and `JiraConnection`. Idempotency is recorded on `IssueLink` (keyed on `findingId` + provider), and the rendered issue body carries the originating persona for traceability back to the analysis.
+The publish route delegates to `publishAnalysisFinding` in `server/src/lib/publishing/analysis-finding-publish.ts`, which constructs an analysis-flavoured set of `PublisherPorts` on top of the shared GitHub/Jira issue-creation ports (`server/src/lib/publishing/finding-publish-ports.ts`) and calls the **same** generic `publishFinding` (`server/src/lib/publishing/finding-publisher.ts`) used by the security scanner and by Impact Analysis → Jira (`server/src/lib/publishing/impact-analysis-publish.ts`). `lib/publishing/` does not import `lib/scanner/`; the scanner depends on it (#800). Destination selection reuses the project's `publishDestination` (`github` | `jira` | `both`) and `JiraConnection`. Idempotency is recorded on `IssueLink` (keyed on `findingId` + provider), and the rendered issue body carries the originating persona for traceability back to the analysis.
 
 ```mermaid
 flowchart LR
@@ -3641,7 +3644,7 @@ See the [operator recovery and rollback workflow](USER_GUIDE.md#legacy-account-a
 | `holistic-synthesizer.ts` | Two-phase holistic generation: Phase 1 extracts per-module facts (Haiku), Phase 2 synthesizes a single narrative document with Mermaid diagrams (Sonnet). Supports `"full"`, `"module"`, `"symbol"`, `"repository"`, and `"database"` scope variants |
 | `db-schema-synthesizer.ts` | Generates documentation from live database schema introspection. Connects via `dbConnectorId`, reflects tables/columns/constraints, and produces an entity-relationship narrative |
 | `generated-doc-provenance.ts` | Defines the generated-document revision ID and immutable per-version provenance manifest, and normalizes legacy history rows on read |
-| `interrupted-generations.ts` | #50 — generation runs in-process (`generateDocumentAsync`), not as a scheduler task, so durable-task recovery never saw a run killed by a restart. A claimed run heartbeats its `generated_documents.updatedAt` every 60 s (fenced on its claim); a sweep started from `server.ts` (at startup, then every minute, independent of the scheduler) fails `generating` rows with no heartbeat for 5 min and `pending` rows untouched for 15 min, compare-and-set on the `updatedAt` it read, and revokes the dead run's claim. Heartbeat-keyed, so another replica's live run is never failed. Not auto-resumed (unattended token spend); `POST /docs/:docId/regenerate` restarts a failed doc in place and reuses the Phase-1 fact cache. |
+| `interrupted-generations.ts` | #50 — generation runs in-process (`generateDocumentAsync`), not as a scheduler task, so durable-task recovery never saw a run killed by a restart. A claimed run heartbeats its `generated_documents.updatedAt` every 60 s (fenced on its claim); a sweep started from `server.ts` (at startup, then every minute, independent of the scheduler) fails `generating` rows with no heartbeat for 5 min and `pending` rows untouched for 15 min, compare-and-set on the `updatedAt` it read, and revokes the dead run's claim. Heartbeat-keyed, so another replica's live run is never failed. Not auto-resumed (unattended token spend); `POST /docs/:docId/regenerate` restarts a failed (or #782 partial) doc in place and reuses the Phase-1 fact cache and every checkpointed section. |
 | `generated-doc-publication.ts` | Durable publication entrypoint for generated docs. Creates the synthetic `Document`, persists the latest markdown blob, enqueues `publish-generated-document`, chunks markdown into revision-scoped sections, and publishes through the shared quarantine/approval pipeline. Publication preserves a conservative derived ACL on the synthetic document, honors the normal quarantine auto-approval policy instead of forcing approval, and reconciles deleted or superseded artifacts out of `QuarantineChunk`, `KnowledgeChunk`, vector storage, and BM25 before any delayed worker can republish stale content. |
 | `rag-ingest.ts` | Back-compat wrapper over the durable publication flow. Preserves the older `ingestDocumentToRag(...)` call surface while delegating to `generated-doc-publication.ts` |
 
@@ -3842,6 +3845,12 @@ The cadence is the configured schedule, not a fixed documentation timer.
   inventory updated; all section dependencies unchanged**, not a whole-inventory
   no-op. The committed version then enters the separate durable publication
   pipeline, with immutable version/revision fences and deletion cleanup.
+
+A run that stops before its commit keeps its finished sections (#782). Each section
+record is checkpointed on `generated_documents.generationCheckpoint` as it finishes. A
+regenerate reuses each record whose inputs are unchanged. A never-published document is
+kept `degraded` with those sections and a cause warning (stage, section, error class). See
+[CODE_GRAPH_AND_DOC_GENERATION.md](CODE_GRAPH_AND_DOC_GENERATION.md).
 
 Generation health (`ready`/`degraded`/`failed`) is not publication/indexing state:
 readable output may still await quarantine, approval, embeddings, vector, and BM25
@@ -5843,6 +5852,10 @@ down with it. The limit itself was **not** raised; the vector was fixed.
 | `CODE_RETRIEVAL_MODE` | `graph`, `hybrid`, `embedding_only` | `graph` | Retrieval strategy for code context |
 
 Hybrid budget split (configurable per-request): 60% graph-ranked, 40% embedding-retrieved.
+
+### 26.6 Test conventions (#813)
+
+`server/src/lib/code-graph/test-conventions.ts` is the one place that decides whether a code-graph file or symbol is a **test**, and what it tests. Each language or framework is a row of the `TEST_CONVENTIONS` table (`go-testing`, `jest-vitest`, `pytest`, `junit` for Java/Kotlin/Scala, `dotnet`, `cargo-test`) holding test file-name and location patterns, test-symbol name rules with a subject capture (`TestValidatePassword` → `ValidatePassword`), and the conventional sibling test paths of a production file (`user.go` → `user_test.go`, `src/main/java/a/Foo.java` → `src/test/java/a/FooTest.java`; never for a `*.d.ts` declaration file, and every proposed sibling itself classifies as a test). JVM test locations include Gradle/Android source sets (`src/test/`, `src/androidTest/`, `src/integrationTest/`, `src/testFixtures/`, any `src/<name>Test/`), and acronym class names (`JSONTest.java`, `DAOIT.java`, `APITests.cs`) are tests; adding a language is a row plus a test. `sas`, `cbl`, `c` and `cpp` have no row and classify as non-test. The API is pure and synchronous: `classifyTestSymbol`, `isTestPath`, `siblingTestPaths` and `subjectMatches` (case- and underscore-insensitive). Known blind spots are recorded on each row: a test marked only by an annotation or attribute (JUnit 4/5 `@Test`, xUnit `[Fact]`), anonymous Jest/Vitest `it()` callbacks, and Rust's in-file `#[cfg(test)]` modules cannot be seen from a name or path. The two older `isTestFilePath` heuristics — `analysis/traceability-matrix.ts` (traceability matrix, impact analysis) and `code-graph/call-resolution.ts` (code overview) — now delegate to `isTestPath` with a `traceability` or `code-graph` **profile** that reproduces each rule set exactly, pinned by a characterization test against copies of the old rules; merging the two profiles is a separate decision. `docs-gen/module-grouping.ts:isTestSourcePath` is deliberately separate: it is a read policy (fixtures, harnesses, runner configs), not a test classifier.
 
 ---
 

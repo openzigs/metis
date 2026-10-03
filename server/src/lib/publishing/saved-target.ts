@@ -1,8 +1,8 @@
 /**
  * #733 / #784 — the project's saved GitHub publish target.
  *
- * The one place both publish paths read it from: the scanner/analysis finding
- * publisher (`scanner/prisma-adapter.ts`) and Spec Kit's
+ * The one place both publish paths read it from: the finding publishers (the
+ * bug scanner's `publishScanFinding` and `./analysis-finding-publish.ts`) and Spec Kit's
  * `/speckit.taskstoissues`. Keeping a single reader means the two cannot drift
  * on what counts as "configured".
  *
@@ -10,7 +10,7 @@
  * repository, which for an open-source project is someone else's upstream.
  */
 import { prisma } from "../prisma.js";
-import type { GitHubIssueTarget } from "../scanner/finding-publisher.js";
+import type { GitHubIssueTarget } from "./finding-publisher.js";
 
 /** The saved `owner/repo`, or null. A half-set pair counts as none. */
 export async function findSavedGitHubTarget(projectId: string): Promise<GitHubIssueTarget | null> {

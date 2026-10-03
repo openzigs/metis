@@ -829,6 +829,23 @@ sections and publishing the new revision. This is not the no-task/no-version cas
 of an unchanged inventory. Partial reuse records the regenerated section IDs;
 conservative full work records its fallback reason.
 
+**A run that stops early (#782).** Every finished section's record is also written,
+as it finishes, to `generated_documents.generationCheckpoint`. This write is scoped to the
+run's claim and is cleared when a version commits. A later run, including a manual
+`POST /docs/:docId/regenerate`, reuses each checkpointed section whose input hashes still
+match, exactly as it reuses a published snapshot's records. A resumed run's checkpoint
+merges with the stored one: a section the run has reached is replaced (or dropped, when its
+inputs changed and it is being rewritten), and a stored section it has not reached yet is
+kept, so a resumed run that fails again never loses sections it did not get to. When a run fails before its
+commit, it records the cause (stage, the section in progress, error class; never the
+error's message) as a `section-failed` warning carrying `stage`/`errorClass`. A document
+with no published version is then kept as `degraded`, holding the assembled document or
+else its checkpointed sections. It has no version and no publication, and the regenerate
+route accepts it. A document with a published version stays `failed` and keeps that
+version. A failed commit and the commit-boundary refusals (inputs changed, superseded,
+aborted) are never salvaged; by then every section is checkpointed anyway.
+Limit: when the shared hybrid escalation budget is on, no reuse records are produced, so nothing is checkpointed. A failure before assembly then saves nothing and a regenerate resumes nothing.
+
 **Publication and scope limits.** A committed version queues the separate shared
 publication lifecycle described above. Generation `ready`/`degraded`/`failed`
 is distinct from publication/indexing state; revision fences and deletion cleanup

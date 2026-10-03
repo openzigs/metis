@@ -173,6 +173,38 @@ describe("runAgent", () => {
   });
 });
 
+describe("retrieved context file label (#717)", () => {
+  const key = "connector:repo:c1:src/internal/model/feed.go";
+  const promptFor = async (source: "repo" | "upload"): Promise<string> => {
+    const captured: ChatMessage[][] = [];
+    const provider = makeProvider(async (msgs) => {
+      captured.push(msgs);
+      return stubResponse(VALID_OUTPUT);
+    });
+    await runAgent(provider, {
+      agentKey: "code",
+      projectName: "Acme",
+      projectDescription: "feeds",
+      retrieved: [
+        { documentId: "doc-1234567890", chunkIndex: 3, filename: key, text: "type Feed", source },
+      ],
+    });
+    const body = captured[0]![0]!.content;
+    if (typeof body !== "string") throw new Error("expected a string prompt");
+    return body;
+  };
+
+  it("names a repo chunk by its repository-relative path", async () => {
+    const body = await promptFor("repo");
+    expect(body).toContain("chunk=3 file=internal/model/feed.go\n");
+    expect(body).not.toContain("connector:repo:");
+  });
+
+  it("keeps the stored name of a non-repo chunk with a repo-shaped name (#547)", async () => {
+    expect(await promptFor("upload")).toContain(`file=${key}`);
+  });
+});
+
 describe("malformed-JSON repair retry", () => {
   // Observed repeatedly on the `database` agent against a 641-table Oracle
   // schema: brackets diverge a few thousand characters in, at a contentLength

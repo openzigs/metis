@@ -81,8 +81,8 @@ import { loadAccessibleImpactDetail } from "../lib/impact-analysis/impact-detail
 import { diffImpactRuns } from "../lib/impact-analysis/impact-drift.js";
 import type { ImpactDriftReport } from "@metis/shared";
 import { serializeImpactAnalysisMarkdown } from "../lib/analysis/analysis-export.js";
-import { publishImpactAnalysisToJira } from "../lib/scanner/prisma-adapter.js";
-import { PublishError } from "../lib/scanner/finding-publisher.js";
+import { publishImpactAnalysisToJira } from "../lib/publishing/impact-analysis-publish.js";
+import { PublishError } from "../lib/publishing/finding-publisher.js";
 import { manualUsageOverrideSchema, impactTableFeedbackInputSchema } from "@metis/shared";
 import {
   deleteTableFeedback,

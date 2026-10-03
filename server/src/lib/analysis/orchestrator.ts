@@ -238,6 +238,7 @@ import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation
 import type { RequirementEscalation } from "@metis/shared";
 import { TaskProfiler } from "../ai/task-profiler.js";
 import { ModelRouter, type ModelPreferences } from "../ai/model-router.js";
+import { displayFilename } from "../rag/hit-locator.js";
 
 const log = createChildLogger("analysis-orchestrator");
 
@@ -2807,7 +2808,7 @@ export class AnalysisOrchestrator {
             evidence: r.chunks
               .map(
                 (c, i) =>
-                  `[${i + 1}] documentId=${c.documentId} chunk=${c.chunkIndex} file=${c.filename}\n${c.text}`,
+                  `[${i + 1}] documentId=${c.documentId} chunk=${c.chunkIndex} file=${displayFilename(c)}\n${c.text}`,
               )
               .join("\n---\n"),
           })),
