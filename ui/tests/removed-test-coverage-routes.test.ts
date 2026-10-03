@@ -56,6 +56,14 @@ describe("removed Test Coverage routes (#818)", () => {
     }
   });
 
+  it("has no dynamic segment beside the removed one that would match /test-coverage", () => {
+    const dirs = fs
+      .readdirSync(path.join(APP, PROJECT), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+    expect(dirs.filter((d) => d.startsWith("["))).toEqual([]);
+  });
+
   it("keeps the root not-found page that unmatched URLs render", () => {
     expect(fs.existsSync(path.join(APP, "not-found.tsx"))).toBe(true);
   });
