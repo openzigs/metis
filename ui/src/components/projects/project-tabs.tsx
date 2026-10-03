@@ -32,7 +32,8 @@ export interface ProjectSection {
   items: ProjectTabLink[];
   /**
    * Routes that belong to this section but are reached from inside a page
-   * rather than from the sub-nav (e.g. the repo scanner, issue sync). Listed so
+   * rather than from the sub-nav (e.g. issue sync, the `/repositories`
+   * redirect). Listed so
    * the tab still lights up there.
    */
   routes?: string[];
@@ -69,8 +70,8 @@ export function getProjectTabModel(projectId: string): ProjectTabModel {
           { href: `${base}/import`, label: "Import" },
           { href: `${base}/jira`, label: "Jira" },
         ],
-        // #1371 — `/repositories` redirects to Connections; the per-repo
-        // scanner lives under it.
+        // #1371 — `/repositories` redirects to Connections; old links still
+        // land there.
         routes: [`${base}/repositories`],
       },
       {
@@ -118,8 +119,6 @@ export function getProjectTabModel(projectId: string): ProjectTabModel {
           { href: `${base}/overview`, label: "Code Overview" },
           { href: `${base}/changes`, label: "Changes" },
           { href: `${base}/pulls`, label: "Pull Requests" },
-          { href: `${base}/rule-sets`, label: "Bug Rules" },
-          { href: `${base}/scans`, label: "Bug Scans" },
           { href: `${base}/test-coverage`, label: "Test Coverage" },
         ],
       },

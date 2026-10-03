@@ -14,7 +14,7 @@ describe("pageCrumbs (#271)", () => {
       "/projects/p1/analysis",
       "/projects/p1/publish",
       "/projects/p1/sync",
-      "/projects/p1/scans/abc123def456ghi789jkl0",
+      "/projects/p1/baselines/abc123def456ghi789jkl0",
       "/runs/42",
     ]) {
       const crumbs = pageCrumbs(path);
@@ -42,10 +42,10 @@ describe("pageCrumbs (#271)", () => {
   });
 
   it("an id-like detail segment is named by its parent", () => {
-    expect(pageCrumbs("/projects/p1/scans/clx0123456789abcdefghijk")).toEqual([
-      { label: "Code", href: "/projects/p1/overview" },
-      { label: "Bug Scans", href: "/projects/p1/scans" },
-      { label: "Scan" },
+    expect(pageCrumbs("/projects/p1/baselines/clx0123456789abcdefghijk")).toEqual([
+      { label: "Requirements", href: "/projects/p1/requirements" },
+      { label: "Baselines", href: "/projects/p1/baselines" },
+      { label: "Baseline" },
     ]);
     expect(pageCrumbs("/runs/42")).toEqual([{ label: "Runs", href: "/runs" }, { label: "Run" }]);
   });
@@ -87,10 +87,8 @@ describe("leafLabel (#271)", () => {
     const id = "clx0123456789abcdefghijk";
     expect(
       [
-        "scans",
         "baselines",
         "discussions",
-        "repositories",
         "runs",
         "reviews",
         "products",
@@ -99,10 +97,8 @@ describe("leafLabel (#271)", () => {
         "workspaces",
       ].map((parent) => leafLabel(id, parent)),
     ).toEqual([
-      "Scan",
       "Baseline",
       "Discussion",
-      "Repository",
       "Run",
       "Review",
       "Product",
@@ -110,6 +106,12 @@ describe("leafLabel (#271)", () => {
       "Run",
       "Workspace",
     ]);
+  });
+
+  it("has no detail label for the removed bug-scanner routes (#803)", () => {
+    const id = "clx0123456789abcdefghijk";
+    expect(leafLabel(id, "scans")).toBe("Details");
+    expect(leafLabel(id, "repositories")).toBe("Details");
   });
 
   it("keeps a segment it cannot decode", () => {

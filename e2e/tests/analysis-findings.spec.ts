@@ -16,9 +16,8 @@
  * Determinism: the offline-stub AI provider can't produce the structured
  * persona/finding/deep-dive payloads these states need, so the whole analysis
  * API surface (personas, runs list, snapshot, approvals) plus the deep-dive /
- * publish calls are stubbed at the route level — exactly the approach the AI
- * Bug Scanner suite (`ai-bug-scanner.spec.ts`) uses. No real LLM, GitHub, or
- * Jira is contacted; the server-side endpoints are covered by unit tests.
+ * publish calls are stubbed at the route level (`page.route`). No real LLM,
+ * GitHub, or Jira is contacted; the server-side endpoints are covered by unit tests.
  *
  * Acceptance criteria covered
  *   #177-1  known agentKey → persona avatar + name + role (not raw key)
