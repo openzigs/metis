@@ -13,6 +13,7 @@
  * keep the full original string in a hover `title`.
  */
 
+import { repoDocumentPath } from "@metis/shared";
 import type { DocumentSource } from "@/lib/projects-api";
 
 export type DocLabelKind = "repo" | "generated" | "file";
@@ -26,8 +27,6 @@ export interface DocLabel {
   kind: DocLabelKind;
 }
 
-/** `connector:repo:<connectorId>:<path>` — capture the path after the id. */
-const CONNECTOR_REPO_RE = /^connector:repo:[^:]+:(.+)$/;
 /** `generated-doc-<cuid>[.ext]` — a generated document with no human title. */
 const GENERATED_DOC_RE = /^generated-doc-([a-z0-9]+)(?:\.[a-z0-9]+)?$/i;
 
@@ -44,9 +43,10 @@ export function formatDocLabel(filename: string, source: DocumentSource): DocLab
   const name = (filename ?? "").trim();
   if (!name) return { primary: "Untitled", kind: "file" };
 
-  const repo = source === "repo" ? name.match(CONNECTOR_REPO_RE) : null;
-  if (repo) {
-    const path = repo[1].trim();
+  // #717 — the repository-relative path, without the ingester's `src/` marker.
+  const repoPath = source === "repo" ? repoDocumentPath(name) : undefined;
+  if (repoPath) {
+    const path = repoPath;
     const parts = path.split("/").filter(Boolean);
     const base = parts.length ? parts[parts.length - 1] : path;
     const dir = parts.slice(0, -1).join("/");

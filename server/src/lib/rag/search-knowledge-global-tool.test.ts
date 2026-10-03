@@ -72,6 +72,35 @@ describe("search-knowledge-global tool", () => {
     expect(result.text).toContain("Hello world");
   });
 
+  // #717 — a repository file by its real path, never the stored key.
+  it("names a repo hit by its repository-relative path", async () => {
+    const svc = mockService({
+      hits: [
+        {
+          chunkId: "c1",
+          projectId: "p1",
+          projectName: "Proj 1",
+          documentId: "d1",
+          filename: "connector:repo:c1:src/internal/model/feed.go",
+          path: "internal/model/feed.go",
+          position: 2,
+          text: "type Feed struct {}",
+          score: 0.0164,
+        },
+      ],
+      projectsSearched: ["p1"],
+      totalHits: 1,
+    });
+    const tool = buildSearchKnowledgeGlobalTool({ service: svc });
+    const result = await tool.exec({ query: "Feed" }, {
+      sessionId: "sess-1",
+      userId: "user-1",
+      projectId: undefined,
+    } as never);
+    expect(result.text).toContain("[Proj 1] internal/model/feed.go#2");
+    expect(result.text).not.toContain("connector:repo:");
+  });
+
   it("reports no matches clearly", async () => {
     const svc = mockService({
       hits: [],

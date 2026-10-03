@@ -16,7 +16,7 @@ import type {
   ExistingIssueLink,
   PublisherPorts,
   PublishInput,
-} from "../src/lib/scanner/finding-publisher.js";
+} from "../src/lib/publishing/finding-publisher.js";
 
 const issueLink = {
   findFirst: vi.fn(),
@@ -53,8 +53,9 @@ const fakeLink: ExistingIssueLink = {
   externalUrl: "https://github.com/acme/app/issues/42",
 };
 
-vi.mock("../src/lib/scanner/finding-publisher.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/lib/scanner/finding-publisher.js")>();
+vi.mock("../src/lib/publishing/finding-publisher.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/publishing/finding-publisher.js")>();
   return {
     ...actual,
     publishFinding: vi.fn(async (ports: PublisherPorts, input: PublishInput) => {
@@ -67,7 +68,7 @@ vi.mock("../src/lib/scanner/finding-publisher.js", async (importOriginal) => {
 import {
   buildAnalysisFindingBody,
   publishAnalysisFinding,
-} from "../src/lib/scanner/prisma-adapter.js";
+} from "../src/lib/publishing/analysis-finding-publish.js";
 
 const DRAFT: FindingIssueDraft = {
   title: "Add audit logging to all mutations",

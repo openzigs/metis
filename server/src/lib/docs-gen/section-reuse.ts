@@ -164,6 +164,15 @@ export function recordSectionSynthesis(
   });
 }
 
+/** True when the record's output still hashes to the `outputHash` it was saved with. */
+function recordIntact(record: SectionSynthesisRecord): boolean {
+  const { markdown, warnings, metadata, evidence } = record;
+  const { score } = record;
+  return (
+    record.outputHash === hash(JSON.stringify({ markdown, warnings, score, metadata, evidence }))
+  );
+}
+
 /** Any missing/invalid record invalidates the entire prior completeness claim. */
 export function reusableSectionRecords(
   previous: unknown,
@@ -178,15 +187,53 @@ export function reusableSectionRecords(
     records.length !== sectionIds.length ||
     byId.size !== records.length ||
     sectionIds.some((id) => !byId.has(id)) ||
-    records.some((record) => {
-      const { markdown, warnings, metadata, evidence } = record;
-      const { score } = record;
-      return (
-        record.outputHash !==
-        hash(JSON.stringify({ markdown, warnings, score, metadata, evidence }))
-      );
-    })
+    records.some((record) => !recordIntact(record))
   )
     return new Map();
+  return byId;
+}
+
+/**
+ * #782 — the sections an unfinished generation completed, as stored on the
+ * document after each section. Unlike a published snapshot it is PARTIAL by
+ * design, so each record stands on its own: one that fails the schema or its
+ * output hash is dropped, never the rest. Whether a record is actually reused
+ * is still decided per section by its input hashes, exactly as for a published
+ * snapshot.
+ */
+const generationCheckpointSchema = z
+  .object({
+    version: z.literal(SECTION_SYNTHESIS_VERSION),
+    records: z.array(z.unknown()),
+  })
+  .strict();
+export type GenerationCheckpoint = {
+  version: typeof SECTION_SYNTHESIS_VERSION;
+  records: SectionSynthesisRecord[];
+};
+
+/** The checkpoint to store for the records a run has finished so far. */
+export function buildGenerationCheckpoint(
+  records: readonly SectionSynthesisRecord[],
+): GenerationCheckpoint {
+  return { version: SECTION_SYNTHESIS_VERSION, records: [...records] };
+}
+
+/** The intact records of a stored checkpoint, keyed by section id (first wins). */
+export function checkpointSectionRecords(
+  checkpoint: unknown,
+  sectionIds: readonly string[],
+  sharedEscalationEnabled: boolean,
+): Map<string, SectionSynthesisRecord> {
+  const parsed = generationCheckpointSchema.safeParse(checkpoint);
+  const byId = new Map<string, SectionSynthesisRecord>();
+  if (sharedEscalationEnabled || !parsed.success) return byId;
+  const wanted = new Set(sectionIds);
+  for (const raw of parsed.data.records) {
+    const record = sectionRecordSchema.safeParse(raw);
+    if (!record.success || !wanted.has(record.data.sectionId)) continue;
+    if (byId.has(record.data.sectionId) || !recordIntact(record.data)) continue;
+    byId.set(record.data.sectionId, record.data);
+  }
   return byId;
 }

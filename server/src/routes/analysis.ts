@@ -101,8 +101,8 @@ import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
 import { BedrockDirectProvider } from "../lib/ai/providers/bedrock-direct-provider.js";
 import { prisma } from "../lib/prisma.js";
 // Epic #176 / #179 — publish an analysis finding via the shared scanner publisher.
-import { publishAnalysisFinding } from "../lib/scanner/prisma-adapter.js";
-import { PublishError } from "../lib/scanner/finding-publisher.js";
+import { publishAnalysisFinding } from "../lib/publishing/analysis-finding-publish.js";
+import { PublishError } from "../lib/publishing/finding-publisher.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };

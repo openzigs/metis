@@ -14,7 +14,7 @@
  */
 import type { AIProvider } from "../ai/types.js";
 import { SCANNER_SYSTEM_PROMPT_GUARD, fenceRepoContent } from "./prompt-fence.js";
-import { callJsonLlm } from "./llm-client.js";
+import { callJsonLlm } from "../ai/json-llm-client.js";
 import type { CompiledRuleMeta } from "./types.js";
 
 export interface CompileRuleInput {

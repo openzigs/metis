@@ -114,15 +114,12 @@ const {
   loadNeighboursForScan,
   loadRagHitsForScan,
   publishScanFinding,
-  publishAnalysisFinding,
-  publishImpactAnalysisToJira,
   materializeTriagedFinding,
 } = await import("./prisma-adapter.js");
 const { pullOrCloneRepo } = await import("../connectors/repo/repo-service.js");
-const { PublishError } = await import("./finding-publisher.js");
 const { HAIKU_MODEL_ID, SONNET_MODEL_ID } = await import("../ai/model-router.js");
 const { scannerMaxOutputTokens } = await import("./output-budget.js");
-const { ScannerJsonParseError } = await import("./llm-client.js");
+const { ScannerJsonParseError } = await import("../ai/json-llm-client.js");
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -360,91 +357,6 @@ describe("buildPublisherPorts.currentRepoCommitSha", () => {
   });
 });
 
-describe("buildPublisherPorts.createJiraIssue", () => {
-  const args = {
-    projectId: "proj-1",
-    title: "Null deref in foo",
-    body: "Body",
-    labels: ["bug", "metis-scanner"],
-    severity: "high" as const,
-  };
-
-  it("throws ERR_JIRA_NOT_CONFIGURED when the project has no Jira connection configured", async () => {
-    mockPrisma.project.findUnique.mockResolvedValue({
-      jiraConnectionId: null,
-      jiraProjectKey: null,
-    });
-    const ports = buildPublisherPorts();
-    await expect(ports.createJiraIssue(args)).rejects.toMatchObject({
-      code: "ERR_JIRA_NOT_CONFIGURED",
-    });
-    await expect(ports.createJiraIssue(args)).rejects.toBeInstanceOf(PublishError);
-  });
-
-  it("throws ERR_JIRA_NOT_CONFIGURED when the configured Jira connection is missing or disabled", async () => {
-    mockPrisma.project.findUnique.mockResolvedValue({
-      jiraConnectionId: "jira-1",
-      jiraProjectKey: "PROJ",
-    });
-    mockPrisma.jiraConnection.findFirst.mockResolvedValue(null);
-    const ports = buildPublisherPorts();
-    await expect(ports.createJiraIssue(args)).rejects.toMatchObject({
-      code: "ERR_JIRA_NOT_CONFIGURED",
-    });
-  });
-
-  it("throws ERR_JIRA_NOT_CONFIGURED when the Jira connection is in error state", async () => {
-    mockPrisma.project.findUnique.mockResolvedValue({
-      jiraConnectionId: "jira-1",
-      jiraProjectKey: "PROJ",
-    });
-    mockPrisma.jiraConnection.findFirst.mockResolvedValue({
-      id: "jira-1",
-      baseUrl: "https://example.atlassian.net",
-      edition: "cloud",
-      username: "u",
-      secretId: "sec-1",
-      tlsCaSecretId: null,
-      proxyUrl: null,
-      tlsRejectUnauthorized: true,
-      status: "error",
-    });
-    const ports = buildPublisherPorts();
-    await expect(ports.createJiraIssue(args)).rejects.toMatchObject({
-      code: "ERR_JIRA_NOT_CONFIGURED",
-    });
-    await expect(ports.createJiraIssue(args)).rejects.toBeInstanceOf(PublishError);
-  });
-
-  it("creates a Jira issue via the client and returns external id + url", async () => {
-    mockPrisma.project.findUnique.mockResolvedValue({
-      jiraConnectionId: "jira-1",
-      jiraProjectKey: "PROJ",
-    });
-    mockPrisma.jiraConnection.findFirst.mockResolvedValue({
-      id: "jira-1",
-      baseUrl: "https://example.atlassian.net",
-      edition: "cloud",
-      username: "u",
-      secretId: "sec-1",
-      tlsCaSecretId: null,
-      proxyUrl: null,
-      tlsRejectUnauthorized: true,
-      status: "active",
-    });
-    const ports = buildPublisherPorts();
-    const issue = await ports.createJiraIssue(args);
-    expect(issue.externalId).toBe("PROJ-42");
-    expect(issue.externalUrl).toContain("/browse/PROJ-42");
-    expect(mockJiraCreateIssue).toHaveBeenCalledTimes(1);
-    const fields = mockJiraCreateIssue.mock.calls[0][0];
-    expect(fields.project).toEqual({ key: "PROJ" });
-    expect(fields.issuetype).toEqual({ name: "Bug" });
-    expect(fields.summary).toBe("Null deref in foo");
-    expect(fields.labels).toEqual(expect.arrayContaining(["bug", "metis-scanner"]));
-  });
-});
-
 // ----------------------------------------------------------------------------
 // buildScannerPorts.runFirstPass — assembles real neighbours + RAG
 // ----------------------------------------------------------------------------
@@ -501,105 +413,6 @@ describe("buildScannerPorts.runFirstPass", () => {
     // The RAG search MUST have been issued and scoped to proj-1.
     expect(mockKnowledgeSearch).toHaveBeenCalled();
     expect(mockKnowledgeSearch.mock.calls[0][0]).toBe("proj-1");
-  });
-});
-
-// ----------------------------------------------------------------------------
-// buildPublisherPorts.createGitHubIssue
-// ----------------------------------------------------------------------------
-
-describe("buildPublisherPorts.createGitHubIssue", () => {
-  it("posts to the repo issues endpoint and returns external id + url", async () => {
-    mockPrisma.repoConnection.findFirst.mockResolvedValue({
-      id: "repo-1",
-      ownerOrOrg: "o",
-      repoName: "r",
-      apiBaseUrl: "https://api.github.com",
-      secretId: "sec-1",
-      lastCommitSha: "abc",
-    });
-    const ports = buildPublisherPorts();
-    const issue = await ports.createGitHubIssue({
-      projectId: "proj-1",
-      repoConnectionId: "repo-1",
-      title: "T",
-      body: "B",
-      labels: ["bug"],
-      target: { owner: "o", repo: "r" },
-    });
-    expect(issue.externalId).toBe("7");
-    expect(issue.externalUrl).toBe("https://github.com/o/r/issues/7");
-    // #480 — the token comes from the connector's bound id, never a label
-    // lookup (PR #499 panel: both mocks returned the same value before).
-    const { readBoundSecret, resolveVaultRef } = await import("../connectors/vault-resolver.js");
-    expect(readBoundSecret).toHaveBeenCalledWith("sec-1", expect.anything());
-    expect(resolveVaultRef).not.toHaveBeenCalled();
-  });
-
-  it("#733 — files into an explicit target with the connector's credential", async () => {
-    mockPrisma.repoConnection.findFirst.mockResolvedValue({
-      id: "repo-1",
-      ownerOrOrg: "miniflux",
-      repoName: "v2",
-      apiBaseUrl: "https://api.github.com",
-      secretId: "sec-1",
-      lastCommitSha: "abc",
-    });
-    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
-    const ports = buildPublisherPorts();
-    await ports.createGitHubIssue({
-      projectId: "proj-1",
-      repoConnectionId: "repo-1",
-      title: "T",
-      body: "B",
-      labels: [],
-      target: { owner: "openzigs", repo: "flux-v2" },
-    });
-    const factory = vi.mocked(acquirePublishOctokit);
-    const client = await factory.mock.results.at(-1)!.value;
-    expect(factory.mock.calls.at(-1)![0]).toMatchObject({
-      owner: "openzigs",
-      token: expect.any(String),
-    });
-    expect(client.request.mock.calls.at(-1)[0].url).toBe("/repos/openzigs/flux-v2/issues");
-  });
-
-  it("#733 — refuses with no target instead of filing into the connector's repo", async () => {
-    mockPrisma.repoConnection.findFirst.mockResolvedValue({
-      id: "repo-1",
-      ownerOrOrg: "o",
-      repoName: "r",
-      apiBaseUrl: "https://api.github.com",
-      secretId: "sec-1",
-      lastCommitSha: "abc",
-    });
-    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
-    vi.mocked(acquirePublishOctokit).mockClear();
-    const ports = buildPublisherPorts();
-    await expect(
-      ports.createGitHubIssue({
-        projectId: "proj-1",
-        repoConnectionId: "repo-1",
-        title: "T",
-        body: "B",
-        labels: [],
-      }),
-    ).rejects.toMatchObject({ code: "ERR_NO_PUBLISH_TARGET" });
-    expect(acquirePublishOctokit).not.toHaveBeenCalled();
-  });
-
-  it("throws when the repo connection is missing", async () => {
-    mockPrisma.repoConnection.findFirst.mockResolvedValue(null);
-    const ports = buildPublisherPorts();
-    await expect(
-      ports.createGitHubIssue({
-        projectId: "proj-1",
-        repoConnectionId: "missing",
-        title: "T",
-        body: "B",
-        labels: [],
-      }),
-    ).rejects.toThrow(/repo connection .* not found/);
   });
 });
 
@@ -771,56 +584,6 @@ describe("publishScanFinding", () => {
     expect(link.externalId).toBe("999");
   });
 
-  const ANALYSIS_DRAFT = {
-    title: "Error limit excludes failing feeds",
-    problemStatement: "p",
-    affected: { files: [], requirementIds: [] },
-    acceptanceCriteria: [],
-    suggestedLabels: [],
-  };
-  const analysisInput: Parameters<typeof publishAnalysisFinding>[0] = {
-    projectId: "proj-1",
-    analysisId: "ana-1",
-    findingId: "fnd-1",
-    agentKey: "code",
-    severity: "high",
-    category: "bug",
-    draft: ANALYSIS_DRAFT,
-    provider: "github",
-  };
-
-  it("#733 — an analysis re-publish with no target still returns the existing link", async () => {
-    upstreamConnector();
-    mockPrisma.project.findUnique.mockResolvedValue(null);
-    mockPrisma.issueLink.findFirst.mockResolvedValue({
-      id: "L7",
-      findingId: "fnd-1",
-      provider: "github",
-      externalId: "77",
-      externalUrl: "https://github.com/openzigs/flux-v2/issues/77",
-    });
-    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
-    vi.mocked(acquirePublishOctokit).mockClear();
-    const link = await publishAnalysisFinding(analysisInput);
-    expect(link.externalId).toBe("77");
-    expect(acquirePublishOctokit).not.toHaveBeenCalled();
-  });
-
-  it("#733 — a first analysis publish with no target refuses before any GitHub call", async () => {
-    upstreamConnector();
-    mockPrisma.project.findUnique.mockResolvedValue({
-      publishGithubOwner: null,
-      publishGithubRepo: null,
-    });
-    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
-    vi.mocked(acquirePublishOctokit).mockClear();
-    await expect(publishAnalysisFinding(analysisInput)).rejects.toMatchObject({
-      code: "ERR_NO_PUBLISH_TARGET",
-    });
-    expect(acquirePublishOctokit).not.toHaveBeenCalled();
-    expect(mockPrisma.issueLink.upsert).not.toHaveBeenCalled();
-  });
-
   it("#733 — a Jira publish needs no GitHub target", async () => {
     mockPrisma.scanFinding.findUnique.mockResolvedValue(scanFindingRow());
     upstreamConnector();
@@ -884,99 +647,6 @@ describe("publishScanFinding", () => {
       provider: "github",
     });
     expect(link.externalId).toBe("7");
-  });
-});
-
-// ----------------------------------------------------------------------------
-// publishImpactAnalysisToJira — Issue #963 (one Jira issue per impact run)
-// ----------------------------------------------------------------------------
-
-describe("publishImpactAnalysisToJira", () => {
-  function configureJira() {
-    mockPrisma.project.findUnique.mockResolvedValue({
-      jiraConnectionId: "jc-1",
-      jiraProjectKey: "IMP",
-    });
-    mockPrisma.jiraConnection.findFirst.mockResolvedValue({
-      id: "jc-1",
-      baseUrl: "https://jira.example.com",
-      edition: "cloud",
-      username: "svc",
-      secretId: "sec-jira",
-      status: "active",
-      proxyUrl: null,
-      tlsRejectUnauthorized: true,
-      tlsCaSecretId: null,
-    });
-  }
-
-  it("reuses an existing IssueLink and skips the Jira call (idempotent per run)", async () => {
-    mockPrisma.issueLink.findFirst.mockResolvedValue({
-      id: "L9",
-      impactAnalysisId: "ia-1",
-      provider: "jira",
-      externalId: "IMP-7",
-      externalUrl: "https://jira.example.com/browse/IMP-7",
-    });
-    const link = await publishImpactAnalysisToJira({
-      analysisId: "ia-1",
-      jiraProjectId: "proj-1",
-      title: "Impact analysis: ia-1",
-      body: "# Impact analysis\n\nbody",
-    });
-    expect(link.externalId).toBe("IMP-7");
-    expect(mockPrisma.issueLink.findFirst).toHaveBeenCalledWith({
-      where: { impactAnalysisId: "ia-1", provider: "jira" },
-    });
-    expect(mockJiraCreateIssue).not.toHaveBeenCalled();
-    expect(mockPrisma.issueLink.upsert).not.toHaveBeenCalled();
-  });
-
-  it("creates a Jira issue + persists the IssueLink keyed on impactAnalysisId", async () => {
-    mockPrisma.issueLink.findFirst.mockResolvedValue(null);
-    configureJira();
-    mockJiraCreateIssue.mockResolvedValue({ key: "IMP-42" });
-    mockPrisma.issueLink.upsert.mockImplementation(
-      async (args: { create: Record<string, unknown> }) => ({ id: "L1", ...args.create }),
-    );
-
-    const link = await publishImpactAnalysisToJira({
-      analysisId: "ia-1",
-      jiraProjectId: "proj-1",
-      title: "Impact analysis: ia-1",
-      body: "# Impact analysis\n\nbody",
-      severity: "critical",
-    });
-
-    expect(mockJiraCreateIssue).toHaveBeenCalledTimes(1);
-    expect(link.externalId).toBe("IMP-42");
-    expect(link.externalUrl).toBe("https://jira.example.com/browse/IMP-42");
-    // Idempotency is keyed on the impact-analysis compound unique.
-    const upsertArg = mockPrisma.issueLink.upsert.mock.calls[0][0] as {
-      where: { impactAnalysisId_provider: { impactAnalysisId: string; provider: string } };
-      create: { impactAnalysisId: string; provider: string };
-    };
-    expect(upsertArg.where.impactAnalysisId_provider).toEqual({
-      impactAnalysisId: "ia-1",
-      provider: "jira",
-    });
-    expect(upsertArg.create.impactAnalysisId).toBe("ia-1");
-  });
-
-  it("surfaces ERR_JIRA_NOT_CONFIGURED when the target project has no Jira wiring", async () => {
-    mockPrisma.issueLink.findFirst.mockResolvedValue(null);
-    mockPrisma.project.findUnique.mockResolvedValue({
-      jiraConnectionId: null,
-      jiraProjectKey: null,
-    });
-    await expect(
-      publishImpactAnalysisToJira({
-        analysisId: "ia-1",
-        jiraProjectId: "proj-1",
-        title: "t",
-        body: "b",
-      }),
-    ).rejects.toBeInstanceOf(PublishError);
   });
 });
 

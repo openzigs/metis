@@ -29,7 +29,7 @@ vi.mock("../lib/scanner/prisma-adapter.js", () => ({
   publishScanFinding: (...args: unknown[]) => mockPublish(...args),
 }));
 
-import { PublishError } from "../lib/scanner/finding-publisher.js";
+import { PublishError } from "../lib/publishing/finding-publisher.js";
 
 const { triageRouter } = await import("./triage.js");
 

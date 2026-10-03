@@ -16,7 +16,11 @@
  *     commitSha differs from the scan's snapshot — operators must
  *     re-scan against fresh code before pushing to external trackers.
  */
-import { SCANNER_PUBLISH_MARKER_PREFIX, type Publisher, type Severity } from "./types.js";
+import {
+  SCANNER_PUBLISH_MARKER_PREFIX,
+  type Publisher,
+  type Severity,
+} from "./finding-publish-types.js";
 
 const MARKER_PREFIX = `<!-- ${SCANNER_PUBLISH_MARKER_PREFIX}:`;
 

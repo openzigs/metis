@@ -120,8 +120,9 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
 
 // Stub the adapter's publish path; assert the route hands it the right args.
 const publishAnalysisFindingMock = vi.fn();
-vi.mock("../src/lib/scanner/prisma-adapter.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/lib/scanner/prisma-adapter.js")>();
+vi.mock("../src/lib/publishing/analysis-finding-publish.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/publishing/analysis-finding-publish.js")>();
   return {
     ...actual,
     publishAnalysisFinding: (...args: unknown[]) => publishAnalysisFindingMock(...args),
@@ -130,7 +131,7 @@ vi.mock("../src/lib/scanner/prisma-adapter.js", async (importOriginal) => {
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import { PublishError } from "../src/lib/scanner/finding-publisher.js";
+import { PublishError } from "../src/lib/publishing/finding-publisher.js";
 
 let app: ReturnType<typeof createApp>;
 let adminToken: string;

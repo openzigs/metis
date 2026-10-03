@@ -48,7 +48,8 @@ function doc(id: string, filename: string): DocumentRow {
     uploadedAt: "2026-09-01T10:00:00Z",
   };
 }
-const repo = (id: string, path: string) => doc(id, `connector:repo:${CONN}:${path}`);
+/** #717 — keyed as connector-ingest.ts keys a source file: `path` is the repo path. */
+const repo = (id: string, path: string) => doc(id, `connector:repo:${CONN}:src/${path}`);
 
 const docs = [
   repo("r1", "src/billing/Invoice.ts"),

@@ -70,6 +70,17 @@ import {
   dispatchGeneratedDocTask,
 } from "../lib/docs-gen/generated-doc-outbox.js";
 import { captureGenerationInputs } from "../lib/docs-gen/generation-inputs.js";
+import type { DocWarning as DocWarningShape } from "../lib/docs-gen/grounding/degraded-warnings.js";
+import {
+  generationFailureWarning,
+  partialDocumentMarkdown,
+  UnpublishableGenerationError,
+  type GenerationStage,
+} from "../lib/docs-gen/generation-checkpoint.js";
+import {
+  buildGenerationCheckpoint,
+  type SectionSynthesisRecord,
+} from "../lib/docs-gen/section-reuse.js";
 import {
   PATH_SCOPE_EMPTY_CODE,
   pathPrefixesSchema,
@@ -836,13 +847,15 @@ export function generatedDocsRouter(): Router {
       where: { id: docId },
       data: parsed.data,
     });
+    // #782 — the generation checkpoint is internal resume state, never a response field.
+    const { generationCheckpoint: _checkpoint, ...row } = updated;
     res.json({
       data: {
-        ...updated,
-        errorMessage: publicGenerationErrorMessage(updated.status, updated.errorMessage),
+        ...row,
+        errorMessage: publicGenerationErrorMessage(row.status, row.errorMessage),
         // #67 — see the GET handler: the row's warnings column is the degraded
         // path's equivalent of `errorMessage` and gets the same treatment.
-        warnings: publicDocWarnings(updated.warnings),
+        warnings: publicDocWarnings(row.warnings),
       },
     });
   });
@@ -859,8 +872,16 @@ export function generatedDocsRouter(): Router {
       // Compare-and-set failed → pending: a double click or a concurrent request
       // starts exactly one generation. `pending` is what generateDocumentAsync's
       // pre-claim failure path fences on, and what the UI shows until it claims.
+      // #782 — and a degraded document that never published a version: that is
+      // a run that stopped early and kept its finished sections, which a
+      // regenerate completes (reusing them).
       const reset = await prisma.generatedDocument.updateMany({
-        where: { id: docId, projectId, deletedAt: null, status: "failed" },
+        where: {
+          id: docId,
+          projectId,
+          deletedAt: null,
+          OR: [{ status: "failed" }, { status: "degraded", versions: { none: {} } }],
+        },
         data: { status: "pending", errorMessage: null },
       });
       if (!reset.count) {
@@ -872,7 +893,7 @@ export function generatedDocsRouter(): Router {
         throw new AppError(
           409,
           "DOC_NOT_REGENERATABLE",
-          `Only a failed document can be regenerated (status: ${existing.status})`,
+          `Only a failed or partially generated document can be regenerated (status: ${existing.status})`,
         );
       }
       void generateDocumentAsync(docId, projectId).catch((err) => {
@@ -973,8 +994,17 @@ export async function generateDocumentAsync(
   // #50 — refreshes the row while this run holds its claim; a stopped heartbeat
   // is how the interrupted-generation sweep tells a dead run from a live one.
   let stopHeartbeat: (() => void) | undefined;
+  // #782 — where the run is, so a failure can say so on the document; and what
+  // it has finished, so a late failure does not discard it.
+  let stage: GenerationStage = "setup";
+  let stageSection: string | undefined;
+  let hadVersion = false;
+  let title = "Generated Documentation";
+  let finishedSections: SectionSynthesisRecord[] = [];
+  let synthesized: { markdown: string; warnings: DocWarningShape[] } | undefined;
   try {
-    if (automatic?.signal.aborted) throw new Error("Regeneration aborted");
+    if (automatic?.signal.aborted)
+      throw new UnpublishableGenerationError("aborted", "Regeneration aborted");
     const original = await prisma.generatedDocument.findFirst({
       where: { id: docId, projectId, deletedAt: null },
     });
@@ -1043,6 +1073,8 @@ export async function generateDocumentAsync(
     });
     if (!acquired.count) throw new Error("Generation already running or revision changed");
     claimed = true;
+    hadVersion = lastVersion != null;
+    title = original.title || title;
     stopHeartbeat = startGenerationHeartbeat(docId, projectId, claim);
     // #239 — broadcast the doc-generation job start so the UI flips from the
     // static "generating" badge to live status without a manual refresh.
@@ -1260,6 +1292,24 @@ export async function generateDocumentAsync(
         doc?.title ?? "Generated Documentation",
         {
           ...(automatic ? { previousManifest } : {}),
+          // #782 — resume: an earlier unfinished run's sections are reused
+          // where their inputs are unchanged, and this run's are saved as each
+          // one finishes, only while this run still holds the claim. `records`
+          // is already merged with the stored checkpoint (sections this run has
+          // not reached are carried), so it replaces the column, and a late
+          // failure's partial document is built from all of it.
+          checkpoint: original.generationCheckpoint ?? undefined,
+          onCheckpoint: async (records) => {
+            finishedSections = records;
+            await prisma.generatedDocument.updateMany({
+              where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
+              data: {
+                generationCheckpoint: buildGenerationCheckpoint(
+                  records,
+                ) as unknown as Prisma.InputJsonValue,
+              },
+            });
+          },
           provenance: {
             revision: {
               projectId,
@@ -1275,6 +1325,13 @@ export async function generateDocumentAsync(
           groundingForSection,
           // #243 — per-section live progress + degraded/failed warnings.
           onSectionProgress: (u) => {
+            // The last section's terminal update ends the section stage: what
+            // follows (assembly, provenance) is not "in" that section.
+            const last =
+              (u.status === "done" || u.status === "degraded" || u.status === "failed") &&
+              u.index >= u.total;
+            stage = last ? "assembly" : "sections";
+            stageSection = last ? undefined : u.section;
             jobEvents.docSection({
               jobId: docId,
               projectId,
@@ -1303,6 +1360,7 @@ export async function generateDocumentAsync(
           },
           // Phase 1 fills the first PHASE1_PROGRESS_SHARE of the bar, per chunk.
           onPhase1Progress: ({ done, total }) => {
+            stage = "facts";
             jobEvents.progress(
               "doc-generation",
               docId,
@@ -1313,6 +1371,8 @@ export async function generateDocumentAsync(
           },
         },
       );
+      stage = "assembly";
+      stageSection = undefined;
       markdown = result.markdown;
       // #182 — sections were grounded against the repository index; when that
       // index is partial (capped, failed, interrupted, never recorded), say so,
@@ -1327,6 +1387,8 @@ export async function generateDocumentAsync(
           ...(pathPrefixes ? { pathPrefixes } : {}),
         })),
       ];
+      // #782 — the whole document exists from here: a failure below keeps it.
+      synthesized = { markdown, warnings: docWarnings };
       synthesizedProvenanceManifest = result.provenanceManifest ?? null;
       manifestSections = result.provenanceManifest
         ? ((JSON.parse(result.provenanceManifest) as { sections?: typeof manifestSections })
@@ -1424,6 +1486,7 @@ export async function generateDocumentAsync(
     // genuine error strings (the catch branch below); it is cleared here on a
     // successful (possibly degraded) generation.
     const healthStatus = deriveDocStatus(docWarnings);
+    stage = "commit";
     // Revalidate both authorization and inputs at the commit boundary. A deleted,
     // superseded or concurrently changed job must never publish old content.
     const current = await prisma.generatedDocument.findFirst({
@@ -1431,13 +1494,15 @@ export async function generateDocumentAsync(
     });
     if (!current || current.codeGraphHash !== claim) return;
     const currentPolicy = await resolveEvidencePolicy(current);
-    if (automatic?.signal.aborted) throw new Error("Regeneration aborted");
+    if (automatic?.signal.aborted)
+      throw new UnpublishableGenerationError("aborted", "Regeneration aborted");
     if (
       inputSnapshot &&
       (await captureGenerationInputs(current, currentPolicy)).fingerprint !==
         inputSnapshot.fingerprint
     ) {
-      throw new Error(
+      throw new UnpublishableGenerationError(
+        "inputs-changed",
         "Generation inputs changed; replay ingestion to regenerate the current revision",
       );
     }
@@ -1465,9 +1530,15 @@ export async function generateDocumentAsync(
               : Prisma.DbNull,
           errorMessage: null,
           generatedAt,
+          // #782 — published: nothing left to resume.
+          generationCheckpoint: Prisma.DbNull,
         },
       });
-      if (!committed.count) throw new Error("Generation revision superseded or deleted");
+      if (!committed.count)
+        throw new UnpublishableGenerationError(
+          "superseded",
+          "Generation revision superseded or deleted",
+        );
       await tx.generatedDocumentVersion.create({
         data: {
           documentId: docId,
@@ -1517,14 +1588,68 @@ export async function generateDocumentAsync(
       error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
       stack: err instanceof Error ? err.stack : undefined,
     });
+    // #782 — the cause, on the document: stage, section and error class.
+    const cause = generationFailureWarning({ stage, section: stageSection, err });
+    // #782 — keep what the run finished rather than discarding it, unless:
+    // - the commit boundary refused it on purpose (inputs changed, superseded);
+    // - the commit itself failed: content is visible only through a committed
+    //   version and its publication task (the transactional outbox), and every
+    //   section is checkpointed by then, so a regenerate reuses them all;
+    // - a published version would be overwritten by a partial one (that version
+    //   stays; a regenerate resumes from the checkpoint).
+    const salvage =
+      claimed &&
+      !automatic &&
+      !hadVersion &&
+      stage !== "commit" &&
+      !(err instanceof UnpublishableGenerationError)
+        ? (synthesized ??
+          (finishedSections.length > 0
+            ? {
+                markdown: partialDocumentMarkdown(title, finishedSections),
+                warnings: finishedSections.flatMap((record) => record.warnings),
+              }
+            : undefined))
+        : undefined;
+    const salvaged = salvage
+      ? await prisma.generatedDocument.updateMany({
+          where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
+          data: {
+            status: "degraded",
+            content: salvage.markdown,
+            codeGraphHash: originalHash,
+            warnings: [...salvage.warnings, cause] as unknown as Prisma.InputJsonValue,
+            errorMessage: null,
+            generatedAt: new Date(),
+          },
+        })
+      : null;
+    if (salvaged?.count) {
+      log.warn("Document generation stopped early; finished sections kept", {
+        docId,
+        projectId,
+        stage,
+        sections: finishedSections.length,
+        assembled: synthesized != null,
+      });
+      jobEvents.completed(
+        "doc-generation",
+        docId,
+        projectId,
+        "Generation stopped early; the finished sections were saved",
+      );
+      return;
+    }
     const failed = claimed
       ? await prisma.generatedDocument.updateMany({
           where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
           // #52 — a fixed, user-safe reason; the raw error is in the log above.
+          // #782 — and the cause, structured, where the UI can show it.
           data: {
             status: "failed",
             codeGraphHash: originalHash,
             errorMessage: generationFailureMessage(err),
+            warnings: [cause] as unknown as Prisma.InputJsonValue,
           },
         })
       : pendingUpdatedAt

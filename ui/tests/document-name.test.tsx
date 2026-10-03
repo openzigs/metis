@@ -7,13 +7,15 @@ import { render, screen } from "@testing-library/react";
 import { formatDocumentName } from "@/lib/document-name";
 import { DocumentName } from "@/components/projects/document-name";
 
-const KEY = "connector:repo:cmumwycfx002j2c9kp7kpu2tg:src/vitest.config.ts";
+// #717 — keyed as connector-ingest.ts keys `server/vitest.config.ts`: the `src/`
+// after the connector id is the ingester's marker, never shown.
+const KEY = "connector:repo:cmumwycfx002j2c9kp7kpu2tg:src/server/vitest.config.ts";
 const NAMES = { cmumwycfx002j2c9kp7kpu2tg: "metis" };
 
 describe("formatDocumentName", () => {
   it("shows a repository file as its path over the repository's name", () => {
     expect(formatDocumentName(KEY, "repo", NAMES)).toEqual({
-      primary: "src/vitest.config.ts",
+      primary: "server/vitest.config.ts",
       secondary: "metis",
       rawId: KEY,
       kind: "repo",
@@ -28,7 +30,7 @@ describe("formatDocumentName", () => {
   it("falls back to a short connector token while the repository name is unknown", () => {
     const name = formatDocumentName(KEY, "repo");
     expect(name.secondary).toBe("kpu2tg");
-    expect(name.primary).toBe("src/vitest.config.ts");
+    expect(name.primary).toBe("server/vitest.config.ts");
   });
 
   it("never puts the internal key in a visible field", () => {
@@ -63,7 +65,9 @@ describe("formatDocumentName", () => {
 describe("<DocumentName />", () => {
   it("renders path and repository, with the key only in the tooltip", () => {
     const { container } = render(<DocumentName filename={KEY} source="repo" repoNames={NAMES} />);
-    expect(screen.getByTestId("document-name-path")).toHaveTextContent(/^src\/vitest\.config\.ts$/);
+    expect(screen.getByTestId("document-name-path")).toHaveTextContent(
+      /^server\/vitest\.config\.ts$/,
+    );
     expect(screen.getByText("metis")).toBeInTheDocument();
     expect(container.textContent).not.toContain("connector:repo:");
     expect(container.firstElementChild).toHaveAttribute("title", KEY);

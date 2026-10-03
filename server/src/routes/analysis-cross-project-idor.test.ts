@@ -169,8 +169,8 @@ vi.mock("../lib/ai/providers/bedrock-direct-provider.js", () => ({
   BedrockDirectProvider: class {},
 }));
 const publishAnalysisFinding = vi.fn();
-vi.mock("../lib/scanner/prisma-adapter.js", () => ({ publishAnalysisFinding }));
-vi.mock("../lib/scanner/finding-publisher.js", () => ({ PublishError: class extends Error {} }));
+vi.mock("../lib/publishing/analysis-finding-publish.js", () => ({ publishAnalysisFinding }));
+vi.mock("../lib/publishing/finding-publisher.js", () => ({ PublishError: class extends Error {} }));
 
 const { initAnalysisRouter } = await import("./analysis.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
