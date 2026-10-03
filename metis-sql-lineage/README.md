@@ -45,6 +45,26 @@ miner, etc.) and calls this service to resolve it.
 }
 ```
 
+#### `access` semantics (#760)
+
+- **Table `access`** is the statement's kind: `persist` for `INSERT`, `write` for
+  `UPDATE` / `DELETE` / `MERGE`, `read` otherwise. Every table in a writing
+  statement carries it, including a `FROM` / `USING` source table.
+- **Column `access`** is per access and can differ from its table's. Only a `SET`
+  target (`UPDATE`, MERGE `WHEN MATCHED THEN UPDATE`, `ON CONFLICT DO UPDATE`) is
+  `write`; an `INSERT` target column (including MERGE `WHEN NOT MATCHED THEN
+  INSERT (…)`) is `persist`; every predicate, join, source and projected column
+  is `read`. So `DELETE FROM t WHERE x = 1` writes `t` but only reads `t.x`.
+- **Column entries may repeat**, one per distinct access: `UPDATE t SET s = $1
+  WHERE s = $2` returns `t.s` twice, once `write` and once `read`. A
+  `(table, column, access)` triple is never repeated. A consumer whose edge does
+  not carry the access (a routine's `calls` edge) must collapse the entries
+  to one per `table.column`.
+- **Bind parameters are never columns** (`$1`, `?`, `:name`, `@name`).
+- An unqualified column in a multi-table statement is attached only when it is a
+  write target (it belongs to the statement's target table); otherwise it is
+  reported in `uncertain` (`unqualified column: <name>`) rather than guessed.
+
 `GET /healthz` → `{ status, service, version, tokenConfigured }` (no auth).
 
 ### Safety

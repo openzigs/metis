@@ -8,6 +8,9 @@ vi.mock("../prisma.js", () => ({
     aITokenUsage: {
       findMany: vi.fn(),
     },
+    tokenUsage: {
+      findMany: vi.fn(),
+    },
   },
 }));
 
@@ -15,6 +18,35 @@ import { prisma } from "../prisma.js";
 import { UsageService, getUsageService, __resetUsageServiceSingleton } from "./usage-service.js";
 
 const mockFindMany = prisma.aITokenUsage.findMany as ReturnType<typeof vi.fn>;
+const mockLedgerFindMany = prisma.tokenUsage.findMany as ReturnType<typeof vi.fn>;
+
+/** #792 — a `token_usages` row, the ledger the project usage page reads. */
+function ledgerRow(
+  overrides: Partial<{
+    provider: string;
+    model: string;
+    userId: string | null;
+    agentStep: string | null;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    costCents: number | null;
+    createdAt: Date;
+  }> = {},
+) {
+  return {
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    userId: "user-1",
+    agentStep: "chat",
+    inputTokens: 100,
+    outputTokens: 50,
+    totalTokens: 150,
+    costCents: 1,
+    createdAt: new Date("2025-01-15T10:00:00.000Z"),
+    ...overrides,
+  };
+}
 
 function makeRow(
   overrides: Partial<{
@@ -58,79 +90,95 @@ describe("UsageService", () => {
     vi.restoreAllMocks();
   });
 
-  describe("projectUsage", () => {
-    it("returns summary with aggregated rows", async () => {
-      mockFindMany.mockResolvedValue([
-        makeRow({ dayBucket: "2025-01-15", totalTokens: 100, estimatedCostUsd: 0.001 }),
-        makeRow({ dayBucket: "2025-01-15", totalTokens: 200, estimatedCostUsd: 0.002 }),
-        makeRow({ dayBucket: "2025-01-16", totalTokens: 300, estimatedCostUsd: 0.003 }),
+  describe("projectUsage (#792 — reads the token_usages ledger)", () => {
+    it("aggregates ledger rows by UTC day, converting integer cents to USD", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ totalTokens: 100, costCents: 1 }),
+        ledgerRow({ totalTokens: 200, costCents: 2 }),
+        ledgerRow({
+          totalTokens: 300,
+          costCents: 3,
+          createdAt: new Date("2025-01-16T23:59:00.000Z"),
+        }),
       ]);
 
       const result = await svc.projectUsage("proj-1", { range: "7d", groupBy: "day" });
       expect(result.totalTokens).toBe(600);
-      expect(result.totalCostUsd).toBeCloseTo(0.006);
-      // Two day buckets
-      expect(result.rows).toHaveLength(2);
+      expect(result.totalCostUsd).toBeCloseTo(0.06, 10);
+      expect(result.rows.map((r) => r.dayBucket)).toEqual(["2025-01-15", "2025-01-16"]);
+      expect(result.rows[0].estimatedCostUsd).toBeCloseTo(0.03, 10);
+    });
+
+    it("queries ONLY the project's ledger rows inside the range, never ai_token_usages", async () => {
+      mockLedgerFindMany.mockResolvedValue([]);
+      const before = Date.now();
+      await svc.projectUsage("proj-1", { range: "30d" });
+      expect(mockFindMany).not.toHaveBeenCalled();
+      const where = mockLedgerFindMany.mock.calls[0][0].where;
+      expect(where.projectId).toBe("proj-1");
+      const since = (where.createdAt.gte as Date).getTime();
+      const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+      expect(Math.abs(before - thirtyDays - since)).toBeLessThan(5_000);
+    });
+
+    it("fills projectId on every row, so a project-scoped CSV export names its project", async () => {
+      mockLedgerFindMany.mockResolvedValue([ledgerRow()]);
+      const result = await svc.projectUsage("proj-1", { groupBy: "day" });
+      expect(result.rows[0].projectId).toBe("proj-1");
+      expect(svc.toCSV(result.rows).split("\n")[1]).toBe(
+        "2025-01-15,anthropic,claude-sonnet-4-6,user-1,proj-1,100,50,150,0.010000,1,0",
+      );
+    });
+
+    it("an unpriced ledger row (costCents NULL) is unpriced, never $0 (#22)", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ costCents: 4 }),
+        ledgerRow({ costCents: null, totalTokens: 70 }),
+      ]);
+      const result = await svc.projectUsage("proj-1", { groupBy: "model" });
+      expect(result.totalCostUsd).toBeCloseTo(0.04, 10);
+      expect(result.unpriced.totalTokens).toBe(70);
+      expect(result.rows[0].unpricedTokens).toBe(70);
     });
 
     it("returns empty when no data", async () => {
-      mockFindMany.mockResolvedValue([]);
+      mockLedgerFindMany.mockResolvedValue([]);
       const result = await svc.projectUsage("proj-1");
       expect(result.totalTokens).toBe(0);
       expect(result.rows).toHaveLength(0);
     });
 
-    // Issue #428 — the detail/by-agent-step views queried AITokenUsage by the
-    // direct `projectId` column only. Chat traffic writes those rows with
-    // projectId=null, associating them to the project ONLY via the session
-    // relation, so the detail view showed "No data" while the KPI/by-provider
-    // aggregates (sourced from TokenUsage with a non-null projectId) showed
-    // data. The query must match rows by direct projectId OR session.projectId.
-    it("matches rows by direct projectId OR session.projectId (#428)", async () => {
-      mockFindMany.mockResolvedValue([]);
-      await svc.projectUsage("proj-1", { range: "7d", groupBy: "day" });
-      const callArg = mockFindMany.mock.calls[0][0];
-      expect(callArg.where).toEqual(
-        expect.objectContaining({
-          OR: [{ projectId: "proj-1" }, { session: { projectId: "proj-1" } }],
-        }),
-      );
-      // The direct `projectId: "proj-1"` equality filter must NOT be present at
-      // the top level — that is exactly what dropped the session-only rows.
-      expect(callArg.where.projectId).toBeUndefined();
-    });
-
-    it("surfaces session-only rows (projectId=null) so detail matches aggregates (#428)", async () => {
-      // Simulate the real chat write path: AITokenUsage rows with projectId
-      // null, associated to the project purely via the session relation. Once
-      // the OR filter is in place Prisma returns these rows, so the detail view
-      // is populated for the same window the aggregates are populated.
-      mockFindMany.mockResolvedValue([
-        makeRow({ projectId: null, agentStep: "chat", totalTokens: 137_514 }),
+    it("groups by the ledger's agentStep; a row with none is 'unknown'", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ agentStep: "impact.table-filter", totalTokens: 10 }),
+        ledgerRow({ agentStep: "impact.table-filter", totalTokens: 15 }),
+        ledgerRow({ agentStep: null, totalTokens: 40 }),
       ]);
       const result = await svc.projectUsage("proj-1", { groupBy: "agentStep" });
-      expect(result.totalTokens).toBe(137_514);
-      expect(result.rows).toHaveLength(1);
-      expect(result.rows[0].agentStep).toBe("chat");
+      expect(result.rows).toHaveLength(2);
+      expect(result.rows.find((r) => r.agentStep === "impact.table-filter")!.totalTokens).toBe(25);
+      expect(result.rows.find((r) => r.agentStep === undefined)!.totalTokens).toBe(40);
     });
 
-    it("groups by user", async () => {
-      mockFindMany.mockResolvedValue([
-        makeRow({ userId: "user-a", totalTokens: 40 }),
-        makeRow({ userId: "user-b", totalTokens: 60 }),
-        makeRow({ userId: "user-a", totalTokens: 10 }),
+    it("groups by the ledger's userId; a row with none is grouped apart, not dropped", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ userId: "user-a", totalTokens: 40 }),
+        ledgerRow({ userId: "user-b", totalTokens: 60 }),
+        ledgerRow({ userId: "user-a", totalTokens: 10 }),
+        ledgerRow({ userId: null, totalTokens: 5 }),
       ]);
       const result = await svc.projectUsage("proj-1", { groupBy: "user" });
-      expect(result.rows).toHaveLength(2);
-      const userA = result.rows.find((r) => r.userId === "user-a");
-      expect(userA!.totalTokens).toBe(50);
+      expect(result.rows).toHaveLength(3);
+      expect(result.rows.find((r) => r.userId === "user-a")!.totalTokens).toBe(50);
+      expect(result.rows.find((r) => r.userId === undefined)!.totalTokens).toBe(5);
+      expect(result.totalTokens).toBe(115);
     });
 
     it("groups by model", async () => {
-      mockFindMany.mockResolvedValue([
-        makeRow({ model: "haiku", totalTokens: 50 }),
-        makeRow({ model: "sonnet", totalTokens: 200 }),
-        makeRow({ model: "haiku", totalTokens: 100 }),
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ model: "haiku", totalTokens: 50 }),
+        ledgerRow({ model: "sonnet", totalTokens: 200 }),
+        ledgerRow({ model: "haiku", totalTokens: 100 }),
       ]);
 
       const result = await svc.projectUsage("proj-1", { groupBy: "model" });

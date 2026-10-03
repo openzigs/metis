@@ -391,6 +391,8 @@ describe("#247 / #180 — grounding calls on the real Anthropic provider", () =>
     await withRunUsage(usage, () => synth(anthropicRouter()));
     // One usage row per request the server answered: none missing, none twice.
     expect(recordUsage).toHaveBeenCalledTimes(bodies.length);
+    // #792 — every docs-gen row carries its step for "by agent step".
+    for (const [row] of recordUsage.mock.calls) expect(row.agentStep).toBe("docs-gen");
     const grounding = recordUsage.mock.calls
       .map(([row]) => row)
       .filter((row) => String(row.sessionId).startsWith("docs-grounding-"));

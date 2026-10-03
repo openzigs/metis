@@ -65,32 +65,41 @@ export class UsageService {
     const since = rangeToDate(opts.range ?? "7d");
     const groupBy = opts.groupBy ?? "day";
 
-    // Issue #428 — AITokenUsage rows are associated with a project EITHER via
-    // the direct (nullable) `projectId` column OR via the session relation
-    // (`session.projectId`). The chat write path persists projectId=null and
-    // relies solely on the session link, so filtering on the direct column
-    // alone dropped those rows and the "Detailed Usage" / "by Agent Step"
-    // views showed "No data" while the KPI/by-provider aggregates (sourced
-    // from TokenUsage) showed data. Match on either association so the detail
-    // and aggregate views agree for the same window. Mirrors the working
-    // /token-breakdown route which already filters by `session.projectId`.
-    const rawRows = await prisma.aITokenUsage.findMany({
-      where: {
-        OR: [{ projectId }, { session: { projectId } }],
-        ts: { gte: since },
-      },
+    // #792 — the project page's ONE ledger. The cards, budget and MTD figures
+    // (`summarizeUsage`) read `token_usages`; this view used to read
+    // `ai_token_usages`, which held disjoint traffic (impact spend only there,
+    // chat/analysis/docs/Spec Kit spend only here), so the page showed two
+    // unrelated totals and the CSV export covered 2.7% of the project's spend.
+    // Reading the same table makes the analytics card and the CSV add up to
+    // the cards for the same window. (Supersedes the #428 session-OR filter.)
+    const ledger = await prisma.tokenUsage.findMany({
+      where: { projectId, createdAt: { gte: since } },
       select: {
-        dayBucket: true,
         provider: true,
         model: true,
         userId: true,
         agentStep: true,
-        promptTokens: true,
-        completionTokens: true,
+        inputTokens: true,
+        outputTokens: true,
         totalTokens: true,
-        estimatedCostUsd: true,
+        costCents: true,
+        createdAt: true,
       },
     });
+
+    const rawRows = ledger.map((r) => ({
+      dayBucket: r.createdAt.toISOString().slice(0, 10),
+      provider: r.provider,
+      model: r.model,
+      userId: r.userId,
+      projectId,
+      agentStep: r.agentStep,
+      promptTokens: r.inputTokens,
+      completionTokens: r.outputTokens,
+      totalTokens: r.totalTokens,
+      // Integer cents → USD; NULL stays NULL (unpriced, #22).
+      estimatedCostUsd: r.costCents === null ? null : r.costCents / 100,
+    }));
 
     return this.aggregate(rawRows, groupBy);
   }
@@ -147,7 +156,8 @@ export class UsageService {
       dayBucket: string;
       provider: string;
       model: string;
-      userId: string;
+      /** NULL on a `token_usages` row whose caller knew no user (#792). */
+      userId: string | null;
       projectId?: string | null;
       agentStep?: string | null;
       promptTokens: number;
@@ -182,7 +192,7 @@ export class UsageService {
           key = r.model;
           break;
         case "user":
-          key = r.userId;
+          key = r.userId ?? "unattributed";
           break;
         case "project":
           key = r.projectId ?? "unassigned";
@@ -207,7 +217,7 @@ export class UsageService {
           dayBucket: r.dayBucket,
           provider: r.provider,
           model: r.model,
-          userId: r.userId,
+          userId: r.userId ?? undefined,
           projectId: r.projectId ?? undefined,
           agentStep: r.agentStep ?? undefined,
           promptTokens: r.promptTokens,

@@ -540,3 +540,104 @@ describe("extractEmbeddedSql persistence", () => {
     }
   });
 });
+
+describe("Issue #760 — bind parameters and enclosing-function attribution", () => {
+  // miniflux `MarkAllAsRead` (internal/storage/entry.go:506) at v2.3.3: the
+  // SQL literal opens on the line after the `func` line.
+  const GO_SRC = [
+    "package storage",
+    "",
+    "func (s *Storage) MarkAllAsRead(userID int64) error {",
+    "\tquery := `UPDATE entries SET status=$1, changed_at=now() WHERE user_id=$2 AND status=$3`",
+    "\t_, err := s.db.Exec(query, 1, userID, 2)",
+    "\treturn err",
+    "}",
+    "",
+  ].join("\n");
+
+  /** What an older sidecar image (pre-#760) returns for MarkAllAsRead. */
+  const OLD_SIDECAR: ExtractUsageResult = {
+    tables: [{ schema: "", name: "entries", qualifiedName: "entries", access: "write" }],
+    columns: ["$1", "$2", "$3", "status", "changed_at", "user_id"].map((column) => ({
+      table: "entries",
+      column,
+      qualifiedName: `entries.${column}`,
+      access: "write" as const,
+    })),
+    lineage_edges: [],
+    uncertain: [],
+    routines: [],
+  };
+
+  it("never persists a bind parameter as a column, even from an older sidecar", async () => {
+    const { prisma, recorded } = fakePrisma();
+    const writer = new SchemaGraphWriter(prisma, "g1", "p1");
+    const res = await extractEmbeddedSql(writer, "internal/storage/entry.go", GO_SRC, {
+      client: stubClient(() => OLD_SIDECAR),
+    });
+
+    const targets = recorded.edges.map((e) => e.toQualifiedName);
+    expect(targets.some((t) => /\.\$\d+$/.test(t ?? ""))).toBe(false);
+    expect(recorded.symbols.some((s) => s.kind === "column" && s.name.startsWith("$"))).toBe(false);
+    expect(targets.sort()).toEqual([
+      "entries",
+      "entries.changed_at",
+      "entries.status",
+      "entries.user_id",
+    ]);
+    expect(res.edges).toBe(4);
+  });
+
+  it("drops `?`, `:name` and `@name` placeholders too", async () => {
+    const { prisma, recorded } = fakePrisma();
+    const writer = new SchemaGraphWriter(prisma, "g1", "p1");
+    const placeholderResult: ExtractUsageResult = {
+      ...tableResult("feeds", "read"),
+      columns: ["?", ":title", "@p1", "title"].map((column) => ({
+        table: "feeds",
+        column,
+        qualifiedName: `feeds.${column}`,
+        access: "read" as const,
+      })),
+    };
+    await extractEmbeddedSql(writer, "src/repo.ts", `q("SELECT title FROM feeds WHERE x = ?")`, {
+      client: stubClient(() => placeholderResult),
+    });
+    expect(recorded.edges.map((e) => e.toQualifiedName).sort()).toEqual(["feeds", "feeds.title"]);
+  });
+
+  it("attributes every edge to the enclosing function symbol, with no synthetic sql@ origin", async () => {
+    const { prisma, recorded } = fakePrisma();
+    const writer = new SchemaGraphWriter(prisma, "g1", "p1");
+    await extractEmbeddedSql(writer, "internal/storage/entry.go", GO_SRC, {
+      client: stubClient(() => OLD_SIDECAR),
+      enclosingSymbols: [
+        { id: "fn-file", startLine: 1, endLine: 8 },
+        { id: "fn-MarkAllAsRead", startLine: 3, endLine: 7 },
+      ],
+    });
+
+    expect(recorded.edges.length).toBeGreaterThan(0);
+    // The narrowest enclosing span wins.
+    expect(new Set(recorded.edges.map((e) => e.fromSymbolId))).toEqual(
+      new Set(["fn-MarkAllAsRead"]),
+    );
+    expect(recorded.symbols.some((s) => s.name.startsWith("sql@"))).toBe(false);
+    // The edge still records where the SQL literal sits.
+    expect(recorded.edges.every((e) => e.line === 4)).toBe(true);
+  });
+
+  it("falls back to a synthetic sql@line origin for SQL outside any function", async () => {
+    const { prisma, recorded } = fakePrisma();
+    const writer = new SchemaGraphWriter(prisma, "g1", "p1");
+    const src = "package storage\n\nconst q = `SELECT id FROM widgets`\n";
+    await extractEmbeddedSql(writer, "pkg/store.go", src, {
+      client: stubClient(() => tableResult("widgets", "read")),
+      enclosingSymbols: [{ id: "fn-other", startLine: 10, endLine: 20 }],
+    });
+    const origin = recorded.symbols.find((s) => s.name === "sql@3");
+    expect(origin?.qualifiedName).toBe("pkg/store.go::sql@3");
+    expect(recorded.edges.every((e) => e.fromSymbolId !== "fn-other")).toBe(true);
+    expect(recorded.edges.length).toBe(2);
+  });
+});

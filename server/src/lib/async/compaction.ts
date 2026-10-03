@@ -109,6 +109,8 @@ function meterSummaryCall(
     recordProjectUsage({
       projectId: meter.projectId,
       sessionId: meter.sessionId,
+      userId: meter.userId,
+      agentStep: "compaction",
       provider: res.provider,
       model,
       inputTokens: res.usage.promptTokens,

@@ -92,6 +92,27 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
     expect(String(calls[0].opts.systemMessage)).toMatch(/^## Constitution v1\.0/);
   });
 
+  it("#792 — the ledger row names the spec-kit command as its step, billed to the actor", async () => {
+    const finops = await import("../../finops/index.js");
+    const { provider } = capturingProvider();
+
+    await runSpecKitAgent({
+      command: "plan",
+      project,
+      actorId: "u-actor",
+      systemPrompt: "Base.",
+      userPrompt: "Plan it.",
+      deps: { provider },
+    });
+
+    expect(vi.mocked(finops.recordUsage)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(finops.recordUsage).mock.calls[0][0]).toMatchObject({
+      projectId: "p1",
+      userId: "u-actor",
+      agentStep: "spec-kit.plan",
+    });
+  });
+
   it("does not request messages-caching (single-shot user turn is unique)", async () => {
     const { provider, calls } = capturingProvider();
 

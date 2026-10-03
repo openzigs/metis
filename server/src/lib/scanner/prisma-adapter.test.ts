@@ -1562,6 +1562,7 @@ describe("buildScannerPorts — metering, output caps, lifecycle (#718)", () => 
     expect(mockRecordUsage).toHaveBeenCalledWith({
       projectId: "proj-9",
       sessionId: "scan-scan-9",
+      agentStep: "bug-scan",
       provider: "anthropic",
       model: "deepseek-flash",
       inputTokens: 1200,
