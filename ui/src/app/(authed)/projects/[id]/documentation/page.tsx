@@ -92,6 +92,12 @@ interface DocWarning {
    * off), never on a per-section warning, so section counts can exclude it.
    */
   runLevel?: boolean;
+  /**
+   * #782 — set only on the warning that records why a generation stopped: the
+   * stage it stopped in and the error's class (never its message).
+   */
+  stage?: string;
+  errorClass?: string;
 }
 
 interface GeneratedDoc {
@@ -511,6 +517,17 @@ export default function DocumentationPage(): React.ReactElement {
           {docDetail.data.status === "failed" && (
             <FailedGenerationBanner
               interrupted={docDetail.data.interrupted === true}
+              cause={generationStopCause(docDetail.data.warnings)}
+              stage={generationStopStage(docDetail.data.warnings)}
+              regenerating={regenerateMutation.isPending}
+              onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
+            />
+          )}
+
+          {/* #782 — a run that stopped early kept its finished sections; it has
+              no published version, and regenerating finishes it. */}
+          {isPartialGeneration(docDetail.data) && (
+            <PartialGenerationBanner
               regenerating={regenerateMutation.isPending}
               onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
             />
@@ -1395,12 +1412,48 @@ export function groundingModeNotice(warnings: DocWarning[]): string | null {
  * interruption by a restart gets its own explanation because the user did
  * nothing wrong and simply needs to run it again. Exported for unit testing.
  */
+/**
+ * #782 — the message of the warning that records why a generation stopped (the
+ * one carrying a `stage`), or null. The server builds it from fixed text only.
+ */
+export function generationStopCause(warnings: DocWarning[] | null | undefined): string | null {
+  return warnings?.find((w) => typeof w.stage === "string")?.message ?? null;
+}
+
+/** #782 — the stage the stop warning records, or null. */
+export function generationStopStage(warnings: DocWarning[] | null | undefined): string | null {
+  return warnings?.find((w) => typeof w.stage === "string")?.stage ?? null;
+}
+
+/** Stages at which at least one section may have finished and been checkpointed. */
+const REUSABLE_STAGES = new Set(["sections", "assembly", "commit"]);
+
+/**
+ * #782 — a `degraded` document that never published a version is a generation
+ * that stopped early and kept the sections it finished.
+ */
+export function isPartialGeneration(
+  doc: Pick<GeneratedDoc, "status" | "versions" | "warnings">,
+): boolean {
+  return (
+    doc.status === "degraded" &&
+    (doc.versions?.length ?? 0) === 0 &&
+    generationStopCause(doc.warnings) !== null
+  );
+}
+
 export function FailedGenerationBanner({
   interrupted,
+  cause,
+  stage,
   regenerating,
   onRegenerate,
 }: {
   interrupted: boolean;
+  /** #782 — why it stopped (stage, section, error class), when the server recorded it. */
+  cause?: string | null;
+  /** #782 — the stage it stopped in; the reuse claim is made only once sections can exist. */
+  stage?: string | null;
   regenerating: boolean;
   onRegenerate: () => void;
 }): React.ReactElement {
@@ -1412,7 +1465,39 @@ export function FailedGenerationBanner({
       <p className="mt-1 text-sm text-destructive">
         {interrupted
           ? "The server restarted or stopped while this document was being generated, so it never finished. Regenerating reuses the modules already analysed before the interruption."
-          : "This document could not be generated. You can try again; if it keeps failing, check the server logs."}
+          : cause
+            ? stage && REUSABLE_STAGES.has(stage)
+              ? "This document could not be generated. Regenerating reuses every section that already finished, where its inputs have not changed."
+              : "This document could not be generated. You can try again."
+            : "This document could not be generated. You can try again; if it keeps failing, check the server logs."}
+      </p>
+      {cause && !interrupted && (
+        <p className="mt-1 text-sm text-destructive" data-testid="generation-stop-cause">
+          {cause}
+        </p>
+      )}
+      <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
+        {regenerating ? "Regenerating…" : "Regenerate"}
+      </Button>
+    </Card>
+  );
+}
+
+/** #782 — offers to finish a document whose generation stopped early. */
+export function PartialGenerationBanner({
+  regenerating,
+  onRegenerate,
+}: {
+  regenerating: boolean;
+  onRegenerate: () => void;
+}): React.ReactElement {
+  return (
+    <Card className="border-warning/40 bg-warning-muted p-4" role="status">
+      <p className="font-medium text-warning">Generation stopped before it finished</p>
+      <p className="mt-1 text-sm text-warning">
+        The sections that finished were saved and are shown below; the reason is listed with the
+        warnings. Regenerating writes the rest and reuses every finished section whose inputs have
+        not changed.
       </p>
       <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
         {regenerating ? "Regenerating…" : "Regenerate"}

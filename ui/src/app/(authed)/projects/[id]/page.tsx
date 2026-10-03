@@ -17,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ProjectPipelineOverview } from "@/components/projects/pipeline-overview";
+import { KnowledgeSearchHit } from "@/components/projects/knowledge-search-hit";
 import { PageHeader } from "@/components/ui/page-header";
 
 export default function ProjectDetailPage() {
@@ -103,12 +104,7 @@ export default function ProjectDetailPage() {
         {hits.length > 0 ? (
           <ul className="space-y-2" data-testid="search-hits">
             {hits.map((h) => (
-              <li key={h.chunkId} className="rounded-md border p-3 text-sm">
-                <p className="text-xs text-muted-foreground">
-                  {h.filename}#{h.position} · score {h.score.toFixed(3)}
-                </p>
-                <pre className="mt-2 whitespace-pre-wrap text-sm">{h.text}</pre>
-              </li>
+              <KnowledgeSearchHit key={h.chunkId} hit={h} />
             ))}
           </ul>
         ) : null}

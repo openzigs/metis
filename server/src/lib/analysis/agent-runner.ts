@@ -40,6 +40,7 @@ import { ConfigValidationError } from "../config/errors.js";
 import { isTruncationFinishReason } from "../docs-gen/truncation.js";
 import type { DocumentSource } from "../documents/document-source.js";
 import { createChildLogger } from "../logger.js";
+import { displayFilename } from "../rag/hit-locator.js";
 import { DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
 import { buildSpecialistPrompt } from "./prompts.js";
 import { responseFormatForAgent } from "./structured-output-schemas.js";
@@ -102,7 +103,7 @@ const formatRetrievedContext = (chunks: RetrievalContextChunk[]): string => {
   return chunks
     .map(
       (c, i) =>
-        `[${i + 1}] documentId=${c.documentId} chunk=${c.chunkIndex} file=${c.filename}\n${c.text}`,
+        `[${i + 1}] documentId=${c.documentId} chunk=${c.chunkIndex} file=${displayFilename(c)}\n${c.text}`,
     )
     .join("\n---\n");
 };

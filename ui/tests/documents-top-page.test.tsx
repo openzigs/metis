@@ -145,7 +145,9 @@ describe("<DocumentsTopLevelPage />", () => {
     renderPage();
     const row = await screen.findByTestId("documents-top-row-d1");
     await waitFor(() => expect(row).toHaveTextContent("metis"));
-    expect(row).toHaveTextContent("src/vitest.config.ts");
+    // #717 — the repository path, without the ingester's `src/` marker.
+    expect(row).toHaveTextContent("vitest.config.ts");
+    expect(row.textContent).not.toContain("src/vitest.config.ts");
     expect(row.textContent).not.toContain("connector:repo:");
     expect(row.textContent).not.toContain("kpu2tg");
     expect(row.querySelector(`[title="${key}"]`)).not.toBeNull();

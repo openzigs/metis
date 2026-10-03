@@ -390,3 +390,26 @@ describe("buildAutoRagContext — derived label for generated documents (#199)",
     expect(out).toContain("not a primary source");
   });
 });
+
+// #717 — the model copies what it reads: a repo hit must be named by its real
+// path, and a lexical-only hit must not print as `score=0.000`.
+describe("buildAutoRagContext — hit naming and scores (#717)", () => {
+  it("names a repo hit by its path and prints the rank score", async () => {
+    __resetConfigSingleton();
+    search.mockResolvedValue({
+      hits: [
+        {
+          ...docHit,
+          filename: "connector:repo:cid1:src/internal/model/feed.go",
+          path: "internal/model/feed.go",
+          score: 0,
+          rankScore: 0.5,
+          matchedBy: ["lexical"],
+        },
+      ],
+    });
+    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    expect(out).toContain("[1] internal/model/feed.go#0 (score=0.500, keyword match)");
+    expect(out).not.toContain("connector:repo:cid1:src/internal");
+  });
+});

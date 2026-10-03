@@ -522,6 +522,63 @@ describe("loadFindingForDeepDive — agent attribution (#338)", () => {
     expect(loaded).toMatchObject({ agentKey: "database", agentSource: null, projectName: "Acme" });
   });
 
+  // #717 — the deep-dive names a repo citation by its real path, so each
+  // document citation must carry its row's source, read in THIS project only.
+  it("attaches each cited document's source, scoped to the finding's project", async () => {
+    documents.set("doc-repo-000001", {
+      id: "doc-repo-000001",
+      filename: "connector:repo:conn1:src/internal/database/migrations.go",
+      source: "repo",
+      projectId: "proj-abcdefghij",
+    });
+    documents.set("doc-foreign-0001", {
+      id: "doc-foreign-0001",
+      filename: "connector:repo:conn9:src/x.go",
+      source: "repo",
+      projectId: "proj-otherproject",
+    });
+    const a = await seedAnalysis();
+    const ar = await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "code",
+      status: "completed",
+      output: {
+        agentKey: "code",
+        summary: "s",
+        findings: [
+          {
+            ...FINDING,
+            citations: [
+              {
+                documentId: "doc-repo-000001",
+                chunkIndex: 0,
+                filename: "connector:repo:conn1:src/internal/database/migrations.go",
+              },
+              {
+                documentId: "doc-foreign-0001",
+                chunkIndex: 1,
+                filename: "connector:repo:conn9:src/x.go",
+              },
+            ],
+          },
+        ],
+        notes: [],
+      },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage,
+    });
+    const loaded = await loadFindingForDeepDive({
+      projectId: "proj-abcdefghij",
+      analysisId: a.id,
+      findingId: ar.findingIds[0],
+    });
+    expect(loaded?.citations).toEqual([
+      expect.objectContaining({ documentId: "doc-repo-000001", source: "repo" }),
+      expect.not.objectContaining({ source: expect.anything() }),
+    ]);
+  });
+
   it("returns null for a finding addressed through another project", async () => {
     const a = await seedAnalysis();
     const ar = await persistAgentResult({

@@ -134,3 +134,29 @@ describe("search-knowledge registration", () => {
     expect(getToolRegistry().has("search-knowledge")).toBe(false);
   });
 });
+
+describe("search-knowledge tool — paths and scores (#717)", () => {
+  it("cites a repository file by its real path and prints the rank score", async () => {
+    const tool = buildSearchKnowledgeTool({
+      service: stubService([
+        hit({
+          chunkId: "r1",
+          filename: "connector:repo:conn1:src/internal/model/feed.go",
+          path: "internal/model/feed.go",
+          position: 2,
+          source: "repo",
+          score: 0,
+          rankScore: 0.5,
+          matchedBy: ["lexical"],
+        }),
+      ]),
+    });
+    const result = await tool.exec(
+      { projectId: "p1", query: "q" },
+      { sessionId: "s", userId: "u" },
+    );
+    expect(result.text).toContain("[1] (score=0.5000, keyword match) internal/model/feed.go#2");
+    expect(result.text).not.toContain("src/internal");
+    expect(result.text).not.toContain("score=0.0000");
+  });
+});

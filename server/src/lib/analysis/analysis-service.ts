@@ -1109,7 +1109,8 @@ export async function loadFindingForDeepDive(input: {
   agentKey: AnalysisAgentKey;
   /** #338 — the custom/library agent the finding came from; null for specialists. */
   agentSource: AnalysisAgentSource | null;
-  citations: Citation[];
+  /** #717 — each document citation carries its row's `documents.source`. */
+  citations: SnapshotCitation[];
   requirementId: string | null;
   projectName: string;
 } | null> {
@@ -1149,6 +1150,10 @@ export async function loadFindingForDeepDive(input: {
     row.agentResult.agentKey,
     parseAgentOutputBlob(row.agentResult.output).sourceName,
   );
+  // #717 — the deep-dive names a repository citation by its real path, which is
+  // decided on the cited row's source (#547), read in the finding's own project.
+  const cited = await readCitedDocuments(ev.citations, { projectId: input.projectId });
+  const sourceById = new Map([...cited].map(([docId, d]) => [docId, d.source]));
 
   return {
     id: row.id,
@@ -1158,7 +1163,7 @@ export async function loadFindingForDeepDive(input: {
     severity: row.severity as FindingSeverity,
     agentKey,
     agentSource,
-    citations: ev.citations,
+    citations: ev.citations.map((c) => withDocumentSource(c, sourceById)),
     requirementId: ev.requirementId,
     projectName: row.agentResult.analysis.project.name,
   };

@@ -370,6 +370,52 @@ describe("searchKnowledgeTool", () => {
     });
   });
 
+  // #717 — the analysis agents' tool names a repository file by its real path
+  // and prints the rank score, never the 0.000 cosine of a keyword-only hit.
+  it("prints a repo hit's real path and rank score, not the raw key or 0.000", async () => {
+    mockKnowledge.search.mockResolvedValue({
+      hits: [
+        {
+          documentId: "doc-repo",
+          filename: "connector:repo:c1:src/internal/model/feed.go",
+          path: "internal/model/feed.go",
+          source: "repo",
+          position: 4,
+          text: "type Feed struct {}",
+          score: 0,
+          rankScore: 0.0164,
+          matchedBy: ["lexical"],
+        },
+      ],
+      mode: "hybrid",
+    });
+    const result = await tool.execute({ query: "Feed struct" }, baseContext);
+    expect(result.content).toContain("internal/model/feed.go#chunk4 documentId=doc-repo chunk=4");
+    expect(result.content).not.toContain("connector:repo:");
+    expect(result.content).not.toContain("0.000");
+    expect(result.content).toContain("score=0.016, keyword match");
+  });
+
+  it("keeps the stored name of a non-repo hit with a repo-shaped name (#547)", async () => {
+    mockKnowledge.search.mockResolvedValue({
+      hits: [
+        {
+          documentId: "doc-up",
+          filename: "connector:repo:c1:src/internal/model/feed.go",
+          source: "upload",
+          position: 0,
+          text: "spoof",
+          score: 0.8,
+          rankScore: 0.8,
+          matchedBy: ["dense"],
+        },
+      ],
+      mode: "hybrid",
+    });
+    const result = await tool.execute({ query: "Feed" }, baseContext);
+    expect(result.content).toContain("connector:repo:c1:src/internal/model/feed.go#chunk0");
+  });
+
   it("respects custom k parameter", async () => {
     mockKnowledge.search.mockResolvedValue({ hits: [], mode: "hybrid" });
     await tool.execute({ query: "test", k: 10 }, baseContext);
