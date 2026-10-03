@@ -44,7 +44,7 @@ describe("removed bug-scanner routes (#803)", () => {
   });
 
   it("has no catch-all segment that would swallow those paths", () => {
-    const ancestors = ["(authed)", "(authed)/projects", PROJECT, `${PROJECT}/repositories`];
+    const ancestors = ["", "(authed)", "(authed)/projects", PROJECT, `${PROJECT}/repositories`];
     for (const rel of ancestors) {
       const dirs = fs
         .readdirSync(path.join(APP, rel), { withFileTypes: true })
