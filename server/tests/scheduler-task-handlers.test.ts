@@ -6,6 +6,7 @@ import {
   BUILT_IN_TASK_TYPES,
   InMemoryTaskHandlerRegistry,
   registerBuiltInHandlers,
+  SCANNER_RUN_SCAN_TIMEOUT_MS,
 } from "../src/lib/scheduler/task-handlers.js";
 import type { TaskHandlerContext, TaskRecord } from "../src/lib/scheduler/types.js";
 
@@ -407,5 +408,26 @@ describe("registerBuiltInHandlers", () => {
     await expect(
       reg.get("scanner.run-scan")!.handler(makeCtx({ scanId: "scan-1" })),
     ).rejects.toThrow(/not wired/);
+  });
+
+  it("#759 — scanner.run-scan tells the scan its attempt, so a timeout knows if it is retried", async () => {
+    const reg = new InMemoryTaskHandlerRegistry();
+    const runScannerScan = vi.fn().mockResolvedValue({});
+    registerBuiltInHandlers(reg, { httpWebhookHandler: vi.fn(), runScannerScan });
+    const ctx = makeCtx({ scanId: "scan-1" });
+    ctx.task.attempts = 2;
+    ctx.task.maxAttempts = 3;
+    await reg.get("scanner.run-scan")!.handler(ctx);
+    expect(runScannerScan).toHaveBeenCalledWith("scan-1", ctx.signal, {
+      attempts: 2,
+      maxAttempts: 3,
+    });
+  });
+
+  it("#759 — scanner.run-scan has its own timeout, not the 5-minute scheduler default", () => {
+    const reg = new InMemoryTaskHandlerRegistry();
+    registerBuiltInHandlers(reg, { httpWebhookHandler: vi.fn() });
+    expect(reg.get("scanner.run-scan")!.defaultTimeoutMs).toBe(SCANNER_RUN_SCAN_TIMEOUT_MS);
+    expect(SCANNER_RUN_SCAN_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000);
   });
 });
