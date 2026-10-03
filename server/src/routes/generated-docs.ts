@@ -847,13 +847,15 @@ export function generatedDocsRouter(): Router {
       where: { id: docId },
       data: parsed.data,
     });
+    // #782 — the generation checkpoint is internal resume state, never a response field.
+    const { generationCheckpoint: _checkpoint, ...row } = updated;
     res.json({
       data: {
-        ...updated,
-        errorMessage: publicGenerationErrorMessage(updated.status, updated.errorMessage),
+        ...row,
+        errorMessage: publicGenerationErrorMessage(row.status, row.errorMessage),
         // #67 — see the GET handler: the row's warnings column is the degraded
         // path's equivalent of `errorMessage` and gets the same treatment.
-        warnings: publicDocWarnings(updated.warnings),
+        warnings: publicDocWarnings(row.warnings),
       },
     });
   });
