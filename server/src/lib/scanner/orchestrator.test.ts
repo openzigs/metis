@@ -581,6 +581,91 @@ describe("runScan", () => {
     expect(res.totalSymbols).toBe(4);
   });
 
+  // The cursor is counted apart from the loop index, so a skip path that does
+  // not advance it leaves it behind: a retry would then rescan and re-bill a
+  // symbol this attempt already finished with.
+  async function skipThenTimeOutThenResume(
+    configure: (r: Recorder) => void,
+  ): Promise<{ first: Recorder; err: Error; resumed: string[] }> {
+    const ac = new AbortController();
+    const first = recorder({ symbols: abcd(), fpTokens: 0, firstPassTokens: 10 });
+    configure(first);
+    const configured = first.ports.runFirstPass;
+    first.ports.runFirstPass = vi.fn().mockImplementation(async (input) => {
+      if (input.symbol.id === "c") {
+        ac.abort(new TaskAbortError("timeout", "task timeout after 7200000ms"));
+        throw new Error("Request was aborted.");
+      }
+      return configured(input);
+    });
+    const err = await runScan(first.ports, {
+      scanId: "scan-1",
+      signal: ac.signal,
+      attempt: { attempts: 1, maxAttempts: 3 },
+    }).catch((e) => e);
+
+    // The retry reads every body and parses every reply.
+    const last = first.state.progress.at(-1)!;
+    const retry = recorder({
+      scan: makeScan({
+        budgetCapTokens: 10_000,
+        resume: {
+          symbolCursor: last.symbolCursor,
+          symbolsScanned: last.symbolsScanned,
+          tokenSpend: last.tokenSpend,
+        },
+      }),
+      symbols: abcd(),
+      fpTokens: 0,
+      firstPassTokens: 10,
+    });
+    await runScan(retry.ports, { scanId: "scan-1", signal: new AbortController().signal });
+    const resumed = (retry.ports.runFirstPass as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0].symbol.id,
+    );
+    return { first, err, resumed };
+  }
+
+  it("advances the cursor past a symbol whose body read throws, so a retry does not rescan it", async () => {
+    const { first, err, resumed } = await skipThenTimeOutThenResume((r) => {
+      r.ports.readSymbolBody = vi
+        .fn()
+        .mockImplementation(async (_s: ScanRecordSnapshot, sym: SymbolToScan) => {
+          if (sym.id === "b") throw new Error("ENOENT: source vanished");
+          return "body";
+        });
+    });
+    // "a" scanned, "b" skipped: the next index is 2.
+    expect(first.state.progress.map((p) => p.symbolCursor)).toEqual([1, 2]);
+    expect(first.state.progress.at(-1)).toEqual({
+      symbolCursor: 2,
+      totalSymbols: 4,
+      symbolsScanned: 1,
+      tokenSpend: 10,
+    });
+    expect(err.message).toMatch(/a retry resumes at symbol 3$/);
+    expect(resumed).toEqual(["c", "d"]);
+  });
+
+  it("advances the cursor past a symbol whose reply is unparseable, so a retry does not re-bill it", async () => {
+    const { first, err, resumed } = await skipThenTimeOutThenResume((r) => {
+      r.ports.runFirstPass = vi.fn().mockImplementation(async ({ symbol }) => {
+        if (symbol.id === "b") throw parseError(40);
+        return { candidates: [], totalTokens: 10 };
+      });
+    });
+    // "a" scanned, "b"'s reply unusable but paid for: the next index is 2.
+    expect(first.state.progress.map((p) => p.symbolCursor)).toEqual([1, 2]);
+    expect(first.state.progress.at(-1)).toEqual({
+      symbolCursor: 2,
+      totalSymbols: 4,
+      symbolsScanned: 1,
+      tokenSpend: 50,
+    });
+    expect(err.message).toMatch(/a retry resumes at symbol 3$/);
+    expect(resumed).toEqual(["c", "d"]);
+  });
+
   it("falls back to a generic reason when the abort carries none", async () => {
     const ac = new AbortController();
     ac.abort("stop");
