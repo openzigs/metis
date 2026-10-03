@@ -3641,7 +3641,7 @@ See the [operator recovery and rollback workflow](USER_GUIDE.md#legacy-account-a
 | `holistic-synthesizer.ts` | Two-phase holistic generation: Phase 1 extracts per-module facts (Haiku), Phase 2 synthesizes a single narrative document with Mermaid diagrams (Sonnet). Supports `"full"`, `"module"`, `"symbol"`, `"repository"`, and `"database"` scope variants |
 | `db-schema-synthesizer.ts` | Generates documentation from live database schema introspection. Connects via `dbConnectorId`, reflects tables/columns/constraints, and produces an entity-relationship narrative |
 | `generated-doc-provenance.ts` | Defines the generated-document revision ID and immutable per-version provenance manifest, and normalizes legacy history rows on read |
-| `interrupted-generations.ts` | #50 — generation runs in-process (`generateDocumentAsync`), not as a scheduler task, so durable-task recovery never saw a run killed by a restart. A claimed run heartbeats its `generated_documents.updatedAt` every 60 s (fenced on its claim); a sweep started from `server.ts` (at startup, then every minute, independent of the scheduler) fails `generating` rows with no heartbeat for 5 min and `pending` rows untouched for 15 min, compare-and-set on the `updatedAt` it read, and revokes the dead run's claim. Heartbeat-keyed, so another replica's live run is never failed. Not auto-resumed (unattended token spend); `POST /docs/:docId/regenerate` restarts a failed doc in place and reuses the Phase-1 fact cache. |
+| `interrupted-generations.ts` | #50 — generation runs in-process (`generateDocumentAsync`), not as a scheduler task, so durable-task recovery never saw a run killed by a restart. A claimed run heartbeats its `generated_documents.updatedAt` every 60 s (fenced on its claim); a sweep started from `server.ts` (at startup, then every minute, independent of the scheduler) fails `generating` rows with no heartbeat for 5 min and `pending` rows untouched for 15 min, compare-and-set on the `updatedAt` it read, and revokes the dead run's claim. Heartbeat-keyed, so another replica's live run is never failed. Not auto-resumed (unattended token spend); `POST /docs/:docId/regenerate` restarts a failed (or #782 partial) doc in place and reuses the Phase-1 fact cache and every checkpointed section. |
 | `generated-doc-publication.ts` | Durable publication entrypoint for generated docs. Creates the synthetic `Document`, persists the latest markdown blob, enqueues `publish-generated-document`, chunks markdown into revision-scoped sections, and publishes through the shared quarantine/approval pipeline. Publication preserves a conservative derived ACL on the synthetic document, honors the normal quarantine auto-approval policy instead of forcing approval, and reconciles deleted or superseded artifacts out of `QuarantineChunk`, `KnowledgeChunk`, vector storage, and BM25 before any delayed worker can republish stale content. |
 | `rag-ingest.ts` | Back-compat wrapper over the durable publication flow. Preserves the older `ingestDocumentToRag(...)` call surface while delegating to `generated-doc-publication.ts` |
 
@@ -3842,6 +3842,12 @@ The cadence is the configured schedule, not a fixed documentation timer.
   inventory updated; all section dependencies unchanged**, not a whole-inventory
   no-op. The committed version then enters the separate durable publication
   pipeline, with immutable version/revision fences and deletion cleanup.
+
+A run that stops before its commit keeps its finished sections (#782). Each section
+record is checkpointed on `generated_documents.generationCheckpoint` as it finishes. A
+regenerate reuses each record whose inputs are unchanged. A never-published document is
+kept `degraded` with those sections and a cause warning (stage, section, error class). See
+[CODE_GRAPH_AND_DOC_GENERATION.md](CODE_GRAPH_AND_DOC_GENERATION.md).
 
 Generation health (`ready`/`degraded`/`failed`) is not publication/indexing state:
 readable output may still await quarantine, approval, embeddings, vector, and BM25
