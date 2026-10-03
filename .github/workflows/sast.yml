@@ -164,18 +164,37 @@ jobs:
           # it enters the tree. A security release is exactly when a supply
           # chain attack is most effective, so we do NOT bypass that gate;
           # we wait it out behind a dated waiver instead.
-          # NOTHING IS WAIVED TODAY (#1324). The single entry that lived here,
-          # GHSA-2v37-7h3g-55p8 (nanoid), EXPIRED on 2026-08-11 and was deleted —
-          # not re-dated — once the 3.x line took 3.3.18 in pnpm-workspace.yaml.
-          # An expired waiver is the gate working as designed; extending one to
-          # clear the red is the failure it exists to prevent.
+          # The previous entry, GHSA-2v37-7h3g-55p8 (nanoid), EXPIRED on 2026-08-11
+          # and was deleted, not re-dated, once the 3.x line took 3.3.18 in
+          # pnpm-workspace.yaml (#1324). An expired waiver is the gate working as
+          # designed. Extending one just to clear the red is the failure it exists
+          # to prevent.
           #
-          # An empty dict is the CORRECT steady state, and the suppression path is
-          # still covered: scripts/lib/sast-waiver-gate.test.mjs substitutes a
-          # fixture dict (its regex handles this single-line `{}` form on purpose),
-          # and scripts/lib/sast-waiver-expiry.test.mjs asserts that whatever is in
-          # here has not gone stale.
-          WAIVERS = {}
+          # An empty dict is the CORRECT steady state. The suppression path stays
+          # covered either way: scripts/lib/sast-waiver-gate.test.mjs substitutes a
+          # fixture dict (its regex handles both the single-line `{}` form and this
+          # multi-line one), and scripts/lib/sast-waiver-expiry.test.mjs asserts
+          # that nothing in here has gone stale.
+          WAIVERS = {
+              # braces@3.0.3, CVSS 8.7, published 2026-09-18 (#767). Stack-exhaustion
+              # DoS via deeply nested brace patterns. OSV: `introduced 0,
+              # last_affected 3.0.3`, and 3.0.3 is the latest braces on npm, so no
+              # fixed version exists to override to (checked 2026-10-02).
+              # scripts/lib/dependency-audit-767-braces.test.mjs fails if braces
+              # gains any route other than the dev-only one named in `reason`.
+              # On expiry: if braces or micromatch has shipped a fix, override to it
+              # and delete this entry. Otherwise re-verify, then re-date it.
+              "GHSA-vfj7-8cjw-p6xm": {
+                  "expires": "2026-11-01",
+                  "reason": ("No patched braces release exists. Not exploitable "
+                             "here: braces is reached only through ui's dev-time "
+                             "lint tooling (eslint-config-next -> "
+                             "@next/eslint-plugin-next -> fast-glob -> micromatch). "
+                             "It expands developer-written lint globs, never ships "
+                             "in the server image or UI bundle, and never sees "
+                             "request input."),
+              },
+          }
           today = datetime.date.today()
 
           def waiver_for(ids):
