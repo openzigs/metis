@@ -186,6 +186,8 @@ export interface TraceabilityCodeNode {
   endLine: number | null;
   confidence: number;
   source: SpecMappingSource;
+  /** #814 — the mapped file itself classifies as a test (`code-graph/test-conventions.ts`). */
+  isTest: boolean;
 }
 
 /** A spec node plus the code it links to. */
@@ -206,7 +208,84 @@ export interface RequirementTraceabilityChain {
   specs: TraceabilitySpecNode[];
   /** Direct requirement→code links (the pre-existing RequirementCodeMapping spine). */
   directCode: TraceabilityCodeNode[];
+  /** #814 — tests resolved from the mapped code, strongest first. */
+  testedBy: TraceabilityTestNode[];
 }
+
+// ---- "Tested by" (#814, Epic #812) ----------------------------------------
+
+/**
+ * How a test was linked to a requirement's mapped code:
+ * - `direct` — a mapped target is itself a test file/symbol;
+ * - `exercises` — a test symbol has a `calls`/`references` edge into a mapped symbol;
+ * - `naming` — a test in the conventional sibling test file is named for a mapped
+ *   symbol, or (file-only target) shares a requirement token.
+ */
+export const TEST_LINK_RELATIONS = ["direct", "exercises", "naming"] as const;
+export type TestLinkRelation = (typeof TEST_LINK_RELATIONS)[number];
+
+/** A test that covers a requirement, resolved from its mapped code. */
+export interface TraceabilityTestNode {
+  codeSymbolId: string | null;
+  filePath: string;
+  /** Qualified name (`file::Name`), or the file path for a file-only `direct` hit. */
+  symbol: string;
+  name: string;
+  startLine: number | null;
+  /** Test convention id (`go-testing`, `pytest`, …), null when none applies. */
+  convention: string | null;
+  relation: TestLinkRelation;
+  /** The mapped code this test was linked through; null for `direct`. */
+  subject: { filePath: string; symbol: string | null } | null;
+  /** 0–1: the relation's base score with BM25 relevance to the requirement folded in. */
+  score: number;
+}
+
+/** A requirement the gap list reports on. */
+export interface RequirementTestGap {
+  requirementId: string;
+  title: string;
+  analysisId: string | null;
+  /** `no-code` = no mapped code, so testedness cannot be told (never listed as untested). */
+  reason: "no-test" | "no-code";
+  /** Distinct mapped files (direct + via specs). */
+  mappedFiles: number;
+}
+
+/** Project-level "requirements with no linked test" (#814). */
+export interface RequirementTestGaps {
+  /** Non-deleted requirements in scope. */
+  total: number;
+  /** Requirements with at least one resolved test. */
+  tested: number;
+  /** One page of requirements that have mapped code but no test, ordered by id. */
+  untested: RequirementTestGap[];
+  /** Requirements with no mapped code at all (counted, not listed). */
+  noCode: number;
+  /** Pass as `cursor` for the next page; null on the last page. */
+  nextCursor: string | null;
+}
+
+/** Query for `GET /api/projects/:projectId/traceability/test-gaps`. */
+export const traceabilityTestGapsQuerySchema = z.object({
+  analysisId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9_-]+$/, "invalid analysisId")
+    .optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  /** The last requirement id of the previous page. */
+  cursor: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9_-]+$/, "invalid cursor")
+    .optional(),
+});
+export type TraceabilityTestGapsQuery = z.infer<typeof traceabilityTestGapsQuerySchema>;
 
 // ===========================================================================
 // Workspace-level traceability rollup — Epic #610 (#626).

@@ -529,6 +529,23 @@ describe("publishScanFinding", () => {
     return client.request.mock.calls.at(-1)[0].url;
   }
 
+  it("#802 — a scanner publish carries metis, metis-scanner and rule:<id>", async () => {
+    mockPrisma.scanFinding.findUnique.mockResolvedValue(scanFindingRow());
+    upstreamConnector();
+    mockPrisma.project.findUnique.mockResolvedValue({
+      publishGithubOwner: "o",
+      publishGithubRepo: "r",
+    });
+    await publishScanFinding({ scanFindingId: "sf-1", provider: "github" });
+    const { acquirePublishOctokit } = await import("../publishing/octokit-factory.js");
+    const client = await vi.mocked(acquirePublishOctokit).mock.results.at(-1)!.value;
+    const labels = client.request.mock.calls.at(-1)[0].data.labels as string[];
+    expect(labels).toContain("metis");
+    expect(labels).toContain("metis-scanner");
+    expect(labels).toContain("rule:rule-1");
+    expect(labels).not.toContain("metis-analysis");
+  });
+
   it("#733 — files into the project's saved target, not the scanned repo", async () => {
     mockPrisma.scanFinding.findUnique.mockResolvedValue(scanFindingRow());
     upstreamConnector();

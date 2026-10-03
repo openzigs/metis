@@ -124,6 +124,36 @@ describe("getRequirementChainWithLinks", () => {
     expect(prisma.requirementLink.findMany).toHaveBeenCalledTimes(1);
   });
 
+  it("#814 — keeps the root chain's testedBy and leaks none through a restricted link", async () => {
+    const testNode = { filePath: "a_test.go", symbol: "a_test.go::TestA", relation: "naming" };
+    getRequirementChain.mockImplementation(async (projectId: string, requirementId: string) => ({
+      requirementId,
+      requirementTitle: `req ${requirementId}`,
+      projectId,
+      specs: [],
+      directCode: [],
+      testedBy: [{ ...testNode, symbol: `${requirementId}::TestA` }],
+    }));
+    actorCanAccessProject.mockImplementation(
+      async (_a: unknown, projectId: string) => projectId !== "projB",
+    );
+    const prisma = {
+      requirementLink: {
+        findMany: edgeFindMany([edge("L1", "relates_to", "R1", "projA", "R2", "projB")]),
+      },
+    };
+    const result = await getRequirementChainWithLinks(
+      actor,
+      "projA",
+      "R1",
+      {},
+      { prisma: prisma as never },
+    );
+    expect(result.testedBy).toEqual([{ ...testNode, symbol: "R1::TestA" }]);
+    expect(result.linkedChains[0]).toMatchObject({ restricted: true, chain: null });
+    expect(getRequirementChain).toHaveBeenCalledTimes(1);
+  });
+
   it("flags an inaccessible counterpart as restricted with a null chain and does not expand it", async () => {
     actorCanAccessProject.mockImplementation(
       async (_a: unknown, projectId: string) => projectId !== "projB",

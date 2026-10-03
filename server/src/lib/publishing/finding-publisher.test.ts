@@ -80,6 +80,7 @@ describe("publishFinding", () => {
     await publishFinding(p, {
       finding: payload({ target: { owner: "openzigs", repo: "flux-v2" } }),
       provider: "github",
+      sourceLabel: "metis-scanner",
     });
     const args = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(args.target).toEqual({ owner: "openzigs", repo: "flux-v2" });
@@ -87,14 +88,22 @@ describe("publishFinding", () => {
 
   it("#733 — passes no target when the finding carries none (scanner findings)", async () => {
     const p = ports();
-    await publishFinding(p, { finding: payload(), provider: "github" });
+    await publishFinding(p, {
+      finding: payload(),
+      provider: "github",
+      sourceLabel: "metis-scanner",
+    });
     const args = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect("target" in args).toBe(false);
   });
 
   it("creates a GitHub issue and saves IssueLink", async () => {
     const p = ports();
-    const out = await publishFinding(p, { finding: payload(), provider: "github" });
+    const out = await publishFinding(p, {
+      finding: payload(),
+      provider: "github",
+      sourceLabel: "metis-scanner",
+    });
     expect(out.reused).toBe(false);
     expect(out.link.externalUrl).toBe("https://gh/1");
     expect(p.createGitHubIssue).toHaveBeenCalledTimes(1);
@@ -102,6 +111,7 @@ describe("publishFinding", () => {
     expect(body).toContain("metis-finding");
     expect(body).toContain(FP);
     const labels = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0].labels;
+    expect(labels).toContain("metis");
     expect(labels).toContain("metis-scanner");
     expect(labels).toContain("severity:high");
     expect(labels).toContain("rule:rule-1");
@@ -109,7 +119,11 @@ describe("publishFinding", () => {
 
   it("creates a Jira issue when provider=jira", async () => {
     const p = ports();
-    const out = await publishFinding(p, { finding: payload(), provider: "jira" });
+    const out = await publishFinding(p, {
+      finding: payload(),
+      provider: "jira",
+      sourceLabel: "metis-scanner",
+    });
     expect(out.link.externalUrl).toBe("https://jira/PROJ-1");
     expect(p.createJiraIssue).toHaveBeenCalledTimes(1);
     expect(p.createGitHubIssue).not.toHaveBeenCalled();
@@ -125,7 +139,11 @@ describe("publishFinding", () => {
         externalUrl: "https://gh/999",
       }),
     });
-    const out = await publishFinding(p, { finding: payload(), provider: "github" });
+    const out = await publishFinding(p, {
+      finding: payload(),
+      provider: "github",
+      sourceLabel: "metis-scanner",
+    });
     expect(out.reused).toBe(true);
     expect(out.link.externalUrl).toBe("https://gh/999");
     expect(p.createGitHubIssue).not.toHaveBeenCalled();
@@ -135,7 +153,7 @@ describe("publishFinding", () => {
   it("vetoes on stale commit and throws ERR_STALE_COMMIT", async () => {
     const p = ports({ currentRepoCommitSha: vi.fn().mockResolvedValue("deadbeef") });
     await expect(
-      publishFinding(p, { finding: payload(), provider: "github" }),
+      publishFinding(p, { finding: payload(), provider: "github", sourceLabel: "metis-scanner" }),
     ).rejects.toBeInstanceOf(PublishError);
     expect(p.createGitHubIssue).not.toHaveBeenCalled();
   });
@@ -143,7 +161,11 @@ describe("publishFinding", () => {
   it("rejects when the scan has no captured commit SHA (empty string)", async () => {
     const p = ports({ currentRepoCommitSha: vi.fn().mockResolvedValue("abc123") });
     await expect(
-      publishFinding(p, { finding: payload({ commitSha: "" }), provider: "github" }),
+      publishFinding(p, {
+        finding: payload({ commitSha: "" }),
+        provider: "github",
+        sourceLabel: "metis-scanner",
+      }),
     ).rejects.toBeInstanceOf(PublishError);
     expect(p.createGitHubIssue).not.toHaveBeenCalled();
   });
@@ -151,7 +173,7 @@ describe("publishFinding", () => {
   it("rejects when the repo currently has no commit SHA (null)", async () => {
     const p = ports({ currentRepoCommitSha: vi.fn().mockResolvedValue(null) });
     await expect(
-      publishFinding(p, { finding: payload(), provider: "github" }),
+      publishFinding(p, { finding: payload(), provider: "github", sourceLabel: "metis-scanner" }),
     ).rejects.toBeInstanceOf(PublishError);
     expect(p.createGitHubIssue).not.toHaveBeenCalled();
   });
@@ -161,9 +183,25 @@ describe("publishFinding", () => {
     // let an unanchored scan create issues with no provenance.
     const p = ports({ currentRepoCommitSha: vi.fn().mockResolvedValue("") });
     await expect(
-      publishFinding(p, { finding: payload({ commitSha: "" }), provider: "github" }),
+      publishFinding(p, {
+        finding: payload({ commitSha: "" }),
+        provider: "github",
+        sourceLabel: "metis-scanner",
+      }),
     ).rejects.toBeInstanceOf(PublishError);
     expect(p.createGitHubIssue).not.toHaveBeenCalled();
+  });
+
+  it("#802 — the source label comes from the caller, not a hard-coded default", async () => {
+    const p = ports();
+    await publishFinding(p, {
+      finding: payload(),
+      provider: "github",
+      sourceLabel: "metis-analysis",
+    });
+    const labels = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0].labels;
+    expect(labels).toContain("metis-analysis");
+    expect(labels).not.toContain("metis-scanner");
   });
 
   it("dedupes labels and accepts extras", async () => {
@@ -171,12 +209,44 @@ describe("publishFinding", () => {
     await publishFinding(p, {
       finding: payload(),
       provider: "github",
+      sourceLabel: "metis-scanner",
       extraLabels: ["bug", "metis-scanner", " "],
     });
     const labels = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0].labels;
     const count = labels.filter((l: string) => l === "metis-scanner").length;
     expect(count).toBe(1);
     expect(labels).toContain("bug");
+  });
+
+  it("#802 — always adds the umbrella metis label next to the source label, once", async () => {
+    const p = ports();
+    await publishFinding(p, {
+      finding: payload(),
+      provider: "jira",
+      sourceLabel: "metis-impact-analysis",
+      extraLabels: ["metis", " metis ", "METIS"],
+    });
+    const labels = (p.createJiraIssue as ReturnType<typeof vi.fn>).mock.calls[0][0].labels;
+    expect(labels.filter((l: string) => l.toLowerCase() === "metis")).toEqual(["metis"]);
+    expect(labels.slice(0, 2)).toEqual(["metis", "metis-impact-analysis"]);
+  });
+
+  it("#802 — drops reserved source labels from extras: only the caller's own survives", async () => {
+    const p = ports();
+    await publishFinding(p, {
+      finding: payload({ ruleId: null }),
+      provider: "github",
+      sourceLabel: "metis-analysis",
+      extraLabels: ["metis-scanner", "metis-impact-analysis", " METIS-Scanner ", "bug"],
+    });
+    const labels = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0].labels;
+    expect(labels).toEqual([
+      "metis",
+      "metis-analysis",
+      "severity:high",
+      "category:security",
+      "bug",
+    ]);
   });
 
   it("audits create + reuse paths", async () => {
@@ -189,7 +259,11 @@ describe("publishFinding", () => {
         externalUrl: "u",
       }),
     });
-    await publishFinding(reusePorts, { finding: payload(), provider: "github" });
+    await publishFinding(reusePorts, {
+      finding: payload(),
+      provider: "github",
+      sourceLabel: "metis-scanner",
+    });
     expect(reusePorts.audit).toHaveBeenCalledWith(
       "scanner.publish.reused",
       "sf-1",
@@ -197,7 +271,11 @@ describe("publishFinding", () => {
     );
 
     const createPorts = ports();
-    await publishFinding(createPorts, { finding: payload(), provider: "github" });
+    await publishFinding(createPorts, {
+      finding: payload(),
+      provider: "github",
+      sourceLabel: "metis-scanner",
+    });
     expect(createPorts.audit).toHaveBeenCalledWith(
       "scanner.publish.created",
       "sf-1",
