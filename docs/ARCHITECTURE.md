@@ -1066,13 +1066,14 @@ Beyond the analysis-specific events above, every long-running flow shares a sing
 | `analysis` | Multi-agent requirements analysis | #238/#239 |
 | `doc-generation` | Document generation (also emits `job:doc-section`) | #238/#239 |
 | `impact-analysis` | Change/impact analysis (may be cross-project → `projectId: null`) | #238/#239 |
-| `scan` | Quality/ruleset scans | #406/#419 |
 | `pr-review` | PR review runs | #406/#419 |
 | `import-sync` | Import-source sync runs | #406/#419 |
 | `embeddings-reindex` | Embeddings reindex | #406/#419 |
 | `spec-kit` | Spec Kit command runs | #406/#419 |
 | `overview-regenerate` | Code-overview regeneration | #406/#419 |
 | `repo-ingest` | Repository connector Deep Ingest (`202 { jobId }`, runs in the background) | #373 |
+
+`scan` was removed in #804: the AI bug scanner never emitted it, and the scanner itself is gone (#799).
 
 **Bus contract** — emit on both `job:{jobId}` and (when single-project) `project:{projectId}`; phases are `started` → `progress` (0–100) → `completed` (progress pinned to 100) / `failed`.
 
@@ -1930,7 +1931,7 @@ Two scoped endpoints back the UI dialog (`ui/src/components/findings/deep-dive-d
 | `POST /projects/:id/analyses/:analysisId/findings/:findingId/deep-dive` | One bounded LLM call (`server/src/lib/analysis/finding-deep-dive.ts`) expands the finding into an editable `FindingIssueDraft` (title, problem statement, affected files, related requirements, acceptance criteria, suggested labels) plus token/model metadata. The finding is loaded IDOR-scoped to the analysis, and the call is rate-limited and gated by the `analysis.run` permission. |
 | `POST /projects/:id/analyses/:analysisId/findings/:findingId/publish` | Publishes the (reviewed) draft to GitHub, Jira, or both. Gated by the `issue.publish` permission and the approval-checkpoint state (`canCreateTickets`). |
 
-The publish route delegates to `publishAnalysisFinding` in `server/src/lib/publishing/analysis-finding-publish.ts`, which constructs an analysis-flavoured set of `PublisherPorts` on top of the shared GitHub/Jira issue-creation ports (`server/src/lib/publishing/finding-publish-ports.ts`) and calls the **same** generic `publishFinding` (`server/src/lib/publishing/finding-publisher.ts`) used by the security scanner and by Impact Analysis → Jira (`server/src/lib/publishing/impact-analysis-publish.ts`). `lib/publishing/` does not import `lib/scanner/`; the scanner depends on it (#800). Destination selection reuses the project's `publishDestination` (`github` | `jira` | `both`) and `JiraConnection`. Idempotency is recorded on `IssueLink` (keyed on `findingId` + provider), and the rendered issue body carries the originating persona for traceability back to the analysis.
+The publish route delegates to `publishAnalysisFinding` in `server/src/lib/publishing/analysis-finding-publish.ts`, which constructs an analysis-flavoured set of `PublisherPorts` on top of the shared GitHub/Jira issue-creation ports (`server/src/lib/publishing/finding-publish-ports.ts`) and calls the **same** generic `publishFinding` (`server/src/lib/publishing/finding-publisher.ts`) used by Impact Analysis → Jira (`server/src/lib/publishing/impact-analysis-publish.ts`). `finding-publisher.ts` is a shared publishing component with no knowledge of which feature produced the finding; its only callers are these two adapters (the AI bug scanner that once also called it was removed in #799 — see [ADR 0018](decisions/0018-remove-the-ai-bug-scanner.md)). Destination selection reuses the project's `publishDestination` (`github` | `jira` | `both`) and `JiraConnection`. Idempotency is recorded on `IssueLink` (keyed on `findingId` + provider), and the rendered issue body carries the originating persona for traceability back to the analysis.
 
 ```mermaid
 flowchart LR
@@ -6289,7 +6290,7 @@ Every number on the project Usage page comes from **one** table, `TokenUsage` (`
 | Token Budget Status gauge and project budget enforcement | `TokenBudgetController.check()` (`GET /token-budget`) sums `token_usages.totalTokens` for the project (daily = UTC day, monthly = month to date) | tokens only |
 | "Detailed Usage Analytics", "by Agent Step", **Export CSV** | `UsageService.projectUsage()` (`GET /usage`, `/usage/csv`) | the same `costCents`, shown as USD |
 
-Before #792 the detail views and the CSV read `AITokenUsage`, which held disjoint traffic in practice: impact-analysis spend only there, chat/analysis/docs/Spec Kit spend only in `TokenUsage`. One page showed 10.8M tokens / $5.57 in its cards and 290k / $0.14 in its analytics and CSV, and impact spend never reached the budget. The grouping dimensions the detail view needs now live on the ledger: `TokenUsage.agentStep` (`chat`, `chat-estimated`, `chat-failed`, `chat.apply-diff`, `subagent`, `compaction`, `analysis`, `docs-gen`, `spec-kit.<command>`, `bug-scan`, `impact.<stage>`) and `TokenUsage.userId` (no FK, so spend outlives the user). Both are nullable: rows written before #792, and calls whose caller knows no user (analysis, docs-gen, bug scan), group under "unknown" / unattributed. `AITokenUsage` is still written and remains the source for the per-user daily rollup, the admin usage page and **per-user** token budgets (`token_usages.userId` is nullable and only populated from #792, so it cannot answer them yet). The windows still differ — the cards default to month-to-date, the analytics card to its 7/30/90-day range — but both count the same calls.
+Before #792 the detail views and the CSV read `AITokenUsage`, which held disjoint traffic in practice: impact-analysis spend only there, chat/analysis/docs/Spec Kit spend only in `TokenUsage`. One page showed 10.8M tokens / $5.57 in its cards and 290k / $0.14 in its analytics and CSV, and impact spend never reached the budget. The grouping dimensions the detail view needs now live on the ledger: `TokenUsage.agentStep` (`chat`, `chat-estimated`, `chat-failed`, `chat.apply-diff`, `subagent`, `compaction`, `analysis`, `docs-gen`, `spec-kit.<command>`, `impact.<stage>`; rows written before #799 may also carry `bug-scan`, from the removed AI bug scanner) and `TokenUsage.userId` (no FK, so spend outlives the user). Both are nullable: rows written before #792, and calls whose caller knows no user (analysis, docs-gen), group under "unknown" / unattributed. `AITokenUsage` is still written and remains the source for the per-user daily rollup, the admin usage page and **per-user** token budgets (`token_usages.userId` is nullable and only populated from #792, so it cannot answer them yet). The windows still differ — the cards default to month-to-date, the analytics card to its 7/30/90-day range — but both count the same calls.
 
 **Morph `apply_diff` spend is on the ledger; test-coverage spend is not.** The chat `apply_diff` tool (`lib/ai/tools/apply-diff.ts`) records each Morph call to `AITokenUsage` and, when the session belongs to a project (the tool context's `projectId`, else `AISession.projectId`), to `TokenUsage` with `agentStep: "chat.apply-diff"`. Every reader reads exactly one of the two tables, so the call is counted once in each view, never twice. Test-coverage judge and suggestion spend (`lib/testcoverage/cost-tracker.ts`, `judge.ts`) is still recorded only to `AITokenUsage`, so it does **not** appear on the project usage page or count toward the project budget; the test-coverage subsystem is being removed (#812) rather than migrated.
 
@@ -6448,39 +6449,6 @@ When running multi-repo analysis, the total token budget (`100,000`) is split ac
 
 After deep-ingest completes the connection-scanning step, if database connections are found, a `connector:discovery` event is emitted to the `project:{projectId}` room. The UI hook shows a Sonner toast with the count and a "View" action linking to the Connections tab.
 
-
-## AI Bug Scanner (Epic #708)
-
-The bug scanner reuses existing infrastructure rather than introducing a parallel stack:
-
-```
-   UI (rule editor, triage, repo deep-link)
-         │
-         ▼
-   /projects/:id/* routes  (rules.ts, scans.ts, triage.ts)
-         │                    │           │
-         │                    ▼           ▼
-         │            scheduler        triage-service (pure)
-         │            (scanner.run-scan)
-         ▼
-   prisma-adapter
-   ├── runScanWithPrismaPorts → orchestrator
-   │     ├── per-symbol-scanner (Haiku)
-   │     └── fp-filter (Sonnet, 3 votes)
-   ├── materializeTriagedFinding → Finding
-   └── publishScanFinding → publisher / jira-publisher
-```
-
-Pure modules under `server/src/lib/scanner/` are port-driven (no Prisma imports). The
-adapter (`prisma-adapter.ts`) wires Prisma queries and the existing publishing stack
-into the ports so the scanner can be tested with in-memory ports.
-
-Key invariants:
-- Every LLM call passes through `prompt-fence.ts`.
-- Per-project RAG isolation is inherited from `code-graph/query-service.ts`.
-- Stale-commit gate aborts orchestrator if HEAD drifts from `Scan.commitSha`.
-- ScanFinding → Finding materialisation happens only on triage `approved`.
-- Republish is idempotent via `IssueLink` + `metis-finding:<fingerprint>` marker.
 
 ## Bidirectional Issue Sync (Epic #739)
 

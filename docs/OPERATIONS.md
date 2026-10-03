@@ -1540,34 +1540,45 @@ buttons in the page header. The button POSTs to
 - `status: "disabled"` → the server flag is unset; the inline banner
   links operators to this section.
 
-## AI Bug Scanner
+## After the AI bug scanner's removal (#799)
 
-Epic #708. Detailed feature docs:
-[docs/AI_BUG_SCANNER.md](./AI_BUG_SCANNER.md).
+The AI bug scanner (scans, triage, rule sets, the `scanner.run-scan` scheduler
+task and `server/src/lib/scanner/`) was removed in #799; see
+[ADR 0018](decisions/0018-remove-the-ai-bug-scanner.md). CodeQL, Semgrep, the code
+agent and Deep Dive cover what it did. Three things an operator may still meet after
+upgrading:
 
-### Component map
+### Leftover `scanner.run-scan` task rows
 
-| Concern             | Implementation                                                     |
-| ------------------- | ------------------------------------------------------------------ |
-| Scheduler task type | `scanner.run-scan` (`server/src/lib/scheduler/task-handlers.ts`)   |
-| Orchestrator        | `server/src/lib/scanner/orchestrator.ts` + `prisma-adapter.ts`     |
-| Prompt fence        | `server/src/lib/scanner/prompt-fence.ts`                           |
-| Two-tier LLM        | `per-symbol-scanner.ts` (Haiku) → `fp-filter.ts` (Sonnet, 3 votes) |
-| Publish             | `prisma-adapter.publishScanFinding` → existing publisher infra     |
-| RAG isolation       | per-project keys via `code-graph` query service                    |
+`scanner.run-scan` is no longer a registered task type. A row that was already
+`pending` or `running` when the upgrade landed is **not** picked up again: the
+type is not in `DURABLE_TASK_TYPES`, and `TaskQueue.resume()` returns early on
+an unregistered type, so the row stays `pending` or `running` indefinitely. It
+does no work and holds no worker. Only a retry or a new enqueue of that type is
+refused, and that attempt is saved as `failed` with `UNKNOWN_TASK_TYPE`. #806
+does **not** clear them: the `tasks` table is not a scanner table, and #806 leaves
+old `scanner.run-scan` rows in place as history. They are harmless; if you want them
+out of the pending/running lists, set `status = 'cancelled'` on the rows with
+`type = 'scanner.run-scan'` by hand.
 
-### Common failure modes
+### Publish audit actions
 
-| Symptom                          | Likely cause / response                                              |
-| -------------------------------- | -------------------------------------------------------------------- |
-| `ERR_STALE_COMMIT`               | Repo head moved during scan. Re-trigger the scan.                    |
-| Rule stuck in `compiling`        | LLM call failed; check audit `rule.compile_failed`; retry compile.   |
-| Rule stuck in `awaiting_grading` | <5 exemplars graded. Add more in the rule editor.                    |
-| Findings empty after scan        | No active rules + heuristic mode produced no hits. Check `Scan.mode`.|
-| Publish 502 `PUBLISH_FAILED`     | Provider credential rejected. Check vault + GH/Jira connector.        |
-| Triage 409 `TRIAGE_NOT_APPROVED` | Publishing requires `triageStatus="approved"`.                       |
+Deep Dive → Issue and Impact Analysis → Jira publishes write
+`publish.<github|jira>.<created|reused>`, with `metadata.source` set to
+`analysis` or `impact-analysis` and the target typed `finding` or
+`impact_analysis`. Before #804 they were written as
+`scanner.scanner.publish.*` against a `scan_finding` target. The new actions
+share the `publish.jira.*` namespace with the batch Jira publisher
+(`publish.jira.issue_created`, `publish.jira.batch_completed`), so a
+`publish.jira.` prefix filter mixes the two flows: filter on `metadata.source`
+to tell them apart.
 
-### Token spend
+### Log names
 
-Every scan tracks `Scan.totalTokens` (Haiku + Sonnet combined) and aborts when the
-`budgetCapTokens` cap (default 2,000,000) is exceeded. Tune via the start-scan API.
+The JSON model-call helper used by requirement → data-mapping suggestions now
+lives at `server/src/lib/ai/json-llm-client.ts` and logs as `json-llm-client`
+(previously `scanner-llm-client`). Its exports were renamed from `Scanner*` to
+`JsonLlm*`. Update any log filter or alert keyed on the old name.
+
+The scanner's own error codes (`ERR_STALE_COMMIT`, `TRIAGE_NOT_APPROVED`) and
+its `rule.compile_failed` audit action no longer occur.
