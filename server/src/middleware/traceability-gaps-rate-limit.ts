@@ -1,11 +1,12 @@
 /**
- * Rate limiter for `GET /api/projects/:projectId/traceability/test-gaps` (#814).
+ * Rate limiter for `GET /api/projects/:projectId/traceability/test-gaps` (#814)
+ * and `GET /api/workspaces/:workspaceId/traceability/summary` (#815).
  *
  * Each call loads every requirement in scope plus the project's mapped code
  * graph to decide which requirements have a test, so it is bounded like the
  * other compute-backed reads (CodeQL `js/missing-rate-limiting`). Keyed by
  * userId; 300 req / 15 min by default. The IP fallback is defensive only: the
- * router's own `requireAuth` runs first, so every request that reaches this
+ * routers' own `requireAuth` runs first, so every request that reaches this
  * limiter carries a user. Same shape as `code-search-rate-limit.ts` (#423).
  */
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
@@ -48,7 +49,7 @@ export const traceabilityGapsRateLimiter: RequestHandler = rateLimit({
     success: false,
     error: {
       code: "TRACEABILITY_GAPS_RATE_LIMITED",
-      message: "Too many test-gap requests — slow down",
+      message: "Too many traceability coverage requests — slow down",
     },
   } satisfies ApiResponse,
 }) as unknown as RequestHandler;

@@ -37,10 +37,9 @@ vi.mock("../lib/prisma.js", () => ({ prisma: mockPrisma }));
 
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: unknown, _res: unknown, next: () => void) => {
-    (req as { user: { userId: string; role: string } }).user = {
-      userId: "user-1",
-      role: "member",
-    };
+    // `x-test-user` lets a test act as a second user (#815 per-user limiter).
+    const r = req as { headers: Record<string, string | undefined>; user: unknown };
+    r.user = { userId: r.headers["x-test-user"] ?? "user-1", role: "member" };
     next();
   },
 }));
@@ -665,6 +664,24 @@ describe("workspace traceability router (#626)", () => {
       expect(res.status).toBe(429);
       expect(res.body.error.code).toBe("TRACEABILITY_GAPS_RATE_LIMITED");
       expect(getWorkspaceTraceabilitySummary).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX;
+    }
+  });
+
+  it("keys the summary limiter by user, not IP, so one user cannot exhaust another's budget (#815)", async () => {
+    getWorkspaceTraceabilitySummary.mockResolvedValue({ projects: [], crossProjectLinks: [] });
+    process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX = "1";
+    try {
+      await request(app).get("/workspaces/ws-1/traceability/summary").set("x-test-user", "user-a");
+      const limited = await request(app)
+        .get("/workspaces/ws-1/traceability/summary")
+        .set("x-test-user", "user-a");
+      expect(limited.status).toBe(429);
+      const other = await request(app)
+        .get("/workspaces/ws-1/traceability/summary")
+        .set("x-test-user", "user-b");
+      expect(other.status).toBe(200);
     } finally {
       delete process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX;
     }

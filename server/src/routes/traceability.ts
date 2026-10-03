@@ -224,14 +224,16 @@ export function traceabilityRouter(): Router {
  */
 export function workspaceTraceabilityRouter(): Router {
   const r = Router({ mergeParams: true });
+  // Router-level auth runs before the limiter so it keys by user, not IP (#815).
+  r.use(requireAuth);
 
   // #815 — each call runs the #814 Tested-by resolver for every accessible
   // project, the same cost test-gaps is limited for, so it shares that limiter
-  // (and budget). In front of requireAuth for CodeQL js/missing-rate-limiting.
+  // and its per-user budget. The limiter sits on the route itself, ahead of the
+  // permission check, so CodeQL js/missing-rate-limiting sees it.
   r.get(
     "/summary",
     traceabilityGapsRateLimiter,
-    requireAuth,
     requirePermission("analysis.read"),
     async (req, res) => {
       const workspaceId = paramOf(req, "workspaceId", "WORKSPACE_REQUIRED");
