@@ -129,11 +129,6 @@ export const PROJECT_ACCESS_BASELINE: readonly BaselineEntry[] = [
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
   },
   {
-    path: "/projects/:projectId/test-coverage",
-    expression: "testCoverageRouter()",
-    note: "test-coverage.ts:76 ensureProject checks existence + archived status, not access",
-  },
-  {
     path: "/projects/:projectId",
     expression: "dataMappingsRouter()",
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",

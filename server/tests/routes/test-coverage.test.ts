@@ -30,6 +30,7 @@ vi.mock("../../src/lib/prisma.js", () => ({
     },
     coverageMapping: {
       findMany: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -38,7 +39,9 @@ vi.mock("../../src/lib/prisma.js", () => ({
     },
     suggestion: {
       findMany: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     requirement: {
       findMany: vi.fn(),
@@ -324,7 +327,8 @@ describe("GET /projects/:projectId/test-coverage/runs/:runId/report", () => {
 
 describe("PATCH /mappings/:mappingId", () => {
   it("maps COVERED override to DB status OVERRIDDEN", async () => {
-    vi.mocked(prisma.coverageMapping.update).mockResolvedValue({
+    vi.mocked(prisma.coverageMapping.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.coverageMapping.findUniqueOrThrow).mockResolvedValue({
       id: "m-1",
       status: "OVERRIDDEN",
     } as never);
@@ -333,18 +337,23 @@ describe("PATCH /mappings/:mappingId", () => {
       .patch("/projects/proj-1/test-coverage/mappings/m-1")
       .send({ status: "COVERED", reason: "human review" });
     expect(res.status).toBe(200);
-    expect(prisma.coverageMapping.update).toHaveBeenCalledWith({
-      where: { id: "m-1" },
+    expect(res.body.data).toEqual({ id: "m-1", status: "OVERRIDDEN" });
+    expect(prisma.coverageMapping.updateMany).toHaveBeenCalledWith({
+      where: { id: "m-1", run: { projectId: "proj-1" } },
       data: expect.objectContaining({
         status: "OVERRIDDEN",
         overriddenById: "user-1",
         overrideReason: "human review",
       }),
     });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "test-coverage.mapping.override" }),
+    );
   });
 
   it("passes through UNCOVERED/AMBIGUOUS verbatim", async () => {
-    vi.mocked(prisma.coverageMapping.update).mockResolvedValue({
+    vi.mocked(prisma.coverageMapping.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.coverageMapping.findUniqueOrThrow).mockResolvedValue({
       id: "m-1",
       status: "UNCOVERED",
     } as never);
@@ -353,17 +362,35 @@ describe("PATCH /mappings/:mappingId", () => {
       .patch("/projects/proj-1/test-coverage/mappings/m-1")
       .send({ status: "UNCOVERED", reason: "false positive" });
     expect(res.status).toBe(200);
-    expect(prisma.coverageMapping.update).toHaveBeenCalledWith(
+    expect(prisma.coverageMapping.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: "UNCOVERED" }),
       }),
     );
   });
+
+  it("404s a mapping that belongs to another project's run, writing nothing (#795)", async () => {
+    // The run-scoped where matches zero rows for a foreign mapping id.
+    vi.mocked(prisma.coverageMapping.updateMany).mockResolvedValue({ count: 0 } as never);
+    const app = createApp(mockUser);
+    const res = await request(app)
+      .patch("/projects/proj-other/test-coverage/mappings/m-1")
+      .send({ status: "COVERED", reason: "cross-project" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("MAPPING_NOT_FOUND");
+    expect(prisma.coverageMapping.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "m-1", run: { projectId: "proj-other" } } }),
+    );
+    expect(prisma.coverageMapping.update).not.toHaveBeenCalled();
+    expect(prisma.coverageMapping.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
 });
 
 describe("PATCH /suggestions/:suggestionId", () => {
   it("accepts a suggestion and records audit", async () => {
-    vi.mocked(prisma.suggestion.update).mockResolvedValue({
+    vi.mocked(prisma.suggestion.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.suggestion.findUniqueOrThrow).mockResolvedValue({
       id: "s-1",
       status: "accepted",
     } as never);
@@ -372,10 +399,114 @@ describe("PATCH /suggestions/:suggestionId", () => {
       .patch("/projects/proj-1/test-coverage/suggestions/s-1")
       .send({ status: "accepted", reason: "covers gap" });
     expect(res.status).toBe(200);
-    expect(prisma.suggestion.update).toHaveBeenCalledWith({
-      where: { id: "s-1" },
+    expect(res.body.data).toEqual({ id: "s-1", status: "accepted" });
+    expect(prisma.suggestion.updateMany).toHaveBeenCalledWith({
+      where: { id: "s-1", run: { projectId: "proj-1" } },
       data: { status: "accepted" },
     });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "test-coverage.suggestion.update" }),
+    );
+  });
+
+  it("404s a suggestion that belongs to another project's run, writing nothing (#795)", async () => {
+    vi.mocked(prisma.suggestion.updateMany).mockResolvedValue({ count: 0 } as never);
+    const app = createApp(mockUser);
+    const res = await request(app)
+      .patch("/projects/proj-other/test-coverage/suggestions/s-1")
+      .send({ status: "rejected", reason: "cross-project" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SUGGESTION_NOT_FOUND");
+    expect(prisma.suggestion.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "s-1", run: { projectId: "proj-other" } } }),
+    );
+    expect(prisma.suggestion.update).not.toHaveBeenCalled();
+    expect(prisma.suggestion.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #795 — the router mounts the #674 `requireProjectAccess()` chokepoint, so a
+ * caller outside the project's workspace gets 404 from EVERY handler before any
+ * role check or data access. These run the real middleware and the real
+ * `assertProjectAccess`; only the `project.findUnique` row is stubbed.
+ */
+describe("project access chokepoint on the test-coverage router (#795)", () => {
+  const outsider = { userId: "user-b", role: "developer", workspaces: ["ws-B"] };
+  const member = { userId: "user-a", role: "developer", workspaces: ["ws-A"] };
+
+  function projectInWorkspaceA(callerIsMember: boolean) {
+    vi.mocked(prisma.project.findUnique).mockResolvedValue({
+      workspaceId: "ws-A",
+      workspace: { deletedAt: null, members: callerIsMember ? [{ id: "mem-1" }] : [] },
+      requireApprovedReview: false,
+    } as never);
+  }
+
+  const routes: Array<[string, (app: Express) => request.Test]> = [
+    ["GET /imports", (app) => request(app).get("/projects/proj-A/test-coverage/imports")],
+    ["GET /runs", (app) => request(app).get("/projects/proj-A/test-coverage/runs")],
+    [
+      "POST /runs",
+      (app) =>
+        request(app)
+          .post("/projects/proj-A/test-coverage/runs")
+          .send({ importIds: ["i"] }),
+    ],
+    [
+      "POST /exports",
+      (app) =>
+        request(app)
+          .post("/projects/proj-A/test-coverage/exports")
+          .send({ runId: "run-1", target: "excel" }),
+    ],
+    [
+      "PATCH /mappings/:id",
+      (app) =>
+        request(app)
+          .patch("/projects/proj-A/test-coverage/mappings/m-1")
+          .send({ status: "COVERED", reason: "x" }),
+    ],
+    [
+      "PATCH /suggestions/:id",
+      (app) =>
+        request(app)
+          .patch("/projects/proj-A/test-coverage/suggestions/s-1")
+          .send({ status: "accepted", reason: "x" }),
+    ],
+  ];
+
+  for (const [label, send] of routes) {
+    it(`404s ${label} for a caller outside the project's workspace`, async () => {
+      projectInWorkspaceA(false);
+      const res = await send(createApp(outsider));
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("NOT_FOUND");
+      expect(prisma.project.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "proj-A" } }),
+      );
+      expect(prisma.testCaseImport.findMany).not.toHaveBeenCalled();
+      expect(prisma.testCoverageRun.findMany).not.toHaveBeenCalled();
+      expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+      expect(prisma.testCoverageRun.findFirst).not.toHaveBeenCalled();
+      expect(prisma.coverageMapping.updateMany).not.toHaveBeenCalled();
+      expect(prisma.suggestion.updateMany).not.toHaveBeenCalled();
+    });
+  }
+
+  it("admits a workspace member through to the handler", async () => {
+    projectInWorkspaceA(true);
+    vi.mocked(prisma.coverageMapping.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.coverageMapping.findUniqueOrThrow).mockResolvedValue({
+      id: "m-1",
+      status: "OVERRIDDEN",
+    } as never);
+    const res = await request(createApp(member))
+      .patch("/projects/proj-A/test-coverage/mappings/m-1")
+      .send({ status: "COVERED", reason: "x" });
+    expect(res.status).toBe(200);
+    expect(prisma.coverageMapping.updateMany).toHaveBeenCalled();
   });
 });
 
