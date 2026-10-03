@@ -240,6 +240,8 @@
   );
 
   window.addEventListener("hashchange", function () {
+    // The skip link targets #deck, which is not a slide number: leave the current slide alone.
+    if (isNaN(parseInt(window.location.hash.replace(/^#\/?/, ""), 10))) return;
     show(readHash(), false);
   });
 

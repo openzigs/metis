@@ -30,11 +30,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Verdicts a step may carry, in the order the report tallies them. */
-export const VERDICTS = /** @type {const} */ (["pass", "weak", "fail", "blocked", "info"]);
+/**
+ * The two scales `docs/walkthroughs/RESULTS_TEMPLATE.md` scores every phase on, in the order the
+ * report tallies them. Works: did the feature do what it should. Useful: was it worth using.
+ */
+export const WORKS = /** @type {const} */ (["pass", "partial", "fail", "blocked"]);
+export const USEFUL = /** @type {const} */ (["pass", "weak", "fail", "n/a"]);
 
-/** Verdicts the tutorial deck leaves out: a tutorial must not teach a step that did not work. */
-export const TUTORIAL_EXCLUDED_VERDICTS = new Set(["fail", "blocked"]);
+/** Works values the tutorial deck leaves out: it must not teach a step that did not work. */
+export const TUTORIAL_EXCLUDED_WORKS = new Set(["fail", "blocked"]);
+
+/** Useful values the tutorial deck leaves out: a step that works but is useless is not taught. */
+export const TUTORIAL_EXCLUDED_USEFUL = new Set(["fail"]);
 
 /** Walkthrough waves, in run order (`e2e-walkthrough` skill, section 3). */
 export const WAVES = /** @type {const} */ (["A", "B", "C", "D", "E"]);
@@ -54,13 +61,17 @@ export const IMAGE_TYPES = /** @type {Record<string, string>} */ ({
   ".gif": "image/gif",
 });
 
+/** An ISO-8601 date-time with a zone, e.g. `2026-10-03T09:12:00Z`; `Date.parse` alone accepts far more. */
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
 const REQUIRED_STRING_FIELDS = ["id", "phase", "chapter", "title", "screenshot", "ts"];
 const OPTIONAL_STRING_FIELDS = ["tutorial", "result"];
 const KNOWN_FIELDS = new Set([
   ...REQUIRED_STRING_FIELDS,
   ...OPTIONAL_STRING_FIELDS,
   "wave",
-  "verdict",
+  "works",
+  "useful",
   "issues",
   "tokens",
   "costCents",
@@ -83,7 +94,8 @@ const ASSET_DIR = path.resolve(
  * @property {string} screenshot
  * @property {string} tutorial
  * @property {string} result
- * @property {string} verdict
+ * @property {string} works
+ * @property {string} useful
  * @property {number[]} issues
  * @property {number | undefined} tokens
  * @property {number | undefined} costCents
@@ -121,10 +133,16 @@ export function validateStep(raw, line) {
   if (!WAVES.includes(/** @type {any} */ (obj.wave))) {
     errors.push(`${at}: "wave" must be one of ${WAVES.join(", ")}`);
   }
-  if (!VERDICTS.includes(/** @type {any} */ (obj.verdict))) {
-    errors.push(`${at}: "verdict" must be one of ${VERDICTS.join(", ")}`);
+  if (!WORKS.includes(/** @type {any} */ (obj.works))) {
+    errors.push(`${at}: "works" must be one of ${WORKS.join(", ")}`);
   }
-  if (typeof obj.ts === "string" && Number.isNaN(Date.parse(obj.ts))) {
+  if (!USEFUL.includes(/** @type {any} */ (obj.useful))) {
+    errors.push(`${at}: "useful" must be one of ${USEFUL.join(", ")}`);
+  }
+  if (
+    typeof obj.ts === "string" &&
+    !(ISO_TIMESTAMP.test(obj.ts) && !Number.isNaN(Date.parse(obj.ts)))
+  ) {
     errors.push(`${at}: "ts" must be an ISO-8601 timestamp`);
   }
   if (
@@ -157,7 +175,8 @@ export function validateStep(raw, line) {
       screenshot: /** @type {string} */ (obj.screenshot),
       tutorial: typeof obj.tutorial === "string" ? obj.tutorial : "",
       result: typeof obj.result === "string" ? obj.result : "",
-      verdict: /** @type {string} */ (obj.verdict),
+      works: /** @type {string} */ (obj.works),
+      useful: /** @type {string} */ (obj.useful),
       issues: /** @type {number[]} */ (obj.issues ?? []),
       tokens: /** @type {number | undefined} */ (obj.tokens),
       costCents: /** @type {number | undefined} */ (obj.costCents),
@@ -246,12 +265,24 @@ export function orderSteps(steps) {
 }
 
 /**
- * Group ordered steps into chapters, in order of each chapter's first step.
+ * Group ordered steps into chapters, in order of each chapter's first step. With `contiguous`,
+ * only adjacent steps share a group, so the input order is kept exactly (the report deck).
  *
  * @param {Step[]} steps already ordered
+ * @param {{ contiguous?: boolean }} [opts]
  * @returns {{ chapter: string, steps: Step[] }[]}
  */
-export function groupChapters(steps) {
+export function groupChapters(steps, opts = {}) {
+  if (opts.contiguous) {
+    /** @type {{ chapter: string, steps: Step[] }[]} */
+    const groups = [];
+    for (const step of steps) {
+      const last = groups.at(-1);
+      if (last && last.chapter === step.chapter) last.steps.push(step);
+      else groups.push({ chapter: step.chapter, steps: [step] });
+    }
+    return groups;
+  }
   /** @type {Map<string, Step[]>} */
   const byChapter = new Map();
   for (const step of steps) {
@@ -263,14 +294,17 @@ export function groupChapters(steps) {
 }
 
 /**
- * The steps a tutorial may teach: not failed or blocked, and with tutorial text.
+ * The steps a tutorial may teach: not failed or blocked, not useless, and with tutorial text.
  *
  * @param {Step[]} steps
  * @returns {Step[]}
  */
 export function selectTutorialSteps(steps) {
   return steps.filter(
-    (s) => !TUTORIAL_EXCLUDED_VERDICTS.has(s.verdict) && s.tutorial.trim() !== "",
+    (s) =>
+      !TUTORIAL_EXCLUDED_WORKS.has(s.works) &&
+      !TUTORIAL_EXCLUDED_USEFUL.has(s.useful) &&
+      s.tutorial.trim() !== "",
   );
 }
 
@@ -422,11 +456,14 @@ function renderIssueLinks(issues) {
 }
 
 /**
- * @param {string} verdict
+ * @param {string} value a WORKS or USEFUL value
+ * @param {string} [axis] "Works" or "Useful"; prefixes the label on a step slide
  * @returns {string}
  */
-function verdictBadge(verdict) {
-  return `<span class="badge badge--${escapeHtml(verdict)}">${escapeHtml(verdict)}</span>`;
+function scoreBadge(value, axis) {
+  const cls = value === "n/a" ? "na" : value;
+  const label = axis ? `${axis}: ${value}` : value;
+  return `<span class="badge badge--${escapeHtml(cls)}">${escapeHtml(label)}</span>`;
 }
 
 /**
@@ -466,7 +503,7 @@ function stepSlide(step, input, pos) {
   const tutorial = input.kind === "tutorial";
   const narration = tutorial
     ? `<div class="narration__text">${renderNarration(step.tutorial)}</div>`
-    : `<p class="verdict">${verdictBadge(step.verdict)}<span class="where">Wave ${escapeHtml(step.wave)} · Phase ${escapeHtml(step.phase)}</span></p>
+    : `<p class="verdict">${scoreBadge(step.works, "Works")}${scoreBadge(step.useful, "Useful")}<span class="where">Wave ${escapeHtml(step.wave)} · Phase ${escapeHtml(step.phase)}</span></p>
       <div class="narration__text">${renderNarration(step.result) || '<p class="muted">No result recorded.</p>'}</div>
       <dl class="facts">
         <dt>Tokens</dt><dd>${step.tokens === undefined ? "–" : step.tokens.toLocaleString("en-US")}</dd>
@@ -477,7 +514,7 @@ function stepSlide(step, input, pos) {
     tutorial && step.result.trim() !== ""
       ? `<aside class="notes" aria-label="Presenter notes">${renderNarration(step.result)}</aside>`
       : "";
-  return `<section class="slide slide--step${tutorial ? "" : ` slide--${escapeHtml(step.verdict)}`}" aria-label="${escapeHtml(step.title)}">
+  return `<section class="slide slide--step${tutorial ? "" : ` slide--${escapeHtml(step.works)}`}" aria-label="${escapeHtml(step.title)}">
   <header class="meta">
     <span class="meta__chapter">${escapeHtml(pos.chapter)} <span class="muted">· Chapter ${pos.chapterNo} of ${pos.chapterCount}</span></span>
     <span class="meta__counter">Step ${pos.stepNo} of ${pos.stepCount}</span>
@@ -506,7 +543,7 @@ function stepSlide(step, input, pos) {
 export function renderSlides(input) {
   const tutorial = input.kind === "tutorial";
   const ordered = orderSteps(tutorial ? selectTutorialSteps(input.steps) : input.steps);
-  const chapters = groupChapters(ordered);
+  const chapters = groupChapters(ordered, { contiguous: !tutorial });
   const generated = input.generatedAt ? ` · Generated ${input.generatedAt.slice(0, 10)}` : "";
 
   /** @type {string[]} */
@@ -541,7 +578,6 @@ ${chapters
 </section>`);
   } else {
     const steps = ordered;
-    const tally = VERDICTS.map((v) => [v, steps.filter((s) => s.verdict === v).length]);
     const tokens = steps.reduce((sum, s) => sum + (s.tokens ?? 0), 0);
     const cents = steps.reduce((sum, s) => sum + (s.costCents ?? 0), 0);
     const issues = [...new Set(steps.flatMap((s) => s.issues))].sort((a, b) => a - b);
@@ -550,21 +586,29 @@ ${chapters
     );
     slides.push(`<section class="slide slide--summary" aria-label="Summary">
   <h2>Summary</h2>
-  <div class="tally">
-${tally
+${[
+  ["Works", WORKS, "works"],
+  ["Useful", USEFUL, "useful"],
+]
   .map(
-    ([v, n]) =>
-      `    <div class="tally__item">${verdictBadge(String(v))}<span class="tally__n">${n}</span></div>`,
+    ([axis, scale, key]) => `  <div class="tally" role="group" aria-label="${axis}">
+    <span class="tally__axis">${axis}</span>
+${scale
+  .map(
+    (v) =>
+      `    <div class="tally__item">${scoreBadge(v)}<span class="tally__n">${steps.filter((s) => s[key] === v).length}</span></div>`,
   )
   .join("\n")}
-  </div>
+  </div>`,
+  )
+  .join("\n")}
   <table class="waves">
-    <thead><tr><th scope="col">Wave</th>${VERDICTS.map((v) => `<th scope="col">${v}</th>`).join("")}<th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
+    <thead><tr><th scope="col">Wave</th>${WORKS.map((v) => `<th scope="col">Works ${v}</th>`).join("")}${USEFUL.map((v) => `<th scope="col">Useful ${v}</th>`).join("")}<th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
     <tbody>
 ${WAVES.filter((w) => steps.some((s) => s.wave === w))
   .map((w) => {
     const ws = steps.filter((s) => s.wave === w);
-    return `      <tr><th scope="row">${w}</th>${VERDICTS.map((v) => `<td>${ws.filter((s) => s.verdict === v).length}</td>`).join("")}<td>${ws.reduce((t, s) => t + (s.tokens ?? 0), 0).toLocaleString("en-US")}</td><td>${formatCost(ws.reduce((t, s) => t + (s.costCents ?? 0), 0))}</td></tr>`;
+    return `      <tr><th scope="row">${w}</th>${WORKS.map((v) => `<td>${ws.filter((s) => s.works === v).length}</td>`).join("")}${USEFUL.map((v) => `<td>${ws.filter((s) => s.useful === v).length}</td>`).join("")}<td>${ws.reduce((t, s) => t + (s.tokens ?? 0), 0).toLocaleString("en-US")}</td><td>${formatCost(ws.reduce((t, s) => t + (s.costCents ?? 0), 0))}</td></tr>`;
   })
   .join("\n")}
     </tbody>
@@ -802,6 +846,8 @@ export function buildSlideshow(opts) {
       }
     } else {
       const assetDir = path.join(deckDir, "assets");
+      // Clear the previous build's screenshots: they are unredacted and would travel with the folder.
+      fs.rmSync(path.join(assetDir, "img"), { recursive: true, force: true });
       fs.mkdirSync(path.join(assetDir, "img"), { recursive: true });
       fs.writeFileSync(path.join(assetDir, "slideshow.css"), assets.css);
       fs.writeFileSync(path.join(assetDir, "slideshow.js"), assets.js);

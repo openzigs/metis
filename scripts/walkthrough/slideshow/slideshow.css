@@ -388,8 +388,17 @@ h2 {
 .badge--blocked {
   background: var(--blocked);
 }
-.badge--info {
+.badge--partial {
+  background: var(--weak);
+}
+.badge--na {
   background: var(--info);
+}
+
+.tally__axis {
+  align-self: center;
+  min-width: 4.5rem;
+  font-weight: 700;
 }
 
 .slide--fail .shot img {

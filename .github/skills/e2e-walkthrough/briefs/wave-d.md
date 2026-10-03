@@ -51,13 +51,15 @@ folder; waves run in sequence, so appending is safe). The run's tutorial and rep
 are built from it. Schema: the `e2e-walkthrough` skill, section 7.
 
 ```json
-{"id":"d-S4-1","wave":"D","phase":"S4","chapter":"Connect a repository","title":"Add the repo connector","screenshot":"wave-d/02-connector.png","tutorial":"Open **Connectors**, choose **Add connector**, paste the repository URL and set **Branch or tag** to `v2.3.3`.","result":"Connector created; lastCommitSha c4d54f87. 41 s.","verdict":"pass","issues":[714],"tokens":1830,"costCents":0.21,"ts":"2026-10-03T09:12:00Z"}
+{"id":"d-S4-1","wave":"D","phase":"S4","chapter":"Connect a repository","title":"Add the repo connector","screenshot":"wave-d/02-connector.png","tutorial":"Open **Connectors**, choose **Add connector**, paste the repository URL and set **Branch or tag** to `v2.3.3`.","result":"Connector created; lastCommitSha c4d54f87. 41 s.","works":"pass","useful":"pass","issues":[714],"tokens":1830,"costCents":0.21,"ts":"2026-10-03T09:12:00Z"}
 ```
 
-`screenshot` is relative to the run folder: no `..`, no absolute path. `verdict` is `pass`,
-`weak`, `fail`, `blocked` or `info`; a `fail` or `blocked` step is left out of the tutorial, so
-still record it. `tutorial` speaks **to a user, about the task**; `result` speaks to the
-reviewer, about what happened.
+`screenshot` is relative to the run folder: no `..`, no absolute path. `works` is `pass`, `partial`, `fail` or `blocked`; `useful` is `pass`, `weak`, `fail` or `n/a`
+(same scales as the results template). A step with `works` of `fail` or `blocked`, or `useful` of
+`fail`, is left out of the tutorial, so still record it. `tutorial` speaks **to a user, about the task**; `result` speaks to the
+reviewer, about what happened. Reuse a chapter name exactly as an earlier step spelled it (copied or
+near-duplicate names split a chapter); the example above is a format sample, not a step to record.
+Omit `tokens` and `costCents` when you cannot read them from the ledger.
 
 | Good `tutorial` | Bad `tutorial` |
 |---|---|

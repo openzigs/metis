@@ -178,9 +178,10 @@ The decks open from disk with no network. Keys: arrows, Page Up/Down, Space, Hom
 
 - **Tutorial deck**: a guided tour for analysts and developers. It contains a title, the contents,
   then each chapter's intro and steps, in wave and phase order. It shows `tutorial` text only,
-  and leaves out `fail` and `blocked` steps and steps with no `tutorial` text.
-- **Run report deck**: every step, with its verdict badge, `result`, tokens, cost and issue
-  links, after a summary slide with the verdict tally per wave and the total spend. Attach it to
+  and leaves out steps with `works` of `fail` or `blocked`, steps with `useful` of `fail`, and
+  steps with no `tutorial` text. A step that works but is only `weak` stays in.
+- **Run report deck**: every step, with its Works and Useful badges, `result`, tokens, cost and issue
+  links, after a summary slide with the Works and Useful tallies, overall and per wave, and the total spend. Attach it to
   the results comment, or compare it with the previous run's report.
 
 The build fails, naming the line or step, on an invalid manifest or a screenshot path outside
@@ -196,10 +197,16 @@ the evidence folder. It changes nothing on disk until the whole manifest checks 
 | `screenshot` | yes | Image path relative to the evidence folder (`.png`, `.jpg`, `.webp`, `.gif`) |
 | `tutorial` | no | User-facing, imperative "how to" text |
 | `result` | no | Reviewer-facing outcome |
-| `verdict` | yes | `pass` / `weak` / `fail` / `blocked` / `info` |
+| `works` | yes | Did it do what it should: `pass` / `partial` / `fail` / `blocked` |
+| `useful` | yes | Was it worth using: `pass` / `weak` / `fail` / `n/a` |
 | `issues` | no | Issue numbers, linked to `openzigs/metis` |
 | `tokens` / `costCents` | no | Spend for the step |
 | `ts` | yes | ISO-8601 timestamp |
+
+`works` and `useful` are the two axes of `docs/walkthroughs/RESULTS_TEMPLATE.md`, so the report's
+tally matches the results comment and the run-2 baseline. A step that does not work gets
+`useful: "n/a"` unless the failure itself is the finding; a step that works but is not worth
+using gets `works: "pass"`, `useful: "weak"` or `"fail"`.
 
 Unknown fields are rejected, so a typo is reported rather than dropped silently. All text is
 shown as plain text; the only formatting is `**bold**`, `` `code` `` and `http(s)` links.

@@ -53,7 +53,8 @@ function step(over = {}) {
     screenshot: "wave-a/01.png",
     tutorial: "Open **Connectors** and choose `GitHub`.",
     result: "Connector created; commit c4d54f87.",
-    verdict: "pass",
+    works: "pass",
+    useful: "pass",
     issues: [714],
     tokens: 1200,
     costCents: 0.5,
@@ -94,8 +95,16 @@ describe("manifest validation", () => {
     ["title", "   "],
     ["screenshot", undefined],
     ["ts", "yesterday"],
+    ["ts", "March 5, 2026"],
+    ["ts", "2026-10-03"],
     ["wave", "F"],
-    ["verdict", "ok"],
+    ["works", "ok"],
+    ["works", "weak"],
+    ["works", undefined],
+    ["useful", "ok"],
+    ["useful", "partial"],
+    ["useful", undefined],
+    ["verdict", "pass"],
     ["tutorial", 5],
     ["issues", ["714"]],
     ["issues", [0]],
@@ -165,23 +174,69 @@ describe("ordering and chapter grouping", () => {
   });
 });
 
+describe("report order", () => {
+  it("keeps strict wave-then-phase order when two waves share a chapter name", () => {
+    const steps = [
+      valid({ id: "a", wave: "A", chapter: "Connect", title: "First-A" }),
+      valid({ id: "b", wave: "B", chapter: "Ask", title: "Second-B" }),
+      valid({ id: "c", wave: "C", chapter: "Connect", title: "Third-C" }),
+    ];
+    const html = renderDeck({
+      kind: "report",
+      title: "T",
+      steps,
+      imageSrc: () => "x.png",
+      inlineAssets: null,
+    });
+    const at = (t) => html.indexOf(`aria-label="${t}"`);
+    expect(at("First-A")).toBeLessThan(at("Second-B"));
+    expect(at("Second-B")).toBeLessThan(at("Third-C"));
+  });
+});
+
 describe("tutorial filtering", () => {
-  it("excludes fail, blocked and steps with no tutorial text; keeps pass, weak, info", () => {
+  it("excludes failed or blocked steps, useless steps and steps with no tutorial text", () => {
     const steps = [
       valid({ id: "pass" }),
-      valid({ id: "weak", verdict: "weak" }),
-      valid({ id: "info", verdict: "info" }),
-      valid({ id: "fail", verdict: "fail" }),
-      valid({ id: "blocked", verdict: "blocked" }),
+      valid({ id: "partial", works: "partial", useful: "weak" }),
+      valid({ id: "works-not-useful", useful: "weak" }),
+      valid({ id: "na", useful: "n/a" }),
+      valid({ id: "useless", useful: "fail" }),
+      valid({ id: "fail", works: "fail", useful: "n/a" }),
+      valid({ id: "blocked", works: "blocked", useful: "n/a" }),
       valid({ id: "empty", tutorial: "  \n " }),
     ];
-    expect(selectTutorialSteps(steps).map((s) => s.id)).toEqual(["pass", "weak", "info"]);
+    expect(selectTutorialSteps(steps).map((s) => s.id)).toEqual([
+      "pass",
+      "partial",
+      "works-not-useful",
+      "na",
+    ]);
+  });
+
+  it("escapes **bold** content", () => {
+    const steps = [valid({ tutorial: "Click **<img src=x onerror=alert(1)>** now" })];
+    const html = renderDeck({
+      kind: "tutorial",
+      title: "T",
+      steps,
+      imageSrc: () => "x.png",
+      inlineAssets: null,
+    });
+    expect(html).toContain("<strong>&lt;img src=x onerror=alert(1)&gt;</strong>");
+    expect(html).not.toContain("<img src=x onerror");
   });
 
   it("the tutorial deck shows tutorial text only; the report shows every step with badges", () => {
     const steps = [
       valid({ id: "ok", title: "Good step", tutorial: "TUTORIAL-TEXT", result: "RESULT-TEXT" }),
-      valid({ id: "bad", title: "Broken step", verdict: "fail", tutorial: "never taught" }),
+      valid({
+        id: "bad",
+        title: "Broken step",
+        works: "fail",
+        useful: "n/a",
+        tutorial: "never taught",
+      }),
     ];
     const base = { title: "T", steps, imageSrc: () => "x.png", inlineAssets: null };
     const tutorial = renderDeck({ ...base, kind: "tutorial" });
@@ -194,7 +249,8 @@ describe("tutorial filtering", () => {
     expect(tutorial).toMatch(/<aside class="notes"[^>]*><p>RESULT-TEXT<\/p><\/aside>/);
 
     expect(report).toContain("Broken step");
-    expect(report).toContain('<span class="badge badge--fail">fail</span>');
+    expect(report).toContain('<span class="badge badge--fail">Works: fail</span>');
+    expect(report).toContain('<span class="badge badge--na">Useful: n/a</span>');
     expect(report).toContain("RESULT-TEXT");
     expect(report).not.toContain("TUTORIAL-TEXT");
     expect(report).toContain('href="https://github.com/openzigs/metis/issues/714"');
@@ -359,7 +415,8 @@ describe("filesystem", () => {
             chapter: "Write a spec",
             title: "Run clarify",
             screenshot: "wave-d/s4.png",
-            verdict: "blocked",
+            works: "blocked",
+            useful: "n/a",
             tutorial: "Blocked step text",
             issues: [801],
           }),
@@ -368,7 +425,8 @@ describe("filesystem", () => {
             phase: "2",
             title: "Wait for indexing",
             screenshot: "wave-a/02 step.png",
-            verdict: "weak",
+            works: "partial",
+            useful: "weak",
             tokens: undefined,
             costCents: undefined,
           }),
@@ -429,14 +487,39 @@ describe("filesystem", () => {
         (m) => m[1],
       );
       expect(reportSections).toEqual(["title", "summary", "step", "step", "step"]);
-      expect(report).toContain('<span class="badge badge--blocked">blocked</span>');
-      expect(report).toMatch(/badge--pass">pass<\/span><span class="tally__n">1</);
-      expect(report).toMatch(/badge--weak">weak<\/span><span class="tally__n">1</);
+      expect(report).toContain('<span class="badge badge--blocked">Works: blocked</span>');
+      // The tally has one row per axis, so run 2's Works and Useful counts are reproducible.
+      expect(report).toMatch(
+        /Works<\/span>[\s\S]*badge--pass">pass<\/span><span class="tally__n">1</,
+      );
+      expect(report).toMatch(/badge--partial">partial<\/span><span class="tally__n">1</);
       expect(report).toMatch(/badge--blocked">blocked<\/span><span class="tally__n">1</);
+      expect(report).toMatch(
+        /Useful<\/span>[\s\S]*badge--weak">weak<\/span><span class="tally__n">1</,
+      );
+      expect(report).toMatch(/badge--na">n\/a<\/span><span class="tally__n">1</);
       expect(report).toContain("<strong>2,400</strong> tokens");
       expect(report).toContain("<strong>$0.0100</strong>");
       expect(report).toContain("issues/801");
       expect(report).toContain("<title>METIS walkthrough</title>");
+    });
+
+    it("a rebuild into the same folder drops screenshots from the earlier build", () => {
+      const out = path.join(tmp, "out");
+      const opts = {
+        inDir: evidence,
+        outDir: out,
+        deck: "report",
+        title: undefined,
+        inlineImages: false,
+        now: new Date("2026-10-03T10:00:00Z"),
+      };
+      buildSlideshow(opts);
+      const orphan = path.join(out, "report", "assets", "img", "99-stale.png");
+      fs.writeFileSync(orphan, PNG);
+      buildSlideshow(opts);
+      expect(fs.existsSync(orphan)).toBe(false);
+      expect(fs.readdirSync(path.join(out, "report", "assets", "img")).length).toBe(3);
     });
 
     it("--inline-images writes one self-contained file per deck, allowed by CSP hashes", () => {
