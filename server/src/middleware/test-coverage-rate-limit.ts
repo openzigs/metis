@@ -12,9 +12,10 @@
  * - {@link testCoverageRateLimiter} — per authenticated user (IP fallback),
  *   mounted after `requireAuth` and IN FRONT of `requireProjectAccess()`.
  *
- * Both are generous: the test-coverage page polls every 4 s while a run is in
- * flight (225 requests / 15 min), so the per-user default is 900 / 15 min, and
- * the per-IP ceiling, shared by every user behind one NAT, is four times that.
+ * Both are generous: the test-coverage page polls the runs list every 4 s for
+ * as long as it is open, whether or not a run is in flight (225 requests /
+ * 15 min per open tab), so the per-user default is 900 / 15 min, and the per-IP
+ * ceiling, shared by every user behind one NAT, is four times that.
  *
  * Both are built at module scope and export the `rateLimit()` handler itself:
  * express-rate-limit@8 throws ERR_ERL_CREATED_IN_REQUEST_HANDLER if

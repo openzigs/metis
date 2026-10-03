@@ -125,8 +125,12 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
   const r = Router({ mergeParams: true });
   // #795 — the #674 object-level chokepoint: every handler below is reachable
   // only by a caller who can access `:projectId` (404 otherwise, no oracle).
-  // The per-IP limiter runs ahead of JWT verification and the per-user one
-  // ahead of the access check's project read (CodeQL js/missing-rate-limiting).
+  // Under the real `apiRouter()` this is a second check: `projectsRouter()`'s
+  // `/:id/:sub` catch-all (projects.ts) already runs `requireAuth` and
+  // `requireProjectAccess` for this path before this router (and so these
+  // limiters) is reached. The limiters below therefore bound only this router's own
+  // auth/access work (and any mount without that upstream guard); they do not
+  // shield the upstream project read (CodeQL js/missing-rate-limiting).
   r.use(testCoveragePreAuthRateLimiter);
   r.use(requireAuth);
   r.use(testCoverageRateLimiter);
@@ -421,7 +425,12 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
           },
         });
         if (count === 0) throw new AppError(404, "MAPPING_NOT_FOUND", "Mapping not found");
-        const updated = await prisma.coverageMapping.findUniqueOrThrow({ where: { id } });
+        // Re-read under the same scope: a run deleted between the two
+        // statements yields null (404), never a P2025 throw (500).
+        const updated = await prisma.coverageMapping.findFirst({
+          where: { id, run: { projectId } },
+        });
+        if (!updated) throw new AppError(404, "MAPPING_NOT_FOUND", "Mapping not found");
         audit({
           actor: { id: actor.id },
           action: "test-coverage.mapping.override",
@@ -453,7 +462,12 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
         if (count === 0) {
           throw new AppError(404, "SUGGESTION_NOT_FOUND", "Suggestion not found");
         }
-        const updated = await prisma.suggestion.findUniqueOrThrow({ where: { id } });
+        const updated = await prisma.suggestion.findFirst({
+          where: { id, run: { projectId } },
+        });
+        if (!updated) {
+          throw new AppError(404, "SUGGESTION_NOT_FOUND", "Suggestion not found");
+        }
         audit({
           actor: { id: actor.id },
           action: "test-coverage.suggestion.update",
