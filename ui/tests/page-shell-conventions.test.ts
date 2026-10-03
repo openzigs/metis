@@ -63,8 +63,8 @@ const PAGES = walk(AUTHED, (n) => n === "page.tsx");
 describe("every authed page uses PageHeader (#270)", () => {
   it("finds the authed pages", () => {
     // #31 folded eight Admin pages into Settings and one catch-all redirect;
-    // #803 removed the four bug-scanner pages.
-    expect(PAGES.length).toBeGreaterThanOrEqual(77);
+    // #803 removed the four bug-scanner pages; #818 the two Test Coverage pages.
+    expect(PAGES.length).toBeGreaterThanOrEqual(75);
   });
 
   for (const page of PAGES) {

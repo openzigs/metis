@@ -119,7 +119,6 @@ export function getProjectTabModel(projectId: string): ProjectTabModel {
           { href: `${base}/overview`, label: "Code Overview" },
           { href: `${base}/changes`, label: "Changes" },
           { href: `${base}/pulls`, label: "Pull Requests" },
-          { href: `${base}/test-coverage`, label: "Test Coverage" },
         ],
       },
       {

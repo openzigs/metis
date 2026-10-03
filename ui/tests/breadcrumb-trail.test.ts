@@ -82,7 +82,7 @@ describe("leafLabel (#271)", () => {
     expect(leafLabel("42", "pulls")).toBe("#42");
     expect(leafLabel("0f8fad5b-d9cb-469f-a165-70867728950e", "baselines")).toBe("Baseline");
     expect(leafLabel("0f8fad5b-d9cb-469f-a165-70867728950e", "unknown")).toBe("Details");
-    expect(leafLabel("test-coverage", undefined)).toBe("Test coverage");
+    expect(leafLabel("spec-kit", undefined)).toBe("Spec kit");
     expect(leafLabel("new", "impact-analyses")).toBe("New");
     const id = "clx0123456789abcdefghijk";
     expect(
