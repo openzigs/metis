@@ -9,4 +9,5 @@ section: Fixed
 - Results show the score they are ordered by; a keyword-only result is marked
   "keyword match" instead of printing `0.000`.
 - Repository files are named by their real path (`internal/model/feed.go`, not
-  `src/internal/...`) in document lists, search, chat and Deep Dive drafts.
+  `src/internal/...`) in document lists, search, chat, cross-project search,
+  the analysis agents' retrieved context and Deep Dive drafts.

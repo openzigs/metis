@@ -10,7 +10,7 @@
  * is the dense cosine, which a lexical-only hit does not have, so printing it
  * showed the model `0.000` for a hit ranked above weaker ones.
  */
-import type { RetrievedChunk } from "@metis/shared";
+import { repoDocumentPath, type RetrievedChunk } from "@metis/shared";
 
 type LocatableHit = Pick<RetrievedChunk, "filename" | "position" | "path">;
 type ScorableHit = Pick<RetrievedChunk, "score" | "rankScore" | "matchedBy">;
@@ -25,4 +25,15 @@ export function formatHitScore(hit: ScorableHit, digits: number): string {
   const value = (hit.rankScore ?? hit.score).toFixed(digits);
   const lexicalOnly = hit.matchedBy?.length === 1 && hit.matchedBy[0] === "lexical";
   return lexicalOnly ? `score=${value}, keyword match` : `score=${value}`;
+}
+
+/**
+ * The display name of a chunk that carries its row's `documents.source` but not
+ * a precomputed `path` (the analysis agents' `RetrievalContextChunk`). Only a
+ * `repo` row is renamed: an upload stored under a repo-shaped name keeps it
+ * (#547), as does any key `repoDocumentPath` does not recognise.
+ */
+export function displayFilename(chunk: { filename: string; source?: string }): string {
+  if (chunk.source !== "repo") return chunk.filename;
+  return repoDocumentPath(chunk.filename) ?? chunk.filename;
 }

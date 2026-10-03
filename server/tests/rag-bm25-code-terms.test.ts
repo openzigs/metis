@@ -31,6 +31,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 import { BM25Index, __resetBM25IndexSingleton, codeAwareTerms } from "../src/lib/rag/bm25-index.js";
+import { prisma } from "../src/lib/prisma.js";
 
 const PROJECT = "p717";
 
@@ -125,6 +126,24 @@ describe("BM25 over code (#717)", () => {
       [{ id: "other", position: 0, text: "func render() { draw() }" }],
     );
     const hits = await idx.search(PROJECT, "scheduler", 5);
+    expect(hits.map((h) => h.chunkId)).toEqual(["path-only"]);
+  });
+
+  // The cold load (`loadProject`, a restart or first search) builds the index
+  // from the database rows, not from `upsertDocumentChunks`: it must index the
+  // same `path` field, or a path-only match works until the process restarts.
+  it("matches by path on a cold load from the database", async () => {
+    vi.mocked(prisma.knowledgeChunk.findMany).mockResolvedValueOnce([
+      { id: "path-only", documentId: "d-sched", position: 0, text: "func run() { tick() }" },
+      { id: "other", documentId: "d-other", position: 0, text: "func render() { draw() }" },
+    ] as never);
+    vi.mocked(prisma.document.findMany).mockResolvedValueOnce([
+      { id: "d-sched", filename: "connector:repo:c1:src/internal/scheduler/poller.go" },
+      { id: "d-other", filename: "connector:repo:c1:src/internal/ui/view.go" },
+    ] as never);
+    const idx = new BM25Index();
+    const hits = await idx.search(PROJECT, "scheduler", 5);
+    expect(prisma.knowledgeChunk.findMany).toHaveBeenCalled();
     expect(hits.map((h) => h.chunkId)).toEqual(["path-only"]);
   });
 

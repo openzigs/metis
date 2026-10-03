@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatHitLocator, formatHitScore } from "./hit-locator.js";
+import { displayFilename, formatHitLocator, formatHitScore } from "./hit-locator.js";
 
 describe("formatHitLocator (#717)", () => {
   it("names a repository file by its real path", () => {
@@ -32,5 +32,22 @@ describe("formatHitScore (#717)", () => {
 
   it("falls back to score for a hit without a rank score", () => {
     expect(formatHitScore({ score: 0.73 }, 3)).toBe("score=0.730");
+  });
+});
+
+describe("displayFilename (#717)", () => {
+  const key = "connector:repo:c1:src/internal/model/feed.go";
+
+  it("names a repo row by its repository-relative path", () => {
+    expect(displayFilename({ filename: key, source: "repo" })).toBe("internal/model/feed.go");
+  });
+
+  it("keeps the stored name for a non-repo row carrying a repo-shaped name (#547)", () => {
+    expect(displayFilename({ filename: key, source: "upload" })).toBe(key);
+    expect(displayFilename({ filename: key })).toBe(key);
+  });
+
+  it("keeps a repo row's name when it is not a repository key", () => {
+    expect(displayFilename({ filename: "notes.md", source: "repo" })).toBe("notes.md");
   });
 });
