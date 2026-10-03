@@ -84,7 +84,7 @@ describe("UntestedRequirementsPanel", () => {
     const link = within(panel).getByRole("link", { name: "OIDC role mapping" });
     expect(link).toHaveAttribute(
       "href",
-      "/projects/proj-1/analysis?analysisId=an-1&requirementId=r-1",
+      "/projects/proj-1/analysis?analysisId=an-1&requirementId=r-1&tab=requirements",
     );
     expect(within(panel).getAllByRole("listitem")).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
@@ -127,6 +127,7 @@ describe("UntestedRequirementsPanel", () => {
       "No requirement has mapped code yet, so none can be checked for tests.",
     );
     expect(screen.queryByTestId("untested-summary")).toBeNull();
+    expect(screen.queryByTestId("untested-no-code")).toBeNull();
   });
 
   it("uses the singular for a single no-code requirement", async () => {
@@ -143,5 +144,31 @@ describe("UntestedRequirementsPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Could not load untested requirements.",
     );
+  });
+
+  it("keeps loaded pages and shows an inline error when Load more fails", async () => {
+    testGaps.mockResolvedValueOnce(PAGE_1).mockRejectedValueOnce(new Error("boom"));
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not load more untested requirements. Try again.",
+    );
+    expect(screen.getByRole("link", { name: "OIDC role mapping" })).toBeInTheDocument();
+    expect(screen.getByTestId("untested-summary")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load more" })).toBeEnabled();
+  });
+
+  it("never lists an entry whose reason is no-code", async () => {
+    testGaps.mockResolvedValue({
+      total: 3,
+      tested: 1,
+      noCode: 0,
+      untested: [gap("r-x", "Listed"), { ...gap("r-y", "Not listed"), reason: "no-code" as const }],
+      nextCursor: null,
+    });
+    renderPanel();
+    expect(await screen.findByRole("link", { name: "Listed" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Not listed" })).toBeNull();
   });
 });

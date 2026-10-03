@@ -28,7 +28,9 @@ interface Props {
 }
 
 function requirementHref(projectId: string, analysisId: string, requirementId: string): string {
-  const qs = new URLSearchParams({ analysisId, requirementId });
+  // An explicit `tab=requirements` so a repeat click still lands on the card's
+  // tab: the page's #424 deep-link effect applies once per requirement.
+  const qs = new URLSearchParams({ analysisId, requirementId, tab: "requirements" });
   return `/projects/${encodeURIComponent(projectId)}/analysis?${qs.toString()}`;
 }
 
@@ -65,7 +67,7 @@ export function UntestedRequirementsPanel({
         Loading untested requirements…
       </p>
     );
-  } else if (query.isError || !first) {
+  } else if (!first) {
     body = (
       <p role="alert" className="text-sm text-destructive">
         Could not load untested requirements.
@@ -107,6 +109,11 @@ export function UntestedRequirementsPanel({
               : "No requirement has mapped code yet, so none can be checked for tests."}
           </p>
         )}
+        {query.isFetchNextPageError ? (
+          <p role="alert" className="text-sm text-destructive">
+            Could not load more untested requirements. Try again.
+          </p>
+        ) : null}
         {query.hasNextPage ? (
           <Button
             size="sm"
