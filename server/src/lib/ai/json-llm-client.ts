@@ -11,7 +11,7 @@
  * FP-filter / rule-compiler can all swap in a deterministic stub during
  * unit tests without booting the real provider singleton.
  */
-import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
+import type { AIProvider, ChatMessage, ChatResponse } from "./types.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("scanner-llm-client");

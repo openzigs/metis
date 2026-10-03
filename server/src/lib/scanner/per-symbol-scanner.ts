@@ -12,7 +12,7 @@
  * bug report we can't anchor in source.
  */
 import type { AIProvider } from "../ai/types.js";
-import { callJsonLlm, type ScannerJsonCallInput } from "./llm-client.js";
+import { callJsonLlm, type ScannerJsonCallInput } from "../ai/json-llm-client.js";
 import {
   type AssembledContext,
   type AssembledSymbol,

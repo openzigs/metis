@@ -12,7 +12,7 @@ import {
 } from "./orchestrator.js";
 import type { CandidateFinding } from "./types.js";
 import type { ChatResponse } from "../ai/types.js";
-import { ScannerJsonParseError } from "./llm-client.js";
+import { ScannerJsonParseError } from "../ai/json-llm-client.js";
 import { TaskAbortError } from "../scheduler/task-abort.js";
 
 function makeScan(overrides: Partial<ScanRecordSnapshot> = {}): ScanRecordSnapshot {
