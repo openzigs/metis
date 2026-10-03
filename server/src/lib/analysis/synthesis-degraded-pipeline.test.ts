@@ -15,6 +15,9 @@ const ANALYSIS_ID = "an_1117bc";
 const PROJECT_ID = "pr_1117bc";
 
 const persistedEnhancements: Array<Record<string, unknown>> = [];
+const persistRequirementsCalls: Array<Record<string, unknown>> = [];
+/** Whether the approval gate lets requirements through this run. Mutated per test. */
+const gate = { allowed: true };
 
 /** What `runSynthesis` reports this run. Mutated per test. */
 const synthesis: { degraded?: SynthesisDegradation } = {};
@@ -51,7 +54,10 @@ vi.mock("./analysis-service.js", () => ({
   persistAnalysisAffectedCode: vi.fn(async () => undefined),
   persistAnalysisDatabaseAware: vi.fn(async () => undefined),
   persistAnalysisEscalation: vi.fn(async () => undefined),
-  persistRequirements: vi.fn(async () => ["rq_1"]),
+  persistRequirements: vi.fn(async (input: Record<string, unknown>) => {
+    persistRequirementsCalls.push(input);
+    return ["rq_1"];
+  }),
   persistCrossDocFindings: vi.fn(async () => undefined),
   readFlattenedFindings: vi.fn(async () => []),
 }));
@@ -96,7 +102,11 @@ vi.mock("./approval-checkpoint.js", async (importOriginal) => {
   return {
     ...actual,
     createApprovalRequests: vi.fn(async () => undefined),
-    canCreateTickets: vi.fn(async () => ({ allowed: true, pendingCount: 0, rejectedCount: 0 })),
+    canCreateTickets: vi.fn(async () => ({
+      allowed: gate.allowed,
+      pendingCount: gate.allowed ? 0 : 1,
+      rejectedCount: 0,
+    })),
   };
 });
 vi.mock("../socket/job-events.js", () => ({
@@ -138,12 +148,13 @@ async function runPipeline(): Promise<void> {
 
 const degradedPatch = (): SynthesisDegradation | undefined =>
   persistedEnhancements.find((p) => p.synthesisDegraded !== undefined)?.synthesisDegraded as
-    | SynthesisDegradation
-    | undefined;
+    SynthesisDegradation | undefined;
 
 beforeEach(() => {
   vi.clearAllMocks();
   persistedEnhancements.length = 0;
+  persistRequirementsCalls.length = 0;
+  gate.allowed = true;
   delete synthesis.degraded;
   process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "false";
   __resetConfigSingleton();
@@ -155,41 +166,52 @@ afterEach(() => {
 });
 
 describe("#1117 B + C — a degraded synthesis is recorded on the analysis", () => {
-  it("writes the degradation to enhancement metadata", async () => {
-    synthesis.degraded = {
-      reason: "non-json",
-      detail: "Expected double-quoted property name in JSON at position 2093",
-      attempts: 2,
-      requirementCount: 16,
-      at: "2026-07-28T11:38:00.000Z",
-    };
+  const DEGRADED: SynthesisDegradation = {
+    reason: "non-json",
+    detail: "Expected double-quoted property name in JSON at position 2093",
+    attempts: 2,
+    requirementCount: 16,
+    at: "2026-07-28T11:38:00.000Z",
+  };
+
+  // Issue #769 — on the promotion path the marker rides `persistRequirements`,
+  // which writes it with the set it describes, or refuses a degraded set that
+  // would overwrite a healthy one. The orchestrator must not pre-write it.
+  it("hands the degradation to persistRequirements, and does not pre-write it", async () => {
+    synthesis.degraded = DEGRADED;
 
     await runPipeline();
 
-    expect(degradedPatch()).toEqual(synthesis.degraded);
+    expect(persistRequirementsCalls).toHaveLength(1);
+    expect(persistRequirementsCalls[0].degraded).toEqual(DEGRADED);
+    expect(degradedPatch()).toBeUndefined();
   });
 
-  it("writes nothing when synthesis was healthy", async () => {
+  it("reports a healthy synthesis to persistRequirements as null, and writes no marker", async () => {
     await runPipeline();
 
-    expect(degradedPatch()).toBeUndefined();
+    expect(persistRequirementsCalls[0].degraded).toBeNull();
     // Absence is the signal, so no key may be written on a good run.
     expect(persistedEnhancements.some((p) => "synthesisDegraded" in p)).toBe(false);
   });
 
-  it("does not disturb the other metadata the run writes", async () => {
-    synthesis.degraded = {
-      reason: "provider-error",
-      attempts: 1,
-      requirementCount: 1,
-      at: "2026-07-28T11:38:00.000Z",
-    };
+  it("writes the degradation with the blocked marker when the approval gate withholds the set", async () => {
+    synthesis.degraded = DEGRADED;
+    gate.allowed = false;
 
     await runPipeline();
 
-    // The degradation rides its OWN patch: `persistAnalysisEnhancement` merges
-    // by key, so a patch carrying only this field cannot clobber another.
+    expect(persistRequirementsCalls).toHaveLength(0);
     const patch = persistedEnhancements.find((p) => p.synthesisDegraded !== undefined)!;
-    expect(Object.keys(patch)).toEqual(["synthesisDegraded"]);
+    expect(patch.synthesisDegraded).toEqual(DEGRADED);
+    expect(patch.promotionStatus).toBe("blocked");
+  });
+
+  it("writes no degradation on a gate-blocked healthy run", async () => {
+    gate.allowed = false;
+
+    await runPipeline();
+
+    expect(persistedEnhancements.some((p) => "synthesisDegraded" in p)).toBe(false);
   });
 });

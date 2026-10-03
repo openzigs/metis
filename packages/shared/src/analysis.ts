@@ -829,6 +829,64 @@ export function describeSynthesisDegradation(degradation: SynthesisDegradation):
 }
 
 /**
+ * Issue #769 \u2014 why a re-synthesis was refused permission to replace the
+ * analysis's requirement set.
+ *
+ * - `reviewed-work`: at least one existing requirement carries human work
+ *   (a review status, an edit, a link, a data mapping, a baseline pin, a review
+ *   item, a comment thread or an assignment). Replacing the set hard-deletes it.
+ * - `degraded-synthesis`: the new synthesis fell back to the keyword clusterer
+ *   while the existing set came from a healthy one.
+ */
+export type RequirementReplacementWithheldReason = "reviewed-work" | "degraded-synthesis";
+
+/**
+ * Durable record of a refused replacement. Persisted to
+ * `Analysis.metadata.requirementReplacementWithheld` (additive, no migration)
+ * and cleared the next time a replacement is allowed.
+ */
+export interface RequirementReplacementWithheld {
+  reason: RequirementReplacementWithheldReason;
+  /** Requirements kept (the set that was NOT replaced). */
+  existingCount: number;
+  /** How many of the kept requirements carry human review work. */
+  reviewedCount: number;
+  /** Requirements the refused synthesis produced (not persisted). */
+  proposedCount: number;
+  /** ISO timestamp of the refusal. */
+  at: string;
+}
+
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
+
+/** The sentence a user reads when a re-synthesis was not applied (#769). */
+export function describeRequirementReplacementWithheld(
+  withheld: RequirementReplacementWithheld,
+): string {
+  const { reason, existingCount, reviewedCount, proposedCount } = withheld;
+  const kept =
+    `METIS kept the existing ${existingCount} ` +
+    `${plural(existingCount, "requirement", "requirements")} unchanged`;
+  const discarded =
+    `The ${proposedCount} newly synthesized ` +
+    `${plural(proposedCount, "requirement was", "requirements were")} not applied.`;
+  if (reason === "degraded-synthesis") {
+    return (
+      `${kept}: the latest re-synthesis was degraded (the model output could not be used), ` +
+      `and a degraded result never overwrites a successful one. ${discarded}`
+    );
+  }
+  return (
+    `${kept}, because ${reviewedCount} of them ` +
+    `${plural(reviewedCount, "carries", "carry")} review work (a review status, edit, link, ` +
+    `data mapping, baseline pin, comment or assignment) that a re-synthesis would have ` +
+    `deleted. ${discarded}`
+  );
+}
+
+/**
  * Request body for `POST /api/projects/:projectId/analyses` \u2014 lets the UI
  * scope which documents and agents participate in the run.
  */
