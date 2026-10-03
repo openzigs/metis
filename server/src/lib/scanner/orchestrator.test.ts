@@ -6,6 +6,7 @@ import {
   type ScannerPorts,
   type SymbolToScan,
   type ScanProgress,
+  type ScanRunResult,
   MAX_CONSECUTIVE_SYMBOL_FAILURES,
   runScan,
 } from "./orchestrator.js";
@@ -62,6 +63,7 @@ interface Recorder {
     running: { id: string; sha: string } | null;
     completed: { id: string; summary: unknown } | null;
     failed: { id: string; reason: string; summary?: unknown } | null;
+    cancelled: { id: string; reason: string; summary: ScanRunResult } | null;
     audit: Array<{ event: string; meta?: Record<string, unknown> }>;
     upserts: ScanPersistedFinding[];
     progress: ScanProgress[];
@@ -85,6 +87,7 @@ function recorder(opts: {
     running: null,
     completed: null,
     failed: null,
+    cancelled: null,
     audit: [],
     upserts: [],
     progress: [],
@@ -127,6 +130,11 @@ function recorder(opts: {
       .fn()
       .mockImplementation(async (id: string, reason: string, summary?: unknown) => {
         state.failed = { id, reason, summary };
+      }),
+    markCancelled: vi
+      .fn()
+      .mockImplementation(async (id: string, reason: string, summary: ScanRunResult) => {
+        state.cancelled = { id, reason, summary };
       }),
     markCompleted: vi.fn().mockImplementation(async (id: string, summary: unknown) => {
       state.completed = { id, summary };
@@ -431,7 +439,11 @@ describe("runScan", () => {
       ac.abort(new TaskAbortError("timeout", "task timeout after 7200000ms"));
       throw new Error("anthropic chat failed (Error): Request was aborted.");
     });
-    const err = await runScan(r.ports, { scanId: "scan-1", signal: ac.signal }).catch((e) => e);
+    const err = await runScan(r.ports, {
+      scanId: "scan-1",
+      signal: ac.signal,
+      attempt: { attempts: 1, maxAttempts: 3 },
+    }).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).not.toMatch(/Request was aborted/);
     expect(err.message).toMatch(/timed out \(task timeout after 120 min\)/);
@@ -441,14 +453,132 @@ describe("runScan", () => {
     expect(r.state.completed).toBeNull();
   });
 
-  it("says 'interrupted' with the reason for a non-timeout abort", async () => {
+  it("says 'interrupted' with the reason for a shutdown abort, and promises no retry", async () => {
     const ac = new AbortController();
-    ac.abort(new TaskAbortError("user", "cancelled by user"));
+    ac.abort(new TaskAbortError("shutdown", "scheduler shutdown"));
+    const r = recorder({ symbols: abcd() });
+    const err = await runScan(r.ports, {
+      scanId: "scan-1",
+      signal: ac.signal,
+      attempt: { attempts: 1, maxAttempts: 3 },
+    }).catch((e) => e);
+    expect(err.message).toBe("scan interrupted (scheduler shutdown) after 0 of 4 symbols");
+    expect(r.ports.runFirstPass).not.toHaveBeenCalled();
+    expect(r.state.failed?.reason).toBe(err.message);
+  });
+
+  it("a user cancel ends the scan cancelled, not failed, and promises no retry", async () => {
+    const ac = new AbortController();
+    const r = recorder({ symbols: abcd(), fpTokens: 0 });
+    r.ports.runFirstPass = vi.fn().mockImplementation(async ({ symbol }) => {
+      if (symbol.id === "a") return { candidates: [], totalTokens: 10 };
+      ac.abort(new TaskAbortError("user", "cancelled by user"));
+      throw new Error("anthropic chat failed (Error): Request was aborted.");
+    });
+    const err = await runScan(r.ports, {
+      scanId: "scan-1",
+      signal: ac.signal,
+      attempt: { attempts: 1, maxAttempts: 3 },
+    }).catch((e) => e);
+    expect(err.message).toBe("scan cancelled (cancelled by user) after 1 of 4 symbols");
+    expect(r.state.cancelled).toMatchObject({ id: "scan-1", reason: err.message });
+    expect(r.state.cancelled?.summary).toMatchObject({ symbolsScanned: 1, totalSymbols: 4 });
+    expect(r.state.failed).toBeNull();
+    expect(r.state.completed).toBeNull();
+    expect(r.state.audit.map((a) => a.event)).toContain("scanner.scan.cancelled");
+    expect(r.state.audit.map((a) => a.event)).not.toContain("scanner.scan.failed");
+  });
+
+  it("the last timed-out attempt says no retries are left, not that a retry resumes", async () => {
+    const ac = new AbortController();
+    const r = recorder({ symbols: abcd(), fpTokens: 0 });
+    r.ports.runFirstPass = vi.fn().mockImplementation(async ({ symbol }) => {
+      if (symbol.id === "a") return { candidates: [], totalTokens: 10 };
+      ac.abort(new TaskAbortError("timeout", "task timeout after 7200000ms"));
+      throw new Error("anthropic chat failed (Error): Request was aborted.");
+    });
+    const err = await runScan(r.ports, {
+      scanId: "scan-1",
+      signal: ac.signal,
+      attempt: { attempts: 3, maxAttempts: 3 },
+    }).catch((e) => e);
+    expect(err.message).toBe(
+      "scan attempt timed out (task timeout after 120 min) after 1 of 4 symbols; no retries left",
+    );
+    expect(err.message).not.toMatch(/retry resumes/);
+    expect(r.state.failed?.reason).toBe(err.message);
+    expect(r.state.cancelled).toBeNull();
+  });
+
+  it("a timeout with attempts left promises the resume at the interrupted symbol", async () => {
+    const ac = new AbortController();
+    const r = recorder({ symbols: abcd(), fpTokens: 0 });
+    r.ports.runFirstPass = vi.fn().mockImplementation(async ({ symbol }) => {
+      if (symbol.id !== "c") return { candidates: [], totalTokens: 10 };
+      ac.abort(new TaskAbortError("timeout", "task timeout after 7200000ms"));
+      throw new Error("Request was aborted.");
+    });
+    const err = await runScan(r.ports, {
+      scanId: "scan-1",
+      signal: ac.signal,
+      attempt: { attempts: 2, maxAttempts: 3 },
+    }).catch((e) => e);
+    expect(err.message).toBe(
+      "scan attempt timed out (task timeout after 120 min) after 2 of 4 symbols; progress is kept and a retry resumes at symbol 3",
+    );
+    expect(r.state.failed?.reason).toBe(err.message);
+  });
+
+  it("a timeout with no attempt info promises no retry", async () => {
+    const ac = new AbortController();
+    ac.abort(new TaskAbortError("timeout", "task timeout after 7200000ms"));
     const r = recorder({ symbols: abcd() });
     await expect(runScan(r.ports, { scanId: "scan-1", signal: ac.signal })).rejects.toThrow(
-      /scan interrupted \(cancelled by user\)/,
+      /after 0 of 4 symbols; no retries left$/,
     );
-    expect(r.ports.runFirstPass).not.toHaveBeenCalled();
+  });
+
+  it("does not count a symbol interrupted during the FP filter, so a resume does not count it twice", async () => {
+    const ac = new AbortController();
+    const r = recorder({ symbols: abcd(), fpTokens: 0, firstPassTokens: 10 });
+    r.ports.runFpFilter = vi.fn().mockImplementation(async ({ candidate: c }) => {
+      if (c.symbolId === "b") {
+        ac.abort(new TaskAbortError("timeout", "task timeout after 7200000ms"));
+        throw new Error("Request was aborted.");
+      }
+      return { keep: true, finalConfidence: 0.9, rationales: [], totalTokens: 0 };
+    });
+    const err = await runScan(r.ports, {
+      scanId: "scan-1",
+      signal: ac.signal,
+      attempt: { attempts: 1, maxAttempts: 3 },
+    }).catch((e) => e);
+    // "a" finished; "b" was in flight in its FP filter and is not counted.
+    expect(err.message).toBe(
+      "scan attempt timed out (task timeout after 120 min) after 1 of 4 symbols; progress is kept and a retry resumes at symbol 2",
+    );
+    expect((r.state.failed?.summary as ScanRunResult).symbolsScanned).toBe(1);
+    expect(r.state.progress.at(-1)).toMatchObject({ symbolCursor: 1, symbolsScanned: 1 });
+
+    // The retry resumes at "b", rescans it, and finishes with each symbol counted once.
+    const retry = recorder({
+      scan: makeScan({
+        resume: {
+          symbolCursor: r.state.progress.at(-1)!.symbolCursor,
+          symbolsScanned: (r.state.failed?.summary as ScanRunResult).symbolsScanned,
+          tokenSpend: 0,
+        },
+      }),
+      symbols: abcd(),
+      fpTokens: 0,
+      firstPassTokens: 10,
+    });
+    const res = await runScan(retry.ports, {
+      scanId: "scan-1",
+      signal: new AbortController().signal,
+    });
+    expect(res.symbolsScanned).toBe(4);
+    expect(res.totalSymbols).toBe(4);
   });
 
   it("falls back to a generic reason when the abort carries none", async () => {

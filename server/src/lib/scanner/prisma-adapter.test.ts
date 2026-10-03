@@ -1640,6 +1640,21 @@ describe("buildScannerPorts — metering, output caps, lifecycle (#718)", () => 
     });
   });
 
+  it("#759 — markCancelled ends the scan cancelled, keeping its progress", async () => {
+    await buildScannerPorts().markCancelled(
+      "scan-9",
+      "scan cancelled (cancelled by user)",
+      summary,
+    );
+    const data = mockPrisma.scan.update.mock.calls[0][0].data;
+    expect(data).toMatchObject({
+      status: "cancelled",
+      errorMessage: "scan cancelled (cancelled by user)",
+      totalSymbols: 3533,
+      scannedSymbols: 0,
+    });
+  });
+
   it("markFailed without a summary only records the failure", async () => {
     await buildScannerPorts().markFailed("scan-9", "x".repeat(2000));
     const data = mockPrisma.scan.update.mock.calls[0][0].data;

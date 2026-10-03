@@ -49,7 +49,7 @@ import type {
   GitHubIssueTarget,
   PublisherPorts,
 } from "./finding-publisher.js";
-import { runScan as runScanPure, type ScannerPorts } from "./orchestrator.js";
+import { runScan as runScanPure, type ScannerPorts, type ScanRunResult } from "./orchestrator.js";
 import { SCAN_SYMBOL_ANSWER_TOKENS, scanSymbol } from "./per-symbol-scanner.js";
 import { FP_FILTER_ANSWER_TOKENS } from "./fp-filter.js";
 import { scannerMaxOutputTokens } from "./output-budget.js";
@@ -129,6 +129,37 @@ async function meteredScanSpend(
   });
   if (!agg._count._all) return null;
   return { totalTokens: agg._sum.totalTokens ?? 0, costCents: agg._sum.costCents ?? 0 };
+}
+
+/**
+ * A scan that ended without completing: `failed`, or (#759) `cancelled` by a
+ * user. Either way the progress made is kept.
+ */
+async function markEnded(
+  scanId: string,
+  status: "failed" | "cancelled",
+  reason: string,
+  summary?: ScanRunResult,
+): Promise<void> {
+  const metered = summary ? await meteredScanSpend(scanId) : null;
+  await prisma.scan.update({
+    where: { id: scanId },
+    data: {
+      status,
+      errorMessage: reason.slice(0, 1000),
+      completedAt: new Date(),
+      // #718 — keep the progress made before the failure, so a failed
+      // scan does not read "0/0 symbols · 0 tokens".
+      ...(summary
+        ? {
+            totalSymbols: summary.totalSymbols,
+            scannedSymbols: summary.symbolsScanned,
+            totalTokens: summary.tokenSpend,
+          }
+        : {}),
+      ...(metered ?? {}),
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +359,11 @@ export function buildScannerPorts(): ScannerPorts {
         mode: row.mode as "rules" | "heuristic" | "both" | "spec",
         budgetCapTokens: row.budgetCapTokens,
         createdById: row.createdById,
-        // #759 — where an earlier attempt stopped.
+        // #759 — where an earlier attempt stopped. `tokenSpend` is the row's
+        // totalTokens, which markFailed/markCompleted re-sync from the usage
+        // ledger (canonical: includes cache reads). The live counter then adds
+        // per-response totals, so the two can drift until the next mark call
+        // re-syncs it from the ledger.
         resume: {
           symbolCursor: row.symbolCursor,
           symbolsScanned: row.scannedSymbols,
@@ -576,25 +611,11 @@ export function buildScannerPorts(): ScannerPorts {
     },
 
     async markFailed(scanId, reason, summary) {
-      const metered = summary ? await meteredScanSpend(scanId) : null;
-      await prisma.scan.update({
-        where: { id: scanId },
-        data: {
-          status: "failed",
-          errorMessage: reason.slice(0, 1000),
-          completedAt: new Date(),
-          // #718 — keep the progress made before the failure, so a failed
-          // scan does not read "0/0 symbols · 0 tokens".
-          ...(summary
-            ? {
-                totalSymbols: summary.totalSymbols,
-                scannedSymbols: summary.symbolsScanned,
-                totalTokens: summary.tokenSpend,
-              }
-            : {}),
-          ...(metered ?? {}),
-        },
-      });
+      await markEnded(scanId, "failed", reason, summary);
+    },
+
+    async markCancelled(scanId, reason, summary) {
+      await markEnded(scanId, "cancelled", reason, summary);
     },
 
     async markCompleted(scanId, summary) {
@@ -633,9 +654,13 @@ export function buildScannerPorts(): ScannerPorts {
 }
 
 /** Convenience wrapper used by the scheduler. */
-export async function runScanWithPrismaPorts(scanId: string, signal: AbortSignal): Promise<void> {
+export async function runScanWithPrismaPorts(
+  scanId: string,
+  signal: AbortSignal,
+  attempt?: { attempts: number; maxAttempts: number },
+): Promise<void> {
   const ports = buildScannerPorts();
-  await runScanPure(ports, { scanId, signal });
+  await runScanPure(ports, { scanId, signal, attempt });
 }
 
 // ---------------------------------------------------------------------------

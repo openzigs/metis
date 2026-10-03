@@ -86,8 +86,8 @@ export function bootstrapScheduler(opts: BootstrapSchedulerOptions = {}): Schedu
     retryRegenerationScheduling: opts.handlerOverrides?.retryRegenerationScheduling,
     runScannerScan:
       opts.handlerOverrides?.runScannerScan ??
-      (async (scanId, signal) => {
-        await runScanWithPrismaPorts(scanId, signal);
+      (async (scanId, signal, attempt) => {
+        await runScanWithPrismaPorts(scanId, signal, attempt);
         return { scanId };
       }),
   };

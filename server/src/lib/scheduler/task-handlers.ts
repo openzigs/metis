@@ -98,7 +98,12 @@ export interface BuiltInHandlerDeps {
     reason: string,
   ): Promise<void>;
   /** Run an AI Bug Scanner scan by id (Epic #708). */
-  runScannerScan?(scanId: string, signal: AbortSignal): Promise<Record<string, unknown> | void>;
+  /** `attempt` (#759) tells the scan whether a timed-out attempt will be retried. */
+  runScannerScan?(
+    scanId: string,
+    signal: AbortSignal,
+    attempt: { attempts: number; maxAttempts: number },
+  ): Promise<Record<string, unknown> | void>;
 }
 
 /**
@@ -280,7 +285,11 @@ export function registerBuiltInHandlers(
       if (!deps.runScannerScan) {
         throw new Error("scanner.run-scan handler not wired");
       }
-      const result = (await deps.runScannerScan(scanId, ctx.signal)) ?? {};
+      const result =
+        (await deps.runScannerScan(scanId, ctx.signal, {
+          attempts: ctx.task.attempts,
+          maxAttempts: ctx.task.maxAttempts,
+        })) ?? {};
       ctx.reportProgress({ step: "scanner.run-scan:complete", pct: 100 });
       return { scanId, ...result };
     },

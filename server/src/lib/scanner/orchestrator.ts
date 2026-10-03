@@ -23,9 +23,10 @@
  *       every symbol, and the next attempt starts there with the earlier
  *       attempts' counters, so finished symbols are never re-scanned (or
  *       re-billed). The interrupted symbol's partial findings are dropped
- *       before it is scanned again. An abort never marks the scan completed,
- *       and a timeout says so instead of surfacing the provider's
- *       "Request was aborted".
+ *       before it is scanned again. An abort never marks the scan completed:
+ *       a user's cancel ends it `cancelled`; a timeout ends it `failed` and
+ *       says so instead of surfacing the provider's "Request was aborted",
+ *       promising a resume only when the queue will actually retry.
  *
  * I/O ports keep the orchestrator unit-testable without a database,
  * filesystem, or LLM in the loop.
@@ -145,6 +146,8 @@ export interface ScannerPorts {
   markRunning(scanId: string, commitSha: string): Promise<void>;
   /** `summary` (#718) carries the progress made before the failure, when any. */
   markFailed(scanId: string, reason: string, summary?: ScanRunResult): Promise<void>;
+  /** #759 — a user cancelled the scan; `summary` carries the progress made. */
+  markCancelled(scanId: string, reason: string, summary: ScanRunResult): Promise<void>;
   markCompleted(scanId: string, summary: ScanRunResult): Promise<void>;
   /** Audit hook — best-effort. */
   audit(event: string, scanId: string, meta?: Record<string, unknown>): Promise<void>;
@@ -154,6 +157,12 @@ export interface RunScanInput {
   scanId: string;
   signal: AbortSignal;
   reportProgress?: (p: { step: string; pct?: number; current?: number; total?: number }) => void;
+  /**
+   * #759 — this run's place in the task's retry budget. A timed-out attempt
+   * promises a resume only when `attempts < maxAttempts`; absent, no retry is
+   * assumed, so the message never promises one that will not happen.
+   */
+  attempt?: { attempts: number; maxAttempts: number };
 }
 
 /**
@@ -182,17 +191,37 @@ function humaniseTimeout(message: string): string {
 
 /**
  * #759 — the scan's error when its signal was aborted. A provider aborted
- * mid-call reports only "Request was aborted"; the user needs to know the
- * attempt hit its time limit and that its progress is kept.
+ * mid-call reports only "Request was aborted"; the user needs to know why the
+ * attempt stopped, and whether anything will pick it up again. Only a timeout
+ * with attempts left is retried by the queue: a user cancel is terminal, and
+ * so is the last attempt.
  */
-function interruptionMessage(signal: AbortSignal, result: ScanRunResult, cursor: number): string {
+function interruptionMessage(
+  signal: AbortSignal,
+  result: ScanRunResult,
+  cursor: number,
+  attempt: RunScanInput["attempt"],
+): string {
   const reason: unknown = signal.reason;
-  const progress = `after ${result.symbolsScanned} of ${result.totalSymbols} symbols; progress is kept and a retry resumes at symbol ${cursor + 1}`;
+  const done = `after ${result.symbolsScanned} of ${result.totalSymbols} symbols`;
+  if (reason instanceof TaskAbortError && reason.source === "user") {
+    return `scan cancelled (${reason.message || "cancelled by user"}) ${done}`;
+  }
   if (reason instanceof TaskAbortError && reason.source === "timeout") {
-    return `scan attempt timed out (${humaniseTimeout(reason.message)}) ${progress}`;
+    const willRetry = attempt !== undefined && attempt.attempts < attempt.maxAttempts;
+    const outcome = willRetry
+      ? `progress is kept and a retry resumes at symbol ${cursor + 1}`
+      : "no retries left";
+    return `scan attempt timed out (${humaniseTimeout(reason.message)}) ${done}; ${outcome}`;
   }
   const why = reason instanceof Error && reason.message ? reason.message : "aborted";
-  return `scan interrupted (${why}) ${progress}`;
+  return `scan interrupted (${why}) ${done}`;
+}
+
+/** #759 — the abort was a user's cancel, which the queue treats as terminal. */
+function isUserCancel(signal: AbortSignal): boolean {
+  const reason: unknown = signal.reason;
+  return reason instanceof TaskAbortError && reason.source === "user";
 }
 
 export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise<ScanRunResult> {
@@ -324,7 +353,6 @@ export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise
       }
       consecutiveFailures = 0;
       result.tokenSpend += firstPass.totalTokens;
-      result.symbolsScanned += 1;
 
       for (const candidate of firstPass.candidates) {
         result.candidatesProduced += 1;
@@ -355,6 +383,9 @@ export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise
         result.candidatesKept += 1;
       }
       if (bailedOnBudget) break;
+      // #759 — counted only once finished, in step with the cursor: an
+      // attempt interrupted mid-symbol rescans it and must not count it twice.
+      result.symbolsScanned += 1;
       await advance();
     }
 
@@ -375,13 +406,18 @@ export async function runScan(ports: ScannerPorts, input: RunScanInput): Promise
   } catch (err) {
     const aborted = input.signal.aborted;
     const message = aborted
-      ? interruptionMessage(input.signal, result, cursor)
+      ? interruptionMessage(input.signal, result, cursor, input.attempt)
       : err instanceof Error
         ? err.message
         : String(err);
     result.durationMs = Date.now() - t0;
-    await ports.markFailed(scan.id, message, result);
-    await ports.audit("scanner.scan.failed", scan.id, { error: message });
+    if (aborted && isUserCancel(input.signal)) {
+      await ports.markCancelled(scan.id, message, result);
+      await ports.audit("scanner.scan.cancelled", scan.id, { error: message });
+    } else {
+      await ports.markFailed(scan.id, message, result);
+      await ports.audit("scanner.scan.failed", scan.id, { error: message });
+    }
     // The queue records the thrown message on the task; make it the same one.
     throw aborted ? new Error(message, { cause: err }) : err;
   }
