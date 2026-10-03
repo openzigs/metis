@@ -135,11 +135,6 @@ export const PROJECT_ACCESS_BASELINE: readonly BaselineEntry[] = [
   },
   {
     path: "/projects/:projectId",
-    expression: "traceabilityRouter()",
-    note: "path-scoped, but the includeLinked=true cross-project branch (traceability.ts:69) needs a human look",
-  },
-  {
-    path: "/projects/:projectId",
     expression: "stakeholdersRouter()",
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
   },

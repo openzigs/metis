@@ -555,6 +555,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Upper bound on affected code symbols (direct + blast radius) retained per requirement candidate before token budgeting (#735). Default 8.",
     sensitive: false,
   },
+  // ── Issue #814 — "Tested by" resolution ─────────────────────────────────────
+  TESTED_BY_MAX_SYMBOLS_PER_FILE: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "Upper bound on the code symbols a file-only requirement→code mapping expands to when resolving which tests exercise a requirement (#814, `lib/traceability/tested-by.ts`). Default 500.",
+    sensitive: false,
+  },
   // ── Epic #820 Phase 1 / Issue #824 — deterministic AFFECTED SCHEMA prompt block ─
   ANALYSIS_AFFECTED_SCHEMA_MAPPING: {
     tier: "tunable",

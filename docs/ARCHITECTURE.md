@@ -2037,7 +2037,8 @@ Epic #207 completes the traceability chain by introducing a first-class **Spec**
 
 - `requirement-spec-mapping.ts` / `spec-code-mapping.ts` — project-scoped CRUD; cross-project links are rejected (`404`), duplicate requirement→spec pairs `409`.
 - `backfill-spec-links.ts` (#228) — idempotently derives links from existing data: requirement→spec by Jaccard file-path overlap (spec scope paths vs the requirement→code spine), then propagates each requirement's code mappings onto its linked specs as `derived` spec→code rows. The derivation (`deriveSpecLinks`) is pure; persistence is a separate injected writer.
-- `traceability-spine.ts` (#229) — `getRequirementChain` assembles the full requirement→spec→code tree; `getRequirementsForFile` is the reverse lookup.
+- `traceability-spine.ts` (#229) — `getRequirementChain` assembles the full requirement→spec→code tree; `getRequirementsForFile` is the reverse lookup. Since #814 every code node carries `isTest` (its file classifies as a test under `code-graph/test-conventions.ts`, #813) and the chain carries `testedBy`.
+- `tested-by.ts` (#814) — resolves which **tests** cover a requirement from the code it is already mapped to (direct `RequirementCodeMapping` rows and `RequirementSpecMapping` → `SpecCodeMapping`), with no model call and no new table. Three relations, strongest first: **`direct`** (base 1.0) — a mapped target's file is itself a test; **`exercises`** (0.8) — a symbol in a test file has an incoming `calls`/`references` `CodeEdge` into a target symbol, where a file-only target (the common `analysis-grounding` shape) means every symbol in that file, capped at `TESTED_BY_MAX_SYMBOLS_PER_FILE` (default 500); `imports` edges are deliberately not followed, since for a file-only target they would link every test that imports the package; **`naming`** (0.6) — a test case in `siblingTestPaths(target)` is named for a target symbol (longest folded symbol name that prefixes the test's subject on a word boundary, ≥3 chars, so `TestValidatePasswordRejectsEmpty` → `ValidatePassword` and `TestUser_Validate` → `User.Validate`), or, for a file-only target, shares a denoised requirement token. Within a relation tests are ranked by `BM25Index` relevance of `name + qualifiedName` against `denoiseRequirementQuery(title + body)`, folded into `score` as `base × (0.8 + 0.2 × relevance)`; results are deduplicated by `(filePath, qualifiedName)` keeping the strongest relation, at most 10. The Prisma query count is constant in the number of requirements (requirements, code mappings, spec mappings, spec code, target symbols, incoming edges, sibling-file symbols), every query filters on `projectId` (edges on the source symbol's project too), and sibling paths are computed in code and passed only as bound `in` values. `listUntestedRequirements` reports the project's requirements with mapped code but no resolved test; a requirement with **no** mapped code is counted in `noCode` and never listed as untested — "cannot tell", the same rule as #773's `no_evidence`.
 
 **REST surface** — `server/src/routes/traceability.ts`, mounted at `/api/projects/:projectId`:
 
@@ -2045,9 +2046,12 @@ Epic #207 completes the traceability chain by introducing a first-class **Spec**
 |---|---|
 | `GET /requirements/:requirementId/traceability` | `analysis.read` |
 | `GET /traceability/by-file?filePath=` | `analysis.read` |
+| `GET /traceability/test-gaps?analysisId=&limit=&cursor=` (#814) | `analysis.read` |
 | `GET/POST/DELETE /requirements/:requirementId/spec-mappings[/:id]` | `analysis.read` (GET) / `analysis.run` |
 | `GET/POST/DELETE /specs/:specId/code-mappings[/:id]` | `analysis.read` (GET) / `analysis.run` |
 | `POST /traceability/backfill` | `analysis.run` |
+
+Since #814 the router mounts `requireAuth, requireProjectAccess()` itself, ahead of every handler, instead of relying on the upstream `projectsRouter()` catch-all (it left the `project-access-baseline.ts` ratchet). `test-gaps` takes a Zod-validated query (`traceabilityTestGapsQuerySchema` in `@metis/shared`: `limit` 1–200, default 50; `analysisId` and `cursor` are id-shaped strings) and returns `RequirementTestGaps` — `{ total, tested, untested[], noCode, nextCursor }`, untested requirements paged by requirement id. An `analysisId` outside the project is a `404`; soft-deleted requirements are excluded.
 
 **UI** — `TraceabilityView` (`ui/src/components/traceability/traceability-view.tsx`, client `traceability-api.ts`) renders the read-only chain under each requirement on the analysis page.
 

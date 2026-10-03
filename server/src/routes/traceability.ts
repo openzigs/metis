@@ -10,7 +10,11 @@
  *   POST   /specs/:specId/code-mappings                       analysis.run    (#227 create)
  *   DELETE /specs/:specId/code-mappings/:id                   analysis.run    (#227 remove)
  *   GET    /traceability/by-file                              analysis.read   (#229 reverse)
+ *   GET    /traceability/test-gaps                            analysis.read   (#814 untested)
  *   POST   /traceability/backfill                             analysis.run    (#228 backfill)
+ *
+ * Every route runs behind `requireProjectAccess()` (#814): the caller must be
+ * able to reach `:projectId` itself, not only hold the role permission.
  *
  * Validation is Zod-based; the service layer throws `AppError` with stable
  * codes that the global error handler formats. Express 5 forwards rejected
@@ -21,9 +25,11 @@ import {
   type ApiResponse,
   createRequirementSpecMappingSchema,
   createSpecCodeMappingSchema,
+  traceabilityTestGapsQuerySchema,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import * as reqSpec from "../lib/traceability/requirement-spec-mapping.js";
 import * as specCode from "../lib/traceability/spec-code-mapping.js";
@@ -36,6 +42,7 @@ import {
   getWorkspaceTraceabilitySummary,
 } from "../lib/traceability/workspace-rollup.js";
 import { runBackfill } from "../lib/traceability/backfill-spec-links.js";
+import { listUntestedRequirements } from "../lib/traceability/tested-by.js";
 import type { SchedulerActor } from "../lib/scheduler/project-access.js";
 
 function ok<T>(data: T): ApiResponse<T> {
@@ -59,6 +66,10 @@ const specIdOf = (req: Request) => paramOf(req, "specId", "SPEC_REQUIRED");
 
 export function traceabilityRouter(): Router {
   const r = Router({ mergeParams: true });
+
+  // #814 — object-level project scope for every route below, so this router's
+  // safety no longer rests on the mount order of `projectsRouter()` upstream.
+  r.use(requireAuth, requireProjectAccess());
 
   // ---- #229 full chain (+ #626 optional cross-project linked chains) -------
   r.get(
@@ -93,6 +104,22 @@ export function traceabilityRouter(): Router {
       }
       const requirementIds = await getRequirementsForFile(projectIdOf(req), filePath);
       res.json(ok({ filePath, requirementIds }));
+    },
+  );
+
+  // ---- #814 requirements with mapped code but no linked test -------------
+  r.get(
+    "/traceability/test-gaps",
+    requireAuth,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      const parsed = traceabilityTestGapsQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "invalid query", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      res.json(ok(await listUntestedRequirements(projectIdOf(req), parsed.data)));
     },
   );
 
