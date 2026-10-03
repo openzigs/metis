@@ -46,7 +46,13 @@ const store = {
 
 vi.mock("../prisma.js", () => ({
   prisma: {
+    // Issue #769 — `persistRequirements` reads the analysis metadata first.
+    analysis: { findFirst: vi.fn(async () => ({ metadata: null })) },
     requirement: {
+      // Issue #769 — this fake models no review work and no prior set, so the
+      // replacement guard proceeds; the guard itself is exercised against a real
+      // SQLite database in tests/requirement-set-preservation-769.sqlite.test.ts.
+      count: vi.fn(async () => 0),
       deleteMany: vi.fn(async ({ where }: { where: { analysisId: string } }) => {
         store.requirements = store.requirements.filter((r) => r.analysisId !== where.analysisId);
         return { count: 0 };
