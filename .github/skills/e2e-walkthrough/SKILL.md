@@ -1,6 +1,6 @@
 ---
 name: e2e-walkthrough
-description: "Runbook to re-run the #706 METIS end-to-end walkthrough from scratch and compare runs: Miniflux v2.3.3 sample project, SQL-lineage sidecar and seeded Postgres, DeepSeek pricing, the five ui-vision waves (A to E) plus the BA re-ask over the API, safety guard-rails for sandbox publishing, and the token/cost ledger queries. Use when asked to run, repeat or compare the walkthrough (run 3 onward) or to set up its fixtures."
+description: "Runbook to re-run the #706 METIS end-to-end walkthrough from scratch and compare runs: Miniflux v2.3.3 sample project, SQL-lineage sidecar and seeded Postgres, DeepSeek pricing, the five ui-vision waves (A to E) plus the BA re-ask over the API, safety guard-rails for sandbox publishing, the token/cost ledger queries, and the HTML tutorial and run-report slideshows built from the screenshots. Use when asked to run, repeat or compare the walkthrough (run 3 onward), to set up its fixtures, or to build its slideshow."
 ---
 
 # E2E walkthrough runbook (#706)
@@ -16,6 +16,7 @@ the **mechanics**: fixtures, order, waves, guard-rails and measurement.
 | `briefs/wave-{a..e}.md`, `briefs/ba-reask.md` | Dispatch templates, one per wave |
 | `scripts/walkthrough/miniflux-seed.sql` | Idempotent Miniflux seed |
 | `docs/walkthroughs/RESULTS_TEMPLATE.md` | The results comment, with the run-2 baseline |
+| `scripts/walkthrough/build-slideshow.mjs` | Tutorial and run-report slideshows from `steps.jsonl` |
 
 ## 1. Setup — in this order
 
@@ -155,3 +156,54 @@ run-to-run comparison table, on #706 or a tracking issue that links back.
 - **Each agent keeps its scratch files in its own subdirectory.** A shared scratchpad
   clobbered backups in run 2.
 - Evidence goes under `.playwright-mcp/walkthrough-706-run<N>/<wave>/` (gitignored).
+
+## 7. Build the slideshow — last step of every run (#829)
+
+Each wave appends one line per screenshot to `<evidence-dir>/steps.jsonl`, where
+`<evidence-dir>` is `.playwright-mcp/walkthrough-706-run<N>/`; the briefs carry the
+instruction and good and bad wording. After the last wave, build both decks:
+
+```bash
+node scripts/walkthrough/build-slideshow.mjs \
+  --in .playwright-mcp/walkthrough-706-run<N> \
+  --out .playwright-mcp/walkthrough-706-run<N>/slides \
+  --deck both --title "METIS walkthrough, run <N>"
+```
+
+This writes `slides/tutorial/index.html` and `slides/report/index.html`, each with an `assets/`
+folder. Add `--inline-images` for one self-contained HTML file per deck; it warns above 15 MB.
+The decks open from disk with no network. Keys: arrows, Page Up/Down, Space, Home/End; `g` or
+`o` opens the slide index, `n` shows presenter notes (the reviewer's `result` in the tutorial),
+`t` toggles the theme. Print to PDF gives one slide per page.
+
+- **Tutorial deck**: a guided tour for analysts and developers. It contains a title, the contents,
+  then each chapter's intro and steps, in wave and phase order. It shows `tutorial` text only,
+  and leaves out `fail` and `blocked` steps and steps with no `tutorial` text.
+- **Run report deck**: every step, with its verdict badge, `result`, tokens, cost and issue
+  links, after a summary slide with the verdict tally per wave and the total spend. Attach it to
+  the results comment, or compare it with the previous run's report.
+
+The build fails, naming the line or step, on an invalid manifest or a screenshot path outside
+the evidence folder. It changes nothing on disk until the whole manifest checks out.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | Unique step id, e.g. `a-2-1` |
+| `wave` | yes | `A`–`E` |
+| `phase` | yes | `"2"`, `"S4"`; ordered naturally within a wave |
+| `chapter` | yes | Feature area, e.g. "Connect a repository"; becomes a tutorial chapter |
+| `title` | yes | Step title; also the screenshot's `alt` text |
+| `screenshot` | yes | Image path relative to the evidence folder (`.png`, `.jpg`, `.webp`, `.gif`) |
+| `tutorial` | no | User-facing, imperative "how to" text |
+| `result` | no | Reviewer-facing outcome |
+| `verdict` | yes | `pass` / `weak` / `fail` / `blocked` / `info` |
+| `issues` | no | Issue numbers, linked to `openzigs/metis` |
+| `tokens` / `costCents` | no | Spend for the step |
+| `ts` | yes | ISO-8601 timestamp |
+
+Unknown fields are rejected, so a typo is reported rather than dropped silently. All text is
+shown as plain text; the only formatting is `**bold**`, `` `code` `` and `http(s)` links.
+
+**Sharing.** The decks can optionally be published as a **private** shareable link, for
+example the inline build uploaded somewhere only the team can open. Review the screenshots
+first: they show the run's data, and the decks are not redacted.
