@@ -19,6 +19,9 @@ const state = vi.hoisted(() => ({
   failAfterSynthesis: false,
   failCommit: false,
   changeInputs: false,
+  // The run dies while writing this section: its failure escapes the
+  // section's own handler, as a lost process or a fatal error would.
+  crashIn: null as string | null,
 }));
 
 vi.mock("../src/lib/prisma.js", () => {
@@ -172,6 +175,22 @@ vi.mock("../src/lib/docs-gen/generated-doc-provenance.js", async (importOriginal
     ),
   };
 });
+vi.mock("../src/lib/docs-gen/generation-failure-message.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/docs-gen/generation-failure-message.js")>();
+  return {
+    ...actual,
+    // First consulted by the failed section's own handler; throwing there once
+    // is what takes the whole run down mid-section.
+    generationFailureMessage: vi.fn((err: unknown) => {
+      if (state.crashIn) {
+        state.crashIn = null;
+        throw new Error("run lost mid-section");
+      }
+      return actual.generationFailureMessage(err);
+    }),
+  };
+});
 vi.mock("../src/lib/logger.js", () => ({
   createChildLogger: () => ({ info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
@@ -187,6 +206,9 @@ vi.mock("../src/lib/socket/job-events.js", () => ({
 }));
 
 import { generateDocumentAsync } from "../src/routes/generated-docs.js";
+import { prisma } from "../src/lib/prisma.js";
+import { resolveEvidencePolicy } from "../src/lib/docs-gen/evidence-policy.js";
+import { captureGenerationInputs } from "../src/lib/docs-gen/generation-inputs.js";
 import { jobEvents } from "../src/lib/socket/job-events.js";
 import { checkpointSectionRecords } from "../src/lib/docs-gen/section-reuse.js";
 import { sectionGroupsFor } from "../src/lib/docs-gen/holistic-synthesizer.js";
@@ -199,6 +221,14 @@ const sectionCalls = () =>
   ).length;
 const warnings = () => state.doc.warnings as Array<Record<string, unknown>>;
 const cause = () => warnings().find((w) => typeof w.stage === "string");
+const checkpointWrites = () =>
+  vi
+    .mocked(prisma.generatedDocument.updateMany)
+    .mock.calls.filter(([args]) => Object.keys(args.data).join() === "generationCheckpoint");
+const checkpointIds = () =>
+  (state.doc.generationCheckpoint as { records: Array<{ sectionId: string }> }).records.map(
+    (r) => r.sectionId,
+  );
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -208,6 +238,7 @@ beforeEach(() => {
   state.failAfterSynthesis = false;
   state.failCommit = false;
   state.changeInputs = false;
+  state.crashIn = null;
   state.doc = {
     id: "d",
     projectId: "p",
@@ -245,6 +276,7 @@ beforeEach(() => {
   state.stream.mockImplementation(async function* (messages) {
     const user = messages.at(-1).content as string;
     const label = user.match(/Section group: \*\*(.+?)\*\*/)?.[1];
+    if (label && label === state.crashIn) throw new Error("provider connection reset");
     yield {
       type: "delta",
       content: label
@@ -288,6 +320,10 @@ describe("#782 — a late failure keeps what was finished", () => {
 
     expect(state.doc.status).toBe("degraded");
     for (const group of GROUPS) expect(state.doc.content).toContain(`## ${group.label}`);
+    // The assembled document itself (its header and footer), not the
+    // fallback rebuilt from checkpointed sections.
+    expect(state.doc.content).not.toContain("Incomplete document");
+    expect(state.doc.content).toContain("auto-generated on");
     expect(state.doc.errorMessage).toBeNull();
     // The claim is released, never left pointing at a dead run.
     expect(state.doc.codeGraphHash).toBeNull();
@@ -359,6 +395,33 @@ describe("#782 — a late failure keeps what was finished", () => {
     expect(jobEvents.failed).toHaveBeenCalledOnce();
   });
 
+  it("never salvages an automatic regeneration, even with no published version", async () => {
+    // `expectedVersion: 0` is how an automatic run reaches a never-published row.
+    state.doc.autoUpdate = true;
+    state.doc.status = "failed";
+    const doc = state.doc as unknown as Parameters<typeof resolveEvidencePolicy>[0] &
+      Parameters<typeof captureGenerationInputs>[0];
+    const { fingerprint } = await captureGenerationInputs(doc, await resolveEvidencePolicy(doc));
+    state.failAfterSynthesis = true;
+
+    await expect(
+      generateDocumentAsync("d", "p", {
+        projectId: "p",
+        generatedDocumentId: "d",
+        expectedVersion: 0,
+        fingerprint,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow(TypeError);
+
+    // It got as far as a late failure: every section was written.
+    expect(sectionCalls()).toBe(GROUPS.length);
+    expect(state.doc.status).toBe("failed");
+    expect(state.doc.content).toBe("");
+    expect(warnings()).toEqual([expect.objectContaining({ stage: "assembly" })]);
+    expect(jobEvents.completed).not.toHaveBeenCalled();
+  });
+
   it("does not salvage a run whose commit failed; every section stays checkpointed", async () => {
     state.failCommit = true;
     await generateDocumentAsync("d", "p");
@@ -396,10 +459,14 @@ describe("#782 — regenerate resumes from the checkpoint", () => {
     state.failAfterSynthesis = false;
     state.doc.status = "pending";
     state.stream.mockClear();
+    vi.mocked(prisma.generatedDocument.updateMany).mockClear();
     await generateDocumentAsync("d", "p");
 
     expect(state.versions).toHaveLength(1);
     expect(sectionCalls()).toBe(0);
+    // A reused section is checkpointed too, one write each, so a resumed run
+    // that fails later still has every section it carried forward.
+    expect(checkpointWrites()).toHaveLength(GROUPS.length);
     for (const group of GROUPS) expect(state.doc.content).toContain(`## ${group.label}`);
     expect(state.doc.generationCheckpoint).toBeNull();
     expect(state.versions).toHaveLength(1);
@@ -422,5 +489,65 @@ describe("#782 — regenerate resumes from the checkpoint", () => {
 
     expect(state.versions).toHaveLength(1);
     expect(sectionCalls()).toBe(1);
+  });
+});
+
+describe("#782 — a resumed run that fails again keeps every finished section", () => {
+  const BRD = sectionGroupsFor("business-requirements");
+  // Sections 1–5 of the BRD's 7.
+  const firstFive = BRD.slice(0, 5);
+
+  beforeEach(() => {
+    state.doc.title = "Business Requirements";
+    state.doc.scopeFilter = JSON.stringify({
+      repoConnectorId: "r",
+      docType: "business-requirements",
+    });
+  });
+
+  it("keeps the sections it had not reached when a changed section's rewrite fails", async () => {
+    // Run 1 finishes sections 1–5, then dies writing section 6.
+    state.crashIn = BRD[5].label;
+    await generateDocumentAsync("d", "p");
+    expect(state.doc.status).toBe("degraded");
+    expect(checkpointIds()).toEqual(firstFive.map((g) => g.id));
+
+    // An ingest changes section 3's inputs.
+    const saved = state.doc.generationCheckpoint as { records: Array<{ inputs: object }> };
+    saved.records[2] = {
+      ...saved.records[2],
+      inputs: { ...saved.records[2].inputs, facts: "0".repeat(64) },
+    };
+
+    // Run 2 reuses 1–2, then dies rewriting section 3.
+    state.crashIn = BRD[2].label;
+    state.stream.mockClear();
+    await generateDocumentAsync("d", "p");
+    expect(sectionCalls()).toBe(1);
+
+    // Sections 4 and 5 are still stored, and the stale section 3 is not.
+    const kept = [BRD[0], BRD[1], BRD[3], BRD[4]];
+    expect(checkpointIds()).toEqual(kept.map((g) => g.id));
+    expect(
+      checkpointSectionRecords(
+        state.doc.generationCheckpoint,
+        BRD.map((g) => g.id),
+        false,
+      ).size,
+    ).toBe(4);
+    // ...and the partial document shows all four.
+    expect(state.doc.status).toBe("degraded");
+    const content = String(state.doc.content);
+    expect(content).toContain("Incomplete document");
+    expect(content).toContain("4 finished sections are shown");
+    for (const group of kept) expect(content).toContain(`## ${group.label}`);
+    expect(content).not.toContain(`## ${BRD[2].label}`);
+    expect(cause()).toMatchObject({ stage: "sections", section: BRD[2].label });
+
+    // Run 3 resumes: only sections 3, 6 and 7 are written.
+    state.stream.mockClear();
+    await generateDocumentAsync("d", "p");
+    expect(sectionCalls()).toBe(3);
+    expect(state.versions).toHaveLength(1);
   });
 });

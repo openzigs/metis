@@ -1294,7 +1294,10 @@ export async function generateDocumentAsync(
           ...(automatic ? { previousManifest } : {}),
           // #782 — resume: an earlier unfinished run's sections are reused
           // where their inputs are unchanged, and this run's are saved as each
-          // one finishes, only while this run still holds the claim.
+          // one finishes, only while this run still holds the claim. `records`
+          // is already merged with the stored checkpoint (sections this run has
+          // not reached are carried), so it replaces the column, and a late
+          // failure's partial document is built from all of it.
           checkpoint: original.generationCheckpoint ?? undefined,
           onCheckpoint: async (records) => {
             finishedSections = records;

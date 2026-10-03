@@ -3791,9 +3791,12 @@ export async function synthesizeFinalDocument(
      */
     checkpoint?: unknown;
     /**
-     * #782 — called with every reuse record finished so far, after each
-     * section, so a run that fails later still has them. Best-effort: a
-     * failure here is logged and never affects the document.
+     * #782 — called with the checkpoint to store, after each section, so a run
+     * that fails later still has it: every record this run has finished, plus
+     * the stored `checkpoint`'s records for sections this run has not reached
+     * yet (a reached section's stored record is replaced, or dropped when its
+     * inputs changed). Best-effort: a failure here is logged and never affects
+     * the document.
      */
     onCheckpoint?: (records: SectionSynthesisRecord[]) => Promise<void>;
   },
@@ -3896,12 +3899,29 @@ export async function synthesizeFinalDocument(
     }
   }
   const synthesisRecords: SectionSynthesisRecord[] = [];
+  // #782 — the stored checkpoint's records, carried into every checkpoint this
+  // run writes until the run reaches their section. Without them a resumed run
+  // that failed again stored only its own sections, discarding finished ones
+  // it had not reached yet. Kept whatever the escalation setting: whether one
+  // is reused is decided later, per section, by its input hashes.
+  const carried = reuse?.checkpoint
+    ? checkpointSectionRecords(
+        reuse.checkpoint,
+        groups.map((group) => group.id),
+        false,
+      )
+    : new Map<string, SectionSynthesisRecord>();
   // #782 — persist what is finished after every section: a 77-minute run that
   // failed in its last moments used to discard five finished sections.
   const checkpoint = async (): Promise<void> => {
     if (!reuse?.onCheckpoint) return;
+    const written = new Map(synthesisRecords.map((record) => [record.sectionId, record]));
+    const records = groups.flatMap((group) => {
+      const record = written.get(group.id) ?? carried.get(group.id);
+      return record ? [record] : [];
+    });
     try {
-      await reuse.onCheckpoint([...synthesisRecords]);
+      await reuse.onCheckpoint(records);
     } catch (err) {
       log.warn("Section checkpoint not saved; a failure now loses this section", {
         projectId,
@@ -4242,7 +4262,13 @@ export async function synthesizeFinalDocument(
         prompts: JSON.stringify(prompts),
       });
       const previous = previousRecords.get(group.id);
-      if (previous && JSON.stringify(previous.inputs) === JSON.stringify(inputHashes)) {
+      const stillValid =
+        previous != null && JSON.stringify(previous.inputs) === JSON.stringify(inputHashes);
+      // #782 — this run has reached the section: from here its stored record is
+      // either reused below or out of date, and a stale one is dropped from the
+      // checkpoint now rather than shown as finished if the rewrite fails.
+      if (carried.delete(group.id) && !stillValid) await checkpoint();
+      if (previous && stillValid) {
         sectionMarkdowns.push(previous.markdown);
         manifestSections.push(previous.metadata);
         // Grounding was freshly retrieved and hashed above, so these are the

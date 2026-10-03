@@ -9,4 +9,4 @@ section: Fixed
 - A failed or partial document now says where it stopped (stage, section and error class) instead
   of "the details are in the server log".
 - Regenerate reuses every finished section whose inputs are unchanged, so that work is not billed
-  again.
+  again, and a resumed run that fails again keeps the saved sections it had not reached.
