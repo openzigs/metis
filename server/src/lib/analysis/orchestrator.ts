@@ -3189,6 +3189,13 @@ export class AnalysisOrchestrator {
           rejectedCount: ticketStatus.rejectedCount,
           awaitingRequirementCount,
         });
+        // Issue #769 — the marker describes the PERSISTED set. When a (healthy,
+        // possibly reviewed) set is already persisted, this run's degradation
+        // describes nothing that exists, and writing it would let the next
+        // degraded run replace that set as if it were itself degraded.
+        const persistedRequirementCount = result.degraded
+          ? await prisma.requirement.count({ where: { analysisId: input.analysisId } })
+          : 0;
         await persistAnalysisEnhancement(input.analysisId, {
           promotionBlocked: {
             blocked: true,
@@ -3200,7 +3207,9 @@ export class AnalysisOrchestrator {
           // #258 — record the coarse outcome in the SAME metadata patch as the
           // marker (one DB write, not two).
           promotionStatus: "blocked",
-          ...(result.degraded ? { synthesisDegraded: result.degraded } : {}),
+          ...(result.degraded && persistedRequirementCount === 0
+            ? { synthesisDegraded: result.degraded }
+            : {}),
         });
         this.emit({
           analysisId: input.analysisId,
@@ -3308,7 +3317,8 @@ export class AnalysisOrchestrator {
         agentKey: "synthesis",
         type: "completed",
         status: "completed",
-        findingCount: result.output.requirements.length,
+        // #769 — a withheld replacement persists nothing; report what was written.
+        findingCount: requirementIds.length,
         ts: Date.now(),
       });
       return {};

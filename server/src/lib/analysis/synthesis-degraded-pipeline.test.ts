@@ -18,6 +18,8 @@ const persistedEnhancements: Array<Record<string, unknown>> = [];
 const persistRequirementsCalls: Array<Record<string, unknown>> = [];
 /** Whether the approval gate lets requirements through this run. Mutated per test. */
 const gate = { allowed: true };
+/** How many requirement rows are already persisted for the analysis. */
+const existing = { count: 0 };
 
 /** What `runSynthesis` reports this run. Mutated per test. */
 const synthesis: { degraded?: SynthesisDegradation } = {};
@@ -35,6 +37,7 @@ vi.mock("../prisma.js", () => ({
     agentResult: { findFirst: vi.fn(async () => ({ status: "completed" })) },
     document: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
     repoConnection: { findMany: vi.fn(async () => []) },
+    requirement: { count: vi.fn(async () => existing.count) },
   },
 }));
 
@@ -155,6 +158,7 @@ beforeEach(() => {
   persistedEnhancements.length = 0;
   persistRequirementsCalls.length = 0;
   gate.allowed = true;
+  existing.count = 0;
   delete synthesis.degraded;
   process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "false";
   __resetConfigSingleton();
@@ -205,6 +209,19 @@ describe("#1117 B + C — a degraded synthesis is recorded on the analysis", () 
     const patch = persistedEnhancements.find((p) => p.synthesisDegraded !== undefined)!;
     expect(patch.synthesisDegraded).toEqual(DEGRADED);
     expect(patch.promotionStatus).toBe("blocked");
+  });
+
+  // Issue #769 review — a blocked degraded run must not stamp the marker over an
+  // already-persisted set, or the next degraded run would replace it.
+  it("does not write the degradation when a set is already persisted and the gate blocks", async () => {
+    synthesis.degraded = DEGRADED;
+    gate.allowed = false;
+    existing.count = 3;
+
+    await runPipeline();
+
+    expect(persistedEnhancements.some((p) => "synthesisDegraded" in p)).toBe(false);
+    expect(persistedEnhancements.some((p) => p.promotionStatus === "blocked")).toBe(true);
   });
 
   it("writes no degradation on a gate-blocked healthy run", async () => {
