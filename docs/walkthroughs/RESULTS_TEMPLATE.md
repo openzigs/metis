@@ -1,0 +1,131 @@
+# #706 walkthrough — results template
+
+Copy this into the results comment for run N (on
+[#706](https://github.com/openzigs/metis/issues/706) or a tracking issue that links back).
+The runbook is the `e2e-walkthrough` skill (`.github/skills/e2e-walkthrough/SKILL.md`). The
+run-2 baseline is pre-filled from #706 comments
+[5964877354](https://github.com/openzigs/metis/issues/706#issuecomment-5964877354) and
+[5965348586](https://github.com/openzigs/metis/issues/706#issuecomment-5965348586); keep
+it unchanged so every run compares against the same reference.
+
+Legend for Works / Useful: ✅ pass · ⚠️ partial (Works) or weak (Useful) · ❌ fail ·
+🚫 blocked (give the reason) · – n/a.
+
+---
+
+## Walkthrough results: run {{N}} ({{DATE}})
+
+**Setup.** `miniflux/v2` @ `v2.3.3` (`c4d54f87`), METIS `main` @ `{{METIS_SHA}}`, DeepSeek
+`deepseek-flash` via the Anthropic-compatible endpoint ({{PEAK_OR_OFF_PEAK}} prices), SQL-lineage
+sidecar, project `{{PROJECT_ID}}` in workspace `{{WORKSPACE_ID}}`. Ledgers summed:
+{{`token_usages` + `ai_token_usages` | `token_usages` only (after #792)}}.
+
+Phases removed since run 2: {{e.g. Phase 4 bug scan (#799); Phase 17 test coverage → "Tested by" (#812)}}.
+
+### Fixes since the previous run, re-verified
+
+| Fix | PR | Verdict | Evidence |
+|---|---|---|---|
+| #… | #… | ✅ holds / ⚠️ partly / ❌ regressed | |
+
+### Per-phase evidence
+
+| Phase | Wall time | Input tok | Output tok | Cache-read tok | Cost | Console errors | Works | Useful | Key findings |
+|---|---|---|---|---|---|---|---|---|---|
+| Setup + 1 Project | | | | | | | | | |
+| 2 Repo connector | | | | | | | | | |
+| 3 Ingest / RAG | | | | | | | | | |
+| 4 Overview / scan | | | | | | | | | |
+| 5 DB + lineage | | | | | | | | | |
+| 6 Import / Jira / TM | | | | | | | | | |
+| 7 Analysis / agents | | | | | | | | | |
+| 8 Requirements / trace | | | | | | | | | |
+| 9 Docs | | | | | | | | | |
+| 10 Chat | | | | | | | | | |
+| 11 Discussions | | | | | | | | | |
+| 12 Publishing | | | | | | | | | |
+| 13 Drift / scheduler / tasks | | | | | | | | | |
+| 14 Spec Kit (S1–S24) | | | | | | | | | |
+| 15 PR review / change | | | | | | | | | |
+| 16 Impact | | | | | | | | | |
+| 17 Test coverage | | | | | | | | | |
+| 18 Usage / cost | | | | | | | | | |
+| 19 Settings | | | | | | | | | |
+| 20 Admin | | | | | | | | | |
+| BA re-ask (API) | | | | | | – | | | |
+
+Mark a removed phase `removed (#…)` rather than deleting its row, so the comparison stays aligned.
+
+**Total spend:** {{tokens}} / ${{usd}} — `token_usages` {{…}}, `ai_token_usages` {{…}}.
+Exact cost = (in × 0.30 + out × 1.20 + cacheRead × 0.006) / 1e6 USD at peak prices.
+Lineage edges (reads + writes): {{…}}.
+
+### Tally
+
+- **Works:** {{n}} pass · {{n}} partial · {{n}} fail · {{n}} blocked
+- **Useful:** {{n}} pass · {{n}} weak · {{n}} fail · {{n}} n/a
+
+### Acceptance criteria (from #706)
+
+- [ ] Playwright headed and connected; `/dashboard` screenshot captured
+- [ ] `deepseek-flash`, `jsonSchema:false`; no Unpriced usage at project scope
+- [ ] Pinned at `v2.3.3` (`c4d54f87`) and fully ingested; embeddings are not the hash stub
+- [ ] Phases 1–20 each run, with a verdict (blocked ones with reasons)
+- [ ] Spec Kit S1–S23 each have a verdict; every artifact and every `SPECKIT_COMMANDS` entry invoked
+- [ ] `/specify` and `/plan` grounded with K > 0
+- [ ] 8/8 BA questions; at least 6 correct with valid citations
+- [ ] 3/3 developer issues with impact, plan and sandbox draft; #4478 surfaces `MarkAllAsReadBeforeDate`
+- [ ] Nothing published, commented or reviewed on `miniflux/v2` (`gh search issues/prs --repo miniflux/v2 --author <user>` → `[]`)
+- [ ] Per-phase token/cost table posted; total within budget
+- [ ] Every failure filed as its own issue
+
+### Run-to-run comparison
+
+| Measure | Run 2 baseline | Run {{N}} | Delta |
+|---|---|---|---|
+| Works: pass / partial / fail / blocked | 11 / 6 / 1 / 2 | | |
+| Useful: pass / weak / fail / n/a | 5 / 4 / 9 / 2 | | |
+| BA questions answered correctly | 8/8 (after #783) | | |
+| Developer-issue impact | 0/3 (#791) | | |
+| Total tokens | ≈ 11.2M (10.81M + 0.39M) | | |
+| Total cost | ≈ $5.77 (557¢ + 19.7¢) | | |
+| Docs-gen share of spend | 80% (8.86M tok / 485¢) | | |
+| Lineage reads/writes edges | 1,436 | | |
+| Repo connector Go files ingested | 421 / 421 | | |
+
+Per phase (run 2 values from its re-run table; "ai ledger" = `ai_token_usages` only):
+
+| Phase | Run 2 Works / Useful | Run 2 tokens / cost | Run {{N}} Works / Useful | Run {{N}} tokens / cost | Delta |
+|---|---|---|---|---|---|
+| Setup + 1 Project | ✅ / ⚠️ | 0 / 0 | | | |
+| 2 Repo connector | ✅ / ✅ | 0 / 0 | | | |
+| 3 Ingest / RAG | ✅ / ❌ | 0 / 0 | | | |
+| 4 Overview / scan | ❌ / ⚠️ | 276k / 18¢ | | | |
+| 5 DB + lineage | ✅ / ❌ | 0 / 0 | | | |
+| 6 Import / Jira / TM | 🚫 / – | 0 / 0 | | | |
+| 7 Analysis / agents | ✅ / ❌ | 588k / ~33¢ | | | |
+| 8 Requirements / trace | ✅ then data loss / ❌ | 131k / ~12¢ | | | |
+| 9 Docs | ⚠️ / ⚠️ | 8.86M / 485¢ | | | |
+| 10 Chat | ✅ / ❌ (2/6) | 773k / 10¢ | | | |
+| 11 Discussions | ❌ / ❌ | ~7k (not in ledger) / ~0.9¢ | | | |
+| 12 Publishing | ⚠️ / ✅ | 3k / 0 | | | |
+| 13 Drift / scheduler / tasks | ✅ / ✅ | 0 / 0 | | | |
+| 14 Spec Kit | ⚠️ / ⚠️ | 183k / 14¢ | | | |
+| 15 PR review / change | 🚫 / – | 0 / 0 | | | |
+| 16 Impact | ✅ / ❌ (0/3) | 50k (ai ledger) / 1.8¢ | | | |
+| 17 Test coverage | ⚠️ / ❌ | 96k (ai ledger) / 6¢ | | | |
+| 18 Usage / cost | ⚠️ / ❌ | 0 / 0 | | | |
+| 19 Settings | ✅ / ✅ | 0 / 0 | | | |
+| 20 Admin | ✅ / ❌ | 0 / 0 | | | |
+
+### Sandbox publishes
+
+Only `openzigs/flux-v2`, dry run first, at most 2: {{issue URLs}}
+
+### Findings
+
+New this run: {{#… · #…}}. Fixed since run 2 and confirmed: {{#…}}.
+
+### Durable findings
+
+{{Every `Durable finding:` line the wave agents returned, for the next run's runbook update.}}
