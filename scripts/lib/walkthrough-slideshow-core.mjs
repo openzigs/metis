@@ -586,12 +586,13 @@ ${chapters
     );
     slides.push(`<section class="slide slide--summary" aria-label="Summary">
   <h2>Summary</h2>
-${[
-  ["Works", WORKS, "works"],
-  ["Useful", USEFUL, "useful"],
-]
-  .map(
-    ([axis, scale, key]) => `  <div class="tally" role="group" aria-label="${axis}">
+${
+  /** @type {Array<[string, readonly string[], "works" | "useful"]>} */ ([
+    ["Works", WORKS, "works"],
+    ["Useful", USEFUL, "useful"],
+  ])
+    .map(
+      ([axis, scale, key]) => `  <div class="tally" role="group" aria-label="${axis}">
     <span class="tally__axis">${axis}</span>
 ${scale
   .map(
@@ -600,8 +601,9 @@ ${scale
   )
   .join("\n")}
   </div>`,
-  )
-  .join("\n")}
+    )
+    .join("\n")
+}
   <table class="waves">
     <thead><tr><th scope="col">Wave</th>${WORKS.map((v) => `<th scope="col">Works ${v}</th>`).join("")}${USEFUL.map((v) => `<th scope="col">Useful ${v}</th>`).join("")}<th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
     <tbody>
