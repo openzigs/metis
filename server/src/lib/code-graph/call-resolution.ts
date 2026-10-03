@@ -37,6 +37,8 @@
  * "who calls X" tools still see the textual reference.
  */
 
+import { isTestPath } from "./test-conventions.js";
+
 /** `receiver` value for a member call whose receiver is not a plain identifier. */
 export const COMPLEX_RECEIVER = "<expr>";
 
@@ -487,19 +489,12 @@ function languageFamily(language: string): string {
  * `*.test.*` / `*.spec.*`, Go `_test.go`, Python `test_*.py` / `*_test.py`, Java
  * `*Test(s).java` / `*IT.java`, and anything under a `test/`, `tests/`,
  * `__tests__/`, `__mocks__/` or `e2e/` directory (which covers Maven's
- * `src/test/`).
+ * `src/test/`). Delegates to `test-conventions.ts` (#813), which keeps these
+ * rules as its `code-graph` profile.
  */
 export function isTestFilePath(filePath: string): boolean {
-  const p = filePath.replace(/\\/g, "/");
-  if (/(^|\/)(tests?|__tests__|__mocks__|e2e)\//.test(p)) return true;
-  const base = p.slice(p.lastIndexOf("/") + 1);
-  return (
-    /\.(test|spec)\.[cm]?[jt]sx?$/.test(base) ||
-    /_test\.go$/.test(base) ||
-    /^test_.*\.py$/.test(base) ||
-    /_test\.py$/.test(base) ||
-    /(Tests?|IT)\.java$/.test(base)
-  );
+  // #813 — the rules now live as the `code-graph` profile of the shared classifier.
+  return isTestPath(filePath, { profile: "code-graph" });
 }
 
 /** A persisted symbol as the resolver sees it. */

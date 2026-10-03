@@ -28,6 +28,7 @@ import {
   type TraceabilityTestLink,
 } from "@metis/shared";
 import { toCsv } from "../requirements/csv.js";
+import { isTestPath } from "../code-graph/test-conventions.js";
 
 /** Minimal requirement projection the builder needs (from the analysis snapshot). */
 export interface MatrixRequirementInput {
@@ -245,17 +246,12 @@ export function serializeTraceabilityMarkdown(matrix: TraceabilityMatrix): strin
  * common JS/TS/Python/Go conventions (`*.test.*`, `*.spec.*`, `*_test.*`,
  * `test_*.*`) and any segment under a `test`/`tests`/`__tests__`/`spec`
  * directory. Case-insensitive on the filename token so `Foo.Test.ts` matches.
+ * Delegates to `code-graph/test-conventions.ts` (#813), which keeps these rules
+ * as its `traceability` profile.
  */
 export function isTestFilePath(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, "/");
-  const base = normalized.split("/").pop() ?? normalized;
-  // `foo.test.ts` / `foo.spec.tsx`.
-  if (/\.(test|spec)\./i.test(base)) return true;
-  // `handler_test.go` (`_test.`), `test_foo.py` (`^test_`), `a.test-utils.ts`
-  // (`.test-`) — a `test` token bounded by a separator on the reference side.
-  if (/(^|[._-])test[._-]/i.test(base)) return true;
-  // Any segment under a test/tests/__tests__/spec directory.
-  return /(^|\/)(tests?|__tests__|spec)\//i.test(normalized);
+  // #813 — the rules now live as the `traceability` profile of the shared classifier.
+  return isTestPath(filePath, { profile: "traceability" });
 }
 
 /**
