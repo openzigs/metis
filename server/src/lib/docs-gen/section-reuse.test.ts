@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildGenerationCheckpoint,
+  checkpointSectionRecords,
   hashSectionInputs,
   recordSectionSynthesis,
   reusableSectionRecords,
@@ -173,5 +175,63 @@ describe("#262 — a stored snapshot from another contract version", () => {
 
   it("parses a current snapshot through the strict current schema", () => {
     expect(storedSectionSynthesisSchema.parse(snapshot())).toEqual(snapshot());
+  });
+});
+
+describe("#782 — a partial generation checkpoint", () => {
+  const second = () =>
+    recordSectionSynthesis("rules", hashSectionInputs(inputs), {
+      ...payload,
+      markdown: "## Rules\n\nSecond.",
+      metadata: { ...payload.metadata, sectionLabel: "Rules", sectionIndex: 1 },
+    });
+
+  it("round-trips a partial set: one finished section of several is reusable", () => {
+    const stored = JSON.parse(JSON.stringify(buildGenerationCheckpoint([record()])));
+    const byId = checkpointSectionRecords(stored, ["overview", "rules", "glossary"], false);
+    expect([...byId.keys()]).toEqual(["overview"]);
+    expect(byId.get("overview")).toEqual(record());
+  });
+
+  it("drops only the tampered record, never the rest", () => {
+    const stored = buildGenerationCheckpoint([record(), second()]);
+    stored.records[0] = { ...stored.records[0], markdown: "## Overview\n\nEdited." };
+    const byId = checkpointSectionRecords(stored, ["overview", "rules"], false);
+    expect([...byId.keys()]).toEqual(["rules"]);
+  });
+
+  it("drops a malformed record and one for a section this document does not have", () => {
+    const stored = {
+      version: SECTION_SYNTHESIS_VERSION,
+      records: [{ sectionId: "overview" }, second()],
+    };
+    expect([...checkpointSectionRecords(stored, ["overview", "rules"], false).keys()]).toEqual([
+      "rules",
+    ]);
+    expect(checkpointSectionRecords(stored, ["overview"], false).size).toBe(0);
+  });
+
+  it("keeps the first of two records for one section", () => {
+    const later = { ...second(), sectionId: "overview" };
+    const byId = checkpointSectionRecords(
+      buildGenerationCheckpoint([record(), later]),
+      ["overview"],
+      false,
+    );
+    expect(byId.get("overview")!.markdown).toBe(payload.markdown);
+  });
+
+  it("reuses nothing from another contract version, a non-checkpoint or a shared escalation run", () => {
+    const stored = buildGenerationCheckpoint([record()]);
+    expect(
+      checkpointSectionRecords(
+        { ...stored, version: SECTION_SYNTHESIS_VERSION - 1 },
+        ["overview"],
+        false,
+      ).size,
+    ).toBe(0);
+    expect(checkpointSectionRecords(null, ["overview"], false).size).toBe(0);
+    expect(checkpointSectionRecords(snapshot(), ["overview"], false).size).toBe(0);
+    expect(checkpointSectionRecords(stored, ["overview"], true).size).toBe(0);
   });
 });
