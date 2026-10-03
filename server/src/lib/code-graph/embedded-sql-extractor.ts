@@ -27,6 +27,7 @@
  * `connectors/db/sql-validator.ts`) — that stays the query-time guard.
  */
 import type { Language } from "./parsers.js";
+import { enclosingSymbolFor, type EnclosingSymbol } from "./orm-callsite-extractor.js";
 import { detectLanguage, findJavaConcatSqlCandidates, findStringLiterals } from "./parsers.js";
 import type { SchemaGraphWriter } from "./schema-graph.js";
 import {
@@ -88,6 +89,20 @@ export function looksLikeSql(text: string): boolean {
   return SQL_LEADING_RE.test(t) || SQL_SHAPE_RE.test(t);
 }
 
+/**
+ * A bind parameter is never a column (#760). Postgres positional parameters
+ * (`$1`), JDBC/ODBC `?`, and named `:name` / `@name` parameters. An older
+ * sidecar parsed `$1` as a column under the default dialect, which put 28% of a
+ * Go project's column edges on `feeds.$1`-style pseudo-columns. Anchored,
+ * bounded pattern (ReDoS-safe).
+ */
+const BIND_PARAMETER_RE = /^(?:\$\d+|\?|[:@][A-Za-z_][A-Za-z0-9_]*)$/;
+
+/** True when a sidecar-reported column name is a bind parameter, not a column. */
+export function isBindParameter(column: string): boolean {
+  return BIND_PARAMETER_RE.test(column.trim());
+}
+
 export interface EmbeddedSqlOptions {
   /** Override the dialect hint (e.g. from a known DB connector on the project). */
   dialect?: string;
@@ -97,6 +112,14 @@ export interface EmbeddedSqlOptions {
   client?: SqlLineageClient;
   /** Epic #882 (#894) — resolved per-project SQL-lineage override. */
   sqlLineageOverride?: boolean | null;
+  /**
+   * #760 — the file's persisted function/method symbols. Edges from a SQL
+   * literal inside one of them originate from the narrowest enclosing symbol,
+   * so a graph walk from `UpdateFeed` reaches `feeds`. A literal outside every
+   * symbol (e.g. a package-level constant) keeps the synthetic `sql@<line>`
+   * origin.
+   */
+  enclosingSymbols?: readonly EnclosingSymbol[];
 }
 
 export interface EmbeddedSqlCandidate {
@@ -143,12 +166,18 @@ export interface EmbeddedSqlResult {
   uncertain: { reason: string; detail: string; line: number }[];
 }
 
-/** Build the `from` symbol id for a SQL literal in app code. */
+/**
+ * Build the `from` symbol id for a SQL literal in app code: the enclosing
+ * function/method when there is one (#760), else a synthetic `sql@<line>`.
+ */
 async function originFor(
   writer: SchemaGraphWriter,
   filePath: string,
   line: number,
+  enclosingSymbols: readonly EnclosingSymbol[],
 ): Promise<string> {
+  const enclosing = enclosingSymbolFor(enclosingSymbols, line);
+  if (enclosing) return enclosing.id;
   return writer.createOriginSymbol(
     "method",
     `sql@${line}`,
@@ -164,13 +193,15 @@ async function persistResult(
   filePath: string,
   line: number,
   result: ExtractUsageResult,
+  enclosingSymbols: readonly EnclosingSymbol[],
 ): Promise<number> {
   if (result.tables.length === 0) return 0;
-  const fromId = await originFor(writer, filePath, line);
+  const fromId = await originFor(writer, filePath, line, enclosingSymbols);
   let edges = 0;
   // Index columns by their owning table for per-table edge attribution.
   const colsByTable = new Map<string, { column: string; access: SqlLineageAccess }[]>();
   for (const c of result.columns) {
+    if (isBindParameter(c.column)) continue;
     const list = colsByTable.get(c.table) ?? [];
     list.push({ column: c.column, access: c.access });
     colsByTable.set(c.table, list);
@@ -260,7 +291,13 @@ export async function extractEmbeddedSql(
       }
       continue;
     }
-    result.edges += await persistResult(writer, filePath, candidate.line, extraction);
+    result.edges += await persistResult(
+      writer,
+      filePath,
+      candidate.line,
+      extraction,
+      opts.enclosingSymbols ?? [],
+    );
     if (extraction.tables.length > 0) result.resolved++;
     for (const u of extraction.uncertain) {
       result.uncertain.push({ reason: u.reason, detail: u.detail, line: candidate.line });
