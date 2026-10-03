@@ -1,7 +1,7 @@
 /** Epic #708 — llm-client extractJson + callJsonLlm tests. */
 import { describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
-import { ScannerJsonParseError, callJsonLlm, extractJson } from "./llm-client.js";
+import type { AIProvider, ChatMessage, ChatResponse } from "./types.js";
+import { ScannerJsonParseError, callJsonLlm, extractJson } from "./json-llm-client.js";
 
 function makeProvider(content: string): AIProvider {
   const response: ChatResponse = {

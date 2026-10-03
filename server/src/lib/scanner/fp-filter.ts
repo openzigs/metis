@@ -10,7 +10,11 @@
  * instability that produces a long tail of low-quality false positives.
  */
 import type { AIProvider } from "../ai/types.js";
-import { ScannerJsonParseError, callJsonLlm, type ScannerJsonCallInput } from "./llm-client.js";
+import {
+  ScannerJsonParseError,
+  callJsonLlm,
+  type ScannerJsonCallInput,
+} from "../ai/json-llm-client.js";
 import { SCANNER_SYSTEM_PROMPT_GUARD, fenceRepoContent } from "./prompt-fence.js";
 import {
   FP_FILTER_MIN_CONFIDENCE,

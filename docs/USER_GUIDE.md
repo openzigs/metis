@@ -1385,6 +1385,8 @@ Every finding card has a **Deep Dive → Issue** button that turns a single find
 2. **Review & edit.** The draft opens in a dialog where every field is editable. The originating persona is shown in the dialog header, so the issue you create carries the same attribution as the finding.
 3. **Publish.** Clicking **Create Issue** publishes the draft to the project's configured destination(s) — GitHub, Jira, or both — and shows a direct link to each created issue. The issue body includes a footer crediting the persona that surfaced the finding, giving you a back-link from the tracker to the analysis that produced it.
 
+Every issue METIS publishes carries the umbrella **`metis`** label plus one source label: **`metis-analysis`** for a Deep Dive, `metis-impact-analysis` for an impact analysis, `metis-scanner` for the bug scanner. A Deep Dive issue also gets `severity:*`, `category:*` and the draft's suggested labels, on both GitHub and Jira. Source labels are reserved: if a suggested or added label names another source (for example `metis-scanner`), it is dropped. Issues published before this change keep the labels they were created with.
+
 The button is **disabled** when ticket creation is blocked by a pending or rejected approval checkpoint (see the approval gating described above); hover the button to see why. Publishing also requires the `issue.publish` permission. If a publish fails, the dialog stays open with an inline error and your edits are preserved so you can retry without re-typing.
 
 #### 11.3.1 Degraded-mode capability banner
@@ -1901,6 +1903,8 @@ dependencies).
 
 Only projects you have access to appear in the picker, and you can only open a
 report whose projects are all visible to you.
+
+When an impact analysis is published to Jira, the issue carries the umbrella **`metis`** label and the **`metis-impact-analysis`** source label (not `metis-scanner`), together with `severity:*` and `category:impact-analysis`. Issues published before this change are not relabelled.
 
 Permission required: `analysis.run` to trigger, `analysis.read` to view results.
 

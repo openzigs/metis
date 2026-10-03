@@ -60,7 +60,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { extractJson } from "./llm-client.js";
+import { extractJson } from "./json-llm-client.js";
 
 /**
  * The pre-#1260 pattern, verbatim including the `/i` flag, as the differential

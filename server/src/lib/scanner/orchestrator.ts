@@ -33,7 +33,7 @@
  */
 import type { CandidateFinding, Severity, TriageStatus } from "./types.js";
 import { DEFAULT_SCAN_TOKEN_BUDGET, SCANNER_SUPPORTED_LANGUAGES } from "./types.js";
-import { ScannerJsonParseError } from "./llm-client.js";
+import { ScannerJsonParseError } from "../ai/json-llm-client.js";
 import { computeFingerprint } from "./validators.js";
 import { TaskAbortError } from "../scheduler/task-abort.js";
 
