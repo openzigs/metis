@@ -3851,6 +3851,12 @@ model GeneratedDocument {
   /// share a field with genuine error strings and `status` stays a clean
   /// state-machine field. Null for clean (`ready`) docs.
   warnings      Json?
+  /// #782 — the sections a generation has finished so far (section-reuse
+  /// records: markdown, warnings, input hashes; never source text), written
+  /// after each section. A run that fails late keeps what it finished, and a
+  /// regenerate reuses every section whose inputs are unchanged. Cleared when
+  /// a generation is published.
+  generationCheckpoint Json?
   /// Whether this document should auto-regenerate on code ingest
   autoUpdate    Boolean   @default(false)
   generatedAt   DateTime?

@@ -482,8 +482,14 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
       await generateDocumentAsync("self", "p1");
       expect(mockPrisma.generatedDocumentVersion.create).toHaveBeenCalled();
       expect(mockPrisma.$transaction).toHaveBeenCalledOnce();
-      expect(mockPrisma.generatedDocument.updateMany).toHaveBeenCalledTimes(2);
+      // Claim + commit; every other write is a #782 per-section checkpoint.
+      const writes = mockPrisma.generatedDocument.updateMany.mock.calls.map(([args]) => args);
+      const checkpoints = writes.filter(
+        (w) => Object.keys(w.data).join() === "generationCheckpoint",
+      );
+      expect(writes.length - checkpoints.length).toBe(2);
       const claim = mockPrisma.generatedDocument.updateMany.mock.calls[0][0].data.codeGraphHash;
+      for (const w of checkpoints) expect(w.where).toMatchObject({ codeGraphHash: claim });
       expect(claim).toMatch(/^regenerating:/);
       expect(mockPrisma.generatedDocument.updateMany).toHaveBeenLastCalledWith(
         expect.objectContaining({ where: expect.objectContaining({ codeGraphHash: claim }) }),

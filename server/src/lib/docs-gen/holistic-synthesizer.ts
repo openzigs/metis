@@ -229,6 +229,7 @@ import {
   hashSectionInputs,
   recordSectionSynthesis,
   reusableSectionRecords,
+  checkpointSectionRecords,
   SECTION_SYNTHESIS_VERSION,
   type SectionSynthesis,
   type SectionSynthesisRecord,
@@ -1212,6 +1213,10 @@ async function runHolisticSynthesis(
   options?: {
     provenance?: HolisticProvenanceContext;
     previousManifest?: GeneratedDocVersionManifest;
+    /** #782 — the document's stored `generationCheckpoint` (see synthesizeFinalDocument). */
+    checkpoint?: unknown;
+    /** #782 — persists the finished sections after each one. */
+    onCheckpoint?: (records: SectionSynthesisRecord[]) => Promise<void>;
     repoConnectorId?: string;
     grounding?: GroundingContext;
     /**
@@ -1596,6 +1601,8 @@ async function runHolisticSynthesis(
     graphSummary,
     {
       previousManifest: options?.previousManifest,
+      checkpoint: options?.checkpoint,
+      ...(options?.onCheckpoint ? { onCheckpoint: options.onCheckpoint } : {}),
       // Resolved provider configuration matters even when the model name stays
       // fixed (e.g. changing an Ollama endpoint or an inference profile).
       // Persist only hashes, never credentials or endpoint/source text.
@@ -3774,7 +3781,22 @@ export async function synthesizeFinalDocument(
   onSectionProgress?: OnSectionProgress,
   groundingForSection?: SectionGroundingRetriever,
   graphSummary?: CodeGraphSummary,
-  reuse?: { previousManifest?: GeneratedDocVersionManifest; effectiveConfigHash?: string },
+  reuse?: {
+    previousManifest?: GeneratedDocVersionManifest;
+    effectiveConfigHash?: string;
+    /**
+     * #782 — the sections an earlier, unfinished run of this document completed
+     * (the stored `generationCheckpoint`). Each is reused only when its input
+     * hashes match, like a published snapshot's records.
+     */
+    checkpoint?: unknown;
+    /**
+     * #782 — called with every reuse record finished so far, after each
+     * section, so a run that fails later still has them. Best-effort: a
+     * failure here is logged and never affects the document.
+     */
+    onCheckpoint?: (records: SectionSynthesisRecord[]) => Promise<void>;
+  },
 ): Promise<
   HolisticSynthesisResult & {
     sections: Array<{
@@ -3861,7 +3883,33 @@ export async function synthesizeFinalDocument(
     groups.map((group) => group.id),
     sharedEscalationEnabled,
   );
+  // #782 — an unfinished run's sections fill in what the published snapshot
+  // does not have. Both are gated per section on identical input hashes below.
+  if (reuse?.effectiveConfigHash) {
+    const checkpointed = checkpointSectionRecords(
+      reuse.checkpoint,
+      groups.map((group) => group.id),
+      sharedEscalationEnabled,
+    );
+    for (const [id, record] of checkpointed) {
+      if (!previousRecords.has(id)) previousRecords.set(id, record);
+    }
+  }
   const synthesisRecords: SectionSynthesisRecord[] = [];
+  // #782 — persist what is finished after every section: a 77-minute run that
+  // failed in its last moments used to discard five finished sections.
+  const checkpoint = async (): Promise<void> => {
+    if (!reuse?.onCheckpoint) return;
+    try {
+      await reuse.onCheckpoint([...synthesisRecords]);
+    } catch (err) {
+      log.warn("Section checkpoint not saved; a failure now loses this section", {
+        projectId,
+        docType,
+        err: String(err),
+      });
+    }
+  };
   const regeneratedSections: string[] = [];
   let reusedCount = 0;
   let escalationsUsed = 0;
@@ -4208,6 +4256,7 @@ export async function synthesizeFinalDocument(
         warnings.push(...previous.warnings);
         synthesisRecords.push(previous);
         reusedCount += 1;
+        await checkpoint();
         reportSection({
           section: group.label,
           status: previous.warnings.length ? "degraded" : "done",
@@ -4557,6 +4606,7 @@ export async function synthesizeFinalDocument(
             section: group.id,
           });
         }
+        await checkpoint();
       }
       reportSection({
         section: group.label,
