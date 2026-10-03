@@ -2,7 +2,7 @@
  * #258 — every vault caller, against a REAL SQLite database built by the real
  * migration chain and the REAL `VaultService`. The defect was an index the
  * test doubles did not have: `Secret.name` is `@unique` and soft-deleted rows
- * keep their name, and `JiraConnection` / `TestManagementConnection` carry an
+ * keep their name, and `JiraConnection` carries an
  * `@@unique([projectId, label])` that also covers soft-deleted rows. Each case
  * re-uses a name or label after a delete and then reads the credential back
  * through the production read path, never through the object the test built.
@@ -36,7 +36,6 @@ const { TeamsInstallationStore } = await import("../src/lib/teams/installation-s
 const { PagerDutyServiceConfigStore } =
   await import("../src/lib/pagerduty/service-config-store.js");
 const jira = await import("../src/lib/connectors/jira/jira-service.js");
-const testmgmt = await import("../src/lib/connectors/testmgmt/connection-service.js");
 
 const MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
 
@@ -123,40 +122,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await expect(
         jira.createJiraConnection("p1", { ...input, apiToken: "x" }, "u1"),
       ).rejects.toMatchObject({ status: 409, code: "JIRA_LABEL_TAKEN" });
-    });
-
-    it("test management: a deleted connection's label can be re-used; rotation keeps working", async () => {
-      const deps = { prisma: db, vault, assertHost: async () => undefined };
-      const input = {
-        label: "zs",
-        kind: "zephyr" as const,
-        baseUrl: "https://zephyr.example.test",
-        auth: { kind: "zephyr" as const, bearerToken: "old" },
-      };
-      const first = await testmgmt.createTestManagementConnection("p1", input, "u1", deps);
-      await testmgmt.deleteTestManagementConnection(first.id, "u1", undefined, deps);
-
-      const second = await testmgmt.createTestManagementConnection(
-        "p1",
-        { ...input, auth: { kind: "zephyr", bearerToken: "new" } },
-        "u1",
-        deps,
-      );
-      await testmgmt.updateTestManagementConnection(
-        second.id,
-        { auth: { kind: "zephyr", bearerToken: "newer" } },
-        "u1",
-        undefined,
-        deps,
-      );
-
-      const loaded = await testmgmt.loadResolvedTestManagementConnection(
-        second.id,
-        undefined,
-        deps,
-      );
-      expect(loaded.label).toBe("zs");
-      expect(loaded.auth).toEqual({ kind: "zephyr", bearerToken: "newer" });
     });
   },
 );

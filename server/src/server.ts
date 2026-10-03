@@ -17,9 +17,6 @@ import { createSocketPublishEmitter } from "./lib/publishing/socket-emitter.js";
 import { configureKnowledgeService } from "./lib/rag/knowledge-service.js";
 import { configureIngestQueue, getIngestQueue } from "./lib/rag/ingest-queue.js";
 import { createSocketDocumentEmitter } from "./lib/rag/socket-emitter.js";
-import { configureTestCoverageRuntime } from "./lib/testcoverage/task-runner.js";
-import { createProviderJudgeCaller } from "./lib/testcoverage/judge-caller.js";
-import { createSocketTestCoverageEmitter } from "./lib/testcoverage/socket-emitter.js";
 import { setUsageEmitter } from "./lib/finops/index.js";
 import { createSocketUsageEmitter } from "./lib/finops/socket-emitter.js";
 import { autoDiscoverFromWorkspace } from "./lib/library/index.js";
@@ -312,10 +309,8 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   }
   // Wire the analysis orchestrator with the live io reference so
   // analysis:agent events broadcast into the analysis:{id} rooms.
-  let aiProvider: import("./lib/ai/types.js").AIProvider | undefined;
   try {
-    aiProvider = buildServerProvider();
-    setOrchestratorForTests(new AnalysisOrchestrator({ provider: aiProvider, io }));
+    setOrchestratorForTests(new AnalysisOrchestrator({ provider: buildServerProvider(), io }));
   } catch {
     // Provider construction failure (missing creds in dev) is non-fatal \u2014
     // the route handler will lazy-init with a stub on first request.
@@ -342,16 +337,6 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // Touch the singleton so any environment validation runs at boot, not on
   // first upload.
   getIngestQueue();
-
-  // Epic #880 issue #886 — wire the test-coverage runner with a live LLM
-  // caller + socket emitter so the judge + suggestion phases actually run in
-  // production. Without a caller the runner silently skips those phases
-  // (the original #886 bug). When the provider could not be built (missing
-  // creds in dev), only the emitter is wired so progress events still flow.
-  configureTestCoverageRuntime({
-    emitter: createSocketTestCoverageEmitter(io),
-    ...(aiProvider ? { caller: createProviderJudgeCaller(aiProvider) } : {}),
-  });
 
   // Epic #164 — wire the FinOps usage emitter so `recordUsage` ticks fan
   // out to the `project:{id}` Socket.IO room and the UI usage page can

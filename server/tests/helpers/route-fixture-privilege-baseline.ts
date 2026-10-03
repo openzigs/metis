@@ -96,10 +96,6 @@ export const ROUTE_FIXTURE_BASELINE: readonly FixtureBaselineEntry[] = [
     note: "project-scoped generated docs; admin-only caller",
   },
   {
-    file: "tests/routes/test-management.test.ts",
-    note: "id-resolved test-management connections; no role literal (cross-tenant cases live in test-management-connection-idor.test.ts)",
-  },
-  {
     file: "src/routes/data-mappings.test.ts",
     note: "project-scoped /projects/:projectId data mappings; no role literal",
   },

@@ -10,8 +10,8 @@
  *     `ai_token_usages`. That is not under-counting, it is absence: the most
  *     LLM-intensive feature in the product was invisible to cost attribution.
  *     Providers do not self-meter — every other metered caller
- *     (`discussions/ai-responder.ts`, `testcoverage/judge.ts`) records at the
- *     call site — and the impact stages simply never did.
+ *     (e.g. `discussions/ai-responder.ts`) records at the call site — and
+ *     the impact stages simply never did.
  *
  *   - **#1024 (degradation).** Every stage already degrades to the
  *     deterministic result on a provider error, but nothing bounded the call.

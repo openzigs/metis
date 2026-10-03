@@ -34,8 +34,6 @@ export * from "./sdk-alignment.js";
 export * from "./spec-kit.js";
 export * from "./product-docs.js";
 export * from "./sync.js";
-export * from "./testcoverage.js";
-export * from "./test-management.js";
 export * from "./traceability.js";
 export * from "./stakeholder.js";
 export * from "./elicitation.js";

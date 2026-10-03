@@ -5,8 +5,7 @@
  * `/api/requirements` is mounted with **no `:projectId` segment**
  * (`routes/index.ts`), so the `requireProjectAccess()` chokepoint (#674) cannot
  * be mounted here: the owning project is not known until a row is read. This is
- * the same shape as `/api/jira`, `/api/test-management` (#1055) and `/api/runs`
- * (#1056), and it is resolved the same way — resolve the requirement, walk to
+ * the same shape as `/api/jira` (#1055) and `/api/runs` (#1056), and it is resolved the same way — resolve the requirement, walk to
  * its own `projectId`, and authorize through the canonical `assertProjectAccess`
  * seam (`lib/custom-agents/authz.ts`).
  *

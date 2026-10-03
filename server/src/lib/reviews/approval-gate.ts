@@ -53,8 +53,9 @@ interface GateContext {
 /**
  * Union of every requirement id a draft traces to: the FK plus the metadata
  * conventions used by the draft generators (`requirementId` on feature
- * drafts, `requirementIds` on epic drafts, `mappedRequirementIds` on
- * test-coverage drafts). Malformed metadata contributes nothing — the draft
+ * drafts, `requirementIds` on epic drafts, `mappedRequirementIds` on legacy
+ * test-coverage export drafts — the exporter is gone (#819), but drafts it
+ * wrote can still be published). Malformed metadata contributes nothing — the draft
  * then counts as unlinked and is blocked while the gate is on.
  */
 export function collectDraftRequirementIds(draft: GateDraft): string[] {
