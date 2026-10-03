@@ -9,7 +9,8 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ToolRegistry } from "../tool-registry.js";
 import type { ToolDefinition } from "../types.js";
-import { buildSessionToolset, CHAT_EXCLUDED_TOOLS, toWireName } from "./toolset.js";
+import { buildSessionToolset, CHAT_EXCLUDED_TOOLS, makeToolset, toWireName } from "./toolset.js";
+import type { RuntimeTool } from "./types.js";
 import { zodToJsonSchema, toolParametersSchema } from "./json-schema.js";
 
 const CTX = { sessionId: "s1", userId: "u1", projectId: "p1" };
@@ -295,5 +296,55 @@ describe("MCP requireApproval is read per call, not per toolset (#128 review)", 
     });
     gone = true;
     await expect(set.tools[0]!.forcePromptNow!()).resolves.toBe(true);
+  });
+});
+
+describe("makeToolset — `-` and `_` spell the same tool (#772)", () => {
+  const rt = (name: string): RuntimeTool => ({
+    name,
+    wireName: name,
+    description: name,
+    parameters: { type: "object" },
+    risk: "low",
+    source: "metis",
+    validate: (args) => ({ ok: true, args }),
+    execute: async () => ({ text: name }),
+  });
+
+  it("resolves search_knowledge to search-knowledge, and the reverse", () => {
+    const set = makeToolset([rt("search-knowledge"), rt("read_file_slice")]);
+    expect(set.resolve("search_knowledge")?.name).toBe("search-knowledge");
+    expect(set.resolve("read-file-slice")?.name).toBe("read_file_slice");
+    expect(set.resolve("search_knowledge_global")).toBeUndefined();
+  });
+
+  it("an exact name always wins over the other spelling", () => {
+    const set = makeToolset([rt("a-b"), rt("a_b")]);
+    expect(set.resolve("a-b")?.name).toBe("a-b");
+    expect(set.resolve("a_b")?.name).toBe("a_b");
+  });
+
+  it("a spelling two tools share resolves to neither", () => {
+    const set = makeToolset([rt("x-y_z"), rt("x_y-z")]);
+    expect(set.resolve("x_y_z")).toBeUndefined();
+    expect(set.resolve("x-y-z")).toBeUndefined();
+  });
+
+  it("a withheld name is never respelt into a different offered tool", () => {
+    const set = makeToolset([rt("a-b")], [{ name: "a_b", risk: "high" }]);
+    expect(set.resolve("a_b")).toBeUndefined();
+    expect(set.withheld("a_b")).toEqual({ name: "a_b", risk: "high" });
+  });
+
+  it("ANY spelling of a withheld name is blocked, not only its exact and wire forms (PR #783 review)", () => {
+    // `a_b_c` is neither the withheld name `a-b_c` nor its wire form, but it
+    // normalises to it — and to the offered `a_b-c`.
+    const set = makeToolset([rt("a_b-c")], [{ name: "a-b_c", risk: "high" }]);
+    expect(set.resolve("a_b_c")).toBeUndefined();
+    expect(set.resolve("a-b-c")).toBeUndefined();
+    expect(set.withheld("a_b_c")).toEqual({ name: "a-b_c", risk: "high" });
+    // The offered tool's own exact name still resolves.
+    expect(set.resolve("a_b-c")?.name).toBe("a_b-c");
+    expect(set.withheld("a_b-c")).toBeUndefined();
   });
 });

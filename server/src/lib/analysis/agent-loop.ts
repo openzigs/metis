@@ -1337,6 +1337,30 @@ function previewOf(text: string): string {
 }
 
 /**
+ * PR #783 review — add the final-answer instruction WITHOUT breaking strict
+ * user/assistant alternation. When the transcript already ends on a user turn
+ * (the text protocol's tool results), the instruction joins that turn instead
+ * of following it: Anthropic merges same-role turns, but the OpenAI-compatible
+ * provider passes them through, and some local chat templates (Gemma's Jinja
+ * template) reject two user turns in a row. The last message is replaced, not
+ * mutated — `messages` is the caller's transcript.
+ */
+function appendUserInstruction(messages: ChatMessage[], instruction: string): void {
+  const last = messages[messages.length - 1];
+  if (last?.role !== "user") {
+    messages.push({ role: "user", content: instruction });
+    return;
+  }
+  messages[messages.length - 1] = {
+    ...last,
+    content:
+      typeof last.content === "string"
+        ? `${last.content}\n\n${instruction}`
+        : [...last.content, { type: "text", text: instruction }],
+  };
+}
+
+/**
  * Execute the multi-turn agent loop.
  *
  * - maxTurns=1 (default) gives backward-compatible single-shot behavior.
@@ -1699,6 +1723,7 @@ export async function runAgentLoop(
     // A single call produces exactly the pre-#15 message, byte for byte.
     messages.push({ role: "assistant", content: response.content });
     messages.push({ role: "user", content: resultSections.join("\n\n") });
+    lastAppended = true;
     if (options.refundTurn?.()) turn--;
   }
 
@@ -1757,13 +1782,15 @@ export async function runAgentLoop(
     // largest prompt of a degraded run. Compact before copying.
     compactBeforeCall();
     const retryMessages: ChatMessage[] = [...messages];
-    // #141 — a native reply already appended with its tool results is not
-    // repeated; one a budget stop left out goes back as text only (its calls
-    // never ran, and an unanswered call id would be rejected).
-    if (lastResponse && !(nativeMode && lastAppended)) {
+    // #141 — a reply already appended with its tool results is not repeated
+    // (#772: on the text protocol too, where re-sending the executed call after
+    // its results read as a fresh request); one a budget stop left out goes back
+    // as text only (its calls never ran, and an unanswered call id would be
+    // rejected).
+    if (lastResponse && !lastAppended) {
       retryMessages.push({ role: "assistant", content: lastResponse });
     }
-    retryMessages.push({ role: "user", content: options.finalAnswerRetry.instruction });
+    appendUserInstruction(retryMessages, options.finalAnswerRetry.instruction);
     try {
       const chatOpts: ChatOptions = {
         model: options.model,
@@ -1784,7 +1811,10 @@ export async function runAgentLoop(
           : {}),
       };
       if (retrySystem) chatOpts.systemMessage = retrySystem;
-      const retryResponse = await provider.chat(retryMessages, chatOpts);
+      // #772 — through the caller's model call, like every turn: chat meters
+      // usage and streams text there, so a direct `provider.chat` left the
+      // answer unbilled and unseen on the /stream route.
+      const retryResponse = await callModel(retryMessages, chatOpts);
       addUsage(totalUsage, retryResponse.usage);
       // The retry reply is a fresh, tool-free answer: judge its text alone.
       if (isValidAnswerText(retryResponse.content)) {
