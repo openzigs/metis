@@ -6,9 +6,10 @@
  * pipeline (zod validation + risk gate + audit). Whenever Morph fails the
  * tool falls back to a local whole-file rewrite so the run never aborts.
  *
- * Cost telemetry: every successful invocation records to the FinOps token
- * tracker with `provider: "morph"` so the existing `/usage` rollup picks
- * it up alongside chat traffic.
+ * Cost telemetry: every successful invocation records to the per-user token
+ * tracker (`ai_token_usages`) with a `morph:` model prefix, and — when the
+ * session belongs to a project — to the project ledger (`token_usages`, #792)
+ * so the project usage page and budget count it.
  */
 import { z } from "zod";
 import {
@@ -17,9 +18,28 @@ import {
   isMorphApplyEnabled,
 } from "../diff-apply-client.js";
 import { getTokenTracker } from "../token-tracker.js";
+import { recordUsage } from "../../finops/token-tracker.js";
+import { prisma } from "../../prisma.js";
 import type { ToolDefinition, ToolResult, ToolContext } from "../types.js";
 
 export const APPLY_DIFF_TOOL_NAME = "apply_diff";
+
+/** #792 — the step label morph spend carries on the project ledger. */
+export const APPLY_DIFF_AGENT_STEP = "chat.apply-diff";
+
+/**
+ * #792 — the project a call is billed to: the tool context's own scope, else
+ * the chat session's project. `null` when neither names one (a session with no
+ * project has no project page to land on).
+ */
+async function resolveProjectId(ctx: ToolContext): Promise<string | null> {
+  if (ctx.projectId) return ctx.projectId;
+  const session = await prisma.aISession.findUnique({
+    where: { id: ctx.sessionId },
+    select: { projectId: true },
+  });
+  return session?.projectId ?? null;
+}
 
 export const applyDiffSchema = z.object({
   original: z.string().min(0),
@@ -101,6 +121,30 @@ export function createApplyDiffTool(
           });
         } catch (err) {
           ctx.log?.error("apply_diff failed to record FinOps usage", {
+            error: (err as Error).message,
+          });
+        }
+        // #792 — the project page reads ONE ledger, `token_usages`. The row
+        // above lands only in the per-user store (`ai_token_usages`), so
+        // morph spend would leave the project's cards, analytics, CSV and
+        // budget. Each reader reads exactly one of the two tables, so writing
+        // the call to both counts it once in each view, never twice.
+        try {
+          const projectId = await resolveProjectId(ctx);
+          if (projectId) {
+            recordUsage({
+              projectId,
+              sessionId: ctx.sessionId,
+              ...(ctx.userId ? { userId: ctx.userId } : {}),
+              agentStep: APPLY_DIFF_AGENT_STEP,
+              provider: "openai",
+              model: `morph:${out.model}`,
+              inputTokens: out.usage.promptTokens,
+              outputTokens: out.usage.completionTokens,
+            });
+          }
+        } catch (err) {
+          ctx.log?.error("apply_diff failed to record project usage", {
             error: (err as Error).message,
           });
         }

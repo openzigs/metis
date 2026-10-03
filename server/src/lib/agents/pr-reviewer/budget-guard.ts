@@ -109,6 +109,7 @@ export async function recordPrReviewSpend(
       totalTokens:
         Math.max(0, Math.floor(input.inputTokens)) + Math.max(0, Math.floor(input.outputTokens)),
       costCents: usdToCents(input.costUsd),
+      agentStep: "pr-review",
     },
   });
 }

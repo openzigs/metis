@@ -2365,6 +2365,60 @@ describe("AnalysisOrchestrator requirement-grounded code agent (#916)", () => {
     return [...agentResults.values()].find((a) => a.agentKey === "code")!;
   };
 
+  // #717 — the grounded evidence names a repository file by its real path; an
+  // upload carrying a repo-shaped name keeps it (#547).
+  it("labels repo evidence by its repository-relative path in the grounded prompt", async () => {
+    const key = "connector:repo:c1:src/internal/model/feed.go";
+    const prompts: string[] = [];
+    const provider = makeCodeProvider();
+    const chat = provider.chat.bind(provider);
+    provider.chat = (async (messages: Array<{ content: unknown }>, opts: unknown) => {
+      prompts.push(String(messages[0]?.content));
+      return chat(messages as never, opts as never);
+    }) as never;
+    const knowledge = {
+      search: vi.fn(async (_p: string, query: string) => ({
+        hits: [
+          {
+            chunkId: query.includes("password") ? "chunk-repo" : "chunk-up",
+            documentId: "doc-1234567890",
+            position: 1,
+            filename: key,
+            source: query.includes("password") ? "repo" : "upload",
+            text: "type Feed struct {}",
+            score: 0,
+            embeddingModel: "stub",
+          },
+        ],
+        embeddingModel: "stub",
+        elapsedMs: 1,
+      })),
+    };
+    const orch = new AnalysisOrchestrator({
+      provider,
+      knowledge:
+        knowledge as unknown as import("../src/lib/rag/knowledge-service.js").KnowledgeService,
+    });
+    await (
+      orch as unknown as {
+        runRequirementGroundedCodeAgent: (input: unknown) => Promise<unknown>;
+      }
+    ).runRequirementGroundedCodeAgent({
+      analysisId: "ana_rg_path",
+      projectId: "proj-abcdefghij",
+      projectName: "Acme",
+      projectDescription: "monolith",
+      requirements: requirementsFixture,
+      documentIds: ["doc-1234567890"],
+      signal: new AbortController().signal,
+    });
+    const prompt = prompts.join("\n");
+    expect(prompt).toContain("file=internal/model/feed.go\n");
+    // REQ-002's hit is an upload under the same name: it keeps the stored key.
+    expect(prompt).toContain(`file=${key}`);
+    expect(prompt.split("file=internal/model/feed.go").length - 1).toBe(1);
+  });
+
   it("searches per-requirement using the requirement text and document filter", async () => {
     const knowledge = makeKnowledge();
     await runGrounded(knowledge);

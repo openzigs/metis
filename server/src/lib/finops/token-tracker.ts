@@ -27,6 +27,10 @@ export interface RecordUsageInput {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** #792 — the user the call is billed to, when the caller knows one. */
+  userId?: string;
+  /** #792 — the pipeline step that spent the tokens, for "by agent step". */
+  agentStep?: string;
 }
 
 export interface RecordUsageResult {
@@ -201,6 +205,8 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
       cacheWriteTokens,
       totalTokens,
       costCents,
+      ...(input.userId ? { userId: input.userId } : {}),
+      ...(input.agentStep ? { agentStep: input.agentStep } : {}),
     }).finally(() => {
       pending -= 1;
       settle();
@@ -248,6 +254,8 @@ async function persist(row: {
   cacheWriteTokens: number;
   totalTokens: number;
   costCents: number | null;
+  userId?: string;
+  agentStep?: string;
 }): Promise<void> {
   try {
     await prisma.tokenUsage.create({ data: row });

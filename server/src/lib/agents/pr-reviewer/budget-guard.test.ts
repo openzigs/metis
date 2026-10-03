@@ -133,6 +133,7 @@ describe("recordPrReviewSpend", () => {
     expect(data.outputTokens).toBe(500);
     expect(data.totalTokens).toBe(1734);
     expect(data.costCents).toBe(0); // 0.0042 USD → 0 cents (sub-cent floor)
+    expect(data.agentStep).toBe("pr-review"); // #792 — shows by name in By Agent Step
   });
 
   it("falls back to unknown provider/model when blank", async () => {

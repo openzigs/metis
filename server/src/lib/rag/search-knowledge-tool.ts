@@ -12,6 +12,7 @@ import type { ToolDefinition } from "../ai/types.js";
 import { getToolRegistry } from "../ai/tool-registry.js";
 import { getKnowledgeService, type KnowledgeService } from "./knowledge-service.js";
 import { formatDerivedLabel } from "./derived-label.js";
+import { formatHitLocator, formatHitScore } from "./hit-locator.js";
 
 const argsSchema = z.object({
   // #736 — optional: a project-scoped chat session is already bound to its
@@ -59,7 +60,7 @@ export function buildSearchKnowledgeTool(
       });
       const lines = hits.map(
         (h, i) =>
-          `[${i + 1}] (score=${h.score.toFixed(4)}) ${h.filename}#${h.position}${formatDerivedLabel(h.derived)}\n${h.text}`,
+          `[${i + 1}] (${formatHitScore(h, 4)}) ${formatHitLocator(h)}${formatDerivedLabel(h.derived)}\n${h.text}`,
       );
       const note = ignoredArg
         ? "Note: this session is bound to its project, which was searched; the projectId argument was ignored (omit it).\n\n"

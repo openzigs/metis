@@ -242,3 +242,52 @@ describe("deepDiveFinding — model on the active provider (#532)", () => {
     expect(chat.mock.calls[0]![1]!.model).toBe("explicit-model");
   });
 });
+
+// #717 — the draft's "Affected files" are copied from the citations the model
+// reads, so a repository citation must name its real path, not the stored key.
+describe("deepDiveFinding — repository citation names (#717)", () => {
+  function promptFor(citations: Parameters<typeof deepDiveFinding>[1]["finding"]["citations"]) {
+    const { provider, chat } = makeProvider(() => ({
+      content: JSON.stringify(VALID_DRAFT),
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "m",
+      provider: "offline-stub",
+    }));
+    return deepDiveFinding(
+      provider,
+      baseInput({ finding: { ...baseInput().finding, citations } }),
+    ).then(() =>
+      (chat.mock.calls[0]![0] as ChatMessage[]).map((m) => String(m.content)).join("\n"),
+    );
+  }
+
+  it("names a repo-sourced citation by its repository-relative path", async () => {
+    const prompt = await promptFor([
+      {
+        documentId: "doc-1234567890",
+        chunkIndex: 3,
+        filename: "connector:repo:conn1:src/internal/database/migrations.go",
+        source: "repo",
+      },
+    ]);
+    expect(prompt).toContain("internal/database/migrations.go#3");
+    expect(prompt).not.toContain("src/internal/database");
+  });
+
+  it("keeps the filename of an upload that merely looks like a repo key (#547)", async () => {
+    const prompt = await promptFor([
+      {
+        documentId: "doc-1234567890",
+        chunkIndex: 0,
+        filename: "connector:repo:conn1:src/spoof.go",
+        source: "upload",
+      },
+    ]);
+    expect(prompt).toContain("connector:repo:conn1:src/spoof.go#0");
+  });
+
+  it("falls back to the document id when a citation has no filename", async () => {
+    const prompt = await promptFor([{ documentId: "doc-1234567890", chunkIndex: 1 }]);
+    expect(prompt).toContain("doc-1234567890#1");
+  });
+});

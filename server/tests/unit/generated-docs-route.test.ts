@@ -1673,6 +1673,29 @@ describe("generated-docs routes", () => {
       expect(res.body.data.title).toBe("Updated Title");
     });
 
+    it("#782 — never returns the internal generation checkpoint", async () => {
+      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+      });
+      (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+        title: "Doc",
+        status: "degraded",
+        autoUpdate: false,
+        errorMessage: null,
+        warnings: null,
+        generationCheckpoint: { version: 3, records: [{ sectionId: "overview" }] },
+      });
+
+      const res = await request(app)
+        .patch("/projects/proj-1/docs/doc-1")
+        .send({ autoUpdate: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.title).toBe("Doc");
+      expect(res.body.data).not.toHaveProperty("generationCheckpoint");
+    });
+
     it("#52 — never returns a failed document's raw error text", async () => {
       (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
         id: "doc-1",
