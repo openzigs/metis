@@ -9,6 +9,7 @@ import type {
   BackfillSpecLinksResult,
   RequirementChainWithLinks,
   RequirementSpecMappingDetail,
+  RequirementTestGaps,
   RequirementTraceabilityChain,
   SpecCodeMappingDetail,
   WorkspaceTraceabilitySummary,
@@ -33,6 +34,16 @@ export const traceabilityApi = {
   /** #626 — workspace-level rollup: per-project coverage + cross-project links. */
   workspaceSummary: (workspaceId: Id) =>
     apiFetch<WorkspaceTraceabilitySummary>(`/workspaces/${workspaceId}/traceability/summary`),
+
+  /**
+   * #816 — one page of requirements with mapped code but no linked test, plus
+   * the tested / no-code counts. Scope with `analysisId`; page with `cursor`
+   * (the previous page's `nextCursor`).
+   */
+  testGaps: (projectId: Id, opts: { analysisId?: string; limit?: number; cursor?: string } = {}) =>
+    apiFetch<RequirementTestGaps>(`/projects/${projectId}/traceability/test-gaps`, {
+      params: { analysisId: opts.analysisId, limit: opts.limit, cursor: opts.cursor },
+    }),
 
   /** #229 — reverse: which requirements touch a file. */
   byFile: (projectId: Id, filePath: string) =>

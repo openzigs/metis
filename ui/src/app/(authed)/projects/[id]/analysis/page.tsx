@@ -93,6 +93,7 @@ import { RequirementDiff } from "@/components/analysis/requirement-diff";
 import { DataMappingsPanel } from "@/components/traceability/data-mappings-panel";
 import { RequirementLinksPanel } from "@/components/requirements/requirement-links-panel";
 import { TraceabilityView } from "@/components/traceability/traceability-view";
+import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
 import { findingsApi } from "@/lib/findings-api";
 // Epic #34 — collaboration on requirements (comments, assignees/SLA, optimistic-lock merge).
@@ -1435,6 +1436,13 @@ export default function AnalysisPage(): React.ReactElement {
                   ) : null}
                   {/* Issue #737 — requirement→findings→code→tests traceability matrix. */}
                   <TraceabilityMatrix
+                    projectId={projectId}
+                    analysisId={detail.data.id}
+                    enabled={detail.data.status === "completed"}
+                  />
+
+                  {/* Issue #816 — requirements whose mapped code has no linked test. */}
+                  <UntestedRequirementsPanel
                     projectId={projectId}
                     analysisId={detail.data.id}
                     enabled={detail.data.status === "completed"}

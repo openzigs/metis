@@ -40,3 +40,19 @@ describe("traceabilityApi.chainWithLinks", () => {
     });
   });
 });
+
+describe("traceabilityApi.testGaps (#816)", () => {
+  it("GETs the project's test-gaps endpoint with no params by default", async () => {
+    await traceabilityApi.testGaps("proj-1");
+    expect(apiFetch).toHaveBeenCalledWith("/projects/proj-1/traceability/test-gaps", {
+      params: { analysisId: undefined, limit: undefined, cursor: undefined },
+    });
+  });
+
+  it("threads analysisId, limit and cursor as query params", async () => {
+    await traceabilityApi.testGaps("proj-1", { analysisId: "an-1", limit: 25, cursor: "r9" });
+    expect(apiFetch).toHaveBeenCalledWith("/projects/proj-1/traceability/test-gaps", {
+      params: { analysisId: "an-1", limit: 25, cursor: "r9" },
+    });
+  });
+});
