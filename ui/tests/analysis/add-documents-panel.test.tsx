@@ -133,8 +133,10 @@ describe("AddDocumentsPanel (#906)", () => {
   });
 
   it("renders a connector id as its file path and repository, raw id only in the tooltip (#427, #363)", () => {
+    // #717 — keyed as connector-ingest.ts keys the repo file `src/main/java/…`:
+    // the first `src/` is the ingester's marker, never shown.
     const rawId =
-      "connector:repo:cmexample0000000000acmerp:src/main/java/com/acme/ShipmentAllocationsVO.java";
+      "connector:repo:cmexample0000000000acmerp:src/src/main/java/com/acme/ShipmentAllocationsVO.java";
     render(<Harness docs={[makeDoc(rawId, rawId, "ready")]} />);
     const row = screen.getByTestId(`add-documents-row-${rawId}`);
     // The file path and a repository label are shown; the key is not.

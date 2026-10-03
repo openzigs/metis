@@ -41,6 +41,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     },
     userRole: {},
     auditLog: { create: vi.fn(async () => ({})) },
+    // #717 — the deep-dive reads each cited document's source (none resolve here).
+    document: { findMany: vi.fn(async () => []) },
     analysis: {
       // Cost-cap usage query — return an empty set so the cap is never hit
       // unless the cost-cap module mock is told to throw.

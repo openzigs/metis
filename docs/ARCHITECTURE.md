@@ -1321,9 +1321,8 @@ Search Query: "What are the authentication requirements?"
                    │
                    ▼
           ┌────────────────┐
-          │  Hybrid Merge  │  Combines both results
-          │  70% vector +  │  with weighted scoring
-          │  30% keyword   │
+          │  Hybrid Merge  │  Reciprocal rank fusion
+          │  (RRF, k = 60) │  of the two ranked lists
           └────────┬───────┘
                    │
                    ▼
@@ -1331,6 +1330,10 @@ Search Query: "What are the authentication requirements?"
 ```
 
 This hybrid approach catches both semantically related content (even when different words are used) and exact keyword matches (for technical terms that need precise matching).
+
+**Keyword terms are code-aware (#717).** `rag/bm25-index.ts` indexes each token whole *and* split at camelCase / `snake_case` boundaries, folds simple plurals and tenses, drops question stop words, and indexes a repository file's path as its own field. Code spells concepts as identifiers (`PollingScheduler`) while tests and config spell them as strings (`"POLLING_SCHEDULER"`); keeping identifiers whole meant only the strings could match, so a question retrieved the tests and never the definition. The index is in-memory and rebuilt from `KnowledgeChunk` rows on first search, so a tokenizer change needs no reindex.
+
+**Scores (#717).** A hit's `score` is the dense cosine (thresholds such as `RAG_SCORE_THRESHOLD` read it, and a keyword-only hit has none, so `0`). `rankScore` is the score the list is ordered by: RRF normalised to 0..1 in `hybrid` (1 = ranked first by both retrievers, 0.5 = first by one), the cosine in `dense`, the reranker's score when reranked. `matchedBy` says which retriever(s) found it. A `repo`-sourced hit also carries `path`, its repository-relative path: the stored filename `connector:repo:<id>:src/<relPath>` carries the ingester's `src/` marker, which is not a directory, and `repoDocumentPath` (`@metis/shared`) is the display-side helper that strips it (`fused-code-context.ts` keeps its own matcher for de-duplication). Model-facing text names a hit through `rag/hit-locator.ts` — chat, both `search-knowledge` tools, the analysis `search_knowledge` tool and the analysis agents' retrieved context (`displayFilename`, which renames only a `repo`-sourced row, #547).
 
 ### 8.4 Components
 

@@ -16,9 +16,10 @@ import {
   findingIssueDraftSchema,
   formatCodeCitationLocator,
   isCodeCitation,
+  repoDocumentPath,
   type AnalysisAgentKey,
-  type Citation,
   type FindingIssueDraft,
+  type SnapshotCitation,
 } from "@metis/shared";
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
 import { HAIKU_MODEL_ID, tierModelFor } from "../ai/model-router.js";
@@ -43,7 +44,8 @@ export interface DeepDiveEngineInput {
     body: string;
     category: string;
     severity: string;
-    citations: Citation[];
+    /** #717 — a document citation's `source` decides whether it names a repo path. */
+    citations: SnapshotCitation[];
     requirementId: string | null;
   };
   /** Optional user steering — bounded + escaped upstream and here. */
@@ -62,14 +64,23 @@ export interface DeepDiveFindingResult {
   model: string;
 }
 
-function formatCitations(citations: Citation[]): string[] {
+/**
+ * #717 — a repository document citation is named by its repository-relative
+ * path. The stored filename is `connector:repo:<id>:src/<relPath>`, and the model
+ * copied that `src/` into the draft's "Affected files", which then named files
+ * that do not exist.
+ */
+function documentCitationName(c: Exclude<SnapshotCitation, { filePath: string }>): string {
+  const repoPath = c.source === "repo" && c.filename ? repoDocumentPath(c.filename) : undefined;
+  return repoPath ?? c.filename ?? c.documentId;
+}
+
+function formatCitations(citations: SnapshotCitation[]): string[] {
   return citations.map((c) => {
     // #734 — code citations render as their `filePath:startLine-endLine` locator.
     const where = isCodeCitation(c)
       ? formatCodeCitationLocator(c)
-      : c.filename
-        ? `${c.filename}#${c.chunkIndex}`
-        : `${c.documentId}#${c.chunkIndex}`;
+      : `${documentCitationName(c)}#${c.chunkIndex}`;
     return c.snippet ? `${where} :: ${c.snippet}` : where;
   });
 }

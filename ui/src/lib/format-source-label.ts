@@ -33,6 +33,7 @@
  * call site can crash on an id it did not expect.
  */
 
+import { repoDocumentPath } from "@metis/shared";
 import type { DocumentSource } from "@/lib/projects-api";
 
 export interface SourceLabel {
@@ -47,8 +48,8 @@ export interface SourceLabel {
   basename: string;
   /** Short, human-facing repo token for connector ids; `undefined` otherwise. */
   repoLabel?: string;
-  /** The path portion after the connectorId for connector ids; `undefined`
-   *  otherwise. */
+  /** The repository-relative path for connector ids (#717: without the
+   *  ingester's `src/` marker); `undefined` otherwise. */
   path?: string;
   /** True when the id matched the `connector:repo:` shape. */
   isConnector: boolean;
@@ -113,7 +114,9 @@ export function formatSourceLabel(
   }
 
   const connectorId = match[1];
-  const path = match[2].trim();
+  // #717 — the repository-relative path: a source file's key carries the
+  // ingester's `src/` marker, which is not a directory in the repository.
+  const path = repoDocumentPath(raw) ?? "";
   const segments = path.split("/").filter(Boolean);
   const basename = segments.length ? segments[segments.length - 1] : "";
   // #23 — own-property lookup only, so an id like "constructor" can never

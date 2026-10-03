@@ -37,8 +37,9 @@ function doc(id: string, filename: string, over: Partial<DocumentRow> = {}): Doc
 /** A row as its connector writes it: the filename pattern AND the stored source (#474). */
 const from = (source: DocumentRow["source"], id: string, filename: string, title?: string) =>
   doc(id, filename, { source, ...(title !== undefined ? { title } : {}) });
+/** #717 — keyed as connector-ingest.ts keys a source file: `path` is the repo path. */
 const repo = (id: string, path: string, conn = CONN) =>
-  from("repo", id, `connector:repo:${conn}:${path}`);
+  from("repo", id, `connector:repo:${conn}:src/${path}`);
 
 describe("toPanelEntries", () => {
   it("names a repository file by its basename, with repo name and path on hover", () => {
