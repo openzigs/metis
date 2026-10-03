@@ -510,6 +510,42 @@ describe("project access chokepoint on the test-coverage router (#795)", () => {
   });
 });
 
+describe("router-level rate limiting (#795, CodeQL js/missing-rate-limiting)", () => {
+  afterEach(() => {
+    delete process.env.TEST_COVERAGE_RATE_LIMIT_MAX;
+    delete process.env.TEST_COVERAGE_PREAUTH_RATE_LIMIT_MAX;
+  });
+
+  it("refuses an anonymous flood per IP ahead of authentication", async () => {
+    process.env.TEST_COVERAGE_PREAUTH_RATE_LIMIT_MAX = "1";
+    const app = createApp(undefined);
+    // A source IP of its own: every other test in this file shares loopback.
+    app.set("trust proxy", true);
+    const ip = "198.51.100.79";
+    const first = await request(app)
+      .get("/projects/proj-1/test-coverage/runs")
+      .set("X-Forwarded-For", ip);
+    expect(first.status).toBe(401);
+    const limited = await request(app)
+      .get("/projects/proj-1/test-coverage/runs")
+      .set("X-Forwarded-For", ip);
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("TEST_COVERAGE_RATE_LIMITED");
+  });
+
+  it("refuses a caller over the per-user budget with 429 before the access check", async () => {
+    process.env.TEST_COVERAGE_RATE_LIMIT_MAX = "1";
+    vi.mocked(prisma.testCaseImport.findMany).mockResolvedValue([] as never);
+    const app = createApp({ userId: "tc-router-limit", role: "developer" });
+    expect((await request(app).get("/projects/proj-1/test-coverage/imports")).status).toBe(200);
+    vi.mocked(prisma.project.findUnique).mockClear();
+    const limited = await request(app).get("/projects/proj-1/test-coverage/imports");
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("TEST_COVERAGE_RATE_LIMITED");
+    expect(prisma.project.findUnique).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /projects/:projectId/test-coverage/runs", () => {
   it("returns up to 50 most-recent runs", async () => {
     vi.mocked(prisma.testCoverageRun.findMany).mockResolvedValue([

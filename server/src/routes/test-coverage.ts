@@ -20,6 +20,10 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
+import {
+  testCoveragePreAuthRateLimiter,
+  testCoverageRateLimiter,
+} from "../middleware/test-coverage-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { getProject } from "../lib/projects/project-service.js";
@@ -121,7 +125,12 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
   const r = Router({ mergeParams: true });
   // #795 — the #674 object-level chokepoint: every handler below is reachable
   // only by a caller who can access `:projectId` (404 otherwise, no oracle).
-  r.use(requireAuth, requireProjectAccess());
+  // The per-IP limiter runs ahead of JWT verification and the per-user one
+  // ahead of the access check's project read (CodeQL js/missing-rate-limiting).
+  r.use(testCoveragePreAuthRateLimiter);
+  r.use(requireAuth);
+  r.use(testCoverageRateLimiter);
+  r.use(requireProjectAccess());
   const enqueueRun =
     deps.enqueueRun ?? createDefaultEnqueueRun({ emitter: deps.emitter, caller: deps.caller });
 
