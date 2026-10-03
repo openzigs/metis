@@ -18,8 +18,10 @@ import {
   DEFAULT_RAG_CHUNK_SIZE,
   DEFAULT_RETRIEVAL_MODE,
   DEFAULT_RETRIEVE_K,
+  type RetrievalMatcher,
   type RetrievalMode,
   type RetrievedChunk,
+  repoDocumentPath,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { readDerivedLabel } from "./derived-label.js";
@@ -55,7 +57,7 @@ import { embedInBoundedBatches } from "./embed-batched.js";
 import { getDocumentStorage, type StorageBackend } from "../documents/storage.js";
 import { onArchive } from "../projects/project-service.js";
 import { createChildLogger } from "../logger.js";
-import { BM25Index, getBM25Index, reciprocalRankFusion } from "./bm25-index.js";
+import { BM25Index, getBM25Index, RRF_K, reciprocalRankFusion } from "./bm25-index.js";
 import { getReranker, type Reranker } from "./reranker.js";
 import { type AclActor, filterAccessible, parseAclSubjects } from "./acl.js";
 import { assertEvidencePolicy, type EvidencePolicy } from "../docs-gen/evidence-policy.js";
@@ -666,6 +668,12 @@ export class KnowledgeService {
       });
     }
 
+    // #717 — which retriever(s) found each chunk, and the score the list is
+    // ordered by. `score` stays the dense cosine (callers threshold on it), so
+    // without these a lexical-only hit printed `0.000` above weaker dense hits
+    // and the list read as unsorted.
+    const denseIds = new Set(denseHits.map((h) => h.row.metadata.chunkId));
+    let sparseIds = new Set<string>();
     let ordered: { chunkId: string; score: number }[];
     if (mode === "dense") {
       ordered = denseHits.map((h) => ({ chunkId: h.row.metadata.chunkId, score: h.score }));
@@ -710,8 +718,17 @@ export class KnowledgeService {
       }
       const denseList = denseHits.map((h) => ({ chunkId: h.row.metadata.chunkId }));
       const sparseList = sparseHits.filter((h) => meta.has(h.chunkId));
-      ordered = reciprocalRankFusion([denseList, sparseList], { topK: poolSize });
+      sparseIds = new Set(sparseList.map((h) => h.chunkId));
+      // #717 — normalise RRF to 0..1: 1 is "ranked first by both retrievers".
+      // A hit only one retriever found tops out at 0.5, which is the honest
+      // reading of a single vote.
+      const fusedMax = 2 / (RRF_K + 1);
+      ordered = reciprocalRankFusion([denseList, sparseList], { topK: poolSize }).map((o) => ({
+        chunkId: o.chunkId,
+        score: o.score / fusedMax,
+      }));
     }
+    const rankScoreByChunk = new Map(ordered.map((o) => [o.chunkId, o.score]));
 
     let chosen = ordered
       .map((o) => meta.get(o.chunkId))
@@ -785,26 +802,42 @@ export class KnowledgeService {
       chosen = reorder
         .map((r) => {
           const base = map.get(r.chunkId);
-          return base ? { ...base, score: r.score ?? base.score } : null;
+          if (!base) return null;
+          // #717 — the reranker now decides the order, so its score is the rank score.
+          if (r.score !== undefined) rankScoreByChunk.set(r.chunkId, r.score);
+          return { ...base, score: r.score ?? base.score };
         })
         .filter((c): c is NonNullable<typeof c> => Boolean(c));
       reranked = true;
     }
 
     const top = chosen.slice(0, k);
-    const mapped: RetrievedChunk[] = top.map((m) => ({
-      chunkId: m.chunkId,
-      documentId: m.documentId,
-      filename: m.filename,
-      position: m.position,
-      text: m.text,
-      score: m.score,
-      embeddingModel: m.embeddingModel,
+    const mapped: RetrievedChunk[] = top.map((m) => {
       // Every chosen chunk passed the live-row read above; "upload" (never a
       // connector kind) only satisfies the Map's type.
-      source: sourceByChunk.get(m.chunkId) ?? "upload",
-      ...(derivedByChunk.has(m.chunkId) ? { derived: derivedByChunk.get(m.chunkId) } : {}),
-    }));
+      const source = sourceByChunk.get(m.chunkId) ?? "upload";
+      const matchedBy: RetrievalMatcher[] = [];
+      if (denseIds.has(m.chunkId)) matchedBy.push("dense");
+      if (sparseIds.has(m.chunkId)) matchedBy.push("lexical");
+      // #717 — a repository file's real path; the stored filename carries the
+      // ingester's `connector:repo:<id>:src/` key. Decided on the row's source
+      // (#547), never on the name.
+      const path = source === "repo" ? repoDocumentPath(m.filename) : undefined;
+      return {
+        chunkId: m.chunkId,
+        documentId: m.documentId,
+        filename: m.filename,
+        position: m.position,
+        text: m.text,
+        score: m.score,
+        rankScore: rankScoreByChunk.get(m.chunkId) ?? m.score,
+        matchedBy,
+        ...(path ? { path } : {}),
+        embeddingModel: m.embeddingModel,
+        source,
+        ...(derivedByChunk.has(m.chunkId) ? { derived: derivedByChunk.get(m.chunkId) } : {}),
+      };
+    });
 
     const coverage = await this.store.modelCoverage(projectId);
     const currentModel = currentIdentity;

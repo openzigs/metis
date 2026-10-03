@@ -12,6 +12,7 @@
  * is reset (tests + project archive).
  */
 import MiniSearch from "minisearch";
+import { repoDocumentPath } from "@metis/shared";
 import { prisma } from "../prisma.js";
 
 export interface BM25Doc {
@@ -27,20 +28,128 @@ export interface BM25Hit {
   score: number;
 }
 
+/**
+ * #717 — question words that carry no lexical signal. In an OR query each one
+ * still scores, so "how often ARE feeds refreshed" rewarded every chunk that
+ * says "are". Kept short on purpose: a word a developer might search for
+ * (`not`, `all`, `no`) is not here.
+ */
+const STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "do",
+  "does",
+  "for",
+  "from",
+  "how",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "the",
+  "to",
+  "was",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "why",
+  "with",
+]);
+
+/** Split on anything that is not a letter or digit — `_`, `.`, `/`, quotes, … */
+const NON_WORD = /[^\p{L}\p{N}]+/u;
+/**
+ * camelCase / PascalCase boundaries, keeping acronyms together:
+ * `HTTPServerError` → `HTTP`, `Server`, `Error`; `ScheduleNextCheck` →
+ * `Schedule`, `Next`, `Check`.
+ */
+const CAMEL_PART = /\p{Lu}+(?=\p{Lu}\p{Ll})|\p{Lu}?\p{Ll}+|\p{Lu}+|\p{N}+/gu;
+
+/**
+ * #717 — fold the commonest English inflections so a question ("feeds",
+ * "refreshed") meets the words code is written in (`Feed`, `refreshDelay`).
+ * Deliberately crude and conservative: it only has to make the query and the
+ * index agree, because both go through it.
+ */
+function lightStem(term: string): string {
+  if (term.length <= 4) return term;
+  if (term.endsWith("ies")) return `${term.slice(0, -3)}y`;
+  if (term.endsWith("ing") && term.length > 6) return term.slice(0, -3);
+  if (term.endsWith("ed") && term.length > 5) return term.slice(0, -2);
+  if (term.endsWith("s") && !term.endsWith("ss") && !term.endsWith("us")) return term.slice(0, -1);
+  return term;
+}
+
+/**
+ * #717 — the terms one token contributes, at index AND query time: the whole
+ * token lowercased (so an exact identifier still matches best), plus each
+ * camelCase part, each stemmed. Stop words contribute nothing.
+ *
+ * Exported for tests.
+ */
+export function codeAwareTerms(token: string): string[] {
+  const out = new Set<string>();
+  const add = (raw: string): void => {
+    const lower = raw.toLowerCase();
+    if (lower.length === 0 || STOP_WORDS.has(lower)) return;
+    out.add(lower);
+    out.add(lightStem(lower));
+  };
+  add(token);
+  const parts = token.match(CAMEL_PART) ?? [];
+  if (parts.length > 1) for (const part of parts) add(part);
+  return [...out];
+}
+
+function tokenize(text: string): string[] {
+  return text.split(NON_WORD).filter((t) => t.length > 0);
+}
+
+/**
+ * #717 — what a chunk's `path` field indexes: the repository-relative path for
+ * a repository file (never the `connector:repo:<id>:src/` key, which every repo
+ * chunk shares), the filename otherwise.
+ */
+function indexedPath(filename: string): string {
+  return repoDocumentPath(filename) ?? filename;
+}
+
+interface IndexedDoc extends BM25Doc {
+  path: string;
+}
+
 const INDEX_OPTS = {
-  fields: ["text"],
+  fields: ["text", "path"],
   storeFields: ["documentId", "filename", "position"],
+  tokenize,
+  processTerm: codeAwareTerms,
 };
 
 const SEARCH_OPTS = {
-  boost: { text: 1 },
+  // A path match ("scheduler" in `internal/scheduler/…`) is a strong hint but
+  // must not outrank a body that actually discusses the query.
+  boost: { text: 1, path: 1.5 },
   fuzzy: 0,
   prefix: true,
   combineWith: "OR" as const,
 };
 
+function toIndexedDoc(doc: BM25Doc): IndexedDoc {
+  return { ...doc, path: indexedPath(doc.filename) };
+}
+
 interface ProjectState {
-  index: MiniSearch<BM25Doc>;
+  index: MiniSearch<IndexedDoc>;
   /** documentId → Set of chunkIds currently in the index. */
   byDoc: Map<string, Set<string>>;
   loaded: boolean;
@@ -75,7 +184,7 @@ export class BM25Index {
     let state = this.projects.get(projectId);
     if (!state) {
       state = {
-        index: new MiniSearch<BM25Doc>(INDEX_OPTS),
+        index: new MiniSearch<IndexedDoc>(INDEX_OPTS),
         byDoc: new Map(),
         loaded: false,
       };
@@ -98,7 +207,7 @@ export class BM25Index {
         text: r.text,
         filename: filenames.get(r.documentId) ?? "",
       }));
-      if (bulk.length > 0) state.index.addAll(bulk);
+      if (bulk.length > 0) state.index.addAll(bulk.map(toIndexedDoc));
       for (const c of bulk) {
         let set = state.byDoc.get(c.documentId);
         if (!set) {
@@ -136,13 +245,15 @@ export class BM25Index {
     }
     state.byDoc.set(documentId, ids);
     state.index.addAll(
-      chunks.map((c) => ({
-        id: c.id,
-        documentId,
-        position: c.position,
-        text: c.text,
-        filename,
-      })),
+      chunks.map((c) =>
+        toIndexedDoc({
+          id: c.id,
+          documentId,
+          position: c.position,
+          text: c.text,
+          filename,
+        }),
+      ),
     );
   }
 
@@ -214,6 +325,9 @@ export class BM25Index {
   }
 }
 
+/** The canonical RRF damping constant (Cormack et al. 2009). */
+export const RRF_K = 60;
+
 /**
  * Reciprocal Rank Fusion (Cormack/Clarke/Buettcher 2009).
  *
@@ -221,13 +335,13 @@ export class BM25Index {
  *
  * `lists` is one ranked list per retrieval source. Documents that appear in
  * multiple lists rank higher than documents that only appear in one. The
- * canonical default is k = 60.
+ * canonical default is k = {@link RRF_K}.
  */
 export function reciprocalRankFusion(
   lists: { chunkId: string; score?: number }[][],
   opts: { k?: number; topK?: number } = {},
 ): { chunkId: string; score: number }[] {
-  const k = opts.k ?? 60;
+  const k = opts.k ?? RRF_K;
   const acc = new Map<string, number>();
   for (const list of lists) {
     list.forEach((hit, idx) => {

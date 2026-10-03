@@ -117,6 +117,12 @@ export interface RetrievedChunk {
   embeddingModel: string;
   /** #547 — the hit's stored `documents.source`; classify on this, not the filename. */
   source: DocumentSource;
+  /** #717 — the score the hits are ordered by (fused rank in hybrid, 0..1). */
+  rankScore?: number;
+  /** #717 — which retriever(s) found the hit; `["lexical"]` has no `score`. */
+  matchedBy?: ("dense" | "lexical")[];
+  /** #717 — a repository file's real path (no `connector:repo:…:src/` key). */
+  path?: string;
 }
 
 export const projectsApi = {

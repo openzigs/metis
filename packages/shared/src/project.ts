@@ -155,6 +155,34 @@ export const DOCUMENT_SOURCES = [
 export const documentSourceSchema = z.enum(DOCUMENT_SOURCES);
 export type DocumentSource = z.infer<typeof documentSourceSchema>;
 
+/** #717 — the retrievers a hybrid hit can come from. */
+export const RETRIEVAL_MATCHERS = ["dense", "lexical"] as const;
+export type RetrievalMatcher = (typeof RETRIEVAL_MATCHERS)[number];
+
+/** `connector:repo:<connectorId>:<rest>` — the key a repository ingest stores. */
+const REPO_DOCUMENT_KEY_RE = /^connector:repo:[^:]+:(.+)$/;
+/** The ingester's namespace marker for a source file (`connector-ingest.ts`). */
+const REPO_SOURCE_MARKER = "src/";
+
+/**
+ * #717 — the repository-relative path behind a repository document's stored
+ * filename. A source file is keyed `connector:repo:<id>:src/<relPath>`, and that
+ * `src/` is the ingester's marker, not a directory, so a citation built from the
+ * raw tail names a file that does not exist. Metadata units (`README.md`,
+ * `OVERVIEW.md`, manifests) carry no marker and are returned as-is. Anything
+ * that is not a repository key returns `undefined`.
+ *
+ * The filename alone does not prove the row is a repository file (#547 — an
+ * upload may carry the name): callers decide on `documents.source` first.
+ */
+export function repoDocumentPath(filename: string): string | undefined {
+  const match = REPO_DOCUMENT_KEY_RE.exec((filename ?? "").trim());
+  if (!match) return undefined;
+  const rest = match[1].trim();
+  const path = rest.startsWith(REPO_SOURCE_MARKER) ? rest.slice(REPO_SOURCE_MARKER.length) : rest;
+  return path.length > 0 ? path : undefined;
+}
+
 export const retrievedChunkSchema = z.object({
   chunkId: idSchema,
   documentId: idSchema,
@@ -175,6 +203,22 @@ export const retrievedChunkSchema = z.object({
    * as recorded at publication (#189); either may be absent on a legacy chunk.
    */
   derived: z.object({ status: z.string().optional(), scope: z.string().optional() }).optional(),
+  /**
+   * #717 — the score the hits are ORDERED by, so a list reads monotonically.
+   * `score` stays the dense cosine (thresholds elsewhere read it, and a
+   * lexical-only hit has none, hence `0`); `rankScore` is the fused rank in
+   * `hybrid` (reciprocal rank fusion normalised to 0..1, where 1 means ranked
+   * first by both retrievers), the cosine in `dense`, the reranker's score when
+   * reranked.
+   */
+  rankScore: z.number().optional(),
+  /** #717 — which retriever(s) surfaced the hit; `["lexical"]` explains a `score` of 0. */
+  matchedBy: z.array(z.enum(RETRIEVAL_MATCHERS)).optional(),
+  /**
+   * #717 — the repository-relative path of a `repo`-sourced hit (see
+   * {@link repoDocumentPath}). Absent for every other source.
+   */
+  path: z.string().optional(),
 });
 export type RetrievedChunk = z.infer<typeof retrievedChunkSchema>;
 
