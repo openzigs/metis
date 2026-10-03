@@ -4300,6 +4300,9 @@ model Scan {
   scannedSymbols   Int       @default(0)
   totalTokens      Int       @default(0)
   costCents        Int       @default(0)
+  /// #759 — index of the next symbol to scan in the ordered symbol list; a
+  /// retried attempt resumes here instead of re-scanning from symbol 0.
+  symbolCursor     Int       @default(0)
   /// Hard token budget. Scan auto-aborts (status=cancelled) when exceeded.
   budgetCapTokens  Int       @default(2000000)
   errorMessage     String?

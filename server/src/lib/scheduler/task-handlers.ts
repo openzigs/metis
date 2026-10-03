@@ -106,6 +106,13 @@ export interface BuiltInHandlerDeps {
  * services not yet wired (in tests, for example) report a clear error rather
  * than crashing.
  */
+/**
+ * #759 — one scan attempt's time limit. The 5-minute scheduler default fits
+ * ~4 symbols on a thinking model (~75 s each); a timed-out attempt is retried
+ * and resumes from its persisted cursor, so this bounds an attempt, not a scan.
+ */
+export const SCANNER_RUN_SCAN_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+
 export function registerBuiltInHandlers(
   registry: TaskHandlerRegistry,
   deps: BuiltInHandlerDeps,
@@ -265,6 +272,7 @@ export function registerBuiltInHandlers(
   registry.register({
     type: "scanner.run-scan",
     description: "Run an AI Bug Scanner scan against a project's repo (Epic #708).",
+    defaultTimeoutMs: SCANNER_RUN_SCAN_TIMEOUT_MS,
     handler: async (ctx) => {
       const scanId = String(ctx.task.payload.scanId ?? "");
       if (!scanId) throw new Error("payload.scanId is required");

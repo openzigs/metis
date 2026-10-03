@@ -6,6 +6,7 @@ import {
   BUILT_IN_TASK_TYPES,
   InMemoryTaskHandlerRegistry,
   registerBuiltInHandlers,
+  SCANNER_RUN_SCAN_TIMEOUT_MS,
 } from "../src/lib/scheduler/task-handlers.js";
 import type { TaskHandlerContext, TaskRecord } from "../src/lib/scheduler/types.js";
 
@@ -407,5 +408,12 @@ describe("registerBuiltInHandlers", () => {
     await expect(
       reg.get("scanner.run-scan")!.handler(makeCtx({ scanId: "scan-1" })),
     ).rejects.toThrow(/not wired/);
+  });
+
+  it("#759 — scanner.run-scan has its own timeout, not the 5-minute scheduler default", () => {
+    const reg = new InMemoryTaskHandlerRegistry();
+    registerBuiltInHandlers(reg, { httpWebhookHandler: vi.fn() });
+    expect(reg.get("scanner.run-scan")!.defaultTimeoutMs).toBe(SCANNER_RUN_SCAN_TIMEOUT_MS);
+    expect(SCANNER_RUN_SCAN_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000);
   });
 });

@@ -5,12 +5,14 @@ import {
   type ScanRecordSnapshot,
   type ScannerPorts,
   type SymbolToScan,
+  type ScanProgress,
   MAX_CONSECUTIVE_SYMBOL_FAILURES,
   runScan,
 } from "./orchestrator.js";
 import type { CandidateFinding } from "./types.js";
 import type { ChatResponse } from "../ai/types.js";
 import { ScannerJsonParseError } from "./llm-client.js";
+import { TaskAbortError } from "../scheduler/task-abort.js";
 
 function makeScan(overrides: Partial<ScanRecordSnapshot> = {}): ScanRecordSnapshot {
   return {
@@ -62,6 +64,8 @@ interface Recorder {
     failed: { id: string; reason: string; summary?: unknown } | null;
     audit: Array<{ event: string; meta?: Record<string, unknown> }>;
     upserts: ScanPersistedFinding[];
+    progress: ScanProgress[];
+    discarded: Array<{ scanId: string; symbolId: string }>;
   };
 }
 
@@ -83,6 +87,8 @@ function recorder(opts: {
     failed: null,
     audit: [],
     upserts: [],
+    progress: [],
+    discarded: [],
   };
   const ports: ScannerPorts = {
     loadScan: vi.fn().mockResolvedValue(scan),
@@ -107,6 +113,12 @@ function recorder(opts: {
     }),
     upsertFinding: vi.fn().mockImplementation(async (_id: string, f: ScanPersistedFinding) => {
       state.upserts.push(f);
+    }),
+    recordProgress: vi.fn().mockImplementation(async (_id: string, p: ScanProgress) => {
+      state.progress.push({ ...p });
+    }),
+    discardSymbolFindings: vi.fn().mockImplementation(async (scanId: string, symbolId: string) => {
+      state.discarded.push({ scanId, symbolId });
     }),
     markRunning: vi.fn().mockImplementation(async (id: string, sha: string) => {
       state.running = { id, sha };
@@ -214,7 +226,7 @@ describe("runScan", () => {
     expect(r.state.failed?.reason).toBe("LLM down");
   });
 
-  it("respects an aborted signal mid-scan", async () => {
+  it("#759 — an abort between symbols stops the scan and never marks it completed", async () => {
     const ac = new AbortController();
     const r = recorder({
       symbols: [makeSym({ id: "a" }), makeSym({ id: "b" })],
@@ -223,8 +235,14 @@ describe("runScan", () => {
       if (symbol.id === "a") ac.abort();
       return { candidates: [], totalTokens: 10 };
     });
-    const res = await runScan(r.ports, { scanId: "scan-1", signal: ac.signal });
-    expect(res.symbolsScanned).toBe(1);
+    await expect(runScan(r.ports, { scanId: "scan-1", signal: ac.signal })).rejects.toThrow(
+      /interrupted/,
+    );
+    expect(r.ports.runFirstPass).toHaveBeenCalledTimes(1);
+    expect(r.state.completed).toBeNull();
+    expect(r.state.failed?.summary).toMatchObject({ symbolsScanned: 1 });
+    // The finished symbol's progress was persisted before the abort was seen.
+    expect(r.state.progress.at(-1)).toMatchObject({ symbolCursor: 1, symbolsScanned: 1 });
   });
 
   // ---------------------------------------------------------------------------
@@ -317,6 +335,128 @@ describe("runScan", () => {
     await runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal });
     expect((r.ports.runFpFilter as ReturnType<typeof vi.fn>).mock.calls[0][0].scan.id).toBe(
       "scan-1",
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // #759 — a scan's progress survives a retry: resume, no re-billing, no
+  // duplicate findings, and a timeout that names itself.
+  // ---------------------------------------------------------------------------
+
+  const abcd = () => ["a", "b", "c", "d"].map((id) => makeSym({ id, qualifiedName: `q::${id}` }));
+
+  it("persists a resume cursor after every symbol, skipped ones included", async () => {
+    const r = recorder({ symbols: abcd(), fpTokens: 0, firstPassTokens: 10 });
+    r.ports.readSymbolBody = vi
+      .fn()
+      .mockImplementation(async (_s: ScanRecordSnapshot, sym: SymbolToScan) =>
+        sym.id === "b" ? "   " : "body",
+      );
+    await runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal });
+    expect(r.state.progress.map((p) => p.symbolCursor)).toEqual([1, 2, 3, 4]);
+    expect(r.state.progress.at(-1)).toEqual({
+      symbolCursor: 4,
+      totalSymbols: 4,
+      symbolsScanned: 3,
+      tokenSpend: 30,
+    });
+  });
+
+  it("resumes from the persisted cursor and never re-scans finished symbols", async () => {
+    const r = recorder({
+      scan: makeScan({
+        budgetCapTokens: 10_000,
+        resume: { symbolCursor: 2, symbolsScanned: 2, tokenSpend: 500 },
+      }),
+      symbols: abcd(),
+      fpTokens: 0,
+      firstPassTokens: 10,
+    });
+    const res = await runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal });
+    const scanned = (r.ports.runFirstPass as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0].symbol.id,
+    );
+    expect(scanned).toEqual(["c", "d"]);
+    // Counters carry across attempts instead of resetting to zero.
+    expect(res.symbolsScanned).toBe(4);
+    expect(res.tokenSpend).toBe(520);
+    expect(r.state.completed?.summary).toMatchObject({ symbolsScanned: 4, tokenSpend: 520 });
+  });
+
+  it("drops the interrupted symbol's partial findings before re-scanning it", async () => {
+    const r = recorder({
+      scan: makeScan({ resume: { symbolCursor: 2, symbolsScanned: 2, tokenSpend: 0 } }),
+      symbols: abcd(),
+    });
+    await runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal });
+    expect(r.state.discarded).toEqual([{ scanId: "scan-1", symbolId: "c" }]);
+    // Discarded before that symbol produced its fresh findings.
+    const discardOrder = (r.ports.discardSymbolFindings as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
+    const firstScanOrder = (r.ports.runFirstPass as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
+    expect(discardOrder).toBeLessThan(firstScanOrder);
+  });
+
+  it("counts the tokens of earlier attempts against the budget", async () => {
+    const r = recorder({
+      scan: makeScan({
+        budgetCapTokens: 1000,
+        resume: { symbolCursor: 1, symbolsScanned: 1, tokenSpend: 1000 },
+      }),
+      symbols: abcd(),
+    });
+    const res = await runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal });
+    expect(res.bailedOnBudget).toBe(true);
+    expect(r.ports.runFirstPass).not.toHaveBeenCalled();
+  });
+
+  it("treats a cursor past the end (symbol list shrank) as nothing left to scan", async () => {
+    const r = recorder({
+      scan: makeScan({ resume: { symbolCursor: 9, symbolsScanned: 9, tokenSpend: 0 } }),
+      symbols: abcd(),
+    });
+    const res = await runScan(r.ports, { scanId: "scan-1", signal: new AbortController().signal });
+    expect(r.ports.runFirstPass).not.toHaveBeenCalled();
+    expect(r.ports.discardSymbolFindings).not.toHaveBeenCalled();
+    expect(r.state.completed?.summary).toMatchObject({ totalSymbols: 4 });
+    expect(res.symbolsScanned).toBe(9);
+  });
+
+  it("names the task timeout, not the provider's 'Request was aborted', when an attempt times out", async () => {
+    const ac = new AbortController();
+    const r = recorder({ symbols: abcd(), fpTokens: 0 });
+    r.ports.runFirstPass = vi.fn().mockImplementation(async ({ symbol }) => {
+      if (symbol.id === "a") return { candidates: [], totalTokens: 10 };
+      ac.abort(new TaskAbortError("timeout", "task timeout after 7200000ms"));
+      throw new Error("anthropic chat failed (Error): Request was aborted.");
+    });
+    const err = await runScan(r.ports, { scanId: "scan-1", signal: ac.signal }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).not.toMatch(/Request was aborted/);
+    expect(err.message).toMatch(/timed out \(task timeout after 120 min\)/);
+    expect(err.message).toMatch(/1 of 4 symbols/);
+    expect(err.message).toMatch(/resumes at symbol 2/);
+    expect(r.state.failed?.reason).toBe(err.message);
+    expect(r.state.completed).toBeNull();
+  });
+
+  it("says 'interrupted' with the reason for a non-timeout abort", async () => {
+    const ac = new AbortController();
+    ac.abort(new TaskAbortError("user", "cancelled by user"));
+    const r = recorder({ symbols: abcd() });
+    await expect(runScan(r.ports, { scanId: "scan-1", signal: ac.signal })).rejects.toThrow(
+      /scan interrupted \(cancelled by user\)/,
+    );
+    expect(r.ports.runFirstPass).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a generic reason when the abort carries none", async () => {
+    const ac = new AbortController();
+    ac.abort("stop");
+    const r = recorder({ symbols: abcd() });
+    await expect(runScan(r.ports, { scanId: "scan-1", signal: ac.signal })).rejects.toThrow(
+      /scan interrupted \(aborted\)/,
     );
   });
 });

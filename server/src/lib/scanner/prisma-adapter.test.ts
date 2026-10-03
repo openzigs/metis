@@ -27,7 +27,8 @@ const mockPrisma = {
   repoConnection: { findFirst: vi.fn() },
   jiraConnection: { findFirst: vi.fn() },
   project: { findUnique: vi.fn() },
-  scanFinding: { findUnique: vi.fn(), update: vi.fn() },
+  scanFinding: { findUnique: vi.fn(), update: vi.fn(), deleteMany: vi.fn() },
+  tokenUsage: { aggregate: vi.fn() },
   issueLink: { upsert: vi.fn(), findFirst: vi.fn() },
   finding: { create: vi.fn() },
   document: { findMany: vi.fn() },
@@ -38,7 +39,13 @@ vi.mock("../prisma.js", () => ({ prisma: mockPrisma }));
 vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 // #718 — scanner LLM calls are metered into the project's usage ledger.
-const mockRecordUsage = vi.fn();
+// #759 — returns the real shape: the adapter awaits `persisted` before it
+// reads the ledger back.
+const mockRecordUsage = vi.fn((_input: Record<string, unknown>) => ({
+  totalTokens: 0,
+  costCents: 0 as number | null,
+  persisted: Promise.resolve(),
+}));
 vi.mock("../finops/token-tracker.js", () => ({ recordUsage: mockRecordUsage }));
 
 // #532 — one provider object for the whole file: the adapter caches the first
@@ -1191,6 +1198,24 @@ describe("buildScannerPorts wrappers", () => {
     expect(row).toMatchObject({ id: "scan-1", mode: "both" });
   });
 
+  it("#759 — listSymbols orders totally, so a resume cursor indexes the same list", async () => {
+    mockPrisma.codeGraph.findFirst.mockResolvedValueOnce({ id: "g1" });
+    mockPrisma.codeSymbol.findMany.mockResolvedValueOnce([]);
+    await buildScannerPorts().listSymbols({
+      id: "scan-1",
+      projectId: "p",
+      repoConnectionId: "r",
+      commitSha: "abc",
+      mode: "heuristic",
+      budgetCapTokens: 1,
+      createdById: "u",
+    });
+    expect(mockPrisma.codeSymbol.findMany.mock.calls[0][0].orderBy).toEqual([
+      { qualifiedName: "asc" },
+      { id: "asc" },
+    ]);
+  });
+
   it("graphCommitSha returns null when no graph exists", async () => {
     mockPrisma.codeGraph.findFirst.mockResolvedValue(null);
     const ports = buildScannerPorts();
@@ -1638,5 +1663,160 @@ describe("buildScannerPorts — metering, output caps, lifecycle (#718)", () => 
       lastSymbolError: null,
     });
     expect(mockPrisma.scan.update.mock.calls[0][0].data.errorMessage).toBeNull();
+  });
+});
+
+// ----------------------------------------------------------------------------
+// #759 — resume cursor, partial-finding cleanup, and scan totals that match
+// the metered ledger across every attempt.
+// ----------------------------------------------------------------------------
+
+describe("buildScannerPorts — resume + metered totals (#759)", () => {
+  const summary = {
+    scanId: "scan-7",
+    totalSymbols: 4252,
+    symbolsScanned: 4,
+    symbolsFailed: 0,
+    lastSymbolError: null,
+    candidatesProduced: 0,
+    candidatesKept: 0,
+    tokenSpend: 74_363,
+    bailedOnBudget: false,
+    bailedOnFreshness: false,
+    durationMs: 1,
+  };
+
+  beforeEach(() => {
+    mockPrisma.scan.update.mockReset().mockResolvedValue({});
+    mockPrisma.scan.findUnique.mockReset();
+    mockPrisma.tokenUsage.aggregate.mockReset();
+    mockPrisma.scanFinding.deleteMany.mockReset().mockResolvedValue({ count: 0 });
+  });
+
+  it("loadScan maps the persisted cursor and counters into a resume point", async () => {
+    mockPrisma.scan.findUnique.mockResolvedValueOnce({
+      id: "scan-7",
+      projectId: "p",
+      repoConnectionId: "r",
+      commitSha: "abc",
+      mode: "heuristic",
+      budgetCapTokens: 100,
+      createdById: "u",
+      symbolCursor: 12,
+      scannedSymbols: 11,
+      totalTokens: 9000,
+    });
+    const row = await buildScannerPorts().loadScan("scan-7");
+    expect(row?.resume).toEqual({ symbolCursor: 12, symbolsScanned: 11, tokenSpend: 9000 });
+  });
+
+  it("recordProgress writes the cursor and running counters onto the scan row", async () => {
+    await buildScannerPorts().recordProgress("scan-7", {
+      symbolCursor: 5,
+      totalSymbols: 4252,
+      symbolsScanned: 4,
+      tokenSpend: 1234,
+    });
+    expect(mockPrisma.scan.update).toHaveBeenCalledWith({
+      where: { id: "scan-7" },
+      data: { symbolCursor: 5, totalSymbols: 4252, scannedSymbols: 4, totalTokens: 1234 },
+    });
+  });
+
+  it("discardSymbolFindings deletes only this scan's untriaged findings for that symbol", async () => {
+    await buildScannerPorts().discardSymbolFindings("scan-7", "sym-3");
+    expect(mockPrisma.scanFinding.deleteMany).toHaveBeenCalledWith({
+      where: { scanId: "scan-7", symbolId: "sym-3", triageStatus: "pending" },
+    });
+  });
+
+  it("markFailed takes totalTokens and costCents from the ledger, after its writes land", async () => {
+    let landed = false;
+    mockRecordUsage.mockImplementationOnce(() => ({
+      totalTokens: 10,
+      costCents: 1,
+      persisted: new Promise<void>((res) =>
+        setTimeout(() => {
+          landed = true;
+          res();
+        }, 5),
+      ),
+    }));
+    // Meter one call against the scan so a write is in flight.
+    mockProvider.chat.mockResolvedValueOnce({
+      content: "{}",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "m",
+      provider: "anthropic",
+    });
+    await buildScannerPorts().runFirstPass({
+      scan: {
+        id: "scan-7",
+        projectId: "proj-7",
+        repoConnectionId: "r",
+        commitSha: "abc",
+        mode: "heuristic",
+        budgetCapTokens: 1,
+        createdById: "u",
+      },
+      symbol: {
+        id: "s",
+        qualifiedName: "q",
+        kind: "function",
+        language: "go",
+        filePath: "a.go",
+        startLine: 1,
+        endLine: 1,
+      },
+      body: "x",
+      ruleInstructions: "",
+      signal: new AbortController().signal,
+    });
+    mockPrisma.scan.findUnique.mockResolvedValueOnce({ projectId: "proj-7" });
+    mockPrisma.tokenUsage.aggregate.mockImplementationOnce(async () => {
+      expect(landed).toBe(true);
+      return { _sum: { totalTokens: 275_882, costCents: 23 }, _count: { _all: 67 } };
+    });
+
+    await buildScannerPorts().markFailed("scan-7", "timed out", summary);
+
+    expect(mockPrisma.tokenUsage.aggregate).toHaveBeenCalledWith({
+      where: { projectId: "proj-7", sessionId: "scan-scan-7" },
+      _sum: { totalTokens: true, costCents: true },
+      _count: { _all: true },
+    });
+    expect(mockPrisma.scan.update.mock.calls[0][0].data).toMatchObject({
+      status: "failed",
+      totalTokens: 275_882,
+      costCents: 23,
+      scannedSymbols: 4,
+    });
+  });
+
+  it("markCompleted takes the ledger totals too", async () => {
+    mockPrisma.scan.findUnique.mockResolvedValueOnce({ projectId: "proj-7" });
+    mockPrisma.tokenUsage.aggregate.mockResolvedValueOnce({
+      _sum: { totalTokens: 500, costCents: null },
+      _count: { _all: 2 },
+    });
+    await buildScannerPorts().markCompleted("scan-7", summary);
+    expect(mockPrisma.scan.update.mock.calls[0][0].data).toMatchObject({
+      status: "completed",
+      totalTokens: 500,
+      // Unpriced model: unknown spend, recorded as no known cost.
+      costCents: 0,
+    });
+  });
+
+  it("keeps the orchestrator's count when the ledger has no rows for the scan", async () => {
+    mockPrisma.scan.findUnique.mockResolvedValueOnce({ projectId: "proj-7" });
+    mockPrisma.tokenUsage.aggregate.mockResolvedValueOnce({
+      _sum: { totalTokens: null, costCents: null },
+      _count: { _all: 0 },
+    });
+    await buildScannerPorts().markCompleted("scan-7", summary);
+    const data = mockPrisma.scan.update.mock.calls[0][0].data;
+    expect(data.totalTokens).toBe(74_363);
+    expect(data).not.toHaveProperty("costCents");
   });
 });
