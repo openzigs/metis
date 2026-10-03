@@ -1554,6 +1554,25 @@ The Requirements page has a second tab called **Traceability Matrix**. This is a
 
 This matrix gives you instant visibility into where each requirement stands in the pipeline — from initial discovery through final publication.
 
+#### Which tests cover a requirement ("Tested by")
+
+Each requirement's card on an analysis's **Requirements** tab shows its traceability chain (specs → code), and below it a **Tested by** section. Each test is listed as `file:line › test name` — for example `internal/validator/user_test.go:18 › TestValidatePassword` — with a label saying how METIS linked it:
+
+| Label | Meaning |
+|---|---|
+| **Mapped directly** | The code mapped to the requirement is itself a test file or test. |
+| **Calls the code** | A test calls (or references) code mapped to the requirement. |
+| **Naming convention** | A test in the conventional test file for the mapped code is named for it. This is the weakest signal. |
+
+Mapped code that is itself a test carries a small **test** badge in the chain.
+
+Two empty states mean different things:
+
+- **No linked test** — the requirement has mapped code, but no test was found for it. This is a real testing gap.
+- **No code mapped yet, so tests can't be linked** — METIS does not yet know which code implements the requirement, so it cannot tell whether it is tested. Map code first.
+
+On the analysis's **Traceability** tab, the matrix's **Tests** column shows the same label after each test, and an **Untested requirements** list sits below the matrix. It reads "N of M requirements with mapped code have a linked test", says how many requirements have no mapped code (those are not counted either way), and lists each untested requirement as a link to its card. Use **Load more** to page through a long list. The list appears once the analysis has completed. It is separate from the **Gap report** further down, which is about missing *implementation*, not missing tests.
+
 ### 12.5 Editing Requirements
 
 You can edit any requirement that hasn't been published yet:
@@ -1684,7 +1703,7 @@ Individual requirement links (Section 12.8) are most useful when you can see the
 
 Open your workspace and select the **Traceability** tab (`/workspaces/<id>/traceability`). You'll see two panels:
 
-- **Per-project coverage** — a table with one row per project in the workspace, showing its requirement count, how many of those requirements are **linked across projects**, and its **spec** and **code** coverage as percentages. It's a quick read on which projects are well-connected and well-covered, and which are lagging.
+- **Per-project coverage** — a table with one row per project in the workspace, showing its requirement count, how many of those requirements are **linked across projects**, and its **spec** and **code** coverage as percentages. A **Tested** column shows the share of requirements *with mapped code* that have at least one linked test (any of the "Tested by" labels in Section 12.4). Requirements with no mapped code are left out of that figure, and a project with none shows "No mapped code" instead of a percentage. Hover the badge for the strict figure, which counts only **Mapped directly** and **Calls the code** links, not **Naming convention**. It's a quick read on which projects are well-connected and well-covered, and which are lagging.
 - **Cross-project link map** — a diagram of the workspace's cross-project requirement links: each project is a box, each participating requirement a node, and each link a typed arrow between them. When there are no cross-project links yet, the panel says so.
 
 **What you see respects your access.** The rollup only ever includes projects you can access within that workspace, and a cross-project link appears **only when you can access both of its endpoints** — so the view never reveals a requirement, project, or link you aren't entitled to see. Asking for a workspace you don't belong to returns "not found".

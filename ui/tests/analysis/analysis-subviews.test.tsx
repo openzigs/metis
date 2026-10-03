@@ -274,6 +274,9 @@ vi.mock("@/components/analysis/StakeholdersPanel", () => ({ StakeholdersPanel: (
 vi.mock("@/components/analysis/analysis-run-summary", () => ({ AnalysisRunSummary: () => null }));
 vi.mock("@/components/analysis/traceability-matrix", () => ({ TraceabilityMatrix: () => null }));
 vi.mock("@/components/analysis/gap-report", () => ({ GapReport: () => null }));
+vi.mock("@/components/traceability/untested-requirements-panel", () => ({
+  UntestedRequirementsPanel: () => null,
+}));
 vi.mock("@/components/analysis/requirement-diff", () => ({ RequirementDiff: () => null }));
 vi.mock("@/components/requirements/requirement-links-panel", () => ({
   RequirementLinksPanel: () => null,
