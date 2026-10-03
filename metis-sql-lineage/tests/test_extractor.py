@@ -413,3 +413,99 @@ def test_never_executes_returns_plain_data():
     assert result["lineage_edges"] == []
     # Purity: extracting twice yields identical output (no hidden state / no run).
     assert extract_usage("DROP TABLE users", dialect="postgres") == result
+
+
+# --- Issue #760: bind parameters + per-column access ------------------------
+
+
+def _column_access(result: dict, table_qn: str) -> set[tuple[str, str]]:
+    return {(c["column"], c["access"]) for c in result["columns"] if c["table"] == table_qn}
+
+
+@pytest.mark.parametrize("dialect", ["", "postgres"])
+def test_postgres_positional_parameters_are_never_columns(dialect):
+    # miniflux `MarkAllAsRead` (entry.go:508). Under the default dialect sqlglot
+    # parses `$1` as a Column, which became `entries.$1` edges (#760).
+    result = extract_usage(
+        "UPDATE entries SET status=$1, changed_at=now() WHERE user_id=$2 AND status=$3",
+        dialect=dialect,
+    )
+    names = _columns_for(result, "entries")
+    assert not any(n.startswith("$") for n in names)
+    assert names == {"status", "changed_at", "user_id"}
+
+
+def test_other_bind_parameter_shapes_are_never_columns():
+    result = extract_usage(
+        "DELETE FROM feeds WHERE id = $1 AND user_id = ? AND title = :title", dialect=""
+    )
+    assert _columns_for(result, "feeds") == {"id", "user_id", "title"}
+
+
+def test_update_writes_only_set_targets_and_reads_predicates():
+    result = extract_usage(
+        "UPDATE entries SET status=$1, changed_at=now() WHERE user_id=$2 AND status=$3",
+        dialect="",
+    )
+    assert _column_access(result, "entries") == {
+        ("status", "write"),
+        ("changed_at", "write"),
+        ("user_id", "read"),
+        ("status", "read"),
+    }
+    # The table itself is still written.
+    assert result["tables"][0]["access"] == "write"
+
+
+def test_tuple_set_targets_are_writes():
+    result = extract_usage("UPDATE t SET (a, b) = (1, 2) WHERE c = 1", dialect="postgres")
+    assert _column_access(result, "t") == {("a", "write"), ("b", "write"), ("c", "read")}
+
+
+def test_delete_predicate_columns_are_reads():
+    result = extract_usage("DELETE FROM sessions WHERE expired = 1", dialect="postgres")
+    assert _column_access(result, "sessions") == {("expired", "read")}
+    assert result["tables"][0]["access"] == "write"
+
+
+def test_insert_targets_persist_and_conflict_set_targets_write():
+    result = extract_usage(
+        "INSERT INTO t (a, b) VALUES ($1, $2) ON CONFLICT (a) DO UPDATE SET b = excluded.b",
+        dialect="postgres",
+    )
+    access = _column_access(result, "t")
+    assert ("a", "persist") in access
+    assert ("b", "persist") in access
+    assert ("b", "write") in access
+    assert not any(n.startswith("$") for n, _ in access)
+
+
+def test_merge_classifies_targets_and_predicates():
+    result = extract_usage(
+        "MERGE INTO t USING s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.v = s.v "
+        "WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)",
+        dialect="",
+    )
+    access = _column_access(result, "t")
+    assert ("v", "write") in access
+    assert ("id", "read") in access
+    assert ("id", "write") not in access
+
+
+def test_multi_statement_merges_column_accesses():
+    sql = "SELECT name FROM users; UPDATE users SET name = 'x' WHERE id = 1;"
+    result = extract_usage(sql, dialect="postgres")
+    assert _column_access(result, "users") == {
+        ("name", "read"),
+        ("name", "write"),
+        ("id", "read"),
+    }
+
+
+def test_merge_qualified_insert_targets_persist():
+    result = extract_usage(
+        "MERGE INTO t USING s ON t.id = s.id WHEN NOT MATCHED THEN INSERT (t.id) VALUES (s.id)",
+        dialect="",
+    )
+    assert _column_access(result, "t") == {("id", "read"), ("id", "persist")}

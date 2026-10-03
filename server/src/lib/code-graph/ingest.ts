@@ -2014,6 +2014,41 @@ export async function extractEfCoreSchema(
   }
 }
 
+/** Languages whose string literals ride the embedded-SQL path (#305/#888/#900). */
+const EMBEDDED_SQL_LANGUAGES: ReadonlySet<string> = new Set(["ts", "js", "py", "go", "java", "cs"]);
+
+/**
+ * #760 — the persisted function/method symbols of `filePaths`, grouped by file,
+ * so embedded-SQL edges hang off `UpdateFeed` rather than a synthetic
+ * `sql@<line>` symbol. Synthetic origins are excluded: they are `method` rows
+ * too (`language: "sql"`, e.g. the MyBatis annotation statements written in
+ * Step 5c), and being one line long they would always win the narrowest-span
+ * match. A failed lookup degrades to no enclosing symbols (synthetic origins).
+ */
+async function loadEnclosingCodeSymbols(
+  prisma: PrismaClient,
+  codeGraphId: string,
+  filePaths: string[],
+): Promise<Map<string, EnclosingSymbol[]>> {
+  const byFile = new Map<string, EnclosingSymbol[]>();
+  if (filePaths.length === 0) return byFile;
+  try {
+    const rows = await prisma.codeSymbol.findMany({
+      where: { codeGraphId, filePath: { in: filePaths }, kind: { in: ["function", "method"] } },
+      select: { id: true, filePath: true, startLine: true, endLine: true, language: true },
+    });
+    for (const s of rows) {
+      if (s.language === "sql") continue;
+      const list = byFile.get(s.filePath) ?? [];
+      list.push({ id: s.id, startLine: s.startLine, endLine: s.endLine });
+      byFile.set(s.filePath, list);
+    }
+  } catch {
+    byFile.clear();
+  }
+  return byFile;
+}
+
 export async function extractSchemaUsage(
   prisma: PrismaClient,
   codeGraphId: string,
@@ -2060,6 +2095,11 @@ export async function extractSchemaUsage(
       codeGraphId,
       projectId,
     );
+    const enclosingByFile = await loadEnclosingCodeSymbols(
+      prisma,
+      codeGraphId,
+      parsedFiles.filter((f) => EMBEDDED_SQL_LANGUAGES.has(f.language)).map((f) => f.filePath),
+    );
     for (const file of parsedFiles) {
       const source = sourceByRelPath.get(file.filePath);
       if (!source) continue;
@@ -2072,29 +2112,26 @@ export async function extractSchemaUsage(
             sqlLineageOverride: wiring.sqlLineageOverride,
           });
           stats.schemaEdges += res.edges;
-        } else if (
-          file.language === "ts" ||
-          file.language === "js" ||
-          file.language === "py" ||
-          file.language === "go" ||
-          file.language === "java" ||
-          file.language === "cs"
-        ) {
+        } else if (EMBEDDED_SQL_LANGUAGES.has(file.language)) {
           // #305 — embedded SQL string literals across the supported languages.
           // #900 — C# ADO.NET/Dapper raw SQL rides this same extractor + gate.
           // #888 — Java raw JDBC (PreparedStatement/Statement string SQL) rides
           // the same extractor + gate; `extractRoutineUsage` below still only
           // scans ts/js/py/go internally (self-guarded), so this is a no-op
           // addition for routine-invocation detection until that's in scope.
+          // #760 — edges originate from the enclosing function/method.
+          const enclosingSymbols = enclosingByFile.get(file.filePath) ?? [];
           const res = await extractEmbeddedSql(writer, file.filePath, source, {
             schema,
             sqlLineageOverride: wiring.sqlLineageOverride,
+            enclosingSymbols,
           });
           stats.schemaEdges += res.edges;
           // #316A — routine invocations in the same code → `executes` edges.
           const routineRes = await extractRoutineUsage(writer, file.filePath, source, {
             schema,
             sqlLineageOverride: wiring.sqlLineageOverride,
+            enclosingSymbols,
           });
           stats.routineEdges += routineRes.edges;
         }

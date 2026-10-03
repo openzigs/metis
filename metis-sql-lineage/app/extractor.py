@@ -185,6 +185,54 @@ def _statement_access(statement: exp.Expression) -> str:
     return ACCESS_READ
 
 
+# A bind parameter is never a column (#760). Under the permissive default
+# dialect sqlglot parses a Postgres positional parameter (`$1`) as a Column
+# named "$1" (`?`, `:name` and `@name` already parse as Placeholder/Parameter
+# nodes, never as Columns). Anchored literal pattern (ReDoS-safe).
+_POSITIONAL_PARAM_RE = re.compile(r"^\$\d+$")
+
+
+def _is_bind_parameter(column: exp.Column) -> bool:
+    return bool(_POSITIONAL_PARAM_RE.match(column.name or ""))
+
+
+def _is_assignment_target(column: exp.Column) -> bool:
+    """True when ``column`` is the left side of a ``SET col = ...`` assignment in an
+    UPDATE, a MERGE ``WHEN MATCHED THEN UPDATE`` or an ``ON CONFLICT DO UPDATE``.
+    A tuple target (``SET (a, b) = (...)``) counts for each of its columns."""
+    node: exp.Expression = column
+    if isinstance(node.parent, exp.Tuple):
+        node = node.parent
+    eq = node.parent
+    if not isinstance(eq, exp.EQ) or node.arg_key != "this":
+        return False
+    return eq.arg_key == "expressions" and isinstance(eq.parent, (exp.Update, exp.OnConflict))
+
+
+def _is_insert_target(column: exp.Column) -> bool:
+    """True for a MERGE ``WHEN NOT MATCHED THEN INSERT (a, b)`` target column."""
+    parent = column.parent
+    return (
+        isinstance(parent, exp.Tuple)
+        and parent.arg_key == "this"
+        and isinstance(parent.parent, exp.Insert)
+    )
+
+
+def _column_access(column: exp.Column, statement_access: str) -> str:
+    """Per-column access (#760). In a read statement every column is read. In a
+    writing statement only the columns actually assigned are written (or
+    persisted, for INSERT targets); predicate, join and source columns are reads —
+    so "who writes ``entries.user_id``?" does not match a ``WHERE user_id = ...``."""
+    if statement_access == ACCESS_READ:
+        return ACCESS_READ
+    if _is_assignment_target(column):
+        return ACCESS_WRITE
+    if _is_insert_target(column):
+        return ACCESS_PERSIST
+    return ACCESS_READ
+
+
 def _routine_target_names(statement: exp.Expression) -> set[str]:
     """Names of routines/objects DEFINED by a CREATE so we don't treat the routine's
     own name as a referenced table."""
@@ -235,7 +283,7 @@ def _collect_tables(statement: exp.Expression, exclude: set[str]) -> dict[str, d
         if not name or name in exclude or name in cte_names:
             continue
         qn = _table_qualified_name(schema, name)
-        tables.setdefault(qn, {"schema": schema, "name": name, "columns": set()})
+        tables.setdefault(qn, {"schema": schema, "name": name, "columns": {}})
 
     # INSERT target columns live in the `Schema` node (`INSERT INTO t (a, b) ...`)
     # as Identifier children, NOT as Column nodes, so attach them here.
@@ -249,12 +297,15 @@ def _collect_tables(statement: exp.Expression, exclude: set[str]) -> dict[str, d
                     if isinstance(ident, exp.Identifier):
                         col = _norm(ident.name)
                         if col:
-                            tables[qn]["columns"].add(col)
+                            tables[qn]["columns"].setdefault(col, set()).add(ACCESS_PERSIST)
     return tables
 
 
-def _attach_columns(statement: exp.Expression, tables: dict[str, dict]) -> set[str]:
-    """Attach resolved columns to their tables. Returns unqualified column names
+def _attach_columns(
+    statement: exp.Expression, tables: dict[str, dict], statement_access: str = ACCESS_READ
+) -> set[str]:
+    """Attach resolved columns (with their per-column access, #760) to their
+    tables. Bind parameters are skipped. Returns unqualified column names
     (columns we could not tie to a specific table) for diagnostics."""
     # Build alias → qualified-name map so `u.email` (u = users) lands on `users`.
     alias_to_qn: dict[str, str] = {}
@@ -271,18 +322,19 @@ def _attach_columns(statement: exp.Expression, tables: dict[str, dict]) -> set[s
     unqualified: set[str] = set()
     for column in statement.find_all(exp.Column):
         col = _norm(column.name)
-        if not col or col == "*":
+        if not col or col == "*" or _is_bind_parameter(column):
             continue
+        access = _column_access(column, statement_access)
         tbl_ref = _norm(column.table) if column.table else ""
         if tbl_ref and tbl_ref in alias_to_qn:
             qn = alias_to_qn[tbl_ref]
             if qn in tables:
-                tables[qn]["columns"].add(col)
+                tables[qn]["columns"].setdefault(col, set()).add(access)
                 continue
         if len(tables) == 1:
             # Single-table statement: an unqualified column belongs to it.
             only_qn = next(iter(tables))
-            tables[only_qn]["columns"].add(col)
+            tables[only_qn]["columns"].setdefault(col, set()).add(access)
         else:
             unqualified.add(col)
     return unqualified
@@ -488,8 +540,8 @@ def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = No
         qualified = _try_qualify(statement, schema, resolved_dialect)
         exclude = _routine_target_names(statement)
         tables = _collect_tables(qualified, exclude)
-        unqualified_cols = _attach_columns(qualified, tables)
         access = _statement_access(statement)
+        unqualified_cols = _attach_columns(qualified, tables, access)
 
         # Routine invocations referenced by this statement (#316): `SELECT fn(...)`
         # in app code → a code→routine `executes` edge; a routine BODY calling
@@ -524,12 +576,13 @@ def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = No
                     "schema": info["schema"],
                     "name": info["name"],
                     "access": access,
-                    "columns": set(info["columns"]),
+                    "columns": {c: set(a) for c, a in info["columns"].items()},
                 }
             else:
                 if access_rank[access] > access_rank[existing["access"]]:
                     existing["access"] = access
-                existing["columns"].update(info["columns"])
+                for col, accesses in info["columns"].items():
+                    existing["columns"].setdefault(col, set()).update(accesses)
 
         result["lineage_edges"].extend(_lineage_edges(qualified, schema, resolved_dialect))
 
@@ -545,14 +598,17 @@ def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = No
             }
         )
         for col in sorted(info["columns"]):
-            result["columns"].append(
-                {
-                    "table": qn,
-                    "column": col,
-                    "qualifiedName": f"{qn}.{col}",
-                    "access": info["access"],
-                }
-            )
+            # One entry per (column, access): `SET status = $1 WHERE status = $3`
+            # both writes and reads `status` (#760).
+            for col_access in sorted(info["columns"][col], key=access_rank.__getitem__):
+                result["columns"].append(
+                    {
+                        "table": qn,
+                        "column": col,
+                        "qualifiedName": f"{qn}.{col}",
+                        "access": col_access,
+                    }
+                )
 
     # Materialize routine invocations deterministically (#316).
     for qn in sorted(routine_acc):
