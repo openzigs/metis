@@ -1,5 +1,6 @@
 /**
- * Epic #708 — Thin LLM seam used by the scanner pipeline.
+ * Epic #708 / #804 — thin JSON-returning LLM seam, used by traceability's
+ * suggest-mappings.
  *
  * Wraps `AIProvider.chat()` with:
  *   • JSON-only system prompt enforcement
@@ -7,16 +8,15 @@
  *     fences or prose preamble)
  *   • per-call token + cost accounting via the returned `ChatResponse`
  *
- * The seam exists so the scanner orchestrator / per-symbol scanner /
- * FP-filter / rule-compiler can all swap in a deterministic stub during
- * unit tests without booting the real provider singleton.
+ * The seam exists so callers can swap in a deterministic stub during unit
+ * tests without booting the real provider singleton.
  */
 import type { AIProvider, ChatMessage, ChatResponse } from "./types.js";
 import { createChildLogger } from "../logger.js";
 
-const log = createChildLogger("scanner-llm-client");
+const log = createChildLogger("json-llm-client");
 
-export interface ScannerJsonCallInput {
+export interface JsonLlmCallInput {
   systemPrompt: string;
   userPrompt: string;
   /** Override the provider's default model for this call (e.g. force Sonnet). */
@@ -36,7 +36,7 @@ export interface ScannerJsonCallInput {
   onUsage?: (response: ChatResponse) => void;
 }
 
-export interface ScannerJsonCallResult<T> {
+export interface JsonLlmCallResult<T> {
   parsed: T;
   raw: string;
   response: ChatResponse;
@@ -45,7 +45,7 @@ export interface ScannerJsonCallResult<T> {
 /**
  * Strip markdown code fences and prose around a JSON object/array, then
  * parse. Throws when no JSON-looking substring is present. `callJsonLlm`
- * rethrows any such failure as a {@link ScannerJsonParseError}.
+ * rethrows any such failure as a {@link JsonLlmParseError}.
  */
 export function extractJson<T = unknown>(raw: string): T {
   const trimmed = raw.trim();
@@ -94,14 +94,14 @@ export function extractJson<T = unknown>(raw: string): T {
  * `finishReason` and the reply length: an empty reply with
  * `finishReason=max_tokens` is a model that spent its output cap reasoning.
  */
-export class ScannerJsonParseError extends Error {
+export class JsonLlmParseError extends Error {
   constructor(
     reason: string,
     readonly raw: string,
     readonly response: ChatResponse,
   ) {
     super(`${reason} (finishReason=${response.finishReason ?? "unknown"}, ${raw.length} chars)`);
-    this.name = "ScannerJsonParseError";
+    this.name = "JsonLlmParseError";
   }
 }
 
@@ -116,8 +116,8 @@ const STRICT_JSON_REMINDER =
  */
 export async function callJsonLlm<T = unknown>(
   provider: AIProvider,
-  input: ScannerJsonCallInput,
-): Promise<ScannerJsonCallResult<T>> {
+  input: JsonLlmCallInput,
+): Promise<JsonLlmCallResult<T>> {
   const messages: ChatMessage[] = [
     { role: "system", content: input.systemPrompt },
     { role: "user", content: `${input.userPrompt}\n\n${STRICT_JSON_REMINDER}` },
@@ -129,12 +129,11 @@ export async function callJsonLlm<T = unknown>(
     reasoningEffort: input.reasoningEffort,
     signal: input.signal,
   });
-  // Metering is bookkeeping: a throw here must not read as a failed call, or the
-  // orchestrator would abort the whole scan over it (the shape #718 removed).
+  // Metering is bookkeeping: a throw here must not read as a failed call (#718).
   try {
     input.onUsage?.(response);
   } catch (err) {
-    log.warn("Scanner usage metering failed; continuing", {
+    log.warn("Usage metering failed; continuing", {
       error: err instanceof Error ? err.message : String(err),
     });
   }
@@ -143,11 +142,7 @@ export async function callJsonLlm<T = unknown>(
   try {
     parsed = extractJson<T>(raw);
   } catch (err) {
-    throw new ScannerJsonParseError(
-      err instanceof Error ? err.message : String(err),
-      raw,
-      response,
-    );
+    throw new JsonLlmParseError(err instanceof Error ? err.message : String(err), raw, response);
   }
   return { parsed, raw, response };
 }

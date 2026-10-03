@@ -134,9 +134,10 @@ export interface AnalysisReposSkippedEvent {
  * `ui/src/hooks/use-job-events.ts` handles new kinds generically.
  *
  * Original kinds (#238/#239): `analysis`, `doc-generation`, `impact-analysis`.
- * Added by #406/#419: `scan`, `pr-review`, `import-sync`, `embeddings-reindex`,
+ * Added by #406/#419: `pr-review`, `import-sync`, `embeddings-reindex`,
  * `spec-kit`, `overview-regenerate`.
  * Added by #373: `repo-ingest` (a repository connector's Deep Ingest).
+ * Removed by #804: `scan` (the bug scanner never emitted it).
  *
  * See `docs/ARCHITECTURE.md` § "Realtime job-events bus" for the full contract.
  */
@@ -144,7 +145,6 @@ export type JobKind =
   | "analysis"
   | "doc-generation"
   | "impact-analysis"
-  | "scan"
   | "pr-review"
   | "import-sync"
   | "embeddings-reindex"

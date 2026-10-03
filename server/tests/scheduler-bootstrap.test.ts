@@ -76,12 +76,6 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
-// #759 — the default scanner wiring is asserted against this double.
-const mockRunScanWithPrismaPorts = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock("../src/lib/scanner/prisma-adapter.js", () => ({
-  runScanWithPrismaPorts: mockRunScanWithPrismaPorts,
-}));
-
 import { loadSchedulerConfig, SCHEDULER_DEFAULTS } from "../src/lib/scheduler/config.js";
 import {
   createSchedulerEmitter,
@@ -282,24 +276,42 @@ describe("bootstrapScheduler()", () => {
     await boot.shutdown();
   });
 
-  it("default scanner wiring hands the task's attempt counter to the scan (#759)", async () => {
-    const boot = bootstrapScheduler({});
-    const task = await boot.queue.enqueue({
+  // #804 — the bug scanner is gone. Rows persisted before the upgrade are left
+  // untouched; whatever reaches the queue with that type fails safe.
+  it("#804 — a leftover scanner.run-scan task is refused, marked failed, and the queue keeps running", async () => {
+    const httpWebhookHandler = vi.fn(async () => ({ ok: true }));
+    const boot = bootstrapScheduler({ handlerOverrides: { httpWebhookHandler } });
+    expect(boot.registry.get("scanner.run-scan")).toBeUndefined();
+
+    const leftover = (await readTaskRecord(
+      makeRow({
+        type: "scanner.run-scan",
+        status: "failed",
+        payload: JSON.stringify({ scanId: "scan-1" }),
+        completedAt: new Date(),
+      }).id as string,
+    ))!;
+    await expect(boot.queue.retry(leftover.id, leftover)).rejects.toMatchObject({
+      code: "UNKNOWN_TASK_TYPE",
+    });
+    const retried = [...taskRows.values()].find((r) => r.trigger === "retry");
+    expect(retried).toMatchObject({
       type: "scanner.run-scan",
-      projectId: "p1",
-      payload: { scanId: "scan-1" },
-      maxAttempts: 4,
+      status: "failed",
+      errorMessage: "unknown task type: scanner.run-scan",
     });
+
+    // A pending leftover is never dispatched to a handler.
+    const pending = (await readTaskRecord(
+      makeRow({ type: "scanner.run-scan", status: "pending", payload: "{}" }).id as string,
+    ))!;
+    boot.queue.resume(pending);
+
+    const next = await boot.queue.enqueue({ type: "http-webhook", payload: {} });
     await new Promise((resolve) => setImmediate(resolve));
-    expect(mockRunScanWithPrismaPorts).toHaveBeenCalledExactlyOnceWith(
-      "scan-1",
-      expect.any(AbortSignal),
-      { attempts: 1, maxAttempts: 4 },
-    );
-    expect(await readTaskRecord(task.id)).toMatchObject({
-      status: "completed",
-      result: { scanId: "scan-1" },
-    });
+    expect(httpWebhookHandler).toHaveBeenCalledOnce();
+    expect((await readTaskRecord(next.id))?.status).toBe("completed");
+    expect(taskRows.get(pending.id)).toMatchObject({ status: "pending", attempts: 0 });
     await boot.shutdown();
   });
 

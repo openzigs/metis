@@ -4,8 +4,7 @@
  *   - buildAnalysisFindingBody: deterministic markdown + persona attribution.
  *   - publishAnalysisFinding: destination resolution (GitHub repo connection /
  *     Jira), payload construction, label merge, and the analysis-specific
- *     PublisherPorts (idempotency keyed on IssueLink.findingId, stale-commit
- *     anchor no-op).
+ *     PublisherPorts (idempotency keyed on IssueLink.findingId).
  *
  * The generic finding-publisher engine is mocked so we can assert exactly what
  * the adapter hands it (ports + payload) without booting Octokit / Jira / vault.
@@ -47,7 +46,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 let captured: { ports: PublisherPorts; input: PublishInput } | null = null;
 const fakeLink: ExistingIssueLink = {
   id: "link_1",
-  scanFindingId: "find_1",
+  sourceId: "find_1",
   provider: "github",
   externalId: "42",
   externalUrl: "https://github.com/acme/app/issues/42",
@@ -60,7 +59,7 @@ vi.mock("../src/lib/publishing/finding-publisher.js", async (importOriginal) => 
     ...actual,
     publishFinding: vi.fn(async (ports: PublisherPorts, input: PublishInput) => {
       captured = { ports, input };
-      return { link: fakeLink, reused: false, staleCommit: false };
+      return { link: fakeLink, reused: false };
     }),
   };
 });
@@ -212,7 +211,7 @@ describe("publishAnalysisFinding", () => {
     const { input } = captured!;
     expect(input.provider).toBe("github");
     expect(input.finding.repoConnectionId).toBe("repo_1");
-    expect(input.finding.scanFindingId).toBe("find_1");
+    expect(input.finding.sourceId).toBe("find_1");
     expect(input.finding.title).toBe(DRAFT.title);
     // Suggested labels + caller extras are merged.
     expect(input.extraLabels).toEqual(["security", "compliance", "triaged"]);
@@ -342,12 +341,10 @@ describe("publishAnalysisFinding", () => {
     });
     const { ports } = captured!;
 
-    // Stale-commit gate is a no-op: anchor equals payload commitSha.
-    expect(await ports.currentRepoCommitSha("proj_1", "repo_1")).toBe(
-      captured!.input.finding.commitSha,
-    );
+    // #804 — the engine has no stale-commit port any more.
+    expect("currentRepoCommitSha" in ports).toBe(false);
 
-    // findExistingLink queries by findingId (not scanFindingId).
+    // findExistingLink queries by findingId.
     issueLink.findFirst.mockResolvedValue(null);
     const none = await ports.findExistingLink("find_1", "github");
     expect(none).toBeNull();
@@ -363,7 +360,7 @@ describe("publishAnalysisFinding", () => {
       externalUrl: "u",
     });
     const found = await ports.findExistingLink("find_1", "github");
-    expect(found?.scanFindingId).toBe("find_1");
+    expect(found?.sourceId).toBe("find_1");
 
     // saveLink upserts on the findingId_provider composite.
     issueLink.upsert.mockResolvedValue({
@@ -374,13 +371,13 @@ describe("publishAnalysisFinding", () => {
       externalUrl: "v",
     });
     const saved = await ports.saveLink({
-      scanFindingId: "find_1",
+      sourceId: "find_1",
       provider: "github",
       externalId: "7",
       externalUrl: "v",
       fingerprint: "fp",
     });
-    expect(saved.scanFindingId).toBe("find_1");
+    expect(saved.sourceId).toBe("find_1");
     const upsertArg = issueLink.upsert.mock.calls[0][0];
     expect(upsertArg.where.findingId_provider).toEqual({
       findingId: "find_1",

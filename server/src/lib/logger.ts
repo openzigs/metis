@@ -126,7 +126,6 @@ const TOKEN_COUNT_META_KEYS: ReadonlySet<string> = new Set(
     // not about which sink happens to see it.
     "tokensConsumed", // analysis/orchestrator.ts — delta.totalTokens
     "tokensUsed", // routes/analysis.ts — result.usage.totalTokens
-    "tokenSpend", // scanner/orchestrator.ts — number, budget accounting
     "monthlyTokenBudget", // autopilot-runner.ts — Project.monthlyTokenBudget cap
   ].map(normalizeKey),
 );

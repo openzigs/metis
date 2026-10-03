@@ -100,7 +100,7 @@ import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
 import { BedrockDirectProvider } from "../lib/ai/providers/bedrock-direct-provider.js";
 import { prisma } from "../lib/prisma.js";
-// Epic #176 / #179 — publish an analysis finding via the shared scanner publisher.
+// Epic #176 / #179 — publish an analysis finding via the shared finding publisher.
 import { publishAnalysisFinding } from "../lib/publishing/analysis-finding-publish.js";
 import { PublishError } from "../lib/publishing/finding-publisher.js";
 
@@ -1187,7 +1187,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * POST /api/projects/:projectId/analyses/:id/findings/:findingId/publish
    *
    * Publishes an operator-edited issue draft for a finding to the project's
-   * configured destination(s). Reuses the scanner finding-publisher (marker
+   * configured destination(s). Reuses the shared finding-publisher (marker
    * dedup + idempotent IssueLink) — no parallel publishing path. The finding
    * is loaded scoped to its analysis + project (IDOR defence → 404).
    */
@@ -1283,9 +1283,6 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           // of client-actionable gap.
           if (err.code === "ERR_NOT_IMPLEMENTED" || err.code === "ERR_NO_PUBLISH_TARGET") {
             throw new AppError(400, err.code, msg);
-          }
-          if (err.code === "ERR_STALE_COMMIT") {
-            throw new AppError(409, err.code, msg);
           }
           throw new AppError(502, err.code || "PUBLISH_FAILED", msg);
         }

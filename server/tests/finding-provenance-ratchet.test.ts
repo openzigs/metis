@@ -110,9 +110,9 @@ const GUARDED_FINDING_WRITERS: readonly { site: string; count: number; guard: st
  */
 const DEFAULTED_FINDING_WRITERS: readonly { site: string; count: number; why: string }[] = [
   // EMPTY — and that is a state this gate reaches honestly, not a state that
-  // makes it vacuous. #1330 landed: `materializeTriagedFinding` now passes
-  // `derivation: "inferred" satisfies …` as a literal, so it classifies as
-  // `literal-safe` and needs no waiver. Emptiness cannot hide a regression
+  // makes it vacuous. The last writer that relied on the default,
+  // `materializeTriagedFinding`, was fixed in #1330 and deleted with the bug
+  // scanner in #804. Emptiness cannot hide a regression
   // here: an unregistered `defaulted` site fails the headline check below, and
   // `registryDrift` is exercised in both directions on synthetic sites, so the
   // "empty registry ⇒ nothing to check ⇒ green" shape (#1215) does not apply.
@@ -123,11 +123,7 @@ const DEFAULTED_FINDING_WRITERS: readonly { site: string; count: number; why: st
 // ---------------------------------------------------------------------------
 
 export type FindingWriteKind =
-  | "literal-safe"
-  | "literal-violation"
-  | "guarded"
-  | "defaulted"
-  | "unclassified";
+  "literal-safe" | "literal-violation" | "guarded" | "defaulted" | "unclassified";
 
 export interface FindingWriteSite {
   /**
@@ -447,12 +443,15 @@ describe("Finding provenance ratchet — corpus anchors", () => {
   });
 
   it("found the Finding write sites it exists to police", () => {
-    // Measured: 7 call sites across 5 files. The floor sits AT the measured
+    // Measured: 6 call sites across 4 files. The floor sits AT the measured
     // count, not below it, so deleting any one site is red rather than silent.
+    // #804 LOWERED it from 7 across 5 on purpose: removing the bug scanner
+    // deleted `materializeTriagedFinding` from the scanner's Prisma adapter,
+    // a real Finding writer, so the corpus genuinely shrank by one site.
     // If the delegate is renamed, a file moves, or the AST walk stops matching,
     // this goes red BEFORE the headline assertion goes quiet for the wrong
     // reason.
-    expect(allSites.length).toBeGreaterThanOrEqual(7);
+    expect(allSites.length).toBeGreaterThanOrEqual(6);
   });
 
   it("sees every file known to write findings", () => {
@@ -460,7 +459,6 @@ describe("Finding provenance ratchet — corpus anchors", () => {
     for (const expected of [
       "src/lib/analysis/analysis-service.ts",
       "src/lib/code-graph/ingest.ts",
-      "src/lib/scanner/prisma-adapter.ts",
       "scripts/e2e-seed-clarify-loop.ts",
       "scripts/e2e-seed-analysis-grounding.ts",
     ]) {

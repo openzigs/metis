@@ -1,5 +1,5 @@
 /**
- * #1260 — `extractJson` in the scanner's LLM seam carried the FIFTH copy of the
+ * #1260 — `extractJson` in the JSON LLM seam carried the FIFTH copy of the
  * quadratic markdown-fence regex, `/```(?:json)?\s*([\s\S]*?)```/i` — verbatim
  * the pattern #1244 removed from `parseToolCall` and #1253 removed from
  * `extractJsonObject`, modulo the `/i` flag.
@@ -191,7 +191,7 @@ function extractOrThrowSwallowed(input: string): void {
   }
 }
 
-describe("#1260 scanner extractJson is linear in input length", () => {
+describe("#1260 json-llm-client extractJson is linear in input length", () => {
   /**
    * 50 ms is ~287x the measured cost of the FIXED function at 200 KB (0.174 ms,
    * measured end-to-end through `extractJson`, not just the regex) — no
@@ -250,7 +250,7 @@ describe("#1260 scanner extractJson is linear in input length", () => {
   }, 60_000);
 
   it("stays fast when the truncated payload also carries an unmatched brace", () => {
-    // The realistic degraded shape on this seam: a scanner prompt demands a
+    // The realistic degraded shape on this seam: a prompt demands a
     // JSON object, the model opens a ```json fence, pretty-prints, and is cut
     // off mid-object. The brute-force fallback then runs too, so this pins that
     // the FENCE regex was the cost rather than the search that follows it.
@@ -266,9 +266,8 @@ describe("#1260 scanner extractJson is linear in input length", () => {
   }, 60_000);
 
   it("stays fast when the truncated payload is an ARRAY", () => {
-    // `extractJson` accepts a top-level array as well as an object — the
-    // scanner's rule-compiler and FP-filter both ask for one — so the array
-    // fallback must be on the fast path too.
+    // `extractJson` accepts a top-level array as well as an object, so the
+    // array fallback must be on the fast path too.
     const half = 100 * 1024;
     const input = "Findings:\n```json\t" + " ".repeat(half) + "[" + "a".repeat(half);
     extractJson("[1]");

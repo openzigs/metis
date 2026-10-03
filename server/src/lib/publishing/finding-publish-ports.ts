@@ -1,13 +1,11 @@
 /**
- * Epic #708 / #800 — the shared halves of the finding publisher's production
- * ports: GitHub and Jira issue creation, plus the best-effort audit.
+ * Epic #708 / #800 / #804 — the shared halves of the finding publisher's
+ * production ports: GitHub and Jira issue creation, plus the best-effort audit.
  *
- * Every finding-publish flow — the scanner's `publishScanFinding`, Deep Dive's
- * `publishAnalysisFinding` and Impact Analysis's `publishImpactAnalysisToJira`
- * — creates its external issue through these. Each flow supplies its own
- * idempotency key (`findExistingLink` / `saveLink`) and stale-commit anchor
- * (`currentRepoCommitSha`) on top. Moved unchanged out of the bug scanner's
- * Prisma adapter by #800 so that publishing does not depend on the scanner.
+ * Both finding-publish flows — Deep Dive's `publishAnalysisFinding` and Impact
+ * Analysis's `publishImpactAnalysisToJira` — create their external issue
+ * through these, and supply their own idempotency key (`findExistingLink` /
+ * `saveLink`) on top.
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
@@ -19,10 +17,19 @@ import { acquirePublishOctokit } from "./octokit-factory.js";
 import { PublishError, type CreatedIssue, type PublisherPorts } from "./finding-publisher.js";
 
 /**
- * Sentinel commit anchor — analysis findings and impact runs have no scanned
- * commit SHA, so both sides of the stale-commit gate carry this constant.
+ * #804 — what a publish audit entry names as its target, and which source it
+ * records in metadata. The action itself is source-neutral (epic #799
+ * decision 2): `publish.<provider>.created|reused`.
  */
-export const ANALYSIS_PUBLISH_ANCHOR = "analysis-finding-anchor";
+export interface PublishAuditSubject {
+  targetType: "finding" | "impact_analysis";
+  source: "analysis" | "impact-analysis";
+}
+
+export const PUBLISH_AUDIT_SUBJECTS = {
+  analysis: { targetType: "finding", source: "analysis" },
+  impactAnalysis: { targetType: "impact_analysis", source: "impact-analysis" },
+} as const satisfies Record<string, PublishAuditSubject>;
 
 interface GhIssueResponse {
   number: number;
@@ -36,20 +43,20 @@ function noPublishTargetError(): PublishError {
   );
 }
 
-function publisherStateForUpsert(): Pick<PublisherPorts, "audit"> {
-  return {
-    async audit(event, scanFindingId, meta) {
-      const sf = await prisma.scanFinding.findUnique({
-        where: { id: scanFindingId },
-        select: { scan: { select: { createdById: true } } },
-      });
-      audit({
-        actor: { id: sf?.scan.createdById ?? "system" },
-        action: `scanner.${event}`,
-        target: { type: "scan_finding", id: scanFindingId },
-        metadata: { ...meta },
-      });
-    },
+/**
+ * #804 — the engine's audit port. The actor is `system`: the ports are not
+ * handed the caller, and the analysis route writes its own
+ * `analysis.finding.publish` entry naming the user. The source is set last so
+ * caller metadata cannot relabel it.
+ */
+function publishAuditPort(subject: PublishAuditSubject): PublisherPorts["audit"] {
+  return async (action, sourceId, meta) => {
+    audit({
+      actor: { id: "system" },
+      action,
+      target: { type: subject.targetType, id: sourceId },
+      metadata: { ...meta, source: subject.source },
+    });
   };
 }
 
@@ -60,8 +67,9 @@ export type SharedFindingPublisherPorts = Pick<
 >;
 
 /** Build the production issue-creation + audit ports. */
-export function buildSharedFindingPublisherPorts(): SharedFindingPublisherPorts {
-  const base = publisherStateForUpsert();
+export function buildSharedFindingPublisherPorts(
+  subject: PublishAuditSubject,
+): SharedFindingPublisherPorts {
   return {
     async createGitHubIssue({
       projectId,
@@ -81,7 +89,7 @@ export function buildSharedFindingPublisherPorts(): SharedFindingPublisherPorts 
       // project's saved publish target); the connector only supplies the
       // credential. There is deliberately NO fallback to `conn.ownerOrOrg/
       // conn.repoName`: for an analysed project that is its upstream, and every
-      // publish path — scanner and analysis alike — funnels through here.
+      // finding-publish path funnels through here.
       if (!target) throw noPublishTargetError();
       const { owner, repo } = target;
       // #480 — the connector's bound secret by id, never re-resolved by label.
@@ -168,6 +176,6 @@ export function buildSharedFindingPublisherPorts(): SharedFindingPublisherPorts 
       };
     },
 
-    audit: base.audit,
+    audit: publishAuditPort(subject),
   };
 }

@@ -1118,9 +1118,8 @@ export async function readCloneHeadSha(cloneDir: string): Promise<string | null>
  * `recordCommit` (default true) persists the checked-out commit as
  * `RepoConnection.lastCommitSha`. Only a caller that also ingests a code graph
  * labelled with that same commit may record it: `lastCommitSha` must never
- * disagree with `code_graphs.commitSha`, or every finding fails the publisher's
- * stale-commit gate. A caller that only reads the checkout (the bug scanner's
- * neighbour snippets, the AST cache rebuild, credential discovery) passes
+ * disagree with `code_graphs.commitSha`. A caller that only reads the checkout
+ * (the AST cache rebuild, credential discovery) passes
  * `{ recordCommit: false }` (#714, #757).
  */
 export interface CloneOptions {

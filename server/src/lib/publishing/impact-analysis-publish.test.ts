@@ -10,12 +10,12 @@ const mockPrisma = {
   repoConnection: { findFirst: vi.fn() },
   jiraConnection: { findFirst: vi.fn() },
   project: { findUnique: vi.fn() },
-  scanFinding: { findUnique: vi.fn() },
   issueLink: { upsert: vi.fn(), findFirst: vi.fn() },
 };
 vi.mock("../prisma.js", () => ({ prisma: mockPrisma }));
 
-vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+const mockAudit = vi.fn();
+vi.mock("../audit/audit-service.js", () => ({ audit: mockAudit }));
 
 vi.mock("../connectors/vault-resolver.js", () => ({
   resolveVaultRef: vi.fn().mockResolvedValue("ghp_fake"),
@@ -94,6 +94,16 @@ describe("publishImpactAnalysisToJira", () => {
     });
     expect(mockJiraCreateIssue).not.toHaveBeenCalled();
     expect(mockPrisma.issueLink.upsert).not.toHaveBeenCalled();
+    expect(mockAudit).toHaveBeenCalledExactlyOnceWith({
+      actor: { id: "system" },
+      action: "publish.jira.reused",
+      target: { type: "impact_analysis", id: "ia-1" },
+      metadata: {
+        provider: "jira",
+        externalUrl: "https://jira.example.com/browse/IMP-7",
+        source: "impact-analysis",
+      },
+    });
   });
 
   it("creates a Jira issue + persists the IssueLink keyed on impactAnalysisId", async () => {
@@ -125,6 +135,59 @@ describe("publishImpactAnalysisToJira", () => {
       provider: "jira",
     });
     expect(upsertArg.create.impactAnalysisId).toBe("ia-1");
+    // #804 — audited under the source-neutral action, against the run itself.
+    expect(mockAudit).toHaveBeenCalledExactlyOnceWith({
+      actor: { id: "system" },
+      action: "publish.jira.created",
+      target: { type: "impact_analysis", id: "ia-1" },
+      metadata: {
+        provider: "jira",
+        externalId: "IMP-42",
+        externalUrl: "https://jira.example.com/browse/IMP-42",
+        source: "impact-analysis",
+      },
+    });
+  });
+
+  it("#804 — reports the run id as the link's sourceId when the row leaves it null", async () => {
+    mockPrisma.issueLink.findFirst.mockResolvedValueOnce({
+      id: "L9",
+      impactAnalysisId: null,
+      provider: "jira",
+      externalId: "IMP-7",
+      externalUrl: "u",
+    });
+    expect(
+      (
+        await publishImpactAnalysisToJira({
+          analysisId: "ia-9",
+          jiraProjectId: "p",
+          title: "t",
+          body: "b",
+        })
+      ).sourceId,
+    ).toBe("ia-9");
+
+    mockPrisma.issueLink.findFirst.mockResolvedValueOnce(null);
+    configureJira();
+    mockJiraCreateIssue.mockResolvedValue({ key: "IMP-8" });
+    mockPrisma.issueLink.upsert.mockResolvedValueOnce({
+      id: "L10",
+      impactAnalysisId: null,
+      provider: "jira",
+      externalId: "IMP-8",
+      externalUrl: "v",
+    });
+    expect(
+      (
+        await publishImpactAnalysisToJira({
+          analysisId: "ia-9",
+          jiraProjectId: "p",
+          title: "t",
+          body: "b",
+        })
+      ).sourceId,
+    ).toBe("ia-9");
   });
 
   it("surfaces ERR_JIRA_NOT_CONFIGURED when the target project has no Jira wiring", async () => {
