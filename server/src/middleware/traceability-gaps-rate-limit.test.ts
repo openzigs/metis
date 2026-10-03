@@ -5,7 +5,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
-import { traceabilityGapsRateLimiter } from "./traceability-gaps-rate-limit.js";
+import {
+  traceabilityGapsRateLimiter,
+  traceabilityPreAuthRateLimiter,
+} from "./traceability-gaps-rate-limit.js";
 
 function app(userId?: string) {
   const a = express();
@@ -20,6 +23,7 @@ function app(userId?: string) {
 
 afterEach(() => {
   delete process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX;
+  delete process.env.TRACEABILITY_PREAUTH_RATE_LIMIT_MAX;
 });
 
 describe("traceabilityGapsRateLimiter", () => {
@@ -46,5 +50,37 @@ describe("traceabilityGapsRateLimiter", () => {
     const res = await request(app("tg-user-3")).get("/");
     expect(res.status).toBe(200);
     expect(res.headers["ratelimit-limit"]).toBe("300");
+  });
+});
+
+describe("traceabilityPreAuthRateLimiter (#815)", () => {
+  function preAuthApp(userId: string) {
+    const a = express();
+    a.use((req, _res, next) => {
+      (req as unknown as { user: { userId: string } }).user = { userId };
+      next();
+    });
+    a.use(traceabilityPreAuthRateLimiter);
+    a.get("/", (_req, res) => res.json({ ok: true }));
+    return a;
+  }
+
+  it("keys by IP even when a user is present, at TRACEABILITY_PREAUTH_RATE_LIMIT_MAX", async () => {
+    process.env.TRACEABILITY_PREAUTH_RATE_LIMIT_MAX = "1";
+    expect((await request(preAuthApp("pa-user-1")).get("/")).status).toBe(200);
+    const res = await request(preAuthApp("pa-user-2")).get("/");
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("TRACEABILITY_GAPS_RATE_LIMITED");
+  });
+
+  it("defaults to a generous per-IP ceiling", async () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const res = await request(preAuthApp("pa-user-3")).get("/");
+      expect(res.headers["ratelimit-limit"]).toBe("3600");
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
   });
 });

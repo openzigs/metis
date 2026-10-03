@@ -6,7 +6,7 @@
  * ids they were grounded in (`evidenceFindingIds`), those findings' CODE
  * citations (`filePath:startLine-endLine`, #734), the per-requirement coverage
  * label (#736), and the requirement→code spine (`RequirementCodeMapping`) — plus
- * a best-effort code-graph test-detection pass layered on by the service.
+ * the per-requirement tests the service resolves with "Tested by" (#814, #815).
  *
  * Nothing here recomputes analysis output or calls an LLM: given the same
  * persisted rows it always yields the same matrix, so the whole module is
@@ -67,10 +67,11 @@ export interface BuildTraceabilityMatrixInput {
    */
   deterministicByRequirement?: ReadonlyMap<string, TraceabilityCodeLocation[]>;
   /**
-   * Detected tests keyed by the code-graph symbol id they reference. Layered on
-   * best-effort by the service; absent ⇒ every tests cell is empty.
+   * Tests per requirement id, from the "Tested by" resolver (#815) — the same
+   * source as the requirement chain's `testedBy`, in its order. Absent ⇒ every
+   * tests cell is empty.
    */
-  testsBySymbolId?: ReadonlyMap<string, TraceabilityTestLink[]>;
+  testsByRequirement?: ReadonlyMap<string, TraceabilityTestLink[]>;
 }
 
 /** Stable de-dupe key for a code location (path + range + provenance). */
@@ -88,7 +89,6 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
   const rows: TraceabilityRow[] = input.requirements.map((req) => {
     const findings: TraceabilityFindingRef[] = [];
     const codeByKey = new Map<string, TraceabilityCodeLocation>();
-    const symbolIds = new Set<string>();
 
     for (const findingId of req.evidenceFindingIds) {
       const finding = input.findingsById.get(findingId);
@@ -104,7 +104,6 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
           ...(citation.symbolId ? { symbolId: citation.symbolId } : {}),
         };
         codeByKey.set(codeLocationKey(loc), loc);
-        if (citation.symbolId) symbolIds.add(citation.symbolId);
       }
     }
 
@@ -112,16 +111,6 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
     // empty). Deduped against citation locations by (source, path, range).
     for (const loc of input.deterministicByRequirement?.get(req.id) ?? []) {
       codeByKey.set(codeLocationKey(loc), loc);
-      if (loc.symbolId) symbolIds.add(loc.symbolId);
-    }
-
-    // Best-effort test detection: union the tests referencing any implicated
-    // symbol, deduped by (filePath, symbol).
-    const testsByKey = new Map<string, TraceabilityTestLink[]>();
-    for (const symbolId of symbolIds) {
-      for (const test of input.testsBySymbolId?.get(symbolId) ?? []) {
-        testsByKey.set(`${test.filePath}::${test.symbol}`, [test]);
-      }
     }
 
     return {
@@ -131,7 +120,7 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
       verdict: req.verdict,
       findings,
       codeLocations: [...codeByKey.values()],
-      tests: [...testsByKey.values()].flat(),
+      tests: [...(input.testsByRequirement?.get(req.id) ?? [])],
     };
   });
 
