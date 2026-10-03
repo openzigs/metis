@@ -7,9 +7,13 @@
  * traceability. Re-exports upsert by `(featureSlug, taskId)`.
  *
  * Issue creation goes through a pluggable `IssueClient` so the command is
- * fully testable without a live GitHub. The default client uses the
- * GitHub REST API with a token from the per-project `RepoConnection` (or
- * the env fallback `SPECKIT_TASKS_DEFAULT_REPO` + `GITHUB_TOKEN`).
+ * fully testable without a live GitHub. No production GitHub client is wired
+ * yet (#784): without an injected client only a dry run is served, and a real
+ * run is refused 501 rather than "exporting" to the no-op client and recording
+ * every task as issue #0.
+ *
+ * The destination is never the project's analysed `RepoConnection` (#784) —
+ * for an analysed open-source project that is someone else's upstream.
  */
 import { prisma } from "../../prisma.js";
 import { audit } from "../../audit/audit-service.js";
@@ -43,11 +47,17 @@ export interface IssueClient {
 export interface TasksToIssuesInput {
   projectId: string;
   featureSlug: string;
-  /** Override resolved repo. Required if no RepoConnection / config exists. */
+  /**
+   * Override resolved repo. Otherwise: `SpecKitConfig.tasksToIssuesRepo`, the
+   * project's saved publish target (#733), then `SPECKIT_TASKS_DEFAULT_REPO`.
+   */
   repo?: { owner: string; name: string };
   /** Override parent epic. Falls back to `SpecKitConfig.tasksToIssuesParentEpic`. */
   parentEpicNumber?: number;
-  /** Pluggable issue client (defaults to `noopIssueClient` for safety). */
+  /**
+   * Pluggable issue client. Required for a non-dry run (#784): without one a
+   * real run is refused 501; a dry run plans with `noopIssueClient`.
+   */
   client?: IssueClient;
   actorId?: string | null;
   /** When true, parses + plans only — no GitHub calls, no DB writes. */
@@ -107,9 +117,19 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     };
   }
 
+  // #784 — refuse before resolving a target or creating anything: the no-op client creates nothing,
+  // so persisting its synthetic issue #0 would pin every task to a phantom
+  // issue that each later run "upserts" onto.
+  if (!input.dryRun && !input.client) {
+    throw new SpecKitArtifactError(
+      501,
+      "SPECKIT_ISSUE_EXPORT_UNAVAILABLE",
+      "Exporting tasks to GitHub issues is not available on this server yet. Re-run with dryRun: true to preview the export.",
+    );
+  }
   const repo = input.repo ?? (await resolveRepo(input.projectId));
   const parentEpicNumber = input.parentEpicNumber ?? (await resolveParentEpic(input.projectId));
-  const client = input.client ?? noopIssueClient;
+  const client = input.client ?? noopIssueClient; // reached only on a dry run
   const created: TasksToIssuesResult["created"] = [];
 
   // Topologically iterate so deps are created before children.
@@ -215,7 +235,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     created,
     repo,
     parentEpicNumber,
-    message: `Exported ${created.length} task(s) to ${repo.owner}/${repo.name}.`,
+    message: `${input.dryRun ? "Would export" : "Exported"} ${created.length} task(s) to ${repo.owner}/${repo.name}.`,
   };
 }
 
@@ -276,12 +296,16 @@ async function resolveRepo(projectId: string): Promise<{ owner: string; name: st
     const [owner, name] = cfg.tasksToIssuesRepo.split("/");
     if (owner && name) return { owner, name };
   }
-  const conn = await prisma.repoConnection.findFirst({
-    where: { projectId, deletedAt: null },
-    select: { ownerOrOrg: true, repoName: true },
+  // #784 — the project's saved publish target (#733). Deliberately NOT the
+  // project's RepoConnection: that is the analysed repository, which for an
+  // open-source project is its upstream. A half-set pair counts as none.
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { publishGithubOwner: true, publishGithubRepo: true },
   });
-  // Issue #288 — skip local/upload connectors (no owner/repo to publish to).
-  if (conn?.ownerOrOrg && conn.repoName) return { owner: conn.ownerOrOrg, name: conn.repoName };
+  if (project?.publishGithubOwner && project.publishGithubRepo) {
+    return { owner: project.publishGithubOwner, name: project.publishGithubRepo };
+  }
   const envRepo = process.env.SPECKIT_TASKS_DEFAULT_REPO;
   if (envRepo) {
     const [owner, name] = envRepo.split("/");
@@ -290,7 +314,7 @@ async function resolveRepo(projectId: string): Promise<{ owner: string; name: st
   throw new SpecKitArtifactError(
     400,
     "SPECKIT_NO_REPO_CONFIGURED",
-    "No GitHub repo resolvable for tasks export. Set repo=, configure SpecKitConfig.tasksToIssuesRepo, attach a RepoConnection, or set SPECKIT_TASKS_DEFAULT_REPO.",
+    "No GitHub repo resolvable for tasks export. Set repo=, configure SpecKitConfig.tasksToIssuesRepo, save a project publish target on the Publishing page, or set SPECKIT_TASKS_DEFAULT_REPO.",
   );
 }
 

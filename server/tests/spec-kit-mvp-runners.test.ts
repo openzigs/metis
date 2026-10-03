@@ -748,6 +748,7 @@ describe("runTasksToIssues", () => {
     expect(r.count).toBe(2);
     expect(create).toHaveBeenCalledTimes(2);
     expect(taskExportRows.size).toBe(2);
+    expect(r.message).toBe("Exported 2 task(s) to o/r.");
     expect(auditCalls.some((c) => c.action === "speckit.tasks_exported")).toBe(true);
   });
 
@@ -821,22 +822,107 @@ describe("runTasksToIssues", () => {
     expect(r.parentEpicNumber).toBe(11);
   });
 
-  it("resolves repo from RepoConnection when no config set", async () => {
+  // #784 — the analysed RepoConnection is the upstream being read (miniflux/v2),
+  // never a place to file issues. Its absence from the resolution order is the fix.
+  it("never falls back to the analysed RepoConnection — refuses instead (#784)", async () => {
     seedReadyFeature();
     repoConnRows.set("rc1", {
       id: "rc1",
       projectId: "p1",
-      ownerOrOrg: "owner-rc",
-      repoName: "repo-rc",
+      ownerOrOrg: "miniflux",
+      repoName: "v2",
       deletedAt: null,
     });
-    const create = vi.fn(async () => ({ number: 1, url: "https://x" }));
+    const prev = process.env.SPECKIT_TASKS_DEFAULT_REPO;
+    delete process.env.SPECKIT_TASKS_DEFAULT_REPO;
+    try {
+      await expect(
+        runTasksToIssues({ projectId: "p1", featureSlug: "001-foo", dryRun: true }),
+      ).rejects.toMatchObject({ status: 400, code: "SPECKIT_NO_REPO_CONFIGURED" });
+    } finally {
+      if (prev !== undefined) process.env.SPECKIT_TASKS_DEFAULT_REPO = prev;
+    }
+  });
+
+  it("defaults to the project's saved publish target, not the analysed repo (#784)", async () => {
+    seedReadyFeature();
+    repoConnRows.set("rc1", {
+      id: "rc1",
+      projectId: "p1",
+      ownerOrOrg: "miniflux",
+      repoName: "v2",
+      deletedAt: null,
+    });
+    Object.assign(projects.get("p1"), {
+      publishGithubOwner: "openzigs",
+      publishGithubRepo: "flux-v2",
+    });
+    const create = vi.fn(async () => ({ number: 0, url: "dryrun://x" }));
     const r = await runTasksToIssues({
       projectId: "p1",
       featureSlug: "001-foo",
       client: { create },
+      dryRun: true,
     });
-    expect(r.repo).toEqual({ owner: "owner-rc", name: "repo-rc" });
+    expect(r.repo).toEqual({ owner: "openzigs", name: "flux-v2" });
+    expect(create).toHaveBeenCalledWith("openzigs", "flux-v2", expect.anything());
+    expect(r.message).toBe("Would export 2 task(s) to openzigs/flux-v2.");
+  });
+
+  it("ignores a half-set saved publish target (#784)", async () => {
+    seedReadyFeature();
+    Object.assign(projects.get("p1"), { publishGithubOwner: "openzigs", publishGithubRepo: null });
+    const prev = process.env.SPECKIT_TASKS_DEFAULT_REPO;
+    delete process.env.SPECKIT_TASKS_DEFAULT_REPO;
+    try {
+      await expect(
+        runTasksToIssues({ projectId: "p1", featureSlug: "001-foo", dryRun: true }),
+      ).rejects.toMatchObject({ code: "SPECKIT_NO_REPO_CONFIGURED" });
+    } finally {
+      if (prev !== undefined) process.env.SPECKIT_TASKS_DEFAULT_REPO = prev;
+    }
+  });
+
+  it("an explicit SpecKitConfig repo still wins over the saved publish target", async () => {
+    seedReadyFeature();
+    configRows.set("p1", { projectId: "p1", tasksToIssuesRepo: "cfg-owner/cfg-repo" });
+    Object.assign(projects.get("p1"), {
+      publishGithubOwner: "openzigs",
+      publishGithubRepo: "flux-v2",
+    });
+    const r = await runTasksToIssues({ projectId: "p1", featureSlug: "001-foo", dryRun: true });
+    expect(r.repo).toEqual({ owner: "cfg-owner", name: "cfg-repo" });
+  });
+
+  // #784 — the route never injects a client, so a non-dry run used to reach the
+  // no-op client and persist SpecKitTaskExport rows for "issue #0".
+  it("a non-dry run with no issue client is refused 501 and persists nothing (#784)", async () => {
+    seedReadyFeature();
+    for (const dryRun of [false, undefined]) {
+      await expect(
+        runTasksToIssues({
+          projectId: "p1",
+          featureSlug: "001-foo",
+          repo: { owner: "openzigs", name: "flux-v2" },
+          ...(dryRun === false ? { dryRun } : {}),
+        }),
+      ).rejects.toMatchObject({ status: 501, code: "SPECKIT_ISSUE_EXPORT_UNAVAILABLE" });
+    }
+    expect(taskExportRows.size).toBe(0);
+    expect(auditCalls.some((c) => c.action === "speckit.tasks_exported")).toBe(false);
+  });
+
+  it("a dry run with no issue client plans without persisting, worded 'Would export' (#784)", async () => {
+    seedReadyFeature();
+    const r = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo: { owner: "openzigs", name: "flux-v2" },
+      dryRun: true,
+    });
+    expect(r.count).toBe(2);
+    expect(r.message).toBe("Would export 2 task(s) to openzigs/flux-v2.");
+    expect(taskExportRows.size).toBe(0);
   });
 
   it("resolves repo from SPECKIT_TASKS_DEFAULT_REPO env fallback", async () => {
