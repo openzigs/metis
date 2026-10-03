@@ -510,6 +510,19 @@ describe("traceability router", () => {
       expect(mockPrisma.requirement.findMany).not.toHaveBeenCalled();
     });
 
+    it("is rate-limited per user", async () => {
+      mockPrisma.requirement.findMany.mockResolvedValue([]);
+      process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX = "1";
+      try {
+        await request(app).get(`${BASE}/traceability/test-gaps`);
+        const res = await request(app).get(`${BASE}/traceability/test-gaps`);
+        expect(res.status).toBe(429);
+        expect(res.body.error.code).toBe("TRACEABILITY_GAPS_RATE_LIMITED");
+      } finally {
+        delete process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX;
+      }
+    });
+
     it("403s without analysis.read", async () => {
       permitRead = false;
       const res = await request(app).get(`${BASE}/traceability/test-gaps`);

@@ -30,6 +30,7 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
+import { traceabilityGapsRateLimiter } from "../middleware/traceability-gaps-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import * as reqSpec from "../lib/traceability/requirement-spec-mapping.js";
 import * as specCode from "../lib/traceability/spec-code-mapping.js";
@@ -111,6 +112,7 @@ export function traceabilityRouter(): Router {
   r.get(
     "/traceability/test-gaps",
     requireAuth,
+    traceabilityGapsRateLimiter,
     requirePermission("analysis.read"),
     async (req, res) => {
       const parsed = traceabilityTestGapsQuerySchema.safeParse(req.query);
