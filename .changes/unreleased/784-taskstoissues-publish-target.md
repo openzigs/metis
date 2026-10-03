@@ -8,4 +8,8 @@ section: Fixed
   project's saved publish target, then `SPECKIT_TASKS_DEFAULT_REPO`, and otherwise refuses.
 - A non-dry export is refused with `501 SPECKIT_ISSUE_EXPORT_UNAVAILABLE`. It used to create
   no issue yet record every task as exported to issue #0, which blocked any later export.
-- A dry run now says "Would export N task(s) to …" instead of "Exported".
+- A dry run now says "Would export N task(s) to …" instead of "Exported", and makes no
+  issue-client calls at all, even when a client is injected: a preview can never file
+  real issues.
+- The `speckit_taskstoissues` MCP tool now describes `dryRun: true` as the supported mode,
+  the 501, and the target resolution order.

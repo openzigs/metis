@@ -159,7 +159,11 @@ export const SPEC_KIT_TOOLS = [
   defineTool({
     name: "speckit_taskstoissues",
     description:
-      "Materialize `tasks.md` rows as GitHub issues (idempotent on (featureSlug, taskId)). Requires tasks gate.",
+      "Plan exporting `tasks.md` rows as GitHub issues (one per task, idempotent on (featureSlug, taskId)). Requires tasks gate. " +
+      "Use `dryRun: true` — the supported mode: it returns the planned issues and target repo without calling GitHub or writing anything. " +
+      "A real export (dryRun false or omitted) is not available on this server yet and returns HTTP 501 `SPECKIT_ISSUE_EXPORT_UNAVAILABLE`. " +
+      "Target repo resolution order: explicit `repo`, then Spec Kit config (`tasksToIssuesRepo`), then the project's saved publish target, " +
+      "then the `SPECKIT_TASKS_DEFAULT_REPO` env var; otherwise HTTP 400 `SPECKIT_NO_REPO_CONFIGURED`. Never the analysed repository.",
     inputSchema: {
       ...featureSlugShape,
       ...forceShape,
@@ -169,7 +173,12 @@ export const SPEC_KIT_TOOLS = [
         .optional()
         .describe("Override the destination repo (otherwise resolved from project config)."),
       parentEpicNumber: z.number().int().positive().optional(),
-      dryRun: z.boolean().optional(),
+      dryRun: z
+        .boolean()
+        .optional()
+        .describe(
+          "Set true to preview the export: no GitHub calls, no writes. Currently the only supported mode — false/omitted returns 501 SPECKIT_ISSUE_EXPORT_UNAVAILABLE.",
+        ),
     },
     toDispatchInput: (args) => ({
       command: "speckit.taskstoissues",

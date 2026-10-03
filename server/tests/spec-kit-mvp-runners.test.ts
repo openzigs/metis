@@ -680,6 +680,18 @@ describe("runChecklist", () => {
 // runTasksToIssues
 // ─────────────────────────────────────────────────────────────────────────────
 describe("runTasksToIssues", () => {
+  /** A client whose every method fails the test if it is ever reached. */
+  function throwingIssueClient() {
+    return {
+      create: vi.fn(async (): Promise<{ number: number; url: string }> => {
+        throw new Error("issue client must not be called");
+      }),
+      addSubIssue: vi.fn(async (): Promise<void> => {
+        throw new Error("issue client must not be called");
+      }),
+    };
+  }
+
   function seedReadyFeature(slug = "001-foo"): string {
     const fid = seedFeature("p1", slug);
     seedFeatureArtifact(fid, "spec.md", "x");
@@ -773,7 +785,7 @@ describe("runTasksToIssues", () => {
     expect(r2.created.every((c) => c.upserted)).toBe(true);
   });
 
-  it("dryRun does not write exports or call addSubIssue", async () => {
+  it("dryRun does not write exports or call create/addSubIssue", async () => {
     seedReadyFeature();
     const create = vi.fn(async () => ({ number: 5, url: "https://x" }));
     const addSubIssue = vi.fn(async () => undefined);
@@ -786,6 +798,7 @@ describe("runTasksToIssues", () => {
     });
     expect(r.count).toBe(2);
     expect(taskExportRows.size).toBe(0);
+    expect(create).not.toHaveBeenCalled();
     expect(addSubIssue).not.toHaveBeenCalled();
   });
 
@@ -857,16 +870,37 @@ describe("runTasksToIssues", () => {
       publishGithubOwner: "openzigs",
       publishGithubRepo: "flux-v2",
     });
-    const create = vi.fn(async () => ({ number: 0, url: "dryrun://x" }));
     const r = await runTasksToIssues({
       projectId: "p1",
       featureSlug: "001-foo",
-      client: { create },
+      client: throwingIssueClient(),
       dryRun: true,
     });
     expect(r.repo).toEqual({ owner: "openzigs", name: "flux-v2" });
-    expect(create).toHaveBeenCalledWith("openzigs", "flux-v2", expect.anything());
     expect(r.message).toBe("Would export 2 task(s) to openzigs/flux-v2.");
+  });
+
+  // #784 — the dryRun contract is "no GitHub calls". A dry run that reached an
+  // injected client would file real issues the moment a real client is wired.
+  it("a dry run never calls the issue client, even when one is injected (#784)", async () => {
+    seedReadyFeature();
+    configRows.set("p1", { projectId: "p1", tasksToIssuesParentEpic: 7 });
+    const client = throwingIssueClient();
+    const r = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo: { owner: "openzigs", name: "flux-v2" },
+      client,
+      dryRun: true,
+    });
+    expect(client.create).not.toHaveBeenCalled();
+    expect(client.addSubIssue).not.toHaveBeenCalled();
+    expect(r.parentEpicNumber).toBe(7);
+    expect(r.created).toEqual([
+      { taskId: "T01", issueNumber: 0, url: "dryrun://%5BT01%5D%20Build%20A", upserted: false },
+      { taskId: "T02", issueNumber: 0, url: "dryrun://%5BT02%5D%20Build%20B", upserted: false },
+    ]);
+    expect(taskExportRows.size).toBe(0);
   });
 
   it("ignores a half-set saved publish target (#784)", async () => {

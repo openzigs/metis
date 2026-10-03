@@ -141,7 +141,8 @@
         "exclusiveMinimum": 0
       },
       "dryRun": {
-        "type": "boolean"
+        "type": "boolean",
+        "description": "Set true to preview the export: no GitHub calls, no writes. Currently the only supported mode — false/omitted returns 501 SPECKIT_ISSUE_EXPORT_UNAVAILABLE."
       }
     },
     "required": [

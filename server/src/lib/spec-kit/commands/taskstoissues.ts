@@ -22,6 +22,7 @@ import { getFeatureArtifact } from "../feature-artifacts.js";
 import { requireGate } from "../gates.js";
 import { parseTasksMarkdown, type ParsedTask } from "../tasks-parser.js";
 import { SpecKitArtifactError } from "../artifacts.js";
+import { findSavedGitHubTarget } from "../../publishing/saved-target.js";
 
 export interface IssueCreateRequest {
   title: string;
@@ -56,11 +57,15 @@ export interface TasksToIssuesInput {
   parentEpicNumber?: number;
   /**
    * Pluggable issue client. Required for a non-dry run (#784): without one a
-   * real run is refused 501; a dry run plans with `noopIssueClient`.
+   * real run is refused 501. A dry run never calls it, injected or not.
    */
   client?: IssueClient;
   actorId?: string | null;
-  /** When true, parses + plans only — no GitHub calls, no DB writes. */
+  /**
+   * When true, parses + plans only — no issue-client calls of any kind (not
+   * `create`, not `addSubIssue`) and no DB writes, even when a real client is
+   * injected (#784).
+   */
   dryRun?: boolean;
   /** Bypass the tasksGate (audit-emitted high-severity event). */
   force?: boolean;
@@ -74,9 +79,14 @@ export interface TasksToIssuesResult {
   message: string;
 }
 
+/** The placeholder a dry run reports for an issue it would create. */
+function plannedIssue(title: string): IssueCreatedResponse {
+  return { number: 0, url: `dryrun://${encodeURIComponent(title)}` };
+}
+
 export const noopIssueClient: IssueClient = {
   async create(_o, _n, req) {
-    return { number: 0, url: `dryrun://${encodeURIComponent(req.title)}` };
+    return plannedIssue(req.title);
   },
 };
 
@@ -129,7 +139,10 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
   }
   const repo = input.repo ?? (await resolveRepo(input.projectId));
   const parentEpicNumber = input.parentEpicNumber ?? (await resolveParentEpic(input.projectId));
-  const client = input.client ?? noopIssueClient; // reached only on a dry run
+  // #784 — a dry run must never reach a client: once a real one is injected, a
+  // "preview" would otherwise file real issues. Past the guard above, a
+  // non-dry run always has one, so `client === null` exactly when dry.
+  const client: IssueClient | null = input.dryRun ? null : (input.client ?? null);
   const created: TasksToIssuesResult["created"] = [];
 
   // Topologically iterate so deps are created before children.
@@ -159,14 +172,13 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
       const body = renderIssueBody(task, feature.slug);
       const labels = [`speckit:${feature.slug}`];
       if (task.userStorySlug) labels.push(`story:${task.userStorySlug}`);
-      const resp = await client.create(repo.owner, repo.name, {
-        title: `[${task.id}] ${task.title}`,
-        body,
-        labels,
-      });
+      const title = `[${task.id}] ${task.title}`;
+      const resp = client
+        ? await client.create(repo.owner, repo.name, { title, body, labels })
+        : plannedIssue(title);
       issueNumber = resp.number;
       url = resp.url;
-      if (!input.dryRun) {
+      if (client) {
         await prisma.specKitTaskExport.create({
           data: {
             projectId: input.projectId,
@@ -182,7 +194,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     idToIssueNumber.set(task.id, issueNumber);
 
     // Link sub-issues to parent epic if supported.
-    if (parentEpicNumber !== null && client.addSubIssue && !input.dryRun && !wasUpsert) {
+    if (parentEpicNumber !== null && client?.addSubIssue && !wasUpsert) {
       try {
         await client.addSubIssue(repo.owner, repo.name, parentEpicNumber, issueNumber);
       } catch (err) {
@@ -196,7 +208,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
       }
     }
     // Link to dependency issues.
-    if (client.addSubIssue && !input.dryRun) {
+    if (client?.addSubIssue) {
       for (const dep of task.dependsOn) {
         const depNum = idToIssueNumber.get(dep);
         if (depNum) {
@@ -296,16 +308,12 @@ async function resolveRepo(projectId: string): Promise<{ owner: string; name: st
     const [owner, name] = cfg.tasksToIssuesRepo.split("/");
     if (owner && name) return { owner, name };
   }
-  // #784 — the project's saved publish target (#733). Deliberately NOT the
-  // project's RepoConnection: that is the analysed repository, which for an
-  // open-source project is its upstream. A half-set pair counts as none.
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { publishGithubOwner: true, publishGithubRepo: true },
-  });
-  if (project?.publishGithubOwner && project.publishGithubRepo) {
-    return { owner: project.publishGithubOwner, name: project.publishGithubRepo };
-  }
+  // #784 — the project's saved publish target (#733), read through the same
+  // helper the finding publisher uses. Deliberately NOT the project's
+  // RepoConnection: that is the analysed repository, which for an open-source
+  // project is its upstream. A half-set pair counts as none.
+  const saved = await findSavedGitHubTarget(projectId);
+  if (saved) return { owner: saved.owner, name: saved.repo };
   const envRepo = process.env.SPECKIT_TASKS_DEFAULT_REPO;
   if (envRepo) {
     const [owner, name] = envRepo.split("/");

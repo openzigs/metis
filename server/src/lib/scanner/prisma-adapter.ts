@@ -17,6 +17,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 
 import { Prisma, prisma } from "../prisma.js";
+import { findSavedGitHubTarget } from "../publishing/saved-target.js";
 import { audit } from "../audit/audit-service.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID, tierModelFor } from "../ai/model-router.js";
@@ -945,18 +946,6 @@ export interface PublishAnalysisFindingInput {
   extraLabels?: readonly string[];
   /** #733 — the GitHub repository to file into; else the project's configured target. */
   target?: GitHubIssueTarget;
-}
-
-/** #733 — the project's saved GitHub publish target, or null (a half-set pair is none). */
-async function findSavedGitHubTarget(projectId: string): Promise<GitHubIssueTarget | null> {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { publishGithubOwner: true, publishGithubRepo: true },
-  });
-  if (project?.publishGithubOwner && project.publishGithubRepo) {
-    return { owner: project.publishGithubOwner, repo: project.publishGithubRepo };
-  }
-  return null;
 }
 
 function noPublishTargetError(): PublishError {
