@@ -13,6 +13,79 @@ function deps(p: Record<string, unknown>): TraceabilityDeps {
 }
 
 describe("getRequirementChain", () => {
+  it("#814 — marks test files and resolves testedBy from the rows it read, project-scoped", async () => {
+    const codeSymbolFindMany = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          id: "sym-v",
+          name: "validatePassword",
+          qualifiedName: "internal/validator/user.go::validatePassword",
+          filePath: "internal/validator/user.go",
+          kind: "function",
+          language: "go",
+          startLine: 10,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    const codeEdgeFindMany = vi.fn().mockResolvedValue([
+      {
+        toSymbolId: "sym-v",
+        fromSymbol: {
+          id: "sym-t",
+          name: "TestValidatePassword",
+          qualifiedName: "internal/validator/user_test.go::TestValidatePassword",
+          filePath: "internal/validator/user_test.go",
+          kind: "function",
+          language: "go",
+          startLine: 55,
+        },
+      },
+    ]);
+    const p = {
+      requirement: {
+        findFirst: vi.fn().mockResolvedValue({ id: "req-1", title: "Password", body: "" }),
+      },
+      requirementSpecMapping: { findMany: vi.fn().mockResolvedValue([]) },
+      specCodeMapping: { findMany: vi.fn() },
+      requirementCodeMapping: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            codeSymbolId: "sym-v",
+            filePath: "internal/validator/user.go",
+            startLine: 10,
+            endLine: 20,
+            confidence: 0.7,
+            source: "semantic",
+          },
+          {
+            codeSymbolId: null,
+            filePath: "internal/validator/user_test.go",
+            startLine: null,
+            endLine: null,
+            confidence: 0.5,
+            source: "analysis-grounding",
+          },
+        ]),
+      },
+      codeSymbol: { findMany: codeSymbolFindMany },
+      codeEdge: { findMany: codeEdgeFindMany },
+    };
+
+    const chain = await getRequirementChain("proj-1", "req-1", deps(p));
+
+    expect(chain.directCode.map((c) => c.isTest)).toEqual([false, true]);
+    expect(chain.testedBy.map((t) => [t.name, t.relation])).toEqual([
+      ["user_test.go", "direct"],
+      ["TestValidatePassword", "exercises"],
+    ]);
+    expect(codeSymbolFindMany.mock.calls[0][0].where.projectId).toBe("proj-1");
+    expect(codeEdgeFindMany.mock.calls[0][0].where).toMatchObject({
+      projectId: "proj-1",
+      fromSymbol: { projectId: "proj-1" },
+    });
+  });
+
   it("assembles specs + their code + direct code", async () => {
     const p = {
       requirement: { findFirst: vi.fn().mockResolvedValue({ id: "req-1", title: "Login" }) },
@@ -51,10 +124,14 @@ describe("getRequirementChain", () => {
           },
         ]),
       },
+      codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
+      codeEdge: { findMany: vi.fn().mockResolvedValue([]) },
     };
 
     const chain = await getRequirementChain("proj-1", "req-1", deps(p));
     expect(chain.requirementTitle).toBe("Login");
+    expect(chain.testedBy).toEqual([]);
+    expect(chain.directCode[0].isTest).toBe(false);
     expect(chain.specs).toHaveLength(1);
     expect(chain.specs[0]).toMatchObject({ specTitle: "Auth Spec", confidence: 0.9 });
     expect(chain.specs[0].code[0].filePath).toBe("src/auth.ts");

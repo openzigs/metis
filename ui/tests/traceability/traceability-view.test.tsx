@@ -24,6 +24,7 @@ function chain(over: Partial<RequirementTraceabilityChain> = {}): RequirementTra
     projectId: "proj-1",
     specs: [],
     directCode: [],
+    testedBy: [],
     ...over,
   };
 }
@@ -67,6 +68,7 @@ describe("TraceabilityView", () => {
                 endLine: 20,
                 confidence: 0.8,
                 source: "derived",
+                isTest: false,
               },
             ],
           },
@@ -79,6 +81,7 @@ describe("TraceabilityView", () => {
             endLine: 5,
             confidence: 0.3,
             source: "semantic",
+            isTest: false,
           },
         ],
       }),
