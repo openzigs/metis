@@ -38,7 +38,12 @@ type Where = Record<string, unknown>;
 function matches(row: Row, where: Where): boolean {
   return Object.entries(where).every(([key, cond]) => {
     if (key === "OR") return (cond as Where[]).some((w) => matches(row, w));
-    if (key === "versions") return true; // no versions in this table fixture
+    // #782 — `versionCount` stands in for the versions relation; `none: {}`
+    // (no version at all) is the only shape asserted on, the rest pass.
+    if (key === "versions") {
+      const none = (cond as { none?: Where }).none;
+      return none && Object.keys(none).length === 0 ? !row.versionCount : true;
+    }
     const value = row[key];
     if (cond instanceof Date) return value instanceof Date && value.getTime() === cond.getTime();
     if (cond && typeof cond === "object") {
@@ -412,6 +417,26 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
     const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
     expect(res.status).toBe(409);
     expect(doc().status).toBe("generating");
+    expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
+  });
+
+  it("#782 — regenerates a partial document (degraded, never published) to finish it", async () => {
+    seed({ status: "degraded", content: "# Partial", codeGraphHash: null });
+
+    const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
+
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(doc().status).toBe("generating"));
+  });
+
+  it("#782 — 409s for a degraded document that has a published version", async () => {
+    seed({ status: "degraded", versionCount: 1 });
+
+    const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error?.message ?? res.text).toMatch(/failed or partially generated/);
+    expect(doc().status).toBe("degraded");
     expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
   });
 

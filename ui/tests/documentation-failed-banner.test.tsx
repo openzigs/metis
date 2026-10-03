@@ -39,6 +39,9 @@ vi.mock("@/components/markdown-previewer", () => ({
 import { apiFetch } from "@/lib/api-client";
 import DocumentationPage, {
   FailedGenerationBanner,
+  generationStopCause,
+  generationStopStage,
+  isPartialGeneration,
 } from "@/app/(authed)/projects/[id]/documentation/page";
 
 const mockApiFetch = vi.mocked(apiFetch);
@@ -123,5 +126,149 @@ describe("DocumentationPage — failed document (#50)", () => {
     fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));
     await screen.findByTestId("markdown-previewer");
     expect(screen.queryByText(/generation failed|generation was interrupted/i)).toBeNull();
+  });
+});
+
+const STOP = {
+  kind: "section-failed",
+  section: "Document",
+  severity: "error",
+  stage: "assembly",
+  errorClass: "TypeError",
+  message:
+    'Section "Document" could not be generated: generation stopped after the sections were written, while assembling the document (TypeError).',
+};
+
+describe("#782 — why a generation stopped is shown, not left in the server log", () => {
+  it("reads the cause from the warning that carries a stage, and only that one", () => {
+    const other = {
+      kind: "section-ungrounded",
+      section: "Rules",
+      severity: "warning",
+      message: "x",
+    };
+    expect(generationStopCause([other, STOP])).toBe(STOP.message);
+    expect(generationStopCause([other])).toBeNull();
+    expect(generationStopCause(null)).toBeNull();
+  });
+
+  it("is a partial generation only when degraded, unpublished and stopped", () => {
+    expect(isPartialGeneration({ status: "degraded", versions: [], warnings: [STOP] })).toBe(true);
+    expect(isPartialGeneration({ status: "degraded", warnings: [STOP] })).toBe(true);
+    expect(
+      isPartialGeneration({
+        status: "degraded",
+        versions: [{ id: "v", version: 1, diffSummary: null, createdAt: "" }],
+        warnings: [STOP],
+      }),
+    ).toBe(false);
+    expect(isPartialGeneration({ status: "degraded", versions: [], warnings: [] })).toBe(false);
+    expect(isPartialGeneration({ status: "failed", versions: [], warnings: [STOP] })).toBe(false);
+  });
+
+  it("FailedGenerationBanner shows the cause and says finished sections are reused", () => {
+    render(
+      <FailedGenerationBanner
+        interrupted={false}
+        cause={STOP.message}
+        stage="assembly"
+        onRegenerate={vi.fn()}
+        regenerating={false}
+      />,
+    );
+    expect(screen.getByTestId("generation-stop-cause")).toHaveTextContent("(TypeError)");
+    expect(screen.getByRole("alert")).toHaveTextContent(/reuses every section/i);
+    expect(screen.getByRole("alert")).not.toHaveTextContent(/server logs/i);
+  });
+
+  it("makes no reuse claim when it stopped before any section could finish", () => {
+    const early = { ...STOP, stage: "facts", message: "Stopped while extracting facts (Error)." };
+    render(
+      <FailedGenerationBanner
+        interrupted={false}
+        cause={early.message}
+        stage={early.stage}
+        onRegenerate={vi.fn()}
+        regenerating={false}
+      />,
+    );
+    expect(screen.getByTestId("generation-stop-cause")).toHaveTextContent("extracting facts");
+    expect(screen.getByRole("alert")).not.toHaveTextContent(/reuses/i);
+  });
+
+  it("reads the stage from the warning that carries one", () => {
+    expect(generationStopStage([STOP])).toBe("assembly");
+    expect(generationStopStage([])).toBeNull();
+    expect(generationStopStage(null)).toBeNull();
+  });
+
+  describe("on the page", () => {
+    const DOC_ID = "doc_2";
+    function setup(doc: Record<string, unknown>) {
+      mockApiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+        if (path.endsWith(`/docs/${DOC_ID}/regenerate`) && init?.method === "POST")
+          return { id: DOC_ID, status: "pending" };
+        if (path.endsWith(`/docs/${DOC_ID}`)) return doc;
+        if (path.endsWith("/docs")) return [{ ...doc, content: undefined }];
+        return [];
+      });
+      const Wrapper = makeWrapper({ withAuth: false });
+      render(
+        <Wrapper>
+          <DocumentationPage />
+        </Wrapper>,
+      );
+    }
+    const base = {
+      id: DOC_ID,
+      title: "BRD",
+      scope: "full",
+      autoUpdate: false,
+      generatedAt: null,
+      createdAt: "2026-10-03T00:00:00.000Z",
+    };
+
+    it("a failed document shows its recorded cause", async () => {
+      setup({ ...base, status: "failed", content: "", warnings: [STOP], versions: [] });
+      fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));
+      expect(await screen.findByTestId("generation-stop-cause")).toHaveTextContent(
+        "while assembling the document",
+      );
+    });
+
+    it("a partial document shows its sections and regenerates to finish", async () => {
+      setup({
+        ...base,
+        status: "degraded",
+        content: "# BRD\n\n## Overview",
+        warnings: [STOP],
+        versions: [],
+      });
+      fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));
+      expect(await screen.findByText(/generation stopped before it finished/i)).toBeInTheDocument();
+      expect(await screen.findByTestId("markdown-previewer")).toHaveTextContent("## Overview");
+      fireEvent.click(screen.getByRole("button", { name: /^regenerate$/i }));
+      await waitFor(() =>
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          `/projects/proj_test/docs/${DOC_ID}/regenerate`,
+          expect.objectContaining({ method: "POST" }),
+        ),
+      );
+    });
+
+    it("a published degraded document offers no partial-regenerate", async () => {
+      setup({
+        ...base,
+        status: "degraded",
+        content: "# BRD",
+        warnings: [
+          { kind: "section-ungrounded", section: "Rules", severity: "warning", message: "x" },
+        ],
+        versions: [{ id: "v1", version: 1, diffSummary: null, createdAt: base.createdAt }],
+      });
+      fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));
+      await screen.findByTestId("markdown-previewer");
+      expect(screen.queryByText(/generation stopped before it finished/i)).toBeNull();
+    });
   });
 });
