@@ -225,10 +225,19 @@ export function traceabilityRouter(): Router {
 export function workspaceTraceabilityRouter(): Router {
   const r = Router({ mergeParams: true });
 
-  r.get("/summary", requireAuth, requirePermission("analysis.read"), async (req, res) => {
-    const workspaceId = paramOf(req, "workspaceId", "WORKSPACE_REQUIRED");
-    res.json(ok(await getWorkspaceTraceabilitySummary(actorOf(req), workspaceId)));
-  });
+  // #815 — each call runs the #814 Tested-by resolver for every accessible
+  // project, the same cost test-gaps is limited for, so it shares that limiter
+  // (and budget). In front of requireAuth for CodeQL js/missing-rate-limiting.
+  r.get(
+    "/summary",
+    traceabilityGapsRateLimiter,
+    requireAuth,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      const workspaceId = paramOf(req, "workspaceId", "WORKSPACE_REQUIRED");
+      res.json(ok(await getWorkspaceTraceabilitySummary(actorOf(req), workspaceId)));
+    },
+  );
 
   return r;
 }

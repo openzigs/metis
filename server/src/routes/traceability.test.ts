@@ -655,6 +655,21 @@ describe("workspace traceability router (#626)", () => {
     );
   });
 
+  it("rate-limits the summary per user before it runs the per-project resolver (#815)", async () => {
+    getWorkspaceTraceabilitySummary.mockResolvedValue({ projects: [], crossProjectLinks: [] });
+    process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX = "1";
+    try {
+      await request(app).get("/workspaces/ws-1/traceability/summary");
+      getWorkspaceTraceabilitySummary.mockClear();
+      const res = await request(app).get("/workspaces/ws-1/traceability/summary");
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe("TRACEABILITY_GAPS_RATE_LIMITED");
+      expect(getWorkspaceTraceabilitySummary).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX;
+    }
+  });
+
   it("denies the summary without analysis.read (403)", async () => {
     permitRead = false;
     const res = await request(app).get("/workspaces/ws-1/traceability/summary");

@@ -58,7 +58,6 @@ type RollupPrisma = Pick<
   | "requirement"
   | "specCodeMapping"
   | "requirementSpecMapping"
-  | "specCodeMapping"
   | "requirementCodeMapping"
   | "codeSymbol"
   | "codeEdge"
