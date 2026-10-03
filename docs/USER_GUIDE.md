@@ -3585,7 +3585,7 @@ The Spec Kit page has three columns:
 
 **`/speckit.checklist`.** Generates per-domain quality checklists (`security`, `performance`, `accessibility`, `observability`, `testability` by default; override via `SpecKitConfig.checklistDomains`). `mode: "merge"` (default) preserves `[x]` check states across re-runs.
 
-**`/speckit.taskstoissues`.** Bridges `tasks.md` → GitHub issues with idempotent upsert keyed on `(featureSlug, taskId)`. Repo resolution: explicit `repo` arg → `SpecKitConfig.tasksToIssuesRepo` → attached `RepoConnection` → `SPECKIT_TASKS_DEFAULT_REPO` env. Optional `parentEpicNumber` links sub-issues under a parent epic.
+**`/speckit.taskstoissues`.** Bridges `tasks.md` → GitHub issues with idempotent upsert keyed on `(featureSlug, taskId)`. Repo resolution: explicit `repo` arg → `SpecKitConfig.tasksToIssuesRepo` → the project's saved publish target (Publishing page, **Save as project target**) → `SPECKIT_TASKS_DEFAULT_REPO` env; with none it is refused (`SPECKIT_NO_REPO_CONFIGURED`). It never files into the project's analysed repository. Only `dryRun: true` is served today ("Would export N task(s) to …"); a real export is refused with `501 SPECKIT_ISSUE_EXPORT_UNAVAILABLE` until a GitHub issue client is wired. Optional `parentEpicNumber` links sub-issues under a parent epic.
 
 **Expanded `/speckit.plan`.** Now emits five artifacts per Spec Kit Phase 0 + Phase 1: `research.md`, `data-model.md`, `contracts/api.openapi.yaml`, `quickstart.md`, `plan.md`. The OpenAPI body is post-processed to ensure it lints clean.
 
