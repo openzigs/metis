@@ -35,6 +35,10 @@ vi.mock("../../../src/lib/prisma.js", () => ({
       create: vi.fn(async () => ({})),
       findMany: vi.fn(async () => []),
     },
+    // #794 — the project ledger (`token_usages`), same escape as above.
+    tokenUsage: {
+      create: vi.fn(async () => ({})),
+    },
   },
 }));
 

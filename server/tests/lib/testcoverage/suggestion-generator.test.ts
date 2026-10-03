@@ -9,6 +9,7 @@ import {
   MAX_STEPS_PER_SUGGESTION,
   clusterRequirements,
   generateSuggestions,
+  restrictToCluster,
   type RequirementForSuggestion,
 } from "../../../src/lib/testcoverage/suggestion-generator.js";
 import type { JudgeModelCaller } from "../../../src/lib/testcoverage/judge.js";
@@ -20,7 +21,11 @@ import type { AIProvider } from "../../../src/lib/ai/types.js";
 
 // The cost tracker's usage rows go through the Prisma singleton; keep them here.
 vi.mock("../../../src/lib/prisma.js", () => ({
-  prisma: { aITokenUsage: { create: vi.fn(async () => ({})) } },
+  prisma: {
+    aITokenUsage: { create: vi.fn(async () => ({})) },
+    // #794 — the project ledger (`token_usages`).
+    tokenUsage: { create: vi.fn(async () => ({})) },
+  },
 }));
 
 vi.mock("../../../src/lib/rag/embedder.js", () => ({
@@ -111,6 +116,31 @@ const sampleItem = (overrides: Record<string, unknown> = {}) => ({
   sourceChunks: [],
   confidence: 0.85,
   ...overrides,
+});
+
+describe("restrictToCluster (#794)", () => {
+  const item = (ids: string[]) =>
+    sampleItem({ mappedRequirementIds: ids }) as unknown as Parameters<
+      typeof restrictToCluster
+    >[0][number];
+
+  it("keeps only ids in the cluster, de-duplicated", () => {
+    const out = restrictToCluster(
+      [item(["r2", "bogus", "r1", "r2", "custom:x"])],
+      [{ id: "r1" }, { id: "r2" }],
+    );
+    expect(out.map((s) => s.mappedRequirementIds)).toEqual([["r2", "r1"]]);
+  });
+
+  it("maps an id-less suggestion to a one-requirement cluster's requirement", () => {
+    const out = restrictToCluster([item(["req_42"])], [{ id: "r1" }]);
+    expect(out.map((s) => s.mappedRequirementIds)).toEqual([["r1"]]);
+  });
+
+  it("drops a suggestion that names no requirement of a multi-requirement cluster", () => {
+    const out = restrictToCluster([item(["req_42"]), item(["r1"])], [{ id: "r1" }, { id: "r2" }]);
+    expect(out.map((s) => s.mappedRequirementIds)).toEqual([["r1"]]);
+  });
 });
 
 describe("clusterRequirements", () => {

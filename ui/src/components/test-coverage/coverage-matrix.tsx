@@ -4,11 +4,16 @@
  * Virtualized requirement × test-case coverage matrix (Epic #856 issue #868).
  *
  * Uses `@tanstack/react-virtual` to keep DOM size bounded for grids
- * containing thousands of cells. Cells colour-code on `score`:
+ * containing thousands of cells. #794 — cells colour-code on the mapping's
+ * persisted `status` (the matcher's, the judge's or a reviewer's verdict),
+ * not on a score band: the RRF `fused` score the cells used to show is
+ * ~0.01–0.02 and could never reach a "≥ 0.8 covered" band, so every cell
+ * read red. The number shown is the judge's confidence where it ran, else the
+ * cosine similarity.
  *
- *   score ≥ 0.8  → green (covered)
- *   score ≥ 0.5  → amber (partial)
- *   score <  0.5 → red   (uncovered)
+ *   COVERED / OVERRIDDEN → green
+ *   AMBIGUOUS            → amber
+ *   UNCOVERED            → red
  *
  * Cells without a mapping render empty (neutral background).
  */
@@ -31,13 +36,25 @@ export interface MatrixCellValue {
   requirementId: string;
   testCaseId: string;
   score: number;
+  /** `COVERED|UNCOVERED|AMBIGUOUS|OVERRIDDEN` — what the cell is coloured by. */
+  status: string;
+  /** The coverage mapping behind the cell, for an override. */
+  mappingId?: string;
+}
+
+export interface MatrixCellClick {
+  requirementId: string;
+  testCaseId: string;
+  score: number | null;
+  status: string | null;
+  mappingId: string | null;
 }
 
 export interface CoverageMatrixProps {
   requirements: ReadonlyArray<MatrixRequirement>;
   testCases: ReadonlyArray<MatrixTestCase>;
   cells: ReadonlyArray<MatrixCellValue>;
-  onCellClick?: (cell: { requirementId: string; testCaseId: string; score: number | null }) => void;
+  onCellClick?: (cell: MatrixCellClick) => void;
 }
 
 const ROW_HEIGHT = 36;
@@ -45,9 +62,10 @@ const COL_WIDTH = 48;
 const REQ_COL_WIDTH = 280;
 const HEADER_HEIGHT = 36;
 
-function scoreClass(score: number): string {
-  if (score >= 0.8) return "bg-success/80 text-success-foreground";
-  if (score >= 0.5) return "bg-warning/80 text-warning-foreground";
+export function statusClass(status: string): string {
+  if (status === "COVERED" || status === "OVERRIDDEN")
+    return "bg-success/80 text-success-foreground";
+  if (status === "AMBIGUOUS") return "bg-warning/80 text-warning-foreground";
   return "bg-destructive/80 text-destructive-foreground";
 }
 
@@ -60,8 +78,8 @@ export function CoverageMatrix({
   const parentRef = useRef<HTMLDivElement>(null);
 
   const cellIndex = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const c of cells) m.set(`${c.requirementId}::${c.testCaseId}`, c.score);
+    const m = new Map<string, MatrixCellValue>();
+    for (const c of cells) m.set(`${c.requirementId}::${c.testCaseId}`, c);
     return m;
   }, [cells]);
 
@@ -166,15 +184,18 @@ export function CoverageMatrix({
 
               {colVirt.getVirtualItems().map((col) => {
                 const tc = testCases[col.index];
-                const score = cellIndex.get(`${req.id}::${tc.id}`) ?? null;
-                const cls = score === null ? "bg-muted/30" : scoreClass(score);
+                const cell = cellIndex.get(`${req.id}::${tc.id}`) ?? null;
+                const score = cell?.score ?? null;
+                const cls = cell === null ? "bg-muted/30" : statusClass(cell.status);
                 return (
                   <button
                     key={tc.id}
                     type="button"
                     role="gridcell"
                     aria-label={`${req.title} × ${tc.title}: ${
-                      score === null ? "no mapping" : `score ${score.toFixed(2)}`
+                      cell === null
+                        ? "no mapping"
+                        : `${cell.status.toLowerCase()}, score ${cell.score.toFixed(2)}`
                     }`}
                     className={cn(
                       "absolute border-r border-b border-border text-[10px] flex items-center justify-center transition",
@@ -191,6 +212,8 @@ export function CoverageMatrix({
                         requirementId: req.id,
                         testCaseId: tc.id,
                         score,
+                        status: cell?.status ?? null,
+                        mappingId: cell?.mappingId ?? null,
                       })
                     }
                   >

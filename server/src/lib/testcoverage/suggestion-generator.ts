@@ -243,6 +243,36 @@ function parseSuggestionPayload(raw: string): SuggestionItem[] {
 }
 
 /**
+ * #794 — keep only the `mappedRequirementIds` the model was actually shown.
+ * The model echoes ids it reads anywhere in the prompt (a finding id inside a
+ * requirement body, a `custom:<agent>` id), and an id that names no
+ * requirement row cannot be rendered, exported or counted. A suggestion left
+ * with no valid id maps to its cluster's requirement when the cluster has
+ * exactly one (that is the only requirement it can be about); otherwise it is
+ * dropped.
+ */
+export function restrictToCluster(
+  items: readonly SuggestionItem[],
+  cluster: readonly { id: string }[],
+): SuggestionItem[] {
+  const allowed = new Set(cluster.map((r) => r.id));
+  const out: SuggestionItem[] = [];
+  for (const item of items) {
+    const ids = [...new Set(item.mappedRequirementIds.filter((id) => allowed.has(id)))];
+    if (ids.length === 0 && cluster.length === 1) ids.push(cluster[0].id);
+    if (ids.length === 0) {
+      log.warn("suggestion maps to no requirement in its cluster; dropped", {
+        title: item.title,
+        mappedRequirementIds: item.mappedRequirementIds,
+      });
+      continue;
+    }
+    out.push({ ...item, mappedRequirementIds: ids });
+  }
+  return out;
+}
+
+/**
  * Generate suggestions for a set of UNCOVERED requirements.
  */
 export async function generateSuggestions(input: GenerateInput): Promise<GenerateResult> {
@@ -344,7 +374,7 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
 
     let items: SuggestionItem[];
     try {
-      items = parseSuggestionPayload(raw);
+      items = restrictToCluster(parseSuggestionPayload(raw), reqs);
     } catch (err) {
       log.warn("suggestion payload failed to parse, skipping cluster", {
         error: (err as Error).message,

@@ -12,6 +12,10 @@ vi.mock("../../../src/lib/prisma.js", () => ({
       create: vi.fn(async () => ({})),
       findMany: vi.fn(async () => []),
     },
+    // #794 — the project ledger (`token_usages`) default writer.
+    tokenUsage: {
+      create: vi.fn(async () => ({})),
+    },
   },
 }));
 
@@ -413,6 +417,105 @@ describe("CoverageCostTracker — embedding usage under the embedder that ran (#
     expect(cost.view().unpricedTokens).toBe(1_000_000);
     expect(cost.view().unpricedEmbeddingTokens).toBe(1_000_000);
     expect(cost.exceeded()).toBe(false);
+  });
+});
+
+describe("CoverageCostTracker — project usage ledger (#794)", () => {
+  const scope = { runId: "r1", userId: "u1", projectId: "p1" };
+
+  function makeLedger() {
+    const rows: Record<string, unknown>[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const projectUsage = vi.fn((input: Record<string, unknown>) => {
+      const persisted = gate.then(() => {
+        rows.push(input);
+      });
+      return { totalTokens: 0, costCents: null, persisted };
+    });
+    return { rows, projectUsage, release };
+  }
+
+  it("writes every phase to token_usages under the run's session and project", async () => {
+    const { db } = makeDb();
+    const { tracker } = makeRecorder();
+    const ledger = makeLedger();
+    const cost = new CoverageCostTracker(scope, {
+      db: db as never,
+      tracker,
+      projectUsage: ledger.projectUsage as never,
+    });
+    cost.record({ phase: "embedding", ...LOCAL_EMBEDDER, embeddingTokens: 40 });
+    cost.record({ phase: "judge", ...BEDROCK, promptTokens: 100, completionTokens: 20 });
+    cost.record({ phase: "suggestion", ...BEDROCK, promptTokens: 10, completionTokens: 5 });
+    expect(ledger.projectUsage.mock.calls.map((c) => c[0])).toEqual([
+      {
+        projectId: "p1",
+        sessionId: "testCoverageRun:r1",
+        provider: "embed:xenova",
+        model: LOCAL_EMBEDDER.modelId,
+        inputTokens: 40,
+        outputTokens: 0,
+      },
+      {
+        projectId: "p1",
+        sessionId: "testCoverageRun:r1",
+        provider: "bedrock-gateway",
+        model: HAIKU_MODEL_ID,
+        inputTokens: 100,
+        outputTokens: 20,
+      },
+      {
+        projectId: "p1",
+        sessionId: "testCoverageRun:r1",
+        provider: "bedrock-gateway",
+        model: HAIKU_MODEL_ID,
+        inputTokens: 10,
+        outputTokens: 5,
+      },
+    ]);
+    // flush() waits for the ledger writes, so a usage read after it sees them.
+    let done = false;
+    const flushed = cost.flush().then(() => {
+      done = true;
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(done).toBe(false);
+    expect(ledger.rows).toHaveLength(0);
+    ledger.release();
+    await flushed;
+    expect(ledger.rows).toHaveLength(3);
+  });
+
+  it("writes nothing for a record with no provider", () => {
+    const { db } = makeDb();
+    const { tracker } = makeRecorder();
+    const ledger = makeLedger();
+    const cost = new CoverageCostTracker(scope, {
+      db: db as never,
+      tracker,
+      projectUsage: ledger.projectUsage as never,
+    });
+    cost.record({ phase: "embedding", embedder: "", modelId: "m", embeddingTokens: 10 });
+    expect(ledger.projectUsage).not.toHaveBeenCalled();
+  });
+
+  it("a ledger writer that throws never breaks the run's accounting", async () => {
+    const { db } = makeDb();
+    const { events, tracker } = makeRecorder();
+    const cost = new CoverageCostTracker(scope, {
+      db: db as never,
+      tracker,
+      projectUsage: () => {
+        throw new Error("boom");
+      },
+    });
+    cost.record({ phase: "judge", ...BEDROCK, promptTokens: 10, completionTokens: 5 });
+    await cost.flush();
+    expect(cost.view().breakdown.judgeTokens).toBe(15);
+    expect(events).toHaveLength(1);
   });
 });
 

@@ -192,6 +192,134 @@ describe("TestCoveragePage", () => {
     expect(screen.getByTestId("tc-low-conf-badge")).toBeInTheDocument();
   });
 
+  describe("matrix names, scores and override (#794)", () => {
+    const now = new Date().toISOString();
+    const run = {
+      id: "run-1",
+      projectId: "p1",
+      status: "succeeded",
+      triggeredById: null,
+      createdAt: now,
+    };
+    const mapping = (over: Record<string, unknown>) => ({
+      id: "m1",
+      runId: "run-1",
+      requirementId: "cmreq1",
+      testCaseDocId: "cmtc1",
+      cosine: 0.66,
+      bm25: 0.1,
+      fused: 0.016,
+      judgeConfidence: null,
+      status: "AMBIGUOUS",
+      overriddenById: null,
+      overrideReason: null,
+      ...over,
+    });
+    function mockReport(mappings: Record<string, unknown>[]) {
+      api.listRuns.mockResolvedValue([run]);
+      api.getBudget.mockResolvedValue({ usedCents: 6, limitCents: 20, remainingCents: 14 });
+      api.getReport.mockResolvedValue({
+        run,
+        summary: { total: 2, covered: 0, gaps: 1, suggestions: 0, coveragePct: 0 },
+        mappings,
+        gaps: [{ id: "g1", runId: "run-1", requirementId: "cmreq2", severity: "high", meta: "{}" }],
+        suggestions: [],
+        requirements: [
+          { id: "cmreq1", title: "Password is at least 6 characters" },
+          { id: "cmreq2", title: "Sessions expire" },
+        ],
+        testCases: [{ id: "cmtc1", title: "TestValidatePassword", externalId: null }],
+      });
+    }
+
+    it("renders requirement and test titles, and the cosine rather than the fused score", async () => {
+      mockReport([mapping({})]);
+      renderPage();
+      const cell = await screen.findByLabelText(
+        "Password is at least 6 characters × TestValidatePassword: ambiguous, score 0.66",
+      );
+      expect(cell).toHaveTextContent("0.66");
+      expect(screen.getByRole("rowheader")).toHaveTextContent("Password is at least 6 characters");
+      // The gap list names its requirement.
+      expect(screen.getByTestId("tc-gaps-card")).toHaveTextContent("Sessions expire");
+      expect(screen.getByTestId("tc-gaps-card")).not.toHaveTextContent("cmreq2");
+    });
+
+    it("shows the judge's confidence where the judge ran", async () => {
+      mockReport([mapping({ judgeConfidence: 0.91, status: "COVERED" })]);
+      renderPage();
+      expect(
+        await screen.findByLabelText(/TestValidatePassword: covered, score 0\.91/),
+      ).toHaveTextContent("0.91");
+    });
+
+    it("overrides a mapping from a matrix cell and re-reads the report", async () => {
+      const user = userEvent.setup();
+      mockReport([mapping({})]);
+      api.overrideMapping.mockResolvedValue(mapping({ status: "OVERRIDDEN" }));
+      renderPage();
+      await user.click(await screen.findByLabelText(/TestValidatePassword: ambiguous/));
+      const dialog = await screen.findByTestId("tc-override-dialog");
+      expect(dialog).toHaveTextContent("currently ambiguous");
+      // A reason is required by the API, so Save stays disabled without one.
+      expect(screen.getByTestId("tc-override-submit")).toBeDisabled();
+      await user.type(screen.getByLabelText("Reason"), "user_test.go:55 checks length");
+      const reportReads = api.getReport.mock.calls.length;
+      await user.click(screen.getByTestId("tc-override-submit"));
+      await waitFor(() =>
+        expect(api.overrideMapping).toHaveBeenCalledWith("p1", "m1", {
+          status: "COVERED",
+          reason: "user_test.go:55 checks length",
+        }),
+      );
+      await waitFor(() => expect(api.getReport.mock.calls.length).toBeGreaterThan(reportReads));
+      await waitFor(() => expect(screen.queryByTestId("tc-override-dialog")).toBeNull());
+    });
+
+    it("defaults a covered cell's override to Uncovered, and sends the chosen status", async () => {
+      const user = userEvent.setup();
+      mockReport([mapping({ status: "COVERED", judgeConfidence: 0.8 })]);
+      api.overrideMapping.mockResolvedValue(mapping({ status: "UNCOVERED" }));
+      renderPage();
+      await user.click(await screen.findByLabelText(/TestValidatePassword: covered/));
+      const select = await screen.findByLabelText("Mark as:");
+      expect(select).toHaveValue("UNCOVERED");
+      await user.selectOptions(select, "AMBIGUOUS");
+      await user.type(screen.getByLabelText("Reason"), "unsure");
+      await user.click(screen.getByTestId("tc-override-submit"));
+      await waitFor(() =>
+        expect(api.overrideMapping).toHaveBeenCalledWith("p1", "m1", {
+          status: "AMBIGUOUS",
+          reason: "unsure",
+        }),
+      );
+    });
+
+    it("surfaces an override failure in the dialog", async () => {
+      const user = userEvent.setup();
+      mockReport([mapping({})]);
+      api.overrideMapping.mockRejectedValue(new Error("Mapping not found"));
+      renderPage();
+      await user.click(await screen.findByLabelText(/TestValidatePassword: ambiguous/));
+      await user.type(await screen.findByLabelText("Reason"), "r");
+      await user.click(screen.getByTestId("tc-override-submit"));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Mapping not found");
+    });
+
+    it("an empty cell opens no override", async () => {
+      const user = userEvent.setup();
+      mockReport([
+        mapping({}),
+        mapping({ id: "m2", requirementId: "cmreq2", testCaseDocId: "cmtc2" }),
+      ]);
+      renderPage();
+      await user.click(
+        await screen.findByLabelText(/Sessions expire × TestValidatePassword: no mapping/),
+      );
+      expect(screen.queryByTestId("tc-override-dialog")).toBeNull();
+    });
+  });
+
   it("subscribes to socket run lifecycle events", async () => {
     renderPage();
     await waitFor(() => expect(socketStub.on).toHaveBeenCalled());

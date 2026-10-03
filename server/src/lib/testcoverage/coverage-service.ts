@@ -251,9 +251,16 @@ export async function runCoverageScoring(
     // The judge records each batch's spend through the cost tracker itself, so
     // we no longer re-record the aggregate here (that would double-count).
     if (res.budgetExceeded) budgetExceeded = true;
-    for (const p of res.pairs) {
-      if (p.cell.status === "COVERED") promotedToCovered += 1;
-    }
+    // #794 — the judge returns verdicts on COPIES of the cells (`res.pairs` is
+    // index-aligned with `ambiguousPairs`). Write each one back onto the
+    // matcher cell, which is what the mappings, gaps and coverage below read;
+    // before, the verdicts were counted here and then thrown away.
+    res.pairs.forEach((judged, i) => {
+      const cell = ambiguousPairs[i].cell;
+      cell.judgeConfidence = judged.cell.judgeConfidence;
+      cell.status = judged.cell.status;
+      if (cell.status === "COVERED") promotedToCovered += 1;
+    });
   }
   emit({
     phase: "judge",

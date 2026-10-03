@@ -75,6 +75,10 @@ vi.mock("../../../src/lib/prisma.js", () => ({
       create: vi.fn(async () => ({})),
       findMany: vi.fn(async () => []),
     },
+    // #794 — the project ledger (`token_usages`), written by finops `recordUsage`.
+    tokenUsage: {
+      create: vi.fn(async () => ({})),
+    },
   },
 }));
 
@@ -82,6 +86,7 @@ beforeEach(() => {
   __resetSemanticCacheSingleton();
   __resetTokenTrackerSingleton();
   vi.mocked(prisma.aITokenUsage.create).mockClear();
+  vi.mocked(prisma.tokenUsage.create).mockClear();
   embedState.key = "xenova";
   embedState.model = "test-model";
   embedState.pins.length = 0;
@@ -790,5 +795,121 @@ describe("runCoverageScoring — embedding cost follow-ups (#72, #73, #77)", () 
     expect(report.judge.modelCalls).toBe(1);
     expect(report.budgetExceeded).toBe(true);
     expect(report.cost.unpricedLlmTokens).toBe(150);
+  });
+});
+
+/** A judge caller that answers every pair in a batch with `confidence`. */
+function judgeCaller(confidence: number) {
+  return vi.fn(async (input: { systemPrompt: string; userPrompt: string; modelId: string }) => {
+    if (input.systemPrompt.startsWith("You are a senior QA reviewer")) {
+      return {
+        raw: JSON.stringify({
+          verdicts: Array.from({ length: 8 }, (_, idx) => ({
+            idx,
+            isCovered: confidence >= 0.5,
+            confidence,
+          })),
+        }),
+        promptTokens: 100,
+        completionTokens: 50,
+        provider: "bedrock-gateway" as const,
+        model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      };
+    }
+    return stubCaller.call(input);
+  });
+}
+
+describe("runCoverageScoring — judge verdicts are persisted (#794)", () => {
+  async function run(confidence: number) {
+    const fixture = ambiguousFixture();
+    pinAmbiguousVectors();
+    const { db, state } = makeDb(fixture);
+    const report = await runCoverageScoring(
+      { runId: "run-794", projectId: "p-1", userId: "u-1" },
+      { db: db as never, caller: { call: judgeCaller(confidence) }, budgetCents: 100 },
+    );
+    const mappings = state.mappings as { judgeConfidence: number | null; status: string }[];
+    return { report, state, mappings };
+  }
+
+  it("writes a confident verdict onto every persisted mapping and covers the requirements", async () => {
+    const { report, state, mappings } = await run(0.9);
+    expect(report.matcher.ambiguous).toBe(12);
+    expect(report.judge.promotedToCovered).toBe(12);
+    // Before #794 every one of these read `judgeConfidence: null, AMBIGUOUS`.
+    expect(mappings).toHaveLength(12);
+    for (const m of mappings) {
+      expect(m).toMatchObject({ judgeConfidence: 0.9, status: "COVERED" });
+    }
+    // The re-aggregation reads the same cells: no gaps, full coverage.
+    expect(state.gaps).toHaveLength(0);
+    expect(report.coveragePct).toBe(100);
+  });
+
+  it("persists a negative verdict as UNCOVERED with its confidence, and gaps the requirements", async () => {
+    const { report, state, mappings } = await run(0.2);
+    expect(report.judge.promotedToCovered).toBe(0);
+    for (const m of mappings) {
+      expect(m).toMatchObject({ judgeConfidence: 0.2, status: "UNCOVERED" });
+    }
+    const gaps = state.gaps as { meta: string }[];
+    expect(gaps).toHaveLength(3);
+    expect(gaps.map((g) => JSON.parse(g.meta).status)).toEqual([
+      "UNCOVERED",
+      "UNCOVERED",
+      "UNCOVERED",
+    ]);
+    expect(report.coveragePct).toBe(0);
+  });
+
+  it("records the run's spend in the project ledger as well (#794)", async () => {
+    const { report } = await run(0.9);
+    // Let the microtask-queued ledger inserts land.
+    await new Promise((r) => setImmediate(r));
+    const rows = vi.mocked(prisma.tokenUsage.create).mock.calls.map((c) => c[0].data);
+    const judge = rows.filter((r) => r.provider === "bedrock-gateway");
+    // Two judge batches, each 100 + 50 tokens, under the run's session.
+    expect(judge).toHaveLength(report.judge.modelCalls);
+    for (const r of judge) {
+      expect(r).toMatchObject({
+        projectId: "p-1",
+        sessionId: "testCoverageRun:run-794",
+        inputTokens: 100,
+        outputTokens: 50,
+      });
+    }
+  });
+});
+
+describe("runCoverageScoring — suggestions map only to real requirements (#794)", () => {
+  it("drops ids the model invented and keeps the cluster's own", async () => {
+    const { db, state } = makeDb({
+      requirements: [
+        {
+          id: "r1",
+          title: "Login lockout",
+          body: "Lock after 5 failed attempts.",
+          priority: "high",
+        },
+      ],
+    });
+    const base = await stubCaller.call({ modelId: "m", systemPrompt: "", userPrompt: "" });
+    const payload = JSON.parse(base.raw) as { suggestions: { mappedRequirementIds: string[] }[] };
+    payload.suggestions[0].mappedRequirementIds = [
+      "cmubo1t0j0001br9k7pkonwte",
+      "r1",
+      "custom:cmurn1l7z0v9ons9k9rc2xe1q",
+    ];
+    const caller: JudgeModelCaller = {
+      call: async () => ({ ...base, raw: JSON.stringify(payload) }),
+    };
+    await runCoverageScoring(
+      { runId: "run-794s", projectId: "p-1", userId: "u-1" },
+      { db: db as never, caller, budgetCents: 100 },
+    );
+    const rows = state.suggestions as { mappedRequirementIds: string }[];
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].mappedRequirementIds)).toEqual(["r1"]);
   });
 });

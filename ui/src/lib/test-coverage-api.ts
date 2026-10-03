@@ -108,6 +108,10 @@ export interface RunReport {
   mappings: CoverageMappingDto[];
   gaps: GapItemDto[];
   suggestions: SuggestionDto[];
+  /** #794 — titles for the requirement ids in `mappings` / `gaps`. */
+  requirements?: { id: string; title: string }[];
+  /** #794 — names for the test-case ids in `mappings`. */
+  testCases?: { id: string; title: string; externalId: string | null }[];
 }
 
 export interface RunBudgetState {
@@ -239,8 +243,7 @@ export interface ExporterPushResultDto {
 }
 
 export type ExportRunResult =
-  | { kind: "file"; blob: Blob; filename: string }
-  | { kind: "push"; result: ExporterPushResultDto };
+  { kind: "file"; blob: Blob; filename: string } | { kind: "push"; result: ExporterPushResultDto };
 
 export const testCoverageApi = {
   // ---- imports ----------------------------------------------------------

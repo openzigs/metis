@@ -6641,9 +6641,13 @@ single entry the task-runner calls during the `match → judge → suggest → s
 - Hydrates indexed cases + requirements from Prisma into matcher inputs.
 - Calls `matchRequirements()`, persists `CoverageMapping` rows for `COVERED` cells, and emits
   `run:progress` with per-phase counters.
-- Sends `AMBIGUOUS` pairs through the judge; flips qualifying cells to `COVERED`.
+- Sends `AMBIGUOUS` pairs through the judge; flips qualifying cells to `COVERED`. The judge
+  returns its verdicts on copies of the cells, so the orchestrator writes each verdict
+  (`judgeConfidence`, `status`) back onto the matcher cell the mappings, gaps and
+  `coveragePct` are built from (#794).
 - Lists remaining `UNCOVERED` requirements, runs the suggestion generator, and writes
-  `GapItem` + `Suggestion` rows.
+  `GapItem` + `Suggestion` rows. A suggestion's `mappedRequirementIds` are restricted to the
+  requirements of the cluster the model was shown (`restrictToCluster`, #794).
 - Returns a `CoverageRunReport` with matcher/judge/suggestion counts, cost breakdown, and the
   final `coveragePct`.
 
@@ -6658,6 +6662,10 @@ charges via the per-provider price table:
   models have published-price rows (`published-embedding-prices.test.ts`); anything else is
   unpriced (#58). The `embed:` namespace keeps an embedder key off LLM provider rows.
 - Judge + suggestion → the provider and model that served each call (#43).
+
+Every recorded call is written to both ledgers: `ai_token_usages` (the per-user rollup) and the
+project ledger `token_usages` (finops `recordUsage`, session `testCoverageRun:<runId>`), which
+usage-summary and the project budget read (#794). `flush()` waits for both writes.
 
 Every `embed()` call a run makes is billed: the `index` phase's case and step batches
 (`TestCoverageIndexer.index`), the match phase's requirement and test-case batches, the judge's
@@ -6692,6 +6700,15 @@ spend during a run and real spend after a failed one:
   unpricedLlmTokens, breakdown: { embeddingTokens, judgeTokens, suggestionTokens } }`.
   `limitCents` is the run's stored cap; only a run recorded before #81 (NULL `budgetCents`)
   falls back to the current default.
+- `GET /api/projects/:projectId/test-coverage/runs/:runId/report` → `{ run, summary, mappings,
+  gaps, suggestions, requirements, testCases }`. `summary` counts **requirements** (#794): `total`
+  is the run's requirements (those with a mapping or a gap row), `covered` those with any
+  `COVERED` or `OVERRIDDEN` mapping, `coveragePct = round(covered / total × 100)`. `gaps` omits a
+  requirement a reviewer has since covered by an override. `requirements` (`{id, title}`) and
+  `testCases` (`{id, title, externalId}`) name the ids the matrix and gap list render, read under
+  the URL project. The matrix colours a cell by its mapping `status` and shows the judge's
+  confidence, else the cosine (never the RRF `fused` score); clicking a cell opens an override
+  (`PATCH …/mappings/:id`, reason required).
 
 
 ### Phase 4 — UI, Virtualized Matrix, Exports (Epic #856 / Issues #865, #868, #872, #875)

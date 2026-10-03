@@ -309,26 +309,82 @@ describe("GET /projects/:projectId/test-coverage/runs/:runId/report", () => {
     expect(res.body.error.code).toBe("RUN_NOT_FOUND");
   });
 
-  it("aggregates mappings, gaps and suggestions with coverage percentage", async () => {
+  it("counts covered REQUIREMENTS over the run's requirements, not cells plus gaps (#794)", async () => {
     vi.mocked(prisma.testCoverageRun.findFirst).mockResolvedValue({
       id: "run-1",
       projectId: "proj-1",
       status: "completed",
     } as never);
+    // r1: a reviewer override on one of its two cells. r2: nothing covers it.
+    // r3: the matcher (or judge) covered it.
     vi.mocked(prisma.coverageMapping.findMany).mockResolvedValue([
-      { id: "m1", status: "COVERED" },
-      { id: "m2", status: "OVERRIDDEN" },
-      { id: "m3", status: "UNCOVERED" },
+      { id: "m1", requirementId: "r1", testCaseDocId: "tc1", status: "OVERRIDDEN" },
+      { id: "m2", requirementId: "r1", testCaseDocId: "tc2", status: "UNCOVERED" },
+      { id: "m3", requirementId: "r2", testCaseDocId: "tc1", status: "UNCOVERED" },
+      { id: "m4", requirementId: "r2", testCaseDocId: "tc2", status: "AMBIGUOUS" },
+      { id: "m5", requirementId: "r3", testCaseDocId: "tc1", status: "COVERED" },
     ] as never);
-    vi.mocked(prisma.gapItem.findMany).mockResolvedValue([{ id: "g1" }] as never);
+    // The run wrote gaps for r1 and r2; r1 has since been overridden.
+    vi.mocked(prisma.gapItem.findMany).mockResolvedValue([
+      { id: "g1", requirementId: "r1" },
+      { id: "g2", requirementId: "r2" },
+    ] as never);
     vi.mocked(prisma.suggestion.findMany).mockResolvedValue([{ id: "s1" }] as never);
+    vi.mocked(prisma.requirement.findMany).mockResolvedValue([
+      { id: "r1", title: "Password is at least 6 characters" },
+      { id: "r2", title: "Session expires" },
+      { id: "r3", title: "Feeds refresh" },
+    ] as never);
+    vi.mocked(prisma.testCaseDoc.findMany).mockResolvedValue([
+      { id: "tc1", title: "TestValidatePassword", externalId: "T1" },
+      { id: "tc2", title: "TestSessionExpiry", externalId: null },
+    ] as never);
     const app = createApp(mockUser);
     const res = await request(app).get("/projects/proj-1/test-coverage/runs/run-1/report");
     expect(res.status).toBe(200);
-    expect(res.body.data.summary.total).toBe(4); // 3 mappings + 1 gap
-    expect(res.body.data.summary.covered).toBe(2);
-    expect(res.body.data.summary.gaps).toBe(1);
-    expect(res.body.data.summary.coveragePct).toBe(50);
+    expect(res.body.data.summary).toEqual({
+      total: 3,
+      covered: 2,
+      gaps: 1,
+      suggestions: 1,
+      coveragePct: 67,
+    });
+    // The overridden requirement drops out of the gap list.
+    expect(res.body.data.gaps.map((g: { id: string }) => g.id)).toEqual(["g2"]);
+    // Names for the matrix and gap list, read under the URL project.
+    expect(res.body.data.requirements).toHaveLength(3);
+    expect(res.body.data.testCases[0]).toEqual({
+      id: "tc1",
+      title: "TestValidatePassword",
+      externalId: "T1",
+    });
+    expect(vi.mocked(prisma.requirement.findMany).mock.lastCall?.[0]).toMatchObject({
+      where: { id: { in: ["r1", "r2", "r3"] }, projectId: "proj-1" },
+    });
+    expect(vi.mocked(prisma.testCaseDoc.findMany).mock.lastCall?.[0]).toMatchObject({
+      where: { id: { in: ["tc1", "tc2"] }, projectId: "proj-1" },
+    });
+  });
+
+  it("reports an empty run as 0% without reading names (#794)", async () => {
+    vi.mocked(prisma.testCoverageRun.findFirst).mockResolvedValue({
+      id: "run-1",
+      projectId: "proj-1",
+      status: "completed",
+    } as never);
+    vi.mocked(prisma.coverageMapping.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.gapItem.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.suggestion.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.requirement.findMany).mockClear();
+    vi.mocked(prisma.testCaseDoc.findMany).mockClear();
+    const app = createApp(mockUser);
+    const res = await request(app).get("/projects/proj-1/test-coverage/runs/run-1/report");
+    expect(res.status).toBe(200);
+    expect(res.body.data.summary).toMatchObject({ total: 0, covered: 0, coveragePct: 0 });
+    expect(res.body.data.requirements).toEqual([]);
+    expect(res.body.data.testCases).toEqual([]);
+    expect(prisma.requirement.findMany).not.toHaveBeenCalled();
+    expect(prisma.testCaseDoc.findMany).not.toHaveBeenCalled();
   });
 });
 

@@ -39,6 +39,11 @@
 import { getTokenTracker, estimateUsageCostUsd } from "../ai/token-tracker.js";
 import type { ProviderKey, UsageProvider } from "../ai/types.js";
 import { embeddingUsageProvider } from "../finops/provider-rates.js";
+import {
+  recordUsage,
+  type RecordUsageInput,
+  type RecordUsageResult,
+} from "../finops/token-tracker.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 
@@ -159,6 +164,8 @@ export class CoverageCostTracker {
       budgetCents?: number;
       tracker?: ReturnType<typeof getTokenTracker>;
       db?: typeof prisma;
+      /** #794 — the project ledger writer (`token_usages`); injectable for tests. */
+      projectUsage?: (input: RecordUsageInput) => RecordUsageResult;
     } = {},
   ) {
     this.sessionId = coverageSessionId(scope.runId);
@@ -216,6 +223,17 @@ export class CoverageCostTracker {
     } else this.estimatedUsd += usd;
     if (!provider || !modelId) return;
 
+    // #794 — the project ledger too. `ai_token_usages` (below) feeds the
+    // per-user rollup only; usage-summary and the project budget read
+    // `token_usages`, so without this a run's spend was invisible to both.
+    this.recordProjectUsage({
+      projectId: this.scope.projectId,
+      sessionId: this.sessionId,
+      provider,
+      model: modelId,
+      inputTokens: prompt,
+      outputTokens: completion,
+    });
     this.persist({
       sessionId: this.sessionId,
       userId: this.scope.userId,
@@ -242,6 +260,21 @@ export class CoverageCostTracker {
     });
     this.inflight.add(task);
     void task.finally(() => this.inflight.delete(task));
+  }
+
+  /** Write one `token_usages` row; {@link flush} waits for it. Never throws. */
+  private recordProjectUsage(input: RecordUsageInput): void {
+    const write = this.options.projectUsage ?? recordUsage;
+    try {
+      const { persisted } = write(input);
+      this.inflight.add(persisted);
+      void persisted.finally(() => this.inflight.delete(persisted));
+    } catch (err) {
+      log.error("test-coverage project usage could not be recorded", {
+        runId: this.scope.runId,
+        error: String(err),
+      });
+    }
   }
 
   private ensureSession(provider: UsageProvider, model: string): Promise<boolean> {

@@ -73,6 +73,42 @@ function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
 }
 
+/**
+ * #794 — a run's coverage counts REQUIREMENTS, not cells. A requirement is
+ * covered when any of its mappings is COVERED (matcher or judge) or OVERRIDDEN
+ * (a reviewer). The run's requirements are those with a mapping or a gap row:
+ * the service writes a gap for every requirement it did not cover. Before,
+ * `total` added mapping cells to gap rows, so one override over 240 cells and
+ * 30 gaps read as 1 / 270 → 0%.
+ */
+export function summariseCoverage(
+  mappings: readonly { requirementId: string; status: string }[],
+  gaps: readonly { requirementId: string }[],
+): {
+  total: number;
+  covered: number;
+  coveragePct: number;
+  requirementIds: Set<string>;
+  coveredIds: Set<string>;
+} {
+  const requirementIds = new Set<string>();
+  const coveredIds = new Set<string>();
+  for (const m of mappings) {
+    requirementIds.add(m.requirementId);
+    if (m.status === "COVERED" || m.status === "OVERRIDDEN") coveredIds.add(m.requirementId);
+  }
+  for (const g of gaps) requirementIds.add(g.requirementId);
+  const total = requirementIds.size;
+  const covered = coveredIds.size;
+  return {
+    total,
+    covered,
+    coveragePct: total === 0 ? 0 : Math.round((covered / total) * 100),
+    requirementIds,
+    coveredIds,
+  };
+}
+
 function actorFromReq(req: Request) {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return { id: req.user.userId, role: req.user.role };
@@ -374,28 +410,47 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
         const runId = String(req.params.runId);
         const run = await prisma.testCoverageRun.findFirst({ where: { id: runId, projectId } });
         if (!run) throw new AppError(404, "RUN_NOT_FOUND", "Run not found");
-        const [mappings, gaps, suggestions] = await Promise.all([
+        const [mappings, gapRows, suggestions] = await Promise.all([
           prisma.coverageMapping.findMany({ where: { runId } }),
           prisma.gapItem.findMany({ where: { runId } }),
           prisma.suggestion.findMany({ where: { runId } }),
         ]);
-        const total = mappings.length + gaps.length;
-        const covered = mappings.filter(
-          (m) => m.status === "COVERED" || m.status === "OVERRIDDEN",
-        ).length;
+        const summary = summariseCoverage(mappings, gapRows);
+        // #794 — a gap whose requirement a reviewer has since covered (an
+        // override) is no longer a gap.
+        const gaps = gapRows.filter((g) => !summary.coveredIds.has(g.requirementId));
+        // #794 — names for the ids the matrix and gap list render.
+        const requirementIds = [...summary.requirementIds];
+        const testCaseIds = [...new Set(mappings.map((m) => m.testCaseDocId))];
+        const [requirements, testCases] = await Promise.all([
+          requirementIds.length === 0
+            ? []
+            : prisma.requirement.findMany({
+                where: { id: { in: requirementIds }, projectId },
+                select: { id: true, title: true },
+              }),
+          testCaseIds.length === 0
+            ? []
+            : prisma.testCaseDoc.findMany({
+                where: { id: { in: testCaseIds }, projectId },
+                select: { id: true, title: true, externalId: true },
+              }),
+        ]);
         res.json(
           ok({
             run,
             summary: {
-              total,
-              covered,
-              gaps: gaps.length,
+              total: summary.total,
+              covered: summary.covered,
+              gaps: summary.total - summary.covered,
               suggestions: suggestions.length,
-              coveragePct: total === 0 ? 0 : Math.round((covered / total) * 100),
+              coveragePct: summary.coveragePct,
             },
             mappings,
             gaps,
             suggestions,
+            requirements,
+            testCases,
           }),
         );
       } catch (err) {

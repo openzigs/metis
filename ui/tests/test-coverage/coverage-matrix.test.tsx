@@ -37,9 +37,11 @@ const tcs = Array.from({ length: 3 }, (_, i) => ({
   title: `TestCase ${i}`,
 }));
 const cells = [
-  { requirementId: "r0", testCaseId: "t0", score: 0.95 },
-  { requirementId: "r0", testCaseId: "t1", score: 0.6 },
-  { requirementId: "r1", testCaseId: "t2", score: 0.2 },
+  { requirementId: "r0", testCaseId: "t0", score: 0.95, status: "COVERED", mappingId: "m0" },
+  { requirementId: "r0", testCaseId: "t1", score: 0.6, status: "AMBIGUOUS", mappingId: "m1" },
+  { requirementId: "r1", testCaseId: "t2", score: 0.2, status: "UNCOVERED", mappingId: "m2" },
+  // #794 — a reviewer override reads covered whatever its score.
+  { requirementId: "r1", testCaseId: "t0", score: 0.55, status: "OVERRIDDEN", mappingId: "m3" },
 ];
 
 describe("<CoverageMatrix />", () => {
@@ -50,14 +52,30 @@ describe("<CoverageMatrix />", () => {
     expect(grid).toHaveAttribute("aria-colcount", "4");
   });
 
-  it("colour-codes cells by score band", () => {
+  // #794 — by the persisted verdict, not a score band the cells can never reach.
+  it("colour-codes cells by mapping status", () => {
     render(<CoverageMatrix requirements={reqs} testCases={tcs} cells={cells} />);
-    const covered = screen.getByLabelText(/Requirement 0 × TestCase 0: score 0\.95/);
-    const partial = screen.getByLabelText(/Requirement 0 × TestCase 1: score 0\.60/);
-    const uncovered = screen.getByLabelText(/Requirement 1 × TestCase 2: score 0\.20/);
+    const covered = screen.getByLabelText(/Requirement 0 × TestCase 0: covered, score 0\.95/);
+    const ambiguous = screen.getByLabelText(/Requirement 0 × TestCase 1: ambiguous, score 0\.60/);
+    const uncovered = screen.getByLabelText(/Requirement 1 × TestCase 2: uncovered, score 0\.20/);
+    const overridden = screen.getByLabelText(/Requirement 1 × TestCase 0: overridden, score 0\.55/);
     expect(covered.className).toContain("bg-success");
-    expect(partial.className).toContain("bg-warning");
+    expect(ambiguous.className).toContain("bg-warning");
     expect(uncovered.className).toContain("bg-destructive");
+    expect(overridden.className).toContain("bg-success");
+  });
+
+  it("a low-scoring COVERED cell is still green (#794)", () => {
+    render(
+      <CoverageMatrix
+        requirements={reqs}
+        testCases={tcs}
+        cells={[{ requirementId: "r2", testCaseId: "t2", score: 0.02, status: "COVERED" }]}
+      />,
+    );
+    expect(screen.getByLabelText(/Requirement 2 × TestCase 2: covered/).className).toContain(
+      "bg-success",
+    );
   });
 
   it("renders empty cell for missing mapping", () => {
@@ -66,17 +84,27 @@ describe("<CoverageMatrix />", () => {
     expect(empty.textContent).toBe("");
   });
 
-  it("invokes onCellClick with the cell coords + score", async () => {
+  it("invokes onCellClick with the cell coords, score, status and mapping", async () => {
     const user = userEvent.setup();
     const onClick = vi.fn();
     render(
       <CoverageMatrix requirements={reqs} testCases={tcs} cells={cells} onCellClick={onClick} />,
     );
-    await user.click(screen.getByLabelText(/Requirement 0 × TestCase 0: score 0\.95/));
+    await user.click(screen.getByLabelText(/Requirement 0 × TestCase 0: covered, score 0\.95/));
     expect(onClick).toHaveBeenCalledWith({
       requirementId: "r0",
       testCaseId: "t0",
       score: 0.95,
+      status: "COVERED",
+      mappingId: "m0",
+    });
+    await user.click(screen.getByLabelText(/Requirement 2 × TestCase 1: no mapping/));
+    expect(onClick).toHaveBeenLastCalledWith({
+      requirementId: "r2",
+      testCaseId: "t1",
+      score: null,
+      status: null,
+      mappingId: null,
     });
   });
 

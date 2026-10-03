@@ -358,6 +358,8 @@ describe("judgeAmbiguous", () => {
         budgetCents: 20,
         db: { aISession: { upsert: vi.fn(async () => ({})) } } as never,
         tracker: { record: vi.fn(), recordAndFlush: vi.fn(async () => ({})) } as never,
+        // #794 — keep the project-ledger write in the test too.
+        projectUsage: () => ({ totalTokens: 0, costCents: null, persisted: Promise.resolve() }),
       },
     );
 

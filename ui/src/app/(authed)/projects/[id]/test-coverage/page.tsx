@@ -46,7 +46,7 @@ import {
   type ConnectorSource,
   type ConnectorPullRequest,
 } from "@/lib/test-coverage-api";
-import { CoverageMatrix } from "@/components/test-coverage/coverage-matrix";
+import { CoverageMatrix, type MatrixCellClick } from "@/components/test-coverage/coverage-matrix";
 import { testManagementApi } from "@/lib/test-management-api";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -240,6 +240,12 @@ export default function TestCoveragePage() {
   const [pasteLabel, setPasteLabel] = useState("Pasted cases");
   const [pasteSource, setPasteSource] = useState<"csv" | "markdown" | "gherkin">("csv");
   const [activeSuggestion, setActiveSuggestion] = useState<SuggestionDto | null>(null);
+  // #794 — the matrix cell a reviewer is overriding.
+  const [overrideCell, setOverrideCell] = useState<MatrixCellClick | null>(null);
+  const [overrideStatus, setOverrideStatus] = useState<"COVERED" | "UNCOVERED" | "AMBIGUOUS">(
+    "COVERED",
+  );
+  const [overrideReason, setOverrideReason] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   const [exportTarget, setExportTarget] = useState<ExportTarget>("excel");
   const [exportOverride, setExportOverride] = useState(false);
@@ -354,6 +360,23 @@ export default function TestCoveragePage() {
     },
   });
 
+  const overrideMutation = useMutation({
+    mutationFn: (input: {
+      mappingId: string;
+      status: "COVERED" | "UNCOVERED" | "AMBIGUOUS";
+      reason: string;
+    }) =>
+      testCoverageApi.overrideMapping(projectId, input.mappingId, {
+        status: input.status,
+        reason: input.reason,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tc-report", projectId, latestRunId] });
+      setOverrideCell(null);
+      setOverrideReason("");
+    },
+  });
+
   const exportMutation = useMutation({
     mutationFn: async () => {
       if (!latestRunId) throw new Error("No run to export");
@@ -406,30 +429,39 @@ export default function TestCoveragePage() {
 
   const report = reportQuery.data;
 
+  // #794 — render names, not cuids. The report carries the titles; an id the
+  // report has no name for (a requirement deleted since the run) shows as-is.
+  const requirementTitles = useMemo(
+    () => new Map((report?.requirements ?? []).map((r) => [r.id, r.title])),
+    [report],
+  );
+  const testCaseTitles = useMemo(
+    () => new Map((report?.testCases ?? []).map((t) => [t.id, t.title])),
+    [report],
+  );
+
   const requirementsForMatrix = useMemo(() => {
     if (!report) return [];
-    const seen = new Map<string, string>();
-    for (const m of report.mappings) {
-      if (!seen.has(m.requirementId)) seen.set(m.requirementId, m.requirementId);
-    }
-    return Array.from(seen.entries()).map(([id]) => ({ id, title: id }));
-  }, [report]);
+    const ids = new Set(report.mappings.map((m) => m.requirementId));
+    return [...ids].map((id) => ({ id, title: requirementTitles.get(id) ?? id }));
+  }, [report, requirementTitles]);
 
   const testCasesForMatrix = useMemo(() => {
     if (!report) return [];
-    const seen = new Map<string, string>();
-    for (const m of report.mappings) {
-      if (!seen.has(m.testCaseDocId)) seen.set(m.testCaseDocId, m.testCaseDocId);
-    }
-    return Array.from(seen.entries()).map(([id]) => ({ id, title: id }));
-  }, [report]);
+    const ids = new Set(report.mappings.map((m) => m.testCaseDocId));
+    return [...ids].map((id) => ({ id, title: testCaseTitles.get(id) ?? id }));
+  }, [report, testCaseTitles]);
 
+  // #794 — the judge's confidence where it ran, else the cosine similarity.
+  // Never the RRF `fused` score: it is ~0.01–0.02 and means nothing on its own.
   const matrixCells = useMemo(() => {
     if (!report) return [];
     return report.mappings.map((m) => ({
       requirementId: m.requirementId,
       testCaseId: m.testCaseDocId,
-      score: m.fused,
+      score: m.judgeConfidence ?? m.cosine,
+      status: m.status,
+      mappingId: m.id,
     }));
   }, [report]);
 
@@ -760,19 +792,32 @@ export default function TestCoveragePage() {
             requirements={requirementsForMatrix}
             testCases={testCasesForMatrix}
             cells={matrixCells}
+            onCellClick={(cell) => {
+              if (!cell.mappingId) return;
+              setOverrideStatus(
+                cell.status === "COVERED" || cell.status === "OVERRIDDEN" ? "UNCOVERED" : "COVERED",
+              );
+              setOverrideReason("");
+              setOverrideCell(cell);
+            }}
           />
-          <div className="flex gap-3 text-xs text-muted-foreground">
+          <div
+            className="flex flex-wrap gap-3 text-xs text-muted-foreground"
+            data-testid="tc-matrix-legend"
+          >
             <span>
-              <span className="inline-block w-3 h-3 bg-success align-middle mr-1" />≥ 0.8 covered
+              <span className="inline-block w-3 h-3 bg-success align-middle mr-1" />
+              covered (or overridden)
             </span>
             <span>
               <span className="inline-block w-3 h-3 bg-warning align-middle mr-1" />
-              0.5–0.8 partial
+              ambiguous
             </span>
             <span>
               <span className="inline-block w-3 h-3 bg-destructive align-middle mr-1" />
-              &lt; 0.5 uncovered
+              uncovered
             </span>
+            <span>Number: judge confidence, else cosine similarity. Click a cell to override.</span>
           </div>
         </Card>
       )}
@@ -788,7 +833,11 @@ export default function TestCoveragePage() {
                 className="flex items-center gap-3 text-sm border-b border-border py-2"
               >
                 <Badge className={severityClass(g.severity)}>{g.severity}</Badge>
-                <code className="text-xs">{g.requirementId}</code>
+                {requirementTitles.has(g.requirementId) ? (
+                  <span className="truncate">{requirementTitles.get(g.requirementId)}</span>
+                ) : (
+                  <code className="text-xs">{g.requirementId}</code>
+                )}
               </li>
             ))}
           </ul>
@@ -856,6 +905,73 @@ export default function TestCoveragePage() {
           </ul>
         </Card>
       )}
+
+      {/* ---- Mapping override dialog (#794) ---- */}
+      <Dialog open={Boolean(overrideCell)} onOpenChange={(o) => !o && setOverrideCell(null)}>
+        <DialogContent data-testid="tc-override-dialog">
+          <DialogHeader>
+            <DialogTitle>Override coverage</DialogTitle>
+            <DialogDescription>
+              {overrideCell
+                ? `${requirementTitles.get(overrideCell.requirementId) ?? overrideCell.requirementId} × ${
+                    testCaseTitles.get(overrideCell.testCaseId) ?? overrideCell.testCaseId
+                  } — currently ${(overrideCell.status ?? "").toLowerCase()}.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex gap-2 items-center">
+              <label className="text-sm" htmlFor="tc-override-status">
+                Mark as:
+              </label>
+              <select
+                id="tc-override-status"
+                className="text-sm border border-border rounded-md px-2 py-1 bg-background"
+                value={overrideStatus}
+                onChange={(e) =>
+                  setOverrideStatus(e.target.value as "COVERED" | "UNCOVERED" | "AMBIGUOUS")
+                }
+              >
+                <option value="COVERED">Covered</option>
+                <option value="UNCOVERED">Uncovered</option>
+                <option value="AMBIGUOUS">Ambiguous</option>
+              </select>
+            </div>
+            <Textarea
+              rows={3}
+              value={overrideReason}
+              onChange={(e) => setOverrideReason(e.target.value)}
+              aria-label="Reason"
+              placeholder="Why does this test (not) verify this requirement?"
+              maxLength={2000}
+            />
+            {overrideMutation.isError && (
+              <p className="text-sm text-destructive" role="alert">
+                {(overrideMutation.error as Error).message}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOverrideCell(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() =>
+                overrideCell?.mappingId &&
+                overrideMutation.mutate({
+                  mappingId: overrideCell.mappingId,
+                  status: overrideStatus,
+                  reason: overrideReason.trim(),
+                })
+              }
+              disabled={!overrideReason.trim() || overrideMutation.isPending}
+              data-testid="tc-override-submit"
+            >
+              {overrideMutation.isPending ? "Saving…" : "Save override"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ---- Paste dialog ---- */}
       <Dialog open={pasteOpen} onOpenChange={setPasteOpen}>
