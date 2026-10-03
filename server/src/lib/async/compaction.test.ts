@@ -334,6 +334,8 @@ describe("providerSummarizer", () => {
     expect(projectRecord.mock.calls[0]![0]).toMatchObject({
       projectId: "p1",
       sessionId: "s1",
+      userId: "u1",
+      agentStep: "compaction",
       provider: "openai",
       model: "served-model",
       inputTokens: 120,

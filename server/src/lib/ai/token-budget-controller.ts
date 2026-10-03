@@ -255,8 +255,26 @@ export class TokenBudgetController {
     dayBucket?: string;
     monthStart?: string;
   }): Promise<number> {
+    // #792 — a project budget counts the project ledger (`token_usages`), the
+    // same table behind the usage page's cards, analytics and CSV. User budgets
+    // stay on the per-user store (`ai_token_usages`): `token_usages.userId` is
+    // nullable and only populated from #792 on, so it cannot yet answer them.
+    if (filter.projectId) {
+      const createdAt: { gte?: Date; lt?: Date } = {};
+      if (filter.dayBucket) {
+        const start = new Date(`${filter.dayBucket}T00:00:00.000Z`);
+        createdAt.gte = start;
+        createdAt.lt = new Date(start.getTime() + 86_400_000);
+      }
+      if (filter.monthStart) createdAt.gte = new Date(`${filter.monthStart}T00:00:00.000Z`);
+      const ledger = await prisma.tokenUsage.aggregate({
+        where: { projectId: filter.projectId, ...(createdAt.gte ? { createdAt } : {}) },
+        _sum: { totalTokens: true },
+      });
+      return ledger._sum.totalTokens ?? 0;
+    }
+
     const where: Record<string, unknown> = {};
-    if (filter.projectId) where.projectId = filter.projectId;
     if (filter.userId) where.userId = filter.userId;
     if (filter.dayBucket) where.dayBucket = filter.dayBucket;
     if (filter.monthStart) where.dayBucket = { gte: filter.monthStart };

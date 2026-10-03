@@ -454,7 +454,12 @@ describe("synthesizeFinalDocument — judge-gated escalation integration", () =>
     // At least one usage record was attributed to the escalation (anthropic) provider.
     const cloudUsage = recordUsageMock.mock.calls.filter((c) => c[0]?.provider === "anthropic");
     expect(cloudUsage.length).toBeGreaterThan(0);
-    expect(cloudUsage[0][0]).toMatchObject({ projectId: "proj-1", provider: "anthropic" });
+    expect(cloudUsage[0][0]).toMatchObject({
+      projectId: "proj-1",
+      provider: "anthropic",
+      agentStep: "docs-gen", // #792
+    });
+    for (const [row] of recordUsageMock.mock.calls) expect(row.agentStep).toBe("docs-gen");
   });
 
   it("keeps the local section (with its warning) when the escalation re-run THROWS", async () => {

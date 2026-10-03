@@ -543,6 +543,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           provider: "openai",
           inputTokens: 5,
           outputTokens: 2,
+          // #792 — the project ledger names the failed turn and its user too.
+          agentStep: "chat-failed",
+          userId: perUser[0]!.userId,
         });
         // The failed turn is still in the transcript, marked incomplete.
         expect((await lastReply(session.id)).incomplete).toBeTruthy();
