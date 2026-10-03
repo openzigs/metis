@@ -1337,6 +1337,30 @@ function previewOf(text: string): string {
 }
 
 /**
+ * PR #783 review — add the final-answer instruction WITHOUT breaking strict
+ * user/assistant alternation. When the transcript already ends on a user turn
+ * (the text protocol's tool results), the instruction joins that turn instead
+ * of following it: Anthropic merges same-role turns, but the OpenAI-compatible
+ * provider passes them through, and some local chat templates (Gemma's Jinja
+ * template) reject two user turns in a row. The last message is replaced, not
+ * mutated — `messages` is the caller's transcript.
+ */
+function appendUserInstruction(messages: ChatMessage[], instruction: string): void {
+  const last = messages[messages.length - 1];
+  if (last?.role !== "user") {
+    messages.push({ role: "user", content: instruction });
+    return;
+  }
+  messages[messages.length - 1] = {
+    ...last,
+    content:
+      typeof last.content === "string"
+        ? `${last.content}\n\n${instruction}`
+        : [...last.content, { type: "text", text: instruction }],
+  };
+}
+
+/**
  * Execute the multi-turn agent loop.
  *
  * - maxTurns=1 (default) gives backward-compatible single-shot behavior.
@@ -1766,7 +1790,7 @@ export async function runAgentLoop(
     if (lastResponse && !lastAppended) {
       retryMessages.push({ role: "assistant", content: lastResponse });
     }
-    retryMessages.push({ role: "user", content: options.finalAnswerRetry.instruction });
+    appendUserInstruction(retryMessages, options.finalAnswerRetry.instruction);
     try {
       const chatOpts: ChatOptions = {
         model: options.model,

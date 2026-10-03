@@ -335,4 +335,16 @@ describe("makeToolset — `-` and `_` spell the same tool (#772)", () => {
     expect(set.resolve("a_b")).toBeUndefined();
     expect(set.withheld("a_b")).toEqual({ name: "a_b", risk: "high" });
   });
+
+  it("ANY spelling of a withheld name is blocked, not only its exact and wire forms (PR #783 review)", () => {
+    // `a_b_c` is neither the withheld name `a-b_c` nor its wire form, but it
+    // normalises to it — and to the offered `a_b-c`.
+    const set = makeToolset([rt("a_b-c")], [{ name: "a-b_c", risk: "high" }]);
+    expect(set.resolve("a_b_c")).toBeUndefined();
+    expect(set.resolve("a-b-c")).toBeUndefined();
+    expect(set.withheld("a_b_c")).toEqual({ name: "a-b_c", risk: "high" });
+    // The offered tool's own exact name still resolves.
+    expect(set.resolve("a_b-c")?.name).toBe("a_b-c");
+    expect(set.withheld("a_b-c")).toBeUndefined();
+  });
 });

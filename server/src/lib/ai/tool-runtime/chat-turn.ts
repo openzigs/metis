@@ -42,6 +42,23 @@ export const CHAT_FINAL_SYNTHESIS_INSTRUCTION =
   "Answer the user's question now, using only the evidence already gathered above, and cite " +
   "the files and line ranges it came from. Say plainly what you could not verify.";
 
+/**
+ * PR #783 review — the synthesis instruction for a run whose answer has a
+ * server-authored output contract (a custom agent's findings JSON, say). The
+ * chat wording alone invited a prose answer that the caller then could not
+ * parse, so the contract is restated after it: it is the last thing the model
+ * reads before the one call that has to produce the answer.
+ */
+export function finalSynthesisInstruction(outputContract?: string): string {
+  const contract = outputContract?.trim();
+  if (!contract) return CHAT_FINAL_SYNTHESIS_INSTRUCTION;
+  return (
+    `${CHAT_FINAL_SYNTHESIS_INSTRUCTION}\n\n` +
+    "Keep the required output format: reply exactly as this output contract specifies, " +
+    `and nothing else.\n\n${contract}`
+  );
+}
+
 /** A synthesis reply counts only if it says something and is not tool protocol. */
 function isChatAnswer(text: string, toolNames: readonly string[]): boolean {
   return text.trim().length > 0 && !isToolCallReply(text, toolNames);
@@ -111,6 +128,12 @@ export interface ChatToolTurnOptions {
    * earlier ones cost. The loop's `usage` (on success) is the sum of these.
    */
   onUsage?: (usage: TokenUsage) => void;
+  /**
+   * PR #783 review — the run's server-authored output contract, if any. The
+   * #772 final-synthesis call restates it so a spent step budget still ends in
+   * the required format, not chat prose.
+   */
+  outputContract?: string;
 }
 
 function capForModel(text: string, maxChars: number | undefined): string {
@@ -186,7 +209,7 @@ export async function runChatToolTurn(
         // #772 — a spent step budget still ends in an answer: one bounded,
         // tool-free call over what the tools already returned.
         finalAnswerRetry: {
-          instruction: CHAT_FINAL_SYNTHESIS_INSTRUCTION,
+          instruction: finalSynthesisInstruction(options.outputContract),
           isValidFinalAnswer: (text) => isChatAnswer(text, wireNames),
         },
         refundTurn: () => {

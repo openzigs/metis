@@ -101,20 +101,37 @@ export function makeToolset(
     }
   }
   const withheldByName = new Map<string, WithheldTool>();
+  // PR #783 review — keyed by the separator-free spelling, so EVERY spelling of
+  // a withheld name is caught, not only the name and its wire form (`a_b_c`
+  // for a withheld `a-b_c`). Shared by two withheld tools ⇒ `null`: still
+  // blocked, but neither is named.
+  const withheldBySpelling = new Map<string, WithheldTool | null>();
   for (const w of withheld) {
     if (byName.has(w.name)) continue;
     withheldByName.set(w.name, w);
     withheldByName.set(toWireName(w.name, new Set()), w);
+    for (const n of new Set([
+      separatorFree(w.name),
+      separatorFree(toWireName(w.name, new Set())),
+    ])) {
+      const seen = withheldBySpelling.get(n);
+      withheldBySpelling.set(n, seen === undefined || seen === w ? w : null);
+    }
   }
   // A name the agent's allowlist withheld is never respelt into an offered tool.
   const resolve = (name: string): RuntimeTool | undefined =>
     byWire.get(name) ??
     byName.get(name) ??
-    (withheldByName.has(name) ? undefined : (bySpelling.get(separatorFree(name)) ?? undefined));
+    (withheldByName.has(name) || withheldBySpelling.has(separatorFree(name))
+      ? undefined
+      : (bySpelling.get(separatorFree(name)) ?? undefined));
   return {
     tools,
     withheldTools: withheld,
-    withheld: (name) => (resolve(name) ? undefined : withheldByName.get(name)),
+    withheld: (name) =>
+      resolve(name)
+        ? undefined
+        : (withheldByName.get(name) ?? withheldBySpelling.get(separatorFree(name)) ?? undefined),
     resolve,
     specs: () =>
       [...tools]

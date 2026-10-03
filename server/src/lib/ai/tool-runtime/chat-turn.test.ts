@@ -34,6 +34,7 @@ import type { ApprovalPolicy } from "../types.js";
 import { ToolApprovalBroker } from "./approval-broker.js";
 import {
   CHAT_FINAL_SYNTHESIS_INSTRUCTION,
+  finalSynthesisInstruction,
   CHAT_TOOL_MAX_APPROVAL_REFUNDS,
   composeReplyText,
   runChatToolTurn,
@@ -725,9 +726,10 @@ describe("a spent step budget still ends in an answer (#772)", () => {
     expect(out.finalResponse).toBe("Refresh skips a feed past the error limit.");
     expect(out.loop.hasFinalAnswer).toBe(true);
     const msgs = provider.requests[1]!.messages;
-    expect(msgs.at(-1)).toEqual({ role: "user", content: CHAT_FINAL_SYNTHESIS_INSTRUCTION });
-    expect(msgs.at(-2)!.role).toBe("user");
-    expect(String(msgs.at(-2)!.content)).toContain("parsing_error_count");
+    // PR #783 review — the instruction joins the results turn (strict alternation).
+    expect(msgs.at(-1)!.role).toBe("user");
+    expect(String(msgs.at(-1)!.content)).toContain("parsing_error_count");
+    expect(String(msgs.at(-1)!.content).endsWith(CHAT_FINAL_SYNTHESIS_INSTRUCTION)).toBe(true);
     expect(msgs.filter((m) => m.role === "assistant")).toHaveLength(1);
   });
 
@@ -799,5 +801,108 @@ describe("a spent step budget still ends in an answer (#772)", () => {
       result: "doc hit",
     });
     expect(out.finalResponse).toBe("OIDC and passwords.");
+  });
+});
+
+describe("the final-synthesis prompt keeps strict role alternation (PR #783 review)", () => {
+  const AUTO: ApprovalPolicy = { low: "auto", medium: "auto", high: "auto" };
+
+  /**
+   * Every adjacent pair differs in role. A run of `tool` results is one reply
+   * to the assistant turn before it, so `tool, tool` is the one repeat allowed;
+   * `user, user` — what Gemma's chat template rejects — never is.
+   */
+  function expectAlternation(messages: ReadonlyArray<{ role: string }>): void {
+    const roles = messages.map((m) => m.role);
+    for (let i = 1; i < roles.length; i++) {
+      if (roles[i] === "tool" && roles[i - 1] === "tool") continue;
+      expect(roles[i], `messages ${i - 1} and ${i} are both "${roles[i]}"`).not.toBe(roles[i - 1]);
+    }
+  }
+
+  it("text protocol: the instruction joins the results turn instead of following it", async () => {
+    const read = tool("read_file_slice", () => "evidence");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const call = (p: string) => `{"tool":"read_file_slice","args":{"path":"${p}"}}`;
+    const provider = new OfflineStubProvider({
+      script: [{ content: call("a.go") }, { content: call("b.go") }, { content: "Answer." }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: false, ctx: CTX, gate },
+      { maxTurns: 2 },
+    );
+    expect(out.finalResponse).toBe("Answer.");
+    const synthesis = provider.requests[2]!.messages;
+    expect(synthesis.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expectAlternation(synthesis);
+  });
+
+  it("native protocol: assistant, its tool results, then ONE user instruction", async () => {
+    const read = tool("read_file_slice", () => "evidence");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "read_file_slice", args: { path: "a.go" } }] },
+        { toolCalls: [{ id: "c2", name: "read_file_slice", args: { path: "b.go" } }] },
+        { content: "Answer." },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 2 },
+    );
+    expect(out.finalResponse).toBe("Answer.");
+    const synthesis = provider.requests[2]!.messages;
+    expect(synthesis.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+      "tool",
+      "user",
+    ]);
+    expectAlternation(synthesis);
+  });
+});
+
+describe("the final-synthesis call keeps a required output format (PR #783 review)", () => {
+  const AUTO: ApprovalPolicy = { low: "auto", medium: "auto", high: "auto" };
+
+  it("restates the output contract after the chat instruction", () => {
+    expect(finalSynthesisInstruction()).toBe(CHAT_FINAL_SYNTHESIS_INSTRUCTION);
+    expect(finalSynthesisInstruction("  ")).toBe(CHAT_FINAL_SYNTHESIS_INSTRUCTION);
+    const withContract = finalSynthesisInstruction('Reply with JSON: {"findings": []}');
+    expect(withContract.startsWith(CHAT_FINAL_SYNTHESIS_INSTRUCTION)).toBe(true);
+    expect(withContract).toMatch(/Keep the required output format/);
+    expect(withContract.endsWith('Reply with JSON: {"findings": []}')).toBe(true);
+  });
+
+  it("a run with an outputContract sends the contract in its synthesis call", async () => {
+    const read = tool("read_file_slice", () => "evidence");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "read_file_slice", args: { path: "a.go" } }] },
+        { content: '{"findings":[]}' },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1, outputContract: "ANSWER FORMAT: findings JSON" },
+    );
+    expect(out.finalResponse).toBe('{"findings":[]}');
+    const last = provider.requests[1]!.messages.at(-1)!;
+    expect(last.role).toBe("user");
+    expect(String(last.content)).toContain("Keep the required output format");
+    expect(String(last.content).endsWith("ANSWER FORMAT: findings JSON")).toBe(true);
   });
 });
