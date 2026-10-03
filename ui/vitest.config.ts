@@ -79,7 +79,6 @@ export default defineConfig({
         "src/app/*/projects/*/settings/**/*.tsx",
         "src/app/*/projects/*/spec-kit/page.tsx",
         "src/app/*/projects/*/sync/**/*.tsx",
-        "src/app/*/projects/*/test-coverage/**/*.tsx",
         "src/app/*/projects/*/pulls/**/*.tsx",
         "src/app/*/projects/*/documentation/page.tsx",
         "src/app/*/projects/*/repositories/**/*.tsx",

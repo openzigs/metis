@@ -57,8 +57,6 @@ const ROUTES: ReadonlyArray<{ path: string; tab: string; landsOn?: string }> = [
   { path: "/overview", tab: "Code" },
   { path: "/changes", tab: "Code" },
   { path: "/pulls", tab: "Code" },
-  { path: "/test-coverage", tab: "Code" },
-  { path: "/test-coverage/connections", tab: "Code" },
   { path: "/settings", tab: "Settings" },
   { path: "/settings/models", tab: "Settings" },
   { path: "/plugins", tab: "Settings" },
@@ -140,7 +138,7 @@ test.describe("Project navigation follows the pipeline (#28, #29)", () => {
     await tabs.openPage("Code", "Changes");
     await expect(page).toHaveURL((url) => url.pathname === `/projects/${projectId}/changes`);
     await expect(page.getByRole("navigation", { name: "Code pages" }).getByRole("link")).toHaveText(
-      ["Code Overview", "Changes", "Pull Requests", "Test Coverage"],
+      ["Code Overview", "Changes", "Pull Requests"],
     );
   });
 

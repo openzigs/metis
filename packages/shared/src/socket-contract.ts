@@ -74,6 +74,12 @@ export const SOCKET_EVENT_ALLOWLIST: Readonly<Record<string, string>> = {
     "TODO(#104): user:{id} notification with no ui/src listener; the drawer listens to comment:mention only.",
   "review:notification":
     "TODO(#104): user:{id} notification with no ui/src listener; nothing renders it in realtime.",
+  // --- #818 removed the Test Coverage page, their only listener; #819 removes
+  // the server emitters and these declarations with the rest of the API. ------
+  "testcoverage:run-update":
+    "#818: Test Coverage page removed; the server emitter goes in #819 with the test-coverage API.",
+  "testcoverage:run-finished":
+    "#818: Test Coverage page removed; the server emitter goes in #819 with the test-coverage API.",
 };
 
 /**

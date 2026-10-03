@@ -85,7 +85,6 @@ describe("getProjectTabModel — pipeline order (#28)", () => {
       ["Code Overview", `${B}/overview`],
       ["Changes", `${B}/changes`],
       ["Pull Requests", `${B}/pulls`],
-      ["Test Coverage", `${B}/test-coverage`],
     ]);
     expect(items.settings).toEqual([
       ["General", `${B}/settings`],
@@ -133,7 +132,6 @@ describe("getProjectTabModel — pipeline order (#28)", () => {
       "/overview",
       "/changes",
       "/pulls",
-      "/test-coverage",
       "/documentation",
       "/settings/templates",
       "/baselines",
@@ -172,7 +170,6 @@ describe("resolveActiveProjectTab", () => {
     expect(active(`${B}/baselines/b1`)).toEqual(["requirements", "Baselines"]);
     expect(active(`${B}/discussions/d1`)).toEqual(["requirements", "Discussions"]);
     expect(active(`${B}/pulls/12`)).toEqual(["code", "Pull Requests"]);
-    expect(active(`${B}/test-coverage/connections`)).toEqual(["code", "Test Coverage"]);
   });
 
   it("prefers the longest match, so Templates is Docs even under /settings", () => {
@@ -276,7 +273,7 @@ describe("<ProjectTabs />", () => {
     const names = within(sub)
       .getAllByRole("link")
       .map((l) => l.textContent);
-    expect(names).toEqual(["Code Overview", "Changes", "Pull Requests", "Test Coverage"]);
+    expect(names).toEqual(["Code Overview", "Changes", "Pull Requests"]);
     expect(within(sub).getByRole("link", { name: "Changes" })).toHaveAttribute(
       "aria-current",
       "page",
