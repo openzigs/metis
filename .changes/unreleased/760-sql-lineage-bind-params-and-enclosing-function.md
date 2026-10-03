@@ -4,10 +4,10 @@ section: Fixed
 ---
 
 - SQL lineage no longer turns bind parameters (`$1`, `?`, `:name`) into
-  columns. In a Go project they were 28% of column edges, which also inflated
-  the Gap Report's resolved figure.
-- Columns that an `UPDATE`, `DELETE` or `MERGE` only filters on are recorded as
-  reads, not writes.
+  columns; in a Go project they were 28% of column edges.
+- Columns an `UPDATE`, `DELETE` or `MERGE` only filters on are reads, not
+  writes, and an unqualified `SET` target in a multi-table statement is kept.
 - Embedded-SQL edges start from the enclosing function, such as `UpdateFeed`,
-  not from a `sql@<line>` symbol. Already-ingested graphs change on the next
-  full re-ingest.
+  not from a `sql@<line>` symbol.
+- Projects with lineage on rewrite these edges on their next ingest; no manual
+  re-ingest is needed.

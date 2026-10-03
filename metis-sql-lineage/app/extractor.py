@@ -301,6 +301,25 @@ def _collect_tables(statement: exp.Expression, exclude: set[str]) -> dict[str, d
     return tables
 
 
+def _write_target_qn(column: exp.Column) -> str | None:
+    """Qualified name of the table a SET / MERGE-INSERT target column writes to
+    (#807): the nearest enclosing UPDATE, MERGE or INSERT's own target. A MERGE
+    ``WHEN MATCHED THEN UPDATE`` / ``WHEN NOT MATCHED THEN INSERT (a, b)`` clause
+    has no table of its own, so the walk continues up to the MERGE; an
+    ``ON CONFLICT DO UPDATE`` reaches the INSERT. A dynamic target never made it
+    into ``tables``, so the caller's membership check drops it."""
+    node = column.parent
+    while node is not None:
+        if isinstance(node, (exp.Update, exp.Merge, exp.Insert)):
+            target = node.this
+            if isinstance(target, exp.Schema):
+                target = target.this
+            if isinstance(target, exp.Table):
+                return _table_qualified_name(*_table_identity(target))
+        node = node.parent
+    return None
+
+
 def _attach_columns(
     statement: exp.Expression, tables: dict[str, dict], statement_access: str = ACCESS_READ
 ) -> set[str]:
@@ -335,8 +354,15 @@ def _attach_columns(
             # Single-table statement: an unqualified column belongs to it.
             only_qn = next(iter(tables))
             tables[only_qn]["columns"].setdefault(col, set()).add(access)
-        else:
-            unqualified.add(col)
+            continue
+        if access != ACCESS_READ:
+            # A SET / MERGE-INSERT target can only belong to the statement's
+            # target table, however many tables the statement reads (#807).
+            target_qn = _write_target_qn(column)
+            if target_qn in tables:
+                tables[target_qn]["columns"].setdefault(col, set()).add(access)
+                continue
+        unqualified.add(col)
     return unqualified
 
 

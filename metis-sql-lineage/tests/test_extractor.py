@@ -509,3 +509,44 @@ def test_merge_qualified_insert_targets_persist():
         dialect="",
     )
     assert _column_access(result, "t") == {("id", "read"), ("id", "persist")}
+
+
+# --- Review of PR #807: unqualified write targets in multi-table statements --
+
+
+@pytest.mark.parametrize("dialect", ["", "postgres"])
+def test_update_from_attaches_unqualified_set_target_to_the_target_table(dialect):
+    # Two tables, so the single-table fallback cannot place `a`; it is a SET
+    # target, so it can only be `t`'s column.
+    result = extract_usage(
+        "UPDATE t SET a = $1 FROM u WHERE t.id = u.id AND u.x = $2", dialect=dialect
+    )
+    assert _column_access(result, "t") == {("a", "write"), ("id", "read")}
+    assert _column_access(result, "u") == {("id", "read"), ("x", "read")}
+
+
+def test_merge_attaches_unqualified_update_and_insert_targets_to_the_target_table():
+    result = extract_usage(
+        "MERGE INTO t USING s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET v = s.v "
+        "WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)",
+        dialect="",
+    )
+    assert _column_access(result, "t") == {
+        ("id", "read"),
+        ("id", "persist"),
+        ("v", "write"),
+        ("v", "persist"),
+    }
+    # The source table only ever reads.
+    assert _column_access(result, "s") == {("id", "read"), ("v", "read")}
+
+
+def test_insert_select_conflict_set_target_lands_on_the_insert_target():
+    result = extract_usage(
+        "INSERT INTO t (a, b) SELECT u.a, u.b FROM u "
+        "ON CONFLICT (a) DO UPDATE SET b = 1",
+        dialect="postgres",
+    )
+    assert ("b", "write") in _column_access(result, "t")
+    assert ("b", "write") not in _column_access(result, "u")
