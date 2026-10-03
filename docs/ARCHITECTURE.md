@@ -1160,7 +1160,7 @@ The `ServerToClientEvents` contract (`packages/shared/src/socket.ts`) is the sin
 | `publish:status` / `publish:progress` / `publish:completed` | `lib/publishing/socket-emitter.ts` | `…/publish/page.tsx` | live |
 | `scheduler:status` | `lib/scheduler/socket-emitter.ts` | `scheduler/page.tsx` | live |
 | `task:status` / `task:progress` | `lib/scheduler/socket-emitter.ts` | `tasks/page.tsx` | live |
-| `testcoverage:run-update` / `testcoverage:run-finished` | `lib/testcoverage/socket-emitter.ts` (computed name — `SOCKET_COMPUTED_EMITTERS`) | `…/test-coverage/page.tsx` | live |
+| `testcoverage:run-update` / `testcoverage:run-finished` | — | — | **removed** (#819) with the test-coverage API; the page that listened went in #818 |
 | `presence:update` | `lib/collaboration/presence.ts` | `components/presence/PresenceAvatars.tsx` | live |
 | `message:new` / `message:stream` | `lib/discussions/socket-emitter.ts` (room `thread:{id}`) | `components/chat/discussion-thread-view.tsx` | live |
 | `typing:update` | `lib/socket/discussion-presence.ts` | `components/chat/typing-indicator.tsx` | live |

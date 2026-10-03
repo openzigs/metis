@@ -218,7 +218,7 @@ describe("published Claude prices — the family match (#42)", () => {
   });
 
   it("the default Bedrock judge model is priced at the Regional Haiku 4.5 SKU", () => {
-    // HAIKU_MODEL_ID (model-router.ts) — the test-coverage judge's model.
+    // HAIKU_MODEL_ID (model-router.ts) — the default Bedrock judge model.
     expectRate(
       resolveRate("bedrock-gateway", "us.anthropic.claude-haiku-4-5-20251001-v1:0", {
         config,

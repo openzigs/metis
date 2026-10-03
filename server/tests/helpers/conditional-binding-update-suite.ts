@@ -35,7 +35,6 @@ import type { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { connectorsRouter } from "../../src/routes/connectors.js";
 import { jiraRouter } from "../../src/routes/jira.js";
-import { testManagementRouter } from "../../src/routes/test-management.js";
 import { mcpRouter } from "../../src/routes/mcp.js";
 import { errorHandler, notFoundHandler } from "../../src/middleware/error-handler.js";
 import { issueTokens } from "../../src/lib/auth/jwt.js";
@@ -50,7 +49,6 @@ import { MCPLifecycleManager } from "../../src/lib/mcp/lifecycle-manager.js";
 import { updateDbConnector } from "../../src/lib/connectors/db/db-service.js";
 import { updateRepoConnector } from "../../src/lib/connectors/repo/repo-service.js";
 import { updateJiraConnection } from "../../src/lib/connectors/jira/jira-service.js";
-import { updateTestManagementConnection } from "../../src/lib/connectors/testmgmt/connection-service.js";
 
 import type { BindingSuiteState } from "./interleaved-guards.js";
 
@@ -97,7 +95,6 @@ export function describeConditionalBindingUpdates(opts: {
       a.use(express.json());
       a.use("/api/projects/:projectId/connectors", connectorsRouter());
       a.use("/api/jira", jiraRouter());
-      a.use("/api/test-management", testManagementRouter());
       a.use("/api/mcp", mcpRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
@@ -161,7 +158,7 @@ export function describeConditionalBindingUpdates(opts: {
     /** Every MCP server this run created, for `purgeRunRows`. */
     const mcpServerIds: string[] = [];
 
-    type Model = "jiraConnection" | "testManagementConnection" | "mCPServer";
+    type Model = "jiraConnection" | "mCPServer";
     /**
      * #495 — run `fn` with `model.findUniqueOrThrow` failing: the read the
      * service makes right AFTER its conditional write has committed. Anything
@@ -555,181 +552,6 @@ export function describeConditionalBindingUpdates(opts: {
         const before = await row(id);
         await expect(
           updateJiraConnection(id, { label: "never" }, ADMIN_ID, undefined, null),
-        ).rejects.toMatchObject({ status: 409, code: CONFLICT });
-        expect(await row(id)).toEqual(before);
-      });
-    });
-
-    // ── Test-management connections ──────────────────────────────────────────
-    describe("PATCH /api/test-management/connections/:id", () => {
-      const url = (id: string) => `/api/test-management/connections/${id}`;
-      const create = async () => {
-        const res = await call(
-          "post",
-          `/api/test-management/connections?projectId=${PROJ}`,
-          ADMIN,
-          {
-            label: `tm-${next()}`,
-            kind: "zephyr",
-            baseUrl: "https://zephyr.internal.example.test",
-            auth: { kind: "zephyr", bearerToken: "zephyr-token-479" },
-          },
-        );
-        expect(res.status, JSON.stringify(res.body)).toBe(201);
-        return res.body.data.id as string;
-      };
-      const row = (id: string) => db.testManagementConnection.findUniqueOrThrow({ where: { id } });
-      const newAuth = { auth: { kind: "zephyr", bearerToken: "coord-zephyr-495" } };
-
-      it("a change between the guard and the write is a 409, not a silent overwrite", async () => {
-        const id = await create();
-        const { a, b } = await interleave(
-          url(id),
-          { label: `b-${next()}` },
-          {
-            baseUrl: `https://${EVIL}`,
-            auth: { kind: "zephyr", bearerToken: "coord-zephyr-479" },
-          },
-        );
-        expect(a.status, JSON.stringify(a.body)).toBe(200);
-        expect(b.status, JSON.stringify(b.body)).toBe(409);
-        expect(b.body.error.code).toBe(CONFLICT);
-        const after = await row(id);
-        expect(after.baseUrl).toBe(`https://${EVIL}`);
-        expect(after.label).toBe(a.body.data.label);
-      });
-
-      it("#495 — a PATCH whose row moved before its vault work leaves no new secret", async () => {
-        const id = await create();
-        const before = await row(id);
-        const secretsBefore = await everyCoordSecret();
-        const { a, b } = await interleave(url(id), newAuth, { label: `a-${next()}` });
-        expect(a.status, JSON.stringify(a.body)).toBe(200);
-        expect(b.status, JSON.stringify(b.body)).toBe(409);
-        expect(b.body.error.code).toBe(CONFLICT);
-        expect(await everyCoordSecret()).toEqual(secretsBefore);
-        expect((await row(id)).authConfigJson).toBe(before.authConfigJson);
-      });
-
-      it("#495 — a PATCH whose row moved during its vault work withdraws the secret it made", async () => {
-        const id = await create();
-        const before = await row(id);
-        const secretsBefore = await liveCoordSecrets();
-        const secretsEvery = await everyCoordSecret();
-        const { a, b } = await interleaveAfterVault(url(id), newAuth, { label: `a-${next()}` });
-        expect(a.status, JSON.stringify(a.body)).toBe(200);
-        expect(b.status, JSON.stringify(b.body)).toBe(409);
-        expect(b.body.error.code).toBe(CONFLICT);
-        expect(await liveCoordSecrets()).toEqual(secretsBefore);
-        expect((await row(id)).authConfigJson).toBe(before.authConfigJson);
-        // A09 — the withdrawal is on the record, as the creation was.
-        await expectConcurrentWithdrawals(added(secretsEvery, await everyCoordSecret()));
-      });
-
-      it("#495/#593 — a PATCH that rotated the row's own secret in place and then lost the race does not withdraw it, and restores its value", async () => {
-        // Seeded and PATCHed by the same owner, so `rotateOrCreate` rotates the
-        // row's existing secret instead of creating one: the id is the one the
-        // row already names, and withdrawing it would leave the row unreadable.
-        // #593 — the request failed, so the value it rotated in is taken back out.
-        const id = await create();
-        const before = await row(id);
-        const ownId = (JSON.parse(before.authConfigJson ?? "{}") as { bearerTokenRef?: string })
-          .bearerTokenRef;
-        expect(ownId, "the seeded row names no bearer-token secret").toBeTruthy();
-        const secretId = ownId!.replace(/^\$\{vault:(.+)\}$/, "$1");
-        const vault = getVaultService();
-        const realRotate = vault.rotateUndoable.bind(vault);
-        let a: request.Response | undefined;
-        let rotated = 0;
-        vi.spyOn(vault, "rotateUndoable").mockImplementation(async (...args) => {
-          const result = await realRotate(...args);
-          rotated += 1;
-          if (!a) a = await call("patch", url(id), ADMIN, { label: `a-${next()}` });
-          return result;
-        });
-        const createSpy = vi.mocked(vault.create);
-        createSpy.mockClear();
-        const b = await call("patch", url(id), ADMIN, {
-          auth: { kind: "zephyr", bearerToken: "admin-rotated-495" },
-        });
-        expect(rotated, "B did not rotate the row's secret in place").toBeGreaterThan(0);
-        expect(createSpy, "B created a secret instead of rotating").not.toHaveBeenCalled();
-        expect(a?.status, JSON.stringify(a?.body)).toBe(200);
-        expect(b.status, JSON.stringify(b.body)).toBe(409);
-        expect(b.body.error.code).toBe(CONFLICT);
-        // The row still names its own secret, which is live and readable.
-        const after = await row(id);
-        expect(after.authConfigJson).toBe(before.authConfigJson);
-        const secret = await db.secret.findUniqueOrThrow({ where: { id: secretId } });
-        expect(secret.deletedAt).toBeNull();
-        expect((await vault.read(secretId)).plaintext).toBe("zephyr-token-479");
-        expect(await withdrawalAudits([secretId])).toEqual([]);
-      });
-
-      it("#495 — a failure after the write has landed keeps the secret the row now names", async () => {
-        const id = await create();
-        const before = await row(id);
-        const secretsBefore = await liveCoordSecrets();
-        const res = await failingReadAfterWrite("testManagementConnection", () =>
-          call("patch", url(id), COORD, newAuth),
-        );
-        expect(res.status, JSON.stringify(res.body)).toBe(500);
-        const after = await row(id);
-        expect(after.authConfigJson).not.toBe(before.authConfigJson);
-        const made = added(secretsBefore, await liveCoordSecrets());
-        expect(made).toHaveLength(1);
-        expect(after.authConfigJson).toContain(made[0]);
-        expect((await getVaultService().read(made[0])).plaintext).toBe(newAuth.auth.bearerToken);
-        expect(await withdrawalAudits(made)).toEqual([]);
-      });
-
-      it("#593 — a failure after the write has landed keeps the owner's in-place rotation", async () => {
-        // Seeded and PATCHed by the same owner, so the bearer token is rotated
-        // in place (the row keeps naming the same secret). The conditional
-        // write lands and only the read after it fails: the new value must
-        // stay — no undo, no restore audit.
-        const id = await create();
-        const before = await row(id);
-        const ownRef = (JSON.parse(before.authConfigJson ?? "{}") as { bearerTokenRef?: string })
-          .bearerTokenRef;
-        expect(ownRef, "the seeded row names no bearer-token secret").toBeTruthy();
-        const secretId = ownRef!.replace(/^\$\{vault:(.+)\}$/, "$1");
-        const { rotateSpy, createSpy } = watchVaultWrites();
-        const rotatedValue = "admin-rotated-landed-593";
-        const label = `landed-${next()}`;
-        const res = await failingReadAfterWrite("testManagementConnection", () =>
-          call("patch", url(id), ADMIN, {
-            label,
-            auth: { kind: "zephyr", bearerToken: rotatedValue },
-          }),
-        );
-        expect(res.status, JSON.stringify(res.body)).toBe(500);
-        expect(rotateSpy, "the owner's PATCH did not rotate in place").toHaveBeenCalledTimes(1);
-        expect(createSpy, "the owner's PATCH created a secret instead").not.toHaveBeenCalled();
-        const after = await row(id);
-        expect(after.label, "the write did not land").toBe(label);
-        expect(
-          (JSON.parse(after.authConfigJson ?? "{}") as { bearerTokenRef?: string }).bearerTokenRef,
-        ).toBe(ownRef);
-        const secret = await db.secret.findUniqueOrThrow({ where: { id: secretId } });
-        expect(secret.deletedAt).toBeNull();
-        expect((await getVaultService().read(secretId)).plaintext).toBe(rotatedValue);
-        expect(await restoreAudits([secretId])).toEqual([]);
-        expect(await withdrawalAudits([secretId])).toEqual([]);
-      });
-
-      it("the service refuses a write whose guard saw no row", async () => {
-        const id = await create();
-        const before = await row(id);
-        await expect(
-          updateTestManagementConnection(
-            id,
-            { label: "never" },
-            ADMIN_ID,
-            undefined,
-            undefined,
-            null,
-          ),
         ).rejects.toMatchObject({ status: 409, code: CONFLICT });
         expect(await row(id)).toEqual(before);
       });

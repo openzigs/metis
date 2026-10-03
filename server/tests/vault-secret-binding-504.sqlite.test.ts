@@ -5,9 +5,9 @@
  *      binding; `backfillSecretBindings` binds each reference with the #344
  *      matching rule, and flags — never guesses — one that is ambiguous or
  *      reaches nothing, leaving it unable to resolve by label.
- *   2. Jira and test-management connections read their stored secret id and
- *      nothing else: a secret created with a LABEL equal to that id, after the
- *      bound one is deleted, is never picked up.
+ *   2. Jira connections read their stored secret id and nothing else: a
+ *      secret created with a LABEL equal to that id, after the bound one is
+ *      deleted, is never picked up.
  *
  * Real vault, real audit, real SQLite built from the migration chain. The
  * Jira client factory is the only stub, and it records the token it is handed.
@@ -74,8 +74,6 @@ const { expandVaultRefs } = await import("../src/lib/vault/env-manager.js");
 const { batchTokenSource, executeBatch, archiveBatch } =
   await import("../src/lib/publishing/publishing-service.js");
 const { buildJiraClientForConnection } = await import("../src/lib/connectors/jira/jira-service.js");
-const { loadResolvedTestManagementConnection } =
-  await import("../src/lib/connectors/testmgmt/connection-service.js");
 
 const PROJ = "proj-504-backfill";
 const ADMIN_VALUE = "admin-value-504";
@@ -722,7 +720,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
-    // ── 2. Jira and test-management read the stored id only ─────────────────
+    // ── 2. Jira reads the stored id only ─────────────────────────────────────
     describe("stored secret ids are never re-resolved by label", () => {
       it("Jira: a secret labelled with the deleted secret's id is never used", async () => {
         const own = await secret(`jira-504-${next()}`, "jira-token");
@@ -744,139 +742,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await squatOnId(own);
         await expect(buildJiraClientForConnection(conn.id)).rejects.toThrow(/not found/);
         expect(state.sent).toEqual([]);
-      });
-
-      it("test management: a secret labelled with the deleted secret's id is never used", async () => {
-        const own = await secret(`tm-504-${next()}`, "tm-token");
-        const conn = await db.testManagementConnection.create({
-          data: {
-            projectId: PROJ,
-            label: `tm-504-${next()}`,
-            kind: "zephyr",
-            baseUrl: "https://zephyr.example.test",
-            authConfigJson: JSON.stringify({ kind: "zephyr", bearerTokenRef: ref(own) }),
-            createdById: "u-coord",
-          },
-        });
-        const deps = { assertHost: async () => undefined };
-        const ok = await loadResolvedTestManagementConnection(conn.id, PROJ, deps);
-        expect(ok.auth).toEqual({ kind: "zephyr", bearerToken: "tm-token" });
-
-        await squatOnId(own);
-        await expect(
-          loadResolvedTestManagementConnection(conn.id, PROJ, deps),
-        ).rejects.toMatchObject({ code: "VAULT_BINDING_STALE" });
-      });
-
-      describe("test management: every bound read, one at a time (PR #518 panel)", () => {
-        /**
-         * A vault that records every plaintext it hands out, so a test can
-         * prove the squatter's value was never read — not merely not returned.
-         */
-        const recordingVault = () => {
-          const handedOut: string[] = [];
-          const real = getVaultService();
-          const vault = new Proxy(real, {
-            get(target, prop) {
-              const value = Reflect.get(target, prop) as unknown;
-              if (prop !== "read" || typeof value !== "function") return value;
-              return async (...args: unknown[]) => {
-                const out = (await (
-                  value as (...a: unknown[]) => Promise<{ plaintext: string }>
-                ).apply(target, args)) as { plaintext: string };
-                handedOut.push(out.plaintext);
-                return out;
-              };
-            },
-          });
-          return { vault, handedOut };
-        };
-        const tmConnection = async (
-          kind: "xray" | "zephyr" | "testrail",
-          auth: Record<string, unknown>,
-          tls: Record<string, unknown> | null = null,
-        ) =>
-          (
-            await db.testManagementConnection.create({
-              data: {
-                projectId: PROJ,
-                label: `tm-read-504-${next()}`,
-                kind,
-                baseUrl: `https://${kind}.example.test`,
-                authConfigJson: JSON.stringify({ kind, ...auth }),
-                tlsConfigJson: tls ? JSON.stringify(tls) : null,
-                createdById: "u-coord",
-              },
-            })
-          ).id;
-        /** Squat on `own`, then prove the load refuses and never reads the squatter. */
-        const expectStaleAfterSquat = async (id: string, own: string) => {
-          await squatOnId(own);
-          const { vault, handedOut } = recordingVault();
-          await expect(
-            loadResolvedTestManagementConnection(id, PROJ, {
-              assertHost: async () => undefined,
-              vault,
-            }),
-          ).rejects.toMatchObject({ status: 409, code: "VAULT_BINDING_STALE" });
-          expect(handedOut).not.toContain(ADMIN_VALUE);
-        };
-
-        it("xray clientId", async () => {
-          const cid = await secret(`tm-xray-cid-504-${next()}`, "xray-cid");
-          const csec = await secret(`tm-xray-csec-504-${next()}`, "xray-csec");
-          const id = await tmConnection("xray", {
-            clientIdRef: ref(cid),
-            clientSecretRef: ref(csec),
-          });
-          const ok = await loadResolvedTestManagementConnection(id, PROJ, {
-            assertHost: async () => undefined,
-          });
-          expect(ok.auth).toEqual({
-            kind: "xray",
-            clientId: "xray-cid",
-            clientSecret: "xray-csec",
-          });
-
-          await expectStaleAfterSquat(id, cid);
-        });
-
-        it("xray clientSecret", async () => {
-          const cid = await secret(`tm-xray-cid-504-${next()}`, "xray-cid");
-          const csec = await secret(`tm-xray-csec-504-${next()}`, "xray-csec");
-          const id = await tmConnection("xray", {
-            clientIdRef: ref(cid),
-            clientSecretRef: ref(csec),
-          });
-          await expectStaleAfterSquat(id, csec);
-        });
-
-        it("testrail apiKey", async () => {
-          const key = await secret(`tm-testrail-504-${next()}`, "testrail-key");
-          const id = await tmConnection("testrail", { email: "e@x.test", apiKeyRef: ref(key) });
-          const ok = await loadResolvedTestManagementConnection(id, PROJ, {
-            assertHost: async () => undefined,
-          });
-          expect(ok.auth).toEqual({ kind: "testrail", email: "e@x.test", apiKey: "testrail-key" });
-
-          await expectStaleAfterSquat(id, key);
-        });
-
-        it("TLS CA certificate", async () => {
-          const token = await secret(`tm-tls-token-504-${next()}`, "tm-token");
-          const ca = await secret(`tm-tls-ca-504-${next()}`, "ca-pem");
-          const id = await tmConnection(
-            "zephyr",
-            { bearerTokenRef: ref(token) },
-            { rejectUnauthorized: true, caCertRef: ref(ca) },
-          );
-          const ok = await loadResolvedTestManagementConnection(id, PROJ, {
-            assertHost: async () => undefined,
-          });
-          expect(ok.tls).toEqual({ rejectUnauthorized: true, caCert: "ca-pem" });
-
-          await expectStaleAfterSquat(id, ca);
-        });
       });
     });
   },

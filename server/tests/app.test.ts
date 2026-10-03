@@ -126,6 +126,25 @@ describe("createApp", () => {
     expect(res.body.error.code).toBe("NOT_FOUND");
   });
 
+  // #819 — the test-coverage API and the test-management connector routes are
+  // unmounted. An authenticated admin reaches the catch-all 404, not a handler.
+  it.each([
+    ["GET", "/api/projects/p1/test-coverage/runs"],
+    ["POST", "/api/projects/p1/test-coverage/runs"],
+    ["GET", "/api/projects/p1/test-coverage/runs/r1/report"],
+    ["GET", "/api/test-management/connections"],
+    ["POST", "/api/test-management/connections"],
+  ])("#819 — %s %s returns 404 for an authenticated admin", async (method, path) => {
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ username: "admin", password: "password" });
+    const token = login.body.data.accessToken as string;
+    const req = method === "POST" ? request(app).post(path).send({}) : request(app).get(path);
+    const res = await req.set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("NOT_FOUND");
+  });
+
   it("attaches a correlation id and echoes it back", async () => {
     const res = await request(app).get("/healthz").set("X-Correlation-Id", "abc-123");
     expect(res.headers["x-correlation-id"]).toBe("abc-123");

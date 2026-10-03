@@ -28,10 +28,9 @@
  * baseline file's header for the measurement.
  *
  * Routers that resolve a project INDIRECTLY from a resource id (`jira`,
- * `test-management`, `background-runs`) are not `:projectId`-mounted and so are
- * invisible to this test by construction. They are covered behaviourally by
- * `jira-connection-idor.test.ts`, `test-management-connection-idor.test.ts` and
- * `background-runs-authz.test.ts`.
+ * `background-runs`) are not `:projectId`-mounted and so are invisible to this
+ * test by construction. They are covered behaviourally by
+ * `jira-connection-idor.test.ts` and `background-runs-authz.test.ts`.
  */
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
@@ -117,7 +116,7 @@ describe("mount-table reader", () => {
   it("finds the project-scoped subtree it is meant to police", () => {
     // A guard test that silently enumerates nothing is worse than no test.
     const scoped = table.filter((e) => isProjectScopedPath(e.path));
-    expect(scoped.length).toBeGreaterThanOrEqual(30);
+    expect(scoped.length).toBeGreaterThanOrEqual(29); // #819 — 30 until the test-coverage mount went
   });
 
   it("parses paths, expressions and sibling handlers out of a `r.use` call", () => {
@@ -252,12 +251,6 @@ const ID_RESOLVED_EXEMPTIONS = [
     expression: "jiraRouter()",
     why: "connections are addressed by primary key; the owning project comes from the row via authorizeJiraConnection (lib/connectors/connection-authz.ts)",
     crossTenantTest: "tests/jira-connection-idor.test.ts",
-  },
-  {
-    mount: "/test-management",
-    expression: "testManagementRouter()",
-    why: "same shape as jira — authorizeTestManagementConnection resolves the project from the connection row",
-    crossTenantTest: "tests/test-management-connection-idor.test.ts",
   },
   {
     mount: "/runs",

@@ -104,7 +104,7 @@ beforeEach(() => {
 
 describe("cross-tenant sweep of every :projectId mount", () => {
   it("enumerates the whole project-scoped subtree", () => {
-    expect(scopedMounts.length).toBeGreaterThanOrEqual(30);
+    expect(scopedMounts.length).toBeGreaterThanOrEqual(29); // #819 — 30 until the test-coverage mount went
   });
 
   // Probe the mount path itself AND a child path, because a router mounted at

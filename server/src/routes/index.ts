@@ -52,7 +52,6 @@ import { adminRouter } from "./admin/index.js";
 import { searchRouter } from "./search.js";
 import { productsRouter as productsMultiRouter } from "./products-multi.js";
 import { jiraRouter } from "./jira.js";
-import { testManagementRouter } from "./test-management.js";
 import { changeAnalysisRouter } from "./change-analysis.js";
 import { impactAnalysisRouter } from "./impact-analysis.js";
 import { syncWebhookRouter, syncDriftRouter } from "./sync.js";
@@ -65,7 +64,6 @@ import { ssoRouter } from "./sso.js";
 import { scimRouter } from "./scim.js";
 import { workspacesRouter } from "./workspaces.js";
 import { finopsWorkspaceRouter } from "./finops-workspace.js";
-import { testCoverageRouter } from "./test-coverage.js";
 import { dataMappingsRouter } from "./data-mappings.js";
 import { traceabilityRouter, workspaceTraceabilityRouter } from "./traceability.js";
 import { stakeholdersRouter } from "./stakeholders.js";
@@ -185,8 +183,6 @@ export function apiRouter(): Router {
   r.use("/products", productsRateLimiter, productsMultiRouter());
   // Epic #556 — Jira integration.
   r.use("/jira", jiraRateLimiter, jiraRouter());
-  // Epic #856 Phase 3 (#871) — Xray/Zephyr/TestRail connection management.
-  r.use("/test-management", testManagementRouter());
   // Epic #249 — runtime configuration management (Phase 1).
   r.use("/admin", mcpAdminRateLimiter, adminRouter());
   // Epic #739 — Bidirectional Issue Sync.
@@ -202,8 +198,6 @@ export function apiRouter(): Router {
   r.use("/workspaces/:workspaceId/requirements", workspaceRequirementSearchRouter());
   // Epic #610 (#626) — workspace-level traceability rollup (coverage + link map).
   r.use("/workspaces/:workspaceId/traceability", workspaceTraceabilityRouter());
-  // Epic #856 — Project-level test coverage gap analysis.
-  r.use("/projects/:projectId/test-coverage", testCoverageRouter());
   // Epic #889 (#892) — requirement↔data traceability mappings.
   r.use("/projects/:projectId", dataMappingsRouter());
   // Epic #207 — requirement→spec→code traceability spine.

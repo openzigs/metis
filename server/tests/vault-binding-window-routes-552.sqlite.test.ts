@@ -93,7 +93,6 @@ const { projectsRouter } = await import("../src/routes/projects.js");
 const { mcpRouter } = await import("../src/routes/mcp.js");
 const { publishingRouter } = await import("../src/routes/publishing.js");
 const { jiraRouter } = await import("../src/routes/jira.js");
-const { testManagementRouter } = await import("../src/routes/test-management.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getVaultService, __resetVaultSingleton } =
@@ -141,7 +140,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use("/api/projects", projectsRouter());
       a.use("/api/mcp", mcpRouter());
       a.use("/api/jira", jiraRouter());
-      a.use("/api/test-management", testManagementRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -349,26 +347,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           (await db.jiraConnection.findUniqueOrThrow({ where: { id } })).baseUrl ===
           "https://jira.moved.example.test",
       },
-      {
-        site: "test-management.ts PATCH /connections/:id",
-        setup: () =>
-          created(
-            call("post", `/api/test-management/connections?projectId=${PROJ}`, {
-              label: `tm-552-${next()}`,
-              kind: "zephyr",
-              baseUrl: "https://zephyr.coord.example.test",
-              auth: { kind: "zephyr", bearerToken: "zephyr-token-552" },
-            }),
-          ),
-        send: (id) =>
-          call("patch", `/api/test-management/connections/${id}`, {
-            baseUrl: "https://zephyr.moved.example.test",
-          }),
-        okStatus: 200,
-        written: async (id) =>
-          (await db.testManagementConnection.findUniqueOrThrow({ where: { id } })).baseUrl ===
-          "https://zephyr.moved.example.test",
-      },
     ];
 
     beforeAll(async () => {
@@ -426,7 +404,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("covers every route-level call site", () => {
-      expect(rows).toHaveLength(12);
+      expect(rows).toHaveLength(11);
     });
 
     it.each(rows.map((r) => [r.site, r] as const))(
@@ -448,7 +426,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           vi.useRealTimers();
         }
         // The binding check ran and stamped the caller's own secret (the
-        // connection's token, for jira / test-management): the refusal below
+        // connection's token, for jira): the refusal below
         // is the window, not the ownership rule.
         expect(stamps.length).toBeGreaterThan(0);
         expect(
