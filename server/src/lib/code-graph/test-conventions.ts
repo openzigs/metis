@@ -68,6 +68,9 @@ export interface TestConvention {
 
 const join = (dir: string, file: string): string => (dir ? `${dir}/${file}` : file);
 
+/** TypeScript declaration files (`types.d.ts`) hold no code to test. */
+const TS_DECLARATION = /\.d$/i;
+
 /**
  * JVM / .NET classes named for an A/B-test feature, not for testing a class
  * (`SplitTest.java`); shared with `config/key-registry.ts` DOCS_GEN_PHASE1_INCLUDE_TESTS.
@@ -97,11 +100,14 @@ export const TEST_CONVENTIONS: readonly TestConvention[] = [
     fileNamePatterns: [/[^/]\.(test|spec)\.[cm]?[jt]sx?$/i],
     pathPatterns: [/(^|\/)__tests__\//i],
     symbolRules: [],
-    siblings: ({ dir, stem, ext }) => [
-      join(dir, `${stem}.test.${ext}`),
-      join(dir, `${stem}.spec.${ext}`),
-      join(dir, `__tests__/${stem}.test.${ext}`),
-    ],
+    siblings: ({ dir, stem, ext }) =>
+      TS_DECLARATION.test(stem) && /^[cm]?ts$/i.test(ext)
+        ? []
+        : [
+            join(dir, `${stem}.test.${ext}`),
+            join(dir, `${stem}.spec.${ext}`),
+            join(dir, `__tests__/${stem}.test.${ext}`),
+          ],
     limitations:
       "Test cases are anonymous `it()`/`test()` callbacks, not named symbols, so no TS/JS symbol is ever a test case.",
   },
@@ -126,8 +132,16 @@ export const TEST_CONVENTIONS: readonly TestConvention[] = [
     id: "junit",
     languages: ["java", "kt", "scala"],
     extensions: ["java", "kt", "kts", "scala"],
-    fileNamePatterns: [/[a-z0-9](Tests?|IT)\.(java|kts?|scala)$/],
-    pathPatterns: [/(^|\/)src\/test\//i],
+    // The suffix must follow an identifier character, so an acronym class
+    // (`JSONTest`, `DAOIT`) is a test but a bare `Test.java` (JUnit's own
+    // annotation) is not. A/B-feature classes are vetoed by name, below.
+    fileNamePatterns: [/[\w$](Tests?|IT)\.(java|kts?|scala)$/],
+    pathPatterns: [
+      /(^|\/)src\/test\//i,
+      // Gradle/Android source sets: androidTest, integrationTest, jvmTest, testFixtures, …
+      // Case-sensitive, so a `src/latest/` production package is not one.
+      /(^|\/)src\/(testFixtures|[a-z]\w*Test)\//,
+    ],
     productionNamePatterns: [AB_TEST_FEATURE_CLASS],
     symbolRules: [
       { pattern: /^test(?=[A-Z_])_?(.+)$/, kinds: ["method", "function"], role: "case" },
@@ -142,13 +156,14 @@ export const TEST_CONVENTIONS: readonly TestConvention[] = [
       return [join(testDir, `${stem}Test.${ext}`), join(testDir, `${stem}Tests.${ext}`)];
     },
     limitations:
-      "JUnit 4/5 test methods are marked by `@Test`, which a name cannot show; only JUnit-3-style `testX` methods classify as cases.",
+      "JUnit 4/5 test methods are marked by `@Test`, which a name cannot show; only JUnit-3-style `testX` methods classify as cases. An all-caps production class ending in `IT` (`AUDIT.java`) reads as an integration test, as it did in the legacy code-graph rule.",
   },
   {
     id: "dotnet",
     languages: ["cs"],
     extensions: ["cs", "csx"],
-    fileNamePatterns: [/[a-z0-9]Tests?\.cs$/],
+    // As for JUnit: `APITests.cs` is a test, a bare `Tests.cs` is not.
+    fileNamePatterns: [/\wTests?\.cs$/],
     pathPatterns: [/(^|\/)[^/]+\.(Unit|Integration|Functional|Acceptance)?Tests?\//i],
     productionNamePatterns: [AB_TEST_FEATURE_CLASS],
     symbolRules: [
@@ -291,13 +306,16 @@ export function classifyTestSymbol(s: {
 
 /**
  * Conventional locations of the tests for production file `filePath`, `/`-separated.
- * Empty for a file that is already a test, or a language with no convention.
+ * Empty for a file that is already a test, a TypeScript declaration file, or a
+ * language with no convention. Every path returned classifies as a test under
+ * the same convention: one a production-name veto would reject (`SplitTest.java`
+ * beside `Split.java`) is dropped rather than proposed.
  */
 export function siblingTestPaths(filePath: string, language?: string | null): string[] {
   const c = conventionFor(filePath, language);
   if (!c || matchesConvention(c, filePath)) return [];
   const { dir, stem, ext } = splitPath(filePath);
-  return c.siblings({ dir, stem, ext });
+  return c.siblings({ dir, stem, ext }).filter((p) => matchesConvention(c, p));
 }
 
 const fold = (s: string): string => s.replace(/[_-]/g, "").toLowerCase();
