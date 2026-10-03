@@ -398,8 +398,11 @@ function resolveOne(
   return candidates.slice(0, limit).map((c) => c.node);
 }
 
-/** Load the direct and spec→code targets of every requirement: three queries at most. */
-async function loadTargets(
+/**
+ * Load the direct and spec→code targets of every requirement: three queries at
+ * most. A requirement absent from the map has no mapped code (`no-code`).
+ */
+export async function loadTestedByTargets(
   prisma: TestedByPrisma,
   projectId: string,
   requirementIds: string[],
@@ -475,7 +478,7 @@ export async function resolveTestedBy(
     select: { id: true, title: true, body: true },
   });
   const ids = requirements.map((r) => r.id);
-  const targets = await loadTargets(prisma, projectId, ids);
+  const targets = await loadTestedByTargets(prisma, projectId, ids);
   return resolveTestedByForTargets(projectId, requirements, targets, opts, deps);
 }
 
@@ -513,7 +516,7 @@ export async function listUntestedRequirements(
   });
   requirements.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
-  const targets = await loadTargets(
+  const targets = await loadTestedByTargets(
     prisma,
     projectId,
     requirements.map((r) => r.id),

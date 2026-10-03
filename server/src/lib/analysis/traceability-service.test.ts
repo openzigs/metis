@@ -1,11 +1,12 @@
 /**
  * Tests for the traceability matrix SERVICE aggregation (#737). Drives the real
  * `getAnalysisSnapshot` read-path shape via an injected loader + a mocked prisma
- * for the spine (`requirementCodeMapping`) and code-graph (`codeEdge`) reads —
- * never stubbing the pure builder's internals.
+ * for the spine (`requirementCodeMapping`) read, and an injected "Tested by"
+ * resolver (#815) — never stubbing the pure builder's internals. Parity with the
+ * chain on a real database lives in `tests/traceability-tested-by.sqlite.test.ts`.
  */
 import { describe, it, expect, vi } from "vitest";
-import type { AnalysisSnapshot } from "@metis/shared";
+import type { AnalysisSnapshot, TraceabilityTestNode } from "@metis/shared";
 import { getTraceabilityMatrix } from "./traceability-service.js";
 
 function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
@@ -77,18 +78,42 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
   };
 }
 
-function mockPrisma(opts: { mappings?: unknown[]; edges?: unknown[] } = {}) {
+function mockPrisma(opts: { mappings?: unknown[] } = {}) {
   return {
     requirementCodeMapping: { findMany: vi.fn().mockResolvedValue(opts.mappings ?? []) },
-    codeEdge: { findMany: vi.fn().mockResolvedValue(opts.edges ?? []) },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
+}
+
+function testNode(over: Partial<TraceabilityTestNode>): TraceabilityTestNode {
+  return {
+    codeSymbolId: "t-1",
+    filePath: "server/src/auth.test.ts",
+    symbol: "server/src/auth.test.ts::login",
+    name: "login",
+    startLine: 3,
+    convention: "vitest",
+    relation: "exercises",
+    subject: { filePath: "server/src/auth.ts", symbol: "server/src/auth.ts::login" },
+    score: 0.8,
+    ...over,
+  };
+}
+
+/** A resolver double returning `tests` for every requirement id it is asked about. */
+function resolver(byRequirement: Record<string, TraceabilityTestNode[]> = {}) {
+  return vi.fn(async (_projectId: string, requirementIds: string[]) => {
+    const out = new Map<string, TraceabilityTestNode[]>();
+    for (const id of requirementIds) if (byRequirement[id]) out.set(id, byRequirement[id]);
+    return out;
+  });
 }
 
 describe("getTraceabilityMatrix", () => {
   it("returns null when the analysis is not visible", async () => {
     const matrix = await getTraceabilityMatrix("missing", {
       prisma: mockPrisma(),
+      resolveTests: resolver(),
       loadSnapshot: vi.fn().mockResolvedValue(null),
     });
     expect(matrix).toBeNull();
@@ -98,6 +123,7 @@ describe("getTraceabilityMatrix", () => {
     const prisma = mockPrisma();
     const matrix = await getTraceabilityMatrix("an-1", {
       prisma,
+      resolveTests: resolver(),
       loadSnapshot: vi.fn().mockResolvedValue(snapshot()),
     });
 
@@ -116,7 +142,7 @@ describe("getTraceabilityMatrix", () => {
         symbolId: "sym-a",
       },
     ]);
-    // No edges → no detected tests.
+    // The resolver found nothing → no tests.
     expect(row.tests).toEqual([]);
     // Spine + code-graph queries are project-scoped (BOLA defense-in-depth).
     expect(prisma.requirementCodeMapping.findMany).toHaveBeenCalledWith(
@@ -124,47 +150,50 @@ describe("getTraceabilityMatrix", () => {
     );
   });
 
-  it("detects tests from code-graph edges in test-path files", async () => {
-    const prisma = mockPrisma({
-      edges: [
-        {
-          toSymbolId: "sym-a",
-          fromSymbol: { filePath: "server/src/auth.test.ts", qualifiedName: "auth.test::login" },
-        },
-        {
-          // non-test file → excluded from the tests column.
-          toSymbolId: "sym-a",
-          fromSymbol: { filePath: "server/src/caller.ts", qualifiedName: "caller::run" },
-        },
+  it("#815 — fills tests from the Tested-by resolver for the analysis's requirements", async () => {
+    const resolveTests = resolver({
+      "req-1": [
+        testNode({}),
+        testNode({
+          filePath: "server/src/auth_test.go",
+          symbol: "server/src/auth_test.go::TestLogin",
+          relation: "naming",
+        }),
       ],
     });
-    const matrix = await getTraceabilityMatrix("an-1", {
-      prisma,
-      loadSnapshot: vi.fn().mockResolvedValue(snapshot()),
-    });
-    expect(matrix!.rows[0]!.tests).toEqual([
-      { filePath: "server/src/auth.test.ts", symbol: "auth.test::login" },
-    ]);
-    // Only queried the referenced symbol id.
-    expect(prisma.codeEdge.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ toSymbolId: { in: ["sym-a"] }, projectId: "proj-1" }),
-      }),
-    );
-  });
-
-  it("skips the code-graph query when no code citation carries a symbol id", async () => {
-    const snap = snapshot();
-    snap.agents[0]!.findings[0]!.citations = [
-      { filePath: "server/src/auth.ts", startLine: 1, endLine: 2 },
-    ];
     const prisma = mockPrisma();
     const matrix = await getTraceabilityMatrix("an-1", {
       prisma,
+      resolveTests,
+      loadSnapshot: vi.fn().mockResolvedValue(snapshot()),
+    });
+    expect(matrix!.rows[0]!.tests).toEqual([
+      {
+        filePath: "server/src/auth.test.ts",
+        symbol: "server/src/auth.test.ts::login",
+        relation: "exercises",
+      },
+      {
+        filePath: "server/src/auth_test.go",
+        symbol: "server/src/auth_test.go::TestLogin",
+        relation: "naming",
+      },
+    ]);
+    expect(matrix!.testsDetection).toBe("heuristic");
+    // Scoped to the analysis's project and requirements, on the matrix's own Prisma.
+    expect(resolveTests).toHaveBeenCalledTimes(1);
+    expect(resolveTests).toHaveBeenCalledWith("proj-1", ["req-1"], undefined, { prisma });
+  });
+
+  it("#815 — a requirement the resolver has no tests for renders an empty tests cell", async () => {
+    const snap = snapshot();
+    snap.requirements.push({ ...snap.requirements[0]!, id: "req-2", evidenceFindingIds: [] });
+    const matrix = await getTraceabilityMatrix("an-1", {
+      prisma: mockPrisma(),
+      resolveTests: resolver({ "req-2": [testNode({})] }),
       loadSnapshot: vi.fn().mockResolvedValue(snap),
     });
-    expect(matrix!.rows[0]!.tests).toEqual([]);
-    expect(prisma.codeEdge.findMany).not.toHaveBeenCalled();
+    expect(matrix!.rows.map((r) => r.tests.length)).toEqual([0, 1]);
   });
 
   it("coerces an unknown finding severity to 'info' and a missing coverage to null", async () => {
@@ -175,13 +204,14 @@ describe("getTraceabilityMatrix", () => {
     (snap.requirements[0] as any).coverage = undefined;
     const matrix = await getTraceabilityMatrix("an-1", {
       prisma: mockPrisma(),
+      resolveTests: resolver(),
       loadSnapshot: vi.fn().mockResolvedValue(snap),
     });
     expect(matrix!.rows[0]!.findings[0]!.severity).toBe("info");
     expect(matrix!.rows[0]!.coverage).toBeNull();
   });
 
-  it("keeps a spine row whose codeSymbolId is null and de-dupes duplicate test edges", async () => {
+  it("keeps a spine row whose codeSymbolId is null", async () => {
     const prisma = mockPrisma({
       mappings: [
         {
@@ -192,22 +222,15 @@ describe("getTraceabilityMatrix", () => {
           endLine: null,
         },
       ],
-      edges: [
-        // Duplicate edge to the same target from the same test symbol → one link.
-        { toSymbolId: "sym-a", fromSymbol: { filePath: "a.test.ts", qualifiedName: "a::t" } },
-        { toSymbolId: "sym-a", fromSymbol: { filePath: "a.test.ts", qualifiedName: "a::t" } },
-        // Edge with no resolvable fromSymbol → skipped.
-        { toSymbolId: "sym-a", fromSymbol: null },
-      ],
     });
     const matrix = await getTraceabilityMatrix("an-1", {
       prisma,
+      resolveTests: resolver(),
       loadSnapshot: vi.fn().mockResolvedValue(snapshot()),
     });
     const mapped = matrix!.rows[0]!.codeLocations.find((l) => l.source === "deterministic-mapping");
     expect(mapped).toMatchObject({ filePath: "server/src/mapped.ts", startLine: null });
     expect(mapped!.symbolId).toBeUndefined();
-    expect(matrix!.rows[0]!.tests).toEqual([{ filePath: "a.test.ts", symbol: "a::t" }]);
   });
 
   it("folds persisted deterministic-mapping spine rows into code locations", async () => {
@@ -224,6 +247,7 @@ describe("getTraceabilityMatrix", () => {
     });
     const matrix = await getTraceabilityMatrix("an-1", {
       prisma,
+      resolveTests: resolver(),
       loadSnapshot: vi.fn().mockResolvedValue(snapshot()),
     });
     const sources = matrix!.rows[0]!.codeLocations.map((l) => l.source).sort();

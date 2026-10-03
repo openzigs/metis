@@ -30,7 +30,10 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
-import { traceabilityGapsRateLimiter } from "../middleware/traceability-gaps-rate-limit.js";
+import {
+  traceabilityGapsRateLimiter,
+  traceabilityPreAuthRateLimiter,
+} from "../middleware/traceability-gaps-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import * as reqSpec from "../lib/traceability/requirement-spec-mapping.js";
 import * as specCode from "../lib/traceability/spec-code-mapping.js";
@@ -224,11 +227,24 @@ export function traceabilityRouter(): Router {
  */
 export function workspaceTraceabilityRouter(): Router {
   const r = Router({ mergeParams: true });
+  // #815 — a per-IP ceiling ahead of JWT verification (CodeQL
+  // js/missing-rate-limiting), then router-level auth, so the route's own
+  // limiter below keys by user rather than IP.
+  r.use(traceabilityPreAuthRateLimiter);
+  r.use(requireAuth);
 
-  r.get("/summary", requireAuth, requirePermission("analysis.read"), async (req, res) => {
-    const workspaceId = paramOf(req, "workspaceId", "WORKSPACE_REQUIRED");
-    res.json(ok(await getWorkspaceTraceabilitySummary(actorOf(req), workspaceId)));
-  });
+  // #815 — each call runs the #814 Tested-by resolver for every accessible
+  // project, the same cost test-gaps is limited for, so it shares that limiter
+  // and its per-user budget.
+  r.get(
+    "/summary",
+    traceabilityGapsRateLimiter,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      const workspaceId = paramOf(req, "workspaceId", "WORKSPACE_REQUIRED");
+      res.json(ok(await getWorkspaceTraceabilitySummary(actorOf(req), workspaceId)));
+    },
+  );
 
   return r;
 }

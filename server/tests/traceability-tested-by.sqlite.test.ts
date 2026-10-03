@@ -41,6 +41,7 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 const { traceabilityRouter } = await import("../src/routes/traceability.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
+const { getTraceabilityMatrix } = await import("../src/lib/analysis/traceability-service.js");
 
 const PROJ = "proj-miniflux-814";
 const OTHER = "proj-other-814";
@@ -245,6 +246,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(
         res.body.data.testedBy.filter((t: { name: string }) => t.name === "TestValidatePassword"),
       ).toHaveLength(1);
+    });
+
+    it("#815 — the analysis matrix's tests equal the chain's testedBy, row for row", async () => {
+      const matrix = await getTraceabilityMatrix(`an-${PROJ}`);
+      expect(matrix).not.toBeNull();
+      const byId = new Map(matrix!.rows.map((r) => [r.requirementId, r.tests]));
+      let compared = 0;
+      for (const id of [ids.pw, ids.oidc, ids.none]) {
+        const res = await get(`/api/projects/${PROJ}/requirements/${id}/traceability`);
+        expect(res.status).toBe(200);
+        const chain = res.body.data.testedBy.map(
+          (t: { filePath: string; symbol: string; relation: string }) => ({
+            filePath: t.filePath,
+            symbol: t.symbol,
+            relation: t.relation,
+          }),
+        );
+        expect(byId.get(id)).toEqual(chain);
+        compared += chain.length;
+      }
+      // Not vacuous: the password requirement carries both of its tests.
+      expect(compared).toBe(2);
+      expect(byId.get(ids.pw)!.map((t) => t.relation)).toEqual(["exercises", "naming"]);
+      expect(JSON.stringify(matrix)).not.toContain("TestMapRoles");
     });
   },
 );

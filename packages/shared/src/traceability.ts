@@ -348,6 +348,16 @@ export interface WorkspaceProjectTraceability {
   specCoverage: number;
   /** Fraction (0–1) of requirements with ≥1 direct requirement→code mapping. */
   codeCoverage: number;
+  /**
+   * #815 — requirements with mapped code, directly or through a spec: the
+   * denominator of the two test fractions, so `no-code` requirements do not
+   * drag them down.
+   */
+  codeMappedRequirements: number;
+  /** #815 — fraction (0–1) of `codeMappedRequirements` with ≥1 `testedBy` of any relation. */
+  testCoverage: number;
+  /** #815 — as `testCoverage`, counting only `direct` and `exercises` links (not `naming`). */
+  strictTestCoverage: number;
 }
 
 /** A cross-project `RequirementLink` edge in the workspace link map. */

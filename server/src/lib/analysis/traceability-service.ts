@@ -9,14 +9,14 @@
  *      read path (so this stays consistent with the GET /analyses/:id contract);
  *   2. the requirement→code spine (`RequirementCodeMapping`) for deterministic-
  *      mapping provenance — additive, usually empty for a fresh analysis;
- *   3. a best-effort code-graph test-detection pass: for the code-graph symbols
- *      the requirements' code citations reference, find symbols in test-path
- *      files that have an edge pointing at them.
+ *   3. the requirements' tests from the "Tested by" resolver (#814), so the
+ *      matrix, the per-requirement chain and the test-gap list never disagree
+ *      (#815). The resolver works from the requirement's mapped code (direct
+ *      and via specs), not from analysis citations.
  *
- * The test column is explicitly heuristic (`testsDetection: "heuristic"`): analysis
- * code citations only carry a `symbolId` when the code agent resolved one, so a
- * requirement with no resolved symbol simply detects no tests — rendered as
- * "none detected", never fabricated.
+ * The test column stays labelled heuristic (`testsDetection: "heuristic"`): the
+ * resolver links tests by code-graph edges and naming conventions, so a
+ * requirement with no resolved test renders "none detected", never fabricated.
  */
 import type { PrismaClient } from "@prisma/client";
 import {
@@ -28,19 +28,22 @@ import {
 } from "@metis/shared";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { getAnalysisSnapshot } from "./analysis-service.js";
+import { resolveTestedBy, type TestedByPrisma } from "../traceability/tested-by.js";
 import {
   buildTraceabilityMatrix,
-  isTestFilePath,
   type MatrixFindingInput,
   type MatrixRequirementInput,
 } from "./traceability-matrix.js";
 
-type TraceabilityPrisma = Pick<PrismaClient, "requirementCodeMapping" | "codeEdge">;
+/** The spine read plus everything the "Tested by" resolver queries. */
+type TraceabilityPrisma = Pick<PrismaClient, "requirementCodeMapping"> & TestedByPrisma;
 
 export interface TraceabilityDeps {
   prisma?: TraceabilityPrisma;
   /** Injectable snapshot loader (tests). Defaults to the shared read path. */
   loadSnapshot?: typeof getAnalysisSnapshot;
+  /** Injectable "Tested by" resolver (tests). Defaults to `resolveTestedBy` (#814). */
+  resolveTests?: typeof resolveTestedBy;
 }
 
 const SEVERITY_SET = new Set<string>(FINDING_SEVERITIES);
@@ -61,6 +64,7 @@ export async function getTraceabilityMatrix(
   const prisma = (deps.prisma ??
     (defaultPrisma as unknown as TraceabilityPrisma)) as TraceabilityPrisma;
   const loadSnapshot = deps.loadSnapshot ?? getAnalysisSnapshot;
+  const resolveTests = deps.resolveTests ?? resolveTestedBy;
 
   const snapshot = await loadSnapshot(analysisId);
   if (!snapshot) return null;
@@ -116,21 +120,15 @@ export async function getTraceabilityMatrix(
     }
   }
 
-  // (3) Best-effort code-graph test detection. Collect every code-graph symbol
-  // id referenced by a requirement's code citations / mapping rows, then find
-  // symbols in test-path files that have an edge INTO them.
-  const symbolIds = new Set<string>();
-  for (const finding of findingsById.values()) {
-    for (const citation of finding.citations) {
-      const symbolId = (citation as { symbolId?: string }).symbolId;
-      if (symbolId) symbolIds.add(symbolId);
-    }
+  // (3) "Tested by" (#815): the same resolver, limit and order as the chain.
+  const resolved = await resolveTests(snapshot.projectId, requirementIds, undefined, { prisma });
+  const testsByRequirement = new Map<string, TraceabilityTestLink[]>();
+  for (const [requirementId, tests] of resolved) {
+    testsByRequirement.set(
+      requirementId,
+      tests.map((t) => ({ filePath: t.filePath, symbol: t.symbol, relation: t.relation })),
+    );
   }
-  for (const locs of deterministicByRequirement.values()) {
-    for (const loc of locs) if (loc.symbolId) symbolIds.add(loc.symbolId);
-  }
-
-  const testsBySymbolId = await detectTestsForSymbols(prisma, snapshot.projectId, [...symbolIds]);
 
   return buildTraceabilityMatrix({
     analysisId: snapshot.id,
@@ -138,51 +136,6 @@ export async function getTraceabilityMatrix(
     requirements,
     findingsById,
     deterministicByRequirement,
-    testsBySymbolId,
+    testsByRequirement,
   });
-}
-
-/**
- * For each target symbol id, find the symbols in TEST-path files that reference
- * it (an incoming `calls`/`references`/`imports` edge). Returns a map keyed by
- * the referenced (target) symbol id. Empty when there are no symbol ids or no
- * code graph — the matrix then renders every tests cell as "none detected".
- *
- * Query is scoped to the analysis project (defense-in-depth): `CodeEdge` carries
- * a denormalized `projectId`, so a stray symbol id cannot pull another project's
- * edges into this matrix.
- */
-async function detectTestsForSymbols(
-  prisma: TraceabilityPrisma,
-  projectId: string,
-  symbolIds: string[],
-): Promise<Map<string, TraceabilityTestLink[]>> {
-  const byTargetSymbol = new Map<string, TraceabilityTestLink[]>();
-  if (symbolIds.length === 0) return byTargetSymbol;
-
-  const edges = await prisma.codeEdge.findMany({
-    where: {
-      projectId,
-      toSymbolId: { in: symbolIds },
-      kind: { in: ["calls", "references", "imports"] },
-    },
-    select: {
-      toSymbolId: true,
-      fromSymbol: { select: { filePath: true, qualifiedName: true } },
-    },
-  });
-
-  for (const edge of edges) {
-    if (!edge.toSymbolId || !edge.fromSymbol) continue;
-    if (!isTestFilePath(edge.fromSymbol.filePath)) continue;
-    const list = byTargetSymbol.get(edge.toSymbolId) ?? [];
-    // Dedupe identical (filePath, symbol) references to the same target.
-    const key = `${edge.fromSymbol.filePath}::${edge.fromSymbol.qualifiedName}`;
-    if (!list.some((t) => `${t.filePath}::${t.symbol}` === key)) {
-      list.push({ filePath: edge.fromSymbol.filePath, symbol: edge.fromSymbol.qualifiedName });
-    }
-    byTargetSymbol.set(edge.toSymbolId, list);
-  }
-
-  return byTargetSymbol;
 }

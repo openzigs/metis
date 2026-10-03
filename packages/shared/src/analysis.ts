@@ -35,6 +35,7 @@ import type { DocumentSource } from "./project.js";
 import type { AgentKind, AgentRef } from "./agents.js";
 import type { CrossDocFindings } from "./cross-doc.js";
 import type { ImpactAffectedRelation } from "./impact.js";
+import type { TestLinkRelation } from "./traceability.js";
 // Type-only, and the dependency runs the other way at runtime: the presentation
 // seam imports this module's types. Erased at build, so no import cycle exists.
 import type { RequirementSupportConfidence } from "./support-panel-view.js";
@@ -1495,11 +1496,16 @@ export interface TraceabilityCodeLocation {
   symbolId?: string;
 }
 
-/** A test the code graph associates with a requirement's implicated code. */
+/**
+ * A test associated with a requirement's mapped code. Since #815 the matrix fills
+ * these from the same "Tested by" resolver as the requirement chain (#814).
+ */
 export interface TraceabilityTestLink {
   filePath: string;
-  /** Qualified name of the test symbol (function/describe) that references the code. */
+  /** Qualified name of the test symbol, or the file path for a file-only `direct` hit. */
   symbol: string;
+  /** How the resolver linked the test (#815). */
+  relation?: TestLinkRelation;
 }
 
 /** The finding a requirement is grounded in, projected to the matrix columns. */
