@@ -141,6 +141,12 @@ export interface PublisherPorts {
 export interface PublishInput {
   finding: FindingPayload;
   provider: Publisher;
+  /**
+   * #802 — the label naming where the finding came from (`metis-scanner`,
+   * `metis-analysis`, `metis-impact-analysis`). Required so a new caller
+   * cannot silently inherit a wrong default.
+   */
+  sourceLabel: string;
   /** Caller-supplied additional labels. */
   extraLabels?: readonly string[];
 }
@@ -165,9 +171,13 @@ export class PublishError extends Error {
   }
 }
 
-function defaultLabels(finding: FindingPayload, extras: readonly string[]): string[] {
+function defaultLabels(
+  finding: FindingPayload,
+  sourceLabel: string,
+  extras: readonly string[],
+): string[] {
   const labels = new Set<string>([
-    "metis-scanner",
+    sourceLabel,
     `severity:${finding.severity}`,
     `category:${finding.category.toLowerCase().replace(/\s+/g, "-")}`,
   ]);
@@ -217,7 +227,7 @@ export async function publishFinding(
   }
 
   const stampedBody = injectFindingMarker(finding.body, finding.fingerprint);
-  const labels = defaultLabels(finding, input.extraLabels ?? []);
+  const labels = defaultLabels(finding, input.sourceLabel, input.extraLabels ?? []);
 
   const created =
     provider === "github"

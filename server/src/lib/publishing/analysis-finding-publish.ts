@@ -226,6 +226,7 @@ export async function publishAnalysisFinding(
   const outcome = await publishFinding(ports, {
     finding: payload,
     provider: input.provider,
+    sourceLabel: "metis-analysis",
     extraLabels,
   });
   return outcome.link;

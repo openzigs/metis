@@ -118,7 +118,8 @@ export async function publishImpactAnalysisToJira(
   const outcome = await publishFinding(ports, {
     finding: payload,
     provider: "jira",
-    extraLabels: ["metis-impact-analysis", ...(input.extraLabels ?? [])],
+    sourceLabel: "metis-impact-analysis",
+    extraLabels: input.extraLabels,
   });
   return outcome.link;
 }

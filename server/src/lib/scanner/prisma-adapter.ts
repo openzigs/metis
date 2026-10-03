@@ -777,6 +777,7 @@ export async function publishScanFinding(
   const outcome = await publishFinding(ports, {
     finding: payload,
     provider: input.provider,
+    sourceLabel: "metis-scanner",
     extraLabels: input.extraLabels,
   });
   return outcome.link;

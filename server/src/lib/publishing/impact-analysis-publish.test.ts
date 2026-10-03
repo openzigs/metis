@@ -142,4 +142,24 @@ describe("publishImpactAnalysisToJira", () => {
       }),
     ).rejects.toBeInstanceOf(PublishError);
   });
+  it("#802 — carries metis-impact-analysis exactly once and never metis-scanner", async () => {
+    mockPrisma.issueLink.findFirst.mockResolvedValue(null);
+    configureJira();
+    mockJiraCreateIssue.mockResolvedValue({ key: "IMP-43" });
+    mockPrisma.issueLink.upsert.mockImplementation(
+      async (args: { create: Record<string, unknown> }) => ({ id: "L1", ...args.create }),
+    );
+    await publishImpactAnalysisToJira({
+      analysisId: "ia-2",
+      jiraProjectId: "proj-1",
+      title: "t",
+      body: "b",
+      extraLabels: ["metis-impact-analysis"],
+    });
+    const labels = (mockJiraCreateIssue.mock.calls[0][0] as { labels: string[] }).labels;
+    expect(labels.filter((l) => l === "metis-impact-analysis")).toHaveLength(1);
+    expect(labels).not.toContain("metis-scanner");
+    expect(labels).toContain("severity:medium");
+    expect(labels).toContain("category:impact-analysis");
+  });
 });

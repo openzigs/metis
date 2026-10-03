@@ -124,4 +124,48 @@ describe("publishAnalysisFinding", () => {
     expect(acquirePublishOctokit).not.toHaveBeenCalled();
     expect(mockPrisma.issueLink.upsert).not.toHaveBeenCalled();
   });
+  it("#802 — a GitHub publish is labelled metis-analysis, never metis-scanner", async () => {
+    upstreamConnector();
+    const { acquirePublishOctokit } = await import("./octokit-factory.js");
+    const request = vi.fn().mockResolvedValue({
+      data: { number: 7, html_url: "https://github.com/o/r/issues/7" },
+    });
+    vi.mocked(acquirePublishOctokit).mockResolvedValueOnce({ request } as never);
+    await publishAnalysisFinding({
+      ...analysisInput,
+      draft: { ...ANALYSIS_DRAFT, suggestedLabels: ["bug"] },
+    });
+    const labels = (request.mock.calls[0][0] as { data: { labels: string[] } }).data.labels;
+    expect(labels).toContain("metis-analysis");
+    expect(labels).not.toContain("metis-scanner");
+    expect(labels).toContain("severity:high");
+    expect(labels).toContain("category:bug");
+    expect(labels).toContain("bug");
+  });
+
+  it("#802 — a Jira publish is labelled metis-analysis, never metis-scanner", async () => {
+    mockPrisma.issueLink.findFirst.mockResolvedValue(null);
+    mockPrisma.project.findUnique.mockResolvedValue({
+      jiraConnectionId: "jc-1",
+      jiraProjectKey: "IMP",
+    });
+    mockPrisma.jiraConnection.findFirst.mockResolvedValue({
+      id: "jc-1",
+      baseUrl: "https://jira.example.com",
+      edition: "cloud",
+      username: "svc",
+      secretId: "sec-jira",
+      status: "active",
+      proxyUrl: null,
+      tlsRejectUnauthorized: true,
+      tlsCaSecretId: null,
+    });
+    mockPrisma.issueLink.upsert.mockImplementation(
+      async (args: { create: Record<string, unknown> }) => ({ id: "L1", ...args.create }),
+    );
+    await publishAnalysisFinding({ ...analysisInput, provider: "jira" });
+    const fields = mockJiraCreateIssue.mock.calls[0][0] as { labels: string[] };
+    expect(fields.labels).toContain("metis-analysis");
+    expect(fields.labels).not.toContain("metis-scanner");
+  });
 });
