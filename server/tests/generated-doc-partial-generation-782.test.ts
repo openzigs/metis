@@ -721,6 +721,28 @@ describe("#855 — cancel", () => {
     expect(String(state.doc.content)).toContain("auto-generated on");
   });
 
+  it("never publishes over a cancel that lands inside the commit", async () => {
+    // After the commit fence has read the row: while it re-captures the inputs.
+    const chunks = vi.mocked(prisma.knowledgeChunk.findMany);
+    let capturesAfterSections = 0;
+    chunks.mockImplementation((async () => {
+      if (sectionCalls() === GROUPS.length && ++capturesAfterSections === 2)
+        state.doc.status = "cancelling";
+      return [];
+    }) as unknown as typeof chunks);
+    try {
+      await generateDocumentAsync("d", "p");
+    } finally {
+      chunks.mockImplementation((async () => []) as unknown as typeof chunks);
+    }
+
+    expect(capturesAfterSections).toBeGreaterThanOrEqual(2);
+    expect(state.versions).toHaveLength(0);
+    expect(state.doc.status).toBe("cancelled");
+    // The row was still this run's, so what it wrote is kept.
+    expect(String(state.doc.content)).toContain("auto-generated on");
+  });
+
   it("does nothing when the document was cancelled before the run read it", async () => {
     state.doc.status = "cancelled";
     await generateDocumentAsync("d", "p");

@@ -1783,8 +1783,10 @@ export async function generateDocumentAsync(
     // - a published version would be overwritten by a partial one (that version
     //   stays; a regenerate resumes from the checkpoint);
     // - it is an automatic regeneration (its published version stays).
+    // A commit refused because a cancel landed inside it reads as `superseded`,
+    // but the row is still this run's: it is a cancel, and keeps its work.
     const salvage =
-      claimed && !automatic && !hadVersion && reason !== "superseded"
+      claimed && !automatic && !hadVersion && (cancelRequested || reason !== "superseded")
         ? (synthesized ??
           (finishedSections.length > 0
             ? {
