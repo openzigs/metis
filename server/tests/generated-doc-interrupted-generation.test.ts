@@ -550,14 +550,63 @@ describe("#855 — POST /:docId/cancel", () => {
     expect(jobEvents.completed).not.toHaveBeenCalled();
   });
 
-  it("409s for a document that is not running", async () => {
+  it("#867 — answers a cancel of a document with nothing running with 200 and its status, changing nothing", async () => {
+    // A second click that lands after the run already settled (an automatic or
+    // published run restores `ready`): nothing to stop, so not an error.
     for (const status of ["ready", "failed", "degraded"]) {
       state.docs.clear();
-      seed({ status });
+      seed({ status, errorMessage: "kept" });
       const res = await cancel();
-      expect(res.status, status).toBe(409);
-      expect(res.body.error.code).toBe("DOC_NOT_CANCELLABLE");
-      expect(doc().status).toBe(status);
+      expect(res.status, status).toBe(200);
+      expect(res.body.data).toEqual({ id: "doc-1", status });
+      expect(doc()).toMatchObject({ status, errorMessage: "kept" });
+    }
+    expect(jobEvents.completed).not.toHaveBeenCalled();
+  });
+
+  it("#867 — cancelling a manual regenerate of a published document leaves it ready and exportable", async () => {
+    vi.mocked(prisma.generatedDocumentVersion.findFirst).mockResolvedValue({
+      version: 1,
+      provenanceManifest: null,
+    } as never);
+    try {
+      // What POST /regenerate leaves: `pending`, over the published version's content.
+      seed({
+        status: "pending",
+        versionCount: 1,
+        content: "# Published v1",
+        warnings: [{ kind: "section-failed", stage: "assembly", message: "an older run failed" }],
+      });
+      await startGeneration();
+
+      expect((await cancel()).status).toBe(202);
+      state.release!(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      await vi.waitFor(() => expect(doc().status).toBe("ready"));
+
+      // Not `cancelled`: the published version is what the document shows, so
+      // no "the sections it finished are kept" banner over it.
+      expect(doc()).toMatchObject({
+        status: "ready",
+        errorMessage: null,
+        content: "# Published v1",
+        codeGraphHash: "previous-hash",
+      });
+      expect(jobEvents.completed).toHaveBeenCalledWith(
+        "doc-generation",
+        "doc-1",
+        "proj-1",
+        "Generation cancelled",
+      );
+      expect(jobEvents.failed).not.toHaveBeenCalled();
+      // No approval gate on this project: export is decided by status alone.
+      vi.mocked(prisma.project.findUnique).mockResolvedValueOnce({
+        requireApprovedReview: false,
+      } as never);
+      const exported = await request(app).get("/projects/proj-1/docs/doc-1/export?format=markdown");
+      expect(exported.status).toBe(200);
+      expect(exported.text ?? String(exported.body)).toContain("# Published v1");
+    } finally {
+      vi.mocked(prisma.generatedDocumentVersion.findFirst).mockResolvedValue(null);
     }
   });
 

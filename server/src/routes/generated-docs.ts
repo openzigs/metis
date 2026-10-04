@@ -967,9 +967,11 @@ export function generatedDocsRouter(): Router {
         res.status(202).json({ data: { id: docId, status: "cancelling" } });
         return;
       }
-      if (existing.status === "cancelled") {
-        // #867 — idempotent: a second click that races the run's own final write.
-        res.status(200).json({ data: { id: docId, status: "cancelled" } });
+      if (["cancelled", "ready", "degraded", "failed"].includes(existing.status)) {
+        // #867 — idempotent: nothing is running. A second click that races the
+        // run's own final write (`cancelled`), or the published state a run
+        // cancelled over a published version restores.
+        res.status(200).json({ data: { id: docId, status: existing.status } });
         return;
       }
       throw new AppError(
@@ -1094,7 +1096,8 @@ export async function generateDocumentAsync(
   const claim = `regenerating:${randomUUID()}`;
   let claimed = false;
   let originalHash: string | null = null;
-  // #867 — what an automatic run that is cancelled puts back over a published version.
+  // #867 — what a cancelled run puts back over a published version: the row's
+  // state when the run read it, when that was a settled one.
   let restoreOnCancel:
     | {
         status: string;
@@ -1129,7 +1132,7 @@ export async function generateDocumentAsync(
     // #855 — cancelled before this run read the row: nothing to do.
     if (!automatic && original.status === "cancelled") return;
     originalHash = original.codeGraphHash;
-    if (automatic && ["ready", "degraded", "failed", "cancelled"].includes(original.status))
+    if (["ready", "degraded", "failed", "cancelled"].includes(original.status))
       restoreOnCancel = {
         status: original.status,
         errorMessage: original.errorMessage,
@@ -1832,9 +1835,17 @@ export async function generateDocumentAsync(
     if (cancelRequested && claimed) {
       // #855 — a clear `cancelled` state that keeps what was finished, and the
       // checkpoint (untouched here) for a regenerate to resume from.
-      // #867 — except an automatic run over a published version: that version
-      // is still what the document shows, so its prior state comes back.
-      const restore = automatic && hadVersion ? restoreOnCancel : undefined;
+      // #867 — except a run over a published version, manual or automatic: that
+      // version is still what the document shows, so the row goes back to the
+      // state it had, and stays exportable. A manual regenerate read its row as
+      // `pending` (the route's reset), so that version's settled state is `ready`.
+      const restore = hadVersion
+        ? (restoreOnCancel ?? {
+            status: "ready",
+            errorMessage: null,
+            warnings: Prisma.DbNull,
+          })
+        : undefined;
       const cancelled = await prisma.generatedDocument.updateMany({
         where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
         data: restore

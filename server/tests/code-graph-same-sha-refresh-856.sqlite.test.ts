@@ -379,6 +379,42 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("#867 — a backfill keeps a routine that only has edges out of it, with its id and edges", async () => {
+      // The routine repo.py invokes is filed under repo.py; its live body
+      // (read-only fetch) reads `users`, an edge OUT of that same symbol.
+      const routines = [
+        { schema: "", name: "refresh_users", type: "procedure" as const, signature: "" },
+      ];
+      const fetchRoutineBody = async () => "SELECT * FROM users";
+      const { projectId, root } = await fixture();
+      await ingest(projectId, root, { routines, fetchRoutineBody });
+      const routine = await db.codeSymbol.findFirstOrThrow({
+        where: { projectId, kind: "procedure", qualifiedName: "refresh_users" },
+      });
+      expect(routine.filePath).toBe("repo.py");
+      const outgoing = () =>
+        db.codeEdge.findMany({
+          where: { projectId, fromSymbolId: routine.id, kind: "calls" },
+          select: { id: true, toSymbolId: true, filePath: true },
+          orderBy: { id: "asc" },
+        });
+      const before = await outgoing();
+      expect(before.length).toBeGreaterThan(0);
+
+      // A backfill in which repo.py's CALL no longer resolves to the routine:
+      // nothing points at it any more, but its body still reads `users`.
+      state.responder = ((p: ExtractUsageParams) =>
+        /refresh_users/i.test(p.sql)
+          ? { tables: [], columns: [], lineage_edges: [], uncertain: [], routines: [] }
+          : usersResponder(p)) as (p: unknown) => unknown;
+      const stats = await ingest(projectId, root, { introspectedSchema: SCHEMA });
+      expect(stats.lineageBackfill).toBe(true);
+      expect(await db.codeEdge.count({ where: { projectId, toSymbolId: routine.id } })).toBe(0);
+
+      expect(await db.codeSymbol.findUnique({ where: { id: routine.id } })).not.toBeNull();
+      expect(await outgoing()).toEqual(before);
+    });
+
     it("#867 — a backfill refreshes an unchanged SAS file's PROC SQL lineage", async () => {
       const sas = "report.sas";
       const { projectId, root } = await fixture({

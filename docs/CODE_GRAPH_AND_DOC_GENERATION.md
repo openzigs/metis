@@ -869,11 +869,15 @@ when one arrived, otherwise prompt and streamed characters at 3.5 per token). A 
 another replica is reached through its heartbeat, which also stops a run whose row was
 deleted or re-claimed. The run ends `cancelled`: it keeps the sections it finished as
 content (when there is no published version) and keeps the checkpoint, and `regenerate`
-accepts it. Cancelling an already-`cancelled` document returns 200. `cancelling` is a live
+accepts it. Cancelling a document with nothing running (`cancelled`, `ready`, `degraded`,
+`failed`) returns 200 with its current status. `cancelling` is a live
 state: the claim guard refuses it as it refuses `generating` (after two hours either can be
 reclaimed), so an automatic regeneration cannot take over a run that is stopping (#867).
-An automatic run cancelled over a published version restores the document's prior status,
-and its task is recorded `cancelled` rather than completed or retried. Ingest re-queues a
+A run cancelled over a published version, manual or automatic, does not end `cancelled`:
+the row gets back the status, `errorMessage` and `warnings` it had when the run read it
+(`ready` for a manual regenerate, which read its row as `pending`), so the published
+version stays exportable. An automatic run's task is recorded `cancelled` rather than
+completed or retried. Ingest re-queues a
 `cancelled` document only when it has a published version; one that never published is
 restarted only by `regenerate`. A `cancelling` row whose process died is settled as
 `cancelled` by the interrupted-generation sweep. `DELETE` now stops a generating document's run as well as

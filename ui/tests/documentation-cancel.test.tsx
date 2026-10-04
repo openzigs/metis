@@ -151,6 +151,21 @@ describe("DocumentationPage — cancel (#855)", () => {
     );
   });
 
+  it("#867 — a published document whose regenerate was cancelled shows its version, with no kept-sections banner", async () => {
+    // What the server restores after cancelling a run over a published version.
+    setup({
+      ...base,
+      status: "ready",
+      content: "# BRD v1",
+      errorMessage: null,
+      versions: [{ version: 1 }],
+    });
+    fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));
+    expect(await screen.findByText("Export PDF")).toBeInTheDocument();
+    expect(screen.queryByText(/generation was cancelled/i)).toBeNull();
+    expect(screen.queryByText(/sections it finished are kept/i)).toBeNull();
+  });
+
   it("offers no cancel for a finished document", async () => {
     setup({ ...base, status: "ready", content: "# Doc" });
     await screen.findByTestId(`doc-card-${DOC_ID}`);
