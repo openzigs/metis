@@ -4,16 +4,16 @@
  *
  * The seeding logic is exercised with an in-memory fake Prisma (matching the
  * DI pattern of backfill-spec-links / traceability-spine tests) so no DB is
- * needed. Covers: creates a link from a citation filename, creates none when a
- * finding has no citation/filename, dedupes within a run and against existing
- * rows, never invents a path, and the conservative source/confidence values.
+ * needed. Covers: requires a resolvable code symbol, separates code and document
+ * citations, reconciles stale auto-links, preserves curated rows, dedupes reruns,
+ * and retains the conservative source/confidence values.
  */
 import { describe, expect, it } from "vitest";
 import {
   ANALYSIS_GROUNDING_SOURCE,
   DEFAULT_SEED_CONFIDENCE,
-  parseCitationFilenames,
   parseEvidenceFindingIds,
+  parseFindingCitations,
   seedRequirementCodeLinksFromFindings,
   type SeedDeps,
 } from "./seed-code-links-from-findings.js";
@@ -35,6 +35,7 @@ interface FindingRow {
   projectId?: string;
 }
 interface MappingRow {
+  id: string;
   requirementId: string;
   projectId: string;
   codeSymbolId: string | null;
@@ -45,14 +46,54 @@ interface MappingRow {
   source: string;
 }
 
+interface DocumentRow {
+  id: string;
+  projectId: string;
+  source: string;
+  filename: string;
+}
+
+interface CodeSymbolRow {
+  id: string;
+  projectId: string;
+  kind: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+}
+
 /** Build an in-memory fake Prisma with the three models the seeder touches. */
 function makeFakePrisma(opts: {
   requirements: ReqRow[];
   findings: FindingRow[];
+  documents?: DocumentRow[];
+  codeSymbols?: CodeSymbolRow[];
   mappings?: MappingRow[];
+  createError?: Error;
 }): { prisma: SeedDeps["prisma"]; created: MappingRow[]; all: MappingRow[] } {
-  const mappings: MappingRow[] = [...(opts.mappings ?? [])];
+  const mappings: MappingRow[] = (opts.mappings ?? []).map((mapping, index) => ({
+    ...mapping,
+    id: mapping.id || `existing-${index}`,
+  }));
   const created: MappingRow[] = [];
+  const codeSymbols =
+    opts.codeSymbols ??
+    [
+      ...new Set(
+        opts.findings.flatMap((finding) =>
+          parseFindingCitations(finding.evidence).flatMap((citation) =>
+            citation.kind === "code" ? [citation.filePath] : [],
+          ),
+        ),
+      ),
+    ].map((filePath, index) => ({
+      id: `module-${index}`,
+      projectId: "proj-1",
+      kind: "module",
+      filePath,
+      startLine: 1,
+      endLine: 100,
+    }));
 
   const prisma = {
     requirement: {
@@ -78,15 +119,50 @@ function makeFakePrisma(opts: {
         );
       },
     },
+    document: {
+      findMany: async ({ where }: { where: { id: { in: string[] }; projectId: string } }) =>
+        (opts.documents ?? []).filter(
+          (document) => where.id.in.includes(document.id) && document.projectId === where.projectId,
+        ),
+    },
+    codeSymbol: {
+      findMany: async ({
+        where,
+      }: {
+        where: {
+          projectId: string;
+          kind?: string;
+          id?: { in: string[] };
+          filePath?: { in: string[] };
+        };
+      }) =>
+        codeSymbols.filter(
+          (symbol) =>
+            symbol.projectId === where.projectId &&
+            (where.kind === undefined || symbol.kind === where.kind) &&
+            (where.id === undefined || where.id.in.includes(symbol.id)) &&
+            (where.filePath === undefined || where.filePath.in.includes(symbol.filePath)),
+        ),
+    },
     requirementCodeMapping: {
       findMany: async ({ where }: { where: { requirementId: string; projectId: string } }) =>
         mappings.filter(
           (m) => m.requirementId === where.requirementId && m.projectId === where.projectId,
         ),
       create: async ({ data }: { data: MappingRow }) => {
-        mappings.push(data);
-        created.push(data);
-        return data;
+        if (opts.createError) throw opts.createError;
+        const row = { ...data, id: `created-${created.length}` };
+        mappings.push(row);
+        created.push(row);
+        return row;
+      },
+      deleteMany: async ({ where }: { where: { id: { in: string[] } } }) => {
+        const ids = new Set(where.id.in);
+        const count = mappings.filter((mapping) => ids.has(mapping.id)).length;
+        for (let index = mappings.length - 1; index >= 0; index -= 1) {
+          if (ids.has(mappings[index]!.id)) mappings.splice(index, 1);
+        }
+        return { count };
       },
     },
   } as unknown as SeedDeps["prisma"];
@@ -98,16 +174,22 @@ function labels(findingIds: string[], extra: string[] = []): string {
   return JSON.stringify([...extra, ...findingIds.map((id) => `finding:${id}`)]);
 }
 
-function evidence(filenames: (string | undefined)[]): string {
+function rawEvidence(citations: unknown[]): string {
   return JSON.stringify({
-    citations: filenames.map((filename, i) => ({
-      documentId: `doc-${i}`,
-      chunkIndex: i,
-      ...(filename === undefined ? {} : { filename }),
-    })),
+    citations,
     tags: [],
     requirementId: null,
   });
+}
+
+function evidence(filePaths: (string | undefined)[]): string {
+  return rawEvidence(
+    filePaths.map((filePath, index) =>
+      filePath === undefined
+        ? { documentId: `doc-${index}`, chunkIndex: index }
+        : { filePath, startLine: 1, endLine: 5 },
+    ),
+  );
 }
 
 describe("parseEvidenceFindingIds", () => {
@@ -122,26 +204,42 @@ describe("parseEvidenceFindingIds", () => {
   });
 });
 
-describe("parseCitationFilenames", () => {
-  it("returns trimmed non-empty filenames only", () => {
-    expect(parseCitationFilenames(evidence(["src/a.ts", undefined, "  src/b.ts  "]))).toEqual([
-      "src/a.ts",
-      "src/b.ts",
+describe("parseFindingCitations", () => {
+  it("keeps code and document citation shapes distinct", () => {
+    expect(
+      parseFindingCitations(
+        rawEvidence([
+          { filePath: "src/a.ts", startLine: 2, endLine: 4, symbolId: "symbol-a" },
+          { documentId: "doc-1", chunkIndex: 3, filename: "api.html" },
+        ]),
+      ),
+    ).toEqual([
+      {
+        kind: "code",
+        filePath: "src/a.ts",
+        startLine: 2,
+        endLine: 4,
+        symbolId: "symbol-a",
+      },
+      { kind: "document", documentId: "doc-1", filename: "api.html" },
     ]);
   });
-  it("returns [] for null / malformed / no citations", () => {
-    expect(parseCitationFilenames(null)).toEqual([]);
-    expect(parseCitationFilenames("nope")).toEqual([]);
-    expect(parseCitationFilenames(JSON.stringify({ citations: "x" }))).toEqual([]);
-    expect(parseCitationFilenames(JSON.stringify({}))).toEqual([]);
-    expect(parseCitationFilenames(JSON.stringify({ citations: [{ filename: "  " }] }))).toEqual([]);
+
+  it("returns [] for null / malformed / invalid citation data", () => {
+    expect(parseFindingCitations(null)).toEqual([]);
+    expect(parseFindingCitations("nope")).toEqual([]);
+    expect(parseFindingCitations(JSON.stringify({ citations: "x" }))).toEqual([]);
+    expect(parseFindingCitations(JSON.stringify({}))).toEqual([]);
+    expect(
+      parseFindingCitations(rawEvidence([{ filePath: "src/a.ts", startLine: 0, endLine: 4 }])),
+    ).toEqual([]);
   });
 });
 
 describe("seedRequirementCodeLinksFromFindings", () => {
   const projectId = "proj-1";
 
-  it("creates a RequirementCodeMapping from a finding whose citation has a filename", async () => {
+  it("creates a symbol-bound mapping from a resolvable code citation", async () => {
     const { prisma, created } = makeFakePrisma({
       requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
       findings: [{ id: "f1", evidence: evidence(["src/auth.ts"]), confidence: 0.9 }],
@@ -155,13 +253,291 @@ describe("seedRequirementCodeLinksFromFindings", () => {
     expect(created[0]).toMatchObject({
       requirementId: "req-1",
       projectId,
-      codeSymbolId: null,
+      codeSymbolId: "module-0",
       filePath: "src/auth.ts",
-      startLine: null,
-      endLine: null,
+      startLine: 1,
+      endLine: 5,
       confidence: 0.9,
       source: ANALYSIS_GROUNDING_SOURCE,
     });
+  });
+
+  it("resolves repo document citations through their source path and module symbol", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: rawEvidence([
+            {
+              documentId: "repo-doc",
+              chunkIndex: 0,
+              filename: "untrusted display name",
+            },
+          ]),
+          confidence: 0.8,
+        },
+      ],
+      documents: [
+        {
+          id: "repo-doc",
+          projectId,
+          source: "repo",
+          filename: "connector:repo:repo-1:src/internal/auth.ts",
+        },
+      ],
+      codeSymbols: [
+        {
+          id: "module-auth",
+          projectId,
+          kind: "module",
+          filePath: "internal/auth.ts",
+          startLine: 1,
+          endLine: 92,
+        },
+      ],
+    });
+
+    const summary = await seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+
+    expect(summary.linksCreated).toBe(1);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "module-auth",
+      filePath: "internal/auth.ts",
+      startLine: 1,
+      endLine: 92,
+    });
+  });
+
+  it("does not promote upload or database document citations to code links", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: rawEvidence([
+            {
+              documentId: "upload-doc",
+              chunkIndex: 0,
+              filename: "connector:repo:spoofed:src/src/auth.ts",
+            },
+            {
+              documentId: "db-doc",
+              chunkIndex: 1,
+              filename: "connector:repo:spoofed:src/src/auth.ts",
+            },
+          ]),
+          confidence: 0.9,
+        },
+      ],
+      documents: [
+        {
+          id: "upload-doc",
+          projectId,
+          source: "upload",
+          filename: "connector:repo:spoofed:src/src/auth.ts",
+        },
+        {
+          id: "db-doc",
+          projectId,
+          source: "db",
+          filename: "connector:repo:spoofed:src/src/auth.ts",
+        },
+      ],
+      codeSymbols: [
+        {
+          id: "module-auth",
+          projectId,
+          kind: "module",
+          filePath: "src/auth.ts",
+          startLine: 1,
+          endLine: 100,
+        },
+      ],
+    });
+
+    const summary = await seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+
+    expect(summary).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 0 });
+    expect(created).toHaveLength(0);
+  });
+
+  it("ignores repo paths with no unique module symbol and reconciles stale auto-links", async () => {
+    const legacy: MappingRow = {
+      id: "mapping-legacy",
+      requirementId: "req-1",
+      projectId,
+      codeSymbolId: null,
+      filePath: "missing.ts",
+      startLine: null,
+      endLine: null,
+      confidence: 0.7,
+      source: ANALYSIS_GROUNDING_SOURCE,
+    };
+    const { prisma, created, all } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: rawEvidence([
+            {
+              documentId: "missing-doc",
+              chunkIndex: 0,
+              filename: "connector:repo:r1:src/missing.ts",
+            },
+            {
+              documentId: "ambiguous-doc",
+              chunkIndex: 1,
+              filename: "connector:repo:r1:src/ambiguous.ts",
+            },
+          ]),
+          confidence: 0.7,
+        },
+      ],
+      documents: [
+        { id: "missing-doc", projectId, source: "repo", filename: "missing.ts" },
+        { id: "ambiguous-doc", projectId, source: "repo", filename: "ambiguous.ts" },
+      ],
+      codeSymbols: [
+        {
+          id: "module-a",
+          projectId,
+          kind: "module",
+          filePath: "ambiguous.ts",
+          startLine: 1,
+          endLine: 10,
+        },
+        {
+          id: "module-b",
+          projectId,
+          kind: "module",
+          filePath: "ambiguous.ts",
+          startLine: 1,
+          endLine: 10,
+        },
+      ],
+      mappings: [legacy],
+    });
+
+    const summary = await seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+
+    expect(summary).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 0 });
+    expect(created).toHaveLength(0);
+    expect(all).toHaveLength(0);
+  });
+
+  it("replaces legacy file-only rows and preserves manual mappings", async () => {
+    const { prisma, created, all } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: rawEvidence([
+            {
+              documentId: "repo-doc",
+              chunkIndex: 0,
+              filename: "untrusted display name",
+            },
+          ]),
+          confidence: 0.8,
+        },
+      ],
+      documents: [
+        {
+          id: "repo-doc",
+          projectId,
+          source: "repo",
+          filename: "connector:repo:repo-1:src/internal/auth.ts",
+        },
+      ],
+      codeSymbols: [
+        {
+          id: "module-auth",
+          projectId,
+          kind: "module",
+          filePath: "internal/auth.ts",
+          startLine: 1,
+          endLine: 92,
+        },
+      ],
+      mappings: [
+        {
+          id: "legacy-file-only",
+          requirementId: "req-1",
+          projectId,
+          codeSymbolId: null,
+          filePath: "internal/auth.ts",
+          startLine: null,
+          endLine: null,
+          confidence: 0.6,
+          source: ANALYSIS_GROUNDING_SOURCE,
+        },
+        {
+          id: "manual-doc",
+          requirementId: "req-1",
+          projectId,
+          codeSymbolId: null,
+          filePath: "api.html",
+          startLine: null,
+          endLine: null,
+          confidence: 0.9,
+          source: "manual",
+        },
+      ],
+    });
+
+    const summary = await seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+
+    expect(summary.linksCreated).toBe(1);
+    expect(created[0]).toMatchObject({ codeSymbolId: "module-auth", filePath: "internal/auth.ts" });
+    expect(all).toHaveLength(2);
+    expect(all.find((mapping) => mapping.source === "manual")?.filePath).toBe("api.html");
+  });
+
+  it("keeps stale auto-links when creating a replacement fails", async () => {
+    const legacy: MappingRow = {
+      id: "legacy-file-only",
+      requirementId: "req-1",
+      projectId,
+      codeSymbolId: null,
+      filePath: "src/old.ts",
+      startLine: null,
+      endLine: null,
+      confidence: 0.6,
+      source: ANALYSIS_GROUNDING_SOURCE,
+    };
+    const { prisma, all } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: rawEvidence([{ filePath: "src/new.ts", startLine: 3, endLine: 5 }]),
+          confidence: 0.8,
+        },
+      ],
+      mappings: [legacy],
+      createError: new Error("mapping create failed"),
+    });
+
+    await expect(
+      seedRequirementCodeLinksFromFindings(
+        { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+        { prisma },
+      ),
+    ).rejects.toThrow("mapping create failed");
+    expect(all).toEqual([legacy]);
   });
 
   it("uses the conservative default confidence when the finding has none", async () => {
@@ -215,7 +591,7 @@ describe("seedRequirementCodeLinksFromFindings", () => {
     expect(summary).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 0 });
   });
 
-  it("creates none when the finding has no citations / no filename", async () => {
+  it("creates none when the finding has no citations", async () => {
     const { prisma, created } = makeFakePrisma({
       requirements: [
         { id: "req-1", projectId, labels: labels(["f1"]) },
@@ -268,12 +644,13 @@ describe("seedRequirementCodeLinksFromFindings", () => {
 
   it("does not re-create a link that already exists (idempotent re-run)", async () => {
     const existing: MappingRow = {
+      id: "mapping-existing",
       requirementId: "req-1",
       projectId,
-      codeSymbolId: null,
+      codeSymbolId: "module-0",
       filePath: "src/a.ts",
-      startLine: null,
-      endLine: null,
+      startLine: 1,
+      endLine: 5,
       confidence: 0.5,
       source: ANALYSIS_GROUNDING_SOURCE,
     };
@@ -286,17 +663,16 @@ describe("seedRequirementCodeLinksFromFindings", () => {
       { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
       { prisma },
     );
-    // src/a.ts already present (skipped), src/c.ts is new (created).
+    // The exact resolved module link already exists; only src/c.ts is new.
     expect(created).toHaveLength(1);
     expect(created[0]!.filePath).toBe("src/c.ts");
     expect(summary).toEqual({ requirementsSeeded: 1, linksCreated: 1, linksSkipped: 1 });
   });
 
   it("does not collide with a pre-existing symbol-bound row for the same path", async () => {
-    // A semantic row WITH a symbol id should not block seeding a file-only row;
-    // they are distinct (codeSymbolId differs). The seeder only dedupes against
-    // existing file-only rows.
+    // A different semantic symbol for the same path is a distinct mapping.
     const symbolRow: MappingRow = {
+      id: "mapping-semantic",
       requirementId: "req-1",
       projectId,
       codeSymbolId: "sym-1",

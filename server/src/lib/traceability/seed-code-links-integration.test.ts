@@ -27,6 +27,7 @@ interface FindingRow {
   confidence: number | null;
 }
 interface MappingRow {
+  id: string;
   requirementId: string;
   projectId: string;
   codeSymbolId: string | null;
@@ -37,9 +38,27 @@ interface MappingRow {
   source: string;
 }
 
+interface DocumentRow {
+  id: string;
+  projectId: string;
+  source: string;
+  filename: string;
+}
+
+interface CodeSymbolRow {
+  id: string;
+  projectId: string;
+  kind: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+}
+
 const store = {
   requirements: [] as ReqRow[],
   findings: [] as FindingRow[],
+  documents: [] as DocumentRow[],
+  codeSymbols: [] as CodeSymbolRow[],
   mappings: [] as MappingRow[],
   seq: 0,
 };
@@ -73,15 +92,50 @@ vi.mock("../prisma.js", () => ({
         store.findings.filter((f) => where.id.in.includes(f.id)),
       ),
     },
+    document: {
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] }; projectId: string } }) =>
+        store.documents.filter(
+          (document) => where.id.in.includes(document.id) && document.projectId === where.projectId,
+        ),
+      ),
+    },
+    codeSymbol: {
+      findMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: {
+            projectId: string;
+            kind?: string;
+            id?: { in: string[] };
+            filePath?: { in: string[] };
+          };
+        }) =>
+          store.codeSymbols.filter(
+            (symbol) =>
+              symbol.projectId === where.projectId &&
+              (where.kind === undefined || symbol.kind === where.kind) &&
+              (where.id === undefined || where.id.in.includes(symbol.id)) &&
+              (where.filePath === undefined || where.filePath.in.includes(symbol.filePath)),
+          ),
+      ),
+    },
     requirementCodeMapping: {
       findMany: vi.fn(async ({ where }: { where: { requirementId: string; projectId: string } }) =>
         store.mappings.filter(
           (m) => m.requirementId === where.requirementId && m.projectId === where.projectId,
         ),
       ),
-      create: vi.fn(async ({ data }: { data: MappingRow }) => {
-        store.mappings.push(data);
-        return data;
+      create: vi.fn(async ({ data }: { data: Omit<MappingRow, "id"> }) => {
+        const row: MappingRow = { id: `mapping-${++store.seq}`, ...data };
+        store.mappings.push(row);
+        return row;
+      }),
+      deleteMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) => {
+        const ids = new Set(where.id.in);
+        const count = store.mappings.filter((mapping) => ids.has(mapping.id)).length;
+        store.mappings = store.mappings.filter((mapping) => !ids.has(mapping.id));
+        return { count };
       }),
     },
   },
@@ -93,17 +147,33 @@ import { seedRequirementCodeLinksFromFindings } from "./seed-code-links-from-fin
 beforeEach(() => {
   store.requirements = [];
   store.findings = [];
+  store.documents = [];
+  store.codeSymbols = [];
   store.mappings = [];
   store.seq = 0;
 });
 
 describe("synthesis hook → requirement→code spine", () => {
-  it("creates a RequirementCodeMapping row after requirements are persisted with a code citation", async () => {
-    // A stubbed finding carrying a code citation, as persistAgentResult would write it.
+  it("creates a symbol-bound row after requirements are persisted with a code citation", async () => {
+    store.codeSymbols.push({
+      id: "symbol-auth",
+      projectId: "proj-1",
+      kind: "function",
+      filePath: "server/src/auth.ts",
+      startLine: 3,
+      endLine: 12,
+    });
     store.findings.push({
       id: "find-1",
       evidence: JSON.stringify({
-        citations: [{ documentId: "doc-1", chunkIndex: 0, filename: "server/src/auth.ts" }],
+        citations: [
+          {
+            filePath: "server/src/auth.ts",
+            startLine: 5,
+            endLine: 8,
+            symbolId: "symbol-auth",
+          },
+        ],
         tags: [],
         requirementId: null,
       }),
@@ -144,7 +214,9 @@ describe("synthesis hook → requirement→code spine", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       filePath: "server/src/auth.ts",
-      codeSymbolId: null,
+      codeSymbolId: "symbol-auth",
+      startLine: 5,
+      endLine: 8,
       source: "analysis-grounding",
       confidence: 0.7,
     });
