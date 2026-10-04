@@ -32,7 +32,13 @@ import { scheduleMirrorToTeams } from "../lib/teams/outbound-sync.js";
 import { createHumanDiscussionMessage } from "../lib/discussions/create-message.js";
 import { promoteMessageToRequirement, PromoteError } from "../lib/discussions/promote.js";
 import { AI_RESPONSE_MODES, shouldAIRespond } from "../lib/discussions/ai-gate.js";
-import { streamAIReply, type ResponderChunk } from "../lib/discussions/ai-responder.js";
+import {
+  streamAIReply,
+  type ResponderChunk,
+  type RetrievedContext,
+} from "../lib/discussions/ai-responder.js";
+import { resolveDiscussionTools } from "../lib/discussions/grounding.js";
+import { buildAutoRagContext, type RagContextCapture } from "./ai.js";
 import {
   checkThreadAIRateLimit,
   loadThreadAIRateLimitConfig,
@@ -374,7 +380,8 @@ export function discussionsRouter(): Router {
   // Given a triggering human `messageId`, the gate (`shouldAIRespond`, #483)
   // decides whether to invoke the provider. When it does, the reply is streamed
   // over SSE and, on completion, persisted as an `authorKind=ai` message with
-  // attribution + a single `AITokenUsage` row (see `streamAIReply`). When the
+  // attribution, one `AITokenUsage` row and one project-ledger row (see
+  // `streamAIReply`; #739 grounds it in the project). When the
   // gate says no (e.g. `off`, or a plain statement in `on_mention`), we make NO
   // provider call and return a JSON `{ responded: false }` — the cost-control
   // guarantee. Member-only via `canAccessThread`.
@@ -482,15 +489,37 @@ export function discussionsRouter(): Router {
       select: { authorKind: true, body: true, authorUserId: true, aiModel: true },
     });
 
+    // #739 — ground the reply in the thread's project, as chat does: its
+    // auto-RAG excerpts, and its read-only tools (bounded; see grounding.ts).
+    const provider = discussionProvider();
+    const retrieve = async (query: string): Promise<RetrievedContext> => {
+      const capture: RagContextCapture = { contexts: [], sources: 0 };
+      const block = await buildAutoRagContext(
+        thread.projectId,
+        [{ role: "user", content: query }],
+        undefined,
+        capture,
+      );
+      return { block, sources: capture.sources };
+    };
+    const resolveTools = (session: { id: string }) =>
+      resolveDiscussionTools({
+        session: { id: session.id, userId: actor.id, projectId: thread.projectId },
+        provider,
+        model: provider.model,
+      });
+
     try {
       const result = await streamAIReply({
         thread,
         triggerMessage: trigger,
         actor: { id: actor.id },
-        provider: discussionProvider(),
+        provider,
         history,
         onChunk: send,
         signal: ac.signal,
+        retrieve,
+        resolveTools,
       });
       // Integration seam (#486 — Phase 4): now that the discussion socket emitter
       // is merged (Phase 2 #481), fan the PERSISTED AI message out to the

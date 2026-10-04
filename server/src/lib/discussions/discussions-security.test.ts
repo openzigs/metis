@@ -20,9 +20,11 @@
  *       enters the fixed `system` prompt, so it cannot steer replies to others.
  *       The system prompt is byte-for-byte identical regardless of message
  *       content.
- *     - The responder streams TEXT only — no tool-call execution is wired from
- *       message content (it is structurally impossible: `streamAIReply` consumes
- *       only `delta`/`usage`/`done` chunks and persists a text body).
+ *     - Without tools the responder streams TEXT only: a tool-call-shaped
+ *       chunk is ignored, never executed.
+ *     - #739 — with tools, a model steered by thread content can still only
+ *       run the reply's read-only toolset: a call to any other tool (a write,
+ *       SQL, MCP) is refused and nothing outside the toolset runs.
  *
  * The XSS (A03) proof lives with the renderer in the UI test-suite
  * (`ui/tests/discussion-xss.test.tsx`); the mention-spam / cost-abuse limiter
@@ -47,8 +49,10 @@ vi.mock("../prisma.js", () => ({
     },
     aISession: { create: (...a: unknown[]) => sessionCreate(...a) },
     discussionMessage: { create: (...a: unknown[]) => messageCreate(...a) },
+    aIToolApproval: { create: async (a: { data: unknown }) => a.data, findFirst: async () => null },
   },
 }));
+vi.mock("../finops/token-tracker.js", () => ({ recordUsage: vi.fn() }));
 
 // Audit is a real side effect we only need to silence; spy on it so we can also
 // assert that denied probes ARE audited (traceability of enumeration attempts).
@@ -282,5 +286,65 @@ describe("A03 Injection — cross-user prompt-injection isolation in AI replies"
     // The persisted reply is just the concatenated text deltas — the tool_call
     // chunk is ignored, not executed.
     expect(result.message.body).toBe("beforeafter");
+  });
+
+  it("#739 — a steered model cannot run anything outside the reply's read-only toolset", async () => {
+    const { ApprovalGateService } = await import("../ai/approval-policy.js");
+    const { makeToolset } = await import("../ai/tool-runtime/toolset.js");
+    const { DISCUSSION_TOOL_ALLOWLIST, DISCUSSION_TOOL_POLICY } = await import("./grounding.js");
+    const read = vi.fn(async () => ({ text: "file text", resultCount: 1 }));
+    const toolset = makeToolset([
+      {
+        name: "read_file_slice",
+        wireName: "read_file_slice",
+        description: "read",
+        parameters: { type: "object" },
+        risk: "low",
+        source: "code",
+        validate: (args: unknown) => ({ ok: true as const, args }),
+        execute: read,
+      },
+    ]);
+    const gate = new ApprovalGateService({
+      sessionId: "sess-1",
+      userId: actor.id,
+      policy: { ...DISCUSSION_TOOL_POLICY },
+      agentAllowlist: DISCUSSION_TOOL_ALLOWLIST,
+    });
+    let turn = 0;
+    const provider = {
+      key: "openai",
+      model: "m",
+      offline: false,
+      stream: vi.fn(),
+      chat: vi.fn(async () => {
+        turn++;
+        return turn === 1
+          ? {
+              content: "",
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              toolCalls: [
+                { id: "c1", name: "apply_diff", args: { patch: "rm -rf" } },
+                { id: "c2", name: "query_database", args: { sql: "drop table users" } },
+              ],
+            }
+          : {
+              content: "I can only read project files.",
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            };
+      }),
+    } as unknown as AIProvider;
+
+    const result = await streamAIReply({
+      thread,
+      triggerMessage: { id: "m", body: INJECTION },
+      actor,
+      provider,
+      resolveTools: async () => ({ toolset, native: true, gate, note: "tools" }),
+    });
+
+    // Neither call named a tool in the toolset, so nothing ran.
+    expect(read).not.toHaveBeenCalled();
+    expect(result.message.body).toBe("I can only read project files.");
   });
 });

@@ -1106,7 +1106,7 @@ Beneath the pipeline, **Knowledge search** runs a retrieval query over the proje
 
 The **Discussions** tab (`/projects/{id}/discussions`) is a shared, realtime room where **multiple analysts and stakeholders** talk through requirements together — and the **AI is a participant**, not a separate single-user chat. Use it to ask questions, brainstorm acceptance criteria, and turn the best ideas into tracked requirements without leaving the conversation.
 
-**Starting a discussion.** Open the **Discussions** tab and click **Start discussion** (an optional title helps others find it). You land in the thread view; everyone with access to the project can join the same thread and see messages appear live.
+**Starting a discussion.** Open the **Discussions** tab and click **Start discussion** (an optional title helps others find it). You land in the thread view; everyone with access to the project — the same people who can open the project itself — can join the same thread and see messages appear live.
 
 **Who said what.** Every message is clearly attributed:
 - **Human messages** show a colored avatar with the author's initials and a small **human** badge.
@@ -1119,13 +1119,13 @@ Message text is rendered as safe Markdown (code blocks, tables, lists, diagrams)
 - **Auto** — the AI replies whenever it detects a clear question or request, no mention needed.
 - **Off** — the AI stays silent, even if you mention `@AI`.
 
-When the AI responds, you'll see its reply **stream in token-by-token**, live, for everyone in the thread — exactly like watching a teammate type. Your own messages appear instantly (optimistically) and are confirmed by the server a moment later.
+The AI answers from **this project's own sources**, as the project chat does: it searches the project's knowledge base and, where your administrator has enabled code tools, reads the project's files before it replies, and it cites the `file:line` it relied on. If the sources don't show something, it says so rather than guessing. When it answers without reading files, you'll see its reply **stream in token-by-token**, live, for everyone in the thread — exactly like watching a teammate type; when it reads files first, the answer arrives in one piece after a short pause. Your own messages appear instantly (optimistically) and are confirmed by the server a moment later.
 
 **Mentioning people and the AI.** Type **`@`** in the composer to open autocomplete. Keep typing to search teammates by name, or pick the **`@AI`** entry (always offered at the top) to bring the assistant in. Use the arrow keys to move, Enter or Tab to insert, and Esc to dismiss — the selected mention is inserted as `@name` (or `@AI`).
 
 **Who's here and who's typing.** Avatars at the top of the thread show **who is currently viewing** it, updating live as people join and leave. When a teammate is composing a message, a **"… is typing"** indicator appears above the input (you never see your own), so you know a reply is on the way.
 
-**Getting someone's attention (@mentions).** Mention a teammate by name (e.g. `@alex`) in a message and they receive an in-app **notification** — it appears in the bell/notification drawer (see §8.5) with a link straight back to the discussion, and arrives live if they're online. Only **project members** are notified (you can't ping someone outside the project), you're never notified for mentioning yourself, and repeated mentions of the same person in one thread are de-duplicated so nobody gets spammed.
+**Getting someone's attention (@mentions).** Mention a teammate by name (e.g. `@alex`) in a message and they receive an in-app **notification** — it appears in the bell/notification drawer (see §8.5) with a link straight back to the discussion, and arrives live if they're online. Only people who can open the project are notified — the same people who can open the thread (you can't ping someone outside the project), you're never notified for mentioning yourself, and repeated mentions of the same person in one thread are de-duplicated so nobody gets spammed.
 
 **Turning a message into a requirement.** When the discussion lands on something worth tracking, hover any message and click **Promote to requirement**. A small form opens (title pre-filled from the message, plus type and priority); on save, METIS creates a tracked Requirement and links you straight to it, preserving where it came from (the source message and thread) in the audit trail. (A future enhancement — "Ask AI to draft acceptance criteria" — is noted in the form but not yet available.)
 

@@ -112,6 +112,17 @@ vi.mock("../lib/discussions/ai-responder.js", () => ({
   streamAIReply: (...a: unknown[]) => streamAIReply(...a),
 }));
 
+// #739 — grounding: chat's auto-RAG builder and the discussion toolset builder
+// are unit-tested where they live; the route only wires them to the thread.
+const buildAutoRagContext = vi.fn();
+vi.mock("./ai.js", () => ({
+  buildAutoRagContext: (...a: unknown[]) => buildAutoRagContext(...a),
+}));
+const resolveDiscussionTools = vi.fn();
+vi.mock("../lib/discussions/grounding.js", () => ({
+  resolveDiscussionTools: (...a: unknown[]) => resolveDiscussionTools(...a),
+}));
+
 // Provider seam — the route builds a provider from config; stub it so no real
 // model is constructed in tests.
 vi.mock("../lib/ai/index.js", () => ({
@@ -493,6 +504,62 @@ describe("discussions routes", () => {
       expect(call.thread).toMatchObject({ id: "t1", aiResponseMode: "on_mention" });
       expect(call.triggerMessage).toMatchObject({ id: "m1" });
       expect(call.actor).toMatchObject({ id: "u1" });
+    });
+
+    it("#739 — grounds the reply in the THREAD's project: its retrieval and its read-only tools", async () => {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      threadFindFirst.mockResolvedValue({ id: "t1", projectId: "p1", aiResponseMode: "auto" });
+      messageFindFirst.mockResolvedValue({
+        id: "m1",
+        body: "how is a feed scheduled?",
+        authorKind: "human",
+      });
+      messageFindMany.mockResolvedValue([]);
+      buildAutoRagContext.mockImplementation(
+        async (_p: string, _m: unknown, _d: unknown, capture: { sources: number }) => {
+          capture.sources = 2;
+          return "## Retrieved Knowledge";
+        },
+      );
+      resolveDiscussionTools.mockResolvedValue({ toolset: "ts" });
+      let grounded: unknown[] = [];
+      streamAIReply.mockImplementation(
+        async (input: {
+          retrieve: (q: string) => Promise<unknown>;
+          resolveTools: (s: { id: string }) => Promise<unknown>;
+        }) => {
+          grounded = [await input.retrieve("q?"), await input.resolveTools({ id: "sess-9" })];
+          return {
+            message: {
+              id: "ai-1",
+              body: "x",
+              aiModel: "m",
+              aiProvider: "p",
+              aiSessionId: "sess-9",
+            },
+            usage: { totalTokens: 1 },
+          };
+        },
+      );
+
+      await request(app).post("/discussions/threads/t1/ai-respond").send({ messageId: "m1" });
+
+      expect(buildAutoRagContext).toHaveBeenCalledWith(
+        "p1",
+        [{ role: "user", content: "q?" }],
+        undefined,
+        expect.objectContaining({ contexts: expect.any(Array) }),
+      );
+      expect(resolveDiscussionTools).toHaveBeenCalledWith(
+        expect.objectContaining({
+          session: { id: "sess-9", userId: "u1", projectId: "p1" },
+          model: "offline-stub",
+        }),
+      );
+      expect(grounded).toEqual([
+        { block: "## Retrieved Knowledge", sources: 2 },
+        { toolset: "ts" },
+      ]);
     });
 
     // #486 — the AI reply must ALSO fan out over the `thread:{id}` room (not only
