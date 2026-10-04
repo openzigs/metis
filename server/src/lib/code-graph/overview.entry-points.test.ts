@@ -9,7 +9,7 @@
  *    — including a Spring Boot WAR with a dispatcher servlet and Quartz jobs.
  */
 import { describe, it, expect } from "vitest";
-import { composeSummary, isJavaEntryPoint, stripDocMarkup } from "./overview.js";
+import { composeSummary, isGoEntryPoint, isJavaEntryPoint, stripDocMarkup } from "./overview.js";
 
 describe("stripDocMarkup (#1371)", () => {
   it("removes block Javadoc tags and everything after them", () => {
@@ -145,5 +145,41 @@ describe("isJavaEntryPoint (#1371)", () => {
         language: "java",
       }),
     ).toBe(true);
+  });
+});
+
+describe("isGoEntryPoint (#719)", () => {
+  const go = (filePath: string, qualifiedName: string, kind = "function") => ({
+    filePath,
+    qualifiedName,
+    kind,
+    language: "go",
+  });
+
+  it("recognises func main in a root main.go", () => {
+    expect(isGoEntryPoint(go("main.go", "main.go::main"))).toBe(true);
+  });
+
+  it("recognises func main in any package main file, not only main.go", () => {
+    expect(isGoEntryPoint(go("tools/gen/run.go", "tools/gen/run.go::main"))).toBe(true);
+  });
+
+  it("does not claim other functions in main.go", () => {
+    expect(isGoEntryPoint(go("main.go", "main.go::init"))).toBe(false);
+    expect(isGoEntryPoint(go("main.go", "main.go::mainLoop"))).toBe(false);
+  });
+
+  it("does not claim a main in a Go test file", () => {
+    expect(isGoEntryPoint(go("internal/x/x_test.go", "internal/x/x_test.go::main"))).toBe(false);
+  });
+
+  it("does not claim a non-function symbol named main", () => {
+    expect(isGoEntryPoint(go("main.go", "main.go::main", "type"))).toBe(false);
+  });
+
+  it("does not fire for non-Go languages", () => {
+    expect(
+      isGoEntryPoint({ filePath: "main.py", qualifiedName: "main.py::main", language: "py" }),
+    ).toBe(false);
   });
 });
