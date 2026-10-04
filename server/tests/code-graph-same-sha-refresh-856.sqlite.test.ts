@@ -364,6 +364,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const stats = await ingest(projectId, root, extra);
         expect(stats.lineageBackfill).toBe(true);
         expect(await dangling(projectId)).toBe(0);
+        // One routine, with its id: the rewritten `executes` edge and the
+        // catalog edge meet on the same symbol rather than on a duplicate.
+        const routines = await db.codeSymbol.findMany({
+          where: { projectId, kind: "procedure", qualifiedName: "refresh_users" },
+          select: { id: true },
+        });
+        expect(routines).toEqual([{ id: routine.id }]);
+        const executes = await db.codeEdge.findMany({
+          where: { projectId, kind: "executes", source: "sqlglot" },
+          select: { toSymbolId: true },
+        });
+        expect(executes).toEqual([{ toSymbolId: routine.id }]);
       }
     });
 
