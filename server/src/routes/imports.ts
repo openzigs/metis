@@ -22,6 +22,8 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import { getImportService, type ImportService } from "../lib/importers/import-service.js";
+import { authorizeImportSecretRef } from "../lib/importers/import-secret-binding.js";
+import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -30,6 +32,11 @@ function ok<T>(data: T): ApiResponse<T> {
 function actor(req: Request): string {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return req.user.userId;
+}
+
+function caller(req: Request) {
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  return req.user;
 }
 
 function projectIdOf(req: Request): string {
@@ -56,7 +63,14 @@ export function importsRouter(service: ImportService = getImportService()): Rout
     // #426 — throw the raw ZodError; the global error handler maps it to a
     // friendly 400 envelope (no raw issues array / schema internals leaked).
     const parsed = importPreviewRequestSchema.parse(req.body ?? {});
-    res.json(ok(await service.preview(projectIdOf(req), parsed)));
+    const projectId = projectIdOf(req);
+    // #763 — a `${vault:label}` credential passes the #344 binding check and
+    // reaches the service as the bound secret id only; plaintext is read there.
+    const { secretId } = await authorizeImportSecretRef(caller(req), projectId, parsed.secretRef, {
+      type: "import_source",
+      id: "preview",
+    });
+    res.json(ok(await service.preview(projectId, parsed, { secretId })));
   });
 
   r.get("/sources", requireAuth, requirePermission("connector.read"), async (req, res) => {
@@ -66,7 +80,15 @@ export function importsRouter(service: ImportService = getImportService()): Rout
   r.post("/sources", requireAuth, requirePermission("connector.write"), async (req, res) => {
     // #426 — raw ZodError → friendly 400 via the global error handler.
     const parsed = createImportSourceSchema.parse(req.body ?? {});
-    const result = await service.createSource(projectIdOf(req), parsed, actor(req));
+    const projectId = projectIdOf(req);
+    const { secretId, until } = await authorizeImportSecretRef(
+      caller(req),
+      projectId,
+      parsed.secretRef,
+      { type: "import_source", id: "new" },
+    );
+    assertBindingWriteWindowOpen(until); // #552
+    const result = await service.createSource(projectId, parsed, actor(req), { secretId });
     res.status(201).json(ok(result));
   });
 

@@ -87,35 +87,75 @@ export function parseImportFilter(source: ImportSourceKind, raw: unknown): Impor
 // ---- Request payloads ------------------------------------------------------
 
 const baseUrlSchema = z.string().url().max(2048);
-const tokenSchema = z.string().min(1).max(8192);
+
+/** Matches a whole `${vault:label}` reference (the shape the vault resolver accepts). */
+const VAULT_REF_SHAPE = /^\$\{vault:([^}]+)\}$/;
+
+/**
+ * #763 — a pasted API token. A `${vault:…}` reference here used to be stored
+ * as the literal token; it now belongs in `secretRef`, so it is refused rather
+ * than silently vaulted as plaintext.
+ */
+const tokenSchema = z
+  .string()
+  .min(1)
+  .max(8192)
+  .refine((v) => !v.trim().startsWith("${vault:"), {
+    message: "send a ${vault:label} reference as secretRef, not as token",
+  });
+
+/** #763 — a reference to an EXISTING vault secret, resolved server-side. */
+export const importSecretRefSchema = z
+  .string()
+  .max(512)
+  .refine((v) => (VAULT_REF_SHAPE.exec(v)?.[1] ?? "").trim().length > 0, {
+    message: "secretRef must be written as ${vault:label}",
+  });
+
+/** #763 — a request names at most one credential: a pasted token or a vault ref. */
+function oneCredential(v: { token?: string; secretRef?: string }): boolean {
+  return !(v.token && v.secretRef);
+}
+const ONE_CREDENTIAL = {
+  message: "provide either token or secretRef, not both",
+  path: ["secretRef"],
+};
 
 /** Preview request: validate config + creds without persisting. */
-export const importPreviewRequestSchema = z.object({
-  source: z.enum(IMPORT_SOURCES),
-  // `.optional()`: zod 4 rejects an absent `z.unknown()` key, zod 3 admitted it (#309).
-  filter: z.unknown().optional(),
-  /** API token for github/azure-devops/linear (not needed for jira reuse). */
-  token: tokenSchema.optional(),
-  baseUrl: baseUrlSchema.optional(),
-});
+export const importPreviewRequestSchema = z
+  .object({
+    source: z.enum(IMPORT_SOURCES),
+    // `.optional()`: zod 4 rejects an absent `z.unknown()` key, zod 3 admitted it (#309).
+    filter: z.unknown().optional(),
+    /** API token for github/azure-devops/linear (not needed for jira reuse). */
+    token: tokenSchema.optional(),
+    /** #763 — `${vault:label}` of an existing vault secret, instead of `token`. */
+    secretRef: importSecretRefSchema.optional(),
+    baseUrl: baseUrlSchema.optional(),
+  })
+  .refine(oneCredential, ONE_CREDENTIAL);
 export type ImportPreviewRequest = z.infer<typeof importPreviewRequestSchema>;
 
 /** Create a saved import source (and kick off the first run). */
-export const createImportSourceSchema = z.object({
-  source: z.enum(IMPORT_SOURCES),
-  label: z.string().min(1).max(200),
-  // `.optional()`: zod 4 rejects an absent `z.unknown()` key, zod 3 admitted it (#309).
-  filter: z.unknown().optional(),
-  token: tokenSchema.optional(),
-  baseUrl: baseUrlSchema.optional(),
-  syncEnabled: z.boolean().default(false),
-  syncIntervalMinutes: z
-    .number()
-    .int()
-    .min(IMPORT_SYNC_MIN_INTERVAL_MINUTES)
-    .max(IMPORT_SYNC_MAX_INTERVAL_MINUTES)
-    .default(IMPORT_SYNC_DEFAULT_INTERVAL_MINUTES),
-});
+export const createImportSourceSchema = z
+  .object({
+    source: z.enum(IMPORT_SOURCES),
+    label: z.string().min(1).max(200),
+    // `.optional()`: zod 4 rejects an absent `z.unknown()` key, zod 3 admitted it (#309).
+    filter: z.unknown().optional(),
+    token: tokenSchema.optional(),
+    /** #763 — `${vault:label}` of an existing vault secret, instead of `token`. */
+    secretRef: importSecretRefSchema.optional(),
+    baseUrl: baseUrlSchema.optional(),
+    syncEnabled: z.boolean().default(false),
+    syncIntervalMinutes: z
+      .number()
+      .int()
+      .min(IMPORT_SYNC_MIN_INTERVAL_MINUTES)
+      .max(IMPORT_SYNC_MAX_INTERVAL_MINUTES)
+      .default(IMPORT_SYNC_DEFAULT_INTERVAL_MINUTES),
+  })
+  .refine(oneCredential, ONE_CREDENTIAL);
 export type CreateImportSourceRequest = z.infer<typeof createImportSourceSchema>;
 
 /** Toggle / reconfigure ongoing sync for an existing source. */
@@ -146,6 +186,11 @@ export interface ImportPreview {
   source: ImportSourceKind;
   count: number;
   sample: MappedRequirementPreview[];
+  /**
+   * #763 — non-fatal notes, e.g. that an unauthenticated GitHub preview is
+   * subject to the anonymous rate limit. Never carries credential material.
+   */
+  warnings?: string[];
 }
 
 export interface ImportRunView {
@@ -176,6 +221,11 @@ export interface ImportSourceView {
   jiraConnectionId: string | null;
   /** True when an API token is stored (the token itself is never returned). */
   hasToken: boolean;
+  /**
+   * #763 — true when the token is an existing vault secret the source refers
+   * to (chosen by `${vault:label}`), rather than one it vaulted for itself.
+   */
+  usesVaultSecret: boolean;
   syncEnabled: boolean;
   syncIntervalMinutes: number;
   consecutiveFailures: number;
