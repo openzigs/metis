@@ -1541,6 +1541,9 @@ model ImportSource {
   baseUrl             String? // custom host (GH Enterprise / Jira DC / ADO org)
   jiraConnectionId    String? // reuse an existing JiraConnection (jira source)
   secretId            String? // vault secret id holding the API token
+  /// #763 — secretId names an EXISTING vault secret chosen by ${vault:label}, which
+  /// the source only refers to; false = a secret the source vaulted for itself.
+  secretBound         Boolean   @default(false)
   syncEnabled         Boolean   @default(false)
   syncIntervalMinutes Int       @default(15)
   scheduledJobId      String? // ScheduledJob driving ongoing sync

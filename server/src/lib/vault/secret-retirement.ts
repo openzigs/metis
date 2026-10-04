@@ -15,11 +15,12 @@
  * session's BYOK `providerSecretRef` (#305), a scheduled job's payload (the
  * http-webhook `authHeader`, resolved with `vault.read`) and the copy held by
  * any http-webhook Task that can still run (#495, bounded by the retry window
- * in #574), and the Jira and
+ * in #574), an import source bound to an existing secret by `${vault:label}`
+ * (#763), and the Jira and
  * test-management connections themselves. Stores that only ever hold
  * a secret they created under their own system label (Slack, Teams, PagerDuty,
- * import sources, suggested-connector passwords) cannot name a connector's
- * secret and are not consulted.
+ * suggested-connector passwords) cannot name a connector's secret and are not
+ * consulted.
  *
  * A reference names a secret by id or by (scoped) label (`secret-binding.ts`),
  * so the text columns are matched on the id and on the bare label by
@@ -65,6 +66,8 @@ export async function isSecretReferenced(
   const counts = await Promise.all([
     prisma.repoConnection.count({ where: { secretId: id } }),
     prisma.databaseConnection.count({ where: { secretId: id } }),
+    // #763 — an import source can now point at an existing secret by id.
+    prisma.importSource.count({ where: { secretId: id } }),
     prisma.jiraConnection.count({ where: { OR: [{ secretId: id }, { tlsCaSecretId: id }] } }),
     prisma.testManagementConnection.count({
       where: { OR: [...containsAny("authConfigJson"), ...containsAny("tlsConfigJson")] },

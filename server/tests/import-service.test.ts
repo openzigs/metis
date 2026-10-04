@@ -269,9 +269,21 @@ describe("ImportService.createSource", () => {
     expect(names[0]).toMatch(/^project:import-github-p1-GH-[0-9A-Z]{26}$/);
   });
 
-  it("rejects a token-based source with no token", async () => {
+  it("rejects a token-only source (Linear) with no token or vault secret", async () => {
     const svc = new ImportService(makeDeps().deps);
-    await expect(svc.createSource("p1", ghFilter, "user_1")).rejects.toThrow(/token/i);
+    await expect(
+      svc.createSource(
+        "p1",
+        {
+          source: "linear",
+          label: "L",
+          filter: { teamId: "t", includeArchived: false },
+          syncEnabled: false,
+          syncIntervalMinutes: 15,
+        },
+        "user_1",
+      ),
+    ).rejects.toMatchObject({ code: "IMPORT_TOKEN_REQUIRED" });
   });
 
   it("validates the Jira connection up-front and stores no token", async () => {
@@ -625,5 +637,132 @@ describe("ImportService.enqueueRun", () => {
   it("throws a 404 for a missing or deleted source", async () => {
     const svc = new ImportService(makeDeps().deps);
     await expect(svc.enqueueRun("nonexistent", {})).rejects.toThrow(/not found/i);
+  });
+});
+
+/** Headers a recorded fetch call sent, lower-cased. */
+function sentHeaders(fetchFn: ReturnType<typeof vi.fn>, i: number): Record<string, string> {
+  const init = (fetchFn.mock.calls[i]?.[1] ?? {}) as { headers?: Record<string, string> };
+  return Object.fromEntries(
+    Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), String(v)]),
+  );
+}
+
+describe("#763 — vault secret and unauthenticated GitHub import", () => {
+  it("preview with a bound vault secret reads it BY ID and sends it, vaulting nothing", async () => {
+    const fetchFn = githubFetch([ghIssue(1)]);
+    const ctx = makeDeps({
+      importerDeps: { fetchFn, assertHostAllowed: () => undefined },
+    });
+    ctx.vault.read.mockResolvedValue({ summary: {}, plaintext: "ghp_from_vault" });
+    const svc = new ImportService(ctx.deps);
+    const preview = await svc.preview(
+      "p1",
+      { source: "github", filter: { owner: "o", repo: "r", state: "open" } },
+      { secretId: "sec_vaulted" },
+    );
+    expect(preview.count).toBe(1);
+    expect(ctx.vault.read).toHaveBeenCalledWith("sec_vaulted");
+    expect(ctx.vault.create).not.toHaveBeenCalled();
+    expect(sentHeaders(fetchFn, 0).authorization).toBe("Bearer ghp_from_vault");
+    expect(preview.warnings ?? []).toEqual([]);
+  });
+
+  it("preview of a public GitHub repo with no credential is anonymous and warns about rate limits", async () => {
+    const fetchFn = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/graphql")) return res(401, { message: "auth required" });
+      if (u.includes("/search/issues")) return res(200, { total_count: 3 });
+      return res(200, [ghIssue(1), ghIssue(2), ghIssue(3)]);
+    });
+    const ctx = makeDeps({ importerDeps: { fetchFn, assertHostAllowed: () => undefined } });
+    const svc = new ImportService(ctx.deps);
+    const preview = await svc.preview("p1", {
+      source: "github",
+      filter: { owner: "miniflux", repo: "v2", state: "open" },
+    });
+    expect(preview.count).toBe(3);
+    expect(preview.sample).toHaveLength(3);
+    for (let i = 0; i < fetchFn.mock.calls.length; i++) {
+      expect(sentHeaders(fetchFn, i)).not.toHaveProperty("authorization");
+      expect(String(fetchFn.mock.calls[i][0])).not.toContain("/graphql");
+    }
+    expect(preview.warnings?.[0]).toMatch(/rate limit/i);
+    expect(ctx.vault.read).not.toHaveBeenCalled();
+  });
+
+  it("still requires a credential for Azure DevOps preview", async () => {
+    const svc = new ImportService(makeDeps().deps);
+    await expect(
+      svc.preview("p1", {
+        source: "azure-devops",
+        filter: { organization: "o", project: "p" },
+      }),
+    ).rejects.toMatchObject({ code: "IMPORT_TOKEN_REQUIRED" });
+  });
+
+  it("createSource with a bound vault secret stores that id and creates no new secret", async () => {
+    const ctx = makeDeps();
+    const svc = new ImportService(ctx.deps);
+    const { source } = await svc.createSource("p1", ghFilter, "user_1", {
+      secretId: "sec_vaulted",
+    });
+    expect(ctx.vault.create).not.toHaveBeenCalled();
+    const row = ctx.prisma.stores.importSource.get(source.id) as Row;
+    expect(row.secretId).toBe("sec_vaulted");
+    expect(row.secretBound).toBe(true);
+    expect(source.hasToken).toBe(true);
+    expect(source.usesVaultSecret).toBe(true);
+  });
+
+  it("a pasted token is still vaulted per source and is NOT marked as a bound secret", async () => {
+    const ctx = makeDeps();
+    const svc = new ImportService(ctx.deps);
+    const { source } = await svc.createSource("p1", { ...ghFilter, token: "ghp_x" }, "user_1");
+    const row = ctx.prisma.stores.importSource.get(source.id) as Row;
+    expect(row.secretBound).toBe(false);
+    expect(source.usesVaultSecret).toBe(false);
+  });
+
+  it("refuses a request carrying both a pasted token and a bound vault secret", async () => {
+    const ctx = makeDeps();
+    const svc = new ImportService(ctx.deps);
+    await expect(
+      svc.createSource("p1", { ...ghFilter, token: "ghp_x" }, "user_1", { secretId: "s" }),
+    ).rejects.toMatchObject({ code: "IMPORT_CREDENTIAL_CONFLICT" });
+    await expect(
+      svc.preview(
+        "p1",
+        { source: "github", filter: { owner: "o", repo: "r", state: "open" }, token: "t" },
+        { secretId: "s" },
+      ),
+    ).rejects.toMatchObject({ code: "IMPORT_CREDENTIAL_CONFLICT" });
+    expect(ctx.vault.create).not.toHaveBeenCalled();
+  });
+
+  it("a public GitHub source can be created with no credential at all", async () => {
+    const ctx = makeDeps();
+    const svc = new ImportService(ctx.deps);
+    const { source } = await svc.createSource("p1", ghFilter, "user_1");
+    expect(source.hasToken).toBe(false);
+    expect(ctx.vault.create).not.toHaveBeenCalled();
+  });
+
+  it("deleting a source never deletes a vault secret it only referred to", async () => {
+    const ctx = makeDeps();
+    const svc = new ImportService(ctx.deps);
+    const { source } = await svc.createSource("p1", ghFilter, "user_1", {
+      secretId: "sec_vaulted",
+    });
+    await svc.deleteSource("p1", source.id, "user_1");
+    expect(ctx.vault.delete).not.toHaveBeenCalled();
+  });
+
+  it("deleting a source still deletes the secret it vaulted for itself", async () => {
+    const ctx = makeDeps();
+    const svc = new ImportService(ctx.deps);
+    const { source } = await svc.createSource("p1", { ...ghFilter, token: "ghp_x" }, "user_1");
+    await svc.deleteSource("p1", source.id, "user_1");
+    expect(ctx.vault.delete).toHaveBeenCalledWith("secret_1");
   });
 });

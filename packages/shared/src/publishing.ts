@@ -315,3 +315,63 @@ export const dryRunPlanSchema = z.object({
   credentialErrorCode: z.string().max(64).nullable().default(null),
 });
 export type DryRunPlan = z.infer<typeof dryRunPlanSchema>;
+
+// ---- Editing a draft before publish (#776) ----------------------------------
+/** GitHub's own ceiling on an issue or pull-request body. */
+export const ISSUE_DRAFT_BODY_MAX = 65_536;
+
+/**
+ * #776 — what a reviewer may change on a draft before a batch publishes it:
+ * the text and the labels, nothing else. Status, metadata, hierarchy and the
+ * dedup key are the server's. `.strict()` so a client cannot smuggle them in.
+ */
+export const editIssueDraftSchema = z
+  .object({
+    title: z.string().trim().min(1).max(255).optional(),
+    body: z.string().trim().min(1).max(ISSUE_DRAFT_BODY_MAX).optional(),
+    labels: z.array(z.string().trim().min(1).max(64)).max(32).optional(),
+  })
+  .strict()
+  .refine((v) => v.title !== undefined || v.body !== undefined || v.labels !== undefined, {
+    message: "change at least one of title, body or labels",
+  });
+export type EditIssueDraftInput = z.infer<typeof editIssueDraftSchema>;
+
+// ---- Draft pull request (#776) ----------------------------------------------
+/**
+ * #776 — open a DRAFT pull request carrying one issue draft as a spec file.
+ *
+ * Deliberately takes no owner, repo or base URL: the target is ALWAYS the
+ * project's saved publish target (#733/#784), never the analysed repository.
+ * `dryRun` defaults to true, so a request that forgets it writes nothing.
+ */
+export const draftPullRequestRequestSchema = z
+  .object({
+    dryRun: z.boolean().default(true),
+    secretRef: z.string().min(1).max(256).optional(),
+  })
+  .strict();
+export type DraftPullRequestRequest = z.infer<typeof draftPullRequestRequestSchema>;
+
+export const DRAFT_PULL_REQUEST_ACTIONS = [
+  "branch.create",
+  "file.commit",
+  "pullRequest.createDraft",
+] as const;
+export type DraftPullRequestActionKind = (typeof DRAFT_PULL_REQUEST_ACTIONS)[number];
+
+/** The plan (dry run) or result (live) of a draft pull request. Never carries credential material. */
+export interface DraftPullRequestResult {
+  dryRun: boolean;
+  target: { owner: string; repo: string };
+  /** Head branch the PR is opened from (created off the default branch). */
+  branch: string;
+  /** Repository path of the committed spec file. */
+  path: string;
+  title: string;
+  actions: Array<{ kind: DraftPullRequestActionKind; summary: string }>;
+  /** `resolved` = the vault reference names a usable secret; never the secret itself. */
+  credentialCheck: CredentialCheckResult;
+  /** Set on a live run: the draft PR opened (or the open one found for this branch). */
+  pullRequest: { number: number; htmlUrl: string; reused: boolean } | null;
+}

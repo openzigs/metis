@@ -407,6 +407,14 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
             ...args.metadata,
             requirementKey: storedKey,
             bodyHeld: true,
+            // #776 — a reviewer's edit outlives the re-link too.
+            ...(existingMeta.userEdited === true
+              ? {
+                  userEdited: true,
+                  editedAt: existingMeta.editedAt,
+                  editedById: existingMeta.editedById,
+                }
+              : {}),
           }),
         },
       });
@@ -414,6 +422,29 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
         draftId: existing.id,
         requirementId: args.requirementId,
         status: existing.status,
+      });
+      return { id: existing.id, created: false };
+    }
+    // #776 — a reviewer edited this draft's text. A re-generate refreshes its
+    // links and metadata but keeps their title, body and labels; the edit is
+    // the point of the review, and silently reverting it would publish the
+    // very text they corrected.
+    if (existingMeta.userEdited === true) {
+      await prisma.issueDraft.update({
+        where: { id: existing.id },
+        data: {
+          requirementId: args.requirementId,
+          parentDraftId: args.parentDraftId,
+          draftType: args.draftType,
+          metadata: JSON.stringify({
+            ...args.metadata,
+            userEdited: true,
+            editedAt: existingMeta.editedAt,
+            editedById: existingMeta.editedById,
+          }),
+          status:
+            existing.status === "failed" || existing.status === "draft" ? "draft" : existing.status,
+        },
       });
       return { id: existing.id, created: false };
     }

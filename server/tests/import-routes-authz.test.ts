@@ -172,7 +172,9 @@ describe("imports — same-workspace caller is still served (no over-blocking)",
       .post("/api/projects/proj-1/imports/sources")
       .send(createSourceBody);
     expect(res.status).toBe(201);
-    expect(service.createSource).toHaveBeenCalledWith("proj-1", expect.any(Object), "user-1");
+    expect(service.createSource).toHaveBeenCalledWith("proj-1", expect.any(Object), "user-1", {
+      secretId: null,
+    });
   });
 
   it("serves a system admin regardless of workspace membership", async () => {

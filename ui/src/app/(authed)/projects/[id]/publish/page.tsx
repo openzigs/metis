@@ -30,6 +30,9 @@ import { queryKeys } from "@/lib/query-keys";
 import { commonDraftTarget, draftTargetsConflict } from "@/lib/publish-target";
 import { AnalysedRepoWarning } from "@/components/publishing/analysed-repo-warning";
 import { DraftDiffDialog } from "@/components/publishing/draft-diff-dialog";
+import { DraftEditDialog } from "@/components/publishing/draft-edit-dialog";
+import { DraftPullRequestDialog } from "@/components/publishing/draft-pull-request-dialog";
+import type { EditIssueDraftInput } from "@metis/shared";
 import {
   BulkApproveDialog,
   computeApprovalCounts,
@@ -211,6 +214,20 @@ export default function PublishingPage() {
   // ── Diff preview ───────────────────────────────────────────────────────
   const [diffDraftId, setDiffDraftId] = useState<string | null>(null);
   const diffDraft = drafts.data?.find((d) => d.id === diffDraftId);
+
+  // ── #776 — edit a draft before publish; open one as a draft PR ────────
+  const [editDraftId, setEditDraftId] = useState<string | null>(null);
+  const editingDraft = drafts.data?.find((d) => d.id === editDraftId) ?? null;
+  const editDraft = useMutation({
+    mutationFn: (input: EditIssueDraftInput) =>
+      publishingApi.editDraft(projectId, editDraftId!, input),
+    onSuccess: () => {
+      setEditDraftId(null);
+      return qc.invalidateQueries({ queryKey: keys.drafts(projectId) });
+    },
+  });
+  const [prDraftId, setPrDraftId] = useState<string | null>(null);
+  const prDraft = drafts.data?.find((d) => d.id === prDraftId) ?? null;
   // Recover any previousBody we have stashed in the JSON metadata blob.
   const previousBody: string | null = (() => {
     if (!diffDraft?.metadata) return null;
@@ -654,6 +671,29 @@ export default function PublishingPage() {
                     >
                       Preview
                     </Button>
+                    {(d.status === "draft" || d.status === "approved" || d.status === "failed") && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          editDraft.reset();
+                          setEditDraftId(d.id);
+                        }}
+                        data-testid={`edit-${d.id}`}
+                      >
+                        Edit
+                      </Button>
+                    )}
+                    {d.status !== "publishing" && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setPrDraftId(d.id)}
+                        data-testid={`draft-pr-${d.id}`}
+                      >
+                        Draft PR
+                      </Button>
+                    )}
                     {d.status === "draft" && (
                       <Button
                         size="sm"
@@ -892,6 +932,28 @@ export default function PublishingPage() {
         )}
       </Card>
 
+      <DraftEditDialog
+        draft={editingDraft}
+        onOpenChange={(open) => {
+          if (!open) setEditDraftId(null);
+        }}
+        onSave={(input) => editDraft.mutate(input)}
+        saving={editDraft.isPending}
+        error={
+          editDraft.error
+            ? editDraft.error instanceof ApiError
+              ? editDraft.error.message
+              : "Could not save this draft."
+            : null
+        }
+      />
+      <DraftPullRequestDialog
+        projectId={projectId}
+        draft={prDraft}
+        onOpenChange={(open) => {
+          if (!open) setPrDraftId(null);
+        }}
+      />
       {diffDraft && (
         <DraftDiffDialog
           open={diffDraftId !== null}
