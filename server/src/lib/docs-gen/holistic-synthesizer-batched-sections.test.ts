@@ -478,13 +478,14 @@ describe("planSectionBatches", () => {
     const capabilities = sectionGroupsFor("business-requirements").find(
       (g) => g.id === "capabilities",
     )!;
-    const { included, omitted } = selectRelevantFacts(
+    const { included, omitted, condensed } = selectRelevantFacts(
       facts,
       capabilities,
       "business-requirements",
       150_000,
     );
-    expect(omitted.length).toBeGreaterThan(0);
+    // Not every module is read in full (#778: the rest are digests or omitted).
+    expect(condensed.size + omitted.length).toBeGreaterThan(0);
     expect(included.length + omitted.length).toBe(143);
   });
 });

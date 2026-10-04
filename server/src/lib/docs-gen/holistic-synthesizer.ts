@@ -74,6 +74,13 @@ import {
   minedLineSources,
   type MinedLineSource,
 } from "./grounding/mined-line-sources.js";
+import { renderCitationFootnotes } from "./citation-footnotes.js";
+import {
+  condenseFactsEntry,
+  digestBudget,
+  digestReserveChars,
+  MIN_DIGEST_CHARS,
+} from "./fact-digest.js";
 import {
   resolveClaimMaxOutputTokens,
   resolveFactsMaxOutputTokens,
@@ -4164,6 +4171,19 @@ export async function synthesizeFinalDocument(
             outputBudget: batchPlan.outputBudget,
           }
         : summarizeFactsBudget(facts, group, docType, factsCharCap);
+      // #778 — modules past the cap are read as condensed digests; that is not
+      // an omission, so it is logged for telemetry rather than warned on.
+      if ("condensedModules" in factsBudget && factsBudget.condensedModules > 0) {
+        log.info("Section facts exceeded the facts char cap — modules condensed to digests", {
+          projectId,
+          docType,
+          section: group.id,
+          factsCharCap,
+          includedModules: factsBudget.includedModules,
+          condensedModules: factsBudget.condensedModules,
+          omittedModules: factsBudget.omittedModules,
+        });
+      }
       if ("exceeded" in factsBudget && factsBudget.exceeded) {
         log.warn("Section facts exceeded the facts char cap — modules omitted", {
           projectId,
@@ -4708,7 +4728,11 @@ export async function synthesizeFinalDocument(
   const runWarning = groundingModeRunWarning(groundingRecord);
   if (runWarning) warnings.push(runWarning);
   // #1360 — last, so heading matching above sees exactly what each group produced.
-  const readableBody = stripLeakedSourceIds(body);
+  // #737 — cited ids of admitted sources become document-scoped footnotes with
+  // readable definitions; anything left (an id no section admitted) is stripped.
+  const readableBody = stripLeakedSourceIds(
+    renderCitationFootnotes(body, selectedEvidenceById.values()),
+  );
   return {
     markdown: `${header}\n${readableBody}${footer}`,
     warnings,
@@ -5069,9 +5093,9 @@ export function buildRelevantFactsBlob(
   docType: DocType,
   perSectionCap = 150_000,
 ): string {
-  const { included, omitted } = selectRelevantFacts(facts, group, docType, perSectionCap);
+  const { included, omitted, entryOf } = selectRelevantFacts(facts, group, docType, perSectionCap);
 
-  const parts: string[] = included.map((f) => factsModuleEntry(f, group));
+  const parts: string[] = included.map(entryOf);
 
   // Append a compact catalog of omitted modules so Phase 2 knows they exist.
   if (omitted.length > 0) {
@@ -5102,6 +5126,11 @@ export interface FactsBudgetSummary {
   includedModules: number;
   /** Relevant modules dropped to fit the cap. */
   omittedModules: number;
+  /**
+   * #778 — included modules sent as a condensed digest rather than in full
+   * (counted in `includedModules`). Not an omission: the model read them.
+   */
+  condensedModules: number;
   /** Total chars of the included module facts entries. */
   includedChars: number;
   /** The per-section char cap the selection was capped to. */
@@ -5116,11 +5145,17 @@ export function summarizeFactsBudget(
   docType: DocType,
   factsCharCap: number,
 ): FactsBudgetSummary {
-  const { included, omitted } = selectRelevantFacts(facts, group, docType, factsCharCap);
-  const includedChars = included.reduce((sum, f) => sum + factsModuleEntry(f, group).length, 0);
+  const { included, omitted, condensed, entryOf } = selectRelevantFacts(
+    facts,
+    group,
+    docType,
+    factsCharCap,
+  );
+  const includedChars = included.reduce((sum, f) => sum + entryOf(f).length, 0);
   return {
     includedModules: included.length,
     omittedModules: omitted.length,
+    condensedModules: condensed.size,
     includedChars,
     factsCharCap,
     exceeded: omitted.length > 0,
@@ -5194,13 +5229,13 @@ export function buildSectionFactsSources(
   docType: DocType,
   perSectionCap = 150_000,
 ): FactsSourceInput[] {
-  const { included } = selectRelevantFacts(facts, group, docType, perSectionCap);
+  const { included, entryOf } = selectRelevantFacts(facts, group, docType, perSectionCap);
   return included.map((f, idx) => ({
     repository: f.repository,
     moduleDir: f.modulePath || f.moduleName,
     idx,
     label: f.moduleName,
-    text: factsModuleEntry(f, group),
+    text: entryOf(f),
   }));
 }
 
@@ -5218,27 +5253,85 @@ export function buildSectionFactsSources(
  *
  * #157 (batched synthesis) should consume this ordering rather than re-rank.
  */
+export interface RelevantFactsSelection {
+  /** Modules the section reads: the full entries in rank order, then the digests in rank order. */
+  included: ModuleFacts[];
+  /** Names of relevant modules not read at all, not even as a digest. */
+  omitted: string[];
+  /** #778 — the included modules sent as a condensed digest. */
+  condensed: ReadonlySet<ModuleFacts>;
+  /** The entry the section reads for an included module (full or digest). */
+  entryOf: (f: ModuleFacts) => string;
+}
+
 export function selectRelevantFacts(
   facts: ModuleFacts[],
   group: SectionGroup,
   _docType: DocType,
   perSectionCap = 150_000,
-): { included: ModuleFacts[]; omitted: string[] } {
-  const included: ModuleFacts[] = [];
-  const omitted: string[] = [];
-  let totalChars = 0;
+): RelevantFactsSelection {
+  const ranked = rankRelevantFacts(facts, group);
+  const entries = new Map<ModuleFacts, string>();
+  for (const f of ranked) entries.set(f, factsModuleEntry(f, group));
+  const condensed = new Set<ModuleFacts>();
+  const entryOf = (f: ModuleFacts): string => entries.get(f) ?? factsModuleEntry(f, group);
 
-  for (const f of rankRelevantFacts(facts, group)) {
-    const entry = factsModuleEntry(f, group);
-    if (totalChars + entry.length > perSectionCap) {
-      omitted.push(f.moduleName);
-      continue;
+  // Greedy in rank order; a module that does not fit is skipped, not a stop.
+  const fitFull = (budget: number) => {
+    const picked: ModuleFacts[] = [];
+    let total = 0;
+    for (const f of ranked) {
+      const length = entries.get(f)!.length;
+      if (total + length > budget) continue;
+      picked.push(f);
+      total += length;
     }
-    included.push(f);
-    totalChars += entry.length;
+    return { picked, total };
+  };
+
+  const atFullCap = fitFull(perSectionCap);
+  if (atFullCap.picked.length === ranked.length) {
+    return { included: atFullCap.picked, omitted: [], condensed, entryOf };
   }
 
-  return { included, omitted };
+  // #778 — reserve part of the SAME cap for digests of the modules that do not
+  // fit, rather than dropping them to a name-only catalog.
+  const reserve = digestReserveChars(perSectionCap, ranked.length - atFullCap.picked.length);
+  const { picked, total } = fitFull(perSectionCap - reserve);
+  const full = new Set(picked);
+  const rest = ranked.filter((f) => !full.has(f));
+  const digests: ModuleFacts[] = [];
+  const omitted: string[] = [];
+  let left = perSectionCap - total;
+  rest.forEach((f, i) => {
+    const entry = entries.get(f)!;
+    const budget = digestBudget(left, rest.length - i);
+    if (entry.length <= budget) {
+      digests.push(f);
+      left -= entry.length;
+      return;
+    }
+    if (budget < MIN_DIGEST_CHARS) {
+      omitted.push(f.moduleName);
+      return;
+    }
+    const digest = condensedModuleEntry(f, group, budget);
+    entries.set(f, digest);
+    condensed.add(f);
+    digests.push(f);
+    left -= digest.length;
+  });
+
+  return { included: [...picked, ...digests], omitted, condensed, entryOf };
+}
+
+/** #778 — a module's entry condensed to `budget` characters (see `fact-digest.ts`). */
+function condensedModuleEntry(f: ModuleFacts, group: SectionGroup, budget: number): string {
+  const { body } = factsModuleParts(f, group);
+  const header =
+    `### MODULE: ${f.moduleName}\n(${f.classCount} classes, ${f.methodCount} methods — ` +
+    `condensed digest: the full facts did not fit this section's budget)`;
+  return condenseFactsEntry(header, body, budget);
 }
 
 /**
