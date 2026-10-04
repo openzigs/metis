@@ -61,12 +61,12 @@ function hangingProvider(parts: ChatChunk[] = []): AIProvider & {
     offline: false,
     streamOpts,
     chatOpts,
-    async *stream(_messages, opts) {
+    async *stream(_messages: ChatMessage[], opts?: ChatOptions) {
       streamOpts.push(opts);
       for (const part of parts) yield part;
       await waitForAbort(opts?.signal);
     },
-    async chat(_messages, opts) {
+    async chat(_messages: ChatMessage[], opts?: ChatOptions) {
       chatOpts.push(opts);
       return waitForAbort(opts?.signal);
     },

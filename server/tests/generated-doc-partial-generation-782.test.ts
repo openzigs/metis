@@ -701,11 +701,11 @@ describe("#855 — cancel", () => {
     const findFirst = vi.mocked(prisma.generatedDocument.findFirst);
     const original = findFirst.getMockImplementation()!;
     let readsAfterSections = 0;
-    findFirst.mockImplementation(async (args) => {
+    findFirst.mockImplementation(((args: Parameters<typeof original>[0]) => {
       if (sectionCalls() === GROUPS.length && ++readsAfterSections === 2)
         state.doc.status = "cancelling";
       return original(args);
-    });
+    }) as typeof original);
     try {
       await generateDocumentAsync("d", "p");
     } finally {
