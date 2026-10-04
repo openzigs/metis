@@ -23,6 +23,8 @@ const mockLedgerFindMany = prisma.tokenUsage.findMany as ReturnType<typeof vi.fn
 /** #792 — a `token_usages` row, the ledger the project usage page reads. */
 function ledgerRow(
   overrides: Partial<{
+    projectId: string;
+    costUsd: number | null;
     provider: string;
     model: string;
     userId: string | null;
@@ -35,6 +37,7 @@ function ledgerRow(
   }> = {},
 ) {
   return {
+    projectId: "proj-1",
     provider: "anthropic",
     model: "claude-sonnet-4-6",
     userId: "user-1",
@@ -44,35 +47,6 @@ function ledgerRow(
     totalTokens: 150,
     costCents: 1,
     createdAt: new Date("2025-01-15T10:00:00.000Z"),
-    ...overrides,
-  };
-}
-
-function makeRow(
-  overrides: Partial<{
-    dayBucket: string;
-    provider: string;
-    model: string;
-    userId: string;
-    projectId: string | null;
-    agentStep: string | null;
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-    estimatedCostUsd: number | null;
-  }> = {},
-) {
-  return {
-    dayBucket: "2025-01-15",
-    provider: "bedrock",
-    model: "claude-sonnet",
-    userId: "user-1",
-    projectId: null,
-    agentStep: null,
-    promptTokens: 100,
-    completionTokens: 50,
-    totalTokens: 150,
-    estimatedCostUsd: 0.001,
     ...overrides,
   };
 }
@@ -188,45 +162,62 @@ describe("UsageService", () => {
     });
   });
 
-  describe("adminUsage", () => {
-    it("aggregates across projects", async () => {
-      mockFindMany.mockResolvedValue([
-        makeRow({ projectId: "proj-1", totalTokens: 500 }),
-        makeRow({ projectId: "proj-2", totalTokens: 300 }),
+  describe("adminUsage (#854 — the All projects scope reads the token_usages ledger)", () => {
+    it("aggregates ledger rows across projects, and never reads ai_token_usages", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ projectId: "proj-1", totalTokens: 500, costCents: 3 }),
+        ledgerRow({ projectId: "proj-2", totalTokens: 300, costCents: 1 }),
+        ledgerRow({ projectId: "proj-2", totalTokens: 200, costCents: 1 }),
       ]);
 
       const result = await svc.adminUsage({ groupBy: "project" });
-      expect(result.rows).toHaveLength(2);
-      expect(result.totalTokens).toBe(800);
+      expect(mockFindMany).not.toHaveBeenCalled();
+      expect(result.totalTokens).toBe(1_000);
+      expect(result.totalCostUsd).toBeCloseTo(0.05, 10);
+      expect(result.rows.map((r) => [r.projectId, r.totalTokens, r.count])).toEqual([
+        ["proj-1", 500, 1],
+        ["proj-2", 500, 2],
+      ]);
     });
 
-    it("handles null projectId as 'unassigned'", async () => {
-      mockFindMany.mockResolvedValue([makeRow({ projectId: null, totalTokens: 100 })]);
-
-      const result = await svc.adminUsage({ groupBy: "project" });
-      expect(result.rows[0].projectId).toBeUndefined();
-    });
-
-    it("respects range filter", async () => {
-      mockFindMany.mockResolvedValue([]);
+    it("queries every project's ledger rows inside the range, with no project filter", async () => {
+      mockLedgerFindMany.mockResolvedValue([]);
+      const before = Date.now();
       await svc.adminUsage({ range: "90d" });
-      expect(mockFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            ts: expect.objectContaining({ gte: expect.any(Date) }),
-          }),
-        }),
+      const where = mockLedgerFindMany.mock.calls[0][0].where;
+      expect(where).not.toHaveProperty("projectId");
+      expect(where).not.toHaveProperty("userId");
+      const ninetyDays = 90 * 24 * 60 * 60 * 1000;
+      expect(Math.abs(before - ninetyDays - (where.createdAt.gte as Date).getTime())).toBeLessThan(
+        5_000,
       );
     });
 
-    it("filters by userId", async () => {
-      mockFindMany.mockResolvedValue([]);
+    it("filters by the ledger's userId", async () => {
+      mockLedgerFindMany.mockResolvedValue([]);
       await svc.adminUsage({ userId: "user-42" });
-      expect(mockFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({ userId: "user-42" }),
-        }),
+      expect(mockLedgerFindMany.mock.calls[0][0].where.userId).toBe("user-42");
+    });
+  });
+
+  describe("sub-cent cost (#761)", () => {
+    it("sums each row's unrounded costUsd, not its per-row-rounded costCents", async () => {
+      // 67 calls at 0.075¢: costCents rounds every one to 0.
+      mockLedgerFindMany.mockResolvedValue(
+        Array.from({ length: 67 }, () => ledgerRow({ costCents: 0, costUsd: 0.00075 })),
       );
+      const project = await svc.projectUsage("proj-1");
+      expect(project.totalCostUsd).toBeCloseTo(0.05025, 10);
+      const platform = await svc.adminUsage();
+      expect(platform.totalCostUsd).toBeCloseTo(0.05025, 10);
+      expect(platform.unpriced.count).toBe(0);
+    });
+
+    it("keeps a row with neither cost unpriced (#22)", async () => {
+      mockLedgerFindMany.mockResolvedValue([ledgerRow({ costCents: null, costUsd: null })]);
+      const result = await svc.adminUsage();
+      expect(result.unpriced.count).toBe(1);
+      expect(result.rows[0].estimatedCostUsd).toBeNull();
     });
   });
 

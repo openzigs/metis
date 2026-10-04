@@ -10,6 +10,8 @@ interface MockUsageRow {
   projectId: string;
   totalTokens: number;
   costCents: number | null;
+  /** #761 — the unrounded cost; omitted on a fixture that predates it. */
+  costUsd?: number | null;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
@@ -115,6 +117,47 @@ describe("assertWithinBudget", () => {
       expect((e as BudgetExceededError).usedTokens).toBe(120);
       expect((e as BudgetExceededError).budget).toBe(100);
     }
+  });
+});
+
+describe("sub-cent spend (#761)", () => {
+  /** 67 gpt-4o-mini calls at 0.075¢ each: `costCents` rounds every one to 0. */
+  function subCentMonth(now: Date): void {
+    for (let i = 0; i < 67; i += 1) {
+      usageRows.push({
+        projectId: "p1",
+        totalTokens: 2_000,
+        costCents: 0,
+        costUsd: 0.00075,
+        inputTokens: 1_000,
+        outputTokens: 1_000,
+        provider: "openai",
+        model: "gpt-4o-mini",
+        createdAt: now,
+      });
+    }
+  }
+
+  it("the budget snapshot sums the unrounded cost: 5¢, not 0¢", async () => {
+    const now = new Date(Date.UTC(2026, 5, 15, 12));
+    projects.set("p1", { monthlyTokenBudget: null });
+    subCentMonth(now);
+    const snap = await assertWithinBudget("p1", now);
+    expect(snap.monthToDateCostCents).toBe(5);
+    // 5.025¢ over 15 of 30 days, ceiled: 11¢ (10.05 → 11), not 0.
+    expect(snap.projectedMonthlyCostCents).toBe(11);
+  });
+
+  it("the usage summary and the ceiling projection count it as well", async () => {
+    const now = new Date(Date.UTC(2026, 5, 15, 12));
+    projects.set("p1", { monthlyTokenBudget: null });
+    subCentMonth(now);
+    const summary = await summarizeUsage("p1", {}, new Date(now.getTime() + 1));
+    expect(summary.costCents).toBe(5);
+    expect(summary.byProvider[0].costCents).toBe(5);
+    expect(summary.byDay[0].costCents).toBe(5);
+    const ceiling = await projectMonthlyCostForCeiling("p1", now);
+    expect(ceiling.projectedCents).toBe(11);
   });
 });
 

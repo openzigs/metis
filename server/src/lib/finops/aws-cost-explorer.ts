@@ -25,6 +25,7 @@
  */
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import { LEDGER_COST_SELECT, ledgerRowCents } from "./ledger-cost.js";
 
 const log = createChildLogger("finops-aws-cost-explorer");
 
@@ -184,10 +185,11 @@ async function metisBedrockCents(start: Date, end: Date): Promise<number> {
       provider: { startsWith: "bedrock" },
       createdAt: { gte: start, lt: end },
     },
-    select: { costCents: true },
+    select: LEDGER_COST_SELECT,
   });
   // #22 — unpriced rows (null) have no METIS-side cost to reconcile.
-  return rows.reduce((sum, r) => sum + (r.costCents ?? 0), 0);
+  // #761 — summed unrounded, then rounded once like the AWS side.
+  return Math.round(rows.reduce((sum, r) => sum + (ledgerRowCents(r) ?? 0), 0));
 }
 
 export interface ReconcileOptions {

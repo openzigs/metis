@@ -671,8 +671,12 @@ model TokenUsage {
   totalTokens      Int      @default(0)
   /// #22 — integer cents, or NULL when the model was UNPRICED at record time
   /// (no built-in price and no MODEL_PRICES entry). NULL is unknown spend,
-  /// never zero spend.
+  /// never zero spend. Kept for compatibility: it is rounded PER ROW, so a
+  /// sub-cent call reads 0 here. Every cost reader sums `costUsd` (#761).
   costCents        Int?
+  /// #761 — the row's unrounded cost in USD; NULL exactly when `costCents` is
+  /// (unpriced). The ledger's cost of record: sum this, round only to display.
+  costUsd          Float?
   /// #792 — the user the call is billed to, when the caller knows one. Plain
   /// column, no FK: spend must survive the user's deletion. NULL = unattributed.
   userId           String?

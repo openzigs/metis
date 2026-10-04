@@ -8,12 +8,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const projects: Array<{ id: string; name: string; workspaceId: string; deletedAt: Date | null }> =
   [];
-const tokenUsage: Array<{ projectId: string; costCents: number; createdAt: Date }> = [];
-const aiUsage: Array<{
-  projectId: string | null;
-  userId: string;
-  estimatedCostUsd: number | null;
-  ts: Date;
+const tokenUsage: Array<{
+  projectId: string;
+  userId: string | null;
+  costUsd: number;
+  createdAt: Date;
 }> = [];
 const users: Array<{ id: string; displayName: string; username: string }> = [];
 const workspaces: Array<{ id: string; name: string; deletedAt: Date | null }> = [];
@@ -34,46 +33,37 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     tokenUsage: {
-      // N1: chargeback now aggregates per-project cost with a single groupBy
-      // instead of one findMany per project.
+      // N1: chargeback aggregates with a single groupBy per dimension instead
+      // of one query per project. #761 sums the unrounded `costUsd`; #854 —
+      // per-user cost comes from this ledger too, never `ai_token_usages`.
       groupBy: vi.fn(
         async ({
+          by,
           where,
         }: {
+          by: Array<"projectId" | "userId">;
           where: { projectId: { in: string[] }; createdAt: { gte: Date; lt: Date } };
         }) => {
-          const sums = new Map<string, number>();
+          const key = by[0];
+          const sums = new Map<string | null, number>();
           for (const r of tokenUsage) {
             if (
               where.projectId.in.includes(r.projectId) &&
               r.createdAt >= where.createdAt.gte &&
               r.createdAt < where.createdAt.lt
             ) {
-              sums.set(r.projectId, (sums.get(r.projectId) ?? 0) + r.costCents);
+              const k = r[key] ?? null;
+              sums.set(k, (sums.get(k) ?? 0) + r.costUsd);
             }
           }
-          return [...sums.entries()].map(([projectId, costCents]) => ({
-            projectId,
-            _sum: { costCents },
-          }));
+          return [...sums.entries()].map(([k, costUsd]) => ({ [key]: k, _sum: { costUsd } }));
         },
       ),
     },
     aITokenUsage: {
-      findMany: vi.fn(
-        async ({
-          where,
-        }: {
-          where: { projectId: { in: string[] }; ts: { gte: Date; lt: Date } };
-        }) =>
-          aiUsage.filter(
-            (r) =>
-              r.projectId !== null &&
-              where.projectId.in.includes(r.projectId) &&
-              r.ts >= where.ts.gte &&
-              r.ts < where.ts.lt,
-          ),
-      ),
+      findMany: vi.fn(async () => {
+        throw new Error("chargeback must not read ai_token_usages (#854)");
+      }),
     },
     user: {
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
@@ -115,7 +105,6 @@ const NOW = new Date(Date.UTC(2026, 6, 1, 6, 0, 0));
 beforeEach(() => {
   projects.length = 0;
   tokenUsage.length = 0;
-  aiUsage.length = 0;
   users.length = 0;
   workspaces.length = 0;
   members.length = 0;
@@ -161,20 +150,18 @@ describe("gatherChargebackData", () => {
     );
     // June (report month) usage.
     tokenUsage.push(
-      { projectId: "p1", costCents: 3_000, createdAt: new Date(Date.UTC(2026, 5, 10)) },
-      { projectId: "p2", costCents: 1_000, createdAt: new Date(Date.UTC(2026, 5, 12)) },
+      { projectId: "p1", userId: "u1", costUsd: 30, createdAt: new Date(Date.UTC(2026, 5, 10)) },
+      { projectId: "p2", userId: "u2", costUsd: 5, createdAt: new Date(Date.UTC(2026, 5, 12)) },
+      // #792 — a row whose caller knew no user is still spend.
+      { projectId: "p2", userId: null, costUsd: 5, createdAt: new Date(Date.UTC(2026, 5, 13)) },
     );
     // May (prior month) usage.
     tokenUsage.push({
       projectId: "p1",
-      costCents: 2_000,
+      userId: "u1",
+      costUsd: 20,
       createdAt: new Date(Date.UTC(2026, 4, 10)),
     });
-    // Per-user usage (June).
-    aiUsage.push(
-      { projectId: "p1", userId: "u1", estimatedCostUsd: 20, ts: new Date(Date.UTC(2026, 5, 10)) },
-      { projectId: "p2", userId: "u2", estimatedCostUsd: 5, ts: new Date(Date.UTC(2026, 5, 12)) },
-    );
     users.push(
       { id: "u1", displayName: "Alice", username: "alice" },
       { id: "u2", displayName: "Bob", username: "bob" },
@@ -185,7 +172,30 @@ describe("gatherChargebackData", () => {
     expect(data?.totalCurrentCents).toBe(4_000);
     expect(data?.totalPriorCents).toBe(2_000);
     expect(data?.byProject.map((p) => p.name)).toEqual(["Alpha", "Beta"]);
-    expect(data?.byUser.find((u) => u.name === "Alice")?.costCents).toBe(2_000);
+    // #854 — per-user lines come from the same ledger, so they add up to the total.
+    expect(data?.byUser).toEqual([
+      { id: "u1", name: "Alice", costCents: 3_000 },
+      { id: "u2", name: "Bob", costCents: 500 },
+      { id: "unattributed", name: "Unattributed", costCents: 500 },
+    ]);
+    expect(data?.byUser.reduce((s, u) => s + u.costCents, 0)).toBe(data?.totalCurrentCents);
+  });
+
+  it("#761 — sums sub-cent rows before rounding, so a month of cheap calls is not $0", async () => {
+    workspaces.push({ id: "w1", name: "Acme", deletedAt: null });
+    projects.push({ id: "p1", name: "Alpha", workspaceId: "w1", deletedAt: null });
+    users.push({ id: "u1", displayName: "Alice", username: "alice" });
+    for (let i = 0; i < 67; i += 1) {
+      tokenUsage.push({
+        projectId: "p1",
+        userId: "u1",
+        costUsd: 0.00075,
+        createdAt: new Date(Date.UTC(2026, 5, 10)),
+      });
+    }
+    const data = await gatherChargebackData("w1", NOW);
+    expect(data?.totalCurrentCents).toBe(5);
+    expect(data?.byUser).toEqual([{ id: "u1", name: "Alice", costCents: 5 }]);
   });
 
   it("returns null for an unknown workspace", async () => {

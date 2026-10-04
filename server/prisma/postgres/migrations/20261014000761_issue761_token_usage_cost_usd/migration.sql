@@ -1,0 +1,23 @@
+-- Issue #761 — store each ledger row's cost unrounded.
+--
+-- `token_usages.costCents` is an integer, rounded PER ROW at insert. A call on
+-- a cheap model costs a fraction of a cent, so most rows recorded 0 and the
+-- sums under-reported spend (walkthrough #706 run 3: 999¢ recorded against
+-- $9.84 computed from the same rows' tokens; 52 of 67 DeepSeek calls at 0¢).
+-- `costUsd` holds the unrounded cost; usage, budgets, forecasts and exports
+-- sum it and round once, for display. `costCents` stays, still written, for
+-- compatibility with anything reading it directly.
+--
+-- Backfill: from `costCents / 100` (= `costCents` x 10,000 micro-USD), NOT
+-- re-priced from token counts. Prices live in code and `MODEL_PRICES`, which
+-- SQL cannot see, and re-pricing at migration time would apply today's price
+-- to yesterday's call. So rows written before this migration keep their
+-- per-row rounding (a sub-cent row stays $0); rows written after it are exact.
+-- An unpriced row (`costCents` NULL) stays NULL — unknown spend, never $0 (#22).
+--
+-- Rollback (documentation):
+--   ALTER TABLE "token_usages" DROP COLUMN "costUsd";
+-- Lossy only for the sub-cent precision of rows written since.
+ALTER TABLE "token_usages" ADD COLUMN IF NOT EXISTS "costUsd" DOUBLE PRECISION;
+UPDATE "token_usages" SET "costUsd" = "costCents" / 100.0
+  WHERE "costCents" IS NOT NULL AND "costUsd" IS NULL;

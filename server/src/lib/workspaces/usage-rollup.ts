@@ -36,12 +36,14 @@ export async function rollupWorkspaceUsage(date?: Date): Promise<number> {
         project: { workspaceId: ws.id },
         createdAt: { gte: dayStart, lt: dayEnd },
       },
-      _sum: { totalTokens: true, costCents: true },
+      _sum: { totalTokens: true, costUsd: true },
       _count: { sessionId: true },
     });
 
     const tokensUsed = aggregation._sum.totalTokens ?? 0;
-    const costCents = aggregation._sum.costCents ?? 0;
+    // #761 — sum the unrounded ledger cost, round once for the integer column.
+    // (`costCents` is rounded per row, so a day of sub-cent calls summed to 0.)
+    const costCents = Math.round((aggregation._sum.costUsd ?? 0) * 100);
     const sessions = aggregation._count.sessionId ?? 0;
 
     if (tokensUsed === 0 && costCents === 0 && sessions === 0) {

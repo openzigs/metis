@@ -14,6 +14,7 @@
  * no risk of two concurrent reviews double-counting.
  */
 import type { PrismaClient } from "@prisma/client";
+import { LEDGER_COST_SELECT, ledgerRowCents } from "../../finops/ledger-cost.js";
 import { prisma as defaultPrisma } from "../../prisma.js";
 
 export interface CheckBudgetResult {
@@ -78,11 +79,12 @@ export async function checkBudget(
     };
   }
 
-  const spentCents = await sumPrReviewSpendCents(prisma, projectId, startOfMonth, startOfNextMonth);
+  // #761 — compare the unrounded spend; report it to the cent.
+  const spent = await sumPrReviewSpendCents(prisma, projectId, startOfMonth, startOfNextMonth);
   return {
-    allowed: spentCents < cap,
+    allowed: spent < cap,
     capCents: cap,
-    spentCents,
+    spentCents: Math.round(spent),
     monthBucket,
     resetAt: startOfNextMonth.toISOString(),
   };
@@ -109,6 +111,8 @@ export async function recordPrReviewSpend(
       totalTokens:
         Math.max(0, Math.floor(input.inputTokens)) + Math.max(0, Math.floor(input.outputTokens)),
       costCents: usdToCents(input.costUsd),
+      // #761 — the unrounded cost every ledger reader sums.
+      costUsd: Number.isFinite(input.costUsd) && input.costUsd > 0 ? input.costUsd : 0,
       agentStep: "pr-review",
     },
   });
@@ -132,9 +136,9 @@ async function sumPrReviewSpendCents(
       createdAt: { gte: startOfMonth, lt: startOfNextMonth },
       sessionId: { startsWith: PR_REVIEW_SESSION_PREFIX },
     },
-    select: { costCents: true },
+    select: LEDGER_COST_SELECT,
   });
-  return rows.reduce((sum, r) => sum + (r.costCents ?? 0), 0);
+  return rows.reduce((sum, r) => sum + (ledgerRowCents(r) ?? 0), 0);
 }
 
 function monthBoundsUTC(now: Date): {

@@ -76,12 +76,12 @@ describe("rollupWorkspaceUsage", () => {
       prismaImpl(async (args: { where: { project: { workspaceId: string } } }) => {
         if (args.where.project.workspaceId === "ws-1") {
           return {
-            _sum: { totalTokens: 5000, costCents: 100 },
+            _sum: { totalTokens: 5000, costUsd: 1.004 },
             _count: { sessionId: 3 },
           };
         }
         return {
-          _sum: { totalTokens: 0, costCents: 0 },
+          _sum: { totalTokens: 0, costUsd: 0 },
           _count: { sessionId: 0 },
         };
       }),
@@ -105,12 +105,12 @@ describe("rollupWorkspaceUsage", () => {
   });
 
   it("treats Prisma's null _sum (no matching rows) as zero rather than NaN", async () => {
-    // Prisma returns `_sum: { totalTokens: null, costCents: null }` — not zeroes —
+    // Prisma returns `_sum: { totalTokens: null, costUsd: null }` — not zeroes —
     // when the WHERE matches no rows. Without the `?? 0` coalesce the skip test
     // below reads `null === 0` as false and upserts a NaN-bearing row.
     vi.mocked(prisma.workspace.findMany).mockResolvedValue([{ id: "ws-none" }] as never);
     vi.mocked(prisma.tokenUsage.aggregate).mockResolvedValue({
-      _sum: { totalTokens: null, costCents: null },
+      _sum: { totalTokens: null, costUsd: null },
       _count: { sessionId: 0 },
     } as never);
 
@@ -122,7 +122,7 @@ describe("rollupWorkspaceUsage", () => {
   it("skips workspaces with no usage data", async () => {
     vi.mocked(prisma.workspace.findMany).mockResolvedValue([{ id: "ws-empty" }] as never);
     vi.mocked(prisma.tokenUsage.aggregate).mockResolvedValue({
-      _sum: { totalTokens: 0, costCents: 0 },
+      _sum: { totalTokens: 0, costUsd: 0 },
       _count: { sessionId: 0 },
     } as never);
 
@@ -137,7 +137,7 @@ describe("rollupWorkspaceUsageWindow", () => {
     vi.clearAllMocks();
     vi.mocked(prisma.workspace.findMany).mockResolvedValue([{ id: "ws-1" }] as never);
     vi.mocked(prisma.tokenUsage.aggregate).mockResolvedValue({
-      _sum: { totalTokens: 1000, costCents: 50 },
+      _sum: { totalTokens: 1000, costUsd: 0.5 },
       _count: { sessionId: 2 },
     } as never);
     vi.mocked(prisma.workspaceUsageDaily.upsert).mockResolvedValue({} as never);
@@ -236,7 +236,7 @@ describe("startWorkspaceUsageRollup", () => {
     // argument aggregates TODAY only, and the next tick lands on the following
     // UTC day — so no completed day was ever revisited.
     vi.mocked(prisma.tokenUsage.aggregate).mockResolvedValue({
-      _sum: { totalTokens: 0, costCents: 0 },
+      _sum: { totalTokens: 0, costUsd: 0 },
       _count: { sessionId: 0 },
     } as never);
     vi.mocked(prisma.workspace.findMany).mockResolvedValue([{ id: "ws-1" }] as never);

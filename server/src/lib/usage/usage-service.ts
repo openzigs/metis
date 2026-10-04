@@ -6,6 +6,7 @@
  *   - Admin-level cross-project usage
  *   - CSV export support
  */
+import { LEDGER_COST_SELECT, ledgerRowCents } from "../finops/ledger-cost.js";
 import { prisma } from "../prisma.js";
 
 export interface UsageRow {
@@ -48,6 +49,21 @@ export interface UsageSummary {
 
 type GroupBy = "day" | "model" | "user" | "project" | "agentStep";
 
+/** One ledger row, before grouping. */
+interface AggregateInput {
+  dayBucket: string;
+  provider: string;
+  model: string;
+  /** NULL on a `token_usages` row whose caller knew no user (#792). */
+  userId: string | null;
+  projectId: string;
+  agentStep: string | null;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number | null;
+}
+
 function rangeToDate(range: string): Date {
   const now = new Date();
   const days = range === "90d" ? 90 : range === "30d" ? 30 : 7;
@@ -72,67 +88,32 @@ export class UsageService {
     // unrelated totals and the CSV export covered 2.7% of the project's spend.
     // Reading the same table makes the analytics card and the CSV add up to
     // the cards for the same window. (Supersedes the #428 session-OR filter.)
-    const ledger = await prisma.tokenUsage.findMany({
-      where: { projectId, createdAt: { gte: since } },
-      select: {
-        provider: true,
-        model: true,
-        userId: true,
-        agentStep: true,
-        inputTokens: true,
-        outputTokens: true,
-        totalTokens: true,
-        costCents: true,
-        createdAt: true,
-      },
-    });
-
-    const rawRows = ledger.map((r) => ({
-      dayBucket: r.createdAt.toISOString().slice(0, 10),
-      provider: r.provider,
-      model: r.model,
-      userId: r.userId,
-      projectId,
-      agentStep: r.agentStep,
-      promptTokens: r.inputTokens,
-      completionTokens: r.outputTokens,
-      totalTokens: r.totalTokens,
-      // Integer cents → USD; NULL stays NULL (unpriced, #22).
-      estimatedCostUsd: r.costCents === null ? null : r.costCents / 100,
-    }));
-
-    return this.aggregate(rawRows, groupBy);
+    return this.aggregate(await this.readLedger({ projectId, createdAt: { gte: since } }), groupBy);
   }
 
   /**
-   * Admin-level aggregation across all projects.
+   * Admin-level aggregation across all projects (the "All projects" scope and
+   * `GET /api/admin/usage`).
+   *
+   * #854 — reads the same ledger as {@link projectUsage}. It used to read
+   * `ai_token_usages`, which carries only chat and a few tool calls (#706 run
+   * 3: 1.0M tokens / $0.50 there against 60.4M / $63.34 in `token_usages`).
+   * Chat writes each call to BOTH tables with identical tokens, so the two are
+   * never summed. `userId` filters the ledger's own column, which is NULL on
+   * rows written before #792 and by callers that know no user.
    */
   async adminUsage(
     opts: { range?: string; groupBy?: GroupBy; userId?: string } = {},
   ): Promise<UsageSummary> {
     const since = rangeToDate(opts.range ?? "30d");
     const groupBy = opts.groupBy ?? "project";
-
-    const where: Record<string, unknown> = { ts: { gte: since } };
-    if (opts.userId) where.userId = opts.userId;
-
-    const rawRows = await prisma.aITokenUsage.findMany({
-      where,
-      select: {
-        dayBucket: true,
-        provider: true,
-        model: true,
-        userId: true,
-        projectId: true,
-        agentStep: true,
-        promptTokens: true,
-        completionTokens: true,
-        totalTokens: true,
-        estimatedCostUsd: true,
-      },
-    });
-
-    return this.aggregate(rawRows, groupBy);
+    return this.aggregate(
+      await this.readLedger({
+        createdAt: { gte: since },
+        ...(opts.userId ? { userId: opts.userId } : {}),
+      }),
+      groupBy,
+    );
   }
 
   /**
@@ -151,22 +132,46 @@ export class UsageService {
 
   // ── Internals ────────────────────────────────────────────────────────────
 
-  private aggregate(
-    rawRows: Array<{
-      dayBucket: string;
-      provider: string;
-      model: string;
-      /** NULL on a `token_usages` row whose caller knew no user (#792). */
-      userId: string | null;
-      projectId?: string | null;
-      agentStep?: string | null;
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
-      estimatedCostUsd: number | null;
-    }>,
-    groupBy: GroupBy,
-  ): UsageSummary {
+  /** `token_usages` rows in the shape {@link aggregate} groups. */
+  private async readLedger(where: {
+    projectId?: string;
+    userId?: string;
+    createdAt: { gte: Date };
+  }): Promise<AggregateInput[]> {
+    const ledger = await prisma.tokenUsage.findMany({
+      where,
+      select: {
+        projectId: true,
+        provider: true,
+        model: true,
+        userId: true,
+        agentStep: true,
+        inputTokens: true,
+        outputTokens: true,
+        totalTokens: true,
+        ...LEDGER_COST_SELECT,
+        createdAt: true,
+      },
+    });
+    return ledger.map((r) => {
+      // #761 — the row's unrounded cost; NULL stays NULL (unpriced, #22).
+      const cents = ledgerRowCents(r);
+      return {
+        dayBucket: r.createdAt.toISOString().slice(0, 10),
+        provider: r.provider,
+        model: r.model,
+        userId: r.userId,
+        projectId: r.projectId,
+        agentStep: r.agentStep,
+        promptTokens: r.inputTokens,
+        completionTokens: r.outputTokens,
+        totalTokens: r.totalTokens,
+        estimatedCostUsd: cents === null ? null : cents / 100,
+      };
+    });
+  }
+
+  private aggregate(rawRows: AggregateInput[], groupBy: GroupBy): UsageSummary {
     const map = new Map<string, UsageRow>();
     const unpriced: UnpricedUsageTotals = {
       promptTokens: 0,
@@ -195,7 +200,7 @@ export class UsageService {
           key = r.userId ?? "unattributed";
           break;
         case "project":
-          key = r.projectId ?? "unassigned";
+          key = r.projectId;
           break;
         case "agentStep":
           key = r.agentStep ?? "unknown";
@@ -218,7 +223,7 @@ export class UsageService {
           provider: r.provider,
           model: r.model,
           userId: r.userId ?? undefined,
-          projectId: r.projectId ?? undefined,
+          projectId: r.projectId,
           agentStep: r.agentStep ?? undefined,
           promptTokens: r.promptTokens,
           completionTokens: r.completionTokens,
