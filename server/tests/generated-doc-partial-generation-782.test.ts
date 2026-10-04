@@ -858,6 +858,28 @@ describe("#867 — a cancel is never taken over", () => {
     expect(state.versions).toHaveLength(0);
   });
 
+  it("cancelling a manual regenerate of a published document restores it, and reports no failure", async () => {
+    state.versions.push({ version: 1, provenanceManifest: null });
+    // What POST /regenerate leaves: `pending`, over the published version.
+    state.doc.status = "pending";
+    state.doc.content = "# Published v1";
+    state.doc.warnings = [{ kind: "section-failed", stage: "assembly", message: "older run" }];
+    state.duringSection = (label) => {
+      if (label !== GROUPS[1].label) return;
+      state.doc.status = "cancelling";
+      stopGeneration("d", "aborted");
+    };
+
+    // No queue task to cancel: it settles, rather than throwing a cancel.
+    await expect(generateDocumentAsync("d", "p")).resolves.toBeUndefined();
+
+    expect(state.doc.status).toBe("ready");
+    expect(state.doc.errorMessage).toBeNull();
+    expect(state.doc.content).toBe("# Published v1");
+    expect(state.versions).toHaveLength(1);
+    expect(jobEvents.failed).not.toHaveBeenCalled();
+  });
+
   it("cancelling an automatic run restores the published document's status and records a cancel", async () => {
     state.versions.push({ version: 1, provenanceManifest: null });
     state.doc.autoUpdate = true;

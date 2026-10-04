@@ -381,11 +381,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("#867 — a backfill keeps a routine that only has edges out of it, with its id and edges", async () => {
       // The routine repo.py invokes is filed under repo.py; its live body
-      // (read-only fetch) reads `users`, an edge OUT of that same symbol.
+      // (read-only fetch) reads `audit_log`, a table nothing in repo.py names,
+      // so the routine's only link to it is the edge OUT of the routine.
       const routines = [
         { schema: "", name: "refresh_users", type: "procedure" as const, signature: "" },
       ];
-      const fetchRoutineBody = async () => "SELECT * FROM users";
+      const fetchRoutineBody = async () => "INSERT INTO audit_log SELECT 1";
+      const auditResponder =
+        (resolveCall: boolean) =>
+        (p: ExtractUsageParams): ExtractUsageResult =>
+          /audit_log/i.test(p.sql)
+            ? {
+                tables: [
+                  { schema: "", name: "audit_log", qualifiedName: "audit_log", access: "write" },
+                ],
+                columns: [],
+                lineage_edges: [],
+                uncertain: [],
+                routines: [],
+              }
+            : !resolveCall && /refresh_users/i.test(p.sql)
+              ? { tables: [], columns: [], lineage_edges: [], uncertain: [], routines: [] }
+              : usersResponder(p);
+      state.responder = auditResponder(true) as (p: unknown) => unknown;
       const { projectId, root } = await fixture();
       await ingest(projectId, root, { routines, fetchRoutineBody });
       const routine = await db.codeSymbol.findFirstOrThrow({
@@ -395,18 +413,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const outgoing = () =>
         db.codeEdge.findMany({
           where: { projectId, fromSymbolId: routine.id, kind: "calls" },
-          select: { id: true, toSymbolId: true, filePath: true },
+          select: { id: true, toSymbolId: true, toQualifiedName: true, filePath: true },
           orderBy: { id: "asc" },
         });
       const before = await outgoing();
-      expect(before.length).toBeGreaterThan(0);
+      expect(before.map((e) => e.toQualifiedName)).toEqual(["audit_log"]);
+      expect(before[0].toSymbolId).not.toBeNull();
 
       // A backfill in which repo.py's CALL no longer resolves to the routine:
-      // nothing points at it any more, but its body still reads `users`.
-      state.responder = ((p: ExtractUsageParams) =>
-        /refresh_users/i.test(p.sql)
-          ? { tables: [], columns: [], lineage_edges: [], uncertain: [], routines: [] }
-          : usersResponder(p)) as (p: unknown) => unknown;
+      // nothing points at it any more, but its body still writes `audit_log`.
+      state.responder = auditResponder(false) as (p: unknown) => unknown;
       const stats = await ingest(projectId, root, { introspectedSchema: SCHEMA });
       expect(stats.lineageBackfill).toBe(true);
       expect(await db.codeEdge.count({ where: { projectId, toSymbolId: routine.id } })).toBe(0);
