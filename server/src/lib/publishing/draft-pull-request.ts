@@ -12,12 +12,18 @@
  *    and with no saved target the request is refused rather than defaulting.
  *  - A saved target that equals one of the project's repo connections — the
  *    analysed (often upstream) repository — is refused outright, including a
- *    soft-deleted connection (the project still holds its analysis). On a live
- *    run the target's fork `parent`/`source` is refused the same way, so a fork
- *    analysed in place of its upstream cannot route a PR to that upstream.
+ *    soft-deleted connection (the project still holds its analysis).
+ *  - On a live run, the UPSTREAM of each analysed public-GitHub repository
+ *    (its fork `parent` and `source`) is refused the same way: a project that
+ *    analyses the fork `me/v2` must not open a PR on `miniflux/v2`. A target
+ *    that is itself a fork of an analysed repo is ALLOWED — that is the
+ *    intended sandbox (the PR's head and base are both in the target, so it
+ *    never writes to the parent). An analysed repo whose lookup fails is
+ *    refused (502 naming the step), never assumed to have no upstream.
  *  - Dry run is the default (the schema defaults `dryRun` to true) and makes
  *    no network call; it only reports whether the credential reference binds,
- *    and says in `upstreamCheck` that the fork network was not checked.
+ *    and says in `upstreamCheck` that the analysed repos' upstreams were not
+ *    checked.
  *  - The credential is a `${vault:label}` reference bound to a secret id
  *    (#480) and read by id at use; the token is never returned, logged or put
  *    in an error. GitHub failures surface as a fixed message with the status.
@@ -87,8 +93,8 @@ export async function openDraftPullRequest(
       "save a GitHub publish target for this project first; a draft pull request is only ever opened there",
     );
   }
-  const analysed = await analysedRepoNames(input.projectId);
-  refuseIfAnalysed(analysed, [`${saved.owner}/${saved.repo}`]);
+  const analysed = await analysedRepos(input.projectId);
+  refuseIfAnalysed(analysed.names, [`${saved.owner}/${saved.repo}`]);
   // Validates owner/repo and pins the public API base URL — no caller input.
   const target = await resolvePublishTarget({
     owner: saved.owner,
@@ -119,12 +125,12 @@ export async function openDraftPullRequest(
           forkNetworkChecked: false,
           note:
             "Checked against this project's repository connections only. A dry run makes no " +
-            "network call, so whether the target is a fork of an analysed repository is " +
-            "checked when the pull request is opened.",
+            "network call, so whether the target is the upstream (fork parent or source) of " +
+            "an analysed repository is checked when the pull request is opened.",
         }
       : {
           forkNetworkChecked: true,
-          note: "Checked against this project's repository connections and the target's fork parent and source.",
+          note: "Checked against this project's repository connections and the fork parent and source of each analysed GitHub repository.",
         },
   };
 
@@ -162,10 +168,12 @@ export async function openDraftPullRequest(
     pinnedFamily: target.pinnedFamily,
   });
   const gh = new GitHubSteps(client, target);
-  const repoInfo = await gh.repository();
-  // Before any write: a fork's upstream is the analysed repository by another name.
-  refuseIfAnalysed(analysed, [repoInfo.parent, repoInfo.source]);
-  const base = repoInfo.defaultBranch;
+  // Before any write: an analysed fork's upstream is the analysed repository
+  // by another name. Fails closed — a lookup that fails refuses the run.
+  refuseIfAnalysed(await upstreamsOfAnalysed(gh, analysed.github), [
+    `${target.owner}/${target.repo}`,
+  ]);
+  const base = await gh.defaultBranch();
   const baseSha = await gh.headSha(base);
   await gh.createBranch(branch, baseSha);
   await gh.putFile(path, branch, specFile(draft.title, draft.body), draft.id);
@@ -207,8 +215,15 @@ export async function openDraftPullRequest(
   return plan;
 }
 
+interface AnalysedRepos {
+  /** Every analysed repository, as lower-cased `owner/repo`. */
+  names: Set<string>;
+  /** The public-GitHub ones, whose upstream a live run looks up. */
+  github: Array<{ owner: string; repo: string }>;
+}
+
 /**
- * Every repository this project analyses, as lower-cased `owner/repo`.
+ * The repositories this project analyses.
  *
  * Soft-deleted connections are included on purpose: deleting a connector does
  * not delete the analysis, code graph and findings built from that repository,
@@ -221,26 +236,46 @@ export async function openDraftPullRequest(
  * it cannot equal the target. That is a known limit, stated in the user guide:
  * a project analysing an uploaded clone must not save that clone's origin as
  * its publish target.
+ *
+ * Only `github` connections have their upstream looked up: the target is on
+ * the public API, and a GitHub Enterprise or GitLab repository's fork network
+ * lives on its own host, so its parent cannot be a github.com repository.
  */
-async function analysedRepoNames(projectId: string): Promise<Set<string>> {
-  const repos = await prisma.repoConnection.findMany({
+async function analysedRepos(projectId: string): Promise<AnalysedRepos> {
+  const rows = await prisma.repoConnection.findMany({
     where: { projectId },
-    select: { ownerOrOrg: true, repoName: true },
+    select: { ownerOrOrg: true, repoName: true, provider: true },
   });
   const names = new Set<string>();
-  for (const r of repos) {
-    if (r.ownerOrOrg && r.repoName) names.add(`${r.ownerOrOrg}/${r.repoName}`.toLowerCase());
+  const github = new Map<string, { owner: string; repo: string }>();
+  for (const r of rows) {
+    if (!r.ownerOrOrg || !r.repoName) continue;
+    const key = `${r.ownerOrOrg}/${r.repoName}`.toLowerCase();
+    names.add(key);
+    if (r.provider === "github") github.set(key, { owner: r.ownerOrOrg, repo: r.repoName });
   }
-  return names;
+  return { names, github: [...github.values()] };
 }
 
-/** Refuse when any candidate `owner/repo` is one of the project's analysed repositories. */
-function refuseIfAnalysed(analysed: Set<string>, candidates: Array<string | null>): void {
-  if (candidates.some((c) => c !== null && analysed.has(c.toLowerCase()))) {
+/** Lower-cased fork `parent`/`source` of every analysed GitHub repository. */
+async function upstreamsOfAnalysed(
+  gh: GitHubSteps,
+  repos: Array<{ owner: string; repo: string }>,
+): Promise<Set<string>> {
+  const upstreams = new Set<string>();
+  for (const r of repos) {
+    for (const name of await gh.forkUpstreamsOf(r)) upstreams.add(name.toLowerCase());
+  }
+  return upstreams;
+}
+
+/** Refuse when any candidate `owner/repo` is in `refused` (lower-cased `owner/repo`). */
+function refuseIfAnalysed(refused: Set<string>, candidates: string[]): void {
+  if (candidates.some((c) => refused.has(c.toLowerCase()))) {
     throw new PublishError(
       409,
       "PUBLISH_TARGET_IS_ANALYSED_REPO",
-      "the saved publish target is, or is a fork of, the repository this project analyses; save a separate target (for example a sandbox repository) for draft pull requests",
+      "the saved publish target is the repository this project analyses, or that repository's upstream; save a separate target (for example a sandbox fork) for draft pull requests",
     );
   }
 }
@@ -331,23 +366,34 @@ class GitHubSteps {
     this.repoPath = `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}`;
   }
 
-  /** Default branch plus the fork network (`parent`/`source` are absent on a non-fork). */
-  async repository(): Promise<{
-    defaultBranch: string;
-    parent: string | null;
-    source: string | null;
-  }> {
-    const res = await this.call<{
-      default_branch?: string;
-      parent?: { full_name?: unknown };
-      source?: { full_name?: unknown };
-    }>("read the repository", { method: "GET", url: this.repoPath });
-    const name = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : null);
-    return {
-      defaultBranch: res.default_branch ?? "main",
-      parent: name(res.parent?.full_name),
-      source: name(res.source?.full_name),
-    };
+  async defaultBranch(): Promise<string> {
+    const res = await this.call<{ default_branch?: string }>("read the repository", {
+      method: "GET",
+      url: this.repoPath,
+    });
+    return res.default_branch ?? "main";
+  }
+
+  /**
+   * An analysed repository's fork `parent` and `source` full names (none when
+   * it is not a fork). Any failure — 404, private, rate limit — throws: the
+   * caller must refuse rather than treat an unknown upstream as none.
+   */
+  async forkUpstreamsOf(repo: { owner: string; repo: string }): Promise<string[]> {
+    const step = `read the analysed repository ${repo.owner}/${repo.repo} to check its upstream`;
+    let res: { parent?: { full_name?: unknown }; source?: { full_name?: unknown } };
+    try {
+      const out = await this.client.request<typeof res>({
+        method: "GET",
+        url: `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.repo)}`,
+      });
+      res = out.data ?? {};
+    } catch (err) {
+      throw githubFailure(step, statusOf(err), err, LOOKUP_HINT);
+    }
+    return [res.parent?.full_name, res.source?.full_name].filter(
+      (v): v is string => typeof v === "string" && v.length > 0,
+    );
   }
 
   async headSha(branch: string): Promise<string> {
@@ -447,13 +493,22 @@ function statusOf(err: unknown): number {
   return typeof s === "number" ? s : 0;
 }
 
-function githubFailure(step: string, status: number, cause?: unknown): PublishError {
+const WRITE_HINT = "Check that the vault secret can write to the publish target.";
+const LOOKUP_HINT =
+  "The draft pull request was not opened: METIS could not confirm the publish target is not " +
+  "that repository's upstream. Check that the vault secret can read it, or retry later.";
+
+function githubFailure(
+  step: string,
+  status: number,
+  cause?: unknown,
+  hint: string = WRITE_HINT,
+): PublishError {
   // The upstream message is deliberately not logged or forwarded.
   log.warn("draft_pr.github_failed", { step, status, kind: (cause as Error | undefined)?.name });
   return new PublishError(
     502,
     "GITHUB_REQUEST_FAILED",
-    `GitHub refused the request to ${step} (HTTP ${status || "error"}). Check that the vault ` +
-      "secret can write to the publish target.",
+    `GitHub refused the request to ${step} (HTTP ${status || "error"}). ${hint}`,
   );
 }

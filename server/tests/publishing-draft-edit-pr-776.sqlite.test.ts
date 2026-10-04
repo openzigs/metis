@@ -45,6 +45,8 @@ const TOKEN = "ghp_publish_token_776";
 const ROLE = "coordinator" as const;
 const OTHER = "u776-other";
 const OTHER_TOKEN = "ghp_someone_elses_token_776";
+/** A project that analyses a FORK (`me/v2`) of the upstream `miniflux/v2`. */
+const PF = "p776-fork";
 
 interface Call {
   method: string;
@@ -100,7 +102,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.user.create({
         data: { id: USER, username: USER, displayName: USER, email: `${USER}@x.test` },
       });
-      for (const id of [P, "p-other"]) {
+      for (const id of [P, "p-other", PF]) {
         await db.project.create({ data: { id, name: id, slug: id, createdById: USER } });
       }
       // The analysed upstream — never a publish target.
@@ -128,6 +130,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           repoName: "gone",
           status: "connected",
           deletedAt: new Date(),
+        },
+      });
+      await db.repoConnection.create({
+        data: {
+          projectId: PF,
+          label: "my-fork",
+          ownerOrOrg: "me",
+          repoName: "v2",
+          status: "connected",
         },
       });
       // An uploaded clone: no owner/repo, so it identifies no GitHub repository.
@@ -453,31 +464,85 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(calls).toEqual([]);
       });
 
+      const live = (projectId: string, draftId: string) =>
+        openDraftPullRequest({
+          projectId,
+          draftId,
+          actorId: USER,
+          actorRole: ROLE,
+          dryRun: false,
+          secretRef: "${vault:github-flux-v2-sandbox}",
+        });
+      const writes = () => calls.filter((c) => c.method !== "GET");
+
+      it("ALLOWS a target that is a fork of the analysed repo — that is the sandbox", async () => {
+        const d = await draft();
+        // openzigs/flux-v2 is a fork of the analysed miniflux/v2.
+        respond = (c) =>
+          c.method === "GET" && c.url === "/repos/openzigs/flux-v2"
+            ? {
+                status: 200,
+                data: {
+                  default_branch: "main",
+                  fork: true,
+                  parent: { full_name: "miniflux/v2" },
+                  source: { full_name: "miniflux/v2" },
+                },
+              }
+            : undefined;
+        const out = await live(P, d.id);
+        expect(out.pullRequest?.number).toBe(7);
+        // Every write lands on the target, none on its parent.
+        expect(writes().length).toBeGreaterThan(0);
+        for (const c of writes()) expect(c.url.startsWith("/repos/openzigs/flux-v2/")).toBe(true);
+      });
+
       it.each([
-        ["parent", { parent: { full_name: "MiniFlux/V2" }, source: { full_name: "MiniFlux/V2" } }],
-        ["source", { parent: { full_name: "someone/v2" }, source: { full_name: "miniflux/v2" } }],
-        ["deleted connection", { parent: { full_name: "oldorg/gone" } }],
+        ["parent", { parent: { full_name: "MiniFlux/V2" } }],
+        [
+          "source only",
+          { parent: { full_name: "someone/v2" }, source: { full_name: "miniflux/v2" } },
+        ],
       ])(
-        "a live run refuses a target whose fork %s is an analysed repo, before any write",
+        "REFUSES a target that is the %s of an analysed fork, before any write",
         async (_case, network) => {
-          const d = await draft();
+          await db.project.update({
+            where: { id: PF },
+            data: { publishGithubOwner: "miniflux", publishGithubRepo: "v2" },
+          });
+          const d = await draft({ projectId: PF });
           respond = (c) =>
-            c.method === "GET" && c.url === "/repos/openzigs/flux-v2"
+            c.method === "GET" && c.url === "/repos/me/v2"
               ? { status: 200, data: { default_branch: "main", fork: true, ...network } }
               : undefined;
-          await expect(
-            openDraftPullRequest({
-              projectId: P,
-              draftId: d.id,
-              actorId: USER,
-              actorRole: ROLE,
-              dryRun: false,
-              secretRef: "${vault:github-flux-v2-sandbox}",
-            }),
-          ).rejects.toMatchObject({ status: 409, code: "PUBLISH_TARGET_IS_ANALYSED_REPO" });
-          expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(["GET /repos/openzigs/flux-v2"]);
+          await expect(live(PF, d.id)).rejects.toMatchObject({
+            status: 409,
+            code: "PUBLISH_TARGET_IS_ANALYSED_REPO",
+          });
+          expect(writes()).toEqual([]);
+          // The analysed repo was looked up with the bound token.
+          expect(calls.find((c) => c.url === "/repos/me/v2")?.token).toBe(TOKEN);
         },
       );
+
+      it("REFUSES (fails closed) when an analysed repo's upstream cannot be looked up", async () => {
+        await db.project.update({
+          where: { id: PF },
+          data: { publishGithubOwner: "miniflux", publishGithubRepo: "v2" },
+        });
+        const d = await draft({ projectId: PF });
+        respond = (c) =>
+          c.method === "GET" && c.url === "/repos/me/v2" ? { status: 404, data: {} } : undefined;
+        const err = (await live(PF, d.id).catch((e: unknown) => e)) as Error & {
+          status?: number;
+          code?: string;
+        };
+        expect(err).toMatchObject({ status: 502, code: "GITHUB_REQUEST_FAILED" });
+        expect(err.message).toContain("me/v2");
+        expect(err.message).toContain("404");
+        expect(err.message).not.toContain(TOKEN);
+        expect(writes()).toEqual([]);
+      });
 
       it("refuses another user's GitHub secret for a live run (repository writes need ownership)", async () => {
         const d = await draft();
@@ -557,8 +622,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           reused: false,
         });
         expect(calls.length).toBeGreaterThan(0);
+        // Reads may look up the analysed repos' upstreams; every write is on the target.
         for (const c of calls) {
-          expect(c.url.startsWith("/repos/openzigs/flux-v2")).toBe(true);
+          if (c.method !== "GET") expect(c.url.startsWith("/repos/openzigs/flux-v2/")).toBe(true);
           expect(c.token).toBe(TOKEN);
           expect(c.baseUrl).toBe("https://api.github.com");
         }
