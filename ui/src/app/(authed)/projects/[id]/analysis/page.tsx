@@ -117,6 +117,7 @@ import {
   FINDINGS_PAGE_SIZE,
   NO_FINDING_FILTERS,
   REQUIREMENTS_PAGE_SIZE,
+  agentDisplayStatus,
   analysisTabCounts,
   analysisViewHref,
   collectFindings,
@@ -147,11 +148,13 @@ function StatusBadge({ status }: { status: string }): React.ReactElement {
   const colour =
     status === "completed"
       ? "bg-success-muted text-success border-success/30"
-      : status === "failed"
-        ? "bg-destructive/10 text-destructive border-destructive/30"
-        : status === "cancelled"
-          ? "bg-muted text-foreground border-border/30"
-          : "bg-info-muted text-info border-info/30";
+      : status === "degraded"
+        ? "bg-warning-muted text-warning border-warning/30"
+        : status === "failed"
+          ? "bg-destructive/10 text-destructive border-destructive/30"
+          : status === "cancelled"
+            ? "bg-muted text-foreground border-border/30"
+            : "bg-info-muted text-info border-info/30";
   return (
     <span className={`inline-block rounded border px-2 py-0.5 text-xs font-medium ${colour}`}>
       {status}
@@ -1397,7 +1400,7 @@ export default function AnalysisPage(): React.ReactElement {
                                   </div>
                                 </div>
                               </div>
-                              <StatusBadge status={agent.status} />
+                              <StatusBadge status={agentDisplayStatus(agent)} />
                             </div>
                             {isSpecialist && detail.data.status === "completed" ? (
                               <div className="mt-2">

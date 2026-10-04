@@ -6287,7 +6287,8 @@ Reduces token waste during agent-driven analysis by caching code summaries, comp
 | AST Parser | `server/src/lib/analysis/ast-parser.ts` | Regex-based parser for TS/JS/Python — extracts classes, functions, interfaces, types |
 | AST Summary Cache | `server/src/lib/analysis/ast-summary-cache.ts` | In-memory cache keyed by file path with invalidation, search, rebuild, and stats |
 | Code-Graph-First Strategy | `server/src/lib/analysis/strategies/code-graph-first.ts` | Intercepts agent file-read calls; returns cached AST summaries instead of full source |
-| Transcript Compaction | `server/src/lib/analysis/context-window-manager.ts` | Elides older agent-loop tool results once the re-sent transcript passes its token ceiling, so per-turn prompt cost stays bounded (#1225) |
+| Transcript Compaction | `server/src/lib/analysis/context-window-manager.ts` | Elides older agent-loop tool results once the re-sent transcript passes its token ceiling, so per-turn prompt cost stays bounded (#1225). Search results go before `read_file_slice` results, which are elided only when nothing else is left (#726) |
+| Agentic Evidence | `server/src/lib/analysis/agentic-evidence.ts` | Rebuilds the code agent's retrieved evidence from the untruncated `toolCalls[].result` (file reads first, token-budgeted). The final-answer retry gets it as a fenced `evidence_digest` block; when transcript salvage recovers nothing, one tool-free call over the task plus the digest is the last salvage path (#726, #766) |
 | Agent Skill Router | `server/src/lib/analysis/agent-skill-router.ts` | Keyword-scored routing to select specialist agents under budget constraints |
 | AST Cache Route | `server/src/routes/ast-cache.ts` | `POST /api/projects/:projectId/repositories/:repoId/rebuild-cache` endpoint |
 

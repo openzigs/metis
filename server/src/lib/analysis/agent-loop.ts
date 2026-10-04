@@ -128,6 +128,14 @@ export interface AgentLoopOptions {
      * Defaults to {@link DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS}.
      */
     maxOutputTokens?: number;
+    /**
+     * #726 — evidence to put ahead of {@link instruction}, built from the
+     * loop's UNTRUNCATED tool results. The retry re-sends the compacted
+     * transcript (#1225), in which older results are a 600-character head, so
+     * without this the answer is written over code the agent read in full but
+     * can no longer see. Return "" for none. A throw is logged and ignored.
+     */
+    evidence?: (toolCalls: AgentLoopResult["toolCalls"]) => string;
   };
   /**
    * #1225 — bound the transcript the loop re-sends every turn.
@@ -1790,7 +1798,22 @@ export async function runAgentLoop(
     if (lastResponse && !lastAppended) {
       retryMessages.push({ role: "assistant", content: lastResponse });
     }
-    appendUserInstruction(retryMessages, options.finalAnswerRetry.instruction);
+    let evidenceBlock = "";
+    if (options.finalAnswerRetry.evidence) {
+      try {
+        evidenceBlock = options.finalAnswerRetry.evidence(toolCalls);
+      } catch (err) {
+        log.warn("Final-answer evidence builder failed; retrying without it", {
+          error: (err as Error).message,
+        });
+      }
+    }
+    appendUserInstruction(
+      retryMessages,
+      evidenceBlock
+        ? `${evidenceBlock}\n\n${options.finalAnswerRetry.instruction}`
+        : options.finalAnswerRetry.instruction,
+    );
     try {
       const chatOpts: ChatOptions = {
         model: options.model,
