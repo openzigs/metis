@@ -77,6 +77,14 @@ const SCHEMA = { public: { users: { id: "INT", email: "TEXT" } } };
 
 /** `SELECT * FROM users`: table-level without a schema, per column with one (#317). */
 const usersResponder = (p: ExtractUsageParams): ExtractUsageResult => {
+  if (/refresh_users/i.test(p.sql))
+    return {
+      tables: [],
+      columns: [],
+      lineage_edges: [],
+      uncertain: [],
+      routines: [{ schema: "", name: "refresh_users", qualifiedName: "refresh_users" }],
+    };
   if (!/users/i.test(p.sql))
     return { tables: [], columns: [], lineage_edges: [], uncertain: [], routines: [] };
   const columns = p.schema
@@ -104,6 +112,10 @@ const TREE = {
     "def load_users():",
     '    """Load every user row."""',
     '    return db.query("SELECT * FROM users")',
+    "",
+    "# No enclosing function: these hang off synthetic sql@/exec@ origins.",
+    'TOTAL = db.query("SELECT * FROM users")',
+    'db.execute("CALL refresh_users()")',
     "",
   ].join("\n"),
   "main.py": [
@@ -175,7 +187,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const snapshot = async (projectId: string) => {
       const symbols = await db.codeSymbol.findMany({
         where: { projectId },
-        select: { id: true, source: true, language: true },
+        select: { id: true, source: true, language: true, kind: true },
         orderBy: { id: "asc" },
       });
       const edges = await db.codeEdge.findMany({
@@ -184,10 +196,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         orderBy: { id: "asc" },
       });
       const parser = (r: { source: string | null }) => r.source === null;
+      // What Step 6 writes per statement and rewrites on a backfill: the
+      // synthetic `sql@`/`exec@` origins and the routines it invokes.
+      const rewritten = (s: { kind: string; language: string }) =>
+        s.language === "sql" && (s.kind === "method" || s.kind === "procedure");
       return {
         symbolIds: symbols.map((s) => s.id),
+        keptSymbolIds: symbols.filter((s) => !rewritten(s)).map((s) => s.id),
         edgeIds: edges.map((e) => e.id),
-        parserSymbolIds: symbols.filter(parser).map((s) => s.id),
+        parserSymbolIds: symbols.filter((s) => parser(s) && s.language !== "sql").map((s) => s.id),
         parserEdgeIds: edges.filter(parser).map((e) => e.id),
         embeddings: (
           await db.codeSymbolEmbedding.findMany({
@@ -230,7 +247,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const ident = new Map(symbols.map((s) => [s.id, `${s.kind}:${s.qualifiedName}`]));
       const edges = await db.codeEdge.findMany({ where: { projectId, source: "sqlglot" } });
       const schemaSymbols = symbols
-        .filter((s) => s.source === "sqlglot")
+        .filter((s) => s.language === "sql")
         .map((s) => `symbol ${s.kind}:${s.qualifiedName} @${s.filePath}`);
       return [
         ...schemaSymbols,
@@ -276,6 +293,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const after = await snapshot(projectId);
       expect(after.parserSymbolIds).toEqual(before.parserSymbolIds);
       expect(after.parserEdgeIds).toEqual(before.parserEdgeIds);
+      // Lineage table/column symbols are reused too, not re-created. Only the
+      // lineage edges and the per-statement origins and routines are rewritten.
+      expect(after.keptSymbolIds).toEqual(before.keptSymbolIds);
       expect(after.symbolIds).toHaveLength(before.symbolIds.length);
       expect(after.edgeIds).toHaveLength(before.edgeIds.length);
       expect(after.embeddings).toEqual(before.embeddings);
@@ -297,6 +317,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(lineage).toEqual(await lineageTable(fresh.projectId));
       // The schema expanded SELECT * into per-column reads.
       expect(lineage.length).toBeGreaterThan(tableLevel.length);
+      // Every kind of Step 6 row is in play: synthetic origins and a routine.
+      expect(lineage).toContain("symbol method:repo.py::sql@6 @repo.py");
+      expect(lineage).toContain("symbol method:repo.py::exec@7 @repo.py");
+      expect(lineage).toContain("symbol procedure:refresh_users @repo.py");
 
       // Back to no schema: the column rows the schema produced are gone again.
       await ingest(projectId, root, { introspectedSchema: null });
