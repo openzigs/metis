@@ -169,6 +169,10 @@ vi.mock("../src/lib/socket/job-events.js", () => ({
 
 import { generateDocumentAsync, generatedDocsRouter } from "../src/routes/generated-docs.js";
 import {
+  releaseGenerationControl,
+  startGenerationControl,
+} from "../src/lib/docs-gen/generation-control.js";
+import {
   GENERATING_STALE_MS,
   GENERATION_HEARTBEAT_MS,
   GENERATION_INTERRUPTED_MESSAGE,
@@ -487,12 +491,21 @@ describe("#855 — POST /:docId/cancel", () => {
   it("stops a running generation and leaves it cancelled", async () => {
     seed();
     await startGeneration();
+    // A run of this document registered in this process, as the real run is:
+    // the route must stop it at once, not wait for the next heartbeat.
+    const local = startGenerationControl("doc-1", "proj-1", {
+      maxCostCents: null,
+      maxTokens: null,
+    });
 
     const res = await cancel();
 
     expect(res.status).toBe(202);
     expect(res.body.data).toEqual({ id: "doc-1", status: "cancelling" });
     expect(doc().status).toBe("cancelling");
+    expect(local.signal.aborted).toBe(true);
+    expect(local.reason).toBe("aborted");
+    releaseGenerationControl(local);
     // The run notices (here: its blocked call fails once aborted) and settles.
     state.release!(Object.assign(new Error("aborted"), { name: "AbortError" }));
     await vi.waitFor(() => expect(doc().status).toBe("cancelled"));

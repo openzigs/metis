@@ -41,6 +41,7 @@ import {
   sectionGroupsFor,
   selectRelevantFacts,
   synthesizeFinalDocument,
+  type GenerationStepHook,
   type ModuleFacts,
   type Phase2ProviderBundle,
   type Phase2Router,
@@ -48,6 +49,7 @@ import {
 } from "./holistic-synthesizer.js";
 import type { PersistedMinedRule } from "./fact-slices.js";
 import { RunUsage, withRunUsage } from "./run-cost.js";
+import { UnpublishableGenerationError } from "./generation-checkpoint.js";
 
 // ── Fixture ───────────────────────────────────────────────────────────────
 
@@ -376,6 +378,101 @@ describe("an onyourleft-sized project (143 modules, 16,384-token cap — run 9's
 });
 
 // ── #741: a length-capped catalogue ───────────────────────────────────────
+
+describe("#741 — a single-call section is fitted to its cap before it is fact-checked", () => {
+  it("shortens every non-batched section and only checks what is kept", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "5000");
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "100000");
+    const checked: Array<{ section: string; chars: number }> = [];
+    scoreFaithfulnessMock.mockImplementation(async (section: string, markdown: string) => {
+      checked.push({ section, chars: markdown.length });
+      return verified(1, 1);
+    });
+    const result = await run(onyourleftSized(), fakeModel(), ragGrounding());
+    const single = sectionGroupsFor("business-requirements").filter((g) => !g.batched);
+    expect(single.length).toBeGreaterThan(0);
+    for (const group of single) {
+      const md = sectionOf(result.markdown, group.label);
+      expect(md.length, group.id).toBeLessThanOrEqual(5_000);
+      expect(md, group.id).toContain("**Shortened for length.**");
+      const judged = checked.filter((c) => c.section === group.label);
+      expect(judged.length, group.id).toBeGreaterThan(0);
+      for (const j of judged) expect(j.chars, group.id).toBeLessThanOrEqual(5_000);
+    }
+  });
+});
+
+describe("#855 / #856 — a stop on the batched path ends the run, not a batch", () => {
+  const RULES_ONLY = (
+    facts: ModuleFacts[],
+    provider: AIProvider,
+    beforeStep?: GenerationStepHook,
+  ) =>
+    synthesizeFinalDocument(
+      facts,
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(provider),
+      "p1",
+      ragGrounding(),
+      undefined,
+      undefined,
+      undefined,
+      beforeStep ? { beforeStep } : undefined,
+    );
+
+  it("a batch-level step hook that throws stops the section and the run", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "4096");
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "1");
+    scoreFaithfulnessMock.mockResolvedValue(verified(1, 1));
+    let batches = 0;
+    const steps: string[] = [];
+    const provider = fakeModel();
+    const stop = new UnpublishableGenerationError("inputs-changed", "changed");
+    await expect(
+      RULES_ONLY(pairs(8), provider, async (step) => {
+        steps.push(step.kind);
+        // Once stopped, a run stays stopped (the route's hook stops its control).
+        if (step.kind === "batch" && ++batches >= 2) throw stop;
+      }),
+    ).rejects.toBe(stop);
+    // One batch was written; the second was never sent, nor any later section.
+    expect(callsFor(provider, RULES)).toHaveLength(1);
+    // Every remaining batch was refused at its hook, and no section after it started.
+    expect(steps.lastIndexOf("section")).toBeLessThan(steps.indexOf("batch"));
+  });
+
+  it("a stop error from a batch's model call is not recorded as a failed batch", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "4096");
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "1");
+    scoreFaithfulnessMock.mockResolvedValue(verified(1, 1));
+    const stop = new UnpublishableGenerationError("aborted", "cancelled");
+    const provider = fakeModel();
+    const inner = provider.stream.bind(provider);
+    let n = 0;
+    provider.stream = (messages: ChatMessage[], opts?: ChatOptions) => {
+      const user = String(messages.at(-1)!.content);
+      if (user.includes(`Section group: **${RULES.label}**`) && ++n === 2) {
+        return (async function* (): AsyncGenerator<ChatChunk> {
+          throw stop;
+        })();
+      }
+      return inner(messages, opts);
+    };
+    await expect(RULES_ONLY(pairs(8), provider)).rejects.toBe(stop);
+  });
+
+  it("a stop error from a batch's fact-check ends the run", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "4096");
+    const stop = new UnpublishableGenerationError("budget", "ceiling");
+    scoreFaithfulnessMock.mockImplementation(async (section: string) => {
+      if (section === RULES.label) throw stop;
+      return verified(1, 1);
+    });
+    await expect(RULES_ONLY(pairs(4), fakeModel())).rejects.toBe(stop);
+  });
+});
 
 describe("#741 — a batched section is planned and fitted to its length cap", () => {
   const CAP = 20_000;

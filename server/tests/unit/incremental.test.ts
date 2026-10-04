@@ -267,7 +267,7 @@ describe("successful ingestion durable regeneration #1356", () => {
         projectId: "p",
         autoUpdate: true,
         deletedAt: null,
-        status: { in: ["ready", "degraded", "failed", "generating"] },
+        status: { in: ["ready", "degraded", "failed", "cancelled", "generating"] },
         scope: { in: ["full", "repository", "module", "symbol"] },
       },
     });
