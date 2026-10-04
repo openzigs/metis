@@ -1203,6 +1203,35 @@ describe("crossToSchema — direct schema-symbol hits promote at HIGH confidence
     expect(rows.map((r) => r.tableName).sort()).toEqual(["entries", "feeds"]);
   });
 
+  it("#791 — a symbol also reached over a resolved edge keeps its reads, whatever the row order", async () => {
+    const ds: SchemaImpactDataSource = {
+      async getSchemaEdgesFrom(ids) {
+        return [{ fromSymbolId: "store", toSymbolId: "t-users", kind: "reads" as const }].filter(
+          (e) => ids.includes(e.fromSymbolId),
+        );
+      },
+      async getSchemaSymbolsByIds(ids) {
+        return [
+          {
+            id: "t-users",
+            kind: "table" as const,
+            name: "users",
+            qualifiedName: "users",
+            source: "sqlglot" as const,
+          },
+        ].filter((s) => ids.includes(s.id));
+      },
+      // The name-bound edge comes first in row order.
+      getDownstreamCallEdgesFrom: async (ids) =>
+        [
+          { fromSymbolId: "handler", toSymbolId: "store", inferred: true },
+          { fromSymbolId: "service", toSymbolId: "store" },
+        ].filter((e) => ids.includes(e.fromSymbolId)),
+    };
+    const rows = await crossToSchema(["handler", "service"], ds);
+    expect(rows.map((r) => r.tableName)).toEqual(["users"]);
+  });
+
   it("applies the additive ADD COLUMN suggestion to a directly-hit table at high confidence", async () => {
     const ds = directHitDs([
       {

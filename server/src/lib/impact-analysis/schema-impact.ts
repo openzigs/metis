@@ -537,7 +537,20 @@ export async function resolveDownstreamDataLayer(
     const edges = await dataSource.getDownstreamCallEdgesFrom(frontier);
     const next: string[] = [];
     for (const e of edges) {
-      if (!e.toSymbolId || depthById.has(e.toSymbolId)) continue;
+      if (!e.toSymbolId) continue;
+      if (depthById.has(e.toSymbolId)) {
+        // Reached again at the same depth over evidence (a resolved edge from a
+        // resolved symbol): it is not inferred-only, whatever the row order.
+        if (
+          inferredOut &&
+          depthById.get(e.toSymbolId) === depth + 1 &&
+          !e.inferred &&
+          !inferredOut.has(e.fromSymbolId)
+        ) {
+          inferredOut.delete(e.toSymbolId);
+        }
+        continue;
+      }
       depthById.set(e.toSymbolId, depth + 1);
       next.push(e.toSymbolId);
       if (inferredOut && (e.inferred || inferredOut.has(e.fromSymbolId))) {
