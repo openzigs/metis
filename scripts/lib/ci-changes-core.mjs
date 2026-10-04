@@ -30,12 +30,16 @@ const GATE_AND_DEPENDENCIES = Object.freeze([
  * What `postgres-adapter` proves, and so what can change its answer:
  *  - the Postgres schema / migrations and the scheme-selected Prisma adapter;
  *  - every Postgres- or pgvector-specific module and integration suite (by name);
- *  - the `src/` modules the Postgres integration suites import directly
- *    (`ci-changes-repo.test.mjs` fails if a suite imports one not listed here);
+ *  - the test helpers those suites pull in (shared suite bodies, fixtures, the pg
+ *    schema helper), and the `src/` modules imported by a suite or by one of those
+ *    helpers (`ci-changes-repo.test.mjs` walks the relative imports and fails if one
+ *    is not listed here);
  *  - the server's test configuration and dependency manifest.
  *
  * NOT covered on PRs: an arbitrary server unit test that starts to depend on the
- * SQLite client. That is caught on the next `main` push or nightly run.
+ * SQLite client, and a change to a `src/` module that a listed `src/` module imports
+ * in turn (the list is not transitive through `src/`). Both are caught on the next
+ * `main` push or nightly run.
  */
 export const POSTGRES_PATTERNS = Object.freeze([
   ...GATE_AND_DEPENDENCIES,
@@ -48,6 +52,9 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/db/**",
   "server/**/*postgres*",
   "server/**/*pgvector*",
+  // Test code the integration suites import (#846 review).
+  "server/tests/helpers/**",
+  "server/tests/lib/pg/**",
   // Direct `../src/` imports (and `vi.mock` targets) of the server/tests/*-postgres and
   // *-pgvector integration suites.
   "server/src/lib/auth/jwt.ts",
@@ -79,6 +86,14 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/routes/scim.ts",
   "server/src/routes/vault.ts",
   "server/src/routes/workspaces.ts",
+  // `src/` modules reached through the test helpers above.
+  "server/src/lib/connectors/db/db-service.ts",
+  "server/src/lib/connectors/jira/jira-service.ts",
+  "server/src/lib/mcp/lifecycle-manager.ts",
+  "server/src/lib/mcp/mcp-service.ts",
+  "server/src/lib/socket/server.ts",
+  "server/src/routes/jira.ts",
+  "server/src/routes/mcp.ts",
 ]);
 
 /**
@@ -101,6 +116,13 @@ export const IMAGE_PATTERNS = Object.freeze([
   "server/prisma/**",
   "server/prisma.config.ts",
   "server/embeddings-svc/**",
+  // Inputs that can break or bloat an image without failing typecheck (#846
+  // review): the standalone output config Dockerfile.ui copies, what each
+  // builder's build emits, and static assets counted by the size gate.
+  "ui/next.config.*",
+  "ui/public/**",
+  "server/tsconfig*.json",
+  "packages/shared/tsconfig*.json",
   "metis-sql-lineage/requirements*.txt",
   "scripts/lib/verify-image-size.mjs",
   "scripts/lib/smoke-server-image.mjs",

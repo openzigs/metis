@@ -39,15 +39,38 @@ describe("the Postgres path list covers what postgres-adapter's suites import (#
     expect(suites.length).toBeGreaterThanOrEqual(15);
   });
 
-  it("every direct ../src import of a Postgres integration suite is a gated path", () => {
+  it("every relative import of a Postgres integration suite, and of the test helpers it pulls in, is a gated path", () => {
+    // Walk relative imports breadth-first from each suite. Imports into server/src are
+    // checked but not followed (their own imports are a NOT-covered transitive case,
+    // see POSTGRES_PATTERNS); imports into server/tests (shared suite bodies, fixtures,
+    // pg schema helpers) are checked AND followed, because they are test code
+    // postgres-adapter runs.
     const imported = new Set();
-    for (const f of suites) {
-      const body = fs.readFileSync(path.join(testsDir, f), "utf8");
-      for (const m of body.matchAll(/["'](\.\.\/src\/[^"']+)["']/g)) {
-        imported.add(path.posix.join("server/tests", m[1]).replace(/\.js$/, ".ts"));
+    const seen = new Set();
+    const queue = suites.map((f) => path.posix.join("server/tests", f));
+    while (queue.length > 0) {
+      const file = /** @type {string} */ (queue.shift());
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const abs = path.join(repoRoot, file);
+      if (!fs.existsSync(abs)) continue;
+      // Comments often carry usage examples whose paths are relative to some other
+      // file (two-replica-prisma.ts documents a suite's vi.mock), so drop them first.
+      const body = fs
+        .readFileSync(abs, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+      for (const m of body.matchAll(/["'](\.\.?\/[^"']+)["']/g)) {
+        const target = path.posix
+          .normalize(path.posix.join(path.posix.dirname(file), m[1]))
+          .replace(/\.js$/, ".ts");
+        if (!target.startsWith("server/")) continue;
+        imported.add(target);
+        if (target.startsWith("server/tests/")) queue.push(target);
       }
     }
-    expect(imported.size).toBeGreaterThan(10);
+    expect([...imported].filter((p) => p.startsWith("server/src/")).length).toBeGreaterThan(10);
+    expect([...imported].some((p) => p.startsWith("server/tests/helpers/"))).toBe(true);
     const ungated = [...imported].filter((p) => matchesAny([p], POSTGRES_PATTERNS).length === 0);
     expect(ungated).toEqual([]);
   });

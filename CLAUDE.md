@@ -95,7 +95,8 @@ gh pr merge <pr> --squash --delete-branch   # only after a clean re-read
 `server`, `changelog`, `sql-lineage`, `postgres-adapter`, `postgres-migrate-deploy`,
 `generative-e2e`, `e2e (1/3)`, `e2e (2/3)`, `e2e (3/3)`, `e2e-outcome`, plus `Analyze
 javascript-typescript`, `Analyze python`, `CodeQL`, `Check CLA signature`, `Dependency audit`,
-`Semgrep`. Read **`e2e-outcome`** for the sharded suite. On a PR, `postgres-adapter` reads
+`Semgrep`. Read **`e2e-outcome`** for the sharded suite — unlike `api-outcome` it also reads
+`fail` when a newer push superseded the run (a cancelled shard), so check for a newer run first. On a PR, `postgres-adapter` reads
 **`skipping`** when no Postgres path changed and `api` skips its image build when no image
 path did — the `changes` job's summary says why; both always run on `main` and nightly.
 `skipping` on `postgres-adapter` is expected; anywhere else it is not.
