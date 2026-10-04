@@ -397,3 +397,4 @@ and point `LOCAL_GEMMA_BASE_URL` at it (an IP literal, ending in `/v1`) from the
 - [`docs/SECURITY.md`](./SECURITY.md) — threat model + secret handling
 - [`docs/USER_GUIDE.md`](./USER_GUIDE.md) — end-user documentation
 - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI pipeline
+
