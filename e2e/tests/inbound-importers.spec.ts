@@ -75,7 +75,7 @@ test.describe("Epic #776 — Inbound Importers", () => {
       await po.filterField("Owner / org").fill("octocat");
       await po.filterField("Repository").fill("hello-world");
       await po.filterField("Labels (comma-separated, optional)").fill("bug");
-      await po.tokenInput.fill("ghp_test_token");
+      await po.pasteToken("ghp_test_token");
     });
 
     await test.step("Preview returns count + first 10 within the 5s SLA", async () => {
@@ -90,16 +90,24 @@ test.describe("Epic #776 — Inbound Importers", () => {
     const po = new ImportPage(page, projectId);
     await po.goto();
 
-    await test.step("GitHub fields + API token are shown by default", async () => {
+    await test.step("GitHub fields + a vault-secret credential are shown by default (#763)", async () => {
       await expect(po.filterField("Owner / org")).toBeVisible();
       await expect(po.filterField("Repository")).toBeVisible();
+      await expect(po.credentialGroup).toBeVisible();
+      await expect(po.vaultSecretMode).toBeChecked();
+      await expect(po.tokenInput).toBeHidden();
+    });
+
+    await test.step("Paste a token swaps the vault picker for the API token field", async () => {
+      await po.pasteTokenMode.check();
       await expect(po.tokenInput).toBeVisible();
     });
 
-    await test.step("Jira shows JQL + connection and hides the API token", async () => {
+    await test.step("Jira shows JQL + connection and hides the credential", async () => {
       await po.selectSource("jira");
       await expect(po.filterField("JQL")).toBeVisible();
       await expect(po.filterField("Jira connection ID")).toBeVisible();
+      await expect(po.credentialGroup).toBeHidden();
       await expect(po.tokenInput).toBeHidden();
     });
 
@@ -126,7 +134,7 @@ test.describe("Epic #776 — Inbound Importers", () => {
       await po.selectSource("linear");
       await po.labelInput.fill("My Linear import");
       await po.filterField("Team ID").fill("TEAM-1");
-      await po.tokenInput.fill("lin_test_token");
+      await po.pasteToken("lin_test_token");
     });
 
     await test.step("preview the matched issues", async () => {
