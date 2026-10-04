@@ -302,6 +302,17 @@ export default function DocumentationPage(): React.ReactElement {
     invalidateKeys: [["generated-docs", projectId]],
   });
 
+  // #855 — stop a generation that is spending money. The server aborts its
+  // in-flight model calls and keeps the sections it finished.
+  const cancelMutation = useAppMutation({
+    mutationFn: (docId: string) =>
+      apiFetch<{ id: string; status: string }>(`/projects/${projectId}/docs/${docId}/cancel`, {
+        method: "POST",
+      }),
+    successMessage: "Cancelling generation…",
+    invalidateKeys: [["generated-docs", projectId]],
+  });
+
   // Delete mutation
   const deleteMutation = useAppMutation({
     mutationFn: async (docId: string) => {
@@ -387,6 +398,14 @@ export default function DocumentationPage(): React.ReactElement {
                   job:doc-section bus the detail view uses; the detail view keeps
                   its richer GenerationProgress unchanged. */}
               {doc.status === "generating" && <DocListProgress docId={doc.id} />}
+              {isCancellable(doc.status) && (
+                <CancelGenerationButton
+                  status={doc.status}
+                  pending={cancelMutation.isPending && cancelMutation.variables === doc.id}
+                  onCancel={() => cancelMutation.mutate(doc.id)}
+                  className="mt-2"
+                />
+              )}
               {doc.generatedAt && (
                 <p className="text-xs text-muted-foreground mt-1">
                   Generated: {new Date(doc.generatedAt).toLocaleDateString()}
@@ -511,6 +530,21 @@ export default function DocumentationPage(): React.ReactElement {
               sections={sectionProgress}
               lifecycleMessage={docJob?.message}
               progress={docJob?.progress}
+            />
+          )}
+
+          {isCancellable(docDetail.data.status) && (
+            <CancelGenerationButton
+              status={docDetail.data.status}
+              pending={cancelMutation.isPending}
+              onCancel={() => cancelMutation.mutate(docDetail.data.id)}
+            />
+          )}
+
+          {docDetail.data.status === "cancelled" && (
+            <CancelledGenerationBanner
+              regenerating={regenerateMutation.isPending}
+              onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
             />
           )}
 
@@ -1189,6 +1223,9 @@ function StatusBadge({ status }: { status: string }): React.ReactElement {
     // Epic #204 (#225) — degraded sits between ready and failed: content exists
     // but some sections failed or couldn't be auto-verified against source.
     degraded: "bg-warning-muted text-warning",
+    // #855 — stopping, then stopped by a user: nothing went wrong.
+    cancelling: "bg-warning-muted text-warning",
+    cancelled: "bg-muted text-muted-foreground",
   };
   // Friendly label: show "needs review" rather than the raw "degraded" status —
   // a flagged doc is for review, not necessarily inaccurate.
@@ -1476,6 +1513,68 @@ export function FailedGenerationBanner({
           {cause}
         </p>
       )}
+      <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
+        {regenerating ? "Regenerating…" : "Regenerate"}
+      </Button>
+    </Card>
+  );
+}
+
+/** #855 — a generation that is queued, running or being stopped can be cancelled. */
+export function isCancellable(status: string): boolean {
+  return status === "pending" || status === "generating" || status === "cancelling";
+}
+
+/**
+ * #855 — stops a running generation. Once the server has accepted the cancel
+ * (status `cancelling`) it shows that it is stopping and cannot be clicked again.
+ */
+export function CancelGenerationButton({
+  status,
+  pending,
+  onCancel,
+  className,
+}: {
+  status: string;
+  pending: boolean;
+  onCancel: () => void;
+  className?: string;
+}): React.ReactElement {
+  const stopping = status === "cancelling";
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className={className}
+      disabled={pending || stopping}
+      onClick={(event) => {
+        // On a list card: cancel, do not also open the document.
+        event.stopPropagation();
+        onCancel();
+      }}
+      data-testid="cancel-generation-btn"
+    >
+      {stopping || pending ? "Cancelling…" : "Cancel generation"}
+    </Button>
+  );
+}
+
+/** #855 — a cancelled generation kept what it finished; regenerating resumes it. */
+export function CancelledGenerationBanner({
+  regenerating,
+  onRegenerate,
+}: {
+  regenerating: boolean;
+  onRegenerate: () => void;
+}): React.ReactElement {
+  return (
+    <Card className="border-muted p-4" role="status">
+      <p className="font-medium">Generation was cancelled</p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Its model calls were stopped. The sections it finished are kept and shown below, and the
+        tokens it used are counted in the project&apos;s usage. Regenerating writes the rest and
+        reuses every finished section whose inputs have not changed.
+      </p>
       <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
         {regenerating ? "Regenerating…" : "Regenerate"}
       </Button>
