@@ -47,10 +47,11 @@ function matches(row: Row, where: Where): boolean {
     const value = row[key];
     if (cond instanceof Date) return value instanceof Date && value.getTime() === cond.getTime();
     if (cond && typeof cond === "object") {
-      const c = cond as { lt?: Date; not?: unknown; in?: unknown[] };
+      const c = cond as { lt?: Date; not?: unknown; in?: unknown[]; notIn?: unknown[] };
       if (c.lt !== undefined) return value instanceof Date && value < c.lt;
       if ("not" in c) return value !== c.not;
       if (c.in) return c.in.includes(value);
+      if (c.notIn) return !c.notIn.includes(value);
       return false;
     }
     return (value ?? null) === (cond ?? null);
@@ -536,8 +537,21 @@ describe("#855 — POST /:docId/cancel", () => {
     expect(res.body.data.status).toBe("cancelling");
   });
 
+  it("#867 — answers a cancel of an already-cancelled document with 200, changing nothing", async () => {
+    // A double click that races the run's own final `cancelled` write.
+    seed({ status: "cancelled", errorMessage: GENERATION_CANCELLED_MESSAGE });
+    const res = await cancel();
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ id: "doc-1", status: "cancelled" });
+    expect(doc()).toMatchObject({
+      status: "cancelled",
+      errorMessage: GENERATION_CANCELLED_MESSAGE,
+    });
+    expect(jobEvents.completed).not.toHaveBeenCalled();
+  });
+
   it("409s for a document that is not running", async () => {
-    for (const status of ["ready", "failed", "degraded", "cancelled"]) {
+    for (const status of ["ready", "failed", "degraded"]) {
       state.docs.clear();
       seed({ status });
       const res = await cancel();

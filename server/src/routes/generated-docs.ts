@@ -71,6 +71,7 @@ import {
   dispatchGeneratedDocTask,
 } from "../lib/docs-gen/generated-doc-outbox.js";
 import { captureGenerationInputs } from "../lib/docs-gen/generation-inputs.js";
+import { TaskAbortError } from "../lib/scheduler/task-abort.js";
 import type { DocWarning as DocWarningShape } from "../lib/docs-gen/grounding/degraded-warnings.js";
 import {
   generationFailureWarning,
@@ -966,6 +967,11 @@ export function generatedDocsRouter(): Router {
         res.status(202).json({ data: { id: docId, status: "cancelling" } });
         return;
       }
+      if (existing.status === "cancelled") {
+        // #867 — idempotent: a second click that races the run's own final write.
+        res.status(200).json({ data: { id: docId, status: "cancelled" } });
+        return;
+      }
       throw new AppError(
         409,
         "DOC_NOT_CANCELLABLE",
@@ -1088,6 +1094,14 @@ export async function generateDocumentAsync(
   const claim = `regenerating:${randomUUID()}`;
   let claimed = false;
   let originalHash: string | null = null;
+  // #867 — what an automatic run that is cancelled puts back over a published version.
+  let restoreOnCancel:
+    | {
+        status: string;
+        errorMessage: string | null;
+        warnings: Prisma.InputJsonValue | typeof Prisma.DbNull;
+      }
+    | undefined;
   let pendingUpdatedAt: Date | undefined;
   // #50 — refreshes the row while this run holds its claim; a stopped heartbeat
   // is how the interrupted-generation sweep tells a dead run from a live one.
@@ -1115,12 +1129,22 @@ export async function generateDocumentAsync(
     // #855 — cancelled before this run read the row: nothing to do.
     if (!automatic && original.status === "cancelled") return;
     originalHash = original.codeGraphHash;
+    if (automatic && ["ready", "degraded", "failed", "cancelled"].includes(original.status))
+      restoreOnCancel = {
+        status: original.status,
+        errorMessage: original.errorMessage,
+        warnings: (original.warnings ?? Prisma.DbNull) as Prisma.InputJsonValue,
+      };
     if (!automatic && original.status === "pending") pendingUpdatedAt = original.updatedAt;
     const policy = await resolveEvidencePolicy(original);
     const lastVersion = await prisma.generatedDocumentVersion.findFirst({
       where: { documentId: docId },
       orderBy: { version: "desc" },
     });
+    // #867 — a document the user cancelled before it ever published is not
+    // restarted by an ingest; only a regenerate does that. One with a published
+    // version keeps tracking, as a failed one does.
+    if (automatic && original.status === "cancelled" && !lastVersion) return;
     if (automatic && (lastVersion?.version ?? 0) !== automatic.expectedVersion) {
       if (
         lastVersion?.version === automatic.expectedVersion + 1 &&
@@ -1168,8 +1192,11 @@ export async function generateDocumentAsync(
         deletedAt: null,
         updatedAt: original.updatedAt,
         versions: { none: { version: { gt: lastVersion?.version ?? 0 } } },
+        // #867 — `cancelling` is live too: a run winding down after a cancel
+        // must not be taken over by another (it would turn the cancel into a
+        // fresh run). A row stuck in either state for two hours has no run.
         OR: [
-          { status: { not: "generating" } },
+          { status: { notIn: ["generating", "cancelling"] } },
           { updatedAt: { lt: new Date(Date.now() - 7_200_000) } },
         ],
         ...(automatic ? { autoUpdate: true } : {}),
@@ -1783,10 +1810,17 @@ export async function generateDocumentAsync(
     // - a published version would be overwritten by a partial one (that version
     //   stays; a regenerate resumes from the checkpoint);
     // - it is an automatic regeneration (its published version stays).
+    // - its inputs changed (`inputs-changed`, mid-run or at the commit fence,
+    //   #867): what it wrote describes sources that no longer hold, and a
+    //   `degraded` row's content is exportable. It fails instead; the
+    //   checkpoint still lets a regenerate reuse every section that matches.
     // A commit refused because a cancel landed inside it reads as `superseded`,
     // but the row is still this run's: it is a cancel, and keeps its work.
     const salvage =
-      claimed && !automatic && !hadVersion && (cancelRequested || reason !== "superseded")
+      claimed &&
+      !automatic &&
+      !hadVersion &&
+      (cancelRequested || (reason !== "superseded" && reason !== "inputs-changed"))
         ? (synthesized ??
           (finishedSections.length > 0
             ? {
@@ -1798,15 +1832,20 @@ export async function generateDocumentAsync(
     if (cancelRequested && claimed) {
       // #855 — a clear `cancelled` state that keeps what was finished, and the
       // checkpoint (untouched here) for a regenerate to resume from.
+      // #867 — except an automatic run over a published version: that version
+      // is still what the document shows, so its prior state comes back.
+      const restore = automatic && hadVersion ? restoreOnCancel : undefined;
       const cancelled = await prisma.generatedDocument.updateMany({
         where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
-        data: {
-          status: "cancelled",
-          codeGraphHash: originalHash,
-          errorMessage: GENERATION_CANCELLED_MESSAGE,
-          warnings: [...(salvage?.warnings ?? []), cause] as unknown as Prisma.InputJsonValue,
-          ...(salvage ? { content: salvage.markdown, generatedAt: new Date() } : {}),
-        },
+        data: restore
+          ? { ...restore, codeGraphHash: originalHash }
+          : {
+              status: "cancelled",
+              codeGraphHash: originalHash,
+              errorMessage: GENERATION_CANCELLED_MESSAGE,
+              warnings: [...(salvage?.warnings ?? []), cause] as unknown as Prisma.InputJsonValue,
+              ...(salvage ? { content: salvage.markdown, generatedAt: new Date() } : {}),
+            },
       });
       if (cancelled.count) {
         log.info("Document generation cancelled", {
@@ -1818,6 +1857,9 @@ export async function generateDocumentAsync(
         });
         jobEvents.completed("doc-generation", docId, projectId, "Generation cancelled");
       }
+      // #867 — the scheduler records the task as cancelled: not a success, and
+      // not a failure it would retry (which would undo the cancel).
+      if (automatic) throw new TaskAbortError("user", "Generation cancelled by user");
       return;
     }
     const salvaged = salvage
@@ -1848,9 +1890,7 @@ export async function generateDocumentAsync(
         projectId,
         reason === "budget"
           ? "Generation reached its cost ceiling; the finished sections were saved"
-          : reason === "inputs-changed"
-            ? "The sources changed during generation; the finished sections were saved, not published"
-            : "Generation stopped early; the finished sections were saved",
+          : "Generation stopped early; the finished sections were saved",
       );
       return;
     }

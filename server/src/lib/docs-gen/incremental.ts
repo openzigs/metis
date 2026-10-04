@@ -26,8 +26,13 @@ export async function checkIncrementalRegeneration(
       projectId,
       autoUpdate: true,
       deletedAt: null,
-      // #855 — a cancelled run keeps tracking ingests, as a failed one does.
-      status: { in: ["ready", "degraded", "failed", "cancelled", "generating"] },
+      OR: [
+        { status: { in: ["ready", "degraded", "failed", "generating"] } },
+        // #855 / #867 — a cancelled (or cancelling) document keeps tracking
+        // ingests only once it has a published version. One that never
+        // published would restart as a full run: a cancel must stop the spend.
+        { status: { in: ["cancelled", "cancelling"] }, versions: { some: {} } },
+      ],
       scope: { in: ["full", "repository", "module", "symbol"] },
     },
     select: {

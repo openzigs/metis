@@ -475,6 +475,27 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       ).toBeNull();
     });
 
+    it("#867 — POST /:docId/cancel is 403 for a member without project.update, and stops nothing", async () => {
+      await db.generatedDocument.update({ where: { id: "doc" }, data: { status: "generating" } });
+      const cancel = (caller: string, role: RoleKey) =>
+        request(app)
+          .post("/projects/project/docs/doc/cancel")
+          .set("Authorization", authorization(caller, role));
+
+      const denied = await cancel("reader", "reader");
+      expect(denied.status).toBe(403);
+      expect(denied.body.error.code).toBe("FORBIDDEN");
+      expect((await db.generatedDocument.findUniqueOrThrow({ where: { id: "doc" } })).status).toBe(
+        "generating",
+      );
+
+      // The same request from a member who holds the permission is accepted.
+      expect((await cancel("actor", "coordinator")).status).toBe(202);
+      expect((await db.generatedDocument.findUniqueOrThrow({ where: { id: "doc" } })).status).toBe(
+        "cancelling",
+      );
+    });
+
     it.each([
       {
         caller: "reader",

@@ -29,6 +29,20 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/lib/prisma.js", () => {
+  // The status and stale-claim filters the claim guard and the fences use.
+  type StatusFilter = string | { not?: string; in?: string[]; notIn?: string[] };
+  const statusMatches = (filter: StatusFilter): boolean => {
+    const status = String(state.doc.status);
+    if (typeof filter === "string") return status === filter;
+    if (filter.not !== undefined && status === filter.not) return false;
+    if (filter.in && !filter.in.includes(status)) return false;
+    if (filter.notIn && filter.notIn.includes(status)) return false;
+    return true;
+  };
+  const orBranchMatches = (branch: { status?: StatusFilter; updatedAt?: { lt: Date } }): boolean =>
+    (branch.status === undefined || statusMatches(branch.status)) &&
+    (branch.updatedAt === undefined ||
+      new Date(state.doc.updatedAt as Date).getTime() < branch.updatedAt.lt.getTime());
   const prisma = {
     project: {
       findFirst: vi.fn(async () => ({ id: "p", name: "Project", description: "System" })),
@@ -90,10 +104,10 @@ vi.mock("../src/lib/prisma.js", () => {
           state.doc.deletedAt ||
           (Object.hasOwn(where, "codeGraphHash") &&
             state.doc.codeGraphHash !== where.codeGraphHash) ||
-          (where.status && state.doc.status !== where.status) ||
+          (where.status && !statusMatches(where.status)) ||
           (where.updatedAt &&
             new Date(state.doc.updatedAt as Date).getTime() !== where.updatedAt.getTime()) ||
-          (where.OR && state.doc.status === "generating")
+          (where.OR && !where.OR.some(orBranchMatches))
         )
           return { count: 0 };
         Object.assign(state.doc, data, { updatedAt: new Date() });
@@ -223,6 +237,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { resolveEvidencePolicy } from "../src/lib/docs-gen/evidence-policy.js";
 import { captureGenerationInputs } from "../src/lib/docs-gen/generation-inputs.js";
 import { jobEvents } from "../src/lib/socket/job-events.js";
+import { TaskAbortError } from "../src/lib/scheduler/task-abort.js";
 import { checkpointSectionRecords } from "../src/lib/docs-gen/section-reuse.js";
 import { sectionGroupsFor } from "../src/lib/docs-gen/holistic-synthesizer.js";
 import {
@@ -469,18 +484,23 @@ describe("#782 — a late failure keeps what was finished", () => {
     state.changeInputs = true;
     await generateDocumentAsync("d", "p");
 
-    expect(state.doc.status).toBe("degraded");
+    // #867 — built from inputs that no longer hold, so never exportable: no
+    // content, and not a `ready`/`degraded` row that export would serve.
+    expect(state.doc.status).toBe("failed");
+    expect(state.doc.content).toBe("");
+    expect(state.doc.errorMessage).toBe(GENERATION_INPUTS_CHANGED_MESSAGE);
     expect(state.versions).toHaveLength(0);
-    for (const group of GROUPS) expect(state.doc.content).toContain(`## ${group.label}`);
     expect(cause()).toMatchObject({ stage: "commit", errorClass: "UnpublishableGenerationError" });
     expect(String(cause()!.message)).toContain("sources changed");
     expect(String(cause()!.message)).toContain("not published");
-    expect(jobEvents.completed).toHaveBeenCalledWith(
-      "doc-generation",
-      "d",
-      "p",
-      expect.stringContaining("not published"),
-    );
+    // Every finished section is still checkpointed for the regenerate below.
+    expect(
+      checkpointSectionRecords(
+        state.doc.generationCheckpoint,
+        GROUPS.map((g) => g.id),
+        false,
+      ).size,
+    ).toBe(GROUPS.length);
 
     // Regenerate: every section whose own inputs still match is reused.
     state.changeInputs = false;
@@ -751,6 +771,89 @@ describe("#855 — cancel", () => {
   });
 });
 
+// #867 review — an automatic regeneration, as the scheduler task runs it.
+async function automaticRun(expectedVersion: number) {
+  const doc = state.doc as unknown as Parameters<typeof resolveEvidencePolicy>[0] &
+    Parameters<typeof captureGenerationInputs>[0];
+  const { fingerprint } = await captureGenerationInputs(doc, await resolveEvidencePolicy(doc));
+  return generateDocumentAsync("d", "p", {
+    projectId: "p",
+    generatedDocumentId: "d",
+    expectedVersion,
+    fingerprint,
+    signal: new AbortController().signal,
+  });
+}
+
+describe("#867 — a cancel is never taken over", () => {
+  it("an automatic regeneration fails to claim a row that is being cancelled", async () => {
+    state.doc.autoUpdate = true;
+    state.doc.status = "cancelling";
+    state.doc.codeGraphHash = "regenerating:the-cancelled-run";
+
+    await expect(automaticRun(0)).rejects.toThrow("Generation already running");
+
+    expect(state.stream).not.toHaveBeenCalled();
+    expect(state.doc.status).toBe("cancelling");
+    // The cancelled run's own final write still matches its claim.
+    expect(state.doc.codeGraphHash).toBe("regenerating:the-cancelled-run");
+  });
+
+  it("still reclaims a cancelling row whose run died two hours ago", async () => {
+    state.doc.autoUpdate = true;
+    state.doc.status = "cancelling";
+    state.doc.codeGraphHash = "regenerating:a-dead-run";
+    state.doc.updatedAt = new Date(Date.now() - 3 * 3_600_000);
+
+    await automaticRun(0);
+
+    expect(state.versions).toHaveLength(1);
+  });
+
+  it("an automatic regeneration never restarts a never-published document the user cancelled", async () => {
+    state.doc.autoUpdate = true;
+    state.doc.status = "cancelled";
+
+    await automaticRun(0);
+
+    expect(state.stream).not.toHaveBeenCalled();
+    expect(state.doc.status).toBe("cancelled");
+    expect(state.versions).toHaveLength(0);
+  });
+
+  it("cancelling an automatic run restores the published document's status and records a cancel", async () => {
+    state.versions.push({ version: 1, provenanceManifest: null });
+    state.doc.autoUpdate = true;
+    state.doc.status = "ready";
+    state.doc.content = "# Published v1";
+    state.doc.errorMessage = null;
+    state.doc.warnings = [];
+    state.duringSection = (label) => {
+      if (label !== GROUPS[1].label) return;
+      state.doc.status = "cancelling";
+      stopGeneration("d", "aborted");
+    };
+
+    const outcome = automaticRun(1);
+    // The scheduler records a cancel, not a success (and not a retryable failure).
+    await expect(outcome).rejects.toBeInstanceOf(TaskAbortError);
+    await expect(outcome).rejects.toMatchObject({ source: "user" });
+
+    expect(state.doc.status).toBe("ready");
+    expect(state.doc.errorMessage).toBeNull();
+    expect(state.doc.warnings).toEqual([]);
+    expect(state.doc.content).toBe("# Published v1");
+    expect(state.doc.codeGraphHash).toBeNull();
+    expect(state.versions).toHaveLength(1);
+    expect(jobEvents.completed).toHaveBeenCalledWith(
+      "doc-generation",
+      "d",
+      "p",
+      "Generation cancelled",
+    );
+  });
+});
+
 describe("#855 — delete stops the spend", () => {
   it("aborts the in-flight call and writes nothing more", async () => {
     let inFlight: AbortSignal | undefined;
@@ -803,7 +906,9 @@ describe("#856 — inputs are checked between sections, not only at the commit f
     await generateDocumentAsync("d", "p");
 
     expect(sectionCalls()).toBe(2);
-    expect(state.doc.status).toBe("degraded");
+    // #867 — its sections describe the old sources: failed, never an exportable draft.
+    expect(state.doc.status).toBe("failed");
+    expect(state.doc.content).toBe("");
     expect(state.versions).toHaveLength(0);
     expect(cause()).toMatchObject({
       stage: "sections",

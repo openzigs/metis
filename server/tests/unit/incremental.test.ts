@@ -267,7 +267,10 @@ describe("successful ingestion durable regeneration #1356", () => {
         projectId: "p",
         autoUpdate: true,
         deletedAt: null,
-        status: { in: ["ready", "degraded", "failed", "cancelled", "generating"] },
+        OR: [
+          { status: { in: ["ready", "degraded", "failed", "generating"] } },
+          { status: { in: ["cancelled", "cancelling"] }, versions: { some: {} } },
+        ],
         scope: { in: ["full", "repository", "module", "symbol"] },
       },
     });
@@ -422,6 +425,64 @@ describe("successful ingestion durable regeneration #1356", () => {
       expect(state.generate).toHaveBeenCalledTimes(1);
     },
   );
+
+  describe("#867 — a cancelled document keeps tracking only once it has published", () => {
+    type Row = { id: string; status: string; versions: number };
+    type StatusFilter = string | { in: string[] };
+    type Where = {
+      status?: StatusFilter;
+      OR?: Array<{ status?: StatusFilter; versions?: { some: object } }>;
+    };
+    const statusIs = (filter: StatusFilter | undefined, status: string) =>
+      filter === undefined ||
+      (typeof filter === "string" ? filter === status : filter.in.includes(status));
+    // Evaluates the selection's status filter against stored rows, as the database would.
+    function storeRows(rows: Row[]) {
+      state.findDocs.mockImplementation(async ({ where }: { where: Where }) =>
+        rows
+          .filter(
+            (row) =>
+              statusIs(where.status, row.status) &&
+              (!where.OR ||
+                where.OR.some(
+                  (branch) =>
+                    statusIs(branch.status, row.status) && (!branch.versions || row.versions > 0),
+                )),
+          )
+          .map((row) => ({ ...document, id: row.id })),
+      );
+    }
+    const scheduled = () =>
+      [...state.tasks.values()].map(
+        (task) =>
+          (JSON.parse(String(task.payload)) as { generatedDocumentId: string }).generatedDocumentId,
+      );
+
+    it("regenerates a cancelled document that has a published version", async () => {
+      storeRows([{ id: "published", status: "cancelled", versions: 1 }]);
+      await checkIncrementalRegeneration("p", "r");
+      expect(scheduled()).toEqual(["published"]);
+    });
+
+    it("never regenerates a cancelled document that never published", async () => {
+      storeRows([{ id: "never-published", status: "cancelled", versions: 0 }]);
+      await checkIncrementalRegeneration("p", "r");
+      expect(scheduled()).toEqual([]);
+      expect(prisma.task.upsert).not.toHaveBeenCalled();
+    });
+
+    it("still regenerates ready, degraded, failed and generating documents", async () => {
+      storeRows(
+        ["ready", "degraded", "failed", "generating"].map((status) => ({
+          id: status,
+          status,
+          versions: 0,
+        })),
+      );
+      await checkIncrementalRegeneration("p", "r");
+      expect(scheduled()).toEqual(["ready", "degraded", "failed", "generating"]);
+    });
+  });
 
   it("skips unchanged inputs and empty document sets", async () => {
     state.parseManifest.mockReturnValue({ inputSnapshot: current });

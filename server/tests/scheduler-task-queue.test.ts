@@ -7,7 +7,7 @@ vi.mock("../src/lib/prisma.js", () => ({ prisma: {} }));
 
 import { TaskQueue, type TaskStore } from "../src/lib/scheduler/task-queue.js";
 import { InMemoryTaskHandlerRegistry } from "../src/lib/scheduler/task-handlers.js";
-import { taskAbortSource } from "../src/lib/scheduler/task-abort.js";
+import { TaskAbortError, taskAbortSource } from "../src/lib/scheduler/task-abort.js";
 import {
   TASK_RETRY_WINDOW_MS,
   VAULT_REFERENCING_TASK_TYPE as WEBHOOK,
@@ -802,6 +802,33 @@ describe("TaskQueue cancellation", () => {
     await new Promise((r) => setImmediate(r));
     expect(aborted).toBe(true);
     expect(rows.get(task.id)?.status).toBe("cancelled");
+  });
+
+  it("#867 — records a handler that reports a user's cancel as cancelled, never retried", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn<TaskHandlerFn>(async () => {
+      // A generation the user cancelled through its own document, not the queue.
+      throw new TaskAbortError("user", "Generation cancelled by user");
+    });
+    registry.register({ type: "regenerate-generated-document", description: "", handler });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, {
+      ...baseConfig,
+      retryBackoffMs: 1,
+    });
+    try {
+      const task = await queue.enqueue({ type: "regenerate-generated-document" });
+      await vi.waitFor(() => expect(rows.get(task.id)?.status).toBe("cancelled"));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(handler).toHaveBeenCalledOnce();
+      expect(rows.get(task.id)).toMatchObject({
+        status: "cancelled",
+        attempts: 1,
+        errorMessage: "Generation cancelled by user",
+      });
+    } finally {
+      await queue.shutdown();
+    }
   });
 
   it("#201 — settles a queued task's handler-owned state when it is cancelled before running", async () => {
