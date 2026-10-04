@@ -177,14 +177,16 @@ describe("#154 buildRelevantFactsBlob sends only the section's slices", () => {
     const cap = 2_000;
     const rules = selectRelevantFacts(all, rulesGroup(), "business-requirements", cap);
     expect(rules.included).toHaveLength(10);
-    // The same facts sent whole (a group reading every slice) no longer fit.
+    expect(rules.condensed.size).toBe(0);
+    // The same facts sent whole (a group reading every slice) no longer fit in
+    // full; since #778 the rest are read as condensed digests instead.
     const whole = selectRelevantFacts(
       all,
       { id: "unknown-reads-all", label: "x", instructions: "" },
       "business-requirements",
       cap,
     );
-    expect(whole.included.length).toBeLessThan(3);
+    expect(whole.included.length - whole.condensed.size).toBeLessThan(3);
   });
 
   it("ranks by the section's own slices, not by other topics", () => {
@@ -222,7 +224,8 @@ describe("#154 facts-truncated budget is measured on the section's slices", () =
   it("still reports omitted modules when the section's own slices do not fit", () => {
     const all = [big(1), big(2), big(3)];
     const notes = groupById("architecture", "ops-and-stack");
-    const budget = summarizeFactsBudget(all, notes, "architecture", 1_000);
+    // #778 — a cap too small even for a ~200-char digest of every module.
+    const budget = summarizeFactsBudget(all, notes, "architecture", 500);
     expect(budget.exceeded).toBe(true);
     expect(budget.omittedModules).toBeGreaterThan(0);
   });

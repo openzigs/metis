@@ -4013,6 +4013,25 @@ against stay identical. On onyourleft (143 TypeScript modules, gemma3:12b facts)
 at a 200,000-char cap the Rules section went from 8 to 35 modules, Key Workflows
 from 11 to 91, Calculations from 11 to all 143.
 
+#### Condensed digests and document-scoped citations (#778, #737)
+
+A single-call section whose ranked entries still exceed `factsCharCap` keeps
+the top modules in full and reads every other module as a condensed digest
+(`fact-digest.ts`): headings and leading bullets, sampled round-robin across
+its slices, within up to 40% of the same cap. Input per section is unchanged.
+Only modules for which even a 200-char digest no longer fits are omitted and
+reported as `facts-truncated`. The digest is the module's entry everywhere: it is
+what the model reads and what the citable `facts:` source holds.
+
+The model cites source ids inline (`[facts:…]`). At assembly,
+`renderCitationFootnotes` (`citation-footnotes.ts`) turns every id of an admitted
+source into a GFM footnote, `[^src-N]`. Numbering is per document and keyed on
+the readable reference, so one module cited from several sections is one
+footnote. Each definition names the module path, or `file:start-end` for a
+typed-symbol source. A bare id the model copied into prose is replaced by the
+same readable reference. Ids that match no admitted source are still stripped
+(#1360).
+
 #### Batched enumerative sections (#157)
 
 Business Rules, Key Workflows, Calculations and Data Model are catalogs whose
