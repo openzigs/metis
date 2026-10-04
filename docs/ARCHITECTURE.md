@@ -3211,6 +3211,17 @@ returns `null` and doc/impact generation proceeds, leaving unresolved SQL
 - **Procedure bodies** — routine bodies parse best-effort; unresolved calls →
   `routine-body-unanalyzed`.
 
+**Lineage backfill (#721, #856).** `CodeGraph.lineageFingerprint` records the lineage
+inputs (on/off, extractor version, introspected-schema hash) the graph was built with. When
+they change — a database connector is added, the schema changes, lineage is toggled — the
+next incremental ingest backfills lineage over files whose content did not change. It does
+**not** re-parse them: their `sqlglot` edges, synthetic `sql@`/`exec@`/`procsql@` origins and
+routines are cleared and Step 6 re-runs over them, reusing the persisted table/column ids;
+table/column symbols left with no incoming edge are then pruned. Parser symbols and edges keep
+their ids, so findings, requirement/spec mappings and embeddings stay linked and the docs-gen
+inputs fingerprint (`docs-gen/generation-inputs.ts`) does not move on a same-SHA refresh.
+`IngestStats.filesLineageRefreshed` counts those files.
+
 The query-time SELECT validator (`connectors/db/sql-validator.ts`, `node-sql-parser`)
 is unchanged — it remains the read-only guard for live DB queries.
 
