@@ -25,7 +25,7 @@ import { requireGate, GateUnmetError } from "../gates.js";
 import { loadAsPreamble } from "../constitution-meta.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
-import { PLAN_SYSTEM_PROMPT as LEGACY_PLAN_SYSTEM_PROMPT } from "./plan.js";
+import { PLAN_SYSTEM_PROMPT as LEGACY_PLAN_SYSTEM_PROMPT } from "./prompts.js";
 import {
   buildSpecKitRagContext,
   type SiblingSymbolLookup,

@@ -603,7 +603,7 @@ describe("feature commands are grounded (#786, #785)", () => {
   }
   const ENTRY = "internal/storage/entry.go";
   const knowledgeService = {
-    search: vi.fn(async () => ({
+    search: vi.fn(async (_projectId: string, _query: string, _opts?: unknown) => ({
       hits: [
         {
           chunkId: "c1",

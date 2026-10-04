@@ -23,7 +23,7 @@ import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
 import { buildSpecKitRagContext, type SpecKitKnowledgeService } from "../rag-context.js";
 import { describeGrounding, PINNED_REQUIREMENT_DOCUMENTS } from "../grounding.js";
-import { SPECIFY_SYSTEM_PROMPT } from "./specify.js";
+import { SPECIFY_SYSTEM_PROMPT } from "./prompts.js";
 
 /**
  * #786 — the same contract as `/specify`: stable `AC-n` ids (which
