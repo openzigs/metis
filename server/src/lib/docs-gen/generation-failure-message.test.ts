@@ -20,6 +20,54 @@ import {
   publicGenerationErrorMessage,
 } from "./generation-failure-message.js";
 import { GENERATION_INTERRUPTED_MESSAGE } from "./interrupted-generations.js";
+import { UnpublishableGenerationError } from "./generation-checkpoint.js";
+import {
+  GENERATION_CANCELLED_MESSAGE,
+  GENERATION_COST_CEILING_MESSAGE,
+  GENERATION_INPUTS_CHANGED_MESSAGE,
+  generationFailureMessage as messageFor,
+  publicGenerationErrorMessage as publicMessageFor,
+} from "./generation-failure-message.js";
+
+describe("#855 / #856 — a run METIS stopped on purpose", () => {
+  it("is described by its stop reason", () => {
+    expect(messageFor(new UnpublishableGenerationError("aborted", "x"))).toBe(
+      GENERATION_CANCELLED_MESSAGE,
+    );
+    expect(messageFor(new UnpublishableGenerationError("budget", "x"))).toBe(
+      GENERATION_COST_CEILING_MESSAGE,
+    );
+    expect(messageFor(new UnpublishableGenerationError("inputs-changed", "x"))).toBe(
+      GENERATION_INPUTS_CHANGED_MESSAGE,
+    );
+    // `superseded` never reaches a user (its row is gone): the generic message.
+    expect(messageFor(new UnpublishableGenerationError("superseded", "x"))).not.toBe(
+      GENERATION_CANCELLED_MESSAGE,
+    );
+  });
+
+  it("keeps the new messages on read, for a failed and a cancelled row", () => {
+    for (const message of [
+      GENERATION_CANCELLED_MESSAGE,
+      GENERATION_COST_CEILING_MESSAGE,
+      GENERATION_INPUTS_CHANGED_MESSAGE,
+    ]) {
+      expect(publicMessageFor("failed", message)).toBe(message);
+    }
+    expect(publicMessageFor("cancelled", GENERATION_CANCELLED_MESSAGE)).toBe(
+      GENERATION_CANCELLED_MESSAGE,
+    );
+  });
+
+  it("never trusts a reason it does not know", () => {
+    const err = Object.assign(new Error("boom /etc/secret"), {
+      name: "UnpublishableGenerationError",
+      reason: "toString",
+    });
+    expect(messageFor(err)).not.toContain("/etc/secret");
+    expect(messageFor(err)).not.toBe(GENERATION_CANCELLED_MESSAGE);
+  });
+});
 import { AIProviderError } from "../ai/errors.js";
 import { BudgetExceededError } from "../finops/budget-enforcer.js";
 
