@@ -302,10 +302,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("#4478 older-than: names the existing MarkAllAsReadBeforeDate and its Google Reader caller", async () => {
-      const { symbols } = await run(REQ_4478);
-      const all = names(symbols);
-      expect(all).toContain(`${ENTRY}::MarkAllAsReadBeforeDate`);
-      expect(all).toContain(`${GREADER}::markAllAsReadHandler`);
+      // The walkthrough's mapper seeded the UI handler and the Go client, never the
+      // storage function (the issue's "indexed but not retrieved"). Pin those seeds,
+      // so the result can come only from the engine following the data.
+      const seed = (qn: string) => ({
+        codeSymbolId: ids.get(qn.split("::")[1]!)!,
+        filePath: qn.split("::")[0]!,
+        qualifiedName: qn,
+        startLine: 13,
+        endLine: 30,
+        confidence: 1,
+      });
+      const seeds = [seed(`${UI_MARK}::markAllAsRead`)];
+      const { symbols } = await run(REQ_4478, { mapRequirement: async () => seeds });
+      const byName = new Map(symbols.map((s) => [s.qualifiedName, s]));
+      expect(byName.get(`${ENTRY}::MarkAllAsReadBeforeDate`)?.relation).toBe("data-writer");
+      expect(byName.get(`${GREADER}::markAllAsReadHandler`)?.relation).toBe("caller");
     });
 
     it("#4511 last refresh: names the refresh writers of checked_at", async () => {
