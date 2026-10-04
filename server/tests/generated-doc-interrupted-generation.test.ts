@@ -169,6 +169,10 @@ vi.mock("../src/lib/socket/job-events.js", () => ({
 
 import { generateDocumentAsync, generatedDocsRouter } from "../src/routes/generated-docs.js";
 import {
+  releaseGenerationControl,
+  startGenerationControl,
+} from "../src/lib/docs-gen/generation-control.js";
+import {
   GENERATING_STALE_MS,
   GENERATION_HEARTBEAT_MS,
   GENERATION_INTERRUPTED_MESSAGE,
@@ -182,6 +186,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { jobEvents } from "../src/lib/socket/job-events.js";
 import { synthesizeDbSchemaDocument } from "../src/lib/docs-gen/db-schema-synthesizer.js";
 import {
+  GENERATION_CANCELLED_MESSAGE,
   GENERATION_FAILED_MESSAGE,
   GENERATION_PROVIDER_BALANCE_MESSAGE,
 } from "../src/lib/docs-gen/generation-failure-message.js";
@@ -435,7 +440,7 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
     const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
 
     expect(res.status).toBe(409);
-    expect(res.body.error?.message ?? res.text).toMatch(/failed or partially generated/);
+    expect(res.body.error?.message ?? res.text).toMatch(/failed, cancelled or partially generated/);
     expect(doc().status).toBe("degraded");
     expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
   });
@@ -447,6 +452,117 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
     expect((await request(app).post("/projects/proj-1/docs/gone/regenerate")).status).toBe(404);
     expect(doc().status).toBe("failed");
     expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
+  });
+});
+
+describe("#855 — POST /:docId/cancel", () => {
+  const app = buildApp();
+  const cancel = (id = "doc-1", project = "proj-1") =>
+    request(app).post(`/projects/${project}/docs/${id}/cancel`).send({});
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.docs.clear();
+    state.release = null;
+    state.user = ADMIN;
+  });
+
+  afterEach(() => {
+    state.release?.(new Error("test teardown"));
+    state.user = null;
+  });
+
+  it("cancels a pending document outright, and its run then does nothing", async () => {
+    seed({ status: "pending" });
+
+    const res = await cancel();
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ id: "doc-1", status: "cancelled" });
+    expect(doc()).toMatchObject({
+      status: "cancelled",
+      errorMessage: GENERATION_CANCELLED_MESSAGE,
+    });
+    await generateDocumentAsync("doc-1", "proj-1");
+    expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
+    expect(doc().status).toBe("cancelled");
+  });
+
+  it("stops a running generation and leaves it cancelled", async () => {
+    seed();
+    await startGeneration();
+    // A run of this document registered in this process, as the real run is:
+    // the route must stop it at once, not wait for the next heartbeat.
+    const local = startGenerationControl("doc-1", "proj-1", {
+      maxCostCents: null,
+      maxTokens: null,
+    });
+
+    const res = await cancel();
+
+    expect(res.status).toBe(202);
+    expect(res.body.data).toEqual({ id: "doc-1", status: "cancelling" });
+    expect(doc().status).toBe("cancelling");
+    expect(local.signal.aborted).toBe(true);
+    expect(local.reason).toBe("aborted");
+    releaseGenerationControl(local);
+    // The run notices (here: its blocked call fails once aborted) and settles.
+    state.release!(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    await vi.waitFor(() => expect(doc().status).toBe("cancelled"));
+    expect(doc()).toMatchObject({
+      errorMessage: GENERATION_CANCELLED_MESSAGE,
+      // The claim is released back to the previous hash.
+      codeGraphHash: "previous-hash",
+    });
+    expect(jobEvents.completed).toHaveBeenCalledWith(
+      "doc-generation",
+      "doc-1",
+      "proj-1",
+      "Generation cancelled",
+    );
+    expect(jobEvents.failed).not.toHaveBeenCalled();
+    // GET reports the cancel in the fixed vocabulary.
+    const got = await request(app).get("/projects/proj-1/docs/doc-1");
+    expect(got.body.data).toMatchObject({
+      status: "cancelled",
+      errorMessage: GENERATION_CANCELLED_MESSAGE,
+    });
+  });
+
+  it("answers a second cancel while the first takes effect", async () => {
+    seed({ status: "cancelling" });
+    const res = await cancel();
+    expect(res.status).toBe(202);
+    expect(res.body.data.status).toBe("cancelling");
+  });
+
+  it("409s for a document that is not running", async () => {
+    for (const status of ["ready", "failed", "degraded", "cancelled"]) {
+      state.docs.clear();
+      seed({ status });
+      const res = await cancel();
+      expect(res.status, status).toBe(409);
+      expect(res.body.error.code).toBe("DOC_NOT_CANCELLABLE");
+      expect(doc().status).toBe(status);
+    }
+  });
+
+  it("404s a document in another project, a deleted one, or another tenant's", async () => {
+    seed({ status: "generating", projectId: "other" });
+    expect((await cancel()).status).toBe(404);
+    seed({ id: "gone", status: "generating", deletedAt: new Date() });
+    expect((await cancel("gone")).status).toBe(404);
+    state.user = { userId: "u", role: "coordinator", workspaces: ["ws-other"], permissions: [] };
+    seed({ id: "theirs", status: "generating" });
+    expect((await cancel("theirs")).status).toBe(404);
+    expect(doc("theirs").status).toBe("generating");
+  });
+
+  it("lets a cancelled document be regenerated", async () => {
+    seed({ status: "cancelled", errorMessage: GENERATION_CANCELLED_MESSAGE });
+    const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(doc().status).toBe("generating"));
   });
 });
 

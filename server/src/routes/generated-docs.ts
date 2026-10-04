@@ -14,6 +14,7 @@
  *   GET    /:docId/schema-graph  — structured schema graph (Epic #895)
  *   PATCH  /:docId               — update metadata (title, autoUpdate)
  *   DELETE /:docId               — soft-delete a document
+ *   POST   /:docId/cancel        — cancel a pending or running generation (#855)
  */
 import { Router, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
@@ -100,6 +101,7 @@ import {
 } from "../lib/docs-gen/regeneration-plan.js";
 import type { RegenerationTask } from "../lib/docs-gen/incremental.js";
 import {
+  GENERATION_CANCELLED_MESSAGE,
   GENERATION_INTERRUPTED_MESSAGE,
   startGenerationHeartbeat,
 } from "../lib/docs-gen/interrupted-generations.js";
@@ -108,6 +110,17 @@ import {
   publicDocWarnings,
   publicGenerationErrorMessage,
 } from "../lib/docs-gen/generation-failure-message.js";
+import {
+  releaseGenerationControl,
+  startGenerationControl,
+  stopGeneration,
+  type GenerationControl,
+} from "../lib/docs-gen/generation-control.js";
+import { withGenerationScope } from "../lib/docs-gen/generation-scope.js";
+import type {
+  GenerationStepHook,
+  SectionResumeReport,
+} from "../lib/docs-gen/holistic-synthesizer.js";
 import {
   INDEXING_PUBLICATION_CANCELLED_MESSAGE,
   isGeneratedDocPublicationCancelled,
@@ -880,7 +893,12 @@ export function generatedDocsRouter(): Router {
           id: docId,
           projectId,
           deletedAt: null,
-          OR: [{ status: "failed" }, { status: "degraded", versions: { none: {} } }],
+          // #855 — and a cancelled one, which resumes from its checkpoint.
+          OR: [
+            { status: "failed" },
+            { status: "cancelled" },
+            { status: "degraded", versions: { none: {} } },
+          ],
         },
         data: { status: "pending", errorMessage: null },
       });
@@ -893,13 +911,66 @@ export function generatedDocsRouter(): Router {
         throw new AppError(
           409,
           "DOC_NOT_REGENERATABLE",
-          `Only a failed or partially generated document can be regenerated (status: ${existing.status})`,
+          `Only a failed, cancelled or partially generated document can be regenerated (status: ${existing.status})`,
         );
       }
       void generateDocumentAsync(docId, projectId).catch((err) => {
         log.error("Background doc regeneration failed", { err, docId });
       });
       res.status(202).json({ data: { id: docId, status: "pending" } });
+    },
+  );
+
+  // POST /:docId/cancel — #855: stop a generation that is spending money.
+  // Behind the router-level pre-auth and per-user limiters, like every route
+  // here; deliberately NOT behind the generate limiter, so a user who has spent
+  // their generate budget can still stop a run.
+  r.post(
+    "/:docId/cancel",
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      const projectId = getProjectId(req);
+      const docId = getDocId(req);
+      // Not yet claimed: nothing is running, so it is cancelled outright (the
+      // claim compare-and-sets on this row's updatedAt, which this changes).
+      const queued = await prisma.generatedDocument.updateMany({
+        where: { id: docId, projectId, deletedAt: null, status: "pending" },
+        data: { status: "cancelled", errorMessage: GENERATION_CANCELLED_MESSAGE },
+      });
+      if (queued.count) {
+        jobEvents.completed("doc-generation", docId, projectId, "Generation cancelled");
+        res.status(200).json({ data: { id: docId, status: "cancelled" } });
+        return;
+      }
+      // Running: mark it, then stop it. A run in this process stops at once;
+      // one on another replica notices on its next heartbeat. The run itself
+      // records the final `cancelled` state, keeping what it finished.
+      const running = await prisma.generatedDocument.updateMany({
+        where: { id: docId, projectId, deletedAt: null, status: "generating" },
+        data: { status: "cancelling" },
+      });
+      if (running.count) {
+        stopGeneration(docId, "aborted");
+        log.info("Generation cancel requested", { docId, projectId, userId: req.user?.userId });
+        res.status(202).json({ data: { id: docId, status: "cancelling" } });
+        return;
+      }
+      const existing = await prisma.generatedDocument.findFirst({
+        where: { id: docId, projectId, deletedAt: null },
+        select: { status: true },
+      });
+      if (!existing) throw new AppError(404, "DOC_NOT_FOUND", "Generated document not found");
+      if (existing.status === "cancelling") {
+        // Idempotent: a second click while the first is taking effect.
+        stopGeneration(docId, "aborted");
+        res.status(202).json({ data: { id: docId, status: "cancelling" } });
+        return;
+      }
+      throw new AppError(
+        409,
+        "DOC_NOT_CANCELLABLE",
+        `Only a pending or generating document can be cancelled (status: ${existing.status})`,
+      );
     },
   );
 
@@ -972,11 +1043,38 @@ export function generatedDocsRouter(): Router {
       }
       return ids;
     });
+    // #855 — deleting a generating document stops its spend, not only its
+    // commit: a run in this process is aborted now, one on another replica on
+    // its next heartbeat (which finds the row deleted).
+    stopGeneration(docId, "superseded");
     for (const id of tasks) await dispatchGeneratedDocTask(id);
     res.status(204).send();
   });
 
   return r;
+}
+
+/**
+ * #856 — how often a batched section re-checks its inputs between batches.
+ * Capturing the inputs reads the code graph and the source files, so it is not
+ * done before every one of a section's batches.
+ */
+const INPUTS_RECHECK_MS = 5 * 60_000;
+
+/** #857 — the version note for a run that had stored sections to reuse. */
+function resumeSummary(resume: SectionResumeReport): string {
+  const stale = resume.stale
+    .slice(0, 10)
+    .map((s) => `${s.section} (${s.changed.join(", ") || "inputs"})`)
+    .join("; ");
+  return [
+    `Reused ${resume.reused.length} finished section${resume.reused.length === 1 ? "" : "s"}`,
+    ...(resume.stale.length > 0
+      ? [
+          `rewrote ${resume.stale.length} whose inputs changed: ${stale}${resume.stale.length > 10 ? "; …" : ""}`,
+        ]
+      : []),
+  ].join("; ");
 }
 
 /**
@@ -1002,6 +1100,11 @@ export async function generateDocumentAsync(
   let title = "Generated Documentation";
   let finishedSections: SectionSynthesisRecord[] = [];
   let synthesized: { markdown: string; warnings: DocWarningShape[] } | undefined;
+  // #855 — this run's stop switch and cost ceiling, from the moment it claims.
+  let control: GenerationControl | undefined;
+  let beforeStep: GenerationStepHook | undefined;
+  // #857 — what a resumed run reused and rewrote.
+  let resume: SectionResumeReport | undefined;
   try {
     if (automatic?.signal.aborted)
       throw new UnpublishableGenerationError("aborted", "Regeneration aborted");
@@ -1009,6 +1112,8 @@ export async function generateDocumentAsync(
       where: { id: docId, projectId, deletedAt: null },
     });
     if (!original || (automatic && !original.autoUpdate)) return;
+    // #855 — cancelled before this run read the row: nothing to do.
+    if (!automatic && original.status === "cancelled") return;
     originalHash = original.codeGraphHash;
     if (!automatic && original.status === "pending") pendingUpdatedAt = original.updatedAt;
     const policy = await resolveEvidencePolicy(original);
@@ -1075,7 +1180,47 @@ export async function generateDocumentAsync(
     claimed = true;
     hadVersion = lastVersion != null;
     title = original.title || title;
-    stopHeartbeat = startGenerationHeartbeat(docId, projectId, claim);
+    const run = startGenerationControl(docId, projectId);
+    control = run;
+    // An automatic run's own abort (its task cancelled) stops it the same way.
+    automatic?.signal.addEventListener("abort", () => run.stop("aborted"), { once: true });
+    stopHeartbeat = startGenerationHeartbeat(docId, projectId, claim, undefined, (reason) =>
+      run.stop(reason),
+    );
+    // #856 — between units of work, not only at the commit fence: a run whose
+    // row was cancelled, deleted or taken, or whose inputs changed, stops
+    // before it spends more. Batches are checked at most every
+    // INPUTS_RECHECK_MS (a batched section can run for 25 minutes); every
+    // other step always is. With a same-SHA refresh made a no-op on the ingest
+    // side the inputs simply never differ here, so this costs one read.
+    let lastInputsCheck = 0;
+    beforeStep = async (step) => {
+      const stopped = run.stopError();
+      if (stopped) throw stopped;
+      const now = Date.now();
+      if (step.kind === "batch" && now - lastInputsCheck < INPUTS_RECHECK_MS) return;
+      lastInputsCheck = now;
+      const row = await prisma.generatedDocument.findFirst({
+        where: { id: docId, projectId, deletedAt: null },
+      });
+      if (!row || row.codeGraphHash !== claim) run.stop("superseded");
+      else if (row.status === "cancelling") run.stop("aborted");
+      else if (
+        inputSnapshot &&
+        (await captureGenerationInputs(row, await resolveEvidencePolicy(row))).fingerprint !==
+          inputSnapshot.fingerprint
+      ) {
+        log.warn("Generation inputs changed mid-run; stopping it", {
+          docId,
+          projectId,
+          step: step.kind,
+          section: step.section,
+        });
+        run.stop("inputs-changed");
+      }
+      const reason = run.stopError();
+      if (reason) throw reason;
+    };
     // #239 — broadcast the doc-generation job start so the UI flips from the
     // static "generating" badge to live status without a manual refresh.
     jobEvents.started("doc-generation", docId, projectId, "Generating documentation");
@@ -1286,12 +1431,12 @@ export async function generateDocumentAsync(
       // #178 — the bar never moves backwards: a batched section's total grows
       // when a cut-off batch is split, which can lower done/total for a moment.
       const docPercent = monotonicPercent();
-      const result = await synthesizeHolisticDocument(
-        projectId,
-        docType,
-        doc?.title ?? "Generated Documentation",
-        {
+      // #855 — inside the run's scope: every docs-gen provider call carries its
+      // AbortSignal and reports its spend to the run's ceiling.
+      const result = await withGenerationScope(control!, () =>
+        synthesizeHolisticDocument(projectId, docType, doc?.title ?? "Generated Documentation", {
           ...(automatic ? { previousManifest } : {}),
+          ...(beforeStep ? { beforeStep } : {}),
           // #782 — resume: an earlier unfinished run's sections are reused
           // where their inputs are unchanged, and this run's are saved as each
           // one finishes, only while this run still holds the claim. `records`
@@ -1331,7 +1476,9 @@ export async function generateDocumentAsync(
               (u.status === "done" || u.status === "degraded" || u.status === "failed") &&
               u.index >= u.total;
             stage = last ? "assembly" : "sections";
-            stageSection = last ? undefined : u.section;
+            // #856 — between sections the run is in none of them: a stop found
+            // before the next one must not be blamed on the one just finished.
+            stageSection = last || u.status !== "generating" ? undefined : u.section;
             jobEvents.docSection({
               jobId: docId,
               projectId,
@@ -1369,11 +1516,13 @@ export async function generateDocumentAsync(
               phase1ProgressMessage(done, total),
             );
           },
-        },
+        }),
       );
       stage = "assembly";
       stageSection = undefined;
       markdown = result.markdown;
+      resume = result.resume;
+      if (resume) log.info("Resumed from stored sections", { docId, projectId, ...resume });
       // #182 — sections were grounded against the repository index; when that
       // index is partial (capped, failed, interrupted, never recorded), say so,
       // so the document is `degraded` rather than looking fully grounded.
@@ -1493,6 +1642,10 @@ export async function generateDocumentAsync(
       where: { id: docId, projectId, deletedAt: null },
     });
     if (!current || current.codeGraphHash !== claim) return;
+    // #855 — a cancel that landed after the last section still wins.
+    if (current.status === "cancelling") control?.stop("aborted");
+    const stopped = control?.stopError();
+    if (stopped) throw stopped;
     const currentPolicy = await resolveEvidencePolicy(current);
     if (automatic?.signal.aborted)
       throw new UnpublishableGenerationError("aborted", "Regeneration aborted");
@@ -1513,6 +1666,8 @@ export async function generateDocumentAsync(
           projectId,
           deletedAt: null,
           codeGraphHash: claim,
+          // #855 — never publish over a cancel requested since the check above.
+          status: "generating",
           scopeFilter: original.scopeFilter,
           evidencePolicy: original.evidencePolicy,
           title: original.title,
@@ -1553,9 +1708,12 @@ export async function generateDocumentAsync(
                 ? "Source inventory updated; all section dependencies unchanged"
                 : automatic && plan?.mode === "full"
                   ? `Conservative full regeneration: ${plan.reason}`
-                  : nextVersion === 1
-                    ? "Initial generation"
-                    : "Full regeneration",
+                  : // #857 — a resumed manual run says what it reused and why it rewrote the rest.
+                    resume
+                    ? `${nextVersion === 1 ? "Initial generation" : "Full regeneration"}, resumed: ${resumeSummary(resume)}`
+                    : nextVersion === 1
+                      ? "Initial generation"
+                      : "Full regeneration",
           ...(plan ? { changedSymbols: JSON.stringify(plan.changed) } : {}),
         },
       });
@@ -1566,6 +1724,8 @@ export async function generateDocumentAsync(
       );
     });
     claimed = false;
+    // Published: the claim is gone, so a later beat must not read as superseded.
+    stopHeartbeat?.();
 
     await dispatchGeneratedDocTask(publicationTaskId);
 
@@ -1578,31 +1738,55 @@ export async function generateDocumentAsync(
       projectId,
       healthStatus === "degraded" ? "Generated with warnings" : "Documentation ready",
     );
-  } catch (err) {
+  } catch (caught) {
+    // Stopped before any write below, so a late beat cannot change the outcome.
+    stopHeartbeat?.();
+    // #855 — a stopped run's cause is its stop, whatever error surfaced first
+    // (an aborted model call's AbortError, say).
+    const err = control?.stopError() ?? caught;
+    const reason = err instanceof UnpublishableGenerationError ? err.reason : null;
     // #52 — the only record of the raw error. Logged as strings: the logger's
     // redaction pass copies own enumerable properties, and an Error's
     // `message` and `stack` are not, so `{ err }` logged `err: {}`.
     log.error("Document generation failed", {
       docId,
       projectId,
-      error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
-      stack: err instanceof Error ? err.stack : undefined,
+      ...(reason ? { stopped: reason } : {}),
+      error: caught instanceof Error ? `${caught.name}: ${caught.message}` : String(caught),
+      stack: caught instanceof Error ? caught.stack : undefined,
     });
+    // #855 — a cancel asked for on this row: by this process (the run's own
+    // stop reason), or by another replica or just before the commit (the row).
+    let cancelRequested = reason === "aborted" && !automatic;
+    if (claimed && !cancelRequested) {
+      const row = await prisma.generatedDocument
+        .findFirst({
+          where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
+          select: { status: true },
+        })
+        .catch(() => null);
+      cancelRequested = row?.status === "cancelling";
+    }
     // #782 — the cause, on the document: stage, section and error class.
-    const cause = generationFailureWarning({ stage, section: stageSection, err });
-    // #782 — keep what the run finished rather than discarding it, unless:
-    // - the commit boundary refused it on purpose (inputs changed, superseded);
-    // - the commit itself failed: content is visible only through a committed
-    //   version and its publication task (the transactional outbox), and every
-    //   section is checkpointed by then, so a regenerate reuses them all;
+    const cause = generationFailureWarning({
+      stage,
+      section: stageSection,
+      err: cancelRequested ? new UnpublishableGenerationError("aborted", "Cancelled") : err,
+    });
+    // #782 / #857 — keep what the run finished, as an unpublished `degraded`
+    // draft, rather than discarding it — including when the commit fence
+    // refused it (its inputs changed) or the commit itself failed: what was
+    // written stays readable, its warning says it was not published, and the
+    // checkpoint lets a regenerate reuse every section whose inputs still
+    // match. Never when:
+    // - the row is no longer this run's (`superseded`: deleted or replaced);
     // - a published version would be overwritten by a partial one (that version
-    //   stays; a regenerate resumes from the checkpoint).
+    //   stays; a regenerate resumes from the checkpoint);
+    // - it is an automatic regeneration (its published version stays).
+    // A commit refused because a cancel landed inside it reads as `superseded`,
+    // but the row is still this run's: it is a cancel, and keeps its work.
     const salvage =
-      claimed &&
-      !automatic &&
-      !hadVersion &&
-      stage !== "commit" &&
-      !(err instanceof UnpublishableGenerationError)
+      claimed && !automatic && !hadVersion && (cancelRequested || reason !== "superseded")
         ? (synthesized ??
           (finishedSections.length > 0
             ? {
@@ -1611,6 +1795,31 @@ export async function generateDocumentAsync(
               }
             : undefined))
         : undefined;
+    if (cancelRequested && claimed) {
+      // #855 — a clear `cancelled` state that keeps what was finished, and the
+      // checkpoint (untouched here) for a regenerate to resume from.
+      const cancelled = await prisma.generatedDocument.updateMany({
+        where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
+        data: {
+          status: "cancelled",
+          codeGraphHash: originalHash,
+          errorMessage: GENERATION_CANCELLED_MESSAGE,
+          warnings: [...(salvage?.warnings ?? []), cause] as unknown as Prisma.InputJsonValue,
+          ...(salvage ? { content: salvage.markdown, generatedAt: new Date() } : {}),
+        },
+      });
+      if (cancelled.count) {
+        log.info("Document generation cancelled", {
+          docId,
+          projectId,
+          stage,
+          sections: finishedSections.length,
+          ...(control ? { spend: control.spend() } : {}),
+        });
+        jobEvents.completed("doc-generation", docId, projectId, "Generation cancelled");
+      }
+      return;
+    }
     const salvaged = salvage
       ? await prisma.generatedDocument.updateMany({
           where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
@@ -1629,6 +1838,7 @@ export async function generateDocumentAsync(
         docId,
         projectId,
         stage,
+        ...(reason ? { stopped: reason } : {}),
         sections: finishedSections.length,
         assembled: synthesized != null,
       });
@@ -1636,7 +1846,11 @@ export async function generateDocumentAsync(
         "doc-generation",
         docId,
         projectId,
-        "Generation stopped early; the finished sections were saved",
+        reason === "budget"
+          ? "Generation reached its cost ceiling; the finished sections were saved"
+          : reason === "inputs-changed"
+            ? "The sources changed during generation; the finished sections were saved, not published"
+            : "Generation stopped early; the finished sections were saved",
       );
       return;
     }
@@ -1675,5 +1889,6 @@ export async function generateDocumentAsync(
     if (automatic) throw err;
   } finally {
     stopHeartbeat?.();
+    if (control) releaseGenerationControl(control);
   }
 }

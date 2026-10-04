@@ -16,6 +16,12 @@ import { SQL_SCAN_DIR_CAP } from "./module-grouping.js";
 import { loadAIConfig } from "../ai/config.js";
 import { isJunkSourcePath } from "@metis/shared";
 
+/** #855 — registry keys that bound a run's spend without changing its output. */
+const RUN_CEILING_KEYS: ReadonlySet<string> = new Set([
+  "DOCS_GEN_MAX_RUN_COST_CENTS",
+  "DOCS_GEN_MAX_RUN_TOKENS",
+]);
+
 /** Canonicalize objects, not arrays: prompt/selection order can be meaningful. */
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -267,9 +273,12 @@ export async function captureGenerationInputs(
   const phase1 = buildDocsGenProvider(1, resolveFactsMaxOutputTokens());
   const phase2 = resolvePhase2Router(resolveSectionMaxOutputTokens());
   // Persist only the hash, never environment values or provider credentials.
+  // #855 — the run ceilings decide when a run stops, never what it writes, so
+  // changing one mid-run must not read as changed inputs.
   const tuningEnv = Object.fromEntries(
     Object.entries(process.env)
       .filter(([key]) => /^(DOCS_GEN_|DOCS_GROUNDING_|DOCS_FAITHFULNESS_)/.test(key))
+      .filter(([key]) => !RUN_CEILING_KEYS.has(key))
       .sort(([a], [b]) => a.localeCompare(b)),
   );
   const bundle = (b: Omit<typeof phase1, "effectiveConfigHash">) => ({

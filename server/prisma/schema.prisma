@@ -3850,7 +3850,7 @@ model GeneratedDocument {
   /// for the interactive Schema Graph Explorer. Only populated for
   /// `scope = "database"` documents (Epic #895).
   schemaGraph   String?
-  /// Status: pending|generating|ready|degraded|failed
+  /// Status: pending|generating|cancelling|ready|degraded|failed|cancelled (#855)
   status        String    @default("pending")
   errorMessage  String?
   /// Epic #204 follow-up (#252) — structured degraded-output warnings

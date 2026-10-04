@@ -22,6 +22,10 @@ const state = vi.hoisted(() => ({
   // The run dies while writing this section: its failure escapes the
   // section's own handler, as a lost process or a fatal error would.
   crashIn: null as string | null,
+  // #855 / #856 — runs inside a section's model call, before it answers.
+  duringSection: null as null | ((label: string, signal?: AbortSignal) => Promise<void> | void),
+  // #855 — usage every model call reports.
+  usage: null as null | { promptTokens: number; completionTokens: number; totalTokens: number },
 }));
 
 vi.mock("../src/lib/prisma.js", () => {
@@ -191,6 +195,14 @@ vi.mock("../src/lib/docs-gen/generation-failure-message.js", async (importOrigin
     }),
   };
 });
+// #855 — every recorded model call, including the estimate for an aborted one.
+const recordUsage = vi.hoisted(() =>
+  vi.fn(() => ({ totalTokens: 0, costCents: null, persisted: Promise.resolve() })),
+);
+vi.mock("../src/lib/finops/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/finops/index.js")>()),
+  recordUsage,
+}));
 vi.mock("../src/lib/logger.js", () => ({
   createChildLogger: () => ({ info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
@@ -206,13 +218,18 @@ vi.mock("../src/lib/socket/job-events.js", () => ({
 }));
 
 import { generateDocumentAsync } from "../src/routes/generated-docs.js";
+import { stopGeneration } from "../src/lib/docs-gen/generation-control.js";
 import { prisma } from "../src/lib/prisma.js";
 import { resolveEvidencePolicy } from "../src/lib/docs-gen/evidence-policy.js";
 import { captureGenerationInputs } from "../src/lib/docs-gen/generation-inputs.js";
 import { jobEvents } from "../src/lib/socket/job-events.js";
 import { checkpointSectionRecords } from "../src/lib/docs-gen/section-reuse.js";
 import { sectionGroupsFor } from "../src/lib/docs-gen/holistic-synthesizer.js";
-import { GENERATION_FAILED_MESSAGE } from "../src/lib/docs-gen/generation-failure-message.js";
+import {
+  GENERATION_CANCELLED_MESSAGE,
+  GENERATION_FAILED_MESSAGE,
+  GENERATION_INPUTS_CHANGED_MESSAGE,
+} from "../src/lib/docs-gen/generation-failure-message.js";
 
 const GROUPS = sectionGroupsFor("architecture");
 const sectionCalls = () =>
@@ -273,10 +290,15 @@ beforeEach(() => {
     language: "ts",
     source: null,
   }));
-  state.stream.mockImplementation(async function* (messages) {
+  state.duringSection = null;
+  state.usage = null;
+  recordUsage.mockClear();
+  state.stream.mockImplementation(async function* (messages, opts?: { signal?: AbortSignal }) {
     const user = messages.at(-1).content as string;
     const label = user.match(/Section group: \*\*(.+?)\*\*/)?.[1];
     if (label && label === state.crashIn) throw new Error("provider connection reset");
+    if (label && state.duringSection) await state.duringSection(label, opts?.signal);
+    if (state.usage) yield { type: "usage", usage: state.usage };
     yield {
       type: "delta",
       content: label
@@ -422,12 +444,14 @@ describe("#782 — a late failure keeps what was finished", () => {
     expect(jobEvents.completed).not.toHaveBeenCalled();
   });
 
-  it("does not salvage a run whose commit failed; every section stays checkpointed", async () => {
+  it("#857 — keeps the written document when the commit failed; every section stays checkpointed", async () => {
     state.failCommit = true;
     await generateDocumentAsync("d", "p");
 
-    expect(state.doc.status).toBe("failed");
-    expect(state.doc.content).toBe("");
+    // An unpublished draft: no version, so nothing is indexed or published.
+    expect(state.doc.status).toBe("degraded");
+    expect(state.versions).toHaveLength(0);
+    for (const group of GROUPS) expect(state.doc.content).toContain(`## ${group.label}`);
     expect(cause()).toMatchObject({ stage: "commit", errorClass: "Error" });
     expect(JSON.stringify(state.doc.warnings)).not.toContain("/var/lib");
     expect(
@@ -439,14 +463,47 @@ describe("#782 — a late failure keeps what was finished", () => {
     ).toBe(GROUPS.length);
   });
 
-  it("does not salvage a run whose inputs changed, and says why", async () => {
+  it("#857 — keeps a run refused at the commit fence as an unpublished draft, and says why", async () => {
+    // Run 3: the first BRD attempt finished every section, then the fence found
+    // its inputs changed. It saved nothing, and the regenerate started over.
+    state.changeInputs = true;
+    await generateDocumentAsync("d", "p");
+
+    expect(state.doc.status).toBe("degraded");
+    expect(state.versions).toHaveLength(0);
+    for (const group of GROUPS) expect(state.doc.content).toContain(`## ${group.label}`);
+    expect(cause()).toMatchObject({ stage: "commit", errorClass: "UnpublishableGenerationError" });
+    expect(String(cause()!.message)).toContain("sources changed");
+    expect(String(cause()!.message)).toContain("not published");
+    expect(jobEvents.completed).toHaveBeenCalledWith(
+      "doc-generation",
+      "d",
+      "p",
+      expect.stringContaining("not published"),
+    );
+
+    // Regenerate: every section whose own inputs still match is reused.
+    state.changeInputs = false;
+    state.doc.status = "pending";
+    state.stream.mockClear();
+    await generateDocumentAsync("d", "p");
+    expect(sectionCalls()).toBe(0);
+    expect(state.versions).toHaveLength(1);
+    expect(state.versions[0].diffSummary).toBe(
+      `Initial generation, resumed: Reused ${GROUPS.length} finished sections`,
+    );
+  });
+
+  it("still fails a run with a published version, keeping that version's content", async () => {
+    state.versions.push({ version: 1, provenanceManifest: null });
+    state.doc.status = "ready";
+    state.doc.content = "# Published v1";
     state.changeInputs = true;
     await generateDocumentAsync("d", "p");
 
     expect(state.doc.status).toBe("failed");
-    expect(state.doc.content).toBe("");
-    expect(cause()).toMatchObject({ stage: "commit", errorClass: "UnpublishableGenerationError" });
-    expect(String(cause()!.message)).toContain("sources changed");
+    expect(state.doc.content).toBe("# Published v1");
+    expect(state.doc.errorMessage).toBe(GENERATION_INPUTS_CHANGED_MESSAGE);
   });
 });
 
@@ -549,5 +606,242 @@ describe("#782 — a resumed run that fails again keeps every finished section",
     await generateDocumentAsync("d", "p");
     expect(sectionCalls()).toBe(3);
     expect(state.versions).toHaveLength(1);
+  });
+});
+
+/** Wait, inside a model call, for the run to abort it — as a real provider would. */
+const abortedBy = (signal?: AbortSignal) =>
+  new Promise<never>((_, reject) => {
+    const abort = () =>
+      reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+    if (signal?.aborted) abort();
+    signal?.addEventListener("abort", abort);
+  });
+
+describe("#855 — cancel", () => {
+  it("aborts the in-flight call, records its spend, keeps what was finished and says cancelled", async () => {
+    let inFlight: AbortSignal | undefined;
+    state.duringSection = async (label, signal) => {
+      if (label !== GROUPS[1].label) return;
+      inFlight = signal;
+      // What POST /:docId/cancel does: mark the row, stop the run.
+      state.doc.status = "cancelling";
+      expect(stopGeneration("d", "aborted")).toBe(1);
+      await abortedBy(signal);
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(inFlight?.aborted).toBe(true);
+    // No section after the cancelled one was started.
+    expect(sectionCalls()).toBe(2);
+    expect(state.doc.status).toBe("cancelled");
+    expect(state.doc.errorMessage).toBe(GENERATION_CANCELLED_MESSAGE);
+    expect(state.doc.codeGraphHash).toBeNull();
+    expect(state.versions).toHaveLength(0);
+    const content = String(state.doc.content);
+    expect(content).toContain("Incomplete document");
+    expect(content).toContain(`## ${GROUPS[0].label}`);
+    expect(content).not.toContain(`## ${GROUPS[1].label}`);
+    expect(cause()).toMatchObject({
+      stage: "sections",
+      errorClass: "UnpublishableGenerationError",
+    });
+    expect(String(cause()!.message)).toContain("cancelled");
+    // The section it was writing was stopped, not failed: the only warning that
+    // names it is the stop's own cause.
+    expect(cause()!.section).toBe(GROUPS[1].label);
+    expect(warnings().filter((w) => w.section === GROUPS[1].label && w !== cause())).toEqual([]);
+    expect(checkpointIds()).toEqual([GROUPS[0].id]);
+    // The aborted call is billed too: its spend is estimated and recorded.
+    expect(recordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ agentStep: "docs-gen-aborted", projectId: "p" }),
+    );
+    expect(jobEvents.completed).toHaveBeenCalledWith(
+      "doc-generation",
+      "d",
+      "p",
+      "Generation cancelled",
+    );
+    expect(jobEvents.failed).not.toHaveBeenCalled();
+    // The run is no longer registered.
+    expect(stopGeneration("d", "aborted")).toBe(0);
+
+    // Regenerate resumes from the checkpoint.
+    state.duringSection = null;
+    state.doc.status = "pending";
+    state.stream.mockClear();
+    await generateDocumentAsync("d", "p");
+    expect(sectionCalls()).toBe(GROUPS.length - 1);
+    expect(state.versions).toHaveLength(1);
+  });
+
+  it("stops a run cancelled from another replica at the next section", async () => {
+    state.duringSection = (label) => {
+      // Only the row changes: this process holds no stop for it.
+      if (label === GROUPS[1].label) state.doc.status = "cancelling";
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(sectionCalls()).toBe(2);
+    expect(state.doc.status).toBe("cancelled");
+    expect(checkpointIds()).toEqual([GROUPS[0].id, GROUPS[1].id]);
+  });
+
+  it("never publishes over a cancel that lands during the last section", async () => {
+    state.duringSection = (label) => {
+      if (label === GROUPS.at(-1)!.label) state.doc.status = "cancelling";
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(state.versions).toHaveLength(0);
+    expect(state.doc.status).toBe("cancelled");
+    // Every section was written, and every one is kept.
+    for (const group of GROUPS) expect(state.doc.content).toContain(`## ${group.label}`);
+  });
+
+  it("never publishes over a cancel that lands after assembly, before the commit", async () => {
+    // The commit fence's own read is the last chance to see it: the cancel lands
+    // after the pre-assembly check (the first read once every section is done).
+    const findFirst = vi.mocked(prisma.generatedDocument.findFirst);
+    const original = findFirst.getMockImplementation()!;
+    let readsAfterSections = 0;
+    findFirst.mockImplementation(((args: Parameters<typeof original>[0]) => {
+      if (sectionCalls() === GROUPS.length && ++readsAfterSections === 2)
+        state.doc.status = "cancelling";
+      return original(args);
+    }) as typeof original);
+    try {
+      await generateDocumentAsync("d", "p");
+    } finally {
+      findFirst.mockImplementation(original);
+    }
+
+    expect(state.versions).toHaveLength(0);
+    expect(state.doc.status).toBe("cancelled");
+    expect(String(state.doc.content)).toContain("auto-generated on");
+  });
+
+  it("never publishes over a cancel that lands inside the commit", async () => {
+    // After the commit fence has read the row: while it re-captures the inputs.
+    const chunks = vi.mocked(prisma.knowledgeChunk.findMany);
+    let capturesAfterSections = 0;
+    chunks.mockImplementation((async () => {
+      if (sectionCalls() === GROUPS.length && ++capturesAfterSections === 2)
+        state.doc.status = "cancelling";
+      return [];
+    }) as unknown as typeof chunks);
+    try {
+      await generateDocumentAsync("d", "p");
+    } finally {
+      chunks.mockImplementation((async () => []) as unknown as typeof chunks);
+    }
+
+    expect(capturesAfterSections).toBeGreaterThanOrEqual(2);
+    expect(state.versions).toHaveLength(0);
+    expect(state.doc.status).toBe("cancelled");
+    // The row was still this run's, so what it wrote is kept.
+    expect(String(state.doc.content)).toContain("auto-generated on");
+  });
+
+  it("does nothing when the document was cancelled before the run read it", async () => {
+    state.doc.status = "cancelled";
+    await generateDocumentAsync("d", "p");
+    expect(state.stream).not.toHaveBeenCalled();
+    expect(state.doc.status).toBe("cancelled");
+  });
+});
+
+describe("#855 — delete stops the spend", () => {
+  it("aborts the in-flight call and writes nothing more", async () => {
+    let inFlight: AbortSignal | undefined;
+    state.duringSection = async (label, signal) => {
+      if (label !== GROUPS[1].label) return;
+      inFlight = signal;
+      // What DELETE /:docId does after its soft-delete commits.
+      state.doc.deletedAt = new Date();
+      stopGeneration("d", "superseded");
+      await abortedBy(signal);
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(inFlight?.aborted).toBe(true);
+    expect(sectionCalls()).toBe(2);
+    expect(state.versions).toHaveLength(0);
+    expect(jobEvents.failed).not.toHaveBeenCalled();
+    expect(jobEvents.completed).not.toHaveBeenCalled();
+  });
+});
+
+describe("#855 — the per-document cost ceiling", () => {
+  it("stops the run at its token ceiling and keeps what was finished", async () => {
+    vi.stubEnv("DOCS_GEN_MAX_RUN_TOKENS", "2500");
+    state.usage = { promptTokens: 500, completionTokens: 500, totalTokens: 1_000 };
+    await generateDocumentAsync("d", "p");
+    vi.unstubAllEnvs();
+
+    expect(sectionCalls()).toBeGreaterThan(0);
+    expect(sectionCalls()).toBeLessThan(GROUPS.length);
+    expect(state.doc.status).toBe("degraded");
+    expect(state.versions).toHaveLength(0);
+    expect(String(cause()!.message)).toContain("cost ceiling");
+    expect(jobEvents.completed).toHaveBeenCalledWith(
+      "doc-generation",
+      "d",
+      "p",
+      expect.stringContaining("cost ceiling"),
+    );
+  });
+});
+
+describe("#856 — inputs are checked between sections, not only at the commit fence", () => {
+  it("stops a run whose sources changed mid-run before it writes the next section", async () => {
+    state.duringSection = (label) => {
+      // A refresh lands while section 2 is being written.
+      if (label === GROUPS[1].label)
+        state.symbols = state.symbols.map((s) => ({ ...s, contentHash: `${s.contentHash}-new` }));
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(sectionCalls()).toBe(2);
+    expect(state.doc.status).toBe("degraded");
+    expect(state.versions).toHaveLength(0);
+    expect(cause()).toMatchObject({
+      stage: "sections",
+      section: "Document",
+      errorClass: "UnpublishableGenerationError",
+    });
+    expect(String(cause()!.message)).toContain("sources changed");
+    expect(checkpointIds()).toEqual([GROUPS[0].id, GROUPS[1].id]);
+  });
+
+  it("does not stop a run whose sources did not change", async () => {
+    state.duringSection = () => {
+      // A same-SHA refresh that recreated identical rows: new ids, same content.
+      state.symbols = state.symbols.map((s) => ({ ...s, id: `${s.id}-recreated` }));
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(sectionCalls()).toBe(GROUPS.length);
+    expect(state.versions).toHaveLength(1);
+  });
+});
+
+describe("#857 — a resumed run says which stored sections were stale, and why", () => {
+  it("records the reused and rewritten sections on the version", async () => {
+    state.failAfterSynthesis = true;
+    await generateDocumentAsync("d", "p");
+    const saved = state.doc.generationCheckpoint as { records: Array<{ inputs: object }> };
+    saved.records[1] = {
+      ...saved.records[1],
+      inputs: { ...saved.records[1].inputs, facts: "0".repeat(64), flow: "1".repeat(64) },
+    };
+
+    state.failAfterSynthesis = false;
+    state.doc.status = "pending";
+    await generateDocumentAsync("d", "p");
+
+    expect(state.versions[0].diffSummary).toBe(
+      `Initial generation, resumed: Reused ${GROUPS.length - 1} finished sections; rewrote 1 whose inputs changed: ${GROUPS[1].label} (facts, flow)`,
+    );
   });
 });

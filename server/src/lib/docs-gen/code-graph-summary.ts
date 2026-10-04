@@ -180,8 +180,12 @@ export function buildCodeGraphSummary(
     // Only chains that actually link modules (a producer AND consumer, or
     // at least one of each role) are interesting; keep any with ≥1 endpoint.
     .filter((d) => d.producers.length > 0 || d.consumers.length > 0)
+    // #857 — ties broken by name: the block is part of every section's reuse
+    // hash, so it must not depend on the order the database returned edges in.
     .sort(
-      (a, b) => b.producers.length + b.consumers.length - (a.producers.length + a.consumers.length),
+      (a, b) =>
+        b.producers.length + b.consumers.length - (a.producers.length + a.consumers.length) ||
+        compareText(a.dataset, b.dataset),
     );
 
   return { perModuleLineage, datasetLineage, crossModuleDeps };
@@ -239,7 +243,10 @@ export function renderCrossModuleDeps(
   if (summary.crossModuleDeps.size === 0) return "";
   // Order by out-degree (most-connected modules first — these are the
   // orchestrators worth describing).
-  const ordered = [...summary.crossModuleDeps.entries()].sort((a, b) => b[1].size - a[1].size);
+  // #857 — ties broken by module dir, never by edge-row order (see above).
+  const ordered = [...summary.crossModuleDeps.entries()].sort(
+    (a, b) => b[1].size - a[1].size || compareText(a[0], b[0]),
+  );
   const parts: string[] = ["### CROSS-MODULE DEPENDENCIES (module → modules it depends on)"];
   let total = parts[0].length;
   let shown = 0;
@@ -256,6 +263,11 @@ export function renderCrossModuleDeps(
     shown += 1;
   }
   return parts.join("\n");
+}
+
+/** Locale-independent ordering, so a rendered block is the same on every host. */
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** Trim a module dir to its last 3 path segments for legible prompts. */

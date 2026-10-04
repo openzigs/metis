@@ -1772,6 +1772,38 @@ describe("generated-docs routes", () => {
   });
 
   describe("DELETE /projects/:projectId/docs/:docId", () => {
+    it("#855 — stops a generation of the document running in this process", async () => {
+      const { startGenerationControl, releaseGenerationControl } =
+        await import("../../src/lib/docs-gen/generation-control.js");
+      const running = startGenerationControl("doc-1", "proj-1", {
+        maxCostCents: null,
+        maxTokens: null,
+      });
+      const other = startGenerationControl("doc-2", "proj-1", {
+        maxCostCents: null,
+        maxTokens: null,
+      });
+      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+        projectId: "proj-1",
+      });
+      (prisma.generatedDocumentVersion.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
+        null,
+      );
+      (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+      });
+
+      const res = await request(app).delete("/projects/proj-1/docs/doc-1");
+
+      expect(res.status).toBe(204);
+      expect(running.signal.aborted).toBe(true);
+      expect(running.reason).toBe("superseded");
+      expect(other.reason).toBeNull();
+      releaseGenerationControl(running);
+      releaseGenerationControl(other);
+    });
+
     it("soft-deletes a document", async () => {
       (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
         id: "doc-1",

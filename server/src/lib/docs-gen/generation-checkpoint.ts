@@ -22,12 +22,14 @@ import type { SectionSynthesisRecord } from "./section-reuse.js";
 export type GenerationStage = "setup" | "facts" | "sections" | "assembly" | "commit";
 
 /** Why a finished generation must not be saved as the document's content. */
-export type UnpublishableReason = "inputs-changed" | "superseded" | "aborted";
+export type UnpublishableReason = "inputs-changed" | "superseded" | "aborted" | "budget";
 
 /**
- * A failure that is the commit boundary doing its job: the inputs moved, the
- * row was replaced or the run was cancelled. Its output must never be saved
- * (the revalidation in `generateDocumentAsync`), so it is never salvaged.
+ * A run stopped on purpose: the inputs moved, the row was replaced or deleted,
+ * the run was cancelled (#855), or it reached its cost ceiling (#855). Its
+ * output is never PUBLISHED as a version. What it finished may still be kept
+ * as an unpublished, degraded draft (#857) — except for `superseded`, whose
+ * row now belongs to someone else.
  */
 export class UnpublishableGenerationError extends Error {
   constructor(
@@ -49,9 +51,11 @@ const STAGE_TEXT: Readonly<Record<GenerationStage, string>> = {
 
 const UNPUBLISHABLE_TEXT: Readonly<Record<UnpublishableReason, string>> = {
   "inputs-changed":
-    "The project's sources changed while this document was being generated, so the result was not saved.",
+    "The project's sources changed while this document was being generated, so the result was not published.",
   superseded: "The document was deleted or replaced by another generation.",
   aborted: "The generation was cancelled.",
+  budget:
+    "The generation reached its cost ceiling (DOCS_GEN_MAX_RUN_COST_CENTS / DOCS_GEN_MAX_RUN_TOKENS) and was stopped.",
 };
 
 // A class name is identifier-shaped. Anything else (a subclass that set
