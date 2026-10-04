@@ -48,10 +48,35 @@ export async function authorizeImportSecretRef(
   if (!body) {
     throw new AppError(400, "VAULT_REF_INVALID", "secretRef must be written as ${vault:label}");
   }
-  const { bindings, until } = await authorizeAndBindSecretRefs(
-    user,
-    { before: [], after: [body], destinationChanged: true },
-    { target, metadata: { projectId } },
-  );
-  return { secretId: bindings[body] ?? null, until };
+  try {
+    const { bindings, until } = await authorizeAndBindSecretRefs(
+      user,
+      { before: [], after: [body], destinationChanged: true },
+      { target, metadata: { projectId } },
+    );
+    return { secretId: bindings[body] ?? null, until };
+  } catch (err) {
+    throw withoutReferenceEcho(err);
+  }
+}
+
+/**
+ * The vault layer's unresolved/ambiguous errors quote the reference back. A
+ * user who wrapped a real token as `${vault:<token>}` would see it in the
+ * response, so those two are re-issued with fixed text (#1094's rule).
+ */
+const SAFE_MESSAGES: Record<string, string> = {
+  VAULT_REF_UNRESOLVED:
+    "That vault secret reference does not name a vault secret. Check the label against " +
+    "the secrets registered for this workspace.",
+  VAULT_REF_AMBIGUOUS:
+    "That vault secret label matches more than one secret. Qualify it as " +
+    '"${vault:global:label}" or "${vault:project:label}", or use the secret id.',
+};
+
+function withoutReferenceEcho(err: unknown): unknown {
+  if (err instanceof AppError && err.code in SAFE_MESSAGES) {
+    return new AppError(err.statusCode, err.code, SAFE_MESSAGES[err.code]);
+  }
+  return err;
 }

@@ -116,6 +116,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await expect(
         authorizeImportSecretRef(ADMIN, "p763", "${vault:no-such-secret}", TARGET),
       ).rejects.toMatchObject({ statusCode: 400, code: "VAULT_REF_UNRESOLVED" });
+      // A token mistakenly wrapped as a reference is never quoted back.
+      const err = (await authorizeImportSecretRef(
+        ADMIN,
+        "p763",
+        "${vault:ghp_pasted_by_mistake}",
+        TARGET,
+      ).catch((e: unknown) => e)) as Error;
+      expect(err.message).not.toContain("ghp_pasted_by_mistake");
       await expect(
         authorizeImportSecretRef(OWNER, "p763", "github-flux-v2-sandbox", TARGET),
       ).rejects.toMatchObject({ statusCode: 400, code: "VAULT_REF_INVALID" });

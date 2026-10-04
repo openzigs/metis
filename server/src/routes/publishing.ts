@@ -3,7 +3,9 @@
  *
  *   GET    /drafts                      list drafts                (issue.draft)
  *   POST   /drafts/generate             generate from analysis     (issue.draft)
+ *   PATCH  /drafts/:id                  edit title/body/labels     (issue.draft)          #776
  *   POST   /drafts/:id/approve          approve a draft            (issue.draft)
+ *   POST   /drafts/:id/pull-request     draft PR, dry-run default  (issue.preview | issue.publish live) #776
  *   GET    /batches                     list batches               (issue.preview)
  *   GET    /batches/:id                 batch detail + issues      (issue.preview)
  *   POST   /batches                     create + immediately run   (issue.publish | issue.preview for dry-run)
@@ -16,6 +18,8 @@ import { z, ZodError } from "zod";
 import {
   archivePublishBatchSchema,
   createPublishBatchSchema,
+  draftPullRequestRequestSchema,
+  editIssueDraftSchema,
   generateDraftsSchema,
   githubOwnerSchema,
   hasPermission,
@@ -41,6 +45,8 @@ import {
   VAULT_REF_FORMAT_MESSAGE,
 } from "../lib/publishing/publishing-service.js";
 import { PublishError } from "../lib/publishing/types.js";
+import { editDraft } from "../lib/publishing/draft-edit.js";
+import { openDraftPullRequest } from "../lib/publishing/draft-pull-request.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -150,6 +156,58 @@ export function publishingRouter(): Router {
         actorId: actor(req),
       });
       res.status(201).json(ok(result));
+    } catch (err) {
+      next(asAppError(err));
+    }
+  });
+
+  // #776 — edit a draft's title, body or labels before a batch publishes it.
+  r.patch("/drafts/:id", requirePermission("issue.draft"), async (req, res, next) => {
+    try {
+      const input = editIssueDraftSchema.parse(req.body ?? {});
+      // #1072: the draft must belong to the PATH project.
+      const updated = await editDraft({
+        draftId: String(req.params.id),
+        projectId: projectIdOf(req),
+        actorId: actor(req),
+        input,
+      });
+      res.json(ok(updated));
+    } catch (err) {
+      next(asAppError(err));
+    }
+  });
+
+  // #776 — open one draft as a DRAFT pull request on the saved publish target.
+  // The body takes no target (the schema is strict); dry run is the default
+  // and needs only `issue.preview`, a live run `issue.publish` — as batches.
+  r.post("/drafts/:id/pull-request", async (req, res, next) => {
+    try {
+      const body = draftPullRequestRequestSchema.parse(req.body ?? {});
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      const requiredPerm = body.dryRun ? "issue.preview" : "issue.publish";
+      if (!hasPermission(req.user.role, requiredPerm)) {
+        throw new AppError(403, "FORBIDDEN", `permission ${requiredPerm} required`);
+      }
+      // #358 — the token only ever goes to the public GitHub API (the target
+      // has no caller-chosen base URL), so this is the batch rule's no-op
+      // case; kept so a future base-URL option cannot skip the check.
+      const until = body.dryRun
+        ? null
+        : await assertPublishSecretBinding(
+            req.user,
+            { secretRef: body.secretRef, baseUrl: null },
+            { type: "issue_draft", id: String(req.params.id) },
+          );
+      assertBindingWriteWindowOpen(until); // #552
+      const result = await openDraftPullRequest({
+        projectId: projectIdOf(req),
+        draftId: String(req.params.id),
+        actorId: actor(req),
+        dryRun: body.dryRun,
+        secretRef: body.secretRef,
+      });
+      res.status(body.dryRun ? 200 : 201).json(ok(result));
     } catch (err) {
       next(asAppError(err));
     }

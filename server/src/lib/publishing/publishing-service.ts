@@ -836,7 +836,7 @@ function toPublishedIssueApi(row: DbPublishedIssue): SharedPublishedIssue {
   };
 }
 
-function toDraftApi(row: DbDraft): SharedIssueDraft {
+export function toDraftApi(row: DbDraft): SharedIssueDraft {
   return {
     id: row.id,
     projectId: row.projectId,
