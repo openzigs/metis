@@ -111,31 +111,61 @@ export const IMAGE_PATTERNS = Object.freeze([
 const REASON_PATH_LIMIT = 5;
 
 /**
- * A minimal glob: `**` + `/` spans zero or more directories, a trailing `/**`
- * takes everything below, `*` stays inside one segment, all else is literal.
+ * `*` within one path segment: classic two-pointer wildcard match with
+ * backtracking to the last star. Linear-ish and regex-free on purpose — a
+ * RegExp built from a pattern is a ReDoS shape Semgrep blocks, and these lists
+ * need nothing a regex adds.
  *
- * @param {string} glob
- * @returns {RegExp}
+ * @param {string} seg
+ * @param {string} pat
+ * @returns {boolean}
  */
-export function globToRegExp(glob) {
-  let source = "";
-  for (let i = 0; i < glob.length; i += 1) {
-    const ch = glob[i];
-    if (ch === "*" && glob[i + 1] === "*") {
-      if (glob[i + 2] === "/") {
-        source += "(?:.*/)?";
-        i += 2;
-      } else {
-        source += ".*";
-        i += 1;
-      }
-    } else if (ch === "*") {
-      source += "[^/]*";
+function segmentMatches(seg, pat) {
+  let s = 0;
+  let p = 0;
+  let star = -1;
+  let mark = 0;
+  while (s < seg.length) {
+    if (p < pat.length && pat[p] !== "*" && pat[p] === seg[s]) {
+      s += 1;
+      p += 1;
+    } else if (p < pat.length && pat[p] === "*") {
+      star = p;
+      mark = s;
+      p += 1;
+    } else if (star >= 0) {
+      p = star + 1;
+      mark += 1;
+      s = mark;
     } else {
-      source += ch.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+      return false;
     }
   }
-  return new RegExp(`^${source}$`);
+  while (p < pat.length && pat[p] === "*") p += 1;
+  return p === pat.length;
+}
+
+/**
+ * A minimal glob over `/`-separated paths: a `**` segment spans zero or more
+ * directories, `*` stays inside one segment, every other character is literal.
+ *
+ * @param {string} file
+ * @param {string} glob
+ * @returns {boolean}
+ */
+export function matchesGlob(file, glob) {
+  const f = file.split("/");
+  const g = glob.split("/");
+  /** @type {(i: number, j: number) => boolean} */
+  const walk = (i, j) => {
+    if (j === g.length) return i === f.length;
+    if (g[j] === "**") {
+      for (let k = i; k <= f.length; k += 1) if (walk(k, j + 1)) return true;
+      return false;
+    }
+    return i < f.length && segmentMatches(f[i], g[j]) && walk(i + 1, j + 1);
+  };
+  return walk(0, 0);
 }
 
 /**
@@ -144,8 +174,7 @@ export function globToRegExp(glob) {
  * @returns {string[]} the files that match at least one pattern
  */
 export function matchesAny(files, patterns) {
-  const res = patterns.map(globToRegExp);
-  return files.filter((f) => res.some((re) => re.test(f)));
+  return files.filter((f) => patterns.some((g) => matchesGlob(f, g)));
 }
 
 /**

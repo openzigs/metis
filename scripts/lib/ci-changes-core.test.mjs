@@ -5,8 +5,8 @@ import {
   POSTGRES_PATTERNS,
   classifyChanges,
   formatOutputs,
-  globToRegExp,
   matchesAny,
+  matchesGlob,
 } from "./ci-changes-core.mjs";
 
 /**
@@ -14,40 +14,43 @@ import {
  * changed paths; this module decides which conditional work runs.
  */
 
-describe("globToRegExp", () => {
+describe("matchesGlob", () => {
   it("matches a literal path exactly, and nothing longer or shorter", () => {
-    const re = globToRegExp("pnpm-lock.yaml");
-    expect(re.test("pnpm-lock.yaml")).toBe(true);
-    expect(re.test("ui/pnpm-lock.yaml")).toBe(false);
-    expect(re.test("pnpm-lock.yaml.bak")).toBe(false);
+    expect(matchesGlob("pnpm-lock.yaml", "pnpm-lock.yaml")).toBe(true);
+    expect(matchesGlob("ui/pnpm-lock.yaml", "pnpm-lock.yaml")).toBe(false);
+    expect(matchesGlob("pnpm-lock.yaml.bak", "pnpm-lock.yaml")).toBe(false);
   });
 
-  it("`*` stays inside one path segment", () => {
-    const re = globToRegExp("Dockerfile.*");
-    expect(re.test("Dockerfile.server")).toBe(true);
-    expect(re.test("Dockerfile.server/x")).toBe(false);
+  it("`*` stays inside one path segment, matches empty, and backtracks", () => {
+    expect(matchesGlob("Dockerfile.server", "Dockerfile.*")).toBe(true);
+    expect(matchesGlob("Dockerfile.server/x", "Dockerfile.*")).toBe(false);
+    expect(matchesGlob("Dockerfile.", "Dockerfile.*")).toBe(true);
+    expect(matchesGlob("a-postgres-b-postgres.ts", "*postgres*.ts")).toBe(true);
+    expect(matchesGlob("requirements-dev.txt", "requirements*.txt")).toBe(true);
+    expect(matchesGlob("requirements.txt.bak", "requirements*.txt")).toBe(false);
+    expect(matchesGlob("Dockerfile", "Dockerfile.*")).toBe(false);
   });
 
   it("`**/` spans zero or more directories", () => {
-    const re = globToRegExp("**/package.json");
-    expect(re.test("package.json")).toBe(true);
-    expect(re.test("server/package.json")).toBe(true);
-    expect(re.test("packages/shared/package.json")).toBe(true);
-    expect(re.test("server/package.json.orig")).toBe(false);
+    expect(matchesGlob("package.json", "**/package.json")).toBe(true);
+    expect(matchesGlob("server/package.json", "**/package.json")).toBe(true);
+    expect(matchesGlob("packages/shared/package.json", "**/package.json")).toBe(true);
+    expect(matchesGlob("server/package.json.orig", "**/package.json")).toBe(false);
   });
 
   it("a trailing `/**` takes everything below the directory, but not a sibling prefix", () => {
-    const re = globToRegExp("server/prisma/**");
-    expect(re.test("server/prisma/schema.prisma")).toBe(true);
-    expect(re.test("server/prisma/postgres/migrations/1/migration.sql")).toBe(true);
-    expect(re.test("server/prisma-clients/x")).toBe(false);
+    expect(matchesGlob("server/prisma/schema.prisma", "server/prisma/**")).toBe(true);
+    expect(
+      matchesGlob("server/prisma/postgres/migrations/1/migration.sql", "server/prisma/**"),
+    ).toBe(true);
+    expect(matchesGlob("server/prisma-clients/x", "server/prisma/**")).toBe(false);
   });
 
-  it("escapes regex metacharacters instead of interpreting them", () => {
-    const re = globToRegExp("a+b.(c).ts");
-    expect(re.test("a+b.(c).ts")).toBe(true);
-    expect(re.test("aab.(c).ts")).toBe(false);
-    expect(re.test("a+bx(c).ts")).toBe(false);
+  it("treats every non-`*` character literally (no regex semantics)", () => {
+    expect(matchesGlob("a+b.(c).ts", "a+b.(c).ts")).toBe(true);
+    expect(matchesGlob("x.ts", "?.ts")).toBe(false);
+    expect(matchesGlob("aab.(c).ts", "a+b.(c).ts")).toBe(false);
+    expect(matchesGlob("a+bx(c).ts", "a+b.(c).ts")).toBe(false);
   });
 });
 
