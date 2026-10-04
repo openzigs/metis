@@ -47,6 +47,10 @@ const OTHER = "u776-other";
 const OTHER_TOKEN = "ghp_someone_elses_token_776";
 /** A project that analyses a FORK (`me/v2`) of the upstream `miniflux/v2`. */
 const PF = "p776-fork";
+/** A project whose analysed fork connection was removed after ingest. */
+const PD = "p776-deleted-fork";
+/** Repositories the fake GitHub knows; any other `GET /repos/{o}/{r}` is a 404. */
+const KNOWN_REPOS = new Set(["openzigs/flux-v2", "miniflux/v2", "oldorg/gone", "me/v2", "me2/v2"]);
 
 interface Call {
   method: string;
@@ -102,7 +106,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.user.create({
         data: { id: USER, username: USER, displayName: USER, email: `${USER}@x.test` },
       });
-      for (const id of [P, "p-other", PF]) {
+      for (const id of [P, "p-other", PF, PD]) {
         await db.project.create({ data: { id, name: id, slug: id, createdById: USER } });
       }
       // The analysed upstream — never a publish target.
@@ -141,6 +145,35 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           status: "connected",
         },
       });
+      // A typo'd connection that never connected: GitHub 404s it.
+      await db.repoConnection.create({
+        data: { projectId: P, label: "typo", ownerOrOrg: "minflux", repoName: "v22" },
+      });
+      // An analysed GitHub Enterprise repo: not on api.github.com (404 there).
+      await db.repoConnection.create({
+        data: {
+          projectId: P,
+          label: "ghe",
+          provider: "github_enterprise",
+          ownerOrOrg: "ghe-org",
+          repoName: "internal",
+          apiBaseUrl: "https://ghe.example.test/api/v3",
+          status: "connected",
+          lastIngestAt: new Date(),
+        },
+      });
+      // An analysed fork, ingested and then removed.
+      await db.repoConnection.create({
+        data: {
+          projectId: PD,
+          label: "removed-fork",
+          ownerOrOrg: "me2",
+          repoName: "v2",
+          status: "error",
+          lastIngestAt: new Date(),
+          deletedAt: new Date(),
+        },
+      });
       // An uploaded clone: no owner/repo, so it identifies no GitHub repository.
       await db.repoConnection.create({
         data: { projectId: P, label: "uploaded", provider: "upload", status: "connected" },
@@ -161,6 +194,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           const u = args.url;
           let data: unknown = {};
           if (args.method === "GET" && /\/repos\/[^/]+\/[^/]+$/.test(u)) {
+            if (!KNOWN_REPOS.has(u.slice("/repos/".length).toLowerCase())) {
+              throw Object.assign(new Error("Not Found"), { status: 404 });
+            }
             data = { default_branch: "main" };
           } else if (u.includes("/git/ref/heads/")) {
             data = { object: { sha: "base-sha" } };
@@ -525,6 +561,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       );
 
+      it("REFUSES a target that is the parent of a SOFT-DELETED analysed fork", async () => {
+        await db.project.update({
+          where: { id: PD },
+          data: { publishGithubOwner: "upstream2", publishGithubRepo: "v2" },
+        });
+        const d = await draft({ projectId: PD });
+        respond = (c) =>
+          c.method === "GET" && c.url === "/repos/me2/v2"
+            ? { status: 200, data: { fork: true, parent: { full_name: "upstream2/v2" } } }
+            : undefined;
+        await expect(live(PD, d.id)).rejects.toMatchObject({
+          status: 409,
+          code: "PUBLISH_TARGET_IS_ANALYSED_REPO",
+        });
+        expect(writes()).toEqual([]);
+      });
+
+      it("does not look up a never-connected row or a non-github connection; the run proceeds", async () => {
+        const d = await draft();
+        const out = await live(P, d.id);
+        expect(out.pullRequest?.number).toBe(7);
+        const urls = calls.map((c) => c.url);
+        // The typo'd pending row would 404; the GHE repo is not on api.github.com.
+        expect(urls).not.toContain("/repos/minflux/v22");
+        expect(urls).not.toContain("/repos/ghe-org/internal");
+        // The analysed (and the removed-but-ingested) github repos are looked up.
+        expect(urls).toContain("/repos/miniflux/v2");
+        expect(urls).toContain("/repos/oldorg/gone");
+      });
+
       it("REFUSES (fails closed) when an analysed repo's upstream cannot be looked up", async () => {
         await db.project.update({
           where: { id: PF },
@@ -541,6 +607,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(err.message).toContain("me/v2");
         expect(err.message).toContain("404");
         expect(err.message).not.toContain(TOKEN);
+        expect(err.message).toMatch(/change the project's publish target/);
         expect(writes()).toEqual([]);
       });
 

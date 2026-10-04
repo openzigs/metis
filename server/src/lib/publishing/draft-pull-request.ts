@@ -240,11 +240,25 @@ interface AnalysedRepos {
  * Only `github` connections have their upstream looked up: the target is on
  * the public API, and a GitHub Enterprise or GitLab repository's fork network
  * lives on its own host, so its parent cannot be a github.com repository.
+ *
+ * And only connections that were actually analysed ({@link wasAnalysed}): a
+ * connection row is inserted before any connectivity test, so a typo'd
+ * owner/repo that never connected would 404 and — since the lookup fails
+ * closed — block every live run, with no way to clear it once soft-deleted.
+ * The name-equality check needs no network call and keeps every row.
  */
 async function analysedRepos(projectId: string): Promise<AnalysedRepos> {
   const rows = await prisma.repoConnection.findMany({
     where: { projectId },
-    select: { ownerOrOrg: true, repoName: true, provider: true },
+    select: {
+      ownerOrOrg: true,
+      repoName: true,
+      provider: true,
+      status: true,
+      lastIngestAt: true,
+      lastCommitSha: true,
+      deletedAt: true,
+    },
   });
   const names = new Set<string>();
   const github = new Map<string, { owner: string; repo: string }>();
@@ -252,9 +266,23 @@ async function analysedRepos(projectId: string): Promise<AnalysedRepos> {
     if (!r.ownerOrOrg || !r.repoName) continue;
     const key = `${r.ownerOrOrg}/${r.repoName}`.toLowerCase();
     names.add(key);
-    if (r.provider === "github") github.set(key, { owner: r.ownerOrOrg, repo: r.repoName });
+    const lookUp = r.provider === "github" && wasAnalysed(r);
+    if (lookUp) github.set(key, { owner: r.ownerOrOrg, repo: r.repoName });
   }
   return { names, github: [...github.values()] };
+}
+
+/**
+ * A connection that reached GitHub: it connected, was ingested, or recorded a
+ * commit. A row still `pending` with none of those never resolved to a real
+ * repository. Soft-deleted rows qualify on the same terms.
+ */
+function wasAnalysed(r: {
+  status: string;
+  lastIngestAt: Date | null;
+  lastCommitSha: string | null;
+}): boolean {
+  return r.status === "connected" || r.lastIngestAt !== null || r.lastCommitSha !== null;
 }
 
 /** Lower-cased fork `parent`/`source` of every analysed GitHub repository. */
@@ -496,7 +524,8 @@ function statusOf(err: unknown): number {
 const WRITE_HINT = "Check that the vault secret can write to the publish target.";
 const LOOKUP_HINT =
   "The draft pull request was not opened: METIS could not confirm the publish target is not " +
-  "that repository's upstream. Check that the vault secret can read it, or retry later.";
+  "the upstream of that analysed repository. Use a vault secret that can read it, retry if " +
+  "GitHub was rate-limiting, or change the project's publish target.";
 
 function githubFailure(
   step: string,
