@@ -297,11 +297,14 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         else await generation;
         expect(await db.generatedDocumentVersion.count()).toBe(0);
         expect(await db.task.count()).toBe(0);
-        expect(await db.generatedDocument.findUnique({ where: { id: "doc" } })).toMatchObject({
-          status: "failed",
-          content: "",
-          codeGraphHash: null,
-        });
+        // #857 — a manual run's written document is kept as an unpublished
+        // degraded draft (no version, no publication task); an automatic one
+        // never touches the published row.
+        expect(await db.generatedDocument.findUnique({ where: { id: "doc" } })).toMatchObject(
+          mode === "manual"
+            ? { status: "degraded", content: "# Durable", codeGraphHash: null }
+            : { status: "failed", content: "", codeGraphHash: null },
+        );
         expect(state.dispatch).not.toHaveBeenCalled();
       },
     );

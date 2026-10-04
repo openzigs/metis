@@ -176,7 +176,12 @@ describe("buildDocsGenProvider — anthropic provider", () => {
     loadAIConfigMock.mockReturnValue(configFor("anthropic"));
     const resolved = buildDocsGenProvider(2, 8192);
     expect(resolved.supportsCaching).toBe(true);
-    expect(resolved.provider).toBe(fakeProvider);
+    // #855 — the factory's provider, wrapped so each call carries the run's
+    // AbortSignal; outside a run a call reaches it unchanged.
+    expect(resolved.provider.key).toBe(fakeProvider.key);
+    expect(resolved.provider.model).toBe(fakeProvider.model);
+    void resolved.provider.chat([], { sessionId: "s" });
+    expect(fakeProvider.chat).toHaveBeenCalledWith([], { sessionId: "s" });
     // The factory was asked to build a provider (the native AnthropicProvider).
     expect(buildProviderMock).toHaveBeenCalledTimes(1);
   });

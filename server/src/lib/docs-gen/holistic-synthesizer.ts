@@ -75,6 +75,16 @@ import {
   type MinedLineSource,
 } from "./grounding/mined-line-sources.js";
 import { renderCitationFootnotes } from "./citation-footnotes.js";
+import { scopedToGeneration } from "./generation-control.js";
+import { isGenerationStop, throwIfGenerationStopped } from "./generation-scope.js";
+import {
+  batchWordBudget,
+  fitSectionToBudget,
+  fitSectionsToDocumentBudget,
+  resolveDocumentMaxChars,
+  resolveSectionMaxChars,
+  sectionBudgetScale,
+} from "./section-size.js";
 import {
   condenseFactsEntry,
   digestBudget,
@@ -238,6 +248,7 @@ import {
   reusableSectionRecords,
   checkpointSectionRecords,
   SECTION_SYNTHESIS_VERSION,
+  type SectionInputHashes,
   type SectionSynthesis,
   type SectionSynthesisRecord,
 } from "./section-reuse.js";
@@ -275,7 +286,31 @@ export interface HolisticSynthesisResult {
   warnings: DocWarning[];
   provenanceManifest?: string;
   sectionSupport?: Array<{ supportedClaims: number; totalClaims: number }>;
+  /** #857 — what a run that had earlier sections to reuse did with them. */
+  resume?: SectionResumeReport;
 }
+
+/**
+ * #857 — per section, whether a stored record (an unfinished run's checkpoint
+ * or the last published snapshot) was reused, and when it was not, which of its
+ * inputs had changed. Reported so a regenerate says why it rewrote a section.
+ */
+export interface SectionResumeReport {
+  reused: string[];
+  stale: Array<{ section: string; changed: Array<keyof SectionInputHashes> }>;
+}
+
+/**
+ * #855 / #856 — a point between units of model work where the caller may stop
+ * the run: before Phase 2, before each section, before each batch of a batched
+ * section, and before assembly. A hook that throws ends the run with that
+ * error; it is never turned into a section or batch failure.
+ */
+export interface GenerationStep {
+  kind: "phase2" | "section" | "batch" | "assembly";
+  section?: string;
+}
+export type GenerationStepHook = (step: GenerationStep) => Promise<void>;
 
 export interface HolisticProvenanceContext {
   revision: GeneratedDocRevisionKey;
@@ -648,6 +683,16 @@ export function buildDocsGenProvider(
   tuning: DocsGenTuning;
   effectiveConfigHash: string;
 } {
+  const bundle = buildDocsGenProviderBundle(phase, defaultMaxTokens);
+  // #855 — every call carries the run's AbortSignal, so a cancel, delete or
+  // ceiling stops an in-flight request instead of waiting for it.
+  return { ...bundle, provider: scopedToGeneration(bundle.provider) };
+}
+
+function buildDocsGenProviderBundle(
+  phase: 1 | 2,
+  defaultMaxTokens: number,
+): ReturnType<typeof buildDocsGenProvider> {
   const config = loadAIConfig();
 
   // First-class local-gemma (Ollama) path. Uses the LOCAL_* tuning so a
@@ -966,7 +1011,14 @@ export function resolvePhase2Router(defaultMaxTokens: number): Phase2Router {
     escalationKind: escalation.kind,
     escalationModel: escalation.tuning.phase2Model,
   });
-  return { primary, hybrid: { local, escalation } };
+  // #855 — like the primary bundle (built through buildDocsGenProvider).
+  return {
+    primary,
+    hybrid: {
+      local: { ...local, provider: scopedToGeneration(local.provider) },
+      escalation: { ...escalation, provider: scopedToGeneration(escalation.provider) },
+    },
+  };
 }
 
 /**
@@ -1227,6 +1279,8 @@ async function runHolisticSynthesis(
     checkpoint?: unknown;
     /** #782 — persists the finished sections after each one. */
     onCheckpoint?: (records: SectionSynthesisRecord[]) => Promise<void>;
+    /** #855 / #856 — where the caller may stop the run between units of work. */
+    beforeStep?: GenerationStepHook;
     repoConnectorId?: string;
     grounding?: GroundingContext;
     /**
@@ -1583,6 +1637,11 @@ async function runHolisticSynthesis(
     phase1Warnings.push(phase1ChunksFailedWarning(failedModules));
   }
 
+  // #855 — a run stopped during Phase 1 saw each remaining extraction fail at
+  // once; it ends here rather than writing sections from what was left.
+  throwIfGenerationStopped();
+  await options?.beforeStep?.({ kind: "phase2" });
+
   log.info("Phase 2: synthesizing holistic document", {
     projectId,
     docType,
@@ -1598,6 +1657,7 @@ async function runHolisticSynthesis(
     sectionSynthesis,
     regeneration,
     grounding: groundingRecord,
+    resume,
   } = await synthesizeFinalDocument(
     facts,
     meta,
@@ -1613,6 +1673,7 @@ async function runHolisticSynthesis(
       previousManifest: options?.previousManifest,
       checkpoint: options?.checkpoint,
       ...(options?.onCheckpoint ? { onCheckpoint: options.onCheckpoint } : {}),
+      ...(options?.beforeStep ? { beforeStep: options.beforeStep } : {}),
       // Resolved provider configuration matters even when the model name stays
       // fixed (e.g. changing an Ollama endpoint or an inference profile).
       // Persist only hashes, never credentials or endpoint/source text.
@@ -1671,6 +1732,7 @@ async function runHolisticSynthesis(
     warnings,
     provenanceManifest,
     sectionSupport: verifiedSectionSupport(sections, sectionSynthesis),
+    ...(resume ? { resume } : {}),
   };
 }
 
@@ -3381,11 +3443,25 @@ export function batchNoteFor(
   lead: boolean,
   batchModules: number,
   totalModules: number,
+  /**
+   * #741 — set when the section is length-capped: this part's word budget and
+   * the whole section's. The part is then asked to summarise at business level
+   * instead of documenting every item.
+   */
+  budget?: { words: number; sectionWords: number },
 ): string {
   return [
     "=== BATCH INSTRUCTIONS ===",
     `This section is written in several parts. THIS part covers ${batchModules} of the ${totalModules} modules with content for "${group.label}"; the other modules are written in separate parts and merged with this one afterwards under the same headings.`,
-    "- Document EVERY item in the MODULE FACTS above. Do not stop early and do not summarise.",
+    ...(budget
+      ? [
+          `- LENGTH LIMIT: write at most about ${budget.words} words for THIS part (the whole section is limited to about ${budget.sectionWords} words). This overrides any instruction to document every item.`,
+          "- Write for a business analyst, not a code reviewer: state each rule as a business policy, merge related checks into one rule, and leave out implementation detail (parsing, encoding, sanitisation and validation internals, per-function steps). Keep the citations of the facts you use.",
+          "- Cover the most significant rules first, so that if you run short it is the minor ones that are left out.",
+        ]
+      : [
+          "- Document EVERY item in the MODULE FACTS above. Do not stop early and do not summarise.",
+        ]),
     "- Begin with the H2 heading from your instructions, then organise everything under H3 (###) TOPIC headings named by business topic, never by module; use H4 (####) for sub-topics.",
     "- Do not mention other parts and do not write a closing summary.",
     ...(lead
@@ -3447,6 +3523,10 @@ async function synthesizeBatchedSection(input: {
   onBatchProgress?: (done: number, total: number) => void;
   /** DOCS_GEN_GROUNDING — how much of each batch reply to check (default: all). */
   grounding?: GroundingPolicy;
+  /** #741 — the merged section is fitted to this many characters. */
+  sectionMaxChars?: number;
+  /** #855 / #856 — awaited before each batch call; a throw ends the run. */
+  beforeBatch?: () => Promise<void>;
 }): Promise<BatchedSectionResult> {
   const { group, bundle, plan, projectId, claimExtractor, faithfulnessJudge } = input;
   let batchesTotal = plan.batches.length;
@@ -3494,6 +3574,10 @@ async function synthesizeBatchedSection(input: {
       : input.baseGrounding;
     const batchFacts = batch.map((m) => m.entry).join("\n\n---\n\n");
     let result: SectionGroupResult;
+    // #855 / #856 — outside the batch's error handling: a stopped run rejects
+    // the pool (and so the section) instead of recording a failed batch.
+    throwIfGenerationStopped();
+    await input.beforeBatch?.();
     calls += 1;
     try {
       result = await generateSectionGroup(
@@ -3510,7 +3594,18 @@ async function synthesizeBatchedSection(input: {
         // #168 — facts already in the batch's facts text are listed by id only.
         grounding ? renderGroundingBlock(grounding, { factsBlob: batchFacts }) : "",
         input.flowBlob,
-        batchNoteFor(group, batch.includes(lead), batch.length, plan.modules.length),
+        batchNoteFor(
+          group,
+          batch.includes(lead),
+          batch.length,
+          plan.modules.length,
+          plan.sectionBudget
+            ? {
+                words: batchWordBudget(batchOutputChars(batch)),
+                sectionWords: batchWordBudget(plan.sectionBudget.maxChars),
+              }
+            : undefined,
+        ),
         // A batch reply is never refined: it is one part of a section merged
         // deterministically, so a second full-length rewrite per batch (#118)
         // only doubles the section's wall time. Refine stays for single-call
@@ -3519,6 +3614,7 @@ async function synthesizeBatchedSection(input: {
         onFirstOutput,
       );
     } catch (err) {
+      if (isGenerationStop(err)) throw err;
       log.warn("Section batch failed", {
         projectId,
         group: group.id,
@@ -3598,13 +3694,18 @@ async function synthesizeBatchedSection(input: {
   if (done.length === 0) throw failed[0].err;
 
   const replies = done.filter((d) => d.result.markdown.trim().length > 0);
-  const markdown =
+  const merged =
     replies.length > 0
       ? mergeBatchSections(
           replies.map((d) => d.result.markdown),
           group.label,
         )
       : "";
+  // #741 — the batch budgets are requests; this is the guarantee.
+  const markdown =
+    merged && input.sectionMaxChars !== undefined
+      ? fitSectionToBudget(merged, input.sectionMaxChars).markdown
+      : merged;
 
   const warnings: DocWarning[] = [];
   const names = (d: { batch: SectionBatchModule[] }) => [
@@ -3684,6 +3785,7 @@ async function synthesizeBatchedSection(input: {
         results.push(r);
         if (!r.verified) unchecked.push(d);
       } catch (err) {
+        if (isGenerationStop(err)) throw err;
         unchecked.push(d);
         threw.push(d);
         const errorClass = classifyGroundingError(err);
@@ -3810,6 +3912,8 @@ export async function synthesizeFinalDocument(
      * the document.
      */
     onCheckpoint?: (records: SectionSynthesisRecord[]) => Promise<void>;
+    /** #855 / #856 — see {@link GenerationStepHook}. */
+    beforeStep?: GenerationStepHook;
   },
 ): Promise<
   HolisticSynthesisResult & {
@@ -3891,6 +3995,9 @@ export async function synthesizeFinalDocument(
   // DOCS_GEN_GROUNDING — read ONCE per document, like the escalation config.
   const groundingPolicy = resolveGroundingPolicy();
   const groundingRecord = groundingPolicyRecord(groundingPolicy);
+  // #741 — length caps, read ONCE per document like the settings above.
+  const sectionMaxChars = resolveSectionMaxChars();
+  const documentMaxChars = resolveDocumentMaxChars();
   const sharedEscalationEnabled = escalationConfig.enabled && router.hybrid != null;
   const previousRecords = reusableSectionRecords(
     reuse?.effectiveConfigHash ? reuse.previousManifest?.sectionSynthesis : undefined,
@@ -3942,6 +4049,8 @@ export async function synthesizeFinalDocument(
     }
   };
   const regeneratedSections: string[] = [];
+  // #857 — reported when there was anything stored to reuse.
+  const resume: SectionResumeReport = { reused: [], stale: [] };
   let reusedCount = 0;
   let escalationsUsed = 0;
   if (escalationConfig.enabled && router.hybrid) {
@@ -4065,6 +4174,10 @@ export async function synthesizeFinalDocument(
   for (let gi = 0; gi < groups.length; gi++) {
     const group = groups[gi];
     const warningStart = warnings.length;
+    // #855 / #856 — outside the section's own error handling: a stopped run
+    // ends here, it does not become a failed section.
+    throwIfGenerationStopped();
+    await reuse?.beforeStep?.({ kind: "section", section: group.label });
     log.info("Generating section group", {
       projectId,
       docType,
@@ -4097,6 +4210,7 @@ export async function synthesizeFinalDocument(
               group,
               factsCharCap,
               resolveSectionMaxOutputTokens(provider.model),
+              sectionMaxChars,
             )
           : null;
       const batchPlan = plannedBatches && plannedBatches.modules.length > 0 ? plannedBatches : null;
@@ -4284,6 +4398,8 @@ export async function synthesizeFinalDocument(
               ? null
               : [CLAIM_DECOMPOSITION_RESPONSE_FORMAT, FAITHFULNESS_VERDICTS_RESPONSE_FORMAT],
           threshold: resolveSectionFaithfulnessThreshold(group.faithfulnessThreshold),
+          // #741 — a section written under another length cap is not reused.
+          sectionMaxChars,
           // Absent for `on`, so a full-check run hashes exactly as before and a
           // section is never reused across fact-check modes.
           ...(groundingRecord ? { grounding: groundingRecord } : {}),
@@ -4293,6 +4409,20 @@ export async function synthesizeFinalDocument(
       const previous = previousRecords.get(group.id);
       const stillValid =
         previous != null && JSON.stringify(previous.inputs) === JSON.stringify(inputHashes);
+      // #857 — say which inputs made a stored section stale, so a regenerate
+      // that rewrites it can tell the user why.
+      if (previous && stillValid) resume.reused.push(group.label);
+      else if (previous) {
+        const keys = Object.keys(inputHashes) as Array<keyof SectionInputHashes>;
+        const changed = keys.filter((key) => previous.inputs[key] !== inputHashes[key]);
+        resume.stale.push({ section: group.label, changed });
+        log.info("Stored section is stale; rewriting it", {
+          projectId,
+          docType,
+          section: group.id,
+          changed,
+        });
+      }
       // #782 — this run has reached the section: from here its stored record is
       // either reused below or out of date, and a stale one is dropped from the
       // checkpoint now rather than shown as finished if the rewrite fails.
@@ -4350,6 +4480,12 @@ export async function synthesizeFinalDocument(
           projectId,
           flowBlob,
           grounding: groundingPolicy,
+          sectionMaxChars,
+          ...(reuse?.beforeStep
+            ? {
+                beforeBatch: () => reuse.beforeStep!({ kind: "batch", section: group.label }),
+              }
+            : {}),
           onBatchProgress: (done, total) =>
             reportSection({
               section: group.label,
@@ -4377,6 +4513,12 @@ export async function synthesizeFinalDocument(
           flowBlob,
         );
         keptTruncation = generated;
+        // #741 — within the section cap before it is fact-checked: what is left
+        // out is neither checked nor paid for.
+        generated.markdown = fitSectionToBudget(
+          generated.markdown.trim(),
+          sectionMaxChars,
+        ).markdown;
         // #273 — post-validate the freshly-synthesized section by ENTAILMENT:
         // decompose it into atomic claims, then judge each claim's support against
         // THIS section's grounding context (the judge sees source TEXT, not ids),
@@ -4441,6 +4583,7 @@ export async function synthesizeFinalDocument(
                 group,
                 esc.factsCharCap,
                 resolveSectionMaxOutputTokens(esc.provider.model),
+                sectionMaxChars,
               )
             : null;
           if (escPlan) {
@@ -4459,6 +4602,12 @@ export async function synthesizeFinalDocument(
               projectId,
               flowBlob,
               grounding: groundingPolicy,
+              sectionMaxChars,
+              ...(reuse?.beforeStep
+                ? {
+                    beforeBatch: () => reuse.beforeStep!({ kind: "batch", section: group.label }),
+                  }
+                : {}),
             });
             const escScore = escBatched.outcome.score?.faithfulness ?? null;
             const keptEscalated = escScore == null ? true : escScore >= localScore;
@@ -4507,6 +4656,7 @@ export async function synthesizeFinalDocument(
               escBlock,
               flowBlob,
             );
+            escMd.markdown = fitSectionToBudget(escMd.markdown.trim(), sectionMaxChars).markdown;
             const escValidated = await validateSectionGrounding(
               group.label,
               escMd.markdown.trim(),
@@ -4542,6 +4692,8 @@ export async function synthesizeFinalDocument(
             });
           }
         } catch (err) {
+          // #855 — a stopped run is not a failed escalation.
+          if (isGenerationStop(err)) throw err;
           // An escalation re-run failure must never crash synthesis or discard
           // the already-generated local section: keep the local outcome (with its
           // below-threshold warning intact) and move on.
@@ -4671,6 +4823,9 @@ export async function synthesizeFinalDocument(
         warning: liveWarning ?? undefined,
       });
     } catch (err) {
+      // #855 / #856 — a run stopped mid-section (cancelled, deleted, over its
+      // ceiling, or its inputs changed) ends; the section is not "failed".
+      if (isGenerationStop(err)) throw err;
       if (!regeneratedSections.includes(group.id)) regeneratedSections.push(group.id);
       log.warn("Section group failed", {
         err: String(err),
@@ -4699,6 +4854,11 @@ export async function synthesizeFinalDocument(
     }
   }
 
+  // #855 / #856 — a stop during the last section ends the run here, before a
+  // document is assembled from it.
+  throwIfGenerationStopped();
+  await reuse?.beforeStep?.({ kind: "assembly" });
+
   // Assemble the final document with title header and footer.
   const header = `# ${title}\n\n> **${docTypeLabel(docType)}** for **${meta.name}** &mdash; auto-generated on ${new Date().toISOString().split("T")[0]}.\n>\n> Synthesized from ${facts.length} modules across ${meta.totalFiles} source files (${meta.totalSymbols.toLocaleString()} code symbols).\n`;
 
@@ -4709,7 +4869,18 @@ export async function synthesizeFinalDocument(
   // streaming recap event sneaks past delta dedupe in a provider
   // or if the LLM regenerates content mid-stream). First occurrence of
   // each H2 heading wins.
-  const body = dedupeH2Sections(sectionMarkdowns.join("\n\n"));
+  // #741 — the whole document within its cap, the longest sections shortened
+  // first at topic boundaries, before footnotes are numbered.
+  const fittedSections = fitSectionsToDocumentBudget(sectionMarkdowns, documentMaxChars);
+  if (fittedSections.trimmed > 0) {
+    log.info("Document over its length cap; longest sections shortened", {
+      projectId,
+      docType,
+      documentMaxChars,
+      sectionsShortened: fittedSections.trimmed,
+    });
+  }
+  const body = dedupeH2Sections(fittedSections.sections.join("\n\n"));
   // #1226 — a section can survive generation and still not reach the reader:
   // `dedupeH2Sections` keeps only the FIRST block per H2 heading, so two groups
   // that happened to lead with the same heading collapse into one and the
@@ -4739,6 +4910,7 @@ export async function synthesizeFinalDocument(
     sections: manifestSections,
     selectedEvidence: [...selectedEvidenceById.values()],
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
+    ...(resume.reused.length + resume.stale.length > 0 ? { resume } : {}),
     ...(synthesisRecords.length === groups.length
       ? {
           sectionSynthesis: {
@@ -5557,6 +5729,13 @@ export interface SectionBatchPlan {
   skipped: string[];
   /** Estimated reply characters one batch is planned against. */
   outputBudget: number;
+  /**
+   * #741 — present when the section's estimated length exceeded its cap: the
+   * cap, and the factor every module's output estimate was scaled by. Each
+   * batch is then asked for its scaled share, in words, and for business-level
+   * rules rather than an exhaustive catalogue.
+   */
+  sectionBudget?: { maxChars: number; scale: number; estimatedChars: number };
 }
 
 /**
@@ -5573,6 +5752,8 @@ export function planSectionBatches(
   group: SectionGroup,
   factsCharCap: number,
   maxTokens: number,
+  /** #741 — the section's length cap; absent = unbounded (the #157 behaviour). */
+  sectionMaxChars?: number,
 ): SectionBatchPlan {
   const modules: SectionBatchModule[] = [];
   const skipped: string[] = [];
@@ -5594,12 +5775,29 @@ export function planSectionBatches(
       ...batchedModuleEntries(f, group, { inputCap: factsCharCap, outputBudget }, formulas),
     );
   }
+  // #741 — a section estimated past its cap is planned to fit it: every
+  // module's share shrinks by the same factor, which also lets one call carry
+  // more modules (the output no longer bounds the batch, only the input does).
+  const estimatedChars = modules.reduce((n, m) => n + m.outputChars, 0);
+  const scale =
+    sectionMaxChars === undefined ? 1 : sectionBudgetScale(estimatedChars, sectionMaxChars);
+  if (scale < 1) {
+    for (const m of modules) m.outputChars = Math.max(1, Math.ceil(m.outputChars * scale));
+  }
   const batches = planBatches(modules, {
     inputCap: factsCharCap,
     outputBudget,
     ...(readsFormulas ? { listCap: FORMULAS_BLOCK_CAP } : {}),
   });
-  return { batches, modules, skipped, outputBudget };
+  return {
+    batches,
+    modules,
+    skipped,
+    outputBudget,
+    ...(scale < 1 && sectionMaxChars !== undefined
+      ? { sectionBudget: { maxChars: sectionMaxChars, scale, estimatedChars } }
+      : {}),
+  };
 }
 
 /**

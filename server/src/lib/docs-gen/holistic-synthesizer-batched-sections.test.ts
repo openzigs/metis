@@ -133,6 +133,8 @@ interface FakeOptions {
   tailMs?: (call: Call) => number;
   /** #178 — report token usage for every call. */
   usage?: TokenUsage;
+  /** #741 — keep each reply within the word budget its prompt states. */
+  obeyBudget?: boolean;
 }
 
 /** #178 — what a fake model observed about concurrency. */
@@ -165,9 +167,14 @@ function fakeModel(
     }
     // One rule per module under a shared topic, padded to a reply proportional
     // to the facts read — the shape and scale of a real catalog reply.
-    const perModule = modules.length
+    let perModule = modules.length
       ? Math.floor((factsText.length * OUTPUT_PER_INPUT_CHAR) / modules.length)
       : 0;
+    // #741 — a model that keeps to the batch's stated word budget.
+    const limit = /write at most about (\d+) words/.exec(call.user);
+    if (options.obeyBudget && limit && modules.length) {
+      perModule = Math.min(perModule, Math.floor((Number(limit[1]) * 6) / modules.length) - 80);
+    }
     const body = modules
       .map(
         (m, i) =>
@@ -284,6 +291,11 @@ const callsFor = (p: { calls: Call[] }, group: SectionGroup) =>
 beforeEach(() => {
   scoreFaithfulnessMock.mockReset();
   vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "16384");
+  // These tests pin the #157 batching mechanics, which read every module and
+  // document every item; #741's length caps are lifted here and tested in
+  // their own describe block below.
+  vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
+  vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "1000000000");
 });
 
 afterEach(() => {
@@ -360,6 +372,64 @@ describe("an onyourleft-sized project (143 modules, 16,384-token cap — run 9's
     const rules = result.sections.find((s) => s.sectionLabel === RULES.label)!;
     expect(rules.factsSourceIds).toHaveLength(143);
     expect(new Set(rules.factsSourceIds).size).toBe(143);
+  });
+});
+
+// ── #741: a length-capped catalogue ───────────────────────────────────────
+
+describe("#741 — a batched section is planned and fitted to its length cap", () => {
+  const CAP = 20_000;
+  beforeEach(() => vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", String(CAP)));
+
+  it("asks each batch for its share in words, in fewer calls, still reading every module once", async () => {
+    const facts = onyourleftSized();
+    const uncapped = fakeModel({ obeyBudget: true });
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
+    await run(facts, uncapped);
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", String(CAP));
+    const provider = fakeModel({ obeyBudget: true });
+    const result = await run(facts, provider);
+
+    const calls = callsFor(provider, RULES);
+    expect(calls.length).toBeLessThan(callsFor(uncapped, RULES).length);
+    const read = calls.flatMap((c) => c.modules);
+    expect([...read].sort()).toEqual(facts.map((f) => f.moduleName).sort());
+    for (const c of calls) {
+      expect(c.user).toMatch(/LENGTH LIMIT: write at most about \d+ words for THIS part/);
+      expect(c.user).toContain("Write for a business analyst");
+      expect(c.user).not.toContain("Document EVERY item");
+    }
+    const words = calls.map((c) => Number(/about (\d+) words for THIS/.exec(c.user)![1]));
+    // The parts' budgets add up to (about) the section's.
+    expect(words.reduce((n, w) => n + w, 0)).toBeLessThan((CAP / 6) * 1.2);
+    expect(sectionOf(result.markdown, RULES.label).length).toBeLessThanOrEqual(CAP);
+  });
+
+  it("fits the merged section when the model ignores its budget", async () => {
+    // Room to write past its budget without being cut off by the output cap.
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "100000");
+    const result = await run(onyourleftSized(), fakeModel());
+    const rules = sectionOf(result.markdown, RULES.label);
+    expect(rules.length).toBeLessThanOrEqual(CAP);
+    expect(rules).toContain("**Shortened for length.**");
+  });
+
+  it("keeps the whole document body within the document cap", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
+    const result = await run(onyourleftSized(), fakeModel());
+    const body = result.markdown.slice(result.markdown.indexOf("\n## "));
+    // Body plus the fixed footer; this fixture cites no sources, so no footnotes.
+    expect(body.length).toBeLessThanOrEqual(30_000 + 400);
+    expect(result.markdown.match(/^## /gm)!.length).toBe(
+      sectionGroupsFor("business-requirements").length,
+    );
+  });
+
+  it("plans as before when the section fits its cap", () => {
+    const facts = pairs(2);
+    const plan = planSectionBatches(facts, RULES, 150_000, 16_384, 1_000_000);
+    expect(plan.sectionBudget).toBeUndefined();
+    expect(plan).toEqual(planSectionBatches(facts, RULES, 150_000, 16_384));
   });
 });
 

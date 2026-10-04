@@ -435,7 +435,7 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
     const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
 
     expect(res.status).toBe(409);
-    expect(res.body.error?.message ?? res.text).toMatch(/failed or partially generated/);
+    expect(res.body.error?.message ?? res.text).toMatch(/failed, cancelled or partially generated/);
     expect(doc().status).toBe("degraded");
     expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
   });
