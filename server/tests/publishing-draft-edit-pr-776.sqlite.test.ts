@@ -425,6 +425,55 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
       });
 
+      it("a live run is refused by the approval gate, as a batch is (#619)", async () => {
+        await db.project.update({ where: { id: P }, data: { requireApprovedReview: true } });
+        try {
+          const d = await draft();
+          await expect(
+            openDraftPullRequest({
+              projectId: P,
+              draftId: d.id,
+              actorId: USER,
+              dryRun: false,
+              secretRef: "${vault:github-flux-v2-sandbox}",
+            }),
+          ).rejects.toMatchObject({ statusCode: 409, code: "APPROVAL_REQUIRED" });
+          expect(calls).toEqual([]);
+        } finally {
+          await db.project.update({ where: { id: P }, data: { requireApprovedReview: false } });
+        }
+      });
+
+      it("a live run is refused while its analysis has a pending approval (#257)", async () => {
+        const an = await db.analysis.create({
+          data: { projectId: P, status: "completed", startedById: USER },
+        });
+        const req = await db.requirement.create({
+          data: {
+            analysisId: an.id,
+            projectId: P,
+            title: `Gated ${++seq}`,
+            body: "b",
+            type: "feature",
+            priority: "high",
+          },
+        });
+        await db.approvalRequest.create({
+          data: { analysisId: an.id, type: "requirement", itemId: req.id, status: "pending" },
+        });
+        const d = await draft({ requirementId: req.id });
+        await expect(
+          openDraftPullRequest({
+            projectId: P,
+            draftId: d.id,
+            actorId: USER,
+            dryRun: false,
+            secretRef: "${vault:github-flux-v2-sandbox}",
+          }),
+        ).rejects.toMatchObject({ status: 409, code: "PROMOTION_BLOCKED" });
+        expect(calls).toEqual([]);
+      });
+
       it("a GitHub failure surfaces as a fixed, token-free message", async () => {
         const d = await draft();
         respond = (c) => (c.method === "PUT" ? { status: 403, data: {} } : undefined);

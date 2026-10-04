@@ -278,7 +278,7 @@ describe("#763 — imports take a vault secret reference", () => {
     expect(service.createSource).not.toHaveBeenCalled();
   });
 
-  it("a pasted token or no credential skips the binding check", async () => {
+  it("with no secretRef the binding binds nothing and the service gets no secret id", async () => {
     binding.authorizeImportSecretRef.mockClear();
     const service = { preview: vi.fn(async () => ({ source: "github", count: 0, sample: [] })) };
     await request(buildApp(service)).post("/projects/p1/imports/preview").send(ghBody);
