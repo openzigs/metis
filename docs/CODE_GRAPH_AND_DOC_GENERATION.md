@@ -842,9 +842,57 @@ error's message) as a `section-failed` warning carrying `stage`/`errorClass`. A 
 with no published version is then kept as `degraded`, holding the assembled document or
 else its checkpointed sections. It has no version and no publication, and the regenerate
 route accepts it. A document with a published version stays `failed` and keeps that
-version. A failed commit and the commit-boundary refusals (inputs changed, superseded,
-aborted) are never salvaged; by then every section is checkpointed anyway.
+version. #857 — this now includes a run refused at the commit fence (its inputs changed)
+and a failed commit: in #706 run 3 such a run finished all seven sections, saved nothing,
+and the regenerate rewrote every one ($3.69). Only `superseded` (deleted or replaced) is
+never kept. A resumed run logs, and records in the version's `diffSummary`, which stored
+sections it reused and, for each it rewrote, which input hashes changed (`facts`,
+`formulas`, `flow`, `grounding`, `context`, `config`, `prompts`).
 Limit: when the shared hybrid escalation budget is on, no reuse records are produced, so nothing is checkpointed. A failure before assembly then saves nothing and a regenerate resumes nothing.
+
+**Why run 3 reused nothing (#857).** The cross-module flow block is in every section's
+prompt and its `flow` hash. It broke out-degree ties in edge-row order, and `loadEdges`
+has no `ORDER BY`, so a graph rebuilt with identical content (run 3's same-SHA refresh)
+produced a different block and every checkpointed section went stale at once. Ties are now
+broken by module path. Measured on the run-3 Miniflux graph (60 modules, block at its
+4,000-character cap): reversing the edge order changed the block before the fix, not after.
+
+**Cancel, delete and the cost ceiling (#855).** `POST /docs/:docId/cancel` cancels a
+`pending` document outright, or marks a `generating` one `cancelling` and stops it. Each
+run registers an `AbortController` (`generation-control.ts`), and every docs-gen provider
+is wrapped so each `chat`/`stream` call carries its signal, so an in-flight request is
+aborted rather than awaited. A call cut off that way reported no usage, so its spend is
+recorded as an estimate (agent step `docs-gen-aborted`; the provider's own usage chunk
+when one arrived, otherwise prompt and streamed characters at 3.5 per token). A run on
+another replica is reached through its heartbeat, which also stops a run whose row was
+deleted or re-claimed. The run ends `cancelled`: it keeps the sections it finished as
+content (when there is no published version) and keeps the checkpoint, and `regenerate`
+accepts it. A `cancelling` row whose process died is settled as `cancelled` by the
+interrupted-generation sweep. `DELETE` now stops a generating document's run as well as
+fencing its commit. `DOCS_GEN_MAX_RUN_COST_CENTS` (default 2500) and
+`DOCS_GEN_MAX_RUN_TOKENS` (default 20,000,000) bound one run; reaching either stops it
+like a cancel, and the document is kept `degraded` with a warning naming the ceiling.
+Discovery-agent (module/symbol scope) and database-schema runs are not wrapped: cancel
+marks them and they stop at their end, without an abort.
+
+**Inputs are checked between sections (#856).** The commit-fence fingerprint check also
+runs before Phase 2, before every section, before a batch at most every 5 minutes, and
+before assembly. A run whose inputs changed stops there and is kept as a degraded draft;
+its finished sections stay checkpointed. When a same-SHA refresh leaves the inputs
+unchanged (the ingest-side fix), the check costs one inventory read per step.
+
+**Bounded section and document length (#741).** Run 3's BRD was 2.19 MB, with
+"Business Rules & Policies" alone 1.1 MB. `DOCS_GEN_SECTION_MAX_CHARS` (default 60,000)
+caps a section and `DOCS_GEN_DOCUMENT_MAX_CHARS` (default 250,000) the document body.
+A batched section whose estimate exceeds its cap scales every module's estimate to fit,
+so the planner packs more modules per call (fewer calls). Each batch is told its word
+budget and to state business rules rather than every implementation check.
+`section-size.ts` then guarantees the cap: it keeps leading content whole (paragraphs,
+fences, `$$` blocks and tables are never split, never mid-sentence) and closes the section
+with a note naming the omitted topics. Over the document cap, the longest sections are
+shortened first. Fitting happens before footnotes are numbered, so `[^src-N]` (#737)
+refer only to kept text. The #778 condensed digests are an input-side budget and are
+unchanged. Both caps are part of a section's reuse hash.
 
 **Publication and scope limits.** A committed version queues the separate shared
 publication lifecycle described above. Generation `ready`/`degraded`/`failed`
