@@ -647,6 +647,10 @@ describe("#855 — cancel", () => {
       errorClass: "UnpublishableGenerationError",
     });
     expect(String(cause()!.message)).toContain("cancelled");
+    // The section it was writing was stopped, not failed: the only warning that
+    // names it is the stop's own cause.
+    expect(cause()!.section).toBe(GROUPS[1].label);
+    expect(warnings().filter((w) => w.section === GROUPS[1].label && w !== cause())).toEqual([]);
     expect(checkpointIds()).toEqual([GROUPS[0].id]);
     // The aborted call is billed too: its spend is estimated and recorded.
     expect(recordUsage).toHaveBeenCalledWith(
