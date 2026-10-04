@@ -7,6 +7,7 @@ import { getArtifact, writeArtifact, SpecKitArtifactError } from "../artifacts.j
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import {
   buildSpecKitRagContext,
+  type SiblingSymbolLookup,
   type SpecKitFusedCodeDeps,
   type SpecKitKnowledgeService,
 } from "../rag-context.js";
@@ -72,6 +73,19 @@ export const PLAN_SYSTEM_PROMPT = [
   "  - Only cite file paths that appear in the retrieved context or the spec.",
   "    Never invent a path; when the right file is unknown, say so explicitly.",
   "    Every backticked path is checked against the project's code graph.",
+  "",
+  "EXISTING CAPABILITY CHECK — REQUIRED before any **New** component, new",
+  "function or new method (#785):",
+  "  - Look through the retrieved code symbols AND the `Sibling Symbols` list for",
+  "    a function whose name and behaviour already match the change — the same",
+  "    verb and noun, often declared right beside a retrieved one",
+  "    (`MarkAllAsReadBeforeDate` next to `MarkAllAsRead`).",
+  "  - If one exists, reuse or extend it, name it with its `path:startLine`, and",
+  "    describe only what is missing (a caller, a route, a parameter). Never",
+  "    propose writing a new or sibling function that duplicates it.",
+  "  - End the `# Plan` summary with exactly one line:",
+  "    `Existing capability: <name> at <path:line>` — or",
+  "    `Existing capability: none found in the retrieved context`.",
 ].join("\n");
 
 const SYSTEM_PROMPT = PLAN_SYSTEM_PROMPT;
@@ -91,6 +105,8 @@ export interface PlanInput {
   fusedCode?: SpecKitFusedCodeDeps;
   /** #20 — injectable code-graph path lookup for the post-generation check. */
   pathLookup?: PlanPathLookup;
+  /** #785 — injectable same-file sibling lookup. Defaults to the production wiring. */
+  siblingLookup?: SiblingSymbolLookup;
 }
 
 export interface PlanResult {
@@ -122,6 +138,8 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     fusedCode: input.fusedCode,
     includeCode: true,
     expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
+    // #785 — list the existing same-file siblings of every retrieved symbol.
+    siblings: { ...(input.siblingLookup ? { lookup: input.siblingLookup } : {}) },
   });
 
   const userPrompt = [

@@ -12,26 +12,25 @@
  *      tenants in a multi-project server).
  *   2. Auto-allocated `NNN-kebab(title)`.
  */
-import { createFeature, resolveFeatureBySlug, type SpecKitFeatureDto } from "../features.js";
+import {
+  createFeature,
+  resolveFeatureBySlug,
+  truncateAtWord,
+  type SpecKitFeatureDto,
+} from "../features.js";
 import { writeFeatureArtifact, type FeatureArtifactDto } from "../feature-artifacts.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
+import { buildSpecKitRagContext, type SpecKitKnowledgeService } from "../rag-context.js";
+import { describeGrounding, PINNED_REQUIREMENT_DOCUMENTS } from "../grounding.js";
+import { SPECIFY_SYSTEM_PROMPT } from "./specify.js";
 
-const SYSTEM_PROMPT = [
-  "You are a Business Analyst producing a Spec Kit-compatible spec.md.",
-  "",
-  "Output Markdown ONLY (no JSON wrapper). The document MUST contain the",
-  "following sections in this exact order:",
-  "",
-  "  1. `# Spec` — one-paragraph summary of the goal.",
-  "  2. `## Stakeholders` — bullet list of personas affected.",
-  "  3. `## In scope` — bullet list of features included.",
-  "  4. `## Out of scope` — bullet list of explicit exclusions.",
-  "  5. `## Acceptance criteria` — Given/When/Then bullets, one per AC.",
-  "  6. `## Non-functional requirements` — bullets with measurable thresholds.",
-  "",
-  "Be concise. Avoid implementation detail.",
-].join("\n");
+/**
+ * #786 — the same contract as `/specify`: stable `AC-n` ids (which
+ * `speckit.tasks` maps every task to), what/why only, and scope reconciled
+ * against the retrieved requirements.
+ */
+const SYSTEM_PROMPT = SPECIFY_SYSTEM_PROMPT;
 
 export interface SpecifyFeatureInput {
   projectId: string;
@@ -43,6 +42,8 @@ export interface SpecifyFeatureInput {
   actorId?: string | null;
   sessionId?: string | null;
   deps?: RunDeps;
+  /** #786 — injectable knowledge service for RAG grounding. Defaults to the real one. */
+  knowledgeService?: SpecKitKnowledgeService;
 }
 
 export interface SpecifyFeatureResult {
@@ -67,8 +68,9 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
   }
 
   const project = await loadProjectContext(input.projectId);
-  // Title heuristic: first sentence of the prompt, capped at 80 chars.
-  const title = trimmed.split(/[.\n]/)[0]!.trim().slice(0, 80);
+  // Title heuristic: first sentence of the prompt, capped at 80 chars on a word
+  // boundary (#786: `…let a user mark eve` became the slug's last word).
+  const title = truncateAtWord(trimmed.split(/[.\n]/)[0]!, 80);
   const slug = input.featureSlugOverride;
 
   let feature: SpecKitFeatureDto;
@@ -102,6 +104,14 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
     .filter(Boolean)
     .join("\n");
 
+  // #786 — ground the spec exactly as `/specify` does (#374 / #20): retrieve on
+  // the brief alone and pin the top requirements documents whole. Empty or
+  // failed retrieval ⇒ "" (ungrounded); never throws.
+  const rag = await buildSpecKitRagContext(input.projectId, trimmed, {
+    knowledgeService: input.knowledgeService,
+    expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
+  });
+
   const run = await runSpecKitAgent({
     command: "specify",
     project,
@@ -110,6 +120,8 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
     actorId: input.actorId ?? null,
     sessionId: input.sessionId ?? null,
     deps: input.deps,
+    ragContext: rag.context,
+    ragChunksUsed: rag.usedChunks,
   });
 
   const artifact = await writeFeatureArtifact({
@@ -131,7 +143,7 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
   return {
     feature,
     artifact,
-    message: `Generated spec.md (v${artifact.version}) for ${feature.slug} in ${run.tokensUsed} tokens.`,
+    message: `Generated spec.md (v${artifact.version}) for ${feature.slug} in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.`,
     tokensUsed: run.tokensUsed,
   };
 }

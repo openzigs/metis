@@ -590,6 +590,108 @@ describe("runPlanExpanded", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #786 / #785 — the per-feature specify and plan are grounded like the legacy ones
+// ─────────────────────────────────────────────────────────────────────────────
+describe("feature commands are grounded (#786, #785)", () => {
+  /** Records the system prompt of every call. */
+  class RecordingProvider extends FakeProvider {
+    readonly systems: string[] = [];
+    async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+      this.systems.push(String((o as { systemMessage?: string }).systemMessage ?? ""));
+      return super.chat(m, o);
+    }
+  }
+  const ENTRY = "internal/storage/entry.go";
+  const knowledgeService = {
+    search: vi.fn(async () => ({
+      hits: [
+        {
+          chunkId: "c1",
+          documentId: "d1",
+          filename: "connector:repo:r1:src/internal/storage/entry.go",
+          path: ENTRY,
+          position: 4,
+          text: "func (s *Storage) MarkAllAsRead(userID int64) error {",
+          score: 0.4,
+          rankScore: 0.4,
+          embeddingModel: "test",
+          source: "repo" as const,
+        },
+      ],
+    })),
+  };
+  const fusedCode = {
+    searcher: {
+      search: vi.fn(async () => [
+        { symbolId: "s-mark", filePath: ENTRY, name: "MarkAllAsRead", kind: "function", score: 1 },
+      ]),
+    },
+    lineLookup: {
+      resolve: vi.fn(
+        async () =>
+          new Map([["s-mark", { filePath: "internal/api/x.go", startLine: 506, endLine: 520 }]]),
+      ),
+    },
+  };
+  const siblingLookup = {
+    findInFiles: vi.fn(async () => [
+      {
+        id: "s-before",
+        name: "MarkAllAsReadBeforeDate",
+        kind: "function",
+        filePath: "internal/api/x.go",
+        startLine: 523,
+        endLine: 544,
+      },
+    ]),
+  };
+
+  it("speckit.specify retrieves project knowledge and reports it", async () => {
+    const provider = new RecordingProvider("# Spec\n\nbody");
+    const r = await runSpecifyFeature({
+      projectId: "p1",
+      prompt: "Mark all entries as read older than N days.",
+      deps: { provider },
+      knowledgeService,
+    });
+    expect(provider.systems[0]).toContain("## Retrieved Project Knowledge");
+    expect(provider.systems[0]).toContain(`${ENTRY}#4`);
+    expect(provider.systems[0]).toContain("AC-1"); // the canonical spec contract
+    expect(r.message).toMatch(/grounded on 1 retrieved chunk/);
+  });
+
+  it("speckit.plan grounds every artifact on the spec's requirements and code, siblings included", async () => {
+    const fid = seedFeature("p1", "005-older");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nMark all entries as read older than N days.");
+    const provider = new RecordingProvider("# Plan\n\nExtends `internal/api/x.go`.");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "005-older",
+      deps: { provider },
+      knowledgeService,
+      fusedCode,
+      siblingLookup,
+      pathLookup: {
+        hasCodeGraph: vi.fn(async () => true),
+        findExisting: vi.fn(async (_p: string, paths: string[]) => paths),
+      },
+    });
+    expect(provider.systems).toHaveLength(5);
+    for (const system of provider.systems) {
+      expect(system).toContain("## Retrieved Code Symbols");
+      expect(system).toContain(
+        "MarkAllAsReadBeforeDate (function) — internal/api/x.go:523-544 (beside MarkAllAsRead)",
+      );
+    }
+    // plan.md is written under the grounding + existing-capability contract.
+    expect(provider.systems.at(-1)).toContain("EXISTING CAPABILITY CHECK");
+    expect(provider.systems.at(-1)).toContain("Constitution Compliance Check");
+    expect(knowledgeService.search.mock.calls[0]![1]).toContain("Mark all entries as read");
+    expect(r.message).toMatch(/grounded on \d+ retrieved chunks? and 2 code symbols/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // runChecklist
 // ─────────────────────────────────────────────────────────────────────────────
 describe("runChecklist", () => {

@@ -57,6 +57,25 @@ const featureSlugShape = {
   featureSlug: z.string().min(1).describe("Per-feature slug, e.g. `001-payments-redesign`."),
 } as const;
 
+/**
+ * #786 — tasks/clarify/analyze/implement run against one feature's
+ * `specs/<slug>/` set when given a slug, else against the project's `.specify/`.
+ */
+const optionalFeatureSlugShape = {
+  featureSlug: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Per-feature slug, e.g. `001-payments-redesign`: read and write `specs/<slug>/`. Omit for the project-level `.specify/` set.",
+    ),
+} as const;
+
+/** The REST body for a tool taking {@link optionalFeatureSlugShape}. */
+function featureBody(args: { featureSlug?: string }): Record<string, unknown> {
+  return args.featureSlug ? { featureSlug: args.featureSlug } : {};
+}
+
 const forceShape = {
   force: z
     .boolean()
@@ -100,10 +119,14 @@ export const SPEC_KIT_TOOLS = [
       "Append a clarification Q&A row. Empty input adds a new question; non-empty answers the latest open question.",
     inputSchema: {
       input: z.string().default("").describe("Answer text (empty asks a question)."),
+      ...optionalFeatureSlugShape,
+      ...forceShape,
     },
     toDispatchInput: (args) => ({
       command: "speckit.clarify",
       input: args.input,
+      body: featureBody(args),
+      force: args.force ?? false,
     }),
   }),
   defineTool({
@@ -139,22 +162,36 @@ export const SPEC_KIT_TOOLS = [
   }),
   defineTool({
     name: "speckit_tasks",
-    description: "Generate `tasks.md` with topologically-ordered tasks and Fibonacci sizing.",
-    inputSchema: {},
-    toDispatchInput: () => ({ command: "speckit.tasks" }),
+    description:
+      "Generate `tasks.md` with topologically-ordered tasks and Fibonacci sizing. With `featureSlug`, from that feature's spec.md and plan.md (requires plan gate).",
+    inputSchema: { ...optionalFeatureSlugShape, ...forceShape },
+    toDispatchInput: (args) => ({
+      command: "speckit.tasks",
+      body: featureBody(args),
+      force: args.force ?? false,
+    }),
   }),
   defineTool({
     name: "speckit_analyze",
-    description: "Cross-phase consistency check across spec/plan/tasks; produces `analysis.md`.",
-    inputSchema: {},
-    toDispatchInput: () => ({ command: "speckit.analyze" }),
+    description:
+      "Cross-phase consistency check across spec/plan/tasks; produces `analysis.md`. With `featureSlug`, for that feature (requires tasks gate).",
+    inputSchema: { ...optionalFeatureSlugShape, ...forceShape },
+    toDispatchInput: (args) => ({
+      command: "speckit.analyze",
+      body: featureBody(args),
+      force: args.force ?? false,
+    }),
   }),
   defineTool({
     name: "speckit_implement",
     description:
-      "Return the orchestrator handoff payload that picks up `tasks.md` and routes to executors.",
-    inputSchema: {},
-    toDispatchInput: () => ({ command: "speckit.implement" }),
+      "Return the orchestrator handoff payload that picks up `tasks.md` and routes to executors. With `featureSlug`, that feature's artifacts (requires tasks gate).",
+    inputSchema: { ...optionalFeatureSlugShape, ...forceShape },
+    toDispatchInput: (args) => ({
+      command: "speckit.implement",
+      body: featureBody(args),
+      force: args.force ?? false,
+    }),
   }),
   defineTool({
     name: "speckit_taskstoissues",

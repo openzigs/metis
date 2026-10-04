@@ -2630,8 +2630,26 @@ flowchart LR
   Map --> Seeds[Seed symbols]
   Seeds --> Radius[Blast radius BFS]
   Radius --> Score[Score per project]
+  Radius --> Cross[Schema crossing]
+  Cross --> Writers[Data-path writers]
+  Writers --> Score
   Score --> Report[Per project impact report]
 ```
+
+**#791 — data-path writers and Go calls.** After the schema crossing, the engine names
+the functions that *write* the data the change touches
+([`data-path-writers.ts`](../server/src/lib/impact-analysis/data-path-writers.ts)), as
+relation `data-writer` at depth 1, plus their direct callers at depth 2. Target columns
+live in a primary table: those the requirement names verbatim, those the mapper seeded,
+and — through a Jaccard match on UPDATE sets — siblings of what the seeded code itself
+writes. It reads the SQL-lineage `writes` / `persists-to` edges, which since #807 start at
+the enclosing function. The Go parser leaves `h.store.X()` calls unresolved, so
+[`go-call-resolution.ts`](../server/src/lib/impact-analysis/go-call-resolution.ts) binds
+them by Go package visibility (same directory, or a package the caller's package imports;
+only an unambiguous name binds) for the blast-radius graph and the downstream schema walk,
+where a symbol reached only that way contributes its writes, not its reads. Schema symbols
+are `language: "sql"` rows only, so an application `function` is never a DB routine. When
+the #936 filter judges a table tangential, a column seed of that table leaves the direct set.
 
 API: `POST /api/impact-analyses` (returns `202` with `{id,status,projectIds}`),
 `GET /api/impact-analyses`, `GET /api/impact-analyses/:id`. Guarded by the
@@ -5569,13 +5587,24 @@ normalizeSpecKitCommand(cmdRaw)  # accepts speckit.* OR legacy bare alias
                      ├── speckit.constitution   → runConstitution
                      ├── speckit.specify        → runSpecifyFeature
                      ├── speckit.plan           → runPlanExpanded
-                     ├── speckit.tasks          → runTasks (v1.2)
-                     ├── speckit.checklist      → runChecklist
-                     ├── speckit.taskstoissues  → runTasksToIssues
-                     ├── speckit.clarify        → runClarify (v1.2)
-                     ├── speckit.analyze        → runAnalyze (v1.2)
-                     └── speckit.implement      → runImplement (v1.2)
+                     ├── speckit.tasks          → runTasks (v1.2)    ┐ featureSlug ⇒
+                     ├── speckit.checklist      → runChecklist        │ featureArtifactScope
+                     ├── speckit.taskstoissues  → runTasksToIssues    │ + feature gate;
+                     ├── speckit.clarify        → runClarify (v1.2)   │ none ⇒ project
+                     ├── speckit.analyze        → runAnalyze (v1.2)   │ `.specify/` (#786)
+                     └── speckit.implement      → runImplement (v1.2) ┘
 ```
+
+**#786 — artifact scope.** `runTasks`, `runClarify`, `runAnalyze` and `runImplement`
+read and write through an `ArtifactScope` ([`artifact-scope.ts`](../server/src/lib/spec-kit/artifact-scope.ts)):
+the project's `.specify/` set by default, or one feature's `specs/<slug>/` set. Given a
+`featureSlug`, `dispatchNamespaced` resolves the feature (404 if unknown), enforces its
+gate (`clarify` → `specGate`, `tasks` → `planGate`, `analyze` → `tasksGate`, `implement` →
+`implementGate`, all bypassable with `X-Speckit-Force`) and runs the command in that
+feature's scope. `speckit.specify` and `speckit.plan` build the same RAG context as
+`/specify` and `/plan` (`buildSpecKitRagContext`; the plan with code symbols, their
+same-file **sibling symbols** (#785) and pinned requirement documents, shared by all five
+plan artifacts), use the same spec and plan prompt contracts, and report their grounding.
 
 The legacy alias is preserved byte-for-byte in response shape (`{command, artifactName, artifact, message, tokensUsed}`) so existing v1.2 client integrations require no changes.
 

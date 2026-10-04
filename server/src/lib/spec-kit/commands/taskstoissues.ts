@@ -110,10 +110,12 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
 
   const tasksArt = await getFeatureArtifact(feature.id, "tasks.md");
   if (!tasksArt) {
+    // #786 — `x-speckit-force` bypasses the phase gate, but no header can export
+    // tasks that do not exist; name the command that writes them.
     throw new SpecKitArtifactError(
       412,
       "SPECKIT_GATE_UNMET",
-      "tasks.md is required — run /speckit.tasks first",
+      `tasks.md is required, even with x-speckit-force: there is nothing to export — run /speckit.tasks with featureSlug ${feature.slug} first`,
     );
   }
   const tasks = parseTasksMarkdown(tasksArt.content);
