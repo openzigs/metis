@@ -842,10 +842,12 @@ error's message) as a `section-failed` warning carrying `stage`/`errorClass`. A 
 with no published version is then kept as `degraded`, holding the assembled document or
 else its checkpointed sections. It has no version and no publication, and the regenerate
 route accepts it. A document with a published version stays `failed` and keeps that
-version. #857 — this now includes a run refused at the commit fence (its inputs changed)
-and a failed commit: in #706 run 3 such a run finished all seven sections, saved nothing,
-and the regenerate rewrote every one ($3.69). Only `superseded` (deleted or replaced) is
-never kept. A resumed run logs, and records in the version's `diffSummary`, which stored
+version. #857 — this now includes a failed commit: in #706 run 3 a run refused at the
+commit fence finished all seven sections, saved nothing, and the regenerate rewrote every
+one ($3.69). A run stopped because its inputs changed (`inputs-changed`, at the fence or
+between sections) keeps its checkpoint but is marked `failed` with no content (#867): its
+markdown describes sources that no longer hold, and a `degraded` row's content is
+exportable. `superseded` (deleted or replaced) is never kept. A resumed run logs, and records in the version's `diffSummary`, which stored
 sections it reused and, for each it rewrote, which input hashes changed (`facts`,
 `formulas`, `flow`, `grounding`, `context`, `config`, `prompts`).
 Limit: when the shared hybrid escalation budget is on, no reuse records are produced, so nothing is checkpointed. A failure before assembly then saves nothing and a regenerate resumes nothing.
@@ -867,8 +869,14 @@ when one arrived, otherwise prompt and streamed characters at 3.5 per token). A 
 another replica is reached through its heartbeat, which also stops a run whose row was
 deleted or re-claimed. The run ends `cancelled`: it keeps the sections it finished as
 content (when there is no published version) and keeps the checkpoint, and `regenerate`
-accepts it. A `cancelling` row whose process died is settled as `cancelled` by the
-interrupted-generation sweep. `DELETE` now stops a generating document's run as well as
+accepts it. Cancelling an already-`cancelled` document returns 200. `cancelling` is a live
+state: the claim guard refuses it as it refuses `generating` (after two hours either can be
+reclaimed), so an automatic regeneration cannot take over a run that is stopping (#867).
+An automatic run cancelled over a published version restores the document's prior status,
+and its task is recorded `cancelled` rather than completed or retried. Ingest re-queues a
+`cancelled` document only when it has a published version; one that never published is
+restarted only by `regenerate`. A `cancelling` row whose process died is settled as
+`cancelled` by the interrupted-generation sweep. `DELETE` now stops a generating document's run as well as
 fencing its commit. `DOCS_GEN_MAX_RUN_COST_CENTS` (default 2500) and
 `DOCS_GEN_MAX_RUN_TOKENS` (default 20,000,000) bound one run; reaching either stops it
 like a cancel, and the document is kept `degraded` with a warning naming the ceiling.
@@ -877,8 +885,8 @@ marks them and they stop at their end, without an abort.
 
 **Inputs are checked between sections (#856).** The commit-fence fingerprint check also
 runs before Phase 2, before every section, before a batch at most every 5 minutes, and
-before assembly. A run whose inputs changed stops there and is kept as a degraded draft;
-its finished sections stay checkpointed. When a same-SHA refresh leaves the inputs
+before assembly. A run whose inputs changed stops there and is marked `failed`, with no
+content written (#867); its finished sections stay checkpointed for the regenerate. When a same-SHA refresh leaves the inputs
 unchanged (the ingest-side fix), the check costs one inventory read per step.
 
 **Bounded section and document length (#741).** Run 3's BRD was 2.19 MB, with

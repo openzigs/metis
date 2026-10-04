@@ -144,6 +144,41 @@ describe("fitSectionToBudget", () => {
     expect(fit.markdown.length).toBeLessThanOrEqual(2_000);
   });
 
+  it.each([
+    [
+      "code fence",
+      [
+        "```ts",
+        ...Array.from({ length: 200 }, (_, i) => `const a${i} = obj.read(); // step.`),
+        "```",
+      ],
+    ],
+    [
+      "math block",
+      ["$$", ...Array.from({ length: 200 }, (_, i) => `x_${i} = y. z_${i} = w.`), "$$"],
+    ],
+    [
+      "table",
+      [
+        "| rule | note |",
+        "|---|---|",
+        ...Array.from({ length: 200 }, (_, i) => `| R${i}. | Applies. |`),
+      ],
+    ],
+  ])(
+    "#867 — never cuts inside a %s that is the first content and alone over budget",
+    (_kind, lines) => {
+      const block = lines.join("\n");
+      const md = `## Overview\n\n${block}\n\n### Later\n\nMore.`;
+      const fit = fitSectionToBudget(md, 2_000);
+      // Cut before it: the heading, then the note — no half of the block.
+      expect(fit.markdown.startsWith("## Overview\n\n> **Shortened for length.**")).toBe(true);
+      expect(fit.markdown).not.toContain(lines[0]);
+      expect(fit.markdown).not.toContain(lines[1]);
+      expect(fit.markdown.length).toBeLessThanOrEqual(2_000);
+    },
+  );
+
   it("keeps only the heading when not even one sentence fits", () => {
     const md = `## Overview\n\n${"a".repeat(5_000)}`;
     const fit = fitSectionToBudget(md, 1_000);

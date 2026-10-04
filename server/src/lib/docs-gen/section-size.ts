@@ -160,6 +160,15 @@ function leadingSentences(text: string, max: number): string {
   return kept.trim();
 }
 
+/**
+ * A unit that may be cut at a sentence: not a code fence, a `$$` math block or
+ * a table, whose syntax a cut would leave unclosed.
+ */
+function isProse(text: string): boolean {
+  const lead = text.trimStart();
+  return !(FENCE.test(lead) || lead.startsWith("$$") || lead.startsWith("|"));
+}
+
 export interface FitResult {
   markdown: string;
   /** True when content was left out. */
@@ -204,13 +213,17 @@ export function fitSectionToBudget(markdown: string, maxChars: number): FitResul
     kept.push(all[i]);
     used += cost;
   }
-  // Nothing but headings fits: keep the first paragraph's leading sentences.
+  // Nothing but headings fits: keep the first paragraph's leading sentences —
+  // only when it is prose. A code fence, math block or table is cut before,
+  // never inside, so nothing is left unclosed (#867).
   if (!kept.some((u) => u.depth === 0)) {
     const first = all.findIndex((u) => u.depth === 0);
     if (first >= 0) {
       const heads = all.slice(0, first).filter((u) => u.depth > 0);
       const headChars = heads.reduce((n, u) => n + u.text.length + 2, 0);
-      const lead = leadingSentences(all[first].text, Math.max(0, room - headChars));
+      const lead = isProse(all[first].text)
+        ? leadingSentences(all[first].text, Math.max(0, room - headChars))
+        : "";
       kept.length = 0;
       kept.push(...heads);
       if (lead) kept.push({ text: lead, depth: 0 });
