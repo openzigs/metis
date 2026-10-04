@@ -7,8 +7,13 @@
  * The artifact is append-only so the operator can see how consistency
  * has evolved over multiple `/analyze` runs without losing history.
  */
-import type { SpecKitArtifactDto } from "@metis/shared";
-import { getArtifact, writeArtifact, SpecKitArtifactError } from "../artifacts.js";
+import { SpecKitArtifactError } from "../artifacts.js";
+import {
+  forFeature,
+  projectArtifactScope,
+  type ArtifactScope,
+  type ScopedArtifact,
+} from "../artifact-scope.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import {
   CONSISTENCY_SYSTEM_PROMPT,
@@ -33,10 +38,12 @@ export interface AnalyzeInput {
   /** Override the timestamp baked into the report header (tests). */
   now?: () => Date;
   deps?: RunDeps;
+  /** #786 — the artifact set to read and write. Defaults to the project's `.specify/`. */
+  scope?: ArtifactScope;
 }
 
 export interface AnalyzeResult {
-  artifact: SpecKitArtifactDto;
+  artifact: ScopedArtifact;
   /** Top-level verdict parsed from the agent's `## Summary` block. */
   verdict: "OK" | "WARN" | "BLOCK" | "UNKNOWN";
   tokensUsed: number;
@@ -50,16 +57,19 @@ function parseVerdict(report: string): AnalyzeResult["verdict"] {
 }
 
 export async function runAnalyze(input: AnalyzeInput): Promise<AnalyzeResult> {
+  const scope = input.scope ?? projectArtifactScope(input.projectId);
   const [spec, plan, tasks] = await Promise.all([
-    getArtifact(input.projectId, "spec.md"),
-    getArtifact(input.projectId, "plan.md"),
-    getArtifact(input.projectId, "tasks.md"),
+    scope.get("spec.md"),
+    scope.get("plan.md"),
+    scope.get("tasks.md"),
   ]);
   if (!spec || !plan || !tasks) {
     throw new SpecKitArtifactError(
       409,
       "SPEC_KIT_ANALYZE_INCOMPLETE",
-      "Run /specify, /plan, and /tasks before /analyze",
+      scope.kind === "feature"
+        ? `Run /speckit.specify, /speckit.plan, and /speckit.tasks for ${scope.featureSlug} before /speckit.analyze`
+        : "Run /specify, /plan, and /tasks before /analyze",
     );
   }
   const project = await loadProjectContext(input.projectId);
@@ -93,22 +103,17 @@ export async function runAnalyze(input: AnalyzeInput): Promise<AnalyzeResult> {
   });
 
   const now = input.now ?? (() => new Date());
-  const existing = await getArtifact(input.projectId, "analysis.md");
+  const existing = await scope.get("analysis.md");
   const prev = existing?.content ?? "# Spec Kit consistency reports\n";
   const block = `${REPORT_HEADER(now().toISOString())}\n${run.content.trim()}\n`;
   const next = `${prev.trimEnd()}\n${block}`;
 
-  const artifact = await writeArtifact({
-    projectId: input.projectId,
-    name: "analysis.md",
-    content: next,
-    actorId: input.actorId ?? null,
-  });
+  const artifact = await scope.write("analysis.md", next, input.actorId ?? null);
 
   return {
     artifact,
     verdict: parseVerdict(run.content),
     tokensUsed: run.tokensUsed,
-    message: `Appended consistency report to analysis.md (v${artifact.version}).`,
+    message: `Appended consistency report to analysis.md (v${artifact.version})${forFeature(scope)}.`,
   };
 }

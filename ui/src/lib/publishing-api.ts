@@ -5,7 +5,10 @@ import { apiFetch } from "@/lib/api-client";
 import type {
   ArchivePublishBatchInput,
   CreatePublishBatchInput,
+  DraftPullRequestRequest,
+  DraftPullRequestResult,
   DryRunPlan,
+  EditIssueDraftInput,
   IssueDraft,
   PublishBatch,
   PublishedIssue,
@@ -43,6 +46,18 @@ export const publishingApi = {
     }),
   approveDraft: (projectId: Id, draftId: Id) =>
     apiFetch<IssueDraft>(`${base(projectId)}/drafts/${draftId}/approve`, { method: "POST" }),
+  /** #776 — change a draft's title, body or labels before it is published. */
+  editDraft: (projectId: Id, draftId: Id, body: EditIssueDraftInput) =>
+    apiFetch<IssueDraft>(`${base(projectId)}/drafts/${draftId}`, { method: "PATCH", body }),
+  /**
+   * #776 — plan (dry run, the default) or open a DRAFT pull request for one
+   * draft on the project's saved publish target. Takes no target by design.
+   */
+  draftPullRequest: (projectId: Id, draftId: Id, body: Partial<DraftPullRequestRequest>) =>
+    apiFetch<DraftPullRequestResult>(`${base(projectId)}/drafts/${draftId}/pull-request`, {
+      method: "POST",
+      body,
+    }),
   listBatches: (projectId: Id, includeArchived = false) =>
     apiFetch<PublishBatch[]>(
       `${base(projectId)}/batches?includeArchived=${includeArchived ? "true" : "false"}`,

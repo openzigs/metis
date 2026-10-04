@@ -59,11 +59,6 @@ export interface BaselineEntry {
  */
 export const PROJECT_ACCESS_BASELINE: readonly BaselineEntry[] = [
   {
-    path: "/projects/:projectId/publishing",
-    expression: "publishingRouter()",
-    note: "drafts/batches are now scoped to the PATH projectId (#1072) — but the path project itself is unchecked",
-  },
-  {
     path: "/projects/:projectId/model-preferences",
     expression: "initModelPreferenceRouter()",
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",

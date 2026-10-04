@@ -188,6 +188,30 @@ describe("readFileSliceTool", () => {
     expect(result.content).toContain("60| line 60");
   });
 
+  /**
+   * #726 — a read that returns exactly the range the agent asked for is NOT
+   * truncated, even though the file continues past it. Flagging it appended
+   * "[Results truncated]" to every symbol-sized read, and the agent reported a
+   * fully-read 20-line Go validator as "truncated after its header".
+   */
+  it("does not flag an explicit in-file range as truncated", async () => {
+    const result = await readFileSliceTool.execute(
+      { filePath: "example.ts", startLine: 14, endLine: 56 },
+      context,
+    );
+    expect(result.content).toContain("example.ts (lines 14-56 of 300)");
+    expect(result.truncated).toBe(false);
+  });
+
+  it("does not flag a range that runs past the end of the file as truncated", async () => {
+    const result = await readFileSliceTool.execute(
+      { filePath: "example.ts", startLine: 250, endLine: 400 },
+      context,
+    );
+    expect(result.content).toContain("lines 250-300 of 300");
+    expect(result.truncated).toBe(false);
+  });
+
   it("enforces max 200 lines per call", async () => {
     const result = await readFileSliceTool.execute(
       { filePath: "example.ts", startLine: 1, endLine: 300 },

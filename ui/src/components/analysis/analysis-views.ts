@@ -9,7 +9,9 @@
  * Everything here is pure so the page — a thin wiring layer excluded from
  * coverage — keeps no logic of its own worth measuring.
  */
+import { AGENT_DEGRADED_NOTE_PREFIX } from "@metis/shared";
 import type {
+  AnalysisAgentStatus,
   AnalysisFinding,
   AnalysisSnapshot,
   AnalysisStatus,
@@ -251,6 +253,25 @@ export function traceabilityPendingMessage(status: AnalysisStatus): string | nul
   if (status === "pending" || status === "running")
     return "Traceability is built when the run completes. Check back once it finishes.";
   return "This run did not complete, so there is no traceability to show.";
+}
+
+/**
+ * Issue #766 — the badge an agent card shows. A row that completed DEGRADED
+ * (the server's `AGENT_DEGRADED_NOTE_PREFIX` note on its output) reads
+ * `degraded`, not a green `completed`: the code agent that exhausted its budget
+ * and recovered 0 findings looked like a clean run everywhere but the Summary.
+ */
+export function agentDisplayStatus(agent: {
+  status: AnalysisAgentStatus;
+  notes?: readonly string[] | null;
+}): AnalysisAgentStatus | "degraded" {
+  if (
+    agent.status === "completed" &&
+    (agent.notes ?? []).some((n) => n.startsWith(AGENT_DEGRADED_NOTE_PREFIX))
+  ) {
+    return "degraded";
+  }
+  return agent.status;
 }
 
 // ── Tab counts ──────────────────────────────────────────────────────────────

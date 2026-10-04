@@ -73,6 +73,15 @@ vi.mock("../prisma.js", () => ({
         store.findings.filter((f) => where.id.in.includes(f.id)),
       ),
     },
+    // #768 — a citation becomes a code link only when the project's graph has the file.
+    codeSymbol: {
+      findMany: vi.fn(
+        async ({ where }: { where: { projectId: string; filePath: { in: string[] } } }) =>
+          where.projectId === "proj-1" && where.filePath.in.includes("server/src/auth.ts")
+            ? [{ id: "sym-auth", filePath: "server/src/auth.ts", startLine: 1, endLine: 80 }]
+            : [],
+      ),
+    },
     requirementCodeMapping: {
       findMany: vi.fn(async ({ where }: { where: { requirementId: string; projectId: string } }) =>
         store.mappings.filter(
@@ -103,7 +112,13 @@ describe("synthesis hook → requirement→code spine", () => {
     store.findings.push({
       id: "find-1",
       evidence: JSON.stringify({
-        citations: [{ documentId: "doc-1", chunkIndex: 0, filename: "server/src/auth.ts" }],
+        citations: [
+          {
+            documentId: "doc-1",
+            chunkIndex: 0,
+            filename: "connector:repo:conn-1:src/server/src/auth.ts",
+          },
+        ],
         tags: [],
         requirementId: null,
       }),

@@ -17,24 +17,48 @@ import type { ResponderChunk } from "./ai-responder.js";
 // ── Prisma double ────────────────────────────────────────────────────────────
 const sessionCreate = vi.fn();
 const messageCreate = vi.fn();
+const approvalCreate = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
     aISession: { create: (...a: unknown[]) => sessionCreate(...a) },
     discussionMessage: { create: (...a: unknown[]) => messageCreate(...a) },
+    // #739 — the tool gate records every decision.
+    aIToolApproval: {
+      create: (...a: unknown[]) => approvalCreate(...a),
+      findFirst: async () => null,
+    },
   },
+}));
+vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+
+// ── Project usage ledger double (#739 / #775) ────────────────────────────────
+const recordProjectUsage = vi.fn();
+vi.mock("../finops/token-tracker.js", () => ({
+  recordUsage: (...a: unknown[]) => recordProjectUsage(...a),
 }));
 
 // ── Token tracker double ─────────────────────────────────────────────────────
 const recordAndFlush = vi.fn();
+const recordFailed = vi.fn();
 vi.mock("../ai/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../ai/index.js")>();
   return {
     ...actual,
-    getTokenTracker: () => ({ recordAndFlush: (...a: unknown[]) => recordAndFlush(...a) }),
+    getTokenTracker: () => ({
+      recordAndFlush: (...a: unknown[]) => recordAndFlush(...a),
+      record: (...a: unknown[]) => recordFailed(...a),
+    }),
   };
 });
 
-const { streamAIReply } = await import("./ai-responder.js");
+const { streamAIReply, DISCUSSION_SYSTEM_PROMPT, discussionSystemPrompt } =
+  await import("./ai-responder.js");
+const { DISCUSSION_TOOL_MAX_TURNS, DISCUSSION_TOOL_POLICY } = await import("./grounding.js");
+const { ApprovalGateService } = await import("../ai/approval-policy.js");
+const { makeToolset } = await import("../ai/tool-runtime/toolset.js");
+import type { ChatMessage, ChatOptions, ChatResponse } from "../ai/index.js";
+import type { RuntimeTool } from "../ai/tool-runtime/types.js";
+import type { DiscussionToolRuntime } from "./grounding.js";
 
 /** A scripted provider: emits the given chunks from stream(). */
 function stubProvider(
@@ -69,6 +93,7 @@ describe("streamAIReply", () => {
       ...args.data,
     }));
     recordAndFlush.mockResolvedValue({});
+    recordProjectUsage.mockReturnValue({ totalTokens: 0, costCents: 0 });
   });
 
   it("streams deltas via onChunk and aggregates the body", async () => {
@@ -281,5 +306,419 @@ describe("streamAIReply", () => {
       streamAIReply({ thread, triggerMessage, actor, provider, onChunk: (c) => chunks.push(c) }),
     ).rejects.toThrow();
     expect(chunks.some((c) => c.type === "error")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #739 — grounded replies: project retrieval + a bounded, read-only tool loop
+// ─────────────────────────────────────────────────────────────────────────────
+
+const USAGE = (p: number, c: number) => ({
+  promptTokens: p,
+  completionTokens: c,
+  totalTokens: p + c,
+});
+
+/** A tool-capable provider whose `chat` replies follow `script`, in order. */
+function chatProvider(script: Array<Partial<ChatResponse> | Error>) {
+  const calls: Array<{ messages: ChatMessage[]; opts: ChatOptions }> = [];
+  const stream = vi.fn();
+  const provider = {
+    key: "openai" as AIProvider["key"],
+    model: "deepseek-flash",
+    offline: false,
+    stream,
+    chat: vi.fn(async (messages: ChatMessage[], opts: ChatOptions) => {
+      calls.push({ messages: [...messages], opts });
+      const next = script[Math.min(calls.length - 1, script.length - 1)];
+      if (next instanceof Error) throw next;
+      return {
+        content: "",
+        usage: USAGE(0, 0),
+        model: "deepseek-flash",
+        provider: "openai",
+        ...next,
+      } as ChatResponse;
+    }),
+  } as unknown as AIProvider;
+  return { provider, calls, stream };
+}
+
+type SpyTool = RuntimeTool & { execute: ReturnType<typeof vi.fn> };
+
+/** A read-only project tool, run under the discussion gate. */
+function readTool(text: string): SpyTool {
+  return {
+    name: "read_file_slice",
+    wireName: "read_file_slice",
+    description: "read a file",
+    parameters: { type: "object" },
+    risk: "low",
+    source: "code",
+    validate: (args: unknown) => ({ ok: true as const, args }),
+    execute: vi.fn(async () => ({ text, resultCount: 1 })),
+  };
+}
+
+function toolRuntime(tool: RuntimeTool): DiscussionToolRuntime {
+  return {
+    toolset: makeToolset([tool]),
+    native: true,
+    note: "## Tools note",
+    gate: new ApprovalGateService({
+      sessionId: "sess-1",
+      userId: "u1",
+      policy: { ...DISCUSSION_TOOL_POLICY },
+      agentAllowlist: ["read_file_slice"],
+    }),
+  };
+}
+
+const CALL = { id: "c1", name: "read_file_slice", args: { path: "internal/model/feed.go" } };
+
+describe("streamAIReply — #739 grounding", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionCreate.mockResolvedValue({ id: "sess-1" });
+    messageCreate.mockImplementation((args: { data: Record<string, unknown> }) => ({
+      id: "m-ai",
+      ...args.data,
+    }));
+    recordAndFlush.mockResolvedValue({});
+    approvalCreate.mockImplementation(async (a: { data: unknown }) => a.data);
+    recordProjectUsage.mockReturnValue({ totalTokens: 0, costCents: 0 });
+  });
+
+  it("tells the model not to invent paths and to cite what it read", () => {
+    expect(DISCUSSION_SYSTEM_PROMPT).toMatch(/never invent/i);
+    expect(DISCUSSION_SYSTEM_PROMPT).toMatch(/file:line/);
+  });
+
+  it("puts the project's retrieved excerpts right before the question, after the fixed prompt", async () => {
+    const streamSpy = vi.fn(async function* (_m: ChatMessage[]) {
+      yield { type: "delta", content: "ok" } as ChatChunk;
+      yield { type: "done" } as ChatChunk;
+    });
+    const provider = {
+      key: "offline-stub",
+      model: "x",
+      stream: streamSpy,
+    } as unknown as AIProvider;
+    const retrieve = vi.fn(async () => ({
+      block: "## Retrieved Knowledge\n[1] internal/model/feed.go:123 ScheduleNextCheck",
+      sources: 1,
+    }));
+
+    await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      history: [{ authorKind: "human", body: "earlier" }],
+      retrieve,
+    });
+
+    expect(retrieve).toHaveBeenCalledWith(triggerMessage.body);
+    const sent = streamSpy.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    expect(sent[0]).toEqual({
+      role: "system",
+      content: discussionSystemPrompt({ excerpts: true, tools: false }),
+    });
+    expect(sent[0].content).toMatch(/retrieved excerpts/);
+    expect(sent.at(-2)).toEqual({
+      role: "system",
+      content: expect.stringContaining("internal/model/feed.go:123"),
+    });
+    expect(sent.at(-1)).toEqual({ role: "user", content: triggerMessage.body });
+  });
+
+  it("answers without retrieval when the retriever finds nothing or fails", async () => {
+    const retrievers = [
+      vi.fn(async () => ({ block: "", sources: 0 })),
+      vi.fn(async (): Promise<{ block: string; sources: number }> => {
+        throw new Error("lance down");
+      }),
+    ];
+    for (const retrieve of retrievers) {
+      const streamSpy = vi.fn(async function* (_m: ChatMessage[]) {
+        yield { type: "delta", content: "ok" } as ChatChunk;
+        yield { type: "done" } as ChatChunk;
+      });
+      const provider = {
+        key: "offline-stub",
+        model: "x",
+        stream: streamSpy,
+      } as unknown as AIProvider;
+      const result = await streamAIReply({ thread, triggerMessage, actor, provider, retrieve });
+      const sent = streamSpy.mock.calls[0][0] as Array<{ role: string; content: string }>;
+      expect(sent.filter((m) => m.role === "system")).toHaveLength(1);
+      // Told about no excerpts it was not given (PR #850 review).
+      expect(sent[0].content).toBe(DISCUSSION_SYSTEM_PROMPT);
+      expect(sent[0].content).not.toMatch(/excerpt/i);
+      expect(sent[0].content).not.toMatch(/tool/i);
+      expect(result.message.body).toBe("ok");
+    }
+  });
+
+  it("with tools: reads the project, then answers from what it read", async () => {
+    const tool = readTool("123: func (f *Feed) ScheduleNextCheck(");
+    const { provider, calls, stream } = chatProvider([
+      { toolCalls: [CALL], usage: USAGE(100, 10) },
+      { content: "See internal/model/feed.go:123 (ScheduleNextCheck).", usage: USAGE(300, 40) },
+    ]);
+    const resolveTools = vi.fn(async () => toolRuntime(tool));
+    const chunks: ResponderChunk[] = [];
+
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      resolveTools,
+      onChunk: (c) => chunks.push(c),
+    });
+
+    // The tools are built for the reply's own backing session.
+    expect(resolveTools).toHaveBeenCalledWith({ id: "sess-1" });
+    expect(tool.execute).toHaveBeenCalledWith(
+      CALL.args,
+      expect.objectContaining({ sessionId: "sess-1", userId: "u1", projectId: "p1" }),
+    );
+    expect(stream).not.toHaveBeenCalled();
+    // Offered natively, tagged as the discussion workload, tools NOT disabled.
+    expect(calls[0].opts).toMatchObject({ callType: "discussion", sessionId: "sess-1" });
+    expect(calls[0].opts.disableTools).toBeUndefined();
+    expect(calls[0].opts.tools?.map((t) => t.name)).toEqual(["read_file_slice"]);
+    // The note rides as its own system message after the fixed prompt.
+    expect(calls[0].messages[0]).toEqual({
+      role: "system",
+      content: discussionSystemPrompt({ excerpts: false, tools: true }),
+    });
+    expect(calls[0].messages[0].content).not.toMatch(/excerpt/i);
+    expect(calls[0].messages[1]).toEqual({ role: "system", content: "## Tools note" });
+
+    expect(result.message.body).toBe("See internal/model/feed.go:123 (ScheduleNextCheck).");
+    expect(messageCreate.mock.calls[0][0].data.body).toBe(result.message.body);
+    expect(chunks).toContainEqual({ type: "delta", content: result.message.body });
+    expect(chunks.at(-1)).toEqual({ type: "done" });
+    expect(result.usage).toMatchObject({ promptTokens: 400, completionTokens: 50 });
+  });
+
+  it("keeps the tool loop to a bounded budget, then answers in one tool-free call", async () => {
+    const tool = readTool("nothing useful");
+    // A model that would read forever: it calls a tool whenever it may, and
+    // answers only on the tool-free synthesis call (`toolChoice: "none"`).
+    const { provider, calls } = chatProvider([]);
+    (provider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+      async (messages: ChatMessage[], opts: ChatOptions) => {
+        calls.push({ messages: [...messages], opts });
+        return {
+          content: opts.toolChoice === "none" ? "Best answer from what was read." : "",
+          ...(opts.toolChoice === "none" ? {} : { toolCalls: [CALL] }),
+          usage: USAGE(10, 1),
+          model: "deepseek-flash",
+          provider: "openai",
+        };
+      },
+    );
+
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      resolveTools: async () => toolRuntime(tool),
+    });
+
+    expect(calls).toHaveLength(DISCUSSION_TOOL_MAX_TURNS + 1);
+    expect(tool.execute).toHaveBeenCalledTimes(DISCUSSION_TOOL_MAX_TURNS);
+    expect(result.message.body).toBe("Best answer from what was read.");
+  });
+
+  it("falls back to a plain streamed reply when the tools cannot be built", async () => {
+    const { provider, calls } = chatProvider([]);
+    (provider as unknown as { stream: unknown }).stream = async function* () {
+      yield { type: "delta", content: "plain" } as ChatChunk;
+      yield { type: "done" } as ChatChunk;
+    };
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      resolveTools: async () => {
+        throw new Error("registry down");
+      },
+    });
+    expect(calls).toHaveLength(0);
+    expect(result.message.body).toBe("plain");
+  });
+
+  it("streams as before when no tools can be offered", async () => {
+    const { provider, calls } = chatProvider([]);
+    (provider as unknown as { stream: unknown }).stream = async function* () {
+      yield { type: "delta", content: "plain" } as ChatChunk;
+      yield { type: "done" } as ChatChunk;
+    };
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      resolveTools: async () => null,
+    });
+    expect(calls).toHaveLength(0);
+    expect(result.message.body).toBe("plain");
+  });
+
+  it("meters the whole reply (every model call) into the project ledger chat uses", async () => {
+    const { provider } = chatProvider([
+      { toolCalls: [CALL], usage: USAGE(100, 10) },
+      { content: "done", usage: { ...USAGE(300, 40), cacheReadTokens: 50 } },
+    ]);
+
+    await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      resolveTools: async () => toolRuntime(readTool("x")),
+    });
+
+    expect(recordProjectUsage).toHaveBeenCalledTimes(1);
+    expect(recordProjectUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "p1",
+        sessionId: "sess-1",
+        userId: "u1",
+        agentStep: "discussion",
+        provider: "openai",
+        model: "deepseek-flash",
+        inputTokens: 400,
+        outputTokens: 50,
+        cacheReadTokens: 50,
+      }),
+    );
+    expect(recordAndFlush).toHaveBeenCalledTimes(1);
+    expect(recordAndFlush.mock.calls[0][0].usage).toMatchObject({
+      promptTokens: 400,
+      completionTokens: 50,
+    });
+  });
+
+  it("meters a streamed (tool-free) reply into the project ledger too", async () => {
+    const provider = stubProvider([
+      { type: "delta", content: "hi" },
+      { type: "usage", usage: USAGE(9, 2) },
+      { type: "done" },
+    ]);
+    await streamAIReply({ thread, triggerMessage, actor, provider });
+    expect(recordProjectUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "p1",
+        agentStep: "discussion",
+        inputTokens: 9,
+        outputTokens: 2,
+      }),
+    );
+  });
+
+  it("meters what a failed reply already spent, and persists no message", async () => {
+    const { provider } = chatProvider([
+      { toolCalls: [CALL], usage: USAGE(100, 10) },
+      new Error("provider exploded"),
+    ]);
+    const chunks: ResponderChunk[] = [];
+
+    await expect(
+      streamAIReply({
+        thread,
+        triggerMessage,
+        actor,
+        provider,
+        resolveTools: async () => toolRuntime(readTool("x")),
+        onChunk: (c) => chunks.push(c),
+      }),
+    ).rejects.toThrow(/provider exploded/);
+
+    expect(messageCreate).not.toHaveBeenCalled();
+    expect(chunks.some((c) => c.type === "error")).toBe(true);
+    expect(recordProjectUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "p1",
+        agentStep: "discussion-failed",
+        inputTokens: 100,
+        outputTokens: 10,
+      }),
+    );
+    expect(recordFailed).toHaveBeenCalledWith(
+      expect.objectContaining({ agentStep: "discussion-failed", projectId: "p1" }),
+    );
+  });
+
+  it("a ledger write that throws never fails the reply", async () => {
+    recordProjectUsage.mockImplementation(() => {
+      throw new Error("ledger down");
+    });
+    recordFailed.mockImplementation(() => {
+      throw "tracker down";
+    });
+    const ok = chatProvider([{ content: "fine", usage: USAGE(1, 1) }]);
+    await expect(
+      streamAIReply({
+        thread,
+        triggerMessage,
+        actor,
+        provider: ok.provider,
+        resolveTools: async () => toolRuntime(readTool("x")),
+      }),
+    ).resolves.toMatchObject({ message: { body: "fine" } });
+
+    // The failure path's own metering errors do not mask the provider error.
+    const bad = chatProvider([{ toolCalls: [CALL], usage: USAGE(1, 1) }, new Error("boom")]);
+    await expect(
+      streamAIReply({
+        thread,
+        triggerMessage,
+        actor,
+        provider: bad.provider,
+        resolveTools: async () => toolRuntime(readTool("x")),
+      }),
+    ).rejects.toThrow("boom");
+  });
+
+  it("forwards the cancellation signal to the tool loop's model calls", async () => {
+    const ac = new AbortController();
+    const { provider, calls } = chatProvider([{ content: "", usage: USAGE(0, 0) }]);
+    const chunks: ResponderChunk[] = [];
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      signal: ac.signal,
+      resolveTools: async () => toolRuntime(readTool("x")),
+      onChunk: (c) => chunks.push(c),
+    });
+    expect(calls[0].opts.signal).toBe(ac.signal);
+    // An empty answer sends no delta, only the end of the reply.
+    expect(result.message.body).toBe("");
+    expect(chunks.filter((c) => c.type === "delta")).toHaveLength(0);
+  });
+
+  it("a failure before any usage was reported meters nothing", async () => {
+    const { provider } = chatProvider([new Error("boom")]);
+    await expect(
+      streamAIReply({
+        thread,
+        triggerMessage,
+        actor,
+        provider,
+        resolveTools: async () => toolRuntime(readTool("x")),
+      }),
+    ).rejects.toThrow();
+    expect(recordProjectUsage).not.toHaveBeenCalled();
+    expect(recordAndFlush).not.toHaveBeenCalled();
+    expect(recordFailed).not.toHaveBeenCalled();
   });
 });

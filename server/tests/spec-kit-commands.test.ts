@@ -603,7 +603,7 @@ describe("/tasks", () => {
         provider: new FakeProvider("| # | Title | SP | Deps | Notes |\n|---|---|---|---|---|"),
       },
     });
-    expect(r.artifact.name).toBe("tasks.md");
+    expect(r.artifact).toMatchObject({ name: "tasks.md" });
   });
 });
 

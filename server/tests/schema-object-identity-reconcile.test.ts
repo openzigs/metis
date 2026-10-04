@@ -33,6 +33,8 @@ interface SymRow {
   projectId: string;
   kind: string;
   qualifiedName: string;
+  /** Schema symbols are `sql`; absent means `sql`. */
+  language?: string;
 }
 interface ClassRow {
   projectId: string;
@@ -79,7 +81,12 @@ function makeDb(store: Store): {
       findMany: async ({ where }: any) => {
         const kinds: string[] = where?.kind?.in ?? [];
         return store.symbols
-          .filter((s) => s.projectId === where.projectId && kinds.includes(s.kind))
+          .filter(
+            (s) =>
+              s.projectId === where.projectId &&
+              kinds.includes(s.kind) &&
+              (where.language === undefined || (s.language ?? "sql") === where.language),
+          )
           .map((s) => ({ kind: s.kind, qualifiedName: s.qualifiedName }));
       },
     },
@@ -148,6 +155,26 @@ describe("reconcileProjectSchemaIdentities (#955)", () => {
     expect(res.skippedReason).toBe("ambiguous-resources");
     expect(res.identitiesReconciled).toBe(0);
     expect(store.identities).toHaveLength(0);
+  });
+
+  it("#791 — never registers an application-code function as a database routine", async () => {
+    const store = emptyStore();
+    store.connections.push({ projectId: "p1", databaseResourceId: "res-1", deletedAt: null });
+    store.symbols.push(
+      { projectId: "p1", kind: "function", qualifiedName: "app.calc_total" },
+      {
+        projectId: "p1",
+        kind: "function",
+        qualifiedName: "internal/storage/entry.go::GetReadTime",
+        language: "go",
+      },
+    );
+    const { db } = makeDb(store);
+
+    const res = await reconcileProjectSchemaIdentities("p1", db);
+
+    expect(res.identitiesReconciled).toBe(1);
+    expect(store.identities.map((i) => i.objectName)).toEqual(["calc_total"]);
   });
 
   it("find-or-creates one identity per table/routine symbol under the linked resource", async () => {

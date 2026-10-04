@@ -181,6 +181,8 @@ export interface AgentResultSummary {
   completedAt: string | null;
   errorMessage: string | null;
   summary: string | null;
+  /** #766 — the agent output's notes (carries the degraded marker). */
+  notes?: string[];
   findings: AnalysisFinding[];
 }
 
@@ -388,6 +390,7 @@ export const analysisApi = {
         completedAt: agent.completedAt ?? null,
         errorMessage: agent.errorMessage ?? null,
         summary: agent.summary ?? null,
+        notes: agent.notes ?? [],
         source: agent.source ?? null,
         findings: agent.findings ?? [],
       })) as AgentResultSummary[],

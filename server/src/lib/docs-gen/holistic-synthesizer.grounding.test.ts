@@ -722,6 +722,22 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
     expect(result.markdown).toContain("Grounded prose.");
   });
 
+  /**
+   * #737 — an id that resolves to an admitted source is not stripped but
+   * rendered: one document-scoped footnote, cited from every section that used
+   * it, with a definition naming the file — never empty punctuation.
+   */
+  it("renders a cited admitted source as a document-wide footnote (#737)", async () => {
+    leakSourceId = "([rag:doc1:c1])";
+    const result = await synthesizeHolisticDocument("p1", "architecture", "Arch", { grounding });
+
+    expect(result.markdown).toContain("Grounded prose.[^src-1]");
+    expect(result.markdown).not.toContain("[^src-2]");
+    expect(result.markdown).toMatch(/^\[\^src-1\]: `A\.ts` \(retrieved excerpt\)$/m);
+    expect(result.markdown).not.toContain("[rag:");
+    expect(result.markdown).not.toMatch(/\(\s*\)/);
+  });
+
   it("strips the legacy module-scoped id shape too (#1360)", async () => {
     leakSourceId = "[facts:docker_oracle_init:1]";
     const result = await synthesizeHolisticDocument("p1", "architecture", "Arch", { grounding });

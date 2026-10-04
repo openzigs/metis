@@ -127,14 +127,24 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   let endLine = validated.endLine ?? startLine + MAX_LINES - 1;
 
   // Enforce max lines per call
-  if (endLine - startLine + 1 > MAX_LINES) {
+  const capped = endLine - startLine + 1 > MAX_LINES;
+  if (capped) {
     endLine = startLine + MAX_LINES - 1;
   }
 
   // Clamp to file length
   const clampedEnd = Math.min(endLine, lines.length);
   const slice = lines.slice(startLine - 1, clampedEnd);
-  const truncated = clampedEnd < endLine || clampedEnd < lines.length;
+  // #726 — truncated means "you did not get what you asked for": the per-call
+  // cap cut an explicit range, or an open-ended read stopped before the end of
+  // the file. An explicit range that lies inside the file (or runs past its
+  // end) was answered in full; flagging it appended "[Results truncated]" to
+  // every symbol-sized read, and the agent reported fully-read functions as
+  // cut off. The header still says "lines X-Y of N" either way.
+  const truncated =
+    validated.endLine === undefined
+      ? clampedEnd < lines.length
+      : capped && clampedEnd < lines.length;
 
   // #773 — an OUT-OF-RANGE read is a BAD CALL, not a fact about the codebase. If it
   // returned `resultCount: 0` it would be indistinguishable from a well-formed empty

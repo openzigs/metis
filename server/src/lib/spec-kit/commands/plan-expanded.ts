@@ -25,21 +25,33 @@ import { requireGate, GateUnmetError } from "../gates.js";
 import { loadAsPreamble } from "../constitution-meta.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
+import { PLAN_SYSTEM_PROMPT as LEGACY_PLAN_SYSTEM_PROMPT } from "./prompts.js";
+import {
+  buildSpecKitRagContext,
+  type SiblingSymbolLookup,
+  type SpecKitFusedCodeDeps,
+  type SpecKitKnowledgeService,
+} from "../rag-context.js";
+import {
+  describeGrounding,
+  extractRequirementText,
+  PINNED_REQUIREMENT_DOCUMENTS,
+  verifyPlanPaths,
+  type PlanPathLookup,
+} from "../grounding.js";
 
+/**
+ * #786 — the `/plan` contract (AC-id traceability, grounding in the existing
+ * code, the #785 existing-capability check) plus the per-feature compliance
+ * section. It used to be a seven-line prompt that cited ACs "by section name"
+ * and never mentioned the codebase.
+ */
 const PLAN_SYSTEM_PROMPT = [
-  "You are a Solution Architect producing a Spec Kit-compatible plan.md.",
+  LEGACY_PLAN_SYSTEM_PROMPT,
   "",
-  "Output Markdown ONLY. The document MUST contain in order:",
-  "",
-  "  1. `# Plan` — paragraph summary of the technical approach.",
-  "  2. `## Components` — bullets of named components and their responsibility.",
-  "  3. `## Architecture diagram` — ONE Mermaid `graph` block (required).",
-  "  4. `## Sequence diagrams` — zero or more Mermaid `sequenceDiagram` blocks.",
-  "  5. `## ADRs` — bulleted Architecture Decision Records (Decision / Rationale).",
-  "  6. `## Risks & mitigations` — bullets pairing each risk with its mitigation.",
-  "  7. `## Constitution Compliance Check` — table of constitutional principles vs pass/fail/n/a.",
-  "",
-  "Cite spec.md acceptance criteria by section name.",
+  "CONSTITUTION — REQUIRED: after `## Risks & mitigations`, add a seventh section",
+  "`## Constitution Compliance Check` — a table of the constitution's principles",
+  "against pass / fail / n/a for this plan.",
 ].join("\n");
 
 const RESEARCH_SYSTEM_PROMPT = [
@@ -90,6 +102,11 @@ export interface PlanInput {
   actorId?: string | null;
   sessionId?: string | null;
   deps?: RunDeps;
+  /** #786 — injectable retrieval seams (default: the production wiring), as `/plan`. */
+  knowledgeService?: SpecKitKnowledgeService;
+  fusedCode?: SpecKitFusedCodeDeps;
+  siblingLookup?: SiblingSymbolLookup;
+  pathLookup?: PlanPathLookup;
 }
 
 export interface PlanResult {
@@ -129,6 +146,20 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   }
   const project = await loadProjectContext(input.projectId);
 
+  // #786 — ground every artifact the way `/plan` is grounded (#375 / #20 /
+  // #785): retrieve on the spec's own requirement text, always include code
+  // symbols with their same-file siblings, and pin the top requirements
+  // documents whole. One retrieval serves all five calls, and the block sits in
+  // the cached system prefix right after the constitution. Empty or failed
+  // retrieval ⇒ "" (ungrounded); never throws.
+  const rag = await buildSpecKitRagContext(input.projectId, extractRequirementText(spec.content), {
+    knowledgeService: input.knowledgeService,
+    fusedCode: input.fusedCode,
+    includeCode: true,
+    expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
+    siblings: { ...(input.siblingLookup ? { lookup: input.siblingLookup } : {}) },
+  });
+
   const userBase = [
     `Feature: ${feature.slug} — ${feature.title}`,
     "",
@@ -140,122 +171,90 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
 
   const artifacts: FeatureArtifactDto[] = [];
   let totalTokens = 0;
+  const generate = async (systemPrompt: string, ask: string): Promise<string> => {
+    const run = await runSpecKitAgent({
+      command: "plan",
+      project,
+      systemPrompt,
+      userPrompt: `${userBase}\n\n${ask}`,
+      actorId: input.actorId ?? null,
+      sessionId: input.sessionId ?? null,
+      deps: input.deps,
+      ragContext: rag.context,
+      ragChunksUsed: rag.usedChunks,
+    });
+    totalTokens += run.tokensUsed;
+    return run.content;
+  };
+  const write = async (key: string, content: string): Promise<void> => {
+    artifacts.push(
+      await writeFeatureArtifact({
+        featureId: feature.id,
+        key,
+        content,
+        actorId: input.actorId ?? null,
+      }),
+    );
+  };
 
   // Phase 0 — research.md (always emitted).
-  const research = await runSpecKitAgent({
-    command: "plan",
-    project,
-    systemPrompt: RESEARCH_SYSTEM_PROMPT,
-    userPrompt: `${userBase}\n\nProduce research.md per the system instructions.`,
-    actorId: input.actorId ?? null,
-    sessionId: input.sessionId ?? null,
-    deps: input.deps,
-  });
-  totalTokens += research.tokensUsed;
+  let researchContent = await generate(
+    RESEARCH_SYSTEM_PROMPT,
+    "Produce research.md per the system instructions.",
+  );
   const noClarMarkers = !/\[NEEDS CLARIFICATION\]/.test(spec.content);
-  let researchContent = research.content;
   if (noClarMarkers && !/^##\s+Resolved Unknowns/m.test(researchContent)) {
     researchContent = `${researchContent.trim()}\n\n## Resolved Unknowns: none\n`;
   }
-  artifacts.push(
-    await writeFeatureArtifact({
-      featureId: feature.id,
-      key: "research.md",
-      content: researchContent,
-      actorId: input.actorId ?? null,
-    }),
-  );
+  await write("research.md", researchContent);
 
   // Phase 1 — data-model.md
-  const dataModel = await runSpecKitAgent({
-    command: "plan",
-    project,
-    systemPrompt: DATA_MODEL_SYSTEM_PROMPT,
-    userPrompt: `${userBase}\n\nProduce data-model.md per the system instructions.`,
-    actorId: input.actorId ?? null,
-    sessionId: input.sessionId ?? null,
-    deps: input.deps,
-  });
-  totalTokens += dataModel.tokensUsed;
-  artifacts.push(
-    await writeFeatureArtifact({
-      featureId: feature.id,
-      key: "data-model.md",
-      content: dataModel.content,
-      actorId: input.actorId ?? null,
-    }),
+  await write(
+    "data-model.md",
+    await generate(DATA_MODEL_SYSTEM_PROMPT, "Produce data-model.md per the system instructions."),
   );
 
   // Phase 1 — contracts/api.openapi.yaml
-  const contract = await runSpecKitAgent({
-    command: "plan",
-    project,
-    systemPrompt: CONTRACT_SYSTEM_PROMPT,
-    userPrompt: `${userBase}\n\nProduce the OpenAPI 3.1 contract per the system instructions.`,
-    actorId: input.actorId ?? null,
-    sessionId: input.sessionId ?? null,
-    deps: input.deps,
-  });
-  totalTokens += contract.tokensUsed;
-  const contractBody = ensureValidOpenAPI(contract.content, feature.slug);
-  artifacts.push(
-    await writeFeatureArtifact({
-      featureId: feature.id,
-      key: "contracts/api.openapi.yaml",
-      content: contractBody,
-      actorId: input.actorId ?? null,
-    }),
+  const contract = await generate(
+    CONTRACT_SYSTEM_PROMPT,
+    "Produce the OpenAPI 3.1 contract per the system instructions.",
   );
+  await write("contracts/api.openapi.yaml", ensureValidOpenAPI(contract, feature.slug));
 
   // Phase 1 — quickstart.md
-  const quickstart = await runSpecKitAgent({
-    command: "plan",
-    project,
-    systemPrompt: QUICKSTART_SYSTEM_PROMPT,
-    userPrompt: `${userBase}\n\nProduce quickstart.md per the system instructions.`,
-    actorId: input.actorId ?? null,
-    sessionId: input.sessionId ?? null,
-    deps: input.deps,
-  });
-  totalTokens += quickstart.tokensUsed;
-  artifacts.push(
-    await writeFeatureArtifact({
-      featureId: feature.id,
-      key: "quickstart.md",
-      content: quickstart.content,
-      actorId: input.actorId ?? null,
-    }),
+  await write(
+    "quickstart.md",
+    await generate(QUICKSTART_SYSTEM_PROMPT, "Produce quickstart.md per the system instructions."),
   );
 
   // Plan.md (last — references the others).
-  const plan = await runSpecKitAgent({
-    command: "plan",
-    project,
-    systemPrompt: PLAN_SYSTEM_PROMPT,
-    userPrompt: `${userBase}\n\nProduce plan.md per the system instructions.`,
-    actorId: input.actorId ?? null,
-    sessionId: input.sessionId ?? null,
-    deps: input.deps,
-  });
-  totalTokens += plan.tokensUsed;
-  let planContent = plan.content;
+  let planContent = await generate(
+    PLAN_SYSTEM_PROMPT,
+    "Produce plan.md per the system instructions.",
+  );
   if (!/^##\s+Constitution Compliance Check/m.test(planContent)) {
     planContent = `${planContent.trim()}\n\n## Constitution Compliance Check\n\n| Principle | Status | Notes |\n| --- | --- | --- |\n| (auto-generated) | n/a | populate per principle from .specify/memory/constitution.md |\n`;
   }
-  artifacts.push(
-    await writeFeatureArtifact({
-      featureId: feature.id,
-      key: "plan.md",
-      content: planContent,
-      actorId: input.actorId ?? null,
-    }),
-  );
+  await write("plan.md", planContent);
 
   await updateFeatureStatus(feature.id, "planned", input.actorId ?? null);
 
+  // #786 — the same post-generation path check as `/plan` (#20): an invented
+  // path is reported, never trusted.
+  const paths = await verifyPlanPaths(input.projectId, planContent, input.pathLookup);
+  const existingNamed = paths.referenced.length - paths.unverified.length;
+  const noneNote =
+    paths.checked && existingNamed === 0
+      ? " The plan names no existing file from the project's code graph — check where the change goes before implementing."
+      : "";
+  const pathNote =
+    paths.unverified.length > 0
+      ? ` ${paths.unverified.length} referenced path${paths.unverified.length === 1 ? " is" : "s are"} not in the project's code graph (expected only for new files): ${paths.unverified.map((p) => `\`${p}\``).join(", ")}.`
+      : "";
+
   return {
     artifacts,
-    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens).`,
+    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${pathNote}${noneNote}`,
     tokensUsed: totalTokens,
   };
 }

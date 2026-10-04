@@ -334,6 +334,16 @@ describe("renderGroundingBlock", () => {
     expect(block).toContain("END GROUNDING SOURCES");
   });
 
+  // #737 — the model wrote its own per-section "source key" tables and handles
+  // (`S1`, `[^storage]`) that meant different modules in different sections.
+  // Citations are rendered document-wide at assembly, so the prompt must say
+  // where an id goes and forbid a hand-written key.
+  it("tells the model to cite ids inline in brackets and not to write its own source key", () => {
+    const block = renderGroundingBlock(buildGroundingContext({ ragChunks: [chunk()] }));
+    expect(block).toContain("[rag:doc1:c1]");
+    expect(block).toMatch(/do NOT write your own footnotes, source keys, handles/i);
+  });
+
   // #168 — a section prompt already carries each module's facts entry in its
   // EXTRACTED MODULE FACTS; the grounding block must not repeat it.
   describe("with the prompt's facts blob (#168)", () => {
