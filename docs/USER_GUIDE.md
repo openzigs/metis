@@ -1264,6 +1264,8 @@ When you click **"Run Analysis"** on a project, here's what happens behind the s
 
 4. **Requirements are created** — up to 100 requirements per analysis, each fully documented with title, description, type, priority, tags, and acceptance criteria.
 
+   On a large analysis the reviewer's answer can be longer than the model may write in one response — especially on models that reason before they answer, such as DeepSeek, whose reasoning counts against the same limit. METIS then keeps every requirement the model finished and asks it again only for the findings those requirements do not yet cover, so the requirements keep their types and acceptance criteria. If METIS still cannot reach some findings, it groups only those by keyword and the **Requirement synthesis was degraded** notice says how many requirements the model wrote and how many were grouped.
+
 ### 11.2 Adding Documents and New Requirements Before a Run
 
 You no longer need to leave the Analysis page to feed a run. The **Start a new analysis** card has two optional panels that let you shape what the agents look at.
