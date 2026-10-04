@@ -165,10 +165,9 @@ Call the **Code Review** subagent with `#tool:agent/runSubagent`:
 
 > **Why this prompt no longer spells the publishing steps out.** It used to name a
 > three-step `mcp_github_pull_request_review_write` flow and assert *"Only `api` and `ui`
-> jobs appear (no CodeQL)"*. The PR check surface is **twelve** checks — `api`,
-> `api-outcome`, `changelog`, `generative-e2e`, `postgres-adapter`,
-> `postgres-migrate-deploy`, `sql-lineage`, `ui`, `e2e`, `windows`, `Dependency audit` and
-> `Semgrep` — so an agent obeying that line treated ten of them as non-existent. The
+> jobs appear (no CodeQL)"*. The PR check surface was then
+> twelve checks (twenty since #844; CLAUDE.md > "CI and merging" holds the current list),
+> so an agent obeying that line treated ten of them as non-existent. The
 > publishing procedure had drifted too: #1180 moved the skills onto `gh api --input`, and
 > #1195 found a sibling endpoint returning a permanent 404. Both defects are the same one —
 > an instruction duplicated in prose gets updated in one copy and not the others (#1187) —
