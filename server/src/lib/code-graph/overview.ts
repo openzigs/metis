@@ -133,6 +133,25 @@ export function isJavaEntryPoint(symbol: {
   return JAVA_ENTRY_POINT_FILE_PATTERNS.some((p) => p.test(symbol.filePath));
 }
 
+/**
+ * #719 — Go's entry point is `func main` in `package main`, most often a root
+ * `main.go`, which none of the file patterns above match (they need a `src/`,
+ * `cmd/` or `bin/` segment). A top-level `main` function is only legal in
+ * `package main`, so the name alone is decisive — no file convention needed.
+ */
+export function isGoEntryPoint(symbol: {
+  name?: string;
+  qualifiedName: string;
+  filePath: string;
+  language: string;
+  kind?: string;
+}): boolean {
+  if (symbol.language !== "go") return false;
+  if (symbol.kind !== undefined && symbol.kind !== "function") return false;
+  if (isTestFilePath(symbol.filePath)) return false;
+  return simpleSymbolName(symbol) === "main";
+}
+
 const TOP_GOD_NODES = 20;
 /** Ranked symbol ids fetched per round trip while skipping test-file symbols. */
 const GOD_NODE_PAGE = 100;
@@ -284,7 +303,12 @@ export async function generateOverview(
   });
   const entryPoints = candidateEntryPoints
     .filter((s) => !calledIds.has(s.id))
-    .filter((s) => ENTRY_POINT_PATTERNS.some((p) => p.test(s.filePath)) || isJavaEntryPoint(s))
+    .filter(
+      (s) =>
+        ENTRY_POINT_PATTERNS.some((p) => p.test(s.filePath)) ||
+        isJavaEntryPoint(s) ||
+        isGoEntryPoint(s),
+    )
     .sort((a, b) => a.qualifiedName.localeCompare(b.qualifiedName))
     .slice(0, TOP_ENTRY_POINTS);
 
@@ -363,7 +387,7 @@ export async function generateOverview(
   lines.push("");
   if (entryPoints.length === 0) {
     lines.push(
-      "_No entry-point candidates were found. (Looking for `bin/*`, `cmd/*`, `src/index.*`, `src/main.*`, `**/server.*`, `**/cli.*`, and for Java a `main` method or `*Application.java` / `*Initializer.java` / `*Servlet.java` / `Main.java`.)_",
+      "_No entry-point candidates were found. (Looking for `bin/*`, `cmd/*`, `src/index.*`, `src/main.*`, `**/server.*`, `**/cli.*`, for Go a `func main`, and for Java a `main` method or `*Application.java` / `*Initializer.java` / `*Servlet.java` / `Main.java`.)_",
     );
   } else {
     lines.push("| Symbol | Kind | File |");
