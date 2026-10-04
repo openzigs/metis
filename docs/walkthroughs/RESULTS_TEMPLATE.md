@@ -48,7 +48,7 @@ Phases removed since run 2: {{e.g. Phase 4 bug scan (#799); Phase 17 test covera
 | 14 Spec Kit (S1–S24) | | | | | | | | | |
 | 15 PR review / change | | | | | | | | | |
 | 16 Impact | | | | | | | | | |
-| 17 Test coverage | | | | | | | | | |
+| 17 Tested by | | | | | | | | | |
 | 18 Usage / cost | | | | | | | | | |
 | 19 Settings | | | | | | | | | |
 | 20 Admin | | | | | | | | | |

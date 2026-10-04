@@ -2,7 +2,7 @@
 
 You are wave B of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read
 [#706](https://github.com/openzigs/metis/issues/706) for the definition and pass bars of
-Phases 5–8 (database and lineage, import / Jira / test management, analysis and agents,
+Phases 5–8 (database and lineage, import / Jira, analysis and agents,
 requirements and traceability).
 
 ## State you start from

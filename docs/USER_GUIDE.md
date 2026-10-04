@@ -924,7 +924,7 @@ After logging in you land on the **Dashboard** inside the persistent app shell:
 - **Sidebar** (left, 16 rem) — six destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout); **Activity** → Tasks, Runs, Sessions, Scheduler, Reviews; **Settings** → Settings, Vault, Eval, and Admin (Admin shown to system admins only). The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
 - **Header** (top, sticky) — a **Workspace › Project breadcrumb** on the left (each crumb opens a switcher menu; degrades to workspace-only when no project is selected); on the right, the **activity indicator**, theme toggle (light / dark / system), the **notifications bell** (with an unread-count badge), and the user menu.
 - **Activity indicator** — a small **"N jobs running"** control that appears in the header **only while something is actually running**, and disappears automatically when everything finishes. It reflects *any* long-running operation — documentation generation, analysis, PR reviews, imports/syncs, and more — not just one kind. Click it to open a drawer that lists each in-progress job with its type, project, and live progress bar. The count and announcements are accessible to screen readers (announced politely as jobs start and complete). For documentation specifically, you no longer have to open a document to watch it build: a doc that is generating now shows a live progress bar and an "N of M sections" counter **directly on its card in the documentation list**, and clicking **Generate Documentation** takes you straight to the new document's live progress (with a "View progress" toast) instead of leaving you on a static badge. [Epic #406] The **Import Requirements** page (`Projects › Import`) likewise streams live progress: after you click **Import** or **Run now** on a saved source, the page shows a live progress bar with the current step ("Fetched 5/10 issues") for the active run instead of going silent, and a toast announces the result when the run finishes ("Imported 5 new, 2 updated" on success, or a generic "The import sync failed. Please try again." on failure — raw error detail is never shown). The import history below still refreshes on its own as a fallback if the live connection drops, and the ongoing-sync toggle, interval, and **Run now** controls are unchanged. [Epic #406, #424]
-- **Consistent completion feedback** — every long-running operation now ends with a clear **success or failure toast**, and you get it **even when you are not on the operation's detail page**. Previously, if you started documentation generation, an analysis, or a test-coverage run and then navigated to a list view (or simply looked away), a *failure* was recorded silently on the row but never announced — you had to notice the badge had changed. Now a single app-wide layer watches the realtime job bus and shows the terminal result wherever you are: a green toast on success (carrying the operation's own message, e.g. the Spec Kit "Generated spec.md (v3) … grounded on N retrieved chunks" line) and a red toast on failure with a **generic, non-revealing message** ("The … operation failed. Please try again.") — raw error detail and stack traces are never shown. Each operation toasts **exactly once**: the surfaces that already announce their own outcome (PR re-review, embeddings reindex, import/sync, Spec Kit, overview regenerate) are reconciled with this global layer so you never see a duplicate. [Epic #406, #425]
+- **Consistent completion feedback** — every long-running operation now ends with a clear **success or failure toast**, and you get it **even when you are not on the operation's detail page**. Previously, if you started documentation generation or an analysis and then navigated to a list view (or simply looked away), a *failure* was recorded silently on the row but never announced — you had to notice the badge had changed. Now a single app-wide layer watches the realtime job bus and shows the terminal result wherever you are: a green toast on success (carrying the operation's own message, e.g. the Spec Kit "Generated spec.md (v3) … grounded on N retrieved chunks" line) and a red toast on failure with a **generic, non-revealing message** ("The … operation failed. Please try again.") — raw error detail and stack traces are never shown. Each operation toasts **exactly once**: the surfaces that already announce their own outcome (PR re-review, embeddings reindex, import/sync, Spec Kit, overview regenerate) are reconciled with this global layer so you never see a duplicate. [Epic #406, #425]
 - **Friendly form validation** — forms now guide you instead of dumping raw errors. The **New project** dialog (`Projects › New project`) keeps its **Create** button disabled until the required fields (**Name** and **Slug**) are filled in; leaving **Name** empty shows an inline "Name is required" message right under the field instead of silently doing nothing. The **Import Requirements** page behaves the same way: if a required filter field is missing (for example a GitHub import with no **Owner** or **Repository**), you get a clear inline message beside the offending field — never the previous wall of raw technical error text, and never a generic "something went wrong" page. Behind the scenes, validation problems now come back from the server as a friendly, structured message (a plain "X is required" per field); the application never exposes internal schema details, stack traces, or raw validation arrays to your browser. [Epic #407, #426 — OWASP A09]
 - **Main content** — the route's surface (Dashboard widgets by default). The shell owns the page gutter, so pages render with consistent spacing; pending data shows skeleton placeholders and errors show a retry/escape card.
 - **Branded "page not found"** — visiting a URL that doesn't exist (for example a mistyped or stale link under a project, such as `/projects/{id}/code`) now shows a **branded 404** with the METIS mark, a clear "Page not found" message, and a **Back to dashboard** button — instead of a bare, unstyled browser-default 404 with no way back. [Epic #407, #430]
@@ -941,7 +941,7 @@ A **skip-to-content** link is the first focusable element on every authenticated
 | Requirements | Review (what is awaiting review), Baselines, Discussions |
 | Docs | Documentation, Templates |
 | Publish | Issue drafts and publish batches |
-| Code | Code Overview, Changes, Pull Requests, Test Coverage |
+| Code | Code Overview, Changes, Pull Requests |
 | ⚙ | Project settings, Models, Plugins, Usage |
 
 There is no "More" menu. Project settings (AI provider and model, safety, budget, autopilot, quarantine, archive, …) are behind **⚙**, not on the Overview. Per-project skills are managed from **Library**, which has a project picker. Every existing project URL still works. Below `md` the whole bar collapses into a single dropdown so there's no horizontal scrolling on mobile. **Settings** sub-pages share a persistent left sub-navigation.
@@ -1573,6 +1573,8 @@ Two empty states mean different things:
 
 On the analysis's **Traceability** tab, the matrix's **Tests** column shows the same label after each test, and an **Untested requirements** list sits below the matrix. It reads "N of M requirements with mapped code have a linked test", says how many requirements have no mapped code (those are not counted either way), and lists each untested requirement as a link to its card. Use **Load more** to page through a long list. The list appears once the analysis has completed. It is separate from the **Gap report** further down, which is about missing *implementation*, not missing tests.
 
+> **Used the old Test Coverage page?** It was removed, with its test-case imports and its Jira, Xray, Zephyr Scale and TestRail connectors ([ADR 0019](decisions/0019-replace-test-coverage-with-tested-by.md)). **Tested by** replaces it: it reads the tests already in your repository from the code graph, makes no model call, and tells "no test" apart from "no code mapped". For a per-project figure, see the **Tested** column in Section 12.10.
+
 ### 12.5 Editing Requirements
 
 You can edit any requirement that hasn't been published yet:
@@ -1595,8 +1597,8 @@ Before a requirement can be published to GitHub, it must be **approved**. This i
 For teams that use the **formal review workflow** (the Reviews page — see the review queue in the sidebar), a project can additionally enforce that nothing is published or exported without a signed-off review:
 
 - **Where:** the **Approval gate** card at the top of the project's **Publishing** page. Tick **"Require approved review to publish/export"**. Only review administrators (coordinator or admin) can change the setting — everyone else sees it read-only. It is **off by default**, so nothing changes until you enable it.
-- **What it enforces (when on):** publishing issue drafts (single approve, live batches, and retried/re-published batches — to GitHub and to Jira), pushing test-coverage suggestions to an external test-management system (GitHub, Xray/Jira, Zephyr, TestRail), exporting a generated document (PDF/Word/Markdown), and exporting a requirement's version history (CSV/JSON) are all **blocked** unless each item has an **approved review of its current content**. If a requirement or document changed after its review was approved, the old approval no longer counts — submit it for review again.
-- **What you see on a block (#1117):** the draft row you clicked shows an inline message right where you clicked it, and a fuller notice appears **above** the drafts list — it used to render below the list, which on a long list put it off-screen and made a rejected Approve read as a click that did nothing. The notice leads with how many requirements/documents still need review (and any drafts not linked to a requirement at all), shows the first five ids plus *"and N more"* rather than a wall of identifiers, and links to **Create or view reviews**. Dry-run publishes are never blocked — use them to preview what still needs sign-off. Local file downloads (the Excel/Gherkin/Playwright test-coverage exports and the clarify-question CSV/JSON) are also never blocked: they write nothing to external systems, like dry-run previews.
+- **What it enforces (when on):** publishing issue drafts (single approve, live batches, and retried/re-published batches — to GitHub and to Jira), exporting a generated document (PDF/Word/Markdown), and exporting a requirement's version history (CSV/JSON) are all **blocked** unless each item has an **approved review of its current content**. If a requirement or document changed after its review was approved, the old approval no longer counts — submit it for review again.
+- **What you see on a block (#1117):** the draft row you clicked shows an inline message right where you clicked it, and a fuller notice appears **above** the drafts list — it used to render below the list, which on a long list put it off-screen and made a rejected Approve read as a click that did nothing. The notice leads with how many requirements/documents still need review (and any drafts not linked to a requirement at all), shows the first five ids plus *"and N more"* rather than a wall of identifiers, and links to **Create or view reviews**. Dry-run publishes are never blocked — use them to preview what still needs sign-off. The clarify-question CSV/JSON download is also never blocked: it writes nothing to external systems, like dry-run previews.
 - **Safety behavior:** the gate *fails closed*. If METIS cannot verify approvals (for example, a temporary database problem), the publish/export is blocked rather than allowed — retry once the system recovers.
 
 #### 12.6.2 Baselines (immutable snapshots of approved requirements)
@@ -2832,7 +2834,7 @@ The **Secret Vault** is a secure storage for sensitive information that METIS ne
 
 - **Encrypted at rest** — all secrets are encrypted using AES-256-GCM, a military-grade encryption algorithm
 - **Key derivation** — the encryption key is derived from a master key using PBKDF2 with 100,000 iterations, making brute-force attacks practically impossible
-- **Access controlled** — users with `vault.read` (admin, coordinator, developer) can list entries, view audit history, and use a secret by reference (chat BYOK keys, connectors, MCP servers) — but a non-administrator may attach to a connector or MCP server only secrets they created, and cannot change the host, base URL, command or env of one that holds someone else's secret (403 `SECRET_BINDING_FORBIDDEN`; ask an administrator). The same applies to publishing and Projects v2 board listing against a GitHub Enterprise base URL, and to moving a Jira or test-management connection (base URL, proxy or TLS settings) without re-entering its credentials. A label that matches more than one secret (for example `global:x` and `project:x`) is refused rather than guessed — qualify it or use the secret id; only `vault.reveal` — administrators only — can see a secret's plaintext; only `vault.write` can create, rotate, or delete entries
+- **Access controlled** — users with `vault.read` (admin, coordinator, developer) can list entries, view audit history, and use a secret by reference (chat BYOK keys, connectors, MCP servers) — but a non-administrator may attach to a connector or MCP server only secrets they created, and cannot change the host, base URL, command or env of one that holds someone else's secret (403 `SECRET_BINDING_FORBIDDEN`; ask an administrator). The same applies to publishing and Projects v2 board listing against a GitHub Enterprise base URL, and to moving a Jira connection (base URL, proxy or TLS settings) without re-entering its credentials. A label that matches more than one secret (for example `global:x` and `project:x`) is refused rather than guessed — qualify it or use the secret id; only `vault.reveal` — administrators only — can see a secret's plaintext; only `vault.write` can create, rotate, or delete entries
 - **Audit logged** — every reveal attempt (`vault.reveal`, with `outcome` `granted`, `denied` or `not_found` — never the value), create, rotate, and delete is recorded in the audit trail with `source: "vault_ui"` metadata
 
 ### Using the Vault
@@ -2850,13 +2852,14 @@ The `/vault` page is split into two panels:
    - **Rotate** — submits a new value via `POST /api/vault/:id/rotate`,
      bumps the key version, and clears any previously revealed plaintext.
      If another user created the secret, the page first shows who owns it
-     and which DB and repo connectors, import sources, Jira connections, MCP
-     servers and test-management connections use it (an MCP server counts when
-     a `${vault:...}` reference in its environment or headers resolves to the
-     secret by id or label, and a test-management connection when one in its
-     auth or TLS config does; notification-channel references are not
-     checked); it rotates only after **Rotate anyway**, because the owner's
-     resources will send your value to the hosts they chose. The secret then
+     and which DB and repo connectors, import sources, Jira connections and
+     MCP servers use it (an MCP server counts when a `${vault:...}` reference
+     in its environment or headers resolves to the secret by id or label;
+     notification-channel references are not checked); it rotates only after **Rotate anyway**, because the owner's
+     resources will send your value to the hosts they chose. (Test-management
+     connections from the removed Test Coverage feature still appear in that
+     list, as binding type `test_management_connection`, until their stored
+     rows are dropped in #821.) The secret then
      becomes yours: the previous owner's existing bindings keep working where
      they are, but they can no longer bind it anywhere new. If the owner
      changed its bindings after you were shown them, the page shows the new
@@ -2866,8 +2869,7 @@ The `/vault` page is split into two panels:
      `confirmedBindings` (the `type`, `id`, `destination` and `routing` of
      every binding listed; `routing` is an opaque digest of every field that
      decides where that resource sends the secret, such as MCP args and env or
-     a connector's database name, or a test-management connection's proxy
-     and TLS settings — echo it exactly as the 409 gave it; a
+     a connector's database name — echo it exactly as the 409 gave it; a
      missing or malformed one is a `400`); if those no longer match the live bindings —
      including a binding re-pointed under the same id, whether at a new host or
      at new args or a new database behind the same destination — it is refused with
@@ -4647,194 +4649,6 @@ threat-model entry.
 
 *This guide was created for the METIS project. For detailed technical architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).*
 
-
-## Test Coverage Gap Analysis (Phase 1 — Backend Only)
-
-> **Phase 4 update:** The Test Coverage workbench is now available in-app
-> at `Projects → <your project> → Test Coverage`. See the next section for the UI walkthrough.
-> The backend API documented here remains unchanged and is the basis for the UI.
-
-### What It Does
-
-METIS can ingest your existing test suite — CSV, Excel, DOCX, Markdown, or Gherkin — and
-compare it to your project's requirements to identify which requirements are tested, which
-are not, and (in Phase 2) propose AI-generated test cases for the gaps.
-
-### Importing Test Cases
-
-Upload a file:
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "label=smoke-suite-may-27" \
-  -F "file=@tests/smoke.csv;type=text/csv" \
-  https://metis.example.com/api/projects/$PROJECT_ID/test-coverage/imports
-# → 201 { "data": { "importId": "...", "count": 42, "confidence": 0.98 } }
-```
-
-Or paste raw text (handy for Markdown or Gherkin):
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"source":"gherkin","label":"login.feature","text":"Feature: Login\n  Scenario: ..."}' \
-  https://metis.example.com/api/projects/$PROJECT_ID/test-coverage/imports/paste
-```
-
-When the importer can't confidently map a column header (e.g. `"Steps to Reproduce"`), the
-API returns `422 COLUMN_MAPPING_REQUIRED` with a suggested mapping. Re-submit with
-`columnOverrides`, e.g. `{"steps to reproduce":"steps"}`.
-
-### Running Coverage Analysis
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  https://metis.example.com/api/projects/$PROJECT_ID/test-coverage/runs
-# → 202 { "data": { "runId": "..." } }
-```
-
-The body is optional. `mode` is `"A"` (default) or `"B"`, and `budgetCents` caps
-this run's AI spend in cents (the server default applies when it is omitted). A
-per-run cap can only be lower than or equal to the operator's
-`TESTCOVERAGE_BUDGET_CENTS`; a higher value is rejected with
-`400 BUDGET_ABOVE_OPERATOR_CAP` for every role, admins included. To allow more
-spend, raise the environment variable. Any other field is rejected with a 400.
-
-Poll the run for progress:
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  https://metis.example.com/api/projects/$PROJECT_ID/test-coverage/runs/$RUN_ID
-# → { "data": { "status": "running", "phaseProgress": { "index": "done", ... } } }
-```
-
-Fetch the report once `status: "completed"`:
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  https://metis.example.com/api/projects/$PROJECT_ID/test-coverage/runs/$RUN_ID/report
-# → { "data": { "totalRequirements": 120, "covered": 78, "coveragePct": 65, "gaps": [...] } }
-```
-
-### Reviewer Overrides
-
-If the automated matcher (Phase 2) gets a mapping wrong, mark it `OVERRIDDEN` with a reason:
-
-```bash
-curl -X PATCH \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status":"COVERED","reason":"manual review confirms"}' \
-  https://metis.example.com/api/projects/$PROJECT_ID/test-coverage/mappings/$MAPPING_ID
-```
-
-Overridden mappings count toward `covered` in the report.
-
-### Limits
-
-- **File size:** 25 MB per upload (multer cap).
-- **Paste body:** 2 MB of text per request.
-- **Supported types:** `text/csv`, `text/markdown`, `application/json` (gherkin),
-  `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (xlsx),
-  `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (docx).
-
-## Test Coverage Workbench (Phase 4 — Epic #856)
-
-The Test Coverage page lives at `Projects → <your project> → Test Coverage`. It
-replaces the script-only Phase 1 workflow with a guided UI: import → run →
-review the matrix → accept suggestions → export.
-
-### Mode A — You already have a test suite
-
-1. **Import** — click *Upload file* (CSV, Excel, DOCX, Markdown, or `.feature`)
-   or paste raw text via *Paste text*.
-2. **Run** — click *Start new run*. The page subscribes to the WebSocket and
-   updates the run table as the analysis progresses through index → match →
-   judge → suggest → score.
-3. **Review the matrix** — the requirement × test-case grid is virtualised
-   so it stays smooth even past 500×500. Each cell is colour-coded:
-   - **green** (fused score ≥ 0.80) — covered
-   - **amber** (≥ 0.50) — partial / ambiguous
-   - **red** (< 0.50) — uncovered
-4. **Accept AI suggestions** — the *Suggested tests* card lists draft cases
-   for any uncovered requirements. *Review* opens a drawer with the
-   Given/When/Then breakdown. *Accept* / *Reject* commits your verdict.
-5. **Export** — *Export…* downloads the run as an Excel workbook
-   (`.xlsx`) or a Gherkin feature file. Suggestions flagged
-   `low-confidence` (faithfulness < 0.6) are excluded by default. If you
-   need to ship them anyway, tick *Override low-confidence guard* — the
-   override is recorded in the audit log
-   (`test-coverage.export.low-confidence-override`).
-
-### Mode B — Empty project (suggestion-first)
-
-If you skip the import step and start a run on a project that has only
-requirements, the matcher will produce zero coverage and the AI will
-generate suggestions for every requirement. Use the export dialog to
-ship the suggestions to Gherkin or your test-management system via the
-Phase 3 connectors (Jira, Xray, Zephyr Scale, TestRail).
-
-### Budget guard
-
-Every run is capped by `TESTCOVERAGE_BUDGET_CENTS` (default 20¢). The
-budget tile turns amber at the warn threshold and red when the cap is
-hit. The orchestrator aborts before exceeding the limit and surfaces a
-`BUDGET_EXCEEDED` error in the run record.
-
-Judge and suggestion calls are recorded under the provider and model that
-served them. If that model has no price (see [Unpriced usage](#unpriced-usage)),
-its spend is unknown, so the run cannot show it is under the cap: after the
-call that reveals it, no further judge batches or LLM phases run, and the
-budget line reads `$x + N unpriced tokens` rather than `$0.00`, and a red note
-under it says the budget stopped the run's LLM work. Pricing the model with
-`MODEL_PRICES` lets later runs proceed. Unpriced *embedding* tokens get their
-own grey note instead: they do not stop the run, but the spend shown is a lower
-bound until the embedder is priced with a `embed:<backend>:<model>` key.
-
-The budget is checked before every judge batch and before every suggestion
-cluster, so a run stops part-way through either phase once the cap is reached.
-
-Embedding usage is recorded under the embedder that ran — every call a run
-makes: the indexing pass over your test cases and their steps, the requirement
-and test-case batches the matcher needs, the judge's per-batch cache keys, and
-the suggestion phase's cluster prompts and deduplication. On a cold run the
-indexing pass is the largest of those. The built-in local embedders cost $0; Amazon
-Titan Text Embeddings V2 and OpenAI's `text-embedding-3-small`,
-`text-embedding-3-large` and `text-embedding-ada-002` are priced at their
-published prices.
-
-Any other cloud embedding model is **unpriced**, and its tokens are reported in
-the `+ N unpriced tokens` figure — so the budget line reads as the lower bound
-it is. Unlike an unpriced judge or suggestion model, an unpriced *embedder* does
-not stop the run. Embedding spend is bounded, input-only and already incurred by
-the time it is recorded, whereas LLM spend is the open-ended part the cap exists
-to control. Because embedding is a run's first recorded usage, stopping there
-would have ended every run on a Cohere model, an Azure deployment name or an
-OpenAI-compatible endpoint before the judge had started. Price the model with a
-`MODEL_PRICES` key of the form `embed:<backend>:<model>` — for example
-`embed:bedrock-sdk:cohere.embed-english-v3` — to bring it back onto the cap.
-
-**Priced embedding spend from the indexing pass counts against the run's cap.**
-The indexing pass over your test cases and their steps runs *before* judging, and
-its cost is charged to the same `TESTCOVERAGE_BUDGET_CENTS` budget as the judge
-and suggestion phases — it is not a free preamble. On a large cold corpus and a
-*priced* cloud embedder (Amazon Titan V2, OpenAI's `text-embedding-3-*`) that pass
-alone can consume the cap, and the run then stops before the judge has looked at
-anything, reporting `BUDGET_EXCEEDED` with a near-zero judged-requirement count.
-Two things avoid it: raise `TESTCOVERAGE_BUDGET_CENTS` for the first (cold) run of
-a large corpus, or use one of the built-in local embedders, which cost $0. Later
-runs over the same corpus skip cases that are already indexed, so the indexing
-share drops sharply after the first run.
-
-### Permissions
-
-- **`project.read`** — view the page, runs, report, and budget tiles.
-- **`analysis.run`** — kick off a new run, import test cases.
-- **`project.update`** — accept/reject suggestions, override mappings,
-  download exports.
 
 ## 38. Formal Reviews & Approvals — Reviewer Walkthrough (Epic #609)
 

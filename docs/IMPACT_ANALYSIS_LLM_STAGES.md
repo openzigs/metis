@@ -379,7 +379,7 @@ point of the per-stage flags.
 Until #1021 **none of those calls were metered**. They reached
 `AIProvider.chat()` directly, and providers do not self-meter — every other
 metered caller in the codebase records at the call site
-(`discussions/ai-responder.ts`, `testcoverage/judge.ts`). The impact pipeline
+(`discussions/ai-responder.ts`). The impact pipeline
 never did, so `ai_token_usages` contained **zero** rows for the most
 LLM-intensive feature in the product. That is not under-counting; it is absence.
 

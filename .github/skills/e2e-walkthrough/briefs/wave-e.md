@@ -2,7 +2,7 @@
 
 You are wave E of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read
 [#706](https://github.com/openzigs/metis/issues/706) for Phases 15–20 (PR review, impact,
-test coverage, usage and cost, settings, admin) and the "Developer: real open Miniflux
+"Tested by" in traceability, usage and cost, settings, admin) and the "Developer: real open Miniflux
 issues" table (#4478, #4511, #4336) with what each must surface.
 
 ## State you start from
