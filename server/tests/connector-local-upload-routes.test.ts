@@ -999,7 +999,10 @@ describe("manual connector regeneration callers (#1356)", () => {
             projectId: "proj_1",
             autoUpdate: true,
             deletedAt: null,
-            status: { in: ["ready", "degraded", "failed", "cancelled", "generating"] },
+            OR: [
+              { status: { in: ["ready", "degraded", "failed", "generating"] } },
+              { status: { in: ["cancelled", "cancelling"] }, versions: { some: {} } },
+            ],
             scope: { in: ["full", "repository", "module", "symbol"] },
           },
         });
