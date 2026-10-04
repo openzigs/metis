@@ -51,9 +51,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   () => {
     let tmpDir: string;
     let db: PrismaClient;
+    // #734 — project access is the workspace seam: each user's claim names
+    // the one workspace they belong to.
+    const WORKSPACE_OF: Record<string, string> = { "u-alice": "ws-1", "u-mallory": "ws-2" };
     const token = (userId: string) =>
-      issueTokens({ userId, username: userId, role: "developer", permissions: [], workspaces: [] })
-        .accessToken;
+      issueTokens({
+        userId,
+        username: userId,
+        role: "developer",
+        permissions: [],
+        workspaces: [WORKSPACE_OF[userId]],
+      }).accessToken;
 
     function get(userId: string, url: string) {
       const a = express();
@@ -91,12 +99,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
         });
       }
-      // Project access is by ownership for a non-admin: Alice owns p-1, Mallory p-2.
+      // #734 — project access is by workspace membership: Alice is in ws-1
+      // (p-1), Mallory in ws-2 (p-2).
+      for (const [ws, userId] of [
+        ["ws-1", "u-alice"],
+        ["ws-2", "u-mallory"],
+      ]) {
+        await db.workspace.create({ data: { id: ws, name: ws, slug: ws } });
+        await db.workspaceMember.create({ data: { workspaceId: ws, userId } });
+      }
       await db.project.create({
-        data: { id: "p-1", name: "P1", slug: "p-1", createdById: "u-alice" },
+        data: { id: "p-1", name: "P1", slug: "p-1", createdById: "u-alice", workspaceId: "ws-1" },
       });
       await db.project.create({
-        data: { id: "p-2", name: "P2", slug: "p-2", createdById: "u-mallory" },
+        data: {
+          id: "p-2",
+          name: "P2",
+          slug: "p-2",
+          createdById: "u-mallory",
+          workspaceId: "ws-2",
+        },
       });
       await db.discussionThread.create({
         data: { id: "t-1", projectId: "p-1", createdById: "u-alice" },
@@ -197,7 +219,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "u-mallory",
         `/api/discussions/threads/t-1/messages?limit=100&cursor=${msgId(120)}`,
       );
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(JSON.stringify(res.body)).not.toContain("message 121");
     });
   },
