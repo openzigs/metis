@@ -225,7 +225,7 @@ disagree. Consequences worth knowing:
 ### 5.3 Playwright e2e
 - Live in `e2e/tests/*.spec.ts`. The default run boots the API + UI via Playwright's `webServer` config — no manual start required.
 - Tag flaky tests with `@quarantine` to exclude them from the default run; they still execute via `--grep @quarantine` in a dedicated CI lane.
-- Failures upload `e2e/playwright-report/` and `e2e/test-results/` as CI artifacts (traces + video on first retry).
+- CI runs the suite in three shards (`e2e (1/3)` to `e2e (3/3)`; `e2e-outcome` is the aggregate check, #844). Failures upload `e2e/playwright-report/` and `e2e/test-results/` as per-shard CI artifacts (traces + video on first retry).
 
 #### Running the gated sandbox e2e locally (Epic #395 #420)
 
