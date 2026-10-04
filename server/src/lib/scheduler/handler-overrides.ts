@@ -164,6 +164,10 @@ export function buildSchedulerHandlerOverrides(
             pulled: clone.pulled,
             filesChanged: clone.filesChanged,
             filesParsed: graphStats.filesParsed,
+            // #856 — a same-SHA refresh that still did work says why: a lineage
+            // backfill re-extracts lineage without re-parsing (filesParsed 0).
+            lineageBackfill: graphStats.lineageBackfill,
+            filesLineageRefreshed: graphStats.filesLineageRefreshed,
             symbolsUpserted: graphStats.symbolsUpserted,
             chunksIngested: srcSummary.chunkCount,
             ...(scheduling && !scheduling.regenerationScheduled
