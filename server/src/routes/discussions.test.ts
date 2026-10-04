@@ -3,7 +3,7 @@
  *
  * Covers create-thread, post-(human)-message, and list-history with attribution.
  * The critical invariants: a human post makes NO LLM call and writes NO
- * AITokenUsage row; member-only authz (non-members 403, missing/soft-deleted
+ * AITokenUsage row; member-only authz (non-members 404 (#734 — no existence oracle), missing/soft-deleted
  * threads 404); body validation; cursor pagination.
  *
  * Prisma + the access helpers are mocked (the #289 lesson: never touch a real
@@ -25,7 +25,10 @@ vi.mock("../lib/logger.js", async (importOriginal) => {
   };
 });
 
-let currentUser: { userId: string; role: string } = { userId: "u1", role: "member" };
+let currentUser: { userId: string; role: string; workspaces?: string[] } = {
+  userId: "u1",
+  role: "member",
+};
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: () => void) => {
     (req as unknown as { user: typeof currentUser }).user = currentUser;
@@ -65,14 +68,13 @@ vi.mock("../lib/prisma.js", () => ({
   },
 }));
 
-// Access guards.
-const actorCanAccessProject = vi.fn();
-vi.mock("../lib/scheduler/project-access.js", () => ({
-  actorCanAccessProject: (...a: unknown[]) => actorCanAccessProject(...a),
-}));
+// Access guards (#734 — both are the project-access seam; unit-tested in
+// lib/discussions/access.test.ts).
+const canAccessProjectDiscussions = vi.fn();
 const canAccessThread = vi.fn();
 vi.mock("../lib/discussions/access.js", () => ({
   canAccessThread: (...a: unknown[]) => canAccessThread(...a),
+  canAccessProjectDiscussions: (...a: unknown[]) => canAccessProjectDiscussions(...a),
 }));
 
 // Promote helper is unit-tested separately; the route mocks it and asserts
@@ -155,9 +157,50 @@ describe("discussions routes", () => {
     app = createApp();
   });
 
+  describe("#734 — project-access seam wiring", () => {
+    it("passes the caller's verified workspace claim to the thread check", async () => {
+      currentUser = { userId: "u1", role: "developer", workspaces: ["ws1"] };
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      messageFindMany.mockResolvedValue([]);
+      await request(app).get("/discussions/threads/t1/messages");
+      expect(canAccessThread).toHaveBeenCalledWith(
+        { id: "u1", role: "developer", workspaces: ["ws1"] },
+        "t1",
+      );
+    });
+
+    it("passes the claim to the list check and audits under the list action", async () => {
+      currentUser = { userId: "u1", role: "developer", workspaces: ["ws1"] };
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      threadFindMany.mockResolvedValue([]);
+      await request(app).get("/discussions/threads?projectId=p1");
+      expect(canAccessProjectDiscussions).toHaveBeenCalledWith(
+        { id: "u1", role: "developer", workspaces: ["ws1"] },
+        "p1",
+        expect.objectContaining({ action: "discussion.thread.list" }),
+      );
+    });
+
+    it("answers a non-member exactly as it answers a missing thread", async () => {
+      canAccessThread.mockResolvedValue({ ok: false, reason: "forbidden" });
+      const denied = await request(app).get("/discussions/threads/t1/messages");
+      canAccessThread.mockResolvedValue({ ok: false, reason: "not_found" });
+      const missing = await request(app).get("/discussions/threads/t1/messages");
+      expect(denied.status).toBe(404);
+      expect(denied.body).toEqual(missing.body);
+    });
+
+    it("answers a non-member on the thread list with 404", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(false);
+      const res = await request(app).get("/discussions/threads?projectId=p1");
+      expect(res.status).toBe(404);
+      expect(threadFindMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe("POST /threads", () => {
     it("creates a project-scoped thread for a project member", async () => {
-      actorCanAccessProject.mockResolvedValue(true);
+      canAccessProjectDiscussions.mockResolvedValue(true);
       threadCreate.mockResolvedValue({ id: "t1", projectId: "p1", title: "Perf chat" });
 
       const res = await request(app)
@@ -174,7 +217,7 @@ describe("discussions routes", () => {
     });
 
     it("defaults aiResponseMode is left to the schema default (not set on create)", async () => {
-      actorCanAccessProject.mockResolvedValue(true);
+      canAccessProjectDiscussions.mockResolvedValue(true);
       threadCreate.mockResolvedValue({ id: "t1", projectId: "p1" });
       await request(app).post("/discussions/threads").send({ projectId: "p1" });
       const data = threadCreate.mock.calls[0][0].data;
@@ -182,7 +225,7 @@ describe("discussions routes", () => {
     });
 
     it("audits thread creation with provenance (#489)", async () => {
-      actorCanAccessProject.mockResolvedValue(true);
+      canAccessProjectDiscussions.mockResolvedValue(true);
       threadCreate.mockResolvedValue({ id: "t1", projectId: "p1" });
       await request(app).post("/discussions/threads").send({ projectId: "p1" });
       expect(audit).toHaveBeenCalledWith(
@@ -193,10 +236,10 @@ describe("discussions routes", () => {
       );
     });
 
-    it("rejects a non-member with 403", async () => {
-      actorCanAccessProject.mockResolvedValue(false);
+    it("rejects a non-member with 404", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(false);
       const res = await request(app).post("/discussions/threads").send({ projectId: "p1" });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(threadCreate).not.toHaveBeenCalled();
       expect(audit).not.toHaveBeenCalledWith(
         expect.objectContaining({ action: "discussion.thread.created" }),
@@ -206,11 +249,11 @@ describe("discussions routes", () => {
     it("rejects a missing projectId with 400", async () => {
       const res = await request(app).post("/discussions/threads").send({ title: "no project" });
       expect(res.status).toBe(400);
-      expect(actorCanAccessProject).not.toHaveBeenCalled();
+      expect(canAccessProjectDiscussions).not.toHaveBeenCalled();
     });
 
     it("validates an analysis anchor belongs to the same project", async () => {
-      actorCanAccessProject.mockResolvedValue(true);
+      canAccessProjectDiscussions.mockResolvedValue(true);
       analysisFindFirst.mockResolvedValue(null); // anchor not in project
       const res = await request(app)
         .post("/discussions/threads")
@@ -220,7 +263,7 @@ describe("discussions routes", () => {
     });
 
     it("accepts a valid analysis anchor", async () => {
-      actorCanAccessProject.mockResolvedValue(true);
+      canAccessProjectDiscussions.mockResolvedValue(true);
       analysisFindFirst.mockResolvedValue({ id: "a1" });
       threadCreate.mockResolvedValue({ id: "t1", projectId: "p1", analysisId: "a1" });
       const res = await request(app)
@@ -233,7 +276,7 @@ describe("discussions routes", () => {
     });
 
     it("accepts a valid requirement anchor and rejects a foreign one", async () => {
-      actorCanAccessProject.mockResolvedValue(true);
+      canAccessProjectDiscussions.mockResolvedValue(true);
       // valid
       requirementFindFirst.mockResolvedValueOnce({ id: "r1" });
       threadCreate.mockResolvedValue({ id: "t1", projectId: "p1", requirementId: "r1" });
@@ -254,7 +297,7 @@ describe("discussions routes", () => {
     });
 
     it("accepts a valid spec-kit-feature anchor and rejects a foreign one", async () => {
-      actorCanAccessProject.mockResolvedValue(true);
+      canAccessProjectDiscussions.mockResolvedValue(true);
       // valid
       specKitFeatureFindFirst.mockResolvedValueOnce({ id: "f1" });
       threadCreate.mockResolvedValue({ id: "t1", projectId: "p1", specKitFeatureId: "f1" });
@@ -279,7 +322,7 @@ describe("discussions routes", () => {
   // list view). Member-gated like thread creation.
   describe("GET /threads (#486 — list project threads)", () => {
     it("returns the project's threads for a member, newest first", async () => {
-      actorCanAccessProject.mockResolvedValue(true);
+      canAccessProjectDiscussions.mockResolvedValue(true);
       threadFindMany.mockResolvedValue([
         { id: "t2", projectId: "p1", title: "Newer", aiResponseMode: "on_mention" },
         { id: "t1", projectId: "p1", title: "Older", aiResponseMode: "off" },
@@ -298,17 +341,17 @@ describe("discussions routes", () => {
       );
     });
 
-    it("rejects a non-member with 403", async () => {
-      actorCanAccessProject.mockResolvedValue(false);
+    it("rejects a non-member with 404", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(false);
       const res = await request(app).get("/discussions/threads?projectId=p1");
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(threadFindMany).not.toHaveBeenCalled();
     });
 
     it("rejects a missing projectId with 400", async () => {
       const res = await request(app).get("/discussions/threads");
       expect(res.status).toBe(400);
-      expect(actorCanAccessProject).not.toHaveBeenCalled();
+      expect(canAccessProjectDiscussions).not.toHaveBeenCalled();
     });
   });
 
@@ -354,12 +397,12 @@ describe("discussions routes", () => {
       expect(threadUpdate).not.toHaveBeenCalled();
     });
 
-    it("returns 403 for a non-member before any update", async () => {
+    it("returns 404 for a non-member before any update", async () => {
       canAccessThread.mockResolvedValue({ ok: false, reason: "forbidden" });
       const res = await request(app)
         .patch("/discussions/threads/t1")
         .send({ aiResponseMode: "off" });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(threadUpdate).not.toHaveBeenCalled();
     });
 
@@ -641,12 +684,12 @@ describe("discussions routes", () => {
       expect(streamAIReply).not.toHaveBeenCalled();
     });
 
-    it("returns 403 for a non-member before any provider work", async () => {
+    it("returns 404 for a non-member before any provider work", async () => {
       canAccessThread.mockResolvedValue({ ok: false, reason: "forbidden" });
       const res = await request(app)
         .post("/discussions/threads/t1/ai-respond")
         .send({ messageId: "m1" });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(streamAIReply).not.toHaveBeenCalled();
     });
 
@@ -943,7 +986,7 @@ describe("discussions routes", () => {
       });
     });
 
-    it("does NOT dispatch mentions when the post is rejected (403)", async () => {
+    it("does NOT dispatch mentions when the post is rejected (404)", async () => {
       canAccessThread.mockResolvedValue({ ok: false, reason: "forbidden" });
       await request(app).post("/discussions/threads/t1/messages").send({ body: "@bob" });
       expect(dispatchDiscussionMentions).not.toHaveBeenCalled();
@@ -965,10 +1008,10 @@ describe("discussions routes", () => {
       expect(messageCreate).not.toHaveBeenCalled();
     });
 
-    it("returns 403 when the caller cannot access the thread", async () => {
+    it("returns 404 when the caller cannot access the thread", async () => {
       canAccessThread.mockResolvedValue({ ok: false, reason: "forbidden" });
       const res = await request(app).post("/discussions/threads/t1/messages").send({ body: "hi" });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(messageCreate).not.toHaveBeenCalled();
     });
 
@@ -998,6 +1041,32 @@ describe("discussions routes", () => {
       expect(res.body.data[1]).toMatchObject({ authorKind: "ai" });
     });
 
+    it("#734 — names each human author instead of returning only the raw user id", async () => {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      messageFindMany.mockResolvedValue([
+        {
+          id: "m1",
+          authorKind: "human",
+          authorUserId: "u1",
+          authorUser: { displayName: "Test Developer" },
+          body: "hi",
+          createdAt: new Date(),
+        },
+        { id: "m2", authorKind: "human", authorUserId: null, authorUser: null, body: "x" },
+        { id: "m3", authorKind: "ai", aiModel: "gpt-4", authorUser: null, body: "hello" },
+      ]);
+
+      const res = await request(app).get("/discussions/threads/t1/messages");
+
+      expect(messageFindMany.mock.calls[0][0].select.authorUser).toEqual({
+        select: { displayName: true },
+      });
+      expect(res.body.data[0]).toMatchObject({ authorUserId: "u1", authorName: "Test Developer" });
+      expect(res.body.data[0]).not.toHaveProperty("authorUser");
+      expect(res.body.data[1]).not.toHaveProperty("authorName");
+      expect(res.body.data[2]).not.toHaveProperty("authorName");
+    });
+
     it("forwards the cursor and a bounded limit to prisma", async () => {
       canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
       messageFindMany.mockResolvedValue([]);
@@ -1018,10 +1087,10 @@ describe("discussions routes", () => {
       expect(messageFindMany.mock.calls[0][0].take).toBe(100);
     });
 
-    it("returns 403 for a non-member", async () => {
+    it("returns 404 for a non-member", async () => {
       canAccessThread.mockResolvedValue({ ok: false, reason: "forbidden" });
       const res = await request(app).get("/discussions/threads/t1/messages");
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(messageFindMany).not.toHaveBeenCalled();
     });
 
@@ -1059,12 +1128,12 @@ describe("discussions routes", () => {
       );
     });
 
-    it("rejects a non-member with 403 before promoting", async () => {
+    it("rejects a non-member with 404 before promoting", async () => {
       canAccessThread.mockResolvedValue({ ok: false, reason: "forbidden" });
       const res = await request(app)
         .post("/discussions/threads/t1/messages/m1/promote")
         .send({ title: "x" });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(promoteMessageToRequirement).not.toHaveBeenCalled();
     });
 
