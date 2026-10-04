@@ -556,6 +556,19 @@ describe("captureGenerationInputs", () => {
     }
   });
 
+  it("#855 — a run ceiling bounds spend, not output, so it is not an input", async () => {
+    const baseline = await capture();
+    for (const name of ["DOCS_GEN_MAX_RUN_COST_CENTS", "DOCS_GEN_MAX_RUN_TOKENS"]) {
+      vi.stubEnv(name, "1");
+      expect((await capture()).fingerprint).toBe(baseline.fingerprint);
+      vi.unstubAllEnvs();
+    }
+    // A size cap changes what is written, so it is one.
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "9000");
+    expect((await capture()).fingerprint).not.toBe(baseline.fingerprint);
+    vi.unstubAllEnvs();
+  });
+
   it("includes web digests only when enabled and handles absent research", async () => {
     await capture();
     expect(mocks.web).not.toHaveBeenCalled();

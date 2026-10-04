@@ -268,6 +268,38 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#178 — how many Phase-2 batch calls of one batched docs-gen section (Business Rules, Key Workflows, Calculations, Data Model) run at once (1-64). Unset, the default depends on the provider: 1 for local-gemma (the local provider's LOCAL_GEMMA_MAX_CONCURRENCY limiter already holds requests to the server's real parallelism) 4 for the cloud providers bedrock-gateway, anthropic, openai and azure, and 1 for every other provider (offline-stub, any new key). The openai provider pointed at a self-hosted server — OPENAI_BASE_URL on a loopback host or a private IP address — also defaults to 1, because the local request limiter covers only local-gemma; a self-hosted server behind a hostname, or an anthropic / azure / gateway endpoint on the local network, is not detected, so set this value to the server's real parallelism there. A set value applies to every provider. Batch replies are always merged in plan order, so the section is the same whatever order the calls finish in — unless the section's re-split budget runs out, in which case which cut-off batch gets the last re-split depends on which reply arrives first. Raise it where the account's request and token quotas allow; lower it behind a gateway with request-rate limits.",
     sensitive: false,
   },
+  DOCS_GEN_MAX_RUN_COST_CENTS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0),
+    description:
+      "#855 — the most one documentation generation may spend, in US cents, estimated from the configured per-token prices as its model calls are recorded (default 2500 = $25; 0 = no cost ceiling). A run that reaches it is stopped: in-flight model calls are aborted, the sections it finished are kept as an unpublished degraded draft with a warning naming the ceiling, and a regenerate reuses them. A model METIS has no price for is bounded only by DOCS_GEN_MAX_RUN_TOKENS.",
+    sensitive: false,
+  },
+  DOCS_GEN_MAX_RUN_TOKENS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0),
+    description:
+      "#855 — the most input + output tokens one documentation generation may use (default 20000000; 0 = no token ceiling). Cache reads are not counted. Run 3 of the #706 walkthrough used 7.1M on its first BRD attempt. Reaching it stops the run exactly as DOCS_GEN_MAX_RUN_COST_CENTS does; it is the ceiling that bounds an unpriced or self-hosted model.",
+    sensitive: false,
+  },
+  DOCS_GEN_SECTION_MAX_CHARS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(5_000),
+    description:
+      "#741 — the longest one generated documentation section may be, in markdown characters (default 60000, about 20 pages; minimum 5000). A catalogue section written in batches (Business Rules, Key Workflows, Calculations, Data Model) gives each batch a word budget from it and asks for business-level rules rather than an exhaustive per-function catalogue; any section still over it keeps its leading topics whole and lists the omitted topic headings in a closing note — never cut mid-sentence. In #706 run 3 Business Rules alone was 1.1 MB.",
+    sensitive: false,
+  },
+  DOCS_GEN_DOCUMENT_MAX_CHARS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(10_000),
+    description:
+      "#741 — the longest a whole generated document's body may be, in markdown characters before its footnote list (default 250000; minimum 10000). When the sections together exceed it, the longest sections are shortened first, at topic boundaries, until it fits. The #706 run-3 BRD was 2.19 MB; the Architecture document of the same run was 212 KB.",
+    sensitive: false,
+  },
   DOCS_GEN_PHASE1_CHUNK_INPUT_TOKENS: {
     tier: "tunable",
     valueType: "int",
