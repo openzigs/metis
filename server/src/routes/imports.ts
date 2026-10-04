@@ -20,6 +20,7 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
+import { importsPreAuthRateLimiter } from "../middleware/imports-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { getImportService, type ImportService } from "../lib/importers/import-service.js";
 import { authorizeImportSecretRef } from "../lib/importers/import-secret-binding.js";
@@ -57,9 +58,13 @@ export function importsRouter(service: ImportService = getImportService()): Rout
   // import sources (vault secret refs, Jira connection ids) and write
   // `Requirement` rows into their project. Non-members get 404 (no existence
   // oracle); system admins bypass. MUST stay above every route below.
+  // PR #850 CI — a per-IP ceiling runs ahead of auth (CodeQL
+  // js/missing-rate-limiting), and the routes rely on this router-level
+  // `requireAuth` rather than repeating it.
+  r.use(importsPreAuthRateLimiter);
   r.use(requireAuth, requireProjectAccess());
 
-  r.post("/preview", requireAuth, requirePermission("connector.read"), async (req, res) => {
+  r.post("/preview", requirePermission("connector.read"), async (req, res) => {
     // #426 — throw the raw ZodError; the global error handler maps it to a
     // friendly 400 envelope (no raw issues array / schema internals leaked).
     const parsed = importPreviewRequestSchema.parse(req.body ?? {});
@@ -73,11 +78,11 @@ export function importsRouter(service: ImportService = getImportService()): Rout
     res.json(ok(await service.preview(projectId, parsed, { secretId })));
   });
 
-  r.get("/sources", requireAuth, requirePermission("connector.read"), async (req, res) => {
+  r.get("/sources", requirePermission("connector.read"), async (req, res) => {
     res.json(ok(await service.listSources(projectIdOf(req))));
   });
 
-  r.post("/sources", requireAuth, requirePermission("connector.write"), async (req, res) => {
+  r.post("/sources", requirePermission("connector.write"), async (req, res) => {
     // #426 — raw ZodError → friendly 400 via the global error handler.
     const parsed = createImportSourceSchema.parse(req.body ?? {});
     const projectId = projectIdOf(req);
@@ -92,50 +97,40 @@ export function importsRouter(service: ImportService = getImportService()): Rout
     res.status(201).json(ok(result));
   });
 
-  r.get("/sources/:id", requireAuth, requirePermission("connector.read"), async (req, res) => {
+  r.get("/sources/:id", requirePermission("connector.read"), async (req, res) => {
     res.json(ok(await service.getSource(projectIdOf(req), String(req.params.id))));
   });
 
-  r.post(
-    "/sources/:id/run",
-    requireAuth,
-    requirePermission("connector.write"),
-    async (req, res) => {
-      // Surface a 404 for an unknown/deleted source before enqueueing.
-      await service.getSource(projectIdOf(req), String(req.params.id));
-      // Enqueue an async task and respond 202 immediately — the client polls
-      // run status via GET /runs.  Do NOT await the import inline here.
-      const run = await service.enqueueRun(String(req.params.id), {
-        trigger: "manual",
-        userId: actor(req),
-      });
-      res.status(202).json(ok(run));
-    },
-  );
+  r.post("/sources/:id/run", requirePermission("connector.write"), async (req, res) => {
+    // Surface a 404 for an unknown/deleted source before enqueueing.
+    await service.getSource(projectIdOf(req), String(req.params.id));
+    // Enqueue an async task and respond 202 immediately — the client polls
+    // run status via GET /runs.  Do NOT await the import inline here.
+    const run = await service.enqueueRun(String(req.params.id), {
+      trigger: "manual",
+      userId: actor(req),
+    });
+    res.status(202).json(ok(run));
+  });
 
-  r.patch(
-    "/sources/:id/sync",
-    requireAuth,
-    requirePermission("connector.write"),
-    async (req, res) => {
-      // #426 — raw ZodError → friendly 400 via the global error handler.
-      const parsed = updateImportSyncSchema.parse(req.body ?? {});
-      const updated = await service.setSync(
-        projectIdOf(req),
-        String(req.params.id),
-        parsed,
-        actor(req),
-      );
-      res.json(ok(updated));
-    },
-  );
+  r.patch("/sources/:id/sync", requirePermission("connector.write"), async (req, res) => {
+    // #426 — raw ZodError → friendly 400 via the global error handler.
+    const parsed = updateImportSyncSchema.parse(req.body ?? {});
+    const updated = await service.setSync(
+      projectIdOf(req),
+      String(req.params.id),
+      parsed,
+      actor(req),
+    );
+    res.json(ok(updated));
+  });
 
-  r.delete("/sources/:id", requireAuth, requirePermission("connector.write"), async (req, res) => {
+  r.delete("/sources/:id", requirePermission("connector.write"), async (req, res) => {
     await service.deleteSource(projectIdOf(req), String(req.params.id), actor(req));
     res.status(204).end();
   });
 
-  r.get("/runs", requireAuth, requirePermission("connector.read"), async (req, res) => {
+  r.get("/runs", requirePermission("connector.read"), async (req, res) => {
     const sourceId = req.query.sourceId ? String(req.query.sourceId) : undefined;
     res.json(ok(await service.listRuns(projectIdOf(req), sourceId)));
   });
