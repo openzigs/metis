@@ -767,6 +767,16 @@ describe("#773 — a broken run cannot claim 'implemented' either (the false-pos
     expect(finding?.verdict).toBe("could-not-verify");
   });
 
+  it("never badges that could-not-verify finding Confirmed (#726)", async () => {
+    await runBrokenRun();
+
+    // The surviving citation used to make `verifyFinding` say `confirmed`, so the
+    // UI showed a green "Verification: Confirmed" under a "Could not verify" title.
+    const finding = codeFindings()[0];
+    expect(finding?.citations?.length).toBeGreaterThan(0);
+    expect(finding?.verificationStatus).toBe("could-not-verify");
+  });
+
   it("rolls the requirement up to could-not-verify — the gap is NOT silently closed", async () => {
     await runBrokenRun();
 

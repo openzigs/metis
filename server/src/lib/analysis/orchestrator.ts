@@ -153,6 +153,13 @@ import {
   runElicitation,
 } from "./elicitation-pipeline.js";
 import { runAgentLoop, buildCachedSystemPrompt, resolveAnalysisNativeTools } from "./agent-loop.js";
+import {
+  buildEvidenceDigest,
+  DEFAULT_RETRY_EVIDENCE_TOKENS,
+  formatEvidenceForAnswer,
+  salvageFromEvidence,
+  type EvidenceSalvageResult,
+} from "./agentic-evidence.js";
 import { summarizeToolCalls, type ToolCallRecord } from "./tool-telemetry.js";
 import {
   FINAL_ANSWER_INSTRUCTION,
@@ -766,7 +773,7 @@ export class AnalysisOrchestrator {
     let outcome: "completed" | "failed" = "completed";
     let errorMessage: string | null = null;
     try {
-      const result = await this.runOneAgent({
+      const agentInput = {
         analysisId: opts.analysisId,
         projectId: analysis.projectId,
         projectName: analysis.project.name,
@@ -777,7 +784,14 @@ export class AnalysisOrchestrator {
         extraInstructions,
         signal: controller.signal,
         actorId: opts.actorId,
-      });
+      };
+      // #766 — the code agent regenerates through the mode the run would pick,
+      // not always single-shot: a run whose code pass was agentic re-ran as one
+      // retrieval-only call that could not see the files the requirements are about.
+      const result =
+        opts.agentKey === "code"
+          ? await this.regenerateCodeAgent(agentInput)
+          : await this.runOneAgent(agentInput);
       delta.promptTokens += result.usage.promptTokens;
       delta.completionTokens += result.usage.completionTokens;
       delta.totalTokens += result.usage.totalTokens;
@@ -825,6 +839,110 @@ export class AnalysisOrchestrator {
       });
       this.active.delete(opts.analysisId);
     }
+  }
+
+  /**
+   * #766 — regenerate the code agent the way the pipeline runs it.
+   *
+   * `runOneAgent` is the single-shot path, so a regenerate of an AGENTIC code
+   * pass used to swap the tool loop for one retrieval-only call: three
+   * info/low findings over symbol stubs, "no storage layer was retrieved".
+   * This reconstructs the agentic inputs from persisted state the same way
+   * {@link resumeSkippedRepos} does (document-agent requirements merged with
+   * the operator's new requirements, deterministic affected-code and
+   * escalation) and runs the agentic pass per live repo. Any other mode falls
+   * back to `runOneAgent`, as before.
+   */
+  private async regenerateCodeAgent(
+    input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
+  ): Promise<AgentRunResult> {
+    const requirements = mergeRequirementSets(
+      await this.extractRequirementsFromDocAgent(input.analysisId),
+      await extractNewRequirementCandidates(input.extraInstructions),
+    );
+    const mode = await this.detectAgentMode(input.projectId, "code", requirements);
+    if (mode !== "agentic") return this.runOneAgent(input);
+
+    const startedAt = new Date();
+    const connectors = await prisma.repoConnection.findMany({
+      where: { projectId: input.projectId, deletedAt: null },
+      select: { id: true, label: true },
+    });
+    const affectedCode = await this.computeAffectedCode(
+      input.analysisId,
+      input.projectId,
+      input.extraInstructions,
+    );
+    const escalation = await this.computeEscalations(
+      input.analysisId,
+      input.projectId,
+      requirements,
+    );
+    const shared = {
+      analysisId: input.analysisId,
+      projectId: input.projectId,
+      projectDescription: input.projectDescription,
+      requirements,
+      extraInstructions: input.extraInstructions,
+      model: input.model,
+      signal: input.signal,
+      affectedCode,
+      escalation,
+    };
+
+    const results: AgentRunResult[] = [];
+    if (connectors.length <= 1) {
+      results.push(
+        await this.runAgenticCodeAgent({
+          ...shared,
+          projectName: input.projectName,
+          connectorId: connectors[0]?.id,
+        }),
+      );
+    } else {
+      // Repos the budget cannot fit keep whatever rows they already have.
+      const { effectiveConnectors, effectiveBudget } = capConnectorsForBudget(
+        connectors,
+        resolveAgentTokenBudget(),
+      );
+      for (const connector of effectiveConnectors) {
+        if (input.signal.aborted) break;
+        results.push(
+          await this.runAgenticCodeAgent({
+            ...shared,
+            projectName: `${input.projectName} [repo: ${connector.label}]`,
+            connectorId: connector.id,
+            tokenBudget: effectiveBudget,
+          }),
+        );
+      }
+    }
+
+    // Each agentic row replaces its own connector's row (#763). A connector-less
+    // `code` row from an earlier single-shot regenerate would otherwise survive
+    // beside them and double the agent's findings.
+    if (connectors.length > 0 && results.length > 0) {
+      await prisma.agentResult.deleteMany({
+        where: {
+          analysisId: input.analysisId,
+          agentKey: "code",
+          connectorId: null,
+          createdAt: { lt: startedAt },
+        },
+      });
+    }
+
+    const last = results[results.length - 1];
+    return {
+      agentKey: "code",
+      output: last?.output ?? { agentKey: "code", summary: "", findings: [], notes: [] },
+      usage: results.reduce<TokenUsage>((sum, r) => sumTokenUsage(sum, r.usage), {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      }),
+      durationMs: Date.now() - startedAt.getTime(),
+    };
   }
 
   /**
@@ -2276,6 +2394,13 @@ export class AnalysisOrchestrator {
                 // `agentOutputSchema` is exactly what this retry exists to fix.
                 isValidFinalAnswer: isSchemaValidFinalAnswer,
                 maxOutputTokens: finalAnswerMaxOutputTokens,
+                // #726 — the retry re-sends the COMPACTED transcript; hand it the
+                // untruncated file reads and search hits so the answer is written
+                // over the code the agent read, not a 600-character head of it.
+                evidence: (calls) =>
+                  formatEvidenceForAnswer(
+                    buildEvidenceDigest(calls, { maxTokens: DEFAULT_RETRY_EVIDENCE_TOKENS }),
+                  ),
               },
             },
           );
@@ -2289,6 +2414,8 @@ export class AnalysisOrchestrator {
           let reason: AgenticDegradationReason | null = null;
           // #298 — every field repair this pass made, recorded below.
           let fieldRepairs: FindingsRepair[] = [];
+          // #766 — spend made after the loop (the evidence salvage), billed to this pass.
+          let extraUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
           if (!loopResult.hasFinalAnswer) {
             // The loop (and its one bounded retry) never produced a JSON answer.
             reason = loopResult.budgetExhausted
@@ -2343,8 +2470,30 @@ export class AnalysisOrchestrator {
                 findKnownDocumentIds,
               },
             );
-            const salvaged = salvage.findings;
+            let salvaged = salvage.findings;
             fieldRepairs = salvage.fieldRepairs;
+            // #766 — nothing recovered from the transcript path (the retry failed
+            // outright, or answered in prose): ONE tool-free call over the task and
+            // the untruncated evidence, without the transcript. 64 tool calls had
+            // ended in 0 findings because the only salvage source left was the
+            // last tool-call reply.
+            let evidenceSalvage: EvidenceSalvageResult | undefined;
+            if (salvaged.length === 0) {
+              evidenceSalvage = await salvageFromEvidence(this.deps.provider, {
+                agentKey,
+                systemMessage: buildCachedSystemPrompt(systemMessage, []),
+                userMessage,
+                toolCalls: loopResult.toolCalls,
+                ...(input.model ? { model: input.model } : {}),
+                ...(input.signal ? { signal: input.signal } : {}),
+                maxOutputTokens: finalAnswerMaxOutputTokens,
+                loadKnownDocuments,
+                findKnownDocumentIds,
+              });
+              salvaged = evidenceSalvage.findings;
+              fieldRepairs = evidenceSalvage.fieldRepairs;
+              extraUsage = evidenceSalvage.usage;
+            }
             log.warn("Agentic code pass degraded; salvaging investigation", {
               analysisId: input.analysisId,
               reason,
@@ -2361,6 +2510,17 @@ export class AnalysisOrchestrator {
               repairAttempted: salvage.repairAttempted,
               repairParsed: salvage.repairParsed,
               repairSucceeded: salvage.repairSucceeded,
+              // #766 — the evidence-only salvage, when the transcript path found nothing.
+              ...(evidenceSalvage
+                ? {
+                    evidenceSalvageAttempted: evidenceSalvage.attempted,
+                    evidenceEntries: evidenceSalvage.evidenceEntries,
+                    evidenceSalvaged: evidenceSalvage.findings.length,
+                    ...(evidenceSalvage.error
+                      ? { evidenceSalvageError: evidenceSalvage.error }
+                      : {}),
+                  }
+                : {}),
               // #1314 — a total loss is the only case the source kind cannot
               // explain, and it was undiagnosable in production without this.
               ...(salvaged.length === 0
@@ -2505,6 +2665,8 @@ export class AnalysisOrchestrator {
                 droppedCitations: dropped,
                 assertsAbsence: claimsAbsence,
                 absenceConfirmable,
+                // #726 — the badge must agree with the verdict.
+                verdict,
               }),
             };
           });
@@ -2562,7 +2724,10 @@ export class AnalysisOrchestrator {
           // unexplained drift. Both are zero when their flags are off.
           return {
             output: validated,
-            usage: sumTokenUsage(sumTokenUsage(loopResult.usage, panelled.usage), scored.usage),
+            usage: sumTokenUsage(
+              sumTokenUsage(sumTokenUsage(loopResult.usage, extraUsage), panelled.usage),
+              scored.usage,
+            ),
           };
         };
 
@@ -2914,6 +3079,8 @@ export class AnalysisOrchestrator {
               droppedCitations: dropped,
               assertsAbsence: claimsAbsence,
               absenceConfirmable,
+              // #726 — the badge must agree with the verdict.
+              verdict,
             }),
           };
         });

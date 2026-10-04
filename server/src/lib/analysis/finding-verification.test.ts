@@ -132,3 +132,32 @@ describe("#773 — absence claims the run's retrieval cannot back", () => {
     expect(verifyFinding({ groundedCitations: [], droppedCitations: [] })).toBeNull();
   });
 });
+
+describe("#726 — a could-not-verify VERDICT is never a Confirmed badge", () => {
+  // The agent itself said "Could not verify: duplicate feed URL rejection" and
+  // cited the test it found (api_integration_test.go:1474). The citation
+  // survived grounding, so rule (2) said `confirmed`, and the UI rendered
+  // "Verification: Confirmed" under a title saying the opposite: 19 of the 23
+  // could-not-verify findings on the reported run.
+  it("follows the gated verdict even when a code citation survived", () => {
+    expect(
+      verifyFinding({
+        groundedCitations: [code] as Citation[],
+        droppedCitations: [],
+        assertsAbsence: false,
+        absenceConfirmable: true,
+        verdict: "could-not-verify",
+      }),
+    ).toBe("could-not-verify");
+  });
+
+  it("leaves a positive verdict with a surviving citation confirmed", () => {
+    expect(
+      verifyFinding({
+        groundedCitations: [code] as Citation[],
+        droppedCitations: [],
+        verdict: "implemented",
+      }),
+    ).toBe("confirmed");
+  });
+});
