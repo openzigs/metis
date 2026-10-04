@@ -792,7 +792,7 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
   const usersResponder = (p: ExtractUsageParams) =>
     /users/i.test(p.sql) ? tableResult("users", "read") : EMPTY;
 
-  it("enabling lineage after a lineage-off ingest re-parses unchanged files and writes edges", async () => {
+  it("enabling lineage after a lineage-off ingest re-extracts unchanged files and writes edges", async () => {
     const root = await makeFixture({ "src/repo.ts": SRC });
     sidecarResponder = usersResponder;
     const { prisma, store } = makePrismaMock();
@@ -804,7 +804,9 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
     sidecarEnabled = true;
     const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
 
-    expect(stats.filesParsed).toBe(1);
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
     expect(stats.lineageBackfill).toBe(true);
     const edge = sqlglotEdges(store).find((e) => (e as any).toQualifiedName === "users");
     expect((edge as any)?.kind).toBe("reads");
@@ -828,7 +830,7 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
     expect(before).toBeGreaterThan(0);
   });
 
-  it("a changed introspected schema re-parses unchanged files", async () => {
+  it("a changed introspected schema re-extracts the lineage of unchanged files", async () => {
     const root = await makeFixture({ "src/repo.ts": SRC });
     sidecarResponder = usersResponder;
     const { prisma } = makePrismaMock();
@@ -840,7 +842,9 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
       introspectedSchema: { public: { users: { id: "INT" } } },
     });
 
-    expect(stats.filesParsed).toBe(1);
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
     expect(stats.lineageBackfill).toBe(true);
   });
 
@@ -860,7 +864,7 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
     expect(stats.lineageBackfill).toBe(false);
   });
 
-  it("a graph built before #721 (no fingerprint) re-parses once when lineage is on", async () => {
+  it("a graph built before #721 (no fingerprint) backfills once when lineage is on", async () => {
     const root = await makeFixture({ "src/repo.ts": SRC });
     sidecarResponder = usersResponder;
     const { prisma, store } = makePrismaMock();
@@ -874,7 +878,9 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
     const first = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
     const second = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
 
-    expect(first.filesParsed).toBe(1);
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(first.filesParsed).toBe(0);
+    expect(first.filesLineageRefreshed).toBe(1);
     expect(second.filesParsed).toBe(0);
   });
 
@@ -890,7 +896,7 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
     expect(stats.filesParsed).toBe(0);
   });
 
-  it("turning lineage OFF re-parses once to drop the lineage edges, and reports it", async () => {
+  it("turning lineage OFF backfills once to drop the lineage edges, and reports it", async () => {
     const root = await makeFixture({ "src/repo.ts": SRC });
     sidecarResponder = usersResponder;
     const { prisma, store } = makePrismaMock();
@@ -901,7 +907,9 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
     sidecarEnabled = false;
     const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
 
-    expect(stats.filesParsed).toBe(1);
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
     expect(stats.lineageBackfill).toBe(true);
     expect(sqlglotEdges(store)).toHaveLength(0);
   });
@@ -952,7 +960,9 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
       introspectedSchema: null,
     });
 
-    expect(stats.filesParsed).toBe(1);
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
     expect(stats.lineageBackfill).toBe(true);
   });
 
@@ -974,7 +984,9 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
     sidecarDown = false;
     const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
 
-    expect(stats.filesParsed).toBe(1);
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
     expect(stats.lineageBackfill).toBe(true);
     const edge = sqlglotEdges(store).find((e) => (e as any).toQualifiedName === "users");
     expect((edge as any)?.kind).toBe("reads");
@@ -988,7 +1000,7 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
   // the next ingest, not wait for a manual full re-ingest.
   const stripVersion = (fp: string) => fp.replace(/^(on|unreached):v\d+:/, "$1:");
 
-  it("a pre-#807 (unversioned) fingerprint with lineage on re-parses once, then settles", async () => {
+  it("a pre-#807 (unversioned) fingerprint with lineage on backfills once, then settles", async () => {
     const root = await makeFixture({ "src/repo.ts": SRC });
     sidecarResponder = usersResponder;
     const { prisma, store } = makePrismaMock();
@@ -1000,7 +1012,9 @@ describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
     expect((store.codeGraphs[0] as any).lineageFingerprint).not.toBe(current);
 
     const upgraded = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
-    expect(upgraded.filesParsed).toBe(1);
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(upgraded.filesParsed).toBe(0);
+    expect(upgraded.filesLineageRefreshed).toBe(1);
     expect(upgraded.lineageBackfill).toBe(true);
     expect((store.codeGraphs[0] as any).lineageFingerprint).toBe(current);
     const edge = sqlglotEdges(store).find((e) => (e as any).toQualifiedName === "users");

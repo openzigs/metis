@@ -297,11 +297,14 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         else await generation;
         expect(await db.generatedDocumentVersion.count()).toBe(0);
         expect(await db.task.count()).toBe(0);
-        expect(await db.generatedDocument.findUnique({ where: { id: "doc" } })).toMatchObject({
-          status: "failed",
-          content: "",
-          codeGraphHash: null,
-        });
+        // #857 — a manual run's written document is kept as an unpublished
+        // degraded draft (no version, no publication task); an automatic one
+        // never touches the published row.
+        expect(await db.generatedDocument.findUnique({ where: { id: "doc" } })).toMatchObject(
+          mode === "manual"
+            ? { status: "degraded", content: "# Durable", codeGraphHash: null }
+            : { status: "failed", content: "", codeGraphHash: null },
+        );
         expect(state.dispatch).not.toHaveBeenCalled();
       },
     );
@@ -470,6 +473,27 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       expect(
         (await db.generatedDocument.findUniqueOrThrow({ where: { id: "doc" } })).deletedAt,
       ).toBeNull();
+    });
+
+    it("#867 — POST /:docId/cancel is 403 for a member without project.update, and stops nothing", async () => {
+      await db.generatedDocument.update({ where: { id: "doc" }, data: { status: "generating" } });
+      const cancel = (caller: string, role: RoleKey) =>
+        request(app)
+          .post("/projects/project/docs/doc/cancel")
+          .set("Authorization", authorization(caller, role));
+
+      const denied = await cancel("reader", "reader");
+      expect(denied.status).toBe(403);
+      expect(denied.body.error.code).toBe("FORBIDDEN");
+      expect((await db.generatedDocument.findUniqueOrThrow({ where: { id: "doc" } })).status).toBe(
+        "generating",
+      );
+
+      // The same request from a member who holds the permission is accepted.
+      expect((await cancel("actor", "coordinator")).status).toBe(202);
+      expect((await db.generatedDocument.findUniqueOrThrow({ where: { id: "doc" } })).status).toBe(
+        "cancelling",
+      );
     });
 
     it.each([

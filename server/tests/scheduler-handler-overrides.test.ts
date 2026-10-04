@@ -196,6 +196,28 @@ describe("scheduled repo refresh takes the per-connector ingest guard (#217)", (
     expect(isConnectorIngestActive("rc1")).toBe(false);
   });
 
+  it("reports a lineage backfill, which re-extracts lineage without re-parsing (#856)", async () => {
+    repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
+    mocks.ingestCodeGraph.mockImplementationOnce(
+      async () =>
+        ({
+          filesParsed: 0,
+          symbolsUpserted: 0,
+          lineageBackfill: true,
+          filesLineageRefreshed: 427,
+        }) as never,
+    );
+    const out = await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+      "rc1",
+      new AbortController().signal,
+    );
+    expect(out).toMatchObject({
+      filesParsed: 0,
+      lineageBackfill: true,
+      filesLineageRefreshed: 427,
+    });
+  });
+
   it("labels the code graph with the commit the pull landed on (#714)", async () => {
     repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
     await buildSchedulerHandlerOverrides().refreshRepoConnector!(

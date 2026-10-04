@@ -21,6 +21,7 @@ import { createChildLogger } from "../logger.js";
 import { estimateUsageCostUsd } from "../ai/token-tracker.js";
 import type { UsageProvider } from "../ai/types.js";
 import { resolveRate } from "../finops/provider-rates.js";
+import { currentGenerationScope } from "./generation-scope.js";
 
 const log = createChildLogger("docs-gen-run-cost");
 
@@ -145,9 +146,14 @@ export function withRunUsage<T>(usage: RunUsage, fn: () => Promise<T>): Promise<
   return store.run(usage, fn);
 }
 
-/** Add a recorded model call to the run it belongs to (no-op outside a run). */
+/**
+ * Add a recorded model call to the run it belongs to (no-op outside a run),
+ * and report it to the generation it belongs to, which enforces the run's
+ * cost ceiling (#855).
+ */
 export function noteRunUsage(event: RunUsageEvent): void {
   store.getStore()?.add(event);
+  currentGenerationScope()?.noteSpend(event);
 }
 
 const usd = (n: number): number => Math.round(n * 10_000) / 10_000;
