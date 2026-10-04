@@ -327,6 +327,44 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await lineageTable(projectId)).toEqual(tableLevel);
     });
 
+    it("#867 — a backfill never leaves a catalog-deps edge pointing at a deleted routine", async () => {
+      // A catalog dependency into the routine repo.py invokes: the writer files
+      // `refresh_users` under repo.py, and the catalog edge reuses that symbol.
+      const dependencies = [
+        {
+          schema: "",
+          name: "nightly_job",
+          type: "PROCEDURE",
+          referencedSchema: "",
+          referencedName: "refresh_users",
+          referencedType: "PROCEDURE",
+        },
+      ];
+      const dangling = (projectId: string) =>
+        db.codeEdge.count({ where: { projectId, source: "catalog-deps", toSymbolId: null } });
+      const { projectId, root } = await fixture();
+      await ingest(projectId, root, { dependencies });
+      const routine = await db.codeSymbol.findFirstOrThrow({
+        where: { projectId, kind: "procedure", qualifiedName: "refresh_users" },
+      });
+      const catalogEdges = await db.codeEdge.findMany({
+        where: { projectId, source: "catalog-deps" },
+      });
+      expect(catalogEdges.map((e) => e.toSymbolId)).toContain(routine.id);
+      expect(routine.filePath).toBe("repo.py");
+      expect(await dangling(projectId)).toBe(0);
+
+      // Backfill with the catalog pass re-run, then one where it is not.
+      for (const extra of [
+        { dependencies, introspectedSchema: SCHEMA },
+        { introspectedSchema: null },
+      ]) {
+        const stats = await ingest(projectId, root, extra);
+        expect(stats.lineageBackfill).toBe(true);
+        expect(await dangling(projectId)).toBe(0);
+      }
+    });
+
     it("turning lineage off drops every lineage row and keeps the parser ids", async () => {
       const { projectId, root } = await fixture();
       await ingest(projectId, root, { introspectedSchema: SCHEMA });

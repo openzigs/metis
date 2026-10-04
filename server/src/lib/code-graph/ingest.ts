@@ -1336,8 +1336,8 @@ const LINEAGE_ORIGIN = /::(?:sql|exec|procsql)@\d+$/;
 /**
  * #856 — remove what Step 6 wrote for files a lineage backfill re-extracts
  * without re-parsing: their `sqlglot` edges, their synthetic `sql@`/`exec@`/
- * `procsql@` origins and the routines filed under them. Table and column
- * symbols stay, so their ids survive for the edges the backfill rewrites (and
+ * `procsql@` origins. Table, column and (#867) routine symbols stay, so their
+ * ids survive for the edges the backfill rewrites (and
  * any other pass's edges into them); {@link pruneOrphanLineageSymbols} removes
  * the ones nothing points at afterwards. Parser rows are never touched.
  */
@@ -1355,14 +1355,15 @@ async function clearFileLineage(
       where: { codeGraphId, filePath: { in: chunk }, language: "sql" },
       select: { id: true, kind: true, qualifiedName: true, filePath: true, source: true },
     });
+    // #867 — routines are kept, like tables and columns: a `catalog-deps` edge
+    // may point at one, and that pass is not rewritten on every ingest.
     const stale = candidates
-      .filter((s) =>
-        s.source === "sqlglot"
-          ? s.kind === "procedure" || s.kind === "function"
-          : s.source === null &&
-            s.kind === "method" &&
-            s.qualifiedName.startsWith(`${s.filePath}::`) &&
-            LINEAGE_ORIGIN.test(s.qualifiedName),
+      .filter(
+        (s) =>
+          s.source === null &&
+          s.kind === "method" &&
+          s.qualifiedName.startsWith(`${s.filePath}::`) &&
+          LINEAGE_ORIGIN.test(s.qualifiedName),
       )
       .map((s) => s.id);
     for (let j = 0; j < stale.length; j += IN_LIST_CHUNK) {
@@ -1374,8 +1375,8 @@ async function clearFileLineage(
 }
 
 /**
- * #856 — after a lineage backfill, drop the `sqlglot` table/column symbols filed
- * under its re-extracted files that no edge points at any more: the columns a
+ * #856 — after a lineage backfill, drop the `sqlglot` table/column/routine symbols filed
+ * under its re-extracted files that no edge points at (or, for a routine, leaves) any more: the columns a
  * dropped schema no longer expands to, or every lineage symbol once lineage is
  * turned off. A full re-parse removed these with the file's other rows.
  */
@@ -1392,21 +1393,22 @@ async function pruneOrphanLineageSymbols(
           codeGraphId,
           filePath: { in: chunk },
           source: "sqlglot",
-          kind: { in: ["table", "column"] },
+          kind: { in: ["table", "column", "procedure", "function"] },
         },
         select: { id: true },
       })
     ).map((s) => s.id);
     for (let j = 0; j < ids.length; j += IN_LIST_CHUNK) {
       const slice = ids.slice(j, j + IN_LIST_CHUNK);
-      const referenced = new Set(
-        (
-          await prisma.codeEdge.findMany({
-            where: { codeGraphId, toSymbolId: { in: slice } },
-            select: { toSymbolId: true },
-          })
-        ).map((e) => e.toSymbolId),
-      );
+      // A routine with an edge out of it (a body's `calls`) is in use too.
+      const edges = await prisma.codeEdge.findMany({
+        where: {
+          codeGraphId,
+          OR: [{ toSymbolId: { in: slice } }, { fromSymbolId: { in: slice } }],
+        },
+        select: { toSymbolId: true, fromSymbolId: true },
+      });
+      const referenced = new Set(edges.flatMap((e) => [e.toSymbolId, e.fromSymbolId]));
       const orphans = slice.filter((id) => !referenced.has(id));
       if (orphans.length > 0) {
         await prisma.codeSymbol.deleteMany({ where: { codeGraphId, id: { in: orphans } } });
@@ -2207,6 +2209,18 @@ export async function extractSchemaUsage(
       writer.prewarm(
         await prisma.codeSymbol.findMany({
           where: { codeGraphId, kind: { in: ["table", "column"] } },
+          select: { id: true, kind: true, qualifiedName: true },
+        }),
+      );
+      // #867 — routines too, so a `catalog-deps` edge into one keeps its target.
+      writer.prewarmRoutines(
+        await prisma.codeSymbol.findMany({
+          where: {
+            codeGraphId,
+            language: "sql",
+            source: { not: null },
+            kind: { in: ["procedure", "function"] },
+          },
           select: { id: true, kind: true, qualifiedName: true },
         }),
       );
