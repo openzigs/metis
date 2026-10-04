@@ -51,7 +51,8 @@ vi.mock("../ai/index.js", async (importOriginal) => {
   };
 });
 
-const { streamAIReply, DISCUSSION_SYSTEM_PROMPT } = await import("./ai-responder.js");
+const { streamAIReply, DISCUSSION_SYSTEM_PROMPT, discussionSystemPrompt } =
+  await import("./ai-responder.js");
 const { DISCUSSION_TOOL_MAX_TURNS, DISCUSSION_TOOL_POLICY } = await import("./grounding.js");
 const { ApprovalGateService } = await import("../ai/approval-policy.js");
 const { makeToolset } = await import("../ai/tool-runtime/toolset.js");
@@ -419,7 +420,11 @@ describe("streamAIReply — #739 grounding", () => {
 
     expect(retrieve).toHaveBeenCalledWith(triggerMessage.body);
     const sent = streamSpy.mock.calls[0][0] as Array<{ role: string; content: string }>;
-    expect(sent[0]).toEqual({ role: "system", content: DISCUSSION_SYSTEM_PROMPT });
+    expect(sent[0]).toEqual({
+      role: "system",
+      content: discussionSystemPrompt({ excerpts: true, tools: false }),
+    });
+    expect(sent[0].content).toMatch(/retrieved excerpts/);
     expect(sent.at(-2)).toEqual({
       role: "system",
       content: expect.stringContaining("internal/model/feed.go:123"),
@@ -445,8 +450,12 @@ describe("streamAIReply — #739 grounding", () => {
         stream: streamSpy,
       } as unknown as AIProvider;
       const result = await streamAIReply({ thread, triggerMessage, actor, provider, retrieve });
-      const sent = streamSpy.mock.calls[0][0] as Array<{ role: string }>;
+      const sent = streamSpy.mock.calls[0][0] as Array<{ role: string; content: string }>;
       expect(sent.filter((m) => m.role === "system")).toHaveLength(1);
+      // Told about no excerpts it was not given (PR #850 review).
+      expect(sent[0].content).toBe(DISCUSSION_SYSTEM_PROMPT);
+      expect(sent[0].content).not.toMatch(/excerpt/i);
+      expect(sent[0].content).not.toMatch(/tool/i);
       expect(result.message.body).toBe("ok");
     }
   });
@@ -481,7 +490,11 @@ describe("streamAIReply — #739 grounding", () => {
     expect(calls[0].opts.disableTools).toBeUndefined();
     expect(calls[0].opts.tools?.map((t) => t.name)).toEqual(["read_file_slice"]);
     // The note rides as its own system message after the fixed prompt.
-    expect(calls[0].messages[0]).toEqual({ role: "system", content: DISCUSSION_SYSTEM_PROMPT });
+    expect(calls[0].messages[0]).toEqual({
+      role: "system",
+      content: discussionSystemPrompt({ excerpts: false, tools: true }),
+    });
+    expect(calls[0].messages[0].content).not.toMatch(/excerpt/i);
     expect(calls[0].messages[1]).toEqual({ role: "system", content: "## Tools note" });
 
     expect(result.message.body).toBe("See internal/model/feed.go:123 (ScheduleNextCheck).");

@@ -68,13 +68,17 @@ export async function editDraft(opts: {
     ...(body !== undefined ? ["body"] : []),
     ...(labels !== undefined ? ["labels"] : []),
   ];
-  const updated = await prisma.issueDraft.update({
-    where: { id: draft.id },
+  // Conditional on the status still being editable: a batch may claim the
+  // draft (`publishing`) between the read above and this write. The status is
+  // written only to send an approved draft back to `draft`; it is never
+  // written back from the stale read, which would undo that claim.
+  const { count } = await prisma.issueDraft.updateMany({
+    where: { id: draft.id, deletedAt: null, status: { notIn: [...NOT_EDITABLE] } },
     data: {
       ...(title !== undefined ? { title } : {}),
       ...(body !== undefined ? { body } : {}),
       ...(labels !== undefined ? { labels: JSON.stringify([...new Set(labels)]) } : {}),
-      status: draft.status === "approved" ? "draft" : draft.status,
+      ...(draft.status === "approved" ? { status: "draft" } : {}),
       metadata: JSON.stringify({
         ...parseMetadata(draft.metadata),
         userEdited: true,
@@ -83,6 +87,14 @@ export async function editDraft(opts: {
       }),
     },
   });
+  if (count === 0) {
+    throw new PublishError(
+      409,
+      "DRAFT_NOT_EDITABLE",
+      "this draft started publishing while it was being edited; its text is already being written to GitHub",
+    );
+  }
+  const updated = await prisma.issueDraft.findUniqueOrThrow({ where: { id: draft.id } });
   // Field names only: the draft text itself is not audit material.
   audit({
     actor: { id: opts.actorId },

@@ -374,4 +374,10 @@ export interface DraftPullRequestResult {
   credentialCheck: CredentialCheckResult;
   /** Set on a live run: the draft PR opened (or the open one found for this branch). */
   pullRequest: { number: number; htmlUrl: string; reused: boolean } | null;
+  /**
+   * What the never-target-the-analysed-repo guard covered. A dry run makes no
+   * network call, so it compares the target with the project's repo
+   * connections only; the target's fork parent/source is checked on a live run.
+   */
+  upstreamCheck: { forkNetworkChecked: boolean; note: string };
 }

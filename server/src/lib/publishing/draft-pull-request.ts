@@ -11,23 +11,31 @@
  *    request carries no owner, repo or base URL, so nothing can redirect it,
  *    and with no saved target the request is refused rather than defaulting.
  *  - A saved target that equals one of the project's repo connections — the
- *    analysed (often upstream) repository — is refused outright.
+ *    analysed (often upstream) repository — is refused outright, including a
+ *    soft-deleted connection (the project still holds its analysis). On a live
+ *    run the target's fork `parent`/`source` is refused the same way, so a fork
+ *    analysed in place of its upstream cannot route a PR to that upstream.
  *  - Dry run is the default (the schema defaults `dryRun` to true) and makes
- *    no network call; it only reports whether the credential reference binds.
+ *    no network call; it only reports whether the credential reference binds,
+ *    and says in `upstreamCheck` that the fork network was not checked.
  *  - The credential is a `${vault:label}` reference bound to a secret id
  *    (#480) and read by id at use; the token is never returned, logged or put
  *    in an error. GitHub failures surface as a fixed message with the status.
+ *  - A live run writes a branch, a file and a PR — repository writes, not just
+ *    issues — so the caller must own the secret (or hold `vault.reveal`): the
+ *    #344 rule judged as a new destination, as an import source does (#763).
  *  - A live run passes the same approval and promotion gates as a batch.
  *  - Only the public GitHub API is used (no caller-chosen host), so the token
  *    goes only to the service that issued it — the batch-publish rule (#358).
  */
-import type { DraftPullRequestResult, CredentialCheckResult } from "@metis/shared";
+import type { AuthPayload, DraftPullRequestResult, CredentialCheckResult } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { getVaultService } from "../vault/vault-service.js";
-import { bindSecretRef } from "../vault/bound-secret.js";
+import { authorizeAndBindSecretRefs, bindSecretRef } from "../vault/bound-secret.js";
+import { assertBindingWriteWindowOpen } from "../vault/binding-write-mark.js";
 import { refBodyOf } from "../vault/secret-binding.js";
 import { readBoundSecret } from "../connectors/vault-resolver.js";
 import { assertDraftsPublishable } from "../reviews/approval-gate.js";
@@ -53,6 +61,8 @@ export interface OpenDraftPullRequestInput {
   projectId: string;
   draftId: string;
   actorId: string;
+  /** The caller's role: decides whether they may use a secret they did not create. */
+  actorRole: AuthPayload["role"];
   dryRun: boolean;
   secretRef?: string;
 }
@@ -77,7 +87,8 @@ export async function openDraftPullRequest(
       "save a GitHub publish target for this project first; a draft pull request is only ever opened there",
     );
   }
-  await assertNotAnalysedRepo(input.projectId, saved);
+  const analysed = await analysedRepoNames(input.projectId);
+  refuseIfAnalysed(analysed, [`${saved.owner}/${saved.repo}`]);
   // Validates owner/repo and pins the public API base URL — no caller input.
   const target = await resolvePublishTarget({
     owner: saved.owner,
@@ -103,6 +114,18 @@ export async function openDraftPullRequest(
     ],
     credentialCheck: "missing",
     pullRequest: null,
+    upstreamCheck: input.dryRun
+      ? {
+          forkNetworkChecked: false,
+          note:
+            "Checked against this project's repository connections only. A dry run makes no " +
+            "network call, so whether the target is a fork of an analysed repository is " +
+            "checked when the pull request is opened.",
+        }
+      : {
+          forkNetworkChecked: true,
+          note: "Checked against this project's repository connections and the target's fork parent and source.",
+        },
   };
 
   if (input.dryRun) {
@@ -117,7 +140,10 @@ export async function openDraftPullRequest(
       "a live draft pull request needs a vault secret ref",
     );
   }
-  const secretId = await bindCredential(input.secretRef);
+  const { secretId, until } = await bindCredential(
+    { ...input, secretRef: input.secretRef },
+    draft.id,
+  );
   await assertPromotionAllowed(draft.requirement?.analysisId ? [draft.requirement.analysisId] : []);
   await assertDraftsPublishable({
     projectId: input.projectId,
@@ -126,6 +152,7 @@ export async function openDraftPullRequest(
     actorId: input.actorId,
   });
 
+  assertBindingWriteWindowOpen(until); // #552 — before the token is sent anywhere
   const token = await readBoundSecret(secretId, getVaultService());
   const client = await acquirePublishOctokit({
     owner: target.owner,
@@ -135,7 +162,10 @@ export async function openDraftPullRequest(
     pinnedFamily: target.pinnedFamily,
   });
   const gh = new GitHubSteps(client, target);
-  const base = await gh.defaultBranch();
+  const repoInfo = await gh.repository();
+  // Before any write: a fork's upstream is the analysed repository by another name.
+  refuseIfAnalysed(analysed, [repoInfo.parent, repoInfo.source]);
+  const base = repoInfo.defaultBranch;
   const baseSha = await gh.headSha(base);
   await gh.createBranch(branch, baseSha);
   await gh.putFile(path, branch, specFile(draft.title, draft.body), draft.id);
@@ -177,21 +207,40 @@ export async function openDraftPullRequest(
   return plan;
 }
 
-/** Refuse a saved target that is one of the project's analysed repositories. */
-async function assertNotAnalysedRepo(
-  projectId: string,
-  target: { owner: string; repo: string },
-): Promise<void> {
+/**
+ * Every repository this project analyses, as lower-cased `owner/repo`.
+ *
+ * Soft-deleted connections are included on purpose: deleting a connector does
+ * not delete the analysis, code graph and findings built from that repository,
+ * so it is still the analysed repo.
+ *
+ * `local` and `upload` connections have no owner or repo (only git providers
+ * require them, `packages/shared/src/connectors.ts`), so they contribute
+ * nothing here: the code they analyse is not identified as any GitHub
+ * repository, and METIS cannot tell which one (if any) it was cloned from, so
+ * it cannot equal the target. That is a known limit, stated in the user guide:
+ * a project analysing an uploaded clone must not save that clone's origin as
+ * its publish target.
+ */
+async function analysedRepoNames(projectId: string): Promise<Set<string>> {
   const repos = await prisma.repoConnection.findMany({
-    where: { projectId, deletedAt: null },
+    where: { projectId },
     select: { ownerOrOrg: true, repoName: true },
   });
-  const same = (a: string | null, b: string) => (a ?? "").toLowerCase() === b.toLowerCase();
-  if (repos.some((r) => same(r.ownerOrOrg, target.owner) && same(r.repoName, target.repo))) {
+  const names = new Set<string>();
+  for (const r of repos) {
+    if (r.ownerOrOrg && r.repoName) names.add(`${r.ownerOrOrg}/${r.repoName}`.toLowerCase());
+  }
+  return names;
+}
+
+/** Refuse when any candidate `owner/repo` is one of the project's analysed repositories. */
+function refuseIfAnalysed(analysed: Set<string>, candidates: Array<string | null>): void {
+  if (candidates.some((c) => c !== null && analysed.has(c.toLowerCase()))) {
     throw new PublishError(
       409,
       "PUBLISH_TARGET_IS_ANALYSED_REPO",
-      "the saved publish target is the repository this project analyses; save a separate target (for example a fork or sandbox) for draft pull requests",
+      "the saved publish target is, or is a fork of, the repository this project analyses; save a separate target (for example a sandbox repository) for draft pull requests",
     );
   }
 }
@@ -210,14 +259,27 @@ async function checkCredential(secretRef: string | undefined): Promise<Credentia
   }
 }
 
-/** Live run: bind the reference to a secret id, with fixed (never echoing) errors. */
-async function bindCredential(secretRef: string): Promise<string> {
-  const body = refBodyOf(secretRef);
+/**
+ * Live run: authorize and bind the reference to ONE secret id (#577), with
+ * fixed (never echoing) errors. The caller must own the secret unless they
+ * hold `vault.reveal`; a refusal is the vault layer's audited 403
+ * SECRET_BINDING_FORBIDDEN, whose text quotes nothing from the request.
+ */
+async function bindCredential(
+  input: OpenDraftPullRequestInput & { secretRef: string },
+  draftId: string,
+): Promise<{ secretId: string; until: Date | null }> {
+  const body = refBodyOf(input.secretRef);
   if (!body) throw new PublishError(400, "VAULT_REF_INVALID", VAULT_REF_FORMAT_MESSAGE);
   try {
-    return await bindSecretRef(body);
+    const { bindings, until } = await authorizeAndBindSecretRefs(
+      { userId: input.actorId, role: input.actorRole },
+      { before: [], after: [body], destinationChanged: true },
+      { target: { type: "issue_draft", id: draftId }, metadata: { projectId: input.projectId } },
+    );
+    return { secretId: bindings[body], until };
   } catch (err) {
-    if (err instanceof AppError) {
+    if (err instanceof AppError && UNBOUND_CODES.has(err.code)) {
       throw new PublishError(
         err.statusCode,
         err.code,
@@ -227,6 +289,9 @@ async function bindCredential(secretRef: string): Promise<string> {
     throw err;
   }
 }
+
+/** Bind failures whose vault-layer text quotes the reference back. */
+const UNBOUND_CODES = new Set(["VAULT_REF_UNRESOLVED", "VAULT_REF_AMBIGUOUS"]);
 
 function specFile(title: string, body: string): string {
   return `# ${title}\n\n${body.trim()}\n`;
@@ -266,12 +331,23 @@ class GitHubSteps {
     this.repoPath = `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}`;
   }
 
-  async defaultBranch(): Promise<string> {
-    const res = await this.call<{ default_branch?: string }>("read the repository", {
-      method: "GET",
-      url: this.repoPath,
-    });
-    return res.default_branch ?? "main";
+  /** Default branch plus the fork network (`parent`/`source` are absent on a non-fork). */
+  async repository(): Promise<{
+    defaultBranch: string;
+    parent: string | null;
+    source: string | null;
+  }> {
+    const res = await this.call<{
+      default_branch?: string;
+      parent?: { full_name?: unknown };
+      source?: { full_name?: unknown };
+    }>("read the repository", { method: "GET", url: this.repoPath });
+    const name = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : null);
+    return {
+      defaultBranch: res.default_branch ?? "main",
+      parent: name(res.parent?.full_name),
+      source: name(res.source?.full_name),
+    };
   }
 
   async headSha(branch: string): Promise<string> {

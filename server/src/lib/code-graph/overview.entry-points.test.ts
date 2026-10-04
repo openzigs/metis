@@ -182,4 +182,15 @@ describe("isGoEntryPoint (#719)", () => {
       isGoEntryPoint({ filePath: "main.py", qualifiedName: "main.py::main", language: "py" }),
     ).toBe(false);
   });
+
+  // KNOWN FALSE POSITIVE (PR #850 review): Go allows an ordinary `func main` in
+  // any package, but only `package main`'s is an entry point. The symbol carries
+  // no package name, so a library's `func main` is listed too. If the extractor
+  // starts recording the package clause, require `package main` and flip this.
+  it("also lists a func main declared in a non-main (library) package", () => {
+    // e.g. `package helpers` in internal/helpers/run.go declaring `func main()`.
+    expect(isGoEntryPoint(go("internal/helpers/run.go", "internal/helpers/run.go::main"))).toBe(
+      true,
+    );
+  });
 });

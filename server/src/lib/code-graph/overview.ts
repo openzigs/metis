@@ -136,8 +136,12 @@ export function isJavaEntryPoint(symbol: {
 /**
  * #719 — Go's entry point is `func main` in `package main`, most often a root
  * `main.go`, which none of the file patterns above match (they need a `src/`,
- * `cmd/` or `bin/` segment). A top-level `main` function is only legal in
- * `package main`, so the name alone is decisive — no file convention needed.
+ * `cmd/` or `bin/` segment). The name is the whole test, and it is a heuristic:
+ * any Go package may declare an ordinary top-level `func main`, and only the one
+ * in `package main` is a program entry point. `CodeSymbol` records no Go package
+ * name (the Go extractor does not keep the package clause), so this cannot
+ * require `package main`; a `func main` in a library package is a known false
+ * positive (pinned in `overview.entry-points.test.ts`).
  */
 export function isGoEntryPoint(symbol: {
   name?: string;

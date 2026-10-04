@@ -41,6 +41,10 @@ const MASTER_KEY = Buffer.alloc(32, 6).toString("base64");
 const USER = "u776";
 const P = "p776";
 const TOKEN = "ghp_publish_token_776";
+/** No `vault.reveal`: may use only secrets it created (#344). */
+const ROLE = "coordinator" as const;
+const OTHER = "u776-other";
+const OTHER_TOKEN = "ghp_someone_elses_token_776";
 
 interface Call {
   method: string;
@@ -111,6 +115,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       });
       await vault.create("github-flux-v2-sandbox", TOKEN, "global", { createdById: USER });
+      await db.user.create({
+        data: { id: OTHER, username: OTHER, displayName: OTHER, email: `${OTHER}@x.test` },
+      });
+      await vault.create("someone-elses-github", OTHER_TOKEN, "global", { createdById: OTHER });
+      // A connector removed after analysis: the project still holds its analysis.
+      await db.repoConnection.create({
+        data: {
+          projectId: P,
+          label: "removed",
+          ownerOrOrg: "oldorg",
+          repoName: "gone",
+          status: "connected",
+          deletedAt: new Date(),
+        },
+      });
+      // An uploaded clone: no owner/repo, so it identifies no GitHub repository.
+      await db.repoConnection.create({
+        data: { projectId: P, label: "uploaded", provider: "upload", status: "connected" },
+      });
       __setPublishOctokitFactory(async ({ token, baseUrl }) => ({
         async request<T>(args: { method: string; url: string; data?: unknown }) {
           const call: Call = { ...args, token, baseUrl };
@@ -163,6 +186,43 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     // ---- 1. editable drafts --------------------------------------------------
 
     describe("editDraft", () => {
+      it("refuses (409) and writes nothing when a batch claims the draft mid-edit", async () => {
+        const d = await draft({ status: "approved" });
+        const realFindFirst = db.issueDraft.findFirst.bind(db.issueDraft);
+        // A batch moves the draft to `publishing` between editDraft's read and write.
+        const spy = vi.spyOn(db.issueDraft, "findFirst").mockImplementationOnce((async (
+          args: Parameters<typeof realFindFirst>[0],
+        ) => {
+          const row = await realFindFirst(args);
+          await db.issueDraft.update({ where: { id: d.id }, data: { status: "publishing" } });
+          return row;
+        }) as unknown as typeof realFindFirst);
+        try {
+          await expect(
+            editDraft({ draftId: d.id, projectId: P, actorId: USER, input: { body: "late edit" } }),
+          ).rejects.toMatchObject({ status: 409, code: "DRAFT_NOT_EDITABLE" });
+        } finally {
+          spy.mockRestore();
+        }
+        const row = await db.issueDraft.findUniqueOrThrow({ where: { id: d.id } });
+        // The batch's claim stands and the in-flight text is untouched.
+        expect(row.status).toBe("publishing");
+        expect(row.body).toBe(d.body);
+        expect(vi.mocked(audit)).not.toHaveBeenCalled();
+      });
+
+      it("leaves a failed draft's status alone (no stale status write-back)", async () => {
+        const d = await draft({ status: "failed" });
+        const out = await editDraft({
+          draftId: d.id,
+          projectId: P,
+          actorId: USER,
+          input: { body: "fixed body" },
+        });
+        expect(out.status).toBe("failed");
+        expect(out.body).toBe("fixed body");
+      });
+
       it("changes title, body and labels, keeps the dedup key and records the edit", async () => {
         const d = await draft();
         const out = await editDraft({
@@ -289,6 +349,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectId: P,
           draftId: d.id,
           actorId: USER,
+          actorRole: ROLE,
           dryRun: true,
           secretRef: "${vault:github-flux-v2-sandbox}",
         });
@@ -313,6 +374,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectId: P,
           draftId: d.id,
           actorId: USER,
+          actorRole: ROLE,
           dryRun: true,
         });
         expect(missing.credentialCheck).toBe("missing");
@@ -320,6 +382,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectId: P,
           draftId: d.id,
           actorId: USER,
+          actorRole: ROLE,
           dryRun: true,
           secretRef: "${vault:no-such}",
         });
@@ -330,7 +393,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await setTarget(null, null);
         const d = await draft();
         await expect(
-          openDraftPullRequest({ projectId: P, draftId: d.id, actorId: USER, dryRun: true }),
+          openDraftPullRequest({
+            projectId: P,
+            draftId: d.id,
+            actorId: USER,
+            actorRole: ROLE,
+            dryRun: true,
+          }),
         ).rejects.toMatchObject({ status: 409, code: "PUBLISH_TARGET_NOT_CONFIGURED" });
         expect(calls).toEqual([]);
       });
@@ -339,21 +408,129 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await setTarget("MiniFlux", "V2");
         const d = await draft();
         await expect(
-          openDraftPullRequest({ projectId: P, draftId: d.id, actorId: USER, dryRun: true }),
+          openDraftPullRequest({
+            projectId: P,
+            draftId: d.id,
+            actorId: USER,
+            actorRole: ROLE,
+            dryRun: true,
+          }),
         ).rejects.toMatchObject({ status: 409, code: "PUBLISH_TARGET_IS_ANALYSED_REPO" });
         expect(calls).toEqual([]);
+      });
+
+      it("refuses a target that is a SOFT-DELETED connection — the analysis outlives the connector", async () => {
+        await setTarget("OldOrg", "Gone");
+        const d = await draft();
+        await expect(
+          openDraftPullRequest({
+            projectId: P,
+            draftId: d.id,
+            actorId: USER,
+            actorRole: ROLE,
+            dryRun: true,
+          }),
+        ).rejects.toMatchObject({ status: 409, code: "PUBLISH_TARGET_IS_ANALYSED_REPO" });
+        expect(calls).toEqual([]);
+      });
+
+      it("an upload/local connection (no owner/repo) matches no target, and the dry run says what it checked", async () => {
+        const uploaded = await db.repoConnection.findFirstOrThrow({
+          where: { projectId: P, label: "uploaded" },
+        });
+        expect([uploaded.ownerOrOrg, uploaded.repoName]).toEqual([null, null]);
+        const d = await draft();
+        const plan = await openDraftPullRequest({
+          projectId: P,
+          draftId: d.id,
+          actorId: USER,
+          actorRole: ROLE,
+          dryRun: true,
+        });
+        expect(plan.target).toEqual({ owner: "openzigs", repo: "flux-v2" });
+        expect(plan.upstreamCheck.forkNetworkChecked).toBe(false);
+        expect(plan.upstreamCheck.note).toMatch(/repository connections only/);
+        expect(calls).toEqual([]);
+      });
+
+      it.each([
+        ["parent", { parent: { full_name: "MiniFlux/V2" }, source: { full_name: "MiniFlux/V2" } }],
+        ["source", { parent: { full_name: "someone/v2" }, source: { full_name: "miniflux/v2" } }],
+        ["deleted connection", { parent: { full_name: "oldorg/gone" } }],
+      ])(
+        "a live run refuses a target whose fork %s is an analysed repo, before any write",
+        async (_case, network) => {
+          const d = await draft();
+          respond = (c) =>
+            c.method === "GET" && c.url === "/repos/openzigs/flux-v2"
+              ? { status: 200, data: { default_branch: "main", fork: true, ...network } }
+              : undefined;
+          await expect(
+            openDraftPullRequest({
+              projectId: P,
+              draftId: d.id,
+              actorId: USER,
+              actorRole: ROLE,
+              dryRun: false,
+              secretRef: "${vault:github-flux-v2-sandbox}",
+            }),
+          ).rejects.toMatchObject({ status: 409, code: "PUBLISH_TARGET_IS_ANALYSED_REPO" });
+          expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(["GET /repos/openzigs/flux-v2"]);
+        },
+      );
+
+      it("refuses another user's GitHub secret for a live run (repository writes need ownership)", async () => {
+        const d = await draft();
+        const err = (await openDraftPullRequest({
+          projectId: P,
+          draftId: d.id,
+          actorId: USER,
+          actorRole: ROLE,
+          dryRun: false,
+          secretRef: "${vault:someone-elses-github}",
+        }).catch((e: unknown) => e)) as Error & { code?: string; statusCode?: number };
+        expect(err).toMatchObject({ statusCode: 403, code: "SECRET_BINDING_FORBIDDEN" });
+        expect(err.message).not.toContain(OTHER_TOKEN);
+        expect(calls).toEqual([]);
+        expect(vi.mocked(audit)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: "vault.binding_refused",
+            target: { type: "issue_draft", id: d.id },
+          }),
+        );
+      });
+
+      it("an admin (vault.reveal) may use another user's secret, as on every binding path", async () => {
+        const d = await draft();
+        const out = await openDraftPullRequest({
+          projectId: P,
+          draftId: d.id,
+          actorId: USER,
+          actorRole: "admin",
+          dryRun: false,
+          secretRef: "${vault:someone-elses-github}",
+        });
+        expect(out.pullRequest?.number).toBe(7);
+        expect(calls.every((c) => c.token === OTHER_TOKEN)).toBe(true);
       });
 
       it("a live run needs a credential", async () => {
         const d = await draft();
         await expect(
-          openDraftPullRequest({ projectId: P, draftId: d.id, actorId: USER, dryRun: false }),
+          openDraftPullRequest({
+            projectId: P,
+            draftId: d.id,
+            actorId: USER,
+            actorRole: ROLE,
+            dryRun: false,
+          }),
         ).rejects.toMatchObject({ status: 400, code: "TOKEN_REQUIRED" });
         await expect(
           openDraftPullRequest({
             projectId: P,
             draftId: d.id,
             actorId: USER,
+            actorRole: ROLE,
             dryRun: false,
             secretRef: "ghp_raw_token_pasted",
           }),
@@ -370,6 +547,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectId: P,
           draftId: d.id,
           actorId: USER,
+          actorRole: ROLE,
           dryRun: false,
           secretRef: "${vault:github-flux-v2-sandbox}",
         });
@@ -396,6 +574,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           (await db.issueDraft.findUniqueOrThrow({ where: { id: d.id } })).metadata ?? "{}",
         );
         expect(meta.pullRequest).toMatchObject({ number: 7, owner: "openzigs", repo: "flux-v2" });
+        expect(out.upstreamCheck.forkNetworkChecked).toBe(true);
       });
 
       it("a re-run reuses the existing branch and open PR instead of failing", async () => {
@@ -415,6 +594,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectId: P,
           draftId: d.id,
           actorId: USER,
+          actorRole: ROLE,
           dryRun: false,
           secretRef: "${vault:github-flux-v2-sandbox}",
         });
@@ -434,6 +614,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               projectId: P,
               draftId: d.id,
               actorId: USER,
+              actorRole: ROLE,
               dryRun: false,
               secretRef: "${vault:github-flux-v2-sandbox}",
             }),
@@ -467,6 +648,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             projectId: P,
             draftId: d.id,
             actorId: USER,
+            actorRole: ROLE,
             dryRun: false,
             secretRef: "${vault:github-flux-v2-sandbox}",
           }),
@@ -481,6 +663,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectId: P,
           draftId: d.id,
           actorId: USER,
+          actorRole: ROLE,
           dryRun: false,
           secretRef: "${vault:github-flux-v2-sandbox}",
         }).catch((e: unknown) => e)) as Error & { code?: string; status?: number };
@@ -492,11 +675,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("404s a draft of another project and refuses an in-flight one", async () => {
         const foreign = await draft({ projectId: "p-other" });
         await expect(
-          openDraftPullRequest({ projectId: P, draftId: foreign.id, actorId: USER, dryRun: true }),
+          openDraftPullRequest({
+            projectId: P,
+            draftId: foreign.id,
+            actorId: USER,
+            actorRole: ROLE,
+            dryRun: true,
+          }),
         ).rejects.toMatchObject({ status: 404, code: "DRAFT_NOT_FOUND" });
         const busy = await draft({ status: "publishing" });
         await expect(
-          openDraftPullRequest({ projectId: P, draftId: busy.id, actorId: USER, dryRun: true }),
+          openDraftPullRequest({
+            projectId: P,
+            draftId: busy.id,
+            actorId: USER,
+            actorRole: ROLE,
+            dryRun: true,
+          }),
         ).rejects.toMatchObject({ status: 409, code: "DRAFT_NOT_EDITABLE" });
       });
     });

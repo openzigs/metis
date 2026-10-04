@@ -120,6 +120,11 @@ export function DraftPullRequestDialog({
                 ))}
               </ul>
               {!opened && <p className="mt-2">{CREDENTIAL_TEXT[plan.credentialCheck]}</p>}
+              {!opened && plan.upstreamCheck && (
+                <p className="mt-1 text-muted-foreground" data-testid="draft-pr-upstream-check">
+                  {plan.upstreamCheck.note}
+                </p>
+              )}
               {opened && (
                 <p className="mt-2">
                   {opened.reused ? "An open draft pull request already existed: " : ""}

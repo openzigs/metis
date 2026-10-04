@@ -71,6 +71,10 @@ const PLAN = {
   ],
   credentialCheck: "resolved",
   pullRequest: null,
+  upstreamCheck: {
+    forkNetworkChecked: false,
+    note: "Checked against this project's repository connections only.",
+  },
 };
 
 function renderPage() {
@@ -189,6 +193,10 @@ describe("Draft pull request (#776)", () => {
     const plan = await screen.findByTestId("draft-pr-plan");
     expect(plan).toHaveTextContent("openzigs/flux-v2");
     expect(plan).toHaveTextContent("nothing was written");
+    // A dry run says the fork network was not checked (PR #850 review).
+    expect(screen.getByTestId("draft-pr-upstream-check")).toHaveTextContent(
+      "repository connections only",
+    );
     expect(draftPullRequest).toHaveBeenLastCalledWith("proj_1", "draft_1", {
       secretRef: "${vault:github-flux-v2-sandbox}",
       dryRun: true,

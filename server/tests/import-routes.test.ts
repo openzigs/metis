@@ -278,6 +278,36 @@ describe("#763 — imports take a vault secret reference", () => {
     expect(service.createSource).not.toHaveBeenCalled();
   });
 
+  it("POST /sources refuses (409) a write whose #552 binding window has closed, writing nothing", async () => {
+    // The binding check passed and stamped, but its window ended before the write.
+    binding.authorizeImportSecretRef.mockResolvedValueOnce({
+      secretId: "sec_bound",
+      until: new Date(Date.now() - 1_000),
+    });
+    const service = { createSource: vi.fn() };
+    const res = await request(buildApp(service))
+      .post("/projects/p1/imports/sources")
+      .send({ ...ghBody, label: "GH", secretRef: "${vault:gh}" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("SECRET_BINDING_WINDOW_EXPIRED");
+    expect(service.createSource).not.toHaveBeenCalled();
+  });
+
+  it("POST /sources writes while its #552 binding window is still open", async () => {
+    binding.authorizeImportSecretRef.mockResolvedValueOnce({
+      secretId: "sec_bound",
+      until: new Date(Date.now() + 60_000),
+    });
+    const service = {
+      createSource: vi.fn(async () => ({ source: { id: "src_1" }, run: { id: "run_1" } })),
+    };
+    const res = await request(buildApp(service))
+      .post("/projects/p1/imports/sources")
+      .send({ ...ghBody, label: "GH", secretRef: "${vault:gh}" });
+    expect(res.status).toBe(201);
+    expect(service.createSource).toHaveBeenCalledTimes(1);
+  });
+
   it("with no secretRef the binding binds nothing and the service gets no secret id", async () => {
     binding.authorizeImportSecretRef.mockClear();
     const service = { preview: vi.fn(async () => ({ source: "github", count: 0, sample: [] })) };

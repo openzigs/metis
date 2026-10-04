@@ -27,6 +27,8 @@ import {
   type RoleKey,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
+import { publishingPreAuthRateLimiter } from "../middleware/publishing-rate-limit.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { assertPublishSecretBinding } from "../lib/publishing/publish-secret-binding.js";
 import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js";
@@ -124,7 +126,12 @@ function asAppError(err: unknown): unknown {
 
 export function publishingRouter(): Router {
   const r = Router({ mergeParams: true });
-  r.use(requireAuth);
+  // PR #850 review — object-level project scope for every route below, as
+  // `traceabilityRouter` does since #814, so this router's safety no longer
+  // rests on the mount order of `projectsRouter()` upstream. A per-IP ceiling
+  // runs ahead of auth (CodeQL js/missing-rate-limiting, #815).
+  r.use(publishingPreAuthRateLimiter);
+  r.use(requireAuth, requireProjectAccess());
 
   // ---- Drafts ----
   r.get("/drafts", requirePermission("issue.draft"), async (req, res, next) => {
@@ -189,21 +196,14 @@ export function publishingRouter(): Router {
       if (!hasPermission(req.user.role, requiredPerm)) {
         throw new AppError(403, "FORBIDDEN", `permission ${requiredPerm} required`);
       }
-      // #358 — the token only ever goes to the public GitHub API (the target
-      // has no caller-chosen base URL), so this is the batch rule's no-op
-      // case; kept so a future base-URL option cannot skip the check.
-      const until = body.dryRun
-        ? null
-        : await assertPublishSecretBinding(
-            req.user,
-            { secretRef: body.secretRef, baseUrl: null },
-            { type: "issue_draft", id: String(req.params.id) },
-          );
-      assertBindingWriteWindowOpen(until); // #552
+      // A live run writes to the repository, so `openDraftPullRequest` itself
+      // requires the caller to own the secret (#344, judged as a new
+      // destination) and checks the #552 window before the token is used.
       const result = await openDraftPullRequest({
         projectId: projectIdOf(req),
         draftId: String(req.params.id),
         actorId: actor(req),
+        actorRole: req.user.role,
         dryRun: body.dryRun,
         secretRef: body.secretRef,
       });
