@@ -64,7 +64,13 @@ import {
   listFeatureArtifacts,
   writeFeatureArtifact,
 } from "../lib/spec-kit/feature-artifacts.js";
-import { computeStatus, GateUnmetError } from "../lib/spec-kit/gates.js";
+import {
+  computeStatus,
+  GateUnmetError,
+  requireGate,
+  type GateName,
+} from "../lib/spec-kit/gates.js";
+import { featureArtifactScope, type ArtifactScope } from "../lib/spec-kit/artifact-scope.js";
 import { BudgetExceededError } from "../lib/finops/budget-enforcer.js";
 import { SafetyDeniedError } from "../lib/safety/safety-hook.js";
 import { resolveProjectProvider } from "../lib/ai/project-provider.js";
@@ -674,12 +680,30 @@ export function memoizeProviderResolver(resolve: ProviderResolver): ProviderReso
   };
 }
 
+/** #786 — the `speckit.*` commands that run in a feature scope when given a slug. */
+const FEATURE_SCOPED_COMMANDS: Record<string, "tasks" | "clarify" | "analyze" | "implement"> = {
+  "speckit.tasks": "tasks",
+  "speckit.clarify": "clarify",
+  "speckit.analyze": "analyze",
+  "speckit.implement": "implement",
+};
+
+/** #786 — the feature phase gate each of them needs (bypassable with x-speckit-force). */
+const FEATURE_COMMAND_GATES: Record<"tasks" | "clarify" | "analyze" | "implement", GateName> = {
+  clarify: "specGate",
+  tasks: "planGate",
+  analyze: "tasksGate",
+  implement: "implementGate",
+};
+
 async function dispatchCommand(
   cmd: SpecKitCommand,
   projectId: string,
   input: string,
   actor: string,
   resolveProvider: ProviderResolver,
+  /** #786 — tasks/clarify/analyze/implement only; the project's `.specify/` when absent. */
+  scope?: ArtifactScope,
 ): Promise<DispatchedCommandResult> {
   // #381 — every LLM-backed command receives the project's real provider via
   // the existing `deps.provider` seam. The offline-stub is no longer the
@@ -711,7 +735,7 @@ async function dispatchCommand(
     }
     case "tasks": {
       const deps = { provider: await resolveProvider() };
-      const r = await runTasks({ projectId, actorId: actor, deps });
+      const r = await runTasks({ projectId, actorId: actor, deps, scope });
       return {
         command: "tasks",
         artifactName: "tasks.md",
@@ -722,7 +746,7 @@ async function dispatchCommand(
     }
     case "clarify": {
       const deps = { provider: await resolveProvider() };
-      const r = await runClarify({ projectId, input, actorId: actor, deps });
+      const r = await runClarify({ projectId, input, actorId: actor, deps, scope });
       return {
         command: "clarify",
         artifactName: "clarify.md",
@@ -733,7 +757,7 @@ async function dispatchCommand(
     }
     case "analyze": {
       const deps = { provider: await resolveProvider() };
-      const r = await runAnalyze({ projectId, actorId: actor, deps });
+      const r = await runAnalyze({ projectId, actorId: actor, deps, scope });
       return {
         command: "analyze",
         artifactName: "analysis.md",
@@ -743,7 +767,7 @@ async function dispatchCommand(
       };
     }
     case "implement": {
-      const r = await runImplement({ projectId, actorId: actor });
+      const r = await runImplement({ projectId, actorId: actor, scope });
       return {
         command: "implement",
         artifactName: null,
@@ -847,14 +871,38 @@ async function dispatchNamespaced(
         actorId: actor,
       });
     }
+    // #786 — with a `featureSlug` these read and write that feature's
+    // `specs/<slug>/` artifacts behind the feature's phase gate; without one
+    // they are the project-level `.specify/` commands (documented).
     case "speckit.tasks":
-      return dispatchCommand("tasks", projectId, input, actor, resolveProvider);
     case "speckit.clarify":
-      return dispatchCommand("clarify", projectId, input, actor, resolveProvider);
     case "speckit.analyze":
-      return dispatchCommand("analyze", projectId, input, actor, resolveProvider);
-    case "speckit.implement":
-      return dispatchCommand("implement", projectId, input, actor, resolveProvider);
+    case "speckit.implement": {
+      const legacy = FEATURE_SCOPED_COMMANDS[cmd];
+      if (!featureSlug) return dispatchCommand(legacy, projectId, input, actor, resolveProvider);
+      const feature = await resolveFeatureBySlug(projectId, featureSlug);
+      if (!feature) {
+        throw new AppError(404, "SPECKIT_FEATURE_NOT_FOUND", `Feature not found: ${featureSlug}`);
+      }
+      await requireGate({
+        featureId: feature.id,
+        gate: FEATURE_COMMAND_GATES[legacy],
+        force,
+        actorId: actor,
+        command: cmd,
+      });
+      return {
+        ...(await dispatchCommand(
+          legacy,
+          projectId,
+          input,
+          actor,
+          resolveProvider,
+          featureArtifactScope(feature),
+        )),
+        featureSlug: feature.slug,
+      };
+    }
     default:
       throw new AppError(400, "SPEC_KIT_UNKNOWN_COMMAND", `Unknown speckit.* command: ${cmd}`);
   }

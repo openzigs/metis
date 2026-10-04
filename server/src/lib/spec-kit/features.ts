@@ -15,6 +15,9 @@ import { isUniqueViolation } from "../db/prisma-errors.js";
 
 export const SPECKIT_FEATURE_SLUG_RE = /^\d{3}-[a-z0-9-]{1,80}$/;
 
+/** The word part of a slug (`NNN-<words>`), per {@link SPECKIT_FEATURE_SLUG_RE}. */
+const MAX_SLUG_WORDS_LENGTH = 80;
+
 export interface SpecKitFeatureDto {
   id: string;
   projectId: string;
@@ -54,18 +57,34 @@ function toDto(row: SpecKitFeatureRow): SpecKitFeatureDto {
 }
 
 /**
+ * #786 — cut free text to at most `max` characters at the last whole word that
+ * fits (a single over-long word is cut hard). Trailing punctuation is dropped.
+ */
+export function truncateAtWord(text: string, max: number): string {
+  const t = text.trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max + 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  const words = lastSpace > 0 ? cut.slice(0, lastSpace) : t.slice(0, max);
+  return words.replace(/[\s,;:(\-–—]+$/u, "");
+}
+
+/**
  * Convert a free-form feature title into a kebab slug. Strips non-alphanumeric
  * characters, collapses whitespace into hyphens, lowercases, and truncates to
- * 80 chars (matching the slug-validation regex).
+ * 80 chars (matching the slug-validation regex) — at the last whole word that
+ * fits (#786: the walkthrough's slug ended `…-mark-eve`). A single word longer
+ * than 80 chars is cut hard.
  */
 export function kebab(input: string): string {
-  return (
-    input
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80) || "feature"
-  );
+  const full = input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (full.length <= MAX_SLUG_WORDS_LENGTH) return full || "feature";
+  const cut = full.slice(0, MAX_SLUG_WORDS_LENGTH + 1);
+  const lastHyphen = cut.lastIndexOf("-");
+  return lastHyphen > 0 ? cut.slice(0, lastHyphen) : full.slice(0, MAX_SLUG_WORDS_LENGTH);
 }
 
 /**

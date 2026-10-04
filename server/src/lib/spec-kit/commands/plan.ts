@@ -7,6 +7,7 @@ import { getArtifact, writeArtifact, SpecKitArtifactError } from "../artifacts.j
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import {
   buildSpecKitRagContext,
+  type SiblingSymbolLookup,
   type SpecKitFusedCodeDeps,
   type SpecKitKnowledgeService,
 } from "../rag-context.js";
@@ -17,62 +18,8 @@ import {
   verifyPlanPaths,
   type PlanPathLookup,
 } from "../grounding.js";
-
-/**
- * Exported for the structural-contract tests (#376) — see specify.ts.
- */
-export const PLAN_SYSTEM_PROMPT = [
-  "You are a Solution Architect producing a Spec Kit-compatible plan.md that",
-  "downstream AI agents will parse deterministically. Every design choice MUST",
-  "be traceable back to the spec it satisfies.",
-  "",
-  "Output Markdown ONLY. Use stable, parseable ATX headings EXACTLY as written",
-  "below — do not rename, reorder, or merge sections. The document MUST contain",
-  "these sections in this order:",
-  "",
-  "  1. `# Plan` — paragraph summary of the technical approach.",
-  "  2. `## Components` — bullets of named components and their responsibility.",
-  "  3. `## Architecture diagram` — ONE Mermaid `graph` block (required).",
-  "  4. `## Sequence diagrams` — zero or more Mermaid `sequenceDiagram` blocks.",
-  "  5. `## ADRs` — bulleted Architecture Decision Records (Decision / Rationale).",
-  "  6. `## Risks & mitigations` — bullets pairing each risk with its mitigation.",
-  "",
-  "TRACEABILITY — REQUIRED:",
-  "  - Reference acceptance criteria by their STABLE id (`AC-1`, `AC-2`, …) as",
-  "    written in spec.md — NOT by section name or paraphrase.",
-  "  - Every component in `## Components` MUST end with the AC id(s) it",
-  "    satisfies, e.g.:",
-  "",
-  "        - **BillingLedger** — accrues line-item charges. (satisfies: AC-2, AC-3)",
-  "",
-  "  - Every ADR in `## ADRs` MUST cite the AC id(s) driving the decision, e.g.:",
-  "",
-  "        - **Decision**: use append-only event log. **Rationale**: … (satisfies: AC-4)",
-  "",
-  "  - Collectively the components/ADRs SHOULD cover every AC id in spec.md;",
-  "    note any AC deliberately deferred and why.",
-  "",
-  "The `## Architecture diagram` section MUST contain exactly one fenced",
-  "```mermaid``` block — never omit it.",
-  "",
-  "GROUNDING IN THE EXISTING CODEBASE — REQUIRED (#20):",
-  "  - The retrieved code symbols (`path:startLine-endLine`) and project",
-  "    documents describe what ALREADY exists. Read them before designing.",
-  "  - The `# Plan` summary MUST name the existing files and modules the change",
-  "    touches, by repo-relative path in backticks (e.g.",
-  "    `server/src/lib/analysis/agent-loop.ts`), and the functions or classes",
-  "    inside them.",
-  "  - Before proposing a component, check whether the retrieved code already",
-  "    implements that behaviour. If it does, extend it and describe only the",
-  "    delta — never re-specify shipped behaviour as a new component.",
-  "  - Mark every component in `## Components` as either **Extends**",
-  "    `path/to/existing/file` (`functionName`) or **New**. Every **New**",
-  "    component MUST state why no existing module can be extended: name the",
-  "    closest existing module and the reason it does not fit.",
-  "  - Only cite file paths that appear in the retrieved context or the spec.",
-  "    Never invent a path; when the right file is unknown, say so explicitly.",
-  "    Every backticked path is checked against the project's code graph.",
-].join("\n");
+import { PLAN_SYSTEM_PROMPT } from "./prompts.js";
+export { PLAN_SYSTEM_PROMPT } from "./prompts.js";
 
 const SYSTEM_PROMPT = PLAN_SYSTEM_PROMPT;
 
@@ -91,6 +38,8 @@ export interface PlanInput {
   fusedCode?: SpecKitFusedCodeDeps;
   /** #20 — injectable code-graph path lookup for the post-generation check. */
   pathLookup?: PlanPathLookup;
+  /** #785 — injectable same-file sibling lookup. Defaults to the production wiring. */
+  siblingLookup?: SiblingSymbolLookup;
 }
 
 export interface PlanResult {
@@ -122,6 +71,8 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     fusedCode: input.fusedCode,
     includeCode: true,
     expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
+    // #785 — list the existing same-file siblings of every retrieved symbol.
+    siblings: { ...(input.siblingLookup ? { lookup: input.siblingLookup } : {}) },
   });
 
   const userPrompt = [

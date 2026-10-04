@@ -1925,7 +1925,11 @@ dependencies).
 5. The report is grouped **per project**. For each impacted requirement you see a
    **severity** badge and **impact score**, the **directly affected** symbols,
    and the **blast radius** symbols tagged with their relation (caller, importer,
-   dependency) and depth.
+   dependency) and depth. Symbols tagged **Writes affected data** are the
+   functions that update or insert the columns the change touches — found from
+   the project's SQL, so they appear even when their names share no word with
+   the requirement (for example every function that marks an entry read) — and
+   are followed by their callers.
 
 Only projects you have access to appear in the picker, and you can only open a
 report whose projects are all visible to you.
@@ -3617,6 +3621,10 @@ The Spec Kit page has three columns:
 **`/speckit.taskstoissues`.** Bridges `tasks.md` → GitHub issues with idempotent upsert keyed on `(featureSlug, taskId)`. Repo resolution: explicit `repo` arg → `SpecKitConfig.tasksToIssuesRepo` → the project's saved publish target (Publishing page, **Save as project target**) → `SPECKIT_TASKS_DEFAULT_REPO` env; with none it is refused (`SPECKIT_NO_REPO_CONFIGURED`). It never files into the project's analysed repository. Only `dryRun: true` is served today ("Would export N task(s) to …"); a real export is refused with `501 SPECKIT_ISSUE_EXPORT_UNAVAILABLE` until a GitHub issue client is wired. Optional `parentEpicNumber` links sub-issues under a parent epic.
 
 **Expanded `/speckit.plan`.** Now emits five artifacts per Spec Kit Phase 0 + Phase 1: `research.md`, `data-model.md`, `contracts/api.openapi.yaml`, `quickstart.md`, `plan.md`. The OpenAPI body is post-processed to ensure it lints clean.
+
+**Grounded per-feature commands.** `/speckit.specify` and `/speckit.plan` retrieve project knowledge and code the same way `/specify` and `/plan` do, and their result line says so ("grounded on N retrieved chunks and M code symbols"). The plan also sees the functions declared beside each retrieved one (**Sibling Symbols**) and must end its summary with an `Existing capability:` line, so it extends an existing function instead of proposing a duplicate.
+
+**Feature-scoped tasks, clarify, analyze and implement.** Pass `featureSlug` to `/speckit.tasks`, `/speckit.clarify`, `/speckit.analyze` or `/speckit.implement` to work on that feature's `specs/<slug>/` artifacts; each checks the feature's gate first (`tasks` needs its plan). `/speckit.tasks` with a slug is how a feature gets the `tasks.md` that `/speckit.taskstoissues` exports. Without a `featureSlug` these four commands work on the project-level `.specify/` artifacts, as before.
 
 ### v1.3 Phase 2 additions
 

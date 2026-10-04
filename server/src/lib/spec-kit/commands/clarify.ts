@@ -12,8 +12,14 @@
  *     changes a section (in v1.2 this just records the answer; the
  *     follow-up edit is left to the operator).
  */
-import type { SpecKitArtifactDto } from "@metis/shared";
-import { getArtifact, writeArtifact, SpecKitArtifactError } from "../artifacts.js";
+import { SpecKitArtifactError } from "../artifacts.js";
+import {
+  commandHint,
+  forFeature,
+  projectArtifactScope,
+  type ArtifactScope,
+  type ScopedArtifact,
+} from "../artifact-scope.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 
 const SYSTEM_PROMPT = [
@@ -33,10 +39,12 @@ export interface ClarifyInput {
   actorId?: string | null;
   sessionId?: string | null;
   deps?: RunDeps;
+  /** #786 — the artifact set to read and write. Defaults to the project's `.specify/`. */
+  scope?: ArtifactScope;
 }
 
 export interface ClarifyResult {
-  artifact: SpecKitArtifactDto;
+  artifact: ScopedArtifact;
   /** When true, the runner asked a new question; otherwise it recorded an answer. */
   questioned: boolean;
   tokensUsed: number;
@@ -50,7 +58,8 @@ function appendBlock(prev: string, block: string): string {
 
 export async function runClarify(input: ClarifyInput): Promise<ClarifyResult> {
   const project = await loadProjectContext(input.projectId);
-  const existing = await getArtifact(input.projectId, "clarify.md");
+  const scope = input.scope ?? projectArtifactScope(input.projectId);
+  const existing = await scope.get("clarify.md");
   const prev = existing?.content ?? "";
 
   const trimmedInput = (input.input ?? "").trim();
@@ -60,30 +69,25 @@ export async function runClarify(input: ClarifyInput): Promise<ClarifyResult> {
       throw new SpecKitArtifactError(
         409,
         "SPEC_KIT_NO_PENDING_QUESTION",
-        "No pending question — run /clarify with no arguments first",
+        `No pending question — run ${commandHint(scope, "clarify")} with no arguments first`,
       );
     }
     const block = `${A_PREFIX} ${trimmedInput}`;
     const next = appendBlock(prev, block);
-    const artifact = await writeArtifact({
-      projectId: input.projectId,
-      name: "clarify.md",
-      content: next,
-      actorId: input.actorId ?? null,
-    });
+    const artifact = await scope.write("clarify.md", next, input.actorId ?? null);
     return {
       artifact,
       questioned: false,
       tokensUsed: 0,
-      message: `Recorded answer in clarify.md (v${artifact.version}).`,
+      message: `Recorded answer in clarify.md (v${artifact.version})${forFeature(scope)}.`,
     };
   }
 
   // Question mode — invoke the agent.
   const [spec, plan, tasks] = await Promise.all([
-    getArtifact(input.projectId, "spec.md"),
-    getArtifact(input.projectId, "plan.md"),
-    getArtifact(input.projectId, "tasks.md"),
+    scope.get("spec.md"),
+    scope.get("plan.md"),
+    scope.get("tasks.md"),
   ]);
   const context = [
     spec ? `spec.md:\n\`\`\`md\n${spec.content}\n\`\`\`` : "",
@@ -112,18 +116,13 @@ export async function runClarify(input: ClarifyInput): Promise<ClarifyResult> {
     ? trimmedAgent
     : `${Q_PREFIX} ${trimmedAgent.replace(/^[-*]\s*\**Q:?\**\s*/i, "")}`;
   const next = appendBlock(prev, block);
-  const artifact = await writeArtifact({
-    projectId: input.projectId,
-    name: "clarify.md",
-    content: next,
-    actorId: input.actorId ?? null,
-  });
+  const artifact = await scope.write("clarify.md", next, input.actorId ?? null);
 
   return {
     artifact,
     questioned: true,
     tokensUsed: run.tokensUsed,
-    message: `Asked a new question (clarify.md v${artifact.version}, ${run.tokensUsed} tokens).`,
+    message: `Asked a new question (clarify.md v${artifact.version}${forFeature(scope)}, ${run.tokensUsed} tokens).`,
   };
 }
 

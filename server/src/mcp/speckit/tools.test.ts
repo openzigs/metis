@@ -113,12 +113,28 @@ describe("SPEC_KIT_TOOLS", () => {
     });
   });
 
-  it("zero-arg tools (tasks/analyze/implement) return only the command", () => {
+  it("tasks/analyze/implement run project-level without a slug, per feature with one (#786)", () => {
     for (const name of ["speckit_tasks", "speckit_analyze", "speckit_implement"] as const) {
       const tool = findTool(name)!;
-      const dispatch = tool.toDispatchInput({});
-      expect(dispatch).toEqual({ command: name.replace("_", ".") });
+      expect(tool.toDispatchInput({})).toEqual({
+        command: name.replace("_", "."),
+        body: {},
+        force: false,
+      });
+      expect(tool.toDispatchInput({ featureSlug: "001-x", force: true })).toEqual({
+        command: name.replace("_", "."),
+        body: { featureSlug: "001-x" },
+        force: true,
+      });
     }
+    expect(
+      findTool("speckit_clarify")!.toDispatchInput({ input: "", featureSlug: "001-x" }),
+    ).toEqual({
+      command: "speckit.clarify",
+      input: "",
+      body: { featureSlug: "001-x" },
+      force: false,
+    });
   });
 
   it("findTool returns undefined for unknown names", () => {
