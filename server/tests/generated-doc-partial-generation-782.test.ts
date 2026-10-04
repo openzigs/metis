@@ -238,6 +238,8 @@ import { resolveEvidencePolicy } from "../src/lib/docs-gen/evidence-policy.js";
 import { captureGenerationInputs } from "../src/lib/docs-gen/generation-inputs.js";
 import { jobEvents } from "../src/lib/socket/job-events.js";
 import { TaskAbortError } from "../src/lib/scheduler/task-abort.js";
+import { noteRunUsage } from "../src/lib/docs-gen/run-cost.js";
+import { GENERATION_HEARTBEAT_MS } from "../src/lib/docs-gen/interrupted-generations.js";
 import { checkpointSectionRecords } from "../src/lib/docs-gen/section-reuse.js";
 import { sectionGroupsFor } from "../src/lib/docs-gen/holistic-synthesizer.js";
 import {
@@ -707,6 +709,41 @@ describe("#855 — cancel", () => {
     expect(checkpointIds()).toEqual([GROUPS[0].id, GROUPS[1].id]);
   });
 
+  it("#867 — a cancel from another replica aborts the call in flight through the heartbeat", async () => {
+    // Only the interval is faked: the heartbeat is the one thing that can see
+    // the row change while a model call is still streaming (no step boundary).
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let inFlight: AbortSignal | undefined;
+    state.duringSection = async (label, signal) => {
+      if (label !== GROUPS[1].label) return;
+      inFlight = signal;
+      // Another replica's POST /:docId/cancel: the row changes, no local stop.
+      state.doc.status = "cancelling";
+      vi.advanceTimersByTime(GENERATION_HEARTBEAT_MS);
+      await Promise.race([
+        abortedBy(signal),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("the heartbeat never aborted the call")), 2_000),
+        ),
+      ]);
+    };
+    try {
+      await generateDocumentAsync("d", "p");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(inFlight?.aborted).toBe(true);
+    expect(sectionCalls()).toBe(2);
+    expect(state.doc.status).toBe("cancelled");
+    expect(cause()).toMatchObject({ errorClass: "UnpublishableGenerationError" });
+    expect(String(cause()!.message)).toContain("cancelled");
+    // The aborted call was cut off mid-flight, so its spend is estimated.
+    expect(recordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ agentStep: "docs-gen-aborted" }),
+    );
+  });
+
   it("never publishes over a cancel that lands during the last section", async () => {
     state.duringSection = (label) => {
       if (label === GROUPS.at(-1)!.label) state.doc.status = "cancelling";
@@ -893,6 +930,46 @@ describe("#855 — the per-document cost ceiling", () => {
       "p",
       expect.stringContaining("cost ceiling"),
     );
+  });
+});
+
+describe("#867 — a ceiling that aborts a call in flight is reported as the ceiling", () => {
+  it("reports the cost-ceiling stop, not a generic failure, when the abort reaches the route", async () => {
+    vi.stubEnv("DOCS_GEN_MAX_RUN_TOKENS", "2500");
+    let inFlight: AbortSignal | undefined;
+    state.duringSection = async (label, signal) => {
+      if (label !== GROUPS[1].label) return;
+      inFlight = signal;
+      // A concurrent call of this run completes and its usage crosses the
+      // ceiling while this one is still streaming: this call is aborted, and
+      // what reaches the route is its AbortError, not the stop itself.
+      noteRunUsage({
+        provider: "test",
+        model: "test-model",
+        inputTokens: 2000,
+        outputTokens: 1000,
+      });
+      await abortedBy(signal);
+    };
+    try {
+      await generateDocumentAsync("d", "p");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(inFlight?.aborted).toBe(true);
+    expect(sectionCalls()).toBe(2);
+    expect(state.doc.status).toBe("degraded");
+    expect(state.versions).toHaveLength(0);
+    expect(cause()).toMatchObject({ errorClass: "UnpublishableGenerationError" });
+    expect(String(cause()!.message)).toContain("cost ceiling");
+    expect(jobEvents.completed).toHaveBeenCalledWith(
+      "doc-generation",
+      "d",
+      "p",
+      "Generation reached its cost ceiling; the finished sections were saved",
+    );
+    expect(jobEvents.failed).not.toHaveBeenCalled();
   });
 });
 

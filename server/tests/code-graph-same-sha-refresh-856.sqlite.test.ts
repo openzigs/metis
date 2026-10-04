@@ -157,13 +157,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       state.responder = usersResponder as (p: unknown) => unknown;
     });
 
-    const fixture = async (): Promise<{ projectId: string; root: string }> => {
+    const fixture = async (
+      tree: Record<string, string> = TREE,
+    ): Promise<{ projectId: string; root: string }> => {
       seq += 1;
       const project = await db.project.create({
         data: { name: `p856-${seq}`, slug: `p856-${seq}`, createdById: USER },
       });
       const root = path.join(scratch, `tree-${seq}`);
-      for (const [rel, content] of Object.entries(TREE)) {
+      for (const [rel, content] of Object.entries(tree)) {
         await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
         await fs.writeFile(path.join(root, rel), content, "utf8");
       }
@@ -363,6 +365,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(stats.lineageBackfill).toBe(true);
         expect(await dangling(projectId)).toBe(0);
       }
+    });
+
+    it("#867 — a backfill refreshes an unchanged SAS file's PROC SQL lineage", async () => {
+      const sas = "report.sas";
+      const { projectId, root } = await fixture({
+        ...TREE,
+        [sas]: [
+          "/* Nightly user report. */",
+          "proc sql;",
+          "  create table work.report as select * from users;",
+          "quit;",
+          "",
+        ].join("\n"),
+      });
+      const sasLineage = async () => (await lineageTable(projectId)).filter((r) => r.includes(sas));
+      await ingest(projectId, root);
+      const tableLevel = await sasLineage();
+      expect(tableLevel.some((r) => r.startsWith("edge") && r.includes("table:users"))).toBe(true);
+      expect(tableLevel.some((r) => r.includes("column:users."))).toBe(false);
+
+      // A schema arrives: the SAS file is unchanged, so only its lineage is redone.
+      const stats = await ingest(projectId, root, { introspectedSchema: SCHEMA });
+
+      expect(stats.lineageBackfill).toBe(true);
+      expect(stats.filesParsed).toBe(0);
+      expect(stats.filesLineageRefreshed).toBe(3);
+      const refreshed = await sasLineage();
+      // The schema expanded its SELECT * into per-column reads, as a fresh ingest would.
+      expect(refreshed.some((r) => r.startsWith("edge") && r.includes("column:users.email"))).toBe(
+        true,
+      );
+      const fresh = await fixture({ [sas]: await fs.readFile(path.join(root, sas), "utf8") });
+      await ingest(fresh.projectId, fresh.root, { introspectedSchema: SCHEMA });
+      const freshEdges = (await lineageTable(fresh.projectId)).filter((r) => r.startsWith("edge"));
+      expect(refreshed.filter((r) => r.startsWith("edge"))).toEqual(freshEdges);
     });
 
     it("turning lineage off drops every lineage row and keeps the parser ids", async () => {
