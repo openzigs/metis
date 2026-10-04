@@ -231,6 +231,23 @@ async function retrieveSafely(input: StreamAIReplyInput): Promise<string> {
   }
 }
 
+/** The reply's tools, or `null` (a plain streamed reply) when they cannot be built. */
+async function resolveToolsSafely(
+  input: StreamAIReplyInput,
+  sessionId: string,
+): Promise<DiscussionToolRuntime | null> {
+  if (!input.resolveTools) return null;
+  try {
+    return await input.resolveTools({ id: sessionId });
+  } catch (err) {
+    log.warn("Discussion tools unavailable; answering without them", {
+      threadId: input.thread.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 /**
  * Invoke the provider, deliver the reply, persist the AI message + token usage.
  * Returns the persisted message and aggregated usage. Rethrows on a provider
@@ -260,7 +277,7 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
   // 2. Ground: the project's excerpts, and its read-only tools when offered.
   const [retrieved, tools] = await Promise.all([
     retrieveSafely(input),
-    input.resolveTools ? input.resolveTools({ id: session.id }) : Promise.resolve(null),
+    resolveToolsSafely(input, session.id),
   ]);
   const messages = buildMessages(input, {
     ...(tools ? { toolNote: tools.note } : {}),

@@ -522,6 +522,25 @@ describe("streamAIReply — #739 grounding", () => {
     expect(result.message.body).toBe("Best answer from what was read.");
   });
 
+  it("falls back to a plain streamed reply when the tools cannot be built", async () => {
+    const { provider, calls } = chatProvider([]);
+    (provider as unknown as { stream: unknown }).stream = async function* () {
+      yield { type: "delta", content: "plain" } as ChatChunk;
+      yield { type: "done" } as ChatChunk;
+    };
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      resolveTools: async () => {
+        throw new Error("registry down");
+      },
+    });
+    expect(calls).toHaveLength(0);
+    expect(result.message.body).toBe("plain");
+  });
+
   it("streams as before when no tools can be offered", async () => {
     const { provider, calls } = chatProvider([]);
     (provider as unknown as { stream: unknown }).stream = async function* () {
