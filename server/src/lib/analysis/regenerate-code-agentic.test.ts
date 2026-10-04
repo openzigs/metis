@@ -44,6 +44,8 @@ type Stubbed = {
   detectAgentMode: ReturnType<typeof vi.fn>;
   computeAffectedCode: ReturnType<typeof vi.fn>;
   computeEscalations: ReturnType<typeof vi.fn>;
+  resolveDatabaseAware: ReturnType<typeof vi.fn>;
+  computeAffectedSchema: ReturnType<typeof vi.fn>;
 };
 
 function makeOrchestrator(mode: "agentic" | "single-shot" | "requirement-grounded") {
@@ -73,14 +75,23 @@ function makeOrchestrator(mode: "agentic" | "single-shot" | "requirement-grounde
     result: { candidates: [] },
   }));
   orch.computeEscalations = vi.fn(async () => undefined);
+  orch.resolveDatabaseAware = vi.fn(async () => ({ enabled: true }));
+  orch.computeAffectedSchema = vi.fn(async () => SCHEMA);
   return orch;
 }
+
+const SCHEMA = { block: "AFFECTED SCHEMA: feeds(user_id, feed_url)", tokens: 10, rows: [] };
 
 const ANALYSIS = {
   id: "an_1",
   projectId: "pr_1",
   metadata: JSON.stringify({ model: "deepseek-flash", extraInstructions: null }),
-  project: { name: "Miniflux", description: "feed reader", status: "active" },
+  project: {
+    name: "Miniflux",
+    description: "feed reader",
+    status: "active",
+    databaseAwareAnalysis: "on",
+  },
 };
 
 async function regenerate(orch: Stubbed, agentKey = "code") {
@@ -104,7 +115,11 @@ describe("regenerate the code agent through its pipeline mode (#766)", () => {
       projectId: "pr_1",
       requirements: REQS,
       connectorId: "repo_1",
+      // The pipeline's AFFECTED SCHEMA seed, resolved from the project setting.
+      affectedSchema: SCHEMA,
     });
+    expect(orch.resolveDatabaseAware).toHaveBeenCalledWith("an_1", "pr_1", "on");
+    expect(orch.computeAffectedSchema).toHaveBeenCalledWith("an_1", "pr_1", undefined, true);
     expect(orch.detectAgentMode).toHaveBeenCalledWith("pr_1", "code", REQS);
     // A stale connector-less row from an earlier single-shot regenerate goes.
     expect(prismaMock.agentResult.deleteMany).toHaveBeenCalledWith({

@@ -20,6 +20,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { __resetConfigSingleton } from "../config/config-service.js";
 import type { AgentFindingPayload, AnalysisCapability } from "@metis/shared";
+import { prisma } from "../prisma.js";
 
 const ANALYSIS_ID = "an_773";
 const PROJECT_ID = "pr_773";
@@ -1139,5 +1140,44 @@ describe("#19 — a run that verified nothing is reported starved/degraded", () 
     ]);
     expect(codeFindings()).toHaveLength(16);
     expect(codeFindings().every((f) => f.verdict === "could-not-verify")).toBe(true);
+  });
+});
+
+describe("#726 — the requirement-grounded path never badges could-not-verify Confirmed", () => {
+  // The same rule as the agentic path, at the OTHER verifyFinding call site:
+  // no code graph ⇒ requirement-grounded, and the passive seed grounds the cite.
+  const CNV_ANSWER = JSON.stringify({
+    summary: "grounded",
+    findings: [
+      {
+        requirementId: "REQ-001",
+        verdict: "could-not-verify",
+        category: "architecture",
+        severity: "medium",
+        // Worded as a positive observation so the absence rule (1) cannot be what
+        // decides the badge; only the verdict says it was not verified.
+        title: "Drift severity uses computeSeverity",
+        body: "computeSeverity classifies drift; which baseline it reads is unclear.",
+        tags: [],
+        citations: [{ filePath: "server/src/drift/severity.ts", startLine: 10, endLine: 42 }],
+      },
+    ],
+    notes: [],
+  });
+
+  it("follows the gated verdict even though the citation survived grounding", async () => {
+    const findFirst = vi.mocked(prisma.codeGraph.findFirst);
+    findFirst.mockImplementation((async () => null) as never);
+    process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    try {
+      await runPipeline([DOC_ANSWER, CNV_ANSWER], { withFusedSeed: true, withKnowledge: true });
+    } finally {
+      findFirst.mockImplementation((async () => ({ id: "cg_1" })) as never);
+    }
+    const finding = codeFindings().find((f) => f.requirementId === "REQ-001");
+    expect(finding?.citations?.length).toBeGreaterThan(0);
+    expect(finding?.verdict).toBe("could-not-verify");
+    expect(finding?.verificationStatus).toBe("could-not-verify");
   });
 });

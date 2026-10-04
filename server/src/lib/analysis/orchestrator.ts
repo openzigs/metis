@@ -790,7 +790,11 @@ export class AnalysisOrchestrator {
       // retrieval-only call that could not see the files the requirements are about.
       const result =
         opts.agentKey === "code"
-          ? await this.regenerateCodeAgent(agentInput)
+          ? await this.regenerateCodeAgent(agentInput, {
+              databaseAwareSetting:
+                (analysis.project as { databaseAwareAnalysis?: string | null })
+                  .databaseAwareAnalysis ?? undefined,
+            })
           : await this.runOneAgent(agentInput);
       delta.promptTokens += result.usage.promptTokens;
       delta.completionTokens += result.usage.completionTokens;
@@ -855,6 +859,7 @@ export class AnalysisOrchestrator {
    */
   private async regenerateCodeAgent(
     input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
+    opts: { databaseAwareSetting?: string } = {},
   ): Promise<AgentRunResult> {
     const requirements = mergeRequirementSets(
       await this.extractRequirementsFromDocAgent(input.analysisId),
@@ -878,6 +883,19 @@ export class AnalysisOrchestrator {
       input.projectId,
       requirements,
     );
+    // The same #824/#855 AFFECTED SCHEMA seed the pipeline gives the code pass,
+    // so a regenerate also gets its schema evidence in the verdict gate.
+    const dbAware = await this.resolveDatabaseAware(
+      input.analysisId,
+      input.projectId,
+      opts.databaseAwareSetting,
+    );
+    const affectedSchema = await this.computeAffectedSchema(
+      input.analysisId,
+      input.projectId,
+      input.extraInstructions,
+      dbAware.enabled,
+    );
     const shared = {
       analysisId: input.analysisId,
       projectId: input.projectId,
@@ -887,6 +905,7 @@ export class AnalysisOrchestrator {
       model: input.model,
       signal: input.signal,
       affectedCode,
+      affectedSchema,
       escalation,
     };
 
