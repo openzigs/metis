@@ -136,8 +136,22 @@ vi.mock("../src/lib/prisma.js", async () => {
         return { count: existed ? 1 : 0 };
       }),
     },
+    // #865 — the analysis-scoped PATCH writes through the versioned service,
+    // which runs in an interactive transaction; this fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../src/lib/prisma.js")).prisma),
+    ),
+    requirementVersion: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
     requirement: {
       findFirst: vi.fn(
+        async ({ where }: { where: { id: string; analysisId?: string; deletedAt: null } }) => {
+          const r = requirements.get(where.id);
+          if (!r || r.deletedAt) return null;
+          if (where.analysisId !== undefined && r.analysisId !== where.analysisId) return null;
+          return r;
+        },
+      ),
+      findUnique: vi.fn(
         async ({ where }: { where: { id: string; analysisId?: string; deletedAt: null } }) => {
           const r = requirements.get(where.id);
           if (!r || r.deletedAt) return null;
