@@ -24,15 +24,22 @@ interface User {
 
 interface AssigneePickerProps {
   requirementId: string;
+  /**
+   * #870 — the requirement's project. The search offers only users who can
+   * open it, so an assignee is always someone who can see the requirement.
+   */
+  projectId: string;
   className?: string;
 }
 
-async function searchUsers(q: string): Promise<User[]> {
+async function searchUsers(q: string, projectId: string): Promise<User[]> {
   if (!q.trim()) return [];
   // `apiFetch` already unwraps the `{ success, data }` envelope, so the result
   // IS the user array. Reading `.data` off it returned undefined for every
   // query and the picker always said "No users found".
-  const users = await apiFetch<User[]>(`/users?search=${encodeURIComponent(q)}&limit=8`);
+  const users = await apiFetch<User[]>(
+    `/users?search=${encodeURIComponent(q)}&limit=8&projectId=${encodeURIComponent(projectId)}`,
+  );
   return users ?? [];
 }
 
@@ -40,7 +47,7 @@ function assignmentQueryKey(requirementId: string) {
   return ["assignments", requirementId] as const;
 }
 
-export function AssigneePicker({ requirementId, className }: AssigneePickerProps) {
+export function AssigneePicker({ requirementId, projectId, className }: AssigneePickerProps) {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
@@ -51,8 +58,8 @@ export function AssigneePicker({ requirementId, className }: AssigneePickerProps
   });
 
   const { data: searchResults = [] } = useQuery<User[]>({
-    queryKey: ["users", "assignee-search", search],
-    queryFn: () => searchUsers(search),
+    queryKey: ["users", "assignee-search", projectId, search],
+    queryFn: () => searchUsers(search, projectId),
     enabled: open && search.length >= 2,
     staleTime: 30_000,
   });

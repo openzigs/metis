@@ -1090,7 +1090,7 @@ export default function AnalysisPage(): React.ReactElement {
                             </div>
                           </div>
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
-                          <RequirementCollabRow requirementId={req.id} />
+                          <RequirementCollabRow requirementId={req.id} projectId={projectId} />
                           <p className="mt-1 max-w-prose text-sm leading-relaxed text-foreground">
                             {req.body}
                           </p>
@@ -1524,7 +1524,13 @@ export default function AnalysisPage(): React.ReactElement {
  * to drive the SLA badge and renders the assignee picker. Kept as its own
  * component so each requirement card owns one `assignmentApi.list` query.
  */
-function RequirementCollabRow({ requirementId }: { requirementId: string }): React.ReactElement {
+function RequirementCollabRow({
+  requirementId,
+  projectId,
+}: {
+  requirementId: string;
+  projectId: string;
+}): React.ReactElement {
   const { data: assignments = [] } = useQuery({
     queryKey: ["assignments", requirementId],
     queryFn: () => assignmentApi.list(requirementId),
@@ -1538,7 +1544,7 @@ function RequirementCollabRow({ requirementId }: { requirementId: string }): Rea
   return (
     <div className="mt-2 flex items-center gap-2" data-testid={`req-collab-${requirementId}`}>
       <span className="text-xs text-muted-foreground">Assignees</span>
-      <AssigneePicker requirementId={requirementId} />
+      <AssigneePicker requirementId={requirementId} projectId={projectId} />
       <SLABadge deadline={nextDeadline ?? null} />
     </div>
   );
