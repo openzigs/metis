@@ -467,3 +467,20 @@ describe("IDOR guard — project cross-access denied", () => {
     expect(res.body.error.code).toBe("NOT_FOUND");
   });
 });
+
+describe("request validation", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    ["post", "/projects/proj-1/spec-kit/artifacts/spec.md/comments"],
+    ["post", "/comments/thread-1/replies"],
+    ["patch", "/comments/comment-1"],
+  ] as const)("answers %s %s with an empty body 400 before any lookup", async (method, url) => {
+    const res = await request(createApp())[method](url).send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    expect(mockPrisma.commentThread.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.comment.findUnique).not.toHaveBeenCalled();
+  });
+});
