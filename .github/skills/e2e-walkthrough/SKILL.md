@@ -86,8 +86,17 @@ previous wave returned. Record each wave's returned IDs before dispatching the n
 | E | Phases 15–20 + developer-issue impact | `briefs/wave-e.md` |
 | BA | The 8 BA questions over `POST /api/ai/chat`, one project-scoped session each | `briefs/ba-reask.md` |
 
-The BA re-ask needs no browser: create a session with `POST /api/ai/sessions`
-`{"projectId":"…","title":"BA Qn"}`, then `POST /api/ai/chat` `{"sessionId":"…","message":"…"}`.
+The BA re-ask needs no browser. Create a session with `POST /api/ai/sessions`
+`{"projectId":"…","title":"BA Qn"}`; the id is at `data.session.id`, not `data.id`. Then send
+`POST /api/ai/chat` `{"sessionId":"…","message":"…"}`. Run it over the API even when Phase 10
+runs in the UI: in run 3 the auto-mode classifier blocked selecting the `/chat` project-scope
+radio, so the UI path may be unavailable without an allow rule.
+
+**Never overlap long jobs.** Waves run in sequence, and so must the jobs inside them. A repo
+refresh, re-ingest or scheduler run while docs generation is in flight used to fail the
+document at commit after its whole spend: $4.61 and 88 min in run 3 (#856). #867 now stops
+early on changed inputs, but the run still ends `failed`. Pause every scheduled job before
+Phase 9, and create the Phase 13 scheduler job **after** Phase 9's documents finish.
 
 ## 4. Safety guard-rails
 
@@ -100,6 +109,15 @@ The BA re-ask needs no browser: create a session with `POST /api/ai/sessions`
 - Never click **Regenerate** on a reviewed run (fixed in #769; keep the warning until it is
   re-verified).
 - Never **reject** approval items on a run that is still needed (#723).
+- **Docs generation has a cancel** (#855): use **Cancel generation** on the doc card, or
+  `POST /api/projects/:id/docs/:docId/cancel`. Don't restart the server to stop a runaway
+  document. Per-run ceilings `DOCS_GEN_MAX_RUN_COST_CENTS` (default 2500) and
+  `DOCS_GEN_MAX_RUN_TOKENS` (default 20M) stop it automatically. For a walkthrough, set a
+  tighter cost ceiling in `.env`, for example 500, so one runaway document can't spend the
+  run's budget.
+- Sending a write statement to the database connector's query endpoint, to prove it is
+  read-only, is classifier-blocked for agents. The operator runs it, or approves it,
+  using no-op writes (`… WHERE false`).
 - Afterwards, both must return `[]`:
   ```bash
   gh search issues --repo miniflux/v2 --author <user> --json url
@@ -108,10 +126,12 @@ The BA re-ask needs no browser: create a session with `POST /api/ai/sessions`
 
 ## 5. Measurement
 
-Snapshot the ledgers **before and after each phase**; the per-phase figure is the delta.
-Until #792 lands, sum both ledgers — `token_usages` (project-scoped) and `ai_token_usages`
-(chat sessions; impact and test-coverage spend landed only here in run 2). After #792, use
-`token_usages` alone and say so in the results. Run against the METIS database
+Snapshot the ledger **before and after each phase**; the per-phase figure is the delta.
+Since #792 and #854, **`token_usages` is the ledger**; use it alone and say so in the results.
+Chat also writes each call to `ai_token_usages` with identical tokens, so **never sum the two
+tables**. Only chat in a session with no project lands in `ai_token_usages` alone. Since #761
+(PR #868), `costUsd` holds the exact per-call cost. `costCents` is still rounded per row, and
+rows written before #761 have `costUsd` NULL, so read `COALESCE(costUsd, costCents / 100.0)`. Run against the METIS database
 (`server/dev.db` with `sqlite3`, or `psql` on the Postgres adapter). Columns are Prisma
 camelCase, so keep the double quotes — Postgres folds unquoted names to lower case.
 Substitute the project ID and the snapshot timestamp for `:project` / `:since`; SQLite
@@ -119,16 +139,21 @@ stores these timestamps as ISO-8601 text, so `:since` is a string like
 `'2026-10-03T09:00:00'`.
 
 ```sql
--- token_usages: project ledger
+-- token_usages: the ledger. Always pass an explicit upper bound: in SQLite a bare
+-- '9999' compares as a number against the ISO text and matches nothing (run 3's helper
+-- returned 0 for a whole wave that way). Use '9999-12-31T00:00:00Z'.
 SELECT COUNT(*) AS n, SUM("inputTokens") AS input, SUM("outputTokens") AS output,
-       SUM("cacheReadTokens") AS cache_read, SUM("costCents") AS cents,
-       SUM(CASE WHEN "costCents" IS NULL THEN 1 ELSE 0 END) AS unpriced_rows
-FROM token_usages WHERE "projectId" = :project AND "createdAt" >= :since;
+       SUM("cacheReadTokens") AS cache_read,
+       SUM(COALESCE("costUsd", "costCents" / 100.0)) AS usd,
+       SUM(CASE WHEN "costUsd" IS NULL AND "costCents" IS NULL THEN 1 ELSE 0 END) AS unpriced_rows
+FROM token_usages
+WHERE "projectId" = :project AND "createdAt" >= :since AND "createdAt" < :until;
 
--- ai_token_usages: session ledger (no project filter: some rows carry no projectId)
-SELECT COUNT(*) AS n, SUM("promptTokens") AS input, SUM("completionTokens") AS output,
-       SUM("cacheReadTokens") AS cache_read, SUM("estimatedCostUsd") AS usd
-FROM ai_token_usages WHERE ts >= :since;
+-- per agent step (docs-gen, analysis, chat, spec-kit.*, impact.*, discussion, …)
+SELECT "agentStep", SUM("inputTokens") + SUM("outputTokens") AS tokens,
+       SUM(COALESCE("costUsd", "costCents" / 100.0)) AS usd
+FROM token_usages WHERE "projectId" = :project AND "createdAt" >= :since
+GROUP BY 1 ORDER BY 3 DESC;
 
 -- lineage: schema edges by kind and provenance (run 2: 1,436 reads/writes)
 SELECT kind, source, COUNT(*) AS n FROM code_edges
@@ -136,8 +161,10 @@ WHERE "projectId" = :project AND kind IN ('reads', 'writes', 'persists-to')
 GROUP BY kind, source;
 ```
 
-Exact cost in USD is `(input × 0.30 + output × 1.20 + cacheRead × 0.006) / 1e6` — compute
-it from the token sums and compare with the ledger's own cost; a mismatch is a finding.
+Exact cost in USD is `(input × 0.30 + output × 1.20 + cacheRead × 0.006) / 1e6`. Compute
+it from the token sums and compare it with the ledger's `usd`. Since #761 they should agree to
+within a cent per summed view, so a larger mismatch is a finding. Run 3, before #761, recorded
+999¢ against $9.84 computed.
 `unpriced_rows > 0` fails the "no Unpriced usage" criterion.
 
 Results go in a comment built from `docs/walkthroughs/RESULTS_TEMPLATE.md`, including its
@@ -155,6 +182,35 @@ run-to-run comparison table, on #706 or a tracking issue that links back.
 - After a workspace membership change, call `/api/auth/refresh` or the workspace claim is stale.
 - **Each agent keeps its scratch files in its own subdirectory.** A shared scratchpad
   clobbered backups in run 2.
+- **Mock users:** `admin`, `coordinator`, `developer` and `reader` all use password
+  `password`. `developer` lacks `project.update`.
+- The access token expires after about **40 min**. One navigation may bounce to
+  `/login?reason=expired`, and the next recovers without a new login.
+- **API paths that differ from what you'd guess:**
+  - Code search is `POST /api/projects/:id/code-search` `{query, limit}`; a GET returns 404.
+  - Knowledge retrieval is `POST /api/projects/:id/retrieve` `{query, k}`.
+  - Admin token budgets are `/api/admin/token-budgets/:userId`, and auth providers are
+    `/api/admin/auth/providers`.
+  - Requirement edits go through `PUT /api/requirements/:id` with `If-Match: <version>`.
+  - Manual baselines exist only in the API: `POST /api/projects/:id/baselines`
+    `{name, requirementIds}`.
+- **Connector labels** must match `^[A-Za-z0-9][A-Za-z0-9 _.\-]*$`. A label like
+  `miniflux/v2 @ v2.3.3` fails with only "invalid payload".
+- **Uploaded and URL documents land in quarantine.** Approve them under Project settings →
+  Quarantine before searching.
+- **Waiting for long jobs:**
+  - The embeddings reindex UI stays on "Reindexing…" at 100% (#862). Confirm with
+    `GET /api/admin/embeddings/projects/:id/coverage` (`shadow.inProgress=false`).
+  - An analysis shows "0 tok" until it ends, so poll `GET /api/analyses/:id`.
+  - Issue Playwright waits one at a time: parallel `browser_wait_for` calls run concurrently.
+- **Spec Kit:** per-feature commands have no UI. Drive them with
+  `POST …/spec-kit/commands/speckit.*`, and screenshot the GET JSON in a second tab.
+- `browser_evaluate` `filename` must be under the repo, for example the wave's evidence
+  folder; the scratchpad is outside the allowed roots.
+- A custom agent enabled for a project **joins every later analysis run** on it. Disable it
+  after Phase 7 if later runs must stay comparable.
+- An enabled custom skill is loaded into later chat sessions. Disable test skills before the
+  BA re-ask.
 - Evidence goes under `.playwright-mcp/walkthrough-706-run<N>/<wave>/` (gitignored).
 
 ## 7. Build the slideshow — last step of every run (#829)

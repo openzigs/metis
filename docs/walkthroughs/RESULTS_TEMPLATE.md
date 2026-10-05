@@ -6,7 +6,15 @@ The runbook is the `e2e-walkthrough` skill (`.github/skills/e2e-walkthrough/SKIL
 run-2 baseline is pre-filled from #706 comments
 [5964877354](https://github.com/openzigs/metis/issues/706#issuecomment-5964877354) and
 [5965348586](https://github.com/openzigs/metis/issues/706#issuecomment-5965348586); keep
-it unchanged so every run compares against the same reference.
+it unchanged so every run compares against the same reference. Run 3's results are in #706
+comment [5983560251](https://github.com/openzigs/metis/issues/706#issuecomment-5983560251):
+
+- Works 11/7/1/1, Useful 9/8/2/1
+- BA 8/8; developer impact 3/3 (2/3 strict)
+- 14.37M tokens, $9.84 (docs-gen 89%)
+
+Add a "Run 3" column beside the baseline when the change since run 3 matters more than the
+change since run 2.
 
 Legend for Works / Useful: ✅ pass · ⚠️ partial (Works) or weak (Useful) · ❌ fail ·
 🚫 blocked (give the reason) · – n/a.
