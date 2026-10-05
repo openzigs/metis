@@ -110,9 +110,11 @@ export async function recordPrReviewSpend(
       outputTokens: Math.max(0, Math.floor(input.outputTokens)),
       totalTokens:
         Math.max(0, Math.floor(input.inputTokens)) + Math.max(0, Math.floor(input.outputTokens)),
-      costCents: usdToCents(input.costUsd),
+      // #868 review — a non-finite cost is an unknown price: record it
+      // UNPRICED (both NULL, #22), never as a known $0.
+      costCents: Number.isFinite(input.costUsd) ? usdToCents(input.costUsd) : null,
       // #761 — the unrounded cost every ledger reader sums.
-      costUsd: Number.isFinite(input.costUsd) && input.costUsd > 0 ? input.costUsd : 0,
+      costUsd: Number.isFinite(input.costUsd) ? Math.max(0, input.costUsd) : null,
       agentStep: "pr-review",
     },
   });

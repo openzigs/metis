@@ -227,6 +227,31 @@ describe("reconcileBedrockSpend", () => {
     expect(findMany.mock.calls.at(-1)?.[0].select).toMatchObject({ costUsd: true });
   });
 
+  it("#868 review — rounds a fractional-cent METIS sum once, so the integer column gets an integer", async () => {
+    // 3 × 0.0123 USD = 3.69¢: a real fraction, not float noise. AWS $10 → a
+    // warning, so the persisted `AlertEvent.budgetCents` (an Int column) is
+    // written with the METIS figure.
+    for (let i = 0; i < 3; i += 1) {
+      tokenUsage.push({
+        provider: "bedrock-gateway",
+        costCents: 1,
+        costUsd: 0.0123,
+        createdAt: new Date(Date.UTC(2026, 4, 10)),
+      });
+    }
+    const result = await reconcileBedrockSpend({
+      client: fakeClient(10),
+      start,
+      end,
+      warnWorkspaceId: "w1",
+    });
+    expect(result.metisCents).toBe(4);
+    expect(Number.isInteger(result.metisCents)).toBe(true);
+    expect(alertEvents).toHaveLength(1);
+    expect(alertEvents[0]!.budgetCents).toBe(4);
+    expect(Number.isInteger(alertEvents[0]!.budgetCents)).toBe(true);
+  });
+
   it("does not persist a warning when no workspace is given", async () => {
     tokenUsage.push({
       provider: "bedrock-gateway",

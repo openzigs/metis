@@ -173,24 +173,34 @@ describe("recordPrReviewSpend", () => {
     expect(data.costUsd).toBe(1.5);
   });
 
-  it("#761 — writes a costUsd of 0 for a non-finite or negative cost, like costCents", async () => {
-    for (const costUsd of [Number.NaN, -1]) {
-      const { prisma, stub } = mkPrisma({});
-      await recordPrReviewSpend(
-        {
-          projectId: "p1",
-          sessionId: "pr-review-x",
-          provider: "anthropic",
-          model: "m",
-          inputTokens: 1,
-          outputTokens: 1,
-          costUsd,
-        },
-        prisma,
-      );
-      const data = stub.tokenUsage.create.mock.calls[0][0].data;
-      expect(data.costUsd).toBe(0);
-      expect(data.costCents).toBe(0);
+  const record = async (costUsd: number) => {
+    const { prisma, stub } = mkPrisma({});
+    await recordPrReviewSpend(
+      {
+        projectId: "p1",
+        sessionId: "pr-review-x",
+        provider: "anthropic",
+        model: "m",
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd,
+      },
+      prisma,
+    );
+    return stub.tokenUsage.create.mock.calls[0][0].data;
+  };
+
+  it("#761 — writes a cost of 0 for a negative cost, like costCents", async () => {
+    const data = await record(-1);
+    expect(data.costUsd).toBe(0);
+    expect(data.costCents).toBe(0);
+  });
+
+  it("#868 review — records a non-finite cost as UNPRICED (both NULL), never a known $0 (#22)", async () => {
+    for (const costUsd of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const data = await record(costUsd);
+      expect(data.costUsd).toBeNull();
+      expect(data.costCents).toBeNull();
     }
   });
 });
