@@ -14,7 +14,11 @@ import request from "supertest";
 
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: () => void) => {
-    (req as unknown as { user: unknown }).user = { userId: "u1", role: "admin", workspaces: [] };
+    (req as unknown as { user: unknown }).user = {
+      userId: "u1",
+      role: "developer",
+      workspaces: ["ws-1"],
+    };
     next();
   },
 }));
