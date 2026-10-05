@@ -325,6 +325,35 @@ describe("MentionInput", () => {
     expect(ta).toHaveValue("hello");
   });
 
+  it("scopes the user search to the project when given one (#734)", async () => {
+    apiFetchMock.mockResolvedValue([{ id: "u1", username: "bob", displayName: "Bob" }]);
+    const Wrapper = makeWrapper({});
+    function Scoped() {
+      const [val, setVal] = useState("");
+      return <MentionInput value={val} onChange={setVal} projectId="proj 1" />;
+    }
+    render(
+      <Wrapper>
+        <Scoped />
+      </Wrapper>,
+    );
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "@bo" } });
+
+    await waitFor(() =>
+      expect(apiFetchMock).toHaveBeenCalledWith("/users?search=bo&limit=8&projectId=proj%201"),
+    );
+  });
+
+  it("searches all users without a project", async () => {
+    apiFetchMock.mockResolvedValue([]);
+    renderInput();
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "@bo" } });
+
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledWith("/users?search=bo&limit=8"));
+  });
+
   it("shows suggestion dropdown on @ trigger", async () => {
     apiFetchMock.mockResolvedValue([{ id: "u1", username: "bob", displayName: "Bob" }]);
 
