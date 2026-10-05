@@ -29,6 +29,7 @@ interface FakeDoc {
   id: string;
   projectId: string;
   filename: string;
+  source: string;
   checksum: string;
   status: string;
   indexState: string;
@@ -50,6 +51,10 @@ const h = vi.hoisted(() => ({
   nextId: 0,
   inFlight: 0,
   maxInFlight: 0,
+  /** #756 — ids passed to `deleteDocument`, and an optional failure override. */
+  deleted: [] as string[],
+  onDelete: null as null | ((id: string) => void),
+  findManyArgs: [] as unknown[],
 }));
 
 vi.mock("../src/lib/logger.js", () => ({
@@ -70,13 +75,41 @@ vi.mock("../src/lib/prisma.js", () => ({
         }
         return null;
       }),
+      // #756 — the prune's listing, with the real query's semantics.
+      findMany: vi.fn(
+        async (args: {
+          where: {
+            projectId: string;
+            source: string;
+            deletedAt: null;
+            filename: { startsWith: string };
+          };
+        }) => {
+          h.findManyArgs.push(args);
+          const { where } = args;
+          return [...h.documents.values()]
+            .filter(
+              (d) =>
+                d.projectId === where.projectId &&
+                d.source === where.source &&
+                d.deletedAt === null &&
+                d.filename.startsWith(where.filename.startsWith),
+            )
+            .map((d) => ({ id: d.id, filename: d.filename }));
+        },
+      ),
       create: vi.fn(
-        async ({ data }: { data: { projectId: string; filename: string; checksum: string } }) => {
+        async ({
+          data,
+        }: {
+          data: { projectId: string; filename: string; checksum: string; source: string };
+        }) => {
           h.nextId += 1;
           const doc: FakeDoc = {
             id: `doc_${h.nextId}`,
             projectId: data.projectId,
             filename: data.filename,
+            source: data.source,
             checksum: data.checksum,
             status: "pending",
             indexState: "pending",
@@ -119,6 +152,11 @@ vi.mock("../src/lib/documents/storage.js", () => ({
 
 vi.mock("../src/lib/rag/knowledge-service.js", () => ({
   getKnowledgeService: () => ({
+    deleteDocument: vi.fn(async (id: string) => {
+      h.onDelete?.(id);
+      h.deleted.push(id);
+      h.documents.delete(id);
+    }),
     ingestDocument: vi.fn(async (id: string) => {
       const doc = h.documents.get(id)!;
       if (h.ingestCalls.length === 0) h.stateAtFirstIngest = h.states.at(-1) ?? null;
@@ -179,6 +217,9 @@ beforeEach(async () => {
   h.stateAtFirstIngest = null;
   h.nextId = 0;
   h.maxInFlight = 0;
+  h.deleted.length = 0;
+  h.onDelete = null;
+  h.findManyArgs.length = 0;
 });
 
 afterEach(async () => {
@@ -832,5 +873,115 @@ describe("per-connector ingest guard (#217)", () => {
     } finally {
       lease.release();
     }
+  });
+});
+
+describe("#756 — documents for files absent from the checkout are pruned", () => {
+  /** Seed a document as if an earlier run (or someone else) wrote it. */
+  function seedDoc(projectId: string, filename: string, source = "repo"): string {
+    h.nextId += 1;
+    const id = `seed_${h.nextId}`;
+    h.documents.set(id, {
+      id,
+      projectId,
+      filename,
+      source,
+      checksum: "x",
+      status: "ready",
+      indexState: "indexed",
+      chunkCount: 1,
+      deletedAt: null,
+    });
+    return id;
+  }
+  const remaining = () => [...h.documents.values()].map((d) => `${d.projectId}|${d.filename}`);
+
+  it("removes a document whose file is gone and keeps those still in the tree", async () => {
+    await writeFiles({ "src/a.go": "a", "src/b.go": "b" });
+    await ingestSourceAsKnowledge("p1", "c1", "u1", root);
+    await fs.rm(path.join(root, "src/b.go"));
+
+    const summary = await ingestSourceAsKnowledge("p1", "c1", "u1", root);
+
+    expect(summary.documentsPruned).toBe(1);
+    expect(lastState()).toMatchObject({ status: "completed", pruned: 1 });
+    expect(remaining()).toEqual(["p1|connector:repo:c1:src/src/a.go"]);
+  });
+
+  it("only ever touches this connector's source documents in this project", async () => {
+    await writeFiles({ "a.go": "a" });
+    const gone = seedDoc("p1", "connector:repo:c1:src/integration_test.go");
+    seedDoc("p1", "connector:repo:c2:src/integration_test.go"); // another connector
+    seedDoc("p2", "connector:repo:c1:src/integration_test.go"); // another project
+    seedDoc("p1", "connector:repo:c1:src/integration_test.go", "upload"); // a user upload
+    seedDoc("p1", "connector:repo:c1:README.md"); // repo metadata, not source
+    seedDoc("p1", "connector:repo:c10:src/x.go"); // an id sharing the prefix "c1"
+
+    const summary = await ingestSourceAsKnowledge("p1", "c1", "u1", root);
+
+    expect(h.deleted).toEqual([gone]);
+    expect(summary.documentsPruned).toBe(1);
+    expect(h.findManyArgs).toEqual([
+      expect.objectContaining({
+        where: {
+          projectId: "p1",
+          source: "repo",
+          deletedAt: null,
+          filename: { startsWith: "connector:repo:c1:src/" },
+        },
+      }),
+    ]);
+  });
+
+  it("keeps the document of a file still present but skipped by the budget or policy", async () => {
+    await writeFiles({ "a.ts": "a", "b.ts": "b", "a.test.ts": "t" });
+    const overCap = seedDoc("p1", "connector:repo:c1:src/b.ts");
+    const excluded = seedDoc("p1", "connector:repo:c1:src/a.test.ts");
+
+    const summary = await ingestSourceAsKnowledge("p1", "c1", "u1", root, {
+      limits: { maxFiles: 1, includeTests: false },
+    });
+
+    expect(summary.documentsPruned).toBe(0);
+    expect(h.documents.has(overCap)).toBe(true);
+    expect(h.documents.has(excluded)).toBe(true);
+  });
+
+  it("prunes nothing when the checkout has no source files at all", async () => {
+    await writeFiles({ "notes.txt": "not source" });
+    const kept = seedDoc("p1", "connector:repo:c1:src/a.go");
+
+    const summary = await ingestSourceAsKnowledge("p1", "c1", "u1", root);
+
+    expect(summary.documentsPruned).toBe(0);
+    expect(h.documents.has(kept)).toBe(true);
+    expect(h.warns.map((w) => w.msg)).toContain(
+      "repository source prune skipped: the checkout has no source files",
+    );
+  });
+
+  it("prunes nothing when the walk itself fails", async () => {
+    const kept = seedDoc("p1", "connector:repo:c1:src/a.go");
+    await expect(
+      ingestSourceAsKnowledge("p1", "c1", "u1", path.join(root, "missing")),
+    ).rejects.toThrow();
+    expect(h.deleted).toEqual([]);
+    expect(h.documents.has(kept)).toBe(true);
+  });
+
+  it("logs a failed delete, keeps going, and does not fail the run", async () => {
+    await writeFiles({ "a.go": "a" });
+    const stuck = seedDoc("p1", "connector:repo:c1:src/x.go");
+    const gone = seedDoc("p1", "connector:repo:c1:src/y.go");
+    h.onDelete = (id) => {
+      if (id === stuck) throw new Error("vector store down");
+    };
+
+    const summary = await ingestSourceAsKnowledge("p1", "c1", "u1", root);
+
+    expect(h.deleted).toEqual([gone]);
+    expect(summary.documentsPruned).toBe(1);
+    expect(lastState().status).toBe("completed");
+    expect(h.warns.map((w) => w.msg)).toContain("repository source prune: document delete failed");
   });
 });
