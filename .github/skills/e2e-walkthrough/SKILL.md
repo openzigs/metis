@@ -152,7 +152,8 @@ WHERE "projectId" = :project AND "createdAt" >= :since AND "createdAt" < :until;
 -- per agent step (docs-gen, analysis, chat, spec-kit.*, impact.*, discussion, …)
 SELECT "agentStep", SUM("inputTokens") + SUM("outputTokens") AS tokens,
        SUM(COALESCE("costUsd", "costCents" / 100.0)) AS usd
-FROM token_usages WHERE "projectId" = :project AND "createdAt" >= :since
+FROM token_usages
+WHERE "projectId" = :project AND "createdAt" >= :since AND "createdAt" < :until
 GROUP BY 1 ORDER BY 3 DESC;
 
 -- lineage: schema edges by kind and provenance (run 2: 1,436 reads/writes)
