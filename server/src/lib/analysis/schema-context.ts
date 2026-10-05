@@ -245,9 +245,15 @@ function relevanceScore(table: DbTableInfo, terms: Set<string>): number {
 
 /**
  * Render one table as a compact, deterministic block: qualified name (+ usage
- * tag), key columns with pk/fk/nullable annotations, and outbound foreign-key
- * relationships. Pure and offline-safe — the sole input is the introspected
- * `DbTableInfo`.
+ * tag), key columns with pk/fk/nullable annotations, outbound foreign-key
+ * relationships and unique constraints/indexes. Pure and offline-safe — the
+ * sole input is the introspected `DbTableInfo`.
+ *
+ * Unique indexes are rendered (#725) because without them the model only ever
+ * sees columns and FKs, and reports a real `unique (user_id, feed_url)`
+ * constraint as "no DB uniqueness constraint". The index that merely backs the
+ * primary key is skipped (the column already carries `pk`), as are non-unique
+ * indexes, which say nothing about integrity and would only spend budget.
  */
 export function renderTableBlock(table: DbTableInfo, usage?: SchemaUsageTag): string {
   const qn = tableQualifiedName(table);
@@ -268,7 +274,33 @@ export function renderTableBlock(table: DbTableInfo, usage?: SchemaUsageTag): st
     });
     lines.push(`  fks: ${rels.join("; ")}`);
   }
+  const uniques = uniqueColumnSets(table);
+  if (uniques.length > 0) {
+    lines.push(`  unique: ${uniques.map((cols) => `(${cols.join(", ")})`).join("; ")}`);
+  }
   return lines.join("\n");
+}
+
+/**
+ * The distinct column sets covered by a unique index on `table`, in
+ * introspection order, excluding the set that is exactly the primary key.
+ */
+function uniqueColumnSets(table: DbTableInfo): string[][] {
+  const pk =
+    table.primaryKey && table.primaryKey.length > 0
+      ? table.primaryKey
+      : table.columns.filter((c) => c.isPrimaryKey).map((c) => c.name);
+  const pkKey = [...pk].sort().join("\u0000");
+  const seen = new Set<string>();
+  const sets: string[][] = [];
+  for (const index of table.indexes ?? []) {
+    if (!index.isUnique || index.columns.length === 0) continue;
+    const key = [...index.columns].sort().join("\u0000");
+    if (key === pkKey || seen.has(key)) continue;
+    seen.add(key);
+    sets.push(index.columns);
+  }
+  return sets;
 }
 
 /** The result of rendering the schema summary within a token budget. */
