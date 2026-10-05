@@ -13,6 +13,15 @@ export interface DeepIngestOutcome {
     filesParsed: number;
     symbolsUpserted: number;
     edgesUpserted: number;
+    /**
+     * #715 — the graph's size after the run, and the files an incremental run
+     * left as they were. Optional only for a caller that does not have them;
+     * without them the message falls back to the run's own counts.
+     */
+    filesUnchanged?: number;
+    graphFiles?: number;
+    graphSymbols?: number;
+    graphEdges?: number;
   };
   source: { documentsCreated: number; chunkCount: number; failures: number };
   /**
@@ -64,9 +73,7 @@ export function deepIngestReportedFailureCount(outcome: DeepIngestOutcome): numb
 export function deepIngestCompletionMessage(outcome: DeepIngestOutcome): string {
   const { codeGraph, source, metadata, cloneSizeBytes } = outcome;
   const totals = [
-    `${codeGraph.filesParsed} of ${codeGraph.filesScanned} files parsed`,
-    plural(codeGraph.symbolsUpserted, "symbol"),
-    plural(codeGraph.edgesUpserted, "edge"),
+    describeCodeGraph(codeGraph),
     plural(source.chunkCount, "RAG chunk"),
     `${plural(source.documentsCreated, "document")} created`,
   ];
@@ -82,6 +89,28 @@ export function deepIngestCompletionMessage(outcome: DeepIngestOutcome): string 
     `${describeFailures({ source, metadata })}. ` +
     `Automatic document regeneration was skipped; run the ingest again to retry. ` +
     `${totals.join(", ")}.`
+  );
+}
+
+/**
+ * #715 — the graph's size first, then what this run changed. An incremental
+ * run re-parses only files whose content changed, so its own counts ("42 of 655
+ * files parsed, 689 symbols") read as most of the repository failing to parse.
+ */
+function describeCodeGraph(codeGraph: DeepIngestOutcome["codeGraph"]): string {
+  const { graphFiles, graphSymbols, graphEdges, filesUnchanged } = codeGraph;
+  if (graphFiles === undefined || graphSymbols === undefined || graphEdges === undefined) {
+    return [
+      `${codeGraph.filesParsed} of ${codeGraph.filesScanned} files parsed`,
+      plural(codeGraph.symbolsUpserted, "symbol"),
+      plural(codeGraph.edgesUpserted, "edge"),
+    ].join(", ");
+  }
+  const delta = [`${plural(codeGraph.filesParsed, "changed file")} re-parsed`];
+  if (filesUnchanged !== undefined) delta.push(`${filesUnchanged} unchanged`);
+  return (
+    `code graph of ${plural(graphFiles, "file")}, ${plural(graphSymbols, "symbol")}, ` +
+    `${plural(graphEdges, "edge")} (${delta.join(", ")})`
   );
 }
 

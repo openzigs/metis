@@ -318,6 +318,36 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     await waitFor(() => expect(screen.getByText(/Sync complete/i)).toBeInTheDocument());
   });
 
+  it("#715 — shows the code graph's size apart from the incremental delta", async () => {
+    refreshIngest.mockResolvedValueOnce({
+      pulled: true,
+      filesChanged: 0,
+      codeGraph: {
+        filesScanned: 655,
+        filesParsed: 0,
+        filesSkipped: 655,
+        symbolsUpserted: 0,
+        edgesUpserted: 0,
+        filesUnchanged: 421,
+        graphFiles: 421,
+        graphSymbols: 4252,
+        graphEdges: 28636,
+        durationMs: 1000,
+      },
+      sourceKnowledge: { documentsCreated: 0, documentsUpdated: 0, chunkCount: 2675 },
+      cloneSizeBytes: 0,
+    });
+    repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    const totals = await screen.findByTestId("sync-graph-totals");
+    expect(totals).toHaveTextContent(/421 files · 4,?252 symbols · 28,?636 edges/);
+    expect(screen.getByText("Changed files re-parsed")).toBeInTheDocument();
+    expect(screen.getByText("0 · 421 unchanged")).toBeInTheDocument();
+    expect(screen.queryByText(/655 scanned/)).not.toBeInTheDocument();
+  });
+
   it("warns instead of reporting success when the sync landed but scheduling failed (#449)", async () => {
     const warning =
       "The repository was ingested, but scheduling automatic document regeneration failed.";

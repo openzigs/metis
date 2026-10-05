@@ -251,6 +251,21 @@ export interface IngestStats {
    * into them keep their ids. Zero unless {@link lineageBackfill} is true.
    */
   filesLineageRefreshed: number;
+  /**
+   * #715 — files an incremental run skipped because their content hash matched
+   * the graph: they are in the graph, just not re-parsed. Counted inside
+   * {@link filesSkipped}, which also holds files in no code-graph language.
+   */
+  filesUnchanged: number;
+  /**
+   * #715 — the graph as a whole after this run, not this run's delta: the
+   * files it holds (one `module` symbol each), its symbols and its edges.
+   * `filesParsed` / `symbolsUpserted` / `edgesUpserted` describe only what an
+   * incremental run re-parsed, which read as the graph's size.
+   */
+  graphFiles: number;
+  graphSymbols: number;
+  graphEdges: number;
   languageStats: Record<string, number>;
   durationMs: number;
 }
@@ -414,6 +429,10 @@ export async function ingestCodeGraph(
     filesRebound: 0,
     lineageBackfill,
     filesLineageRefreshed: 0,
+    filesUnchanged: 0,
+    graphFiles: 0,
+    graphSymbols: 0,
+    graphEdges: 0,
     languageStats: {},
     durationMs: 0,
   };
@@ -515,6 +534,7 @@ export async function ingestCodeGraph(
     if (incremental && existing?.contentHash === fileHash) {
       unchangedFiles.set(relPath, { language: existing.language });
       stats.filesSkipped += 1;
+      stats.filesUnchanged += 1;
       if (lineageBackfill && (EMBEDDED_SQL_LANGUAGES.has(lang) || lang === "sas")) {
         lineageOnlyFiles.push({
           filePath: relPath,
@@ -756,6 +776,13 @@ export async function ingestCodeGraph(
   // Step 8 — finalise CodeGraph counts.
   const totalSymbols = await prisma.codeSymbol.count({ where: { codeGraphId: graph.id } });
   const totalEdges = await prisma.codeEdge.count({ where: { codeGraphId: graph.id } });
+  // #715 — one `module` symbol per file, the same index `loadExistingFiles` reads.
+  const totalFiles = await prisma.codeSymbol.count({
+    where: { codeGraphId: graph.id, kind: "module" },
+  });
+  stats.graphFiles = totalFiles;
+  stats.graphSymbols = totalSymbols;
+  stats.graphEdges = totalEdges;
   const langGrouping = await prisma.codeSymbol.groupBy({
     by: ["language"],
     where: { codeGraphId: graph.id },

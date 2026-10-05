@@ -51,6 +51,14 @@ export interface RefreshIngestSummary {
     filesSkipped: number;
     symbolsUpserted: number;
     edgesUpserted: number;
+    /**
+     * #715 — the graph's size after the Sync, apart from the delta above. Absent
+     * from a server that predates #715.
+     */
+    filesUnchanged?: number;
+    graphFiles?: number;
+    graphSymbols?: number;
+    graphEdges?: number;
     durationMs: number;
   };
   sourceKnowledge: { documentsCreated: number; documentsUpdated: number; chunkCount: number };
