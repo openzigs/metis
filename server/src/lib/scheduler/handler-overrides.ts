@@ -118,8 +118,8 @@ export function buildSchedulerHandlerOverrides(
             projectId,
             rootDir: clone.path,
             repoConnectionId: connectorId,
-            // #714 — label the graph with the pulled commit so it agrees with
-            // lastCommitSha; otherwise findings fail the stale-commit publish gate.
+            // #714/#758 — label the graph with the pulled commit; ingestCodeGraph
+            // records it as lastCommitSha too, once the graph is complete.
             commitSha: clone.commitSha ?? undefined,
             introspectedSchema: schemaWiring.introspectedSchema,
             introspectionFailed: schemaWiring.introspectionFailed,
@@ -142,7 +142,7 @@ export function buildSchedulerHandlerOverrides(
             { lease },
           );
           abortGuard(signal);
-          // Step 4 — refresh metadata (README, head SHA, connectivity check)
+          // Step 4 — refresh metadata (README, manifests, connectivity check)
           const meta = await fetchRepoMetadata(projectId, connectorId, "system");
           const metadataSummary = await ingestRepoMetadata(projectId, connectorId, "system", meta);
           abortGuard(signal);

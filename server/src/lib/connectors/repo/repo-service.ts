@@ -983,12 +983,10 @@ export async function fetchRepoMetadata(
 
   await prisma.repoConnection.update({
     where: { id },
-    // #714 — a failed lookup must not wipe the SHA the clone recorded.
-    data: {
-      ...(headSha ? { lastCommitSha: headSha } : {}),
-      status: "connected",
-      errorMessage: null,
-    },
+    // #758 — `headSha` is the remote tip NOW, which after a long ingest can be
+    // newer than the commit the graph was built from, so it is returned for the
+    // metadata document but never written as `lastCommitSha`.
+    data: { status: "connected", errorMessage: null },
   });
   audit({
     actor: { id: actorId },
@@ -1071,7 +1069,12 @@ export async function openRepoContentFetcher(
 export interface ShallowCloneResult {
   path: string;
   sizeBytes: number;
-  /** The commit the clone checked out (#714); null when HEAD cannot be read. */
+  /**
+   * The commit the clone checked out (#714); null when HEAD cannot be read.
+   * Only returned, never persisted: `RepoConnection.lastCommitSha` is written
+   * by `ingestCodeGraph` once a graph built from this commit is complete, so a
+   * read-only pull, or an ingest that fails, cannot move it (#757, #758).
+   */
   commitSha?: string | null;
 }
 
@@ -1113,36 +1116,6 @@ export async function readCloneHeadSha(cloneDir: string): Promise<string | null>
 }
 
 /**
- * Options for `shallowCloneRepo` / `pullOrCloneRepo`.
- *
- * `recordCommit` (default true) persists the checked-out commit as
- * `RepoConnection.lastCommitSha`. Only a caller that also ingests a code graph
- * labelled with that same commit may record it: `lastCommitSha` must never
- * disagree with `code_graphs.commitSha`. A caller that only reads the checkout
- * (the AST cache rebuild, credential discovery) passes
- * `{ recordCommit: false }` (#714, #757).
- */
-export interface CloneOptions {
-  recordCommit?: boolean;
-}
-
-/**
- * Read the commit a clone or pull left checked out and, unless the caller
- * opted out, record it as `lastCommitSha` (#714).
- */
-async function recordCloneCommit(
-  id: string,
-  cloneDir: string,
-  opts: CloneOptions,
-): Promise<string | null> {
-  const commitSha = await readCloneHeadSha(cloneDir);
-  if (commitSha && opts.recordCommit !== false) {
-    await prisma.repoConnection.update({ where: { id }, data: { lastCommitSha: commitSha } });
-  }
-  return commitSha;
-}
-
-/**
  * The parent-process env vars the `git` clone/pull subprocess needs — just
  * enough for network egress (a corporate forward proxy) and basic execution,
  * NOT the operator's whole environment. Blanket-forwarding `process.env`
@@ -1176,7 +1149,6 @@ export async function shallowCloneRepo(
   projectId: string,
   id: string,
   actorId: string,
-  opts: CloneOptions = {},
 ): Promise<ShallowCloneResult> {
   const conn = await getRepoConnector(projectId, id);
   const gitRepo = assertGitConnector(conn);
@@ -1274,7 +1246,7 @@ export async function shallowCloneRepo(
     target: { type: "repo_connector", id },
     metadata: { projectId, sizeBytes, path: target.replace(os.homedir(), "~") },
   });
-  const commitSha = await recordCloneCommit(id, target, opts);
+  const commitSha = await readCloneHeadSha(target);
   return { path: target, sizeBytes, commitSha };
 }
 
@@ -1297,7 +1269,6 @@ export async function pullOrCloneRepo(
   projectId: string,
   id: string,
   actorId: string,
-  opts: CloneOptions = {},
 ): Promise<PullOrCloneResult> {
   // #777 — same shared helper as the clone path above and as the analysis side.
   const target = resolveRepoClonePath(id);
@@ -1312,7 +1283,7 @@ export async function pullOrCloneRepo(
   }
 
   if (!hasClone) {
-    const result = await shallowCloneRepo(projectId, id, actorId, opts);
+    const result = await shallowCloneRepo(projectId, id, actorId);
     return { ...result, pulled: false, filesChanged: 0 };
   }
 
@@ -1356,7 +1327,7 @@ export async function pullOrCloneRepo(
       target: { type: "repo_connector", id },
       metadata: { projectId, sizeBytes, filesChanged },
     });
-    const commitSha = await recordCloneCommit(id, target, opts);
+    const commitSha = await readCloneHeadSha(target);
     return { path: target, sizeBytes, pulled: true, filesChanged, commitSha };
   } catch (pullErr) {
     // Pull failed (diverged, shallow history too short, corrupt, etc.) — fall
@@ -1364,7 +1335,7 @@ export async function pullOrCloneRepo(
     log.warn(
       `git pull failed for connector ${id} — falling back to fresh clone: ${(pullErr as Error).message}`,
     );
-    const result = await shallowCloneRepo(projectId, id, actorId, opts);
+    const result = await shallowCloneRepo(projectId, id, actorId);
     return { ...result, pulled: false, filesChanged: 0 };
   }
 }
