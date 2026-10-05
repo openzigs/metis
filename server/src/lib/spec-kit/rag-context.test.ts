@@ -412,6 +412,21 @@ describe("buildSpecKitRagContext — a symbol's real lines, never a chunk index 
     expect(res.usedSymbols).toBe(2);
   });
 
+  it("claims only that a located symbol shares a file with an excerpt, not that one holds it", async () => {
+    // Chunks carry no line range, so a same-file chunk counts as coverage even
+    // when the symbol's body never reached the prompt (#869 review).
+    const res = await buildSpecKitRagContext("p1", "mark all as read", {
+      knowledgeService: knowledgeService([sourceChunk]),
+      fusedCode: deps(),
+      includeCode: true,
+    });
+    expect(res.context).toContain(
+      "## Symbol Line Locators (symbols in the same files as the retrieved source excerpts above)",
+    );
+    expect(res.context).toMatch(/may not appear in the\s+excerpts/);
+    expect(res.context).not.toMatch(/symbols inside|sit\s+inside/);
+  });
+
   it("tells the model a `#N` is a chunk number, not a line", async () => {
     const res = await buildSpecKitRagContext("p1", "q", {
       knowledgeService: knowledgeService([sourceChunk]),

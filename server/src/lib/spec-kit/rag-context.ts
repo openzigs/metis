@@ -234,7 +234,7 @@ export async function buildSpecKitRagContext(
       return empty;
     }
 
-    // #853 — a symbol inside a retrieved source chunk was dropped from the code
+    // #853 — a symbol in the same file as a retrieved source chunk was dropped from the code
     // block as a duplicate, leaving only the chunk's `#N`. Keep its real span,
     // and let it anchor siblings like any other retrieved symbol.
     const covered = renderCoveredLocators(fused.covered);
@@ -311,12 +311,14 @@ async function expandDocuments(
 }
 
 const COVERED_HEADER = [
-  "## Symbol Line Locators (symbols inside the retrieved source excerpts above)",
-  "The excerpts above are numbered by chunk, not by line. These retrieved symbols sit",
-  "inside them; cite their `path:startLine-endLine` when you rely on one.",
+  "## Symbol Line Locators (symbols in the same files as the retrieved source excerpts above)",
+  "The excerpts above are numbered by chunk, not by line. These retrieved symbols are in",
+  "the same files, at the real line spans given; a symbol's body may not appear in the",
+  "excerpts. Cite its `path:startLine-endLine` when you rely on one.",
 ].join("\n");
 
-/** #853 — one locator line per symbol a source chunk already carries. */
+/** #853 — one locator line per symbol whose file a source chunk covers (chunks
+ * carry no line range, so this is same-file, not same-span). */
 function renderCoveredLocators(
   covered: ReadonlyArray<{
     name: string;
