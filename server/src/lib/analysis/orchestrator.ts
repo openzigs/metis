@@ -3533,8 +3533,21 @@ export class AnalysisOrchestrator {
       // `allowed` outcome in a SINGLE metadata patch (one DB write instead of
       // two) now that promotion succeeded.
       await persistAnalysisEnhancement(input.analysisId, {
-        promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 0 },
+        promotionBlocked: {
+          blocked: false,
+          pendingCount: 0,
+          rejectedCount: ticketStatus.rejectedCount,
+        },
         promotionStatus: "allowed",
+        // #723 — which reviewed requirements are now rows, so one reopened and
+        // approved later is appended rather than ignored.
+        ...(reviewed
+          ? {
+              promotedStructuredIds: structured
+                .filter((r) => approvedIds.has(r.id))
+                .map((r) => r.id),
+            }
+          : {}),
       });
       this.emit({
         analysisId: input.analysisId,

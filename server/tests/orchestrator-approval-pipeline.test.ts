@@ -412,9 +412,38 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     expect(blockedEvents[0].reason).toMatch(/Promotion blocked/i);
   });
 
-  it("blocks promotion while an approval is rejected", async () => {
-    await approvalSvc.createApprovalRequests("ana-reject", [{ type: "requirement", itemId: "r1" }]);
+  // Issue #723 — a rejection is a resolution: it no longer blocks promotion.
+  // The rejected structured requirement is left out; the approved one is kept.
+  it("promotes the approved requirements and leaves the rejected one out", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    const structuredReq = (id: string, title: string) => ({
+      id,
+      title,
+      description: `${title}.`,
+      type: "functional" as const,
+      stakeholders: [],
+      priority: "should-have" as const,
+      ambiguities: [],
+      evidenceNeeds: [],
+      rawSource: "",
+    });
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        structuredReq("r1", "Feed URL must be absolute"),
+        structuredReq("r2", "Reading speed validation"),
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    await approvalSvc.createApprovalRequests("ana-reject", [
+      { type: "requirement", itemId: "r1" },
+      { type: "requirement", itemId: "r2" },
+    ]);
     await approvalSvc.reviewApprovalRequest("ana-reject", "ap-1", {
+      status: "approved",
+      reviewerId: "u1",
+    });
+    await approvalSvc.reviewApprovalRequest("ana-reject", "ap-2", {
       status: "rejected",
       reviewerId: "u1",
     });
@@ -425,7 +454,16 @@ describe("#216 — promotion is gated on resolved approvals", () => {
       ...synthInput,
     });
 
-    expect(persisted.requirements).toHaveLength(0);
+    expect(persisted.requirements).toHaveLength(1);
+    const synthesis = persisted.requirements[0]!.synthesis as {
+      requirements: Array<{ title: string }>;
+    };
+    expect(synthesis.requirements.map((r) => r.title)).toEqual(["Feed URL must be absolute"]);
+    const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+    expect(cleared).toMatchObject({
+      promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 1 },
+      promotedStructuredIds: ["r1"],
+    });
   });
 
   // Issue #730 — the gate being open at synthesis time must not swap the
