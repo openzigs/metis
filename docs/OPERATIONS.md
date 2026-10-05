@@ -381,6 +381,30 @@ carrying the current workflow and probe, then
 the `embed-parity-fixture` artifact, whose file name carries the runner's key. The ISA
 class is random per run, so dispatch a few and keep one per class.
 
+### 6.3 The `token_usages.costUsd` column (#761): no upgrade step
+
+Migration `20261014000761_issue761_token_usage_cost_usd` only adds the nullable
+`token_usages.costUsd` column. On Postgres that is a metadata-only change: a brief
+lock, and no rewrite of the table. It does **not** backfill. Rows written before the
+upgrade keep `costUsd` NULL and are read through `costCents`, which every reader
+falls back to. Row readers do this through `ledgerRowCents`, and aggregate readers
+through `LEGACY_COST_ROW_WHERE` / `sumLedgerCents` (`server/src/lib/finops/ledger-cost.ts`).
+The same fallback covers rows that an old replica writes during a rolling deploy.
+The totals are therefore the same with or without a backfill, so there is nothing to
+run.
+
+**Optional.** If you want `costUsd` populated anyway, for example for external SQL
+that reads the column directly, backfill in short batches. The values can only be
+`costCents / 100`, because prices live in code and in `MODEL_PRICES`. Repeat until
+the statement reports `UPDATE 0`:
+
+```sql
+UPDATE "token_usages" SET "costUsd" = "costCents" / 100.0
+ WHERE "id" IN (SELECT "id" FROM "token_usages"
+                 WHERE "costCents" IS NOT NULL AND "costUsd" IS NULL
+                 LIMIT 10000);
+```
+
 ---
 
 ## 7. Container Image Sizes

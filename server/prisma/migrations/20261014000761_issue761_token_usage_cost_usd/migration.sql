@@ -1,0 +1,26 @@
+-- Issue #761 — store each ledger row's cost unrounded.
+--
+-- `token_usages.costCents` is an integer, rounded PER ROW at insert. A call on
+-- a cheap model costs a fraction of a cent, so most rows recorded 0 and the
+-- sums under-reported spend (walkthrough #706 run 3: 999¢ recorded against
+-- $9.84 computed from the same rows' tokens; 52 of 67 DeepSeek calls at 0¢).
+-- `costUsd` holds the unrounded cost; usage, budgets, forecasts and exports
+-- sum it and round once, for display. `costCents` stays, still written, for
+-- compatibility with anything reading it directly.
+--
+-- No backfill (#868 review). Existing rows keep `costUsd` NULL and are read
+-- through `costCents`: every reader goes through `ledgerRowCents` or, for an
+-- aggregate, `LEGACY_COST_ROW_WHERE` / `sumLedgerCents`
+-- (`server/src/lib/finops/ledger-cost.ts`). A backfill would add nothing — it
+-- could only copy `costCents / 100`, since prices live in code and
+-- `MODEL_PRICES`, which SQL cannot see — and on Postgres a full-table UPDATE in
+-- this migration's transaction would hold the ACCESS EXCLUSIVE lock taken by
+-- ADD COLUMN for the whole rewrite of the largest table. A nullable column with
+-- no default is a metadata-only change. An unpriced row (`costCents` NULL)
+-- stays NULL — unknown spend, never $0 (#22). An optional batched backfill is
+-- in OPERATIONS.md §6.3.
+--
+-- Rollback (documentation):
+--   ALTER TABLE "token_usages" DROP COLUMN "costUsd";
+-- Lossy only for the sub-cent precision of rows written since.
+ALTER TABLE "token_usages" ADD COLUMN "costUsd" REAL;

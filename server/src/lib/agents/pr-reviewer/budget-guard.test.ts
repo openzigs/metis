@@ -20,7 +20,10 @@ interface PrismaStub {
   };
 }
 
-function mkPrisma(opts: { cap?: number | null; rows?: Array<{ costCents: number }> }): {
+function mkPrisma(opts: {
+  cap?: number | null;
+  rows?: Array<{ costCents: number; costUsd?: number | null }>;
+}): {
   prisma: PrismaClient;
   stub: PrismaStub;
 } {
@@ -91,6 +94,18 @@ describe("checkBudget", () => {
     expect(out.spentCents).toBe(600);
   });
 
+  it("#761 — sums sub-cent reviews unrounded: 300 × 0.42¢ blocks a 100¢ cap", async () => {
+    const { prisma, stub } = mkPrisma({
+      cap: 100,
+      rows: Array.from({ length: 300 }, () => ({ costCents: 0, costUsd: 0.0042 })),
+    });
+    const out = await checkBudget("p1", prisma, NOW);
+    expect(out.allowed).toBe(false);
+    expect(out.spentCents).toBe(126);
+    // The stub returns whatever it holds, so pin the column a real query fetches.
+    expect(stub.tokenUsage.findMany.mock.calls[0][0].select).toMatchObject({ costUsd: true });
+  });
+
   it("returns the correct UTC month bucket and reset boundary", async () => {
     const { prisma } = mkPrisma({ cap: null });
     const out = await checkBudget("p1", prisma, new Date("2026-12-30T23:59:59Z"));
@@ -133,6 +148,7 @@ describe("recordPrReviewSpend", () => {
     expect(data.outputTokens).toBe(500);
     expect(data.totalTokens).toBe(1734);
     expect(data.costCents).toBe(0); // 0.0042 USD → 0 cents (sub-cent floor)
+    expect(data.costUsd).toBe(0.0042); // #761 — the unrounded cost readers sum
     expect(data.agentStep).toBe("pr-review"); // #792 — shows by name in By Agent Step
   });
 
@@ -154,5 +170,37 @@ describe("recordPrReviewSpend", () => {
     expect(data.provider).toBe("unknown");
     expect(data.model).toBe("unknown");
     expect(data.costCents).toBe(150);
+    expect(data.costUsd).toBe(1.5);
+  });
+
+  const record = async (costUsd: number) => {
+    const { prisma, stub } = mkPrisma({});
+    await recordPrReviewSpend(
+      {
+        projectId: "p1",
+        sessionId: "pr-review-x",
+        provider: "anthropic",
+        model: "m",
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd,
+      },
+      prisma,
+    );
+    return stub.tokenUsage.create.mock.calls[0][0].data;
+  };
+
+  it("#761 — writes a cost of 0 for a negative cost, like costCents", async () => {
+    const data = await record(-1);
+    expect(data.costUsd).toBe(0);
+    expect(data.costCents).toBe(0);
+  });
+
+  it("#868 review — records a non-finite cost as UNPRICED (both NULL), never a known $0 (#22)", async () => {
+    for (const costUsd of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const data = await record(costUsd);
+      expect(data.costUsd).toBeNull();
+      expect(data.costCents).toBeNull();
+    }
   });
 });

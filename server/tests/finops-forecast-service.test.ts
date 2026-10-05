@@ -16,6 +16,8 @@ interface TokenUsageRow {
   projectId: string;
   createdAt: Date;
   costCents: number;
+  /** #761 — the unrounded cost; omitted on a fixture that predates it. */
+  costUsd?: number;
 }
 
 const usageDaily: UsageDailyRow[] = [];
@@ -114,6 +116,22 @@ describe("loadProjectWindow", () => {
     const points = await loadProjectWindow("p1", NOW);
     const d14 = points.find((p) => p.day === "2026-06-14");
     expect(d14?.costCents).toBe(350);
+  });
+
+  it("#761 — sums sub-cent rows unrounded, and persists an integer month-to-date", async () => {
+    for (let i = 0; i < 67; i += 1) {
+      tokenUsage.push({
+        projectId: "p1",
+        createdAt: new Date(Date.UTC(2026, 5, 14, 3)),
+        costCents: 0,
+        costUsd: 0.00075,
+      });
+    }
+    const points = await loadProjectWindow("p1", NOW);
+    expect(points.find((p) => p.day === "2026-06-14")?.costCents).toBeCloseTo(5.025, 9);
+    const r = await computeProjectForecast("w1", "p1", NOW);
+    expect(r.monthToDateCents).toBe(5);
+    expect(createdForecasts.at(-1)?.monthToDateCents).toBe(5);
   });
 });
 

@@ -117,6 +117,12 @@ export function isCrossRegionModelId(modelId: string): boolean {
  * via the constructor option `maxAttempts`, or process-wide via `AI_MAX_RETRIES`
  * (read in the constructor, consistent with the existing `AI_*` env knobs).
  */
+/**
+ * `max_tokens` a chat call inherits when the caller sets none (#1224 measured
+ * it). Exported so a caller choosing its own cap can avoid LOWERING it.
+ */
+export const OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS = 4096;
+
 const DEFAULT_MAX_ATTEMPTS = 4;
 
 /**
@@ -920,7 +926,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     this.apiKey = opts.apiKey;
     this.defaultModel = opts.model;
     this.key = opts.providerKey ?? "bedrock-gateway";
-    this.defaultMaxTokens = opts.defaultMaxTokens ?? 4096;
+    this.defaultMaxTokens = opts.defaultMaxTokens ?? OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS;
     this.defaultTemperature = opts.defaultTemperature ?? 0.2;
     this.defaultTopP = opts.defaultTopP;
     this.defaultFrequencyPenalty = opts.defaultFrequencyPenalty;

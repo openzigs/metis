@@ -14,10 +14,14 @@
  *     the tokens that are still unpriced, so a ceiling can fail closed.
  *   • `summarizeUsage(projectId, from, to)` — full usage rollup that
  *     powers `GET /api/projects/:id/usage`.
+ *
+ * #761 — every cost here sums each row's UNROUNDED cost (`ledgerRowCents`)
+ * and rounds once, to the integer-cent fields the API has always returned.
  */
 import { prisma } from "../prisma.js";
 import { resolveRate } from "./provider-rates.js";
-import { canonicalTokenCounts, priceCanonicalTokens } from "./token-tracker.js";
+import { LEDGER_COST_SELECT, ledgerRowCents, normalizeCents } from "./ledger-cost.js";
+import { canonicalTokenCounts, priceCanonicalTokensExact } from "./token-tracker.js";
 
 export class BudgetExceededError extends Error {
   readonly status = 402;
@@ -73,7 +77,7 @@ async function getMtdAggregate(
   const { start } = monthBoundsUtc(now);
   const rows = await prisma.tokenUsage.findMany({
     where: { projectId, createdAt: { gte: start } },
-    select: { totalTokens: true, costCents: true },
+    select: { totalTokens: true, ...LEDGER_COST_SELECT },
   });
   let tokens = 0;
   let cents = 0;
@@ -81,9 +85,11 @@ async function getMtdAggregate(
   for (const r of rows) {
     tokens += r.totalTokens;
     // #22 — an unpriced row (null) adds tokens but no known cost.
-    if (r.costCents === null) unpricedTokens += r.totalTokens;
-    else cents += r.costCents;
+    const rowCents = ledgerRowCents(r);
+    if (rowCents === null) unpricedTokens += r.totalTokens;
+    else cents += rowCents;
   }
+  // `cents` stays fractional: the projection pro-rates it before rounding.
   return { tokens, cents, unpricedTokens };
 }
 
@@ -104,7 +110,7 @@ export async function assertWithinBudget(
     budget,
     remainingTokens: budget == null ? 0 : Math.max(0, budget - mtd.tokens),
     projectedMonthlyCostCents: projected,
-    monthToDateCostCents: mtd.cents,
+    monthToDateCostCents: Math.round(mtd.cents),
   };
   if (budget != null && mtd.tokens >= budget) {
     throw new BudgetExceededError(mtd.tokens, budget);
@@ -115,8 +121,11 @@ export async function assertWithinBudget(
 export function projectMonthlyFromMtd(monthToDateCents: number, now: Date = new Date()): number {
   const { daysInMonth, dayOfMonth } = monthBoundsUtc(now);
   if (dayOfMonth <= 0) return monthToDateCents;
-  // Pro-rate linearly. Ceil so the projection is conservative.
-  return Math.ceil((monthToDateCents * daysInMonth) / dayOfMonth);
+  // Pro-rate linearly. Ceil so the projection is conservative — but only a
+  // REAL fraction of a cent: the sum and the pro-rata both add float noise
+  // (7¢ x 31 = 217.00000000000003), and a ceil of noise is a phantom cent that
+  // trips a ceiling set one cent above the true projection (#868 review).
+  return Math.ceil(normalizeCents((monthToDateCents * daysInMonth) / dayOfMonth));
 }
 
 export async function projectMonthlyCost(
@@ -165,7 +174,7 @@ export async function projectMonthlyCostForCeiling(
       cacheReadTokens: true,
       cacheWriteTokens: true,
       totalTokens: true,
-      costCents: true,
+      ...LEDGER_COST_SELECT,
     },
   });
   let cents = 0;
@@ -174,8 +183,11 @@ export async function projectMonthlyCostForCeiling(
     // #264 — re-price through the same uncached-share rule `recordUsage` uses,
     // or a gateway row's cache reads are billed again at the input rate.
     const rowCents =
-      r.costCents ??
-      priceCanonicalTokens(resolveRate(r.provider, r.model), canonicalTokenCounts(r.provider, r));
+      ledgerRowCents(r) ??
+      priceCanonicalTokensExact(
+        resolveRate(r.provider, r.model),
+        canonicalTokenCounts(r.provider, r),
+      );
     if (rowCents === null) unpricedTokens += r.totalTokens;
     else cents += rowCents;
   }
@@ -265,7 +277,7 @@ export async function summarizeUsage(
       inputTokens: true,
       outputTokens: true,
       totalTokens: true,
-      costCents: true,
+      ...LEDGER_COST_SELECT,
       createdAt: true,
     },
     orderBy: { createdAt: "asc" },
@@ -283,7 +295,7 @@ export async function summarizeUsage(
     inputTokens += r.inputTokens;
     outputTokens += r.outputTokens;
     totalTokens += r.totalTokens;
-    const rowCents = r.costCents;
+    const rowCents = ledgerRowCents(r);
     if (rowCents === null) {
       unpriced.inputTokens += r.inputTokens;
       unpriced.outputTokens += r.outputTokens;
@@ -326,6 +338,12 @@ export async function summarizeUsage(
     byDayMap.set(day, dcur);
   }
 
+  // #761 — the sums above are fractional cents; round each once, here.
+  for (const p of byProviderMap.values()) {
+    if (p.costCents !== null) p.costCents = Math.round(p.costCents);
+  }
+  for (const d of byDayMap.values()) d.costCents = Math.round(d.costCents);
+
   const mtd = await getMtdAggregate(projectId, now);
   // #41 re-review — the projection shown is the one the cost ceiling enforces:
   // NULL-cost rows re-priced with today's price source, the rest unpriced.
@@ -342,7 +360,7 @@ export async function summarizeUsage(
     inputTokens,
     outputTokens,
     totalTokens,
-    costCents,
+    costCents: Math.round(costCents),
     unpriced,
     projectedMonthlyCostCents: projection.projectedCents,
     monthlyTokenBudget: project?.monthlyTokenBudget ?? null,

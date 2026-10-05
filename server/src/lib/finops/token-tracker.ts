@@ -14,7 +14,12 @@ import { conventionForProvider, normalizeTokenUsage } from "../ai/cache-verifica
 import type { UsageProvider } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
-import { computeCostCents, resolveRate, type TokenRate } from "./provider-rates.js";
+import {
+  computeCostCents,
+  computeCostCentsExact,
+  resolveRate,
+  type TokenRate,
+} from "./provider-rates.js";
 
 const log = createChildLogger("finops-token-tracker");
 
@@ -37,6 +42,11 @@ export interface RecordUsageResult {
   totalTokens: number;
   /** `null` = the model is UNPRICED (#22) — unknown spend, not zero spend. */
   costCents: number | null;
+  /**
+   * #761 — the call's unrounded cost in USD (`null` when unpriced). `costCents`
+   * rounds to the cent, so a sub-cent call reads 0 there; this does not.
+   */
+  costUsd: number | null;
   /**
    * Settles once the row is written (or the write failed — `persist` logs and
    * swallows). Never rejects. #724 — lets a caller that reads `token_usages`
@@ -154,12 +164,27 @@ export function priceCanonicalTokens(
   rate: TokenRate | null,
   counts: CanonicalTokenCounts,
 ): number | null {
-  return computeCostCents(rate, {
+  return computeCostCents(rate, canonicalCostUsage(counts));
+}
+
+/**
+ * #761 — {@link priceCanonicalTokens} without the per-call rounding to the
+ * cent: the unrounded cost in cents, or `null` when the model is unpriced.
+ */
+export function priceCanonicalTokensExact(
+  rate: TokenRate | null,
+  counts: CanonicalTokenCounts,
+): number | null {
+  return rate === null ? null : computeCostCentsExact(rate, canonicalCostUsage(counts));
+}
+
+function canonicalCostUsage(counts: CanonicalTokenCounts) {
+  return {
     inputTokens: counts.freshInputTokens,
     outputTokens: counts.outputTokens,
     cacheReadTokens: counts.cacheReadTokens,
     cacheWriteTokens: counts.cacheWriteTokens,
-  });
+  };
 }
 
 /**
@@ -182,10 +207,13 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
   });
   const totalTokens = canonical.totalTokens;
   // #22 — the single pricing source; `null` for a model METIS has no price for.
-  const costCents = priceCanonicalTokens(resolveRate(input.provider, input.model), canonical);
+  // #761 — priced ONCE, unrounded; `costCents` is the same figure to the cent.
+  const exactCents = priceCanonicalTokensExact(resolveRate(input.provider, input.model), canonical);
+  const costCents = exactCents === null ? null : Math.round(exactCents);
+  const costUsd = exactCents === null ? null : exactCents / 100;
 
   if (totalTokens === 0) {
-    return { totalTokens, costCents, persisted: Promise.resolve() };
+    return { totalTokens, costCents, costUsd, persisted: Promise.resolve() };
   }
 
   pending += 1;
@@ -205,6 +233,7 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
       cacheWriteTokens,
       totalTokens,
       costCents,
+      costUsd,
       ...(input.userId ? { userId: input.userId } : {}),
       ...(input.agentStep ? { agentStep: input.agentStep } : {}),
     }).finally(() => {
@@ -231,7 +260,7 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
     }
   }
 
-  return { totalTokens, costCents, persisted };
+  return { totalTokens, costCents, costUsd, persisted };
 }
 
 /** Awaitable variant for tests. */
@@ -254,6 +283,7 @@ async function persist(row: {
   cacheWriteTokens: number;
   totalTokens: number;
   costCents: number | null;
+  costUsd: number | null;
   userId?: string;
   agentStep?: string;
 }): Promise<void> {
