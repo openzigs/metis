@@ -12,3 +12,4 @@ section: Fixed
 - The monthly chargeback report's per-user lines read the same ledger, so they
   add up to the per-project total. Spend with no known user is listed as
   "Unattributed".
+- The **All projects** view aggregates in the database, so it no longer loads every usage row in the window into memory.
