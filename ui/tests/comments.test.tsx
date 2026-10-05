@@ -233,6 +233,36 @@ describe("CommentPanel", () => {
     expect(screen.queryByText(/Requirement comments/i)).not.toBeInTheDocument();
   });
 
+  it("scopes both mention pickers (new comment and reply) to the project (#734)", async () => {
+    mockCommentApi.listForRequirement.mockResolvedValue([makeThread()]);
+    const apiClientMod = await import("@/lib/api-client");
+    const apiFetchMock = apiClientMod.apiFetch as ReturnType<typeof vi.fn>;
+    apiFetchMock.mockResolvedValue([]);
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <CommentPanel
+          open
+          onClose={vi.fn()}
+          requirementId="req1"
+          projectId="p1"
+          currentUserId={CURRENT_USER_ID}
+        />
+      </Wrapper>,
+    );
+    await waitFor(() => expect(screen.getByText("Hello world")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText(/Write a comment/), {
+      target: { value: "@ne" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Reply/), { target: { value: "@re" } });
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith("/users?search=ne&limit=8&projectId=p1");
+      expect(apiFetchMock).toHaveBeenCalledWith("/users?search=re&limit=8&projectId=p1");
+    });
+  });
+
   it("renders threads returned from API", async () => {
     mockCommentApi.listForRequirement.mockResolvedValue([makeThread()]);
     renderPanel();

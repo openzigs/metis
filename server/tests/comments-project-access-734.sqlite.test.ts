@@ -273,6 +273,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await db.commentThread.count({ where: { specKitProjectId: PROJECT } })).toBe(before);
       });
 
+      it("answers a member the same 404 on a soft-deleted project, as discussions do", async () => {
+        await db.project.upsert({
+          where: { id: "proj-734-trashed" },
+          update: {},
+          create: {
+            id: "proj-734-trashed",
+            name: "trashed",
+            slug: "proj-734-trashed",
+            createdById: "u-member",
+            workspaceId: WS,
+            deletedAt: new Date(),
+          },
+        });
+
+        const denied = await call("get", url("proj-734-trashed"), MEMBER);
+        const unknown = await call("get", url("proj-nope"), MEMBER);
+        const post = await call("post", url("proj-734-trashed"), MEMBER, { body: "x" });
+
+        expect(denied.status).toBe(404);
+        expect(denied.body).toEqual(unknown.body);
+        expect(post.status).toBe(404);
+        expect((await call("get", url("proj-734-trashed"), ADMIN)).status).toBe(200);
+      });
+
       it("still admits a system admin", async () => {
         expect((await call("get", url(PROJECT), ADMIN)).status).toBe(200);
       });

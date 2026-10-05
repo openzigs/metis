@@ -21,6 +21,8 @@ const mockPrisma = {
   },
   project: {
     findUnique: vi.fn(),
+    // #734 — the discussions rule also requires the project to be live.
+    findFirst: vi.fn(),
   },
 };
 
@@ -425,6 +427,9 @@ describe("IDOR guard — project cross-access denied", () => {
     // #734 — the real `assertProjectAccess` runs: proj-A lives in ws-A, where
     // user-2 has no membership; proj-B in ws-B, where user-2 is a member who
     // did NOT create the project.
+    mockPrisma.project.findFirst.mockImplementation(async (args: { where: { id: string } }) => ({
+      id: args.where.id,
+    }));
     mockPrisma.project.findUnique.mockImplementation(async (args: { where: { id: string } }) => {
       const ws = args.where.id === "proj-B" ? "ws-B" : "ws-A";
       return {

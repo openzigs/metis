@@ -20,7 +20,8 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { dispatchMentions } from "../lib/collaboration/mentions.js";
-import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
+import type { RoleKey } from "@metis/shared";
+import { canAccessProjectDiscussions } from "../lib/discussions/access.js";
 import { audit } from "../lib/audit/audit-service.js";
 
 // ---- IDOR guard ------------------------------------------------------------
@@ -35,14 +36,18 @@ const commentNotFound = () => new AppError(404, "COMMENT_NOT_FOUND", "Comment no
 /**
  * #734 — may the caller reach the project that holds this comment?
  *
- * The canonical project-access rule (`assertProjectAccess`, the rule behind
- * `requireProjectAccess`, `GET /projects/:id` and discussions): system admins
- * bypass, workspace members are admitted, projects with no workspace stay open.
- * It replaced a local copy of the scheduler's creator-only rule, which answered
- * a workspace member 403 on a thread they had just been @mentioned in.
+ * Exactly the discussions rule (`canAccessProjectDiscussions`): the canonical
+ * project-access rule (`assertProjectAccess`, behind `requireProjectAccess` and
+ * `GET /projects/:id`) plus "the project is not soft-deleted" for non-admins.
+ * System admins bypass, workspace members are admitted, projects with no
+ * workspace stay open. It replaced a local copy of the scheduler's creator-only
+ * rule, which answered a workspace member 403 on a thread they had just been
+ * @mentioned in. Mention delivery and the mention picker use the same rule.
  *
  * A refusal is the route's OWN not-found error, byte-identical to an unknown
- * id, so it is not an existence oracle; the reason is kept in the audit row.
+ * id, so it is not an existence oracle; the reason is kept in the audit row
+ * (`comment.access.denied`). A comment whose thread resolves to no project is
+ * refused to non-admins (fail closed).
  */
 async function assertCommentProjectAccess(
   req: Request,
@@ -50,19 +55,24 @@ async function assertCommentProjectAccess(
   notFound: () => AppError,
   target: { type: string; id: string },
 ): Promise<void> {
-  try {
-    await assertResourceProjectAccess(req.user, projectId, notFound);
-  } catch (err) {
-    if (err instanceof AppError && err.statusCode === 404 && req.user) {
-      audit({
-        actor: { id: req.user.userId },
-        action: "comment.access.denied",
-        target,
-        metadata: { reason: "project-access-denied", projectId: projectId ?? null },
-      });
-    }
-    throw err;
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  if (req.user.role === "admin") return;
+  const actor = {
+    id: req.user.userId,
+    role: req.user.role as RoleKey,
+    ...(req.user.workspaces ? { workspaces: req.user.workspaces } : {}),
+  };
+  const auditCtx = { resource: target.type, resourceId: target.id, action: "comment.access" };
+  if (!projectId) {
+    audit({
+      actor: { id: actor.id },
+      action: "comment.access.denied",
+      target,
+      metadata: { reason: "no-project" },
+    });
+    throw notFound();
   }
+  if (!(await canAccessProjectDiscussions(actor, projectId, auditCtx))) throw notFound();
 }
 
 // ---- Zod schemas -----------------------------------------------------------
