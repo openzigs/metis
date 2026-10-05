@@ -15,6 +15,7 @@
  */
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import { LEDGER_COST_SELECT, ledgerRowCents } from "./ledger-cost.js";
 import {
   mape,
   projectMonthEnd,
@@ -106,14 +107,15 @@ export async function loadProjectWindow(
   const { windowStart } = computeMonthBounds(now);
   const rows = await prisma.tokenUsage.findMany({
     where: { projectId, createdAt: { gte: windowStart } },
-    select: { createdAt: true, costCents: true },
+    select: { createdAt: true, ...LEDGER_COST_SELECT },
     orderBy: { createdAt: "asc" },
   });
   const buckets = new Map<string, number>();
   for (const r of rows) {
     const day = isoDay(r.createdAt);
     // #22 — the forecast projects PRICED spend; an unpriced row adds nothing.
-    buckets.set(day, (buckets.get(day) ?? 0) + (r.costCents ?? 0));
+    // #761 — summed unrounded, so sub-cent calls are not each dropped to 0.
+    buckets.set(day, (buckets.get(day) ?? 0) + (ledgerRowCents(r) ?? 0));
   }
   return densifyWindow(buckets, windowStart, now);
 }
@@ -170,7 +172,8 @@ function buildResult(
     workspaceId,
     projectId,
     scope: projectId ? "project" : "workspace",
-    monthToDateCents: mtd,
+    // #761 — a project window sums fractional cents; the column is integer.
+    monthToDateCents: Math.round(mtd),
   };
 }
 

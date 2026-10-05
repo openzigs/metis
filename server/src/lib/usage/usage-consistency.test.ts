@@ -34,7 +34,7 @@ vi.mock("../prisma.js", () => ({
 
 import { summarizeUsage } from "../finops/budget-enforcer.js";
 import { UsageService } from "./usage-service.js";
-import { getRate, computeCostCents } from "../finops/provider-rates.js";
+import { getRate, computeCostCents, computeCostCentsExact } from "../finops/provider-rates.js";
 
 const PROJECT_ID = "proj-1";
 const NOW = new Date("2026-06-25T12:00:00.000Z");
@@ -52,7 +52,9 @@ function call(opts: {
     inputTokens: opts.input,
     outputTokens: opts.output,
   });
+  const rate = getRate(opts.provider, opts.model);
   return {
+    projectId: PROJECT_ID,
     provider: opts.provider,
     model: opts.model,
     userId: "user-1",
@@ -61,6 +63,10 @@ function call(opts: {
     outputTokens: opts.output,
     totalTokens: opts.input + opts.output,
     costCents,
+    // #761 — what `recordUsage` writes beside `costCents`: the unrounded cost.
+    costUsd: rate
+      ? computeCostCentsExact(rate, { inputTokens: opts.input, outputTokens: opts.output }) / 100
+      : null,
     createdAt: opts.createdAt,
   };
 }
@@ -104,7 +110,8 @@ describe("usage aggregate-vs-detail consistency (#428, #792)", () => {
     expect(detail.totalTokens).toBe(expectedTotal);
     // #792 — the analytics card and CSV showed $0.14 against the cards' $5.57.
     expect(aggregate.costCents).toBeGreaterThan(0);
-    expect(detail.totalCostUsd * 100).toBeCloseTo(aggregate.costCents, 10);
+    // #761 — the detail carries the unrounded cost; the card rounds it once.
+    expect(Math.round(detail.totalCostUsd * 100)).toBe(aggregate.costCents);
     expect(aggregate.byProvider.length).toBeGreaterThan(0);
     expect(detail.rows.map((r) => r.agentStep).sort()).toEqual(["chat", "impact.table-filter"]);
     expect(aiTokenUsageFindMany).not.toHaveBeenCalled();

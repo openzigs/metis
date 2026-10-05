@@ -7,7 +7,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const tokenUsage: Array<{ provider: string; costCents: number; createdAt: Date }> = [];
+const tokenUsage: Array<{
+  provider: string;
+  costCents: number;
+  /** #761 — the unrounded cost; omitted on a fixture that predates it. */
+  costUsd?: number;
+  createdAt: Date;
+}> = [];
 const alertEvents: Record<string, unknown>[] = [];
 
 vi.mock("../src/lib/prisma.js", () => ({
@@ -36,6 +42,7 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+import { prisma } from "../src/lib/prisma.js";
 import {
   buildCostAndUsageInput,
   parseCostAndUsageResponse,
@@ -201,6 +208,23 @@ describe("reconcileBedrockSpend", () => {
     );
     const result = await reconcileBedrockSpend({ client: fakeClient(1), start, end });
     expect(result.metisCents).toBe(100); // openai excluded
+  });
+
+  it("#761 — sums sub-cent Bedrock rows unrounded before comparing with AWS", async () => {
+    for (let i = 0; i < 400; i += 1) {
+      tokenUsage.push({
+        provider: "bedrock-gateway",
+        costCents: 0,
+        costUsd: 0.0025,
+        createdAt: new Date(Date.UTC(2026, 4, 10)),
+      });
+    }
+    const result = await reconcileBedrockSpend({ client: fakeClient(1), start, end });
+    expect(result.metisCents).toBe(100);
+    expect(result.warning).toBe(false);
+    // The mock ignores `select`, so pin the column a real query must fetch.
+    const findMany = prisma.tokenUsage.findMany as unknown as ReturnType<typeof vi.fn>;
+    expect(findMany.mock.calls.at(-1)?.[0].select).toMatchObject({ costUsd: true });
   });
 
   it("does not persist a warning when no workspace is given", async () => {

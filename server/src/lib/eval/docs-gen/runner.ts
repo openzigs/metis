@@ -35,6 +35,7 @@ import { DEFAULT_EMBED_MODEL } from "@metis/shared";
 import { __resetKnowledgeServiceSingleton } from "../../rag/knowledge-service.js";
 import { Embedder } from "../../rag/embedder.js";
 import { ingestSourceAsKnowledge } from "../../connectors/connector-ingest.js";
+import { ledgerRowCents } from "../../finops/ledger-cost.js";
 import { prisma } from "../../prisma.js";
 import { runAnswerCorrectness } from "../answer-correctness/runner.js";
 import { resolveJudgeDeps } from "../answer-correctness/judge-deps.js";
@@ -508,7 +509,8 @@ async function tokenUsageTotals(projectId: string): Promise<{
       cacheReadTokens: acc.cacheReadTokens + row.cacheReadTokens,
       cacheWriteTokens: acc.cacheWriteTokens + row.cacheWriteTokens,
       // #22 — an unpriced row (null) contributes tokens but no known cost.
-      estimatedCostUsd: acc.estimatedCostUsd + (row.costCents ?? 0) / 100,
+      // #761 — the row's unrounded cost, not its per-row-rounded `costCents`.
+      estimatedCostUsd: acc.estimatedCostUsd + (ledgerRowCents(row) ?? 0) / 100,
     }),
     {
       promptTokens: 0,

@@ -7,9 +7,12 @@
  * emails it to each workspace owner via the #50 email channel.
  *
  * Data sources:
- *   - Per-project cost: `TokenUsage.costCents` aggregated by projectId.
- *   - Per-user cost:     `AITokenUsage.estimatedCostUsd` aggregated by userId
- *     (converted to integer cents for consistency).
+ *   - Per-project cost: `TokenUsage.costUsd` aggregated by projectId.
+ *   - Per-user cost:    `TokenUsage.costUsd` aggregated by userId — the same
+ *     ledger, so the per-user lines add up to the project total (#854). A row
+ *     with no user (written before #792, or by a caller that knew none) is an
+ *     "Unattributed" line rather than dropped spend.
+ *   Both sum the unrounded `costUsd` and round once to integer cents (#761).
  *
  * SECURITY: every user-controlled value (workspace/project name, username,
  * email) is HTML-escaped before it reaches the PDF renderer to prevent
@@ -77,14 +80,14 @@ async function projectCosts(workspaceId: string, range: MonthRange): Promise<Cos
       projectId: { in: projects.map((p) => p.id) },
       createdAt: { gte: range.start, lt: range.end },
     },
-    _sum: { costCents: true },
+    _sum: { costUsd: true },
   });
 
   return grouped
     .map((g) => ({
       id: g.projectId,
       name: nameById.get(g.projectId) ?? g.projectId,
-      costCents: g._sum.costCents ?? 0,
+      costCents: usdToCents(g._sum.costUsd),
     }))
     .filter((l) => l.costCents > 0)
     .sort((a, b) => b.costCents - a.costCents);
@@ -99,25 +102,26 @@ async function userCosts(workspaceId: string, range: MonthRange): Promise<CostLi
   const projectIds = projects.map((p) => p.id);
   if (projectIds.length === 0) return [];
 
-  const rows = await prisma.aITokenUsage.findMany({
+  const grouped = await prisma.tokenUsage.groupBy({
+    by: ["userId"],
     where: {
       projectId: { in: projectIds },
-      ts: { gte: range.start, lt: range.end },
+      createdAt: { gte: range.start, lt: range.end },
     },
-    select: { userId: true, estimatedCostUsd: true },
+    _sum: { costUsd: true },
   });
-  const byUser = new Map<string, number>();
-  for (const r of rows) {
-    byUser.set(r.userId, (byUser.get(r.userId) ?? 0) + usdToCents(r.estimatedCostUsd));
-  }
-  const userIds = [...byUser.keys()];
+  const userIds = grouped.flatMap((g) => (g.userId === null ? [] : [g.userId]));
   const users = await prisma.user.findMany({
     where: { id: { in: userIds } },
     select: { id: true, displayName: true, username: true },
   });
   const nameById = new Map(users.map((u) => [u.id, u.displayName || u.username]));
-  return [...byUser.entries()]
-    .map(([id, costCents]) => ({ id, name: nameById.get(id) ?? id, costCents }))
+  return grouped
+    .map((g) => {
+      const costCents = usdToCents(g._sum.costUsd);
+      if (g.userId === null) return { id: "unattributed", name: "Unattributed", costCents };
+      return { id: g.userId, name: nameById.get(g.userId) ?? g.userId, costCents };
+    })
     .filter((l) => l.costCents > 0)
     .sort((a, b) => b.costCents - a.costCents);
 }
