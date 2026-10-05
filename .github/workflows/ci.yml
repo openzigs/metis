@@ -883,6 +883,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration invite-accept-workspace-delete-race-601-postgres
 
+      # Issue #871 — on READ COMMITTED two requirement edits can both read version N
+      # inside their transactions. The write is conditional on that version; prove
+      # exactly one same-version edit wins and the other is a VERSION_CONFLICT.
+      - name: Prove concurrent same-version requirement edits conflict on real Postgres
+        working-directory: server
+        run: pnpm test:integration requirement-concurrent-edit-871-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing

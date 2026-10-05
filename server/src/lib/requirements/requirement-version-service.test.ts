@@ -155,7 +155,11 @@ describe("buildHistoryEntries", () => {
 
 function makeClient(overrides: Partial<Record<string, unknown>> = {}): {
   client: VersionPrismaClient;
-  requirement: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+  requirement: {
+    findUnique: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    updateMany: ReturnType<typeof vi.fn>;
+  };
   requirementVersion: {
     create: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;
@@ -165,6 +169,7 @@ function makeClient(overrides: Partial<Record<string, unknown>> = {}): {
   const requirement = {
     findUnique: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
   };
   const requirementVersion = {
     create: vi.fn().mockResolvedValue({}),
@@ -183,7 +188,7 @@ function makeClient(overrides: Partial<Record<string, unknown>> = {}): {
 describe("updateRequirementWithHistory", () => {
   it("appends a version row when fields change", async () => {
     const { client, requirement, requirementVersion } = makeClient();
-    requirement.findUnique.mockResolvedValue({
+    requirement.findUnique.mockResolvedValueOnce({
       id: "r1",
       version: 2,
       title: "Old",
@@ -194,7 +199,11 @@ describe("updateRequirementWithHistory", () => {
       storyPoints: null,
       reviewStatus: null,
     });
-    requirement.update.mockResolvedValue({ id: "r1", version: 3, updatedAt: new Date() });
+    requirement.findUnique.mockResolvedValueOnce({
+      id: "r1",
+      version: 3,
+      updatedAt: new Date(),
+    });
 
     const result = await updateRequirementWithHistory(client, {
       requirementId: "r1",
@@ -205,6 +214,11 @@ describe("updateRequirementWithHistory", () => {
 
     expect(result.changed).toBe(true);
     expect(result.version).toBe(3);
+    // #871 — the write is conditional on the version read in the transaction.
+    expect(requirement.updateMany).toHaveBeenCalledWith({
+      where: { id: "r1", version: 2, deletedAt: null },
+      data: { title: "New", version: 3 },
+    });
     expect(requirementVersion.create).toHaveBeenCalledTimes(1);
     const createArg = requirementVersion.create.mock.calls[0][0] as {
       data: Record<string, unknown>;
@@ -219,7 +233,7 @@ describe("updateRequirementWithHistory", () => {
 
   it("does NOT append a version row for a no-op patch", async () => {
     const { client, requirement, requirementVersion } = makeClient();
-    requirement.findUnique.mockResolvedValue({
+    requirement.findUnique.mockResolvedValueOnce({
       id: "r1",
       version: 2,
       title: "Same",
@@ -230,7 +244,7 @@ describe("updateRequirementWithHistory", () => {
       storyPoints: null,
       reviewStatus: null,
     });
-    requirement.update.mockResolvedValue({ id: "r1", version: 2, updatedAt: new Date() });
+    requirement.findUnique.mockResolvedValueOnce({ id: "r1", version: 2, updatedAt: new Date() });
 
     const result = await updateRequirementWithHistory(client, {
       requirementId: "r1",
@@ -239,8 +253,92 @@ describe("updateRequirementWithHistory", () => {
 
     expect(result.changed).toBe(false);
     expect(requirementVersion.create).not.toHaveBeenCalled();
-    const updateArg = requirement.update.mock.calls[0][0] as { data: Record<string, unknown> };
+    const updateArg = requirement.updateMany.mock.calls[0][0] as { data: Record<string, unknown> };
     expect(updateArg.data).not.toHaveProperty("version");
+  });
+
+  const ROW_V2 = {
+    id: "r1",
+    version: 2,
+    title: "Old",
+    body: "Body",
+    priority: "low",
+    type: "feature",
+    labels: "[]",
+    storyPoints: null,
+    reviewStatus: null,
+  };
+
+  it("#871 — throws VERSION_CONFLICT when the in-transaction version differs from expectedVersion", async () => {
+    const { client, requirement, requirementVersion } = makeClient();
+    requirement.findUnique.mockResolvedValue(ROW_V2);
+
+    await expect(
+      updateRequirementWithHistory(client, {
+        requirementId: "r1",
+        patch: { title: "New" },
+        expectedVersion: 1,
+      }),
+    ).rejects.toMatchObject({ name: "RequirementVersionError", code: "VERSION_CONFLICT" });
+    expect(requirement.updateMany).not.toHaveBeenCalled();
+    expect(requirementVersion.create).not.toHaveBeenCalled();
+  });
+
+  it("#871 — throws VERSION_CONFLICT when a concurrent writer wins the conditional update", async () => {
+    // Postgres READ COMMITTED: both transactions read version 2; the loser's
+    // conditional UPDATE re-evaluates against the winner's row and matches 0.
+    const { client, requirement, requirementVersion } = makeClient();
+    requirement.findUnique.mockResolvedValue(ROW_V2);
+    requirement.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      updateRequirementWithHistory(client, {
+        requirementId: "r1",
+        patch: { title: "New" },
+        expectedVersion: 2,
+      }),
+    ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+    expect(requirement.updateMany).toHaveBeenCalledTimes(1);
+    expect(requirementVersion.create).not.toHaveBeenCalled();
+  });
+
+  it("#871 — an unversioned edit that loses the race retries on the winner's row", async () => {
+    const { client, requirement, requirementVersion } = makeClient();
+    requirement.findUnique
+      .mockResolvedValueOnce(ROW_V2)
+      .mockResolvedValueOnce({ ...ROW_V2, version: 3, title: "Winner" })
+      .mockResolvedValueOnce({ id: "r1", version: 4, updatedAt: new Date() });
+    requirement.updateMany.mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+
+    const result = await updateRequirementWithHistory(client, {
+      requirementId: "r1",
+      patch: { title: "Mine" },
+    });
+
+    expect(result.version).toBe(4);
+    expect(requirement.updateMany).toHaveBeenLastCalledWith({
+      where: { id: "r1", version: 3, deletedAt: null },
+      data: { title: "Mine", version: 4 },
+    });
+    expect(requirementVersion.create).toHaveBeenCalledTimes(1);
+    const created = requirementVersion.create.mock.calls[0][0] as {
+      data: { version: number; changedFields: string };
+    };
+    expect(created.data.version).toBe(4);
+    expect(JSON.parse(created.data.changedFields)).toEqual({
+      title: { from: "Winner", to: "Mine" },
+    });
+  });
+
+  it("#871 — an unversioned edit gives up after bounded retries", async () => {
+    const { client, requirement } = makeClient();
+    requirement.findUnique.mockResolvedValue(ROW_V2);
+    requirement.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      updateRequirementWithHistory(client, { requirementId: "r1", patch: { title: "Mine" } }),
+    ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+    expect(requirement.updateMany).toHaveBeenCalledTimes(3);
   });
 
   it("throws NOT_FOUND when the requirement is missing", async () => {
@@ -333,6 +431,90 @@ describe("restoreRequirementVersion", () => {
     await expect(
       restoreRequirementVersion(client, { requirementId: "r1", targetVersion: 99 }),
     ).rejects.toMatchObject({ code: "INVALID_VERSION" });
+  });
+
+  const ROW_V2 = {
+    id: "r1",
+    version: 2,
+    title: "Old",
+    body: "Body",
+    priority: "low",
+    type: "feature",
+    labels: "[]",
+    storyPoints: null,
+    reviewStatus: null,
+  };
+
+  it("#871 — throws VERSION_CONFLICT when the in-transaction version differs from expectedVersion", async () => {
+    const { client, requirement, requirementVersion } = makeClient();
+    requirement.findUnique.mockResolvedValue(ROW_V2);
+
+    await expect(
+      updateRequirementWithHistory(client, {
+        requirementId: "r1",
+        patch: { title: "New" },
+        expectedVersion: 1,
+      }),
+    ).rejects.toMatchObject({ name: "RequirementVersionError", code: "VERSION_CONFLICT" });
+    expect(requirement.updateMany).not.toHaveBeenCalled();
+    expect(requirementVersion.create).not.toHaveBeenCalled();
+  });
+
+  it("#871 — throws VERSION_CONFLICT when a concurrent writer wins the conditional update", async () => {
+    // Postgres READ COMMITTED: both transactions read version 2; the loser's
+    // conditional UPDATE re-evaluates against the winner's row and matches 0.
+    const { client, requirement, requirementVersion } = makeClient();
+    requirement.findUnique.mockResolvedValue(ROW_V2);
+    requirement.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      updateRequirementWithHistory(client, {
+        requirementId: "r1",
+        patch: { title: "New" },
+        expectedVersion: 2,
+      }),
+    ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+    expect(requirement.updateMany).toHaveBeenCalledTimes(1);
+    expect(requirementVersion.create).not.toHaveBeenCalled();
+  });
+
+  it("#871 — an unversioned edit that loses the race retries on the winner's row", async () => {
+    const { client, requirement, requirementVersion } = makeClient();
+    requirement.findUnique
+      .mockResolvedValueOnce(ROW_V2)
+      .mockResolvedValueOnce({ ...ROW_V2, version: 3, title: "Winner" })
+      .mockResolvedValueOnce({ id: "r1", version: 4, updatedAt: new Date() });
+    requirement.updateMany.mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+
+    const result = await updateRequirementWithHistory(client, {
+      requirementId: "r1",
+      patch: { title: "Mine" },
+    });
+
+    expect(result.version).toBe(4);
+    expect(requirement.updateMany).toHaveBeenLastCalledWith({
+      where: { id: "r1", version: 3, deletedAt: null },
+      data: { title: "Mine", version: 4 },
+    });
+    expect(requirementVersion.create).toHaveBeenCalledTimes(1);
+    const created = requirementVersion.create.mock.calls[0][0] as {
+      data: { version: number; changedFields: string };
+    };
+    expect(created.data.version).toBe(4);
+    expect(JSON.parse(created.data.changedFields)).toEqual({
+      title: { from: "Winner", to: "Mine" },
+    });
+  });
+
+  it("#871 — an unversioned edit gives up after bounded retries", async () => {
+    const { client, requirement } = makeClient();
+    requirement.findUnique.mockResolvedValue(ROW_V2);
+    requirement.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      updateRequirementWithHistory(client, { requirementId: "r1", patch: { title: "Mine" } }),
+    ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+    expect(requirement.updateMany).toHaveBeenCalledTimes(3);
   });
 
   it("throws NOT_FOUND when the requirement is missing", async () => {

@@ -44,8 +44,8 @@ export type ChangedFields = Record<string, FieldChange>;
 
 /** Error thrown by the version service for predictable failure modes. */
 export class RequirementVersionError extends Error {
-  readonly code: "NOT_FOUND" | "INVALID_VERSION";
-  constructor(code: "NOT_FOUND" | "INVALID_VERSION", message: string) {
+  readonly code: "NOT_FOUND" | "INVALID_VERSION" | "VERSION_CONFLICT";
+  constructor(code: "NOT_FOUND" | "INVALID_VERSION" | "VERSION_CONFLICT", message: string) {
     super(message);
     this.name = "RequirementVersionError";
     this.code = code;
@@ -62,6 +62,7 @@ export interface VersionPrismaClient {
   requirement: {
     findUnique(args: unknown): Promise<Record<string, unknown> | null>;
     update(args: unknown): Promise<Record<string, unknown>>;
+    updateMany(args: unknown): Promise<{ count: number }>;
   };
   requirementVersion: {
     create(args: unknown): Promise<Record<string, unknown>>;
@@ -251,7 +252,23 @@ export interface UpdateWithHistoryParams {
    * another analysis is NOT_FOUND, so that route cannot write cross-analysis.
    */
   analysisId?: string;
+  /**
+   * #871 — the version the caller's edit was based on (the request body's
+   * `version`). Compared INSIDE the write transaction, so two concurrent edits
+   * carrying the same version cannot both succeed: the loser gets
+   * `VERSION_CONFLICT`. `undefined` opts out of optimistic locking (last writer
+   * wins), matching the route's "no `version` skips the check" contract.
+   */
+  expectedVersion?: number;
 }
+
+/**
+ * How many times an UNVERSIONED edit (no `expectedVersion`) re-reads and
+ * retries after losing the conditional write to a concurrent edit. Each retry
+ * re-applies the patch on top of the winner's row, so it is last-writer-wins
+ * with a correct, gap-free version history.
+ */
+const UNVERSIONED_WRITE_ATTEMPTS = 3;
 
 export interface UpdateWithHistoryResult {
   id: string;
@@ -271,6 +288,38 @@ export async function updateRequirementWithHistory(
   client: VersionPrismaClient,
   params: UpdateWithHistoryParams,
 ): Promise<UpdateWithHistoryResult> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await updateOnce(client, params);
+    } catch (err) {
+      // A versioned edit that lost the race is the caller's conflict to resolve;
+      // an unversioned one asked for last-writer-wins, so retry on the new row.
+      const lostRace =
+        err instanceof RequirementVersionError &&
+        err.code === "VERSION_CONFLICT" &&
+        params.expectedVersion === undefined;
+      if (!lostRace || attempt >= UNVERSIONED_WRITE_ATTEMPTS) throw err;
+    }
+  }
+}
+
+/**
+ * One attempt of {@link updateRequirementWithHistory}.
+ *
+ * #871 — the version check lives here, inside the transaction, and the write
+ * itself is conditional on the version read (`updateMany` WHERE `version` =
+ * read version, which must match exactly one row). The in-transaction compare
+ * alone is not enough on Postgres: under READ COMMITTED two transactions can
+ * both read version N before either writes. The conditional UPDATE closes that
+ * window on both backends — on Postgres the second UPDATE blocks on the row
+ * lock and re-evaluates its WHERE against the committed row (version N+1), so
+ * it matches nothing; on SQLite the driver adapter serializes transactions, so
+ * the second one reads N+1 and fails the compare.
+ */
+async function updateOnce(
+  client: VersionPrismaClient,
+  params: UpdateWithHistoryParams,
+): Promise<UpdateWithHistoryResult> {
   return client.$transaction(async (tx) => {
     const txc = tx as unknown as VersionPrismaClient;
     const existing = (await txc.requirement.findUnique({
@@ -286,6 +335,9 @@ export async function updateRequirementWithHistory(
     if (!existing) {
       throw new RequirementVersionError("NOT_FOUND", "Requirement not found");
     }
+    if (params.expectedVersion !== undefined && existing.version !== params.expectedVersion) {
+      throw versionConflict();
+    }
 
     const before = pickTracked(existing);
     const after: Partial<RequirementSnapshot> = { ...before, ...params.patch };
@@ -293,11 +345,11 @@ export async function updateRequirementWithHistory(
     const changed = Object.keys(changedFields).length > 0;
     const nextVersion = existing.version + 1;
 
-    const updated = (await txc.requirement.update({
-      where: { id: params.requirementId },
+    const { count } = await txc.requirement.updateMany({
+      where: { id: params.requirementId, version: existing.version, deletedAt: null },
       data: changed ? { ...params.patch, version: nextVersion } : { ...params.patch },
-      select: { id: true, version: true, updatedAt: true },
-    })) as { id: string; version: number; updatedAt: Date };
+    });
+    if (count !== 1) throw versionConflict();
 
     if (changed) {
       await txc.requirementVersion.create({
@@ -311,6 +363,11 @@ export async function updateRequirementWithHistory(
       });
     }
 
+    const updated = (await txc.requirement.findUnique({
+      where: { id: params.requirementId },
+      select: { id: true, version: true, updatedAt: true },
+    })) as { id: string; version: number; updatedAt: Date };
+
     return {
       id: updated.id,
       version: updated.version,
@@ -319,6 +376,13 @@ export async function updateRequirementWithHistory(
       changedFields,
     };
   });
+}
+
+function versionConflict(): RequirementVersionError {
+  return new RequirementVersionError(
+    "VERSION_CONFLICT",
+    "Requirement has been modified since you loaded it",
+  );
 }
 
 export interface RestoreParams {
