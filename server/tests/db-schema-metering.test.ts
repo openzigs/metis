@@ -150,6 +150,28 @@ describe("#858 — DB-schema prose calls are metered", () => {
     expect(recordUsageSpy).not.toHaveBeenCalled();
   });
 
+  it("a run stopped while a prose call is in flight ends the document, not just the batch", async () => {
+    let stopped: UnpublishableGenerationError | null = null;
+    const stop = new UnpublishableGenerationError("aborted", "The generation was cancelled.");
+    chatSpy.mockImplementation(async () => {
+      stopped = stop;
+      throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    });
+    const s: GenerationScope = {
+      docId: "doc-1",
+      projectId: "p1",
+      signal: new AbortController().signal,
+      stopError: () => stopped,
+      noteSpend: vi.fn(),
+    };
+    await expect(
+      withGenerationScope(s, () =>
+        synthesizeDbSchemaDocument("p1", "conn1", "actor1", "Database Schema"),
+      ),
+    ).rejects.toThrow();
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("records nothing when the provider reports no usage", async () => {
     chatSpy.mockResolvedValue({
       ...reply(["feeds", "entries"]),
