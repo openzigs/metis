@@ -66,8 +66,8 @@ export interface ChargebackData {
  * old replica mid rolling-deploy), which every row-level reader counts through
  * `ledgerRowCents`. The second, legacy query adds exactly those rows.
  */
-async function groupedLedgerCents<K extends "projectId" | "userId">(
-  key: K,
+async function groupedLedgerCents(
+  key: "projectId" | "userId",
   where: { projectId: { in: string[] }; createdAt: { gte: Date; lt: Date } },
 ): Promise<Map<string | null, number>> {
   const [priced, legacy] = await Promise.all([
@@ -81,10 +81,10 @@ async function groupedLedgerCents<K extends "projectId" | "userId">(
   const usdByKey = new Map<string | null, number | null>();
   const legacyByKey = new Map<string | null, number | null>();
   for (const g of priced) {
-    usdByKey.set((g as Record<K, string | null>)[key], g._sum.costUsd ?? null);
+    usdByKey.set(g[key] ?? null, g._sum.costUsd ?? null);
   }
   for (const g of legacy) {
-    legacyByKey.set((g as Record<K, string | null>)[key], g._sum.costCents ?? null);
+    legacyByKey.set(g[key] ?? null, g._sum.costCents ?? null);
   }
   const out = new Map<string | null, number>();
   for (const k of new Set([...usdByKey.keys(), ...legacyByKey.keys()])) {

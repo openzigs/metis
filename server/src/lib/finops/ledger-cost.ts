@@ -39,6 +39,9 @@ export function normalizeCents(cents: number): number {
  */
 export const LEGACY_COST_ROW_WHERE = { costUsd: null, costCents: { not: null } } as const;
 
+/** Rows recorded UNPRICED (#22): neither cost column set. Unknown spend, never $0. */
+export const UNPRICED_ROW_WHERE = { costUsd: null, costCents: null } as const;
+
 /**
  * Combine a `_sum.costUsd` over priced rows with a `_sum.costCents` over
  * {@link LEGACY_COST_ROW_WHERE} rows into one unrounded cents total — exactly

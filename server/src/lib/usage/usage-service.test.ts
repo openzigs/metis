@@ -10,6 +10,7 @@ vi.mock("../prisma.js", () => ({
     },
     tokenUsage: {
       findMany: vi.fn(),
+      groupBy: vi.fn(),
     },
   },
 }));
@@ -19,6 +20,63 @@ import { UsageService, getUsageService, __resetUsageServiceSingleton } from "./u
 
 const mockFindMany = prisma.aITokenUsage.findMany as ReturnType<typeof vi.fn>;
 const mockLedgerFindMany = prisma.tokenUsage.findMany as ReturnType<typeof vi.fn>;
+const mockLedgerGroupBy = prisma.tokenUsage.groupBy as unknown as ReturnType<typeof vi.fn>;
+
+type Row = Record<string, unknown>;
+/** Prisma's filter for a nullable column: `null`, `{ not: null }`, or a value. */
+function matches(value: unknown, filter: unknown): boolean {
+  const v = value ?? null;
+  if (filter === null) return v === null;
+  if (filter && typeof filter === "object" && "not" in filter) {
+    return (filter as { not: unknown }).not === null ? v !== null : v !== filter.not;
+  }
+  return v === filter;
+}
+
+/**
+ * #868 review — `adminUsage` groups in the database. This double implements
+ * Prisma `groupBy` semantics (`_sum` skips NULLs and is `null` for an all-NULL
+ * group; `_count._all` counts rows; `_min`) over the SAME fixture each test
+ * hands `findMany`, and reads it through `findMany` with the query's `where`,
+ * so every existing assertion on the ledger query still holds.
+ */
+async function emulateGroupBy(args: {
+  by: string[];
+  where: Row;
+  _sum?: Record<string, true>;
+  _count?: { _all: true };
+  _min?: Record<string, true>;
+}): Promise<Row[]> {
+  const rows = ((await mockLedgerFindMany({ where: args.where })) ?? []) as Row[];
+  const costFilters = ["costUsd", "costCents"].filter((k) => k in args.where);
+  const groups = new Map<string, Row[]>();
+  for (const r of rows) {
+    if (!costFilters.every((k) => matches(r[k], args.where[k]))) continue;
+    const key = JSON.stringify(args.by.map((k) => r[k] ?? null));
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  }
+  return [...groups.values()].map((g) => {
+    const out: Row = Object.fromEntries(args.by.map((k) => [k, g[0]![k] ?? null]));
+    if (args._sum) {
+      out._sum = Object.fromEntries(
+        Object.keys(args._sum).map((k) => {
+          const vals = g.map((r) => r[k]).filter((v): v is number => typeof v === "number");
+          return [k, vals.length === 0 ? null : vals.reduce((a, b) => a + b, 0)];
+        }),
+      );
+    }
+    if (args._count) out._count = { _all: g.length };
+    if (args._min) {
+      out._min = Object.fromEntries(
+        Object.keys(args._min).map((k) => [
+          k,
+          g.map((r) => r[k] as Date).reduce((a, b) => (b < a ? b : a)),
+        ]),
+      );
+    }
+    return out;
+  });
+}
 
 /** #792 — a `token_usages` row, the ledger the project usage page reads. */
 function ledgerRow(
@@ -59,6 +117,7 @@ describe("UsageService", () => {
     svc = new UsageService();
     vi.clearAllMocks();
     mockFindMany.mockResolvedValue([]);
+    mockLedgerGroupBy.mockImplementation(emulateGroupBy);
   });
 
   afterEach(() => {
@@ -222,6 +281,55 @@ describe("UsageService", () => {
       expect(result.totalTokens).toBe(850);
       const unassigned = result.rows.find((r) => r.projectId === undefined);
       expect(unassigned?.totalTokens).toBe(700);
+    });
+  });
+
+  describe("adminUsage aggregates in the database (#868 review)", () => {
+    it("groups every non-day dimension with groupBy and never reads the window's rows", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ model: "a", costUsd: 0.01 }),
+        ledgerRow({ model: "b", costUsd: null, costCents: 3 }),
+        ledgerRow({ model: "b", costUsd: null, costCents: null, totalTokens: 9 }),
+      ]);
+      for (const groupBy of ["project", "user", "model", "agentStep"] as const) {
+        vi.clearAllMocks();
+        mockLedgerGroupBy.mockImplementation(emulateGroupBy);
+        mockFindMany.mockResolvedValue([]);
+        const result = await svc.adminUsage({ groupBy });
+        expect(mockLedgerGroupBy).toHaveBeenCalledTimes(3);
+        for (const [args] of mockLedgerGroupBy.mock.calls) {
+          expect(args.by).toEqual(["projectId", "userId", "provider", "model", "agentStep"]);
+        }
+        // Only the double's own reads (no `select`): the service fetched no rows.
+        for (const [args] of mockLedgerFindMany.mock.calls)
+          expect(args).not.toHaveProperty("select");
+        expect(result.totalCostUsd).toBeCloseTo(0.04, 10);
+        expect(result.unpriced).toEqual({
+          promptTokens: 100,
+          completionTokens: 50,
+          totalTokens: 9,
+          count: 1,
+        });
+      }
+    });
+
+    it("pages the window for groupBy=day instead of loading it at once", async () => {
+      const page = Array.from({ length: 5_000 }, (_, i) => ({
+        ...ledgerRow({ totalTokens: 1, costUsd: 0.01 }),
+        id: `r${String(i).padStart(5, "0")}`,
+      }));
+      mockLedgerFindMany
+        .mockResolvedValueOnce(page)
+        .mockResolvedValueOnce([{ ...ledgerRow({ totalTokens: 1, costUsd: 0.01 }), id: "r99999" }]);
+      const result = await svc.adminUsage({ groupBy: "day" });
+      expect(mockLedgerFindMany).toHaveBeenCalledTimes(2);
+      const [first, second] = mockLedgerFindMany.mock.calls.map((c) => c[0]);
+      expect(first).toMatchObject({ take: 5_000, orderBy: { id: "asc" } });
+      expect(first).not.toHaveProperty("cursor");
+      expect(second).toMatchObject({ take: 5_000, cursor: { id: "r04999" }, skip: 1 });
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0].count).toBe(5_001);
+      expect(result.totalCostUsd).toBeCloseTo(50.01, 8);
     });
   });
 

@@ -6,7 +6,13 @@
  *   - Admin-level cross-project usage
  *   - CSV export support
  */
-import { LEDGER_COST_SELECT, ledgerRowCents } from "../finops/ledger-cost.js";
+import {
+  LEDGER_COST_SELECT,
+  LEGACY_COST_ROW_WHERE,
+  UNPRICED_ROW_WHERE,
+  ledgerRowCents,
+  sumLedgerCents,
+} from "../finops/ledger-cost.js";
 import { prisma } from "../prisma.js";
 
 export interface UsageRow {
@@ -65,6 +71,140 @@ interface AggregateInput {
   estimatedCostUsd: number | null;
 }
 
+/**
+ * #868 review — a pre-aggregated slice of usage, the unit {@link UsageAccumulator}
+ * groups. One ledger row is a slice of `count: 1`; a database group is a slice
+ * of many rows. The representative fields (day, provider, model, …) are the
+ * slice's first row's.
+ */
+interface UsageSlice {
+  dayBucket: string;
+  provider: string;
+  model: string;
+  userId: string | null;
+  projectId: string | null;
+  agentStep: string | null;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  count: number;
+  /** Cost of the slice's PRICED rows in USD; `null` when none was priced (#22). */
+  costUsd: number | null;
+  /** The slice's unpriced share. */
+  unpriced: UnpricedUsageTotals;
+}
+
+const noUnpriced = (): UnpricedUsageTotals => ({
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+  count: 0,
+});
+
+function rowSlice(r: AggregateInput): UsageSlice {
+  const cost = r.estimatedCostUsd;
+  return {
+    dayBucket: r.dayBucket,
+    provider: r.provider,
+    model: r.model,
+    userId: r.userId,
+    projectId: r.projectId,
+    agentStep: r.agentStep,
+    promptTokens: r.promptTokens,
+    completionTokens: r.completionTokens,
+    totalTokens: r.totalTokens,
+    count: 1,
+    costUsd: cost,
+    unpriced:
+      cost === null
+        ? {
+            promptTokens: r.promptTokens,
+            completionTokens: r.completionTokens,
+            totalTokens: r.totalTokens,
+            count: 1,
+          }
+        : noUnpriced(),
+  };
+}
+
+/**
+ * The ledger columns {@link adminUsage} groups by in the database. Every
+ * grouping the view offers except `day` is one of them, so merging these groups
+ * by the requested dimension is exact; `day` is a date expression Prisma's
+ * `groupBy` cannot form portably (SQLite and Postgres store DateTime
+ * differently), so it pages instead.
+ */
+const LEDGER_GROUP_KEYS = ["projectId", "userId", "provider", "model", "agentStep"] as const;
+
+/** Rows per page when the `day` grouping streams the ledger. */
+const LEDGER_PAGE_SIZE = 5_000;
+
+/** Groups slices by one dimension. Memory is O(groups), not O(rows). */
+class UsageAccumulator {
+  private readonly map = new Map<string, UsageRow>();
+  private readonly unpriced = noUnpriced();
+
+  constructor(private readonly groupBy: GroupBy) {}
+
+  private keyOf(r: UsageSlice): string {
+    switch (this.groupBy) {
+      case "day":
+        return r.dayBucket;
+      case "model":
+        return r.model;
+      case "user":
+        return r.userId ?? "unattributed";
+      case "project":
+        return r.projectId ?? "unassigned";
+      case "agentStep":
+        return r.agentStep ?? "unknown";
+      default:
+        return r.dayBucket;
+    }
+  }
+
+  add(r: UsageSlice): void {
+    this.unpriced.promptTokens += r.unpriced.promptTokens;
+    this.unpriced.completionTokens += r.unpriced.completionTokens;
+    this.unpriced.totalTokens += r.unpriced.totalTokens;
+    this.unpriced.count += r.unpriced.count;
+
+    const key = this.keyOf(r);
+    const existing = this.map.get(key);
+    if (existing) {
+      existing.promptTokens += r.promptTokens;
+      existing.completionTokens += r.completionTokens;
+      existing.totalTokens += r.totalTokens;
+      existing.unpricedTokens += r.unpriced.totalTokens;
+      if (r.costUsd !== null)
+        existing.estimatedCostUsd = (existing.estimatedCostUsd ?? 0) + r.costUsd;
+      existing.count += r.count;
+    } else {
+      this.map.set(key, {
+        dayBucket: r.dayBucket,
+        provider: r.provider,
+        model: r.model,
+        userId: r.userId ?? undefined,
+        projectId: r.projectId ?? undefined,
+        agentStep: r.agentStep ?? undefined,
+        promptTokens: r.promptTokens,
+        completionTokens: r.completionTokens,
+        totalTokens: r.totalTokens,
+        estimatedCostUsd: r.costUsd,
+        unpricedTokens: r.unpriced.totalTokens,
+        count: r.count,
+      });
+    }
+  }
+
+  summary(): UsageSummary {
+    const rows = [...this.map.values()].sort((a, b) => a.dayBucket.localeCompare(b.dayBucket));
+    const totalTokens = rows.reduce((s, r) => s + r.totalTokens, 0);
+    const totalCostUsd = rows.reduce((s, r) => s + (r.estimatedCostUsd ?? 0), 0);
+    return { totalTokens, totalCostUsd, unpriced: { ...this.unpriced }, rows };
+  }
+}
+
 function rangeToDate(range: string): Date {
   const now = new Date();
   const days = range === "90d" ? 90 : range === "30d" ? 30 : 7;
@@ -107,20 +247,30 @@ export class UsageService {
    * (multi-project or stale-project scope): `token_usages.projectId` is
    * required, so such a call reaches `ai_token_usages` only. Those rows are
    * added, as "unassigned", via {@link readProjectlessChat}.
+   *
+   * #868 review — this scope spans every project for up to 90 days (run 3 alone
+   * put 60.4M tokens in the ledger), so it no longer loads the window's rows:
+   * the database groups them ({@link readLedgerGrouped}) and only the groups
+   * come back. `day` streams the window in pages instead, holding O(groups).
    */
   async adminUsage(
     opts: { range?: string; groupBy?: GroupBy; userId?: string } = {},
   ): Promise<UsageSummary> {
     const since = rangeToDate(opts.range ?? "30d");
     const groupBy = opts.groupBy ?? "project";
-    const [ledger, projectless] = await Promise.all([
-      this.readLedger({
-        createdAt: { gte: since },
-        ...(opts.userId ? { userId: opts.userId } : {}),
-      }),
+    const where = {
+      createdAt: { gte: since },
+      ...(opts.userId ? { userId: opts.userId } : {}),
+    };
+    const acc = new UsageAccumulator(groupBy);
+    const [, projectless] = await Promise.all([
+      groupBy === "day"
+        ? this.scanLedgerInto(acc, where)
+        : this.readLedgerGrouped(where).then((slices) => slices.forEach((s) => acc.add(s))),
       this.readProjectlessChat(since, opts.userId),
     ]);
-    return this.aggregate([...ledger, ...projectless], groupBy);
+    for (const r of projectless) acc.add(rowSlice(r));
+    return acc.summary();
   }
 
   /**
@@ -175,109 +325,154 @@ export class UsageService {
     userId?: string;
     createdAt: { gte: Date };
   }): Promise<AggregateInput[]> {
-    const ledger = await prisma.tokenUsage.findMany({
-      where,
-      select: {
-        projectId: true,
-        provider: true,
-        model: true,
-        userId: true,
-        agentStep: true,
-        inputTokens: true,
-        outputTokens: true,
-        totalTokens: true,
-        ...LEDGER_COST_SELECT,
-        createdAt: true,
-      },
-    });
-    return ledger.map((r) => {
-      // #761 — the row's unrounded cost; NULL stays NULL (unpriced, #22).
-      const cents = ledgerRowCents(r);
-      return {
-        dayBucket: r.createdAt.toISOString().slice(0, 10),
-        provider: r.provider,
-        model: r.model,
-        userId: r.userId,
-        projectId: r.projectId,
-        agentStep: r.agentStep,
-        promptTokens: r.inputTokens,
-        completionTokens: r.outputTokens,
-        totalTokens: r.totalTokens,
-        estimatedCostUsd: cents === null ? null : cents / 100,
-      };
-    });
+    const ledger = await prisma.tokenUsage.findMany({ where, select: LEDGER_ROW_SELECT });
+    return ledger.map(ledgerInput);
+  }
+
+  /**
+   * #868 review — the window's ledger grouped IN THE DATABASE by every
+   * dimension the view offers but `day`, one slice per group. Three grouped
+   * reads over the same keys: all rows (tokens, count, priced `costUsd`, first
+   * row's time), legacy rows (`costCents` with no `costUsd`, #761 fallback),
+   * and unpriced rows (#22). Slices come back in first-row order, so each
+   * view group takes its representative fields from its earliest row — what
+   * the row-by-row reduction gives on a ledger written in time order.
+   */
+  private async readLedgerGrouped(where: {
+    userId?: string;
+    createdAt: { gte: Date };
+  }): Promise<UsageSlice[]> {
+    const [all, legacy, unpriced] = await Promise.all([
+      prisma.tokenUsage.groupBy({
+        by: [...LEDGER_GROUP_KEYS],
+        where,
+        _sum: { inputTokens: true, outputTokens: true, totalTokens: true, costUsd: true },
+        _count: { _all: true },
+        _min: { createdAt: true },
+      }),
+      prisma.tokenUsage.groupBy({
+        by: [...LEDGER_GROUP_KEYS],
+        where: { ...where, ...LEGACY_COST_ROW_WHERE },
+        _sum: { costCents: true },
+      }),
+      prisma.tokenUsage.groupBy({
+        by: [...LEDGER_GROUP_KEYS],
+        where: { ...where, ...UNPRICED_ROW_WHERE },
+        _sum: { inputTokens: true, outputTokens: true, totalTokens: true },
+        _count: { _all: true },
+      }),
+    ]);
+    type Keys = Pick<(typeof all)[number], (typeof LEDGER_GROUP_KEYS)[number]>;
+    const keyOf = (g: Keys): string => JSON.stringify(LEDGER_GROUP_KEYS.map((k) => g[k]));
+    const legacyCents = new Map(legacy.map((g) => [keyOf(g), g._sum.costCents ?? null]));
+    const unpricedBy = new Map(unpriced.map((g) => [keyOf(g), g]));
+
+    return all
+      .map((g) => {
+        const k = keyOf(g);
+        const u = unpricedBy.get(k);
+        const count = g._count._all;
+        const unpricedCount = u?._count._all ?? 0;
+        const first = g._min.createdAt;
+        const slice: UsageSlice = {
+          dayBucket: first ? first.toISOString().slice(0, 10) : "",
+          provider: g.provider,
+          model: g.model,
+          userId: g.userId,
+          projectId: g.projectId,
+          agentStep: g.agentStep,
+          promptTokens: g._sum.inputTokens ?? 0,
+          completionTokens: g._sum.outputTokens ?? 0,
+          totalTokens: g._sum.totalTokens ?? 0,
+          count,
+          // #22 — NULL only when EVERY row in the group was unpriced.
+          costUsd:
+            count > unpricedCount ? sumLedgerCents(g._sum.costUsd, legacyCents.get(k)) / 100 : null,
+          unpriced: {
+            promptTokens: u?._sum.inputTokens ?? 0,
+            completionTokens: u?._sum.outputTokens ?? 0,
+            totalTokens: u?._sum.totalTokens ?? 0,
+            count: unpricedCount,
+          },
+        };
+        return { slice, first: first?.getTime() ?? 0, k };
+      })
+      .sort((a, b) => a.first - b.first || a.k.localeCompare(b.k))
+      .map((x) => x.slice);
+  }
+
+  /**
+   * #868 review — the `day` grouping: stream the window in keyset-paged
+   * batches (by id, i.e. write order) into the accumulator, so memory holds
+   * one page and the groups, never the whole window.
+   */
+  private async scanLedgerInto(
+    acc: UsageAccumulator,
+    where: { userId?: string; createdAt: { gte: Date } },
+  ): Promise<void> {
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await prisma.tokenUsage.findMany({
+        where,
+        select: { id: true, ...LEDGER_ROW_SELECT },
+        orderBy: { id: "asc" },
+        take: LEDGER_PAGE_SIZE,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      });
+      for (const r of page) acc.add(rowSlice(ledgerInput(r)));
+      if (page.length < LEDGER_PAGE_SIZE) return;
+      cursor = page[page.length - 1]!.id;
+    }
   }
 
   private aggregate(rawRows: AggregateInput[], groupBy: GroupBy): UsageSummary {
-    const map = new Map<string, UsageRow>();
-    const unpriced: UnpricedUsageTotals = {
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-      count: 0,
-    };
-
-    for (const r of rawRows) {
-      const cost = r.estimatedCostUsd;
-      if (cost === null) {
-        unpriced.promptTokens += r.promptTokens;
-        unpriced.completionTokens += r.completionTokens;
-        unpriced.totalTokens += r.totalTokens;
-        unpriced.count += 1;
-      }
-      let key: string;
-      switch (groupBy) {
-        case "day":
-          key = r.dayBucket;
-          break;
-        case "model":
-          key = r.model;
-          break;
-        case "user":
-          key = r.userId ?? "unattributed";
-          break;
-        case "project":
-          key = r.projectId ?? "unassigned";
-          break;
-        case "agentStep":
-          key = r.agentStep ?? "unknown";
-          break;
-        default:
-          key = r.dayBucket;
-      }
-
-      const existing = map.get(key);
-      if (existing) {
-        existing.promptTokens += r.promptTokens;
-        existing.completionTokens += r.completionTokens;
-        existing.totalTokens += r.totalTokens;
-        if (cost === null) existing.unpricedTokens += r.totalTokens;
-        else existing.estimatedCostUsd = (existing.estimatedCostUsd ?? 0) + cost;
-        existing.count += 1;
-      } else {
-        map.set(key, {
-          dayBucket: r.dayBucket,
-          provider: r.provider,
-          model: r.model,
-          userId: r.userId ?? undefined,
-          projectId: r.projectId ?? undefined,
-          agentStep: r.agentStep ?? undefined,
-          promptTokens: r.promptTokens,
-          completionTokens: r.completionTokens,
-          totalTokens: r.totalTokens,
-          estimatedCostUsd: cost,
-          unpricedTokens: cost === null ? r.totalTokens : 0,
-          count: 1,
-        });
-      }
-    }
-
-    const rows = [...map.values()].sort((a, b) => a.dayBucket.localeCompare(b.dayBucket));
-    const totalTokens = rows.reduce((s, r) => s + r.totalTokens, 0);
-    const totalCostUsd = rows.reduce((s, r) => s + (r.estimatedCostUsd ?? 0), 0);
-
-    return { totalTokens, totalCostUsd, unpriced, rows };
+    const acc = new UsageAccumulator(groupBy);
+    for (const r of rawRows) acc.add(rowSlice(r));
+    return acc.summary();
   }
+}
+
+/** The ledger columns a row-level reader needs. */
+const LEDGER_ROW_SELECT = {
+  projectId: true,
+  provider: true,
+  model: true,
+  userId: true,
+  agentStep: true,
+  inputTokens: true,
+  outputTokens: true,
+  totalTokens: true,
+  ...LEDGER_COST_SELECT,
+  createdAt: true,
+} as const;
+
+function ledgerInput(r: {
+  projectId: string;
+  provider: string;
+  model: string;
+  userId: string | null;
+  agentStep: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costCents: number | null;
+  costUsd: number | null;
+  createdAt: Date;
+}): AggregateInput {
+  // #761 — the row's unrounded cost; NULL stays NULL (unpriced, #22).
+  const cents = ledgerRowCents(r);
+  return {
+    dayBucket: r.createdAt.toISOString().slice(0, 10),
+    provider: r.provider,
+    model: r.model,
+    userId: r.userId,
+    projectId: r.projectId,
+    agentStep: r.agentStep,
+    promptTokens: r.inputTokens,
+    completionTokens: r.outputTokens,
+    totalTokens: r.totalTokens,
+    estimatedCostUsd: cents === null ? null : cents / 100,
+  };
 }
 
 let singleton: UsageService | null = null;
