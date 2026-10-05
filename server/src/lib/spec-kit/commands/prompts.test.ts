@@ -6,7 +6,8 @@
  * walkthrough expects a plan to find in Miniflux. A plan that then "found" it
  * could have copied it from the prompt, so the #785 check measured nothing.
  * These are names from the walkthrough's ground-truth repo (Miniflux v2.3.3);
- * no prompt text the model reads may name any of them.
+ * no prompt text the model reads may name any of them — the command prompts,
+ * and the static headers `../rag-context.ts` wraps retrieved context in.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -14,7 +15,20 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PLAN_SYSTEM_PROMPT, SPECIFY_SYSTEM_PROMPT } from "./prompts.js";
 import { TASKS_SYSTEM_PROMPT } from "./tasks.js";
+import {
+  COVERED_LOCATORS_HEADER,
+  RAG_KNOWLEDGE_HEADER,
+  SIBLING_SYMBOLS_HEADER,
+} from "../rag-context.js";
 
+/**
+ * Hand-maintained on purpose: the ground truth is not in this repo. It is
+ * Miniflux v2.3.3, cloned outside the tracked tree — see "Ground truth" in
+ * `.github/skills/e2e-walkthrough/SKILL.md` §1, and the expected answers the
+ * run checks in `docs/walkthroughs/RESULTS_TEMPLATE.md` (e.g. #4478 surfacing
+ * `MarkAllAsReadBeforeDate`). When those expected answers change, update this
+ * list with them.
+ */
 const WALKTHROUGH_GROUND_TRUTH = [
   "MarkAllAsReadBeforeDate",
   "MarkAllAsRead",
@@ -28,8 +42,10 @@ const WALKTHROUGH_GROUND_TRUTH = [
   "ArchiveEntries",
 ];
 
+/** Whole-word match: `MarkAllAsRead` does not match inside `MarkAllAsReadBeforeDate`. */
 function named(text: string): string[] {
-  return WALKTHROUGH_GROUND_TRUTH.filter((name) => new RegExp(`\\b${name}\\b`).test(text));
+  const words = new Set(text.match(/\w+/g) ?? []);
+  return WALKTHROUGH_GROUND_TRUTH.filter((name) => words.has(name));
 }
 
 describe("Spec Kit prompts name no walkthrough ground-truth symbol (#853)", () => {
@@ -39,6 +55,21 @@ describe("Spec Kit prompts name no walkthrough ground-truth symbol (#853)", () =
     ["TASKS_SYSTEM_PROMPT", TASKS_SYSTEM_PROMPT],
   ])("%s", (_label, prompt) => {
     expect(named(prompt)).toEqual([]);
+  });
+
+  it.each([
+    ["RAG_KNOWLEDGE_HEADER", RAG_KNOWLEDGE_HEADER],
+    ["COVERED_LOCATORS_HEADER", COVERED_LOCATORS_HEADER],
+    ["SIBLING_SYMBOLS_HEADER", SIBLING_SYMBOLS_HEADER],
+  ])("rag-context %s", (_label, header) => {
+    expect(header.length).toBeGreaterThan(0);
+    expect(named(header)).toEqual([]);
+  });
+
+  it("matches whole words only", () => {
+    expect(named("see MarkAllAsReadBeforeDate")).toEqual(["MarkAllAsReadBeforeDate"]);
+    expect(named("call `MarkAllAsRead` here")).toEqual(["MarkAllAsRead"]);
+    expect(named("MarkAllAsReadish")).toEqual([]);
   });
 
   it("no command module (every prompt string, exported or not) names one", () => {
