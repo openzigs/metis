@@ -140,8 +140,10 @@ import { notifyAnalysisComplete } from "../teams/notification-hooks.js";
 import {
   createApprovalRequests,
   canCreateTickets,
+  listApprovalRequests,
   type ApprovalPolicy,
 } from "./approval-checkpoint.js";
+import { buildApprovedRequirementSet } from "./approved-requirement-set.js";
 import type { ApprovalType } from "./types/requirements.js";
 import { runSynthesis, type FlatFinding } from "./synthesis.js";
 import { runCrossDocDetection } from "./cross-doc-detection.js";
@@ -3459,7 +3461,25 @@ export class AnalysisOrchestrator {
       // from the linked-finding citation shapes (code vs docs vs none). Pure +
       // LLM-free; `findings` carries the merged citations the synthesis model saw
       // via `evidenceFindingIndexes`, so this is a direct lookup, not a re-read.
-      const coverages = computeCoverageForRequirements(result.output.requirements, findings);
+      // Issue #730 — when the requirements went through the approval checkpoint,
+      // persist the APPROVED structured requirements (what the reviewer saw),
+      // not the synthesis set, exactly as `promoteApprovedRequirements` does.
+      // Only consulted when structured requirements exist, so runs without the
+      // checkpoint (and the pipeline suites) keep the synthesis output as-is.
+      const structured = refined?.requirements ?? [];
+      const requirementApprovals =
+        structured.length > 0
+          ? (await listApprovalRequests(input.analysisId)).filter((a) => a.type === "requirement")
+          : [];
+      const reviewed = requirementApprovals.length > 0;
+      const approvedIds = new Set(
+        requirementApprovals.filter((a) => a.status === "approved").map((a) => a.itemId),
+      );
+      const toPersist = reviewed
+        ? buildApprovedRequirementSet({ structured, approvedIds, synthesis: result.output })
+        : result.output;
+
+      const coverages = computeCoverageForRequirements(toPersist.requirements, findings);
 
       // Issue #773 — the per-requirement VERDICT, rolled up from the linked CODE
       // findings' already-gated verdicts. This is the field that answers "must we
@@ -3476,7 +3496,7 @@ export class AnalysisOrchestrator {
         verdict: f.verdict ?? null,
       }));
       const verdicts = computeVerdictsForRequirements(
-        result.output.requirements,
+        toPersist.requirements,
         verdictFindings,
         codeAnalysisRan,
       );
@@ -3484,12 +3504,13 @@ export class AnalysisOrchestrator {
       const requirementIds = await persistRequirements({
         analysisId: input.analysisId,
         projectId: input.projectId,
-        synthesis: result.output,
+        synthesis: toPersist,
         findingIdsByIndex,
         coverages,
         verdicts,
-        // Issue #769 — a degraded set never replaces a healthy one.
-        degraded: result.degraded ?? null,
+        // Issue #769 — a degraded set never replaces a healthy one. A reviewed
+        // set is the reviewer's, not the degraded synthesis's (#730).
+        degraded: reviewed ? null : (result.degraded ?? null),
       });
 
       // feat/req-code-traceability — auto-seed the requirement→code spine from
