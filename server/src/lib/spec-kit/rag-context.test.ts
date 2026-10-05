@@ -366,3 +366,57 @@ describe("buildSpecKitRagContext — same-file siblings (#785)", () => {
     expect(failing.context).not.toContain("## Sibling Symbols");
   });
 });
+
+describe("buildSpecKitRagContext — a symbol's real lines, never a chunk index (#853)", () => {
+  const ENTRY = "internal/storage/entry.go";
+  // The whole-file source chunk is chunk #8 of entry.go; the symbol it holds
+  // starts on line 506. A plan cited `entry.go:8` when only the chunk was shown.
+  const sourceChunk: RetrievedChunk = {
+    ...docHit,
+    filename: `connector:repo:cid1:src/${ENTRY}`,
+    path: ENTRY,
+    position: 8,
+    text: "func (s *Storage) MarkAllAsRead(userID int64) error {",
+  };
+  const deps = () =>
+    fused(
+      [{ symbolId: "s-mark", filePath: ENTRY, name: "MarkAllAsRead", kind: "function", score: 1 }],
+      { "s-mark": { filePath: ENTRY, startLine: 506, endLine: 520 } },
+    );
+  const lookup = {
+    findInFiles: vi.fn(async () => [
+      {
+        id: "s-before",
+        name: "MarkAllAsReadBeforeDate",
+        kind: "function",
+        filePath: ENTRY,
+        startLine: 523,
+        endLine: 544,
+      },
+    ]),
+  };
+
+  it("keeps the line span of a symbol whose file a source chunk already covers", async () => {
+    const res = await buildSpecKitRagContext("p1", "mark all as read older than", {
+      knowledgeService: knowledgeService([sourceChunk]),
+      fusedCode: deps(),
+      includeCode: true,
+      siblings: { lookup },
+    });
+    expect(res.context).toContain(`${ENTRY}#8`);
+    expect(res.context).toContain(`MarkAllAsRead (function) — ${ENTRY}:506-520`);
+    expect(res.context).toContain(
+      `MarkAllAsReadBeforeDate (function) — ${ENTRY}:523-544 (beside MarkAllAsRead)`,
+    );
+    expect(res.context).not.toContain(`${ENTRY}:8`);
+    expect(res.usedSymbols).toBe(2);
+  });
+
+  it("tells the model a `#N` is a chunk number, not a line", async () => {
+    const res = await buildSpecKitRagContext("p1", "q", {
+      knowledgeService: knowledgeService([sourceChunk]),
+      fusedCode: fused([], {}),
+    });
+    expect(res.context).toMatch(/`#N`.*chunk number.*NOT a line number/s);
+  });
+});

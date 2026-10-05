@@ -713,6 +713,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(dangerExec).toHaveBeenCalledTimes(1);
       });
 
+      it("#861 /chat with no client in the session's room: a sub-agent's prompt is refused at once, never waited out", async () => {
+        const sid = await newSession({
+          projectId: IDS.project,
+          policy: { medium: "auto", high: "always-prompt" },
+        });
+        const started = Date.now();
+        // The real 120 s approval timeout: only an immediate refusal returns in time.
+        const res = await as(alice).post("/api/ai/chat", {
+          sessionId: sid,
+          message: "SCN-WRITER go",
+        });
+        expect(Date.now() - started).toBeLessThan(10_000);
+        expect(res.status).toBe(200);
+        expect(dangerExec).not.toHaveBeenCalled();
+        expect(getToolApprovalBroker().size).toBe(0);
+        const row = await db.aIToolApproval.findFirst({
+          where: { sessionId: sid, toolName: "danger_write" },
+        });
+        expect(row).toMatchObject({ decision: "deny", reason: "no_interactive_approver" });
+      });
+
       it("the sub-agent CALL itself passes the gate: denied, the agent never runs", async () => {
         const sid = await newSession({
           projectId: IDS.project,

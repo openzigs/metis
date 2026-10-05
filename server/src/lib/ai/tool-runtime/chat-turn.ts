@@ -76,6 +76,8 @@ export interface ChatToolRecord {
   decision?: ExecutedToolCall["decision"];
   /** Fixed-vocabulary code for a refused or failed call. */
   errorCode?: ExecutedToolCall["errorCode"];
+  /** #861 — the gate's machine reason for a refused call. */
+  reason?: string;
   executed: boolean;
   /** #147 — the sub-agent run this call started (its stored transcript). */
   subAgentRunId?: string;
@@ -254,6 +256,7 @@ export async function runChatToolTurn(
             ...(executed.isError ? { isError: true } : {}),
             ...(executed.decision ? { decision: executed.decision } : {}),
             ...(executed.errorCode ? { errorCode: executed.errorCode } : {}),
+            ...(executed.reason ? { reason: executed.reason } : {}),
             ...(executed.subAgentRunId ? { subAgentRunId: executed.subAgentRunId } : {}),
           };
           const source = input.toolset.resolve(executed.tool)?.source;

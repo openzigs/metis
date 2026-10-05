@@ -350,6 +350,13 @@ const chatBodySchema = z.object({
   model: z.string().max(120).optional(),
   systemMessage: z.string().max(20_000).optional(),
   reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+  /**
+   * #861 — `/chat` only. With no client subscribed to the session's socket
+   * room nobody can be shown an approval prompt, so a tool that needs one is
+   * refused at once. A client that answers `POST …/approvals/:id` itself while
+   * this request is open sets this to wait for that answer instead.
+   */
+  awaitToolApproval: z.boolean().optional(),
 });
 
 type ChatBody = z.infer<typeof chatBodySchema>;
@@ -770,6 +777,39 @@ function emitToolEventToSession(event: ToolEvent): void {
   }
 }
 
+/**
+ * #861 — is a client subscribed to the session's socket room, where approval
+ * prompts are shown? Joining it requires owning the session (see
+ * `subscribe:session`), so any member is someone who may answer.
+ */
+async function sessionHasApprover(sessionId: string): Promise<boolean> {
+  const io = getSocketServer();
+  if (!io) return false;
+  const sockets = await io.in(sessionRoom(sessionId)).fetchSockets();
+  return sockets.length > 0;
+}
+
+/** #861 — a tool call the approval step refused, as the `/chat` response reports it. */
+interface ToolApprovalOutcome {
+  callId: string;
+  tool: string;
+  decision: string;
+  reason?: string;
+  code: string;
+}
+
+function toolApprovalOutcome(r: ChatToolRecord): ToolApprovalOutcome | null {
+  if (r.executed || !r.decision) return null;
+  if (r.errorCode !== "TOOL_DENIED" && r.errorCode !== "TOOL_APPROVAL_EXPIRED") return null;
+  return {
+    callId: r.callId,
+    tool: r.tool,
+    decision: r.decision,
+    ...(r.reason ? { reason: r.reason } : {}),
+    code: r.errorCode,
+  };
+}
+
 /** #136/#142 — the transcript's view of one tool call (full result + decision). */
 function replyToolCall(r: ChatToolRecord): ReplyToolCall {
   return {
@@ -806,6 +846,8 @@ function bindSubAgents(
     toolResultMaxChars: number;
     meter: { sessionId: string; userId: string; projectId: string | null };
     queueHooks?: Pick<SubAgentChatOptions, "onSlotQueued" | "onSlotAcquired">;
+    /** #861 — `/chat`: whether anyone can answer a sub-agent's approval prompt. */
+    approverPresent?: () => Promise<boolean>;
   },
 ): void {
   const ctx = tools.subAgents;
@@ -821,6 +863,7 @@ function bindSubAgents(
   } = live.providerChatOptions;
   ctx.signal = live.signal;
   ctx.onToolEvent = live.onToolEvent;
+  ctx.approverPresent = live.approverPresent;
   ctx.providerChatOptions = { ...providerChatOptions, ...(live.queueHooks ?? {}) };
   ctx.toolResultMaxChars = live.toolResultMaxChars;
   ctx.onUsage = (usage, model) => {
@@ -1353,6 +1396,12 @@ export function aiRouter(): Router {
     let prepared: PreparedTurn | null = null;
     // #142 — every tool call this turn made or refused, in order, as it finished.
     const toolCalls: ReplyToolCall[] = [];
+    // #861 — the calls the approval step refused, reported in the response.
+    const toolApprovals: ToolApprovalOutcome[] = [];
+    // #861 — a prompt nobody can see is refused at once (see `awaitToolApproval`).
+    const approverPresent = parsed.data.awaitToolApproval
+      ? undefined
+      : () => sessionHasApprover(session.id);
     // Set once the reply is on record: a later failure must not add a second,
     // error-marked reply to the same question.
     let replyRecorded = false;
@@ -1537,6 +1586,7 @@ export function aiRouter(): Router {
           providerChatOptions: chatProviderOptions,
           toolResultMaxChars: turn.build.toolResultMaxChars,
           meter: { sessionId: session.id, userId, projectId: session.projectId },
+          ...(approverPresent ? { approverPresent } : {}),
         });
         const loop = await runChatToolTurn(
           providerInstance,
@@ -1550,6 +1600,7 @@ export function aiRouter(): Router {
               runtime: tools,
               signal: ac.signal,
               onEvent: emitToolEventToSession,
+              ...(approverPresent ? { approverPresent } : {}),
             }),
           },
           {
@@ -1558,7 +1609,11 @@ export function aiRouter(): Router {
             toolResultMaxChars: turn.build.toolResultMaxChars,
             onToolEvent: emitToolEventToSession,
             // Recorded as each call finishes, so a later failure keeps them.
-            onToolRecord: (rec) => toolCalls.push(replyToolCall(rec)),
+            onToolRecord: (rec) => {
+              toolCalls.push(replyToolCall(rec));
+              const refused = toolApprovalOutcome(rec);
+              if (refused) toolApprovals.push(refused);
+            },
             // #243 — each model call's usage as it returns.
             onUsage: (u) => turnMeter.add(u),
           },
@@ -1705,6 +1760,7 @@ export function aiRouter(): Router {
           transcript: { userOrdinal: turn.userRow.ordinal, replyOrdinal: replyRow.ordinal },
           grounding,
           ...(turn.compaction ? { compaction: compactionEvent(turn.compaction) } : {}),
+          ...(toolApprovals.length > 0 ? { toolApprovals } : {}),
         }),
       );
 

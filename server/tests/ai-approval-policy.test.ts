@@ -232,6 +232,27 @@ describe("ApprovalGateService", () => {
   });
 });
 
+describe("#861 — nobody can approve", () => {
+  it("an `unavailable` answer denies at once, audited with its own reason, and is not remembered", async () => {
+    const prompter = { ask: vi.fn(async () => "unavailable" as const) };
+    const gate = new ApprovalGateService({
+      sessionId: "s1",
+      userId: "u1",
+      policy: { low: "auto", medium: "prompt-once", high: "always-prompt" },
+      prompter,
+    });
+    const input = { sessionId: "s1", userId: "u1", toolName: "inspect_schema", args: {} };
+    const first = await gate.evaluate({ ...input, risk: "medium" });
+    expect(first).toEqual({ allowed: false, decision: "deny", reason: "no_interactive_approver" });
+    expect(created.map((r) => [r.decision, r.reason])).toEqual([
+      ["deny", "no_interactive_approver"],
+    ]);
+    // Not an approval, so prompt-once asks again next time.
+    await gate.evaluate({ ...input, risk: "medium" });
+    expect(prompter.ask).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("hashArgs", () => {
   it("is stable regardless of key order", () => {
     expect(hashArgs({ a: 1, b: 2 })).toBe(hashArgs({ b: 2, a: 1 }));
