@@ -21,7 +21,7 @@ interface AppShellProps {
  * the cookie expires mid-session.
  */
 export function AppShell({ children }: AppShellProps) {
-  const { isLoading, isAuthenticated } = useAuth();
+  const { isLoading, isAuthenticated, isSigningOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -38,12 +38,15 @@ export function AppShell({ children }: AppShellProps) {
   // `reason=expired` so the login form explains the involuntary bounce. The
   // `?next` value is the current same-origin path; the login form re-validates
   // it with `safeRedirectPath` before honouring it (OWASP A01, no open redirect).
+  //
+  // #720 — a deliberate sign-out is not an involuntary bounce: `logout()` routes
+  // to plain `/login` itself, so stand down while it is in progress.
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
+    if (!isLoading && !isAuthenticated && !isSigningOut) {
       const here = (pathname ?? "/") + window.location.search;
       router.replace(`/login?next=${encodeURIComponent(here)}&reason=expired`);
     }
-  }, [isLoading, isAuthenticated, router, pathname]);
+  }, [isLoading, isAuthenticated, isSigningOut, router, pathname]);
 
   if (isLoading) {
     return (
