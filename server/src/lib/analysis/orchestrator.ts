@@ -3380,7 +3380,13 @@ export class AnalysisOrchestrator {
         // WITHHOLDING them. Record how many so every surface (metadata, socket,
         // job event, UI) can say "N requirements awaiting approval" instead of
         // presenting an empty, apparently-successful run.
-        const awaitingRequirementCount = result.output.requirements.length;
+        // Issue #730 — promotion persists the APPROVED structured requirements
+        // when there are any (`promoteApprovedRequirements`), so that list — the
+        // one the Approvals tab shows — is what is awaiting, not the synthesis set.
+        const awaitingRequirementCount =
+          refinedRequirements.length > 0
+            ? refinedRequirements.length
+            : result.output.requirements.length;
         const { reason: blockedReason } = describePromotionGate({
           pendingCount: ticketStatus.pendingCount,
           rejectedCount: ticketStatus.rejectedCount,
