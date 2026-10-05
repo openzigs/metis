@@ -15,7 +15,10 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { AppError } from "../middleware/error-handler.js";
+import type { Prisma } from "@prisma/client";
+import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../lib/prisma.js";
+import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
 
 const MAX_LIMIT = 25;
 const DEFAULT_LIMIT = 8;
@@ -33,7 +36,42 @@ const searchQuerySchema = z.object({
       const floored = Math.floor(n);
       return Math.min(Math.max(floored, 1), MAX_LIMIT);
     }),
+  /** #734 — restrict the picker to users who can open this project. */
+  projectId: z.string().trim().min(1).max(100).optional(),
 });
+
+/** System admins open every project (`assertProjectAccess`'s bypass). */
+const SYSTEM_ADMIN: Prisma.UserWhereInput = { roles: { some: { role: { key: "admin" } } } };
+
+/**
+ * #734 — the users who can open `projectId`, as a `User` filter. Mirrors who a
+ * comment or discussion @mention is delivered to (`assertProjectAccess` plus
+ * "not soft-deleted", via `canAccessProjectDiscussions`): system admins, plus
+ * the live members of a live workspace — or everyone for a legacy project with
+ * no workspace.
+ *
+ * @throws AppError 404 — unknown project, or the caller cannot open it
+ */
+async function mentionAudienceWhere(
+  user: AuthPayload | undefined,
+  projectId: string,
+): Promise<Prisma.UserWhereInput> {
+  await assertResourceProjectAccess(user, projectId, projectNotFound);
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true, deletedAt: true, workspace: { select: { deletedAt: true } } },
+  });
+  if (!project) throw projectNotFound();
+  if (project.deletedAt || project.workspace?.deletedAt) return SYSTEM_ADMIN;
+  if (!project.workspaceId) return {};
+  return {
+    OR: [{ workspaceMemberships: { some: { workspaceId: project.workspaceId } } }, SYSTEM_ADMIN],
+  };
+}
+
+function projectNotFound(): AppError {
+  return new AppError(404, "NOT_FOUND", "Project not found");
+}
 
 export function usersRouter(): Router {
   const r = Router();
@@ -49,14 +87,22 @@ export function usersRouter(): Router {
       });
     }
 
-    const { search, limit } = parsed.data;
+    const { search, limit, projectId } = parsed.data;
+
+    // #734 — scoped to a project, the picker offers only the users who can
+    // open it, so an @mention never targets someone it cannot notify. The
+    // caller must be able to open the project themselves (the seam's 404
+    // otherwise, as for an unknown id), or this would list another tenant's
+    // members.
+    const audience = projectId ? await mentionAudienceWhere(req.user, projectId) : null;
 
     // SQLite `LIKE` is case-insensitive for ASCII, so a plain `contains` filter
     // gives prefix/substring matching without the Postgres-only
     // `mode: "insensitive"` option. The term is passed as a bound parameter by
     // Prisma — it is never interpolated into raw SQL.
-    const where = {
+    const where: Prisma.UserWhereInput = {
       status: "active",
+      ...(audience ? { AND: [audience] } : {}),
       ...(search
         ? {
             OR: [{ username: { contains: search } }, { displayName: { contains: search } }],

@@ -20,29 +20,48 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { dispatchMentions } from "../lib/collaboration/mentions.js";
-import {
-  isAdminActor,
-  listAccessibleProjectIds,
-  type SchedulerActor,
-} from "../lib/scheduler/project-access.js";
+import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
+import { audit } from "../lib/audit/audit-service.js";
 
 // ---- IDOR guard ------------------------------------------------------------
 
+const requirementNotFound = () =>
+  new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+/** The project seam's own 404 — what `requireProjectAccess` answers. */
+const projectNotFound = () => new AppError(404, "NOT_FOUND", "Project not found");
+const threadNotFound = () => new AppError(404, "THREAD_NOT_FOUND", "Comment thread not found");
+const commentNotFound = () => new AppError(404, "COMMENT_NOT_FOUND", "Comment not found");
+
 /**
- * Assert the authenticated user has access to the given project.
- * Admins are always allowed. Non-admins must have created the project
- * (current access model — no ProjectMember table yet).
- * Throws 403 FORBIDDEN on denial.
+ * #734 — may the caller reach the project that holds this comment?
+ *
+ * The canonical project-access rule (`assertProjectAccess`, the rule behind
+ * `requireProjectAccess`, `GET /projects/:id` and discussions): system admins
+ * bypass, workspace members are admitted, projects with no workspace stay open.
+ * It replaced a local copy of the scheduler's creator-only rule, which answered
+ * a workspace member 403 on a thread they had just been @mentioned in.
+ *
+ * A refusal is the route's OWN not-found error, byte-identical to an unknown
+ * id, so it is not an existence oracle; the reason is kept in the audit row.
  */
-async function assertProjectAccess(
-  user: { userId: string; role: string },
-  projectId: string,
+async function assertCommentProjectAccess(
+  req: Request,
+  projectId: string | null | undefined,
+  notFound: () => AppError,
+  target: { type: string; id: string },
 ): Promise<void> {
-  const actor: SchedulerActor = { id: user.userId, role: user.role as SchedulerActor["role"] };
-  if (isAdminActor(actor)) return;
-  const allowed = await listAccessibleProjectIds(actor);
-  if (!allowed.includes(projectId)) {
-    throw new AppError(403, "FORBIDDEN", "Insufficient project access");
+  try {
+    await assertResourceProjectAccess(req.user, projectId, notFound);
+  } catch (err) {
+    if (err instanceof AppError && err.statusCode === 404 && req.user) {
+      audit({
+        actor: { id: req.user.userId },
+        action: "comment.access.denied",
+        target,
+        metadata: { reason: "project-access-denied", projectId: projectId ?? null },
+      });
+    }
+    throw err;
   }
 }
 
@@ -115,9 +134,12 @@ export function requirementCommentsRouter(): Router {
         where: { id: requirementId },
         select: { id: true, projectId: true },
       });
-      if (!req_) throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+      if (!req_) throw requirementNotFound();
 
-      await assertProjectAccess(req.user, req_.projectId);
+      await assertCommentProjectAccess(req, req_.projectId, requirementNotFound, {
+        type: "requirement",
+        id: requirementId,
+      });
 
       const thread = await prisma.commentThread.create({
         data: {
@@ -168,9 +190,12 @@ export function requirementCommentsRouter(): Router {
         where: { id: requirementId },
         select: { id: true, projectId: true },
       });
-      if (!req_) throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+      if (!req_) throw requirementNotFound();
 
-      await assertProjectAccess(req.user, req_.projectId);
+      await assertCommentProjectAccess(req, req_.projectId, requirementNotFound, {
+        type: "requirement",
+        id: requirementId,
+      });
 
       const threads = await prisma.commentThread.findMany({
         where: { requirementId },
@@ -228,7 +253,10 @@ export function specKitArtifactCommentsRouter(): Router {
         });
       }
 
-      await assertProjectAccess(req.user, projectId);
+      await assertCommentProjectAccess(req, projectId, projectNotFound, {
+        type: "spec_kit_artifact",
+        id: `${projectId}:${artifactName}`,
+      });
 
       const thread = await prisma.commentThread.create({
         data: {
@@ -278,7 +306,10 @@ export function specKitArtifactCommentsRouter(): Router {
       const projectId = String(req.params.projectId);
       const artifactName = String(req.params.artifactName);
 
-      await assertProjectAccess(req.user, projectId);
+      await assertCommentProjectAccess(req, projectId, projectNotFound, {
+        type: "spec_kit_artifact",
+        id: `${projectId}:${artifactName}`,
+      });
 
       const threads = await prisma.commentThread.findMany({
         where: {
@@ -348,12 +379,15 @@ export function commentsRouter(): Router {
           requirement: { select: { projectId: true } },
         },
       });
-      if (!thread) throw new AppError(404, "THREAD_NOT_FOUND", "Comment thread not found");
+      if (!thread) throw threadNotFound();
 
-      const threadProjectId = thread.requirement?.projectId ?? thread.specKitProjectId;
-      if (!threadProjectId)
-        throw new AppError(403, "FORBIDDEN", "Cannot determine project for thread");
-      await assertProjectAccess(req.user, threadProjectId);
+      // A thread that resolves to no project is refused for non-admins (fail closed).
+      await assertCommentProjectAccess(
+        req,
+        thread.requirement?.projectId ?? thread.specKitProjectId,
+        threadNotFound,
+        { type: "comment_thread", id: threadId },
+      );
 
       const comment = await prisma.comment.create({
         data: {
@@ -401,13 +435,14 @@ export function commentsRouter(): Router {
         },
       });
       if (!existing || existing.deletedAt) {
-        throw new AppError(404, "COMMENT_NOT_FOUND", "Comment not found");
+        throw commentNotFound();
       }
-      const editProjectId =
-        existing.thread.requirement?.projectId ?? existing.thread.specKitProjectId;
-      if (!editProjectId)
-        throw new AppError(403, "FORBIDDEN", "Cannot determine project for comment");
-      await assertProjectAccess(req.user, editProjectId);
+      await assertCommentProjectAccess(
+        req,
+        existing.thread.requirement?.projectId ?? existing.thread.specKitProjectId,
+        commentNotFound,
+        { type: "comment", id: commentId },
+      );
       if (existing.authorId !== req.user.userId) {
         throw new AppError(403, "FORBIDDEN", "You can only edit your own comments");
       }
@@ -447,13 +482,14 @@ export function commentsRouter(): Router {
         },
       });
       if (!existing || existing.deletedAt) {
-        throw new AppError(404, "COMMENT_NOT_FOUND", "Comment not found");
+        throw commentNotFound();
       }
-      const deleteProjectId =
-        existing.thread.requirement?.projectId ?? existing.thread.specKitProjectId;
-      if (!deleteProjectId)
-        throw new AppError(403, "FORBIDDEN", "Cannot determine project for comment");
-      await assertProjectAccess(req.user, deleteProjectId);
+      await assertCommentProjectAccess(
+        req,
+        existing.thread.requirement?.projectId ?? existing.thread.specKitProjectId,
+        commentNotFound,
+        { type: "comment", id: commentId },
+      );
       if (existing.authorId !== req.user.userId) {
         throw new AppError(403, "FORBIDDEN", "You can only delete your own comments");
       }

@@ -14,11 +14,19 @@ const mockPrisma = {
   mention: { upsert: vi.fn(), updateMany: vi.fn() },
   notification: { create: vi.fn() },
   notificationPreference: { findMany: vi.fn() },
+  // #734/#735 — where the comment lives (link, text, audience).
+  comment: { findUnique: vi.fn() },
+  userRole: { findFirst: vi.fn() },
 };
 
 vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
 vi.mock("../src/lib/socket/registry.js", () => ({
   getSocketServer: () => mockIo,
+}));
+// #734 — every mentioned user here can open the project; the rule itself is
+// exercised against a real database in comments-project-access-734.sqlite.test.ts.
+vi.mock("../src/lib/discussions/access.js", () => ({
+  canAccessProjectDiscussions: vi.fn(async () => true),
 }));
 
 const { fanOutMentions } = await import("../src/lib/collaboration/mentions.js");
@@ -31,6 +39,15 @@ describe("fanOutMentions — Issue #416 persistence", () => {
     mockPrisma.notification.create.mockResolvedValue({ id: "n-1" });
     // #614 — default: no stored preference rows (inApp × mention defaults ON).
     mockPrisma.notificationPreference.findMany.mockResolvedValue([]);
+    mockPrisma.userRole.findFirst.mockResolvedValue(null);
+    mockPrisma.comment.findUnique.mockResolvedValue({
+      author: { displayName: "Alice", username: "alice" },
+      thread: {
+        specKitProjectId: null,
+        specKitArtifactName: null,
+        requirement: { id: "req-1", title: "Login works", projectId: "p-1", analysisId: "a-1" },
+      },
+    });
   });
 
   it("persists a Notification row for the mentioned user", async () => {
@@ -49,13 +66,14 @@ describe("fanOutMentions — Issue #416 persistence", () => {
     );
   });
 
-  it("persists a Notification with an href linking to the comment", async () => {
+  it("persists a Notification linking to the requirement that holds the comment (#735)", async () => {
     mockPrisma.user.findMany.mockResolvedValue([{ id: "user-carol", username: "carol" }]);
 
     await fanOutMentions("comment-xyz", "@carol hi", "author-1");
 
     const createCall = mockPrisma.notification.create.mock.calls[0][0];
-    expect(createCall.data.href).toContain("comment-xyz");
+    expect(createCall.data.href).toBe("/projects/p-1/analysis?analysisId=a-1&requirementId=req-1");
+    expect(createCall.data.message).toBe('Alice mentioned you on "Login works"');
   });
 
   it("still emits the socket event even when persistence fails", async () => {
