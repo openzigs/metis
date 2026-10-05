@@ -63,6 +63,7 @@ import {
   projectMonthlyFromMtd,
   summarizeUsage,
 } from "../src/lib/finops/budget-enforcer.js";
+import { ledgerRowCents } from "../src/lib/finops/ledger-cost.js";
 
 beforeEach(() => {
   usageRows.length = 0;
@@ -178,6 +179,56 @@ describe("sub-cent spend (#761)", () => {
     expect(summary.byDay[0].costCents).toBe(5);
     const ceiling = await projectMonthlyCostForCeiling("p1", now);
     expect(ceiling.projectedCents).toBe(11);
+  });
+});
+
+describe("float noise must not cost a cent (#868 review)", () => {
+  // 0.07 * 100 === 7.000000000000001 in IEEE-754. Day 1 of a 31-day month
+  // projects x31 = 217.00000000000003, and a ceil turned an exact 217¢ into
+  // 218¢ — tripping an autopilot ceiling set one cent above the true projection.
+  const jan1 = new Date(Date.UTC(2026, 0, 1, 12));
+  const sevenCents = (): void => {
+    usageRows.push({
+      projectId: "p1",
+      totalTokens: 1_000,
+      costCents: 7,
+      costUsd: 0.07,
+      inputTokens: 500,
+      outputTokens: 500,
+      provider: "openai",
+      model: "gpt-4o",
+      createdAt: jan1,
+    });
+  };
+
+  it("reads a 7¢ row as exactly 7", () => {
+    expect(ledgerRowCents({ costCents: 7, costUsd: 0.07 })).toBe(7);
+    expect(ledgerRowCents({ costCents: 29, costUsd: 0.29 })).toBe(29);
+  });
+
+  it("projects a 7¢ day-1 row to exactly 217¢ for the ceiling, not 218¢", async () => {
+    sevenCents();
+    const ceiling = await projectMonthlyCostForCeiling("p1", jan1);
+    expect(ceiling.projectedCents).toBe(217);
+    // A ceiling one cent above the true projection must not trip.
+    expect(ceiling.projectedCents).toBeLessThan(218);
+  });
+
+  it("projects the same 217¢ on the budget snapshot", async () => {
+    projects.set("p1", { monthlyTokenBudget: null });
+    sevenCents();
+    const snap = await assertWithinBudget("p1", jan1);
+    expect(snap.projectedMonthlyCostCents).toBe(217);
+  });
+
+  it("does not let a noisy SUM of exact rows tip the ceil either", () => {
+    // 0.1 + 0.2 === 0.30000000000000004: noise from summing, not from one row.
+    expect(projectMonthlyFromMtd(0.1 + 0.2, jan1)).toBe(10); // 0.3 x 31 = 9.3 → 10
+    expect(projectMonthlyFromMtd(7.000000000000001, jan1)).toBe(217);
+  });
+
+  it("still ceils a genuine fraction of a cent up", () => {
+    expect(projectMonthlyFromMtd(7.01, jan1)).toBe(218); // 217.31 → 218
   });
 });
 

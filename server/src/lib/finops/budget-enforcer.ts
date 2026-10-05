@@ -20,7 +20,7 @@
  */
 import { prisma } from "../prisma.js";
 import { resolveRate } from "./provider-rates.js";
-import { LEDGER_COST_SELECT, ledgerRowCents } from "./ledger-cost.js";
+import { LEDGER_COST_SELECT, ledgerRowCents, normalizeCents } from "./ledger-cost.js";
 import { canonicalTokenCounts, priceCanonicalTokensExact } from "./token-tracker.js";
 
 export class BudgetExceededError extends Error {
@@ -121,8 +121,11 @@ export async function assertWithinBudget(
 export function projectMonthlyFromMtd(monthToDateCents: number, now: Date = new Date()): number {
   const { daysInMonth, dayOfMonth } = monthBoundsUtc(now);
   if (dayOfMonth <= 0) return monthToDateCents;
-  // Pro-rate linearly. Ceil so the projection is conservative.
-  return Math.ceil((monthToDateCents * daysInMonth) / dayOfMonth);
+  // Pro-rate linearly. Ceil so the projection is conservative — but only a
+  // REAL fraction of a cent: the sum and the pro-rata both add float noise
+  // (7¢ x 31 = 217.00000000000003), and a ceil of noise is a phantom cent that
+  // trips a ceiling set one cent above the true projection (#868 review).
+  return Math.ceil(normalizeCents((monthToDateCents * daysInMonth) / dayOfMonth));
 }
 
 export async function projectMonthlyCost(

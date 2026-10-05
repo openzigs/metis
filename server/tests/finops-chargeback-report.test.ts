@@ -11,7 +11,9 @@ const projects: Array<{ id: string; name: string; workspaceId: string; deletedAt
 const tokenUsage: Array<{
   projectId: string;
   userId: string | null;
-  costUsd: number;
+  /** #761 — NULL on a row an old-version replica wrote during a rolling deploy. */
+  costUsd: number | null;
+  costCents?: number | null;
   createdAt: Date;
 }> = [];
 const users: Array<{ id: string; displayName: string; username: string }> = [];
@@ -42,21 +44,33 @@ vi.mock("../src/lib/prisma.js", () => ({
           where,
         }: {
           by: Array<"projectId" | "userId">;
-          where: { projectId: { in: string[] }; createdAt: { gte: Date; lt: Date } };
+          where: {
+            projectId: { in: string[] };
+            createdAt: { gte: Date; lt: Date };
+            costUsd?: null;
+          };
         }) => {
           const key = by[0];
+          // Prisma semantics: `where: { costUsd: null }` keeps only NULL rows,
+          // and `_sum` skips NULLs. The legacy query sums `costCents`.
+          const legacy = "costUsd" in where && where.costUsd === null;
           const sums = new Map<string | null, number>();
           for (const r of tokenUsage) {
+            if (legacy && r.costUsd !== null) continue;
             if (
               where.projectId.in.includes(r.projectId) &&
               r.createdAt >= where.createdAt.gte &&
               r.createdAt < where.createdAt.lt
             ) {
               const k = r[key] ?? null;
-              sums.set(k, (sums.get(k) ?? 0) + r.costUsd);
+              const v = legacy ? (r.costCents ?? 0) : (r.costUsd ?? 0);
+              sums.set(k, (sums.get(k) ?? 0) + v);
             }
           }
-          return [...sums.entries()].map(([k, costUsd]) => ({ [key]: k, _sum: { costUsd } }));
+          return [...sums.entries()].map(([k, v]) => ({
+            [key]: k,
+            _sum: legacy ? { costCents: v } : { costUsd: v },
+          }));
         },
       ),
     },
@@ -196,6 +210,24 @@ describe("gatherChargebackData", () => {
     const data = await gatherChargebackData("w1", NOW);
     expect(data?.totalCurrentCents).toBe(5);
     expect(data?.byUser).toEqual([{ id: "u1", name: "Alice", costCents: 5 }]);
+  });
+
+  it("#868 review — counts a row with costCents but NULL costUsd (old replica mid-deploy)", async () => {
+    workspaces.push({ id: "w1", name: "Acme", deletedAt: null });
+    projects.push({ id: "p1", name: "Alpha", workspaceId: "w1", deletedAt: null });
+    users.push({ id: "u1", displayName: "Alice", username: "alice" });
+    const june = new Date(Date.UTC(2026, 5, 10));
+    tokenUsage.push(
+      { projectId: "p1", userId: "u1", costUsd: 1.5, costCents: 150, createdAt: june },
+      // Written by a pre-#761 replica: only the rounded integer column is set.
+      { projectId: "p1", userId: "u1", costUsd: null, costCents: 250, createdAt: june },
+      // Genuinely unpriced: both NULL — unknown spend, never invented.
+      { projectId: "p1", userId: "u1", costUsd: null, costCents: null, createdAt: june },
+    );
+    const data = await gatherChargebackData("w1", NOW);
+    expect(data?.byProject).toEqual([{ id: "p1", name: "Alpha", costCents: 400 }]);
+    expect(data?.byUser).toEqual([{ id: "u1", name: "Alice", costCents: 400 }]);
+    expect(data?.totalCurrentCents).toBe(400);
   });
 
   it("returns null for an unknown workspace", async () => {

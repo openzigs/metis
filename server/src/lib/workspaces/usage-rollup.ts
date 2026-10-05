@@ -6,6 +6,7 @@
  */
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { LEGACY_COST_ROW_WHERE, sumLedgerCents } from "../finops/ledger-cost.js";
 
 const log = createChildLogger("workspace-usage-rollup");
 
@@ -31,19 +32,30 @@ export async function rollupWorkspaceUsage(date?: Date): Promise<number> {
 
   for (const ws of workspaces) {
     // Aggregate TokenUsage for projects in this workspace on this date
-    const aggregation = await prisma.tokenUsage.aggregate({
-      where: {
-        project: { workspaceId: ws.id },
-        createdAt: { gte: dayStart, lt: dayEnd },
-      },
-      _sum: { totalTokens: true, costUsd: true },
-      _count: { sessionId: true },
-    });
+    const where = {
+      project: { workspaceId: ws.id },
+      createdAt: { gte: dayStart, lt: dayEnd },
+    };
+    const [aggregation, legacy] = await Promise.all([
+      prisma.tokenUsage.aggregate({
+        where,
+        _sum: { totalTokens: true, costUsd: true },
+        _count: { sessionId: true },
+      }),
+      // #868 review — `_sum.costUsd` skips a row an old replica wrote with
+      // only `costCents` (a rolling deploy); count it the way `ledgerRowCents` does.
+      prisma.tokenUsage.aggregate({
+        where: { ...where, ...LEGACY_COST_ROW_WHERE },
+        _sum: { costCents: true },
+      }),
+    ]);
 
     const tokensUsed = aggregation._sum.totalTokens ?? 0;
     // #761 — sum the unrounded ledger cost, round once for the integer column.
     // (`costCents` is rounded per row, so a day of sub-cent calls summed to 0.)
-    const costCents = Math.round((aggregation._sum.costUsd ?? 0) * 100);
+    const costCents = Math.round(
+      sumLedgerCents(aggregation._sum.costUsd, legacy._sum?.costCents ?? null),
+    );
     const sessions = aggregation._count.sessionId ?? 0;
 
     if (tokensUsed === 0 && costCents === 0 && sessions === 0) {

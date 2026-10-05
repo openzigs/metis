@@ -38,6 +38,7 @@ const { assertWithinBudget, summarizeUsage, projectMonthlyCostForCeiling } =
 const { UsageService } = await import("../src/lib/usage/usage-service.js");
 const { rollupWorkspaceUsage } = await import("../src/lib/workspaces/usage-rollup.js");
 const { loadProjectWindow } = await import("../src/lib/finops/forecast-service.js");
+const { gatherChargebackData } = await import("../src/lib/finops/chargeback-report.js");
 
 const MIGRATION = "20261014000761_issue761_token_usage_cost_usd";
 const USER = "u-761";
@@ -261,6 +262,194 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const window = await loadProjectWindow("p-a");
       const total = window.reduce((s, p) => s + p.costCents, 0);
       expect(total).toBeCloseTo(EXACT_CENTS, 9);
+    });
+  },
+);
+
+/**
+ * #868 review — a row with `costCents` set and `costUsd` NULL. An old-version
+ * replica still serving after `migrate deploy` (a rolling Postgres deploy)
+ * writes exactly this. Every row-level reader counts it through
+ * `ledgerRowCents`' fallback; the `_sum: { costUsd }` aggregates skipped it.
+ */
+describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
+  "#868 review — aggregate readers count a legacy costCents-only row (real SQLite)",
+  () => {
+    let sqlite: MigratedSqlite;
+    let db: PrismaClient;
+    // Chargeback reports the month that just closed: run on 1 July -> June.
+    const NOW = new Date(Date.UTC(2026, 6, 1, 6));
+    const JUNE = new Date(Date.UTC(2026, 5, 10, 12));
+
+    beforeAll(async () => {
+      sqlite = createMigratedSqlite("868-legacy");
+      db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
+      state.db = db;
+      await db.user.create({
+        data: { id: USER, username: USER, displayName: USER, email: `${USER}@x.test` },
+      });
+      await db.workspace.create({ data: { id: "ws-868", name: "ws", slug: "ws-868" } });
+      await seedProject(db, "p-868", "ws-868");
+      const row = { projectId: "p-868", provider: "openai", model: "gpt-4o", userId: USER };
+      await db.tokenUsage.createMany({
+        data: [
+          // Priced by a current writer: both columns.
+          { ...row, totalTokens: 100, costCents: 150, costUsd: 1.5, createdAt: JUNE },
+          // Priced by an OLD writer: the integer column only.
+          { ...row, totalTokens: 100, costCents: 250, costUsd: null, createdAt: JUNE },
+          // Unpriced: both NULL — unknown spend, never invented.
+          { ...row, totalTokens: 100, costCents: null, costUsd: null, createdAt: JUNE },
+        ],
+      });
+    }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
+
+    afterAll(async () => {
+      await db?.$disconnect();
+      sqlite?.cleanup();
+    });
+
+    it("the workspace daily rollup counts it", async () => {
+      await rollupWorkspaceUsage(JUNE);
+      const daily = await db.workspaceUsageDaily.findMany({ where: { workspaceId: "ws-868" } });
+      expect(daily).toHaveLength(1);
+      expect(daily[0]!.costCents).toBe(400);
+    });
+
+    it("chargeback counts it, per project and per user", async () => {
+      const data = await gatherChargebackData("ws-868", NOW);
+      expect(data?.byProject).toEqual([{ id: "p-868", name: "p-868", costCents: 400 }]);
+      expect(data?.byUser.map((u) => u.costCents)).toEqual([400]);
+      expect(data?.totalCurrentCents).toBe(400);
+    });
+
+    /**
+     * #868 review (performance) — the platform scope aggregates in the
+     * database. Its oracle is `projectUsage`, which still reduces the same
+     * rows in memory: on a one-project ledger the two must agree, group for
+     * group, on every grouping — including legacy and unpriced rows.
+     */
+    describe("the platform scope aggregates in the database and matches the row reduction", () => {
+      beforeAll(async () => {
+        const now = Date.now();
+        const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000);
+        const day = 24 * 60;
+        const base = { projectId: "p-868", provider: "openai", userId: USER };
+        await db.tokenUsage.createMany({
+          data: [
+            // Inserted oldest first, as a live ledger is: the row reduction takes
+            // each group's representative fields from its FIRST row.
+            {
+              ...base,
+              userId: null,
+              model: "deepseek",
+              agentStep: "chat",
+              inputTokens: 3,
+              outputTokens: 4,
+              totalTokens: 7,
+              costCents: 7,
+              costUsd: 0.07,
+              createdAt: at(2 * day + 2),
+            },
+            {
+              ...base,
+              userId: null,
+              model: "deepseek",
+              agentStep: "chat",
+              inputTokens: 9,
+              outputTokens: 1,
+              totalTokens: 10,
+              costCents: null,
+              costUsd: null,
+              createdAt: at(2 * day + 1),
+            },
+            {
+              ...base,
+              model: "gpt-4o-mini",
+              agentStep: "analysis",
+              inputTokens: 1_000,
+              outputTokens: 1_000,
+              totalTokens: 2_000,
+              costCents: 0,
+              costUsd: 0.00075,
+              createdAt: at(day + 6),
+            },
+            {
+              ...base,
+              model: "gpt-4o-mini",
+              agentStep: "analysis",
+              inputTokens: 1_000,
+              outputTokens: 1_000,
+              totalTokens: 2_000,
+              costCents: 0,
+              costUsd: 0.00075,
+              createdAt: at(day + 5),
+            },
+            {
+              ...base,
+              model: "gpt-4o",
+              agentStep: null,
+              inputTokens: 5,
+              outputTokens: 5,
+              totalTokens: 10,
+              costCents: null,
+              costUsd: null,
+              createdAt: at(30),
+            },
+            {
+              ...base,
+              model: "gpt-4o",
+              agentStep: "chat",
+              inputTokens: 70,
+              outputTokens: 30,
+              totalTokens: 100,
+              costCents: 250,
+              costUsd: null,
+              createdAt: at(20),
+            },
+            {
+              ...base,
+              model: "gpt-4o",
+              agentStep: "chat",
+              inputTokens: 60,
+              outputTokens: 40,
+              totalTokens: 100,
+              costCents: 150,
+              costUsd: 1.5,
+              createdAt: at(10),
+            },
+          ],
+        });
+      });
+
+      it("counts the legacy costCents-only row", async () => {
+        const usage = await new UsageService().adminUsage({ range: "7d" });
+        expect(usage.totalCostUsd).toBeCloseTo(1.5 + 2.5 + 2 * 0.00075 + 0.07, 10);
+        expect(usage.totalTokens).toBe(4_227);
+        expect(usage.unpriced).toEqual({
+          promptTokens: 14,
+          completionTokens: 6,
+          totalTokens: 20,
+          count: 2,
+        });
+      });
+
+      for (const groupBy of ["project", "user", "model", "agentStep", "day"] as const) {
+        it(`groupBy=${groupBy} equals the row-by-row reduction`, async () => {
+          const svc = new UsageService();
+          const platform = await svc.adminUsage({ range: "7d", groupBy });
+          const reference = await svc.projectUsage("p-868", { range: "7d", groupBy });
+          const norm = (u: typeof platform) =>
+            u.rows.map((r) => ({
+              ...r,
+              estimatedCostUsd:
+                r.estimatedCostUsd === null ? null : Math.round(r.estimatedCostUsd * 1e9) / 1e9,
+            }));
+          expect(norm(platform)).toEqual(norm(reference));
+          expect(platform.unpriced).toEqual(reference.unpriced);
+          expect(platform.totalTokens).toBe(reference.totalTokens);
+          expect(platform.totalCostUsd).toBeCloseTo(reference.totalCostUsd, 9);
+        });
+      }
     });
   },
 );

@@ -50,7 +50,9 @@ const DAY_MS = 86_400_000;
 function daysAggregated(): string[] {
   return vi
     .mocked(prisma.tokenUsage.aggregate)
-    .mock.calls.map((c) =>
+    .mock.calls // #868 review — each day also runs a legacy-cost aggregate; count the day once.
+    .filter((c) => !("costUsd" in (c[0] as unknown as { where: object }).where))
+    .map((c) =>
       (c[0] as unknown as { where: { createdAt: { gte: Date } } }).where.createdAt.gte
         .toISOString()
         .slice(0, 10),
