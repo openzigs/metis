@@ -85,6 +85,9 @@ const requirementVersions: Array<{
 }> = [];
 
 vi.mock("../src/lib/prisma.js", () => ({
+  // #779 — `persistRequirements` locks by provider on Postgres only; this
+  // fake has no raw SQL, so it pins the SQLite path on either generated client.
+  resolveDatabaseProvider: () => "sqlite" as const,
   prisma: {
     // #865 — `updateRequirementRow` writes through the versioned service, which
     // runs in an interactive transaction; this fake runs it on itself.
