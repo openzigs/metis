@@ -15,6 +15,7 @@ import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
 import { shouldNotify } from "../notifications/preferences.js";
+import { canAccessProjectDiscussions } from "../discussions/access.js";
 
 const log = createChildLogger("collaboration:mentions");
 
@@ -65,6 +66,92 @@ export async function resolveUsernames(
   }
 }
 
+/** Where a comment lives, for the notification's text, link and audience. */
+export interface CommentMentionContext {
+  projectId: string;
+  /** In-app link to the requirement or artifact that holds the comment (#735). */
+  href: string;
+  /** e.g. `Alice mentioned you on "Feeds refresh on schedule"`. */
+  message: string;
+}
+
+const MAX_TITLE_IN_MESSAGE = 120;
+
+/**
+ * Resolve the project, link and notification text for a comment. #735 — the
+ * link used to be `/comments/<id>`, which has no page; it now opens the
+ * requirement (the analysis page's `?requirementId=` deep link) or the Spec Kit
+ * artifact. `null` when the comment or its project cannot be resolved.
+ */
+export async function resolveCommentMentionContext(
+  commentId: string,
+): Promise<CommentMentionContext | null> {
+  const row = await prisma.comment.findUnique({
+    where: { id: commentId },
+    select: {
+      author: { select: { displayName: true, username: true } },
+      thread: {
+        select: {
+          specKitProjectId: true,
+          specKitArtifactName: true,
+          requirement: { select: { id: true, title: true, projectId: true, analysisId: true } },
+        },
+      },
+    },
+  });
+  if (!row) return null;
+  const who = row.author?.displayName || row.author?.username || "Someone";
+  const enc = encodeURIComponent;
+  const requirement = row.thread.requirement;
+  if (requirement) {
+    const title =
+      requirement.title.length > MAX_TITLE_IN_MESSAGE
+        ? `${requirement.title.slice(0, MAX_TITLE_IN_MESSAGE - 1)}…`
+        : requirement.title;
+    return {
+      projectId: requirement.projectId,
+      href:
+        `/projects/${enc(requirement.projectId)}/analysis` +
+        `?analysisId=${enc(requirement.analysisId)}&requirementId=${enc(requirement.id)}`,
+      message: `${who} mentioned you on "${title}"`,
+    };
+  }
+  const { specKitProjectId, specKitArtifactName } = row.thread;
+  if (specKitProjectId) {
+    const artifact = specKitArtifactName ?? "a Spec Kit artifact";
+    return {
+      projectId: specKitProjectId,
+      href:
+        `/projects/${enc(specKitProjectId)}/spec-kit` +
+        (specKitArtifactName ? `?artifact=${enc(specKitArtifactName)}` : ""),
+      message: `${who} mentioned you on ${artifact}`,
+    };
+  }
+  return null;
+}
+
+/**
+ * #734 — may `userId` open `projectId`? The rule the comment routes enforce
+ * (`assertProjectAccess`, plus "not soft-deleted"), keyed by the MENTIONED
+ * user. Mentioning someone who cannot open the comment is a no-op, as it is
+ * for discussions (`discussions/notify.ts`). Fails closed.
+ */
+async function canOpenProject(userId: string, projectId: string): Promise<boolean> {
+  try {
+    const adminRole = await prisma.userRole.findFirst({
+      where: { userId, role: { key: "admin" } },
+      select: { userId: true },
+    });
+    return await canAccessProjectDiscussions(
+      { id: userId, role: adminRole ? "admin" : "reader" },
+      projectId,
+    );
+  } catch (err) {
+    log.warn("mention eligibility check failed; treating as non-member", { userId, err });
+    return false;
+  }
+}
+
 /**
  * Persist Mention rows and fan-out socket notifications.
  * Called asynchronously after a comment is saved — never throws.
@@ -82,85 +169,93 @@ export async function fanOutMentions(
     const usernames = parseMentions(body);
     if (usernames.length === 0) return;
 
-    const users = await resolveUsernames(usernames);
+    const context = await resolveCommentMentionContext(commentId);
+    if (!context) {
+      log.warn("fanOutMentions: comment has no resolvable project; nothing sent", { commentId });
+      return;
+    }
+
+    const candidates = (await resolveUsernames(usernames)).filter((u) => u.id !== authorId); // skip self-mentions
+    const eligible = await Promise.all(
+      candidates.map((u) => canOpenProject(u.id, context.projectId)),
+    );
+    const users = candidates.filter((_, i) => eligible[i]);
     const io = getSocketServer();
 
     await Promise.allSettled(
-      users
-        .filter((u) => u.id !== authorId) // skip self-mentions
-        .map(async (u) => {
-          try {
-            // Upsert: the unique index on (commentId, mentionedUserId) prevents
-            // duplicate notifications if fanOutMentions is called twice.
-            await prisma.mention.upsert({
-              where: {
-                commentId_mentionedUserId: {
-                  commentId,
-                  mentionedUserId: u.id,
-                },
-              },
-              update: {},
-              create: {
+      users.map(async (u) => {
+        try {
+          // Upsert: the unique index on (commentId, mentionedUserId) prevents
+          // duplicate notifications if fanOutMentions is called twice.
+          await prisma.mention.upsert({
+            where: {
+              commentId_mentionedUserId: {
                 commentId,
                 mentionedUserId: u.id,
-                notified: false,
               },
-            });
-
-            // #614 — per-user preference gate (inApp × mention), enforced
-            // before the socket emit + Notification row. The Mention upsert
-            // above is provenance data (who was mentioned where), not a
-            // notification, so it is still recorded — but `notified` stays
-            // false. The helper fails OPEN (send) on any internal error.
-            if (!(await shouldNotify(u.id, "inApp", "mention"))) return;
-
-            const mentionPayload = {
+            },
+            update: {},
+            create: {
               commentId,
               mentionedUserId: u.id,
-              ts: Date.now(),
-            };
+              notified: false,
+            },
+          });
 
-            // Emit in-app notification via Socket.IO to the user's personal
-            // room (user:{userId}). The room is auto-joined on connect from the
-            // verified JWT only (OWASP A01 — no client-supplied room id).
-            if (io) {
-              io.to(userRoom(u.id)).emit("comment:mention", mentionPayload);
-            }
+          // #614 — per-user preference gate (inApp × mention), enforced
+          // before the socket emit + Notification row. The Mention upsert
+          // above is provenance data (who was mentioned where), not a
+          // notification, so it is still recorded — but `notified` stays
+          // false. The helper fails OPEN (send) on any internal error.
+          if (!(await shouldNotify(u.id, "inApp", "mention"))) return;
 
-            // Issue #416 — persist the notification so the drawer hydrates
-            // across reloads/reconnects. Best-effort: never break the emit.
-            try {
-              await prisma.notification.create({
-                data: {
-                  userId: u.id,
-                  type: "mention",
-                  title: "You were mentioned in a comment",
-                  message: `Comment ${commentId} mentioned you`,
-                  href: `/comments/${encodeURIComponent(commentId)}`,
-                  payload: JSON.stringify(mentionPayload),
-                },
-              });
-            } catch (persistErr) {
-              log.warn("Failed to persist mention notification", {
-                commentId,
+          const mentionPayload = {
+            commentId,
+            mentionedUserId: u.id,
+            ts: Date.now(),
+          };
+
+          // Emit in-app notification via Socket.IO to the user's personal
+          // room (user:{userId}). The room is auto-joined on connect from the
+          // verified JWT only (OWASP A01 — no client-supplied room id).
+          if (io) {
+            io.to(userRoom(u.id)).emit("comment:mention", mentionPayload);
+          }
+
+          // Issue #416 — persist the notification so the drawer hydrates
+          // across reloads/reconnects. Best-effort: never break the emit.
+          try {
+            await prisma.notification.create({
+              data: {
                 userId: u.id,
-                err: persistErr,
-              });
-            }
-
-            // Mark as notified.
-            await prisma.mention.updateMany({
-              where: { commentId, mentionedUserId: u.id },
-              data: { notified: true },
+                type: "mention",
+                title: "You were mentioned in a comment",
+                message: context.message,
+                href: context.href,
+                payload: JSON.stringify(mentionPayload),
+              },
             });
-          } catch (err) {
-            log.warn("Failed to fan out mention", {
+          } catch (persistErr) {
+            log.warn("Failed to persist mention notification", {
               commentId,
               userId: u.id,
-              err,
+              err: persistErr,
             });
           }
-        }),
+
+          // Mark as notified.
+          await prisma.mention.updateMany({
+            where: { commentId, mentionedUserId: u.id },
+            data: { notified: true },
+          });
+        } catch (err) {
+          log.warn("Failed to fan out mention", {
+            commentId,
+            userId: u.id,
+            err,
+          });
+        }
+      }),
     );
   } catch (err) {
     log.error("fanOutMentions top-level error", { commentId, err });

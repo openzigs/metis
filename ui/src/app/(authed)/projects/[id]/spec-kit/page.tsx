@@ -13,12 +13,17 @@
  * for editing (no Monaco dep — keeps the bundle slim per the existing
  * Tailwind/shadcn-only rule).
  */
-import { useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { SPEC_KIT_ARTIFACT_NAMES, SPEC_KIT_COMMANDS, isSpecKitCommand } from "@metis/shared";
+import {
+  SPEC_KIT_ARTIFACT_NAMES,
+  SPEC_KIT_COMMANDS,
+  isSpecKitArtifactName,
+  isSpecKitCommand,
+} from "@metis/shared";
 import type { SpecKitArtifactName, SpecKitCommand } from "@metis/shared";
 import { specKitApi } from "@/lib/spec-kit-api";
 import { queryKeys } from "@/lib/query-keys";
@@ -64,6 +69,16 @@ export default function SpecKitPage() {
   });
 
   const [selectedName, setSelectedName] = useState<SpecKitArtifactName>("spec.md");
+  // #735 — a comment @mention links here as `?artifact=<name>`: open that
+  // artifact with its comments. Keyed on the param, so following a second link
+  // while already on this page still switches.
+  const searchParams = useSearchParams();
+  const linkedArtifact = searchParams?.get("artifact") ?? null;
+  useEffect(() => {
+    if (!linkedArtifact || !isSpecKitArtifactName(linkedArtifact)) return;
+    setSelectedName(linkedArtifact);
+    setCommentsOpen(true);
+  }, [linkedArtifact]);
   const [editingDraft, setEditingDraft] = useState<string | null>(null);
   const [commandBuffer, setCommandBuffer] = useState("");
   const [lastResultMessage, setLastResultMessage] = useState<string | null>(null);

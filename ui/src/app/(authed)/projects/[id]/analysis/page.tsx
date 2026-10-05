@@ -1494,6 +1494,7 @@ export default function AnalysisPage(): React.ReactElement {
         open={commentsReqId !== null}
         onClose={() => setCommentsReqId(null)}
         requirementId={commentsReqId ?? undefined}
+        projectId={projectId || undefined}
         currentUserId={user?.id}
         title={
           detail.data?.requirements.find((r) => r.id === commentsReqId)?.title ??

@@ -35,6 +35,12 @@ interface MentionInputProps {
   onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   /** Accessible label for the underlying textarea (defaults to none). */
   ariaLabel?: string;
+  /**
+   * #734 — the project the comment or message belongs to. When set, the picker
+   * offers only users who can open that project, so an @mention never names
+   * someone it cannot notify.
+   */
+  projectId?: string;
 }
 
 /**
@@ -43,9 +49,12 @@ interface MentionInputProps {
  * `apiFetch` already unwraps the `{ success, data }` envelope, so this returns
  * the `UserHit[]` payload directly — do NOT unwrap a second time (issue #281).
  */
-async function searchUsers(prefix: string): Promise<UserHit[]> {
+async function searchUsers(prefix: string, projectId?: string): Promise<UserHit[]> {
   if (!prefix) return [];
-  return (await apiFetch<UserHit[]>(`/users?search=${encodeURIComponent(prefix)}&limit=8`)) ?? [];
+  const scope = projectId ? `&projectId=${encodeURIComponent(projectId)}` : "";
+  return (
+    (await apiFetch<UserHit[]>(`/users?search=${encodeURIComponent(prefix)}&limit=8${scope}`)) ?? []
+  );
 }
 
 /**
@@ -71,6 +80,7 @@ export function MentionInput({
   extraSuggestions = [],
   onKeyDown: onKeyDownProp,
   ariaLabel,
+  projectId,
 }: MentionInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [trigger, setTrigger] = useState<{
@@ -80,8 +90,8 @@ export function MentionInput({
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const { data: userHits = [] } = useQuery<UserHit[]>({
-    queryKey: ["users", "mention-search", trigger?.prefix ?? ""],
-    queryFn: () => searchUsers(trigger?.prefix ?? ""),
+    queryKey: ["users", "mention-search", projectId ?? "", trigger?.prefix ?? ""],
+    queryFn: () => searchUsers(trigger?.prefix ?? "", projectId),
     enabled: trigger !== null && (trigger.prefix?.length ?? 0) >= 1,
     staleTime: 30_000,
   });
