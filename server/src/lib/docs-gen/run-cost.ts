@@ -25,6 +25,13 @@ import { currentGenerationScope } from "./generation-scope.js";
 
 const log = createChildLogger("docs-gen-run-cost");
 
+/**
+ * #792 — `agentStep` on the project-ledger rows of docs-generation calls. Here,
+ * not in `holistic-synthesizer.ts`, so the DB-schema synthesizer (#858) can
+ * share it without loading that module.
+ */
+export const DOCS_GEN_AGENT_STEP = "docs-gen";
+
 /** One recorded model call's token counts. */
 export interface RunUsageEvent {
   provider: string;

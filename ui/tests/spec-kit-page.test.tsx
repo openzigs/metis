@@ -5,6 +5,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 
+// #735 — mutable so a test can open the page from a mention link.
+const nav = vi.hoisted(() => ({ search: "" }));
+
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
   return {
@@ -19,7 +22,7 @@ vi.mock("next/navigation", async () => {
       prefetch: vi.fn(),
       refresh: vi.fn(),
     }),
-    useSearchParams: () => new URLSearchParams(),
+    useSearchParams: () => new URLSearchParams(nav.search),
   };
 });
 
@@ -88,6 +91,7 @@ function artifact(name: string, content = "body", version = 1) {
 }
 
 beforeEach(() => {
+  nav.search = "";
   for (const key of Object.keys(m)) m[key]!.mockReset();
   m.getEnabled!.mockResolvedValue({ enabled: true });
   m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [] });
@@ -96,6 +100,25 @@ beforeEach(() => {
 });
 
 describe("SpecKitPage", () => {
+  it("opens the linked artifact's comments from a mention link (#735)", async () => {
+    nav.search = "artifact=plan.md";
+    collabMock.listForArtifact.mockClear();
+
+    render(<SpecKitPage />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(collabMock.listForArtifact).toHaveBeenCalledWith("p1", "plan.md"));
+  });
+
+  it("ignores a linked artifact name that is not a Spec Kit artifact", async () => {
+    nav.search = "artifact=..%2Fsecrets";
+    collabMock.listForArtifact.mockClear();
+
+    render(<SpecKitPage />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(screen.getByTestId("spec-kit-root")).toBeInTheDocument());
+    expect(collabMock.listForArtifact).not.toHaveBeenCalled();
+  });
+
   it("renders the artifact tree, toggle, and slash-command palette", async () => {
     render(<SpecKitPage />, { wrapper: makeWrapper() });
     await waitFor(() => expect(screen.getByTestId("spec-kit-root")).toBeInTheDocument());

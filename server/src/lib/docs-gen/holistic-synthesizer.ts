@@ -140,7 +140,7 @@ import {
 import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
 import { isInPathScope, restrictToPathScope, withPathScopeBanner } from "./path-scope.js";
 import { resolvePhase2Concurrency } from "./phase2-concurrency.js";
-import { noteRunUsage, withDocsGenRunCost } from "./run-cost.js";
+import { DOCS_GEN_AGENT_STEP, noteRunUsage, withDocsGenRunCost } from "./run-cost.js";
 import {
   loadRepositorySources,
   repositoryPathIdentity,
@@ -271,8 +271,7 @@ import {
 
 const log = createChildLogger("docs-gen:holistic");
 
-/** #792 — `agentStep` on the project-ledger rows of docs-generation calls. */
-export const DOCS_GEN_AGENT_STEP = "docs-gen";
+export { DOCS_GEN_AGENT_STEP };
 
 export type DocType = "business-requirements" | "architecture" | "user-guide";
 

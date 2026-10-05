@@ -64,10 +64,6 @@ export const ROUTE_FIXTURE_BASELINE: readonly FixtureBaselineEntry[] = [
     note: "project-scoped: /projects/:projectId/change-analyses; admin-only caller",
   },
   {
-    file: "tests/comments-mentions.test.ts",
-    note: "project-scoped comments/mentions; admin-only caller",
-  },
-  {
     file: "tests/import-routes.test.ts",
     note: "project-scoped imports; stubs requireAuth with no role literal at all",
   },

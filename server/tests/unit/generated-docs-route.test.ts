@@ -209,6 +209,7 @@ import {
 } from "../../src/lib/docs-gen/grounding/grounding-retrieval.js";
 import { synthesizeHolisticDocument } from "../../src/lib/docs-gen/holistic-synthesizer.js";
 import { synthesizeDbSchemaDocument } from "../../src/lib/docs-gen/db-schema-synthesizer.js";
+import { currentGenerationScope } from "../../src/lib/docs-gen/generation-scope.js";
 import { runDomainWebResearch } from "../../src/lib/docs-gen/grounding/domain-web-research.js";
 import { jobEvents } from "../../src/lib/socket/job-events.js";
 import { generatedDocOutboxId } from "../../src/lib/docs-gen/generated-doc-outbox.js";
@@ -797,11 +798,17 @@ describe("generated-docs routes", () => {
         scopeFilter: "{broken-json",
         evidencePolicy: "{}",
       });
-      (synthesizeDbSchemaDocument as ReturnType<typeof vi.fn>).mockResolvedValue({
-        markdown: "# Schema",
-        schemaGraph: { tables: [] },
-        generationModel: "db-schema-test-model",
-        warnings: [],
+      // #858 — the DB-schema synthesiser runs inside the run's generation scope,
+      // so its prose calls carry the cancel signal and count against the ceiling.
+      let scopeDocId: string | undefined;
+      (synthesizeDbSchemaDocument as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        scopeDocId = currentGenerationScope()?.docId;
+        return {
+          markdown: "# Schema",
+          schemaGraph: { tables: [] },
+          generationModel: "db-schema-test-model",
+          warnings: [],
+        };
       });
       (prisma.generatedDocumentVersion.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
         null,
@@ -817,6 +824,7 @@ describe("generated-docs routes", () => {
         "user_admin",
         "Stored DB Doc",
       );
+      expect(scopeDocId).toBe("doc-1");
       const createArg = (prisma.generatedDocumentVersion.create as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0] as {
         data: { provenanceManifest: string };

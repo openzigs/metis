@@ -23,8 +23,14 @@ issues" table (#4478, #4511, #4336) with what each must surface.
 2. For each of the three developer issues: chat "where would I implement this?", impact
    analysis, and Spec Kit `/specify` → `/plan`. Score each against #706's "must surface"
    column (run 2: 0/3). A sandbox draft only if the run's cap of 2 is not used up.
-3. Phase 18: compare the Usage page with the ledger queries in the skill; a mismatch is a
-   finding.
+   Run 3 scored 3/3 by the brief and 2/3 strictly: #4478 still proposed a `users` column. Open
+   the collapsed **Blast radius** group (`[data-testid=blast-radius-toggle]`) before you
+   screenshot the "Writes affected data" rows.
+3. **Phase 17 is "Tested by"** (#812), not the removed Test Coverage page. The steps are in
+   the latest #706 comment that redefines Phase 17. Its ledger delta must be 0.
+4. Phase 18: compare the Usage page, the **All projects** view and `GET /api/admin/usage`
+   with the ledger queries in the skill. All three should now agree with `token_usages`
+   (#854), and the ledger cost with the token-computed cost (#761). A mismatch is a finding.
 
 ## Standing rules — never
 

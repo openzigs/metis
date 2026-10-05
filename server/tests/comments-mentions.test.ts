@@ -20,7 +20,12 @@ const mockPrisma = {
   // User + Mention are driven by the real mention fan-out path.
   user: { findMany: vi.fn() },
   mention: { upsert: vi.fn(), updateMany: vi.fn() },
-  project: { findMany: vi.fn() },
+  // #734 — the real project-access rule runs: the caller is a workspace member.
+  project: { findUnique: vi.fn(), findFirst: vi.fn() },
+  // #734/#735 — fan-out resolves where the comment lives, and whether each
+  // mentioned user can open it (`u-admin` holds the admin role).
+  comment: { findUnique: vi.fn() },
+  userRole: { findFirst: vi.fn() },
   // #614 — no stored rows: inApp × mention defaults ON (send).
   notificationPreference: { findMany: vi.fn(async () => []) },
 };
@@ -32,7 +37,8 @@ vi.mock("../src/middleware/auth.js", () => ({
     (req as unknown as { user: unknown }).user = {
       userId: "user-1",
       username: "alice",
-      role: "admin",
+      role: "developer",
+      workspaces: ["ws-1"],
     };
     next();
   },
@@ -87,6 +93,24 @@ function stubThread(body: string) {
   });
 }
 
+/** `proj-1` lives in workspace `ws-1`; only `memberIds` hold a membership row. */
+function projectMembers(memberIds: string[]) {
+  mockPrisma.project.findUnique.mockImplementation(
+    async (args: {
+      select?: { workspace?: { select?: { members?: { where?: { userId?: string } } } } };
+    }) => {
+      const asked = args.select?.workspace?.select?.members?.where?.userId;
+      return {
+        workspaceId: "ws-1",
+        workspace: {
+          deletedAt: null,
+          members: asked && memberIds.includes(asked) ? [{ id: `m-${asked}` }] : [],
+        },
+      };
+    },
+  );
+}
+
 // Allow the fire-and-forget fan-out microtasks to settle before assertions.
 const flush = () => new Promise((r) => setTimeout(r, 10));
 
@@ -95,6 +119,19 @@ describe("POST comment with @mentions (real fan-out path)", () => {
     vi.clearAllMocks();
     mockPrisma.mention.upsert.mockResolvedValue({});
     mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
+    projectMembers(["user-1"]);
+    mockPrisma.project.findFirst.mockResolvedValue({ id: "proj-1" });
+    mockPrisma.comment.findUnique.mockResolvedValue({
+      author: { displayName: "Alice", username: "alice" },
+      thread: {
+        specKitProjectId: null,
+        specKitArtifactName: null,
+        requirement: { id: "req-1", title: "R", projectId: "proj-1", analysisId: "ana-1" },
+      },
+    });
+    mockPrisma.userRole.findFirst.mockImplementation(async (args: { where: { userId: string } }) =>
+      args.where.userId === "u-admin" ? { userId: "u-admin" } : null,
+    );
   });
 
   afterAll(() => vi.restoreAllMocks());
@@ -134,6 +171,22 @@ describe("POST comment with @mentions (real fan-out path)", () => {
 
     expect(res.status).toBe(201);
     await flush(); // ensure the rejected fan-out does not surface late
+  });
+
+  it("answers a caller outside the project's workspace 404 and dispatches nothing (#734)", async () => {
+    projectMembers(["someone-else"]);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: "u-admin", username: "admin" }]);
+    stubThread("cc @admin");
+
+    const res = await request(createApp())
+      .post("/requirements/req-1/comments")
+      .send({ body: "cc @admin" });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
+    await flush();
+    expect(mockPrisma.commentThread.create).not.toHaveBeenCalled();
+    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
   });
 
   it("returns 201 for a plain body with no mentions", async () => {

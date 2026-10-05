@@ -416,6 +416,7 @@ export function DiscussionThreadView({
       <DiscussionComposer
         onSubmit={handleSend}
         threadId={threadId}
+        projectId={projectId}
         busy={sending}
         disabled={!!error}
       >

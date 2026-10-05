@@ -401,6 +401,8 @@ export interface SessionGateInput {
   signal?: AbortSignal;
   onEvent?: (event: ToolEvent) => void;
   broker?: ToolApprovalBroker;
+  /** #861 — see `BrokerPrompterOptions.approverPresent`. */
+  approverPresent?: () => Promise<boolean>;
 }
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
@@ -436,6 +438,7 @@ export function sessionGate(input: SessionGateInput): ApprovalGateService {
       ...(timeoutMs > 0 ? { timeoutMs } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+      ...(input.approverPresent ? { approverPresent: input.approverPresent } : {}),
     }),
   });
 }
