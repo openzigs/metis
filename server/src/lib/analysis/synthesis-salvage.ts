@@ -52,6 +52,11 @@ function scanString(s: string, i: number): number {
  * first. Objects and arrays are matched by depth, skipping string contents, so
  * a `}` inside a title cannot close anything. Bare primitives run to the next
  * delimiter.
+ *
+ * Always returns either -1 or an index STRICTLY greater than `i`: an empty
+ * primitive (the value position holds a delimiter such as a stray `}` or `]`)
+ * is malformed, not a zero-width value. Every caller loops on the returned
+ * index, so a zero-width return would spin forever on model output (#868).
  */
 function scanValue(s: string, i: number): number {
   const c = s[i];
@@ -75,6 +80,8 @@ function scanValue(s: string, i: number): number {
   }
   let j = i;
   while (j < s.length && s[j] !== "," && s[j] !== "}" && s[j] !== "]" && !isWs(s[j])) j++;
+  // No progress: the value position holds a delimiter, not a value.
+  if (j === i) return -1;
   // A primitive that runs into end-of-input may itself be cut (`tru`, `12`).
   return j < s.length ? j : -1;
 }
@@ -99,7 +106,9 @@ function scanRequirements(s: string, i: number, out: unknown[]): number {
       continue;
     }
     const end = scanValue(s, j);
-    if (end < 0) return -1;
+    // Belt and braces over scanValue's own guarantee: never re-enter the loop
+    // at the same index.
+    if (end <= j) return -1;
     const parsed = tryParse(s.slice(j, end));
     // A complete-but-malformed element is skipped, not fatal: its neighbours
     // were written independently and are still the model's own answer.
@@ -146,7 +155,7 @@ export function salvageSynthesisPrefix(raw: string): SalvagedSynthesis {
       continue;
     }
     const end = scanValue(raw, i);
-    if (end < 0) return result;
+    if (end <= i) return result;
     if (key.ok && key.value === "summary") {
       const summary = tryParse(raw.slice(i, end));
       if (summary.ok && typeof summary.value === "string") result.summary = summary.value;

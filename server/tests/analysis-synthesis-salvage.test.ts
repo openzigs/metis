@@ -4,6 +4,8 @@
  * brackets or the word "requirements" inside string values, and it must never
  * return the element that was being written when the cap fired.
  */
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { salvageSynthesisPrefix } from "../src/lib/analysis/synthesis-salvage.js";
 
@@ -86,5 +88,75 @@ describe("salvageSynthesisPrefix", () => {
       `{summary: "s", "requirements": [${JSON.stringify(req("A"))}]}`,
     );
     expect(out.requirements).toEqual([]);
+  });
+});
+
+/**
+ * #868 review — the scanner must always make progress. A stray closer of the
+ * wrong kind (`}` inside the array, `]` inside the object) used to hit the
+ * primitive branch, which returned its own start index, so `scanRequirements`
+ * spun forever and pinned the event loop. A synchronous infinite loop cannot be
+ * interrupted from inside the same thread, so the cases run in a child process
+ * with a hard kill: a regression fails the test instead of hanging the suite.
+ */
+describe("salvageSynthesisPrefix — unbalanced closers terminate", () => {
+  const HANG_CASES = [
+    '{"summary":"s","requirements":[{"title":"a"}}',
+    '{"requirements":[{"t":1}, }',
+    '{"requirements":[}',
+    '{"requirements":[ } ]}',
+    '{"requirements":[{"t":1},}]}',
+    '{"requirements":[{"t":1}}}}}}',
+    '{"summary":"s",]',
+    '{"summary": ]}',
+    '{"summary": }',
+    '{"a": , "requirements":[{"t":1}]}',
+    '{"requirements":[{"t":1}],]',
+    '{"requirements":[[}',
+  ];
+
+  it("returns promptly (well under 1 s) for every unbalanced closer", () => {
+    const modUrl = new URL("../src/lib/analysis/synthesis-salvage.ts", import.meta.url).href;
+    const script = `
+      const { salvageSynthesisPrefix } = await import(${JSON.stringify(modUrl)});
+      const cases = JSON.parse(process.argv[1]);
+      const out = cases.map((c) => {
+        const t = performance.now();
+        const r = salvageSynthesisPrefix(c);
+        return { ms: performance.now() - t, n: r.requirements.length };
+      });
+      process.stdout.write(JSON.stringify(out));
+    `;
+    const res = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "-e", script, JSON.stringify(HANG_CASES)],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        timeout: 8_000,
+        killSignal: "SIGKILL",
+      },
+    );
+    // A hang is killed by the timeout: signal SIGKILL, status null.
+    expect(res.signal, res.stderr).toBeNull();
+    expect(res.status, res.stderr).toBe(0);
+    const results = JSON.parse(res.stdout) as { ms: number; n: number }[];
+    expect(results).toHaveLength(HANG_CASES.length);
+    for (const r of results) expect(r.ms).toBeLessThan(1_000);
+  }, 15_000);
+
+  it("keeps the whole elements before a stray closer and never reports complete", () => {
+    const a = salvageSynthesisPrefix('{"summary":"s","requirements":[{"title":"a"}}');
+    expect(a.requirements).toEqual([{ title: "a" }]);
+    expect(a.summary).toBe("s");
+    expect(a.complete).toBe(false);
+    const b = salvageSynthesisPrefix('{"requirements":[{"t":1}, }');
+    expect(b.requirements).toEqual([{ t: 1 }]);
+    expect(b.complete).toBe(false);
+  });
+
+  it("does not report a missing value as a complete object", () => {
+    expect(salvageSynthesisPrefix('{"summary": }').complete).toBe(false);
+    expect(salvageSynthesisPrefix('{"a": , "requirements":[{"t":1}]}').complete).toBe(false);
   });
 });
