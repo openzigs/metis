@@ -2353,7 +2353,16 @@ Workbench chat panel) shows the tool, its risk and its arguments with
 **Approve** and **Deny**. Check the
 arguments before approving; if they contain invisible characters the chat warns
 you. A request nobody answers is denied after two minutes (administrators can
-change this with `AI_TOOL_APPROVAL_TIMEOUT_MS`). Nothing the AI writes, and
+change this with `AI_TOOL_APPROVAL_TIMEOUT_MS`).
+
+Over the API, `POST /api/ai/chat` can only show a prompt to a client that has
+the chat open (subscribed to the session's socket room). With none, a tool that
+needs approval is refused at once instead of waiting two minutes: the AI is told
+nobody could approve it and answers without it, and the response lists the
+refused call under `toolApprovals` (reason `no_interactive_approver`). A client
+that answers prompts itself through
+`POST /api/ai/sessions/:id/approvals/:approvalId` while the request is open
+sends `"awaitToolApproval": true` to wait as before. Nothing the AI writes, and
 nothing a tool returns, can approve a call — only your click can, and only in
 your own chat. No provider brings tools of its own: the only tools a chat can
 run are the ones above, through this approval step.
