@@ -1343,11 +1343,16 @@ export async function generateDocumentAsync(
       fallbackGenerationPipeline = "database-schema";
       const dbConnectorId = typeof filter.dbConnectorId === "string" ? filter.dbConnectorId : "";
       const actorId = policy.actor.userId;
-      const result = await synthesizeDbSchemaDocument(
-        projectId,
-        dbConnectorId,
-        actorId,
-        doc.title ?? "Database Schema",
+      // #858 — in the run's scope like the holistic path (#855): the prose calls
+      // carry its AbortSignal, a cancel stops them, and their spend counts
+      // against the run's ceiling.
+      const result = await withGenerationScope(control!, () =>
+        synthesizeDbSchemaDocument(
+          projectId,
+          dbConnectorId,
+          actorId,
+          doc.title ?? "Database Schema",
+        ),
       );
       markdown = result.markdown;
       schemaGraphJson = result.schemaGraph ? JSON.stringify(result.schemaGraph) : null;
