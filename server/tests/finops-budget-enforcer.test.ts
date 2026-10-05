@@ -148,6 +148,26 @@ describe("sub-cent spend (#761)", () => {
     expect(snap.projectedMonthlyCostCents).toBe(11);
   });
 
+  it("the ceiling re-prices a NULL-cost sub-cent row unrounded, not as 0¢ per row", async () => {
+    const now = new Date(Date.UTC(2026, 5, 15, 12));
+    for (let i = 0; i < 67; i += 1) {
+      usageRows.push({
+        projectId: "p1",
+        totalTokens: 2_000,
+        costCents: null,
+        costUsd: null,
+        inputTokens: 1_000,
+        outputTokens: 1_000,
+        provider: "openai",
+        model: "gpt-4o-mini",
+        createdAt: now,
+      });
+    }
+    const ceiling = await projectMonthlyCostForCeiling("p1", now);
+    expect(ceiling.unpricedTokens).toBe(0);
+    expect(ceiling.projectedCents).toBe(11);
+  });
+
   it("the usage summary and the ceiling projection count it as well", async () => {
     const now = new Date(Date.UTC(2026, 5, 15, 12));
     projects.set("p1", { monthlyTokenBudget: null });

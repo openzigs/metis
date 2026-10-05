@@ -161,6 +161,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           estimatedCostUsd: 0.02,
         },
       });
+      // `apply_diff` writes its `ai_token_usages` row with NO projectId while
+      // mirroring the call into `token_usages` for the session's project. Its
+      // session is project-scoped, so the platform scope must not add it.
+      await db.aITokenUsage.create({
+        data: {
+          sessionId: "chat-1",
+          userId: USER,
+          provider: "openai",
+          model: "morph:v3",
+          promptTokens: 200,
+          completionTokens: 100,
+          totalTokens: 300,
+          dayBucket: new Date().toISOString().slice(0, 10),
+          estimatedCostUsd: 0.001,
+        },
+      });
+      // A chat session with no project (multi-project or stale-project scope):
+      // `token_usages` cannot hold its spend, because projectId is required
+      // there, so this is the only record of it.
+      await db.aISession.create({
+        data: { id: "chat-free", userId: USER, provider: "openai", model: "gpt-4o" },
+      });
+      await db.aITokenUsage.create({
+        data: {
+          sessionId: "chat-free",
+          userId: USER,
+          provider: "openai",
+          model: "gpt-4o",
+          promptTokens: 500,
+          completionTokens: 200,
+          totalTokens: 700,
+          dayBucket: new Date().toISOString().slice(0, 10),
+          estimatedCostUsd: 0.003,
+        },
+      });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -195,17 +230,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("#854 — the platform scope reads token_usages, once: both projects, chat not double-counted", async () => {
       const usage = await new UsageService().adminUsage({ groupBy: "project" });
-      expect(usage.totalTokens).toBe(CALLS * 2_000 + 5_000);
-      expect(usage.totalCostUsd).toBeCloseTo((EXACT_CENTS + 2) / 100, 10);
-      const byProject = Object.fromEntries(usage.rows.map((r) => [r.projectId, r]));
+      expect(usage.totalTokens).toBe(CALLS * 2_000 + 5_000 + 700);
+      expect(usage.totalCostUsd).toBeCloseTo((EXACT_CENTS + 2 + 0.3) / 100, 10);
+      const byProject = Object.fromEntries(usage.rows.map((r) => [r.projectId ?? "-", r]));
       expect(byProject["p-a"].count).toBe(CALLS);
       expect(byProject["p-b"].totalTokens).toBe(5_000);
     });
 
-    it("#854 — the platform scope filters by the ledger's userId", async () => {
+    it("#854 — chat spend from a session with no project stays in the platform scope, as 'unassigned'", async () => {
+      const usage = await new UsageService().adminUsage({ groupBy: "project" });
+      const unassigned = usage.rows.filter((r) => r.projectId === undefined);
+      expect(unassigned).toHaveLength(1);
+      expect(unassigned[0].totalTokens).toBe(700);
+      expect(unassigned[0].estimatedCostUsd).toBeCloseTo(0.003, 10);
+    });
+
+    it("#854 — the platform scope filters both sources by userId", async () => {
       const usage = await new UsageService().adminUsage({ userId: USER, groupBy: "user" });
-      expect(usage.totalTokens).toBe(CALLS * 2_000);
+      expect(usage.totalTokens).toBe(CALLS * 2_000 + 700);
       expect(usage.rows.map((r) => r.userId)).toEqual([USER]);
+      const other = await new UsageService().adminUsage({ userId: "someone-else" });
+      expect(other.totalTokens).toBe(0);
     });
 
     it("the workspace daily rollup and the project forecast window carry the sub-cent spend", async () => {

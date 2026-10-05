@@ -58,6 +58,7 @@ describe("UsageService", () => {
     __resetUsageServiceSingleton();
     svc = new UsageService();
     vi.clearAllMocks();
+    mockFindMany.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -163,7 +164,7 @@ describe("UsageService", () => {
   });
 
   describe("adminUsage (#854 — the All projects scope reads the token_usages ledger)", () => {
-    it("aggregates ledger rows across projects, and never reads ai_token_usages", async () => {
+    it("aggregates ledger rows across projects", async () => {
       mockLedgerFindMany.mockResolvedValue([
         ledgerRow({ projectId: "proj-1", totalTokens: 500, costCents: 3 }),
         ledgerRow({ projectId: "proj-2", totalTokens: 300, costCents: 1 }),
@@ -171,7 +172,6 @@ describe("UsageService", () => {
       ]);
 
       const result = await svc.adminUsage({ groupBy: "project" });
-      expect(mockFindMany).not.toHaveBeenCalled();
       expect(result.totalTokens).toBe(1_000);
       expect(result.totalCostUsd).toBeCloseTo(0.05, 10);
       expect(result.rows.map((r) => [r.projectId, r.totalTokens, r.count])).toEqual([
@@ -193,10 +193,35 @@ describe("UsageService", () => {
       );
     });
 
-    it("filters by the ledger's userId", async () => {
+    it("filters both sources by userId", async () => {
       mockLedgerFindMany.mockResolvedValue([]);
       await svc.adminUsage({ userId: "user-42" });
       expect(mockLedgerFindMany.mock.calls[0][0].where.userId).toBe("user-42");
+      expect(mockFindMany.mock.calls[0][0].where.userId).toBe("user-42");
+    });
+
+    it("reads ai_token_usages ONLY for chat with no project on the row or its session", async () => {
+      mockLedgerFindMany.mockResolvedValue([ledgerRow({ projectId: "proj-1", totalTokens: 150 })]);
+      mockFindMany.mockResolvedValue([
+        {
+          dayBucket: "2025-01-15",
+          provider: "openai",
+          model: "gpt-4o",
+          userId: "user-1",
+          agentStep: null,
+          promptTokens: 500,
+          completionTokens: 200,
+          totalTokens: 700,
+          estimatedCostUsd: 0.003,
+        },
+      ]);
+      const result = await svc.adminUsage({ groupBy: "project" });
+      const where = mockFindMany.mock.calls[0][0].where;
+      expect(where.projectId).toBeNull();
+      expect(where.session).toEqual({ projectId: null });
+      expect(result.totalTokens).toBe(850);
+      const unassigned = result.rows.find((r) => r.projectId === undefined);
+      expect(unassigned?.totalTokens).toBe(700);
     });
   });
 

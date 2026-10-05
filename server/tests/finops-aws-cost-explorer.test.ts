@@ -42,6 +42,7 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+import { prisma } from "../src/lib/prisma.js";
 import {
   buildCostAndUsageInput,
   parseCostAndUsageResponse,
@@ -221,6 +222,9 @@ describe("reconcileBedrockSpend", () => {
     const result = await reconcileBedrockSpend({ client: fakeClient(1), start, end });
     expect(result.metisCents).toBe(100);
     expect(result.warning).toBe(false);
+    // The mock ignores `select`, so pin the column a real query must fetch.
+    const findMany = prisma.tokenUsage.findMany as unknown as ReturnType<typeof vi.fn>;
+    expect(findMany.mock.calls.at(-1)?.[0].select).toMatchObject({ costUsd: true });
   });
 
   it("does not persist a warning when no workspace is given", async () => {

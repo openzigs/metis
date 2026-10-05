@@ -95,13 +95,15 @@ describe("checkBudget", () => {
   });
 
   it("#761 — sums sub-cent reviews unrounded: 300 × 0.42¢ blocks a 100¢ cap", async () => {
-    const { prisma } = mkPrisma({
+    const { prisma, stub } = mkPrisma({
       cap: 100,
       rows: Array.from({ length: 300 }, () => ({ costCents: 0, costUsd: 0.0042 })),
     });
     const out = await checkBudget("p1", prisma, NOW);
     expect(out.allowed).toBe(false);
     expect(out.spentCents).toBe(126);
+    // The stub returns whatever it holds, so pin the column a real query fetches.
+    expect(stub.tokenUsage.findMany.mock.calls[0][0].select).toMatchObject({ costUsd: true });
   });
 
   it("returns the correct UTC month bucket and reset boundary", async () => {
