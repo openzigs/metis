@@ -157,8 +157,30 @@ describe("buildMapperMethodSymbolIndex", () => {
         filePath: { in: ["mapper/FooMapper.java", "mapper/BarMapper.java"] },
         kind: { in: ["method"] },
       },
-      select: { id: true, filePath: true, name: true },
+      select: { id: true, filePath: true, name: true, language: true },
     });
+  });
+
+  it("resolves to the real Java method, never a same-named synthetic sql-language MyBatis symbol (#822)", async () => {
+    // The MyBatis pass writes a one-line `method` symbol (language "sql") for
+    // each annotated statement INTO the Java mapper file. Returned first, it used
+    // to win the first-seen-by-name slot.
+    const rows = [
+      { id: "synthetic", filePath: "mapper/FooMapper.java", name: "findAccount", language: "sql" },
+      { id: "java", filePath: "mapper/FooMapper.java", name: "findAccount", language: "java" },
+    ];
+    const prisma = { codeSymbol: { findMany: vi.fn(async () => rows) } };
+    const idx = await buildMapperMethodSymbolIndex(prisma as any, "g1", ["mapper/FooMapper.java"]);
+    expect(idx.get("mapper/FooMapper.java")?.get("findAccount")).toBe("java");
+  });
+
+  it("does not index a name that only a synthetic sql-language symbol carries (#822)", async () => {
+    const rows = [
+      { id: "synthetic", filePath: "mapper/FooMapper.java", name: "findAccount", language: "sql" },
+    ];
+    const prisma = { codeSymbol: { findMany: vi.fn(async () => rows) } };
+    const idx = await buildMapperMethodSymbolIndex(prisma as any, "g1", ["mapper/FooMapper.java"]);
+    expect(idx.get("mapper/FooMapper.java")?.has("findAccount") ?? false).toBe(false);
   });
 
   it("short-circuits with an empty map and no query for an empty file-path list", async () => {
