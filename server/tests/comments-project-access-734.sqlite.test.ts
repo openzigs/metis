@@ -413,8 +413,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       it("offers only system admins on a soft-deleted project", async () => {
-        await db.project.create({
-          data: {
+        await db.project.upsert({
+          where: { id: "proj-734-gone" },
+          update: {},
+          create: {
             id: "proj-734-gone",
             name: "gone",
             slug: "proj-734-gone",
@@ -427,6 +429,52 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const res = await call("get", "/api/users?search=u-&projectId=proj-734-gone", ADMIN);
 
         expect(usernames(res)).toEqual(["u-admin"]);
+      });
+
+      it("answers a non-admin member the unknown-project 404 on a soft-deleted project", async () => {
+        await db.project.upsert({
+          where: { id: "proj-734-gone" },
+          update: {},
+          create: {
+            id: "proj-734-gone",
+            name: "gone",
+            slug: "proj-734-gone",
+            createdById: "u-author",
+            workspaceId: WS,
+            deletedAt: new Date(),
+          },
+        });
+
+        const denied = await call("get", "/api/users?search=u-&projectId=proj-734-gone", MEMBER);
+        const unknown = await call("get", "/api/users?search=u-&projectId=proj-nope", MEMBER);
+
+        expect(denied.status).toBe(404);
+        expect(denied.body).toEqual(unknown.body);
+      });
+
+      it("never offers a soft-deleted user, whom delivery would skip", async () => {
+        await db.user.create({
+          data: {
+            id: "u-scimgone",
+            username: "u-scimgone",
+            displayName: "Sam Soft-deleted",
+            email: "u-scimgone@example.test",
+            deletedAt: new Date(),
+          },
+        });
+        await db.workspaceMember.create({
+          data: { workspaceId: WS, userId: "u-scimgone", role: "member" },
+        });
+        try {
+          const scoped = await call("get", `/api/users?search=u-&projectId=${PROJECT}`, MEMBER);
+          const unscoped = await call("get", "/api/users?search=u-", MEMBER);
+
+          expect(usernames(scoped)).toEqual(["u-admin", "u-author", "u-member"]);
+          expect(usernames(unscoped)).not.toContain("u-scimgone");
+        } finally {
+          await db.workspaceMember.deleteMany({ where: { userId: "u-scimgone" } });
+          await db.user.delete({ where: { id: "u-scimgone" } });
+        }
       });
 
       it("answers a non-member the unknown-project 404 rather than a member list", async () => {

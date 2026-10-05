@@ -245,6 +245,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await db.requirement.findUniqueOrThrow({ where: { id } })).title).toBe("First edit");
     });
 
+    it("diffs visible labels only on a 409: hidden finding/review labels never conflict", async () => {
+      const id = await makeRequirement({ labels: ["auth", "finding:f-1", "review:approved"] });
+      expect((await patch(id, { title: "First edit", version: 1 })).status).toBe(200);
+
+      const sameLabels = await patch(id, { title: "Lost update", labels: ["auth"], version: 1 });
+
+      expect(sameLabels.status).toBe(409);
+      expect(sameLabels.body.error.diff).toEqual([
+        { field: "title", server: "First edit", client: "Lost update" },
+      ]);
+
+      const otherLabels = await patch(id, { labels: ["security"], version: 1 });
+
+      expect(otherLabels.status).toBe(409);
+      expect(otherLabels.body.error.diff).toEqual([
+        { field: "labels", server: ["auth"], client: ["security"] },
+      ]);
+    });
+
     it("accepts the current version", async () => {
       const id = await makeRequirement();
 

@@ -48,9 +48,11 @@ const SYSTEM_ADMIN: Prisma.UserWhereInput = { roles: { some: { role: { key: "adm
  * comment or discussion @mention is delivered to (`assertProjectAccess` plus
  * "not soft-deleted", via `canAccessProjectDiscussions`): system admins, plus
  * the live members of a live workspace — or everyone for a legacy project with
- * no workspace.
+ * no workspace. A soft-deleted project offers system admins only, and only to
+ * a system admin.
  *
- * @throws AppError 404 — unknown project, or the caller cannot open it
+ * @throws AppError 404 — unknown project, the caller cannot open it, or it is
+ *   soft-deleted and the caller is not a system admin
  */
 async function mentionAudienceWhere(
   user: AuthPayload | undefined,
@@ -62,7 +64,13 @@ async function mentionAudienceWhere(
     select: { workspaceId: true, deletedAt: true, workspace: { select: { deletedAt: true } } },
   });
   if (!project) throw projectNotFound();
-  if (project.deletedAt || project.workspace?.deletedAt) return SYSTEM_ADMIN;
+  if (project.deletedAt || project.workspace?.deletedAt) {
+    // A soft-deleted project is the unknown-project 404 to everyone but a
+    // system admin — the comment routes answer it the same way
+    // (`canAccessProjectDiscussions`), and a 200 here would list the admins.
+    if (user?.role !== "admin") throw projectNotFound();
+    return SYSTEM_ADMIN;
+  }
   if (!project.workspaceId) return {};
   return {
     OR: [{ workspaceMemberships: { some: { workspaceId: project.workspaceId } } }, SYSTEM_ADMIN],
@@ -100,8 +108,12 @@ export function usersRouter(): Router {
     // gives prefix/substring matching without the Postgres-only
     // `mode: "insensitive"` option. The term is passed as a bound parameter by
     // Prisma — it is never interpolated into raw SQL.
+    // `deletedAt: null` matches mention delivery (`LIVE_MEMBER_USER`): a
+    // SCIM soft-deleted user whose status is still active is never notified,
+    // so the picker must not offer them either.
     const where: Prisma.UserWhereInput = {
       status: "active",
+      deletedAt: null,
       ...(audience ? { AND: [audience] } : {}),
       ...(search
         ? {

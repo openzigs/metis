@@ -9,6 +9,7 @@
  * row is created so history is preserved (#57 AC1). Cascade-on-archive is
  * already wired via Prisma `onDelete: Cascade` on the project relation.
  */
+import { isHiddenRequirementLabel, parseRequirementLabels } from "./requirement-labels.js";
 import {
   isAgentPhaseResultKey,
   type AnalysisAgentSource,
@@ -1083,7 +1084,7 @@ export async function updateRequirementRow(input: {
   // lose any legacy `review:*` label so the JSON blob stays clean. Written only
   // when the list actually differs, so a stored value that merely serialises
   // differently is not recorded as an edit.
-  const storedLabels = parseLabels(existing.labels);
+  const storedLabels = parseRequirementLabels(existing.labels);
   let labels = storedLabels;
   if (input.patch.labels) {
     labels = mergeLabelsPreservingMeta(input.patch.labels, labels);
@@ -1203,19 +1204,9 @@ export async function loadFindingForDeepDive(input: {
 
 const SAFE_AGENT_KEYS = new Set<string>(ANALYSIS_AGENT_KEYS);
 
-function parseLabels(raw: string | null | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const v = JSON.parse(raw);
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
 function mergeLabelsPreservingMeta(next: string[], prev: string[]): string[] {
-  const meta = prev.filter((l) => l.startsWith("review:") || l.startsWith("finding:"));
-  const cleaned = next.filter((l) => !l.startsWith("review:") && !l.startsWith("finding:"));
+  const meta = prev.filter(isHiddenRequirementLabel);
+  const cleaned = next.filter((l) => !isHiddenRequirementLabel(l));
   return [...new Set([...cleaned, ...meta])];
 }
 
@@ -1467,7 +1458,7 @@ function toSnapshot(
     }
   }
   const requirements = row.requirements.map((r) => {
-    const labels = parseLabels(r.labels);
+    const labels = parseRequirementLabels(r.labels);
     const reviewLabel = labels.find((l) => l.startsWith("review:"));
     // Prefer the typed column (#M4); fall back to the legacy `review:*`
     // label so rows written before the migration still parse.

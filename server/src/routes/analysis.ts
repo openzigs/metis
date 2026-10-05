@@ -80,6 +80,7 @@ import {
   serializeFindingIssueDraftMarkdown,
   serializeAnalysisReportMarkdown,
 } from "../lib/analysis/index.js";
+import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 // Issue #743 — diff-style current-vs-proposed view for changed requirements.
 import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-service.js";
 import type { StructuredRequirements } from "../lib/analysis/types/requirements.js";
@@ -510,14 +511,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       });
       if (!row) return null;
       // The lock diffs against the request body, which carries labels as a
-      // string[]; present the stored JSON column in that shape.
-      let labels: unknown = [];
-      try {
-        labels = JSON.parse(row.labels);
-      } catch {
-        labels = [];
-      }
-      return { ...row, labels };
+      // string[]; present the stored JSON column in that shape — and only the
+      // labels the caller sees. The hidden `finding:*` / `review:*` labels are
+      // preserved by the write, so they are never a conflict and never offered
+      // as the "server" value in the merge modal.
+      return { ...row, labels: visibleRequirementLabels(row.labels) };
     }),
     async (req: Request, res: Response) => {
       const id = String(req.params.id);
