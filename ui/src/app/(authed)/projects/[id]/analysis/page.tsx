@@ -632,7 +632,10 @@ export default function AnalysisPage(): React.ReactElement {
   // opens the page that holds it and scrolls to its card. Applied once per run,
   // so a refetch never pulls a reader back after they page away. With no
   // `?tab=`, the link opens the Requirements tab, as `#approvals` does.
+  // #735 — a comment @mention adds `&comments=1`: open that requirement's
+  // comment panel too, as the Spec Kit page does for `?artifact=`.
   const requestedRequirementId = searchParams?.get("requirementId") ?? null;
+  const requestedComments = searchParams?.get("comments") === "1";
   const appliedRequirementLink = useRef<string | null>(null);
   const snapshot = detail.data;
   useEffect(() => {
@@ -653,7 +656,8 @@ export default function AnalysisPage(): React.ReactElement {
     if (!requestedTab) setTab("requirements");
     if (!requestedTab || parseAnalysisTab(requestedTab) === "requirements")
       setPendingAnchor(`#requirement-${requestedRequirementId}`);
-  }, [snapshot, requestedRequirementId, requestedTab]);
+    if (requestedComments) setCommentsReqId(requestedRequirementId);
+  }, [snapshot, requestedRequirementId, requestedTab, requestedComments]);
 
   if (!projectId) return <p className="p-6">Missing project id.</p>;
 

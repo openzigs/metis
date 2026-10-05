@@ -8,4 +8,4 @@ section: Fixed
   denial is audited. The @mention picker offers only users who can open the project, and only
   they are notified.
 - A comment @mention notification now names the author and the requirement or artifact, and
-  links to it instead of the missing `/comments/<id>` page (#735).
+  opens its comments instead of the missing `/comments/<id>` page (#735).

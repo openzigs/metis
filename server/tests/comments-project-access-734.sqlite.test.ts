@@ -500,7 +500,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const rows = await db.notification.findMany({ where: { type: "mention" } });
         expect(rows.map((r) => r.userId)).toEqual(["u-member"]);
         expect(rows[0]!.href).toBe(
-          `/projects/${PROJECT}/analysis?analysisId=${ANALYSIS}&requirementId=${REQ}`,
+          `/projects/${PROJECT}/analysis?analysisId=${ANALYSIS}&requirementId=${REQ}&comments=1`,
         );
         expect(rows[0]!.message).toBe(`Alice Author mentioned you on "Feeds refresh on schedule"`);
       });

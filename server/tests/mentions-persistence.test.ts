@@ -72,7 +72,9 @@ describe("fanOutMentions — Issue #416 persistence", () => {
     await fanOutMentions("comment-xyz", "@carol hi", "author-1");
 
     const createCall = mockPrisma.notification.create.mock.calls[0][0];
-    expect(createCall.data.href).toBe("/projects/p-1/analysis?analysisId=a-1&requirementId=req-1");
+    expect(createCall.data.href).toBe(
+      "/projects/p-1/analysis?analysisId=a-1&requirementId=req-1&comments=1",
+    );
     expect(createCall.data.message).toBe('Alice mentioned you on "Login works"');
   });
 

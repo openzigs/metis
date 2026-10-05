@@ -269,7 +269,7 @@ describe("resolveCommentMentionContext (#735)", () => {
   it("links a requirement comment to the requirement on the analysis page", async () => {
     await expect(resolveCommentMentionContext("c-1")).resolves.toEqual({
       projectId: "p-1",
-      href: "/projects/p-1/analysis?analysisId=a-1&requirementId=req-1",
+      href: "/projects/p-1/analysis?analysisId=a-1&requirementId=req-1&comments=1",
       message: 'Alice mentioned you on "Login works"',
     });
   });

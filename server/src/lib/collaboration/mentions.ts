@@ -112,7 +112,9 @@ export async function resolveCommentMentionContext(
       projectId: requirement.projectId,
       href:
         `/projects/${enc(requirement.projectId)}/analysis` +
-        `?analysisId=${enc(requirement.analysisId)}&requirementId=${enc(requirement.id)}`,
+        `?analysisId=${enc(requirement.analysisId)}&requirementId=${enc(requirement.id)}` +
+        // Opens the requirement's comment panel, not just its card (#735).
+        `&comments=1`,
       message: `${who} mentioned you on "${title}"`,
     };
   }

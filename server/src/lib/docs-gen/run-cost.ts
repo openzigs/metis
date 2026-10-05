@@ -25,7 +25,6 @@ import { currentGenerationScope } from "./generation-scope.js";
 
 const log = createChildLogger("docs-gen-run-cost");
 
-/** One recorded model call's token counts. */
 /**
  * #792 — `agentStep` on the project-ledger rows of docs-generation calls. Here,
  * not in `holistic-synthesizer.ts`, so the DB-schema synthesizer (#858) can
@@ -33,6 +32,7 @@ const log = createChildLogger("docs-gen-run-cost");
  */
 export const DOCS_GEN_AGENT_STEP = "docs-gen";
 
+/** One recorded model call's token counts. */
 export interface RunUsageEvent {
   provider: string;
   model: string;
