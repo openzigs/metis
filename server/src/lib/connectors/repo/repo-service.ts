@@ -750,13 +750,9 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
   const start = Date.now();
   try {
     const octokit = await acquireOctokit(conn.apiBaseUrl, conn.secretRef);
-    emitter().progress({
-      connectorId: id,
-      projectId,
-      kind: "repo",
-      phase: "test",
-      step: "repo.get",
-    });
+    // #762 — no `connector:progress` here: a Test is one request answered in
+    // well under a second, and its count-less progress event left a stuck
+    // "repo.get /" row under the card. The response (and its toast) reports it.
     const repoData = await octokit.rest.repos.get({
       owner: git.ownerOrOrg,
       repo: git.repoName,

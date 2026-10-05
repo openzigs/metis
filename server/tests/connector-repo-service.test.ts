@@ -154,6 +154,7 @@ import {
   readCloneHeadSha,
   shallowCloneRepo,
   testRepoConnector,
+  configureRepoConnectorService,
   updateRepoConnector,
   type OctokitLike,
   type SimpleGitLike,
@@ -1131,6 +1132,28 @@ describe("#714 — pinned ref survives Test", () => {
     const result = await testRepoConnector("proj_1", c.id, "user_1");
     expect(result.ok).toBe(true);
     expect((await getRepoConnector("proj_1", c.id)).defaultBranch).toBe("v2.3.3");
+  });
+});
+
+describe("#762 — Test sends no progress event", () => {
+  afterEach(() => configureRepoConnectorService({}));
+
+  it("reports through its response and status, never a count-less progress row", async () => {
+    const progress = vi.fn();
+    const status = vi.fn();
+    configureRepoConnectorService({
+      emitter: { progress, status, discovery: vi.fn() } as never,
+    });
+    __setOctokitFactory(() => makeOctokit({}));
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "t762", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.ok).toBe(true);
+    expect(progress).not.toHaveBeenCalled();
+    expect(status).toHaveBeenCalledWith(expect.objectContaining({ status: "connected" }));
   });
 });
 

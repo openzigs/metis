@@ -30,6 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useConnectorProgress, useConnectorDiscovery } from "@/hooks/use-connector-events";
+import { isDeterminate, progressLabel } from "@/lib/connector-progress";
 import { useDeepIngest } from "@/hooks/use-deep-ingest";
 import { DeepIngestOutcomeBanner } from "@/components/connectors/deep-ingest-outcome-banner";
 import { DbConnectorWizard } from "@/components/connectors/db-connector-wizard";
@@ -126,7 +127,11 @@ export default function ConnectionsPage() {
   const qc = useQueryClient();
 
   // Socket.IO real-time progress + discovery (#664, #669)
-  const { progressMap, clearProgress } = useConnectorProgress(projectId);
+  // #762 — a run that ends (the auto-ingest a new connector starts has no job
+  // id to follow) refetches the cards, so status and commit appear without a reload.
+  const { progressMap, clearProgress } = useConnectorProgress(projectId, {
+    onSettled: () => qc.invalidateQueries({ queryKey: repoKeys.list(projectId) }),
+  });
   useConnectorDiscovery(projectId, () => {
     qc.invalidateQueries({ queryKey: suggestedKeys.list(projectId) });
   });
@@ -1014,10 +1019,12 @@ export default function ConnectionsPage() {
                 {progressMap[r.id] && (
                   <div className="mt-2 space-y-1" data-testid={`progress-${r.id}`}>
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>{progressMap[r.id].step}</span>
-                      <span>
-                        {progressMap[r.id].current}/{progressMap[r.id].total}
-                      </span>
+                      <span>{progressLabel(progressMap[r.id])}</span>
+                      {isDeterminate(progressMap[r.id]) ? (
+                        <span>
+                          {progressMap[r.id].current}/{progressMap[r.id].total}
+                        </span>
+                      ) : null}
                     </div>
                     <Progress
                       value={
