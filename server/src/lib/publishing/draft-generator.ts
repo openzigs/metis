@@ -65,31 +65,31 @@ export interface GeneratedDraftSummary {
  */
 async function noRequirementsError(analysisId: string): Promise<PublishError> {
   const gate = await canCreateTickets(analysisId);
+  // #406 — ids, counts and the remedy only. The UI builds the route itself, so
+  // the server holds no knowledge of UI paths and the client follows no URL it
+  // was handed.
   if (gate.allowed) {
+    // Issue #723 — a rejection is a resolution, so an open gate with nothing
+    // promoted means every requirement was rejected. A rejected approval can be
+    // reopened on the Analysis page, so point there rather than at a re-run.
+    if (gate.rejectedCount > 0) {
+      return new PublishError(
+        400,
+        "APPROVALS_BLOCKING",
+        `analysis has no requirements — all ${gate.rejectedCount} reviewed approval(s) were rejected; reopen and approve the ones to keep on the Analysis page`,
+        false,
+        {
+          analysisId,
+          pendingCount: gate.pendingCount,
+          rejectedCount: gate.rejectedCount,
+          action: "resolve",
+        },
+      );
+    }
     return new PublishError(
       400,
       "NO_REQUIREMENTS",
       "analysis has no requirements — run analysis first",
-    );
-  }
-  // #406 — ids, counts and the remedy only. The UI builds the route itself, so
-  // the server holds no knowledge of UI paths and the client follows no URL it
-  // was handed.
-  // A rejection is final (a reviewed approval cannot be re-reviewed, 409
-  // APPROVAL_ALREADY_REVIEWED), so a run holding one can never produce
-  // requirements: the remedy is a new run, not the approvals panel (PR #404 panel).
-  if (gate.rejectedCount > 0) {
-    return new PublishError(
-      400,
-      "APPROVALS_BLOCKING",
-      `analysis has no requirements — ${gate.rejectedCount} approval(s) were rejected, so this run cannot produce requirements; re-run the analysis`,
-      false,
-      {
-        analysisId,
-        pendingCount: gate.pendingCount,
-        rejectedCount: gate.rejectedCount,
-        action: "rerun",
-      },
     );
   }
   return new PublishError(

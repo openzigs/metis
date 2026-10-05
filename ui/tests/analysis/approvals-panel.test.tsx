@@ -10,7 +10,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const { analysisApi } = vi.hoisted(() => ({
-  analysisApi: { listApprovals: vi.fn(), reviewApproval: vi.fn() },
+  analysisApi: { listApprovals: vi.fn(), reviewApproval: vi.fn(), reopenApproval: vi.fn() },
 }));
 
 vi.mock("@/lib/analysis-api", async () => {
@@ -302,5 +302,70 @@ describe("ApprovalsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
     expect(await screen.findByText(/Could not record the review/)).toBeInTheDocument();
+  });
+
+  // Issue #723 — a rejection used to be final and dead-ended the run.
+  describe("rejected approvals (#723)", () => {
+    it("treats a rejection as resolved: unblocked banner names what was left out", async () => {
+      renderPanel(
+        [
+          approval({ id: "ap-1", status: "rejected" }),
+          approval({ id: "ap-2", status: "approved", itemId: "req-2" }),
+        ],
+        { allowed: true, pendingCount: 0, rejectedCount: 1 },
+      );
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent(/unblocked/i);
+      expect(banner).toHaveTextContent("1 rejected item(s) were left out");
+    });
+
+    it("never lists rejections as outstanding in the blocked banner", async () => {
+      renderPanel(
+        [approval({ id: "ap-1", status: "rejected" }), approval({ id: "ap-2", itemId: "req-2" })],
+        { allowed: false, pendingCount: 1, rejectedCount: 1 },
+      );
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent("1 pending approval(s) must be resolved");
+      expect(banner).not.toHaveTextContent("rejected");
+    });
+
+    it("offers Reopen on a rejected approval and calls the reopen endpoint", async () => {
+      analysisApi.reopenApproval.mockResolvedValue(approval({ status: "pending" }));
+      renderPanel([approval({ id: "ap-1", status: "rejected" })], {
+        allowed: true,
+        pendingCount: 0,
+        rejectedCount: 1,
+      });
+
+      const reopen = await screen.findByRole("button", { name: "Reopen requirement item 1" });
+      fireEvent.click(reopen);
+
+      await waitFor(() =>
+        expect(analysisApi.reopenApproval).toHaveBeenCalledWith("proj-1", "ana-1", "ap-1"),
+      );
+      // The card moves back to Pending only once the list is re-read.
+      await waitFor(() => expect(analysisApi.listApprovals.mock.calls.length).toBeGreaterThan(1));
+    });
+
+    it("does not offer Reopen on an approved approval", async () => {
+      renderPanel([approval({ id: "ap-1", status: "approved" })], {
+        allowed: true,
+        pendingCount: 0,
+        rejectedCount: 0,
+      });
+      await screen.findByTestId("promotion-banner");
+      expect(screen.queryByRole("button", { name: /Reopen/ })).not.toBeInTheDocument();
+    });
+
+    it("shows a reopen failure", async () => {
+      analysisApi.reopenApproval.mockRejectedValue(new ApiError(409, "only a rejected approval"));
+      renderPanel([approval({ id: "ap-1", status: "rejected" })], {
+        allowed: true,
+        pendingCount: 0,
+        rejectedCount: 1,
+      });
+      fireEvent.click(await screen.findByRole("button", { name: /Reopen/ }));
+      expect(await screen.findByText("only a rejected approval")).toBeInTheDocument();
+    });
   });
 });

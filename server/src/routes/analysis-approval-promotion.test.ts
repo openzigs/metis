@@ -47,6 +47,13 @@ const reviewApprovalRequest = vi.fn(async () => ({
   status: "approved",
 }));
 const promoteApprovedRequirements = vi.fn();
+const reopenApprovalRequest = vi.fn(async () => ({
+  id: "ap_1",
+  analysisId: "analysis-1",
+  type: "requirement",
+  itemId: "r1",
+  status: "pending",
+}));
 
 vi.mock("../lib/analysis/index.js", () => ({
   ANALYSIS_SPECIALIST_AGENT_KEYS: [],
@@ -67,6 +74,7 @@ vi.mock("../lib/analysis/index.js", () => ({
   getDialogState: vi.fn(),
   listApprovalRequests: vi.fn(),
   reviewApprovalRequest,
+  reopenApprovalRequest,
   canCreateTickets: vi.fn(),
   promoteApprovedRequirements,
   deepDiveFinding: vi.fn(),
@@ -146,5 +154,31 @@ describe("PUT .../approvals/:approvalId — #1104 promotion retry", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.status).toBe("approved");
     expect(res.body.data.promotion.status).toBe("unavailable");
+  });
+});
+
+describe("POST .../approvals/:approvalId/reopen — #723", () => {
+  it("reopens a rejected approval scoped to its analysis", async () => {
+    const res = await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
+    );
+
+    expect(res.status).toBe(200);
+    expect(reopenApprovalRequest).toHaveBeenCalledWith("analysis-1", "ap_1");
+    expect(res.body.data.status).toBe("pending");
+  });
+
+  it("passes through the service's 409 for an approval that is not rejected", async () => {
+    const { AppError } = await import("../middleware/error-handler.js");
+    reopenApprovalRequest.mockRejectedValueOnce(
+      new AppError(409, "APPROVAL_NOT_REOPENABLE", "only a rejected approval can be reopened"),
+    );
+
+    const res = await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("APPROVAL_NOT_REOPENABLE");
   });
 });

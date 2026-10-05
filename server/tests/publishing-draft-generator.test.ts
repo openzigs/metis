@@ -664,9 +664,8 @@ describe("generateDrafts", () => {
       expect(message).toContain("Analysis page");
       expect(message).not.toContain("run analysis first");
 
-      // PR #404 panel — a rejection is final, so any rejected checkpoint means
-      // this run can never produce requirements: point at a new run, not at the
-      // approvals panel, even while other approvals are still pending.
+      // Issue #723 — a rejection is a resolution, so while another approval is
+      // still pending the remedy is the approvals panel, not a re-run.
       approvalCounts.rejected = 1;
       const rejected = await generateDrafts({
         projectId: "proj_1",
@@ -676,30 +675,25 @@ describe("generateDrafts", () => {
       }).catch((e: unknown) => e);
       expect(rejected).toMatchObject({
         code: "APPROVALS_BLOCKING",
-        message: expect.stringContaining("1 approval(s) were rejected"),
-        details: {
-          pendingCount: 3,
-          rejectedCount: 1,
-          action: "rerun",
-        },
+        details: { pendingCount: 3, rejectedCount: 1, action: "resolve" },
       });
-      expect((rejected as PublishError).details).not.toHaveProperty("resolveUrl");
-      expect((rejected as PublishError).message).toContain("re-run the analysis");
-      expect((rejected as PublishError).message).not.toContain("resolve them");
+      expect((rejected as PublishError).message).not.toContain("re-run");
 
-      // Rejected alone: the same re-run remedy.
+      // Rejected alone: every reviewed requirement was rejected. A rejection can
+      // be reopened, so the remedy is still the approvals panel, never a re-run.
       approvalCounts.pending = 0;
-      await expect(
-        generateDrafts({
-          projectId: "proj_1",
-          analysisId: "analysis_1",
-          targetOwner: "acme",
-          targetRepo: "metis",
-        }),
-      ).rejects.toMatchObject({
+      const allRejected = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+      expect(allRejected).toMatchObject({
         code: "APPROVALS_BLOCKING",
-        details: { action: "rerun" },
+        details: { pendingCount: 0, rejectedCount: 1, action: "resolve" },
       });
+      expect((allRejected as PublishError).message).toContain("reopen");
+      expect((allRejected as PublishError).message).not.toContain("re-run");
     } finally {
       requirements.push(
         {

@@ -65,11 +65,6 @@ export function GenerateIssuesAction({
   const gateUnknown = approvalsState !== "ready";
   if (!gated && !gateUnknown && !hasFindings) return null;
 
-  // A rejected approval is final (it cannot be re-reviewed), so a run holding
-  // one can never produce requirements: say so, and point at a new run rather
-  // than the approvals panel (PR #404 panel).
-  const rejected = gated && ticketStatus.rejectedCount > 0;
-
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <button
@@ -97,8 +92,6 @@ export function GenerateIssuesAction({
           ) : (
             "Checking approvals…"
           )
-        ) : rejected ? (
-          `${ticketStatus.rejectedCount} approval(s) were rejected, so this run can't produce requirements. Re-run the analysis to generate issues.`
         ) : gated ? (
           <>
             {ticketStatus.pendingCount > 0

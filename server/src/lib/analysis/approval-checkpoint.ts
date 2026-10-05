@@ -152,7 +152,51 @@ export async function areAllApprovalsResolved(analysisId: string): Promise<boole
 }
 
 /**
- * Check if ticket creation is allowed (all approvals resolved, none rejected).
+ * Issue #723 — reopen a REJECTED approval so it can be reviewed again.
+ *
+ * A rejection used to be final, and because the gate also treated it as
+ * unresolved, one rejected requirement dead-ended the whole run. Rejections are
+ * now resolutions (see {@link canCreateTickets}); reopening is how a reviewer
+ * takes one back. Only `rejected` reopens: an `approved` requirement may
+ * already be a promoted row, and withdrawing it is a requirement edit, not an
+ * approval state change.
+ */
+export async function reopenApprovalRequest(
+  analysisId: string,
+  requestId: string,
+): Promise<ApprovalRequestRow> {
+  const existing = await prisma.approvalRequest.findFirst({
+    where: { id: requestId, analysisId },
+  });
+  if (!existing) {
+    throw new AppError(404, "APPROVAL_NOT_FOUND", `Approval request ${requestId} not found`);
+  }
+  if (existing.status !== "rejected") {
+    throw new AppError(
+      409,
+      "APPROVAL_NOT_REOPENABLE",
+      `Approval request ${requestId} is ${existing.status}; only a rejected approval can be reopened`,
+    );
+  }
+
+  log.info("Reopening approval request", { requestId, analysisId });
+
+  const updated = await prisma.approvalRequest.update({
+    where: { id: requestId },
+    data: { status: "pending", reviewerId: null, reviewNote: null, reviewedAt: null },
+  });
+  return updated as ApprovalRequestRow;
+}
+
+/**
+ * Check if ticket creation is allowed: every approval is resolved.
+ *
+ * Issue #723 — a REJECTED approval is a resolution, exactly as
+ * {@link areAllApprovalsResolved} counts it: the rejected item is left out of
+ * the promoted set (`buildApprovedRequirementSet`) and the approved ones are
+ * promoted. Counting it as outstanding made one rejection block promotion,
+ * publishing and Deep Dive forever, with nothing in the product able to clear
+ * it. `rejectedCount` is still reported so surfaces can say what was dropped.
  */
 export async function canCreateTickets(analysisId: string): Promise<{
   allowed: boolean;
@@ -165,7 +209,7 @@ export async function canCreateTickets(analysisId: string): Promise<{
   ]);
 
   return {
-    allowed: pendingCount === 0 && rejectedCount === 0,
+    allowed: pendingCount === 0,
     pendingCount,
     rejectedCount,
   };

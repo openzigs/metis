@@ -92,7 +92,8 @@ export interface CreateBatchOptions {
 /**
  * #257 — defence-in-depth promotion guard for the publishing layer. Throws a
  * `PublishError(409, "PROMOTION_BLOCKED", ...)` if any of the supplied analyses
- * still has unresolved (pending) or rejected approvals. A no-op for the empty
+ * still has unresolved (pending) approvals. A rejected approval is resolved
+ * (#723): its requirement was left out of the promoted set. A no-op for the empty
  * set (drafts not traceable to an analysis fall back to the upstream gate).
  * Exported for unit testing.
  */
@@ -103,7 +104,7 @@ export async function assertPromotionAllowed(analysisIds: string[]): Promise<voi
       throw new PublishError(
         409,
         "PROMOTION_BLOCKED",
-        `promotion blocked for analysis ${analysisId}: ${ticketStatus.pendingCount} pending, ${ticketStatus.rejectedCount} rejected approval(s) must be resolved before publishing`,
+        `promotion blocked for analysis ${analysisId}: ${ticketStatus.pendingCount} pending approval(s) must be resolved before publishing`,
       );
     }
   }

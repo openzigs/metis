@@ -655,6 +655,13 @@ export const analysisApi = {
       { method: "PUT", body },
     ),
 
+  /** Issue #723 — return a rejected approval to pending so it can be reviewed again. */
+  reopenApproval: (projectId: string, analysisId: string, approvalId: string) =>
+    apiFetch<ApprovalRequestPayload>(
+      `/projects/${projectId}/analyses/${analysisId}/approvals/${approvalId}/reopen`,
+      { method: "POST" },
+    ),
+
   // ── Epic #176 — Deep Dive → Issue ──────────────────────────────────────
 
   /** Sub 2: expand a single finding into an editable issue draft (1 LLM call). */

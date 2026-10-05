@@ -58,6 +58,7 @@ import {
   ClarificationDialog,
   getDialogState,
   listApprovalRequests,
+  reopenApprovalRequest,
   reviewApprovalRequest,
   canCreateTickets,
   // Issue #1104 (finding B) — release the requirements the gate withheld.
@@ -1085,6 +1086,37 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       }
 
       res.json(ok({ ...updated, promotion }));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/approvals/:approvalId/reopen
+   * Issue #723 — return a REJECTED approval to pending so it can be reviewed
+   * again. A rejection used to be final, which left a mistaken rejection with
+   * no way back short of a full re-run. Scoped exactly like the review route
+   * (#1097): the analysis to its project, the approval to its analysis.
+   */
+  projectScoped.post(
+    "/:id/approvals/:approvalId/reopen",
+    requireAuth,
+    requirePermission("analysis.run"),
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      const approvalId = String(req.params.approvalId);
+      await ensureAnalysisVisible(analysisId, projectId);
+
+      const actor = actorFromReq(req);
+      const updated = await reopenApprovalRequest(analysisId, approvalId);
+
+      audit({
+        actor: { id: actor.id },
+        action: "analysis.approval.reopen",
+        target: { type: "approval_request", id: approvalId },
+        metadata: { analysisId },
+      });
+
+      res.json(ok(updated));
     },
   );
 

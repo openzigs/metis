@@ -547,18 +547,21 @@ describe("Generate GitHub Issues on the Findings tab", () => {
     expect(screen.queryByRole("link", { name: /Generate GitHub Issues/ })).not.toBeInTheDocument();
   });
 
-  it("names a rejected approval", async () => {
+  // #723 — a rejection no longer dead-ends the run: the gate is open, so the
+  // reason is the plain "no requirements", never a demand to re-run.
+  it("does not demand a re-run for a rejected approval", async () => {
     apiMock.get.mockResolvedValue({ ...SNAPSHOT, requirements: [] });
     apiMock.listApprovals.mockResolvedValue({
       items: [],
-      ticketStatus: { allowed: false, pendingCount: 0, rejectedCount: 1 },
+      ticketStatus: { allowed: true, pendingCount: 0, rejectedCount: 1 },
     });
     renderPage();
     await waitFor(() =>
       expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
-        "1 approval(s) were rejected",
+        "No requirements to generate issues from.",
       ),
     );
+    expect(screen.getByTestId("generate-issues-reason")).not.toHaveTextContent("Re-run");
   });
 
   it("says it is checking while the approvals query is in flight", async () => {

@@ -44,12 +44,14 @@ describe("GenerateIssuesAction (#362)", () => {
 
   // PR #404 panel — a rejection is final, so the remedy is a new run; sending
   // the user to the approvals panel would be a dead end.
-  it("says a run with a rejected approval must be re-run, with no approvals link", () => {
+  // #723 — a rejection is resolved (and can be reopened); only the pending
+  // approval holds the gate, so point at the approvals, never at a re-run.
+  it("points a run holding a rejection and a pending approval at the approvals, not a re-run", () => {
     renderAction({ ticketStatus: { allowed: false, pendingCount: 1, rejectedCount: 2 } });
-    expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
-      "2 approval(s) were rejected, so this run can't produce requirements. Re-run the analysis",
-    );
-    expect(screen.queryByRole("link", { name: "Go to approvals" })).not.toBeInTheDocument();
+    const reason = screen.getByTestId("generate-issues-reason");
+    expect(reason).toHaveTextContent("1 pending approval(s) must be resolved");
+    expect(reason).not.toHaveTextContent("Re-run");
+    expect(screen.getByRole("link", { name: "Go to approvals" })).toBeInTheDocument();
   });
 
   it("explains the gate even on a run with no findings", () => {

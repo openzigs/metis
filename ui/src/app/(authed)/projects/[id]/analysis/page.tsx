@@ -1304,7 +1304,8 @@ export default function AnalysisPage(): React.ReactElement {
                                 title={
                                   ticketsAllowed
                                     ? "Expand this finding into a publishable issue draft"
-                                    : "Ticket creation is blocked until pending approvals are resolved"
+                                    : // #723 — name the real reason: only PENDING approvals hold the gate.
+                                      `Ticket creation is blocked until ${approvals.data?.ticketStatus?.pendingCount ?? 0} pending approval(s) are resolved`
                                 }
                                 onClick={() => {
                                   setDeepDiveFinding({

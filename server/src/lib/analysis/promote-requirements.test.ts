@@ -38,12 +38,14 @@ const SYNTHESIS_OUTPUT = {
 
 const gate = { allowed: true, pendingCount: 0, rejectedCount: 0 };
 const db = {
-  analysis: { projectId: PROJECT_ID } as { projectId: string } | null,
+  analysis: { projectId: PROJECT_ID } as { projectId: string; metadata?: string } | null,
   synthesisOutput: JSON.stringify(SYNTHESIS_OUTPUT) as string | null,
   requirementCount: 0,
   /** #730 — the reviewed structured list and its per-requirement approvals. */
   structured: null as { requirements: Array<Record<string, unknown>> } | null,
   approvals: [] as Array<{ itemId: string; status: string }>,
+  /** #723 — titles of the rows already promoted (legacy append matching). */
+  existingTitles: [] as string[],
 };
 
 vi.mock("../prisma.js", () => ({
@@ -52,7 +54,13 @@ vi.mock("../prisma.js", () => ({
     agentResult: {
       findFirst: vi.fn(async () => (db.synthesisOutput ? { output: db.synthesisOutput } : null)),
     },
-    requirement: { count: vi.fn(async () => db.requirementCount) },
+    requirement: {
+      count: vi.fn(async () => db.requirementCount),
+      findMany: vi.fn(async () => db.existingTitles.map((title) => ({ title }))),
+      create: vi.fn(async ({ data }: { data: { title: string } }) => ({
+        id: `rq_new_${data.title.length}`,
+      })),
+    },
     approvalRequest: {
       findMany: vi.fn(async ({ where }: { where: { type?: string } }) =>
         db.approvals.filter(() => where.type === "requirement"),
@@ -96,6 +104,7 @@ vi.mock("./approval-checkpoint.js", async (importOriginal) => {
 });
 
 const { promoteApprovedRequirements } = await import("./promote-requirements.js");
+const { prisma } = await import("../prisma.js");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -107,6 +116,7 @@ beforeEach(() => {
   db.requirementCount = 0;
   db.structured = null;
   db.approvals = [];
+  db.existingTitles = [];
   findings.length = 0;
 });
 
@@ -388,5 +398,103 @@ describe("#730 — promote the requirements the user approved, not a different s
 
     expect(persistedRequirements()).toHaveLength(3);
     expect(persistedRequirements()[0]?.title).toBe("Could not verify: PORT overrides LISTEN_ADDR");
+  });
+});
+
+describe("#723 — a rejected requirement is dropped, and can be reopened after promotion", () => {
+  const created = () =>
+    (
+      prisma.requirement.create as unknown as {
+        mock: { calls: Array<[{ data: { title: string } }]> };
+      }
+    ).mock.calls.map((c) => c[0].data.title);
+
+  const structuredReq = (id: string, title: string) => ({
+    id,
+    title,
+    description: `${title}.`,
+    type: "functional",
+    stakeholders: [],
+    priority: "should-have",
+    ambiguities: [],
+    evidenceNeeds: [],
+    rawSource: "",
+  });
+
+  beforeEach(() => {
+    db.structured = {
+      requirements: [
+        structuredReq("REQ-1", "Feed URL must be absolute"),
+        structuredReq("REQ-2", "Reading speed validation"),
+        structuredReq("REQ-3", "Per-host polling concurrency limit"),
+      ],
+    };
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "rejected" },
+      { itemId: "REQ-3", status: "approved" },
+    ];
+    gate.rejectedCount = 1;
+  });
+
+  it("promotes the approved ones and records which structured ids it promoted", async () => {
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome.status).toBe("promoted");
+    const input = persistRequirements.mock.calls[0]?.[0] as {
+      synthesis: { requirements: Array<{ title: string }> };
+    };
+    expect(input.synthesis.requirements.map((r) => r.title)).toEqual([
+      "Feed URL must be absolute",
+      "Per-host polling concurrency limit",
+    ]);
+    expect(persistAnalysisEnhancement).toHaveBeenCalledWith(ANALYSIS_ID, {
+      promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 1 },
+      promotionStatus: "allowed",
+      promotedStructuredIds: ["REQ-1", "REQ-3"],
+    });
+  });
+
+  it("adds a reopened-then-approved requirement without replacing the promoted set", async () => {
+    db.requirementCount = 2;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-3"] }),
+    };
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+    gate.rejectedCount = 0;
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
+    expect(persistRequirements).not.toHaveBeenCalled();
+    expect(created()).toEqual(["Reading speed validation"]);
+    expect(applyClarificationsToRequirements).toHaveBeenCalledWith(ANALYSIS_ID);
+    expect(persistAnalysisEnhancement).toHaveBeenCalledWith(ANALYSIS_ID, {
+      promotedStructuredIds: ["REQ-1", "REQ-3", "REQ-2"],
+    });
+  });
+
+  it("matches on title for a set promoted before the ids were recorded", async () => {
+    db.requirementCount = 2;
+    db.existingTitles = ["Feed URL must be absolute", "per-host polling  concurrency limit"];
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(created()).toEqual(["Reading speed validation"]);
+  });
+
+  it("is still a no-op when every approved requirement is already promoted", async () => {
+    db.requirementCount = 2;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-3"] }),
+    };
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "already-promoted", requirementCount: 2 });
+    expect(created()).toEqual([]);
   });
 });

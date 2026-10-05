@@ -134,12 +134,15 @@ function PromotionBanner({
         className="rounded border border-success/40 bg-success-muted px-3 py-2 text-sm text-success"
       >
         All approvals resolved — artifact promotion is unblocked.
+        {/* #723 — a rejection is a resolution: say what it did, and how to undo it. */}
+        {status.rejectedCount > 0 &&
+          ` ${status.rejectedCount} rejected item(s) were left out; reopen one below to review it again.`}
       </div>
     );
   }
+  // #723 — rejected approvals are resolved; only pending ones hold the gate.
   const parts: string[] = [];
   if (status.pendingCount > 0) parts.push(`${status.pendingCount} pending`);
-  if (status.rejectedCount > 0) parts.push(`${status.rejectedCount} rejected`);
   return (
     <div
       role="alert"
@@ -221,6 +224,17 @@ function ApprovalCard({
       // #364 — someone (or another tab) resolved it first: refresh so the card
       // moves to Resolved instead of leaving a button that can only 409.
       if (err instanceof ApiError && err.code === "APPROVAL_ALREADY_REVIEWED") onChange();
+    },
+  });
+  // Issue #723 — a rejection used to be final. Reopening returns it to pending
+  // (the server refuses anything but `rejected`), which closes the gate again
+  // until it is re-reviewed.
+  const reopenMutation = useMutation({
+    mutationFn: () => analysisApi.reopenApproval(projectId, analysisId, approval.id),
+    onSuccess: () => {
+      onChange();
+      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(analysisId) });
     },
   });
   // #364 — once a decision has been recorded the card stays on screen until the
@@ -320,6 +334,27 @@ function ApprovalCard({
       {isResolved && approval.reviewNote && (
         <p className="text-xs text-muted-foreground">Note: {approval.reviewNote}</p>
       )}
+
+      {approval.status === "rejected" && (
+        <div className="space-y-1">
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label={`Reopen ${itemName}`}
+            onClick={() => reopenMutation.mutate()}
+            disabled={reopenMutation.isPending || reopenMutation.isSuccess}
+          >
+            Reopen
+          </Button>
+          {reopenMutation.isError && (
+            <p role="alert" className="text-xs text-destructive">
+              {reopenMutation.error instanceof ApiError
+                ? reopenMutation.error.message
+                : "Could not reopen this approval. Try again."}
+            </p>
+          )}
+        </div>
+      )}
     </Card>
   );
 }
@@ -400,7 +435,7 @@ export function ApprovalsPanel({
         <h3 className="text-lg font-semibold">Approvals</h3>
         <p className="text-sm text-muted-foreground">
           Review and resolve the human-in-the-loop checkpoints below. Specs are not promoted until
-          every approval is resolved.
+          every approval is resolved; rejected items are left out, and can be reopened.
         </p>
       </div>
 

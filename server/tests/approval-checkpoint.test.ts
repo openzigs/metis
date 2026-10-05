@@ -74,6 +74,7 @@ const {
   reviewApprovalRequest,
   areAllApprovalsResolved,
   canCreateTickets,
+  reopenApprovalRequest,
   DEFAULT_APPROVAL_POLICY,
 } = await import("../src/lib/analysis/approval-checkpoint.js");
 
@@ -272,17 +273,39 @@ describe("ApprovalCheckpoint", () => {
       expect(result.pendingCount).toBe(1);
     });
 
-    it("blocks when rejected approvals exist", async () => {
-      await createApprovalRequests("analysis-1", [{ type: "evidence" as const, itemId: "e-1" }]);
+    // Issue #723 — a rejection is a resolution. Treating it as outstanding
+    // dead-ended the run: nothing pending, promotion and Deep Dive blocked forever.
+    it("allows when the only non-approved approvals are rejected, and reports them", async () => {
+      await createApprovalRequests("analysis-1", [
+        { type: "requirement" as const, itemId: "r-1" },
+        { type: "requirement" as const, itemId: "r-2" },
+      ]);
 
+      await reviewApprovalRequest("analysis-1", "approval-1", {
+        status: "rejected",
+        reviewerId: "user-1",
+      });
+      await reviewApprovalRequest("analysis-1", "approval-2", {
+        status: "approved",
+        reviewerId: "user-1",
+      });
+
+      const result = await canCreateTickets("analysis-1");
+      expect(result).toEqual({ allowed: true, pendingCount: 0, rejectedCount: 1 });
+    });
+
+    it("still blocks while another approval is pending beside a rejection", async () => {
+      await createApprovalRequests("analysis-1", [
+        { type: "requirement" as const, itemId: "r-1" },
+        { type: "requirement" as const, itemId: "r-2" },
+      ]);
       await reviewApprovalRequest("analysis-1", "approval-1", {
         status: "rejected",
         reviewerId: "user-1",
       });
 
       const result = await canCreateTickets("analysis-1");
-      expect(result.allowed).toBe(false);
-      expect(result.rejectedCount).toBe(1);
+      expect(result).toEqual({ allowed: false, pendingCount: 1, rejectedCount: 1 });
     });
 
     it("allows when all approved", async () => {
@@ -316,6 +339,64 @@ describe("ApprovalCheckpoint", () => {
 
     it("requires requirement approval by default", () => {
       expect(DEFAULT_APPROVAL_POLICY.requireRequirementApproval).toBe(true);
+    });
+  });
+});
+
+describe("reopenApprovalRequest (#723)", () => {
+  beforeEach(() => {
+    rows = [];
+    idCounter = 0;
+  });
+
+  it("returns a rejected approval to pending so it can be reviewed again", async () => {
+    await createApprovalRequests("analysis-1", [{ type: "requirement" as const, itemId: "r-1" }]);
+    await reviewApprovalRequest("analysis-1", "approval-1", {
+      status: "rejected",
+      reviewerId: "user-1",
+      reviewNote: "not needed",
+    });
+
+    const reopened = await reopenApprovalRequest("analysis-1", "approval-1");
+
+    expect(reopened).toMatchObject({ status: "pending", reviewerId: null, reviewNote: null });
+    const approved = await reviewApprovalRequest("analysis-1", "approval-1", {
+      status: "approved",
+      reviewerId: "user-2",
+    });
+    expect(approved.status).toBe("approved");
+  });
+
+  it("refuses to reopen an approved approval (409)", async () => {
+    await createApprovalRequests("analysis-1", [{ type: "requirement" as const, itemId: "r-1" }]);
+    await reviewApprovalRequest("analysis-1", "approval-1", {
+      status: "approved",
+      reviewerId: "user-1",
+    });
+
+    await expect(reopenApprovalRequest("analysis-1", "approval-1")).rejects.toMatchObject({
+      statusCode: 409,
+      code: "APPROVAL_NOT_REOPENABLE",
+    });
+  });
+
+  it("refuses to reopen a pending approval (409)", async () => {
+    await createApprovalRequests("analysis-1", [{ type: "requirement" as const, itemId: "r-1" }]);
+
+    await expect(reopenApprovalRequest("analysis-1", "approval-1")).rejects.toMatchObject({
+      code: "APPROVAL_NOT_REOPENABLE",
+    });
+  });
+
+  it("is scoped to its analysis (404 for another analysis's approval)", async () => {
+    await createApprovalRequests("analysis-1", [{ type: "requirement" as const, itemId: "r-1" }]);
+    await reviewApprovalRequest("analysis-1", "approval-1", {
+      status: "rejected",
+      reviewerId: "user-1",
+    });
+
+    await expect(reopenApprovalRequest("analysis-2", "approval-1")).rejects.toMatchObject({
+      code: "APPROVAL_NOT_FOUND",
     });
   });
 });
