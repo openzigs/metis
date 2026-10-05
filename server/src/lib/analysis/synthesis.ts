@@ -820,11 +820,16 @@ export async function runSynthesis(
     // `degraded` is what stops it from presenting as a clean success.
     const reason = failure?.reason ?? "empty-requirements";
     const output = fallbackSynthesize(input.findings);
+    // #868 review — the clusterer stops at 100 groups; a finding past that is
+    // in no requirement, and the notice must not say "Nothing was dropped".
+    const placed = new Set(output.requirements.flatMap((r) => r.evidenceFindingIndexes));
+    const findingsWithoutRequirement = total - placed.size;
     const degraded: SynthesisDegradation = {
       reason,
       ...(failure?.detail ? { detail: truncateDetail(failure.detail) } : {}),
       attempts: calls,
       requirementCount: output.requirements.length,
+      ...(findingsWithoutRequirement > 0 ? { findingsWithoutRequirement } : {}),
       at: new Date().toISOString(),
     };
     log.warn("Synthesis degraded to the deterministic fallback", {
@@ -917,6 +922,8 @@ export async function runSynthesis(
     requirementCount: grouped.length,
     // #751 — lets the banner say which requirements are model-written.
     modelRequirementCount: kept.length,
+    // #868 review — and whether "Nothing was dropped" is true.
+    ...(findingsShutOut > 0 ? { findingsWithoutRequirement: findingsShutOut } : {}),
     at: new Date().toISOString(),
   };
   log.warn("Synthesis partially degraded: unreached findings grouped deterministically", {

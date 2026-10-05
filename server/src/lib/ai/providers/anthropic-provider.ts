@@ -99,7 +99,8 @@ export function normalizeAnthropicModelId(id: string | undefined): string {
 /** Bare (non-Bedrock) default — mirrors the Bedrock default tier. */
 const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
 /** Messages API non-streaming default budget (#285). */
-const DEFAULT_MAX_TOKENS = 16_000;
+export const ANTHROPIC_DEFAULT_MAX_TOKENS = 16_000;
+const DEFAULT_MAX_TOKENS = ANTHROPIC_DEFAULT_MAX_TOKENS;
 /** Larger budget for streaming, where long outputs are expected (#285). */
 const DEFAULT_STREAM_MAX_TOKENS = 64_000;
 /** Lightweight `ping()`/`models()` probe timeout — safe for `/readyz`. */

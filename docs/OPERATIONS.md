@@ -289,7 +289,6 @@ psql "$DATABASE_URL" -c "DELETE FROM \"prReviewWebhookDelivery\" WHERE \"receive
 | Per release | Re-run `pnpm test:coverage` and confirm gates still pass |
 | Per release | Re-run `pnpm verify:image-size` after rebuilding the Docker images |
 | After any embedding-model / pooling / dtype change | `pnpm embeddings:migrate status`, then follow the runbook (below) |
-| Once, before upgrading a large Postgres deployment past #761 | Pre-run the batched `costUsd` backfill (§6.3) so the migration does not rewrite `token_usages` under an exclusive lock |
 | Once, after upgrading past the issue-draft dedup migration (#369) | `pnpm --filter @metis/server publishing:dedup-leftovers` — read-only; lists retired duplicate drafts that still have a published GitHub/Jira issue, split into issues shared with the kept draft (leave open) and separate issues (close one if unwanted) and live drafts whose parent was retired (#396) |
 
 ### 6.1 Embedding-model migration
@@ -382,43 +381,29 @@ carrying the current workflow and probe, then
 the `embed-parity-fixture` artifact, whose file name carries the runner's key. The ISA
 class is random per run, so dispatch a few and keep one per class.
 
-### 6.3 Upgrading a large Postgres ledger past the `costUsd` migration (#761)
+### 6.3 The `token_usages.costUsd` column (#761): no upgrade step
 
-Migration `20261014000761_issue761_token_usage_cost_usd` adds `token_usages.costUsd`
-and backfills it with one `UPDATE` of every priced row. Prisma sends the file as a
-single multi-statement query, which Postgres runs as **one transaction**, so the
-`ACCESS EXCLUSIVE` lock taken by `ADD COLUMN` is held until the `UPDATE` has
-rewritten the whole table. Every ledger read and write waits for that time, and
-the table is about twice its size until vacuum reclaims the old row versions.
-A single-instance deploy that migrates before it serves will not notice. A large or
-multi-replica deployment should do the backfill **before** `migrate deploy`, in
-batches, outside that lock.
+Migration `20261014000761_issue761_token_usage_cost_usd` only adds the nullable
+`token_usages.costUsd` column. On Postgres that is a metadata-only change: a brief
+lock, and no rewrite of the table. It does **not** backfill. Rows written before the
+upgrade keep `costUsd` NULL and are read through `costCents`, which every reader
+falls back to. Row readers do this through `ledgerRowCents`, and aggregate readers
+through `LEGACY_COST_ROW_WHERE` / `sumLedgerCents` (`server/src/lib/finops/ledger-cost.ts`).
+The same fallback covers rows that an old replica writes during a rolling deploy.
+The totals are therefore the same with or without a backfill, so there is nothing to
+run.
 
-The backfill is not needed for correctness. Every cost reader falls back to
-`costCents` when `costUsd` is NULL: the row readers do it through `ledgerRowCents`,
-and the aggregate readers through `LEGACY_COST_ROW_WHERE` / `sumLedgerCents`
-(`server/src/lib/finops/ledger-cost.ts`). That fallback also covers rows that an
-old replica writes during a rolling deploy. The migration file is left byte-identical,
-because editing applied SQL changes its checksum. It is idempotent, though: it uses
-`ADD COLUMN IF NOT EXISTS` and `WHERE "costUsd" IS NULL`. Run the steps below first,
-and the migration's own `UPDATE` then rewrites no rows.
+**Optional.** If you want `costUsd` populated anyway, for example for external SQL
+that reads the column directly, backfill in short batches. The values can only be
+`costCents / 100`, because prices live in code and in `MODEL_PRICES`. Repeat until
+the statement reports `UPDATE 0`:
 
 ```sql
--- 1. Metadata-only on Postgres 11+ (nullable, no default): a brief lock, no rewrite.
-ALTER TABLE "token_usages" ADD COLUMN IF NOT EXISTS "costUsd" DOUBLE PRECISION;
-
--- 2. Repeat until it reports UPDATE 0. Each batch is its own short transaction.
 UPDATE "token_usages" SET "costUsd" = "costCents" / 100.0
  WHERE "id" IN (SELECT "id" FROM "token_usages"
                  WHERE "costCents" IS NOT NULL AND "costUsd" IS NULL
                  LIMIT 10000);
-
--- 3. Then run `prisma migrate deploy` (or start the server) as usual.
 ```
-
-The migration's `UPDATE` still runs a sequential scan while it holds the lock,
-but it writes nothing. If a batch has not finished when you run `migrate deploy`,
-the migration completes the rest itself.
 
 ---
 

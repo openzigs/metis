@@ -57,8 +57,9 @@ export function sumLedgerCents(
 
 /**
  * The row's unrounded cost in cents, or `null` when it was recorded unpriced
- * (#22 — unknown spend, never $0). Falls back to `costCents` only for a row
- * whose writer set no `costUsd`; the #761 migration backfilled every priced row.
+ * (#22 — unknown spend, never $0). Falls back to `costCents` for a row
+ * whose writer set no `costUsd`: every row written before #761 (the migration
+ * does not backfill, #868 review) and any written by an older replica.
  */
 export function ledgerRowCents(row: {
   costCents: number | null;

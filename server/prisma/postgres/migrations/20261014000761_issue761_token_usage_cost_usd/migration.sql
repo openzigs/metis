@@ -8,16 +8,19 @@
 -- sum it and round once, for display. `costCents` stays, still written, for
 -- compatibility with anything reading it directly.
 --
--- Backfill: from `costCents / 100` (= `costCents` x 10,000 micro-USD), NOT
--- re-priced from token counts. Prices live in code and `MODEL_PRICES`, which
--- SQL cannot see, and re-pricing at migration time would apply today's price
--- to yesterday's call. So rows written before this migration keep their
--- per-row rounding (a sub-cent row stays $0); rows written after it are exact.
--- An unpriced row (`costCents` NULL) stays NULL — unknown spend, never $0 (#22).
+-- No backfill (#868 review). Existing rows keep `costUsd` NULL and are read
+-- through `costCents`: every reader goes through `ledgerRowCents` or, for an
+-- aggregate, `LEGACY_COST_ROW_WHERE` / `sumLedgerCents`
+-- (`server/src/lib/finops/ledger-cost.ts`). A backfill would add nothing — it
+-- could only copy `costCents / 100`, since prices live in code and
+-- `MODEL_PRICES`, which SQL cannot see — and on Postgres a full-table UPDATE in
+-- this migration's transaction would hold the ACCESS EXCLUSIVE lock taken by
+-- ADD COLUMN for the whole rewrite of the largest table. A nullable column with
+-- no default is a metadata-only change. An unpriced row (`costCents` NULL)
+-- stays NULL — unknown spend, never $0 (#22). An optional batched backfill is
+-- in OPERATIONS.md §6.3.
 --
 -- Rollback (documentation):
 --   ALTER TABLE "token_usages" DROP COLUMN "costUsd";
 -- Lossy only for the sub-cent precision of rows written since.
 ALTER TABLE "token_usages" ADD COLUMN IF NOT EXISTS "costUsd" DOUBLE PRECISION;
-UPDATE "token_usages" SET "costUsd" = "costCents" / 100.0
-  WHERE "costCents" IS NOT NULL AND "costUsd" IS NULL;

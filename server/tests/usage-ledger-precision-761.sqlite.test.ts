@@ -66,7 +66,7 @@ async function seedProject(db: PrismaClient, id: string, workspaceId?: string): 
 }
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
-  "#761 migration — backfills costUsd from costCents (real SQLite)",
+  "#761 migration — adds costUsd WITHOUT a backfill; legacy rows are read through costCents (real SQLite)",
   () => {
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
@@ -79,7 +79,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       await seedProject(db, "p-legacy");
       await db.$disconnect();
-      // Rows in the pre-#761 shape: one priced, one unpriced (#22).
+      // Rows in the pre-#761 shape: one priced, one unpriced (#22). `createdAt`
+      // defaults to now, so the windowed readers below see them.
       sqlite.exec(
         `INSERT INTO "token_usages" ("id","projectId","provider","model","totalTokens","costCents") VALUES (?,?,?,?,?,?)`,
         ["t-priced", "p-legacy", "openai", "gpt-4o", 5000, 7],
@@ -91,21 +92,39 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite.apply(MIGRATION);
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
-    afterAll(() => sqlite?.cleanup());
+    afterAll(async () => {
+      await (state.db as PrismaClient | null)?.$disconnect();
+      sqlite?.cleanup();
+    });
 
-    it("sets costUsd = costCents / 100 on a priced row, and leaves an unpriced row NULL", () => {
+    it("leaves every pre-existing row's costUsd NULL: the migration rewrites no rows", () => {
+      // #868 review — a full-table UPDATE in the same transaction as ADD COLUMN
+      // held Postgres's ACCESS EXCLUSIVE lock for the whole ledger rewrite.
       const raw = new Database(sqlite.dbFile, { readonly: true });
       try {
         const rows = raw
           .prepare(`SELECT "id", "costCents", "costUsd" FROM "token_usages" ORDER BY "id"`)
           .all() as Array<{ id: string; costCents: number | null; costUsd: number | null }>;
         expect(rows).toEqual([
-          { id: "t-priced", costCents: 7, costUsd: 0.07 },
+          { id: "t-priced", costCents: 7, costUsd: null },
           { id: "t-unpriced", costCents: null, costUsd: null },
         ]);
       } finally {
         raw.close();
       }
+    });
+
+    it("still counts the legacy priced row, and keeps the unpriced one unpriced (#22)", async () => {
+      const db2 = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
+      state.db = db2;
+      const summary = await summarizeUsage("p-legacy");
+      expect(summary.costCents).toBe(7);
+      const project = await new UsageService().projectUsage("p-legacy");
+      expect(project.totalCostUsd).toBeCloseTo(0.07, 10);
+      expect(project.unpriced.totalTokens).toBe(900);
+      const platform = await new UsageService().adminUsage({ groupBy: "project" });
+      expect(platform.totalCostUsd).toBeCloseTo(0.07, 10);
+      expect(platform.unpriced.totalTokens).toBe(900);
     });
   },
 );

@@ -643,6 +643,47 @@ describe("#751 synthesis recovers from an output-cap truncation", () => {
     expect(result.degraded?.detail).toMatch(/20 finding\(s\)/);
     const capWarning = synthesisWarn.mock.calls.find((c) => /cap/i.test(String(c[0])));
     expect(capWarning?.[1]).toMatchObject({ requirementsDropped: 20 });
+    // The notice must agree with the detail: something WAS dropped.
+    expect(result.degraded?.findingsWithoutRequirement).toBe(20);
+    const banner = describeSynthesisDegradation(result.degraded!);
+    expect(banner).toContain("20 findings are in no requirement");
+    expect(banner).not.toContain("Nothing was dropped");
+  });
+
+  it("a partial run that dropped nothing says so", async () => {
+    // Every reply is cut after one requirement until the call budget runs out;
+    // the remainder is grouped, so every finding is in some requirement.
+    const { provider } = thinkingProvider({}, (_call, user, maxTokens) => {
+      const r = simulateThinkingReply("", user, maxTokens);
+      return ok(r.content.slice(0, r.content.indexOf("\n  }") + 9), "max_tokens");
+    });
+    const result = await runSynthesis(provider, { projectName: "M", findings: findings(40) });
+    expect(result.degraded?.modelRequirementCount).toBeGreaterThan(0);
+    expect(result.degraded?.findingsWithoutRequirement ?? 0).toBe(0);
+    expect(describeSynthesisDegradation(result.degraded!)).toContain("Nothing was dropped");
+  });
+
+  it("a whole-fallback run past 100 keyword groups reports the findings it could not place", async () => {
+    // Distinct titles and tags, so the clusterer cannot merge them: 130 groups
+    // would be needed, and it stops at 100.
+    const WORDS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"];
+    const distinct = Array.from({ length: 130 }, (_, i) => ({
+      agentKey: "code",
+      category: "functional",
+      severity: "low",
+      title: `${WORDS[i % 8]}${i} ${WORDS[(i + 3) % 8]}x${i * 7} q${i}`,
+      body: "b",
+      tags: [`only-${i}`],
+      citations: [],
+    })) as unknown as FlatFinding[];
+    const { provider } = thinkingProvider({}, () => new Error("provider down"));
+    const result = await runSynthesis(provider, { projectName: "M", findings: distinct });
+    const placed = covered(result.output.requirements).size;
+    expect(placed).toBeLessThan(130);
+    expect(result.degraded?.findingsWithoutRequirement).toBe(130 - placed);
+    const banner = describeSynthesisDegradation(result.degraded!);
+    expect(banner).toContain(`${130 - placed} findings are in no requirement`);
+    expect(banner).not.toContain("Nothing was dropped");
   });
 });
 

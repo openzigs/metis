@@ -6,6 +6,7 @@
  * never-throws behavior, filename parsing, and hallucination rejection.
  */
 import { describe, expect, it, vi } from "vitest";
+import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "../ai/providers/anthropic-provider.js";
 import type { AIProvider } from "../ai/types.js";
 import {
   DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS,
@@ -400,6 +401,30 @@ describe("suggestMappings output cap (#751)", () => {
       deps(second.provider, { DATA_MAPPING_SUGGEST_MAX_OUTPUT_TOKENS: "3000" }),
     );
     expect(second.chat.mock.calls[0]![1]).toMatchObject({ maxTokens: 3000 });
+  });
+
+  /** The same double, presenting as a given provider + model. */
+  const asProvider = (key: string, model: string) => {
+    const t = truncatingProvider([]);
+    Object.assign(t.provider, { key, model });
+    return t;
+  };
+
+  it("raises a 4,096-default OpenAI-compatible provider to the 8,192 target", async () => {
+    for (const key of ["openai", "bedrock-gateway", "local-gemma", "azure"]) {
+      const { provider, chat } = asProvider(key, "gpt-4o");
+      await suggestMappings("proj-1", "req-1", deps(provider));
+      expect(chat.mock.calls[0]![1]).toMatchObject({ maxTokens: 8_192 });
+    }
+  });
+
+  it("never LOWERS the direct Anthropic provider below its 16,000 default", async () => {
+    // Thinking spends 5–10k of that budget; 8,192 would truncate batches that fit.
+    const { provider, chat } = asProvider("anthropic", "claude-sonnet-4-6");
+    await suggestMappings("proj-1", "req-1", deps(provider));
+    const sent = (chat.mock.calls[0]![1] as { maxTokens: number }).maxTokens;
+    expect(sent).toBe(ANTHROPIC_DEFAULT_MAX_TOKENS);
+    expect(sent).toBeGreaterThanOrEqual(16_000);
   });
 
   it("re-asks a cap-truncated batch as two halves instead of skipping it", async () => {

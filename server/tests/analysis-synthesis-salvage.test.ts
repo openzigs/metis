@@ -100,6 +100,48 @@ describe("salvageSynthesisPrefix", () => {
  * with a hard kill: a regression fails the test instead of hanging the suite.
  */
 describe("salvageSynthesisPrefix — unbalanced closers terminate", () => {
+  interface IsolatedResult {
+    ms: number;
+    requirements: unknown[];
+    summary?: string;
+    complete: boolean;
+  }
+
+  /**
+   * Run the scanner over `cases` in a CHILD process killed after 8 s. Every
+   * assertion on a hang-prone input reads this output: called in-process, a
+   * regression would spin the vitest worker forever instead of failing.
+   */
+  function salvageIsolated(cases: readonly string[]): IsolatedResult[] {
+    const modUrl = new URL("../src/lib/analysis/synthesis-salvage.ts", import.meta.url).href;
+    const script = `
+      const { salvageSynthesisPrefix } = await import(${JSON.stringify(modUrl)});
+      const cases = JSON.parse(process.argv[1]);
+      const out = cases.map((c) => {
+        const t = performance.now();
+        const r = salvageSynthesisPrefix(c);
+        return { ms: performance.now() - t, ...r };
+      });
+      process.stdout.write(JSON.stringify(out));
+    `;
+    const res = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "-e", script, JSON.stringify(cases)],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        timeout: 8_000,
+        killSignal: "SIGKILL",
+      },
+    );
+    // A hang is killed by the timeout: signal SIGKILL, status null.
+    expect(res.signal, res.stderr).toBeNull();
+    expect(res.status, res.stderr).toBe(0);
+    const results = JSON.parse(res.stdout) as IsolatedResult[];
+    expect(results).toHaveLength(cases.length);
+    return results;
+  }
+
   const HANG_CASES = [
     '{"summary":"s","requirements":[{"title":"a"}}',
     '{"requirements":[{"t":1}, }',
@@ -116,47 +158,24 @@ describe("salvageSynthesisPrefix — unbalanced closers terminate", () => {
   ];
 
   it("returns promptly (well under 1 s) for every unbalanced closer", () => {
-    const modUrl = new URL("../src/lib/analysis/synthesis-salvage.ts", import.meta.url).href;
-    const script = `
-      const { salvageSynthesisPrefix } = await import(${JSON.stringify(modUrl)});
-      const cases = JSON.parse(process.argv[1]);
-      const out = cases.map((c) => {
-        const t = performance.now();
-        const r = salvageSynthesisPrefix(c);
-        return { ms: performance.now() - t, n: r.requirements.length };
-      });
-      process.stdout.write(JSON.stringify(out));
-    `;
-    const res = spawnSync(
-      process.execPath,
-      ["--import", "tsx", "--input-type=module", "-e", script, JSON.stringify(HANG_CASES)],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        encoding: "utf8",
-        timeout: 8_000,
-        killSignal: "SIGKILL",
-      },
-    );
-    // A hang is killed by the timeout: signal SIGKILL, status null.
-    expect(res.signal, res.stderr).toBeNull();
-    expect(res.status, res.stderr).toBe(0);
-    const results = JSON.parse(res.stdout) as { ms: number; n: number }[];
-    expect(results).toHaveLength(HANG_CASES.length);
-    for (const r of results) expect(r.ms).toBeLessThan(1_000);
+    for (const r of salvageIsolated(HANG_CASES)) expect(r.ms).toBeLessThan(1_000);
   }, 15_000);
 
   it("keeps the whole elements before a stray closer and never reports complete", () => {
-    const a = salvageSynthesisPrefix('{"summary":"s","requirements":[{"title":"a"}}');
-    expect(a.requirements).toEqual([{ title: "a" }]);
-    expect(a.summary).toBe("s");
-    expect(a.complete).toBe(false);
-    const b = salvageSynthesisPrefix('{"requirements":[{"t":1}, }');
-    expect(b.requirements).toEqual([{ t: 1 }]);
-    expect(b.complete).toBe(false);
-  });
+    const [a, b] = salvageIsolated([
+      '{"summary":"s","requirements":[{"title":"a"}}',
+      '{"requirements":[{"t":1}, }',
+    ]);
+    expect(a!.requirements).toEqual([{ title: "a" }]);
+    expect(a!.summary).toBe("s");
+    expect(a!.complete).toBe(false);
+    expect(b!.requirements).toEqual([{ t: 1 }]);
+    expect(b!.complete).toBe(false);
+  }, 15_000);
 
   it("does not report a missing value as a complete object", () => {
-    expect(salvageSynthesisPrefix('{"summary": }').complete).toBe(false);
-    expect(salvageSynthesisPrefix('{"a": , "requirements":[{"t":1}]}').complete).toBe(false);
-  });
+    for (const r of salvageIsolated(['{"summary": }', '{"a": , "requirements":[{"t":1}]}'])) {
+      expect(r.complete).toBe(false);
+    }
+  }, 15_000);
 });

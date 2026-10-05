@@ -22,6 +22,8 @@ import type { AIProvider } from "../ai/types.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
 import { JsonLlmParseError, callJsonLlm } from "../ai/json-llm-client.js";
 import { clampToModelOutputCeiling } from "../ai/model-output-limits.js";
+import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "../ai/providers/anthropic-provider.js";
+import { OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS } from "../ai/providers/bedrock-direct-provider.js";
 import { isTruncationFinishReason } from "../docs-gen/truncation.js";
 import { getKnowledgeService } from "../rag/knowledge-service.js";
 import { prisma as defaultPrisma } from "../prisma.js";
@@ -49,15 +51,28 @@ export const LOW_CONFIDENCE_THRESHOLD = 0.5;
  * be cut off mid-JSON. A candidate is ~60–100 tokens; 8,192 leaves the answer
  * for a full batch plus a reasoning margin, and is held at the model's own
  * output ceiling below.
+ *
+ * A FLOOR, not a target: #868 review — the direct Anthropic provider inherits
+ * 16,000, and thinking spends 5–10k of it, so sending 8,192 there would cut
+ * off batches that used to fit. The default cap is therefore the larger of
+ * this and the provider's own inherited default ({@link inheritedMaxTokens}).
  */
 export const DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS = 8_192;
+
+/** What a `chat()` call on this provider would get with `maxTokens` unset. */
+function inheritedMaxTokens(providerKey: string | undefined): number {
+  return providerKey === "anthropic"
+    ? ANTHROPIC_DEFAULT_MAX_TOKENS
+    : OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS;
+}
 
 export interface SuggestConfig {
   maxLlmCalls: number;
   tokenBudget: number;
   tablesPerCall: number;
   retrieveK: number;
-  maxOutputTokens: number;
+  /** The operator's explicit cap, used as given; `null` = the default (a floor). */
+  maxOutputTokens: number | null;
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
@@ -80,10 +95,7 @@ export function loadSuggestConfig(env: NodeJS.ProcessEnv = process.env): Suggest
       DEFAULT_SUGGEST_TABLES_PER_CALL,
     ),
     retrieveK: parsePositiveInt(env.DATA_MAPPING_SUGGEST_RETRIEVE_K, DEFAULT_SUGGEST_RETRIEVE_K),
-    maxOutputTokens: parsePositiveInt(
-      env.DATA_MAPPING_SUGGEST_MAX_OUTPUT_TOKENS,
-      DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS,
-    ),
+    maxOutputTokens: parsePositiveInt(env.DATA_MAPPING_SUGGEST_MAX_OUTPUT_TOKENS, 0) || null,
   };
 }
 
@@ -250,9 +262,14 @@ export async function suggestMappings(
     let tokensUsed = 0;
     let budgetExhausted = false;
 
-    // #751 AC4 — held at what the model will actually accept, so a model with
-    // a lower output ceiling is not handed a value it rejects with a 400.
-    const maxTokens = clampToModelOutputCeiling(config.maxOutputTokens, provider.model, undefined, {
+    // #751 AC4 — never below what the provider would have used (#868 review),
+    // and held at what the model will actually accept, so a model with a lower
+    // output ceiling is not handed a value it rejects with a 400. An operator's
+    // explicit value is used as given, as `ANALYSIS_SYNTHESIS_MAX_OUTPUT_TOKENS` is.
+    const requestedMaxTokens =
+      config.maxOutputTokens ??
+      Math.max(DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS, inheritedMaxTokens(provider.key));
+    const maxTokens = clampToModelOutputCeiling(requestedMaxTokens, provider.model, undefined, {
       knob: "DATA_MAPPING_SUGGEST_MAX_OUTPUT_TOKENS",
       nonStreamingProviderKey: provider.key,
     }).value;
