@@ -552,12 +552,27 @@ export async function runSynthesis(
 
   // #751 — requirements kept so far, in the order the model wrote them.
   const kept: SynthesizedRequirement[] = [];
-  const keptByTitle = new Map<string, SynthesizedRequirement>();
+  /** Requirements kept by EARLIER calls, by normalised title (several may share one). */
+  const keptByTitle = new Map<string, SynthesizedRequirement[]>();
+  /**
+   * #868 review — what the schema caps cut while keeping or merging. Never
+   * dropped silently: logged at the end of the run, and named in the detail of
+   * a degraded one.
+   */
+  const capDrops = {
+    requirementsDropped: 0,
+    evidenceLinksDropped: 0,
+    acceptanceCriteriaDropped: 0,
+  };
   /**
    * Keep one call's requirements. Evidence indexes are clamped to the table
-   * (the model occasionally invents findings). A requirement whose title
-   * repeats one kept from an EARLIER call is merged into it rather than
-   * duplicated — a continuation is told what exists, but may still restate it.
+   * (the model occasionally invents findings). A requirement that repeats one
+   * kept from an EARLIER call is merged into it rather than duplicated — a
+   * continuation is told what exists, but may still restate it. "Repeats" means
+   * the normalised title matches AND the two cite at least one finding in
+   * common: generic titles ("Input validation", "Error handling") recur across
+   * split halves for unrelated findings, and fusing those would discard one
+   * requirement's type and description and pin its criteria on the other.
    * Titles within one call are not merged: that is the model's own output, and
    * a single clean call must come back exactly as it always has.
    */
@@ -569,8 +584,18 @@ export async function runSynthesis(
         evidenceFindingIndexes: r.evidenceFindingIndexes.filter(isValidIndex),
       };
       const key = normalizeTitle(clean.title);
-      const prior = keptByTitle.get(key);
+      const evidence = new Set(clean.evidenceFindingIndexes);
+      const prior = keptByTitle
+        .get(key)
+        ?.find((p) => p.evidenceFindingIndexes.some((i) => evidence.has(i)));
       if (prior) {
+        const evidenceAll = new Set([
+          ...prior.evidenceFindingIndexes,
+          ...clean.evidenceFindingIndexes,
+        ]);
+        const criteriaAll = new Set([...prior.acceptanceCriteria, ...clean.acceptanceCriteria]);
+        capDrops.evidenceLinksDropped += Math.max(0, evidenceAll.size - MAX_EVIDENCE);
+        capDrops.acceptanceCriteriaDropped += Math.max(0, criteriaAll.size - MAX_CRITERIA);
         prior.evidenceFindingIndexes = union(
           prior.evidenceFindingIndexes,
           clean.evidenceFindingIndexes,
@@ -584,11 +609,23 @@ export async function runSynthesis(
         );
         continue;
       }
-      if (kept.length >= MAX_REQUIREMENTS) continue;
+      if (kept.length >= MAX_REQUIREMENTS) {
+        capDrops.requirementsDropped += 1;
+        continue;
+      }
       kept.push(clean);
       fromThisCall.push([key, clean]);
     }
-    for (const [key, r] of fromThisCall) if (!keptByTitle.has(key)) keptByTitle.set(key, r);
+    for (const [key, r] of fromThisCall) {
+      const list = keptByTitle.get(key);
+      if (list) list.push(r);
+      else keptByTitle.set(key, [r]);
+    }
+  };
+  /** Indexes of `segment` that some KEPT requirement cites (after every cap). */
+  const keptCitations = (segment: readonly number[]): Set<number> => {
+    const cited = new Set(kept.flatMap((r) => r.evidenceFindingIndexes));
+    return new Set(segment.filter((i) => cited.has(i)));
   };
 
   let summary: string | undefined;
@@ -610,7 +647,9 @@ export async function runSynthesis(
 
   while (queue.length > 0) {
     const segment = queue.shift()!;
-    if (calls >= MAX_SYNTHESIS_CALLS) {
+    // #868 review — once the set holds MAX_REQUIREMENTS, no call can add a
+    // requirement for these findings; spending one would only bill tokens.
+    if (calls >= MAX_SYNTHESIS_CALLS || kept.length >= MAX_REQUIREMENTS) {
       unreached.push(...segment.indexes);
       continue;
     }
@@ -674,11 +713,24 @@ export async function runSynthesis(
         continue;
       }
       // Zero requirements for the WHOLE table means the model produced nothing
-      // usable, and re-asking tends to get nothing again. Zero for a remainder
-      // or a half is a legitimate answer — those findings may be covered.
-      if (validation.data.requirements.length === 0 && !partialTable) {
-        failure = { reason: "empty-requirements" };
-        break;
+      // usable, and re-asking tends to get nothing again.
+      if (validation.data.requirements.length === 0) {
+        if (!partialTable) {
+          failure = { reason: "empty-requirements" };
+          break;
+        }
+        // #868 review — zero for a remainder or a split half leaves its
+        // findings cited by NOTHING: a continuation is shown only uncovered
+        // findings, and a half split off a reply that salvaged nothing has no
+        // kept requirement to lean on. Accepting it as "covered" dropped them
+        // with no degradation; they are unreached, so they reach the fallback
+        // and the run says so.
+        failure = {
+          reason: "empty-requirements",
+          detail: `a partial table of ${segment.indexes.length} finding(s) returned no requirements`,
+        };
+        unreached.push(...segment.indexes);
+        continue;
       }
       summary ??= validation.data.summary;
       keep(validation.data.requirements);
@@ -703,14 +755,19 @@ export async function runSynthesis(
       const v = synthesizedRequirementSchema.safeParse(r);
       return v.success ? [v.data] : [];
     });
+    // #868 review — "covered" is decided by what was actually KEPT after the
+    // requirement and evidence caps, not by everything salvaged: a requirement
+    // the cap refused, or an evidence link a merge cut, covers nothing.
+    // A salvage citing nothing in this segment is not kept at all (as before):
+    // the segment is about to be split or re-asked, and would write it again.
     const inSegment = new Set(segment.indexes);
-    const coveredNow = new Set(
-      whole.flatMap((r) => r.evidenceFindingIndexes).filter((i) => inSegment.has(i)),
-    );
-    if (coveredNow.size > 0) {
+    const citesSegment = whole.some((r) => r.evidenceFindingIndexes.some((i) => inSegment.has(i)));
+    const coveredBefore = keptCitations(segment.indexes);
+    if (citesSegment) keep(whole);
+    const coveredNow = keptCitations(segment.indexes);
+    if (coveredNow.size > coveredBefore.size) {
       salvagedResponses += 1;
       if (salvage.summary) summary ??= salvage.summary;
-      keep(whole);
       const rest = segment.indexes.filter((i) => !coveredNow.has(i));
       log.info("Synthesis reply was cut short; kept its complete requirements", {
         call: calls,
@@ -790,7 +847,21 @@ export async function runSynthesis(
   const resolvedSummary =
     summary ?? `Synthesized ${kept.length} requirement(s) from ${total} finding(s).`;
 
+  // #868 review — a cap that cut data is recorded, never silent.
+  const logCapDrops = (extra: Record<string, number> = {}): void => {
+    const all = { ...capDrops, ...extra };
+    if (Object.values(all).some((n) => n > 0)) {
+      log.warn("Synthesis output caps dropped data", {
+        ...all,
+        maxRequirements: MAX_REQUIREMENTS,
+        maxEvidence: MAX_EVIDENCE,
+        maxAcceptanceCriteria: MAX_CRITERIA,
+      });
+    }
+  };
+
   if (unreached.length === 0) {
+    logCapDrops();
     if (recovery) {
       log.info("Synthesis recovered across several calls", {
         ...recovery,
@@ -814,12 +885,24 @@ export async function runSynthesis(
   // nothing is dropped. The run is still marked degraded, and the detail says
   // which requirements are which.
   const orderedUnreached = [...new Set(unreached)].sort((a, b) => a - b);
-  const grouped = fallbackSynthesize(orderedUnreached.map((i) => input.findings[i]!))
-    .requirements.map((r) => ({
-      ...r,
-      evidenceFindingIndexes: r.evidenceFindingIndexes.map((j) => orderedUnreached[j]!),
-    }))
-    .slice(0, Math.max(0, MAX_REQUIREMENTS - kept.length));
+  const allGrouped = fallbackSynthesize(
+    orderedUnreached.map((i) => input.findings[i]!),
+  ).requirements.map((r) => ({
+    ...r,
+    evidenceFindingIndexes: r.evidenceFindingIndexes.map((j) => orderedUnreached[j]!),
+  }));
+  const grouped = allGrouped.slice(0, Math.max(0, MAX_REQUIREMENTS - kept.length));
+  const groupedRequirementsDropped = allGrouped.length - grouped.length;
+  // Findings the requirement cap shut out of BOTH the model's set and the
+  // keyword groups: represented by no requirement at all.
+  const represented = new Set([...kept, ...grouped].flatMap((r) => r.evidenceFindingIndexes));
+  const findingsShutOut = orderedUnreached.filter((i) => !represented.has(i)).length;
+  logCapDrops({ groupedRequirementsDropped, findingsShutOut });
+  const capNote =
+    findingsShutOut > 0
+      ? `The ${MAX_REQUIREMENTS}-requirement cap was reached, so ${findingsShutOut} finding(s) ` +
+        `are in no requirement. `
+      : "";
   const reason = failure?.reason ?? "non-json";
   const degraded: SynthesisDegradation = {
     reason,
@@ -827,11 +910,13 @@ export async function runSynthesis(
       (
         `partial: ${kept.length} model-written requirement(s) kept; ` +
         `${orderedUnreached.length} finding(s) no call reached were grouped deterministically ` +
-        `into ${grouped.length}. ${failure?.detail ?? ""}`
+        `into ${grouped.length}. ${capNote}${failure?.detail ?? ""}`
       ).trimEnd(),
     ),
     attempts: calls,
     requirementCount: grouped.length,
+    // #751 — lets the banner say which requirements are model-written.
+    modelRequirementCount: kept.length,
     at: new Date().toISOString(),
   };
   log.warn("Synthesis partially degraded: unreached findings grouped deterministically", {

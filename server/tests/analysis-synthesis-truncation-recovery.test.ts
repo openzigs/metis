@@ -21,6 +21,28 @@ const { recordUsageMock } = vi.hoisted(() => ({
 }));
 vi.mock("../src/lib/finops/token-tracker.js", () => ({ recordUsage: recordUsageMock }));
 
+// #868 review — the caps must never drop data silently. A clean run has no
+// degradation record to carry that, so the warning log is the record.
+const { synthesisWarn } = vi.hoisted(() => ({ synthesisWarn: vi.fn() }));
+vi.mock("../src/lib/logger.js", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../src/lib/logger.js")>();
+  return {
+    ...orig,
+    createChildLogger: (name: string) => {
+      const real = orig.createChildLogger(name);
+      if (name !== "analysis-synthesis") return real;
+      // The real logger's methods live on its prototype; wrap `warn` in place.
+      const warn = real.warn.bind(real);
+      return Object.assign(Object.create(real) as typeof real, {
+        warn: (...args: Parameters<typeof real.warn>) => {
+          synthesisWarn(...args);
+          return warn(...args);
+        },
+      });
+    },
+  };
+});
+
 import { __resetConfigSingleton } from "../src/lib/config/config-service.js";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../src/lib/ai/types.js";
 import {
@@ -37,6 +59,7 @@ import {
   type FlatFinding,
 } from "../src/lib/analysis/synthesis.js";
 import { buildSynthesisPrompt } from "../src/lib/analysis/prompts.js";
+import { describeSynthesisDegradation } from "@metis/shared";
 import { DEFAULT_REASONING_ALLOWANCE_TOKENS } from "../src/lib/docs-gen/output-caps.js";
 import {
   parseFindingRows,
@@ -126,7 +149,46 @@ beforeEach(() => {
   process.env.ANALYSIS_SYNTHESIS_MAX_OUTPUT_TOKENS = String(DEFAULT_SYNTHESIS_MAX_OUTPUT_TOKENS);
   __resetConfigSingleton();
   recordUsageMock.mockClear();
+  synthesisWarn.mockClear();
 });
+
+const ok = (content: string, finishReason = "end_turn"): ChatResponse => ({
+  content,
+  finishReason,
+  usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+  model: "deepseek-flash",
+  provider: "openai",
+});
+
+/** A reply that spent the whole cap on reasoning: nothing salvageable, so the table splits. */
+const emptyTruncated = (): ChatResponse => ok("", "max_tokens");
+
+interface ReqShape {
+  type?: string;
+  title: string;
+  evidenceFindingIndexes: number[];
+  acceptanceCriteria?: string[];
+  labels?: string[];
+}
+const reqJson = (r: ReqShape): Record<string, unknown> => ({
+  type: r.type ?? "bug",
+  title: r.title,
+  body: "b",
+  priority: "high",
+  labels: r.labels ?? [],
+  evidenceFindingIndexes: r.evidenceFindingIndexes,
+  acceptanceCriteria: r.acceptanceCriteria ?? ["c"],
+});
+/** One model-written requirement per row the call was shown. */
+const perRowReply = (user: string, prefix = "Req"): ChatResponse =>
+  ok(
+    JSON.stringify({
+      summary: "s",
+      requirements: parseFindingRows(user).map((row) =>
+        reqJson({ title: `${prefix} ${row.index}`, evidenceFindingIndexes: [row.index] }),
+      ),
+    }),
+  );
 
 afterEach(() => {
   delete process.env.ANALYSIS_SYNTHESIS_MAX_OUTPUT_TOKENS;
@@ -252,6 +314,11 @@ describe("#751 synthesis recovers from an output-cap truncation", () => {
     expect(result.degraded?.detail).toMatch(/^partial: 6 model-written requirement/);
     expect(result.degraded?.attempts).toBe(MAX_SYNTHESIS_CALLS);
     expect(result.degraded?.requirementCount).toBe(result.output.requirements.length - 6);
+    // The banner must be able to say which requirements are which.
+    expect(result.degraded?.modelRequirementCount).toBe(6);
+    expect(describeSynthesisDegradation(result.degraded!)).toContain(
+      "6 requirements were written by the model",
+    );
   });
 
   it("stops calling after a provider error and keeps what was already written", async () => {
@@ -269,23 +336,170 @@ describe("#751 synthesis recovers from an output-cap truncation", () => {
     ).toBeGreaterThan(5);
   });
 
-  it("accepts a continuation that adds nothing: the leftover was covered already", async () => {
+  it("treats a continuation that adds nothing as unreached: its findings are grouped, not dropped", async () => {
+    // #868 review — a continuation is shown ONLY findings no kept requirement
+    // cites, so an empty answer leaves them cited by nothing. Accepting it as
+    // "covered" dropped them with no degradation.
     const input = findings(36);
     const { provider, calls } = thinkingProvider({}, (call) =>
-      call === 2
-        ? {
-            content: JSON.stringify({ summary: "nothing new", requirements: [] }),
-            finishReason: "end_turn",
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "deepseek-flash",
-            provider: "openai",
-          }
-        : undefined,
+      call === 2 ? ok(JSON.stringify({ summary: "nothing new", requirements: [] })) : undefined,
     );
     const result = await runSynthesis(provider, { projectName: "Miniflux", findings: input });
     expect(calls).toHaveLength(2);
-    expect(result.degraded).toBeUndefined();
+    const asked = parseFindingRows(calls[1]!.user).map((r) => r.index);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(covered(result.output.requirements).size).toBe(36);
+    const grouped = result.output.requirements.filter((r) => r.acceptanceCriteria.length === 0);
+    expect(covered(grouped)).toEqual(new Set(asked));
+    expect(result.degraded?.reason).toBe("empty-requirements");
     expect(result.output.summary).toBe("Synthesised 36 findings.");
+  });
+
+  it("treats an empty answer for a split half as unreached while its sibling is still queued", async () => {
+    // Call 1 spends the cap on reasoning → split into [0..19] and [20..39].
+    // Call 2 (first half) answers `requirements: []` with the second half
+    // still queued; call 3 answers the second half properly.
+    const { provider, calls } = thinkingProvider({}, (call, user) =>
+      call === 1
+        ? emptyTruncated()
+        : call === 2
+          ? ok(JSON.stringify({ summary: "s", requirements: [] }))
+          : perRowReply(user),
+    );
+    const result = await runSynthesis(provider, { projectName: "M", findings: findings(40) });
+
+    expect(calls).toHaveLength(3);
+    expect(parseFindingRows(calls[1]!.user).map((r) => r.index)).toEqual(
+      Array.from({ length: 20 }, (_, i) => i),
+    );
+    // The first half reaches the keyword fallback rather than vanishing.
+    expect(covered(result.output.requirements).size).toBe(40);
+    const grouped = result.output.requirements.filter((r) => r.acceptanceCriteria.length === 0);
+    expect(covered(grouped)).toEqual(new Set(Array.from({ length: 20 }, (_, i) => i)));
+    expect(result.degraded?.reason).toBe("empty-requirements");
+    expect(result.degraded?.modelRequirementCount).toBe(20);
+    expect(result.degraded?.requirementCount).toBe(grouped.length);
+    const banner = describeSynthesisDegradation(result.degraded!);
+    expect(banner).toContain("20 requirements were written by the model");
+    expect(banner).not.toMatch(/every requirement/i);
+  });
+
+  it("moves every still-queued segment to the fallback when the provider errors", async () => {
+    // Call 1 → split [0..19] [20..39]; call 2 → split [0..9] [10..19];
+    // call 3 answers [0..9]; call 4 throws with [20..39] STILL queued.
+    const { provider, calls } = thinkingProvider({}, (call, user) =>
+      call <= 2
+        ? emptyTruncated()
+        : call === 3
+          ? perRowReply(user)
+          : new Error("spend cap reached"),
+    );
+    const result = await runSynthesis(provider, { projectName: "M", findings: findings(40) });
+
+    expect(calls).toHaveLength(4);
+    expect(result.degraded?.reason).toBe("provider-error");
+    expect(result.degraded?.modelRequirementCount).toBe(10);
+    const grouped = result.output.requirements.filter((r) => r.acceptanceCriteria.length === 0);
+    // Both the failing segment [10..19] and the queued one [20..39] are grouped.
+    expect(covered(grouped)).toEqual(new Set(Array.from({ length: 30 }, (_, i) => i + 10)));
+  });
+
+  it("never keeps a salvaged element that fails the schema, and re-asks for its findings", async () => {
+    const bogus = {
+      type: "nonsense",
+      title: "Bogus",
+      body: "b",
+      evidenceFindingIndexes: [0, 1, 2],
+    };
+    const real = reqJson({ title: "Real 3", evidenceFindingIndexes: [3] });
+    const { provider, calls } = thinkingProvider({}, (call, user) =>
+      call === 1
+        ? ok(
+            `{"summary":"s","requirements":[${JSON.stringify(bogus)},${JSON.stringify(real)},{"type":"ta`,
+            "max_tokens",
+          )
+        : perRowReply(user),
+    );
+    const result = await runSynthesis(provider, { projectName: "M", findings: findings(6) });
+
+    expect(result.output.requirements.map((r) => r.title)).not.toContain("Bogus");
+    expect(result.output.requirements.map((r) => r.title)).toContain("Real 3");
+    // The invalid element covers nothing: its findings go to the continuation.
+    expect(parseFindingRows(calls[1]!.user).map((r) => r.index)).toEqual([0, 1, 2, 4, 5]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  it("keeps two same-titled requirements apart when their evidence does not overlap", async () => {
+    const first = reqJson({
+      title: "Input validation",
+      evidenceFindingIndexes: [0, 1],
+      type: "bug",
+    });
+    const { provider } = thinkingProvider({}, (call, user) => {
+      if (call === 1) {
+        return ok(`{"summary":"s","requirements":[${JSON.stringify(first)},{"ty`, "max_tokens");
+      }
+      const rows = parseFindingRows(user).map((r) => r.index);
+      return ok(
+        JSON.stringify({
+          summary: "s",
+          requirements: [
+            reqJson({
+              title: "  input   VALIDATION ",
+              evidenceFindingIndexes: rows,
+              type: "chore",
+              acceptanceCriteria: ["other"],
+            }),
+          ],
+        }),
+      );
+    });
+    const result = await runSynthesis(provider, { projectName: "M", findings: findings(8) });
+
+    const same = result.output.requirements.filter((r) => /input\s+validation/i.test(r.title));
+    expect(same).toHaveLength(2);
+    expect(same[0]!.type).toBe("bug");
+    expect(same[0]!.evidenceFindingIndexes).toEqual([0, 1]);
+    expect(same[0]!.acceptanceCriteria).toEqual(["c"]);
+    expect(same[1]!.type).toBe("chore");
+    expect(same[1]!.evidenceFindingIndexes).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  it("records evidence and acceptance-criteria links a merge drops at the caps", async () => {
+    const crit = (from: number) => Array.from({ length: 15 }, (_, k) => `criterion ${from + k}`);
+    const first = reqJson({
+      title: "Shared",
+      evidenceFindingIndexes: Array.from({ length: 30 }, (_, i) => i),
+      acceptanceCriteria: crit(0),
+    });
+    const { provider } = thinkingProvider({}, (call) =>
+      call === 1
+        ? ok(`{"summary":"s","requirements":[${JSON.stringify(first)},{"ty`, "max_tokens")
+        : ok(
+            JSON.stringify({
+              summary: "s",
+              requirements: [
+                reqJson({
+                  title: "shared",
+                  // Overlaps on finding 0, so it IS the same requirement.
+                  evidenceFindingIndexes: [0, ...Array.from({ length: 30 }, (_, i) => i + 30)],
+                  acceptanceCriteria: crit(100),
+                }),
+              ],
+            }),
+          ),
+    );
+    const result = await runSynthesis(provider, { projectName: "M", findings: findings(60) });
+
+    expect(result.output.requirements).toHaveLength(1);
+    expect(result.output.requirements[0]!.evidenceFindingIndexes).toHaveLength(50);
+    expect(result.output.requirements[0]!.acceptanceCriteria).toHaveLength(20);
+    const capWarning = synthesisWarn.mock.calls.find((c) => /cap/i.test(String(c[0])));
+    expect(capWarning?.[1]).toMatchObject({
+      evidenceLinksDropped: 10,
+      acceptanceCriteriaDropped: 10,
+    });
   });
 
   it("merges a continuation requirement that repeats an earlier title instead of duplicating it", async () => {
@@ -303,7 +517,9 @@ describe("#751 synthesis recovers from an output-cap truncation", () => {
               body: "dup",
               priority: "critical",
               labels: ["extra"],
-              evidenceFindingIndexes: rows,
+              // Cites finding 0 too: the overlap is what makes it the SAME
+              // requirement rather than a different one with a generic title.
+              evidenceFindingIndexes: [0, ...rows],
               acceptanceCriteria: ["a new criterion"],
             },
           ],
@@ -413,10 +629,20 @@ describe("#751 synthesis recovers from an output-cap truncation", () => {
       projectName: "Miniflux",
       findings: findings(120),
     });
+    // #868 review — once the set is full no further call can add anything, so
+    // none is made; the 20 findings the cap shut out are covered by NO kept
+    // requirement (coveredNow comes from what was kept, not what was salvaged)
+    // and the run says so instead of reporting a clean success.
     expect(calls).toHaveLength(2);
-    expect(result.degraded).toBeUndefined();
     expect(result.output.requirements).toHaveLength(100);
     expect(result.output.summary).toBe("Synthesized 100 requirement(s) from 120 finding(s).");
+    expect(covered(result.output.requirements)).toEqual(
+      new Set(Array.from({ length: 100 }, (_, i) => i)),
+    );
+    expect(result.degraded?.detail).toMatch(/100-requirement cap/);
+    expect(result.degraded?.detail).toMatch(/20 finding\(s\)/);
+    const capWarning = synthesisWarn.mock.calls.find((c) => /cap/i.test(String(c[0])));
+    expect(capWarning?.[1]).toMatchObject({ requirementsDropped: 20 });
   });
 });
 

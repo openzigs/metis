@@ -798,6 +798,13 @@ export interface SynthesisDegradation {
   attempts: number;
   /** How many requirements the deterministic fallback ended up emitting. */
   requirementCount: number;
+  /**
+   * #751 — on a PARTIAL run, how many requirements the model wrote (typed,
+   * with acceptance criteria) and were kept alongside the
+   * {@link requirementCount} keyword-grouped ones. Absent or 0 when the whole
+   * set came from the fallback, which is how every record before #751 reads.
+   */
+  modelRequirementCount?: number;
   /** ISO timestamp of the degraded run. */
   at: string;
 }
@@ -820,6 +827,21 @@ export function describeSynthesisDegradation(degradation: SynthesisDegradation):
   const { reason, attempts, requirementCount } = degradation;
   const attemptNote = attempts > 1 ? ` after ${attempts} attempts` : "";
   const count = requirementCount === 1 ? "requirement" : "requirements";
+  const modelCount = degradation.modelRequirementCount ?? 0;
+  if (modelCount > 0) {
+    // #751 — a partial run: most of the list IS typed and has criteria, so the
+    // whole-fallback sentence ("every requirement is typed feature") is false.
+    const counted = (n: number): string =>
+      `${n} ${n === 1 ? "requirement was" : "requirements were"}`;
+    return (
+      `Requirement synthesis was partly degraded: ${DEGRADATION_CAUSE[reason]}${attemptNote}. ` +
+      `${counted(modelCount)} written by the model, with model-assigned types and acceptance ` +
+      `criteria. The other ${counted(requirementCount)} grouped deterministically by keyword ` +
+      `overlap from findings no model call reached — those are typed "feature" and have ` +
+      `no acceptance criteria because the fallback cannot derive them. Nothing was dropped. ` +
+      `Re-run the analysis to get model-assigned types and criteria for all of them.`
+    );
+  }
   return (
     `Requirement synthesis was degraded: ${DEGRADATION_CAUSE[reason]}${attemptNote}, ` +
     `so the ${requirementCount} ${count} below were grouped deterministically by keyword ` +
