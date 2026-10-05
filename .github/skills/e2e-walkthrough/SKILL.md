@@ -191,7 +191,9 @@ run-to-run comparison table, on #706 or a tracking issue that links back.
   - Knowledge retrieval is `POST /api/projects/:id/retrieve` `{query, k}`.
   - Admin token budgets are `/api/admin/token-budgets/:userId`, and auth providers are
     `/api/admin/auth/providers`.
-  - Requirement edits go through `PUT /api/requirements/:id` with `If-Match: <version>`.
+  - Requirement edits use `PUT /api/requirements/:id` with the current `version` in the body
+    (409 `VERSION_CONFLICT` on a stale one). Since #865, `PATCH
+    /api/analyses/:id/requirements/:reqId` is versioned the same way.
   - Manual baselines exist only in the API: `POST /api/projects/:id/baselines`
     `{name, requirementIds}`.
 - **Connector labels** must match `^[A-Za-z0-9][A-Za-z0-9 _.\-]*$`. A label like
