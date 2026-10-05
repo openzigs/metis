@@ -6,18 +6,24 @@
  * distinct from document citations (monospace + a "code" badge) with a
  * copy-to-clipboard affordance.
  *
- * There is no in-app repository file viewer (verified 2026-07), so the locator
- * is rendered as non-link text; the copy button lets an analyst paste it into an
- * editor / `git blame`. If a future connector exposes a remote blob URL this is
- * the single place to make the locator a link.
+ * There is no in-app repository file viewer (verified 2026-07). #728 — when the
+ * page provides the project's single GitHub / GitHub Enterprise repo
+ * (`CodeCitationRepoContext`), the locator links to the file's blob at the
+ * connector's commit SHA (else its branch/ref) in a new tab. Otherwise — no
+ * provider, a non-GitHub connector, several candidate repos, or an unsafe path —
+ * it stays non-link text. The copy button remains either way, so an analyst can
+ * paste the locator into an editor / `git blame`.
  */
 import { formatCodeCitationLocator, type AnalysisCodeCitation } from "@/lib/analysis-api";
+import { buildCodeCitationBlobUrl } from "@/lib/code-citation-blob-url";
+import { useCodeCitationRepoContext } from "./code-citation-repo-context";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 
 export function CodeCitation({ citation }: { citation: AnalysisCodeCitation }) {
   // #1284 — the hook owns the 1.5s dismissal timer AND cancels it on unmount.
   const { active: copied, show: showCopied } = useTransientFlag(1500);
   const locator = formatCodeCitationLocator(citation);
+  const href = buildCodeCitationBlobUrl(useCodeCitationRepoContext(), citation);
 
   async function handleCopy() {
     try {
@@ -37,9 +43,22 @@ export function CodeCitation({ citation }: { citation: AnalysisCodeCitation }) {
       >
         code
       </span>
-      <code className="font-mono text-foreground" title={citation.symbolId ?? locator}>
-        {locator}
-      </code>
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-foreground underline-offset-2 hover:underline"
+          title={citation.symbolId ? `${citation.symbolId} — open on GitHub` : "Open on GitHub"}
+          data-testid="code-citation-link"
+        >
+          <code className="font-mono">{locator}</code>
+        </a>
+      ) : (
+        <code className="font-mono text-foreground" title={citation.symbolId ?? locator}>
+          {locator}
+        </code>
+      )}
       <button
         type="button"
         onClick={handleCopy}

@@ -41,6 +41,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CodeCitation } from "@/components/findings/code-citation";
+import {
+  CodeCitationRepoContext,
+  useCodeCitationRepo,
+} from "@/components/findings/code-citation-repo-context";
 import { DerivationBadge } from "@/components/findings/derivation-badge";
 import { PersonaTag } from "@/components/findings/persona-tag";
 import { agentSourcePersonas } from "@/components/findings/agent-source-persona";
@@ -167,6 +171,8 @@ export default function AnalysisPage(): React.ReactElement {
   const projectId = params?.id ?? "";
   // #23 — connector id → repository name for citation labels.
   const repoNames = useRepoNames(projectId);
+  // #728 — the single GitHub repo code citations link into (null = plain text).
+  const citationRepo = useCodeCitationRepo(projectId);
   const qc = useQueryClient();
   const [selectedAnalysisId, setSelectedAnalysisId] = useState<string | null>(null);
 
@@ -661,7 +667,7 @@ export default function AnalysisPage(): React.ReactElement {
 
   if (!projectId) return <p className="p-6">Missing project id.</p>;
 
-  return (
+  const content = (
     <div className="space-y-6 p-6">
       <PageHeader
         title={<>Requirements Analysis — {project.data?.name ?? "loading…"}</>}
@@ -1516,6 +1522,13 @@ export default function AnalysisPage(): React.ReactElement {
         onDismiss={() => setConflict(null)}
       />
     </div>
+  );
+  // #728 — every CodeCitation below (findings, gap report, requirement diff)
+  // links into this repo; null keeps them plain text.
+  return (
+    <CodeCitationRepoContext.Provider value={citationRepo}>
+      {content}
+    </CodeCitationRepoContext.Provider>
   );
 }
 
