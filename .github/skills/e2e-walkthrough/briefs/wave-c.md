@@ -17,11 +17,23 @@ Phases 9–13 (docs generation, chat, discussions, publishing, drift / scheduler
 
 ## Do
 
-Phases 9–13 as #706 defines them. Docs generation dominated run 2's spend (80%); snapshot
-the ledgers immediately before and after each document so its cost is attributable.
-Phase 12 is the only phase allowed to publish, and only under the rules below.
+Phases 9–13 as #706 defines them. Docs generation dominated the spend in run 2 (80%) and
+run 3 (89%, $8.73). Snapshot the ledger immediately before and after each document so its
+cost is attributable. Phase 12 is the only phase allowed to publish, and only under the rules
+below.
+
+**Order matters:** finish Phase 9's documents before you create or run anything in Phase 13.
+In run 3, a scheduled repo refresh during the BRD failed it at commit after 88 min and $4.61
+(#856). Keep every scheduled job paused until Phase 9 is done.
+
+**One BRD attempt.** If a document runs long, stop it with **Cancel generation**, which keeps
+its finished sections (#855). Don't regenerate it in a second full run, and don't ask the
+operator to restart the server. Record the wall time, cost and final size. #741 caps a
+section at 60k characters and a document at 250k; run 3's BRD was 2.19 MB.
 
 ## Standing rules — never
+
+- Never start a repo refresh, re-ingest or scheduler job while a document is generating.
 
 - Never publish, comment or review on `miniflux/v2`. Sandbox is `openzigs/flux-v2` only.
 - Never click **Regenerate** on a reviewed run — `{{ANALYSIS_RUN_ID}}` is one.
