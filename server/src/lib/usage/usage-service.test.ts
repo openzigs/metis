@@ -47,7 +47,10 @@ async function emulateGroupBy(args: {
   _count?: { _all: true };
   _min?: Record<string, true>;
 }): Promise<Row[]> {
-  const rows = ((await mockLedgerFindMany({ where: args.where })) ?? []) as Row[];
+  const readRows = mockLedgerFindMany as unknown as (q: {
+    where: Row;
+  }) => Promise<Row[] | undefined>;
+  const rows = (await readRows({ where: args.where })) ?? [];
   const costFilters = ["costUsd", "costCents"].filter((k) => k in args.where);
   const groups = new Map<string, Row[]>();
   for (const r of rows) {

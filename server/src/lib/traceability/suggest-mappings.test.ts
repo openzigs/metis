@@ -356,23 +356,25 @@ describe("suggestMappings output cap (#751)", () => {
   /** Truncated on the listed calls; otherwise one candidate per table the prompt lists. */
   function truncatingProvider(truncateCalls: number[] = [1], finishReason = "max_tokens") {
     let call = 0;
-    const chat = vi.fn(async (messages: Array<{ role: string; content: string }>) => {
-      call += 1;
-      const user = messages.find((m) => m.role === "user")?.content ?? "";
-      if (truncateCalls.includes(call)) {
+    const chat = vi.fn(
+      async (messages: Array<{ role: string; content: string }>, _opts?: unknown) => {
+        call += 1;
+        const user = messages.find((m) => m.role === "user")?.content ?? "";
+        if (truncateCalls.includes(call)) {
+          return {
+            content: '{"candidates":[{"dbConnectorId":"db-1","schemaName":"pub',
+            finishReason,
+            usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
+          };
+        }
+        const tables = [...user.matchAll(/\| public\.(\w+)/g)].map((m) => m[1]!);
         return {
-          content: '{"candidates":[{"dbConnectorId":"db-1","schemaName":"pub',
-          finishReason,
+          content: JSON.stringify({ candidates: tables.map(candidateFor) }),
+          finishReason: "stop",
           usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
         };
-      }
-      const tables = [...user.matchAll(/\| public\.(\w+)/g)].map((m) => m[1]!);
-      return {
-        content: JSON.stringify({ candidates: tables.map(candidateFor) }),
-        finishReason: "stop",
-        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
-      };
-    });
+      },
+    );
     return { provider: { chat } as unknown as AIProvider, chat };
   }
   const deps = (provider: AIProvider, env: NodeJS.ProcessEnv = {}): SuggestDeps => ({
