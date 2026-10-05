@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { AppShell } from "@/components/layout/app-shell";
 import { makeWrapper, TEST_USER } from "./test-utils";
+import { useAuth } from "@/lib/auth-context";
 import { useRouter, usePathname } from "next/navigation";
 
 const fetchMock = vi.fn();
@@ -49,6 +50,35 @@ describe("<AppShell />", () => {
         `/login?next=${encodeURIComponent("/dashboard")}&reason=expired`,
       );
     });
+  });
+
+  // #720 — a deliberate sign-out clears the user, which used to trip the
+  // involuntary-bounce redirect above before `logout()`'s own push to /login.
+  it("does NOT tag a deliberate sign-out as reason=expired (#720)", async () => {
+    fetchMock.mockResolvedValue(ok({ success: true, data: null })); // /auth/logout
+    function SignOut() {
+      const { logout } = useAuth();
+      return (
+        <button type="button" onClick={() => void logout()}>
+          Sign out
+        </button>
+      );
+    }
+    render(
+      <AppShell>
+        <SignOut />
+      </AppShell>,
+      { wrapper: makeWrapper({ initialUser: TEST_USER }) },
+    );
+    screen.getByRole("button", { name: "Sign out" }).click();
+    const router = (
+      useRouter as unknown as () => {
+        push: ReturnType<typeof vi.fn>;
+        replace: ReturnType<typeof vi.fn>;
+      }
+    )();
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith("/login"));
+    expect(router.replace).not.toHaveBeenCalled();
   });
 
   it("renders the shell + children when authenticated", () => {
