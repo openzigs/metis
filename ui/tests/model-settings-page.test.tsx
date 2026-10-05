@@ -145,4 +145,66 @@ describe("ProjectModelSettingsPage", () => {
     expect(options[3].textContent).toContain("Claude Fable 5");
     expect(options[4].textContent).toContain("Claude Opus 4.8");
   });
+
+  describe("on a provider that does not serve the Claude tiers (#713)", () => {
+    const DEEPSEEK_PREFS = {
+      ...MOCK_PREFS,
+      availableModels: [
+        { id: "deepseek-flash", name: "deepseek-flash", tier: "configured", price: null },
+      ],
+      servesTierModels: false,
+    };
+
+    it("offers the provider's model, with no Claude option and no price", async () => {
+      mockGet.mockResolvedValue(DEEPSEEK_PREFS);
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByTestId("default-model-select")).toBeInTheDocument();
+      });
+      const options = Array.from(
+        (screen.getByTestId("default-model-select") as HTMLSelectElement).options,
+      );
+      expect(options.map((o) => o.value)).toEqual(["auto", "deepseek-flash"]);
+      expect(options[1].textContent).toBe(
+        "deepseek-flash — The model this deployment's provider runs",
+      );
+      expect(options.map((o) => o.textContent).join(" ")).not.toMatch(/Claude|\$/);
+    });
+
+    it("saves the provider's model as the default", async () => {
+      mockGet.mockResolvedValue(DEEPSEEK_PREFS);
+      const user = userEvent.setup();
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByTestId("default-model-select")).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByTestId("default-model-select"), "deepseek-flash");
+      await user.click(screen.getByTestId("save-model-prefs"));
+      await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+      expect(mockUpdate.mock.calls[0][1]).toMatchObject({ defaultModel: "deepseek-flash" });
+    });
+
+    it("does not promise a Sonnet-to-Haiku downgrade, and disables the threshold", async () => {
+      mockGet.mockResolvedValue(DEEPSEEK_PREFS);
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByTestId("budget-threshold-help")).toBeInTheDocument();
+      });
+      const help = screen.getByTestId("budget-threshold-help").textContent ?? "";
+      expect(help).not.toMatch(/Sonnet|Haiku/);
+      expect(help).toContain("no cheaper model");
+      expect(screen.getByTestId("budget-threshold-slider")).toBeDisabled();
+    });
+
+    it("keeps the downgrade wording where the tiers are served", async () => {
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByTestId("budget-threshold-help")).toBeInTheDocument();
+      });
+      expect(screen.getByTestId("budget-threshold-help").textContent).toContain(
+        "downgrades from Sonnet to Haiku",
+      );
+      expect(screen.getByTestId("budget-threshold-slider")).not.toBeDisabled();
+    });
+  });
 });

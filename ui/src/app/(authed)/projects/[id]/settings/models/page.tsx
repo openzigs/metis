@@ -32,6 +32,8 @@ const TIER_DESCRIPTIONS: Record<string, string> = {
   fast: "Faster and cheaper — best for simple tasks",
   balanced: "More capable — best for complex reasoning",
   complex: "Highest capability — most expensive",
+  // #713 — a provider that does not serve the Claude tiers offers its own model.
+  configured: "The model this deployment's provider runs",
 };
 
 const AUTO_OPTION = {
@@ -60,6 +62,8 @@ export default function ProjectModelSettingsPage() {
   });
 
   const modelOptions = [AUTO_OPTION, ...(data?.availableModels ?? []).map(toOption)];
+  // #713 — absent from an older server: assume the tiers, as it did.
+  const servesTierModels = data?.servesTierModels ?? true;
 
   const [defaultModel, setDefaultModel] = useState<string>("auto");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
@@ -134,9 +138,10 @@ export default function ProjectModelSettingsPage() {
       <Card className="space-y-4 p-4">
         <div>
           <Label htmlFor="budget-threshold">Budget Downgrade Threshold</Label>
-          <p className="text-xs text-muted-foreground">
-            When monthly token usage exceeds this threshold, METIS automatically downgrades from
-            Sonnet to Haiku to save costs. Set to 0 to disable.
+          <p className="text-xs text-muted-foreground" data-testid="budget-threshold-help">
+            {servesTierModels
+              ? "When monthly token usage exceeds this threshold, METIS automatically downgrades from Sonnet to Haiku to save costs. Set to 0 to disable."
+              : "This deployment's provider runs a single model, so there is no cheaper model to downgrade to and this threshold has no effect."}
           </p>
         </div>
         <div className="flex items-center gap-4">
@@ -148,6 +153,7 @@ export default function ProjectModelSettingsPage() {
             max={1_000_000}
             step={10_000}
             className="flex-1"
+            disabled={!servesTierModels}
             value={threshold}
             onChange={(e) => setThreshold(Number(e.target.value))}
           />
