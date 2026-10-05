@@ -65,6 +65,12 @@ import {
 } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
+import {
+  RequirementVersionError,
+  updateRequirementWithHistory,
+  type RequirementSnapshot,
+  type VersionPrismaClient,
+} from "../requirements/requirement-version-service.js";
 import { asDocumentSource, type DocumentSource } from "../documents/document-source.js";
 import type { TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
@@ -1051,35 +1057,59 @@ export async function updateRequirementRow(input: {
     storyPoints?: number | null;
     reviewStatus?: RequirementReviewStatus;
   };
-}) {
+  /** Recorded on the version row (#865). */
+  actorId?: string | null;
+}): Promise<{ id: string; version: number; changed: boolean } | null> {
   const existing = await prisma.requirement.findFirst({
     where: {
       id: input.requirementId,
       analysisId: input.analysisId,
       deletedAt: null,
     },
+    select: { id: true, labels: true },
   });
   if (!existing) return null;
 
-  const data: Record<string, unknown> = {};
-  if (input.patch.title !== undefined) data.title = input.patch.title.slice(0, 255);
-  if (input.patch.body !== undefined) data.body = input.patch.body;
-  if (input.patch.priority !== undefined) data.priority = input.patch.priority;
-  if (input.patch.type !== undefined) data.type = input.patch.type;
-  if (input.patch.storyPoints !== undefined) data.storyPoints = input.patch.storyPoints;
+  const patch: Partial<RequirementSnapshot> = {};
+  if (input.patch.title !== undefined) patch.title = input.patch.title.slice(0, 255);
+  if (input.patch.body !== undefined) patch.body = input.patch.body;
+  if (input.patch.priority !== undefined) patch.priority = input.patch.priority;
+  if (input.patch.type !== undefined) patch.type = input.patch.type;
+  if (input.patch.storyPoints !== undefined) patch.storyPoints = input.patch.storyPoints;
+  // Review status is now a typed column (#M4).
+  if (input.patch.reviewStatus !== undefined) patch.reviewStatus = input.patch.reviewStatus;
 
-  // Review status is now a typed column (#M4). We still strip any legacy
-  // `review:*` labels so the JSON blob stays clean.
-  let labels = parseLabels(existing.labels);
+  // Labels keep the `finding:*` traceability labels the caller never sees, and
+  // lose any legacy `review:*` label so the JSON blob stays clean. Written only
+  // when the list actually differs, so a stored value that merely serialises
+  // differently is not recorded as an edit.
+  const storedLabels = parseLabels(existing.labels);
+  let labels = storedLabels;
   if (input.patch.labels) {
     labels = mergeLabelsPreservingMeta(input.patch.labels, labels);
   }
   labels = labels.filter((l) => !l.startsWith("review:"));
-  if (input.patch.reviewStatus !== undefined) {
-    data.reviewStatus = input.patch.reviewStatus;
+  if (JSON.stringify(labels) !== JSON.stringify(storedLabels)) {
+    patch.labels = JSON.stringify(labels);
   }
-  data.labels = JSON.stringify(labels);
-  return prisma.requirement.update({ where: { id: input.requirementId }, data });
+
+  // #865 — the same versioned write as `PUT /api/requirements/:id`: a real
+  // change bumps `version` and appends a `RequirementVersion` row in one
+  // transaction, so a baseline taken after this edit pins a NEW version and the
+  // compare sees the edit. A no-op patch leaves the version alone.
+  try {
+    const result = await updateRequirementWithHistory(prisma as unknown as VersionPrismaClient, {
+      requirementId: input.requirementId,
+      analysisId: input.analysisId,
+      patch,
+      actorId: input.actorId ?? null,
+    });
+    return { id: result.id, version: result.version, changed: result.changed };
+  } catch (err) {
+    // Deleted between the read above and the transaction.
+    if (err instanceof RequirementVersionError && err.code === "NOT_FOUND") return null;
+    throw err;
+  }
 }
 
 /**

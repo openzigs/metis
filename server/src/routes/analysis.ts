@@ -32,6 +32,7 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
+import { optimisticLock } from "../middleware/optimistic-lock.js";
 // Issue #1099 — the top-level `/api/analyses` router has no path project to
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
@@ -477,35 +478,76 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     "/:id/requirements/:reqId",
     requireAuth,
     requirePermission("analysis.run"),
+    // #1099 — no path project here; authorize against the analysis's own.
+    // Runs BEFORE the lock, whose 409 diff would otherwise describe a row the
+    // caller cannot reach.
+    async (req: Request, _res: Response, next: NextFunction) => {
+      await ensureAnalysisAccessible(req, String(req.params.id));
+      next();
+    },
+    // #865 — the optimistic-concurrency contract of `PUT /api/requirements/:id`:
+    // a body `version` that is not the current one is a 409 with a field diff;
+    // no `version` skips the check. The loader is scoped to this analysis, so a
+    // requirement of another one is the same 404 the handler gives.
+    optimisticLock("requirement", async (req) => {
+      const row = await prisma.requirement.findFirst({
+        where: {
+          id: String(req.params.reqId),
+          analysisId: String(req.params.id),
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          version: true,
+          title: true,
+          body: true,
+          priority: true,
+          type: true,
+          labels: true,
+          storyPoints: true,
+          reviewStatus: true,
+        },
+      });
+      if (!row) return null;
+      // The lock diffs against the request body, which carries labels as a
+      // string[]; present the stored JSON column in that shape.
+      let labels: unknown = [];
+      try {
+        labels = JSON.parse(row.labels);
+      } catch {
+        labels = [];
+      }
+      return { ...row, labels };
+    }),
     async (req: Request, res: Response) => {
       const id = String(req.params.id);
       const reqId = String(req.params.reqId);
-      // #1099 — no path project here; authorize against the analysis's own.
-      await ensureAnalysisAccessible(req, id);
       const parsed = updateRequirementSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         throw new AppError(400, "VALIDATION_ERROR", "Invalid requirement patch", {
           issues: parsed.error.flatten(),
         });
       }
+      const actor = actorFromReq(req);
       const updated = await updateRequirementRow({
         analysisId: id,
         requirementId: reqId,
         patch: parsed.data,
+        actorId: actor.id,
       });
       if (!updated) {
         // 404 covers both "requirement does not exist" and "requirement
         // belongs to a different analysis" — never leak the difference.
         throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
       }
-      const actor = actorFromReq(req);
       audit({
         actor: { id: actor.id },
         action: "analysis.requirement.update",
         target: { type: "requirement", id: reqId },
         metadata: { analysisId: id, fields: Object.keys(parsed.data) },
       });
-      res.json(ok({ id: reqId }));
+      // `version` is additive: the next optimistic-lock token for the caller.
+      res.json(ok({ id: reqId, version: updated.version }));
     },
   );
 

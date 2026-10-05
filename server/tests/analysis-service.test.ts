@@ -78,8 +78,31 @@ const documents = new Map<
 let id = 0;
 const nid = (p: string) => `${p}_${++id}`;
 
+const requirementVersions: Array<{
+  requirementId: string;
+  version: number;
+  changedFields: string;
+}> = [];
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
+    // #865 — `updateRequirementRow` writes through the versioned service, which
+    // runs in an interactive transaction; this fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../src/lib/prisma.js")).prisma),
+    ),
+    requirementVersion: {
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: { requirementId: string; version: number; changedFields: string };
+        }) => {
+          requirementVersions.push(data);
+          return data;
+        },
+      ),
+    },
     analysis: {
       create: vi.fn(async ({ data }: { data: Partial<AnalysisRow> }) => {
         const row: AnalysisRow = {
@@ -268,6 +291,14 @@ vi.mock("../src/lib/prisma.js", () => ({
         return row;
       }),
       findFirst: vi.fn(
+        async ({ where }: { where: { id: string; analysisId?: string; deletedAt: null } }) => {
+          const r = requirements.get(where.id);
+          if (!r || r.deletedAt) return null;
+          if (where.analysisId !== undefined && r.analysisId !== where.analysisId) return null;
+          return r;
+        },
+      ),
+      findUnique: vi.fn(
         async ({ where }: { where: { id: string; analysisId?: string; deletedAt: null } }) => {
           const r = requirements.get(where.id);
           if (!r || r.deletedAt) return null;
@@ -793,10 +824,14 @@ describe("updateRequirementRow", () => {
       patch: { labels: ["security"], reviewStatus: "approved" },
     });
     expect(updated).not.toBeNull();
-    const labels = JSON.parse(updated!.labels) as string[];
+    const row = requirements.get(ids[0])!;
+    const labels = JSON.parse(row.labels) as string[];
     expect(labels).toContain("security");
     // Review status now lives on the typed column, not in the labels blob.
-    expect((updated as unknown as { reviewStatus: string }).reviewStatus).toBe("approved");
+    expect(row.reviewStatus).toBe("approved");
+    // #865 — a versioned write: the version moves and a history row is appended.
+    expect(updated).toMatchObject({ id: ids[0], version: row.version, changed: true });
+    expect(requirementVersions.filter((v) => v.requirementId === ids[0])).toHaveLength(1);
     expect(labels.some((l) => l.startsWith("review:"))).toBe(false);
     expect(labels).toContain(`finding:${ar.findingIds[0]}`);
   });

@@ -245,6 +245,12 @@ export interface UpdateWithHistoryParams {
    * `undefined` means "no narrowing" (system admins).
    */
   projectId?: string;
+  /**
+   * #865 — owning analysis, for the analysis-scoped route
+   * (`PATCH /api/analyses/:id/requirements/:reqId`). When set, a requirement of
+   * another analysis is NOT_FOUND, so that route cannot write cross-analysis.
+   */
+  analysisId?: string;
 }
 
 export interface UpdateWithHistoryResult {
@@ -272,6 +278,7 @@ export async function updateRequirementWithHistory(
         id: params.requirementId,
         deletedAt: null,
         ...(params.projectId ? { projectId: params.projectId } : {}),
+        ...(params.analysisId ? { analysisId: params.analysisId } : {}),
       },
       select: TRACKED_SELECT,
     })) as (RequirementSnapshot & { id: string; version: number }) | null;
