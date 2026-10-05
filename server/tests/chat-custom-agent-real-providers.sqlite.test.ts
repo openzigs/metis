@@ -90,7 +90,9 @@ interface Seen {
 }
 
 const NOT_ALLOWED = "this tool is not allowed for this session's agent";
-const NOT_APPROVED = "the user did not approve this tool call in time";
+// #861 — `/chat` with no client in the session's room refuses a prompt at once
+// rather than letting it expire: the call still needed (and lacked) approval.
+const NOT_APPROVED = "this tool needs the user's approval and no one is available to approve it";
 
 /**
  * What the model "decides", from what it can see. Turn one: load its skill,
