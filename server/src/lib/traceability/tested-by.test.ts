@@ -22,6 +22,7 @@ interface Sym {
   kind: string;
   language: string;
   startLine: number;
+  endLine?: number;
 }
 interface Fixture {
   analyses?: Array<{ id: string; projectId: string }>;
@@ -39,6 +40,7 @@ interface Fixture {
     codeSymbolId: string | null;
     filePath: string;
     startLine?: number | null;
+    endLine?: number | null;
   }>;
   specMappings?: Array<{ requirementId: string; projectId: string; specDocumentId: string }>;
   specCode?: Array<{
@@ -99,7 +101,7 @@ function fakePrisma(f: Fixture) {
               (m) =>
                 m.projectId === where.projectId && inList(where.requirementId, m.requirementId),
             )
-            .map((m) => pick({ startLine: null, ...m }, select)),
+            .map((m) => pick({ startLine: null, endLine: null, ...m }, select)),
       ),
     },
     requirementSpecMapping: {
@@ -172,6 +174,7 @@ const sym = (id: string, filePath: string, name: string, extra: Partial<Sym> = {
   language: filePath.endsWith(".go") ? "go" : filePath.endsWith(".py") ? "py" : "ts",
   startLine: 1,
   ...extra,
+  endLine: extra.endLine ?? (extra.startLine ?? 1) + 5,
 });
 const req = (id: string, title: string, body = "") => ({
   id,
@@ -463,6 +466,109 @@ describe("resolveTestedBy", () => {
       ],
     });
     expect((await resolveTestedBy(P, ["r1", "r2"], undefined, d)).size).toBe(0);
+  });
+});
+
+describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
+  const OPTIONS = "internal/config/options.go";
+  const optionSymbols = [
+    sym("o-new", OPTIONS, "NewConfigOptions", { startLine: 64, endLine: 621 }),
+    sym("o-oauth", OPTIONS, "OAuth2UserCreationAllowed", { startLine: 640, endLine: 642 }),
+    sym("o-yt", OPTIONS, "YouTubeEmbedUrlOverride", { startLine: 700, endLine: 702 }),
+  ];
+  // Five sanitizer tests in five files read a YouTube option; one OAuth test reads
+  // the OAuth option and builds the config.
+  const sanitizerTests = Array.from({ length: 5 }, (_, i) =>
+    sym(`t-yt-${i}`, `internal/reader/sanitizer/s${i}_test.go`, `TestRewriteYouTubeIframe${i}`),
+  );
+  const oauthTest = sym("t-oauth", "internal/oauth2/user_test.go", "TestOAuth2UserCreation");
+  const calls = (from: string, to: string) => ({
+    projectId: P,
+    kind: "calls",
+    fromSymbolId: from,
+    toSymbolId: to,
+  });
+  const hubFixture = (mapping: ReturnType<typeof fileMap>, title: string): Fixture => ({
+    requirements: [req("r1", title)],
+    codeMappings: [mapping],
+    symbols: [...optionSymbols, ...sanitizerTests, oauthTest],
+    edges: [
+      ...sanitizerTests.map((t) => calls(t.id, "o-yt")),
+      ...sanitizerTests.map((t) => calls(t.id, "o-new")),
+      calls("t-oauth", "o-oauth"),
+      calls("t-oauth", "o-new"),
+    ],
+  });
+
+  it("a file-only mapping onto a config hub links only the tests about the requirement", async () => {
+    const { deps: d } = deps(hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION"));
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    expect(out.map((t) => t.name)).toEqual(["TestOAuth2UserCreation"]);
+  });
+
+  it("a symbol mapping onto a hub constructor drops the unrelated callers", async () => {
+    const mapping = { ...fileMap("r1", OPTIONS, "o-new"), startLine: 64, endLine: 621 };
+    const { deps: d } = deps(hubFixture(mapping, "OIDC discovery endpoint"));
+    // No exercising test is about OIDC, so the requirement stays untested.
+    expect((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")).toEqual([]);
+  });
+
+  it("keeps a hub link whose CALLEE is named for the requirement", async () => {
+    const f = hubFixture(fileMap("r1", OPTIONS), "Allow OAuth2 user creation");
+    f.symbols!.push(sym("t-misc", "internal/api/misc_test.go", "TestMisc"));
+    f.edges!.push(calls("t-misc", "o-oauth"));
+    const { deps: d } = deps(f);
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    expect(out.map((t) => t.name).sort()).toEqual(["TestMisc", "TestOAuth2UserCreation"]);
+  });
+
+  it("below the hub threshold every exercising test still counts", async () => {
+    const { deps: d } = deps(hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION"), {
+      hubMinTestFiles: 7,
+    });
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    expect(out).toHaveLength(6);
+    expect(out.every((t) => t.relation === "exercises")).toBe(true);
+  });
+
+  it("a file-only mapping with a line range expands only to the symbols in that range", async () => {
+    const mapping = { ...fileMap("r1", OPTIONS), startLine: 630, endLine: 650 };
+    const { deps: d } = deps(hubFixture(mapping, "Something unrelated"));
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    // Only `OAuth2UserCreationAllowed` is in range; one test file exercises it.
+    expect(out.map((t) => [t.name, t.subject?.symbol])).toEqual([
+      ["TestOAuth2UserCreation", `${OPTIONS}::OAuth2UserCreationAllowed`],
+    ]);
+  });
+
+  it("a test file cited only for its licence header is not a direct link", async () => {
+    const FINDER_TEST = "internal/reader/icon/finder_test.go";
+    const symbols = [sym("t-find", FINDER_TEST, "TestFindIcon", { startLine: 12, endLine: 30 })];
+    const header = { ...fileMap("r1", FINDER_TEST), startLine: 1, endLine: 3 };
+    const { deps: d } = deps({
+      requirements: [req("r1", "Licensed under the Apache License 2.0")],
+      codeMappings: [header],
+      symbols,
+    });
+    expect((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")).toEqual([]);
+
+    const body = { ...header, startLine: 14, endLine: 20 };
+    const cited = deps({
+      requirements: [req("r1", "Find the feed icon")],
+      codeMappings: [body],
+      symbols,
+    });
+    const out = (await resolveTestedBy(P, ["r1"], undefined, cited.deps)).get("r1")!;
+    expect(out.map((t) => [t.filePath, t.relation])).toEqual([[FINDER_TEST, "direct"]]);
+  });
+
+  it("a ranged test-file mapping whose file has no symbols in the graph still links", async () => {
+    const { deps: d } = deps({
+      requirements: [req("r1", "x")],
+      codeMappings: [{ ...fileMap("r1", "pkg/a.test.ts"), startLine: 1, endLine: 2 }],
+    });
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    expect(out.map((t) => t.relation)).toEqual(["direct"]);
   });
 });
 

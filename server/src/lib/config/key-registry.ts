@@ -596,6 +596,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Upper bound on the code symbols a file-only requirement→code mapping expands to when resolving which tests exercise a requirement (#814, `lib/traceability/tested-by.ts`). Default 500.",
     sensitive: false,
   },
+  TESTED_BY_HUB_MIN_TEST_FILES: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      'How many distinct test files must exercise one requirement→code mapping before it is treated as a hub (a config file, a constructor every test calls) when resolving "Tested by" (#860, `lib/traceability/tested-by.ts`). Through a hub, an `exercises` link counts only when the test or the symbol it calls shares the requirement\'s words. Default 5.',
+    sensitive: false,
+  },
   // ── Epic #820 Phase 1 / Issue #824 — deterministic AFFECTED SCHEMA prompt block ─
   ANALYSIS_AFFECTED_SCHEMA_MAPPING: {
     tier: "tunable",
