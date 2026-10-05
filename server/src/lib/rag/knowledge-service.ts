@@ -201,6 +201,11 @@ export interface SearchOptions {
 export interface ReindexProgress {
   processed: number;
   total: number;
+  /**
+   * #862 — which corpus `processed`/`total` count: document chunks (phase 1) or
+   * code-symbol vectors (phase 2, #797). Absent means `"chunks"`.
+   */
+  phase?: "chunks" | "symbols";
 }
 
 export interface ReindexResult {
@@ -1203,6 +1208,14 @@ export class KnowledgeService {
             {
               ...(opts.batchSize !== undefined ? { batchSize: opts.batchSize } : {}),
               ...(opts.fresh !== undefined ? { fresh: opts.fresh } : {}),
+              // #862 — phase 2 reports too, or a watcher sits on phase 1's "N/N
+              // chunks, 100%" for the whole symbol re-embed.
+              ...(opts.onProgress
+                ? {
+                    onProgress: (p: { processed: number; total: number }) =>
+                      opts.onProgress?.({ ...p, phase: "symbols" }),
+                  }
+                : {}),
             },
             lease,
           );
@@ -1305,7 +1318,11 @@ export class KnowledgeService {
     let embedded = 0;
     const report = (): void => {
       try {
-        opts.onProgress?.({ processed: resumed.size + embedded, total: chunks.length });
+        opts.onProgress?.({
+          processed: resumed.size + embedded,
+          total: chunks.length,
+          phase: "chunks",
+        });
       } catch {
         // progress callback failure must never abort the migration
       }
