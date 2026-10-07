@@ -123,6 +123,17 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+// #723 — publishing promotes a stranded run's approved requirements first.
+const promoteApprovedRequirements = vi.hoisted(() =>
+  vi.fn(async (_analysisId: string): Promise<Record<string, unknown>> => ({
+    status: "unavailable",
+    reason: "This analysis has no usable synthesis output to promote.",
+  })),
+);
+vi.mock("../src/lib/analysis/promote-requirements.js", () => ({
+  promoteApprovedRequirements,
+}));
+
 import { estimateStoryPoints, generateDrafts } from "../src/lib/publishing/draft-generator.js";
 import { PublishError } from "../src/lib/publishing/types.js";
 
@@ -720,6 +731,81 @@ describe("generateDrafts", () => {
         },
       );
     }
+  });
+
+  // Issue #723 — a run stranded before rejections counted as resolved: the gate
+  // is open, approved requirements exist, and nothing ever re-ran promotion
+  // (only the review route did). Publishing must recover it, not tell the
+  // reviewer every approval was rejected.
+  describe("an open gate with nothing promoted (#723)", () => {
+    const saved: typeof requirements = [];
+    beforeEach(() => {
+      saved.splice(0, saved.length, ...requirements);
+      requirements.length = 0;
+      approvalCounts.approved = 32;
+      approvalCounts.rejected = 1;
+    });
+    afterEach(() => {
+      requirements.splice(0, requirements.length, ...saved);
+      delete approvalCounts.approved;
+      promoteApprovedRequirements.mockReset();
+      promoteApprovedRequirements.mockResolvedValue({
+        status: "unavailable",
+        reason: "This analysis has no usable synthesis output to promote.",
+      });
+    });
+
+    it("promotes the approved requirements, then generates drafts from them", async () => {
+      promoteApprovedRequirements.mockImplementationOnce(async () => {
+        requirements.push(...saved);
+        return { status: "promoted", requirementCount: saved.length };
+      });
+
+      const summary = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      });
+
+      expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1");
+      expect(summary.features).toBe(2);
+    });
+
+    it("says the approved requirements could not be promoted — never that they were rejected", async () => {
+      promoteApprovedRequirements.mockResolvedValueOnce({
+        status: "unavailable",
+        reason: "This analysis has no usable synthesis output to promote.",
+      });
+
+      const err = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(PublishError);
+      const message = (err as PublishError).message;
+      expect(message).toContain("32 approved requirement(s) could not be promoted");
+      expect(message).toContain("no usable synthesis output");
+      expect(message).not.toContain("rejected");
+      expect(message).not.toContain("reopen");
+    });
+
+    it("does not try to promote while approvals are still pending", async () => {
+      approvalCounts.pending = 2;
+
+      const err = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+
+      expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+      expect(err).toMatchObject({ code: "APPROVALS_BLOCKING", details: { pendingCount: 2 } });
+    });
   });
 
   it("renders a Mermaid diagram and traceability footer in the epic", async () => {

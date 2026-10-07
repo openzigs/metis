@@ -583,7 +583,12 @@ test.describe("Analysis findings — persona attribution + Deep Dive → Issue (
 
     const button = pom.deepDiveButton(CODE_FINDING_TITLE);
     await expect(button).toBeDisabled();
-    await expect(button).toHaveAttribute("title", /blocked until pending approvals are resolved/i);
+    // #723 — the tooltip names the pending count the fixture mocks (2): only
+    // pending approvals hold the gate, a rejection is a resolution.
+    await expect(button).toHaveAttribute(
+      "title",
+      /blocked until 2 pending approval\(s\) are resolved/i,
+    );
     await expect(pom.dialog).toHaveCount(0);
   });
 

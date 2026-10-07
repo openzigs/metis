@@ -75,7 +75,7 @@ async function readSynthesisOutput(analysisId: string): Promise<SynthesisOutput 
 export async function promoteApprovedRequirements(analysisId: string): Promise<PromotionOutcome> {
   const analysis = await prisma.analysis.findFirst({
     where: { id: analysisId },
-    select: { projectId: true, metadata: true },
+    select: { projectId: true },
   });
   if (!analysis) {
     return { status: "unavailable", reason: "Analysis not found." };
@@ -143,7 +143,6 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
       const appended = await appendNewlyApproved({
         analysisId,
         projectId: analysis.projectId,
-        metadata: analysis.metadata,
         toPromote,
         promotedStructuredIds,
       });
@@ -236,70 +235,105 @@ const normalizeTitle = (title: string): string => title.trim().toLowerCase().rep
  * is the structured id recorded at promotion; for a set promoted before that
  * record existed, the (reviewed, verbatim) title stands in. A row the user
  * soft-deleted still counts as present, so it is never resurrected.
+ *
+ * Atomic: the rows and the record of their structured ids commit together in
+ * one transaction, so a failure part-way leaves neither behind (a retry would
+ * otherwise re-create the rows that did land). The transaction opens with a
+ * write to the analysis row, which on Postgres waits for any concurrent append
+ * to commit and then returns the metadata it recorded (READ COMMITTED re-reads
+ * the row after the wait); on SQLite the write takes the database write lock.
+ * Which ids are new is decided only after that, so two approvals resolving at
+ * once append each requirement exactly once. (#882's `FOR NO KEY UPDATE`
+ * analysis-row lock is the same serialisation point; it is not on `main` yet.)
  */
 async function appendNewlyApproved(input: {
   analysisId: string;
   projectId: string;
-  metadata: string | null;
   toPromote: SynthesisOutput;
   promotedStructuredIds: string[];
 }): Promise<number> {
-  const recorded = readPromotedStructuredIds(input.metadata);
-  let isNew: (idx: number) => boolean;
-  if (recorded) {
-    const seen = new Set(recorded);
-    isNew = (idx) => !seen.has(input.promotedStructuredIds[idx] ?? "");
-  } else {
-    const rows = await prisma.requirement.findMany({
-      where: { analysisId: input.analysisId },
-      select: { title: true },
-    });
-    const titles = new Set(rows.map((r) => normalizeTitle(r.title)));
-    isNew = (idx) => !titles.has(normalizeTitle(input.toPromote.requirements[idx]?.title ?? ""));
-  }
-  const newIdx = input.toPromote.requirements.map((_, i) => i).filter(isNew);
-  if (newIdx.length === 0) return 0;
-
-  const added = newIdx.map((i) => input.toPromote.requirements[i]!);
   const flat = await readFlattenedFindings(input.analysisId);
-  const coverages = computeCoverageForRequirements(
-    added,
-    flat.map((f) => ({ citations: f.citations })),
-  );
-  const verdicts = computeVerdictsForRequirements(
-    added,
-    flat.map((f) => ({ agentKey: f.agentKey, verdict: f.verdict ?? null })),
-    flat.some((f) => f.agentKey === "code"),
-  );
 
-  // Same row shape `persistRequirements` writes, without its replace semantics.
-  const requirementIds: string[] = [];
-  for (let k = 0; k < added.length; k++) {
-    const r = added[k]!;
-    const evidenceIds = r.evidenceFindingIndexes
-      .map((i) => flat[i]?.findingId)
-      .filter((id): id is string => Boolean(id));
-    const row = await prisma.requirement.create({
-      data: {
-        analysisId: input.analysisId,
-        projectId: input.projectId,
-        type: r.type,
-        title: r.title.slice(0, 255),
-        body: r.body,
-        priority: r.priority,
-        labels: JSON.stringify(
-          Array.from(new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)])),
-        ),
-        acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
-        storyPoints: r.storyPoints ?? null,
-        coverage: coverages[k] ?? null,
-        verdict: verdicts[k] ?? null,
-      },
-      select: { id: true },
+  const requirementIds = await prisma.$transaction(async (tx) => {
+    const locked = await tx.analysis.update({
+      where: { id: input.analysisId },
+      data: { updatedAt: new Date() },
+      select: { metadata: true },
     });
-    requirementIds.push(row.id);
-  }
+    const recorded = readPromotedStructuredIds(locked.metadata);
+    let isNew: (idx: number) => boolean;
+    if (recorded) {
+      const seen = new Set(recorded);
+      isNew = (idx) => !seen.has(input.promotedStructuredIds[idx] ?? "");
+    } else {
+      const rows = await tx.requirement.findMany({
+        where: { analysisId: input.analysisId },
+        select: { title: true },
+      });
+      const titles = new Set(rows.map((r) => normalizeTitle(r.title)));
+      isNew = (idx) => !titles.has(normalizeTitle(input.toPromote.requirements[idx]?.title ?? ""));
+    }
+    const newIdx = input.toPromote.requirements.map((_, i) => i).filter(isNew);
+    if (newIdx.length === 0) return [];
 
+    const added = newIdx.map((i) => input.toPromote.requirements[i]!);
+    const coverages = computeCoverageForRequirements(
+      added,
+      flat.map((f) => ({ citations: f.citations })),
+    );
+    const verdicts = computeVerdictsForRequirements(
+      added,
+      flat.map((f) => ({ agentKey: f.agentKey, verdict: f.verdict ?? null })),
+      flat.some((f) => f.agentKey === "code"),
+    );
+
+    // Same row shape `persistRequirements` writes, without its replace semantics.
+    const ids: string[] = [];
+    for (let k = 0; k < added.length; k++) {
+      const r = added[k]!;
+      const evidenceIds = r.evidenceFindingIndexes
+        .map((i) => flat[i]?.findingId)
+        .filter((id): id is string => Boolean(id));
+      const row = await tx.requirement.create({
+        data: {
+          analysisId: input.analysisId,
+          projectId: input.projectId,
+          type: r.type,
+          title: r.title.slice(0, 255),
+          body: r.body,
+          priority: r.priority,
+          labels: JSON.stringify(
+            Array.from(new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)])),
+          ),
+          acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
+          storyPoints: r.storyPoints ?? null,
+          coverage: coverages[k] ?? null,
+          verdict: verdicts[k] ?? null,
+        },
+        select: { id: true },
+      });
+      ids.push(row.id);
+    }
+
+    // Recorded in the SAME transaction as the rows, onto the metadata read
+    // under the lock — never onto a copy taken before it.
+    const appendedIds = newIdx.map((i) => input.promotedStructuredIds[i] ?? "").filter(Boolean);
+    await tx.analysis.update({
+      where: { id: input.analysisId },
+      data: {
+        metadata: JSON.stringify({
+          ...parseMetadataObject(locked.metadata),
+          promotedStructuredIds: [
+            ...new Set([...(recorded ?? input.promotedStructuredIds), ...appendedIds]),
+          ],
+        }),
+      },
+    });
+    return ids;
+  });
+  if (requirementIds.length === 0) return 0;
+
+  // Best-effort enrichment of the committed rows, as on the first promotion.
   await applyClarificationsToRequirements(input.analysisId);
   try {
     await seedRequirementCodeLinksFromFindings({
@@ -313,13 +347,22 @@ async function appendNewlyApproved(input: {
       error: (err as Error).message,
     });
   }
-  await persistAnalysisEnhancement(input.analysisId, {
-    promotedStructuredIds: [...new Set([...(recorded ?? []), ...input.promotedStructuredIds])],
-  });
 
   log.info("Appended requirements approved after promotion", {
     analysisId: input.analysisId,
     requirements: requirementIds.length,
   });
   return requirementIds.length;
+}
+
+function parseMetadataObject(metadata: string | null): Record<string, unknown> {
+  if (!metadata) return {};
+  try {
+    const parsed: unknown = JSON.parse(metadata);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }

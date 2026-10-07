@@ -466,6 +466,52 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     });
   });
 
+  // Issue #723 — `persistRequirements` withholds a replacement over reviewed
+  // work (#769) and returns []. Nothing became a row, so no id is recorded as
+  // promoted; otherwise a later append would skip a requirement that never landed.
+  it("records no promoted ids when the replacement was withheld", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        {
+          id: "r1",
+          title: "Feed URL must be absolute",
+          description: "Feed URL must be absolute.",
+          type: "functional" as const,
+          stakeholders: [],
+          priority: "should-have" as const,
+          ambiguities: [],
+          evidenceNeeds: [],
+          rawSource: "",
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    vi.mocked(svc.persistRequirements).mockImplementationOnce((input) => {
+      persisted.requirements.push(input as unknown as Record<string, unknown>);
+      return Promise.resolve([]);
+    });
+    await approvalSvc.createApprovalRequests("ana-withheld", [
+      { type: "requirement", itemId: "r1" },
+    ]);
+    await approvalSvc.reviewApprovalRequest("ana-withheld", "ap-1", {
+      status: "approved",
+      reviewerId: "u1",
+    });
+
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-withheld",
+      ...synthInput,
+    });
+
+    expect(persisted.requirements).toHaveLength(1);
+    const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+    expect(cleared).toBeDefined();
+    expect(cleared).not.toHaveProperty("promotedStructuredIds");
+  });
+
   // Issue #730 — the gate being open at synthesis time must not swap the
   // reviewed list for the synthesis set on the orchestrator's own path either.
   it("#730 — persists the approved structured requirements, not the synthesis set", async () => {

@@ -31,6 +31,23 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
     next: express.NextFunction,
   ) => next(),
 }));
+// #723 — the reopen route must sit behind its own limiter (CodeQL
+// js/missing-rate-limiting). The stub lets a test flip it to "limited".
+const reopenLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
+vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
+  analysisApprovalReopenRateLimiter: (
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    reopenLimiter.calls += 1;
+    if (reopenLimiter.limited) {
+      res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "slow" } });
+      return;
+    }
+    next();
+  },
+}));
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -114,6 +131,8 @@ const approve = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reopenLimiter.limited = false;
+  reopenLimiter.calls = 0;
 });
 
 describe("PUT .../approvals/:approvalId — #1104 promotion retry", () => {
@@ -180,5 +199,17 @@ describe("POST .../approvals/:approvalId/reopen — #723", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("APPROVAL_NOT_REOPENABLE");
+  });
+
+  it("is rate limited before the reopen runs", async () => {
+    reopenLimiter.limited = true;
+
+    const res = await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
+    );
+
+    expect(res.status).toBe(429);
+    expect(reopenLimiter.calls).toBe(1);
+    expect(reopenApprovalRequest).not.toHaveBeenCalled();
   });
 });

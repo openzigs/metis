@@ -316,7 +316,40 @@ describe("ApprovalsPanel", () => {
       );
       const banner = await screen.findByTestId("promotion-banner");
       expect(banner).toHaveTextContent(/unblocked/i);
-      expect(banner).toHaveTextContent("1 rejected item(s) were left out");
+      expect(banner).toHaveTextContent("1 rejected requirement(s) were left out");
+      expect(banner).not.toHaveTextContent("evidence");
+    });
+
+    it("never says a rejected evidence or clarification item was left out", async () => {
+      renderPanel(
+        [
+          approval({ id: "ap-1", type: "evidence", itemId: "ev-1", status: "rejected" }),
+          approval({ id: "ap-2", type: "clarification", itemId: "cl-1", status: "rejected" }),
+          approval({ id: "ap-3", status: "approved", itemId: "req-2" }),
+        ],
+        { allowed: true, pendingCount: 0, rejectedCount: 2 },
+      );
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent(/unblocked/i);
+      expect(banner).not.toHaveTextContent("left out");
+      expect(banner).toHaveTextContent(
+        "2 rejected evidence or clarification item(s) were recorded; they do not change which requirements are promoted.",
+      );
+    });
+
+    it("names each kind of rejection separately when both occur", async () => {
+      renderPanel(
+        [
+          approval({ id: "ap-1", status: "rejected" }),
+          approval({ id: "ap-2", type: "evidence", itemId: "ev-1", status: "rejected" }),
+        ],
+        { allowed: true, pendingCount: 0, rejectedCount: 2 },
+      );
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent("1 rejected requirement(s) were left out");
+      expect(banner).toHaveTextContent(
+        "1 rejected evidence or clarification item(s) were recorded",
+      );
     });
 
     it("never lists rejections as outstanding in the blocked banner", async () => {

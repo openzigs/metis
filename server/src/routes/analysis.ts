@@ -37,6 +37,7 @@ import { optimisticLock } from "../middleware/optimistic-lock.js";
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
+import { analysisApprovalReopenRateLimiter } from "../middleware/analysis-approval-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   AnalysisOrchestrator,
@@ -1100,6 +1101,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     "/:id/approvals/:approvalId/reopen",
     requireAuth,
     requirePermission("analysis.run"),
+    analysisApprovalReopenRateLimiter,
     async (req: Request, res: Response) => {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);

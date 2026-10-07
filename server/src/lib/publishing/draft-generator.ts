@@ -30,6 +30,10 @@ import { createChildLogger } from "../logger.js";
 import { computeDedupHash } from "./dedup.js";
 import { buildEpicTitle } from "./epic-title.js";
 import { canCreateTickets } from "../analysis/approval-checkpoint.js";
+import {
+  promoteApprovedRequirements,
+  type PromotionOutcome,
+} from "../analysis/promote-requirements.js";
 import { PublishError } from "./types.js";
 import { findTemplate } from "./template-service.js";
 import { renderToMarkdown, buildTemplatePrompt } from "./template-renderer.js";
@@ -63,20 +67,50 @@ export interface GeneratedDraftSummary {
  * approval checkpoint is resolved. Name that precondition, with its counts and
  * where to resolve it, instead of telling the user to re-run the analysis.
  */
-async function noRequirementsError(analysisId: string): Promise<PublishError> {
-  const gate = await canCreateTickets(analysisId);
+async function noRequirementsError(
+  analysisId: string,
+  gate: Awaited<ReturnType<typeof canCreateTickets>>,
+  promotion: PromotionOutcome | null,
+): Promise<PublishError> {
   // #406 — ids, counts and the remedy only. The UI builds the route itself, so
   // the server holds no knowledge of UI paths and the client follows no URL it
   // was handed.
   if (gate.allowed) {
-    // Issue #723 — a rejection is a resolution, so an open gate with nothing
-    // promoted means every requirement was rejected. A rejected approval can be
-    // reopened on the Analysis page, so point there rather than at a re-run.
-    if (gate.rejectedCount > 0) {
+    // Issue #723 — count the REQUIREMENT approvals, not every rejection: an
+    // evidence or clarification rejection excludes no requirement, so only
+    // "approved none, rejected some" means the reviewer left everything out.
+    const [approvedRequirements, rejectedRequirements] = await Promise.all([
+      prisma.approvalRequest.count({
+        where: { analysisId, type: "requirement", status: "approved" },
+      }),
+      prisma.approvalRequest.count({
+        where: { analysisId, type: "requirement", status: "rejected" },
+      }),
+    ]);
+    if (approvedRequirements > 0) {
+      // Approved requirements exist and promotion was just retried, yet no row
+      // is visible. Say that — never that they were rejected.
+      const why =
+        promotion && "reason" in promotion
+          ? promotion.reason
+          : promotion?.status === "already-promoted"
+            ? "every promoted requirement has since been deleted"
+            : "promotion did not produce any requirement rows";
+      return new PublishError(
+        400,
+        "NO_REQUIREMENTS",
+        `analysis has no requirements — ${approvedRequirements} approved requirement(s) could not be promoted (${why})`,
+        true,
+        { analysisId, approvedCount: approvedRequirements },
+      );
+    }
+    if (rejectedRequirements > 0) {
+      // A rejected approval can be reopened on the Analysis page, so point
+      // there rather than at a re-run.
       return new PublishError(
         400,
         "APPROVALS_BLOCKING",
-        `analysis has no requirements — all ${gate.rejectedCount} reviewed approval(s) were rejected; reopen and approve the ones to keep on the Analysis page`,
+        `analysis has no requirements — all ${rejectedRequirements} reviewed requirement(s) were rejected; reopen and approve the ones to keep on the Analysis page`,
         false,
         {
           analysisId,
@@ -106,6 +140,45 @@ async function noRequirementsError(analysisId: string): Promise<PublishError> {
   );
 }
 
+function findLiveRequirements(analysisId: string) {
+  return prisma.requirement.findMany({
+    where: { analysisId, deletedAt: null },
+    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+  });
+}
+
+/**
+ * Issue #723 — the analysis's requirements, promoting them first when the gate
+ * is open but nothing was promoted. Promotion only ever ran from the approval
+ * review route, so a run stranded before rejections counted as resolved (32
+ * approved, 1 rejected, 0 rows) had an open gate and nothing left to trigger
+ * it: publishing is where that run recovers. `promoteApprovedRequirements` is
+ * idempotent and never replaces an existing set.
+ */
+async function loadOrPromoteRequirements(analysisId: string) {
+  const requirements = await findLiveRequirements(analysisId);
+  if (requirements.length > 0) return requirements;
+
+  const gate = await canCreateTickets(analysisId);
+  let promotion: PromotionOutcome | null = null;
+  if (gate.allowed) {
+    try {
+      promotion = await promoteApprovedRequirements(analysisId);
+    } catch (err) {
+      log.warn("lazy promotion before draft generation failed", {
+        analysisId,
+        error: (err as Error).message,
+      });
+      promotion = { status: "unavailable", reason: "promoting the requirements failed" };
+    }
+    if (promotion.status === "promoted" && promotion.requirementCount > 0) {
+      const promoted = await findLiveRequirements(analysisId);
+      if (promoted.length > 0) return promoted;
+    }
+  }
+  throw await noRequirementsError(analysisId, gate, promotion);
+}
+
 export async function generateDrafts(opts: GenerateDraftsOptions): Promise<GeneratedDraftSummary> {
   const project = await prisma.project.findFirst({
     where: { id: opts.projectId, deletedAt: null },
@@ -119,13 +192,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   if (!analysis) {
     throw new PublishError(404, "ANALYSIS_NOT_FOUND", `analysis not found: ${opts.analysisId}`);
   }
-  const requirements = await prisma.requirement.findMany({
-    where: { analysisId: opts.analysisId, deletedAt: null },
-    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
-  });
-  if (requirements.length === 0) {
-    throw await noRequirementsError(opts.analysisId);
-  }
+  const requirements = await loadOrPromoteRequirements(opts.analysisId);
 
   const summary: GeneratedDraftSummary = {
     total: 0,

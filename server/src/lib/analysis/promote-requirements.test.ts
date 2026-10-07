@@ -48,26 +48,80 @@ const db = {
   existingTitles: [] as string[],
 };
 
-vi.mock("../prisma.js", () => ({
-  prisma: {
+/**
+ * #723 — a small transactional model of the two tables the append writes. A
+ * write made outside `$transaction` commits at once; one made through the tx
+ * client is staged and lands only if the callback resolves. `$transaction`
+ * runs one callback at a time — the analysis-row lock the append opens with.
+ */
+const committed = {
+  /** Titles of the requirement rows that actually reached the database. */
+  rows: [] as string[],
+  /** Optional fault: the Nth requirement create (1-based) throws. */
+  failCreateAt: 0,
+  creates: 0,
+};
+const createRow = async (_args: { data: { title: string } }) => {
+  committed.creates += 1;
+  if (committed.failCreateAt && committed.creates === committed.failCreateAt) {
+    throw new Error("connection reset");
+  }
+  return { id: `rq_new_${committed.creates}` };
+};
+let txChain: Promise<unknown> = Promise.resolve();
+
+vi.mock("../prisma.js", () => {
+  const requirementFindMany = vi.fn(async () => db.existingTitles.map((title) => ({ title })));
+  const client = {
     analysis: { findFirst: vi.fn(async () => db.analysis) },
     agentResult: {
       findFirst: vi.fn(async () => (db.synthesisOutput ? { output: db.synthesisOutput } : null)),
     },
     requirement: {
       count: vi.fn(async () => db.requirementCount),
-      findMany: vi.fn(async () => db.existingTitles.map((title) => ({ title }))),
-      create: vi.fn(async ({ data }: { data: { title: string } }) => ({
-        id: `rq_new_${data.title.length}`,
-      })),
+      findMany: requirementFindMany,
+      create: vi.fn(async (args: { data: { title: string } }) => {
+        const row = await createRow(args);
+        committed.rows.push(args.data.title);
+        return row;
+      }),
     },
     approvalRequest: {
       findMany: vi.fn(async ({ where }: { where: { type?: string } }) =>
         db.approvals.filter(() => where.type === "requirement"),
       ),
     },
-  },
-}));
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const run = txChain.then(async () => {
+        const stagedRows: string[] = [];
+        let stagedMetadata: string | undefined;
+        const tx = {
+          analysis: {
+            update: vi.fn(async ({ data }: { data: { metadata?: string } }) => {
+              if (data.metadata !== undefined) stagedMetadata = data.metadata;
+              return { metadata: stagedMetadata ?? db.analysis?.metadata ?? null };
+            }),
+          },
+          requirement: {
+            findMany: requirementFindMany,
+            create: vi.fn(async (args: { data: { title: string } }) => {
+              const row = await createRow(args);
+              stagedRows.push(args.data.title);
+              return row;
+            }),
+          },
+        };
+        const result = await fn(tx);
+        committed.rows.push(...stagedRows);
+        if (stagedMetadata !== undefined && db.analysis) db.analysis.metadata = stagedMetadata;
+        return result;
+      });
+      txChain = run.catch(() => undefined);
+      return run;
+    }),
+  };
+  return { prisma: client };
+});
 
 const persistRequirements = vi.fn(async (..._args: unknown[]) => ["rq_1", "rq_2"]);
 const persistAnalysisEnhancement = vi.fn(async () => undefined);
@@ -104,7 +158,6 @@ vi.mock("./approval-checkpoint.js", async (importOriginal) => {
 });
 
 const { promoteApprovedRequirements } = await import("./promote-requirements.js");
-const { prisma } = await import("../prisma.js");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -118,6 +171,10 @@ beforeEach(() => {
   db.approvals = [];
   db.existingTitles = [];
   findings.length = 0;
+  committed.rows = [];
+  committed.failCreateAt = 0;
+  committed.creates = 0;
+  txChain = Promise.resolve();
 });
 
 describe("#1104 B — promoting the requirements the approval gate withheld", () => {
@@ -402,12 +459,11 @@ describe("#730 — promote the requirements the user approved, not a different s
 });
 
 describe("#723 — a rejected requirement is dropped, and can be reopened after promotion", () => {
-  const created = () =>
-    (
-      prisma.requirement.create as unknown as {
-        mock: { calls: Array<[{ data: { title: string } }]> };
-      }
-    ).mock.calls.map((c) => c[0].data.title);
+  /** Titles of the requirement rows that COMMITTED (see the transactional model). */
+  const created = () => committed.rows;
+  const recordedIds = () =>
+    (JSON.parse(db.analysis?.metadata ?? "{}") as { promotedStructuredIds?: string[] })
+      .promotedStructuredIds;
 
   const structuredReq = (id: string, title: string) => ({
     id,
@@ -470,9 +526,47 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     expect(persistRequirements).not.toHaveBeenCalled();
     expect(created()).toEqual(["Reading speed validation"]);
     expect(applyClarificationsToRequirements).toHaveBeenCalledWith(ANALYSIS_ID);
-    expect(persistAnalysisEnhancement).toHaveBeenCalledWith(ANALYSIS_ID, {
-      promotedStructuredIds: ["REQ-1", "REQ-3", "REQ-2"],
-    });
+    expect(recordedIds()).toEqual(["REQ-1", "REQ-3", "REQ-2"]);
+    // The record rides the rows' transaction, not a separate metadata write.
+    expect(persistAnalysisEnhancement).not.toHaveBeenCalled();
+  });
+
+  it("commits neither the rows nor the record when a create fails part-way", async () => {
+    db.requirementCount = 1;
+    const metadata = JSON.stringify({ promotedStructuredIds: ["REQ-1"] });
+    db.analysis = { projectId: PROJECT_ID, metadata };
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+    committed.failCreateAt = 2; // REQ-2 lands, REQ-3 throws
+
+    await expect(promoteApprovedRequirements(ANALYSIS_ID)).rejects.toThrow("connection reset");
+
+    expect(created()).toEqual([]);
+    expect(db.analysis.metadata).toBe(metadata);
+
+    // The retry then appends each requirement exactly once.
+    committed.failCreateAt = 0;
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
+    expect(created()).toEqual(["Reading speed validation", "Per-host polling concurrency limit"]);
+    expect(recordedIds()).toEqual(["REQ-1", "REQ-2", "REQ-3"]);
+  });
+
+  it("appends a requirement once when two approvals resolve concurrently", async () => {
+    db.requirementCount = 2;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-3"] }),
+    };
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+
+    const outcomes = await Promise.all([
+      promoteApprovedRequirements(ANALYSIS_ID),
+      promoteApprovedRequirements(ANALYSIS_ID),
+    ]);
+
+    expect(created()).toEqual(["Reading speed validation"]);
+    expect(outcomes.map((o) => o.status).sort()).toEqual(["already-promoted", "promoted"]);
+    expect(recordedIds()).toEqual(["REQ-1", "REQ-3", "REQ-2"]);
   });
 
   it("matches on title for a set promoted before the ids were recorded", async () => {
@@ -483,6 +577,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     await promoteApprovedRequirements(ANALYSIS_ID);
 
     expect(created()).toEqual(["Reading speed validation"]);
+    expect(recordedIds()).toEqual(["REQ-1", "REQ-2", "REQ-3"]);
   });
 
   it("is still a no-op when every approved requirement is already promoted", async () => {

@@ -3540,8 +3540,10 @@ export class AnalysisOrchestrator {
         },
         promotionStatus: "allowed",
         // #723 — which reviewed requirements are now rows, so one reopened and
-        // approved later is appended rather than ignored.
-        ...(reviewed
+        // approved later is appended rather than ignored. Only when they ARE
+        // rows: a withheld replacement (#769) persisted nothing, and recording
+        // its ids would make a later append skip requirements that never landed.
+        ...(reviewed && requirementIds.length === toPersist.requirements.length
           ? {
               promotedStructuredIds: structured
                 .filter((r) => approvedIds.has(r.id))

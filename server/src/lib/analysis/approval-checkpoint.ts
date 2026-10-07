@@ -192,9 +192,11 @@ export async function reopenApprovalRequest(
  * Check if ticket creation is allowed: every approval is resolved.
  *
  * Issue #723 — a REJECTED approval is a resolution, exactly as
- * {@link areAllApprovalsResolved} counts it: the rejected item is left out of
- * the promoted set (`buildApprovedRequirementSet`) and the approved ones are
- * promoted. Counting it as outstanding made one rejection block promotion,
+ * {@link areAllApprovalsResolved} counts it. What it EXCLUDES depends on its
+ * type: a rejected `requirement` approval is left out of the promoted set
+ * (`buildApprovedRequirementSet`); a rejected `evidence` or `clarification`
+ * approval is recorded but changes no promoted requirement — surfaces must not
+ * claim it was "left out". Counting it as outstanding made one rejection block promotion,
  * publishing and Deep Dive forever, with nothing in the product able to clear
  * it. `rejectedCount` is still reported so surfaces can say what was dropped.
  */

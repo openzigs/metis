@@ -115,16 +115,42 @@ export function summarisePendingByType(pending: ReadonlyArray<{ type: string }>)
   return parts.join(", ");
 }
 
+/**
+ * Issue #723 — what the resolved rejections actually DID, per approval type.
+ * Only a rejected `requirement` is left out of the promoted set; a rejected
+ * `evidence` or `clarification` approval is recorded but excludes nothing, so
+ * claiming it "was left out" would tell the reviewer something false.
+ */
+export function describeRejections(rejected: ReadonlyArray<{ type: string }>): string | null {
+  if (rejected.length === 0) return null;
+  const requirementCount = rejected.filter((a) => a.type === "requirement").length;
+  const otherCount = rejected.length - requirementCount;
+  const parts: string[] = [];
+  if (requirementCount > 0) {
+    parts.push(`${requirementCount} rejected requirement(s) were left out of the promoted set.`);
+  }
+  if (otherCount > 0) {
+    parts.push(
+      `${otherCount} rejected evidence or clarification item(s) were recorded; they do not change which requirements are promoted.`,
+    );
+  }
+  parts.push("Reopen one below to review it again.");
+  return parts.join(" ");
+}
+
 function PromotionBanner({
   status,
   awaitingRequirementCount,
   pendingByType,
+  rejectionSummary,
 }: {
   status: TicketStatus;
   /** #1104 — how many synthesized requirements the gate is holding back. */
   awaitingRequirementCount?: number;
   /** #1117 (finding E) — breakdown of the pending approvals, e.g. "16 requirement, 11 evidence". */
   pendingByType?: string | null;
+  /** #723 — what the rejections did, per approval type ({@link describeRejections}). */
+  rejectionSummary?: string | null;
 }): React.ReactElement | null {
   if (status.allowed) {
     return (
@@ -135,8 +161,7 @@ function PromotionBanner({
       >
         All approvals resolved — artifact promotion is unblocked.
         {/* #723 — a rejection is a resolution: say what it did, and how to undo it. */}
-        {status.rejectedCount > 0 &&
-          ` ${status.rejectedCount} rejected item(s) were left out; reopen one below to review it again.`}
+        {rejectionSummary && ` ${rejectionSummary}`}
       </div>
     );
   }
@@ -435,7 +460,8 @@ export function ApprovalsPanel({
         <h3 className="text-lg font-semibold">Approvals</h3>
         <p className="text-sm text-muted-foreground">
           Review and resolve the human-in-the-loop checkpoints below. Specs are not promoted until
-          every approval is resolved; rejected items are left out, and can be reopened.
+          every approval is resolved; rejected requirements are left out, and any rejection can be
+          reopened.
         </p>
       </div>
 
@@ -457,6 +483,7 @@ export function ApprovalsPanel({
               readEnhancementMetadata(metadata).promotionBlocked?.awaitingRequirementCount
             }
             pendingByType={summarisePendingByType(pending)}
+            rejectionSummary={describeRejections(resolved.filter((a) => a.status === "rejected"))}
           />
         )
       )}
