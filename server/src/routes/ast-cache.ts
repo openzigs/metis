@@ -55,11 +55,8 @@ export function astCacheRouter(): Router {
         // Pull (or clone) the repo into the connector's clone dir, then rebuild
         // the AST summary cache from the on-disk source files.
         const cache = getASTSummaryCache();
-        // Reads the checkout only — no graph ingest — so it must not move
-        // lastCommitSha past the code graph's commit label (#757).
-        const { path: cloneDir } = await pullOrCloneRepo(projectId, repoId, actorId, {
-          recordCommit: false,
-        });
+        // Reads the checkout only; lastCommitSha moves with a graph ingest (#758).
+        const { path: cloneDir } = await pullOrCloneRepo(projectId, repoId, actorId);
         const result = await rebuildCacheFromCloneDir(cache, cloneDir);
 
         res.json(

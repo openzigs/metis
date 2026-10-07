@@ -10,15 +10,38 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCodeGraph = { findFirst: vi.fn() };
-const mockCodeSymbol = { findMany: vi.fn(), findFirst: vi.fn() };
+/**
+ * `mockCodeSymbol.named` answers the `calls`/`calledBy` NAME lookup (#774): it
+ * returns the one symbol the name resolves to, or null. The lookup is a
+ * `findMany` whose select includes `name`; the result listing's does not.
+ */
+const mockCodeSymbol = { findMany: vi.fn(), named: vi.fn() };
 const mockCodeEdge = { findMany: vi.fn(), count: vi.fn() };
 
 vi.mock("../../prisma.js", () => ({
   prisma: {
     codeGraph: { findFirst: (...a: unknown[]) => mockCodeGraph.findFirst(...a) },
     codeSymbol: {
-      findMany: (...a: unknown[]) => mockCodeSymbol.findMany(...a),
-      findFirst: (...a: unknown[]) => mockCodeSymbol.findFirst(...a),
+      findMany: async (q: { select?: { name?: boolean }; where: { OR?: unknown[] } }) => {
+        if (!q.select?.name) return mockCodeSymbol.findMany(q);
+        // Exact tier only; the substring tier then finds nothing either.
+        if (!q.where.OR) return [];
+        const hit = (await mockCodeSymbol.named(q)) as { id: string } | null;
+        if (!hit) return [];
+        const ref = (q.where.OR[0] as { qualifiedName: string }).qualifiedName;
+        return [
+          {
+            name: ref,
+            qualifiedName: ref,
+            kind: "function",
+            filePath: "x.go",
+            startLine: 1,
+            endLine: 2,
+            language: "go",
+            ...hit,
+          },
+        ];
+      },
     },
     codeEdge: {
       findMany: (...a: unknown[]) => mockCodeEdge.findMany(...a),
@@ -35,7 +58,7 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
   beforeEach(() => {
     mockCodeGraph.findFirst.mockReset();
     mockCodeSymbol.findMany.mockReset();
-    mockCodeSymbol.findFirst.mockReset();
+    mockCodeSymbol.named.mockReset();
     mockCodeEdge.findMany.mockReset();
     mockCodeEdge.count.mockReset();
     mockCodeEdge.count.mockResolvedValue(0);
@@ -95,7 +118,7 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
 
   it("calledBy: resolves callees and still renders their filePath:startLine-endLine locators", async () => {
     mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
-    mockCodeSymbol.findFirst.mockResolvedValue({ id: "caller1" }); // the named caller
+    mockCodeSymbol.named.mockResolvedValue({ id: "caller1" }); // the named caller
     mockCodeEdge.findMany.mockResolvedValue([{ toSymbolId: "callee1" }]);
     mockCodeSymbol.findMany.mockResolvedValue([
       {
@@ -116,14 +139,14 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
 
   it("calledBy: reports cleanly when the named caller does not exist", async () => {
     mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
-    mockCodeSymbol.findFirst.mockResolvedValue(null);
+    mockCodeSymbol.named.mockResolvedValue(null);
     const res = await searchCodeGraphTool.execute({ calledBy: "Ghost" }, ctx);
     expect(res.content).toBe('No symbol matching "Ghost" found.');
   });
 
   it("calledBy: reports cleanly when the caller calls nothing", async () => {
     mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
-    mockCodeSymbol.findFirst.mockResolvedValue({ id: "caller1" });
+    mockCodeSymbol.named.mockResolvedValue({ id: "caller1" });
     mockCodeEdge.findMany.mockResolvedValue([]);
     const res = await searchCodeGraphTool.execute({ calledBy: "Leaf" }, ctx);
     expect(res.content).toBe('"Leaf" does not call any other symbols.');
@@ -131,7 +154,7 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
 
   it("calls: resolves callers and renders their locators", async () => {
     mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
-    mockCodeSymbol.findFirst.mockResolvedValue({ id: "callee1" });
+    mockCodeSymbol.named.mockResolvedValue({ id: "callee1" });
     mockCodeEdge.findMany.mockResolvedValue([{ fromSymbolId: "caller1" }]);
     mockCodeSymbol.findMany.mockResolvedValue([
       {
@@ -152,7 +175,7 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
 
   it("calls: reports cleanly when no symbol calls the target", async () => {
     mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
-    mockCodeSymbol.findFirst.mockResolvedValue({ id: "callee1" });
+    mockCodeSymbol.named.mockResolvedValue({ id: "callee1" });
     mockCodeEdge.findMany.mockResolvedValue([]);
     const res = await searchCodeGraphTool.execute({ calls: "helper" }, ctx);
     expect(res.content).toBe('No symbols call "helper".');
@@ -160,7 +183,7 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
 
   it("calls: reports cleanly when the named callee does not exist", async () => {
     mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
-    mockCodeSymbol.findFirst.mockResolvedValue(null);
+    mockCodeSymbol.named.mockResolvedValue(null);
     const res = await searchCodeGraphTool.execute({ calls: "Ghost" }, ctx);
     expect(res.content).toBe('No symbol matching "Ghost" found.');
   });
@@ -322,11 +345,11 @@ describe("search_code_graph calledBy — unresolved callees (#740)", () => {
   beforeEach(() => {
     mockCodeGraph.findFirst.mockReset();
     mockCodeSymbol.findMany.mockReset();
-    mockCodeSymbol.findFirst.mockReset();
+    mockCodeSymbol.named.mockReset();
     mockCodeEdge.findMany.mockReset();
     mockCodeEdge.count.mockReset();
     mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
-    mockCodeSymbol.findFirst.mockResolvedValue({ id: "caller1" });
+    mockCodeSymbol.named.mockResolvedValue({ id: "caller1" });
     useSymbolTable();
   });
 

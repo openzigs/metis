@@ -53,11 +53,24 @@ jobs:
     name: Check CLA signature
     runs-on: ubuntu-latest
     # Comments are noisy: only the two that mean something to this bot get a run.
+    #
+    # Pull requests OPENED by `mgcronin` skip the check entirely. `mgcronin` is
+    # already on the allowlist below (the CLA's grantee signing to itself conveys
+    # nothing), but the allowlist is matched per COMMIT AUTHOR, and the
+    # maintainer's PRs are often written by Claude Code, whose commits are authored
+    # `Claude <noreply@anthropic.com>`. That address belongs to no GitHub account,
+    # so the action matches it by the bare git author NAME — and an allowlist entry
+    # for a name anyone can type into `git config user.name` would let any outside
+    # contributor skip the CLA. The PR opener, by contrast, is the authenticated
+    # account that opened the PR, which no one else can be. The trade: commits by a
+    # third party that the maintainer pushes into their own PR are not checked;
+    # carrying someone else's work is the maintainer's deliberate act.
     if: >-
-      (github.event_name == 'issue_comment' &&
-       (github.event.comment.body == 'recheck' ||
-        github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')) ||
-      github.event_name == 'pull_request_target'
+      ((github.event_name == 'issue_comment' &&
+        (github.event.comment.body == 'recheck' ||
+         github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')) ||
+       github.event_name == 'pull_request_target') &&
+      (github.event.pull_request.user.login || github.event.issue.user.login) != 'mgcronin'
     steps:
       - name: CLA Assistant
         uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1

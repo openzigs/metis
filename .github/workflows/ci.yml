@@ -883,6 +883,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration invite-accept-workspace-delete-race-601-postgres
 
+      # Issue #871 — on READ COMMITTED two requirement edits can both read version N
+      # inside their transactions. The write is conditional on that version; prove
+      # exactly one same-version edit wins and the other is a VERSION_CONFLICT.
+      - name: Prove concurrent same-version requirement edits conflict on real Postgres
+        working-directory: server
+        run: pnpm test:integration requirement-concurrent-edit-871-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing
@@ -915,6 +922,13 @@ jobs:
       - name: Prove exactly-once leader election + failover on real Postgres
         working-directory: server
         run: pnpm test:integration leader-election-postgres
+
+      # Issue #779 — a re-synthesis checked for review work, then deleted the set in a
+      # separate statement, so a comment committed in between was cascaded away. The
+      # set is now locked before the check; prove that comment waits and is refused.
+      - name: Prove review work racing a requirement-set replace is never lost on real Postgres
+        working-directory: server
+        run: pnpm test:integration requirement-set-replace-toctou-779-postgres
 
   # Issue #556 (Epic #518) — prove the Postgres migration HISTORY applies from
   # an EMPTY database via the real `prisma migrate deploy`.
@@ -1298,3 +1312,54 @@ jobs:
             echo "::error title=e2e not green::The sharded e2e suite concluded '$E2E_RESULT'. Read the failing 'e2e (N/3)' job's log; a cancelled shard may have timed out."
             exit 1
           fi
+
+  # #848 — a red nightly must not go unnoticed. GitHub tells only the user who
+  # last edited the `cron` line, and since #844 the nightly (with `main` pushes)
+  # is the only run of the path-gated `postgres-adapter` and `api` image work.
+  # This job opens a `ci-nightly` issue (or comments on the open one) with the run
+  # URL and the failing jobs, and comments on and closes it when a later nightly
+  # passes. Logic and tests: scripts/lib/ci-nightly-report-core.mjs.
+  #
+  # Schedule-only: on a PR (and on push / workflow_dispatch) this job reads
+  # `skipping`, which is expected. `needs` lists EVERY other job
+  # (ci-nightly-report-repo.test.mjs enforces it), so a job added later cannot
+  # fail the nightly without being reported.
+  nightly-report:
+    name: nightly-report
+    runs-on: ubuntu-latest
+    needs:
+      - changes
+      - api
+      - api-outcome
+      - ui
+      - server
+      - changelog
+      - sql-lineage
+      - postgres-adapter
+      - postgres-migrate-deploy
+      - generative-e2e
+      - e2e
+      - e2e-outcome
+    if: ${{ always() && github.event_name == 'schedule' }}
+    timeout-minutes: 5
+    # The ONLY job that writes anything; the workflow default stays `contents: read`.
+    # Job-level permissions replace the workflow's, so `contents: read` is restated
+    # for the checkout. `actions: read` lists the run's jobs (per-shard names).
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Open, update or close the ci-nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node scripts/ci-nightly-report.mjs

@@ -259,9 +259,10 @@ Other people or automated reviewers (e.g., GitHub Copilot code review) may have 
 
    > **Note:** This repository does NOT have a CodeQL workflow on pull requests. Do not expect
    > or wait for CodeQL entries in `gh pr checks` output. **Every other check is real, and
-   > the set is listed once, in CLAUDE.md > "CI and merging"** (#844: twenty, with the
+   > the set is listed once, in CLAUDE.md > "CI and merging"** (#844: twenty-one since #848, with the
    > e2e suite sharded as `e2e (1/3)`–`e2e (3/3)` and read through `e2e-outcome`, and
-   > `postgres-adapter` reading `skipping` on a PR that touches no Postgres path). This note used to end *"Only CI jobs (`api`, `ui`) will
+   > `postgres-adapter` reading `skipping` on a PR that touches no Postgres path, and the
+   > schedule-only `nightly-report` always reading `skipping`). This note used to end *"Only CI jobs (`api`, `ui`) will
    > appear"*, which was true when it was written and had since become false in ten places;
    > an agent obeying it treated ten checks as non-existent (#1282). Read the set `gh pr
    > checks` actually returns rather than a list from memory — including this one, which will

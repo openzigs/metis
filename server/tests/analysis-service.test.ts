@@ -85,6 +85,9 @@ const requirementVersions: Array<{
 }> = [];
 
 vi.mock("../src/lib/prisma.js", () => ({
+  // #779 — `persistRequirements` locks by provider on Postgres only; this
+  // fake has no raw SQL, so it pins the SQLite path on either generated client.
+  resolveDatabaseProvider: () => "sqlite" as const,
   prisma: {
     // #865 — `updateRequirementRow` writes through the versioned service, which
     // runs in an interactive transaction; this fake runs it on itself.
@@ -312,6 +315,22 @@ vi.mock("../src/lib/prisma.js", () => ({
           if (!r) throw new Error("not found");
           Object.assign(r, data);
           return r;
+        },
+      ),
+      // #871 — the versioned write is conditional on the version it read.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; version?: number };
+          data: Partial<RequirementRow>;
+        }) => {
+          const r = requirements.get(where.id);
+          if (!r || r.deletedAt) return { count: 0 };
+          if (where.version !== undefined && r.version !== where.version) return { count: 0 };
+          Object.assign(r, data);
+          return { count: 1 };
         },
       ),
     },

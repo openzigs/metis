@@ -22,15 +22,14 @@ import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
 import type { KnowledgeService } from "../src/lib/rag/knowledge-service.js";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
-vi.mock("../src/lib/prisma.js", async () => {
-  const { Prisma } = await import("@prisma/client");
-  return {
-    get prisma() {
-      return state.db;
-    },
-    Prisma,
-  };
-});
+// The real module, so `persistRequirements` picks its locking by the real
+// provider seam (#779); only the client is swapped.
+vi.mock("../src/lib/prisma.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/prisma.js")>()),
+  get prisma() {
+    return state.db;
+  },
+}));
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
