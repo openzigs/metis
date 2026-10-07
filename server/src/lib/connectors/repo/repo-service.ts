@@ -196,15 +196,37 @@ let gitFactoryOverride: SimpleGitFactory | null = null;
 export function __setSimpleGitFactory(factory: SimpleGitFactory | null): void {
   gitFactoryOverride = factory;
 }
+/**
+ * Every `GIT_*` key `authenticatedGitEnv` passes through `.env()`. simple-git 4
+ * REJECTS a guarded (`GIT_*`) key supplied via `.env()` unless it is named in
+ * `allowEnvironment` — on 3.x the same env was accepted, so a missing entry here
+ * fails every authenticated clone/pull at runtime (#903). Guarded by
+ * `tests/repo-service-simple-git-real.test.ts`, which runs the real client.
+ */
+export const SIMPLE_GIT_ALLOWED_ENV = [
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_KEY_0",
+  "GIT_CONFIG_VALUE_0",
+  "GIT_TERMINAL_PROMPT",
+  "GIT_CONFIG_NOSYSTEM",
+] as const;
+
 async function defaultGit(cwd: string): Promise<SimpleGitLike> {
   const mod = (await import("simple-git")) as unknown as {
     simpleGit: (c: string, opts?: Record<string, unknown>) => SimpleGitLike;
   };
-  // simple-git blocks GIT_CONFIG_COUNT/_KEY_n/_VALUE_n by default (same class
-  // of guard as allowUnsafeAskPass/allowUnsafeEditor) — opt in since
-  // `basicAuthConfigEnv` relies on it to carry the auth header.
-  return mod.simpleGit(cwd, { unsafe: { allowUnsafeConfigEnvCount: true } });
+  // Two opt-ins, both required on simple-git 4: `allowEnvironment` lets the named
+  // keys through the env guard at all, and `allowUnsafeConfigEnvCount` then permits
+  // GIT_CONFIG_COUNT/_KEY_n/_VALUE_n specifically (same class of guard as
+  // allowUnsafeAskPass/allowUnsafeEditor) — `basicAuthConfigEnv` relies on it to
+  // carry the auth header.
+  return mod.simpleGit(cwd, {
+    allowEnvironment: SIMPLE_GIT_ALLOWED_ENV,
+    unsafe: { allowUnsafeConfigEnvCount: true },
+  });
 }
+/** The real client factory, exported only so a test can execute it (#903). */
+export const __defaultGitForTest = defaultGit;
 
 // Builds env vars that make git send `Authorization: Basic <token>` on every
 // request via Git's env-var config mechanism (`GIT_CONFIG_COUNT`/`_KEY_n`/
@@ -1172,6 +1194,22 @@ function forwardedGitEnv(): Record<string, string> {
   return out;
 }
 
+/**
+ * The complete env for an authenticated clone or pull. `simple-git#env(obj)`
+ * REPLACES rather than merges the spawned env, so PATH/HTTPS_PROXY/etc. are
+ * forwarded explicitly or a proxied network's `git` hangs. Every `GIT_*` key
+ * here must also be in `SIMPLE_GIT_ALLOWED_ENV` (#903).
+ */
+export function authenticatedGitEnv(token: string): Record<string, string> {
+  return {
+    ...forwardedGitEnv(),
+    ...basicAuthConfigEnv(token),
+    GIT_TERMINAL_PROMPT: "0",
+    // Disable libcurl's netrc lookup so a rogue ~/.netrc can't override us.
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
+}
+
 export async function shallowCloneRepo(
   projectId: string,
   id: string,
@@ -1216,13 +1254,7 @@ export async function shallowCloneRepo(
     // its spawn env, which they never did here. Symptom: `git clone` to a
     // public GitHub host hangs until libcurl's own timeout and fails with
     // "Recv failure: Operation timed out" (observed live, 2026-09-10).
-    cloneEnv = {
-      ...forwardedGitEnv(),
-      ...basicAuthConfigEnv(token),
-      GIT_TERMINAL_PROMPT: "0",
-      // Disable libcurl's netrc lookup so a rogue ~/.netrc can't override us.
-      GIT_CONFIG_NOSYSTEM: "1",
-    };
+    cloneEnv = authenticatedGitEnv(token);
   }
 
   // M6 — cap clone size BEFORE the working tree exists by combining
@@ -1324,15 +1356,7 @@ export async function pullOrCloneRepo(
   // `basicAuthConfigEnv` for why GIT_ASKPASS was replaced.
   let pullEnv: Record<string, string> = {};
   if (token) {
-    pullEnv = {
-      // Same fix as `shallowCloneRepo`'s `cloneEnv` — `simple-git#env(obj)`
-      // REPLACES rather than merges the spawned env, so PATH/HTTPS_PROXY/etc.
-      // must be forwarded explicitly or a proxied network's `git pull` hangs.
-      ...forwardedGitEnv(),
-      ...basicAuthConfigEnv(token),
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_CONFIG_NOSYSTEM: "1",
-    };
+    pullEnv = authenticatedGitEnv(token);
   }
 
   try {
