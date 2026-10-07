@@ -41,6 +41,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CodeCitation } from "@/components/findings/code-citation";
+import {
+  CodeCitationRepoContext,
+  useCodeCitationRepo,
+} from "@/components/findings/code-citation-repo-context";
 import { DerivationBadge } from "@/components/findings/derivation-badge";
 import { PersonaTag } from "@/components/findings/persona-tag";
 import { agentSourcePersonas } from "@/components/findings/agent-source-persona";
@@ -167,6 +171,8 @@ export default function AnalysisPage(): React.ReactElement {
   const projectId = params?.id ?? "";
   // #23 — connector id → repository name for citation labels.
   const repoNames = useRepoNames(projectId);
+  // #728 — the single GitHub repo code citations link into (null = plain text).
+  const citationRepo = useCodeCitationRepo(projectId);
   const qc = useQueryClient();
   const [selectedAnalysisId, setSelectedAnalysisId] = useState<string | null>(null);
 
@@ -661,7 +667,7 @@ export default function AnalysisPage(): React.ReactElement {
 
   if (!projectId) return <p className="p-6">Missing project id.</p>;
 
-  return (
+  const content = (
     <div className="space-y-6 p-6">
       <PageHeader
         title={<>Requirements Analysis — {project.data?.name ?? "loading…"}</>}
@@ -1090,7 +1096,7 @@ export default function AnalysisPage(): React.ReactElement {
                             </div>
                           </div>
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
-                          <RequirementCollabRow requirementId={req.id} />
+                          <RequirementCollabRow requirementId={req.id} projectId={projectId} />
                           <p className="mt-1 max-w-prose text-sm leading-relaxed text-foreground">
                             {req.body}
                           </p>
@@ -1517,6 +1523,13 @@ export default function AnalysisPage(): React.ReactElement {
       />
     </div>
   );
+  // #728 — every CodeCitation below (findings, gap report, requirement diff)
+  // links into this repo; null keeps them plain text.
+  return (
+    <CodeCitationRepoContext.Provider value={citationRepo}>
+      {content}
+    </CodeCitationRepoContext.Provider>
+  );
 }
 
 /**
@@ -1524,7 +1537,13 @@ export default function AnalysisPage(): React.ReactElement {
  * to drive the SLA badge and renders the assignee picker. Kept as its own
  * component so each requirement card owns one `assignmentApi.list` query.
  */
-function RequirementCollabRow({ requirementId }: { requirementId: string }): React.ReactElement {
+function RequirementCollabRow({
+  requirementId,
+  projectId,
+}: {
+  requirementId: string;
+  projectId: string;
+}): React.ReactElement {
   const { data: assignments = [] } = useQuery({
     queryKey: ["assignments", requirementId],
     queryFn: () => assignmentApi.list(requirementId),
@@ -1538,7 +1557,7 @@ function RequirementCollabRow({ requirementId }: { requirementId: string }): Rea
   return (
     <div className="mt-2 flex items-center gap-2" data-testid={`req-collab-${requirementId}`}>
       <span className="text-xs text-muted-foreground">Assignees</span>
-      <AssigneePicker requirementId={requirementId} />
+      <AssigneePicker requirementId={requirementId} projectId={projectId} />
       <SLABadge deadline={nextDeadline ?? null} />
     </div>
   );

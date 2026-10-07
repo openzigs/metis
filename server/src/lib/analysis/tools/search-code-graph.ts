@@ -12,6 +12,12 @@ import { prisma } from "../../prisma.js";
 const MAX_RESULTS = 30;
 /** #740 — cap on the unresolved-callee names listed alongside the results. */
 const MAX_UNRESOLVED_NAMES = 20;
+/** #774 — cap on the candidate symbols listed when a `calls`/`calledBy` name is ambiguous. */
+const MAX_CANDIDATES = 10;
+/** #774 — cap on the probable (unresolved) call sites listed for `calls`. */
+const MAX_PROBABLE_CALL_SITES = 20;
+/** #774 — rows read before the case-sensitive name check; bounds the query on a huge graph. */
+const PROBABLE_CALL_SITE_FETCH_CAP = 500;
 
 /** Every filter this tool understands. At least one is required (#774). */
 const FILTERS = ["query", "kind", "filePath", "calledBy", "calls"] as const;
@@ -64,6 +70,151 @@ async function describeUnresolvedCallees(callerId: string): Promise<string> {
   return `${count} ${noun} to external or unresolved symbols (not in the code graph)${list}`;
 }
 
+const SYMBOL_REF_SELECT = {
+  id: true,
+  name: true,
+  qualifiedName: true,
+  kind: true,
+  filePath: true,
+  startLine: true,
+  endLine: true,
+  language: true,
+} as const;
+
+interface SymbolRef {
+  id: string;
+  name: string;
+  qualifiedName: string;
+  kind: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  language: string;
+}
+
+type Resolution =
+  | { kind: "found"; symbol: SymbolRef }
+  | { kind: "ambiguous"; candidates: SymbolRef[]; more: boolean }
+  | { kind: "none" };
+
+const renderSymbol = (s: Omit<SymbolRef, "id" | "name">): string =>
+  `${s.kind} ${s.qualifiedName} — ${s.filePath}:${s.startLine}-${s.endLine} [${s.language}]`;
+
+/**
+ * #774 — resolve the symbol a `calls`/`calledBy` filter names. Before #774 this
+ * was `findFirst({ qualifiedName: { contains } })`: with three `UpdateFeed`
+ * symbols it silently answered for whichever came first, and `updateFeed`
+ * (the UI handler) matched the client's `UpdateFeed` because SQLite's
+ * `contains` ignores case.
+ *
+ * Exact matches win: a symbol whose qualified name IS the reference, then the
+ * symbols whose bare name is the reference (case-sensitive). Only when there is
+ * no exact match does a substring match count, and then a unique `::ref` /
+ * `.ref` suffix beats the rest. Anything still matching more than one symbol is
+ * reported as ambiguous so the model re-asks with a qualified name, instead of
+ * reasoning from an arbitrary pick.
+ */
+async function resolveNamedSymbol(codeGraphId: string, ref: string): Promise<Resolution> {
+  const page = { select: SYMBOL_REF_SELECT, orderBy: { qualifiedName: "asc" as const } };
+  const exact: SymbolRef[] = await prisma.codeSymbol.findMany({
+    where: { codeGraphId, OR: [{ qualifiedName: ref }, { name: ref }] },
+    ...page,
+    take: MAX_CANDIDATES + 1,
+  });
+  // SQLite compares `=` case-sensitively, Postgres too; re-check anyway so the
+  // rule does not depend on the database's collation.
+  const exactHits = exact.filter((s) => s.qualifiedName === ref || s.name === ref);
+  const byQualifiedName = exactHits.filter((s) => s.qualifiedName === ref);
+  if (byQualifiedName.length === 1) return { kind: "found", symbol: byQualifiedName[0] };
+
+  let pool = exactHits;
+  if (pool.length === 0) {
+    const fuzzy: SymbolRef[] = await prisma.codeSymbol.findMany({
+      where: { codeGraphId, qualifiedName: { contains: ref } },
+      ...page,
+      take: MAX_CANDIDATES + 1,
+    });
+    const suffix = fuzzy.filter(
+      (s) => s.qualifiedName.endsWith(`::${ref}`) || s.qualifiedName.endsWith(`.${ref}`),
+    );
+    pool = suffix.length === 1 ? suffix : fuzzy;
+  }
+  if (pool.length === 0) return { kind: "none" };
+  if (pool.length === 1) return { kind: "found", symbol: pool[0] };
+  return {
+    kind: "ambiguous",
+    candidates: pool.slice(0, MAX_CANDIDATES),
+    more: pool.length > MAX_CANDIDATES,
+  };
+}
+
+/** #774 — the reply for a `calls`/`calledBy` name that matches several symbols. */
+function ambiguityMessage(
+  filter: "calls" | "calledBy",
+  ref: string,
+  r: { candidates: SymbolRef[]; more: boolean },
+): string {
+  const count = r.more ? `more than ${MAX_CANDIDATES}` : String(r.candidates.length);
+  return [
+    `"${ref}" is ambiguous: it matches ${count} symbols, and ${filter} needs exactly one. ` +
+      `Re-run with one of these qualified names, e.g. {"${filter}":"${r.candidates[0].qualifiedName}"}:`,
+    ...r.candidates.map(renderSymbol),
+    ...(r.more ? ["…"] : []),
+  ].join("\n");
+}
+
+/**
+ * #774 — `calls` edges the parser could not bind (`toSymbolId` NULL) whose
+ * textual target names `callee`. A Go call through a receiver or a field
+ * (`h.store.UpdateFeed(...)`) is stored as the bare `UpdateFeed` and is mostly
+ * unresolved, so following only resolved edges reported "tests only" for
+ * functions whose production callers all go through a receiver.
+ *
+ * They are only PROBABLE call sites — the name could belong to another symbol —
+ * so they are labelled as such, with the `filePath:line` the edge records.
+ * Restricted to callers in the callee's language. Returns "" when there are none.
+ */
+async function describeProbableCallSites(
+  codeGraphId: string,
+  callee: SymbolRef,
+  filePath: string | undefined,
+): Promise<string> {
+  const rows = await prisma.codeEdge.findMany({
+    where: {
+      codeGraphId,
+      kind: "calls",
+      toSymbolId: null,
+      OR: [{ toQualifiedName: callee.name }, { toQualifiedName: { endsWith: `.${callee.name}` } }],
+      fromSymbol: { language: callee.language },
+      ...(filePath ? { filePath: { contains: filePath } } : {}),
+    },
+    select: {
+      filePath: true,
+      line: true,
+      toQualifiedName: true,
+      fromSymbol: { select: { qualifiedName: true } },
+    },
+    orderBy: [{ filePath: "asc" }, { line: "asc" }],
+    take: PROBABLE_CALL_SITE_FETCH_CAP,
+  });
+  // `endsWith` is a case-insensitive LIKE on SQLite; the call must name it exactly.
+  const sites = rows.filter(
+    (e) => e.toQualifiedName === callee.name || e.toQualifiedName?.endsWith(`.${callee.name}`),
+  );
+  if (sites.length === 0) return "";
+  const total =
+    rows.length === PROBABLE_CALL_SITE_FETCH_CAP ? `${sites.length}+` : String(sites.length);
+  const shown = sites
+    .slice(0, MAX_PROBABLE_CALL_SITES)
+    .map((e) => `${e.filePath}:${e.line} in ${e.fromSymbol.qualifiedName}`);
+  if (sites.length > MAX_PROBABLE_CALL_SITES) shown.push("…");
+  return [
+    `Probable (unresolved) call sites (${total}): calls to "${callee.name}" the parser could not ` +
+      `bind to a symbol, so they may target ${callee.qualifiedName} or another symbol with that name:`,
+    ...shown,
+  ].join("\n");
+}
+
 export interface SearchCodeGraphArgs {
   query?: string;
   kind?: string;
@@ -89,11 +240,13 @@ const parameters: JSONSchema = {
     },
     calledBy: {
       type: "string",
-      description: "Find symbols that are called by the named symbol",
+      description:
+        "Find symbols that are called by the named symbol. Give its qualified name when the bare name is ambiguous.",
     },
     calls: {
       type: "string",
-      description: "Find symbols that call the named symbol",
+      description:
+        "Find symbols that call the named symbol, plus probable call sites the parser could not resolve. Give its qualified name when the bare name is ambiguous.",
     },
   },
 };
@@ -143,14 +296,16 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
 
   // Handle edge-based queries (calledBy / calls)
   let unresolvedNote = "";
+  let probableNote = "";
   if (calledBy) {
-    const caller = await prisma.codeSymbol.findFirst({
-      where: { codeGraphId: codeGraph.id, qualifiedName: { contains: calledBy } },
-      select: { id: true },
-    });
-    if (!caller) {
+    const resolved = await resolveNamedSymbol(codeGraph.id, calledBy);
+    if (resolved.kind === "none") {
       return { content: `No symbol matching "${calledBy}" found.`, resultCount: 0 };
     }
+    if (resolved.kind === "ambiguous") {
+      return { content: ambiguityMessage("calledBy", calledBy, resolved), resultCount: 0 };
+    }
+    const caller = resolved.symbol;
     // #740 — a callee the parser could not resolve (stdlib, third-party) is
     // stored with toSymbolId = NULL, and Prisma rejects a NULL member of `in`.
     // Filter in the query so `take` caps RESOLVED edges, not the first N edges
@@ -177,13 +332,14 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   }
 
   if (calls) {
-    const callee = await prisma.codeSymbol.findFirst({
-      where: { codeGraphId: codeGraph.id, qualifiedName: { contains: calls } },
-      select: { id: true },
-    });
-    if (!callee) {
+    const resolved = await resolveNamedSymbol(codeGraph.id, calls);
+    if (resolved.kind === "none") {
       return { content: `No symbol matching "${calls}" found.`, resultCount: 0 };
     }
+    if (resolved.kind === "ambiguous") {
+      return { content: ambiguityMessage("calls", calls, resolved), resultCount: 0 };
+    }
+    const callee = resolved.symbol;
     const edges = await prisma.codeEdge.findMany({
       where: { toSymbolId: callee.id, kind: "calls" },
       select: { fromSymbolId: true },
@@ -192,7 +348,14 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
       take: MAX_RESULTS,
     });
     const callerIds = edges.map((e) => e.fromSymbolId);
+    probableNote = await describeProbableCallSites(codeGraph.id, callee, filePath);
     if (callerIds.length === 0) {
+      if (probableNote) {
+        return {
+          content: `No resolved symbols call "${calls}".\n${probableNote}`,
+          resultCount: 0,
+        };
+      }
       return { content: `No symbols call "${calls}".`, resultCount: 0 };
     }
     where.id = { in: callerIds };
@@ -216,15 +379,14 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
 
   if (symbols.length === 0) {
     const none = "No symbols found matching the query.";
-    return { content: unresolvedNote ? `${none}\n${unresolvedNote}` : none, resultCount: 0 };
+    const notes = [none, unresolvedNote, probableNote].filter(Boolean);
+    return { content: notes.join("\n"), resultCount: 0 };
   }
 
   const truncated = symbols.length === MAX_RESULTS;
-  const lines = symbols.map(
-    (s) =>
-      `${s.kind} ${s.qualifiedName} — ${s.filePath}:${s.startLine}-${s.endLine} [${s.language}]`,
-  );
+  const lines = symbols.map(renderSymbol);
   if (unresolvedNote) lines.push(`(plus ${unresolvedNote})`);
+  if (probableNote) lines.push(probableNote);
 
   return {
     content: lines.join("\n"),

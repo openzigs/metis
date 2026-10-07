@@ -13,7 +13,14 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
-import { skillsApi, type SkillDetail, type SkillSummary } from "@/lib/library-api";
+import {
+  skillsApi,
+  type SkillDetail,
+  type SkillSummary,
+  type SkillVersionDetail,
+  type SkillVersionSummary,
+} from "@/lib/library-api";
+import { type DiffLine, diffLines } from "@/components/publishing/draft-diff-dialog";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/alert-dialog";
@@ -163,7 +170,7 @@ export function SkillsLibraryPanel() {
       </Dialog>
 
       <Dialog open={versionsTarget !== null} onOpenChange={(o) => !o && setVersionsTarget(null)}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Versions — {versionsTarget?.key}</DialogTitle>
             <DialogDescription>Immutable version history for this skill.</DialogDescription>
@@ -369,24 +376,173 @@ function VersionsTimeline({ skillId }: { skillId: string }) {
   if (versions.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
   const items = versions.data?.items ?? [];
   if (items.length === 0) return <p className="text-sm text-muted-foreground">No versions yet.</p>;
+  return <VersionsWithDiff skillId={skillId} items={items} />;
+}
+
+/**
+ * #797 — the version list plus a diff between two picked versions. Defaults to
+ * the newest version against the one before it; each row can also be diffed
+ * against its predecessor. `items` is newest first, as the API orders it.
+ */
+function VersionsWithDiff({ skillId, items }: { skillId: string; items: SkillVersionSummary[] }) {
+  const [picked, setPicked] = useState<{ from: string; to: string } | null>(null);
+  const canDiff = items.length > 1;
+  const from = picked?.from ?? items[1]?.id ?? "";
+  const to = picked?.to ?? items[0]?.id ?? "";
+  const label = (id: string) => `v${items.find((v) => v.id === id)?.version ?? "?"}`;
+
   return (
-    <ol className="space-y-2 text-sm">
-      {items.map((v) => (
-        <li key={v.id} className="flex items-center justify-between rounded border p-2">
-          <div>
-            <div className="font-medium">v{v.version}</div>
-            <div className="text-xs text-muted-foreground">
-              {new Date(v.createdAt).toLocaleString()}
-            </div>
+    <div className="space-y-4">
+      <ol className="space-y-2 text-sm">
+        {items.map((v, i) => {
+          const previous = items[i + 1];
+          return (
+            <li key={v.id} className="flex items-center justify-between gap-2 rounded border p-2">
+              <div>
+                <div className="font-medium">v{v.version}</div>
+                <div className="text-xs text-muted-foreground">
+                  {new Date(v.createdAt).toLocaleString()}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="text-xs text-muted-foreground">
+                  sha256:{v.contentSha256.slice(0, 12)}…
+                </code>
+                {previous ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Diff v${v.version} against previous`}
+                    onClick={() => setPicked({ from: previous.id, to: v.id })}
+                  >
+                    Diff
+                  </Button>
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+
+      {canDiff ? (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Label htmlFor="skill-diff-from">From</Label>
+            <select
+              id="skill-diff-from"
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              value={from}
+              onChange={(e) => setPicked({ from: e.target.value, to })}
+            >
+              {items.map((v) => (
+                <option key={v.id} value={v.id}>
+                  v{v.version}
+                </option>
+              ))}
+            </select>
+            <Label htmlFor="skill-diff-to">To</Label>
+            <select
+              id="skill-diff-to"
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              value={to}
+              onChange={(e) => setPicked({ from, to: e.target.value })}
+            >
+              {items.map((v) => (
+                <option key={v.id} value={v.id}>
+                  v{v.version}
+                </option>
+              ))}
+            </select>
           </div>
-          <code className="text-xs text-muted-foreground">
-            sha256:{v.contentSha256.slice(0, 12)}…
-          </code>
-        </li>
-      ))}
-    </ol>
+          {from === to ? (
+            <p className="text-sm text-muted-foreground">Pick two different versions to compare.</p>
+          ) : (
+            <SkillVersionDiffView
+              skillId={skillId}
+              from={from}
+              to={to}
+              fromLabel={label(from)}
+              toLabel={label(to)}
+            />
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
+
+/** The SKILL.md text a version holds — frontmatter + body, as the editor shows it. */
+function versionText(v: SkillVersionDetail | null): string {
+  return v ? rebuildSource(v) : "";
+}
+
+function SkillVersionDiffView({
+  skillId,
+  from,
+  to,
+  fromLabel,
+  toLabel,
+}: {
+  skillId: string;
+  from: string;
+  to: string;
+  fromLabel: string;
+  toLabel: string;
+}) {
+  const diff = useQuery({
+    queryKey: queryKeys.skills.diff(skillId, from, to),
+    queryFn: () => skillsApi.diff(skillId, from, to),
+  });
+  const lines = useMemo(
+    () => (diff.data ? diffLines(versionText(diff.data.left), versionText(diff.data.right)) : []),
+    [diff.data],
+  );
+  if (diff.isLoading) return <p className="text-sm text-muted-foreground">Loading diff…</p>;
+  if (diff.isError || !diff.data) {
+    return (
+      <p className="text-sm text-destructive" role="alert">
+        Failed to load the diff.
+      </p>
+    );
+  }
+  const changed = lines.some((l) => l.kind !== "same");
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-muted-foreground">
+        {fromLabel} → {toLabel}
+        {changed ? null : " — no changes"}
+      </p>
+      {/* Rendered as text nodes only — skill bodies are untrusted markup. */}
+      <pre
+        className="max-h-96 overflow-auto rounded border bg-muted/30 p-2 font-mono text-xs"
+        data-testid="skill-version-diff"
+      >
+        {lines.map((l, i) => (
+          <div
+            key={i}
+            data-testid={`diff-line-${l.kind}`}
+            className={`whitespace-pre-wrap break-words ${DIFF_LINE_CLASS[l.kind]}`}
+          >
+            {DIFF_LINE_PREFIX[l.kind]}
+            {l.text}
+          </div>
+        ))}
+      </pre>
+    </div>
+  );
+}
+
+const DIFF_LINE_CLASS: Record<DiffLine["kind"], string> = {
+  add: "bg-success-muted text-success",
+  remove: "bg-destructive/10 text-destructive",
+  same: "text-foreground",
+};
+
+const DIFF_LINE_PREFIX: Record<DiffLine["kind"], string> = {
+  add: "+",
+  remove: "-",
+  same: " ",
+};
 
 /**
  * Reconstruct an editable SKILL.md source from a `SkillDetail`. The server
@@ -394,7 +550,7 @@ function VersionsTimeline({ skillId }: { skillId: string }) {
  * `instructions`; we re-emit a canonical YAML frontmatter so the textarea
  * round-trips cleanly through the same parser the API uses on save.
  */
-export function rebuildSource(detail: SkillDetail): string {
+export function rebuildSource(detail: Pick<SkillDetail, "manifest" | "instructions">): string {
   const m = detail.manifest as Record<string, unknown>;
   const lines: string[] = ["---"];
   for (const [k, v] of Object.entries(m)) {

@@ -241,6 +241,32 @@ describe("ingestCodeGraph (#308)", () => {
     expect(second.filesSkipped).toBeGreaterThanOrEqual(1);
   });
 
+  // #715 — an unchanged re-ingest re-parses nothing, but the graph is still
+  // whole: report its size apart from this run's delta.
+  it("reports the graph's totals and the unchanged files, not only the run's delta", async () => {
+    const root = await makeFixture({
+      "src/a.ts": `export function a() { b(); }\n`,
+      "src/b.ts": `export function b() {}\n`,
+      "README.md": "not a code-graph language\n",
+    });
+    const { prisma } = makePrismaMock();
+    const first = await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+    expect(first.graphFiles).toBe(2);
+    expect(first.filesUnchanged).toBe(0);
+
+    const second = await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+    expect(second).toMatchObject({
+      filesScanned: 3,
+      filesParsed: 0,
+      symbolsUpserted: 0,
+      filesUnchanged: 2,
+      graphFiles: 2,
+      graphSymbols: first.graphSymbols,
+      graphEdges: first.graphEdges,
+    });
+    expect(second.graphSymbols).toBeGreaterThan(0);
+  });
+
   it("forces full re-parse when incremental=false", async () => {
     const root = await makeFixture({
       "src/foo.ts": `function f() {}\n`,

@@ -83,7 +83,15 @@ let quarantineRows: Array<{
 }> = [];
 
 vi.mock("../src/lib/prisma.js", () => ({
+  // #779 — `persistRequirements` locks by provider on Postgres only; this
+  // fake has no raw SQL, so it pins the SQLite path on either generated client.
+  resolveDatabaseProvider: () => "sqlite" as const,
   prisma: {
+    // #779 — `persistRequirements` runs in an interactive transaction; this
+    // fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../src/lib/prisma.js")).prisma),
+    ),
     project: {
       findFirst: vi.fn(async ({ where }: { where: { id: string; deletedAt: null } }) => {
         const p = projects.get(where.id);
@@ -340,8 +348,11 @@ import { analysisRoom, isAnalysisDegraded, type DbTableInfo } from "@metis/share
  * never invoked: the offline provider returns a final answer on turn 1, so no
  * tool ever executes.
  */
+// #755 — `search` resolves `{ hits }`, as `KnowledgeService.search` does. A bare
+// `[]` made every specialist using it crash (`res.hits is not iterable`), which a
+// phantom success in the orchestrator used to hide behind a `completed` status.
 const stubKnowledge = (): KnowledgeService =>
-  ({ search: async () => [] }) as unknown as KnowledgeService;
+  ({ search: async () => ({ hits: [] }) }) as unknown as KnowledgeService;
 
 interface FakeIO {
   events: Array<{ room: string; event: string; data: unknown }>;

@@ -15,7 +15,7 @@ import { isoDatetime } from "../lib/validation/iso-datetime.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
-import { optimisticLock } from "../middleware/optimistic-lock.js";
+import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lock.js";
 import { prisma } from "../lib/prisma.js";
 import { requirementCommentsRouter } from "./comments.js";
 import { requirementHistoryRouter } from "./requirement-history.js";
@@ -65,6 +65,39 @@ const assignSchema = z.object({
 });
 
 // ---- Router -----------------------------------------------------------------
+
+/**
+ * The optimistic-lock view of a requirement: tracked fields plus `version`, in
+ * the shape the client speaks. Used by the lock middleware and again by the
+ * handler when the write transaction itself detects a conflict (#871).
+ */
+async function loadLockedRequirement(req: Request) {
+  const id = String(req.params.requirementId);
+  const row = await prisma.requirement.findUnique({
+    // The scope resolved by `requireRequirementAccess` narrows the loader
+    // too, so the lock's 409 diff can only ever describe an in-tenant row.
+    where: { id, deletedAt: null, ...requirementScopeWhere(req) },
+    select: {
+      id: true,
+      version: true,
+      title: true,
+      body: true,
+      priority: true,
+      type: true,
+      labels: true,
+      storyPoints: true,
+      reviewStatus: true,
+    },
+  });
+  if (!row) return null;
+  // `labels` is stored as a JSON string but travels over the API as a
+  // string[] (see `updateRequirementSchema`). The lock diffs the record
+  // against the REQUEST BODY field by field, so handing it the raw column
+  // reported `labels` as conflicting on every 409 — and the merge modal
+  // then offered to "keep" a JSON string, which the same endpoint rejects
+  // with a 400. Present the record in the shape the client speaks.
+  return { ...row, labels: parseLabels(row.labels) };
+}
 
 export function requirementsCollaborationRouter(): Router {
   const r = Router({ mergeParams: true });
@@ -182,33 +215,7 @@ export function requirementsCollaborationRouter(): Router {
     "/:requirementId",
     requireAuth,
     requirePermission("project.update"),
-    optimisticLock("requirement", async (req) => {
-      const id = String(req.params.requirementId);
-      const row = await prisma.requirement.findUnique({
-        // The scope resolved by `requireRequirementAccess` narrows the loader
-        // too, so the lock's 409 diff can only ever describe an in-tenant row.
-        where: { id, deletedAt: null, ...requirementScopeWhere(req) },
-        select: {
-          id: true,
-          version: true,
-          title: true,
-          body: true,
-          priority: true,
-          type: true,
-          labels: true,
-          storyPoints: true,
-          reviewStatus: true,
-        },
-      });
-      if (!row) return null;
-      // `labels` is stored as a JSON string but travels over the API as a
-      // string[] (see `updateRequirementSchema`). The lock diffs the record
-      // against the REQUEST BODY field by field, so handing it the raw column
-      // reported `labels` as conflicting on every 409 — and the merge modal
-      // then offered to "keep" a JSON string, which the same endpoint rejects
-      // with a 400. Present the record in the shape the client speaks.
-      return { ...row, labels: parseLabels(row.labels) };
-    }),
+    optimisticLock("requirement", loadLockedRequirement),
     async (req: Request, res: Response) => {
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
       const requirementId = String(req.params.requirementId);
@@ -230,9 +237,12 @@ export function requirementsCollaborationRouter(): Router {
 
       // Epic #770 — the version-history service owns version bumping and appends
       // a compact, changed-fields-only audit row inside the same transaction.
-      // The optimistic-lock middleware still guards against concurrent writes
-      // (409) but its `res.locals.nextVersion` is intentionally ignored here to
-      // avoid double-incrementing.
+      // The optimistic-lock middleware answers the common stale-version case
+      // with a diff, but its read is outside the write transaction, so two
+      // concurrent edits with the same version both pass it (#871). The service
+      // re-checks `expectedVersion` inside the transaction; the middleware's
+      // `res.locals.nextVersion` is intentionally ignored (no double increment).
+      const expectedVersion = parsed.data.version;
       try {
         const result = await updateRequirementWithHistory(prisma, {
           requirementId,
@@ -242,6 +252,7 @@ export function requirementsCollaborationRouter(): Router {
           // Defence in depth: the scope lives in the service's own query, not
           // only in the router guard (undefined for system admins).
           projectId: requirementScopeWhere(req).projectId,
+          expectedVersion,
         });
         res.json({
           success: true,
@@ -250,6 +261,22 @@ export function requirementsCollaborationRouter(): Router {
       } catch (err) {
         if (err instanceof RequirementVersionError && err.code === "NOT_FOUND") {
           throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+        }
+        if (
+          err instanceof RequirementVersionError &&
+          err.code === "VERSION_CONFLICT" &&
+          expectedVersion !== undefined
+        ) {
+          const current = await loadLockedRequirement(req);
+          if (!current) throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+          sendVersionConflict(
+            res,
+            "requirement",
+            current,
+            req.body as Record<string, unknown>,
+            expectedVersion,
+          );
+          return;
         }
         throw err;
       }
