@@ -21,13 +21,18 @@
  *  - A file-only target that records a line range expands only to the symbols
  *    overlapping that range, not the whole file. The range is applied before the
  *    per-file cap, so a cited symbol deep in a large file is not capped away.
- *  - A test file mapped by a line range that covers none of its symbols (a
- *    citation of its licence header or imports) is not a `direct` link.
- *  - A file-only (or ranged) **hub** target — one exercised by tests in at least
- *    `TESTED_BY_HUB_MIN_TEST_FILES` distinct test files, like a config file —
- *    links an `exercises` test only when the test, or the symbol it calls, shares
- *    at least two of the requirement TITLE's words. A precise `codeSymbolId`
- *    mapping is exempt: a test calling that exact symbol is the evidence.
+ *  - A test-file mapping is `direct` only when it lands on a real test-file
+ *    symbol. The whole-file `module` symbol every parser emits does not count:
+ *    the seeder (#768) binds a licence-header citation to it, because it is the
+ *    only symbol enclosing lines 1-3, and writes the module's 1-EOF span.
+ *  - A **hub** target — any mapping, symbol or file, exercised from test files
+ *    in at least `TESTED_BY_HUB_MIN_TEST_DIRS` distinct directories, like a
+ *    config constructor every package's tests build — links an `exercises` test
+ *    only when the test, or the symbol it calls, shares the requirement TITLE's
+ *    words (see {@link sharesRequirementWords}). Directories, not files: a
+ *    function tested from many files of its own package (`Sanitize`) is
+ *    focused testing, not fan-in. A flat test layout (one `tests/` directory)
+ *    therefore never forms a hub, which is the behaviour before #860.
  *
  * Within a relation, tests are ordered by BM25 relevance of `name + qualifiedName`
  * against `denoiseRequirementQuery(title + body)`, folded into `score`. Results
@@ -67,14 +72,14 @@ export interface TestedByDeps {
   prisma?: TestedByPrisma;
   /** Overrides `TESTED_BY_MAX_SYMBOLS_PER_FILE`. */
   maxSymbolsPerFile?: number;
-  /** Overrides `TESTED_BY_HUB_MIN_TEST_FILES`. */
-  hubMinTestFiles?: number;
+  /** Overrides `TESTED_BY_HUB_MIN_TEST_DIRS`. */
+  hubMinTestDirs?: number;
 }
 
 /** Default cap on the symbols a file-only target expands to. */
 export const DEFAULT_TESTED_BY_MAX_SYMBOLS_PER_FILE = 500;
-/** Default number of distinct exercising test files that makes a target a hub (#860). */
-export const DEFAULT_TESTED_BY_HUB_MIN_TEST_FILES = 5;
+/** Default number of distinct exercising test directories that makes a target a hub (#860). */
+export const DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS = 5;
 export const DEFAULT_TESTED_BY_LIMIT = 10;
 
 const BASE_SCORE: Record<TestLinkRelation, number> = { direct: 1, exercises: 0.8, naming: 0.6 };
@@ -98,13 +103,10 @@ function maxSymbolsPerFile(deps?: TestedByDeps): number {
   );
 }
 
-function hubMinTestFiles(deps?: TestedByDeps): number {
+function hubMinTestDirs(deps?: TestedByDeps): number {
   return (
-    deps?.hubMinTestFiles ??
-    getConfigService().getNumber(
-      "TESTED_BY_HUB_MIN_TEST_FILES",
-      DEFAULT_TESTED_BY_HUB_MIN_TEST_FILES,
-    )
+    deps?.hubMinTestDirs ??
+    getConfigService().getNumber("TESTED_BY_HUB_MIN_TEST_DIRS", DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS)
   );
 }
 
@@ -225,10 +227,15 @@ function words(text: string): Set<string> {
   return new Set(split.filter((w) => w.length >= MIN_SUBJECT_LENGTH && !TEST_NAME_TOKENS.has(w)));
 }
 
-/** Requirement words a hub link must share: two, or all of them for a one-word requirement. */
+/**
+ * True when `name` shares enough of the requirement title's words to count as a
+ * hub link: one word for a title of one or two words ("Password length" keeps
+ * `TestValidatePassword`), two for a longer title, so one common word such as
+ * `config` cannot carry a link through a hub.
+ */
 function sharesRequirementWords(name: string, requirementWords: ReadonlySet<string>): boolean {
-  const needed = Math.min(2, requirementWords.size);
-  if (needed === 0) return false;
+  if (requirementWords.size === 0) return false;
+  const needed = requirementWords.size <= 2 ? 1 : 2;
   let shared = 0;
   for (const w of words(name)) if (requirementWords.has(w) && ++shared >= needed) return true;
   return false;
@@ -251,6 +258,14 @@ function basename(filePath: string): string {
   const p = filePath.replace(/\\/g, "/");
   return p.slice(p.lastIndexOf("/") + 1);
 }
+
+function dirname(filePath: string): string {
+  const p = filePath.replace(/\\/g, "/");
+  return p.slice(0, Math.max(0, p.lastIndexOf("/")));
+}
+
+/** The whole-file symbol every parser emits; never evidence of a cited test (#860). */
+const isModule = (s: Pick<SymbolRow, "kind">): boolean => s.kind === "module";
 
 function testNodeFromSymbol(
   sym: SymbolRow,
@@ -293,9 +308,13 @@ function pushTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
  * is not lost to the cap.
  */
 function fileTargetSymbols(t: TestedByTarget, graph: GraphRows): SymbolRow[] {
-  return (graph.symbolsByFile.get(t.filePath) ?? [])
-    .filter((s) => inTargetRange(s, t))
-    .slice(0, graph.perFileCap);
+  const inRange = (graph.symbolsByFile.get(t.filePath) ?? []).filter((s) => inTargetRange(s, t));
+  // The whole-file module symbol sorts first (line 1) and overlaps every range;
+  // it must not take one of the cap's slots from a cited symbol.
+  return [
+    ...inRange.filter((s) => !isModule(s)).slice(0, graph.perFileCap),
+    ...inRange.filter(isModule),
+  ];
 }
 
 const targetIsTest = (t: TestedByTarget): boolean =>
@@ -310,13 +329,16 @@ async function loadGraph(
 ): Promise<GraphRows> {
   const symbolIds = new Set<string>();
   const fileOnly = new Set<string>();
-  // #860 — a test file mapped by a line range: load its symbols to tell a cited
-  // test from a cited licence header. Not an edge target.
+  // #860 — a test file mapped by a line range or a symbol: load its symbols to
+  // tell a cited test from a cited licence header. Not an edge target.
   const rangedTestFiles = new Set<string>();
   for (const t of targets) {
     if (t.codeSymbolId) symbolIds.add(t.codeSymbolId);
-    else if (!targetIsTest(t)) fileOnly.add(t.filePath);
-    else if (t.startLine != null) rangedTestFiles.add(t.filePath);
+    if (!targetIsTest(t)) {
+      if (!t.codeSymbolId) fileOnly.add(t.filePath);
+    } else if (t.codeSymbolId || t.startLine != null) {
+      rangedTestFiles.add(t.filePath);
+    }
   }
   const graph: GraphRows = {
     symbolById: new Map(),
@@ -381,6 +403,34 @@ async function loadGraph(
   return graph;
 }
 
+/**
+ * Whether a test-file target cites a test (#860). A target bound to a real
+ * symbol does; a file-level target with no range (the whole test file) does.
+ * Otherwise the target must overlap a non-`module` symbol of the file. A target
+ * bound to the `module` symbol and carrying that symbol's own span has no
+ * evidence of WHICH lines were cited — the seeder writes the module's span when
+ * no real symbol enclosed the citation (a header, imports) — so it does not.
+ */
+function isDirectTestCitation(
+  t: TestedByTarget,
+  bound: SymbolRow | undefined,
+  graph: GraphRows,
+): boolean {
+  if (bound && !isModule(bound)) return true;
+  if (bound && (t.startLine == null || coversSpan(t, bound))) return false;
+  if (t.startLine == null) return true;
+  const fileSymbols = (graph.symbolsByFile.get(t.filePath) ?? []).filter((s) => !isModule(s));
+  // No real symbol known for the file: nothing to tell a header from a test by.
+  return fileSymbols.length === 0 || fileSymbols.some((s) => inTargetRange(s, t));
+}
+
+/** True when the target's range covers all of `sym`'s span. */
+function coversSpan(t: TestedByTarget, sym: Pick<SymbolRow, "startLine" | "endLine">): boolean {
+  return (
+    t.startLine != null && t.startLine <= sym.startLine && (t.endLine ?? t.startLine) >= sym.endLine
+  );
+}
+
 /** Resolve one requirement's tests from its targets against the loaded graph. */
 function resolveOne(
   requirement: TestedByRequirement,
@@ -404,13 +454,9 @@ function resolveOne(
 
   for (const t of targets) {
     if (targetIsTest(t)) {
-      const sym = t.codeSymbolId ? graph.symbolById.get(t.codeSymbolId) : undefined;
-      if (!t.codeSymbolId && t.startLine != null) {
-        // #860 — a range that covers none of the file's symbols cites its
-        // header (licence, imports), not a test.
-        const fileSymbols = graph.symbolsByFile.get(t.filePath) ?? [];
-        if (fileSymbols.length > 0 && !fileSymbols.some((s) => inTargetRange(s, t))) continue;
-      }
+      const bound = t.codeSymbolId ? graph.symbolById.get(t.codeSymbolId) : undefined;
+      if (!isDirectTestCitation(t, bound, graph)) continue;
+      const sym = bound && !isModule(bound) ? bound : undefined;
       offer(
         sym
           ? testNodeFromSymbol(sym, "direct", null)
@@ -439,9 +485,11 @@ function resolveOne(
     }
     // #860 — through a hub, being called is not evidence of testing THIS
     // requirement: keep only tests about it (by the test's or the callee's name).
-    // A precise symbol mapping is exempt: calling the exact mapped symbol IS the
-    // evidence; the fan-out #860 saw comes from file-only and ranged mappings.
-    const hub = fileOnly && new Set(exercised.map((x) => x.from.filePath)).size >= hubThreshold;
+    // Symbol mappings included: the seeder binds a ranged citation of a config
+    // constructor (`options.go:64-621`) to that symbol, and every package's tests
+    // call it. Fan-in is counted by directory so a function tested from many
+    // files of its own package is not a hub.
+    const hub = new Set(exercised.map((x) => dirname(x.from.filePath))).size >= hubThreshold;
     for (const { from, ts } of exercised) {
       if (
         hub &&
@@ -560,7 +608,7 @@ export async function resolveTestedByForTargets(
   const limit = opts?.limit ?? DEFAULT_TESTED_BY_LIMIT;
   const all = requirements.flatMap((r) => targetsByRequirement.get(r.id) ?? []);
   const graph = await loadGraph(prisma, projectId, all, maxSymbolsPerFile(deps));
-  const hubThreshold = hubMinTestFiles(deps);
+  const hubThreshold = hubMinTestDirs(deps);
   const out = new Map<string, TraceabilityTestNode[]>();
   for (const r of requirements) {
     out.set(r.id, resolveOne(r, targetsByRequirement.get(r.id) ?? [], graph, limit, hubThreshold));

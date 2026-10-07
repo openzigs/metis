@@ -7,7 +7,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_TESTED_BY_HUB_MIN_TEST_FILES,
+  DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS,
   listUntestedRequirements,
   matchTestSubject,
   resolveTestedBy,
@@ -471,16 +471,26 @@ describe("resolveTestedBy", () => {
 });
 
 describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
+  // The `module` symbol every parser emits for a file (parsers.ts,
+  // parsers-tree-sitter.ts): name = basename, qualifiedName = path, 1 to EOF.
+  const mod = (id: string, filePath: string, endLine: number): Sym =>
+    sym(id, filePath, filePath.slice(filePath.lastIndexOf("/") + 1), {
+      kind: "module",
+      qualifiedName: filePath,
+      startLine: 1,
+      endLine,
+    });
   const OPTIONS = "internal/config/options.go";
   const optionSymbols = [
+    mod("o-mod", OPTIONS, 900),
     sym("o-new", OPTIONS, "NewConfigOptions", { startLine: 64, endLine: 621 }),
     sym("o-oauth", OPTIONS, "OAuth2UserCreationAllowed", { startLine: 640, endLine: 642 }),
     sym("o-yt", OPTIONS, "YouTubeEmbedUrlOverride", { startLine: 700, endLine: 702 }),
   ];
-  // Five sanitizer tests in five files read a YouTube option; one OAuth test reads
-  // the OAuth option and builds the config.
-  const sanitizerTests = Array.from({ length: 5 }, (_, i) =>
-    sym(`t-yt-${i}`, `internal/reader/sanitizer/s${i}_test.go`, `TestRewriteYouTubeIframe${i}`),
+  // Five YouTube tests in five packages read a YouTube option; one OAuth test
+  // reads the OAuth option. All six build the config, as every package's tests do.
+  const youtubeTests = Array.from({ length: 5 }, (_, i) =>
+    sym(`t-yt-${i}`, `internal/reader/p${i}/youtube_test.go`, `TestRewriteYouTubeIframe${i}`),
   );
   const oauthTest = sym("t-oauth", "internal/oauth2/user_test.go", "TestOAuth2UserCreation");
   const calls = (from: string, to: string) => ({
@@ -489,44 +499,55 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     fromSymbolId: from,
     toSymbolId: to,
   });
-  const hubFixture = (mapping: ReturnType<typeof fileMap>, title: string): Fixture => ({
+  type Mapping = ReturnType<typeof fileMap> & { startLine?: number; endLine?: number };
+  const hubFixture = (mapping: Mapping, title: string): Fixture => ({
     requirements: [req("r1", title)],
     codeMappings: [mapping],
-    symbols: [...optionSymbols, ...sanitizerTests, oauthTest],
+    symbols: [...optionSymbols, ...youtubeTests, oauthTest],
     edges: [
-      ...sanitizerTests.map((t) => calls(t.id, "o-yt")),
-      ...sanitizerTests.map((t) => calls(t.id, "o-new")),
+      ...youtubeTests.map((t) => calls(t.id, "o-yt")),
+      ...youtubeTests.map((t) => calls(t.id, "o-new")),
       calls("t-oauth", "o-oauth"),
       calls("t-oauth", "o-new"),
     ],
   });
+  const names = async (d: TestedByDeps) =>
+    ((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1") ?? []).map((t) => t.name).sort();
 
   it("a file-only mapping onto a config hub links only the tests about the requirement", async () => {
     const { deps: d } = deps(hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION"));
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(out.map((t) => t.name)).toEqual(["TestOAuth2UserCreation"]);
+    expect(await names(d)).toEqual(["TestOAuth2UserCreation"]);
   });
 
   it("a file-only range spanning the hub constructor drops the unrelated callers", async () => {
-    // The #860 evidence: a code link spanning `options.go:64-621`.
     const mapping = { ...fileMap("r1", OPTIONS), startLine: 64, endLine: 621 };
     const { deps: d } = deps(hubFixture(mapping, "OIDC discovery endpoint"));
-    // No exercising test is about OIDC, so the requirement stays untested.
-    expect((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")).toEqual([]);
+    expect(await names(d)).toEqual([]);
   });
 
-  it("a precise symbol mapping keeps every test that calls that symbol, hub or not", async () => {
-    // Calling the exact mapped symbol IS the evidence #860 asked for, so the hub
-    // rule does not apply — even to a one-word callee that can never share two words.
+  it("a SYMBOL mapping onto the hub constructor, as the seeder writes it, drops unrelated callers", async () => {
+    // The #860 evidence on real data: the seeder (#768) binds the `options.go:64-621`
+    // citation to `NewConfigOptions` and writes that symbol's span.
+    const mapping = { ...fileMap("r1", OPTIONS, "o-new"), startLine: 64, endLine: 621 };
+    const { deps: d } = deps(hubFixture(mapping, "OIDC discovery endpoint"));
+    // Six test packages call the constructor; none is about OIDC: still untested.
+    expect(await names(d)).toEqual([]);
+    const { deps: oauth } = deps(hubFixture(mapping, "OAUTH2_USER_CREATION"));
+    expect(await names(oauth)).toEqual(["TestOAuth2UserCreation"]);
+  });
+
+  it("a precise symbol mapping tested from many files of its own package keeps them all", async () => {
+    // Five test files in the sanitizer's own package: focused testing, not fan-in,
+    // so `Sanitize` is not a hub and no title word is required of its callers.
     const SANITIZER = "internal/reader/sanitizer/sanitizer.go";
     const sanitize = sym("s-fn", SANITIZER, "Sanitize", { startLine: 10, endLine: 40 });
     const callers = Array.from({ length: 5 }, (_, i) =>
-      sym(`t-s-${i}`, `internal/reader/s${i}/x_test.go`, `TestCase${i}`),
+      sym(`t-s-${i}`, `internal/reader/sanitizer/s${i}_test.go`, `TestCase${i}`),
     );
     const { deps: d } = deps({
       requirements: [req("r1", "Strip unsafe iframe markup")],
-      codeMappings: [fileMap("r1", SANITIZER, "s-fn")],
-      symbols: [sanitize, ...callers],
+      codeMappings: [{ ...fileMap("r1", SANITIZER, "s-fn"), startLine: 10, endLine: 40 }],
+      symbols: [mod("s-mod", SANITIZER, 200), sanitize, ...callers],
       edges: callers.map((t) => calls(t.id, "s-fn")),
     });
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
@@ -534,28 +555,55 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     expect(out.every((t) => t.relation === "exercises")).toBe(true);
   });
 
+  it("a two-word title needs only one shared word through a hub (Password length)", async () => {
+    const USER_GO = "internal/validator/user.go";
+    const pkgs = ["api", "storage", "cli", "ui"];
+    const { deps: d } = deps({
+      requirements: [req("r1", "Password length")],
+      codeMappings: [fileMap("r1", USER_GO)],
+      symbols: [
+        mod("u-mod", USER_GO, 120),
+        sym("u-pw", USER_GO, "ValidatePassword", { startLine: 10, endLine: 30 }),
+        sym("u-name", USER_GO, "ValidateUsername", { startLine: 40, endLine: 60 }),
+        sym("t-pw", "internal/validator/user_test.go", "TestValidatePassword"),
+        ...pkgs.map((p) => sym(`t-${p}`, `internal/${p}/user_test.go`, `TestCreateUser${p}`)),
+      ],
+      edges: [calls("t-pw", "u-pw"), ...pkgs.map((p) => calls(`t-${p}`, "u-name"))],
+    });
+    // Five test directories make `user.go` a hub; `password` is shared, `length` is
+    // not. The link must stay `exercises`: the sibling `naming` link alone would
+    // not count as strictly tested (workspace-rollup.ts).
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    expect(out.map((t) => [t.name, t.relation])).toEqual([["TestValidatePassword", "exercises"]]);
+  });
+
   it("keeps a hub link whose TEST is named for the requirement when the callee is not", async () => {
     const f = hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION");
     f.symbols!.push(sym("t-flow", "internal/oauth2/flow_test.go", "TestOAuth2UserCreationFlow"));
     f.edges!.push(calls("t-flow", "o-new"));
     const { deps: d } = deps(f);
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(out.map((t) => t.name).sort()).toEqual([
-      "TestOAuth2UserCreation",
-      "TestOAuth2UserCreationFlow",
-    ]);
+    expect(await names(d)).toEqual(["TestOAuth2UserCreation", "TestOAuth2UserCreationFlow"]);
   });
 
-  it("a target exercised from exactly the threshold number of test files is a hub", async () => {
-    // Four sanitizer files + the OAuth test file = 5 = DEFAULT_TESTED_BY_HUB_MIN_TEST_FILES.
+  it("a target exercised from exactly the threshold number of test directories is a hub", async () => {
+    // Four YouTube packages + the OAuth package = 5 = DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS.
     const f = hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION");
     const dropped = new Set(["t-yt-4"]);
     f.symbols = f.symbols!.filter((s) => !dropped.has(s.id));
     f.edges = f.edges!.filter((e) => !dropped.has(e.fromSymbolId));
-    const { deps: d } = deps(f, { hubMinTestFiles: DEFAULT_TESTED_BY_HUB_MIN_TEST_FILES });
-    expect(DEFAULT_TESTED_BY_HUB_MIN_TEST_FILES).toBe(5);
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(out.map((t) => t.name)).toEqual(["TestOAuth2UserCreation"]);
+    const { deps: d } = deps(f, { hubMinTestDirs: DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS });
+    expect(DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS).toBe(5);
+    expect(await names(d)).toEqual(["TestOAuth2UserCreation"]);
+  });
+
+  it("counts directories, not files: many test files in one package are not a hub", async () => {
+    const f = hubFixture(fileMap("r1", OPTIONS), "OIDC discovery endpoint");
+    // Move every caller into the config package's own test files.
+    f.symbols = f.symbols!.map((s) =>
+      s.filePath.endsWith("_test.go") ? { ...s, filePath: `internal/config/${s.id}_test.go` } : s,
+    );
+    const { deps: d } = deps(f);
+    expect(await names(d)).toHaveLength(6);
   });
 
   it("matches hub links against the requirement TITLE, not the common words of its body", async () => {
@@ -572,13 +620,13 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     f.symbols!.push(sym("t-acct", "internal/model/account_test.go", "TestDefaultAccountProvider"));
     f.edges!.push(calls("t-acct", "o-new"));
     const { deps: d } = deps(f);
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(out.map((t) => t.name)).toEqual(["TestOAuth2UserCreation"]);
+    expect(await names(d)).toEqual(["TestOAuth2UserCreation"]);
   });
 
   it("filters a ranged file-only target by range BEFORE the per-file cap", async () => {
-    // Symbols are ordered by startLine, so a cap of 1 keeps only `NewConfigOptions`
-    // (line 64); the cited range 630-650 holds `OAuth2UserCreationAllowed`.
+    // Symbols are ordered by startLine, so a cap of 1 applied first would keep only
+    // the module symbol (line 1) or `NewConfigOptions` (line 64); the cited range
+    // 630-650 holds `OAuth2UserCreationAllowed`.
     const mapping = { ...fileMap("r1", OPTIONS), startLine: 630, endLine: 650 };
     const { deps: d } = deps(hubFixture(mapping, "Something unrelated"), { maxSymbolsPerFile: 1 });
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
@@ -590,6 +638,7 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
   it("a ranged test-file citation past the per-file cap is still a direct link", async () => {
     const T = "internal/reader/icon/finder_test.go";
     const symbols = [
+      mod("t-mod", T, 70),
       sym("t-a", T, "TestA", { startLine: 10, endLine: 20 }),
       sym("t-b", T, "TestB", { startLine: 30, endLine: 40 }),
       sym("t-c", T, "TestFindIcon", { startLine: 50, endLine: 60 }),
@@ -611,13 +660,12 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     f.symbols!.push(sym("t-misc", "internal/api/misc_test.go", "TestMisc"));
     f.edges!.push(calls("t-misc", "o-oauth"));
     const { deps: d } = deps(f);
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(out.map((t) => t.name).sort()).toEqual(["TestMisc", "TestOAuth2UserCreation"]);
+    expect(await names(d)).toEqual(["TestMisc", "TestOAuth2UserCreation"]);
   });
 
   it("below the hub threshold every exercising test still counts", async () => {
     const { deps: d } = deps(hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION"), {
-      hubMinTestFiles: 7,
+      hubMinTestDirs: 7,
     });
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
     expect(out).toHaveLength(6);
@@ -628,31 +676,61 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     const mapping = { ...fileMap("r1", OPTIONS), startLine: 630, endLine: 650 };
     const { deps: d } = deps(hubFixture(mapping, "Something unrelated"));
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    // Only `OAuth2UserCreationAllowed` is in range; one test file exercises it.
     expect(out.map((t) => [t.name, t.subject?.symbol])).toEqual([
       ["TestOAuth2UserCreation", `${OPTIONS}::OAuth2UserCreationAllowed`],
     ]);
   });
 
-  it("a test file cited only for its licence header is not a direct link", async () => {
+  describe("a test file cited only for its licence header is not a direct link", () => {
     const FINDER_TEST = "internal/reader/icon/finder_test.go";
-    const symbols = [sym("t-find", FINDER_TEST, "TestFindIcon", { startLine: 12, endLine: 30 })];
-    const header = { ...fileMap("r1", FINDER_TEST), startLine: 1, endLine: 3 };
-    const { deps: d } = deps({
-      requirements: [req("r1", "Licensed under the Apache License 2.0")],
-      codeMappings: [header],
-      symbols,
-    });
-    expect((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")).toEqual([]);
+    // As the parsers produce it: the module symbol, then the test function.
+    const symbols = [
+      mod("t-fmod", FINDER_TEST, 60),
+      sym("t-find", FINDER_TEST, "TestFindIcon", { startLine: 12, endLine: 30 }),
+    ];
+    const resolve = async (mapping: Mapping, title = "Find the feed icon") => {
+      const { deps: d } = deps({
+        requirements: [req("r1", title)],
+        codeMappings: [mapping],
+        symbols,
+      });
+      return (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    };
 
-    const body = { ...header, startLine: 14, endLine: 20 };
-    const cited = deps({
-      requirements: [req("r1", "Find the feed icon")],
-      codeMappings: [body],
-      symbols,
+    it("drops the seeder's module-bound header row (lines 1-3 bind to the module, 1-EOF)", async () => {
+      const header = { ...fileMap("r1", FINDER_TEST, "t-fmod"), startLine: 1, endLine: 60 };
+      expect(await resolve(header, "Licensed under the Apache License 2.0")).toEqual([]);
     });
-    const out = (await resolveTestedBy(P, ["r1"], undefined, cited.deps)).get("r1")!;
-    expect(out.map((t) => [t.filePath, t.relation])).toEqual([[FINDER_TEST, "direct"]]);
+
+    it("drops a module-bound row with no range", async () => {
+      expect(await resolve(fileMap("r1", FINDER_TEST, "t-fmod"))).toEqual([]);
+    });
+
+    it("drops a file-level ranged header row although the module symbol overlaps it", async () => {
+      const header = { ...fileMap("r1", FINDER_TEST), startLine: 1, endLine: 3 };
+      expect(await resolve(header, "Licensed under the Apache License 2.0")).toEqual([]);
+    });
+
+    it("keeps the seeder's row for a citation inside the test (bound to TestFindIcon)", async () => {
+      const body = { ...fileMap("r1", FINDER_TEST, "t-find"), startLine: 12, endLine: 30 };
+      const out = await resolve(body);
+      expect(out.map((t) => [t.name, t.relation])).toEqual([["TestFindIcon", "direct"]]);
+    });
+
+    it("keeps a file-level or module-bound row whose range covers a real test", async () => {
+      const fileLevel = { ...fileMap("r1", FINDER_TEST), startLine: 14, endLine: 20 };
+      expect((await resolve(fileLevel)).map((t) => t.relation)).toEqual(["direct"]);
+      const narrowed = { ...fileMap("r1", FINDER_TEST, "t-fmod"), startLine: 10, endLine: 40 };
+      expect((await resolve(narrowed)).map((t) => [t.filePath, t.relation])).toEqual([
+        [FINDER_TEST, "direct"],
+      ]);
+    });
+
+    it("keeps a whole-file test mapping with neither a symbol nor a range", async () => {
+      expect((await resolve(fileMap("r1", FINDER_TEST))).map((t) => t.relation)).toEqual([
+        "direct",
+      ]);
+    });
   });
 
   it("a ranged test-file mapping whose file has no symbols in the graph still links", async () => {
