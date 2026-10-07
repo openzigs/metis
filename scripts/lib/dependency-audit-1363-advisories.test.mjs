@@ -174,14 +174,18 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
       expect(entries, "no override governs next").not.toHaveLength(0);
       for (const [key] of entries) {
         const ceiling = /<\s*(\d+\.\d+\.\d+)/.exec(key)?.[1];
+        expect(ceiling, `override key "${key}" carries no \`<\` bound`).toBeDefined();
+        // #908 moved the bound past this file's floor, to 16.3.8 (GHSA-cjq9-62q9-8jv4), and
+        // `dependency-audit-908-next-ssrf.test.mjs` guards that floor. The defect this arm
+        // catches is a bound BELOW 16.3.6, so a bound at or above it passes.
         expect(
-          ceiling,
-          `override key "${key}" does not bound at ${FIXED.join(".")}. A \`<\`-bounded selector ` +
+          resolvedVersionMeetsFloor(/** @type {string} */ (ceiling), FIXED),
+          `override key "${key}" bounds below ${FIXED.join(".")}. A \`<\`-bounded selector ` +
             "stops matching the moment a consumer's declared range clears the bound, so " +
             "leaving `<16.2.11` while raising the target to ^16.3.3 leaves the backstop " +
             "covering only the band already fixed — #1208's floor-not-ceiling defect, " +
             "which #1213, #1240 and #1345 each had to fix again.",
-        ).toBe(FIXED.join("."));
+        ).toBe(true);
       }
     });
 
