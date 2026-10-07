@@ -484,7 +484,13 @@ overrides:
   # 16.3.6. METIS does not import next/og, but the CI audit gate fails on it.
   # Bound and floor move to 16.3.6 with `ui/package.json`. 16.3.6 was published
   # 2026-09-22, clear of the 7-day minimumReleaseAge window; 16.3.7 (09-29) is not.
-  next@<16.3.6: ^16.3.6
+  #
+  # 2026-10-07: GHSA-cjq9-62q9-8jv4 (#908), HIGH, CVSS v4 8.3 (v3.1 6.5), SSRF
+  # in Image Optimization, published 20:30Z for `>=16.0.0 <16.3.8`, fixed in
+  # 16.3.8. METIS runs next/image, so this path is live. Bound and floor move
+  # to 16.3.8 with `ui/package.json`. 16.3.8 was published 2026-09-30T16:07Z,
+  # clear of minimumReleaseAge; 16.4.0 (10-06) is not.
+  next@<16.3.8: ^16.3.8
 
   # @xmldom/xmldom, NINETEEN High advisories across two lines, all published
   # 2026-09-08 (#1363) — DOM-clobbering and parser-confusion bugs that let
