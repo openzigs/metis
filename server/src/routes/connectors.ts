@@ -795,8 +795,8 @@ export function connectorsRouter(): Router {
           projectId,
           rootDir: clone.path,
           repoConnectionId: id,
-          // #714/#757 — the pull just recorded this commit as lastCommitSha; label
-          // the graph with it too, or every finding fails the stale-commit gate.
+          // #714/#758 — label the graph with the pulled commit; ingestCodeGraph
+          // records it as lastCommitSha too, once the graph is complete.
           commitSha: clone.commitSha ?? undefined,
           triggeredByUserId: a,
           introspectedSchema: refreshSchemaWiring.introspectedSchema,
@@ -815,7 +815,7 @@ export function connectorsRouter(): Router {
           boundary,
           lease,
         });
-        // Step 4: refresh metadata (README, head SHA, etc.) — github only
+        // Step 4: refresh metadata (README, etc.) — github only
         const metadata = { failures: 0, stepFailed: false };
         if (!isNonGit) {
           try {
@@ -864,6 +864,12 @@ export function connectorsRouter(): Router {
               filesSkipped: stats.filesSkipped,
               symbolsUpserted: stats.symbolsUpserted,
               edgesUpserted: stats.edgesUpserted,
+              // #715 — the graph's size, so the Sync panel can tell it apart
+              // from the incremental delta above.
+              filesUnchanged: stats.filesUnchanged,
+              graphFiles: stats.graphFiles,
+              graphSymbols: stats.graphSymbols,
+              graphEdges: stats.graphEdges,
               durationMs: stats.durationMs,
             },
             sourceKnowledge: {
@@ -912,9 +918,8 @@ export function connectorsRouter(): Router {
           conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD;
         const clone = isNonGit
           ? await resolveNonGitIngestRoot(projectId, id)
-          : // Reads the checkout without re-ingesting the graph, so it must not
-            // move lastCommitSha past the graph's label (#757).
-            await pullOrCloneRepo(projectId, id, a, { recordCommit: false });
+          : // Reads the checkout only; lastCommitSha moves with a graph ingest (#758).
+            await pullOrCloneRepo(projectId, id, a);
         const discovery = await discoverAndUpsertConnections(projectId, clone.path);
         if (discovery.connectionsFound > 0) {
           const connector = await getRepoConnector(projectId, id);

@@ -19,6 +19,7 @@ vi.mock("@/lib/library-api", () => ({
     enable: vi.fn(),
     disable: vi.fn(),
     versions: vi.fn(),
+    diff: vi.fn(),
   },
 }));
 
@@ -31,6 +32,7 @@ const archiveMock = vi.mocked(skillsApi.archive);
 const enableMock = vi.mocked(skillsApi.enable);
 const disableMock = vi.mocked(skillsApi.disable);
 const versionsMock = vi.mocked(skillsApi.versions);
+const diffMock = vi.mocked(skillsApi.diff);
 
 function makeSummary(over: Partial<SkillSummary> = {}): SkillSummary {
   return {
@@ -212,6 +214,106 @@ describe("<AdminSkillsPage />", () => {
     await waitFor(() => expect(screen.getByText("Scan Deps")).toBeInTheDocument());
     fireEvent.click(screen.getAllByRole("button", { name: "Versions" })[0]);
     expect(await screen.findByText("No versions yet.")).toBeInTheDocument();
+  });
+
+  describe("version diff (#797)", () => {
+    const V1 = {
+      id: "v1",
+      version: "1.0.0",
+      contentSha256: "aaaaaaaaaaaaaaaaaaaa",
+      createdById: null,
+      createdAt: "2026-04-25T00:00:00Z",
+    };
+    const V2 = { ...V1, id: "v2", version: "1.1.0", contentSha256: "bbbbbbbbbbbbbbbbbbbb" };
+    const V3 = { ...V1, id: "v3", version: "1.2.0", contentSha256: "cccccccccccccccccccc" };
+    const detail = (v: typeof V1, instructions: string) => ({
+      ...v,
+      manifest: { name: "scan-deps", version: v.version },
+      instructions,
+    });
+
+    beforeEach(() => {
+      // Newest first, as GET /skills/:id/versions orders them.
+      versionsMock.mockResolvedValue({ items: [V3, V2, V1] });
+      diffMock.mockImplementation(async (_id: string, left: string, right: string) => {
+        const all = {
+          v1: detail(V1, "Step one.\nStep two."),
+          v2: detail(V2, "Step one.\nStep 2 <b>bold</b>."),
+          v3: detail(V3, "Step one.\nStep 2 <b>bold</b>.\nStep three."),
+        } as Record<string, ReturnType<typeof detail>>;
+        return { left: all[left] ?? null, right: all[right] ?? null };
+      });
+    });
+
+    async function openVersions() {
+      renderPage();
+      await waitFor(() => expect(screen.getByText("Scan Deps")).toBeInTheDocument());
+      fireEvent.click(screen.getAllByRole("button", { name: "Versions" })[0]);
+      await screen.findByLabelText("From");
+    }
+
+    it("diffs the newest version against the previous one by default", async () => {
+      await openVersions();
+      const diff = await screen.findByTestId("skill-version-diff");
+      expect(diffMock).toHaveBeenCalledWith("s1", "v2", "v3");
+      const added = within(diff).getAllByTestId("diff-line-add");
+      expect(added.map((l) => l.textContent)).toContain("+Step three.");
+      expect(
+        within(diff)
+          .queryAllByTestId("diff-line-remove")
+          .map((l) => l.textContent),
+      ).toContain('-version: "1.1.0"');
+    });
+
+    it("re-diffs when the user picks two other versions, rendering text safely", async () => {
+      await openVersions();
+      await screen.findByTestId("skill-version-diff");
+      fireEvent.change(screen.getByLabelText("From"), { target: { value: "v1" } });
+      fireEvent.change(screen.getByLabelText("To"), { target: { value: "v2" } });
+      await waitFor(() => expect(diffMock).toHaveBeenCalledWith("s1", "v1", "v2"));
+      const diff = await screen.findByTestId("skill-version-diff");
+      await waitFor(() =>
+        expect(
+          within(diff)
+            .getAllByTestId("diff-line-remove")
+            .map((l) => l.textContent),
+        ).toContain("-Step two."),
+      );
+      // Markup in the skill body is shown as text, never parsed into elements.
+      expect(within(diff).getByText(/Step 2 <b>bold<\/b>\./)).toBeInTheDocument();
+      expect(diff.querySelector("b")).toBeNull();
+    });
+
+    it("diffs a row against its previous version from the row button", async () => {
+      await openVersions();
+      await screen.findByTestId("skill-version-diff");
+      fireEvent.click(screen.getByRole("button", { name: "Diff v1.1.0 against previous" }));
+      await waitFor(() => expect(diffMock).toHaveBeenCalledWith("s1", "v1", "v2"));
+    });
+
+    it("says so when the same version is picked twice", async () => {
+      await openVersions();
+      fireEvent.change(screen.getByLabelText("From"), { target: { value: "v3" } });
+      expect(
+        await screen.findByText("Pick two different versions to compare."),
+      ).toBeInTheDocument();
+    });
+
+    it("shows no diff controls for a single version", async () => {
+      versionsMock.mockResolvedValue({ items: [V1] });
+      renderPage();
+      await waitFor(() => expect(screen.getByText("Scan Deps")).toBeInTheDocument());
+      fireEvent.click(screen.getAllByRole("button", { name: "Versions" })[0]);
+      await screen.findByText("v1.0.0");
+      expect(screen.queryByLabelText("From")).toBeNull();
+      expect(diffMock).not.toHaveBeenCalled();
+    });
+
+    it("shows an error when the diff request fails", async () => {
+      diffMock.mockRejectedValue(new ApiError(500, "boom"));
+      await openVersions();
+      expect(await screen.findByText("Failed to load the diff.")).toBeInTheDocument();
+    });
   });
 
   it("toggles enable/disable for a skill", async () => {

@@ -18,7 +18,7 @@ export interface DraftDiffDialogProps {
   previousBody?: string | null;
 }
 
-interface DiffLine {
+export interface DiffLine {
   kind: "same" | "add" | "remove";
   text: string;
 }

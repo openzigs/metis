@@ -19,7 +19,6 @@ vi.mock("../src/lib/prisma.js", () => ({
       findFirst: vi.fn(),
     },
     codeSymbol: {
-      findFirst: vi.fn(),
       findMany: vi.fn(),
     },
     codeEdge: {
@@ -90,7 +89,19 @@ describe("searchCodeGraphTool", () => {
 
   it("handles calledBy edge queries", async () => {
     mockPrisma.codeGraph.findFirst.mockResolvedValue({ id: "cg-1" } as never);
-    mockPrisma.codeSymbol.findFirst.mockResolvedValue({ id: "sym-caller" } as never);
+    mockPrisma.codeSymbol.findMany.mockResolvedValueOnce([
+      // #774 — the name lookup: an exact match on the bare name.
+      {
+        id: "sym-caller",
+        name: "main",
+        qualifiedName: "src/main.ts::main",
+        kind: "function",
+        filePath: "src/x.ts",
+        startLine: 1,
+        endLine: 2,
+        language: "typescript",
+      },
+    ] as never);
     mockPrisma.codeEdge.findMany.mockResolvedValue([{ toSymbolId: "sym-callee" }] as never);
     mockPrisma.codeSymbol.findMany.mockResolvedValue([
       {
@@ -109,7 +120,8 @@ describe("searchCodeGraphTool", () => {
 
   it("returns message when calledBy symbol not found", async () => {
     mockPrisma.codeGraph.findFirst.mockResolvedValue({ id: "cg-1" } as never);
-    mockPrisma.codeSymbol.findFirst.mockResolvedValue(null);
+    // #774 — neither the exact nor the substring name lookup finds a symbol.
+    mockPrisma.codeSymbol.findMany.mockResolvedValue([] as never);
 
     const result = await searchCodeGraphTool.execute({ calledBy: "nonexistent" }, baseContext);
     expect(result.content).toContain('No symbol matching "nonexistent"');
@@ -117,7 +129,19 @@ describe("searchCodeGraphTool", () => {
 
   it("handles calls edge queries", async () => {
     mockPrisma.codeGraph.findFirst.mockResolvedValue({ id: "cg-1" } as never);
-    mockPrisma.codeSymbol.findFirst.mockResolvedValue({ id: "sym-callee" } as never);
+    mockPrisma.codeSymbol.findMany.mockResolvedValueOnce([
+      // #774 — the name lookup: an exact match on the bare name.
+      {
+        id: "sym-callee",
+        name: "query",
+        qualifiedName: "Database.query",
+        kind: "function",
+        filePath: "src/x.ts",
+        startLine: 1,
+        endLine: 2,
+        language: "typescript",
+      },
+    ] as never);
     mockPrisma.codeEdge.findMany.mockResolvedValue([{ fromSymbolId: "sym-caller" }] as never);
     mockPrisma.codeSymbol.findMany.mockResolvedValue([
       {
