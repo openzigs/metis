@@ -573,6 +573,18 @@ export interface SymbolReindexResult {
   currentModel: string;
 }
 
+export interface SymbolReindexOptions {
+  batchSize?: number;
+  fresh?: boolean;
+  /**
+   * #862 — symbols re-embedded so far (resumed included) out of the snapshot. Fired
+   * once at the start (so a watcher learns the phase has begun) and after every
+   * batch. Without it the document phase's last "N/N chunks" was the only thing a
+   * watcher saw for the whole symbol phase.
+   */
+  onProgress?: (progress: { processed: number; total: number }) => void;
+}
+
 /**
  * The surface `KnowledgeService` needs from this module. Injected so the RAG
  * layer can be unit-tested without a code graph, and so the dependency points
@@ -589,7 +601,7 @@ export interface SymbolEmbeddingsPort {
    */
   reindexProject(
     projectId: string,
-    opts?: { batchSize?: number; fresh?: boolean },
+    opts?: SymbolReindexOptions,
     fence?: ReindexFence,
   ): Promise<SymbolReindexResult>;
   dropProject(projectId: string, fence?: ReindexFence): Promise<void>;
@@ -652,14 +664,14 @@ export async function symbolDeploymentCoverage(): Promise<Map<string, Record<str
  */
 export async function reindexProjectSymbols(
   projectId: string,
-  opts: { batchSize?: number; fresh?: boolean } & SymbolEmbeddingDeps = {},
+  opts: SymbolReindexOptions & SymbolEmbeddingDeps = {},
 ): Promise<SymbolReindexResult> {
   return withSymbolFence(projectId, opts, (fence) => runSymbolReindex(projectId, opts, fence));
 }
 
 async function runSymbolReindex(
   projectId: string,
-  opts: { batchSize?: number; fresh?: boolean } & SymbolEmbeddingDeps,
+  opts: SymbolReindexOptions & SymbolEmbeddingDeps,
   fence: ReindexFence,
 ): Promise<SymbolReindexResult> {
   const { store, embedService, model } = resolveDeps(opts);
@@ -691,6 +703,14 @@ async function runSymbolReindex(
 
   const pending = rows.filter((r) => !resumed.has(r.symbolId));
   let embedded = 0;
+  const report = (): void => {
+    try {
+      opts.onProgress?.({ processed: resumed.size + embedded, total: rows.length });
+    } catch {
+      // a progress callback failure must never abort the migration
+    }
+  };
+  report();
   for (let i = 0; i < pending.length; i += batchSize) {
     const batch = pending.slice(i, i + batchSize);
     const { vectors, model: usedModel } = await embedService.embed(batch.map((r) => r.text));
@@ -718,6 +738,7 @@ async function runSymbolReindex(
     if (!(await fence.renew())) throw new ReindexFencedError(projectId, fence.holder);
     await store.upsert(shadowNs, vrows);
     embedded += batch.length;
+    report();
   }
 
   // THE SECOND FENCE, at the cut-over, and the one that actually closes D2. `assertHeld`

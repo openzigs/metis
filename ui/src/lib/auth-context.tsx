@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -42,6 +43,13 @@ interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  /**
+   * #720 — true from the moment a deliberate `logout()` starts until the next
+   * successful `login()`. The involuntary "session expired" redirects (the
+   * AppShell guard and `onRefreshFailure`) skip while it is set, so a chosen
+   * sign-out lands on plain `/login` instead of `?reason=expired`.
+   */
+  isSigningOut: boolean;
   error: string | null;
   login: (credentials: LoginCredentials) => Promise<void>;
   logout: () => Promise<void>;
@@ -74,6 +82,10 @@ export function AuthProvider({
   // If we were given a hydrated user up front, skip the initial /me probe.
   const [isLoading, setIsLoading] = useState<boolean>(initialUser === null);
   const [error, setError] = useState<string | null>(null);
+  // #720 — state for consumers (AppShell), ref for the api-client callback,
+  // which is registered once and must read the current value.
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const signingOutRef = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -92,6 +104,8 @@ export function AuthProvider({
           method: "POST",
           body: { username, password },
         });
+        signingOutRef.current = false;
+        setIsSigningOut(false);
         setUser(data.user);
         queryClient.setQueryData(queryKeys.auth.me(), data.user);
       } catch (err) {
@@ -104,6 +118,12 @@ export function AuthProvider({
   );
 
   const logout = useCallback(async () => {
+    // #720 — flag the sign-out BEFORE clearing the user: clearing it re-renders
+    // AppShell, whose expired-redirect would otherwise win the race against the
+    // `router.push` below, and any request that 401s meanwhile would fire
+    // `onRefreshFailure`'s expired-redirect too.
+    signingOutRef.current = true;
+    setIsSigningOut(true);
     try {
       await apiFetch("/auth/logout", { method: "POST" });
     } catch {
@@ -169,7 +189,7 @@ export function AuthProvider({
     setOnRefreshFailure(() => {
       setUser(null);
       queryClient.removeQueries({ queryKey: queryKeys.auth.all });
-      if (isPublicRoute(window.location.pathname)) {
+      if (signingOutRef.current || isPublicRoute(window.location.pathname)) {
         return;
       }
       const here = window.location.pathname + window.location.search;
@@ -183,12 +203,13 @@ export function AuthProvider({
       user,
       isLoading,
       isAuthenticated: user !== null,
+      isSigningOut,
       error,
       login,
       logout,
       refresh,
     }),
-    [user, isLoading, error, login, logout, refresh],
+    [user, isLoading, isSigningOut, error, login, logout, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
