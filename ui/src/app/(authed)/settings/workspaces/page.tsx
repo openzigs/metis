@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { apiFetch } from "@/lib/api-client";
 import { workspaceSlugSuggestionMessage } from "@/lib/error-suggestion";
 import { PageHeader } from "@/components/ui/page-header";
+import { WORKSPACE_SLUG_PATTERN } from "@/lib/slug-pattern";
 
 interface Workspace {
   id: string;
@@ -126,7 +127,7 @@ export default function WorkspacesPage() {
                 setSlugEdited(true);
               }}
               maxLength={60}
-              pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]$"
+              pattern={WORKSPACE_SLUG_PATTERN}
             />
             <p className="text-xs text-muted-foreground">
               Lowercase letters, numbers, and hyphens only. Used in URLs.

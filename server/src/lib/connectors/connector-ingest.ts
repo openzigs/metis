@@ -53,6 +53,11 @@ export interface IngestSummary {
   documentsUpdated: number;
   chunkCount: number;
   failures: number;
+  /**
+   * #756 — repository-source only: documents removed because their file is no
+   * longer in the checkout. Absent for metadata and database ingests.
+   */
+  documentsPruned?: number;
 }
 
 interface IngestionUnit {
@@ -764,6 +769,74 @@ export async function ingestSourceAsKnowledge(
   }
 }
 
+/**
+ * #756 — delete this connector's source documents whose file is not in
+ * `present` (the paths the walk of the checkout found). Scoped to ONE
+ * connector in ONE project: the filename prefix carries the connector id and
+ * the query also matches `projectId` and `source: "repo"`, so a user upload, a
+ * metadata document (README, manifests) or another connector's documents are
+ * never candidates. An empty walk prunes nothing: a checkout with no source
+ * files is far likelier a broken clone than a repository emptied upstream.
+ * Each delete goes through `KnowledgeService.deleteDocument`, which drops the
+ * vectors and BM25 entries with the row. A failed delete is logged and left
+ * for the next run; the prune never fails the ingest.
+ */
+async function pruneAbsentSourceDocuments(
+  ctx: UnitContext,
+  present: ReadonlySet<string>,
+): Promise<number> {
+  const prefix = `${REPO_FILENAME_PREFIX}:${ctx.connectorId}:src/`;
+  if (present.size === 0) {
+    log.warn("repository source prune skipped: the checkout has no source files", {
+      connectorId: ctx.connectorId,
+    });
+    return 0;
+  }
+  let docs: Array<{ id: string; filename: string }>;
+  try {
+    docs = await prisma.document.findMany({
+      where: {
+        projectId: ctx.projectId,
+        source: ctx.kind,
+        deletedAt: null,
+        filename: { startsWith: prefix },
+      },
+      select: { id: true, filename: true },
+    });
+  } catch (err) {
+    log.warn("repository source prune skipped: listing documents failed", {
+      connectorId: ctx.connectorId,
+      err: (err as Error).message,
+    });
+    return 0;
+  }
+  let pruned = 0;
+  for (const doc of docs) {
+    // Re-checked here: SQLite's LIKE is case-insensitive, so the query alone
+    // could match another connector whose id differs only in case.
+    if (!doc.filename.startsWith(prefix)) continue;
+    if (present.has(doc.filename.slice(prefix.length))) continue;
+    try {
+      await ctx.knowledge.deleteDocument(doc.id);
+      pruned += 1;
+    } catch (err) {
+      log.warn("repository source prune: document delete failed", {
+        connectorId: ctx.connectorId,
+        documentId: doc.id,
+        err: (err as Error).message,
+      });
+    }
+  }
+  if (pruned > 0) {
+    log.info("repository source prune: removed documents for files absent from the checkout", {
+      projectId: ctx.projectId,
+      connectorId: ctx.connectorId,
+      pruned,
+    });
+  }
+  return pruned;
+}
+
 async function runSourceIngest(
   projectId: string,
   connectorId: string,
@@ -900,6 +973,12 @@ async function runSourceIngest(
       state.chunkCount += outcome.chunkCount;
       await writer.write();
     });
+    // #756 — a file absent from this checkout (deleted upstream, or not in the
+    // ref the connector now pins) must not stay citable in RAG. The present set
+    // is every walked file, not just those embedded this run, so a budget or
+    // size skip never deletes a document.
+    const present = new Set([...candidates.map((c) => c.relPath), ...unreadable]);
+    state.pruned = await pruneAbsentSourceDocuments(ctx, present);
     state.status = settledStatus(state);
   } catch (err) {
     failure = err;
@@ -915,6 +994,7 @@ async function runSourceIngest(
     documentsUpdated: state.updated,
     chunkCount: state.chunkCount,
     failures: state.failed,
+    documentsPruned: state.pruned ?? 0,
   };
   const outcome = {
     status: state.status,

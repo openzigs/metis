@@ -37,6 +37,14 @@ vi.mock("../finops/token-tracker.js", () => ({
   recordUsage: (...a: unknown[]) => recordProjectUsage(...a),
 }));
 
+// ── Project budget gate double (#775) — the real error class ────────────────
+const assertWithinBudget = vi.fn();
+vi.mock("../finops/budget-enforcer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../finops/budget-enforcer.js")>()),
+  assertWithinBudget: (...a: unknown[]) => assertWithinBudget(...a),
+}));
+const { BudgetExceededError } = await import("../finops/budget-enforcer.js");
+
 // ── Token tracker double ─────────────────────────────────────────────────────
 const recordAndFlush = vi.fn();
 const recordFailed = vi.fn();
@@ -720,5 +728,58 @@ describe("streamAIReply — #739 grounding", () => {
     expect(recordProjectUsage).not.toHaveBeenCalled();
     expect(recordAndFlush).not.toHaveBeenCalled();
     expect(recordFailed).not.toHaveBeenCalled();
+  });
+});
+
+describe("streamAIReply — project budget gate (#775)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionCreate.mockResolvedValue({ id: "sess-1" });
+    messageCreate.mockImplementation(async (args: { data: { body: string } }) => ({
+      id: "ai-msg-1",
+      body: args.data.body,
+    }));
+  });
+
+  it("checks the thread's project budget and then replies", async () => {
+    const provider = stubProvider([
+      { type: "delta", content: "ok" },
+      { type: "usage", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } },
+    ]);
+    await streamAIReply({ thread, triggerMessage, actor, provider });
+    expect(assertWithinBudget).toHaveBeenCalledWith("p1");
+    expect(messageCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("over budget: emits BUDGET_EXCEEDED, calls no model, creates no session, spends nothing", async () => {
+    assertWithinBudget.mockRejectedValueOnce(new BudgetExceededError(1200, 1000));
+    const provider = stubProvider([{ type: "delta", content: "never" }]);
+    const streamSpy = vi.spyOn(provider, "stream");
+    const chunks: ResponderChunk[] = [];
+
+    await expect(
+      streamAIReply({ thread, triggerMessage, actor, provider, onChunk: (c) => chunks.push(c) }),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+
+    expect(chunks).toEqual([expect.objectContaining({ type: "error", code: "BUDGET_EXCEEDED" })]);
+    expect(streamSpy).not.toHaveBeenCalled();
+    expect(sessionCreate).not.toHaveBeenCalled();
+    expect(messageCreate).not.toHaveBeenCalled();
+    expect(recordProjectUsage).not.toHaveBeenCalled();
+    expect(recordAndFlush).not.toHaveBeenCalled();
+  });
+
+  it("a failed budget lookup is not reported as BUDGET_EXCEEDED, and still blocks the call", async () => {
+    assertWithinBudget.mockRejectedValueOnce(new Error("db down"));
+    const provider = stubProvider([{ type: "delta", content: "never" }]);
+    const chunks: ResponderChunk[] = [];
+    await expect(
+      streamAIReply({ thread, triggerMessage, actor, provider, onChunk: (c) => chunks.push(c) }),
+    ).rejects.toThrow("db down");
+    // The internal error text is not forwarded to the thread.
+    expect(chunks).toEqual([
+      { type: "error", code: "BUDGET_CHECK_FAILED", message: "Could not check the budget" },
+    ]);
+    expect(sessionCreate).not.toHaveBeenCalled();
   });
 });

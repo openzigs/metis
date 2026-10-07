@@ -1,7 +1,8 @@
 /**
  * Publish Octokit factory — Phase 9 (#66).
  *
- * Builds a per-org cached `@octokit/rest` client with:
+ * Builds a cached `@octokit/rest` client — one per (host, owner, pinned
+ * address, token) — with:
  *
  *   - `@octokit/plugin-throttling` — primary + secondary rate-limit hooks log
  *     and back off (60s base, exponential, full-jitter, capped at 600s per
@@ -19,6 +20,7 @@
  *
  * The token NEVER appears in audit logs or any thrown message.
  */
+import { createHash } from "node:crypto";
 import {
   DEFAULT_PUBLISH_BACKOFF_BUDGET_MS,
   DEFAULT_PUBLISH_MAX_RETRIES,
@@ -112,25 +114,29 @@ function posInt(raw: string | undefined, fallback: number): number {
   return n;
 }
 
-// ---- Per-org client cache --------------------------------------------------
+// ---- Per-credential client cache ------------------------------------------
 
-interface CacheEntry {
-  client: PublishOctokitLike;
-  tokenFingerprint: string;
-  baseUrl: string;
-}
+/**
+ * #749 — one client per (baseUrl, owner, pinned address, token). The token is
+ * part of the key as a full SHA-256, so two credentials publishing to the same
+ * owner never share a client: the old "fingerprint" (length + first 2 + last 2
+ * characters) collided about 1 in 3,844 for classic `ghp_` PATs, and a publish
+ * then went out under another project's token. The pinned address is in the
+ * key too, so a client whose agent connects to one resolved IP is never reused
+ * for a call that resolved another (#716 DNS pinning).
+ *
+ * The digest lives in memory only and is NEVER logged. The cache is an LRU
+ * bounded at {@link PUBLISH_OCTOKIT_CACHE_MAX} entries, so rotated tokens and
+ * many projects cannot grow it without limit.
+ */
+export const PUBLISH_OCTOKIT_CACHE_MAX = 100;
 
-const clientCache = new Map<string, CacheEntry>();
+const clientCache = new Map<string, PublishOctokitLike>();
 
-function cacheKey(owner: string, baseUrl: string): string {
-  return `${baseUrl}::${owner.toLowerCase()}`;
-}
-
-function fingerprint(token: string): string {
-  // Non-reversible truncated digest used purely to detect rotations. NEVER
-  // log or expose this — it is enough to confirm "same token" with low
-  // collision risk, but should not be treated as a credential.
-  return token.length === 0 ? "empty" : `${token.length}:${token.slice(0, 2)}…${token.slice(-2)}`;
+function cacheKey(opts: AcquirePublishOctokitOptions): string {
+  const tokenDigest = createHash("sha256").update(opts.token).digest("hex");
+  const pin = opts.pinnedAddress ? `${opts.pinnedAddress}/${opts.pinnedFamily ?? ""}` : "";
+  return [opts.baseUrl, opts.owner.toLowerCase(), pin, tokenDigest].join("::");
 }
 
 export function __resetPublishOctokitCache(): void {
@@ -150,11 +156,13 @@ export async function acquirePublishOctokit(
   opts: AcquirePublishOctokitOptions,
 ): Promise<PublishOctokitLike> {
   const cfg = opts.rateLimit ?? rateLimitConfigFromEnv();
-  const key = cacheKey(opts.owner, opts.baseUrl);
+  const key = cacheKey(opts);
   const existing = clientCache.get(key);
-  const fp = fingerprint(opts.token);
-  if (existing && existing.tokenFingerprint === fp && existing.baseUrl === opts.baseUrl) {
-    return existing.client;
+  if (existing) {
+    // Re-insert so Map order tracks recency (least recently used first).
+    clientCache.delete(key);
+    clientCache.set(key, existing);
+    return existing;
   }
   const args: OctokitFactoryArgs = {
     baseUrl: opts.baseUrl,
@@ -166,7 +174,12 @@ export async function acquirePublishOctokit(
   const client = octokitFactoryOverride
     ? await octokitFactoryOverride(args)
     : await defaultOctokit(args);
-  clientCache.set(key, { client, tokenFingerprint: fp, baseUrl: opts.baseUrl });
+  clientCache.set(key, client);
+  while (clientCache.size > PUBLISH_OCTOKIT_CACHE_MAX) {
+    const oldest = clientCache.keys().next().value;
+    if (oldest === undefined) break;
+    clientCache.delete(oldest);
+  }
   return client;
 }
 
