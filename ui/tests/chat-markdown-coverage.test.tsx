@@ -276,17 +276,18 @@ describe("EvidenceReview", () => {
 
 // ─── Simple 0% components ────────────────────────────────────────────────────
 
+// vitest 5 rejects a nested vi.mock; it was always hoisted here, so this is unchanged.
+vi.mock("@/lib/model-preferences-api", () => ({
+  modelPreferencesApi: {
+    getRecommendation: vi.fn().mockResolvedValue({ model: "claude-3", reason: "Best fit" }),
+  },
+}));
+
 import { ModelRecommendation } from "@/components/analysis/ModelRecommendation";
 
 describe("ModelRecommendation", () => {
   it("renders without crashing", async () => {
     vi.useRealTimers();
-    // Mock the API call if needed
-    vi.mock("@/lib/model-preferences-api", () => ({
-      modelPreferencesApi: {
-        getRecommendation: vi.fn().mockResolvedValue({ model: "claude-3", reason: "Best fit" }),
-      },
-    }));
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
