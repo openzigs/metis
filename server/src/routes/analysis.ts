@@ -38,6 +38,7 @@ import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lo
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
 import {
+  analysisApprovalPreAuthRateLimiter,
   analysisApprovalPromoteRateLimiter,
   analysisApprovalReopenRateLimiter,
 } from "../middleware/analysis-approval-rate-limit.js";
@@ -1143,6 +1144,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    */
   projectScoped.post(
     "/:id/approvals/promote",
+    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting (PR #902).
+    analysisApprovalPreAuthRateLimiter,
     requireAuth,
     requirePermission("analysis.run"),
     analysisApprovalPromoteRateLimiter,
@@ -1189,6 +1192,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    */
   projectScoped.post(
     "/:id/approvals/:approvalId/reopen",
+    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting (PR #902).
+    analysisApprovalPreAuthRateLimiter,
     requireAuth,
     requirePermission("analysis.run"),
     analysisApprovalReopenRateLimiter,

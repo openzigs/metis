@@ -10,8 +10,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 
+// PR #902 — counts auth runs so a test can prove the pre-auth limiter answers
+// before the route's own `requireAuth` is reached.
+const authCalls = vi.hoisted(() => ({ n: 0 }));
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: () => void) => {
+    authCalls.n += 1;
     (req as unknown as { user: { userId: string; role: string } }).user = {
       userId: "user-1",
       role: "member",
@@ -35,8 +39,21 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
 // js/missing-rate-limiting). The stub lets a test flip it to "limited".
 const reopenLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
 const promoteLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
+const preAuthLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
 const analysisRow = vi.hoisted(() => ({ status: "completed" }));
 vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
+  analysisApprovalPreAuthRateLimiter: (
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    preAuthLimiter.calls += 1;
+    if (preAuthLimiter.limited) {
+      res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "slow" } });
+      return;
+    }
+    next();
+  },
   analysisApprovalReopenRateLimiter: (
     _req: express.Request,
     res: express.Response,
@@ -155,7 +172,78 @@ beforeEach(() => {
   reopenLimiter.calls = 0;
   promoteLimiter.limited = false;
   promoteLimiter.calls = 0;
+  preAuthLimiter.limited = false;
+  preAuthLimiter.calls = 0;
+  authCalls.n = 0;
   analysisRow.status = "completed";
+});
+
+describe("approval promote/reopen — per-IP limiter ahead of the route's auth (PR #902)", () => {
+  const routes = [
+    {
+      path: "/:id/approvals/promote",
+      url: "/api/projects/proj-1/analyses/analysis-1/approvals/promote",
+      perUser: promoteLimiter,
+    },
+    {
+      path: "/:id/approvals/:approvalId/reopen",
+      url: "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
+      perUser: reopenLimiter,
+    },
+  ];
+
+  it.each(routes)(
+    "registers the pre-auth limiter first, before requireAuth, on $path",
+    async ({ path }) => {
+      const { requireAuth } = await import("../middleware/auth.js");
+      const limits = await import("../middleware/analysis-approval-rate-limit.js");
+      const { projectScoped } = initAnalysisRouter();
+      type Layer = {
+        route?: { path: string; methods: Record<string, boolean>; stack: { handle: unknown }[] };
+      };
+      const layer = (projectScoped as unknown as { stack: Layer[] }).stack.find(
+        (l) => l.route?.path === path && l.route.methods.post,
+      );
+      const handles = layer?.route?.stack.map((s) => s.handle) ?? [];
+      // CodeQL js/missing-rate-limiting reads exactly this order.
+      expect(handles[0]).toBe(limits.analysisApprovalPreAuthRateLimiter);
+      expect(handles[1]).toBe(requireAuth);
+    },
+  );
+
+  it.each(routes)(
+    "answers 429 from the pre-auth limiter before the route's auth on $path",
+    async ({ url, perUser }) => {
+      preAuthLimiter.limited = true;
+
+      const res = await request(createApp()).post(url);
+
+      expect(res.status).toBe(429);
+      expect(preAuthLimiter.calls).toBe(1);
+      // Only the router-wide `requireAuth` ran; the route's own never did.
+      expect(authCalls.n).toBe(1);
+      expect(perUser.calls).toBe(0);
+      expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+      expect(reopenApprovalRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(routes)(
+    "lets the request through to the per-user limiter on $path",
+    async ({ url, perUser }) => {
+      promoteApprovedRequirements.mockResolvedValueOnce({
+        status: "promoted",
+        requirementCount: 1,
+      });
+
+      const res = await request(createApp()).post(url);
+
+      expect(res.status).toBe(200);
+      expect(preAuthLimiter.calls).toBe(1);
+      expect(authCalls.n).toBe(2);
+      expect(perUser.calls).toBe(1);
+    },
+  );
 });
 
 describe("PUT .../approvals/:approvalId — #1104 promotion retry", () => {

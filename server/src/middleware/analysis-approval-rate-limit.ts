@@ -84,3 +84,33 @@ export const analysisApprovalPromoteRateLimiter: RequestHandler = rateLimit({
     },
   } satisfies ApiResponse,
 }) as unknown as RequestHandler;
+
+/**
+ * PR #902 CI — a per-IP ceiling AHEAD of `requireAuth` on the promote and
+ * reopen routes only. CodeQL `js/missing-rate-limiting` flags the route's own
+ * `requireAuth` ("performs authorization, but is not rate-limited") unless an
+ * `express-rate-limit` handler precedes it; the per-user limiters above then
+ * run after the permission check, unchanged. Keyed by IP alone, and generous
+ * because one IP may front many users (a NAT or proxy). Same shape as
+ * `traceabilityPreAuthRateLimiter` (#815) and `importsPreAuthRateLimiter` (#850).
+ */
+export const ANALYSIS_APPROVAL_PREAUTH_DEFAULT_MAX = 3_600;
+
+// `as unknown as RequestHandler` bridges the Express 4↔5 type split.
+export const analysisApprovalPreAuthRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("analysis-approval-preauth"),
+  windowMs: envMs("ANALYSIS_APPROVAL_PREAUTH_RATE_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS, { min: 1 }),
+  limit: () =>
+    intFromEnv("ANALYSIS_APPROVAL_PREAUTH_RATE_LIMIT_MAX", ANALYSIS_APPROVAL_PREAUTH_DEFAULT_MAX),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req, res) =>
+    `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`,
+  message: {
+    success: false,
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many approval requests — please try again later",
+    },
+  } satisfies ApiResponse,
+}) as unknown as RequestHandler;
