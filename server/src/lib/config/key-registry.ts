@@ -596,6 +596,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Upper bound on the code symbols a file-only requirement→code mapping expands to when resolving which tests exercise a requirement (#814, `lib/traceability/tested-by.ts`). Default 500.",
     sensitive: false,
   },
+  TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "How many distinct FOREIGN test directories (not the mapped code's own directory or its conventional sibling test directory) must exercise one requirement→code mapping before it is treated as a hub (a config constructor other packages' tests call for setup) when resolving \"Tested by\" (#860, `lib/traceability/tested-by.ts`). Through a hub, a foreign `exercises` link counts only when the test or the symbol it calls shares the requirement title's words; tests in the code's own directory always count. Default 2.",
+    sensitive: false,
+  },
   // ── Epic #820 Phase 1 / Issue #824 — deterministic AFFECTED SCHEMA prompt block ─
   ANALYSIS_AFFECTED_SCHEMA_MAPPING: {
     tier: "tunable",
