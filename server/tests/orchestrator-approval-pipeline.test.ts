@@ -636,6 +636,51 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     ]);
   });
 
+  // Issue #730 — the gate being open at synthesis time must not swap the
+  // reviewed list for the synthesis set on the orchestrator's own path either.
+  it("#730 — persists the approved structured requirements, not the synthesis set", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        {
+          id: "r1",
+          title: "Duplicate feed subscription prevention",
+          description: "A user cannot subscribe to the same feed URL twice.",
+          type: "functional",
+          stakeholders: [],
+          priority: "must-have",
+          ambiguities: [],
+          evidenceNeeds: [],
+          rawSource: "",
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    await approvalSvc.createApprovalRequests("ana-730", [{ type: "requirement", itemId: "r1" }]);
+    await approvalSvc.reviewApprovalRequest("ana-730", "ap-1", {
+      status: "approved",
+      reviewerId: "u1",
+    });
+
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-730",
+      ...synthInput,
+    });
+
+    expect(persisted.requirements).toHaveLength(1);
+    const synthesis = persisted.requirements[0]!.synthesis as {
+      requirements: Array<{ title: string; body: string }>;
+    };
+    expect(synthesis.requirements).toEqual([
+      expect.objectContaining({
+        title: "Duplicate feed subscription prevention",
+        body: "A user cannot subscribe to the same feed URL twice.",
+      }),
+    ]);
+  });
+
   it("promotes once all approvals are approved", async () => {
     await approvalSvc.createApprovalRequests("ana-ok", [{ type: "requirement", itemId: "r1" }]);
     await approvalSvc.reviewApprovalRequest("ana-ok", "ap-1", {

@@ -69,6 +69,8 @@ const createRow = async (_args: { data: { title: string } }) => {
   return { id: `rq_new_${committed.creates}` };
 };
 let txChain: Promise<unknown> = Promise.resolve();
+/** The tx client handed to the most recent `$transaction` callback. */
+let lastTx: { analysis: { update: ReturnType<typeof vi.fn> } } | null = null;
 
 vi.mock("../prisma.js", () => {
   const requirementFindMany = vi.fn(async () => db.existingTitles.map((title) => ({ title })));
@@ -111,6 +113,7 @@ vi.mock("../prisma.js", () => {
             }),
           },
         };
+        lastTx = tx;
         const result = await fn(tx);
         committed.rows.push(...stagedRows);
         if (stagedMetadata !== undefined && db.analysis) db.analysis.metadata = stagedMetadata;
@@ -125,6 +128,7 @@ vi.mock("../prisma.js", () => {
 
 const persistRequirements = vi.fn(async (..._args: unknown[]) => ["rq_1", "rq_2"]);
 const persistAnalysisEnhancement = vi.fn(async () => undefined);
+const lockRequirementSet = vi.fn(async (_tx: unknown, _analysisId: string) => undefined);
 /** Persisted findings the promotion re-derives coverage + verdicts from. */
 const findings: Array<Record<string, unknown>> = [];
 vi.mock("./analysis-service.js", () => ({
@@ -132,6 +136,7 @@ vi.mock("./analysis-service.js", () => ({
   persistAnalysisEnhancement: (...a: unknown[]) => persistAnalysisEnhancement(...(a as [])),
   readFlattenedFindings: vi.fn(async () => findings),
   getStructuredRequirements: vi.fn(async () => db.structured),
+  lockRequirementSet: (...a: unknown[]) => lockRequirementSet(...(a as [unknown, string])),
 }));
 
 /**
@@ -175,6 +180,7 @@ beforeEach(() => {
   committed.failCreateAt = 0;
   committed.creates = 0;
   txChain = Promise.resolve();
+  lastTx = null;
 });
 
 describe("#1104 B — promoting the requirements the approval gate withheld", () => {
@@ -529,6 +535,23 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     expect(recordedIds()).toEqual(["REQ-1", "REQ-3", "REQ-2"]);
     // The record rides the rows' transaction, not a separate metadata write.
     expect(persistAnalysisEnhancement).not.toHaveBeenCalled();
+  });
+
+  it("takes #882's requirement-set lock on its own transaction before reading the record", async () => {
+    db.requirementCount = 2;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-3"] }),
+    };
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(lockRequirementSet).toHaveBeenCalledTimes(1);
+    expect(lockRequirementSet).toHaveBeenCalledWith(lastTx, ANALYSIS_ID);
+    const lockedAt = lockRequirementSet.mock.invocationCallOrder[0]!;
+    const firstUpdateAt = lastTx!.analysis.update.mock.invocationCallOrder[0]!;
+    expect(lockedAt).toBeLessThan(firstUpdateAt);
   });
 
   it("commits neither the rows nor the record when a create fails part-way", async () => {

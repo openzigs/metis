@@ -745,8 +745,14 @@ async function assessRequirementReplacement(
  * analysis run one after the other instead of interleaving their inserts.
  *
  * SQLite needs nothing: the driver adapter runs one transaction at a time.
+ *
+ * Issue #723 — exported for the post-promotion append, which writes the same
+ * set and so takes the same locks in the same order.
  */
-async function lockRequirementSet(tx: Prisma.TransactionClient, analysisId: string): Promise<void> {
+export async function lockRequirementSet(
+  tx: Prisma.TransactionClient,
+  analysisId: string,
+): Promise<void> {
   if (resolveDatabaseProvider() !== "postgresql") return;
   await tx.$queryRaw`SELECT 1 FROM "analyses" WHERE "id" = ${analysisId} FOR NO KEY UPDATE`;
   await tx.$queryRaw`SELECT 1 FROM "requirements" WHERE "analysisId" = ${analysisId} FOR UPDATE`;

@@ -18,6 +18,7 @@ import { prisma } from "../prisma.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import {
   getStructuredRequirements,
+  lockRequirementSet,
   persistAnalysisEnhancement,
   persistRequirements,
   readFlattenedFindings,
@@ -237,13 +238,15 @@ const normalizeTitle = (title: string): string => title.trim().toLowerCase().rep
  *
  * Atomic: the rows and the record of their structured ids commit together in
  * one transaction, so a failure part-way leaves neither behind (a retry would
- * otherwise re-create the rows that did land). The transaction opens with a
- * write to the analysis row, which on Postgres waits for any concurrent append
- * to commit and then returns the metadata it recorded (READ COMMITTED re-reads
- * the row after the wait); on SQLite the write takes the database write lock.
- * Which ids are new is decided only after that, so two approvals resolving at
- * once append each requirement exactly once. (#882's `FOR NO KEY UPDATE`
- * analysis-row lock is the same serialisation point; it is not on `main` yet.)
+ * otherwise re-create the rows that did land). On Postgres the transaction
+ * opens with {@link lockRequirementSet} — the analysis row `FOR NO KEY UPDATE`,
+ * then the requirement rows `FOR UPDATE`, the same locks in the same order as
+ * `persistRequirements` (#882) — so a concurrent append or replacement of this
+ * set waits for it. The write to the analysis row that follows returns the
+ * metadata recorded by whichever transaction held the lock before (READ
+ * COMMITTED reads the latest committed row); on SQLite that write takes the
+ * database write lock. Which ids are new is decided only after that, so two
+ * approvals resolving at once append each requirement exactly once.
  */
 async function appendNewlyApproved(input: {
   analysisId: string;
@@ -254,6 +257,7 @@ async function appendNewlyApproved(input: {
   const flat = await readFlattenedFindings(input.analysisId);
 
   const requirementIds = await prisma.$transaction(async (tx) => {
+    await lockRequirementSet(tx, input.analysisId);
     const locked = await tx.analysis.update({
       where: { id: input.analysisId },
       data: { updatedAt: new Date() },
