@@ -238,6 +238,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ).map((v) => v.version);
           expect(versions).toEqual([2, 3]);
         });
+
+        // #877 — a patch that changes nothing must succeed. An empty conditional
+        // UPDATE matches no row on a real database (Prisma issues none), which the
+        // write path misread as a lost race: 409 when versioned, 500 after three
+        // retries when not.
+        const noOps: Array<[string, Record<string, unknown>]> = [
+          ["only the current version", { version: 1 }],
+          ["an empty body", {}],
+          ["unchanged labels, no version", { labels: ["auth"] }],
+          ["an unchanged title and the current version", { title: "SAME", version: 1 }],
+        ];
+        for (const [label, body] of noOps) {
+          it(`a no-op patch with ${label} succeeds without a new version`, async () => {
+            const id = await makeRequirement();
+            const before = await db.requirement.findUniqueOrThrow({ where: { id } });
+            const sent = body.title === "SAME" ? { ...body, title: before.title } : body;
+
+            const res = await route.send(id, sent);
+
+            expect(res.status).toBe(200);
+            const row = await db.requirement.findUniqueOrThrow({ where: { id } });
+            expect(row).toMatchObject({ title: before.title, body: before.body, version: 1 });
+            expect(await db.requirementVersion.count({ where: { requirementId: id } })).toBe(0);
+          });
+        }
+
+        it("a no-op patch carrying a stale version is still a 409", async () => {
+          const id = await makeRequirement();
+          await route.send(id, { title: "Moved on", version: 1 });
+
+          const res = await route.send(id, { version: 1 });
+
+          expect(res.status).toBe(409);
+          expect(res.body.error).toMatchObject({ code: "VERSION_CONFLICT", serverVersion: 2 });
+        });
       });
     }
   },
