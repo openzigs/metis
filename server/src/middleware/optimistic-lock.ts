@@ -63,6 +63,53 @@ function valuesEqual(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * Answer 409 `VERSION_CONFLICT` with a field-level diff for the 3-way merge UI.
+ *
+ * Exported so a route whose write transaction detects the conflict itself
+ * (#871 — two edits carrying the same version both pass the middleware) can
+ * answer with exactly the payload the middleware gives.
+ *
+ * @param record       The current server record, in the shape the client speaks.
+ * @param clientBody   The request body (its `version` field is skipped).
+ * @param clientVersion The version the client's edit was based on.
+ */
+export function sendVersionConflict(
+  res: Response,
+  entityLabel: string,
+  record: VersionedRecord,
+  clientBody: Record<string, unknown>,
+  clientVersion: number,
+): void {
+  // We intentionally do NOT include the full server record or full request
+  // body to avoid leaking unrelated field values.
+  const diff: Array<{ field: string; server: unknown; client: unknown }> = [];
+  for (const field of Object.keys(clientBody)) {
+    if (field === "version") continue;
+    if (!(field in record)) continue;
+    // Structural comparison: a field whose value is an array or object
+    // (e.g. a requirement's `labels`) is never `===` equal to an
+    // equivalent value from the request body, so identity comparison
+    // reported it as conflicting on EVERY conflict — and the merge modal
+    // then offered a "server version" the client never actually differed
+    // from. See `valuesEqual` for why this is not `JSON.stringify`.
+    if (!valuesEqual(record[field], clientBody[field])) {
+      diff.push({ field, server: record[field], client: clientBody[field] });
+    }
+  }
+  res.status(409).json({
+    success: false,
+    error: {
+      code: "VERSION_CONFLICT",
+      message: `${entityLabel} has been modified since you loaded it`,
+      conflict: true,
+      serverVersion: record.version,
+      clientVersion,
+      diff,
+    },
+  });
+}
+
+/**
  * Build the optimistic-lock middleware for a given record fetcher.
  *
  * @param entityLabel  Used in error messages, e.g. "requirement".
@@ -90,35 +137,13 @@ export function optimisticLock(entityLabel: string, getRecord: RecordFetcher): R
       }
 
       if (record.version !== clientVersion) {
-        // 409 — version conflict; surface a field-level diff for the 3-way
-        // merge UI. We intentionally do NOT include the full server record or
-        // full request body to avoid leaking unrelated field values.
-        const clientBody = req.body as Record<string, unknown>;
-        const diff: Array<{ field: string; server: unknown; client: unknown }> = [];
-        for (const field of Object.keys(clientBody)) {
-          if (field === "version") continue;
-          if (!(field in record)) continue;
-          // Structural comparison: a field whose value is an array or object
-          // (e.g. a requirement's `labels`) is never `===` equal to an
-          // equivalent value from the request body, so identity comparison
-          // reported it as conflicting on EVERY conflict — and the merge modal
-          // then offered a "server version" the client never actually differed
-          // from. See `valuesEqual` for why this is not `JSON.stringify`.
-          if (!valuesEqual(record[field], clientBody[field])) {
-            diff.push({ field, server: record[field], client: clientBody[field] });
-          }
-        }
-        res.status(409).json({
-          success: false,
-          error: {
-            code: "VERSION_CONFLICT",
-            message: `${entityLabel} has been modified since you loaded it`,
-            conflict: true,
-            serverVersion: record.version,
-            clientVersion: clientVersion as number,
-            diff,
-          },
-        });
+        sendVersionConflict(
+          res,
+          entityLabel,
+          record,
+          req.body as Record<string, unknown>,
+          clientVersion,
+        );
         return;
       }
 

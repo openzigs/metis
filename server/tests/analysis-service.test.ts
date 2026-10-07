@@ -314,6 +314,22 @@ vi.mock("../src/lib/prisma.js", () => ({
           return r;
         },
       ),
+      // #871 — the versioned write is conditional on the version it read.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; version?: number };
+          data: Partial<RequirementRow>;
+        }) => {
+          const r = requirements.get(where.id);
+          if (!r || r.deletedAt) return { count: 0 };
+          if (where.version !== undefined && r.version !== where.version) return { count: 0 };
+          Object.assign(r, data);
+          return { count: 1 };
+        },
+      ),
     },
     // Epic #203 (#221) — cross-doc findings. Backed by `crossDocFindings` so
     // Issue #448 read-time enrichment tests can seed rows; default empty so

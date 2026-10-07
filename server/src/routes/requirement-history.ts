@@ -219,6 +219,10 @@ export function requirementHistoryRouter(): Router {
           if (err.code === "NOT_FOUND") {
             throw new AppError(404, "REQUIREMENT_NOT_FOUND", err.message);
           }
+          // #871 — concurrent edits kept winning the write; the client may retry.
+          if (err.code === "VERSION_CONFLICT") {
+            throw new AppError(409, "VERSION_CONFLICT", err.message);
+          }
           throw new AppError(404, "VERSION_NOT_FOUND", err.message);
         }
         throw err;

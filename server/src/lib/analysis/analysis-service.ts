@@ -1060,6 +1060,12 @@ export async function updateRequirementRow(input: {
   };
   /** Recorded on the version row (#865). */
   actorId?: string | null;
+  /**
+   * #871 — the version the caller's edit was based on, checked inside the
+   * write transaction. A mismatch throws `RequirementVersionError`
+   * (`VERSION_CONFLICT`); `undefined` skips the check.
+   */
+  expectedVersion?: number;
 }): Promise<{ id: string; version: number; changed: boolean } | null> {
   const existing = await prisma.requirement.findFirst({
     where: {
@@ -1104,6 +1110,7 @@ export async function updateRequirementRow(input: {
       analysisId: input.analysisId,
       patch,
       actorId: input.actorId ?? null,
+      expectedVersion: input.expectedVersion,
     });
     return { id: result.id, version: result.version, changed: result.changed };
   } catch (err) {

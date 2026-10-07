@@ -174,6 +174,25 @@ vi.mock("../src/lib/prisma.js", async () => {
           return r;
         },
       ),
+      // #871 — the versioned write is conditional on the version it read
+      // (`undefined` is no filter, as in Prisma; these fixture rows carry none).
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; version?: number };
+          data: { labels?: string; reviewStatus?: string | null };
+        }) => {
+          const r = requirements.get(where.id) as { version?: number } | undefined;
+          if (!r) return { count: 0 };
+          if (where.version !== undefined && r.version !== where.version) return { count: 0 };
+          const row = requirements.get(where.id)!;
+          if (data.labels !== undefined) row.labels = data.labels;
+          if (data.reviewStatus !== undefined) row.reviewStatus = data.reviewStatus ?? null;
+          return { count: 1 };
+        },
+      ),
     },
     // Epic #203 (#221) — cross-doc findings read by getAnalysisSnapshot.
     crossDocFinding: {
