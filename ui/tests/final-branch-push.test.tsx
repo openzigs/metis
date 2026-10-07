@@ -338,10 +338,9 @@ describe("ConnectionsPage — GitHub Enterprise repo", () => {
     fireEvent.click(testBtns[0]);
     await waitFor(() => expect(repoTest).toHaveBeenCalled());
     // "Last test:" message should appear after test result
-    await waitFor(
-      () =>
-        expect(screen.queryByText(/Last test/i)).toBeInTheDocument() ||
-        expect(screen.getByText("Bad Repo")).toBeInTheDocument(),
-    );
+    await waitFor(() => {
+      expect(screen.queryByText(/Last test/i)).toBeInTheDocument();
+      expect(screen.getByText("Bad Repo")).toBeInTheDocument();
+    });
   });
 });

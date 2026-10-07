@@ -1,5 +1,12 @@
-import "@testing-library/jest-dom/vitest";
-import { afterEach, vi } from "vitest";
+// vitest 5 (#668): extend THIS package's `expect` rather than importing
+// `@testing-library/jest-dom/vitest`. That entry does `import "vitest"` from jest-dom's own
+// directory, which under pnpm resolves a different vitest copy (one per `@types/node` peer)
+// and loads a second runtime that breaks `.rejects.toThrow(...)`. Types:
+// `tests/jest-dom-vitest.d.ts`.
+import * as matchers from "@testing-library/jest-dom/matchers";
+import { afterEach, expect, vi } from "vitest";
+
+expect.extend(matchers);
 import { cleanup } from "@testing-library/react";
 
 afterEach(() => {

@@ -21,7 +21,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.unmock("@huggingface/transformers");
+  vi.doUnmock("@huggingface/transformers");
   if (ORIGINAL_OFFLINE == null) delete process.env.HF_HUB_OFFLINE;
   else process.env.HF_HUB_OFFLINE = ORIGINAL_OFFLINE;
   if (ORIGINAL_CACHE == null) delete process.env.TRANSFORMERS_CACHE;
