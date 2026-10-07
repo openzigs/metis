@@ -65,6 +65,19 @@ updates:
       root-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    # katex: ui pins `~0.16.x` on purpose. ui/src/lib/katex-css.ts loads the
+    # stylesheet from ui's own katex, but `rehype-katex` renders the markup with
+    # its nested katex 0.16, and 0.18 prefixed the CSS classes (`.sizing` ->
+    # `.katex-sizing`). A 0.18 stylesheet over 0.16 markup leaves superscripts
+    # and fractions unstyled; ui/tests/katex-stylesheet-parity.test.ts
+    # (#310) is the gate. Bump ui's katex only alongside a rehype-katex that
+    # renders with the same minor.
+    # `ignore` matches package NAMES across the workspace — there is no
+    # directory key — so this also holds server's katex at its current minor.
+    # Patch bumps still arrive for both; a server minor needs a manual bump.
+    ignore:
+      - dependency-name: "katex"
+        update-types: ["version-update:semver-minor"]
 
   # GitHub Actions used by workflows — group all bumps into one PR (low risk).
   # This ecosystem keeps the SHA-pinned `uses:` refs (issue #586) current:

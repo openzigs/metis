@@ -5,6 +5,13 @@
  *   GET  /api/projects/:projectId/model-preferences  — read preferences
  *   PUT  /api/projects/:projectId/model-preferences  — upsert preferences
  *   GET  /api/projects/:projectId/analyses/model-recommendation — get recommendation (#600)
+ *
+ * #713 — the preferences list the models the ACTIVE provider runs, as the
+ * recommendation does (#512): the router's Claude tiers where the provider serves
+ * them, otherwise the provider's own configured model, priced by the catalog for
+ * that endpoint. DeepSeek's Anthropic-compatible endpoint, for one, remaps every
+ * `claude-*` id, so offering one there pinned a model the run never used, at a
+ * price it never paid.
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
@@ -23,9 +30,11 @@ import {
   LEGACY_SONNET_MODEL_ID,
   type RouterProvider,
 } from "../lib/ai/model-router.js";
-import { routerCatalog } from "../lib/ai/model-catalog.js";
+import { getModelCatalog, routerCatalog } from "../lib/ai/model-catalog.js";
 import { loadAIConfig } from "../lib/ai/config.js";
 import { buildProvider } from "../lib/ai/providers/factory.js";
+import type { AIProvider } from "../lib/ai/types.js";
+import type { ModelCatalogEntry } from "@metis/shared";
 import { createChildLogger } from "../lib/logger.js";
 import {
   estimateAnalysisRunTokens,
@@ -53,7 +62,9 @@ const validModelIds = [
 ] as const;
 
 const modelPreferenceSchema = z.object({
-  defaultModel: z.enum(validModelIds).nullable().optional(),
+  // A tier id, or (#713) the active provider's configured model — checked in
+  // the handler, because which one is valid depends on the provider.
+  defaultModel: z.string().min(1).max(200).nullable().optional(),
   taskTypeOverrides: z.record(z.string(), z.string()).optional(),
   budgetDowngradeThreshold: z.number().int().positive().nullable().optional(),
 });
@@ -77,6 +88,7 @@ export function initModelPreferenceRouter(): Router {
       const pref = await prisma.modelPreference.findUnique({
         where: { projectId },
       });
+      const provider = activeRouterProvider();
 
       res.json(
         ok({
@@ -86,15 +98,11 @@ export function initModelPreferenceRouter(): Router {
           budgetDowngradeThreshold: pref?.budgetDowngradeThreshold ?? null,
           // #135 — the router's models as the catalog describes them (name,
           // tier, context window, price, capabilities) — the settings picker
-          // renders from this, never from a list of its own.
-          availableModels: routerCatalog().map((m) => ({
-            id: m.id,
-            name: m.displayName,
-            tier: m.routerTier,
-            contextWindow: m.contextWindow,
-            price: m.price,
-            capabilities: m.capabilities,
-          })),
+          // renders from this, never from a list of its own. #713 — only the
+          // ones the active provider runs.
+          availableModels: await availableModelsFor(provider),
+          // #713 — the picker's wording (tier downgrade or not) follows this.
+          servesTierModels: servesTierModels(provider),
         }),
       );
     },
@@ -116,8 +124,15 @@ export function initModelPreferenceRouter(): Router {
         });
       }
 
+      const defaultModel = parsed.data.defaultModel ?? null;
+      if (defaultModel !== null && !acceptsDefaultModel(defaultModel, activeRouterProvider())) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid model preference payload", {
+          issues: { fieldErrors: { defaultModel: ["Not a model this deployment can run"] } },
+        });
+      }
+
       const data = {
-        defaultModel: parsed.data.defaultModel ?? null,
+        defaultModel,
         taskTypeOverrides: JSON.stringify(parsed.data.taskTypeOverrides ?? {}),
         budgetDowngradeThreshold: parsed.data.budgetDowngradeThreshold ?? null,
       };
@@ -254,6 +269,105 @@ export function initModelRecommendationRouter(): Router {
   return router;
 }
 
+/** One option of the settings picker. */
+interface AvailableModel {
+  id: string;
+  name: string;
+  /** The router tier, or `configured` for the provider's own model (#713). */
+  tier: string;
+  contextWindow: number | null;
+  price: ModelCatalogEntry["price"];
+  capabilities: ModelCatalogEntry["capabilities"];
+}
+
+/** The provider the preferences describe; `offline` marks the stub. */
+type PreferenceProvider = RouterProvider & Partial<Pick<AIProvider, "offline">>;
+
+/**
+ * #713 — the offline stub, which answers any model id and runs no real model.
+ * Two shapes: the stub itself (`offline: true`), and the e2e `AI_REPLAY=1`
+ * wrapper around it — a `ReplayProvider` that reports `offline: false` (it is
+ * not the stub when a fixture hits) but keeps the stub's `key`
+ * (`fixtures/install.ts`). Testing `offline` alone listed only "Offline stub"
+ * under replay.
+ */
+function isOfflineStub(provider: PreferenceProvider): boolean {
+  return provider.offline === true || provider.key === "offline-stub";
+}
+
+/**
+ * #713 — true when the router's Claude tier ids run as sent. With no resolvable
+ * provider, or on the offline stub, the tier list is reported unchanged, as
+ * before.
+ */
+function servesTierModels(provider: PreferenceProvider | undefined): boolean {
+  if (!provider || isOfflineStub(provider)) return true;
+  return routerCatalog().some((m) => provider.servesRouterModel?.(m.id) === true);
+}
+
+/**
+ * #713 — the models a project can pick: the router tiers the provider serves,
+ * or else the one model it is configured to run, described by the catalog for
+ * that endpoint (`GET /api/ai/models` — DeepSeek's own price, never Anthropic's;
+ * an unknown price stays `null`).
+ */
+async function availableModelsFor(
+  provider: PreferenceProvider | undefined,
+): Promise<AvailableModel[]> {
+  if (servesTierModels(provider)) {
+    return routerCatalog()
+      .filter(
+        (m) => !provider || isOfflineStub(provider) || provider.servesRouterModel?.(m.id) === true,
+      )
+      .map((m) => ({
+        id: m.id,
+        name: m.displayName,
+        tier: m.routerTier ?? "configured",
+        contextWindow: m.contextWindow,
+        price: m.price,
+        capabilities: m.capabilities,
+      }));
+  }
+  const model = provider!.model;
+  let entry: ModelCatalogEntry | undefined;
+  try {
+    const catalog = await getModelCatalog({ config: loadAIConfig() });
+    entry = catalog.models.find((m) => m.id === model);
+  } catch (err) {
+    log.warn("Could not describe the configured model for the model preferences", {
+      error: (err as Error).message,
+    });
+  }
+  return [
+    {
+      id: model,
+      name: entry?.displayName ?? model,
+      tier: "configured",
+      contextWindow: entry?.contextWindow ?? null,
+      price: entry?.price ?? null,
+      capabilities: entry?.capabilities ?? {
+        tools: false,
+        jsonSchema: false,
+        jsonObject: false,
+        vision: false,
+        thinking: false,
+      },
+    },
+  ];
+}
+
+/**
+ * #713 — a default model a project may save: `auto`; a router tier id (the
+ * current ones, and the legacy Sonnet id saved before the Sonnet 5 rename) only
+ * where the provider serves the tiers — the same test that decides whether GET
+ * lists them; or the active provider's configured model.
+ */
+function acceptsDefaultModel(id: string, provider: PreferenceProvider | undefined): boolean {
+  if (id === "auto") return true;
+  if ((validModelIds as readonly string[]).includes(id) && servesTierModels(provider)) return true;
+  return provider !== undefined && id === provider.model;
+}
+
 /**
  * #512 — the provider an analysis run uses, so the Model card names the model
  * the run will actually use. The booted analysis orchestrator's own provider
@@ -264,7 +378,7 @@ export function initModelRecommendationRouter(): Router {
  * recommendation on tier routing (the run itself will surface that error)
  * rather than failing the form.
  */
-function activeRouterProvider(): RouterProvider | undefined {
+function activeRouterProvider(): PreferenceProvider | undefined {
   try {
     return getOrchestrator().provider;
   } catch {

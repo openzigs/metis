@@ -8,13 +8,21 @@
  * that genuinely produced nothing. That single line is what made a gated run
  * indistinguishable from a lost one. When the analysis metadata records a
  * blocked promotion, say what exists, what is blocking it, and where to go.
+ *
+ * Issue #723 — only PENDING approvals hold the gate; a rejection is resolved.
+ * Once the gate is open (the live `ticketStatus`, or a record written before
+ * rejections counted as resolved, with no pending approval) nothing is left to
+ * review: point at the Promote action instead of at outstanding approvals.
  */
-import { readEnhancementMetadata } from "@/lib/analysis-api";
+import { readEnhancementMetadata, type TicketStatus } from "@/lib/analysis-api";
 
 export function RequirementsEmptyState({
   metadata,
+  ticketStatus,
 }: {
   metadata: Record<string, unknown> | null | undefined;
+  /** #723 — the live approval gate, when known; it outranks the recorded counts. */
+  ticketStatus?: TicketStatus | null;
 }): React.ReactElement {
   const blocked = readEnhancementMetadata(metadata).promotionBlocked;
 
@@ -23,9 +31,31 @@ export function RequirementsEmptyState({
   }
 
   const awaiting = blocked.awaitingRequirementCount ?? 0;
-  const outstanding: string[] = [];
-  if (blocked.pendingCount > 0) outstanding.push(`${blocked.pendingCount} pending`);
-  if (blocked.rejectedCount > 0) outstanding.push(`${blocked.rejectedCount} rejected`);
+  const pendingCount = ticketStatus ? ticketStatus.pendingCount : blocked.pendingCount;
+  const gateOpen = ticketStatus ? ticketStatus.allowed : blocked.pendingCount === 0;
+
+  if (gateOpen) {
+    return (
+      <div
+        role="alert"
+        data-testid="requirements-gated"
+        className="space-y-1 rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
+      >
+        <p>
+          <span aria-hidden>⚠</span>{" "}
+          {awaiting > 0
+            ? `All approvals are resolved, but the ${awaiting} requirement(s) have not been promoted yet.`
+            : "All approvals are resolved, but the requirements have not been promoted yet."}
+        </p>
+        <p className="text-xs text-warning">
+          Promote the approved requirements from the approvals section.{" "}
+          <a href="#approvals" className="font-medium underline">
+            Go to approvals
+          </a>
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -40,9 +70,9 @@ export function RequirementsEmptyState({
           : "Requirements are awaiting approval before they are saved."}
       </p>
       <p className="text-xs text-warning">
-        {outstanding.length > 0
-          ? `${outstanding.join(", ")} approval(s) must be resolved.`
-          : "Resolve the outstanding approvals to release them."}{" "}
+        {pendingCount > 0
+          ? `${pendingCount} pending approval(s) must be resolved.`
+          : "Resolve the pending approvals to release them."}{" "}
         <a href="#approvals" className="font-medium underline">
           Go to approvals
         </a>

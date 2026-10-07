@@ -37,6 +37,11 @@ import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lo
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
+import {
+  analysisApprovalPreAuthRateLimiter,
+  analysisApprovalPromoteRateLimiter,
+  analysisApprovalReopenRateLimiter,
+} from "../middleware/analysis-approval-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   AnalysisOrchestrator,
@@ -58,6 +63,7 @@ import {
   ClarificationDialog,
   getDialogState,
   listApprovalRequests,
+  reopenApprovalRequest,
   reviewApprovalRequest,
   canCreateTickets,
   // Issue #1104 (finding B) — release the requirements the gate withheld.
@@ -1121,6 +1127,93 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       }
 
       res.json(ok({ ...updated, promotion }));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/approvals/promote
+   * Issue #723 — promote the approved requirements of a run whose gate is open
+   * but which has no requirement rows: a run stranded before rejections counted
+   * as resolved has no review left to make, so the review PUT never fires again
+   * and the Analysis page had no way to recover it. Same permission and scope
+   * as the review PUT (#1097); `promoteApprovedRequirements` is idempotent and
+   * never replaces an existing set. Refused only while the analysis is pending
+   * or running: mid-run, the orchestrator has not saved its own requirements
+   * yet. A failed or cancelled run is terminal — its approvals were resolved,
+   * and the review PUT above would promote the very same run — so it is allowed.
+   */
+  projectScoped.post(
+    "/:id/approvals/promote",
+    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting (PR #902).
+    analysisApprovalPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("analysis.run"),
+    analysisApprovalPromoteRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      const analysis = await ensureAnalysisVisible(analysisId, projectId);
+      if (analysis.status === "pending" || analysis.status === "running") {
+        throw new AppError(
+          409,
+          "ANALYSIS_NOT_COMPLETED",
+          "The analysis is still running — its requirements are saved when it completes.",
+        );
+      }
+
+      let promotion: PromotionOutcome;
+      try {
+        promotion = await promoteApprovedRequirements(analysisId);
+      } catch {
+        promotion = {
+          status: "unavailable",
+          reason: "Promoting the requirements failed. Try again.",
+        };
+      }
+
+      const actor = actorFromReq(req);
+      audit({
+        actor: { id: actor.id },
+        action: "analysis.approval.promote",
+        target: { type: "analysis", id: analysisId },
+        metadata: { outcome: promotion.status },
+      });
+
+      res.json(ok({ promotion }));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/approvals/:approvalId/reopen
+   * Issue #723 — return a REJECTED approval to pending so it can be reviewed
+   * again. A rejection used to be final, which left a mistaken rejection with
+   * no way back short of a full re-run. Scoped exactly like the review route
+   * (#1097): the analysis to its project, the approval to its analysis.
+   */
+  projectScoped.post(
+    "/:id/approvals/:approvalId/reopen",
+    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting (PR #902).
+    analysisApprovalPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("analysis.run"),
+    analysisApprovalReopenRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      const approvalId = String(req.params.approvalId);
+      await ensureAnalysisVisible(analysisId, projectId);
+
+      const actor = actorFromReq(req);
+      const updated = await reopenApprovalRequest(analysisId, approvalId);
+
+      audit({
+        actor: { id: actor.id },
+        action: "analysis.approval.reopen",
+        target: { type: "approval_request", id: approvalId },
+        metadata: { analysisId },
+      });
+
+      res.json(ok(updated));
     },
   );
 

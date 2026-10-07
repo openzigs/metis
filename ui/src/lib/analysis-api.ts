@@ -655,6 +655,23 @@ export const analysisApi = {
       { method: "PUT", body },
     ),
 
+  /** Issue #723 — return a rejected approval to pending so it can be reviewed again. */
+  reopenApproval: (projectId: string, analysisId: string, approvalId: string) =>
+    apiFetch<ApprovalRequestPayload>(
+      `/projects/${projectId}/analyses/${analysisId}/approvals/${approvalId}/reopen`,
+      { method: "POST" },
+    ),
+
+  /**
+   * Issue #723 — promote the approved requirements of a run whose gate is open
+   * but which has no requirement rows. Idempotent on the server.
+   */
+  promoteApprovedRequirements: (projectId: string, analysisId: string) =>
+    apiFetch<{ promotion: PromotionOutcome }>(
+      `/projects/${projectId}/analyses/${analysisId}/approvals/promote`,
+      { method: "POST" },
+    ),
+
   // ── Epic #176 — Deep Dive → Issue ──────────────────────────────────────
 
   /** Sub 2: expand a single finding into an editable issue draft (1 LLM call). */
@@ -945,3 +962,16 @@ export interface TicketStatus {
   pendingCount: number;
   rejectedCount: number;
 }
+
+/** Issue #1104 / #723 — what a promotion attempt did (server `PromotionOutcome`). */
+export type PromotionOutcome =
+  | { status: "promoted"; requirementCount: number }
+  | {
+      status: "blocked";
+      pendingCount: number;
+      rejectedCount: number;
+      awaitingRequirementCount: number;
+      reason: string;
+    }
+  | { status: "already-promoted"; requirementCount: number }
+  | { status: "unavailable"; reason: string };

@@ -106,6 +106,15 @@ vi.mock("../src/lib/analysis/analysis-service.js", () => ({
   markAnalysisFailed: vi.fn(),
 }));
 
+/** #723 — the record `persistRequirements` hands `onWithheld` (#769). */
+const withheldRecord = (proposedCount: number) => ({
+  reason: "reviewed-work" as const,
+  existingCount: 1,
+  reviewedCount: 1,
+  proposedCount,
+  at: new Date().toISOString(),
+});
+
 const extractMock = vi.fn();
 vi.mock("../src/lib/analysis/requirements-extractor.js", () => ({
   RequirementsExtractor: class {
@@ -412,9 +421,38 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     expect(blockedEvents[0].reason).toMatch(/Promotion blocked/i);
   });
 
-  it("blocks promotion while an approval is rejected", async () => {
-    await approvalSvc.createApprovalRequests("ana-reject", [{ type: "requirement", itemId: "r1" }]);
+  // Issue #723 — a rejection is a resolution: it no longer blocks promotion.
+  // The rejected structured requirement is left out; the approved one is kept.
+  it("promotes the approved requirements and leaves the rejected one out", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    const structuredReq = (id: string, title: string) => ({
+      id,
+      title,
+      description: `${title}.`,
+      type: "functional" as const,
+      stakeholders: [],
+      priority: "should-have" as const,
+      ambiguities: [],
+      evidenceNeeds: [],
+      rawSource: "",
+    });
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        structuredReq("r1", "Feed URL must be absolute"),
+        structuredReq("r2", "Reading speed validation"),
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    await approvalSvc.createApprovalRequests("ana-reject", [
+      { type: "requirement", itemId: "r1" },
+      { type: "requirement", itemId: "r2" },
+    ]);
     await approvalSvc.reviewApprovalRequest("ana-reject", "ap-1", {
+      status: "approved",
+      reviewerId: "u1",
+    });
+    await approvalSvc.reviewApprovalRequest("ana-reject", "ap-2", {
       status: "rejected",
       reviewerId: "u1",
     });
@@ -425,7 +463,222 @@ describe("#216 — promotion is gated on resolved approvals", () => {
       ...synthInput,
     });
 
-    expect(persisted.requirements).toHaveLength(0);
+    expect(persisted.requirements).toHaveLength(1);
+    const synthesis = persisted.requirements[0]!.synthesis as {
+      requirements: Array<{ title: string }>;
+    };
+    expect(synthesis.requirements.map((r) => r.title)).toEqual(["Feed URL must be absolute"]);
+    const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+    expect(cleared).toMatchObject({
+      promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 1 },
+      promotedStructuredIds: ["r1"],
+    });
+  });
+
+  // Issue #723 — `persistRequirements` withholds a replacement over reviewed
+  // work (#769) and returns []. Nothing became a row, so no id is recorded as
+  // promoted; otherwise a later append would skip a requirement that never landed.
+  it("records no promoted ids when the replacement was withheld", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        {
+          id: "r1",
+          title: "Feed URL must be absolute",
+          description: "Feed URL must be absolute.",
+          type: "functional" as const,
+          stakeholders: [],
+          priority: "should-have" as const,
+          ambiguities: [],
+          evidenceNeeds: [],
+          rawSource: "",
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    vi.mocked(svc.persistRequirements).mockImplementationOnce((input) => {
+      persisted.requirements.push(input as unknown as Record<string, unknown>);
+      input.onWithheld?.(withheldRecord(1));
+      return Promise.resolve([]);
+    });
+    await approvalSvc.createApprovalRequests("ana-withheld", [
+      { type: "requirement", itemId: "r1" },
+    ]);
+    await approvalSvc.reviewApprovalRequest("ana-withheld", "ap-1", {
+      status: "approved",
+      reviewerId: "u1",
+    });
+
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-withheld",
+      ...synthInput,
+    });
+
+    expect(persisted.requirements).toHaveLength(1);
+    const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+    expect(cleared).toBeDefined();
+    expect(cleared).not.toHaveProperty("promotedStructuredIds");
+  });
+
+  // Issue #723 — with every requirement rejected the approved set is EMPTY, so
+  // a withheld replacement also returns [] and a length comparison (0 === 0)
+  // cannot tell the two apart. Only the explicit signal can: nothing is recorded
+  // over the earlier promotion record.
+  describe("an all-rejected re-run (#723)", () => {
+    const rejectAll = async (analysisId: string) => {
+      const svc = await import("../src/lib/analysis/analysis-service.js");
+      vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+        requirements: [
+          {
+            id: "r1",
+            title: "Feed URL must be absolute",
+            description: "Feed URL must be absolute.",
+            type: "functional" as const,
+            stakeholders: [],
+            priority: "should-have" as const,
+            ambiguities: [],
+            evidenceNeeds: [],
+            rawSource: "",
+          },
+        ],
+        totalAmbiguities: 0,
+        totalEvidenceNeeds: 0,
+      });
+      await approvalSvc.createApprovalRequests(analysisId, [{ type: "requirement", itemId: "r1" }]);
+      await approvalSvc.reviewApprovalRequest(analysisId, "ap-1", {
+        status: "rejected",
+        reviewerId: "u1",
+      });
+      return svc;
+    };
+
+    it("records nothing when the empty replacement was withheld", async () => {
+      const svc = await rejectAll("ana-all-rejected-withheld");
+      vi.mocked(svc.persistRequirements).mockImplementationOnce((input) => {
+        persisted.requirements.push(input as unknown as Record<string, unknown>);
+        input.onWithheld?.(withheldRecord(0));
+        return Promise.resolve([]);
+      });
+
+      const { orch } = makeOrchestrator();
+      await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+        analysisId: "ana-all-rejected-withheld",
+        ...synthInput,
+      });
+
+      const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+      expect(cleared).toBeDefined();
+      expect(cleared).not.toHaveProperty("promotedStructuredIds");
+    });
+
+    it("records the empty set when the replacement really happened", async () => {
+      const svc = await rejectAll("ana-all-rejected-replaced");
+      vi.mocked(svc.persistRequirements).mockImplementationOnce((input) => {
+        persisted.requirements.push(input as unknown as Record<string, unknown>);
+        return Promise.resolve([]);
+      });
+
+      const { orch } = makeOrchestrator();
+      await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+        analysisId: "ana-all-rejected-replaced",
+        ...synthInput,
+      });
+
+      const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+      expect(cleared).toMatchObject({ promotedStructuredIds: [] });
+    });
+  });
+
+  // Issue #730 — the gate being open at synthesis time must not swap the
+  // reviewed list for the synthesis set on the orchestrator's own path either.
+  it("#730 — persists the approved structured requirements, not the synthesis set", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        {
+          id: "r1",
+          title: "Duplicate feed subscription prevention",
+          description: "A user cannot subscribe to the same feed URL twice.",
+          type: "functional",
+          stakeholders: [],
+          priority: "must-have",
+          ambiguities: [],
+          evidenceNeeds: [],
+          rawSource: "",
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    await approvalSvc.createApprovalRequests("ana-730", [{ type: "requirement", itemId: "r1" }]);
+    await approvalSvc.reviewApprovalRequest("ana-730", "ap-1", {
+      status: "approved",
+      reviewerId: "u1",
+    });
+
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-730",
+      ...synthInput,
+    });
+
+    expect(persisted.requirements).toHaveLength(1);
+    const synthesis = persisted.requirements[0]!.synthesis as {
+      requirements: Array<{ title: string; body: string }>;
+    };
+    expect(synthesis.requirements).toEqual([
+      expect.objectContaining({
+        title: "Duplicate feed subscription prevention",
+        body: "A user cannot subscribe to the same feed URL twice.",
+      }),
+    ]);
+  });
+
+  // Issue #730 — the gate being open at synthesis time must not swap the
+  // reviewed list for the synthesis set on the orchestrator's own path either.
+  it("#730 — persists the approved structured requirements, not the synthesis set", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        {
+          id: "r1",
+          title: "Duplicate feed subscription prevention",
+          description: "A user cannot subscribe to the same feed URL twice.",
+          type: "functional",
+          stakeholders: [],
+          priority: "must-have",
+          ambiguities: [],
+          evidenceNeeds: [],
+          rawSource: "",
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    await approvalSvc.createApprovalRequests("ana-730", [{ type: "requirement", itemId: "r1" }]);
+    await approvalSvc.reviewApprovalRequest("ana-730", "ap-1", {
+      status: "approved",
+      reviewerId: "u1",
+    });
+
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-730",
+      ...synthInput,
+    });
+
+    expect(persisted.requirements).toHaveLength(1);
+    const synthesis = persisted.requirements[0]!.synthesis as {
+      requirements: Array<{ title: string; body: string }>;
+    };
+    expect(synthesis.requirements).toEqual([
+      expect.objectContaining({
+        title: "Duplicate feed subscription prevention",
+        body: "A user cannot subscribe to the same feed URL twice.",
+      }),
+    ]);
   });
 
   it("promotes once all approvals are approved", async () => {

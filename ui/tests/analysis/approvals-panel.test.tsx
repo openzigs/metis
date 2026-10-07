@@ -10,7 +10,12 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const { analysisApi } = vi.hoisted(() => ({
-  analysisApi: { listApprovals: vi.fn(), reviewApproval: vi.fn() },
+  analysisApi: {
+    listApprovals: vi.fn(),
+    reviewApproval: vi.fn(),
+    reopenApproval: vi.fn(),
+    promoteApprovedRequirements: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/analysis-api", async () => {
@@ -41,6 +46,8 @@ function renderPanel(
   items: ApprovalRequestPayload[],
   ticketStatus: TicketStatus,
   metadata: Record<string, unknown> | null = null,
+  requirementCount?: number,
+  analysisStatus?: string,
 ) {
   analysisApi.listApprovals.mockResolvedValue({ items, ticketStatus });
   const qc = new QueryClient({
@@ -48,7 +55,13 @@ function renderPanel(
   });
   return render(
     <QueryClientProvider client={qc}>
-      <ApprovalsPanel projectId="proj-1" analysisId="ana-1" metadata={metadata} />
+      <ApprovalsPanel
+        projectId="proj-1"
+        analysisId="ana-1"
+        metadata={metadata}
+        requirementCount={requirementCount}
+        analysisStatus={analysisStatus}
+      />
     </QueryClientProvider>,
   );
 }
@@ -302,5 +315,211 @@ describe("ApprovalsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
     expect(await screen.findByText(/Could not record the review/)).toBeInTheDocument();
+  });
+
+  // Issue #723 — "artifact promotion is unblocked" was shown for a run whose
+  // gate was open but which had NO requirement rows (32 approved, 1 rejected,
+  // nothing promoted), and the Analysis page offered no way to recover it.
+  describe("an open gate with nothing promoted (#723)", () => {
+    const stranded = [
+      approval({ id: "ap-1", status: "rejected" }),
+      approval({ id: "ap-2", status: "approved", itemId: "req-2" }),
+      approval({ id: "ap-3", status: "approved", itemId: "req-3" }),
+      approval({ id: "ap-4", type: "evidence", itemId: "ev-1", status: "approved" }),
+    ];
+
+    it("says the approved requirements were not promoted, never that promotion is unblocked", async () => {
+      renderPanel(stranded, { allowed: true, pendingCount: 0, rejectedCount: 1 }, null, 0);
+
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent(
+        "All approvals resolved, but the 2 approved requirement(s) have not been promoted yet.",
+      );
+      expect(banner).not.toHaveTextContent(/unblocked/i);
+      expect(
+        screen.getByRole("button", { name: "Promote approved requirements" }),
+      ).toBeInTheDocument();
+    });
+
+    // The server refuses to promote mid-run (the orchestrator has not saved its
+    // requirements yet), so the panel must not offer a button that can only 409.
+    it.each(["pending", "running"])("offers no Promote action while the run is %s", async (s) => {
+      renderPanel(stranded, { allowed: true, pendingCount: 0, rejectedCount: 1 }, null, 0, s);
+
+      expect(await screen.findByTestId("promotion-banner")).toHaveTextContent(
+        "have not been promoted yet",
+      );
+      expect(
+        screen.queryByRole("button", { name: "Promote approved requirements" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it.each(["completed", "failed", "cancelled"])(
+      "offers the Promote action on a %s run",
+      async (s) => {
+        renderPanel(stranded, { allowed: true, pendingCount: 0, rejectedCount: 1 }, null, 0, s);
+
+        expect(
+          await screen.findByRole("button", { name: "Promote approved requirements" }),
+        ).toBeInTheDocument();
+      },
+    );
+
+    it("promotes from the panel and refreshes the approvals", async () => {
+      analysisApi.promoteApprovedRequirements.mockResolvedValueOnce({
+        promotion: { status: "promoted", requirementCount: 2 },
+      });
+      renderPanel(stranded, { allowed: true, pendingCount: 0, rejectedCount: 1 }, null, 0);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Promote approved requirements" }));
+
+      await waitFor(() =>
+        expect(analysisApi.promoteApprovedRequirements).toHaveBeenCalledWith("proj-1", "ana-1"),
+      );
+      await waitFor(() => expect(analysisApi.listApprovals).toHaveBeenCalledTimes(2));
+    });
+
+    it("shows why promotion did not happen", async () => {
+      analysisApi.promoteApprovedRequirements.mockResolvedValueOnce({
+        promotion: {
+          status: "unavailable",
+          reason: "This analysis has no usable synthesis output to promote.",
+        },
+      });
+      renderPanel(stranded, { allowed: true, pendingCount: 0, rejectedCount: 1 }, null, 0);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Promote approved requirements" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "This analysis has no usable synthesis output to promote.",
+      );
+    });
+
+    it("says nothing was promoted when no requirement was approved — and offers no promotion", async () => {
+      renderPanel(
+        [
+          approval({ id: "ap-1", status: "rejected" }),
+          approval({ id: "ap-2", type: "evidence", itemId: "ev-1", status: "approved" }),
+        ],
+        { allowed: true, pendingCount: 0, rejectedCount: 1 },
+        null,
+        0,
+      );
+
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent("no requirement was approved, so none were promoted");
+      expect(banner).not.toHaveTextContent(/unblocked/i);
+      expect(
+        screen.queryByRole("button", { name: "Promote approved requirements" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("keeps the unblocked banner once requirements exist", async () => {
+      renderPanel(stranded, { allowed: true, pendingCount: 0, rejectedCount: 1 }, null, 2);
+
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent(/unblocked/i);
+      expect(
+        screen.queryByRole("button", { name: "Promote approved requirements" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  // Issue #723 — a rejection used to be final and dead-ended the run.
+  describe("rejected approvals (#723)", () => {
+    it("treats a rejection as resolved: unblocked banner names what was left out", async () => {
+      renderPanel(
+        [
+          approval({ id: "ap-1", status: "rejected" }),
+          approval({ id: "ap-2", status: "approved", itemId: "req-2" }),
+        ],
+        { allowed: true, pendingCount: 0, rejectedCount: 1 },
+      );
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent(/unblocked/i);
+      expect(banner).toHaveTextContent("1 rejected requirement(s) were left out");
+      expect(banner).not.toHaveTextContent("evidence");
+    });
+
+    it("never says a rejected evidence or clarification item was left out", async () => {
+      renderPanel(
+        [
+          approval({ id: "ap-1", type: "evidence", itemId: "ev-1", status: "rejected" }),
+          approval({ id: "ap-2", type: "clarification", itemId: "cl-1", status: "rejected" }),
+          approval({ id: "ap-3", status: "approved", itemId: "req-2" }),
+        ],
+        { allowed: true, pendingCount: 0, rejectedCount: 2 },
+      );
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent(/unblocked/i);
+      expect(banner).not.toHaveTextContent("left out");
+      expect(banner).toHaveTextContent(
+        "2 rejected evidence or clarification item(s) were recorded; they do not change which requirements are promoted.",
+      );
+    });
+
+    it("names each kind of rejection separately when both occur", async () => {
+      renderPanel(
+        [
+          approval({ id: "ap-1", status: "rejected" }),
+          approval({ id: "ap-2", type: "evidence", itemId: "ev-1", status: "rejected" }),
+        ],
+        { allowed: true, pendingCount: 0, rejectedCount: 2 },
+      );
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent("1 rejected requirement(s) were left out");
+      expect(banner).toHaveTextContent(
+        "1 rejected evidence or clarification item(s) were recorded",
+      );
+    });
+
+    it("never lists rejections as outstanding in the blocked banner", async () => {
+      renderPanel(
+        [approval({ id: "ap-1", status: "rejected" }), approval({ id: "ap-2", itemId: "req-2" })],
+        { allowed: false, pendingCount: 1, rejectedCount: 1 },
+      );
+      const banner = await screen.findByTestId("promotion-banner");
+      expect(banner).toHaveTextContent("1 pending approval(s) must be resolved");
+      expect(banner).not.toHaveTextContent("rejected");
+    });
+
+    it("offers Reopen on a rejected approval and calls the reopen endpoint", async () => {
+      analysisApi.reopenApproval.mockResolvedValue(approval({ status: "pending" }));
+      renderPanel([approval({ id: "ap-1", status: "rejected" })], {
+        allowed: true,
+        pendingCount: 0,
+        rejectedCount: 1,
+      });
+
+      const reopen = await screen.findByRole("button", { name: "Reopen requirement item 1" });
+      fireEvent.click(reopen);
+
+      await waitFor(() =>
+        expect(analysisApi.reopenApproval).toHaveBeenCalledWith("proj-1", "ana-1", "ap-1"),
+      );
+      // The card moves back to Pending only once the list is re-read.
+      await waitFor(() => expect(analysisApi.listApprovals.mock.calls.length).toBeGreaterThan(1));
+    });
+
+    it("does not offer Reopen on an approved approval", async () => {
+      renderPanel([approval({ id: "ap-1", status: "approved" })], {
+        allowed: true,
+        pendingCount: 0,
+        rejectedCount: 0,
+      });
+      await screen.findByTestId("promotion-banner");
+      expect(screen.queryByRole("button", { name: /Reopen/ })).not.toBeInTheDocument();
+    });
+
+    it("shows a reopen failure", async () => {
+      analysisApi.reopenApproval.mockRejectedValue(new ApiError(409, "only a rejected approval"));
+      renderPanel([approval({ id: "ap-1", status: "rejected" })], {
+        allowed: true,
+        pendingCount: 0,
+        rejectedCount: 1,
+      });
+      fireEvent.click(await screen.findByRole("button", { name: /Reopen/ }));
+      expect(await screen.findByText("only a rejected approval")).toBeInTheDocument();
+    });
   });
 });

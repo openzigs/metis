@@ -54,6 +54,7 @@ import { formatChangeRunLabels } from "@/lib/format-change-run-label";
 import { EnhancementStatus } from "@/components/analysis/EnhancementStatus";
 import { EnhancementResults } from "@/components/analysis/EnhancementResults";
 import { ApprovalsPanel } from "@/components/analysis/ApprovalsPanel";
+import { countApprovedRequirements } from "@/components/analysis/PromoteApprovedRequirementsButton";
 import { GenerateIssuesAction } from "@/components/analysis/GenerateIssuesAction";
 // Issue #1104 — a gated run's empty requirements list must explain itself.
 import { RequirementsEmptyState } from "@/components/analysis/RequirementsEmptyState";
@@ -1013,7 +1014,10 @@ export default function AnalysisPage(): React.ReactElement {
                       {detail.data.requirements.length === 0 ? (
                         /* Issue #1104 (finding B) — distinguish "produced nothing"
                        from "produced N and the approval gate is holding them". */
-                        <RequirementsEmptyState metadata={detail.data.metadata} />
+                        <RequirementsEmptyState
+                          metadata={detail.data.metadata}
+                          ticketStatus={approvals.data?.ticketStatus}
+                        />
                       ) : null}
                       {requirementsView.items.map((req) => (
                         <div
@@ -1163,6 +1167,9 @@ export default function AnalysisPage(): React.ReactElement {
                         approvalsState={
                           approvals.isError ? "error" : approvals.data ? "ready" : "loading"
                         }
+                        approvedRequirementCount={countApprovedRequirements(
+                          approvals.data?.items ?? [],
+                        )}
                       />
                     </div>
                     {/* Issue #30 — severity, category and agent join #740's verification filter. */}
@@ -1310,7 +1317,8 @@ export default function AnalysisPage(): React.ReactElement {
                                 title={
                                   ticketsAllowed
                                     ? "Expand this finding into a publishable issue draft"
-                                    : "Ticket creation is blocked until pending approvals are resolved"
+                                    : // #723 — name the real reason: only PENDING approvals hold the gate.
+                                      `Ticket creation is blocked until ${approvals.data?.ticketStatus?.pendingCount ?? 0} pending approval(s) are resolved`
                                 }
                                 onClick={() => {
                                   setDeepDiveFinding({
@@ -1377,6 +1385,8 @@ export default function AnalysisPage(): React.ReactElement {
                     projectId={projectId}
                     analysisId={detail.data.id}
                     metadata={detail.data.metadata}
+                    requirementCount={detail.data.requirements.length}
+                    analysisStatus={detail.data.status}
                   />
                 </TabsContent>
 
