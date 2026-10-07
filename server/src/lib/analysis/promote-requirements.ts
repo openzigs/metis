@@ -17,11 +17,13 @@ import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import {
+  getStructuredRequirements,
   persistAnalysisEnhancement,
   persistRequirements,
   readFlattenedFindings,
 } from "./analysis-service.js";
 import { canCreateTickets } from "./approval-checkpoint.js";
+import { buildApprovedRequirementSet } from "./approved-requirement-set.js";
 import { applyClarificationsToRequirements } from "./clarification-enrichment.js";
 import { describePromotionGate } from "./promotion-gate.js";
 import { computeCoverageForRequirements } from "./requirement-coverage.js";
@@ -80,7 +82,22 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   }
 
   const synthesis = await readSynthesisOutput(analysisId);
-  if (!synthesis) {
+
+  // Issue #730 — when the requirements went through the approval checkpoint,
+  // the reviewed list is the STRUCTURED one (one `requirement` approval per
+  // structured requirement). Promote that list, not the synthesis output, which
+  // is a different set (and on a degraded run, finding-titled fallback rows).
+  const structured = (await getStructuredRequirements(analysisId))?.requirements ?? [];
+  const requirementApprovals =
+    structured.length > 0
+      ? await prisma.approvalRequest.findMany({
+          where: { analysisId, type: "requirement" },
+          select: { itemId: true, status: true },
+        })
+      : [];
+  const reviewed = requirementApprovals.length > 0;
+
+  if (!synthesis && !reviewed) {
     return {
       status: "unavailable",
       reason: "This analysis has no usable synthesis output to promote.",
@@ -89,19 +106,33 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
 
   const ticketStatus = await canCreateTickets(analysisId);
   if (!ticketStatus.allowed) {
+    const awaitingRequirementCount = reviewed
+      ? new Set(requirementApprovals.filter((a) => a.status !== "rejected").map((a) => a.itemId))
+          .size
+      : (synthesis?.requirements.length ?? 0);
     const { reason } = describePromotionGate({
       pendingCount: ticketStatus.pendingCount,
       rejectedCount: ticketStatus.rejectedCount,
-      awaitingRequirementCount: synthesis.requirements.length,
+      awaitingRequirementCount,
     });
     return {
       status: "blocked",
       pendingCount: ticketStatus.pendingCount,
       rejectedCount: ticketStatus.rejectedCount,
-      awaitingRequirementCount: synthesis.requirements.length,
+      awaitingRequirementCount,
       reason,
     };
   }
+
+  const toPromote: SynthesisOutput = reviewed
+    ? buildApprovedRequirementSet({
+        structured,
+        approvedIds: new Set(
+          requirementApprovals.filter((a) => a.status === "approved").map((a) => a.itemId),
+        ),
+        synthesis,
+      })
+    : (synthesis as SynthesisOutput);
 
   // Idempotence: `persistRequirements` REPLACES the set (#57), so a second call
   // would silently discard any human edits made after the first promotion.
@@ -113,7 +144,7 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   const flat = await readFlattenedFindings(analysisId);
   const findingIdsByIndex = flat.map((f) => f.findingId);
   const coverages = computeCoverageForRequirements(
-    synthesis.requirements,
+    toPromote.requirements,
     flat.map((f) => ({ citations: f.citations })),
   );
   const verdictFindings: VerdictFindingInput[] = flat.map((f) => ({
@@ -121,7 +152,7 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     verdict: f.verdict ?? null,
   }));
   const verdicts = computeVerdictsForRequirements(
-    synthesis.requirements,
+    toPromote.requirements,
     verdictFindings,
     flat.some((f) => f.agentKey === "code"),
   );
@@ -129,7 +160,7 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   const requirementIds = await persistRequirements({
     analysisId,
     projectId: analysis.projectId,
-    synthesis,
+    synthesis: toPromote,
     findingIdsByIndex,
     coverages,
     verdicts,
