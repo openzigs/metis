@@ -61,9 +61,9 @@ export interface GroundingToolCall {
 
 /**
  * #464 — METIS registry tools that read only the session's project. The
- * project-scoped `search-knowledge` refuses (`isError`) any project other than
- * the session's, so a successful call with hits read this project's knowledge
- * base. Its cross-project sibling `search-knowledge-global` is deliberately
+ * project-scoped `search-knowledge` searches only the session's project in a
+ * bound session (#736: it ignores a `projectId` argument naming any other), so a
+ * successful call with hits read this project's knowledge base. Its cross-project sibling `search-knowledge-global` is deliberately
  * absent (and is not offered to a scoped chat — `CHAT_EXCLUDED_TOOLS`).
  */
 const PROJECT_READ_METIS_TOOLS: ReadonlySet<string> = new Set(["search-knowledge"]);
@@ -99,8 +99,8 @@ export function countProjectToolReads(calls: readonly GroundingToolCall[]): numb
  * unscoped turn stays unscoped.
  *
  * #464 / PR #471 review — that unscoped guard is load-bearing, not cosmetic:
- * `search-knowledge` refuses another project only when the session HAS a
- * project (search-knowledge-tool.ts), so in an unscoped chat it can search any
+ * `search-knowledge` is pinned to the session's project only when the session
+ * HAS one (search-knowledge-tool.ts), so in an unscoped chat it can search any
  * project. Counting those reads would label an answer grounded in a project the
  * chat is not scoped to. Pinned by "keeps an unscoped turn unscoped".
  */

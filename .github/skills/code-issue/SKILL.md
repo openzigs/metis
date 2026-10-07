@@ -412,10 +412,12 @@ The static-analysis that *does* run on a PR is **`Semgrep`** and **`Dependency a
 1. **Wait for checks to complete.** `gh pr checks {PR_NUMBER} --watch` blocks, but it has
    exited 0 with jobs still pending and can return a transient empty set — so finish with a
    plain `gh pr checks {PR_NUMBER}` re-read.
-2. **Require the full set present with zero pending.** Today that is **twelve** checks —
-   `api`, `api-outcome`, `changelog`, `generative-e2e`, `postgres-adapter`,
-   `postgres-migrate-deploy`, `sql-lineage`, `ui`, `e2e`, `windows`, `Dependency audit`,
-   `Semgrep`. A run showing only two or three is **queued, not green**. Do not check that
+2. **Require the full set present with zero pending.** Today that is **twenty-one** checks,
+   listed in CLAUDE.md > "CI and merging" (#844, #848): the sharded e2e reports as `e2e (1/3)` to
+   `e2e (3/3)` plus the one aggregate to read, `e2e-outcome`, and `postgres-adapter` reads
+   `skipping` on a PR that touches no Postgres path; the schedule-only `nightly-report` always
+   reads `skipping` on a PR. A run showing only two or three is
+   **queued, not green**. Do not check that
    list off from memory: it drifts, which is the whole reason this paragraph was wrong.
    Read the set the command returns.
 3. **If `Semgrep` flags something**, fix the code — a suppression comment is not a fix:

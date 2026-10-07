@@ -6,8 +6,10 @@
  * never-throws behavior, filename parsing, and hallucination rejection.
  */
 import { describe, expect, it, vi } from "vitest";
+import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "../ai/providers/anthropic-provider.js";
 import type { AIProvider } from "../ai/types.js";
 import {
+  DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS,
   loadSuggestConfig,
   parseSchemaDocFilename,
   suggestMappings,
@@ -335,5 +337,146 @@ describe("suggestMappings", () => {
 
     expect(result.candidates).toEqual([]);
     expect(result.note).toMatch(/suggestion failed: rag down/i);
+  });
+});
+
+// ── #751 AC4 — output cap and truncation handling ────────────────────────
+
+describe("suggestMappings output cap (#751)", () => {
+  const FOUR_TABLES = ["users", "orders", "items", "payments"].map((t) => ({
+    filename: `connector:db:db-1:public.${t}.md`,
+    text: `# public.${t}`,
+  }));
+  const candidateFor = (table: string) => ({
+    dbConnectorId: "db-1",
+    schemaName: "public",
+    tableName: table,
+    confidence: 0.9,
+    rationale: "r",
+  });
+  /** Truncated on the listed calls; otherwise one candidate per table the prompt lists. */
+  function truncatingProvider(truncateCalls: number[] = [1], finishReason = "max_tokens") {
+    let call = 0;
+    const chat = vi.fn(
+      async (messages: Array<{ role: string; content: string }>, _opts?: unknown) => {
+        call += 1;
+        const user = messages.find((m) => m.role === "user")?.content ?? "";
+        if (truncateCalls.includes(call)) {
+          return {
+            content: '{"candidates":[{"dbConnectorId":"db-1","schemaName":"pub',
+            finishReason,
+            usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
+          };
+        }
+        const tables = [...user.matchAll(/\| public\.(\w+)/g)].map((m) => m[1]!);
+        return {
+          content: JSON.stringify({ candidates: tables.map(candidateFor) }),
+          finishReason: "stop",
+          usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
+        };
+      },
+    );
+    return { provider: { chat } as unknown as AIProvider, chat };
+  }
+  const deps = (provider: AIProvider, env: NodeJS.ProcessEnv = {}): SuggestDeps => ({
+    prisma: fakePrisma({ requirement: REQUIREMENT, connectors: [{ id: "db-1", label: "DB" }] }),
+    knowledge: fakeKnowledge(FOUR_TABLES),
+    provider,
+    env,
+  });
+  const userOf = (chat: ReturnType<typeof vi.fn>, n: number): string =>
+    (chat.mock.calls[n]![0] as Array<{ role: string; content: string }>).find(
+      (m) => m.role === "user",
+    )!.content;
+
+  it("sends an explicit output cap on every call, overridable by env", async () => {
+    const { provider, chat } = truncatingProvider([]);
+    await suggestMappings("proj-1", "req-1", deps(provider));
+    expect(chat.mock.calls[0]![1]).toMatchObject({ maxTokens: DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS });
+
+    const second = truncatingProvider([]);
+    await suggestMappings(
+      "proj-1",
+      "req-1",
+      deps(second.provider, { DATA_MAPPING_SUGGEST_MAX_OUTPUT_TOKENS: "3000" }),
+    );
+    expect(second.chat.mock.calls[0]![1]).toMatchObject({ maxTokens: 3000 });
+  });
+
+  /** The same double, presenting as a given provider + model. */
+  const asProvider = (key: string, model: string) => {
+    const t = truncatingProvider([]);
+    Object.assign(t.provider, { key, model });
+    return t;
+  };
+
+  it("raises a 4,096-default OpenAI-compatible provider to the 8,192 target", async () => {
+    for (const key of ["openai", "bedrock-gateway", "local-gemma", "azure"]) {
+      const { provider, chat } = asProvider(key, "gpt-4o");
+      await suggestMappings("proj-1", "req-1", deps(provider));
+      expect(chat.mock.calls[0]![1]).toMatchObject({ maxTokens: 8_192 });
+    }
+  });
+
+  it("never LOWERS the direct Anthropic provider below its 16,000 default", async () => {
+    // Thinking spends 5–10k of that budget; 8,192 would truncate batches that fit.
+    const { provider, chat } = asProvider("anthropic", "claude-sonnet-4-6");
+    await suggestMappings("proj-1", "req-1", deps(provider));
+    const sent = (chat.mock.calls[0]![1] as { maxTokens: number }).maxTokens;
+    expect(sent).toBe(ANTHROPIC_DEFAULT_MAX_TOKENS);
+    expect(sent).toBeGreaterThanOrEqual(16_000);
+  });
+
+  it("re-asks a cap-truncated batch as two halves instead of skipping it", async () => {
+    const { provider, chat } = truncatingProvider([1]);
+    const result = await suggestMappings("proj-1", "req-1", deps(provider));
+
+    expect(chat).toHaveBeenCalledTimes(3);
+    expect(userOf(chat, 1)).toContain("public.users");
+    expect(userOf(chat, 1)).toContain("public.orders");
+    expect(userOf(chat, 1)).not.toContain("public.items");
+    expect(userOf(chat, 2)).toContain("public.items");
+    expect(userOf(chat, 2)).toContain("public.payments");
+    expect(result.candidates.map((c) => c.tableName).sort()).toEqual([
+      "items",
+      "orders",
+      "payments",
+      "users",
+    ]);
+    expect(result.budgetExhausted).toBe(false);
+  });
+
+  it("still skips (does not split) a batch that is unparseable but NOT truncated", async () => {
+    const { provider, chat } = truncatingProvider([1], "stop");
+    const result = await suggestMappings("proj-1", "req-1", deps(provider));
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(result.candidates).toEqual([]);
+  });
+
+  it("does not split a single-table batch forever", async () => {
+    const { provider, chat } = truncatingProvider([1, 2, 3, 4, 5]);
+    const result = await suggestMappings(
+      "proj-1",
+      "req-1",
+      deps(provider, {
+        DATA_MAPPING_SUGGEST_TABLES_PER_CALL: "1",
+        DATA_MAPPING_SUGGEST_MAX_CALLS: "10",
+      }),
+    );
+    // One call per table, each truncated and skipped: a single table is never re-asked.
+    expect(chat).toHaveBeenCalledTimes(4);
+    expect(result.candidates).toEqual([]);
+  });
+
+  it("keeps the halves inside the call budget and reports the shortfall", async () => {
+    const { provider, chat } = truncatingProvider([1]);
+    const result = await suggestMappings(
+      "proj-1",
+      "req-1",
+      deps(provider, { DATA_MAPPING_SUGGEST_MAX_CALLS: "2" }),
+    );
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(result.budgetExhausted).toBe(true);
+    expect(result.candidates.map((c) => c.tableName).sort()).toEqual(["orders", "users"]);
   });
 });

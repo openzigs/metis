@@ -10,6 +10,8 @@ interface MockUsageRow {
   projectId: string;
   totalTokens: number;
   costCents: number | null;
+  /** #761 — the unrounded cost; omitted on a fixture that predates it. */
+  costUsd?: number | null;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
@@ -61,6 +63,7 @@ import {
   projectMonthlyFromMtd,
   summarizeUsage,
 } from "../src/lib/finops/budget-enforcer.js";
+import { ledgerRowCents } from "../src/lib/finops/ledger-cost.js";
 
 beforeEach(() => {
   usageRows.length = 0;
@@ -115,6 +118,117 @@ describe("assertWithinBudget", () => {
       expect((e as BudgetExceededError).usedTokens).toBe(120);
       expect((e as BudgetExceededError).budget).toBe(100);
     }
+  });
+});
+
+describe("sub-cent spend (#761)", () => {
+  /** 67 gpt-4o-mini calls at 0.075¢ each: `costCents` rounds every one to 0. */
+  function subCentMonth(now: Date): void {
+    for (let i = 0; i < 67; i += 1) {
+      usageRows.push({
+        projectId: "p1",
+        totalTokens: 2_000,
+        costCents: 0,
+        costUsd: 0.00075,
+        inputTokens: 1_000,
+        outputTokens: 1_000,
+        provider: "openai",
+        model: "gpt-4o-mini",
+        createdAt: now,
+      });
+    }
+  }
+
+  it("the budget snapshot sums the unrounded cost: 5¢, not 0¢", async () => {
+    const now = new Date(Date.UTC(2026, 5, 15, 12));
+    projects.set("p1", { monthlyTokenBudget: null });
+    subCentMonth(now);
+    const snap = await assertWithinBudget("p1", now);
+    expect(snap.monthToDateCostCents).toBe(5);
+    // 5.025¢ over 15 of 30 days, ceiled: 11¢ (10.05 → 11), not 0.
+    expect(snap.projectedMonthlyCostCents).toBe(11);
+  });
+
+  it("the ceiling re-prices a NULL-cost sub-cent row unrounded, not as 0¢ per row", async () => {
+    const now = new Date(Date.UTC(2026, 5, 15, 12));
+    for (let i = 0; i < 67; i += 1) {
+      usageRows.push({
+        projectId: "p1",
+        totalTokens: 2_000,
+        costCents: null,
+        costUsd: null,
+        inputTokens: 1_000,
+        outputTokens: 1_000,
+        provider: "openai",
+        model: "gpt-4o-mini",
+        createdAt: now,
+      });
+    }
+    const ceiling = await projectMonthlyCostForCeiling("p1", now);
+    expect(ceiling.unpricedTokens).toBe(0);
+    expect(ceiling.projectedCents).toBe(11);
+  });
+
+  it("the usage summary and the ceiling projection count it as well", async () => {
+    const now = new Date(Date.UTC(2026, 5, 15, 12));
+    projects.set("p1", { monthlyTokenBudget: null });
+    subCentMonth(now);
+    const summary = await summarizeUsage("p1", {}, new Date(now.getTime() + 1));
+    expect(summary.costCents).toBe(5);
+    expect(summary.byProvider[0].costCents).toBe(5);
+    expect(summary.byDay[0].costCents).toBe(5);
+    const ceiling = await projectMonthlyCostForCeiling("p1", now);
+    expect(ceiling.projectedCents).toBe(11);
+  });
+});
+
+describe("float noise must not cost a cent (#868 review)", () => {
+  // 0.07 * 100 === 7.000000000000001 in IEEE-754. Day 1 of a 31-day month
+  // projects x31 = 217.00000000000003, and a ceil turned an exact 217¢ into
+  // 218¢ — tripping an autopilot ceiling set one cent above the true projection.
+  const jan1 = new Date(Date.UTC(2026, 0, 1, 12));
+  const sevenCents = (): void => {
+    usageRows.push({
+      projectId: "p1",
+      totalTokens: 1_000,
+      costCents: 7,
+      costUsd: 0.07,
+      inputTokens: 500,
+      outputTokens: 500,
+      provider: "openai",
+      model: "gpt-4o",
+      createdAt: jan1,
+    });
+  };
+
+  it("reads a 7¢ row as exactly 7", () => {
+    expect(ledgerRowCents({ costCents: 7, costUsd: 0.07 })).toBe(7);
+    expect(ledgerRowCents({ costCents: 29, costUsd: 0.29 })).toBe(29);
+  });
+
+  it("projects a 7¢ day-1 row to exactly 217¢ for the ceiling, not 218¢", async () => {
+    sevenCents();
+    const ceiling = await projectMonthlyCostForCeiling("p1", jan1);
+    expect(ceiling.projectedCents).toBe(217);
+    // A ceiling one cent above the true projection must not trip.
+    expect(ceiling.projectedCents).toBeLessThan(218);
+  });
+
+  it("projects the same 217¢ on the budget snapshot", async () => {
+    projects.set("p1", { monthlyTokenBudget: null });
+    sevenCents();
+    const snap = await assertWithinBudget("p1", jan1);
+    expect(snap.projectedMonthlyCostCents).toBe(217);
+  });
+
+  it("does not let a noisy SUM of exact rows tip the ceil either", () => {
+    // 0.1 + 0.2 === 0.30000000000000004: noise from summing, not from one row.
+    expect(projectMonthlyFromMtd(0.1 + 0.2, jan1)).toBe(10); // 0.3 x 31 = 9.3 → 10
+    expect(projectMonthlyFromMtd(7.000000000000001, jan1)).toBe(217);
+  });
+
+  it("still ceils a genuine fraction of a cent up", () => {
+    expect(projectMonthlyFromMtd(7.01, jan1)).toBe(218); // 217.31 → 218
   });
 });
 

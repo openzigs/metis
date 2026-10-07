@@ -41,6 +41,7 @@ describe("<TraceabilityView />", () => {
       requirementTitle: "Audit logging",
       projectId: "proj-1",
       specs: [],
+      testedBy: [],
       directCode: [
         {
           codeSymbolId: null,
@@ -49,6 +50,7 @@ describe("<TraceabilityView />", () => {
           endLine: null,
           confidence: 0.5,
           source: "analysis-grounding",
+          isTest: false,
         },
       ],
     };
@@ -70,6 +72,7 @@ describe("<TraceabilityView />", () => {
       projectId: "proj-1",
       specs: [],
       directCode: [],
+      testedBy: [],
     };
     chainMock.mockResolvedValue(chain);
 

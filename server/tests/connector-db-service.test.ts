@@ -454,6 +454,7 @@ describe("buildCodeGraphSchemaWiring (#316/#317)", () => {
     const wiring = await buildCodeGraphSchemaWiring("proj_without_db", "user_1");
     expect(wiring).toEqual({
       introspectedSchema: null,
+      introspectionFailed: false,
       routines: [],
       packages: [],
       dependencies: [],
@@ -492,6 +493,7 @@ describe("buildCodeGraphSchemaWiring (#316/#317)", () => {
 
     // #317 — schema mapped into the sqlglot { db: { table: { col: type } } } shape.
     expect(wiring.introspectedSchema).toEqual({ public: { users: { id: "integer" } } });
+    expect(wiring.introspectionFailed).toBe(false);
     // #316B — routines surfaced + a body fetcher bound.
     expect(wiring.routines).toEqual([
       { schema: "app", name: "recalc", type: "procedure", signature: "" },
@@ -509,7 +511,7 @@ describe("buildCodeGraphSchemaWiring (#316/#317)", () => {
     expect(wiring.dependencies).toEqual([]);
   });
 
-  it("never throws — returns empty wiring when introspection fails", async () => {
+  it("never throws — returns empty wiring, flagged as a failed read, when introspection fails", async () => {
     __resetDriverRegistry();
     registerDriver("postgres", () =>
       makeFakeAdapter({
@@ -526,6 +528,7 @@ describe("buildCodeGraphSchemaWiring (#316/#317)", () => {
     const wiring = await buildCodeGraphSchemaWiring("proj_fail", "user_1");
     expect(wiring).toEqual({
       introspectedSchema: null,
+      introspectionFailed: true,
       routines: [],
       packages: [],
       dependencies: [],

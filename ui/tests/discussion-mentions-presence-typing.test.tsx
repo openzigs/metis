@@ -25,7 +25,7 @@ vi.mock("@/lib/api-client", () => ({
 import { useSocket } from "@/lib/socket-client";
 import { apiFetch } from "@/lib/api-client";
 import { MentionInput } from "@/components/comments/MentionInput";
-import { AI_MENTION_SUGGESTION } from "@/components/chat/discussion-composer";
+import { AI_MENTION_SUGGESTION, DiscussionComposer } from "@/components/chat/discussion-composer";
 import { TypingIndicator, typingLabel } from "@/components/chat/typing-indicator";
 import { PresenceAvatars } from "@/components/presence/PresenceAvatars";
 
@@ -106,6 +106,30 @@ describe("MentionInput @AI extension (#487)", () => {
     // @AI first, then the user "aisha".
     expect(options[0]).toHaveTextContent("@AI");
     expect(options.some((o) => o.textContent?.includes("aisha"))).toBe(true);
+  });
+});
+
+describe("DiscussionComposer mention scope (#734)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock.mockResolvedValue([]);
+    useSocketMock.mockReturnValue({ emit: vi.fn(), on: vi.fn(), off: vi.fn() });
+  });
+
+  it("offers only users who can open the thread's project", async () => {
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <DiscussionComposer onSubmit={vi.fn()} threadId="t1" projectId="p1" />
+      </Wrapper>,
+    );
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText("Message"), "@bo");
+
+    await waitFor(() =>
+      expect(apiFetchMock).toHaveBeenCalledWith("/users?search=bo&limit=8&projectId=p1"),
+    );
   });
 });
 

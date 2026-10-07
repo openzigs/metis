@@ -19,6 +19,9 @@ interface PersistedRow {
   cacheWriteTokens: number;
   totalTokens: number;
   costCents: number | null;
+  costUsd: number | null;
+  userId?: string;
+  agentStep?: string;
 }
 
 const persisted: PersistedRow[] = [];
@@ -46,6 +49,33 @@ afterEach(() => {
 });
 
 describe("recordUsage", () => {
+  it("#792 — persists who and which step a call is billed to, so the usage page can group the ledger", async () => {
+    await recordUsageAndFlush({
+      projectId: "proj-1",
+      sessionId: "sess-1",
+      provider: "openai",
+      model: "gpt-4o",
+      inputTokens: 10,
+      outputTokens: 5,
+      userId: "user-7",
+      agentStep: "impact.table-filter",
+    });
+    expect(persisted[0]).toMatchObject({ userId: "user-7", agentStep: "impact.table-filter" });
+  });
+
+  it("#792 — a caller that knows neither writes no attribution columns", async () => {
+    await recordUsageAndFlush({
+      projectId: "proj-1",
+      sessionId: "sess-1",
+      provider: "openai",
+      model: "gpt-4o",
+      inputTokens: 10,
+      outputTokens: 5,
+    });
+    expect(persisted[0]).not.toHaveProperty("userId");
+    expect(persisted[0]).not.toHaveProperty("agentStep");
+  });
+
   it("computes cost from provider rates and persists a row", async () => {
     const r = await recordUsageAndFlush({
       projectId: "proj-1",
@@ -67,6 +97,41 @@ describe("recordUsage", () => {
       totalTokens: 5000,
       costCents: 2,
     });
+  });
+
+  it("#761 — persists a sub-cent call's unrounded cost beside the rounded costCents", async () => {
+    // gpt-4o-mini: 1,000 × 0.015/1k + 1,000 × 0.06/1k = 0.075¢.
+    const r = await recordUsageAndFlush({
+      projectId: "proj-1",
+      sessionId: "sess-1",
+      provider: "openai",
+      model: "gpt-4o-mini",
+      inputTokens: 1_000,
+      outputTokens: 1_000,
+    });
+    expect(r.costCents).toBe(0);
+    expect(r.costUsd).toBeCloseTo(0.00075, 12);
+    expect(persisted[0].costCents).toBe(0);
+    expect(persisted[0].costUsd).toBeCloseTo(0.00075, 12);
+  });
+
+  it("#761 — an unpriced call persists a NULL costUsd too, never 0", async () => {
+    vi.stubEnv("ANTHROPIC_BASE_URL", "");
+    vi.stubEnv("MODEL_PRICES", "");
+    try {
+      const r = await recordUsageAndFlush({
+        projectId: "proj-1",
+        sessionId: "sess-1",
+        provider: "anthropic",
+        model: "deepseek-v4-pro",
+        inputTokens: 10,
+        outputTokens: 10,
+      });
+      expect(r.costUsd).toBeNull();
+      expect(persisted[0].costUsd).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("sanitises non-finite + negative numbers", async () => {

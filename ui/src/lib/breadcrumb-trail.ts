@@ -26,10 +26,8 @@ const ID_LIKE = /^\d+$|^[0-9a-f-]{16,}$|^[a-z0-9_-]{20,}$/i;
 /** What a detail page under `/<parent>/<id>` is called. */
 const DETAIL_LABEL: Record<string, (id: string) => string> = {
   pulls: (id) => `#${id}`,
-  scans: () => "Scan",
   baselines: () => "Baseline",
   discussions: () => "Discussion",
-  repositories: () => "Repository",
   runs: () => "Run",
   reviews: () => "Review",
   products: () => "Product",
@@ -87,8 +85,8 @@ export function pageCrumbs(pathname: string): Crumb[] {
     const matched = candidates.sort((a, b) => b.length - a.length)[0] ?? section.href;
     const trail: Crumb[] = [{ label: section.label, href: section.href }];
     if (item) trail.push({ label: item.label, href: item.href });
-    // A route reached from inside the section (issue sync, the repo scanner)
-    // is not in the sub-nav: on the route itself, it is the page.
+    // A route reached from inside the section (issue sync) is not in the
+    // sub-nav: on the route itself, it is the page.
     if (!item && matched !== section.href && path === matched) {
       return [...trail, { label: leafLabel(matched.split("/").pop() ?? "", undefined) }];
     }

@@ -118,7 +118,11 @@ export function buildSchedulerHandlerOverrides(
             projectId,
             rootDir: clone.path,
             repoConnectionId: connectorId,
+            // #714/#758 — label the graph with the pulled commit; ingestCodeGraph
+            // records it as lastCommitSha too, once the graph is complete.
+            commitSha: clone.commitSha ?? undefined,
             introspectedSchema: schemaWiring.introspectedSchema,
+            introspectionFailed: schemaWiring.introspectionFailed,
             routines: schemaWiring.routines,
             fetchRoutineBody: schemaWiring.fetchRoutineBody,
             routineDialect: schemaWiring.routineDialect,
@@ -138,7 +142,7 @@ export function buildSchedulerHandlerOverrides(
             { lease },
           );
           abortGuard(signal);
-          // Step 4 — refresh metadata (README, head SHA, connectivity check)
+          // Step 4 — refresh metadata (README, manifests, connectivity check)
           const meta = await fetchRepoMetadata(projectId, connectorId, "system");
           const metadataSummary = await ingestRepoMetadata(projectId, connectorId, "system", meta);
           abortGuard(signal);
@@ -160,6 +164,10 @@ export function buildSchedulerHandlerOverrides(
             pulled: clone.pulled,
             filesChanged: clone.filesChanged,
             filesParsed: graphStats.filesParsed,
+            // #856 — a same-SHA refresh that still did work says why: a lineage
+            // backfill re-extracts lineage without re-parsing (filesParsed 0).
+            lineageBackfill: graphStats.lineageBackfill,
+            filesLineageRefreshed: graphStats.filesLineageRefreshed,
             symbolsUpserted: graphStats.symbolsUpserted,
             chunksIngested: srcSummary.chunkCount,
             ...(scheduling && !scheduling.regenerationScheduled

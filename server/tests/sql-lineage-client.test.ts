@@ -343,6 +343,86 @@ describe("extractUsageSafe (graceful degradation)", () => {
   });
 });
 
+describe("sidecar reachability accounting (#721)", () => {
+  it("counts a served call as reached and a 400 rejection as reached, a 503 as unreachable", async () => {
+    process.env.SQL_LINEAGE_MODE = "sidecar";
+    const probe = await startProbe((_path, body) => {
+      if (body.includes("BAD")) return { status: 400, body: { detail: "invalid request body" } };
+      if (body.includes("DOWN")) return { status: 503, body: { detail: "unconfigured" } };
+      return { status: 200, body: EMPTY };
+    });
+    try {
+      const mod = await import("../src/lib/code-graph/sql-lineage-client.js");
+      const client = new mod.SqlLineageClient({ baseUrl: probe.url, token: "x", maxAttempts: 1 });
+      const { result, reachability } = await mod.trackSqlLineageReachability(async () => {
+        await mod.extractUsageSafe({ sql: "SELECT 1" }, client);
+        await mod.extractUsageSafe({ sql: "BAD" }, client);
+        await mod.extractUsageSafe({ sql: "DOWN" }, client);
+        return "done";
+      });
+      expect(result).toBe("done");
+      expect(reachability).toEqual({ reached: 2, unreachable: 1 });
+    } finally {
+      await probe.close();
+    }
+  });
+
+  it("counts a missing client (no token) as unreachable, and nothing outside a scope", async () => {
+    process.env.SQL_LINEAGE_MODE = "sidecar";
+    delete process.env.SQL_LINEAGE_TOKEN;
+    const mod = await import("../src/lib/code-graph/sql-lineage-client.js");
+    mod.__resetSqlLineageClientSingleton();
+    const { reachability } = await mod.trackSqlLineageReachability(() =>
+      mod.extractUsageSafe({ sql: "SELECT 1" }),
+    );
+    expect(reachability).toEqual({ reached: 0, unreachable: 1 });
+    // Outside a scope the call still degrades to null and records nowhere.
+    expect(await mod.extractUsageSafe({ sql: "SELECT 1" })).toBeNull();
+  });
+
+  it("classifies client errors: network/401/403/5xx unreachable, other 4xx reached", async () => {
+    const mod = await import("../src/lib/code-graph/sql-lineage-client.js");
+    const err = (status: number) => new mod.SqlLineageClientError("x", status, false);
+    expect(mod.isSidecarUnreachableError(new Error("ECONNREFUSED"))).toBe(true);
+    expect(mod.isSidecarUnreachableError(err(0))).toBe(true);
+    expect(mod.isSidecarUnreachableError(err(401))).toBe(true);
+    expect(mod.isSidecarUnreachableError(err(403))).toBe(true);
+    expect(mod.isSidecarUnreachableError(err(503))).toBe(true);
+    expect(mod.isSidecarUnreachableError(err(400))).toBe(false);
+    expect(mod.isSidecarUnreachableError(err(413))).toBe(false);
+  });
+
+  it("probeSqlLineageSidecar is true only for a healthy, configured sidecar", async () => {
+    const healthy = await startProbe(() => ({
+      status: 200,
+      body: { status: "ok", tokenConfigured: true },
+    }));
+    const unconfigured = await startProbe(() => ({
+      status: 200,
+      body: { status: "ok", tokenConfigured: false },
+    }));
+    try {
+      const mod = await import("../src/lib/code-graph/sql-lineage-client.js");
+      const at = (url: string) => new mod.SqlLineageClient({ baseUrl: url, token: "x" });
+      expect(await mod.probeSqlLineageSidecar(at(healthy.url))).toBe(true);
+      expect(await mod.probeSqlLineageSidecar(at(unconfigured.url))).toBe(false);
+    } finally {
+      await healthy.close();
+      await unconfigured.close();
+    }
+    const mod = await import("../src/lib/code-graph/sql-lineage-client.js");
+    // Nothing listening on the closed port — a network failure, never a throw.
+    expect(
+      await mod.probeSqlLineageSidecar(
+        new mod.SqlLineageClient({ baseUrl: healthy.url, token: "x" }),
+      ),
+    ).toBe(false);
+    delete process.env.SQL_LINEAGE_TOKEN;
+    mod.__resetSqlLineageClientSingleton();
+    expect(await mod.probeSqlLineageSidecar()).toBe(false);
+  });
+});
+
 describe("buildIntrospectedSchema (#317)", () => {
   it("maps introspected tables into the { db: { table: { col: type } } } shape", async () => {
     const { buildIntrospectedSchema } = await import("../src/lib/code-graph/sql-lineage-client.js");

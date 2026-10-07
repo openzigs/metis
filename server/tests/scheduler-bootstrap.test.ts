@@ -276,6 +276,45 @@ describe("bootstrapScheduler()", () => {
     await boot.shutdown();
   });
 
+  // #804 — the bug scanner is gone. Rows persisted before the upgrade are left
+  // untouched; whatever reaches the queue with that type fails safe.
+  it("#804 — a leftover scanner.run-scan task is refused, marked failed, and the queue keeps running", async () => {
+    const httpWebhookHandler = vi.fn(async () => ({ ok: true }));
+    const boot = bootstrapScheduler({ handlerOverrides: { httpWebhookHandler } });
+    expect(boot.registry.get("scanner.run-scan")).toBeUndefined();
+
+    const leftover = (await readTaskRecord(
+      makeRow({
+        type: "scanner.run-scan",
+        status: "failed",
+        payload: JSON.stringify({ scanId: "scan-1" }),
+        completedAt: new Date(),
+      }).id as string,
+    ))!;
+    await expect(boot.queue.retry(leftover.id, leftover)).rejects.toMatchObject({
+      code: "UNKNOWN_TASK_TYPE",
+    });
+    const retried = [...taskRows.values()].find((r) => r.trigger === "retry");
+    expect(retried).toMatchObject({
+      type: "scanner.run-scan",
+      status: "failed",
+      errorMessage: "unknown task type: scanner.run-scan",
+    });
+
+    // A pending leftover is never dispatched to a handler.
+    const pending = (await readTaskRecord(
+      makeRow({ type: "scanner.run-scan", status: "pending", payload: "{}" }).id as string,
+    ))!;
+    boot.queue.resume(pending);
+
+    const next = await boot.queue.enqueue({ type: "http-webhook", payload: {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(httpWebhookHandler).toHaveBeenCalledOnce();
+    expect((await readTaskRecord(next.id))?.status).toBe("completed");
+    expect(taskRows.get(pending.id)).toMatchObject({ status: "pending", attempts: 0 });
+    await boot.shutdown();
+  });
+
   it("returns the same instance on subsequent calls", () => {
     const a = bootstrapScheduler({});
     const b = bootstrapScheduler({});

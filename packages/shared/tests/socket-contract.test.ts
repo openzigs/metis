@@ -478,6 +478,15 @@ describe("realtime contract guard (live repo scan)", () => {
     expect(catalogue.current).toContain("drift:detected");
   });
 
+  it("#819 — removed test-coverage run events are gone from the contract and catalogued as removed", () => {
+    for (const event of ["testcoverage:run-update", "testcoverage:run-finished"]) {
+      expect(declaredEvents).not.toContain(event);
+      expect(allowlist).not.toContain(event);
+      expect(Object.keys(SOCKET_COMPUTED_EMITTERS)).not.toContain(event);
+      expect(catalogue.removed).toContain(event);
+    }
+  });
+
   it("has no stale allow-list entries (each allow-listed event is still declared)", () => {
     const stale = findStaleAllowlistEntries(declaredEvents, allowlist);
     expect(stale, `Stale allow-list entries (no longer declared): ${stale.join(", ")}`).toEqual([]);

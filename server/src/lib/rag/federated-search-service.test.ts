@@ -120,6 +120,26 @@ describe("FederatedSearchService", () => {
       }
     });
 
+    // #717 — the repo path a project search set survives fusion, so the
+    // global tool can name the file by it.
+    it("carries a repo hit's path through cross-project fusion", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [
+          {
+            ...makeChunk("chunk-a1", { filename: "connector:repo:c1:src/internal/model/feed.go" }),
+            path: "internal/model/feed.go",
+          },
+          makeChunk("chunk-a2"),
+        ],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({ userId: "user-1", query: "Feed", k: 5 });
+      const repo = result.hits.find((h) => h.chunkId === "chunk-a1");
+      expect(repo?.path).toBe("internal/model/feed.go");
+      expect(result.hits.find((h) => h.chunkId === "chunk-a2")).not.toHaveProperty("path");
+    });
+
     it("applies RRF fusion across 3 projects correctly", async () => {
       mockGetAccessible.mockResolvedValue([
         { id: "proj-a", name: "A" },

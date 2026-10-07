@@ -19,6 +19,11 @@ import type {
 } from "./types.js";
 
 export interface GithubImporterConfig {
+  /**
+   * API token. #763 — empty means anonymous: public repositories only, at
+   * GitHub's unauthenticated rate limit. The count then uses REST search,
+   * because the GraphQL API refuses every unauthenticated request.
+   */
   token: string;
   baseUrl?: string | null;
   fetchFn?: FetchFn;
@@ -65,9 +70,13 @@ export class GithubImporter implements Importer<GithubFilter> {
     return b ? `${b}/api/graphql` : "https://api.github.com/graphql";
   }
 
+  private get anonymous(): boolean {
+    return this.config.token.length === 0;
+  }
+
   private headers(): Record<string, string> {
     return {
-      Authorization: `Bearer ${this.config.token}`,
+      ...(this.anonymous ? {} : { Authorization: `Bearer ${this.config.token}` }),
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "metis-importer",
@@ -109,6 +118,7 @@ export class GithubImporter implements Importer<GithubFilter> {
   }
 
   async count(filter: GithubFilter, ctx?: ImporterFetchContext): Promise<number> {
+    if (this.anonymous) return this.countViaRestSearch(filter, ctx);
     await this.guard(this.graphqlUrl);
     const query = `query($q:String!){ search(query:$q, type:ISSUE){ issueCount } }`;
     const res = await fetchWithBackoff(
@@ -122,6 +132,23 @@ export class GithubImporter implements Importer<GithubFilter> {
     );
     const json = (await res.json()) as { data?: { search?: { issueCount?: number } } };
     return json.data?.search?.issueCount ?? 0;
+  }
+
+  /** #763 — anonymous count: REST search accepts unauthenticated callers. */
+  private async countViaRestSearch(
+    filter: GithubFilter,
+    ctx?: ImporterFetchContext,
+  ): Promise<number> {
+    const params = new URLSearchParams({ q: this.searchQuery(filter), per_page: "1" });
+    const url = `${this.apiBase}/search/issues?${params.toString()}`;
+    await this.guard(url);
+    const res = await fetchWithBackoff(
+      url,
+      { method: "GET", headers: this.headers() },
+      this.backoffOpts(ctx),
+    );
+    const json = (await res.json()) as { total_count?: number };
+    return json.total_count ?? 0;
   }
 
   async *fetchAll(filter: GithubFilter, ctx?: ImporterFetchContext): AsyncGenerator<ExternalIssue> {

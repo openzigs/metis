@@ -7,7 +7,9 @@
  *   3. See the "Primary" badge on the Connections tab
  *   4. Switch primary via "Set as primary" button
  *   5. Navigate from Settings primary-repo card → Connections
- *   6. See publishing fields pre-filled from the primary repo
+ *   6. Publishing is NOT pre-filled from the primary repo (#733 — for an
+ *      analysed open-source project that is upstream); it is pre-filled from
+ *      the project's saved publish target
  *   7. See a validation error when only owner is provided (no repo name)
  */
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
@@ -252,11 +254,15 @@ test.describe("Epic #640 — Primary Repository", () => {
     });
   });
 
-  // AC 6: Publishing pre-fills targetOwner and targetRepo from primary repo
-  test("publishing pre-fills owner and repo from primary repo", async ({ page }) => {
+  // AC 6 (#733): Publishing never pre-fills from the primary (analysed) repo —
+  // it pre-fills from the saved publish target.
+  test("publishing pre-fills from the saved publish target, not the primary repo", async ({
+    page,
+  }) => {
     const slug = `e2e-publish-${Date.now()}`;
     const repoOwner = "publish-org";
     const repoName = "publish-repo";
+    let createdId = "";
 
     await test.step("Create project with primary repo via API", async () => {
       const api = await authedApi(accessToken);
@@ -268,6 +274,7 @@ test.describe("Epic #640 — Primary Repository", () => {
         },
       });
       expect(res.status()).toBe(201);
+      createdId = (await res.json()).data.id as string;
       await api.dispose();
     });
 
@@ -280,12 +287,25 @@ test.describe("Epic #640 — Primary Repository", () => {
       projectId = url.split("/projects/")[1].split("/")[0];
     });
 
-    await test.step("Navigate to Publish tab and verify pre-filled fields", async () => {
+    await test.step("With no saved target, the fields start empty", async () => {
       await page.goto(`/projects/${projectId!}/publish`);
-      const ownerInput = page.getByLabel("Target owner");
-      const repoInput = page.getByLabel("Target repo");
-      await expect(ownerInput).toHaveValue(repoOwner, { timeout: 15_000 });
-      await expect(repoInput).toHaveValue(repoName);
+      await expect(page.getByTestId("publish-target-unset")).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByLabel("Target owner")).toHaveValue("");
+      await expect(page.getByLabel("Target repo")).toHaveValue("");
+    });
+
+    await test.step("A saved target pre-fills the fields after a reload", async () => {
+      const api = await authedApi(accessToken);
+      const res = await api.patch(`/api/projects/${createdId}/publish-destination`, {
+        data: { publishDestination: "github", githubOwner: "sandbox-org", githubRepo: "sandbox" },
+      });
+      expect(res.status()).toBe(200);
+      await api.dispose();
+      await page.reload();
+      await expect(page.getByLabel("Target owner")).toHaveValue("sandbox-org", {
+        timeout: 15_000,
+      });
+      await expect(page.getByLabel("Target repo")).toHaveValue("sandbox");
     });
   });
 

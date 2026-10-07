@@ -11,7 +11,11 @@ vi.mock("../../prisma.js", () => ({
   },
 }));
 
+const recordUsage = vi.hoisted(() => vi.fn());
+vi.mock("../../finops/token-tracker.js", () => ({ recordUsage }));
+
 import {
+  APPLY_DIFF_AGENT_STEP,
   APPLY_DIFF_TOOL_NAME,
   applyDiffSchema,
   createApplyDiffTool,
@@ -62,6 +66,49 @@ describe("apply_diff tool", () => {
     const data = result.data as { provider: string; model: string };
     expect(data.provider).toBe("morph");
     expect(data.model).toBe("morph-v3");
+  });
+
+  it("#792 — bills the context's project on the project ledger, once", async () => {
+    recordUsage.mockClear();
+    const apply = vi.fn(async () => ({
+      content: "x",
+      provider: "morph" as const,
+      model: "morph-v3",
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      durationMs: 1,
+    }));
+    const tool = createApplyDiffTool({ isEnabled: () => true, client: { apply } as never });
+    await tool.exec({ original: "a", patch: "b" }, { ...ctx, projectId: "p1" });
+    expect(recordUsage).toHaveBeenCalledTimes(1);
+    expect(recordUsage).toHaveBeenCalledWith({
+      projectId: "p1",
+      sessionId: "s1",
+      userId: "u1",
+      agentStep: APPLY_DIFF_AGENT_STEP,
+      provider: "openai",
+      model: "morph:morph-v3",
+      inputTokens: 10,
+      outputTokens: 5,
+    });
+  });
+
+  it("#792 — a failed project lookup is logged and never breaks the apply", async () => {
+    recordUsage.mockClear();
+    const apply = vi.fn(async () => ({
+      content: "x",
+      provider: "morph" as const,
+      model: "morph-v3",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      durationMs: 1,
+    }));
+    const errors: string[] = [];
+    const log = { info: () => undefined, error: (m: string) => void errors.push(m) };
+    const tool = createApplyDiffTool({ isEnabled: () => true, client: { apply } as never });
+    // The mocked prisma has no `aISession`, so the session lookup throws.
+    const out = await tool.exec({ original: "a", patch: "b" }, { ...ctx, log });
+    expect(out.text).toBe("x");
+    expect(recordUsage).not.toHaveBeenCalled();
+    expect(errors).toContain("apply_diff failed to record project usage");
   });
 
   it("falls back to the local applier when the morph client throws", async () => {

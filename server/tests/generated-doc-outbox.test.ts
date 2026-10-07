@@ -153,7 +153,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         `CREATE TABLE roles (id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT '', isSystem BOOLEAN DEFAULT true, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP)`,
         `CREATE TABLE user_roles (userId TEXT REFERENCES users(id), roleId TEXT REFERENCES roles(id), source TEXT DEFAULT 'local', assignedAt DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(userId,roleId))`,
         `CREATE TABLE workspace_members (id TEXT PRIMARY KEY, userId TEXT REFERENCES users(id), workspaceId TEXT NOT NULL, role TEXT DEFAULT 'member', joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(workspaceId,userId))`,
-        `CREATE TABLE generated_documents (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, title TEXT NOT NULL, scope TEXT DEFAULT 'full', scopeFilter TEXT DEFAULT '{}', evidencePolicy TEXT, content TEXT DEFAULT '', codeGraphHash TEXT, schemaGraph TEXT, status TEXT DEFAULT 'pending', errorMessage TEXT, warnings JSONB, autoUpdate BOOLEAN DEFAULT true, generatedAt DATETIME, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME NOT NULL, deletedAt DATETIME)`,
+        `CREATE TABLE generated_documents (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, title TEXT NOT NULL, scope TEXT DEFAULT 'full', scopeFilter TEXT DEFAULT '{}', evidencePolicy TEXT, content TEXT DEFAULT '', codeGraphHash TEXT, schemaGraph TEXT, status TEXT DEFAULT 'pending', errorMessage TEXT, warnings JSONB, generationCheckpoint JSONB, autoUpdate BOOLEAN DEFAULT true, generatedAt DATETIME, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME NOT NULL, deletedAt DATETIME)`,
         `CREATE TABLE generated_document_versions (id TEXT PRIMARY KEY, documentId TEXT NOT NULL REFERENCES generated_documents(id), version INTEGER NOT NULL, revisionId TEXT, provenanceManifest TEXT, content TEXT NOT NULL, diffSummary TEXT, changedSymbols TEXT DEFAULT '[]', createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(documentId,version))`,
         `CREATE TABLE tasks (id TEXT PRIMARY KEY, scheduledJobId TEXT, projectId TEXT, type TEXT NOT NULL, trigger TEXT DEFAULT 'manual', status TEXT DEFAULT 'pending', priority INTEGER DEFAULT 5, payload TEXT DEFAULT '{}', result TEXT, errorMessage TEXT, progress INTEGER, attempts INTEGER DEFAULT 0, maxAttempts INTEGER DEFAULT 3, scheduledFor DATETIME, startedAt DATETIME, completedAt DATETIME, createdById TEXT, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME NOT NULL)`,
         `CREATE TABLE scheduled_jobs (id TEXT PRIMARY KEY, key TEXT, name TEXT, cron TEXT, taskType TEXT, payload TEXT, projectId TEXT, enabled BOOLEAN, lastRunAt DATETIME, lastFiredAt DATETIME, nextRunAt DATETIME, maxAttempts INTEGER, createdById TEXT, createdAt DATETIME, updatedAt DATETIME, deletedAt DATETIME)`,
@@ -297,11 +297,14 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         else await generation;
         expect(await db.generatedDocumentVersion.count()).toBe(0);
         expect(await db.task.count()).toBe(0);
-        expect(await db.generatedDocument.findUnique({ where: { id: "doc" } })).toMatchObject({
-          status: "failed",
-          content: "",
-          codeGraphHash: null,
-        });
+        // #857 — a manual run's written document is kept as an unpublished
+        // degraded draft (no version, no publication task); an automatic one
+        // never touches the published row.
+        expect(await db.generatedDocument.findUnique({ where: { id: "doc" } })).toMatchObject(
+          mode === "manual"
+            ? { status: "degraded", content: "# Durable", codeGraphHash: null }
+            : { status: "failed", content: "", codeGraphHash: null },
+        );
         expect(state.dispatch).not.toHaveBeenCalled();
       },
     );
@@ -470,6 +473,27 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       expect(
         (await db.generatedDocument.findUniqueOrThrow({ where: { id: "doc" } })).deletedAt,
       ).toBeNull();
+    });
+
+    it("#867 — POST /:docId/cancel is 403 for a member without project.update, and stops nothing", async () => {
+      await db.generatedDocument.update({ where: { id: "doc" }, data: { status: "generating" } });
+      const cancel = (caller: string, role: RoleKey) =>
+        request(app)
+          .post("/projects/project/docs/doc/cancel")
+          .set("Authorization", authorization(caller, role));
+
+      const denied = await cancel("reader", "reader");
+      expect(denied.status).toBe(403);
+      expect(denied.body.error.code).toBe("FORBIDDEN");
+      expect((await db.generatedDocument.findUniqueOrThrow({ where: { id: "doc" } })).status).toBe(
+        "generating",
+      );
+
+      // The same request from a member who holds the permission is accepted.
+      expect((await cancel("actor", "coordinator")).status).toBe(202);
+      expect((await db.generatedDocument.findUniqueOrThrow({ where: { id: "doc" } })).status).toBe(
+        "cancelling",
+      );
     });
 
     it.each([

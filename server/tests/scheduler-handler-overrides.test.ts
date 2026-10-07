@@ -36,6 +36,10 @@ const mocks = vi.hoisted(() => {
     ingestRepoMetadata: vi.fn(async () => ({ failures: 0 })),
     ingestSourceAsKnowledge: vi.fn(async () => ({ chunkCount: 5, failures: 0 })),
     ingestCodeGraph: vi.fn(async () => ({ filesParsed: 2, symbolsUpserted: 10 })),
+    buildCodeGraphSchemaWiring: vi.fn(async (): Promise<Record<string, unknown>> => ({
+      introspectedSchema: null,
+      routines: [],
+    })),
     logWarn: vi.fn(),
     logError: vi.fn(),
     taskUpsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
@@ -88,13 +92,14 @@ vi.mock("../src/lib/connectors/repo/repo-service.js", () => ({
     pulled: true,
     filesChanged: 3,
     headSha: "abc",
+    commitSha: "sha-after-pull",
   })),
 }));
 vi.mock("../src/lib/connectors/db/db-service.js", () => ({
   inspectDbConnector: mocks.inspectDbConnector,
   // #316/#317 — refresh path builds SQL-lineage wiring; return empty (no DB
   // connector) so the scheduler test stays focused on the repo-refresh contract.
-  buildCodeGraphSchemaWiring: vi.fn(async () => ({ introspectedSchema: null, routines: [] })),
+  buildCodeGraphSchemaWiring: mocks.buildCodeGraphSchemaWiring,
 }));
 vi.mock("../src/lib/connectors/connector-ingest.js", () => ({
   ingestRepoMetadata: mocks.ingestRepoMetadata,
@@ -189,6 +194,40 @@ describe("scheduled repo refresh takes the per-connector ingest guard (#217)", (
     );
     expect(heldDuringSource).toBe(true);
     expect(isConnectorIngestActive("rc1")).toBe(false);
+  });
+
+  it("reports a lineage backfill, which re-extracts lineage without re-parsing (#856)", async () => {
+    repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
+    mocks.ingestCodeGraph.mockImplementationOnce(
+      async () =>
+        ({
+          filesParsed: 0,
+          symbolsUpserted: 0,
+          lineageBackfill: true,
+          filesLineageRefreshed: 427,
+        }) as never,
+    );
+    const out = await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+      "rc1",
+      new AbortController().signal,
+    );
+    expect(out).toMatchObject({
+      filesParsed: 0,
+      lineageBackfill: true,
+      filesLineageRefreshed: 427,
+    });
+  });
+
+  it("labels the code graph with the commit the pull landed on (#714)", async () => {
+    repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
+    await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+      "rc1",
+      new AbortController().signal,
+    );
+    expect(mocks.ingestCodeGraph).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ commitSha: "sha-after-pull" }),
+    );
   });
 
   it("releases the guard when the refresh fails", async () => {
@@ -348,6 +387,23 @@ describe("buildSchedulerHandlerOverrides", () => {
     expect(out).toMatchObject({ repo: "acme/api", headSha: "abc", latencyMs: 12 });
     expect(mocks.fetchRepoMetadata).toHaveBeenCalledWith("p-alpha", "rc1", "system");
     expect(mocks.testRepoConnector).toHaveBeenCalledWith("p-alpha", "rc1", "system");
+  });
+
+  it("refresh-repo-connector passes a DB introspection outage on to the code-graph ingest (#721)", async () => {
+    repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
+    mocks.buildCodeGraphSchemaWiring.mockResolvedValueOnce({
+      introspectedSchema: null,
+      introspectionFailed: true,
+      routines: [],
+    });
+    await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+      "rc1",
+      new AbortController().signal,
+    );
+    expect(mocks.ingestCodeGraph).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ projectId: "p-alpha", introspectionFailed: true }),
+    );
   });
 
   it("refresh-repo-connector throws on aborted signal", async () => {

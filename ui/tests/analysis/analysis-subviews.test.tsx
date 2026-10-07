@@ -274,6 +274,9 @@ vi.mock("@/components/analysis/StakeholdersPanel", () => ({ StakeholdersPanel: (
 vi.mock("@/components/analysis/analysis-run-summary", () => ({ AnalysisRunSummary: () => null }));
 vi.mock("@/components/analysis/traceability-matrix", () => ({ TraceabilityMatrix: () => null }));
 vi.mock("@/components/analysis/gap-report", () => ({ GapReport: () => null }));
+vi.mock("@/components/traceability/untested-requirements-panel", () => ({
+  UntestedRequirementsPanel: () => null,
+}));
 vi.mock("@/components/analysis/requirement-diff", () => ({ RequirementDiff: () => null }));
 vi.mock("@/components/requirements/requirement-links-panel", () => ({
   RequirementLinksPanel: () => null,
@@ -281,6 +284,7 @@ vi.mock("@/components/requirements/requirement-links-panel", () => ({
 
 import AnalysisPage from "@/app/(authed)/projects/[id]/analysis/page";
 import { analysisApi } from "@/lib/analysis-api";
+import { commentApi } from "@/lib/collaboration-api";
 
 const apiMock = analysisApi as unknown as {
   get: ReturnType<typeof vi.fn>;
@@ -1124,6 +1128,28 @@ describe("the requirement deep link", () => {
     await queryClient.invalidateQueries();
     expect(await screen.findByText("Requirement 0 (edited)")).toBeInTheDocument();
     expect(screen.queryByText("Requirement 7")).not.toBeInTheDocument();
+  });
+
+  // #735 — a comment @mention links here with `&comments=1`: open that
+  // requirement's comment panel, as the Spec Kit page does for `?artifact=`.
+  it("opens the linked requirement's comments from a mention link (#735)", async () => {
+    vi.mocked(commentApi.listForRequirement).mockClear();
+    nav.search = new URLSearchParams("analysisId=an-1&requirementId=req-7&comments=1");
+    renderPage();
+    const panel = await screen.findByRole("dialog", { name: "Requirement 7" });
+    expect(within(panel).getByRole("button", { name: "Close comments" })).toBeInTheDocument();
+    await waitFor(() => expect(commentApi.listForRequirement).toHaveBeenCalledWith("req-7"));
+    expect(screen.getByTestId("requirements-pager")).toHaveTextContent("Page 2 of 3");
+  });
+
+  it("leaves the comment panel closed for a link without comments=1", async () => {
+    vi.mocked(commentApi.listForRequirement).mockClear();
+    nav.search = new URLSearchParams("analysisId=an-1&requirementId=req-7");
+    renderPage();
+    expect(await screen.findByText("Requirement 7")).toBeInTheDocument();
+    await waitFor(() => expect(scrolled).toHaveLength(1));
+    expect(commentApi.listForRequirement).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Close comments" })).not.toBeInTheDocument();
   });
 
   // PR #470 review: a promote appends the requirement to a run whose detail is

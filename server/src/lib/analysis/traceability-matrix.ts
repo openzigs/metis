@@ -6,7 +6,7 @@
  * ids they were grounded in (`evidenceFindingIds`), those findings' CODE
  * citations (`filePath:startLine-endLine`, #734), the per-requirement coverage
  * label (#736), and the requirement→code spine (`RequirementCodeMapping`) — plus
- * a best-effort code-graph test-detection pass layered on by the service.
+ * the per-requirement tests the service resolves with "Tested by" (#814, #815).
  *
  * Nothing here recomputes analysis output or calls an LLM: given the same
  * persisted rows it always yields the same matrix, so the whole module is
@@ -28,6 +28,7 @@ import {
   type TraceabilityTestLink,
 } from "@metis/shared";
 import { toCsv } from "../requirements/csv.js";
+import { isTestPath } from "../code-graph/test-conventions.js";
 
 /** Minimal requirement projection the builder needs (from the analysis snapshot). */
 export interface MatrixRequirementInput {
@@ -66,10 +67,11 @@ export interface BuildTraceabilityMatrixInput {
    */
   deterministicByRequirement?: ReadonlyMap<string, TraceabilityCodeLocation[]>;
   /**
-   * Detected tests keyed by the code-graph symbol id they reference. Layered on
-   * best-effort by the service; absent ⇒ every tests cell is empty.
+   * Tests per requirement id, from the "Tested by" resolver (#815) — the same
+   * source as the requirement chain's `testedBy`, in its order. Absent ⇒ every
+   * tests cell is empty.
    */
-  testsBySymbolId?: ReadonlyMap<string, TraceabilityTestLink[]>;
+  testsByRequirement?: ReadonlyMap<string, TraceabilityTestLink[]>;
 }
 
 /** Stable de-dupe key for a code location (path + range + provenance). */
@@ -87,7 +89,6 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
   const rows: TraceabilityRow[] = input.requirements.map((req) => {
     const findings: TraceabilityFindingRef[] = [];
     const codeByKey = new Map<string, TraceabilityCodeLocation>();
-    const symbolIds = new Set<string>();
 
     for (const findingId of req.evidenceFindingIds) {
       const finding = input.findingsById.get(findingId);
@@ -103,7 +104,6 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
           ...(citation.symbolId ? { symbolId: citation.symbolId } : {}),
         };
         codeByKey.set(codeLocationKey(loc), loc);
-        if (citation.symbolId) symbolIds.add(citation.symbolId);
       }
     }
 
@@ -111,16 +111,6 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
     // empty). Deduped against citation locations by (source, path, range).
     for (const loc of input.deterministicByRequirement?.get(req.id) ?? []) {
       codeByKey.set(codeLocationKey(loc), loc);
-      if (loc.symbolId) symbolIds.add(loc.symbolId);
-    }
-
-    // Best-effort test detection: union the tests referencing any implicated
-    // symbol, deduped by (filePath, symbol).
-    const testsByKey = new Map<string, TraceabilityTestLink[]>();
-    for (const symbolId of symbolIds) {
-      for (const test of input.testsBySymbolId?.get(symbolId) ?? []) {
-        testsByKey.set(`${test.filePath}::${test.symbol}`, [test]);
-      }
     }
 
     return {
@@ -130,7 +120,7 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
       verdict: req.verdict,
       findings,
       codeLocations: [...codeByKey.values()],
-      tests: [...testsByKey.values()].flat(),
+      tests: [...(input.testsByRequirement?.get(req.id) ?? [])],
     };
   });
 
@@ -245,17 +235,12 @@ export function serializeTraceabilityMarkdown(matrix: TraceabilityMatrix): strin
  * common JS/TS/Python/Go conventions (`*.test.*`, `*.spec.*`, `*_test.*`,
  * `test_*.*`) and any segment under a `test`/`tests`/`__tests__`/`spec`
  * directory. Case-insensitive on the filename token so `Foo.Test.ts` matches.
+ * Delegates to `code-graph/test-conventions.ts` (#813), which keeps these rules
+ * as its `traceability` profile.
  */
 export function isTestFilePath(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, "/");
-  const base = normalized.split("/").pop() ?? normalized;
-  // `foo.test.ts` / `foo.spec.tsx`.
-  if (/\.(test|spec)\./i.test(base)) return true;
-  // `handler_test.go` (`_test.`), `test_foo.py` (`^test_`), `a.test-utils.ts`
-  // (`.test-`) — a `test` token bounded by a separator on the reference side.
-  if (/(^|[._-])test[._-]/i.test(base)) return true;
-  // Any segment under a test/tests/__tests__/spec directory.
-  return /(^|\/)(tests?|__tests__|spec)\//i.test(normalized);
+  // #813 — the rules now live as the `traceability` profile of the shared classifier.
+  return isTestPath(filePath, { profile: "traceability" });
 }
 
 /**

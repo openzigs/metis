@@ -39,6 +39,12 @@
  *    rate-limit check gates BEFORE the provider call too — a chatty channel can
  *    never blow the AI budget beyond the existing per-(thread,user) cap.
  *
+ * 5. GROUNDED, WITHOUT TOOLS (#739, PR #850 review). The reply gets the same
+ *    project-scoped auto-RAG excerpts the in-app reply gets (`projectRetriever`
+ *    over chat's `buildAutoRagContext`, for the thread's project). It gets NO
+ *    `resolveTools`: this path deliberately runs no tool execution, and the
+ *    responder's prompt names tools only when tools are offered.
+ *
  * SECURITY: the triggering body is UNTRUSTED Teams content. It flows only into
  * the responder's injection-isolated message array (a fixed system prompt + the
  * body as a USER turn); we never execute it. Member/tenant scoping from #549/#551
@@ -53,6 +59,7 @@ import {
   loadThreadAIRateLimitConfig,
 } from "../discussions/ai-rate-limit.js";
 import { streamAIReply } from "../discussions/ai-responder.js";
+import { projectRetriever } from "../discussions/project-retrieval.js";
 import { emitMessageNew } from "../discussions/socket-emitter.js";
 import { scheduleMirrorToTeams } from "./outbound-sync.js";
 import { buildProvider, loadAIConfig, type AIProvider } from "../ai/index.js";
@@ -95,6 +102,8 @@ export interface AIParticipantDeps {
   streamReply: typeof streamAIReply;
   emit: typeof emitMessageNew;
   scheduleMirror: typeof scheduleMirrorToTeams;
+  /** Builds the project-scoped excerpt retriever (chat's auto-RAG). */
+  buildRetriever: typeof projectRetriever;
 }
 
 export type AIParticipantOptions = Partial<AIParticipantDeps>;
@@ -108,6 +117,7 @@ function resolveDeps(opts: AIParticipantOptions): AIParticipantDeps {
     streamReply: opts.streamReply ?? streamAIReply,
     emit: opts.emit ?? emitMessageNew,
     scheduleMirror: opts.scheduleMirror ?? scheduleMirrorToTeams,
+    buildRetriever: opts.buildRetriever ?? projectRetriever,
   };
 }
 
@@ -206,6 +216,8 @@ export async function maybeRespondAsAI(
       triggerMessage: { id: trigger.messageId, body: canonicalBody },
       actor: { id: trigger.authorUserId },
       provider: deps.provider,
+      // #739 — the thread's project excerpts, as in-app. No `resolveTools`.
+      retrieve: deps.buildRetriever(trigger.projectId),
     });
 
     // 4a. Fan the persisted AI reply out to the in-app `thread:{id}` room so

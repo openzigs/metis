@@ -36,12 +36,6 @@ const READ_METADATA_SCRIPT = path.resolve(
   "scripts",
   "e2e-read-analysis-metadata.ts",
 );
-const COVERAGE_MAPPING_SCRIPT = path.resolve(
-  REPO_ROOT,
-  "server",
-  "scripts",
-  "e2e-seed-coverage-mapping.ts",
-);
 const GENERATED_DOC_SCRIPT = path.resolve(
   REPO_ROOT,
   "server",
@@ -313,69 +307,6 @@ export function readAnalysisMetadataViaCli(opts: {
   const out = result.stdout.trim();
   if (!out || out === "null") return null;
   return JSON.parse(out) as Record<string, unknown>;
-}
-
-/**
- * Epic #260 (#44/#45) — seed a COMPLETED test-coverage run straight into the
- * e2e DB, with one Requirement plus:
- *   - one CoverageMapping per `docTitles[]` entry (target for the JUnit
- *     round-trip verdict propagation, #45), and/or
- *   - one high-confidence Suggestion per `suggestionTitles[]` entry (the
- *     scaffold source for the Playwright-POM export, #44).
- *
- * The offline-stub AI can't deterministically produce mappings/suggestions, so
- * the export-scaffold and matched/updated/unmatched assertions seed them here.
- * Returns the new run id (target for upload/export) plus the requirement id and
- * the created doc titles + suggestion ids.
- */
-export function seedCoverageMappingViaCli(opts: {
-  projectId: string;
-  userId: string;
-  docTitles?: string[];
-  suggestionTitles?: string[];
-  databaseUrl: string;
-}): { runId: string; requirementId: string; docTitles: string[]; suggestionIds: string[] } {
-  const config = JSON.stringify({
-    docTitles: opts.docTitles ?? [],
-    suggestionTitles: opts.suggestionTitles ?? [],
-  });
-  const result = spawnSync(
-    "pnpm",
-    [
-      "--filter",
-      "@metis/server",
-      "exec",
-      "tsx",
-      COVERAGE_MAPPING_SCRIPT,
-      opts.projectId,
-      opts.userId,
-      config,
-    ],
-    {
-      cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        DATABASE_URL: opts.databaseUrl,
-        DATABASE_PROVIDER: "sqlite",
-      },
-      encoding: "utf8",
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `e2e-seed-coverage-mapping.ts failed (status=${result.status}):\n${result.stderr}\n${result.stdout}`,
-    );
-  }
-  const parsed = JSON.parse(result.stdout) as {
-    runId: string;
-    requirementId: string;
-    docTitles: string[];
-    suggestionIds: string[];
-  };
-  if (!parsed.runId) {
-    throw new Error(`e2e-seed-coverage-mapping.ts returned malformed payload: ${result.stdout}`);
-  }
-  return parsed;
 }
 
 /**

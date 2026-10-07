@@ -141,7 +141,9 @@ describe("ProjectDocumentsPage", () => {
     );
     const row = await screen.findByTestId("document-row-d1");
     await waitFor(() => expect(row).toHaveTextContent("metis"));
-    expect(row).toHaveTextContent("src/vitest.config.ts");
+    // #717 — the repository path, without the ingester's `src/` marker.
+    expect(row).toHaveTextContent("vitest.config.ts");
+    expect(row.textContent).not.toContain("src/vitest.config.ts");
     expect(row.textContent).not.toContain("connector:repo:");
     expect(row.textContent).not.toContain("kpu2tg");
     expect(repoList).toHaveBeenCalledWith("p1");

@@ -128,6 +128,14 @@ export interface AgentLoopOptions {
      * Defaults to {@link DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS}.
      */
     maxOutputTokens?: number;
+    /**
+     * #726 — evidence to put ahead of {@link instruction}, built from the
+     * loop's UNTRUNCATED tool results. The retry re-sends the compacted
+     * transcript (#1225), in which older results are a 600-character head, so
+     * without this the answer is written over code the agent read in full but
+     * can no longer see. Return "" for none. A throw is logged and ignored.
+     */
+    evidence?: (toolCalls: AgentLoopResult["toolCalls"]) => string;
   };
   /**
    * #1225 — bound the transcript the loop re-sends every turn.
@@ -172,6 +180,14 @@ export interface AgentLoopOptions {
     tool: string;
     args: unknown;
   }) => Promise<ToolResult & { tool?: string; fullText?: string }>;
+  /**
+   * #736 — asked once after each reply's tool calls have all run. `true` means
+   * the turn does not count against `maxTurns` (it still counts in
+   * `turnsUsed`). The caller owns the policy AND its bound — the chat surface
+   * refunds a turn in which no call ran because nobody answered its approval
+   * prompt, a bounded number of times.
+   */
+  refundTurn?: () => boolean;
   /**
    * #140 — make one model call. Defaults to `provider.chat`. The chat stream
    * route supplies a streaming caller so native tool turns still stream their
@@ -1205,12 +1221,7 @@ function buildBudgetExhaustedMessage(
  * spending a bounded syntax-repair call on.
  */
 export type FinalAnswerKind =
-  | "valid-json"
-  | "truncated-json"
-  | "malformed-json"
-  | "tool-call"
-  | "prose"
-  | "empty";
+  "valid-json" | "truncated-json" | "malformed-json" | "tool-call" | "prose" | "empty";
 
 export function classifyFinalAnswer(text: string): FinalAnswerKind {
   const trimmed = (text ?? "").trim();
@@ -1331,6 +1342,30 @@ function countStructuralBraces(text: string): { opens: number; closes: number } 
 /** Bounded, log-safe excerpt of a model response (#1217 AC5). */
 function previewOf(text: string): string {
   return text.slice(0, 300);
+}
+
+/**
+ * PR #783 review — add the final-answer instruction WITHOUT breaking strict
+ * user/assistant alternation. When the transcript already ends on a user turn
+ * (the text protocol's tool results), the instruction joins that turn instead
+ * of following it: Anthropic merges same-role turns, but the OpenAI-compatible
+ * provider passes them through, and some local chat templates (Gemma's Jinja
+ * template) reject two user turns in a row. The last message is replaced, not
+ * mutated — `messages` is the caller's transcript.
+ */
+function appendUserInstruction(messages: ChatMessage[], instruction: string): void {
+  const last = messages[messages.length - 1];
+  if (last?.role !== "user") {
+    messages.push({ role: "user", content: instruction });
+    return;
+  }
+  messages[messages.length - 1] = {
+    ...last,
+    content:
+      typeof last.content === "string"
+        ? `${last.content}\n\n${instruction}`
+        : [...last.content, { type: "text", text: instruction }],
+  };
 }
 
 /**
@@ -1681,6 +1716,7 @@ export async function runAgentLoop(
       });
       messages.push(...toolMessages);
       lastAppended = true;
+      if (options.refundTurn?.()) turn--;
       continue;
     }
 
@@ -1695,6 +1731,8 @@ export async function runAgentLoop(
     // A single call produces exactly the pre-#15 message, byte for byte.
     messages.push({ role: "assistant", content: response.content });
     messages.push({ role: "user", content: resultSections.join("\n\n") });
+    lastAppended = true;
+    if (options.refundTurn?.()) turn--;
   }
 
   let finalResponse = lastResponse;
@@ -1752,13 +1790,30 @@ export async function runAgentLoop(
     // largest prompt of a degraded run. Compact before copying.
     compactBeforeCall();
     const retryMessages: ChatMessage[] = [...messages];
-    // #141 — a native reply already appended with its tool results is not
-    // repeated; one a budget stop left out goes back as text only (its calls
-    // never ran, and an unanswered call id would be rejected).
-    if (lastResponse && !(nativeMode && lastAppended)) {
+    // #141 — a reply already appended with its tool results is not repeated
+    // (#772: on the text protocol too, where re-sending the executed call after
+    // its results read as a fresh request); one a budget stop left out goes back
+    // as text only (its calls never ran, and an unanswered call id would be
+    // rejected).
+    if (lastResponse && !lastAppended) {
       retryMessages.push({ role: "assistant", content: lastResponse });
     }
-    retryMessages.push({ role: "user", content: options.finalAnswerRetry.instruction });
+    let evidenceBlock = "";
+    if (options.finalAnswerRetry.evidence) {
+      try {
+        evidenceBlock = options.finalAnswerRetry.evidence(toolCalls);
+      } catch (err) {
+        log.warn("Final-answer evidence builder failed; retrying without it", {
+          error: (err as Error).message,
+        });
+      }
+    }
+    appendUserInstruction(
+      retryMessages,
+      evidenceBlock
+        ? `${evidenceBlock}\n\n${options.finalAnswerRetry.instruction}`
+        : options.finalAnswerRetry.instruction,
+    );
     try {
       const chatOpts: ChatOptions = {
         model: options.model,
@@ -1779,7 +1834,10 @@ export async function runAgentLoop(
           : {}),
       };
       if (retrySystem) chatOpts.systemMessage = retrySystem;
-      const retryResponse = await provider.chat(retryMessages, chatOpts);
+      // #772 — through the caller's model call, like every turn: chat meters
+      // usage and streams text there, so a direct `provider.chat` left the
+      // answer unbilled and unseen on the /stream route.
+      const retryResponse = await callModel(retryMessages, chatOpts);
       addUsage(totalUsage, retryResponse.usage);
       // The retry reply is a fresh, tool-free answer: judge its text alone.
       if (isValidAnswerText(retryResponse.content)) {

@@ -127,6 +127,17 @@ describe("<RepositoriesTopLevelPage />", () => {
     );
   });
 
+  // #803 — the AI bug scanner is removed: no Scan column, no link to it.
+  it("has no Scan column and links nowhere near the removed scanner", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("repositories-top-row-r1")).toBeInTheDocument());
+    expect(screen.queryByRole("columnheader", { name: "Scan" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("repositories-top-scan-r1")).not.toBeInTheDocument();
+    expect(screen.queryByText(/scan for bugs/i)).not.toBeInTheDocument();
+    const hrefs = screen.getAllByRole("link").map((l) => l.getAttribute("href") ?? "");
+    expect(hrefs.filter((h) => h.includes("/scanner"))).toEqual([]);
+  });
+
   // Issue #364 — a local-directory connector printed "null/null" and "pending".
   it("describes a local-directory connector by its source and ingest state", async () => {
     repoListMock.mockImplementation(async (projectId: string) =>

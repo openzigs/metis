@@ -29,6 +29,7 @@ import {
   FIRST_RUN_STEPS,
   derivePipelineStages,
   isDocumentIngesting,
+  isGeneratedDocRunning,
   isFirstRun,
   isIngestRunning,
   isProjectRepoIngestJob,
@@ -180,10 +181,7 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
   const docs = useQuery({
     queryKey: queryKeys.generatedDocs.forProject(projectId),
     queryFn: () => apiFetch<Array<{ status: string }>>(`/projects/${projectId}/docs`),
-    refetchInterval: (q) =>
-      q.state.data?.some((d) => d.status === "pending" || d.status === "generating")
-        ? LIVE_POLL_MS
-        : false,
+    refetchInterval: (q) => (q.state.data?.some(isGeneratedDocRunning) ? LIVE_POLL_MS : false),
   });
   const batches = useQuery({
     queryKey: ["publishing", "batches", projectId],

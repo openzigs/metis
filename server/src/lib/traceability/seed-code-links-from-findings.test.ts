@@ -4,15 +4,16 @@
  *
  * The seeding logic is exercised with an in-memory fake Prisma (matching the
  * DI pattern of backfill-spec-links / traceability-spine tests) so no DB is
- * needed. Covers: creates a link from a citation filename, creates none when a
- * finding has no citation/filename, dedupes within a run and against existing
- * rows, never invents a path, and the conservative source/confidence values.
+ * needed. Covers: creates a link only for a citation that resolves to the code
+ * graph (#768), creates none when a finding has no citation/filename, dedupes
+ * within a run and against existing rows, never invents a path, and the
+ * conservative source/confidence values.
  */
 import { describe, expect, it } from "vitest";
 import {
   ANALYSIS_GROUNDING_SOURCE,
   DEFAULT_SEED_CONFIDENCE,
-  parseCitationFilenames,
+  parseCitationTargets,
   parseEvidenceFindingIds,
   seedRequirementCodeLinksFromFindings,
   type SeedDeps,
@@ -34,6 +35,13 @@ interface FindingRow {
    */
   projectId?: string;
 }
+interface SymbolRow {
+  id: string;
+  projectId: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+}
 interface MappingRow {
   requirementId: string;
   projectId: string;
@@ -45,14 +53,38 @@ interface MappingRow {
   source: string;
 }
 
-/** Build an in-memory fake Prisma with the three models the seeder touches. */
+/** A whole-file symbol in `proj-1` for each path, so a repo citation resolves. */
+function graphFiles(...paths: string[]): SymbolRow[] {
+  return paths.map((filePath, i) => ({
+    id: `file-sym-${i}`,
+    projectId: "proj-1",
+    filePath,
+    startLine: 1,
+    endLine: 1000,
+  }));
+}
+
+/** Build an in-memory fake Prisma with the four models the seeder touches. */
 function makeFakePrisma(opts: {
   requirements: ReqRow[];
   findings: FindingRow[];
   mappings?: MappingRow[];
+  /** Code-graph symbols. Defaults to one file symbol per path the tests cite. */
+  symbols?: SymbolRow[];
 }): { prisma: SeedDeps["prisma"]; created: MappingRow[]; all: MappingRow[] } {
   const mappings: MappingRow[] = [...(opts.mappings ?? [])];
   const created: MappingRow[] = [];
+  const symbols =
+    opts.symbols ??
+    graphFiles(
+      "src/auth.ts",
+      "src/x.ts",
+      "src/hi.ts",
+      "src/lo.ts",
+      "src/a.ts",
+      "src/b.ts",
+      "src/c.ts",
+    );
 
   const prisma = {
     requirement: {
@@ -78,6 +110,12 @@ function makeFakePrisma(opts: {
         );
       },
     },
+    codeSymbol: {
+      findMany: async ({ where }: { where: { projectId: string; filePath: { in: string[] } } }) =>
+        symbols.filter(
+          (s) => s.projectId === where.projectId && where.filePath.in.includes(s.filePath),
+        ),
+    },
     requirementCodeMapping: {
       findMany: async ({ where }: { where: { requirementId: string; projectId: string } }) =>
         mappings.filter(
@@ -98,12 +136,19 @@ function labels(findingIds: string[], extra: string[] = []): string {
   return JSON.stringify([...extra, ...findingIds.map((id) => `finding:${id}`)]);
 }
 
-function evidence(filenames: (string | undefined)[]): string {
+/** A repository document key, as the source-as-RAG ingester names a file. */
+const repoKey = (relPath: string): string => `connector:repo:conn-1:src/${relPath}`;
+
+/**
+ * Evidence whose document citations name repository files. A bare path is
+ * wrapped as a repo key; pass `raw` to cite a filename verbatim.
+ */
+function evidence(filenames: (string | undefined)[], raw = false): string {
   return JSON.stringify({
     citations: filenames.map((filename, i) => ({
       documentId: `doc-${i}`,
       chunkIndex: i,
-      ...(filename === undefined ? {} : { filename }),
+      ...(filename === undefined ? {} : { filename: raw ? filename : repoKey(filename) }),
     })),
     tags: [],
     requirementId: null,
@@ -122,19 +167,357 @@ describe("parseEvidenceFindingIds", () => {
   });
 });
 
-describe("parseCitationFilenames", () => {
-  it("returns trimmed non-empty filenames only", () => {
-    expect(parseCitationFilenames(evidence(["src/a.ts", undefined, "  src/b.ts  "]))).toEqual([
-      "src/a.ts",
-      "src/b.ts",
+describe("parseCitationTargets (#768)", () => {
+  it("keeps only repository source keys among document citations, stripping the key", () => {
+    const raw = evidence(
+      [
+        "miniflux.1.txt",
+        "Live database schema",
+        "api.html",
+        "connector:db:db-1:public.acme_cache.md",
+        "connector:repo:conn-1:OVERVIEW.md",
+        "  connector:repo:conn-1:src/internal/config/options.go  ",
+        undefined,
+      ],
+      true,
+    );
+    expect(parseCitationTargets(raw)).toEqual([{ filePath: "internal/config/options.go" }]);
+  });
+
+  it("keeps code citations with their span and symbol id, normalising the path", () => {
+    const raw = JSON.stringify({
+      citations: [
+        {
+          filePath: "./internal/metric/metric.go",
+          startLine: 10,
+          endLine: 20,
+          symbolId: "s1",
+        },
+        {
+          filePath: "internal/http/server/routes.go",
+          startLine: 5,
+          endLine: 4,
+        },
+        { filePath: "  ", startLine: 1, endLine: 2 },
+        { filePath: "x.go", startLine: "1", endLine: 2 },
+      ],
+    });
+    expect(parseCitationTargets(raw)).toEqual([
+      {
+        filePath: "internal/metric/metric.go",
+        startLine: 10,
+        endLine: 20,
+        symbolId: "s1",
+      },
+      { filePath: "internal/http/server/routes.go", startLine: 4, endLine: 5 },
     ]);
   });
+
   it("returns [] for null / malformed / no citations", () => {
-    expect(parseCitationFilenames(null)).toEqual([]);
-    expect(parseCitationFilenames("nope")).toEqual([]);
-    expect(parseCitationFilenames(JSON.stringify({ citations: "x" }))).toEqual([]);
-    expect(parseCitationFilenames(JSON.stringify({}))).toEqual([]);
-    expect(parseCitationFilenames(JSON.stringify({ citations: [{ filename: "  " }] }))).toEqual([]);
+    expect(parseCitationTargets(null)).toEqual([]);
+    expect(parseCitationTargets("nope")).toEqual([]);
+    expect(parseCitationTargets(JSON.stringify({ citations: "x" }))).toEqual([]);
+    expect(parseCitationTargets(JSON.stringify({}))).toEqual([]);
+    expect(parseCitationTargets(JSON.stringify({ citations: [null, { filename: "  " }] }))).toEqual(
+      [],
+    );
+  });
+});
+
+describe("seedRequirementCodeLinksFromFindings — only code is a code link (#768)", () => {
+  const projectId = "proj-1";
+  const run = (prisma: SeedDeps["prisma"]) =>
+    seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+
+  it("writes no link for a man page, an uploaded doc, the live schema or a db connector doc", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: evidence(
+            [
+              "miniflux.1.txt",
+              "Live database schema",
+              "api.html",
+              "connector:db:db-1:public.acme_cache.md",
+              "connector:db:db-1:OVERVIEW.md",
+            ],
+            true,
+          ),
+          confidence: 0.8,
+        },
+      ],
+      // Even a graph file sharing the doc's name must not make the doc code.
+      symbols: graphFiles("api.html", "miniflux.1.txt"),
+    });
+    expect(await run(prisma)).toEqual({
+      requirementsSeeded: 0,
+      linksCreated: 0,
+      linksSkipped: 0,
+    });
+    expect(created).toEqual([]);
+  });
+
+  it("strips the connector:repo:<id>:src/ key so the stored path is the graph's path", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: evidence(["internal/config/options.go"]),
+          confidence: 0.8,
+        },
+      ],
+      symbols: graphFiles("internal/config/options.go"),
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      filePath: "internal/config/options.go",
+      codeSymbolId: null,
+      startLine: null,
+      endLine: null,
+    });
+  });
+
+  it("writes nothing for a repository file the code graph does not contain", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: evidence(["docs/README.md"]), confidence: 0.8 }],
+      symbols: graphFiles("internal/config/options.go"),
+    });
+    await run(prisma);
+    expect(created).toEqual([]);
+  });
+
+  it("does not resolve against another project's graph", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: evidence(["internal/a.go"]), confidence: 0.8 }],
+      symbols: [
+        {
+          id: "x",
+          projectId: "other",
+          filePath: "internal/a.go",
+          startLine: 1,
+          endLine: 9,
+        },
+      ],
+    });
+    await run(prisma);
+    expect(created).toEqual([]);
+  });
+
+  const metricSymbols: SymbolRow[] = [
+    {
+      id: "opts",
+      projectId,
+      filePath: "internal/config/options.go",
+      startLine: 1,
+      endLine: 900,
+    },
+    {
+      id: "mc",
+      projectId,
+      filePath: "internal/config/options.go",
+      startLine: 118,
+      endLine: 130,
+    },
+    {
+      id: "mri",
+      projectId,
+      filePath: "internal/config/options.go",
+      startLine: 132,
+      endLine: 140,
+    },
+  ];
+
+  it("binds a code citation to the innermost symbol enclosing its span, keeping that symbol's lines", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: JSON.stringify({
+            citations: [
+              {
+                filePath: "internal/config/options.go",
+                startLine: 120,
+                endLine: 125,
+              },
+            ],
+          }),
+          confidence: 0.9,
+        },
+      ],
+      symbols: metricSymbols,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "mc",
+      filePath: "internal/config/options.go",
+      startLine: 118,
+      endLine: 130,
+      confidence: 0.9,
+      source: ANALYSIS_GROUNDING_SOURCE,
+    });
+  });
+
+  it("prefers the citation's own symbol id when that symbol is in the cited file", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: JSON.stringify({
+            citations: [
+              {
+                filePath: "internal/config/options.go",
+                startLine: 120,
+                endLine: 125,
+                symbolId: "mri",
+              },
+            ],
+          }),
+          confidence: 0.9,
+        },
+      ],
+      symbols: metricSymbols,
+    });
+    await run(prisma);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "mri",
+      startLine: 132,
+      endLine: 140,
+    });
+  });
+
+  it("ignores a citation symbol id that is not in the cited file and falls back to the span", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: JSON.stringify({
+            citations: [
+              {
+                filePath: "internal/config/options.go",
+                startLine: 120,
+                endLine: 125,
+                symbolId: "someone-elses-symbol",
+              },
+            ],
+          }),
+          confidence: 0.9,
+        },
+      ],
+      symbols: metricSymbols,
+    });
+    await run(prisma);
+    expect(created[0]).toMatchObject({ codeSymbolId: "mc" });
+  });
+
+  it("keeps a code citation outside every symbol as a file link with the cited lines", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: JSON.stringify({
+            citations: [
+              {
+                filePath: "internal/metric/metric.go",
+                startLine: 3,
+                endLine: 4,
+              },
+            ],
+          }),
+          confidence: 0.9,
+        },
+      ],
+      symbols: [
+        {
+          id: "m",
+          projectId,
+          filePath: "internal/metric/metric.go",
+          startLine: 10,
+          endLine: 20,
+        },
+      ],
+    });
+    await run(prisma);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: null,
+      filePath: "internal/metric/metric.go",
+      startLine: 3,
+      endLine: 4,
+    });
+  });
+
+  it("writes nothing for a code citation whose file is not in the graph", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: JSON.stringify({
+            citations: [{ filePath: "internal/gone.go", startLine: 3, endLine: 4 }],
+          }),
+          confidence: 0.9,
+        },
+      ],
+      symbols: metricSymbols,
+    });
+    await run(prisma);
+    expect(created).toEqual([]);
+  });
+
+  it("dedupes two citations of one symbol and skips a symbol already linked", async () => {
+    const existing: MappingRow = {
+      requirementId: "req-1",
+      projectId,
+      codeSymbolId: "mri",
+      filePath: "internal/config/options.go",
+      startLine: 132,
+      endLine: 140,
+      confidence: 0.7,
+      source: "semantic",
+    };
+    const cite = (startLine: number) => ({
+      filePath: "internal/config/options.go",
+      startLine,
+      endLine: startLine + 1,
+    });
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1", "f2"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: JSON.stringify({ citations: [cite(120)] }),
+          confidence: 0.6,
+        },
+        {
+          id: "f2",
+          evidence: JSON.stringify({ citations: [cite(122), cite(134)] }),
+          confidence: 0.8,
+        },
+      ],
+      symbols: metricSymbols,
+      mappings: [existing],
+    });
+    const summary = await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ codeSymbolId: "mc", confidence: 0.8 });
+    expect(summary).toEqual({
+      requirementsSeeded: 1,
+      linksCreated: 1,
+      linksSkipped: 1,
+    });
   });
 });
 

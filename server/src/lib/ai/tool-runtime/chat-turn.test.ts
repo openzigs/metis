@@ -32,7 +32,14 @@ import {
 } from "../providers/local-concurrency-limiter.js";
 import type { ApprovalPolicy } from "../types.js";
 import { ToolApprovalBroker } from "./approval-broker.js";
-import { composeReplyText, runChatToolTurn, type ChatToolRecord } from "./chat-turn.js";
+import {
+  CHAT_FINAL_SYNTHESIS_INSTRUCTION,
+  finalSynthesisInstruction,
+  CHAT_TOOL_MAX_APPROVAL_REFUNDS,
+  composeReplyText,
+  runChatToolTurn,
+  type ChatToolRecord,
+} from "./chat-turn.js";
 import { brokerPrompter } from "./prompter.js";
 import { collectGuardedStream } from "./stream-collect.js";
 import { makeToolset } from "./toolset.js";
@@ -522,5 +529,380 @@ describe("replyText keeps every native turn's text (#128 review)", () => {
     });
     expect(out.finalResponse).toBe("It is 42.");
     expect(out.replyText).toBe("Let me look.\n\nIt is 42.");
+  });
+});
+
+describe("an unanswered approval does not spend the step budget (#736)", () => {
+  function expiringGate(tools: RuntimeTool[]) {
+    const broker = new ToolApprovalBroker();
+    const toolset = makeToolset(tools);
+    const gate = new ApprovalGateService({
+      sessionId: CTX.sessionId,
+      userId: CTX.userId,
+      policy: ALWAYS,
+      // Nobody answers: every prompt expires.
+      prompter: brokerPrompter({ broker, toolset, projectId: CTX.projectId, timeoutMs: 5 }),
+    });
+    return { toolset, gate };
+  }
+
+  it("a turn whose every call expired is refunded, so the model still gets to answer", async () => {
+    const lookup = tool("inspect_schema", () => "3 tables");
+    const { toolset, gate } = expiringGate([lookup]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "inspect_schema", args: {} }] },
+        { content: "I could not check the schema; here is what I know." },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+    expect(lookup.execute).not.toHaveBeenCalled();
+    expect(out.loop.hasFinalAnswer).toBe(true);
+    expect(out.finalResponse).toBe("I could not check the schema; here is what I know.");
+    expect(out.turnsUsed).toBe(2);
+  });
+
+  it("refunds at most CHAT_TOOL_MAX_APPROVAL_REFUNDS turns, so an unattended session still ends", async () => {
+    const lookup = tool("inspect_schema", () => "3 tables");
+    const { toolset, gate } = expiringGate([lookup]);
+    const call = (id: string) => ({ toolCalls: [{ id, name: "inspect_schema", args: { id } }] });
+    const provider = new OfflineStubProvider({
+      script: [call("c1"), call("c2"), call("c3"), call("c4"), { content: "never reached" }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+    expect(out.turnsUsed).toBe(1 + CHAT_TOOL_MAX_APPROVAL_REFUNDS);
+    expect(out.loop.turnsExhausted).toBe(true);
+  });
+
+  it("a turn with a call that RAN is not refunded", async () => {
+    const lookup = tool("inspect_schema", () => "3 tables");
+    const { toolset } = expiringGate([lookup]);
+    const allow = new ApprovalGateService({
+      sessionId: CTX.sessionId,
+      userId: CTX.userId,
+      policy: { low: "auto", medium: "auto", high: "auto" },
+    });
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "inspect_schema", args: {} }] },
+        { content: "never reached" },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate: allow },
+      { maxTurns: 1 },
+    );
+    expect(lookup.execute).toHaveBeenCalledTimes(1);
+    expect(out.turnsUsed).toBe(1);
+    expect(out.loop.turnsExhausted).toBe(true);
+  });
+
+  // Low-risk calls run unprompted; anything above prompts and, unanswered, expires.
+  function mixedGate(tools: RuntimeTool[]) {
+    const broker = new ToolApprovalBroker();
+    const toolset = makeToolset(tools);
+    const gate = new ApprovalGateService({
+      sessionId: CTX.sessionId,
+      userId: CTX.userId,
+      policy: { low: "auto", medium: "always-prompt", high: "always-prompt" },
+      prompter: brokerPrompter({ broker, toolset, projectId: CTX.projectId, timeoutMs: 5 }),
+    });
+    return { toolset, gate };
+  }
+
+  it("a turn where one call expired but another RAN is not refunded", async () => {
+    const cheap = { ...tool("list_files", () => "a.go"), risk: "low" as const };
+    const gated = tool("inspect_schema", () => "3 tables");
+    const { toolset, gate } = mixedGate([cheap, gated]);
+    const provider = new OfflineStubProvider({
+      script: [
+        {
+          toolCalls: [
+            { id: "c1", name: "list_files", args: {} },
+            { id: "c2", name: "inspect_schema", args: {} },
+          ],
+        },
+        { content: "never reached" },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+    expect(cheap.execute).toHaveBeenCalledTimes(1);
+    expect(gated.execute).not.toHaveBeenCalled();
+    expect(out.turnsUsed).toBe(1);
+    expect(out.loop.turnsExhausted).toBe(true);
+  });
+
+  it("judges each turn on its own calls: an earlier turn's ran call does not block a later refund", async () => {
+    const cheap = { ...tool("list_files", () => "a.go"), risk: "low" as const };
+    const gated = tool("inspect_schema", () => "3 tables");
+    const { toolset, gate } = mixedGate([cheap, gated]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "list_files", args: {} }] },
+        { toolCalls: [{ id: "c2", name: "inspect_schema", args: {} }] },
+        { content: "answered after the refund" },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 2 },
+    );
+    expect(cheap.execute).toHaveBeenCalledTimes(1);
+    expect(out.loop.hasFinalAnswer).toBe(true);
+    expect(out.finalResponse).toBe("answered after the refund");
+    expect(out.turnsUsed).toBe(3);
+  });
+});
+
+describe("a spent step budget still ends in an answer (#772)", () => {
+  const AUTO: ApprovalPolicy = { low: "auto", medium: "auto", high: "auto" };
+  const readCall = (id: string) => ({
+    toolCalls: [{ id, name: "read_file_slice", args: { path: `f${id}.go` } }],
+  });
+
+  it("native: one tool-free synthesis call answers from the evidence already gathered", async () => {
+    const read = tool(
+      "read_file_slice",
+      (args) => `contents of ${(args as { path: string }).path}`,
+    );
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [
+        readCall("c1"),
+        readCall("c2"),
+        { content: "Feeds are disabled after 3 parse errors (fc1.go)." },
+      ],
+    });
+    const usages: number[] = [];
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 2, onUsage: (u) => usages.push(u.totalTokens) },
+    );
+
+    expect(out.finalResponse).toBe("Feeds are disabled after 3 parse errors (fc1.go).");
+    expect(out.replyText).toBe("Feeds are disabled after 3 parse errors (fc1.go).");
+    expect(out.loop).toEqual({ turnsExhausted: true, hasFinalAnswer: true });
+    expect(read.execute).toHaveBeenCalledTimes(2);
+    // Bounded: exactly ONE extra call, and it is metered like every other.
+    expect(provider.requests).toHaveLength(3);
+    expect(usages).toHaveLength(3);
+    const synthesis = provider.requests[2]!;
+    expect(synthesis.opts.toolChoice).toBe("none");
+    // It sees every result the investigation produced, then the instruction.
+    const [results, instruction] = synthesis.messages.slice(-2);
+    expect(results).toMatchObject({ role: "tool", toolCallId: "c2" });
+    expect(String(results!.content)).toContain("contents of fc2.go");
+    expect(instruction).toEqual({ role: "user", content: CHAT_FINAL_SYNTHESIS_INSTRUCTION });
+  });
+
+  it("text protocol: the synthesis prompt ends on the results, not a re-sent unexecuted call", async () => {
+    const read = tool("read_file_slice", () => "line 50: parsing_error_count < $n");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const call = '{"tool":"read_file_slice","args":{"path":"batch.go"}}';
+    const provider = new OfflineStubProvider({
+      script: [{ content: call }, { content: "Refresh skips a feed past the error limit." }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: false, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+
+    expect(out.finalResponse).toBe("Refresh skips a feed past the error limit.");
+    expect(out.loop.hasFinalAnswer).toBe(true);
+    const msgs = provider.requests[1]!.messages;
+    // PR #783 review — the instruction joins the results turn (strict alternation).
+    expect(msgs.at(-1)!.role).toBe("user");
+    expect(String(msgs.at(-1)!.content)).toContain("parsing_error_count");
+    expect(String(msgs.at(-1)!.content).endsWith(CHAT_FINAL_SYNTHESIS_INSTRUCTION)).toBe(true);
+    expect(msgs.filter((m) => m.role === "assistant")).toHaveLength(1);
+  });
+
+  it("a synthesis reply that is still only a tool call falls back, and nothing more is spent", async () => {
+    const read = tool("read_file_slice", () => "x");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [readCall("c1"), readCall("c2"), { content: "unreachable" }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+
+    expect(provider.requests).toHaveLength(2);
+    expect(read.execute).toHaveBeenCalledTimes(1);
+    expect(out.loop.hasFinalAnswer).toBe(false);
+    expect(out.finalResponse).toMatch(/^I reached the tool-call limit/);
+  });
+
+  it("an empty synthesis reply is not an answer", async () => {
+    const read = tool("read_file_slice", () => "x");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({ script: [readCall("c1"), { content: "  " }] });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1 },
+    );
+    expect(out.loop.hasFinalAnswer).toBe(false);
+    expect(out.finalResponse).toMatch(/^I reached the tool-call limit/);
+  });
+
+  it("an answer inside the budget costs no extra call", async () => {
+    const read = tool("read_file_slice", () => "x");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [readCall("c1"), { content: "Done." }, { content: "unreachable" }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 2 },
+    );
+    expect(out.finalResponse).toBe("Done.");
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it("a model that types search_knowledge reaches the search-knowledge tool", async () => {
+    const search = tool("search-knowledge", () => "doc hit");
+    const { toolset, gate } = setup(AUTO, [search]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "search_knowledge", args: { query: "sign in" } }] },
+        { content: "OIDC and passwords." },
+      ],
+    });
+    const records: ChatToolRecord[] = [];
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { onToolRecord: (r) => records.push(r) },
+    );
+    expect(search.execute).toHaveBeenCalledTimes(1);
+    expect(records[0]).toMatchObject({
+      tool: "search-knowledge",
+      executed: true,
+      result: "doc hit",
+    });
+    expect(out.finalResponse).toBe("OIDC and passwords.");
+  });
+});
+
+describe("the final-synthesis prompt keeps strict role alternation (PR #783 review)", () => {
+  const AUTO: ApprovalPolicy = { low: "auto", medium: "auto", high: "auto" };
+
+  /**
+   * Every adjacent pair differs in role. A run of `tool` results is one reply
+   * to the assistant turn before it, so `tool, tool` is the one repeat allowed;
+   * `user, user` — what Gemma's chat template rejects — never is.
+   */
+  function expectAlternation(messages: ReadonlyArray<{ role: string }>): void {
+    const roles = messages.map((m) => m.role);
+    for (let i = 1; i < roles.length; i++) {
+      if (roles[i] === "tool" && roles[i - 1] === "tool") continue;
+      expect(roles[i], `messages ${i - 1} and ${i} are both "${roles[i]}"`).not.toBe(roles[i - 1]);
+    }
+  }
+
+  it("text protocol: the instruction joins the results turn instead of following it", async () => {
+    const read = tool("read_file_slice", () => "evidence");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const call = (p: string) => `{"tool":"read_file_slice","args":{"path":"${p}"}}`;
+    const provider = new OfflineStubProvider({
+      script: [{ content: call("a.go") }, { content: call("b.go") }, { content: "Answer." }],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: false, ctx: CTX, gate },
+      { maxTurns: 2 },
+    );
+    expect(out.finalResponse).toBe("Answer.");
+    const synthesis = provider.requests[2]!.messages;
+    expect(synthesis.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expectAlternation(synthesis);
+  });
+
+  it("native protocol: assistant, its tool results, then ONE user instruction", async () => {
+    const read = tool("read_file_slice", () => "evidence");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "read_file_slice", args: { path: "a.go" } }] },
+        { toolCalls: [{ id: "c2", name: "read_file_slice", args: { path: "b.go" } }] },
+        { content: "Answer." },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 2 },
+    );
+    expect(out.finalResponse).toBe("Answer.");
+    const synthesis = provider.requests[2]!.messages;
+    expect(synthesis.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+      "tool",
+      "user",
+    ]);
+    expectAlternation(synthesis);
+  });
+});
+
+describe("the final-synthesis call keeps a required output format (PR #783 review)", () => {
+  const AUTO: ApprovalPolicy = { low: "auto", medium: "auto", high: "auto" };
+
+  it("restates the output contract after the chat instruction", () => {
+    expect(finalSynthesisInstruction()).toBe(CHAT_FINAL_SYNTHESIS_INSTRUCTION);
+    expect(finalSynthesisInstruction("  ")).toBe(CHAT_FINAL_SYNTHESIS_INSTRUCTION);
+    const withContract = finalSynthesisInstruction('Reply with JSON: {"findings": []}');
+    expect(withContract.startsWith(CHAT_FINAL_SYNTHESIS_INSTRUCTION)).toBe(true);
+    expect(withContract).toMatch(/Keep the required output format/);
+    expect(withContract.endsWith('Reply with JSON: {"findings": []}')).toBe(true);
+  });
+
+  it("a run with an outputContract sends the contract in its synthesis call", async () => {
+    const read = tool("read_file_slice", () => "evidence");
+    const { toolset, gate } = setup(AUTO, [read]);
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "c1", name: "read_file_slice", args: { path: "a.go" } }] },
+        { content: '{"findings":[]}' },
+      ],
+    });
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "q" }], toolset, native: true, ctx: CTX, gate },
+      { maxTurns: 1, outputContract: "ANSWER FORMAT: findings JSON" },
+    );
+    expect(out.finalResponse).toBe('{"findings":[]}');
+    const last = provider.requests[1]!.messages.at(-1)!;
+    expect(last.role).toBe("user");
+    expect(String(last.content)).toContain("Keep the required output format");
+    expect(String(last.content).endsWith("ANSWER FORMAT: findings JSON")).toBe(true);
   });
 });

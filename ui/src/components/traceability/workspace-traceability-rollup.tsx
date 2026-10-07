@@ -8,6 +8,10 @@
  * Mermaid visualization of the cross-project `RequirementLink` map. The server
  * scopes everything to the caller's accessible projects, so this component just
  * renders whatever the summary endpoint returns.
+ *
+ * #816 — a Tested column shows `testCoverage` (any "Tested by" relation, #815)
+ * over the requirements that have mapped code; its tooltip gives the strict
+ * figure (direct + exercises only) and names that denominator.
  */
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -87,6 +91,30 @@ function CoverageBadge({ fraction }: { fraction: number }): React.ReactElement {
   return <Badge variant={low ? "outline" : "secondary"}>{formatCoveragePct(fraction)}</Badge>;
 }
 
+/** The Tested cell's tooltip: the figure, its denominator, and the strict figure. */
+export function testedTooltip(p: WorkspaceProjectTraceability): string {
+  const n = p.codeMappedRequirements;
+  const noun = n === 1 ? "requirement with mapped code has" : "requirements with mapped code have";
+  return (
+    `${formatCoveragePct(p.testCoverage)} of the ${n} ${noun} a linked test. ` +
+    `Strict (mapped directly or calls the code): ${formatCoveragePct(p.strictTestCoverage)}.`
+  );
+}
+
+function TestedCell({ p }: { p: WorkspaceProjectTraceability }): React.ReactElement {
+  // No mapped code means no denominator: a 0% here would read as "untested".
+  if (p.codeMappedRequirements === 0) {
+    return <span className="text-xs text-muted-foreground">No mapped code</span>;
+  }
+  const tip = testedTooltip(p);
+  return (
+    <span title={tip}>
+      <CoverageBadge fraction={p.testCoverage} />
+      <span className="sr-only">{tip}</span>
+    </span>
+  );
+}
+
 function SummaryTable({
   projects,
 }: {
@@ -100,7 +128,8 @@ function SummaryTable({
           <th className="py-2 pr-4 font-medium">Requirements</th>
           <th className="py-2 pr-4 font-medium">Cross-project links</th>
           <th className="py-2 pr-4 font-medium">Spec coverage</th>
-          <th className="py-2 font-medium">Code coverage</th>
+          <th className="py-2 pr-4 font-medium">Code coverage</th>
+          <th className="py-2 font-medium">Tested</th>
         </tr>
       </thead>
       <tbody>
@@ -112,8 +141,11 @@ function SummaryTable({
             <td className="py-2 pr-4">
               <CoverageBadge fraction={p.specCoverage} />
             </td>
-            <td className="py-2">
+            <td className="py-2 pr-4">
               <CoverageBadge fraction={p.codeCoverage} />
+            </td>
+            <td className="py-2" data-testid="rollup-tested-cell">
+              <TestedCell p={p} />
             </td>
           </tr>
         ))}

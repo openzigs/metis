@@ -152,7 +152,6 @@ describe("query-backed hooks re-read on reconnect (#646)", () => {
       analysis: true,
       "doc-generation": true,
       "impact-analysis": true,
-      scan: true,
       "pr-review": true,
       "import-sync": true,
       "embeddings-reindex": true,

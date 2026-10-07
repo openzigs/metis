@@ -268,3 +268,170 @@ describe("buildSpecKitRagContext — expandDocuments (#20)", () => {
     expect(res.usedChunks).toBe(1);
   });
 });
+
+describe("buildSpecKitRagContext — repo hits are named by path, scored by rank (#824 item 4)", () => {
+  it("prints the repo-relative path and the rank score, marking a keyword-only hit", async () => {
+    const hit: RetrievedChunk = {
+      ...docHit,
+      filename: "connector:repo:cid1:src/internal/storage/entry.go",
+      path: "internal/storage/entry.go",
+      position: 3,
+      score: 0,
+      rankScore: 0.0312,
+      matchedBy: ["lexical"],
+    };
+    const res = await buildSpecKitRagContext("p1", "mark all as read", {
+      knowledgeService: knowledgeService([hit]),
+      fusedCode: fused([], {}),
+    });
+    expect(res.context).toContain("[1] internal/storage/entry.go#3 (score=0.031, keyword match)");
+    expect(res.context).not.toContain("connector:repo:");
+    expect(res.context).not.toContain("score=0.000");
+  });
+});
+
+describe("buildSpecKitRagContext — same-file siblings (#785)", () => {
+  const ENTRY = "internal/storage/entry.go";
+  type Row = {
+    id: string;
+    name: string;
+    kind: string;
+    filePath: string;
+    startLine: number;
+    endLine: number;
+  };
+  const siblingLookup = (rows: Row[]) => ({
+    findInFiles: vi.fn(async (_p: string, files: string[]) =>
+      rows.filter((r) => files.includes(r.filePath)),
+    ),
+  });
+  const fn = (id: string, name: string, filePath: string, startLine: number): Row => ({
+    id,
+    name,
+    kind: "function",
+    filePath,
+    startLine,
+    endLine: startLine + 14,
+  });
+
+  it("lists a same-file function that extends a retrieved name (MarkAllAsReadBeforeDate)", async () => {
+    const deps = fused(
+      [{ symbolId: "s-mark", filePath: ENTRY, name: "MarkAllAsRead", kind: "function", score: 1 }],
+      { "s-mark": { filePath: ENTRY, startLine: 506, endLine: 520 } },
+    );
+    const lookup = siblingLookup([
+      fn("s-mark", "MarkAllAsRead", ENTRY, 506),
+      { ...fn("s-before", "MarkAllAsReadBeforeDate", ENTRY, 523), endLine: 544 },
+      fn("s-feed", "MarkFeedAsRead", ENTRY, 581),
+      fn("s-count", "CountAllEntries", ENTRY, 24),
+      fn("s-other", "MarkAllAsReadSoon", "internal/ui/x.go", 1),
+    ]);
+    const res = await buildSpecKitRagContext("p1", "mark all entries as read older than N days", {
+      knowledgeService: knowledgeService([]),
+      fusedCode: deps,
+      includeCode: true,
+      siblings: { lookup },
+    });
+    expect(res.context).toContain("## Sibling Symbols");
+    expect(res.context).toContain(
+      `MarkAllAsReadBeforeDate (function) — ${ENTRY}:523-544 (beside MarkAllAsRead)`,
+    );
+    // Sharing only the verb, or living in another file, is not a sibling.
+    expect(res.context).not.toContain("MarkFeedAsRead");
+    expect(res.context).not.toContain("CountAllEntries");
+    expect(res.context).not.toContain("MarkAllAsReadSoon");
+    expect(res.usedSymbols).toBe(2);
+    expect(lookup.findInFiles).toHaveBeenCalledWith("p1", [ENTRY]);
+  });
+
+  it("adds nothing without the option, and survives a failing lookup", async () => {
+    const deps = fused(
+      [{ symbolId: "s-mark", filePath: ENTRY, name: "MarkAllAsRead", kind: "function", score: 1 }],
+      { "s-mark": { filePath: ENTRY, startLine: 506, endLine: 520 } },
+    );
+    const off = await buildSpecKitRagContext("p1", "q", {
+      knowledgeService: knowledgeService([]),
+      fusedCode: deps,
+      includeCode: true,
+    });
+    expect(off.context).not.toContain("## Sibling Symbols");
+    const failing = await buildSpecKitRagContext("p1", "q", {
+      knowledgeService: knowledgeService([]),
+      fusedCode: deps,
+      includeCode: true,
+      siblings: { lookup: { findInFiles: vi.fn().mockRejectedValue(new Error("db down")) } },
+    });
+    expect(failing.usedSymbols).toBe(1);
+    expect(failing.context).toContain("MarkAllAsRead");
+    expect(failing.context).not.toContain("## Sibling Symbols");
+  });
+});
+
+describe("buildSpecKitRagContext — a symbol's real lines, never a chunk index (#853)", () => {
+  const ENTRY = "internal/storage/entry.go";
+  // The whole-file source chunk is chunk #8 of entry.go; the symbol it holds
+  // starts on line 506. A plan cited `entry.go:8` when only the chunk was shown.
+  const sourceChunk: RetrievedChunk = {
+    ...docHit,
+    filename: `connector:repo:cid1:src/${ENTRY}`,
+    path: ENTRY,
+    position: 8,
+    text: "func (s *Storage) MarkAllAsRead(userID int64) error {",
+  };
+  const deps = () =>
+    fused(
+      [{ symbolId: "s-mark", filePath: ENTRY, name: "MarkAllAsRead", kind: "function", score: 1 }],
+      { "s-mark": { filePath: ENTRY, startLine: 506, endLine: 520 } },
+    );
+  const lookup = {
+    findInFiles: vi.fn(async () => [
+      {
+        id: "s-before",
+        name: "MarkAllAsReadBeforeDate",
+        kind: "function",
+        filePath: ENTRY,
+        startLine: 523,
+        endLine: 544,
+      },
+    ]),
+  };
+
+  it("keeps the line span of a symbol whose file a source chunk already covers", async () => {
+    const res = await buildSpecKitRagContext("p1", "mark all as read older than", {
+      knowledgeService: knowledgeService([sourceChunk]),
+      fusedCode: deps(),
+      includeCode: true,
+      siblings: { lookup },
+    });
+    expect(res.context).toContain(`${ENTRY}#8`);
+    expect(res.context).toContain(`MarkAllAsRead (function) — ${ENTRY}:506-520`);
+    expect(res.context).toContain(
+      `MarkAllAsReadBeforeDate (function) — ${ENTRY}:523-544 (beside MarkAllAsRead)`,
+    );
+    expect(res.context).not.toContain(`${ENTRY}:8`);
+    expect(res.usedSymbols).toBe(2);
+  });
+
+  it("claims only that a located symbol shares a file with an excerpt, not that one holds it", async () => {
+    // Chunks carry no line range, so a same-file chunk counts as coverage even
+    // when the symbol's body never reached the prompt (#869 review).
+    const res = await buildSpecKitRagContext("p1", "mark all as read", {
+      knowledgeService: knowledgeService([sourceChunk]),
+      fusedCode: deps(),
+      includeCode: true,
+    });
+    expect(res.context).toContain(
+      "## Symbol Line Locators (symbols in the same files as the retrieved source excerpts above)",
+    );
+    expect(res.context).toMatch(/may not appear in the\s+excerpts/);
+    expect(res.context).not.toMatch(/symbols inside|sit\s+inside/);
+  });
+
+  it("tells the model a `#N` is a chunk number, not a line", async () => {
+    const res = await buildSpecKitRagContext("p1", "q", {
+      knowledgeService: knowledgeService([sourceChunk]),
+      fusedCode: fused([], {}),
+    });
+    expect(res.context).toMatch(/`#N`.*chunk number.*NOT a line number/s);
+  });
+});

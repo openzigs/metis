@@ -4,6 +4,8 @@
 import { describe, expect, it } from "vitest";
 import {
   isNonGitRepoProvider,
+  isRepoRefOrEmpty,
+  shortCommitSha,
   repoLocationLabel,
   repoStatusLabel,
   repoStatusTone,
@@ -138,5 +140,23 @@ describe("repoStatusTone", () => {
     expect(repoStatusTone({ ...base, status: "pending", lastIngestAt: null })).toBe("neutral");
     expect(repoStatusTone({ ...base, status: "error", lastIngestAt: null })).toBe("destructive");
     expect(repoStatusTone({ ...base, status: "disabled", lastIngestAt: null })).toBe("neutral");
+  });
+});
+
+describe("#714 — ref and commit display helpers", () => {
+  it("accepts an empty ref, a branch, a slashed branch and a tag", () => {
+    for (const v of ["", "  ", "main", "release/1.x", "v2.3.3"]) {
+      expect(isRepoRefOrEmpty(v)).toBe(true);
+    }
+  });
+
+  it("rejects refs the server would reject", () => {
+    for (const v of ["-x", "has space", "a;rm", "x".repeat(129)]) {
+      expect(isRepoRefOrEmpty(v)).toBe(false);
+    }
+  });
+
+  it("shortens a commit SHA to 7 characters", () => {
+    expect(shortCommitSha("c4d54f87a81b30aa173fddf05d7ff83ae7da5796")).toBe("c4d54f8");
   });
 });

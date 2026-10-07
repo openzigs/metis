@@ -298,9 +298,12 @@ describe("useProjectJobEvents", () => {
     const { result } = renderHook(() => useProjectJobEvents("p1"), { wrapper: wrapper(qc) });
 
     act(() =>
-      fake.fire("job:lifecycle", lifecycle({ kind: "scan", status: "progress", progress: 30 })),
+      fake.fire(
+        "job:lifecycle",
+        lifecycle({ kind: "pr-review", status: "progress", progress: 30 }),
+      ),
     );
-    expect(result.current?.kind).toBe("scan");
+    expect(result.current?.kind).toBe("pr-review");
     expect(result.current?.status).toBe("progress");
     expect(result.current?.progress).toBe(30);
   });

@@ -8,6 +8,7 @@
 import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
 import { missingParamError } from "./arg-errors.js";
 import type { KnowledgeService } from "../../rag/knowledge-service.js";
+import { formatHitScore } from "../../rag/hit-locator.js";
 
 const DEFAULT_K = 5;
 const MAX_K = 15;
@@ -74,9 +75,12 @@ export function createSearchKnowledgeTool(deps: SearchKnowledgeDeps): AgentTool 
     // a citation has an id to cite: the label alone led models to cite
     // `filename#chunkN` as the id. Same `documentId=… chunk=…` form as the
     // pre-retrieved context block (`agent-runner.ts`).
+    // #717 — a repository file by its real path (`hit.path`, set only for a
+    // `repo` row) and the rank score the list is ordered by, not the cosine a
+    // keyword-only hit does not have.
     const formatted = result.hits.map(
       (hit, i) =>
-        `[${i + 1}] ${hit.filename}#chunk${hit.position} documentId=${hit.documentId} chunk=${hit.position} (score: ${hit.score?.toFixed(3) ?? "n/a"})\n${hit.text}`,
+        `[${i + 1}] ${hit.path ?? hit.filename}#chunk${hit.position} documentId=${hit.documentId} chunk=${hit.position} (${formatHitScore(hit, 3)})\n${hit.text}`,
     );
 
     return {

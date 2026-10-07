@@ -119,7 +119,6 @@
       }
     },
     "required": [
-      "projectId",
       "query"
     ]
   },

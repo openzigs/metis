@@ -2,8 +2,11 @@
  * Issue #281 / Epic #34 — User search endpoint for @mention autocomplete.
  *
  * Routes:
- *   GET /api/users?search=<q>&limit=<n>  — search ACTIVE users by username or
- *                                          displayName for the mention picker.
+ *   GET /api/users?search=<q>&limit=<n>[&projectId=<id>]
+ *     — search ACTIVE users by username or displayName for the mention and
+ *       assignee pickers. With `projectId`, only users who can open that
+ *       project (#734); without it, only users sharing a live workspace with
+ *       the caller, plus system admins (#870). A system admin sees everyone.
  *
  * Requires authentication. Only NON-sensitive fields (id, username,
  * displayName) are ever returned — password hashes, emails, roles and SSO
@@ -15,7 +18,11 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { AppError } from "../middleware/error-handler.js";
+import type { Prisma } from "@prisma/client";
+import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../lib/prisma.js";
+import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
+import { readLiveWorkspaceIds } from "../lib/auth/live-workspace-ids.js";
 
 const MAX_LIMIT = 25;
 const DEFAULT_LIMIT = 8;
@@ -33,7 +40,74 @@ const searchQuerySchema = z.object({
       const floored = Math.floor(n);
       return Math.min(Math.max(floored, 1), MAX_LIMIT);
     }),
+  /** #734 — restrict the picker to users who can open this project. */
+  projectId: z.string().trim().min(1).max(100).optional(),
 });
+
+/** System admins open every project (`assertProjectAccess`'s bypass). */
+const SYSTEM_ADMIN: Prisma.UserWhereInput = { roles: { some: { role: { key: "admin" } } } };
+
+/**
+ * #734 — the users who can open `projectId`, as a `User` filter. Mirrors who a
+ * comment or discussion @mention is delivered to (`assertProjectAccess` plus
+ * "not soft-deleted", via `canAccessProjectDiscussions`): system admins, plus
+ * the live members of a live workspace — or everyone for a legacy project with
+ * no workspace. A soft-deleted project offers system admins only, and only to
+ * a system admin.
+ *
+ * @throws AppError 404 — unknown project, the caller cannot open it, or it is
+ *   soft-deleted and the caller is not a system admin
+ */
+async function mentionAudienceWhere(
+  user: AuthPayload | undefined,
+  projectId: string,
+): Promise<Prisma.UserWhereInput> {
+  await assertResourceProjectAccess(user, projectId, projectNotFound);
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true, deletedAt: true, workspace: { select: { deletedAt: true } } },
+  });
+  if (!project) throw projectNotFound();
+  if (project.deletedAt || project.workspace?.deletedAt) {
+    // A soft-deleted project is the unknown-project 404 to everyone but a
+    // system admin — the comment routes answer it the same way
+    // (`canAccessProjectDiscussions`), and a 200 here would list the admins.
+    if (user?.role !== "admin") throw projectNotFound();
+    return SYSTEM_ADMIN;
+  }
+  if (!project.workspaceId) return {};
+  return {
+    OR: [{ workspaceMemberships: { some: { workspaceId: project.workspaceId } } }, SYSTEM_ADMIN],
+  };
+}
+
+/**
+ * #870 — the users the caller may see with no `projectId`: the live members of
+ * the caller's own live workspaces, plus system admins, plus the caller. A
+ * system admin sees everyone, as `assertProjectAccess` lets them open every
+ * project. Without this, any authenticated user could list the usernames and
+ * display names of every active user in every tenant (OWASP A01).
+ *
+ * Memberships are re-read from the database rather than taken from the JWT, so
+ * a membership removed since the token was issued no longer widens the list.
+ */
+async function callerAudienceWhere(user: AuthPayload): Promise<Prisma.UserWhereInput | null> {
+  if (user.role === "admin") return null;
+  const workspaceIds = await readLiveWorkspaceIds(user.userId);
+  return {
+    OR: [
+      { id: user.userId },
+      SYSTEM_ADMIN,
+      ...(workspaceIds.length > 0
+        ? [{ workspaceMemberships: { some: { workspaceId: { in: workspaceIds } } } }]
+        : []),
+    ],
+  };
+}
+
+function projectNotFound(): AppError {
+  return new AppError(404, "NOT_FOUND", "Project not found");
+}
 
 export function usersRouter(): Router {
   const r = Router();
@@ -49,14 +123,29 @@ export function usersRouter(): Router {
       });
     }
 
-    const { search, limit } = parsed.data;
+    const { search, limit, projectId } = parsed.data;
+
+    // #734 — scoped to a project, the picker offers only the users who can
+    // open it, so an @mention never targets someone it cannot notify. The
+    // caller must be able to open the project themselves (the seam's 404
+    // otherwise, as for an unknown id), or this would list another tenant's
+    // members. Without a project, #870 scopes the list to the caller's own
+    // workspaces (everyone, for a system admin).
+    const audience = projectId
+      ? await mentionAudienceWhere(req.user, projectId)
+      : await callerAudienceWhere(req.user);
 
     // SQLite `LIKE` is case-insensitive for ASCII, so a plain `contains` filter
     // gives prefix/substring matching without the Postgres-only
     // `mode: "insensitive"` option. The term is passed as a bound parameter by
     // Prisma — it is never interpolated into raw SQL.
-    const where = {
+    // `deletedAt: null` matches mention delivery (`LIVE_MEMBER_USER`): a
+    // SCIM soft-deleted user whose status is still active is never notified,
+    // so the picker must not offer them either.
+    const where: Prisma.UserWhereInput = {
       status: "active",
+      deletedAt: null,
+      ...(audience ? { AND: [audience] } : {}),
       ...(search
         ? {
             OR: [{ username: { contains: search } }, { displayName: { contains: search } }],

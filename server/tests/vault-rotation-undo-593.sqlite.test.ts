@@ -1,8 +1,8 @@
 /**
  * #593 — an update that rotates a connection's own secret in place and then
  * fails part-way puts the previous value back: the request reports failure, so
- * the credential must not have changed. Covers the Jira and test-management
- * update paths and the vault primitives they use (`rotateUndoable`,
+ * the credential must not have changed. Covers the Jira update path and the
+ * vault primitives they use (`rotateUndoable`,
  * `undoRotation`, `undoRotations`).
  *
  * Real SQLite built by the migration chain and the real `VaultService`; the
@@ -36,7 +36,6 @@ vi.mock("../src/lib/prisma.js", async () => {
 const { getVaultService, __resetVaultSingleton, SecretNotFoundError } =
   await import("../src/lib/vault/vault-service.js");
 const jira = await import("../src/lib/connectors/jira/jira-service.js");
-const testmgmt = await import("../src/lib/connectors/testmgmt/connection-service.js");
 const { undoRotations } = await import("../src/lib/vault/secret-retirement.js");
 const { getAuditService } = await import("../src/lib/audit/audit-service.js");
 const { mapStatusCarryingError } = await import("../src/middleware/http-status-errors.js");
@@ -53,7 +52,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const prevKey = process.env.VAULT_MASTER_KEY;
     let seq = 0;
     const uniq = (p: string) => `${p}-${++seq}`;
-    const refIdOf = (ref: string) => /^\$\{vault:([^}]+)\}$/.exec(ref)![1]!;
     const vault = () => getVaultService();
     const plaintext = async (id: string) => (await vault().read(id)).plaintext;
     const ciphertext = async (id: string) =>
@@ -242,103 +240,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await plaintext(before.secretId)).toBe("new-token");
       expect(await plaintext(before.tlsCaSecretId!)).toBe("new-ca");
       expect(await rotationAudits([before.secretId, before.tlsCaSecretId!])).toEqual([]);
-    });
-
-    // ---- Test management ---------------------------------------------------
-
-    const tmDeps = () => ({
-      prisma: db,
-      vault: vault(),
-      assertHost: async () => undefined,
-    });
-
-    async function ownerXray() {
-      const made = await testmgmt.createTestManagementConnection(
-        "p1",
-        {
-          label: uniq("x"),
-          kind: "xray",
-          baseUrl: "https://xray.example.test",
-          auth: { kind: "xray", clientId: "owner-id", clientSecret: "owner-secret" },
-          tlsConfig: { rejectUnauthorized: true, caCert: "owner-ca" },
-        },
-        OWNER,
-        tmDeps(),
-      );
-      const row = await db.testManagementConnection.findUniqueOrThrow({ where: { id: made.id } });
-      const auth = JSON.parse(row.authConfigJson) as Record<string, string>;
-      const tls = JSON.parse(row.tlsConfigJson!) as { caCertRef: string };
-      return {
-        row,
-        clientId: refIdOf(auth.clientIdRef!),
-        clientSecret: refIdOf(auth.clientSecretRef!),
-        ca: refIdOf(tls.caCertRef),
-      };
-    }
-
-    it("test management update: the row write failing restores both xray credentials and the CA cert", async () => {
-      const { row, clientId, clientSecret, ca } = await ownerXray();
-      vi.spyOn(db.testManagementConnection, "update").mockRejectedValueOnce(new Error("disk full"));
-
-      await expect(
-        testmgmt.updateTestManagementConnection(
-          row.id,
-          {
-            auth: { kind: "xray", clientId: "new-id", clientSecret: "new-secret" },
-            tlsConfig: { rejectUnauthorized: true, caCert: "new-ca" },
-          },
-          OWNER,
-          undefined,
-          tmDeps(),
-        ),
-      ).rejects.toThrow("disk full");
-
-      expect(await plaintext(clientId)).toBe("owner-id");
-      expect(await plaintext(clientSecret)).toBe("owner-secret");
-      expect(await plaintext(ca)).toBe("owner-ca");
-      const after = await db.testManagementConnection.findUniqueOrThrow({ where: { id: row.id } });
-      expect(after.authConfigJson).toBe(row.authConfigJson);
-      const audits = await rotationAudits([clientId, clientSecret, ca]);
-      expect(audits.map((a) => a.targetId).sort()).toEqual([clientId, clientSecret, ca].sort());
-      for (const a of audits) {
-        expect(JSON.parse(a.metadata ?? "{}")).toMatchObject({
-          resourceType: "test_management_connection",
-          resourceId: row.id,
-        });
-      }
-    });
-
-    it("test management update: the client_secret rotation failing restores the client_id", async () => {
-      const { row, clientId, clientSecret } = await ownerXray();
-      failRotationOn(2);
-
-      await expect(
-        testmgmt.updateTestManagementConnection(
-          row.id,
-          { auth: { kind: "xray", clientId: "new-id", clientSecret: "new-secret" } },
-          OWNER,
-          undefined,
-          tmDeps(),
-        ),
-      ).rejects.toThrow("vault unavailable");
-
-      expect(await plaintext(clientId)).toBe("owner-id");
-      expect(await plaintext(clientSecret)).toBe("owner-secret");
-    });
-
-    it("test management update: a successful update keeps the rotated values", async () => {
-      const { row, clientId, clientSecret } = await ownerXray();
-
-      await testmgmt.updateTestManagementConnection(
-        row.id,
-        { auth: { kind: "xray", clientId: "new-id", clientSecret: "new-secret" } },
-        OWNER,
-        undefined,
-        tmDeps(),
-      );
-
-      expect(await plaintext(clientId)).toBe("new-id");
-      expect(await plaintext(clientSecret)).toBe("new-secret");
     });
 
     // ---- Vault primitives --------------------------------------------------

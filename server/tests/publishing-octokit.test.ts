@@ -1,6 +1,8 @@
 /**
  * Octokit factory + throttle hooks + auth scope verifier — Phase 9 (#66).
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
@@ -8,6 +10,7 @@ vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
 }));
 
 import {
+  PUBLISH_OCTOKIT_CACHE_MAX,
   __resetPublishOctokitCache,
   __resetThrottleBudget,
   __setPublishOctokitFactory,
@@ -24,6 +27,8 @@ import type {
   OctokitResponseLike,
   PublishOctokitLike,
 } from "../src/lib/publishing/types.js";
+
+const GH = "https://api.github.com";
 
 afterEach(() => {
   __setPublishOctokitFactory(null);
@@ -173,7 +178,7 @@ describe("acquirePublishOctokit caching", () => {
     expect(calls).toBe(1);
   });
 
-  it("rotates client on token change (fingerprint mismatch)", async () => {
+  it("rotates client on token change", async () => {
     let calls = 0;
     __setPublishOctokitFactory(async () => {
       calls += 1;
@@ -190,6 +195,102 @@ describe("acquirePublishOctokit caching", () => {
       token: "tok-2",
     });
     expect(calls).toBe(2);
+  });
+
+  // #749 — the old fingerprint was length + first 2 + last 2 characters, so
+  // two classic `ghp_` PATs differing only in the middle shared one client and
+  // a publish went out under the other project's credential.
+  it("never shares a client between tokens that differ only in the middle", async () => {
+    const tokensSeen: string[] = [];
+    __setPublishOctokitFactory(async (args) => {
+      tokensSeen.push(args.token);
+      return fakeClient(async () => ({ status: 200, headers: {}, data: {} }));
+    });
+    const tokenA = `ghp_${"A".repeat(34)}zz`;
+    const tokenB = `ghp_${"B".repeat(34)}zz`;
+    expect(tokenA).toHaveLength(tokenB.length);
+
+    const a = await acquirePublishOctokit({ owner: "openzigs", baseUrl: GH, token: tokenA });
+    const b = await acquirePublishOctokit({ owner: "openzigs", baseUrl: GH, token: tokenB });
+
+    expect(b).not.toBe(a);
+    expect(tokensSeen).toEqual([tokenA, tokenB]);
+  });
+
+  it("keeps one client per token, so alternating projects do not rebuild", async () => {
+    let calls = 0;
+    __setPublishOctokitFactory(async () => {
+      calls += 1;
+      return fakeClient(async () => ({ status: 200, headers: {}, data: {} }));
+    });
+    const a1 = await acquirePublishOctokit({ owner: "openzigs", baseUrl: GH, token: "tok-a" });
+    const b1 = await acquirePublishOctokit({ owner: "openzigs", baseUrl: GH, token: "tok-b" });
+    const a2 = await acquirePublishOctokit({ owner: "openzigs", baseUrl: GH, token: "tok-a" });
+    const b2 = await acquirePublishOctokit({ owner: "openzigs", baseUrl: GH, token: "tok-b" });
+
+    expect(a2).toBe(a1);
+    expect(b2).toBe(b1);
+    expect(calls).toBe(2);
+  });
+
+  it("builds a new client when the pinned address changes", async () => {
+    const pins: Array<string | undefined> = [];
+    __setPublishOctokitFactory(async (args) => {
+      pins.push(args.pinnedAddress);
+      return fakeClient(async () => ({ status: 200, headers: {}, data: {} }));
+    });
+    const base = { owner: "acme", baseUrl: "https://ghe.example.test/api/v3", token: "tok-1" };
+
+    const first = await acquirePublishOctokit({
+      ...base,
+      pinnedAddress: "203.0.113.5",
+      pinnedFamily: 4,
+    });
+    const again = await acquirePublishOctokit({
+      ...base,
+      pinnedAddress: "203.0.113.5",
+      pinnedFamily: 4,
+    });
+    const moved = await acquirePublishOctokit({
+      ...base,
+      pinnedAddress: "203.0.113.9",
+      pinnedFamily: 4,
+    });
+
+    expect(again).toBe(first);
+    expect(moved).not.toBe(first);
+    expect(pins).toEqual(["203.0.113.5", "203.0.113.9"]);
+  });
+
+  it("bounds the cache, evicting the least recently used client", async () => {
+    let calls = 0;
+    __setPublishOctokitFactory(async () => {
+      calls += 1;
+      return fakeClient(async () => ({ status: 200, headers: {}, data: {} }));
+    });
+    const acquire = (token: string) => acquirePublishOctokit({ owner: "acme", baseUrl: GH, token });
+
+    const keep = await acquire("tok-keep");
+    for (let i = 0; i < PUBLISH_OCTOKIT_CACHE_MAX - 1; i++) await acquire(`tok-${i}`);
+    // Touch `tok-keep` so `tok-0` becomes the least recently used entry.
+    expect(await acquire("tok-keep")).toBe(keep);
+    await acquire("tok-overflow");
+    expect(calls).toBe(PUBLISH_OCTOKIT_CACHE_MAX + 1);
+
+    expect(await acquire("tok-keep")).toBe(keep);
+    expect(calls).toBe(PUBLISH_OCTOKIT_CACHE_MAX + 1);
+    await acquire("tok-0");
+    expect(calls).toBe(PUBLISH_OCTOKIT_CACHE_MAX + 2);
+  });
+
+  it("never logs token material", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("../src/lib/publishing/octokit-factory.ts", import.meta.url)),
+      "utf8",
+    );
+    const logCalls = source.match(/log\.\w+\([^;]*;/g) ?? [];
+    expect(logCalls.length).toBeGreaterThan(0);
+    for (const call of logCalls) expect(call).not.toMatch(/token|auth|fingerprint/i);
   });
 });
 

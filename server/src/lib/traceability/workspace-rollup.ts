@@ -41,18 +41,26 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { actorCanAccessProject, type SchedulerActor } from "../scheduler/project-access.js";
 import { listAccessibleProjectsInWorkspace } from "../cross-project/cross-project-access.js";
 import { getRequirementChain } from "./traceability-spine.js";
+import {
+  loadTestedByTargets,
+  resolveTestedByForTargets,
+  type TestedByPrisma,
+} from "./tested-by.js";
 
 /**
- * Prisma surface the rollup needs: the spine's four tables plus `requirementLink`
- * (edge traversal), `project` (names) and `workspaceMember` (access checks).
- * Kept narrow so unit tests can supply a hand-rolled mock.
+ * Prisma surface the rollup needs: the spine's tables plus `requirementLink`
+ * (edge traversal), `project` (names), `workspaceMember` (access checks) and
+ * the #814 resolver's `specCodeMapping`. Kept narrow so unit tests can supply a
+ * hand-rolled mock.
  */
 type RollupPrisma = Pick<
   PrismaClient,
   | "requirement"
-  | "requirementSpecMapping"
   | "specCodeMapping"
+  | "requirementSpecMapping"
   | "requirementCodeMapping"
+  | "codeSymbol"
+  | "codeEdge"
   | "requirementLink"
   | "project"
   | "workspaceMember"
@@ -210,7 +218,12 @@ type LinkProjectRow = {
  * Aggregate a workspace's traceability: per-project coverage counts plus the
  * cross-project link map. Scoped to the caller's accessible projects within the
  * workspace (membership asserted → 404 for non-members). Bounded query cost:
- * one link query + O(#projects) count queries; no unbounded graph traversal.
+ * one link query + O(#projects × constant) queries; no unbounded graph traversal.
+ *
+ * #815 — each project's tested coverage comes from the "Tested by" resolver
+ * (#814) run once per project in batch mode, so the summary agrees with the
+ * chain and the gap list. Its denominator is the requirements with mapped code
+ * (direct or via a spec), the same set the gap list judges.
  */
 export async function getWorkspaceTraceabilitySummary(
   actor: SchedulerActor,
@@ -263,8 +276,11 @@ export async function getWorkspaceTraceabilitySummary(
 
   const projects: WorkspaceProjectTraceability[] = await Promise.all(
     projectIds.map(async (pid): Promise<WorkspaceProjectTraceability> => {
-      const [requirements, specMapped, codeMapped] = await Promise.all([
-        prisma.requirement.count({ where: { projectId: pid, deletedAt: null } }),
+      const [liveRequirements, specMapped, codeMapped] = await Promise.all([
+        prisma.requirement.findMany({
+          where: { projectId: pid, deletedAt: null },
+          select: { id: true, title: true, body: true },
+        }),
         prisma.requirementSpecMapping.findMany({
           where: { projectId: pid },
           select: { requirementId: true },
@@ -276,10 +292,40 @@ export async function getWorkspaceTraceabilitySummary(
           distinct: ["requirementId"],
         }),
       ]);
+      const requirements = liveRequirements.length;
       // Mapping tables can retain rows for soft-deleted requirements, so clamp
       // the fraction to 1 rather than let the numerator exceed the denominator.
-      const coverage = (mapped: number): number =>
-        requirements === 0 ? 0 : Math.min(1, mapped / requirements);
+      const fraction = (part: number, whole: number): number =>
+        whole === 0 ? 0 : Math.min(1, Math.max(0, part / whole));
+      const coverage = (mapped: number): number => fraction(mapped, requirements);
+
+      // #815 — tested coverage over the requirements that have mapped code.
+      // limit 1: the resolver orders by relation strength, so the first test
+      // tells whether a strict (`direct`/`exercises`) link exists.
+      const resolverDeps = { prisma: prisma as unknown as TestedByPrisma };
+      const targets = await loadTestedByTargets(
+        resolverDeps.prisma,
+        pid,
+        liveRequirements.map((r) => r.id),
+      );
+      const tests = await resolveTestedByForTargets(
+        pid,
+        liveRequirements,
+        targets,
+        { limit: 1 },
+        resolverDeps,
+      );
+      let codeMappedRequirements = 0;
+      let tested = 0;
+      let strictlyTested = 0;
+      for (const r of liveRequirements) {
+        if ((targets.get(r.id) ?? []).length === 0) continue;
+        codeMappedRequirements++;
+        const strongest = tests.get(r.id)?.[0];
+        if (!strongest) continue;
+        tested++;
+        if (strongest.relation !== "naming") strictlyTested++;
+      }
       return {
         projectId: pid,
         name: nameById.get(pid) ?? pid,
@@ -287,6 +333,9 @@ export async function getWorkspaceTraceabilitySummary(
         linkedCrossProject: crossReqByProject.get(pid)?.size ?? 0,
         specCoverage: coverage(specMapped.length),
         codeCoverage: coverage(codeMapped.length),
+        codeMappedRequirements,
+        testCoverage: fraction(tested, codeMappedRequirements),
+        strictTestCoverage: fraction(strictlyTested, codeMappedRequirements),
       };
     }),
   );

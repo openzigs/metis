@@ -224,6 +224,20 @@ export class SchemaGraphWriter {
     }
   }
 
+  /**
+   * #867 — seed the routine cache with already-persisted schema routines, so a
+   * lineage backfill reuses their ids. Edges from passes that are not rewritten
+   * on that ingest (`catalog-deps`) point at them, and `CodeEdge.toSymbol` is
+   * `onDelete: SetNull`. The caller passes only schema rows (`language: "sql"`
+   * with a schema `source`), never an ordinary code `function`.
+   */
+  prewarmRoutines(rows: readonly { id: string; kind: string; qualifiedName: string }[]): void {
+    for (const row of rows) {
+      if (row.kind === "procedure" || row.kind === "function")
+        this.routineCache.set(`${row.kind}:${row.qualifiedName}`, row.id);
+    }
+  }
+
   /** Ensure a `table` symbol exists, returning its id (cached per qualified name). */
   async ensureTable(
     table: string,

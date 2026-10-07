@@ -86,7 +86,7 @@ type InvalidationKeys = readonly (readonly unknown[])[];
  * The query keys a job transition invalidates, per kind.
  *
  * The original three kinds (#239) have bespoke target lists here. Every other
- * kind — including the long-running ops added by Epic #406 (#419): `scan`,
+ * kind — including the long-running ops added by Epic #406 (#419):
  * `pr-review`, `import-sync`, `embeddings-reindex`, `spec-kit`,
  * `overview-regenerate` — falls through to `DEFAULT_INVALIDATION`, a generic,
  * project-scoped default that invalidates the project detail cache so whatever

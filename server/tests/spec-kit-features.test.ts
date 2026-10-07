@@ -71,6 +71,7 @@ import {
   listFeatures,
   ensureLegacyFeature,
   kebab,
+  truncateAtWord,
   archiveFeature,
   restoreFeature,
   SPECKIT_FEATURE_ARCHIVED_STATUS,
@@ -84,6 +85,20 @@ beforeEach(() => {
 });
 afterEach(() => vi.clearAllMocks());
 
+describe("truncateAtWord (#786)", () => {
+  it("keeps short text and cuts long text at the last whole word", () => {
+    expect(truncateAtWord("  Mark all as read  ", 80)).toBe("Mark all as read");
+    expect(
+      truncateAtWord(
+        "Mark all entries as read older than N days (Miniflux #4478): let a user mark every entry",
+        80,
+      ),
+    ).toBe("Mark all entries as read older than N days (Miniflux #4478): let a user mark");
+    expect(truncateAtWord("Mark all entries (Miniflux #4478): let", 20)).toBe("Mark all entries");
+    expect(truncateAtWord("x".repeat(100), 80)).toBe("x".repeat(80));
+  });
+});
+
 describe("kebab", () => {
   it("normalizes free text to kebab-case", () => {
     expect(kebab("Build the Login Page!!")).toBe("build-the-login-page");
@@ -94,6 +109,17 @@ describe("kebab", () => {
   it("truncates to 80 chars", () => {
     const long = "a".repeat(200);
     expect(kebab(long).length).toBe(80);
+  });
+  it("#786 — truncates at a word boundary, never mid-word", () => {
+    const title =
+      "Mark all entries as read older than N days (Miniflux #4478): let a user mark every entry";
+    const slug = kebab(title);
+    expect(slug).toBe(
+      "mark-all-entries-as-read-older-than-n-days-miniflux-4478-let-a-user-mark-every",
+    );
+    expect(slug.length).toBeLessThanOrEqual(80);
+    // The walkthrough got `…-let-a-user-mark-eve`.
+    expect(kebab(`${title} entry entry`)).toBe(slug);
   });
 });
 

@@ -509,7 +509,7 @@ credentials are explicitly **not** in scope.
 | `suggested_connector.provisioned`           | connector + vault entry created     |
 | `suggested_connector.provisioned.failed`    | provisioning failed (with rollback) |
 | `suggested_connector.stored_secret_refused` | stored password refused for another driver, host, port, Oracle service name or destination-choosing `options` (#324, #344) |
-| `vault.binding_refused`                     | a non-admin tried to attach a vault secret they did not create, or to move a connector / MCP server / Jira or test-management connection holding one, or to send one to a caller-chosen publishing / Projects v2 base URL (#344, #358) |
+| `vault.binding_refused`                     | a non-admin tried to attach a vault secret they did not create, or to move a connector / MCP server / Jira connection holding one, or to send one to a caller-chosen publishing / Projects v2 base URL (#344, #358) |
 
 ### 11.6 Non-goals
 

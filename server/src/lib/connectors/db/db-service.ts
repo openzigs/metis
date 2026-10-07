@@ -430,6 +430,14 @@ export async function inspectDbConnector(
 export interface CodeGraphSchemaWiring {
   /** Introspected schema in the sqlglot shape, or null when none is available. */
   introspectedSchema: IntrospectedSchema | null;
+  /**
+   * #721 — true when the project has a DB connector but reading it failed, so
+   * {@link introspectedSchema} is null for want of an answer. False when there
+   * is no connector (null means "no database") or it was introspected.
+   * Threaded into `ingestCodeGraph`'s `introspectionFailed` so an outage does
+   * not register as a schema change.
+   */
+  introspectionFailed: boolean;
   /** Live routines (procedures & functions) to parse for `calls` edges. */
   routines: DbRoutineInfo[];
   /** READ-ONLY routine-body fetcher bound to the project's DB connector. */
@@ -464,7 +472,8 @@ export interface CodeGraphSchemaWiring {
  *
  * NEVER throws and NEVER blocks ingest: any failure (no DB connector, unreachable
  * DB, missing grants) yields empty wiring so code-graph ingest proceeds exactly as
- * before. The returned `fetchRoutineBody` is itself wrapped to return null on any
+ * before. A failure to read an EXISTING connector is flagged `introspectionFailed`
+ * so ingest can tell an outage from "no database" (#721). The returned `fetchRoutineBody` is itself wrapped to return null on any
  * driver error. Routine bodies are only PARSED downstream — never executed; the
  * dependency catalog rows are only READ, never parsed or executed.
  */
@@ -475,6 +484,7 @@ export async function buildCodeGraphSchemaWiring(
   const sqlLineageOverride = (await resolveProjectSqlLineage(projectId, prisma)).enabled;
   const empty: CodeGraphSchemaWiring = {
     introspectedSchema: null,
+    introspectionFailed: false,
     routines: [],
     packages: [],
     dependencies: [],
@@ -557,6 +567,7 @@ export async function buildCodeGraphSchemaWiring(
 
     return {
       introspectedSchema,
+      introspectionFailed: false,
       routines,
       fetchRoutineBody,
       routineDialect: driver,
@@ -566,7 +577,9 @@ export async function buildCodeGraphSchemaWiring(
       sqlLineageOverride,
     };
   } catch {
-    return empty;
+    // A connector exists (or its listing failed) but could not be read — not
+    // the same as having no database (#721).
+    return { ...empty, introspectionFailed: true };
   }
 }
 

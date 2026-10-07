@@ -287,6 +287,13 @@ describe("plan SYSTEM_PROMPT contract", () => {
     }
     expect(PLAN_SYSTEM_PROMPT).toMatch(/## Risks & mitigations/);
   });
+
+  it("#785 — requires an existing-capability check before any new function", () => {
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/EXISTING CAPABILITY CHECK/);
+    expect(PLAN_SYSTEM_PROMPT).toContain("Sibling Symbols");
+    expect(PLAN_SYSTEM_PROMPT).toContain("Existing capability: <name> at <path:startLine-endLine>");
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/Never\s+propose writing a new or sibling function/);
+  });
 });
 
 describe("tasks SYSTEM_PROMPT contract", () => {

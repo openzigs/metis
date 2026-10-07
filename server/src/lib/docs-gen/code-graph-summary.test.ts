@@ -185,3 +185,54 @@ describe("rendering budget bounds", () => {
     expect(out.length).toBeLessThan(400);
   });
 });
+
+/**
+ * #857 — the flow block is part of every section's prompt and of its reuse
+ * hash, so it must not depend on the order the database returns edges in.
+ * `loadEdges` has no ORDER BY: a code graph rebuilt with identical content (a
+ * same-SHA refresh) returns its edges in a different order, and on the #706
+ * run-3 Miniflux graph (60 modules, many tied out-degrees, the block at its
+ * 4,000-char cap) that alone changed the block, and so the input hash of every
+ * checkpointed section, which a regenerate then rewrote from scratch.
+ */
+describe("#857 — the rendered blocks are independent of edge order", () => {
+  const graph = (): { symbols: GraphSymbol[]; edges: GraphEdge[] } => {
+    const symbols: GraphSymbol[] = [];
+    const edges: GraphEdge[] = [];
+    // Twelve modules with the same out-degree (a tie), each calling two others.
+    for (let i = 0; i < 12; i++) symbols.push(sym(`m${i}`, `svc/mod${i}/x.go`, "x"));
+    for (let i = 0; i < 12; i++) {
+      for (const j of [(i + 1) % 12, (i + 5) % 12]) {
+        edges.push({
+          kind: "calls",
+          fromSymbolId: `m${i}`,
+          toSymbolId: `m${j}`,
+          toQualifiedName: `svc/mod${j}/x.go::x`,
+        });
+      }
+      edges.push(ref(`m${i}`, `ds${i % 4}`, i % 2 === 0 ? "output" : "input"));
+    }
+    return { symbols, edges };
+  };
+
+  it("renders the same cross-module block whatever order the edges arrive in", () => {
+    const { symbols, edges } = graph();
+    const forward = renderCrossModuleDeps(buildCodeGraphSummary(symbols, edges), 400, 100);
+    const reversed = renderCrossModuleDeps(
+      buildCodeGraphSummary(symbols, [...edges].reverse()),
+      400,
+      100,
+    );
+    expect(forward).toMatch(/truncated/);
+    expect(reversed).toBe(forward);
+  });
+
+  it("renders the same dataset lineage block whatever order the edges arrive in", () => {
+    const { symbols, edges } = graph();
+    const forward = renderDatasetLineageChain(buildCodeGraphSummary(symbols, edges));
+    const reversed = renderDatasetLineageChain(
+      buildCodeGraphSummary(symbols, [...edges].reverse()),
+    );
+    expect(reversed).toBe(forward);
+  });
+});

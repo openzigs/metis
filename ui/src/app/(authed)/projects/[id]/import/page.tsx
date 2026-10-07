@@ -35,6 +35,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/ui/page-header";
+import { VaultPicker } from "@/components/connectors/vault-picker";
+import { vaultRefHint, VAULT_REF_EXAMPLE } from "@/lib/vault-ref";
 
 const SOURCE_LABELS: Record<ImportSourceKind, string> = {
   github: "GitHub",
@@ -44,6 +46,9 @@ const SOURCE_LABELS: Record<ImportSourceKind, string> = {
 };
 
 type FilterState = Record<string, string>;
+
+/** #763 — how the import authenticates: an existing vault secret, or a pasted token. */
+type CredentialMode = "vault" | "paste";
 
 /** Build the per-source filter object the API expects from flat form fields. */
 function buildFilter(source: ImportSourceKind, f: FilterState): Record<string, unknown> {
@@ -140,6 +145,9 @@ export default function ImportPage() {
   const [source, setSource] = useState<ImportSourceKind>("github");
   const [label, setLabel] = useState("");
   const [token, setToken] = useState("");
+  // #763 — default to the vault, like the connector forms; pasting is opt-in.
+  const [credentialMode, setCredentialMode] = useState<CredentialMode>("vault");
+  const [secretRef, setSecretRef] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [filter, setFilter] = useState<FilterState>({});
   const [preview, setPreview] = useState<ImportPreview | null>(null);
@@ -158,6 +166,14 @@ export default function ImportPage() {
 
   const usesToken = source !== "jira";
 
+  /** #763 — exactly one credential field is sent, per the chosen mode. */
+  function credentialFields(): { token?: string; secretRef?: string } {
+    if (!usesToken) return {};
+    if (credentialMode === "paste") return { token: token || undefined };
+    return { secretRef: secretRef.trim() || undefined };
+  }
+  const secretRefHintText = credentialMode === "vault" ? vaultRefHint(secretRef) : null;
+
   const sources = useQuery({
     queryKey: queryKeys.imports.sources(projectId),
     queryFn: () => importApi.listSources(projectId),
@@ -170,7 +186,7 @@ export default function ImportPage() {
       importApi.preview(projectId, {
         source,
         filter: buildFilter(source, filter),
-        token: token || undefined,
+        ...credentialFields(),
         baseUrl: baseUrl || undefined,
       }),
     onSuccess: (data) => {
@@ -197,7 +213,7 @@ export default function ImportPage() {
         source,
         label: label || `${SOURCE_LABELS[source]} import`,
         filter: buildFilter(source, filter),
-        token: token || undefined,
+        ...credentialFields(),
         baseUrl: baseUrl || undefined,
         syncEnabled: false,
         syncIntervalMinutes: IMPORT_SYNC_DEFAULT_INTERVAL_MINUTES,
@@ -208,6 +224,7 @@ export default function ImportPage() {
       setPreview(null);
       setLabel("");
       setToken("");
+      setSecretRef("");
       setFilter({});
       setFormError(null);
       setFieldErrors({});
@@ -308,15 +325,70 @@ export default function ImportPage() {
           })}
 
           {usesToken && (
-            <div>
-              <Label htmlFor="token">API token</Label>
-              <Input
-                id="token"
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-              />
-            </div>
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium">Credential</legend>
+              <div className="flex gap-4 text-sm">
+                <label className="flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name="credentialMode"
+                    value="vault"
+                    checked={credentialMode === "vault"}
+                    onChange={() => {
+                      setCredentialMode("vault");
+                      setToken("");
+                    }}
+                  />
+                  Vault secret
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name="credentialMode"
+                    value="paste"
+                    checked={credentialMode === "paste"}
+                    onChange={() => {
+                      setCredentialMode("paste");
+                      setSecretRef("");
+                    }}
+                  />
+                  Paste a token
+                </label>
+              </div>
+              {credentialMode === "vault" ? (
+                <div>
+                  <Label htmlFor="secretRef">Vault secret</Label>
+                  <VaultPicker
+                    id="secretRef"
+                    value={secretRef}
+                    onChange={setSecretRef}
+                    placeholder={VAULT_REF_EXAMPLE}
+                  />
+                  <p
+                    className={`mt-1 text-xs ${secretRefHintText ? "text-destructive" : "text-muted-foreground"}`}
+                  >
+                    {secretRefHintText ??
+                      (source === "github"
+                        ? "Optional for a public repository: leave it empty to read anonymously (rate-limited)."
+                        : "The token is read from the vault by the server and never shown here.")}
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <Label htmlFor="token">API token</Label>
+                  <Input
+                    id="token"
+                    type="password"
+                    autoComplete="off"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Stored in the vault for this import source only.
+                  </p>
+                </div>
+              )}
+            </fieldset>
           )}
 
           {usesToken && (
@@ -359,6 +431,11 @@ export default function ImportPage() {
 
           {preview && (
             <div className="rounded-md border p-4">
+              {(preview.warnings ?? []).map((w) => (
+                <p key={w} role="status" className="mb-2 text-xs text-warning">
+                  {w}
+                </p>
+              ))}
               <p className="text-sm font-medium">
                 {preview.count} matching issue{preview.count === 1 ? "" : "s"} · showing first{" "}
                 {preview.sample.length}

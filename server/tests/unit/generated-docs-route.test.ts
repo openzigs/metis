@@ -209,6 +209,7 @@ import {
 } from "../../src/lib/docs-gen/grounding/grounding-retrieval.js";
 import { synthesizeHolisticDocument } from "../../src/lib/docs-gen/holistic-synthesizer.js";
 import { synthesizeDbSchemaDocument } from "../../src/lib/docs-gen/db-schema-synthesizer.js";
+import { currentGenerationScope } from "../../src/lib/docs-gen/generation-scope.js";
 import { runDomainWebResearch } from "../../src/lib/docs-gen/grounding/domain-web-research.js";
 import { jobEvents } from "../../src/lib/socket/job-events.js";
 import { generatedDocOutboxId } from "../../src/lib/docs-gen/generated-doc-outbox.js";
@@ -797,11 +798,17 @@ describe("generated-docs routes", () => {
         scopeFilter: "{broken-json",
         evidencePolicy: "{}",
       });
-      (synthesizeDbSchemaDocument as ReturnType<typeof vi.fn>).mockResolvedValue({
-        markdown: "# Schema",
-        schemaGraph: { tables: [] },
-        generationModel: "db-schema-test-model",
-        warnings: [],
+      // #858 — the DB-schema synthesiser runs inside the run's generation scope,
+      // so its prose calls carry the cancel signal and count against the ceiling.
+      let scopeDocId: string | undefined;
+      (synthesizeDbSchemaDocument as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        scopeDocId = currentGenerationScope()?.docId;
+        return {
+          markdown: "# Schema",
+          schemaGraph: { tables: [] },
+          generationModel: "db-schema-test-model",
+          warnings: [],
+        };
       });
       (prisma.generatedDocumentVersion.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
         null,
@@ -817,6 +824,7 @@ describe("generated-docs routes", () => {
         "user_admin",
         "Stored DB Doc",
       );
+      expect(scopeDocId).toBe("doc-1");
       const createArg = (prisma.generatedDocumentVersion.create as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0] as {
         data: { provenanceManifest: string };
@@ -1673,6 +1681,29 @@ describe("generated-docs routes", () => {
       expect(res.body.data.title).toBe("Updated Title");
     });
 
+    it("#782 — never returns the internal generation checkpoint", async () => {
+      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+      });
+      (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+        title: "Doc",
+        status: "degraded",
+        autoUpdate: false,
+        errorMessage: null,
+        warnings: null,
+        generationCheckpoint: { version: 3, records: [{ sectionId: "overview" }] },
+      });
+
+      const res = await request(app)
+        .patch("/projects/proj-1/docs/doc-1")
+        .send({ autoUpdate: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.title).toBe("Doc");
+      expect(res.body.data).not.toHaveProperty("generationCheckpoint");
+    });
+
     it("#52 — never returns a failed document's raw error text", async () => {
       (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
         id: "doc-1",
@@ -1749,6 +1780,38 @@ describe("generated-docs routes", () => {
   });
 
   describe("DELETE /projects/:projectId/docs/:docId", () => {
+    it("#855 — stops a generation of the document running in this process", async () => {
+      const { startGenerationControl, releaseGenerationControl } =
+        await import("../../src/lib/docs-gen/generation-control.js");
+      const running = startGenerationControl("doc-1", "proj-1", {
+        maxCostCents: null,
+        maxTokens: null,
+      });
+      const other = startGenerationControl("doc-2", "proj-1", {
+        maxCostCents: null,
+        maxTokens: null,
+      });
+      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+        projectId: "proj-1",
+      });
+      (prisma.generatedDocumentVersion.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
+        null,
+      );
+      (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+      });
+
+      const res = await request(app).delete("/projects/proj-1/docs/doc-1");
+
+      expect(res.status).toBe(204);
+      expect(running.signal.aborted).toBe(true);
+      expect(running.reason).toBe("superseded");
+      expect(other.reason).toBeNull();
+      releaseGenerationControl(running);
+      releaseGenerationControl(other);
+    });
+
     it("soft-deletes a document", async () => {
       (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
         id: "doc-1",

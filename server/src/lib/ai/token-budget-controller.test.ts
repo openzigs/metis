@@ -16,6 +16,10 @@ vi.mock("../prisma.js", () => ({
     aITokenUsage: {
       aggregate: vi.fn(),
     },
+    // #792 — project budgets sum the project ledger.
+    tokenUsage: {
+      aggregate: vi.fn(),
+    },
   },
 }));
 vi.mock("../logger.js", () => ({
@@ -36,7 +40,15 @@ import {
 
 const mockFindUnique = prisma.tokenBudget.findUnique as ReturnType<typeof vi.fn>;
 const mockFindFirst = prisma.tokenBudget.findFirst as ReturnType<typeof vi.fn>;
-const mockAggregate = prisma.aITokenUsage.aggregate as ReturnType<typeof vi.fn>;
+const mockUserAggregate = prisma.aITokenUsage.aggregate as ReturnType<typeof vi.fn>;
+const mockProjectAggregate = prisma.tokenUsage.aggregate as ReturnType<typeof vi.fn>;
+// The legacy tests set one sum for whichever store is read; mirror it to both.
+const mockAggregate = {
+  mockResolvedValue: (v: unknown) => {
+    mockUserAggregate.mockResolvedValue(v);
+    mockProjectAggregate.mockResolvedValue(v);
+  },
+};
 const mockUpsert = prisma.tokenBudget.upsert as ReturnType<typeof vi.fn>;
 const mockCreate = prisma.tokenBudget.create as ReturnType<typeof vi.fn>;
 const mockUpdate = prisma.tokenBudget.update as ReturnType<typeof vi.fn>;
@@ -192,9 +204,8 @@ describe("TokenBudgetController", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       });
-      mockAggregate
-        .mockResolvedValueOnce({ _sum: { totalTokens: 200 } }) // project
-        .mockResolvedValueOnce({ _sum: { totalTokens: 200 } }); // user
+      mockProjectAggregate.mockResolvedValueOnce({ _sum: { totalTokens: 200 } });
+      mockUserAggregate.mockResolvedValueOnce({ _sum: { totalTokens: 200 } });
 
       const result = await ctrl.check("proj-1", "user-1");
       expect(result.allowed).toBe(false);

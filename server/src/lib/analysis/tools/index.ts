@@ -18,6 +18,7 @@ export { createDescribeTableTool, type DescribeTableDeps } from "./describe-tabl
 import type { AgentTool } from "./types.js";
 import { searchCodeGraphTool } from "./search-code-graph.js";
 import { createSearchSymbolsTool, type SearchSymbolsDeps } from "./search-symbols.js";
+import { createChatReadFileSliceTool } from "./chat-read-file-slice.js";
 
 export { CHAT_CODE_TOOL_NAMES } from "./chat-code-tool-names.js";
 
@@ -31,7 +32,10 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps>;
  * no duplication) plus the hybrid `search_code_symbols` tool. Ordering is
  * irrelevant here — `formatToolSchemas` sorts deterministically by name before
  * rendering the schemas into the cache-stable prompt lead.
+ *
+ * #736 — plus `read_file_slice`, so a cited `file:line` can be quoted rather
+ * than reported unverified. It reads only the session project's own clones.
  */
 export function getChatCodeTools(deps?: ChatCodeToolDeps): AgentTool[] {
-  return [searchCodeGraphTool, createSearchSymbolsTool(deps)];
+  return [searchCodeGraphTool, createSearchSymbolsTool(deps), createChatReadFileSliceTool()];
 }

@@ -16,7 +16,7 @@
 - **Analyse** uploaded material with a multi-agent orchestrator (BA, architect, security reviewer, planner) running on Anthropic (or an Anthropic-compatible endpoint such as DeepSeek), OpenAI, Azure OpenAI, Bedrock, a local model (Ollama / vLLM / LM Studio), or any internal OpenAI-compatible gateway.
 - **Synthesise** structured requirements + Given/When/Then acceptance criteria with a confidence score and full traceability back to source documents.
 - **Publish** the resulting issue drafts to GitHub (cloud or Enterprise) via an idempotent, rate-limited batch publisher with native sub-issue support and dry-run preview.
-- **Audit test coverage** by importing your existing test suite (CSV / Excel / DOCX / Markdown / Gherkin or via Jira, Xray, Zephyr Scale, TestRail) and getting a virtualised requirement × test-case coverage matrix, AI-generated gap suggestions, and Excel / Gherkin exports.
+- **See which tests cover each requirement** — "Tested by" in traceability links the tests already in your repository to requirements through their mapped code, with no model call, and lists the requirements that have mapped code but no test.
 - **Schedule** recurring jobs (analysis re-runs, connector refresh, webhooks) on a cron-driven scheduler with priority task queue and live progress.
 - **Run** safely in production with Prometheus metrics, JSON-log shipping, vault-encrypted secrets, RBAC, healthchecks, and one-command backup/restore.
 

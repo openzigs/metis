@@ -11,28 +11,40 @@
  * construction (the whole reason for the `authorKind` discriminator, see #476).
  *
  * Authorization: thread access uses `canAccessThread` (#477) — the single source
- * of truth shared with the socket layer — which maps to 404 (missing/soft-
- * deleted) vs 403 (non-member). Thread creation checks project membership
- * directly via `actorCanAccessProject` since no thread exists yet.
+ * of truth shared with the socket layer. Listing and creating threads, where no
+ * thread exists yet, use `canAccessProjectDiscussions`. Both are the canonical
+ * project-access seam (`assertProjectAccess`, #734), so a thread is open to
+ * whoever can open its project. Every denial is a 404 — a non-member cannot
+ * tell a thread they may not see from one that does not exist.
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
-import { actorCanAccessProject } from "../lib/scheduler/project-access.js";
-import { canAccessThread } from "../lib/discussions/access.js";
+import {
+  canAccessProjectDiscussions,
+  canAccessThread,
+  type ThreadActor,
+} from "../lib/discussions/access.js";
 import { emitMessageNew, emitMessageStream } from "../lib/discussions/socket-emitter.js";
 import { scheduleMirrorToTeams } from "../lib/teams/outbound-sync.js";
 import { createHumanDiscussionMessage } from "../lib/discussions/create-message.js";
 import { promoteMessageToRequirement, PromoteError } from "../lib/discussions/promote.js";
 import { AI_RESPONSE_MODES, shouldAIRespond } from "../lib/discussions/ai-gate.js";
-import { streamAIReply, type ResponderChunk } from "../lib/discussions/ai-responder.js";
+import {
+  streamAIReply,
+  type ResponderChunk,
+  type RetrievedContext,
+} from "../lib/discussions/ai-responder.js";
+import { resolveDiscussionTools } from "../lib/discussions/grounding.js";
+import { buildAutoRagContext, type RagContextCapture } from "./ai.js";
 import {
   checkThreadAIRateLimit,
   loadThreadAIRateLimitConfig,
 } from "../lib/discussions/ai-rate-limit.js";
 import { audit } from "../lib/audit/audit-service.js";
+import { assertWithinBudget, BudgetExceededError } from "../lib/finops/budget-enforcer.js";
 import { buildProvider, loadAIConfig, type AIProvider } from "../lib/ai/index.js";
 import type { RoleKey } from "@metis/shared";
 import { createChildLogger } from "../lib/logger.js";
@@ -102,16 +114,32 @@ const promoteSchema = z.object({
 
 // ---- Helpers ----------------------------------------------------------------
 
-function actorFromReq(req: Request): { id: string; role: RoleKey } {
+/**
+ * The request actor, carrying its verified workspace claim — the same claim
+ * `requireProjectAccess` hands `assertProjectAccess` for the project routes, so
+ * a thread and its project are open to exactly the same callers.
+ */
+function actorFromReq(req: Request): ThreadActor {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-  return { id: req.user.userId, role: req.user.role as RoleKey };
+  return {
+    id: req.user.userId,
+    role: req.user.role as RoleKey,
+    ...(req.user.workspaces ? { workspaces: req.user.workspaces } : {}),
+  };
 }
 
-/** Map a `canAccessThread` denial to the right HTTP error. */
-function denyToError(reason: "not_found" | "forbidden"): AppError {
-  return reason === "not_found"
-    ? new AppError(404, "THREAD_NOT_FOUND", "Discussion thread not found")
-    : new AppError(403, "FORBIDDEN", "No access to this discussion thread");
+/**
+ * A `canAccessThread` denial as an HTTP error. #734 — a non-member gets the
+ * same 404 as a missing thread (no existence oracle), as `assertProjectAccess`
+ * answers for the project itself. The reason stays in the audit row.
+ */
+function threadNotFound(): AppError {
+  return new AppError(404, "THREAD_NOT_FOUND", "Discussion thread not found");
+}
+
+/** A project the caller may not open: the project seam's own 404. */
+function projectNotFound(): AppError {
+  return new AppError(404, "NOT_FOUND", "Project not found");
 }
 
 /**
@@ -168,12 +196,12 @@ export function discussionsRouter(): Router {
       throw new AppError(400, "VALIDATION_ERROR", "projectId query param is required");
     }
 
-    const allowed = await actorCanAccessProject(actor, projectId, {
+    const allowed = await canAccessProjectDiscussions(actor, projectId, {
       resource: "discussion_thread",
       resourceId: projectId,
       action: "discussion.thread.list",
     });
-    if (!allowed) throw new AppError(403, "FORBIDDEN", "No access to this project");
+    if (!allowed) throw projectNotFound();
 
     const threads = await prisma.discussionThread.findMany({
       where: { projectId, deletedAt: null },
@@ -206,12 +234,12 @@ export function discussionsRouter(): Router {
     }
     const { projectId, title, anchor } = parsed.data;
 
-    const allowed = await actorCanAccessProject(actor, projectId, {
+    const allowed = await canAccessProjectDiscussions(actor, projectId, {
       resource: "discussion_thread",
       resourceId: projectId,
       action: "discussion.thread.create",
     });
-    if (!allowed) throw new AppError(403, "FORBIDDEN", "No access to this project");
+    if (!allowed) throw projectNotFound();
 
     const anchorCols = await validateAnchor(projectId, anchor);
 
@@ -252,7 +280,7 @@ export function discussionsRouter(): Router {
     }
 
     const access = await canAccessThread(actor, threadId);
-    if (!access.ok) throw denyToError(access.reason);
+    if (!access.ok) throw threadNotFound();
 
     // Anchor ids must belong to this thread's project (access carries projectId).
     const anchorCols = parsed.data.anchor
@@ -275,7 +303,7 @@ export function discussionsRouter(): Router {
     const threadId = String(req.params.id);
 
     const access = await canAccessThread(actor, threadId);
-    if (!access.ok) throw denyToError(access.reason);
+    if (!access.ok) throw threadNotFound();
 
     const rawLimit = Number.parseInt(String(req.query.limit ?? ""), 10);
     const limit = Number.isFinite(rawLimit)
@@ -300,11 +328,18 @@ export function discussionsRouter(): Router {
         body: true,
         createdAt: true,
         editedAt: true,
+        // #734 — the author's display name, so a reload does not render the
+        // raw user id. Only the name is read; the user row stays private.
+        authorUser: { select: { displayName: true } },
       },
     });
 
     const nextCursor = messages.length === limit ? messages[messages.length - 1]?.id : null;
-    res.json({ success: true, data: messages, nextCursor });
+    const data = messages.map(({ authorUser, ...m }) => ({
+      ...m,
+      ...(authorUser?.displayName ? { authorName: authorUser.displayName } : {}),
+    }));
+    res.json({ success: true, data, nextCursor });
   });
 
   // POST /api/discussions/threads/:id/messages — post a HUMAN message.
@@ -320,7 +355,7 @@ export function discussionsRouter(): Router {
     }
 
     const access = await canAccessThread(actor, threadId);
-    if (!access.ok) throw denyToError(access.reason);
+    if (!access.ok) throw threadNotFound();
 
     // Human message: NO provider call, NO AITokenUsage row. The SHARED creation
     // path (#551) builds via `buildHumanMessageData` (nulls AI columns + asserts
@@ -346,7 +381,8 @@ export function discussionsRouter(): Router {
   // Given a triggering human `messageId`, the gate (`shouldAIRespond`, #483)
   // decides whether to invoke the provider. When it does, the reply is streamed
   // over SSE and, on completion, persisted as an `authorKind=ai` message with
-  // attribution + a single `AITokenUsage` row (see `streamAIReply`). When the
+  // attribution, one `AITokenUsage` row and one project-ledger row (see
+  // `streamAIReply`; #739 grounds it in the project). When the
   // gate says no (e.g. `off`, or a plain statement in `on_mention`), we make NO
   // provider call and return a JSON `{ responded: false }` — the cost-control
   // guarantee. Member-only via `canAccessThread`.
@@ -362,13 +398,13 @@ export function discussionsRouter(): Router {
     }
 
     const access = await canAccessThread(actor, threadId);
-    if (!access.ok) throw denyToError(access.reason);
+    if (!access.ok) throw threadNotFound();
 
     const thread = await prisma.discussionThread.findFirst({
       where: { id: threadId, deletedAt: null },
       select: { id: true, projectId: true, aiResponseMode: true },
     });
-    if (!thread) throw denyToError("not_found");
+    if (!thread) throw threadNotFound();
 
     const trigger = await prisma.discussionMessage.findFirst({
       where: { id: parsed.data.messageId, threadId, deletedAt: null },
@@ -380,6 +416,26 @@ export function discussionsRouter(): Router {
     if (!shouldAIRespond(thread, trigger)) {
       res.json({ success: true, data: { responded: false } });
       return;
+    }
+
+    // #775 — the project budget gate, as `/api/ai/stream` runs it: an
+    // over-budget project gets a 402 before the SSE stream opens and before a
+    // rate-limit slot is spent. `streamAIReply` checks again for its other
+    // caller (the Teams @AI participant).
+    try {
+      await assertWithinBudget(thread.projectId);
+    } catch (err) {
+      if (!(err instanceof BudgetExceededError)) throw err;
+      audit({
+        actor: { id: actor.id },
+        action: "discussion.ai.budget_exceeded",
+        target: { type: "discussion_thread", id: threadId },
+        metadata: { usedTokens: err.usedTokens, budget: err.budget },
+      });
+      throw new AppError(err.status, err.code, err.message, {
+        usedTokens: err.usedTokens,
+        budget: err.budget,
+      });
     }
 
     // Per-(thread,user) AI-invocation rate limit (#485). Enforced BEFORE the
@@ -454,15 +510,37 @@ export function discussionsRouter(): Router {
       select: { authorKind: true, body: true, authorUserId: true, aiModel: true },
     });
 
+    // #739 — ground the reply in the thread's project, as chat does: its
+    // auto-RAG excerpts, and its read-only tools (bounded; see grounding.ts).
+    const provider = discussionProvider();
+    const retrieve = async (query: string): Promise<RetrievedContext> => {
+      const capture: RagContextCapture = { contexts: [], sources: 0 };
+      const block = await buildAutoRagContext(
+        thread.projectId,
+        [{ role: "user", content: query }],
+        undefined,
+        capture,
+      );
+      return { block, sources: capture.sources };
+    };
+    const resolveTools = (session: { id: string }) =>
+      resolveDiscussionTools({
+        session: { id: session.id, userId: actor.id, projectId: thread.projectId },
+        provider,
+        model: provider.model,
+      });
+
     try {
       const result = await streamAIReply({
         thread,
         triggerMessage: trigger,
         actor: { id: actor.id },
-        provider: discussionProvider(),
+        provider,
         history,
         onChunk: send,
         signal: ac.signal,
+        retrieve,
+        resolveTools,
       });
       // Integration seam (#486 — Phase 4): now that the discussion socket emitter
       // is merged (Phase 2 #481), fan the PERSISTED AI message out to the
@@ -553,7 +631,7 @@ export function discussionsRouter(): Router {
 
       // Member-only: promoting in a thread the caller can't access → 403/404.
       const access = await canAccessThread(actor, threadId);
-      if (!access.ok) throw denyToError(access.reason);
+      if (!access.ok) throw threadNotFound();
 
       try {
         const result = await promoteMessageToRequirement({

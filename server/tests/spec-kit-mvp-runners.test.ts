@@ -590,6 +590,108 @@ describe("runPlanExpanded", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #786 / #785 — the per-feature specify and plan are grounded like the legacy ones
+// ─────────────────────────────────────────────────────────────────────────────
+describe("feature commands are grounded (#786, #785)", () => {
+  /** Records the system prompt of every call. */
+  class RecordingProvider extends FakeProvider {
+    readonly systems: string[] = [];
+    async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+      this.systems.push(String((o as { systemMessage?: string }).systemMessage ?? ""));
+      return super.chat(m, o);
+    }
+  }
+  const ENTRY = "internal/storage/entry.go";
+  const knowledgeService = {
+    search: vi.fn(async (_projectId: string, _query: string, _opts?: unknown) => ({
+      hits: [
+        {
+          chunkId: "c1",
+          documentId: "d1",
+          filename: "connector:repo:r1:src/internal/storage/entry.go",
+          path: ENTRY,
+          position: 4,
+          text: "func (s *Storage) MarkAllAsRead(userID int64) error {",
+          score: 0.4,
+          rankScore: 0.4,
+          embeddingModel: "test",
+          source: "repo" as const,
+        },
+      ],
+    })),
+  };
+  const fusedCode = {
+    searcher: {
+      search: vi.fn(async () => [
+        { symbolId: "s-mark", filePath: ENTRY, name: "MarkAllAsRead", kind: "function", score: 1 },
+      ]),
+    },
+    lineLookup: {
+      resolve: vi.fn(
+        async () =>
+          new Map([["s-mark", { filePath: "internal/api/x.go", startLine: 506, endLine: 520 }]]),
+      ),
+    },
+  };
+  const siblingLookup = {
+    findInFiles: vi.fn(async () => [
+      {
+        id: "s-before",
+        name: "MarkAllAsReadBeforeDate",
+        kind: "function",
+        filePath: "internal/api/x.go",
+        startLine: 523,
+        endLine: 544,
+      },
+    ]),
+  };
+
+  it("speckit.specify retrieves project knowledge and reports it", async () => {
+    const provider = new RecordingProvider("# Spec\n\nbody");
+    const r = await runSpecifyFeature({
+      projectId: "p1",
+      prompt: "Mark all entries as read older than N days.",
+      deps: { provider },
+      knowledgeService,
+    });
+    expect(provider.systems[0]).toContain("## Retrieved Project Knowledge");
+    expect(provider.systems[0]).toContain(`${ENTRY}#4`);
+    expect(provider.systems[0]).toContain("AC-1"); // the canonical spec contract
+    expect(r.message).toMatch(/grounded on 1 retrieved chunk/);
+  });
+
+  it("speckit.plan grounds every artifact on the spec's requirements and code, siblings included", async () => {
+    const fid = seedFeature("p1", "005-older");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nMark all entries as read older than N days.");
+    const provider = new RecordingProvider("# Plan\n\nExtends `internal/api/x.go`.");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "005-older",
+      deps: { provider },
+      knowledgeService,
+      fusedCode,
+      siblingLookup,
+      pathLookup: {
+        hasCodeGraph: vi.fn(async () => true),
+        findExisting: vi.fn(async (_p: string, paths: string[]) => paths),
+      },
+    });
+    expect(provider.systems).toHaveLength(5);
+    for (const system of provider.systems) {
+      expect(system).toContain("## Retrieved Code Symbols");
+      expect(system).toContain(
+        "MarkAllAsReadBeforeDate (function) — internal/api/x.go:523-544 (beside MarkAllAsRead)",
+      );
+    }
+    // plan.md is written under the grounding + existing-capability contract.
+    expect(provider.systems.at(-1)).toContain("EXISTING CAPABILITY CHECK");
+    expect(provider.systems.at(-1)).toContain("Constitution Compliance Check");
+    expect(knowledgeService.search.mock.calls[0]![1]).toContain("Mark all entries as read");
+    expect(r.message).toMatch(/grounded on \d+ retrieved chunks? and 2 code symbols/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // runChecklist
 // ─────────────────────────────────────────────────────────────────────────────
 describe("runChecklist", () => {
@@ -680,6 +782,18 @@ describe("runChecklist", () => {
 // runTasksToIssues
 // ─────────────────────────────────────────────────────────────────────────────
 describe("runTasksToIssues", () => {
+  /** A client whose every method fails the test if it is ever reached. */
+  function throwingIssueClient() {
+    return {
+      create: vi.fn(async (): Promise<{ number: number; url: string }> => {
+        throw new Error("issue client must not be called");
+      }),
+      addSubIssue: vi.fn(async (): Promise<void> => {
+        throw new Error("issue client must not be called");
+      }),
+    };
+  }
+
   function seedReadyFeature(slug = "001-foo"): string {
     const fid = seedFeature("p1", slug);
     seedFeatureArtifact(fid, "spec.md", "x");
@@ -748,6 +862,7 @@ describe("runTasksToIssues", () => {
     expect(r.count).toBe(2);
     expect(create).toHaveBeenCalledTimes(2);
     expect(taskExportRows.size).toBe(2);
+    expect(r.message).toBe("Exported 2 task(s) to o/r.");
     expect(auditCalls.some((c) => c.action === "speckit.tasks_exported")).toBe(true);
   });
 
@@ -772,7 +887,7 @@ describe("runTasksToIssues", () => {
     expect(r2.created.every((c) => c.upserted)).toBe(true);
   });
 
-  it("dryRun does not write exports or call addSubIssue", async () => {
+  it("dryRun does not write exports or call create/addSubIssue", async () => {
     seedReadyFeature();
     const create = vi.fn(async () => ({ number: 5, url: "https://x" }));
     const addSubIssue = vi.fn(async () => undefined);
@@ -785,6 +900,7 @@ describe("runTasksToIssues", () => {
     });
     expect(r.count).toBe(2);
     expect(taskExportRows.size).toBe(0);
+    expect(create).not.toHaveBeenCalled();
     expect(addSubIssue).not.toHaveBeenCalled();
   });
 
@@ -821,22 +937,128 @@ describe("runTasksToIssues", () => {
     expect(r.parentEpicNumber).toBe(11);
   });
 
-  it("resolves repo from RepoConnection when no config set", async () => {
+  // #784 — the analysed RepoConnection is the upstream being read (miniflux/v2),
+  // never a place to file issues. Its absence from the resolution order is the fix.
+  it("never falls back to the analysed RepoConnection — refuses instead (#784)", async () => {
     seedReadyFeature();
     repoConnRows.set("rc1", {
       id: "rc1",
       projectId: "p1",
-      ownerOrOrg: "owner-rc",
-      repoName: "repo-rc",
+      ownerOrOrg: "miniflux",
+      repoName: "v2",
       deletedAt: null,
     });
-    const create = vi.fn(async () => ({ number: 1, url: "https://x" }));
+    const prev = process.env.SPECKIT_TASKS_DEFAULT_REPO;
+    delete process.env.SPECKIT_TASKS_DEFAULT_REPO;
+    try {
+      await expect(
+        runTasksToIssues({ projectId: "p1", featureSlug: "001-foo", dryRun: true }),
+      ).rejects.toMatchObject({ status: 400, code: "SPECKIT_NO_REPO_CONFIGURED" });
+    } finally {
+      if (prev !== undefined) process.env.SPECKIT_TASKS_DEFAULT_REPO = prev;
+    }
+  });
+
+  it("defaults to the project's saved publish target, not the analysed repo (#784)", async () => {
+    seedReadyFeature();
+    repoConnRows.set("rc1", {
+      id: "rc1",
+      projectId: "p1",
+      ownerOrOrg: "miniflux",
+      repoName: "v2",
+      deletedAt: null,
+    });
+    Object.assign(projects.get("p1"), {
+      publishGithubOwner: "openzigs",
+      publishGithubRepo: "flux-v2",
+    });
     const r = await runTasksToIssues({
       projectId: "p1",
       featureSlug: "001-foo",
-      client: { create },
+      client: throwingIssueClient(),
+      dryRun: true,
     });
-    expect(r.repo).toEqual({ owner: "owner-rc", name: "repo-rc" });
+    expect(r.repo).toEqual({ owner: "openzigs", name: "flux-v2" });
+    expect(r.message).toBe("Would export 2 task(s) to openzigs/flux-v2.");
+  });
+
+  // #784 — the dryRun contract is "no GitHub calls". A dry run that reached an
+  // injected client would file real issues the moment a real client is wired.
+  it("a dry run never calls the issue client, even when one is injected (#784)", async () => {
+    seedReadyFeature();
+    configRows.set("p1", { projectId: "p1", tasksToIssuesParentEpic: 7 });
+    const client = throwingIssueClient();
+    const r = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo: { owner: "openzigs", name: "flux-v2" },
+      client,
+      dryRun: true,
+    });
+    expect(client.create).not.toHaveBeenCalled();
+    expect(client.addSubIssue).not.toHaveBeenCalled();
+    expect(r.parentEpicNumber).toBe(7);
+    expect(r.created).toEqual([
+      { taskId: "T01", issueNumber: 0, url: "dryrun://%5BT01%5D%20Build%20A", upserted: false },
+      { taskId: "T02", issueNumber: 0, url: "dryrun://%5BT02%5D%20Build%20B", upserted: false },
+    ]);
+    expect(taskExportRows.size).toBe(0);
+  });
+
+  it("ignores a half-set saved publish target (#784)", async () => {
+    seedReadyFeature();
+    Object.assign(projects.get("p1"), { publishGithubOwner: "openzigs", publishGithubRepo: null });
+    const prev = process.env.SPECKIT_TASKS_DEFAULT_REPO;
+    delete process.env.SPECKIT_TASKS_DEFAULT_REPO;
+    try {
+      await expect(
+        runTasksToIssues({ projectId: "p1", featureSlug: "001-foo", dryRun: true }),
+      ).rejects.toMatchObject({ code: "SPECKIT_NO_REPO_CONFIGURED" });
+    } finally {
+      if (prev !== undefined) process.env.SPECKIT_TASKS_DEFAULT_REPO = prev;
+    }
+  });
+
+  it("an explicit SpecKitConfig repo still wins over the saved publish target", async () => {
+    seedReadyFeature();
+    configRows.set("p1", { projectId: "p1", tasksToIssuesRepo: "cfg-owner/cfg-repo" });
+    Object.assign(projects.get("p1"), {
+      publishGithubOwner: "openzigs",
+      publishGithubRepo: "flux-v2",
+    });
+    const r = await runTasksToIssues({ projectId: "p1", featureSlug: "001-foo", dryRun: true });
+    expect(r.repo).toEqual({ owner: "cfg-owner", name: "cfg-repo" });
+  });
+
+  // #784 — the route never injects a client, so a non-dry run used to reach the
+  // no-op client and persist SpecKitTaskExport rows for "issue #0".
+  it("a non-dry run with no issue client is refused 501 and persists nothing (#784)", async () => {
+    seedReadyFeature();
+    for (const dryRun of [false, undefined]) {
+      await expect(
+        runTasksToIssues({
+          projectId: "p1",
+          featureSlug: "001-foo",
+          repo: { owner: "openzigs", name: "flux-v2" },
+          ...(dryRun === false ? { dryRun } : {}),
+        }),
+      ).rejects.toMatchObject({ status: 501, code: "SPECKIT_ISSUE_EXPORT_UNAVAILABLE" });
+    }
+    expect(taskExportRows.size).toBe(0);
+    expect(auditCalls.some((c) => c.action === "speckit.tasks_exported")).toBe(false);
+  });
+
+  it("a dry run with no issue client plans without persisting, worded 'Would export' (#784)", async () => {
+    seedReadyFeature();
+    const r = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo: { owner: "openzigs", name: "flux-v2" },
+      dryRun: true,
+    });
+    expect(r.count).toBe(2);
+    expect(r.message).toBe("Would export 2 task(s) to openzigs/flux-v2.");
+    expect(taskExportRows.size).toBe(0);
   });
 
   it("resolves repo from SPECKIT_TASKS_DEFAULT_REPO env fallback", async () => {

@@ -4,7 +4,7 @@
  * Broadcasts `started` / `progress` / `completed` / `failed` transitions for the
  * long-running flows over the EXISTING socket.io layer. No new realtime
  * dependency is introduced. As of Epic #406 (#419) the {@link JobKind} union
- * covers all long-running ops (analysis, doc-generation, impact-analysis, scan,
+ * covers all long-running ops (analysis, doc-generation, impact-analysis,
  * pr-review, import-sync, embeddings-reindex, spec-kit, overview-regenerate).
  *
  * THE EMIT SEAM (#420–#424 wire their op here, in one place):
@@ -62,7 +62,6 @@ const GENERIC_FAILURE_MESSAGE: Record<JobKind, string> = {
   "doc-generation": "Document generation failed",
   "impact-analysis": "Impact analysis failed",
   // Epic #406 (#419) — new long-running ops.
-  scan: "The scan failed. Please try again.",
   "pr-review": "The pull request review failed. Please try again.",
   "import-sync": "The import sync failed. Please try again.",
   "embeddings-reindex": "The embeddings reindex failed. Please try again.",

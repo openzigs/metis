@@ -250,6 +250,8 @@ export interface AgentToolsContext {
   onToolEvent?: (event: ToolEvent) => void;
   broker?: ToolApprovalBroker;
   approvalTimeoutMs?: number;
+  /** #861 — is anyone there to answer a sub-agent's approval prompt? */
+  approverPresent?: () => Promise<boolean>;
   db?: PrismaClient;
   store?: SubAgentRunStore;
   allowlist?: SkillAllowlistSource;
@@ -485,6 +487,7 @@ async function runSubAgent(
           : {}),
         ...(ctx.signal ? { signal: ctx.signal } : {}),
         ...(onToolEvent ? { onEvent: onToolEvent } : {}),
+        ...(ctx.approverPresent ? { approverPresent: ctx.approverPresent } : {}),
       });
       const gate = new ApprovalGateService({
         sessionId: ctx.session.id,

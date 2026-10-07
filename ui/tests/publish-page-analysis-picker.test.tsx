@@ -50,10 +50,15 @@ vi.mock("@/lib/connectors-api", () => ({
   repoConnectorsApi: { getPrimary: vi.fn().mockResolvedValue(null) },
 }));
 
+vi.mock("@/lib/change-analysis-api", () => ({
+  publishDestinationApi: { get: vi.fn().mockResolvedValue(null), update: vi.fn() },
+}));
+
 import { analysisApi } from "@/lib/analysis-api";
 import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
+import { publishDestinationApi } from "@/lib/change-analysis-api";
 import PublishingPage from "@/app/(authed)/projects/[id]/publish/page";
 
 const listForProjectMock = analysisApi.listForProject as unknown as ReturnType<typeof vi.fn>;
@@ -294,8 +299,16 @@ describe("PublishingPage — screen-reader affordances (#58)", () => {
   });
 });
 
-describe("PublishingPage — run labels and target pre-fill (#364)", () => {
+describe("PublishingPage — run labels and target pre-fill (#364, #733)", () => {
   const getPrimaryMock = repoConnectorsApi.getPrimary as unknown as ReturnType<typeof vi.fn>;
+  const getDestMock = publishDestinationApi.get as unknown as ReturnType<typeof vi.fn>;
+  const dest = (githubOwner: string | null, githubRepo: string | null) => ({
+    publishDestination: "github",
+    jiraProjectKey: null,
+    jiraConnectionId: null,
+    githubOwner,
+    githubRepo,
+  });
 
   function renderPage() {
     const Wrapper = makeWrapper({});
@@ -320,38 +333,53 @@ describe("PublishingPage — run labels and target pre-fill (#364)", () => {
     expect(older.textContent).toMatch(/^Run #1 — /);
   });
 
-  it("fills owner and repo from the primary repository when they are empty", async () => {
-    getPrimaryMock.mockResolvedValueOnce({ ownerOrOrg: "acme", repoName: "api" });
+  it("#733 — fills owner and repo from the saved project target when they are empty", async () => {
+    getDestMock.mockResolvedValueOnce(dest("openzigs", "flux-v2"));
     renderPage();
-    await waitFor(() => expect(screen.getByLabelText("Target owner")).toHaveValue("acme"));
-    expect(screen.getByLabelText("Target repo")).toHaveValue("api");
+    await waitFor(() => expect(screen.getByLabelText("Target owner")).toHaveValue("openzigs"));
+    expect(screen.getByLabelText("Target repo")).toHaveValue("flux-v2");
   });
 
-  it("never pairs a typed owner with the primary's repo: a typed field suppresses the pre-fill", async () => {
-    let resolvePrimary: (v: unknown) => void = () => {};
-    getPrimaryMock.mockReturnValueOnce(new Promise((r) => (resolvePrimary = r)));
+  it("#733 — never fills the target from the analysed (primary) repository", async () => {
+    getPrimaryMock.mockResolvedValueOnce({ ownerOrOrg: "miniflux", repoName: "v2" });
+    getDestMock.mockResolvedValueOnce(dest(null, null));
+    renderPage();
+    await waitFor(() => expect(getPrimaryMock).toHaveBeenCalled());
+    await waitFor(() => expect(getDestMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByLabelText("Target owner")).toHaveValue("");
+    expect(screen.getByLabelText("Target repo")).toHaveValue("");
+    expect(screen.getByTestId("publish-target-unset")).toBeInTheDocument();
+  });
+
+  it("never pairs a typed owner with the saved repo: a typed field suppresses the pre-fill", async () => {
+    let resolveDest: (v: unknown) => void = () => {};
+    getDestMock.mockReturnValueOnce(new Promise((r) => (resolveDest = r)));
     renderPage();
     const owner = await screen.findByLabelText("Target owner");
     fireEvent.change(owner, { target: { value: "my-org" } });
-    resolvePrimary({ ownerOrOrg: "acme", repoName: "from-primary" });
-    await waitFor(() => expect(getPrimaryMock).toHaveBeenCalled());
+    resolveDest(dest("openzigs", "from-saved"));
+    await waitFor(() => expect(getDestMock).toHaveBeenCalled());
     // Let the resolved query settle and the effect run.
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByLabelText("Target owner")).toHaveValue("my-org");
     expect(screen.getByLabelText("Target repo")).toHaveValue("");
   });
 
-  it("does not pre-fill half a pair from a local/upload primary with no owner", async () => {
-    getPrimaryMock.mockResolvedValueOnce({ ownerOrOrg: null, repoName: "from-primary" });
+  it.each([
+    [null, "from-saved"],
+    ["openzigs", null],
+  ])("does not pre-fill half a pair from a half-saved target (%s/%s)", async (o, r) => {
+    getDestMock.mockResolvedValueOnce(dest(o, r));
     renderPage();
-    await waitFor(() => expect(getPrimaryMock).toHaveBeenCalled());
+    await waitFor(() => expect(getDestMock).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByLabelText("Target owner")).toHaveValue("");
     expect(screen.getByLabelText("Target repo")).toHaveValue("");
   });
 
-  it("does not refill fields the user cleared when the primary repo refetches", async () => {
-    getPrimaryMock.mockResolvedValue({ ownerOrOrg: "acme", repoName: "api" });
+  it("does not refill fields the user cleared when the saved target refetches", async () => {
+    getDestMock.mockResolvedValue(dest("openzigs", "flux-v2"));
     try {
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       const Wrapper = makeWrapper({ queryClient });
@@ -360,20 +388,20 @@ describe("PublishingPage — run labels and target pre-fill (#364)", () => {
           <PublishingPage />
         </Wrapper>,
       );
-      await waitFor(() => expect(screen.getByLabelText("Target owner")).toHaveValue("acme"));
+      await waitFor(() => expect(screen.getByLabelText("Target owner")).toHaveValue("openzigs"));
       fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "" } });
       fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "" } });
-      const calls = getPrimaryMock.mock.calls.length;
+      const calls = getDestMock.mock.calls.length;
       // Changed data, so the refetch hands the page a new object (an identical
       // result is structurally shared and would never reach the effect at all).
-      getPrimaryMock.mockResolvedValue({ ownerOrOrg: "acme", repoName: "api-renamed" });
-      await queryClient.refetchQueries({ queryKey: ["connectors", "repos"] });
-      await waitFor(() => expect(getPrimaryMock.mock.calls.length).toBeGreaterThan(calls));
+      getDestMock.mockResolvedValue(dest("openzigs", "flux-v2-renamed"));
+      await queryClient.refetchQueries({ queryKey: ["publishDestination"] });
+      await waitFor(() => expect(getDestMock.mock.calls.length).toBeGreaterThan(calls));
       await new Promise((r) => setTimeout(r, 50));
       expect(screen.getByLabelText("Target owner")).toHaveValue("");
       expect(screen.getByLabelText("Target repo")).toHaveValue("");
     } finally {
-      getPrimaryMock.mockResolvedValue(null);
+      getDestMock.mockResolvedValue(null);
     }
   });
 });

@@ -10,6 +10,12 @@
  * `.int()` accepts only safe integers, and its converter says so with
  * `maximum: Number.MAX_SAFE_INTEGER`.
  *
+ * Deliberate schema changes since are hand-applied to the recording, each one
+ * a content change rather than converter drift: #784 added the
+ * `speckit_taskstoissues.dryRun` description; #786 added the optional
+ * `featureSlug` and `force` to `speckit_tasks`, `speckit_clarify`,
+ * `speckit_analyze` and `speckit_implement`.
+ *
  * Driven through a real SDK client over the in-memory transport.
  */
 import fs from "node:fs";

@@ -29,8 +29,8 @@ export const ROLE_HIERARCHY: Record<RoleKey, number> = {
  *   reference is bound to its destination (#344, #358): a non-admin may attach
  *   only secrets they created, and may not move a resource while it holds
  *   someone else's (lib/vault/secret-binding.ts). That covers DB and repo
- *   connectors, MCP servers, Jira and test-management connections, Projects v2
- *   board listing and live publishing to a non-github.com base URL.
+ *   connectors, MCP servers, Jira connections, Projects v2 board listing and
+ *   live publishing to a non-github.com base URL.
  * - `coordinator` runs project lifecycle + publishes issues.
  * - `developer` runs analyses, drafts issues, reads vault.
  * - `reader` is read-only on projects/documents/analyses.

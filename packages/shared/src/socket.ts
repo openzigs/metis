@@ -134,9 +134,10 @@ export interface AnalysisReposSkippedEvent {
  * `ui/src/hooks/use-job-events.ts` handles new kinds generically.
  *
  * Original kinds (#238/#239): `analysis`, `doc-generation`, `impact-analysis`.
- * Added by #406/#419: `scan`, `pr-review`, `import-sync`, `embeddings-reindex`,
+ * Added by #406/#419: `pr-review`, `import-sync`, `embeddings-reindex`,
  * `spec-kit`, `overview-regenerate`.
  * Added by #373: `repo-ingest` (a repository connector's Deep Ingest).
+ * Removed by #804: `scan` (the bug scanner never emitted it).
  *
  * See `docs/ARCHITECTURE.md` § "Realtime job-events bus" for the full contract.
  */
@@ -144,7 +145,6 @@ export type JobKind =
   | "analysis"
   | "doc-generation"
   | "impact-analysis"
-  | "scan"
   | "pr-review"
   | "import-sync"
   | "embeddings-reindex"
@@ -395,10 +395,6 @@ export interface ServerToClientEvents {
   }) => void;
   /** Epic #156 — per-step progress event for an active background run. */
   "bg-run:step": (data: { runId: string; kind: string; content: string; ts: number }) => void;
-  /** Epic #856/#880 — test-coverage run progress (queued/started/progress). */
-  "testcoverage:run-update": (data: TestCoverageRunSocketEvent) => void;
-  /** Epic #856/#880 — test-coverage run terminal state (completed/failed). */
-  "testcoverage:run-finished": (data: TestCoverageRunSocketEvent) => void;
   heartbeat: (data: { ts: number }) => void;
   /** Epic #728 — presence update for an artifact room. */
   "presence:update": (data: {
@@ -454,16 +450,6 @@ export interface ServerToClientEvents {
     slaDeadline: string | undefined;
     ts: number;
   }) => void;
-}
-
-/** Epic #856/#880 — test-coverage run lifecycle socket payload. */
-export interface TestCoverageRunSocketEvent {
-  type: "run:queued" | "run:started" | "run:progress" | "run:completed" | "run:failed";
-  runId: string;
-  projectId: string;
-  phase?: string;
-  detail?: Record<string, unknown>;
-  error?: string;
 }
 
 export interface ConnectorRoomEvent {

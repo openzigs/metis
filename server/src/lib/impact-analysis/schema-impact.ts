@@ -23,6 +23,7 @@ import type {
 } from "@metis/shared";
 import { SCHEMA_IMPACT_EDGE_KINDS, isLiveSchemaSource } from "@metis/shared";
 import type { LiveSchemaIndex } from "./live-schema-ingest.js";
+import { loadResolvedGoCalls, type ResolvedGoCall } from "./go-call-resolution.js";
 
 /**
  * A schema symbol reachable from impacted code: a `table`/`column` (#168) or, as
@@ -52,6 +53,12 @@ interface SchemaEdgeRow {
 interface DownstreamCodeEdgeRow {
   fromSymbolId: string;
   toSymbolId: string;
+  /**
+   * #791 — true for a call the ingest left unresolved and impact bound by name
+   * (Go, see go-call-resolution.ts). Weaker evidence than a resolved edge, so a
+   * symbol reached only this way contributes what it WRITES, not what it reads.
+   */
+  inferred?: boolean;
 }
 
 /**
@@ -109,6 +116,23 @@ export interface SchemaImpactDataSource {
    * crossing (the seeds themselves must directly own the schema edges).
    */
   getDownstreamCallEdgesFrom?(symbolIds: string[]): Promise<DownstreamCodeEdgeRow[]>;
+  /** #791 — the `column` schema symbols of the named tables (data-path-writers.ts). */
+  getColumnsOfTables?(tableNames: string[]): Promise<SchemaSymbolRow[]>;
+  /** #791 — `writes` / `persists-to` edges INTO the given schema symbols. */
+  getWriterEdgesTo?(schemaSymbolIds: string[]): Promise<SchemaEdgeRow[]>;
+  /** #791 — location and language of the given code symbols. */
+  getCodeSymbolDetails?(ids: string[]): Promise<CodeSymbolDetail[]>;
+}
+
+/** #791 — a code symbol's location, for a data-path writer the result names. */
+export interface CodeSymbolDetail {
+  id: string;
+  kind: string;
+  qualifiedName: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  language: string;
 }
 
 /** The row data persisted to `ImpactAffectedTable` (id/impactItemId added later). */
@@ -493,11 +517,15 @@ export const DOWNSTREAM_DATA_LAYER_DECAY = 0.8;
  * Read-only. A no-op that returns just the seeds (depth 0) when the data source
  * lacks {@link SchemaImpactDataSource.getDownstreamCallEdgesFrom} — preserving
  * the pre-#928 single-hop crossing for callers/tests that don't wire it.
+ *
+ * #791 — `inferredOut`, when given, receives every id first reached through an
+ * `inferred` edge (or from a symbol that was).
  */
-async function resolveDownstreamDataLayer(
+export async function resolveDownstreamDataLayer(
   seedIds: string[],
   dataSource: SchemaImpactDataSource,
   maxDepth: number,
+  inferredOut?: Set<string>,
 ): Promise<Map<string, number>> {
   const depthById = new Map<string, number>();
   for (const id of seedIds) depthById.set(id, 0);
@@ -509,9 +537,25 @@ async function resolveDownstreamDataLayer(
     const edges = await dataSource.getDownstreamCallEdgesFrom(frontier);
     const next: string[] = [];
     for (const e of edges) {
-      if (!e.toSymbolId || depthById.has(e.toSymbolId)) continue;
+      if (!e.toSymbolId) continue;
+      if (depthById.has(e.toSymbolId)) {
+        // Reached again at the same depth over evidence (a resolved edge from a
+        // resolved symbol): it is not inferred-only, whatever the row order.
+        if (
+          inferredOut &&
+          depthById.get(e.toSymbolId) === depth + 1 &&
+          !e.inferred &&
+          !inferredOut.has(e.fromSymbolId)
+        ) {
+          inferredOut.delete(e.toSymbolId);
+        }
+        continue;
+      }
       depthById.set(e.toSymbolId, depth + 1);
       next.push(e.toSymbolId);
+      if (inferredOut && (e.inferred || inferredOut.has(e.fromSymbolId))) {
+        inferredOut.add(e.toSymbolId);
+      }
     }
     frontier = next;
   }
@@ -781,8 +825,19 @@ export async function crossToSchema(
   // while the statement itself (kind=`method`) is dropped by the schema-symbol
   // filter and never surfaced as a terminal object.
   const maxDownstreamDepth = options?.maxDownstreamDepth ?? DEFAULT_MAX_DOWNSTREAM_DEPTH;
-  const directDepthById = await resolveDownstreamDataLayer(seedIds, dataSource, maxDownstreamDepth);
-  const edges = await dataSource.getSchemaEdgesFrom([...directDepthById.keys()]);
+  const inferredIds = new Set<string>();
+  const directDepthById = await resolveDownstreamDataLayer(
+    seedIds,
+    dataSource,
+    maxDownstreamDepth,
+    inferredIds,
+  );
+  // #791 — a symbol reached only through a name-bound call keeps its writes: a
+  // Go handler's incidental reads (the user, the session, the integrations row)
+  // are fan-out, while what it writes is the change surface.
+  const edges = (await dataSource.getSchemaEdgesFrom([...directDepthById.keys()])).filter(
+    (e) => !inferredIds.has(e.fromSymbolId) || e.kind === "writes" || e.kind === "persists-to",
+  );
 
   // #922 — DAO/mapper sibling expansion (opt-in). Resolve the sibling method ids,
   // expand THEM downstream too (so a sibling MyBatis mapper method reaches its
@@ -928,7 +983,92 @@ export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
         select: { fromSymbolId: true, toSymbolId: true },
       }),
     );
-    return rows.map((e) => ({ fromSymbolId: e.fromSymbolId, toSymbolId: e.toSymbolId as string }));
+    const out: DownstreamCodeEdgeRow[] = rows.map((e) => ({
+      fromSymbolId: e.fromSymbolId,
+      toSymbolId: e.toSymbolId as string,
+    }));
+    // #791 — a Go handler reaches storage through calls the ingest left
+    // unresolved; follow the ones that bind unambiguously.
+    const wanted = new Set(symbolIds);
+    for (const c of await this.goCalls()) {
+      if (wanted.has(c.fromSymbolId)) out.push({ ...c, inferred: true });
+    }
+    return out;
+  }
+
+  /** #791 — the `column` schema symbols of the named tables. */
+  async getColumnsOfTables(tableNames: string[]): Promise<SchemaSymbolRow[]> {
+    if (tableNames.length === 0) return [];
+    const rows = await chunkedIn(tableNames, (chunk) =>
+      this.prisma.codeSymbol.findMany({
+        where: {
+          projectId: this.projectId,
+          kind: "column",
+          language: "sql",
+          OR: chunk.map((t) => ({ qualifiedName: { startsWith: `${t}.` } })),
+        },
+        select: { id: true, kind: true, name: true, qualifiedName: true, source: true },
+      }),
+    );
+    const wanted = new Set(tableNames);
+    // `startsWith` narrows in the DB; the exact parent table is re-checked here so
+    // `entries` never collects `entries_archive.status`.
+    return rows
+      .filter((r) => wanted.has(r.qualifiedName.slice(0, -(r.name.length + 1))))
+      .map((r) => ({
+        id: r.id,
+        kind: "column" as const,
+        name: r.name,
+        qualifiedName: r.qualifiedName,
+        source: r.source as SchemaSource | null,
+      }));
+  }
+
+  /** #791 — `writes` / `persists-to` edges into the given schema symbols. */
+  async getWriterEdgesTo(schemaSymbolIds: string[]): Promise<SchemaEdgeRow[]> {
+    if (schemaSymbolIds.length === 0) return [];
+    const rows = await chunkedIn(schemaSymbolIds, (chunk) =>
+      this.prisma.codeEdge.findMany({
+        where: {
+          projectId: this.projectId,
+          toSymbolId: { in: chunk },
+          kind: { in: ["writes", "persists-to"] },
+        },
+        select: { fromSymbolId: true, toSymbolId: true, kind: true },
+      }),
+    );
+    return rows.map((e) => ({
+      fromSymbolId: e.fromSymbolId,
+      toSymbolId: e.toSymbolId as string,
+      kind: e.kind as SchemaEdgeKind,
+    }));
+  }
+
+  /** #791 — location and language of the given code symbols. */
+  async getCodeSymbolDetails(ids: string[]): Promise<CodeSymbolDetail[]> {
+    if (ids.length === 0) return [];
+    return chunkedIn(ids, (chunk) =>
+      this.prisma.codeSymbol.findMany({
+        where: { id: { in: chunk }, projectId: this.projectId },
+        select: {
+          id: true,
+          kind: true,
+          qualifiedName: true,
+          filePath: true,
+          startLine: true,
+          endLine: true,
+          language: true,
+        },
+      }),
+    );
+  }
+
+  private goCallsP: Promise<ResolvedGoCall[]> | null = null;
+
+  /** The project's resolvable Go calls, loaded once per data source. */
+  private goCalls(): Promise<ResolvedGoCall[]> {
+    this.goCallsP ??= loadResolvedGoCalls(this.prisma, this.projectId);
+    return this.goCallsP;
   }
 
   async getSchemaSymbolsByIds(ids: string[]): Promise<SchemaSymbolRow[]> {
@@ -939,6 +1079,9 @@ export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
           id: { in: chunk },
           projectId: this.projectId,
           kind: { in: ["table", "column", "procedure", "function"] },
+          // #791 — a schema object is a `sql` symbol. A Go/TS `function` is code:
+          // without this every impacted Go function surfaced as a DB routine.
+          language: "sql",
         },
         select: { id: true, kind: true, name: true, qualifiedName: true, source: true },
       }),

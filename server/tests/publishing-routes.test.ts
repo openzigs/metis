@@ -282,6 +282,27 @@ vi.mock("../src/lib/publishing/draft-generator.js", () => ({
   })),
 }));
 
+// #776 — the edit and draft-PR services have their own real-SQLite suite
+// (`publishing-draft-edit-pr-776.sqlite.test.ts`); here they are seams the
+// routes must reach with the right permission, path project and body.
+const draft776 = vi.hoisted(() => ({
+  editDraft: vi.fn(async (opts: { draftId: string }) => ({ id: opts.draftId, status: "draft" })),
+  openDraftPullRequest: vi.fn(async (opts: { dryRun: boolean }) => ({
+    dryRun: opts.dryRun,
+    target: { owner: "openzigs", repo: "flux-v2" },
+    branch: "metis/draft-x",
+    path: ".metis/drafts/x.md",
+    title: "T",
+    actions: [],
+    credentialCheck: "missing",
+    pullRequest: null,
+  })),
+}));
+vi.mock("../src/lib/publishing/draft-edit.js", () => ({ editDraft: draft776.editDraft }));
+vi.mock("../src/lib/publishing/draft-pull-request.js", () => ({
+  openDraftPullRequest: draft776.openDraftPullRequest,
+}));
+
 import request from "supertest";
 import { createApp } from "../src/app.js";
 import { generateDrafts as generateDraftsMock } from "../src/lib/publishing/draft-generator.js";
@@ -994,5 +1015,111 @@ describe("approval gate (#619)", () => {
       .set("Authorization", `Bearer ${token}`)
       .send(batchBody);
     expect(res.status).toBe(201);
+  });
+});
+
+describe("PATCH /drafts/:id (#776)", () => {
+  const url = "/api/projects/proj_test_001/publishing/drafts/draft_1";
+
+  it("developer (issue.draft) edits a draft scoped to the PATH project", async () => {
+    const token = await login("developer");
+    const res = await request(app)
+      .patch(url)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ title: "[metis-706 re-run] Lock migrations", labels: ["feature"] });
+    expect(res.status).toBe(200);
+    expect(draft776.editDraft).toHaveBeenCalledWith({
+      draftId: "draft_1",
+      projectId: "proj_test_001",
+      actorId: expect.any(String),
+      input: { title: "[metis-706 re-run] Lock migrations", labels: ["feature"] },
+    });
+  });
+
+  it("reader is refused", async () => {
+    const token = await login("reader");
+    const res = await request(app).patch(url).set("Authorization", `Bearer ${token}`).send({
+      body: "x",
+    });
+    expect(res.status).toBe(403);
+    expect(draft776.editDraft).not.toHaveBeenCalled();
+  });
+
+  it("refuses server-owned fields and an empty edit", async () => {
+    const token = await login("admin");
+    for (const body of [{ status: "published" }, { title: "t", metadata: {} }, {}]) {
+      const res = await request(app).patch(url).set("Authorization", `Bearer ${token}`).send(body);
+      expect(res.status).toBe(400);
+    }
+    expect(draft776.editDraft).not.toHaveBeenCalled();
+  });
+
+  it("maps a service PublishError to its status", async () => {
+    draft776.editDraft.mockRejectedValueOnce(
+      new PublishError(409, "DRAFT_NOT_EDITABLE", "a published draft cannot be edited"),
+    );
+    const token = await login("admin");
+    const res = await request(app).patch(url).set("Authorization", `Bearer ${token}`).send({
+      body: "x",
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("DRAFT_NOT_EDITABLE");
+  });
+});
+
+describe("POST /drafts/:id/pull-request (#776)", () => {
+  const url = "/api/projects/proj_test_001/publishing/drafts/draft_1/pull-request";
+
+  it("defaults to a dry run, which issue.preview may request", async () => {
+    const token = await login("developer");
+    const res = await request(app).post(url).set("Authorization", `Bearer ${token}`).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.data.dryRun).toBe(true);
+    expect(draft776.openDraftPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "proj_test_001", draftId: "draft_1", dryRun: true }),
+    );
+  });
+
+  it("a live run needs issue.publish", async () => {
+    const token = await login("developer");
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ dryRun: false, secretRef: "${vault:gh}" });
+    expect(res.status).toBe(403);
+    expect(draft776.openDraftPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("a live run by an admin reaches the service with the secret ref", async () => {
+    const token = await login("admin");
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ dryRun: false, secretRef: "${vault:gh}" });
+    expect(res.status).toBe(201);
+    expect(draft776.openDraftPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ dryRun: false, secretRef: "${vault:gh}" }),
+    );
+  });
+
+  it("refuses a caller-supplied target: owner, repo and base URL are not accepted", async () => {
+    const token = await login("admin");
+    for (const extra of [
+      { targetOwner: "miniflux", targetRepo: "v2" },
+      { targetBaseUrl: "https://evil.example/api/v3" },
+    ]) {
+      const res = await request(app)
+        .post(url)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ dryRun: true, ...extra });
+      expect(res.status).toBe(400);
+    }
+    expect(draft776.openDraftPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("reader is refused even a dry run", async () => {
+    const token = await login("reader");
+    const res = await request(app).post(url).set("Authorization", `Bearer ${token}`).send({});
+    expect(res.status).toBe(403);
   });
 });

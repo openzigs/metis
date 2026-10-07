@@ -87,7 +87,7 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     auditLog: { create: vi.fn(async () => ({})) },
     // #679 — a discussion presence room takes the thread read rule
-    // (`canAccessThread`): thread `t1` lives in `p1`, which `u1` created;
+    // (`canAccessThread`): thread `t1` lives in `p1`, in workspace `w1` (#734);
     // `t-boom` makes the lookup throw; `t-deleted` is soft-deleted.
     discussionThread: {
       findFirst: vi.fn(async (args: { where: { id: string; deletedAt?: null } }) => {
@@ -182,6 +182,11 @@ vi.mock("../src/lib/prisma.js", () => ({
         const createdById = args?.where?.createdById;
         if (createdById === "u1") return [{ id: "p1", name: "P1" }];
         return [];
+      }),
+      // #734 — the discussions seam's live-project check: only `p1` exists.
+      findFirst: vi.fn(async (args: { where: { id: string } }) => {
+        if (args.where.id === "p-boom") throw new Error("db down");
+        return args.where.id === "p1" ? { id: "p1" } : null;
       }),
       // #645 — `assertProjectAccess`: `p1` sits in workspace `w1`, whose only
       // member is `u1`.

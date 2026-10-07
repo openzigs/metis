@@ -6,7 +6,7 @@
  * "null/null" and a permanent "pending" status even after its source had been
  * ingested. These helpers give the non-Git providers their own wording.
  */
-import { NON_GIT_REPO_PROVIDERS, type RepoConnector } from "@metis/shared";
+import { NON_GIT_REPO_PROVIDERS, repoConnectorSchema, type RepoConnector } from "@metis/shared";
 
 const NON_GIT_PROVIDERS: ReadonlySet<string> = new Set(NON_GIT_REPO_PROVIDERS);
 
@@ -84,4 +84,18 @@ export function repoStatusTone(
   if (r.status === "disabled") return "neutral";
   if (r.sourceIngest) return SOURCE_INGEST_TONES[r.sourceIngest.effectiveStatus];
   return r.lastIngestAt ? "success" : "neutral";
+}
+
+/**
+ * #714 — an optional branch or tag typed into the create form. Empty means
+ * "use the default"; anything else must pass the server's own ref rule.
+ */
+export function isRepoRefOrEmpty(value: string): boolean {
+  const v = value.trim();
+  return v === "" || repoConnectorSchema.shape.defaultBranch.safeParse(v).success;
+}
+
+/** #714 — the 7-character form of a commit SHA, as `git log --oneline` prints it. */
+export function shortCommitSha(sha: string): string {
+  return sha.slice(0, 7);
 }

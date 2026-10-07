@@ -17,6 +17,10 @@ export class ImportPage {
   readonly sourceSelect: Locator;
   readonly labelInput: Locator;
   readonly tokenInput: Locator;
+  /** #763 — the Credential choice: the vault secret is the default, "Paste a token" the alternative. */
+  readonly credentialGroup: Locator;
+  readonly vaultSecretMode: Locator;
+  readonly pasteTokenMode: Locator;
   readonly baseUrlInput: Locator;
   readonly previewButton: Locator;
   readonly importButton: Locator;
@@ -44,6 +48,9 @@ export class ImportPage {
     this.sourceSelect = page.getByLabel("Source", { exact: true });
     this.labelInput = page.getByLabel("Label", { exact: true });
     this.tokenInput = page.getByLabel("API token");
+    this.credentialGroup = page.getByRole("group", { name: "Credential" });
+    this.vaultSecretMode = page.getByRole("radio", { name: "Vault secret" });
+    this.pasteTokenMode = page.getByRole("radio", { name: "Paste a token" });
     this.baseUrlInput = page.getByLabel("Base URL (optional, self-hosted)");
     this.previewButton = page.getByRole("button", { name: "Preview" });
     this.importButton = page.getByRole("button", { name: "Import", exact: true });
@@ -60,6 +67,12 @@ export class ImportPage {
     this.cancelDeleteButton = page.getByRole("button", { name: "Cancel" });
     this.deleteConfirmPrompt = page.getByText("Delete this import?");
     this.intervalInput = page.getByLabel("every", { exact: true });
+  }
+
+  /** #763 — switch the credential to "Paste a token" and type one. */
+  async pasteToken(token: string): Promise<void> {
+    await this.pasteTokenMode.check();
+    await this.tokenInput.fill(token);
   }
 
   async goto(): Promise<void> {

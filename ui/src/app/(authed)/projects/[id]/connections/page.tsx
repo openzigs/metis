@@ -30,6 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useConnectorProgress, useConnectorDiscovery } from "@/hooks/use-connector-events";
+import { isDeterminate, progressLabel } from "@/lib/connector-progress";
 import { useDeepIngest } from "@/hooks/use-deep-ingest";
 import { DeepIngestOutcomeBanner } from "@/components/connectors/deep-ingest-outcome-banner";
 import { DbConnectorWizard } from "@/components/connectors/db-connector-wizard";
@@ -38,7 +39,9 @@ import { RebuildCacheButton } from "@/components/projects/rebuild-cache-button";
 import { PageHeader } from "@/components/ui/page-header";
 import {
   isNonGitRepoProvider,
+  isRepoRefOrEmpty,
   repoStatusLabel,
+  shortCommitSha,
   repoStatusTone,
   type RepoConnectorWithIngest,
   type RepoStatusTone,
@@ -124,7 +127,11 @@ export default function ConnectionsPage() {
   const qc = useQueryClient();
 
   // Socket.IO real-time progress + discovery (#664, #669)
-  const { progressMap, clearProgress } = useConnectorProgress(projectId);
+  // #762 — a run that ends (the auto-ingest a new connector starts has no job
+  // id to follow) refetches the cards, so status and commit appear without a reload.
+  const { progressMap, clearProgress } = useConnectorProgress(projectId, {
+    onSettled: () => qc.invalidateQueries({ queryKey: repoKeys.list(projectId) }),
+  });
   useConnectorDiscovery(projectId, () => {
     qc.invalidateQueries({ queryKey: suggestedKeys.list(projectId) });
   });
@@ -262,6 +269,8 @@ export default function ConnectionsPage() {
   const [repoOwner, setRepoOwner] = useState("");
   const [repoName, setRepoName] = useState("");
   const [repoApiBase, setRepoApiBase] = useState("");
+  // #714 — the branch or tag to ingest; empty means the server default.
+  const [repoRef, setRepoRef] = useState("");
   const [repoSecretRef, setRepoSecretRef] = useState("");
   const [repoError, setRepoError] = useState<string | null>(null);
   // Issue #288 — non-git source types: GitHub | Local server path | Upload .zip
@@ -320,6 +329,7 @@ export default function ConnectionsPage() {
         ownerOrOrg: repoOwner.trim(),
         repoName: repoName.trim(),
         apiBaseUrl: repoApiBase.trim() || undefined,
+        defaultBranch: repoRef.trim() || undefined,
         secretRef: repoSecretRef.trim() || undefined,
       }),
     onSuccess: () => {
@@ -327,6 +337,7 @@ export default function ConnectionsPage() {
       setRepoOwner("");
       setRepoName("");
       setRepoApiBase("");
+      setRepoRef("");
       setRepoSecretRef("");
       setRepoError(null);
       qc.invalidateQueries({ queryKey: repoKeys.list(projectId) });
@@ -501,6 +512,7 @@ export default function ConnectionsPage() {
     repoLabel.trim().length > 0 &&
     repoOwner.trim().length > 0 &&
     repoName.trim().length > 0 &&
+    isRepoRefOrEmpty(repoRef) &&
     isVaultRefOrEmpty(repoSecretRef);
 
   if (!projectId) return <div className="p-6">Invalid project id.</div>;
@@ -649,7 +661,16 @@ export default function ConnectionsPage() {
                     placeholder="https://git.example.com"
                   />
                 </div>
-                <div className="col-span-2">
+                <div>
+                  <Label htmlFor="repo-ref">Branch or tag</Label>
+                  <Input
+                    id="repo-ref"
+                    value={repoRef}
+                    onChange={(e) => setRepoRef(e.target.value)}
+                    placeholder="main"
+                  />
+                </div>
+                <div>
                   <Label htmlFor="repo-secret">Secret ref (vault)</Label>
                   <VaultPicker
                     id="repo-secret"
@@ -724,6 +745,11 @@ export default function ConnectionsPage() {
                 Upload folder
               </Button>
             )}
+            {repoSource === "github" && !isRepoRefOrEmpty(repoRef) ? (
+              <span className="text-sm text-destructive">
+                &quot;{repoRef.trim()}&quot; is not a valid branch or tag name.
+              </span>
+            ) : null}
             {repoSource === "github" && !isVaultRefOrEmpty(repoSecretRef) ? (
               <span className="text-sm text-destructive">
                 Secret ref must look like ${"${vault:name}"}.
@@ -810,6 +836,15 @@ export default function ConnectionsPage() {
                             {r.defaultBranch}
                           </button>
                         )}
+                        {/* #714/#758 — the commit the code graph was built from; written only with the graph. */}
+                        {r.lastCommitSha ? (
+                          <span
+                            data-testid="repo-commit-sha"
+                            title={`Code graph built from commit ${r.lastCommitSha}`}
+                          >
+                            · {shortCommitSha(r.lastCommitSha)}
+                          </span>
+                        ) : null}
                       </div>
                     )}
                     {r.errorMessage ? (
@@ -984,10 +1019,12 @@ export default function ConnectionsPage() {
                 {progressMap[r.id] && (
                   <div className="mt-2 space-y-1" data-testid={`progress-${r.id}`}>
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>{progressMap[r.id].step}</span>
-                      <span>
-                        {progressMap[r.id].current}/{progressMap[r.id].total}
-                      </span>
+                      <span>{progressLabel(progressMap[r.id])}</span>
+                      {isDeterminate(progressMap[r.id]) ? (
+                        <span>
+                          {progressMap[r.id].current}/{progressMap[r.id].total}
+                        </span>
+                      ) : null}
                     </div>
                     <Progress
                       value={
@@ -1032,10 +1069,26 @@ export default function ConnectionsPage() {
                 <p className="mb-1 text-warning">{refreshIngestResult.summary.warning}</p>
               ) : null}
               <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-foreground">
-                <span>Files re-parsed</span>
+                {/* #715 — the graph's size first; the rows below are only what
+                    this incremental run changed. */}
+                {refreshIngestResult.summary.codeGraph.graphFiles !== undefined ? (
+                  <>
+                    <span>Code graph</span>
+                    <span data-testid="sync-graph-totals">
+                      {refreshIngestResult.summary.codeGraph.graphFiles.toLocaleString()} files ·{" "}
+                      {(refreshIngestResult.summary.codeGraph.graphSymbols ?? 0).toLocaleString()}{" "}
+                      symbols ·{" "}
+                      {(refreshIngestResult.summary.codeGraph.graphEdges ?? 0).toLocaleString()}{" "}
+                      edges
+                    </span>
+                  </>
+                ) : null}
+                <span>Changed files re-parsed</span>
                 <span>
-                  {refreshIngestResult.summary.codeGraph.filesParsed} /{" "}
-                  {refreshIngestResult.summary.codeGraph.filesScanned} scanned
+                  {refreshIngestResult.summary.codeGraph.filesParsed}
+                  {refreshIngestResult.summary.codeGraph.filesUnchanged !== undefined
+                    ? ` · ${refreshIngestResult.summary.codeGraph.filesUnchanged} unchanged`
+                    : ` / ${refreshIngestResult.summary.codeGraph.filesScanned} scanned`}
                 </span>
                 <span>Symbols upserted</span>
                 <span>

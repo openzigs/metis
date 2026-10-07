@@ -8,7 +8,10 @@
  *   - Mermaid ER diagram
  *   - Table-by-table reference section
  */
+import { randomBytes } from "node:crypto";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
+import type { ChatResponse } from "../ai/types.js";
+import { recordUsage } from "../finops/index.js";
 import { createChildLogger } from "../logger.js";
 import { inspectDbConnector, getDbConnector } from "../connectors/db/db-service.js";
 import type {
@@ -26,6 +29,9 @@ import {
   sectionTruncatedWarning,
   type DocWarning,
 } from "./grounding/degraded-warnings.js";
+import { DOCS_GEN_AGENT_STEP, noteRunUsage } from "./run-cost.js";
+import { scopedToGeneration } from "./generation-control.js";
+import { isGenerationStop, throwIfGenerationStopped } from "./generation-scope.js";
 
 const log = createChildLogger("docs-gen:db-schema");
 
@@ -810,6 +816,31 @@ function coerceDescriptionMap(parsed: unknown): Record<string, string> | null {
   return Object.keys(out).length > 0 ? out : null;
 }
 
+/**
+ * #858 — bill one prose call like every other docs-gen call: a `token_usages`
+ * row under the `docs-gen` agent step (exact `costUsd`, #761, is priced by
+ * `recordUsage`), and the run's spend, which enforces its cost ceiling (#855).
+ */
+function meterProseCall(
+  projectId: string,
+  sessionId: string,
+  provider: { key: string; model: string },
+  response: ChatResponse,
+): void {
+  const usage = response.usage;
+  if (!usage || (usage.promptTokens <= 0 && usage.completionTokens <= 0)) return;
+  const tokens = {
+    provider: provider.key,
+    model: provider.model,
+    inputTokens: usage.promptTokens,
+    outputTokens: usage.completionTokens,
+    cacheReadTokens: usage.cacheReadTokens ?? 0,
+    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+  };
+  recordUsage({ projectId, sessionId, agentStep: DOCS_GEN_AGENT_STEP, ...tokens });
+  noteRunUsage(tokens);
+}
+
 async function generateTableDescriptions(
   tables: DbTableInfo[],
   projectId: string,
@@ -826,7 +857,9 @@ async function generateTableDescriptions(
   let provider;
   try {
     const aiConfig = loadAIConfig();
-    provider = buildProvider({ config: aiConfig });
+    // #858 — inside a generation scope every call carries the run's abort
+    // signal, and a stopped run's next call fails instead of being made (#855).
+    provider = scopedToGeneration(buildProvider({ config: aiConfig }));
   } catch (err) {
     log.warn("Could not build AI provider; skipping prose descriptions", { err });
     // #1228 — this is a FAILURE, not a graceful skip: the document ships with
@@ -865,8 +898,10 @@ async function generateTableDescriptions(
   let attemptedTableCount = 0;
   let budgetExhausted = false;
   const failures: ProseBatchFailure[] = [];
+  const sessionId = `docs-db-schema-${projectId}-${Date.now()}-${randomBytes(3).toString("hex")}`;
 
   for (let i = 0; i < tables.length; i += batchSize) {
+    throwIfGenerationStopped();
     const batch = tables.slice(i, i + batchSize);
     const tableList = batch
       .map((t) => {
@@ -920,10 +955,14 @@ Respond in JSON format: { "descriptions": { "tableName": "description", ... } }`
         maxTokens: maxOutputTokens,
       });
     } catch (err) {
+      // A stopped run (#855) ends the document, not just this batch.
+      if (isGenerationStop(err)) throw err;
       record("provider-error", err instanceof Error ? err.message : String(err), 0);
       // Leave descriptions empty for this batch — markdown will show column table only
       continue;
     }
+
+    meterProseCall(projectId, sessionId, provider, response);
 
     const detection = detectTruncation(response.content ?? "", response.finishReason);
     const parsed = parseTableDescriptions(detection.text);

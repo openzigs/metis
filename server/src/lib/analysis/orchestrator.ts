@@ -69,6 +69,11 @@ import {
   type DroppedCitation,
 } from "./code-citations.js";
 import { getPersona } from "./personas.js";
+import {
+  flushAnalysisUsage,
+  meterAnalysisProvider,
+  runInAnalysisUsageScope,
+} from "./analysis-usage.js";
 import { withInvokeAgentSpan } from "../otel/genai-spans.js";
 import {
   startRun as startReplayRun,
@@ -148,6 +153,13 @@ import {
   runElicitation,
 } from "./elicitation-pipeline.js";
 import { runAgentLoop, buildCachedSystemPrompt, resolveAnalysisNativeTools } from "./agent-loop.js";
+import {
+  buildEvidenceDigest,
+  DEFAULT_RETRY_EVIDENCE_TOKENS,
+  formatEvidenceForAnswer,
+  salvageFromEvidence,
+  type EvidenceSalvageResult,
+} from "./agentic-evidence.js";
 import { summarizeToolCalls, type ToolCallRecord } from "./tool-telemetry.js";
 import {
   FINAL_ANSWER_INSTRUCTION,
@@ -233,8 +245,22 @@ import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation
 import type { RequirementEscalation } from "@metis/shared";
 import { TaskProfiler } from "../ai/task-profiler.js";
 import { ModelRouter, type ModelPreferences } from "../ai/model-router.js";
+import { displayFilename } from "../rag/hit-locator.js";
 
 const log = createChildLogger("analysis-orchestrator");
+
+/**
+ * #724 — a replay run's cost is summed from `token_usages`, and the meter
+ * writes those rows asynchronously. Drain this analysis's pending writes first,
+ * or the last calls' spend is missing from `AgentRun.costCents`.
+ */
+async function replayRunCostAfterUsage(
+  analysisId: string,
+  replayRunId: string,
+): ReturnType<typeof computeReplayRunCost> {
+  await flushAnalysisUsage(analysisId);
+  return computeReplayRunCost(replayRunId);
+}
 
 /**
  * #734 — build the `onDrop` sink for {@link groundCodeCitations}. A dropped code
@@ -561,7 +587,9 @@ export class AnalysisOrchestrator {
   private readonly retrievalHealths = new Map<string, AnalysisRetrievalHealth[]>();
 
   constructor(deps: OrchestratorDeps) {
-    this.deps = deps;
+    // #724 — every model call the analysis family makes through this provider
+    // is recorded as project usage while a run's usage scope is active.
+    this.deps = { ...deps, provider: meterAnalysisProvider(deps.provider) };
   }
 
   /** Issue #178 — expose the configured AI provider for one-shot helpers (deep-dive). */
@@ -624,13 +652,17 @@ export class AnalysisOrchestrator {
     // Issue #855 (Epic #852) \u2014 thread the project's `databaseAwareAnalysis`
     // setting through (already loaded above, no extra query) so the run path
     // can resolve it via #854's resolver instead of the bare env flag.
-    void this.runPipeline(
-      row.id,
-      project.name,
-      project.description,
-      agentKeys,
-      resolvedOpts,
-      project.databaseAwareAnalysis,
+    // #724 — bill every model call of the run to the project; the analysis id
+    // is the session the replay run's cost (`computeRunCost`) reads back.
+    void runInAnalysisUsageScope({ projectId: opts.projectId, sessionId: row.id }, () =>
+      this.runPipeline(
+        row.id,
+        project.name,
+        project.description,
+        agentKeys,
+        resolvedOpts,
+        project.databaseAwareAnalysis,
+      ),
     );
 
     return { id: row.id };
@@ -644,7 +676,7 @@ export class AnalysisOrchestrator {
    * off the long-running pipeline.
    */
   async assertCanRegenerate(analysisId: string): Promise<{
-    analysis: Awaited<ReturnType<typeof prisma.analysis.findFirst>>;
+    analysis: NonNullable<Awaited<ReturnType<typeof prisma.analysis.findFirst>>>;
   }> {
     await assertCanStartAnalysis();
     const analysis = await prisma.analysis.findFirst({
@@ -682,7 +714,19 @@ export class AnalysisOrchestrator {
     agentKey: AnalysisSpecialistAgentKey;
     actorId: string;
   }): Promise<void> {
-    const { analysis: maybeAnalysis } = await this.assertCanRegenerate(opts.analysisId);
+    const { analysis } = await this.assertCanRegenerate(opts.analysisId);
+    // #724 — bill the regenerated agent and the re-synthesis to the project.
+    const scope = {
+      projectId: analysis.projectId,
+      sessionId: opts.analysisId,
+    };
+    return runInAnalysisUsageScope(scope, () => this.regenerateLoadedAgent(opts, analysis));
+  }
+
+  private async regenerateLoadedAgent(
+    opts: { analysisId: string; agentKey: AnalysisSpecialistAgentKey; actorId: string },
+    maybeAnalysis: Awaited<ReturnType<AnalysisOrchestrator["assertCanRegenerate"]>>["analysis"],
+  ): Promise<void> {
     const analysis = maybeAnalysis as NonNullable<typeof maybeAnalysis> & {
       project: { name: string; description: string; status: string };
       projectId: string;
@@ -729,7 +773,7 @@ export class AnalysisOrchestrator {
     let outcome: "completed" | "failed" = "completed";
     let errorMessage: string | null = null;
     try {
-      const result = await this.runOneAgent({
+      const agentInput = {
         analysisId: opts.analysisId,
         projectId: analysis.projectId,
         projectName: analysis.project.name,
@@ -740,7 +784,18 @@ export class AnalysisOrchestrator {
         extraInstructions,
         signal: controller.signal,
         actorId: opts.actorId,
-      });
+      };
+      // #766 — the code agent regenerates through the mode the run would pick,
+      // not always single-shot: a run whose code pass was agentic re-ran as one
+      // retrieval-only call that could not see the files the requirements are about.
+      const result =
+        opts.agentKey === "code"
+          ? await this.regenerateCodeAgent(agentInput, {
+              databaseAwareSetting:
+                (analysis.project as { databaseAwareAnalysis?: string | null })
+                  .databaseAwareAnalysis ?? undefined,
+            })
+          : await this.runOneAgent(agentInput);
       delta.promptTokens += result.usage.promptTokens;
       delta.completionTokens += result.usage.completionTokens;
       delta.totalTokens += result.usage.totalTokens;
@@ -788,6 +843,125 @@ export class AnalysisOrchestrator {
       });
       this.active.delete(opts.analysisId);
     }
+  }
+
+  /**
+   * #766 — regenerate the code agent the way the pipeline runs it.
+   *
+   * `runOneAgent` is the single-shot path, so a regenerate of an AGENTIC code
+   * pass used to swap the tool loop for one retrieval-only call: three
+   * info/low findings over symbol stubs, "no storage layer was retrieved".
+   * This reconstructs the agentic inputs from persisted state the same way
+   * {@link resumeSkippedRepos} does (document-agent requirements merged with
+   * the operator's new requirements, deterministic affected-code and
+   * escalation) and runs the agentic pass per live repo. Any other mode falls
+   * back to `runOneAgent`, as before.
+   */
+  private async regenerateCodeAgent(
+    input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
+    opts: { databaseAwareSetting?: string } = {},
+  ): Promise<AgentRunResult> {
+    const requirements = mergeRequirementSets(
+      await this.extractRequirementsFromDocAgent(input.analysisId),
+      await extractNewRequirementCandidates(input.extraInstructions),
+    );
+    const mode = await this.detectAgentMode(input.projectId, "code", requirements);
+    if (mode !== "agentic") return this.runOneAgent(input);
+
+    const startedAt = new Date();
+    const connectors = await prisma.repoConnection.findMany({
+      where: { projectId: input.projectId, deletedAt: null },
+      select: { id: true, label: true },
+    });
+    const affectedCode = await this.computeAffectedCode(
+      input.analysisId,
+      input.projectId,
+      input.extraInstructions,
+    );
+    const escalation = await this.computeEscalations(
+      input.analysisId,
+      input.projectId,
+      requirements,
+    );
+    // The same #824/#855 AFFECTED SCHEMA seed the pipeline gives the code pass,
+    // so a regenerate also gets its schema evidence in the verdict gate.
+    const dbAware = await this.resolveDatabaseAware(
+      input.analysisId,
+      input.projectId,
+      opts.databaseAwareSetting,
+    );
+    const affectedSchema = await this.computeAffectedSchema(
+      input.analysisId,
+      input.projectId,
+      input.extraInstructions,
+      dbAware.enabled,
+    );
+    const shared = {
+      analysisId: input.analysisId,
+      projectId: input.projectId,
+      projectDescription: input.projectDescription,
+      requirements,
+      extraInstructions: input.extraInstructions,
+      model: input.model,
+      signal: input.signal,
+      affectedCode,
+      affectedSchema,
+      escalation,
+    };
+
+    const results: AgentRunResult[] = [];
+    if (connectors.length <= 1) {
+      results.push(
+        await this.runAgenticCodeAgent({
+          ...shared,
+          projectName: input.projectName,
+          connectorId: connectors[0]?.id,
+        }),
+      );
+    } else {
+      // Repos the budget cannot fit keep whatever rows they already have.
+      const { effectiveConnectors, effectiveBudget } = capConnectorsForBudget(
+        connectors,
+        resolveAgentTokenBudget(),
+      );
+      for (const connector of effectiveConnectors) {
+        if (input.signal.aborted) break;
+        results.push(
+          await this.runAgenticCodeAgent({
+            ...shared,
+            projectName: `${input.projectName} [repo: ${connector.label}]`,
+            connectorId: connector.id,
+            tokenBudget: effectiveBudget,
+          }),
+        );
+      }
+    }
+
+    // Each agentic row replaces its own connector's row (#763). A connector-less
+    // `code` row from an earlier single-shot regenerate would otherwise survive
+    // beside them and double the agent's findings.
+    if (connectors.length > 0 && results.length > 0) {
+      await prisma.agentResult.deleteMany({
+        where: {
+          analysisId: input.analysisId,
+          agentKey: "code",
+          connectorId: null,
+          createdAt: { lt: startedAt },
+        },
+      });
+    }
+
+    const last = results[results.length - 1];
+    return {
+      agentKey: "code",
+      output: last?.output ?? { agentKey: "code", summary: "", findings: [], notes: [] },
+      usage: results.reduce<TokenUsage>((sum, r) => sumTokenUsage(sum, r.usage), {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      }),
+      durationMs: Date.now() - startedAt.getTime(),
+    };
   }
 
   /**
@@ -846,9 +1020,20 @@ export class AnalysisOrchestrator {
     analysisId: string;
     actorId: string;
   }): Promise<ResumeSkippedReposResult> {
-    const { analysis: maybeAnalysis, skippedRepos } = await this.assertCanResumeRepos(
-      opts.analysisId,
-    );
+    const loaded = await this.assertCanResumeRepos(opts.analysisId);
+    // #724 — bill the resumed repos and the re-synthesis to the project.
+    const scope = {
+      projectId: loaded.analysis.projectId,
+      sessionId: opts.analysisId,
+    };
+    return runInAnalysisUsageScope(scope, () => this.resumeLoadedRepos(opts, loaded));
+  }
+
+  private async resumeLoadedRepos(
+    opts: { analysisId: string; actorId: string },
+    loaded: Awaited<ReturnType<AnalysisOrchestrator["assertCanResumeRepos"]>>,
+  ): Promise<ResumeSkippedReposResult> {
+    const { analysis: maybeAnalysis, skippedRepos } = loaded;
     // Idempotent no-op: nothing was skipped (or it was already resumed).
     if (skippedRepos.length === 0) {
       return { resumed: [], remaining: [], noop: true };
@@ -1369,6 +1554,9 @@ export class AnalysisOrchestrator {
               totals.promptTokens += codeResult.usage.promptTokens;
               totals.completionTokens += codeResult.usage.completionTokens;
               totals.totalTokens += codeResult.usage.totalTokens;
+              // #755 — count the success explicitly; the all-failed gate must
+              // not rely on a placeholder to see the code agent succeed.
+              recordAgentOutcome({ status: "fulfilled", value: codeResult });
             } else {
               // Multi-repo — run agent per connector sequentially, split token
               // budget. When the even split falls below the per-repo floor the
@@ -1423,6 +1611,9 @@ export class AnalysisOrchestrator {
                 totals.completionTokens += result.usage.completionTokens;
                 totals.totalTokens += result.usage.totalTokens;
               }
+              if (multiResults.length > 0) {
+                recordAgentOutcome({ status: "fulfilled", value: multiResults });
+              }
             }
           } catch (err) {
             if ((err as { name?: string }).name !== "AbortError") {
@@ -1458,6 +1649,7 @@ export class AnalysisOrchestrator {
             totals.promptTokens += codeResult.usage.promptTokens;
             totals.completionTokens += codeResult.usage.completionTokens;
             totals.totalTokens += codeResult.usage.totalTokens;
+            recordAgentOutcome({ status: "fulfilled", value: codeResult });
           } catch (err) {
             if ((err as { name?: string }).name !== "AbortError") {
               log.error("Requirement-grounded code agent failed", {
@@ -1475,32 +1667,35 @@ export class AnalysisOrchestrator {
 
       // Non-sequenced path (backward compat when doc+code don't both exist)
       if (!needsSequencing && !run.cancelled) {
+        // #755 — only agents that have NOT run yet. This used to map every key
+        // and answer an already-run one with a zero-usage placeholder, which
+        // settled `fulfilled` and was counted as a specialist SUCCESS — so an
+        // agent's failure was always cancelled out by its own phantom, and the
+        // all-failed gate below could never fire unless document AND code ran.
         const settled = await Promise.allSettled(
-          agentKeys.map(async (agentKey) => {
-            if (run.controllers.has(agentKey))
-              return {
-                usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-              } as AgentRunResult;
-            const controller = new AbortController();
-            run.controllers.set(agentKey, controller);
-            return this.runOneAgent({
-              analysisId,
-              projectId: opts.projectId,
-              projectName,
-              projectDescription,
-              agentKey,
-              documentIds: opts.documentIds,
-              model: opts.model,
-              extraInstructions: opts.extraInstructions,
-              signal: controller.signal,
-              replayRunId,
-              actorId: opts.startedById,
-              // #824 — Sally (database) renders it; other specialists ignore it.
-              // `runAffectedSchemaBlock` is the hoisted string form; the
-              // `affectedSchema` object is scoped to the `!run.cancelled` block above.
-              affectedSchema: runAffectedSchemaBlock,
-            });
-          }),
+          agentKeys
+            .filter((agentKey) => !run.controllers.has(agentKey))
+            .map(async (agentKey) => {
+              const controller = new AbortController();
+              run.controllers.set(agentKey, controller);
+              return this.runOneAgent({
+                analysisId,
+                projectId: opts.projectId,
+                projectName,
+                projectDescription,
+                agentKey,
+                documentIds: opts.documentIds,
+                model: opts.model,
+                extraInstructions: opts.extraInstructions,
+                signal: controller.signal,
+                replayRunId,
+                actorId: opts.startedById,
+                // #824 — Sally (database) renders it; other specialists ignore it.
+                // `runAffectedSchemaBlock` is the hoisted string form; the
+                // `affectedSchema` object is scoped to the `!run.cancelled` block above.
+                affectedSchema: runAffectedSchemaBlock,
+              });
+            }),
         );
 
         for (const r of settled) {
@@ -1576,9 +1771,11 @@ export class AnalysisOrchestrator {
         if (replayRunId) {
           // A cancelled analysis may still have incurred spend before the
           // cancel landed; attribute whatever usage is in-window.
-          const { costCents } = await computeReplayRunCost(replayRunId).catch(() => ({
-            costCents: 0,
-          }));
+          const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(
+            () => ({
+              costCents: 0,
+            }),
+          );
           await finishReplayRun({
             runId: replayRunId,
             status: "cancelled",
@@ -1640,9 +1837,11 @@ export class AnalysisOrchestrator {
           metadata: { error: summary, agentCount: agentKeys.length },
         });
         if (replayRunId) {
-          const { costCents } = await computeReplayRunCost(replayRunId).catch(() => ({
-            costCents: 0,
-          }));
+          const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(
+            () => ({
+              costCents: 0,
+            }),
+          );
           await finishReplayRun({
             runId: replayRunId,
             status: "failed",
@@ -1701,7 +1900,7 @@ export class AnalysisOrchestrator {
       });
       if (replayRunId) {
         // Attribute real LLM cost from in-window TokenUsage rows for this run.
-        const { costCents } = await computeReplayRunCost(replayRunId).catch(() => ({
+        const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(() => ({
           costCents: 0,
         }));
         await finishReplayRun({
@@ -1731,7 +1930,7 @@ export class AnalysisOrchestrator {
       if (replayRunId) {
         // A failed analysis may still have incurred spend before throwing;
         // attribute whatever usage landed in-window.
-        const { costCents } = await computeReplayRunCost(replayRunId).catch(() => ({
+        const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(() => ({
           costCents: 0,
         }));
         await finishReplayRun({
@@ -2224,6 +2423,13 @@ export class AnalysisOrchestrator {
                 // `agentOutputSchema` is exactly what this retry exists to fix.
                 isValidFinalAnswer: isSchemaValidFinalAnswer,
                 maxOutputTokens: finalAnswerMaxOutputTokens,
+                // #726 — the retry re-sends the COMPACTED transcript; hand it the
+                // untruncated file reads and search hits so the answer is written
+                // over the code the agent read, not a 600-character head of it.
+                evidence: (calls) =>
+                  formatEvidenceForAnswer(
+                    buildEvidenceDigest(calls, { maxTokens: DEFAULT_RETRY_EVIDENCE_TOKENS }),
+                  ),
               },
             },
           );
@@ -2237,6 +2443,8 @@ export class AnalysisOrchestrator {
           let reason: AgenticDegradationReason | null = null;
           // #298 — every field repair this pass made, recorded below.
           let fieldRepairs: FindingsRepair[] = [];
+          // #766 — spend made after the loop (the evidence salvage), billed to this pass.
+          let extraUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
           if (!loopResult.hasFinalAnswer) {
             // The loop (and its one bounded retry) never produced a JSON answer.
             reason = loopResult.budgetExhausted
@@ -2291,8 +2499,30 @@ export class AnalysisOrchestrator {
                 findKnownDocumentIds,
               },
             );
-            const salvaged = salvage.findings;
+            let salvaged = salvage.findings;
             fieldRepairs = salvage.fieldRepairs;
+            // #766 — nothing recovered from the transcript path (the retry failed
+            // outright, or answered in prose): ONE tool-free call over the task and
+            // the untruncated evidence, without the transcript. 64 tool calls had
+            // ended in 0 findings because the only salvage source left was the
+            // last tool-call reply.
+            let evidenceSalvage: EvidenceSalvageResult | undefined;
+            if (salvaged.length === 0) {
+              evidenceSalvage = await salvageFromEvidence(this.deps.provider, {
+                agentKey,
+                systemMessage: buildCachedSystemPrompt(systemMessage, []),
+                userMessage,
+                toolCalls: loopResult.toolCalls,
+                ...(input.model ? { model: input.model } : {}),
+                ...(input.signal ? { signal: input.signal } : {}),
+                maxOutputTokens: finalAnswerMaxOutputTokens,
+                loadKnownDocuments,
+                findKnownDocumentIds,
+              });
+              salvaged = evidenceSalvage.findings;
+              fieldRepairs = evidenceSalvage.fieldRepairs;
+              extraUsage = evidenceSalvage.usage;
+            }
             log.warn("Agentic code pass degraded; salvaging investigation", {
               analysisId: input.analysisId,
               reason,
@@ -2309,6 +2539,17 @@ export class AnalysisOrchestrator {
               repairAttempted: salvage.repairAttempted,
               repairParsed: salvage.repairParsed,
               repairSucceeded: salvage.repairSucceeded,
+              // #766 — the evidence-only salvage, when the transcript path found nothing.
+              ...(evidenceSalvage
+                ? {
+                    evidenceSalvageAttempted: evidenceSalvage.attempted,
+                    evidenceEntries: evidenceSalvage.evidenceEntries,
+                    evidenceSalvaged: evidenceSalvage.findings.length,
+                    ...(evidenceSalvage.error
+                      ? { evidenceSalvageError: evidenceSalvage.error }
+                      : {}),
+                  }
+                : {}),
               // #1314 — a total loss is the only case the source kind cannot
               // explain, and it was undiagnosable in production without this.
               ...(salvaged.length === 0
@@ -2453,6 +2694,8 @@ export class AnalysisOrchestrator {
                 droppedCitations: dropped,
                 assertsAbsence: claimsAbsence,
                 absenceConfirmable,
+                // #726 — the badge must agree with the verdict.
+                verdict,
               }),
             };
           });
@@ -2510,7 +2753,10 @@ export class AnalysisOrchestrator {
           // unexplained drift. Both are zero when their flags are off.
           return {
             output: validated,
-            usage: sumTokenUsage(sumTokenUsage(loopResult.usage, panelled.usage), scored.usage),
+            usage: sumTokenUsage(
+              sumTokenUsage(sumTokenUsage(loopResult.usage, extraUsage), panelled.usage),
+              scored.usage,
+            ),
           };
         };
 
@@ -2756,7 +3002,7 @@ export class AnalysisOrchestrator {
             evidence: r.chunks
               .map(
                 (c, i) =>
-                  `[${i + 1}] documentId=${c.documentId} chunk=${c.chunkIndex} file=${c.filename}\n${c.text}`,
+                  `[${i + 1}] documentId=${c.documentId} chunk=${c.chunkIndex} file=${displayFilename(c)}\n${c.text}`,
               )
               .join("\n---\n"),
           })),
@@ -2862,6 +3108,8 @@ export class AnalysisOrchestrator {
               droppedCitations: dropped,
               assertsAbsence: claimsAbsence,
               absenceConfirmable,
+              // #726 — the badge must agree with the verdict.
+              verdict,
             }),
           };
         });
@@ -3111,11 +3359,12 @@ export class AnalysisOrchestrator {
       // already polls `metadata` (that is how #1104's gated-requirements notice
       // reaches the screen), and the alternative was inventing an
       // `AnalysisAgentEventType` for a state the user reads after the run ends.
-      if (result.degraded) {
-        await persistAnalysisEnhancement(input.analysisId, {
-          synthesisDegraded: result.degraded,
-        });
-      }
+      //
+      // Issue #769 — the marker describes the PERSISTED requirement set, so on
+      // the promotion path it is written by `persistRequirements` together with
+      // the set it describes (a degraded synthesis may be refused there and must
+      // not relabel the kept, healthy set). Only the gate-blocked branch below
+      // writes it here, because no set is persisted on that branch.
 
       // Epic #202 (#216) — gate artifact promotion on resolved approvals.
       // Synthesis still runs (so the agent result is captured), but promotion
@@ -3137,6 +3386,13 @@ export class AnalysisOrchestrator {
           rejectedCount: ticketStatus.rejectedCount,
           awaitingRequirementCount,
         });
+        // Issue #769 — the marker describes the PERSISTED set. When a (healthy,
+        // possibly reviewed) set is already persisted, this run's degradation
+        // describes nothing that exists, and writing it would let the next
+        // degraded run replace that set as if it were itself degraded.
+        const persistedRequirementCount = result.degraded
+          ? await prisma.requirement.count({ where: { analysisId: input.analysisId } })
+          : 0;
         await persistAnalysisEnhancement(input.analysisId, {
           promotionBlocked: {
             blocked: true,
@@ -3148,6 +3404,9 @@ export class AnalysisOrchestrator {
           // #258 — record the coarse outcome in the SAME metadata patch as the
           // marker (one DB write, not two).
           promotionStatus: "blocked",
+          ...(result.degraded && persistedRequirementCount === 0
+            ? { synthesisDegraded: result.degraded }
+            : {}),
         });
         this.emit({
           analysisId: input.analysisId,
@@ -3223,6 +3482,8 @@ export class AnalysisOrchestrator {
         findingIdsByIndex,
         coverages,
         verdicts,
+        // Issue #769 — a degraded set never replaces a healthy one.
+        degraded: result.degraded ?? null,
       });
 
       // feat/req-code-traceability — auto-seed the requirement→code spine from
@@ -3253,7 +3514,8 @@ export class AnalysisOrchestrator {
         agentKey: "synthesis",
         type: "completed",
         status: "completed",
-        findingCount: result.output.requirements.length,
+        // #769 — a withheld replacement persists nothing; report what was written.
+        findingCount: requirementIds.length,
         ts: Date.now(),
       });
       return {};

@@ -38,7 +38,6 @@ import type { SchemaGraphWriter } from "./schema-graph.js";
 import {
   extractUsageSafe,
   type IntrospectedSchema,
-  type SqlLineageAccess,
   type SqlLineageClient,
 } from "./sql-lineage-client.js";
 
@@ -176,11 +175,15 @@ async function persistCalls(
     filePath,
   });
 
-  const colsByTable = new Map<string, { column: string; access: SqlLineageAccess }[]>();
+  // A `calls` edge carries no access, and the sidecar returns one column entry
+  // per access (#760) — `SET status = $1 WHERE status = $2` yields `status` as
+  // both `write` and `read`. Collapse to one entry per table.column so the
+  // routine gets a single `calls` edge to it, not one per access.
+  const colsByTable = new Map<string, Set<string>>();
   for (const c of extraction.columns) {
-    const list = colsByTable.get(c.table) ?? [];
-    list.push({ column: c.column, access: c.access });
-    colsByTable.set(c.table, list);
+    const cols = colsByTable.get(c.table) ?? new Set<string>();
+    cols.add(c.column);
+    colsByTable.set(c.table, cols);
   }
 
   let edges = 0;
@@ -195,13 +198,13 @@ async function persistCalls(
       filePath,
     });
     edges += 1;
-    for (const col of colsByTable.get(table.qualifiedName) ?? []) {
-      const colId = await writer.ensureColumn(table.name, col.column, "sqlglot", {
+    for (const column of colsByTable.get(table.qualifiedName) ?? []) {
+      const colId = await writer.ensureColumn(table.name, column, "sqlglot", {
         schema: table.schema || undefined,
         filePath,
       });
       await writer.addEdge(fromId, "calls", colId, "sqlglot", {
-        toQualifiedName: `${table.qualifiedName}.${col.column}`,
+        toQualifiedName: `${table.qualifiedName}.${column}`,
         filePath,
       });
       edges += 1;

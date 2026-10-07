@@ -589,3 +589,48 @@ describe("generateOverview() — test files are not ranked (#17)", () => {
     expect(out.stats.godNodeCount).toBe(20);
   });
 });
+
+describe("generateOverview() — Go entry points (#719)", () => {
+  const go = (id: string, qualifiedName: string, filePath: string): SymbolRow => ({
+    id,
+    qualifiedName,
+    kind: "function",
+    filePath,
+    language: "go",
+    startLine: 10,
+    endLine: 12,
+    projectId: "proj_1",
+  });
+
+  it("lists a root main.go func main, which no file pattern covered", async () => {
+    const symbols = [
+      go("m", "main.go::main", "main.go"),
+      go("p", "internal/cli/cli.go::Parse", "internal/cli/cli.go"),
+      go("s", "internal/storage/feed.go::FeedByID", "internal/storage/feed.go"),
+    ];
+    // main → cli.Parse, so Parse is (correctly) not an entry point.
+    const edges: EdgeRow[] = [
+      { id: "e1", fromSymbolId: "m", toSymbolId: "p", kind: "calls", projectId: "proj_1" },
+    ];
+    const prisma = makePrisma({
+      project: { id: "proj_1", name: "Miniflux", slug: "miniflux" },
+      graph: {
+        id: "g1",
+        symbolCount: symbols.length,
+        edgeCount: edges.length,
+        languageStats: '{"go":3}',
+        lastIndexedAt: null,
+        commitSha: null,
+      },
+      symbols,
+      edges,
+      findings: [],
+    });
+    const out = await generateOverview(prisma, "proj_1");
+    const section = out.markdown.split("## Entry Points")[1];
+    expect(section).toContain("| `main.go::main` | function | `main.go` |");
+    expect(section).not.toContain("FeedByID");
+    expect(section).not.toContain("Parse");
+    expect(out.stats.entryPointCount).toBe(1);
+  });
+});

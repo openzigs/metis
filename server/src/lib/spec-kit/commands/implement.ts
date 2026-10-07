@@ -14,11 +14,18 @@
  */
 import { audit } from "../../audit/audit-service.js";
 import { getArtifact, SpecKitArtifactError } from "../artifacts.js";
+import { commandHint, projectArtifactScope, type ArtifactScope } from "../artifact-scope.js";
 import { loadProjectContext } from "./runner.js";
 
 export interface ImplementInput {
   projectId: string;
   actorId?: string | null;
+  /**
+   * #786 — the artifact set to hand off. Defaults to the project's `.specify/`;
+   * a feature scope forwards `specs/<slug>/…` paths. The constitution is always
+   * the project's.
+   */
+  scope?: ArtifactScope;
 }
 
 export interface ImplementResult {
@@ -33,17 +40,18 @@ const REQUIRED = ["spec.md", "plan.md", "tasks.md"] as const;
 
 export async function runImplement(input: ImplementInput): Promise<ImplementResult> {
   const project = await loadProjectContext(input.projectId);
+  const scope = input.scope ?? projectArtifactScope(input.projectId);
   const present: string[] = [];
   for (const name of REQUIRED) {
-    const a = await getArtifact(input.projectId, name);
+    const a = await scope.get(name);
     if (!a || a.content.trim().length === 0) {
       throw new SpecKitArtifactError(
         409,
         "SPEC_KIT_IMPLEMENT_INCOMPLETE",
-        `Cannot /implement: missing ${name} — run /${name.replace(".md", "")} first`,
+        `Cannot ${commandHint(scope, "implement")}: missing ${name} — run ${commandHint(scope, name.replace(".md", ""))} first`,
       );
     }
-    present.push(name);
+    present.push(scope.kind === "feature" ? `${scope.location}${name}` : name);
   }
   const constitution = await getArtifact(input.projectId, "constitution.md");
   if (constitution) present.push("constitution.md");

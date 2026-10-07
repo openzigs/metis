@@ -2,8 +2,14 @@
  * `/tasks` — runs the PO agent against `.specify/spec.md` + `plan.md` and
  * writes `.specify/tasks.md` (Issue #206).
  */
-import type { SpecKitArtifactDto } from "@metis/shared";
-import { getArtifact, writeArtifact, SpecKitArtifactError } from "../artifacts.js";
+import { SpecKitArtifactError } from "../artifacts.js";
+import {
+  commandHint,
+  forFeature,
+  projectArtifactScope,
+  type ArtifactScope,
+  type ScopedArtifact,
+} from "../artifact-scope.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import { findTestsAfterImplementation } from "../grounding.js";
 
@@ -58,31 +64,31 @@ export interface TasksInput {
   actorId?: string | null;
   sessionId?: string | null;
   deps?: RunDeps;
+  /** #786 — the artifact set to read and write. Defaults to the project's `.specify/`. */
+  scope?: ArtifactScope;
 }
 
 export interface TasksResult {
-  artifact: SpecKitArtifactDto;
+  artifact: ScopedArtifact;
   tokensUsed: number;
   message: string;
 }
 
 export async function runTasks(input: TasksInput): Promise<TasksResult> {
-  const [spec, plan] = await Promise.all([
-    getArtifact(input.projectId, "spec.md"),
-    getArtifact(input.projectId, "plan.md"),
-  ]);
+  const scope = input.scope ?? projectArtifactScope(input.projectId);
+  const [spec, plan] = await Promise.all([scope.get("spec.md"), scope.get("plan.md")]);
   if (!spec || spec.content.trim().length === 0) {
     throw new SpecKitArtifactError(
       409,
       "SPEC_KIT_TASKS_NEEDS_SPEC",
-      "Run /specify before /tasks — no spec.md found",
+      `Run ${commandHint(scope, "specify")} before ${commandHint(scope, "tasks")} — no spec.md found`,
     );
   }
   if (!plan || plan.content.trim().length === 0) {
     throw new SpecKitArtifactError(
       409,
       "SPEC_KIT_TASKS_NEEDS_PLAN",
-      "Run /plan before /tasks — no plan.md found",
+      `Run ${commandHint(scope, "plan")} before ${commandHint(scope, "tasks")} — no plan.md found`,
     );
   }
   const project = await loadProjectContext(input.projectId);
@@ -112,12 +118,7 @@ export async function runTasks(input: TasksInput): Promise<TasksResult> {
     deps: input.deps,
   });
 
-  const artifact = await writeArtifact({
-    projectId: input.projectId,
-    name: "tasks.md",
-    content: run.content,
-    actorId: input.actorId ?? null,
-  });
+  const artifact = await scope.write("tasks.md", run.content, input.actorId ?? null);
 
   // #20 — make a test-last ordering visible rather than trusting the prompt.
   const late = findTestsAfterImplementation(run.content);
@@ -129,6 +130,6 @@ export async function runTasks(input: TasksInput): Promise<TasksResult> {
   return {
     artifact,
     tokensUsed: run.tokensUsed,
-    message: `Generated tasks.md (v${artifact.version}) in ${run.tokensUsed} tokens.${orderNote}`,
+    message: `Generated tasks.md (v${artifact.version})${forFeature(scope)} in ${run.tokensUsed} tokens.${orderNote}`,
   };
 }

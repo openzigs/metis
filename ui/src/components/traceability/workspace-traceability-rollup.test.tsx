@@ -6,7 +6,7 @@
  * (Mermaid mocked, as elsewhere in the UI suite), and the no-links path.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkspaceTraceabilitySummary } from "@metis/shared";
 
@@ -42,6 +42,9 @@ const SUMMARY: WorkspaceTraceabilitySummary = {
       linkedCrossProject: 1,
       specCoverage: 0.5,
       codeCoverage: 0.25,
+      codeMappedRequirements: 1,
+      testCoverage: 0,
+      strictTestCoverage: 0,
     },
     {
       projectId: "projB",
@@ -50,6 +53,9 @@ const SUMMARY: WorkspaceTraceabilitySummary = {
       linkedCrossProject: 1,
       specCoverage: 1,
       codeCoverage: 0,
+      codeMappedRequirements: 0,
+      testCoverage: 0,
+      strictTestCoverage: 0,
     },
   ],
   crossProjectLinks: [
@@ -115,6 +121,9 @@ describe("buildCrossProjectLinkMermaid", () => {
           linkedCrossProject: 1,
           specCoverage: 0,
           codeCoverage: 0,
+          codeMappedRequirements: 0,
+          testCoverage: 0,
+          strictTestCoverage: 0,
         },
       ],
       crossProjectLinks: [
@@ -151,6 +160,35 @@ describe("WorkspaceTraceabilityRollup", () => {
 
     await waitFor(() => expect(screen.getByTestId("rollup-link-map")).toBeInTheDocument());
     expect(mermaid.render).toHaveBeenCalled();
+  });
+
+  it("adds a Tested column whose tooltip gives the strict figure and the denominator (#816)", async () => {
+    workspaceSummary.mockResolvedValue({
+      projects: [
+        {
+          ...SUMMARY.projects[0],
+          codeMappedRequirements: 4,
+          testCoverage: 0.75,
+          strictTestCoverage: 0.5,
+        },
+        SUMMARY.projects[1],
+      ],
+      crossProjectLinks: [],
+    });
+    renderRollup();
+    const table = await screen.findByTestId("rollup-summary-table");
+    expect(within(table).getByRole("columnheader", { name: "Tested" })).toBeInTheDocument();
+    const [alpha, beta] = within(table).getAllByTestId("rollup-tested-cell");
+    // The badge itself shows testCoverage (exact match, so not the tooltip text).
+    expect(within(alpha).getByText("75%")).toBeInTheDocument();
+    const tip =
+      "75% of the 4 requirements with mapped code have a linked test. Strict (mapped directly or calls the code): 50%.";
+    expect(within(alpha).getByTitle(tip)).toBeInTheDocument();
+    // The tooltip is also exposed as text, so it is not hover-only.
+    expect(alpha).toHaveTextContent(tip);
+    // No mapped code: the fraction has no denominator, so no percentage is shown.
+    expect(beta).toHaveTextContent("No mapped code");
+    expect(beta).not.toHaveTextContent("%");
   });
 
   it("shows a no-links message when there are no cross-project links", async () => {

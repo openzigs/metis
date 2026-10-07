@@ -247,7 +247,7 @@ export async function createBatch(opts: CreateBatchOptions): Promise<SharedPubli
   // #619 — approval gate (requireApprovedReview). A LIVE batch may only be
   // created when every draft traces to a requirement with an approved,
   // still-current review. Enforced at the service layer so internal callers
-  // (test-coverage exporter, future flows) cannot bypass the route. Dry-run
+  // cannot bypass the route. Dry-run
   // previews are exempt: they perform no external writes and previewing the
   // plan is how users discover what still needs review. Fail-closed: any
   // error inside the gate blocks the batch.
@@ -836,7 +836,7 @@ function toPublishedIssueApi(row: DbPublishedIssue): SharedPublishedIssue {
   };
 }
 
-function toDraftApi(row: DbDraft): SharedIssueDraft {
+export function toDraftApi(row: DbDraft): SharedIssueDraft {
   return {
     id: row.id,
     projectId: row.projectId,

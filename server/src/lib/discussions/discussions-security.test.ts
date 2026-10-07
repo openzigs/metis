@@ -8,10 +8,11 @@
  * fails closed:
  *
  *   A01 Broken Access Control
- *     - REST IDOR: a non-member who crafts/swaps a thread id is denied (403),
- *       and a probe against a missing/soft-deleted id is indistinguishable
- *       (404) — no project-membership leak. The REAL `canAccessThread` +
- *       `actorCanAccessProject` chain is exercised (only prisma mocked).
+ *     - REST IDOR: a non-member who crafts/swaps a thread id is denied, and a
+ *       probe against a missing/soft-deleted id is indistinguishable (both 404
+ *       at the route) — no project-membership leak. The REAL `canAccessThread`
+ *       → `assertProjectAccess` chain (#734) is exercised (only prisma and the
+ *       membership read are mocked).
  *     - Admin override behaves (admins legitimately access any thread).
  *   A03 Injection — Cross-user LLM prompt injection
  *     - A malicious instruction embedded in ANOTHER user's thread message is
@@ -19,9 +20,11 @@
  *       enters the fixed `system` prompt, so it cannot steer replies to others.
  *       The system prompt is byte-for-byte identical regardless of message
  *       content.
- *     - The responder streams TEXT only — no tool-call execution is wired from
- *       message content (it is structurally impossible: `streamAIReply` consumes
- *       only `delta`/`usage`/`done` chunks and persists a text body).
+ *     - Without tools the responder streams TEXT only: a tool-call-shaped
+ *       chunk is ignored, never executed.
+ *     - #739 — with tools, a model steered by thread content can still only
+ *       run the reply's read-only toolset: a call to any other tool (a write,
+ *       SQL, MCP) is refused and nothing outside the toolset runs.
  *
  * The XSS (A03) proof lives with the renderer in the UI test-suite
  * (`ui/tests/discussion-xss.test.tsx`); the mention-spam / cost-abuse limiter
@@ -33,16 +36,27 @@ import type { AIProvider, ChatChunk } from "../ai/index.js";
 
 // ── Prisma double (shared across both halves of the suite) ───────────────────
 const threadFindFirst = vi.fn();
-const projectFindMany = vi.fn();
+const projectFindFirst = vi.fn();
+const projectFindUnique = vi.fn();
 const sessionCreate = vi.fn();
 const messageCreate = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
     discussionThread: { findFirst: (...a: unknown[]) => threadFindFirst(...a) },
-    project: { findMany: (...a: unknown[]) => projectFindMany(...a) },
+    project: {
+      findFirst: (...a: unknown[]) => projectFindFirst(...a),
+      findUnique: (...a: unknown[]) => projectFindUnique(...a),
+    },
     aISession: { create: (...a: unknown[]) => sessionCreate(...a) },
     discussionMessage: { create: (...a: unknown[]) => messageCreate(...a) },
+    aIToolApproval: { create: async (a: { data: unknown }) => a.data, findFirst: async () => null },
   },
+}));
+vi.mock("../finops/token-tracker.js", () => ({ recordUsage: vi.fn() }));
+// #775 — the responder's project budget gate; within budget here.
+vi.mock("../finops/budget-enforcer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../finops/budget-enforcer.js")>()),
+  assertWithinBudget: vi.fn(async () => undefined),
 }));
 
 // Audit is a real side effect we only need to silence; spy on it so we can also
@@ -59,7 +73,31 @@ vi.mock("../ai/index.js", async (importOriginal) => {
   };
 });
 
-// The REAL access chain (canAccessThread → actorCanAccessProject) + the REAL
+// #734 — the caller's live workspace memberships (DB-sourced when the caller
+// carries no verified claim).
+const readLiveWorkspaceIds = vi.fn();
+vi.mock("../auth/live-workspace-ids.js", () => ({
+  readLiveWorkspaceIds: (...a: unknown[]) => readLiveWorkspaceIds(...a),
+}));
+
+/** p1 lives in workspace ws1; `memberId` is its only member. */
+function p1InWorkspace(memberId: string): void {
+  projectFindFirst.mockResolvedValue({ id: "p1" });
+  projectFindUnique.mockImplementation(
+    async (args: {
+      select: { workspace: { select: { members: { where: { userId: string } } } } };
+    }) => ({
+      workspaceId: "ws1",
+      workspace: {
+        deletedAt: null,
+        members:
+          args.select.workspace.select.members.where.userId === memberId ? [{ id: "m1" }] : [],
+      },
+    }),
+  );
+}
+
+// The REAL access chain (canAccessThread → assertProjectAccess) + the REAL
 // responder. Nothing in this file mocks the authorization logic itself.
 const { canAccessThread } = await import("./access.js");
 const { streamAIReply } = await import("./ai-responder.js");
@@ -83,10 +121,11 @@ beforeEach(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe("A01 Broken Access Control — discussion thread IDOR", () => {
   it("DENIES a non-member who crafts/swaps a thread id (forbidden, real authz)", async () => {
-    // The thread exists and belongs to project p1, created by the member.
+    // The thread exists and belongs to project p1, in a workspace the stranger
+    // is not a member of — even when the stranger forges the workspace claim.
     threadFindFirst.mockResolvedValue({ id: "t1", projectId: "p1" });
-    // The non-member owns NO projects → not on the accessible list → forbidden.
-    projectFindMany.mockResolvedValue([]); // stranger created nothing
+    p1InWorkspace(MEMBER.id);
+    readLiveWorkspaceIds.mockResolvedValue(["ws1"]); // forged/stale claim
 
     const result = await canAccessThread(NON_MEMBER, "t1");
 
@@ -99,8 +138,9 @@ describe("A01 Broken Access Control — discussion thread IDOR", () => {
 
   it("ALLOWS the genuine project member (positive control)", async () => {
     threadFindFirst.mockResolvedValue({ id: "t1", projectId: "p1" });
-    // The member created p1, so it is on their accessible list.
-    projectFindMany.mockResolvedValue([{ id: "p1" }]);
+    // The member is in p1's workspace (they did not have to create p1).
+    p1InWorkspace(MEMBER.id);
+    readLiveWorkspaceIds.mockResolvedValue(["ws1"]);
 
     const result = await canAccessThread(MEMBER, "t1");
     expect(result).toEqual({ ok: true, projectId: "p1" });
@@ -108,10 +148,10 @@ describe("A01 Broken Access Control — discussion thread IDOR", () => {
 
   it("ALLOWS an admin (admins legitimately reach any thread)", async () => {
     threadFindFirst.mockResolvedValue({ id: "t1", projectId: "p1" });
-    // Admin short-circuits before the project list is consulted.
+    // Admin short-circuits before any project or membership lookup.
     const result = await canAccessThread(ADMIN, "t1");
     expect(result).toEqual({ ok: true, projectId: "p1" });
-    expect(projectFindMany).not.toHaveBeenCalled();
+    expect(projectFindUnique).not.toHaveBeenCalled();
   });
 
   it("makes a missing thread INDISTINGUISHABLE from a forbidden one (404, no leak)", async () => {
@@ -122,7 +162,7 @@ describe("A01 Broken Access Control — discussion thread IDOR", () => {
 
     const result = await canAccessThread(NON_MEMBER, "../../etc/passwd");
     expect(result).toEqual({ ok: false, reason: "not_found" });
-    expect(projectFindMany).not.toHaveBeenCalled();
+    expect(projectFindUnique).not.toHaveBeenCalled();
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "discussion.thread.access.denied",
@@ -132,9 +172,10 @@ describe("A01 Broken Access Control — discussion thread IDOR", () => {
   });
 
   it("does NOT leak another project's thread to a member of a DIFFERENT project", async () => {
-    // Stranger is a legit member of p2, but the thread lives in p1.
+    // Stranger is a legit member of another workspace, but the thread lives in p1.
     threadFindFirst.mockResolvedValue({ id: "t1", projectId: "p1" });
-    projectFindMany.mockResolvedValue([{ id: "p2" }]); // accessible: p2 only
+    p1InWorkspace(MEMBER.id);
+    readLiveWorkspaceIds.mockResolvedValue(["ws2"]);
 
     const result = await canAccessThread(NON_MEMBER, "t1");
     expect(result).toEqual({ ok: false, reason: "forbidden" });
@@ -250,5 +291,65 @@ describe("A03 Injection — cross-user prompt-injection isolation in AI replies"
     // The persisted reply is just the concatenated text deltas — the tool_call
     // chunk is ignored, not executed.
     expect(result.message.body).toBe("beforeafter");
+  });
+
+  it("#739 — a steered model cannot run anything outside the reply's read-only toolset", async () => {
+    const { ApprovalGateService } = await import("../ai/approval-policy.js");
+    const { makeToolset } = await import("../ai/tool-runtime/toolset.js");
+    const { DISCUSSION_TOOL_ALLOWLIST, DISCUSSION_TOOL_POLICY } = await import("./grounding.js");
+    const read = vi.fn(async () => ({ text: "file text", resultCount: 1 }));
+    const toolset = makeToolset([
+      {
+        name: "read_file_slice",
+        wireName: "read_file_slice",
+        description: "read",
+        parameters: { type: "object" },
+        risk: "low",
+        source: "code",
+        validate: (args: unknown) => ({ ok: true as const, args }),
+        execute: read,
+      },
+    ]);
+    const gate = new ApprovalGateService({
+      sessionId: "sess-1",
+      userId: actor.id,
+      policy: { ...DISCUSSION_TOOL_POLICY },
+      agentAllowlist: DISCUSSION_TOOL_ALLOWLIST,
+    });
+    let turn = 0;
+    const provider = {
+      key: "openai",
+      model: "m",
+      offline: false,
+      stream: vi.fn(),
+      chat: vi.fn(async () => {
+        turn++;
+        return turn === 1
+          ? {
+              content: "",
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              toolCalls: [
+                { id: "c1", name: "apply_diff", args: { patch: "rm -rf" } },
+                { id: "c2", name: "query_database", args: { sql: "drop table users" } },
+              ],
+            }
+          : {
+              content: "I can only read project files.",
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            };
+      }),
+    } as unknown as AIProvider;
+
+    const result = await streamAIReply({
+      thread,
+      triggerMessage: { id: "m", body: INJECTION },
+      actor,
+      provider,
+      resolveTools: async () => ({ toolset, native: true, gate, note: "tools" }),
+    });
+
+    // Neither call named a tool in the toolset, so nothing ran.
+    expect(read).not.toHaveBeenCalled();
+    expect(result.message.body).toBe("I can only read project files.");
   });
 });

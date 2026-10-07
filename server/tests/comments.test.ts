@@ -20,7 +20,9 @@ const mockPrisma = {
     update: vi.fn(),
   },
   project: {
-    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    // #734 — the discussions rule also requires the project to be live.
+    findFirst: vi.fn(),
   },
 };
 
@@ -416,34 +418,74 @@ describe("IDOR guard — project cross-access denied", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Switch to a non-admin user for this suite.
-    Object.assign(testUser, { userId: "user-2", username: "bob", role: "developer" });
-    // user-2 only owns proj-B, not proj-A.
-    mockPrisma.project.findMany.mockResolvedValue([{ id: "proj-B" }]);
+    Object.assign(testUser, {
+      userId: "user-2",
+      username: "bob",
+      role: "developer",
+      workspaces: ["ws-B"],
+    });
+    // #734 — the real `assertProjectAccess` runs: proj-A lives in ws-A, where
+    // user-2 has no membership; proj-B in ws-B, where user-2 is a member who
+    // did NOT create the project.
+    mockPrisma.project.findFirst.mockImplementation(async (args: { where: { id: string } }) => ({
+      id: args.where.id,
+    }));
+    mockPrisma.project.findUnique.mockImplementation(async (args: { where: { id: string } }) => {
+      const ws = args.where.id === "proj-B" ? "ws-B" : "ws-A";
+      return {
+        workspaceId: ws,
+        workspace: { deletedAt: null, members: ws === "ws-B" ? [{ id: "m-2" }] : [] },
+      };
+    });
     app = createApp();
   });
 
   afterEach(() => {
     // Restore admin user for other suites.
     Object.assign(testUser, { userId: "user-1", username: "alice", role: "admin" });
+    delete (testUser as { workspaces?: string[] }).workspaces;
   });
 
-  it("denies non-admin reading threads in a project they do not own", async () => {
-    // Requirement belongs to proj-A, which user-2 does not own.
+  it("answers a non-member the unknown-requirement 404", async () => {
     mockPrisma.requirement.findUnique.mockResolvedValue({ id: "req-1", projectId: "proj-A" });
 
     const res = await request(app).get("/requirements/req-1/comments");
 
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe("FORBIDDEN");
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
+    expect(mockPrisma.commentThread.findMany).not.toHaveBeenCalled();
   });
 
-  it("allows non-admin reading threads in a project they own", async () => {
-    // Requirement belongs to proj-B, which user-2 does own.
+  it("admits a workspace member who did not create the project", async () => {
     mockPrisma.requirement.findUnique.mockResolvedValue({ id: "req-2", projectId: "proj-B" });
     mockPrisma.commentThread.findMany.mockResolvedValue([]);
 
     const res = await request(app).get("/requirements/req-2/comments");
 
     expect(res.status).toBe(200);
+  });
+
+  it("answers a non-member's artifact comment list the unknown-project 404", async () => {
+    const res = await request(app).get("/projects/proj-A/spec-kit/artifacts/spec.md/comments");
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("NOT_FOUND");
+  });
+});
+
+describe("request validation", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    ["post", "/projects/proj-1/spec-kit/artifacts/spec.md/comments"],
+    ["post", "/comments/thread-1/replies"],
+    ["patch", "/comments/comment-1"],
+  ] as const)("answers %s %s with an empty body 400 before any lookup", async (method, url) => {
+    const res = await request(createApp())[method](url).send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    expect(mockPrisma.commentThread.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.comment.findUnique).not.toHaveBeenCalled();
   });
 });

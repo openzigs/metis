@@ -45,8 +45,22 @@ const store = {
 };
 
 vi.mock("../prisma.js", () => ({
+  // #779 — `persistRequirements` locks by provider on Postgres only; this
+  // fake has no raw SQL, so it pins the SQLite path on either generated client.
+  resolveDatabaseProvider: () => "sqlite" as const,
   prisma: {
+    // #779 — `persistRequirements` runs in an interactive transaction; this
+    // fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../prisma.js")).prisma),
+    ),
+    // Issue #769 — `persistRequirements` reads the analysis metadata first.
+    analysis: { findFirst: vi.fn(async () => ({ metadata: null })) },
     requirement: {
+      // Issue #769 — this fake models no review work and no prior set, so the
+      // replacement guard proceeds; the guard itself is exercised against a real
+      // SQLite database in tests/requirement-set-preservation-769.sqlite.test.ts.
+      count: vi.fn(async () => 0),
       deleteMany: vi.fn(async ({ where }: { where: { analysisId: string } }) => {
         store.requirements = store.requirements.filter((r) => r.analysisId !== where.analysisId);
         return { count: 0 };
@@ -65,6 +79,15 @@ vi.mock("../prisma.js", () => ({
     finding: {
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
         store.findings.filter((f) => where.id.in.includes(f.id)),
+      ),
+    },
+    // #768 — a citation becomes a code link only when the project's graph has the file.
+    codeSymbol: {
+      findMany: vi.fn(
+        async ({ where }: { where: { projectId: string; filePath: { in: string[] } } }) =>
+          where.projectId === "proj-1" && where.filePath.in.includes("server/src/auth.ts")
+            ? [{ id: "sym-auth", filePath: "server/src/auth.ts", startLine: 1, endLine: 80 }]
+            : [],
       ),
     },
     requirementCodeMapping: {
@@ -97,7 +120,13 @@ describe("synthesis hook → requirement→code spine", () => {
     store.findings.push({
       id: "find-1",
       evidence: JSON.stringify({
-        citations: [{ documentId: "doc-1", chunkIndex: 0, filename: "server/src/auth.ts" }],
+        citations: [
+          {
+            documentId: "doc-1",
+            chunkIndex: 0,
+            filename: "connector:repo:conn-1:src/server/src/auth.ts",
+          },
+        ],
         tags: [],
         requirementId: null,
       }),

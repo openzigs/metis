@@ -109,6 +109,14 @@ export const AGENT_RESULT_STATUSES = [
 ] as const;
 export type AgentResultStatus = (typeof AGENT_RESULT_STATUSES)[number];
 
+/**
+ * #766 — the note the server writes on an agent output that completed DEGRADED
+ * (the agentic code pass ran out of budget and persisted partial or no
+ * findings). The agent's row still says `completed`; the UI reads this note to
+ * badge the card `degraded` instead of a green `completed`.
+ */
+export const AGENT_DEGRADED_NOTE_PREFIX = "DEGRADED (#769):";
+
 // ---- Multi-agent analysis (Phase 7) ----------------------------------------
 /**
  * Stable agent identifiers persisted on `AgentResult.agentKey`. Order is

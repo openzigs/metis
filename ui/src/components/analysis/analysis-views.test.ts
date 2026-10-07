@@ -17,6 +17,7 @@ import {
   requirementPage,
   sameFindingFilters,
   traceabilityPendingMessage,
+  agentDisplayStatus,
   runHasQuestionsView,
   tabCountLabel,
   tabForAnchor,
@@ -374,5 +375,28 @@ describe("sameFindingFilters", () => {
     ["verification", { verification: "confirmed" as const }],
   ])("is false when %s differs", (_facet, over) => {
     expect(sameFindingFilters(NO_FINDING_FILTERS, { ...NO_FINDING_FILTERS, ...over })).toBe(false);
+  });
+});
+
+// Issue #766 — a code agent that ran out of budget and persisted partial (or no)
+// findings showed a green "completed" badge; only the Summary tab said otherwise.
+describe("agentDisplayStatus", () => {
+  it("shows degraded for a completed agent whose output carries the degraded note", () => {
+    expect(
+      agentDisplayStatus({
+        status: "completed",
+        notes: [
+          "DEGRADED (#769): the code agent exhausted its token budget mid-investigation.",
+          "Recovered 0 finding(s) from 64 tool call(s).",
+        ],
+      }),
+    ).toBe("degraded");
+  });
+
+  it("keeps the row status otherwise", () => {
+    expect(agentDisplayStatus({ status: "completed", notes: ["All good."] })).toBe("completed");
+    expect(agentDisplayStatus({ status: "completed" })).toBe("completed");
+    expect(agentDisplayStatus({ status: "failed", notes: ["DEGRADED (#769): x"] })).toBe("failed");
+    expect(agentDisplayStatus({ status: "running", notes: [] })).toBe("running");
   });
 });

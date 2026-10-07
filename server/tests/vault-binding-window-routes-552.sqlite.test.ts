@@ -93,7 +93,8 @@ const { projectsRouter } = await import("../src/routes/projects.js");
 const { mcpRouter } = await import("../src/routes/mcp.js");
 const { publishingRouter } = await import("../src/routes/publishing.js");
 const { jiraRouter } = await import("../src/routes/jira.js");
-const { testManagementRouter } = await import("../src/routes/test-management.js");
+const { importsRouter } = await import("../src/routes/imports.js");
+const { ImportService } = await import("../src/lib/importers/import-service.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getVaultService, __resetVaultSingleton } =
@@ -138,10 +139,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(express.json());
       a.use("/api/projects/:projectId/connectors", connectorsRouter());
       a.use("/api/projects/:projectId/publishing", publishingRouter());
+      // The real import service over the test DB; only the scheduler edge is stubbed.
+      a.use(
+        "/api/projects/:projectId/imports",
+        importsRouter(
+          new ImportService({
+            prisma: db,
+            vault: getVaultService(),
+            enqueueTask: async () => ({ id: "task-552" }),
+            createScheduledJob: async () => ({ id: "job-552" }),
+            deleteScheduledJob: async () => undefined,
+            resolveJira: async () => {
+              throw new Error("no Jira in this test");
+            },
+          }),
+        ),
+      );
       a.use("/api/projects", projectsRouter());
       a.use("/api/mcp", mcpRouter());
       a.use("/api/jira", jiraRouter());
-      a.use("/api/test-management", testManagementRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -329,6 +345,44 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           state.tokensSent.length > 0,
       },
       {
+        // PR #850 review — the draft-PR path checks the window in
+        // `openDraftPullRequest`, after the ownership check, before the token is read.
+        site: "publishing.ts POST /drafts/:id/pull-request",
+        setup: async () => {
+          await db.project.update({
+            where: { id: PROJ },
+            data: { publishGithubOwner: "octo", publishGithubRepo: "sandbox-552" },
+          });
+          return (
+            await db.issueDraft.create({
+              data: { projectId: PROJ, title: `Draft PR ${next()}`, body: "b", status: "draft" },
+            })
+          ).id;
+        },
+        send: (draftId) =>
+          call("post", `/api/projects/${PROJ}/publishing/drafts/${draftId}/pull-request`, {
+            dryRun: false,
+            secretRef: ref(OWN_LABEL),
+          }),
+        // The stubbed network fails the run itself; the token was sent.
+        okStatus: 500,
+        written: async () => state.tokensSent.some((t) => t.token === OWN_VALUE),
+      },
+      {
+        site: "imports.ts POST /sources",
+        setup: async () => `import-552-${next()}`,
+        send: (label) =>
+          call("post", `/api/projects/${PROJ}/imports/sources`, {
+            source: "github",
+            label,
+            filter: { owner: "octo", repo: "app", state: "open" },
+            secretRef: ref(OWN_LABEL),
+          }),
+        okStatus: 201,
+        written: async (label) =>
+          (await db.importSource.count({ where: { projectId: PROJ, label } })) > 0,
+      },
+      {
         site: "jira.ts PATCH /connections/:id",
         setup: () =>
           created(
@@ -348,26 +402,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         written: async (id) =>
           (await db.jiraConnection.findUniqueOrThrow({ where: { id } })).baseUrl ===
           "https://jira.moved.example.test",
-      },
-      {
-        site: "test-management.ts PATCH /connections/:id",
-        setup: () =>
-          created(
-            call("post", `/api/test-management/connections?projectId=${PROJ}`, {
-              label: `tm-552-${next()}`,
-              kind: "zephyr",
-              baseUrl: "https://zephyr.coord.example.test",
-              auth: { kind: "zephyr", bearerToken: "zephyr-token-552" },
-            }),
-          ),
-        send: (id) =>
-          call("patch", `/api/test-management/connections/${id}`, {
-            baseUrl: "https://zephyr.moved.example.test",
-          }),
-        okStatus: 200,
-        written: async (id) =>
-          (await db.testManagementConnection.findUniqueOrThrow({ where: { id } })).baseUrl ===
-          "https://zephyr.moved.example.test",
       },
     ];
 
@@ -426,7 +460,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("covers every route-level call site", () => {
-      expect(rows).toHaveLength(12);
+      expect(rows).toHaveLength(13);
     });
 
     it.each(rows.map((r) => [r.site, r] as const))(
@@ -448,7 +482,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           vi.useRealTimers();
         }
         // The binding check ran and stamped the caller's own secret (the
-        // connection's token, for jira / test-management): the refusal below
+        // connection's token, for jira): the refusal below
         // is the window, not the ownership rule.
         expect(stamps.length).toBeGreaterThan(0);
         expect(

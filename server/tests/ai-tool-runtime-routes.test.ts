@@ -152,13 +152,23 @@ import {
   OpenAICompatibleProvider,
 } from "../src/lib/ai/providers/bedrock-direct-provider.js";
 import { __setSessionRuntime } from "../src/lib/library/session-runtime.js";
+import { registerSocketServer } from "../src/lib/socket/registry.js";
+import type { MetisIOServer } from "../src/lib/socket/server.js";
 
 // ── Tools ─────────────────────────────────────────────────────────────────
 const dangerExec = vi.fn(async (args: { table: string }) => ({ text: `rows in ${args.table}: 7` }));
 const boomExec = vi.fn(async () => {
   throw new Error("connect ECONNREFUSED db.internal:5432 password=hunter2");
 });
+const inspectExec = vi.fn(async () => ({ text: "tables: feeds, entries" }));
 function registerMetisTools(): void {
+  getToolRegistry().register({
+    name: "inspect_schema",
+    description: "Read the database schema",
+    schema: z.object({}),
+    risk: "medium",
+    exec: inspectExec,
+  } as ToolDefinition);
   getToolRegistry().register({
     name: "count_rows",
     description: "Count rows in a table",
@@ -266,6 +276,7 @@ beforeEach(async () => {
   projectState.workspaceId = null;
   dangerExec.mockClear();
   boomExec.mockClear();
+  inspectExec.mockClear();
   __resetAIRateLimiter();
   __resetToolApprovalBroker();
   __resetToolRegistrySingleton();
@@ -584,7 +595,9 @@ describe("#142 the approval gate through the routes", () => {
     const sid = await newSession(app);
     const pending = as(
       alice,
-      request(app).post("/api/ai/chat").send({ sessionId: sid, message: "go" }),
+      request(app)
+        .post("/api/ai/chat")
+        .send({ sessionId: sid, message: "go", awaitToolApproval: true }),
     ).then((r) => r);
     const approvalId = await waitForPending(sid);
     expect(dangerExec).not.toHaveBeenCalled();
@@ -711,6 +724,40 @@ describe("#142 the approval gate through the routes", () => {
       .map((d) => d.content)
       .join("");
     expect(text).toMatch(/tool-call limit/);
+  });
+
+  // #772 — a spent step budget ends in ONE tool-free call whose answer the user
+  // sees streamed and is billed for, not the canned "tool-call limit" message.
+  it("/stream: a turn that runs out of steps streams and meters a synthesized answer (#772)", async () => {
+    const { setUsageEmitter } = await import("../src/lib/finops/token-tracker.js");
+    const ticks: Array<Record<string, unknown>> = [];
+    setUsageEmitter((_projectId, payload) => ticks.push(payload));
+    try {
+      const usage = { promptTokens: 10, completionTokens: 1, totalTokens: 11 };
+      const calls = Array.from({ length: 6 }, (_, i) => ({
+        toolCalls: [{ id: `c${i}`, name: "count_rows", args: { table: `t${i}` } }],
+        usage,
+      }));
+      const model = stubModel([
+        ...calls,
+        { content: "There are 7 rows; t5 was not checked.", usage },
+        { content: "unreachable" },
+      ]);
+      const app = makeApp();
+      const sid = await newSession(app, { policy: { high: "auto" } });
+      const res = await stream(app, sid);
+      const text = frames(res.text, "delta")
+        .map((d) => d.content)
+        .join("");
+      expect(text).toBe("There are 7 rows; t5 was not checked.");
+      expect(text).not.toMatch(/tool-call limit/);
+      expect(model.requests).toHaveLength(7);
+      expect(model.requests[6]!.opts.toolChoice).toBe("none");
+      expect(ticks).toHaveLength(1);
+      expect(ticks[0]).toMatchObject({ totalTokens: 7 * 11 });
+    } finally {
+      setUsageEmitter(null);
+    }
   });
 
   it("MCP requireApproval forces a prompt even under auto — asked once, run once", async () => {
@@ -855,7 +902,9 @@ describe("#142 the approval gate through the routes", () => {
     const sid = await newSession(app);
     const req = as(
       alice,
-      request(app).post("/api/ai/chat").send({ sessionId: sid, message: "go" }),
+      request(app)
+        .post("/api/ai/chat")
+        .send({ sessionId: sid, message: "go", awaitToolApproval: true }),
     );
     const settled = req.then(
       () => "completed",
@@ -1191,6 +1240,111 @@ describe("#142 real providers carry the session's tools on the wire", () => {
       });
     }
   }
+});
+
+// ── #861 ────────────────────────────────────────────────────────────────
+describe("#861 /chat when nobody can answer an approval", () => {
+  const inspectCall: OfflineScriptTurn = {
+    toolCalls: [{ id: "c1", name: "inspect_schema", args: {} }],
+  };
+  /** A socket server whose session room holds `members` sockets. */
+  function socketServer(members: number): MetisIOServer {
+    const room = { fetchSockets: vi.fn(async () => Array.from({ length: members }, () => ({}))) };
+    return {
+      in: vi.fn(() => room),
+      to: vi.fn(() => ({ emit: vi.fn() })),
+    } as unknown as MetisIOServer;
+  }
+  afterEach(() => {
+    registerSocketServer(null as unknown as MetisIOServer);
+  });
+
+  it("fails a prompt-once medium tool at once, never runs it, and reports it in the response", async () => {
+    // The real 120 s default: nothing here may wait for it.
+    delete process.env.AI_TOOL_APPROVAL_TIMEOUT_MS;
+    const model = stubModel([inspectCall, { content: "Answered without the schema." }]);
+    const app = makeApp();
+    // The session default policy: medium = prompt-once.
+    const sid = await newSession(app);
+    const started = Date.now();
+    const res = await as(
+      alice,
+      request(app).post("/api/ai/chat").send({ sessionId: sid, message: "which tables?" }),
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(res.status).toBe(200);
+    expect(inspectExec).not.toHaveBeenCalled();
+    expect(getToolApprovalBroker().size).toBe(0);
+    expect(res.body.data.response.content).toBe("Answered without the schema.");
+    expect(res.body.data.toolApprovals).toEqual([
+      {
+        callId: "c1",
+        tool: "inspect_schema",
+        decision: "deny",
+        reason: "no_interactive_approver",
+        code: "TOOL_DENIED",
+      },
+    ]);
+    expect(approvalRows.map((r) => [r.decision, r.reason])).toEqual([
+      ["deny", "no_interactive_approver"],
+    ]);
+    const toolMsg = model.requests[1]!.messages.find((m) => m.role === "tool")!;
+    expect(String(toolMsg.content)).toMatch(/no one is available to approve/);
+  });
+
+  it("still asks when a client is subscribed to the session's socket room", async () => {
+    registerSocketServer(socketServer(1));
+    stubModel([inspectCall, { content: "Feeds and entries." }]);
+    const app = makeApp();
+    const sid = await newSession(app);
+    const pending = as(
+      alice,
+      request(app).post("/api/ai/chat").send({ sessionId: sid, message: "which tables?" }),
+    ).then((r) => r);
+    const approvalId = await waitForPending(sid);
+    expect((await decide(app, alice, sid, approvalId)).status).toBe(200);
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(inspectExec).toHaveBeenCalledTimes(1);
+    expect(res.body.data.toolApprovals).toBeUndefined();
+  });
+
+  it("an empty session room is nobody: fails at once", async () => {
+    registerSocketServer(socketServer(0));
+    stubModel([inspectCall, { content: "done" }]);
+    const app = makeApp();
+    const sid = await newSession(app);
+    const res = await as(
+      alice,
+      request(app).post("/api/ai/chat").send({ sessionId: sid, message: "which tables?" }),
+    );
+    expect(res.status).toBe(200);
+    expect(inspectExec).not.toHaveBeenCalled();
+    expect(res.body.data.toolApprovals[0]).toMatchObject({ reason: "no_interactive_approver" });
+  });
+
+  it("an auto-approved tool is unaffected, and a policy=deny refusal is reported too", async () => {
+    stubModel([inspectCall, { content: "done" }]);
+    const app = makeApp();
+    const auto = await newSession(app, { policy: { medium: "auto" } });
+    const ran = await as(
+      alice,
+      request(app).post("/api/ai/chat").send({ sessionId: auto, message: "go" }),
+    );
+    expect(inspectExec).toHaveBeenCalledTimes(1);
+    expect(ran.body.data.toolApprovals).toBeUndefined();
+
+    stubModel([inspectCall, { content: "done" }]);
+    const denied = await newSession(app, { policy: { medium: "deny" } });
+    const refused = await as(
+      alice,
+      request(app).post("/api/ai/chat").send({ sessionId: denied, message: "go" }),
+    );
+    expect(inspectExec).toHaveBeenCalledTimes(1);
+    expect(refused.body.data.toolApprovals).toEqual([
+      expect.objectContaining({ decision: "deny", reason: "policy=deny" }),
+    ]);
+  });
 });
 
 // ── #143 ────────────────────────────────────────────────────────────────
