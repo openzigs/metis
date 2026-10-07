@@ -272,6 +272,35 @@ describe("reindexProjectSymbols", () => {
     expect(spy).toHaveBeenCalledWith(symbolReindexShadowId(PROJECT));
   });
 
+  // #862 — the symbol phase runs after the document chunks reach 100%. With no
+  // progress of its own, the reindex page sat on "N/N chunks" for all of it.
+  it("reports progress at the start and after every batch", async () => {
+    const progress: Array<{ processed: number; total: number }> = [];
+
+    await reindexProjectSymbols(PROJECT, {
+      ...deps(),
+      batchSize: 1,
+      onProgress: (p) => progress.push(p),
+    });
+
+    expect(progress).toEqual([
+      { processed: 0, total: 2 },
+      { processed: 1, total: 2 },
+      { processed: 2, total: 2 },
+    ]);
+  });
+
+  it("a throwing progress callback does not abort the symbol reindex", async () => {
+    const result = await reindexProjectSymbols(PROJECT, {
+      ...deps(),
+      onProgress: () => {
+        throw new Error("watcher gone");
+      },
+    });
+
+    expect(result.embeddedSymbols).toBe(2);
+  });
+
   it("RESUMES a shadow left by an interrupted run instead of re-embedding it", async () => {
     const e = embedder();
     // A previous run got as far as s1 and died.
