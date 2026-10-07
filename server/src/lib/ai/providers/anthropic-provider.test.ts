@@ -55,6 +55,10 @@ import {
 import type { ChatChunk, ChatMessage } from "../types.js";
 import { __resetConfigSingleton } from "../../config/config-service.js";
 import { SDK_MODEL_NONSTREAMING_TOKENS } from "../nonstreaming-output-bound.js";
+import {
+  __resetCacheHitAggregatorSingleton,
+  getCacheHitAggregator,
+} from "../cache-hit-telemetry.js";
 
 /** A non-streaming `messages.create` result with the usage we map. */
 function fakeMessage(over?: Record<string, unknown>) {
@@ -922,5 +926,71 @@ describe("AnthropicProvider honours the SDK's PER-MODEL non-streaming ceiling (#
         `${model} still exceeds the SDK's own pre-flight`,
       ).not.toThrow();
     }
+  });
+});
+
+describe("AnthropicProvider feeds the admin cache telemetry (#796)", () => {
+  // The usage shape DeepSeek's Anthropic-compatible endpoint actually returned
+  // in the recorded contract fixture
+  // `tests/fixtures/llm/provider-contract/deepseek/tools-stream.json`:
+  // `input_tokens` EXCLUDES the 256 cache-read tokens.
+  const deepseekUsage = {
+    input_tokens: 111,
+    output_tokens: 77,
+    cache_read_input_tokens: 256,
+    cache_creation_input_tokens: 0,
+  };
+
+  beforeEach(() => __resetCacheHitAggregatorSingleton());
+  afterEach(() => __resetCacheHitAggregatorSingleton());
+
+  it("records a chat() call's cache reads and writes, tagged by call type and served model", async () => {
+    await provider().chat(messages, { callType: "discussion" });
+    const stats = getCacheHitAggregator().snapshot("discussion", "claude-sonnet-4-6");
+    expect(stats).toMatchObject({
+      calls: 1,
+      sumCacheReadTokens: 80,
+      sumCacheWriteTokens: 12,
+      // fresh 100 + read 80 + write 12 — the full prompt, not `input_tokens`.
+      sumPromptTokens: 192,
+    });
+    expect(stats?.hitRatio).toBeCloseTo(80 / 192);
+  });
+
+  it("records a stream() call from DeepSeek's recorded usage, with a ratio below 1", async () => {
+    streamSpy.mockReturnValue(
+      fakeStreamHandle(
+        [{ type: "content_block_delta", delta: { type: "text_delta", text: "x" } }],
+        fakeMessage({ model: "deepseek-v4-pro", usage: deepseekUsage }),
+      ),
+    );
+    for await (const _c of provider().stream(messages, { callType: "chat" })) {
+      /* drain */
+    }
+    const stats = getCacheHitAggregator().snapshot("chat", "deepseek-v4-pro");
+    expect(stats).toMatchObject({
+      calls: 1,
+      sumCacheReadTokens: 256,
+      sumCacheWriteTokens: 0,
+      sumPromptTokens: 367,
+    });
+    expect(stats?.hitRatio).toBeCloseTo(256 / 367);
+  });
+
+  it("buckets a call with no call type under 'unknown' and still counts an uncached call", async () => {
+    createSpy.mockResolvedValue(fakeMessage({ usage: { input_tokens: 3, output_tokens: 4 } }));
+    await provider().chat(messages, {});
+    expect(getCacheHitAggregator().snapshot("unknown", "claude-sonnet-4-6")).toMatchObject({
+      calls: 1,
+      sumCacheReadTokens: 0,
+      sumPromptTokens: 3,
+      hitRatio: 0,
+    });
+  });
+
+  it("records nothing when the call fails", async () => {
+    createSpy.mockRejectedValue(Object.assign(new Error("boom"), { status: 500 }));
+    await expect(provider().chat(messages, {})).rejects.toThrow();
+    expect(getCacheHitAggregator().allSnapshots()).toEqual([]);
   });
 });

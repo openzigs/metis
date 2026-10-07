@@ -49,7 +49,7 @@ vi.mock("../../lib/socket/job-events.js", () => ({
 
 type ReindexOpts = {
   batchSize?: number;
-  onProgress?: (p: { processed: number; total: number }) => void;
+  onProgress?: (p: { processed: number; total: number; phase?: "chunks" | "symbols" }) => void;
 };
 const { reindexProject, coverageReport, reindexShadowState, discardReindexShadow } = vi.hoisted(
   () => ({
@@ -328,6 +328,47 @@ describe("runReindexJob — lifecycle streaming", () => {
       expect.stringContaining("Reindexed 10 of 10 chunks"),
     );
     expect(jobEvents.failed).not.toHaveBeenCalled();
+  });
+
+  // #862 — after the chunks reach 100% the code-symbol phase streams its own
+  // progress; the page must say what it is waiting on, and the completion says
+  // both corpora moved.
+  it("streams the code-symbol phase as its own progress and names it on completion", async () => {
+    reindexProject.mockImplementation(async (_id: string, opts: ReindexOpts) => {
+      opts.onProgress?.({ processed: 10, total: 10, phase: "chunks" });
+      opts.onProgress?.({ processed: 3, total: 4, phase: "symbols" });
+      return {
+        reindexedChunks: 10,
+        totalChunks: 10,
+        currentModel: "text-embed-3",
+        currentDimension: 1536,
+        resumedChunks: 0,
+        symbols: { totalSymbols: 4 },
+      };
+    });
+
+    await runReindexJob("job-s", "p1", {});
+
+    expect(jobEvents.progress).toHaveBeenCalledWith(
+      "embeddings-reindex",
+      "job-s",
+      "p1",
+      100,
+      "Re-embedded 10/10 chunks",
+    );
+    expect(jobEvents.progress).toHaveBeenLastCalledWith(
+      "embeddings-reindex",
+      "job-s",
+      "p1",
+      75,
+      "Re-embedded 3/4 code symbols",
+    );
+    expect(jobEvents.completed).toHaveBeenCalledWith(
+      "embeddings-reindex",
+      "job-s",
+      "p1",
+      expect.stringContaining("Reindexed 10 of 10 chunks and 4 code symbols"),
+    );
   });
 
   it("handles a zero-total corpus without a divide-by-zero (progress 0)", async () => {

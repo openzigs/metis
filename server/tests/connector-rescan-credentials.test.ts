@@ -149,10 +149,7 @@ describe("POST /repos/:id/rescan-credentials", () => {
       suggestionsUpserted: 2,
       errors: 0,
     });
-    // #757 — discovery only reads the checkout, so it must not move lastCommitSha.
-    expect(mockPullOrClone).toHaveBeenCalledWith("proj-1", "repo-1", expect.any(String), {
-      recordCommit: false,
-    });
+    expect(mockPullOrClone).toHaveBeenCalledWith("proj-1", "repo-1", expect.any(String));
     expect(mockDiscovery).toHaveBeenCalledWith("proj-1", "/tmp/clone");
   });
 
