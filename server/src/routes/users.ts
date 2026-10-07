@@ -2,8 +2,11 @@
  * Issue #281 / Epic #34 — User search endpoint for @mention autocomplete.
  *
  * Routes:
- *   GET /api/users?search=<q>&limit=<n>  — search ACTIVE users by username or
- *                                          displayName for the mention picker.
+ *   GET /api/users?search=<q>&limit=<n>[&projectId=<id>]
+ *     — search ACTIVE users by username or displayName for the mention and
+ *       assignee pickers. With `projectId`, only users who can open that
+ *       project (#734); without it, only users sharing a live workspace with
+ *       the caller, plus system admins (#870). A system admin sees everyone.
  *
  * Requires authentication. Only NON-sensitive fields (id, username,
  * displayName) are ever returned — password hashes, emails, roles and SSO
@@ -19,6 +22,7 @@ import type { Prisma } from "@prisma/client";
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../lib/prisma.js";
 import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
+import { readLiveWorkspaceIds } from "../lib/auth/live-workspace-ids.js";
 
 const MAX_LIMIT = 25;
 const DEFAULT_LIMIT = 8;
@@ -77,6 +81,30 @@ async function mentionAudienceWhere(
   };
 }
 
+/**
+ * #870 — the users the caller may see with no `projectId`: the live members of
+ * the caller's own live workspaces, plus system admins, plus the caller. A
+ * system admin sees everyone, as `assertProjectAccess` lets them open every
+ * project. Without this, any authenticated user could list the usernames and
+ * display names of every active user in every tenant (OWASP A01).
+ *
+ * Memberships are re-read from the database rather than taken from the JWT, so
+ * a membership removed since the token was issued no longer widens the list.
+ */
+async function callerAudienceWhere(user: AuthPayload): Promise<Prisma.UserWhereInput | null> {
+  if (user.role === "admin") return null;
+  const workspaceIds = await readLiveWorkspaceIds(user.userId);
+  return {
+    OR: [
+      { id: user.userId },
+      SYSTEM_ADMIN,
+      ...(workspaceIds.length > 0
+        ? [{ workspaceMemberships: { some: { workspaceId: { in: workspaceIds } } } }]
+        : []),
+    ],
+  };
+}
+
 function projectNotFound(): AppError {
   return new AppError(404, "NOT_FOUND", "Project not found");
 }
@@ -101,8 +129,11 @@ export function usersRouter(): Router {
     // open it, so an @mention never targets someone it cannot notify. The
     // caller must be able to open the project themselves (the seam's 404
     // otherwise, as for an unknown id), or this would list another tenant's
-    // members.
-    const audience = projectId ? await mentionAudienceWhere(req.user, projectId) : null;
+    // members. Without a project, #870 scopes the list to the caller's own
+    // workspaces (everyone, for a system admin).
+    const audience = projectId
+      ? await mentionAudienceWhere(req.user, projectId)
+      : await callerAudienceWhere(req.user);
 
     // SQLite `LIKE` is case-insensitive for ASCII, so a plain `contains` filter
     // gives prefix/substring matching without the Postgres-only

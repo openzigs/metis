@@ -134,6 +134,15 @@ vi.mock("../lib/ai/index.js", () => ({
 const audit = vi.fn();
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: (...a: unknown[]) => audit(...a) }));
 
+// #775 — the project budget gate. The real error class, so the route's
+// `instanceof` mapping onto a 402 is exercised.
+const assertWithinBudget = vi.fn();
+vi.mock("../lib/finops/budget-enforcer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/finops/budget-enforcer.js")>()),
+  assertWithinBudget: (...a: unknown[]) => assertWithinBudget(...a),
+}));
+const { BudgetExceededError } = await import("../lib/finops/budget-enforcer.js");
+
 // #489 — mention-notification fan-out is unit-tested separately (notify.test.ts);
 // here we only assert the post-message route dispatches it with the right args.
 const dispatchDiscussionMentions = vi.fn();
@@ -897,6 +906,65 @@ describe("discussions routes", () => {
         "Discussion AI stream response emitted an error",
         expect.objectContaining({ threadId: "t1", userId: "u1", error: "socket reset" }),
       );
+    });
+  });
+
+  describe("POST /threads/:id/ai-respond budget gate (#775)", () => {
+    function armTriggerable() {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      threadFindFirst.mockResolvedValue({
+        id: "t1",
+        projectId: "p1",
+        aiResponseMode: "on_mention",
+      });
+      messageFindFirst.mockResolvedValue({ id: "m1", body: "@AI help", authorKind: "human" });
+      messageFindMany.mockResolvedValue([]);
+      streamAIReply.mockResolvedValue({ message: { id: "ai-1" }, usage: {} });
+    }
+
+    it("checks the THREAD's project budget before replying", async () => {
+      armTriggerable();
+      const res = await request(app)
+        .post("/discussions/threads/t1/ai-respond")
+        .send({ messageId: "m1" });
+      expect(res.status).toBe(200);
+      expect(assertWithinBudget).toHaveBeenCalledWith("p1");
+      expect(streamAIReply).toHaveBeenCalledTimes(1);
+    });
+
+    it("answers 402 over budget, makes no provider call, spends no rate-limit slot, and audits", async () => {
+      process.env.DISCUSSION_AI_RATE_LIMIT_MAX = "1";
+      armTriggerable();
+      assertWithinBudget.mockRejectedValueOnce(new BudgetExceededError(1200, 1000));
+
+      const res = await request(app)
+        .post("/discussions/threads/t1/ai-respond")
+        .send({ messageId: "m1" });
+
+      expect(res.status).toBe(402);
+      expect(res.headers["content-type"]).toContain("application/json");
+      expect(res.body.error).toMatchObject({ code: "BUDGET_EXCEEDED" });
+      expect(streamAIReply).not.toHaveBeenCalled();
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "discussion.ai.budget_exceeded",
+          target: { type: "discussion_thread", id: "t1" },
+          metadata: { usedTokens: 1200, budget: 1000 },
+        }),
+      );
+
+      // The denied request did not consume the single allowed invocation.
+      const next = await request(app)
+        .post("/discussions/threads/t1/ai-respond")
+        .send({ messageId: "m1" });
+      expect(next.status).toBe(200);
+    });
+
+    it("does not reach the gate when the trigger gate declines (no @AI)", async () => {
+      armTriggerable();
+      messageFindFirst.mockResolvedValue({ id: "m1", body: "just chatting", authorKind: "human" });
+      await request(app).post("/discussions/threads/t1/ai-respond").send({ messageId: "m1" });
+      expect(assertWithinBudget).not.toHaveBeenCalled();
     });
   });
 

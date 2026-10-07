@@ -19,7 +19,19 @@ import {
 } from "./impact-llm-runtime.js";
 import { runInImpactProjectScope } from "./impact-llm-scope.js";
 import type { RecordUsageInput } from "../finops/token-tracker.js";
-import type { AIProvider, ChatChunk, ChatOptions, ChatResponse, TokenUsage } from "../ai/types.js";
+import {
+  providerSupports,
+  resolveCapabilities,
+  supportsResponseFormat,
+} from "../ai/capabilities.js";
+import type {
+  AIProvider,
+  ChatChunk,
+  ChatOptions,
+  ChatResponse,
+  ProviderCapabilities,
+  TokenUsage,
+} from "../ai/types.js";
 
 const USAGE: TokenUsage = { promptTokens: 900, completionTokens: 120, totalTokens: 1020 };
 
@@ -288,6 +300,56 @@ describe("createImpactLlmRuntime — metering (#1021)", () => {
     expect(await wrapped.models()).toEqual(["claude-sonnet-5"]);
     expect(await wrapped.ping()).toBe(true);
     expect((await wrapped.embed(["x"])).model).toBe("e");
+  });
+
+  it("#754 — forwards capabilities, capabilitiesFor and servesRouterModel (not 'supports nothing')", () => {
+    const { runtime } = runtimeWith();
+    const caps = { responseFormat: true, jsonSchema: true, nativeToolCalls: true };
+    const inner = {
+      ...fakeProvider(),
+      capabilities: { responseFormat: false, nativeToolCalls: false },
+      routerIds: new Set(["us.anthropic.claude-sonnet-5"]),
+      capabilitiesFor(this: { capabilities: ProviderCapabilities }, model: string) {
+        return model === "claude-sonnet-5" ? caps : this.capabilities;
+      },
+      servesRouterModel(this: { routerIds: Set<string> }, modelId: string) {
+        // Reads `this`, so an unbound forward would throw.
+        return this.routerIds.has(modelId);
+      },
+    } as unknown as AIProvider;
+    const wrapped = runtime.instrument(inner, "seeding");
+
+    expect(wrapped.capabilities).toBe(inner.capabilities);
+    expect(wrapped.capabilitiesFor?.("claude-sonnet-5")).toEqual(caps);
+    expect(wrapped.servesRouterModel?.("us.anthropic.claude-sonnet-5")).toBe(true);
+    expect(wrapped.servesRouterModel?.("gpt-5")).toBe(false);
+    // The structured-output gate a stage branches on takes the capable branch.
+    expect(supportsResponseFormat(wrapped, "claude-sonnet-5", "json_schema")).toBe(true);
+    expect(providerSupports(wrapped, "nativeToolCalls", "claude-sonnet-5")).toBe(true);
+    expect(resolveCapabilities(wrapped, "claude-sonnet-5")).toEqual(caps);
+  });
+
+  it("#754 — keeps an absent optional member absent", () => {
+    const { runtime } = runtimeWith();
+    const wrapped = runtime.instrument(fakeProvider(), "seeding");
+
+    expect(wrapped.capabilitiesFor).toBeUndefined();
+    expect(wrapped.servesRouterModel).toBeUndefined();
+    expect("servesRouterModel" in wrapped).toBe(false);
+    expect(supportsResponseFormat(wrapped)).toBe(false);
+  });
+
+  it("#754 — still meters a call made through the forwarding wrapper", async () => {
+    const { runtime, record } = runtimeWith();
+    const inner = {
+      ...fakeProvider(),
+      capabilities: { responseFormat: true, nativeToolCalls: true },
+    } as unknown as AIProvider;
+    const wrapped = runtime.instrument(inner, "seeding");
+
+    await runInImpactProjectScope("proj-1", () => wrapped.chat([{ role: "user", content: "x" }]));
+    await runtime.flush();
+    expect(record).toHaveBeenCalledTimes(1);
   });
 });
 

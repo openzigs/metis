@@ -9,7 +9,7 @@
  * a creation form that validates against the same zod schema the server uses
  * (mirrored client-side via the API contract).
  */
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
@@ -18,6 +18,8 @@ import {
   type MCPRuntime,
   type MCPServerScope,
   type MCPServerView,
+  type MCPStatus,
+  type MCPTestResult,
   type MCPTransport,
   type MCPTrustLevel,
   mcpApi,
@@ -65,16 +67,81 @@ const SCOPE_LABEL: Record<MCPServerScope, string> = {
   global: "Global",
 };
 
-export function McpServersPanel({ initialScope = "all" }: { initialScope?: McpScopeFilter }) {
+/**
+ * #797 — which lifecycle action a row is waiting on. A start (and a Test,
+ * which starts the server too) settles once the row leaves `idle`/`starting`;
+ * a stop settles once the row is no longer up.
+ */
+export type McpLifecycleAction = "start" | "stop";
+
+const SETTLED: Record<McpLifecycleAction, (s: MCPStatus) => boolean> = {
+  start: (s) => s !== "idle" && s !== "starting",
+  stop: (s) => s !== "ready" && s !== "starting",
+};
+
+/** #797 — default poll cadence and bound after a Start/Stop/Restart/Test. */
+export const MCP_POLL_INTERVAL_MS = 1_000;
+export const MCP_POLL_TIMEOUT_MS = 30_000;
+
+type ListData = { items: MCPServerView[] };
+
+function isListData(v: unknown): v is ListData {
+  return typeof v === "object" && v !== null && Array.isArray((v as ListData).items);
+}
+
+export function McpServersPanel({
+  initialScope = "all",
+  pollIntervalMs = MCP_POLL_INTERVAL_MS,
+  pollTimeoutMs = MCP_POLL_TIMEOUT_MS,
+}: {
+  initialScope?: McpScopeFilter;
+  /** #797 — list refetch cadence while a lifecycle action settles. */
+  pollIntervalMs?: number;
+  /** #797 — stop polling this long after the action. */
+  pollTimeoutMs?: number;
+}) {
   const qc = useQueryClient();
   const [scope, setScope] = useState<McpScopeFilter>(initialScope);
+  // #797 — rows waiting on a lifecycle action: id → deadline + what settles it.
+  // Read from `refetchInterval`, so react-query owns the timer and clears it on
+  // unmount; nothing here schedules a timer of its own.
+  const watches = useRef(new Map<string, { until: number; action: McpLifecycleAction }>());
   const list = useQuery({
     queryKey: [...queryKeys.admin.mcp(), "scope", scope],
     queryFn: () => mcpApi.list(scope === "all" ? undefined : { scope }),
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      const now = Date.now();
+      for (const [id, w] of watches.current) {
+        const row = items.find((s) => s.id === id);
+        if (!row || now >= w.until || SETTLED[w.action](row.status)) watches.current.delete(id);
+      }
+      return watches.current.size > 0 ? pollIntervalMs : false;
+    },
   });
   const [createOpen, setCreateOpen] = useState(false);
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: queryKeys.admin.mcp() });
+  const invalidate = useCallback(
+    () => qc.invalidateQueries({ queryKey: queryKeys.admin.mcp() }),
+    [qc],
+  );
+
+  /**
+   * #797 — after a lifecycle action: show the server's response in the row at
+   * once, then refetch and keep polling (bounded) until the row settles.
+   */
+  const onLifecycle = useCallback(
+    (id: string, action: McpLifecycleAction, view?: MCPServerView) => {
+      watches.current.set(id, { until: Date.now() + pollTimeoutMs, action });
+      if (view) {
+        qc.setQueriesData({ queryKey: queryKeys.admin.mcp() }, (old: unknown) =>
+          isListData(old) ? { ...old, items: old.items.map((s) => (s.id === id ? view : s)) } : old,
+        );
+      }
+      void invalidate();
+    },
+    [qc, invalidate, pollTimeoutMs],
+  );
 
   return (
     <div className="space-y-6">
@@ -149,7 +216,12 @@ export function McpServersPanel({ initialScope = "all" }: { initialScope?: McpSc
               </tr>
             ) : (
               list.data?.items.map((server) => (
-                <ServerRow key={server.id} server={server} onChange={invalidate} />
+                <ServerRow
+                  key={server.id}
+                  server={server}
+                  onChange={invalidate}
+                  onLifecycle={onLifecycle}
+                />
               ))
             )}
           </tbody>
@@ -159,14 +231,32 @@ export function McpServersPanel({ initialScope = "all" }: { initialScope?: McpSc
   );
 }
 
-function ServerRow({ server, onChange }: { server: MCPServerView; onChange: () => void }) {
-  const start = useMutation({ mutationFn: () => mcpApi.start(server.id), onSuccess: onChange });
-  const stop = useMutation({ mutationFn: () => mcpApi.stop(server.id), onSuccess: onChange });
+function ServerRow({
+  server,
+  onChange,
+  onLifecycle,
+}: {
+  server: MCPServerView;
+  onChange: () => void;
+  onLifecycle: (id: string, action: McpLifecycleAction, view?: MCPServerView) => void;
+}) {
+  const start = useMutation({
+    mutationFn: () => mcpApi.start(server.id),
+    onSuccess: (view) => onLifecycle(server.id, "start", view),
+  });
+  const stop = useMutation({
+    mutationFn: () => mcpApi.stop(server.id),
+    onSuccess: (view) => onLifecycle(server.id, "stop", view),
+  });
   const restart = useMutation({
     mutationFn: () => mcpApi.restart(server.id),
-    onSuccess: onChange,
+    onSuccess: (view) => onLifecycle(server.id, "start", view),
   });
-  const test = useMutation({ mutationFn: () => mcpApi.test(server.id), onSuccess: onChange });
+  // #797 — a Test starts the server too, so the row is watched like a Start.
+  const test = useMutation({
+    mutationFn: () => mcpApi.test(server.id),
+    onSuccess: () => onLifecycle(server.id, "start"),
+  });
   const remove = useMutation({ mutationFn: () => mcpApi.remove(server.id), onSuccess: onChange });
 
   return (
@@ -204,7 +294,9 @@ function ServerRow({ server, onChange }: { server: MCPServerView; onChange: () =
           {server.trustLevel}
         </span>
       </td>
-      <td className="px-4 py-3">{server.capabilities.length}</td>
+      <td className="px-4 py-3" data-testid={`mcp-tools-${server.id}`}>
+        {server.capabilities.length}
+      </td>
       <td className="px-4 py-3 text-right space-x-2">
         <Button
           variant="outline"
@@ -238,8 +330,39 @@ function ServerRow({ server, onChange }: { server: MCPServerView; onChange: () =
             </Button>
           }
         />
+        {test.isPending ? (
+          <p className="mt-2 text-xs text-muted-foreground" role="status">
+            Testing…
+          </p>
+        ) : test.isSuccess ? (
+          <TestResult serverId={server.id} result={test.data} />
+        ) : test.isError ? (
+          <p
+            className="mt-2 text-xs text-destructive"
+            role="alert"
+            data-testid={`mcp-test-result-${server.id}`}
+          >
+            Test failed: {test.error instanceof ApiError ? test.error.message : "request failed"}
+          </p>
+        ) : null}
       </td>
     </tr>
+  );
+}
+
+/** #797 — the outcome of `POST /mcp/:id/test`, shown under the row's actions. */
+function TestResult({ serverId, result }: { serverId: string; result: MCPTestResult }) {
+  const count = result.tools.length;
+  return (
+    <p
+      className={`mt-2 text-xs ${result.ok ? "text-success" : "text-destructive"}`}
+      role={result.ok ? "status" : "alert"}
+      data-testid={`mcp-test-result-${serverId}`}
+    >
+      {result.ok ? "Test OK" : "Test failed"} · {result.latencyMs} ms · {count}{" "}
+      {count === 1 ? "tool" : "tools"}
+      {!result.ok && result.error ? <> — {result.error}</> : null}
+    </p>
   );
 }
 
