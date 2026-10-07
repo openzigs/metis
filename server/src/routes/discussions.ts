@@ -44,6 +44,7 @@ import {
   loadThreadAIRateLimitConfig,
 } from "../lib/discussions/ai-rate-limit.js";
 import { audit } from "../lib/audit/audit-service.js";
+import { assertWithinBudget, BudgetExceededError } from "../lib/finops/budget-enforcer.js";
 import { buildProvider, loadAIConfig, type AIProvider } from "../lib/ai/index.js";
 import type { RoleKey } from "@metis/shared";
 import { createChildLogger } from "../lib/logger.js";
@@ -415,6 +416,26 @@ export function discussionsRouter(): Router {
     if (!shouldAIRespond(thread, trigger)) {
       res.json({ success: true, data: { responded: false } });
       return;
+    }
+
+    // #775 — the project budget gate, as `/api/ai/stream` runs it: an
+    // over-budget project gets a 402 before the SSE stream opens and before a
+    // rate-limit slot is spent. `streamAIReply` checks again for its other
+    // caller (the Teams @AI participant).
+    try {
+      await assertWithinBudget(thread.projectId);
+    } catch (err) {
+      if (!(err instanceof BudgetExceededError)) throw err;
+      audit({
+        actor: { id: actor.id },
+        action: "discussion.ai.budget_exceeded",
+        target: { type: "discussion_thread", id: threadId },
+        metadata: { usedTokens: err.usedTokens, budget: err.budget },
+      });
+      throw new AppError(err.status, err.code, err.message, {
+        usedTokens: err.usedTokens,
+        budget: err.budget,
+      });
     }
 
     // Per-(thread,user) AI-invocation rate limit (#485). Enforced BEFORE the
