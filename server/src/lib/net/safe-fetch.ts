@@ -27,6 +27,8 @@
  * The reference pre-existing pattern lives in
  * `server/src/lib/scheduler/webhook-handler.ts#makePinnedDispatcher`; this
  * helper is a generalisation of it that the rest of the server can adopt.
+ * Both build their socket `lookup` with the shared `makePinnedLookup`
+ * (`./pinned-lookup.ts`, #750).
  */
 import { promises as dns } from "node:dns";
 import { isIP } from "node:net";
@@ -38,6 +40,7 @@ import {
   SafeFetchSchemeError,
   SafeFetchUrlError,
 } from "./safe-fetch.errors.js";
+import { makePinnedLookup } from "./pinned-lookup.js";
 
 /** DNS lookup result shape consumed by the resolver injection point. */
 export interface ResolvedAddress {
@@ -108,29 +111,15 @@ const defaultResolver: SafeFetchResolver = async (host) => {
  * exercise the dispatcher).
  */
 const defaultDispatcherFactory: DispatcherFactory = async (pinned) => {
-  const fam = pinned.family;
-  const lookup = (
-    _hostname: string,
-    options: unknown,
-    cb: (err: Error | null, address: string, family: number) => void,
-  ): void => {
-    // Node's `net.connect` asks for EVERY address (`{ all: true }`) whenever
-    // `autoSelectFamily` is on — the default from Node 20 — and expects an
-    // array of `{ address, family }` back. Answering with the single-address
-    // form makes Node read `undefined` as the IP ("Invalid IP address:
-    // undefined"), which failed every default-dispatcher `safeFetch` (#716;
-    // same class as #13's `makePinnedLookup`). Answer in the shape asked for.
-    if (options && typeof options === "object" && (options as { all?: unknown }).all === true) {
-      (
-        cb as unknown as (
-          err: Error | null,
-          addresses: { address: string; family: number }[],
-        ) => void
-      )(null, [{ address: pinned.address, family: fam }]);
-      return;
-    }
-    cb(null, pinned.address, fam);
-  };
+  // The shared pinned lookup (#750) — never a local copy: a second copy here
+  // missed #13's `{ all: true }` fix and broke every default `safeFetch` (#716).
+  const lookup = makePinnedLookup(pinned.address, pinned.family);
+  if (!lookup) {
+    // An empty address would mean something slipped past validation — throw
+    // rather than silently fall back to the OS resolver (which re-opens the
+    // rebinding hole).
+    throw new Error("safeFetch: pinned lookup unavailable");
+  }
   // Wrapped for Node's built-in `fetch`, which cannot drive a bare undici 8
   // dispatcher (#308).
   const { pinnedAgentForBuiltinFetch } = await import("./builtin-fetch-dispatcher.js");
