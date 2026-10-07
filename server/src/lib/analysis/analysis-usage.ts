@@ -37,6 +37,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { recordUsage } from "../finops/token-tracker.js";
 import { createChildLogger } from "../logger.js";
+import { decorateProvider } from "../ai/provider-decorator.js";
 import type { AIProvider, ChatChunk, ChatMessage, ChatOptions, TokenUsage } from "../ai/types.js";
 
 const log = createChildLogger("analysis-usage");
@@ -131,7 +132,7 @@ function record(provider: string, model: string, usage: TokenUsage | undefined):
  * {@link runInAnalysisUsageScope} scope. Idempotent: an already-metered
  * provider is returned as-is, so a call is never recorded twice.
  *
- * A `Proxy`, not a hand-built object: every other member — `capabilities`,
+ * Built with {@link decorateProvider}, not a hand-built object: every other member — `capabilities`,
  * `capabilitiesFor`, `servesRouterModel`, `embed`, `instanceof` — must reach
  * the wrapped adapter unchanged, or capability resolution silently degrades
  * to "supports nothing" for the whole analysis.
@@ -156,16 +157,7 @@ export function meterAnalysisProvider(provider: AIProvider): AIProvider {
     }
   }
 
-  return new Proxy(provider, {
-    get(target, prop) {
-      if (prop === METERED) return true;
-      if (prop === "chat") return chat;
-      if (prop === "stream") return stream;
-      const value: unknown = Reflect.get(target, prop, target);
-      // Bind to the adapter so an internal `this.chat()` is not metered twice.
-      return typeof value === "function"
-        ? (value as (...a: unknown[]) => unknown).bind(target)
-        : value;
-    },
-  });
+  // Forwarded members are bound to the adapter, so an internal `this.chat()` is
+  // not metered twice.
+  return decorateProvider(provider, { [METERED]: true, chat, stream });
 }
