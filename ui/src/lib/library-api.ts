@@ -37,6 +37,18 @@ export interface SkillVersionSummary {
   createdAt: string;
 }
 
+/** `GET /skills/:id/versions/:versionId` — a version with its content. */
+export interface SkillVersionDetail extends SkillVersionSummary {
+  manifest: Record<string, unknown>;
+  instructions: string;
+}
+
+/** `GET /skills/:id/diff?left&right` — `null` when a version id is unknown. */
+export interface SkillVersionDiff {
+  left: SkillVersionDetail | null;
+  right: SkillVersionDetail | null;
+}
+
 export interface AgentSummary {
   id: string;
   key: string;
@@ -131,6 +143,9 @@ export const skillsApi = {
   enable: (id: string) => apiFetch<SkillDetail>(`/skills/${id}/enable`, { method: "POST" }),
   disable: (id: string) => apiFetch<SkillDetail>(`/skills/${id}/disable`, { method: "POST" }),
   versions: (id: string) => apiFetch<{ items: SkillVersionSummary[] }>(`/skills/${id}/versions`),
+  /** #797 — both versions' content; the client computes the line diff. */
+  diff: (id: string, left: string, right: string) =>
+    apiFetch<SkillVersionDiff>(`/skills/${id}/diff`, { params: { left, right } }),
 };
 
 export const agentsApi = {

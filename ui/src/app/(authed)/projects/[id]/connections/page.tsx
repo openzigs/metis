@@ -831,11 +831,11 @@ export default function ConnectionsPage() {
                             {r.defaultBranch}
                           </button>
                         )}
-                        {/* #714 — which commit the code graph and RAG reflect. */}
+                        {/* #714/#758 — the commit the code graph was built from; written only with the graph. */}
                         {r.lastCommitSha ? (
                           <span
                             data-testid="repo-commit-sha"
-                            title={`Last cloned commit ${r.lastCommitSha}`}
+                            title={`Code graph built from commit ${r.lastCommitSha}`}
                           >
                             · {shortCommitSha(r.lastCommitSha)}
                           </span>

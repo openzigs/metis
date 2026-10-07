@@ -53,6 +53,11 @@ vi.mock("../prisma.js", () => ({
   },
 }));
 vi.mock("../finops/token-tracker.js", () => ({ recordUsage: vi.fn() }));
+// #775 — the responder's project budget gate; within budget here.
+vi.mock("../finops/budget-enforcer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../finops/budget-enforcer.js")>()),
+  assertWithinBudget: vi.fn(async () => undefined),
+}));
 
 // Audit is a real side effect we only need to silence; spy on it so we can also
 // assert that denied probes ARE audited (traceability of enumeration attempts).
