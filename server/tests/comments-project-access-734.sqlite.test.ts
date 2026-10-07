@@ -391,10 +391,52 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(usernames(res)).toEqual(["u-admin", "u-author", "u-member"]);
       });
 
-      it("offers everyone without a projectId (unchanged)", async () => {
+      // #870 — without a projectId the list used to span every tenant.
+      it("offers a member only their own workspaces and system admins without a projectId", async () => {
         const res = await call("get", `/api/users?search=u-`, MEMBER);
 
-        expect(usernames(res)).toEqual(["u-admin", "u-author", "u-member", "u-out"]);
+        expect(res.status).toBe(200);
+        expect(usernames(res)).toEqual(["u-admin", "u-author", "u-member"]);
+      });
+
+      it("never lists another tenant's users to an outsider without a projectId", async () => {
+        const res = await call("get", `/api/users?search=u-`, OUTSIDER);
+
+        expect(res.status).toBe(200);
+        expect(usernames(res)).toEqual(["u-admin", "u-out"]);
+      });
+
+      it("offers a user in no workspace only themselves and system admins", async () => {
+        // Not a `u-` name, so the other cases' exact lists stay unaffected.
+        await db.user.upsert({
+          where: { id: "x-loner" },
+          update: {},
+          create: {
+            id: "x-loner",
+            username: "x-loner",
+            displayName: "Lou Loner",
+            email: "x-loner@example.test",
+          },
+        });
+
+        const res = await call("get", `/api/users?limit=25`, developer("x-loner", []));
+
+        expect(usernames(res)).toEqual(["u-admin", "x-loner"]);
+      });
+
+      it("ignores workspaces claimed in the token but not held in the database", async () => {
+        // A stale or forged `workspaces` claim must not widen the list.
+        const res = await call("get", `/api/users?search=u-`, developer("u-out", [WS, WS_OTHER]));
+
+        expect(usernames(res)).toEqual(["u-admin", "u-out"]);
+      });
+
+      it("offers a system admin everyone without a projectId", async () => {
+        const res = await call("get", `/api/users?search=u-`, ADMIN);
+
+        expect(usernames(res)).toEqual(
+          expect.arrayContaining(["u-admin", "u-author", "u-member", "u-out"]),
+        );
       });
 
       it("offers everyone on a legacy project with no workspace", async () => {

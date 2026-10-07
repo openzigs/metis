@@ -1286,11 +1286,18 @@ available on **all** current models.
   `ttl` and the billed premium can never drift apart.
 
 **Hit-ratio telemetry** (`server/src/lib/ai/cache-hit-telemetry.ts`, #390):
-after every `chat()` / `stream()` the gateway provider emits one structured log
-line — `cacheReadTokens`, `promptTokens`, the derived read-based hit ratio, and
+after every `chat()` / `stream()` the gateway provider and the native Anthropic
+provider (including Anthropic-compatible endpoints such as DeepSeek, #796) emit
+one structured log line — `cacheReadTokens`, `promptTokens`, the derived read-based hit ratio, and
 the **call type** (`agent-loop` · `synthesis` · `grounding` · `chat` ·
 `unknown`) and **model** tags — and accumulates per-(call type, model) rolling
-totals in a small in-process aggregator. This is in-process and dependency-free:
+totals in a small in-process aggregator. On the native Anthropic path the
+hit-ratio denominator is the full prompt (`input_tokens` + cache reads + cache
+writes), because `input_tokens` there excludes the cache fields. The
+OpenAI-compatible provider (OpenAI, Azure, local runtimes) does not parse cache
+tokens and records nothing. The aggregator starts empty on every server restart;
+the persisted ledgers (`token_usages`, `ai_token_usages`) are the durable record.
+This is in-process and dependency-free:
 **no external metrics backend, no dashboard panel, and no alert wiring are
 shipped here** — those remain ops follow-ups. A hit ratio that trends to ~0 on a
 caching-enabled path signals a regressed/unstable cacheable prefix or a prefix
