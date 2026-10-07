@@ -21,7 +21,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.unmock("@huggingface/transformers");
+  vi.doUnmock("@huggingface/transformers");
   vi.restoreAllMocks();
   process.env = { ...ORIGINAL_ENV };
 });
