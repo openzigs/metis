@@ -923,6 +923,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration leader-election-postgres
 
+      # Issue #779 — a re-synthesis checked for review work, then deleted the set in a
+      # separate statement, so a comment committed in between was cascaded away. The
+      # set is now locked before the check; prove that comment waits and is refused.
+      - name: Prove review work racing a requirement-set replace is never lost on real Postgres
+        working-directory: server
+        run: pnpm test:integration requirement-set-replace-toctou-779-postgres
+
   # Issue #556 (Epic #518) — prove the Postgres migration HISTORY applies from
   # an EMPTY database via the real `prisma migrate deploy`.
   #
