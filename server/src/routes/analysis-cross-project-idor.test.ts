@@ -39,10 +39,11 @@ const PROJECTS: Record<
   "proj-b": { id: "proj-b", workspaceId: "ws-b", deletedAt: null, workspace: MEMBER_ROW },
   "proj-legacy": { id: "proj-legacy", workspaceId: null, deletedAt: null },
 };
-const ANALYSES: Record<string, { id: string; projectId: string; deletedAt: null }> = {
-  "ana-a": { id: "ana-a", projectId: "proj-a", deletedAt: null },
-  "ana-b": { id: "ana-b", projectId: "proj-b", deletedAt: null },
-};
+const ANALYSES: Record<string, { id: string; projectId: string; status: string; deletedAt: null }> =
+  {
+    "ana-a": { id: "ana-a", projectId: "proj-a", status: "completed", deletedAt: null },
+    "ana-b": { id: "ana-b", projectId: "proj-b", status: "completed", deletedAt: null },
+  };
 
 const DRAFT = {
   title: "Draft",
@@ -108,6 +109,11 @@ vi.mock("../lib/prisma.js", () => ({
 const getDialogState = vi.fn();
 const listApprovalRequests = vi.fn();
 const reviewApprovalRequest = vi.fn();
+const reopenApprovalRequest = vi.fn();
+const promoteApprovedRequirements = vi.fn(async () => ({
+  status: "already-promoted" as const,
+  requirementCount: 0,
+}));
 const canCreateTickets = vi.fn();
 const loadFindingForDeepDive = vi.fn();
 const deepDiveFinding = vi.fn();
@@ -132,13 +138,12 @@ vi.mock("../lib/analysis/index.js", () => ({
   getDialogState,
   listApprovalRequests,
   reviewApprovalRequest,
+  reopenApprovalRequest,
   canCreateTickets,
   // #1104 — reviewing an approval now retries promotion of the withheld
   // requirements; scoping is asserted on `reviewApprovalRequest` as before.
-  promoteApprovedRequirements: vi.fn(async () => ({
-    status: "already-promoted" as const,
-    requirementCount: 0,
-  })),
+  // #723 — the promote route's own scoping is asserted on this mock.
+  promoteApprovedRequirements,
   deepDiveFinding,
   loadFindingForDeepDive,
   getTraceabilityMatrix: vi.fn(),
@@ -307,6 +312,55 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
         "appr-b1",
         expect.objectContaining({ status: "approved", reviewerId: "user-b" }),
       );
+    });
+  });
+
+  // Issue #723 — the reopen route WRITES (it closes the gate again), so it is
+  // scoped exactly like the review PUT above.
+  describe("POST /:id/approvals/:approvalId/reopen", () => {
+    it("404s before reopening another project's approval request", async () => {
+      const res = await request(app).post(
+        "/api/projects/proj-b/analyses/ana-a/approvals/appr-a1/reopen",
+      );
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("ANALYSIS_NOT_FOUND");
+      expect(analysisFindFirst).toHaveBeenCalledWith({
+        where: { id: "ana-a", deletedAt: null, projectId: "proj-b" },
+      });
+      expect(reopenApprovalRequest).not.toHaveBeenCalled();
+    });
+
+    it("still reopens the caller's own approval request (no over-blocking)", async () => {
+      reopenApprovalRequest.mockResolvedValueOnce({ id: "appr-b1", status: "pending" });
+
+      const res = await request(app).post(
+        "/api/projects/proj-b/analyses/ana-b/approvals/appr-b1/reopen",
+      );
+
+      expect(res.status).toBe(200);
+      expect(reopenApprovalRequest).toHaveBeenCalledWith("ana-b", "appr-b1");
+    });
+  });
+
+  // Issue #723 — promotion writes the requirement set.
+  describe("POST /:id/approvals/promote", () => {
+    it("404s before promoting another project's requirements", async () => {
+      const res = await request(app).post("/api/projects/proj-b/analyses/ana-a/approvals/promote");
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("ANALYSIS_NOT_FOUND");
+      expect(analysisFindFirst).toHaveBeenCalledWith({
+        where: { id: "ana-a", deletedAt: null, projectId: "proj-b" },
+      });
+      expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+    });
+
+    it("still promotes the caller's own analysis (no over-blocking)", async () => {
+      const res = await request(app).post("/api/projects/proj-b/analyses/ana-b/approvals/promote");
+
+      expect(res.status).toBe(200);
+      expect(promoteApprovedRequirements).toHaveBeenCalledWith("ana-b");
     });
   });
 

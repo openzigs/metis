@@ -10,8 +10,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 
+// PR #902 — counts auth runs so a test can prove the pre-auth limiter answers
+// before the route's own `requireAuth` is reached.
+const authCalls = vi.hoisted(() => ({ n: 0 }));
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: () => void) => {
+    authCalls.n += 1;
     (req as unknown as { user: { userId: string; role: string } }).user = {
       userId: "user-1",
       role: "member",
@@ -31,10 +35,60 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
     next: express.NextFunction,
   ) => next(),
 }));
+// #723 — the reopen route must sit behind its own limiter (CodeQL
+// js/missing-rate-limiting). The stub lets a test flip it to "limited".
+const reopenLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
+const promoteLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
+const preAuthLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
+const analysisRow = vi.hoisted(() => ({ status: "completed" }));
+vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
+  analysisApprovalPreAuthRateLimiter: (
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    preAuthLimiter.calls += 1;
+    if (preAuthLimiter.limited) {
+      res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "slow" } });
+      return;
+    }
+    next();
+  },
+  analysisApprovalReopenRateLimiter: (
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    reopenLimiter.calls += 1;
+    if (reopenLimiter.limited) {
+      res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "slow" } });
+      return;
+    }
+    next();
+  },
+  analysisApprovalPromoteRateLimiter: (
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    promoteLimiter.calls += 1;
+    if (promoteLimiter.limited) {
+      res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "slow" } });
+      return;
+    }
+    next();
+  },
+}));
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
-    analysis: { findFirst: vi.fn(async () => ({ id: "analysis-1", projectId: "proj-1" })) },
+    analysis: {
+      findFirst: vi.fn(async () => ({
+        id: "analysis-1",
+        projectId: "proj-1",
+        status: analysisRow.status,
+      })),
+    },
     project: { findUnique: vi.fn(async () => ({ workspaceId: null })) },
   },
 }));
@@ -47,6 +101,13 @@ const reviewApprovalRequest = vi.fn(async () => ({
   status: "approved",
 }));
 const promoteApprovedRequirements = vi.fn();
+const reopenApprovalRequest = vi.fn(async () => ({
+  id: "ap_1",
+  analysisId: "analysis-1",
+  type: "requirement",
+  itemId: "r1",
+  status: "pending",
+}));
 
 vi.mock("../lib/analysis/index.js", () => ({
   ANALYSIS_SPECIALIST_AGENT_KEYS: [],
@@ -67,6 +128,7 @@ vi.mock("../lib/analysis/index.js", () => ({
   getDialogState: vi.fn(),
   listApprovalRequests: vi.fn(),
   reviewApprovalRequest,
+  reopenApprovalRequest,
   canCreateTickets: vi.fn(),
   promoteApprovedRequirements,
   deepDiveFinding: vi.fn(),
@@ -106,6 +168,82 @@ const approve = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reopenLimiter.limited = false;
+  reopenLimiter.calls = 0;
+  promoteLimiter.limited = false;
+  promoteLimiter.calls = 0;
+  preAuthLimiter.limited = false;
+  preAuthLimiter.calls = 0;
+  authCalls.n = 0;
+  analysisRow.status = "completed";
+});
+
+describe("approval promote/reopen — per-IP limiter ahead of the route's auth (PR #902)", () => {
+  const routes = [
+    {
+      path: "/:id/approvals/promote",
+      url: "/api/projects/proj-1/analyses/analysis-1/approvals/promote",
+      perUser: promoteLimiter,
+    },
+    {
+      path: "/:id/approvals/:approvalId/reopen",
+      url: "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
+      perUser: reopenLimiter,
+    },
+  ];
+
+  it.each(routes)(
+    "registers the pre-auth limiter first, before requireAuth, on $path",
+    async ({ path }) => {
+      const { requireAuth } = await import("../middleware/auth.js");
+      const limits = await import("../middleware/analysis-approval-rate-limit.js");
+      const { projectScoped } = initAnalysisRouter();
+      type Layer = {
+        route?: { path: string; methods: Record<string, boolean>; stack: { handle: unknown }[] };
+      };
+      const layer = (projectScoped as unknown as { stack: Layer[] }).stack.find(
+        (l) => l.route?.path === path && l.route.methods.post,
+      );
+      const handles = layer?.route?.stack.map((s) => s.handle) ?? [];
+      // CodeQL js/missing-rate-limiting reads exactly this order.
+      expect(handles[0]).toBe(limits.analysisApprovalPreAuthRateLimiter);
+      expect(handles[1]).toBe(requireAuth);
+    },
+  );
+
+  it.each(routes)(
+    "answers 429 from the pre-auth limiter before the route's auth on $path",
+    async ({ url, perUser }) => {
+      preAuthLimiter.limited = true;
+
+      const res = await request(createApp()).post(url);
+
+      expect(res.status).toBe(429);
+      expect(preAuthLimiter.calls).toBe(1);
+      // Only the router-wide `requireAuth` ran; the route's own never did.
+      expect(authCalls.n).toBe(1);
+      expect(perUser.calls).toBe(0);
+      expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+      expect(reopenApprovalRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(routes)(
+    "lets the request through to the per-user limiter on $path",
+    async ({ url, perUser }) => {
+      promoteApprovedRequirements.mockResolvedValueOnce({
+        status: "promoted",
+        requirementCount: 1,
+      });
+
+      const res = await request(createApp()).post(url);
+
+      expect(res.status).toBe(200);
+      expect(preAuthLimiter.calls).toBe(1);
+      expect(authCalls.n).toBe(2);
+      expect(perUser.calls).toBe(1);
+    },
+  );
 });
 
 describe("PUT .../approvals/:approvalId — #1104 promotion retry", () => {
@@ -146,5 +284,110 @@ describe("PUT .../approvals/:approvalId — #1104 promotion retry", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.status).toBe("approved");
     expect(res.body.data.promotion.status).toBe("unavailable");
+  });
+});
+
+describe("POST .../approvals/:approvalId/reopen — #723", () => {
+  it("reopens a rejected approval scoped to its analysis", async () => {
+    const res = await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
+    );
+
+    expect(res.status).toBe(200);
+    expect(reopenApprovalRequest).toHaveBeenCalledWith("analysis-1", "ap_1");
+    expect(res.body.data.status).toBe("pending");
+  });
+
+  it("passes through the service's 409 for an approval that is not rejected", async () => {
+    const { AppError } = await import("../middleware/error-handler.js");
+    reopenApprovalRequest.mockRejectedValueOnce(
+      new AppError(409, "APPROVAL_NOT_REOPENABLE", "only a rejected approval can be reopened"),
+    );
+
+    const res = await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("APPROVAL_NOT_REOPENABLE");
+  });
+
+  it("is rate limited before the reopen runs", async () => {
+    reopenLimiter.limited = true;
+
+    const res = await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
+    );
+
+    expect(res.status).toBe(429);
+    expect(reopenLimiter.calls).toBe(1);
+    expect(reopenApprovalRequest).not.toHaveBeenCalled();
+  });
+});
+
+// Issue #723 — the Analysis page's recovery for a run whose gate is open but
+// which has no requirement rows (no review left to fire the PUT above).
+describe("POST .../approvals/promote — #723", () => {
+  const promote = () =>
+    request(createApp()).post("/api/projects/proj-1/analyses/analysis-1/approvals/promote");
+
+  it("promotes the approved requirements and reports the outcome", async () => {
+    promoteApprovedRequirements.mockResolvedValueOnce({ status: "promoted", requirementCount: 32 });
+
+    const res = await promote();
+
+    expect(res.status).toBe(200);
+    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1");
+    expect(res.body.data.promotion).toEqual({ status: "promoted", requirementCount: 32 });
+  });
+
+  it.each(["running", "pending"])("refuses with 409 while the analysis is %s", async (status) => {
+    analysisRow.status = status;
+
+    const res = await promote();
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("ANALYSIS_NOT_COMPLETED");
+    expect(res.body.error.message).toContain("still running");
+    expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+  });
+
+  // A failed or cancelled run is terminal and its approvals were resolved; the
+  // review PUT would promote it, so the recovery route must too — never claim
+  // such a run is "still running".
+  it.each(["failed", "cancelled"])(
+    "promotes the resolved approvals of a %s analysis",
+    async (status) => {
+      analysisRow.status = status;
+      promoteApprovedRequirements.mockResolvedValueOnce({
+        status: "promoted",
+        requirementCount: 3,
+      });
+
+      const res = await promote();
+
+      expect(res.status).toBe(200);
+      expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1");
+      expect(res.body.data.promotion).toEqual({ status: "promoted", requirementCount: 3 });
+    },
+  );
+
+  it("reports a failed promotion as unavailable instead of a 500", async () => {
+    promoteApprovedRequirements.mockRejectedValueOnce(new Error("db down"));
+
+    const res = await promote();
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.promotion.status).toBe("unavailable");
+  });
+
+  it("is rate limited before the promotion runs", async () => {
+    promoteLimiter.limited = true;
+
+    const res = await promote();
+
+    expect(res.status).toBe(429);
+    expect(promoteLimiter.calls).toBe(1);
+    expect(promoteApprovedRequirements).not.toHaveBeenCalled();
   });
 });

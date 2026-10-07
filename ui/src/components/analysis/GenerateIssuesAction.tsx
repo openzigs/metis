@@ -10,6 +10,7 @@
  * exist; otherwise it is disabled and says why.
  */
 import type { TicketStatus } from "@/lib/analysis-api";
+import { PromoteApprovedRequirementsButton } from "./PromoteApprovedRequirementsButton";
 
 export interface GenerateIssuesActionProps {
   projectId: string;
@@ -25,6 +26,13 @@ export interface GenerateIssuesActionProps {
    * removes (PR #404 review).
    */
   approvalsState?: "loading" | "error" | "ready";
+  /**
+   * #723 — how many `requirement` approvals are APPROVED. With the gate open
+   * and no requirement rows, these were never promoted (a run stranded before
+   * rejections counted as resolved), so the action offers to promote them
+   * instead of claiming there is nothing to generate from.
+   */
+  approvedRequirementCount?: number;
 }
 
 const LABEL = "Generate GitHub Issues";
@@ -46,6 +54,7 @@ export function GenerateIssuesAction({
   hasFindings,
   ticketStatus,
   approvalsState = "ready",
+  approvedRequirementCount = 0,
 }: GenerateIssuesActionProps): React.ReactElement | null {
   if (status !== "completed") return null;
 
@@ -63,12 +72,8 @@ export function GenerateIssuesAction({
 
   const gated = ticketStatus != null && !ticketStatus.allowed;
   const gateUnknown = approvalsState !== "ready";
-  if (!gated && !gateUnknown && !hasFindings) return null;
-
-  // A rejected approval is final (it cannot be re-reviewed), so a run holding
-  // one can never produce requirements: say so, and point at a new run rather
-  // than the approvals panel (PR #404 panel).
-  const rejected = gated && ticketStatus.rejectedCount > 0;
+  const stranded = !gated && !gateUnknown && approvedRequirementCount > 0;
+  if (!gated && !gateUnknown && !stranded && !hasFindings) return null;
 
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
@@ -97,8 +102,6 @@ export function GenerateIssuesAction({
           ) : (
             "Checking approvals…"
           )
-        ) : rejected ? (
-          `${ticketStatus.rejectedCount} approval(s) were rejected, so this run can't produce requirements. Re-run the analysis to generate issues.`
         ) : gated ? (
           <>
             {ticketStatus.pendingCount > 0
@@ -108,10 +111,15 @@ export function GenerateIssuesAction({
               Go to approvals
             </a>
           </>
+        ) : stranded ? (
+          `${approvedRequirementCount} approved requirement(s) have not been promoted yet.`
         ) : (
           "No requirements to generate issues from."
         )}
       </span>
+      {stranded && (
+        <PromoteApprovedRequirementsButton projectId={projectId} analysisId={analysisId} />
+      )}
     </span>
   );
 }

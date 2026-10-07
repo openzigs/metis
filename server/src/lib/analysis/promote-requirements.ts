@@ -18,6 +18,7 @@ import { prisma } from "../prisma.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import {
   getStructuredRequirements,
+  lockRequirementSet,
   persistAnalysisEnhancement,
   persistRequirements,
   readFlattenedFindings,
@@ -112,7 +113,6 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
       : (synthesis?.requirements.length ?? 0);
     const { reason } = describePromotionGate({
       pendingCount: ticketStatus.pendingCount,
-      rejectedCount: ticketStatus.rejectedCount,
       awaitingRequirementCount,
     });
     return {
@@ -124,20 +124,30 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     };
   }
 
+  const approvedIds = new Set(
+    requirementApprovals.filter((a) => a.status === "approved").map((a) => a.itemId),
+  );
   const toPromote: SynthesisOutput = reviewed
-    ? buildApprovedRequirementSet({
-        structured,
-        approvedIds: new Set(
-          requirementApprovals.filter((a) => a.status === "approved").map((a) => a.itemId),
-        ),
-        synthesis,
-      })
+    ? buildApprovedRequirementSet({ structured, approvedIds, synthesis })
     : (synthesis as SynthesisOutput);
+  // Parallel to `toPromote.requirements` on the reviewed path (same filter, same order).
+  const promotedStructuredIds = reviewed
+    ? structured.filter((r) => approvedIds.has(r.id)).map((r) => r.id)
+    : [];
 
   // Idempotence: `persistRequirements` REPLACES the set (#57), so a second call
   // would silently discard any human edits made after the first promotion.
   const existing = await prisma.requirement.count({ where: { analysisId } });
   if (existing > 0) {
+    if (reviewed) {
+      const appended = await appendNewlyApproved({
+        analysisId,
+        projectId: analysis.projectId,
+        toPromote,
+        promotedStructuredIds,
+      });
+      if (appended > 0) return { status: "promoted", requirementCount: appended };
+    }
     return { status: "already-promoted", requirementCount: existing };
   }
 
@@ -188,8 +198,13 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   }
 
   await persistAnalysisEnhancement(analysisId, {
-    promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 0 },
+    promotionBlocked: {
+      blocked: false,
+      pendingCount: 0,
+      rejectedCount: ticketStatus.rejectedCount,
+    },
     promotionStatus: "allowed",
+    ...(reviewed ? { promotedStructuredIds } : {}),
   });
 
   log.info("Promoted withheld requirements", {
@@ -197,4 +212,160 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     analysisId,
   });
   return { status: "promoted", requirementCount: requirementIds.length };
+}
+
+function readPromotedStructuredIds(metadata: string | null): string[] | null {
+  if (!metadata) return null;
+  try {
+    const parsed = JSON.parse(metadata) as { promotedStructuredIds?: unknown };
+    return Array.isArray(parsed.promotedStructuredIds)
+      ? parsed.promotedStructuredIds.filter((x): x is string => typeof x === "string")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const normalizeTitle = (title: string): string => title.trim().toLowerCase().replace(/\s+/g, " ");
+
+/**
+ * Issue #723 — a rejection can be reopened and approved AFTER the rest of the
+ * set was promoted. Replacing the set would discard any review work on the
+ * promoted rows, so the newly approved requirement is ADDED instead. Identity
+ * is the structured id recorded at promotion; for a set promoted before that
+ * record existed, the (reviewed, verbatim) title stands in. A row the user
+ * soft-deleted still counts as present, so it is never resurrected.
+ *
+ * Atomic: the rows and the record of their structured ids commit together in
+ * one transaction, so a failure part-way leaves neither behind (a retry would
+ * otherwise re-create the rows that did land). On Postgres the transaction
+ * opens with {@link lockRequirementSet} — the analysis row `FOR NO KEY UPDATE`,
+ * then the requirement rows `FOR UPDATE`, the same locks in the same order as
+ * `persistRequirements` (#882) — so a concurrent append or replacement of this
+ * set waits for it. The write to the analysis row that follows returns the
+ * metadata recorded by whichever transaction held the lock before (READ
+ * COMMITTED reads the latest committed row); on SQLite that write takes the
+ * database write lock. Which ids are new is decided only after that, so two
+ * approvals resolving at once append each requirement exactly once.
+ */
+async function appendNewlyApproved(input: {
+  analysisId: string;
+  projectId: string;
+  toPromote: SynthesisOutput;
+  promotedStructuredIds: string[];
+}): Promise<number> {
+  const flat = await readFlattenedFindings(input.analysisId);
+
+  const requirementIds = await prisma.$transaction(async (tx) => {
+    await lockRequirementSet(tx, input.analysisId);
+    const locked = await tx.analysis.update({
+      where: { id: input.analysisId },
+      data: { updatedAt: new Date() },
+      select: { metadata: true },
+    });
+    const recorded = readPromotedStructuredIds(locked.metadata);
+    let isNew: (idx: number) => boolean;
+    if (recorded) {
+      const seen = new Set(recorded);
+      isNew = (idx) => !seen.has(input.promotedStructuredIds[idx] ?? "");
+    } else {
+      const rows = await tx.requirement.findMany({
+        where: { analysisId: input.analysisId },
+        select: { title: true },
+      });
+      const titles = new Set(rows.map((r) => normalizeTitle(r.title)));
+      isNew = (idx) => !titles.has(normalizeTitle(input.toPromote.requirements[idx]?.title ?? ""));
+    }
+    const newIdx = input.toPromote.requirements.map((_, i) => i).filter(isNew);
+    if (newIdx.length === 0) return [];
+
+    const added = newIdx.map((i) => input.toPromote.requirements[i]!);
+    const coverages = computeCoverageForRequirements(
+      added,
+      flat.map((f) => ({ citations: f.citations })),
+    );
+    const verdicts = computeVerdictsForRequirements(
+      added,
+      flat.map((f) => ({ agentKey: f.agentKey, verdict: f.verdict ?? null })),
+      flat.some((f) => f.agentKey === "code"),
+    );
+
+    // Same row shape `persistRequirements` writes, without its replace semantics.
+    const ids: string[] = [];
+    for (let k = 0; k < added.length; k++) {
+      const r = added[k]!;
+      const evidenceIds = r.evidenceFindingIndexes
+        .map((i) => flat[i]?.findingId)
+        .filter((id): id is string => Boolean(id));
+      const row = await tx.requirement.create({
+        data: {
+          analysisId: input.analysisId,
+          projectId: input.projectId,
+          type: r.type,
+          title: r.title.slice(0, 255),
+          body: r.body,
+          priority: r.priority,
+          labels: JSON.stringify(
+            Array.from(new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)])),
+          ),
+          acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
+          storyPoints: r.storyPoints ?? null,
+          coverage: coverages[k] ?? null,
+          verdict: verdicts[k] ?? null,
+        },
+        select: { id: true },
+      });
+      ids.push(row.id);
+    }
+
+    // Recorded in the SAME transaction as the rows, onto the metadata read
+    // under the lock — never onto a copy taken before it.
+    const appendedIds = newIdx.map((i) => input.promotedStructuredIds[i] ?? "").filter(Boolean);
+    await tx.analysis.update({
+      where: { id: input.analysisId },
+      data: {
+        metadata: JSON.stringify({
+          ...parseMetadataObject(locked.metadata),
+          promotedStructuredIds: [
+            ...new Set([...(recorded ?? input.promotedStructuredIds), ...appendedIds]),
+          ],
+        }),
+      },
+    });
+    return ids;
+  });
+  if (requirementIds.length === 0) return 0;
+
+  // Best-effort enrichment of the committed rows, as on the first promotion.
+  await applyClarificationsToRequirements(input.analysisId);
+  try {
+    await seedRequirementCodeLinksFromFindings({
+      analysisId: input.analysisId,
+      projectId: input.projectId,
+      requirementIds,
+    });
+  } catch (err) {
+    log.warn("requirement→code link seeding failed after appending (non-fatal)", {
+      analysisId: input.analysisId,
+      error: (err as Error).message,
+    });
+  }
+
+  log.info("Appended requirements approved after promotion", {
+    analysisId: input.analysisId,
+    requirements: requirementIds.length,
+  });
+  return requirementIds.length;
+}
+
+function parseMetadataObject(metadata: string | null): Record<string, unknown> {
+  if (!metadata) return {};
+  try {
+    const parsed: unknown = JSON.parse(metadata);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }

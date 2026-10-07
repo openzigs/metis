@@ -6463,6 +6463,8 @@ Raw Documents
 - `POST /api/analysis/:id/clarify` — Start or continue a clarification dialog
 - `GET /api/analysis/:id/approvals` — List approval requests for an analysis
 - `PUT /api/analysis/:id/approvals/:approvalId` — Approve or reject an approval request
+- `POST /api/projects/:projectId/analyses/:id/approvals/:approvalId/reopen` — Return a rejected approval to pending (#723)
+- `POST /api/projects/:projectId/analyses/:id/approvals/promote` — Promote the approved requirements of a completed run whose gate is open but which has no requirement rows; `analysis.run`, project-scoped, rate-limited, idempotent (#723)
 
 ---
 

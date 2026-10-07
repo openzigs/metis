@@ -30,6 +30,10 @@ import { createChildLogger } from "../logger.js";
 import { computeDedupHash } from "./dedup.js";
 import { buildEpicTitle } from "./epic-title.js";
 import { canCreateTickets } from "../analysis/approval-checkpoint.js";
+import {
+  promoteApprovedRequirements,
+  type PromotionOutcome,
+} from "../analysis/promote-requirements.js";
 import { PublishError } from "./types.js";
 import { findTemplate } from "./template-service.js";
 import { renderToMarkdown, buildTemplatePrompt } from "./template-renderer.js";
@@ -63,33 +67,63 @@ export interface GeneratedDraftSummary {
  * approval checkpoint is resolved. Name that precondition, with its counts and
  * where to resolve it, instead of telling the user to re-run the analysis.
  */
-async function noRequirementsError(analysisId: string): Promise<PublishError> {
-  const gate = await canCreateTickets(analysisId);
+async function noRequirementsError(
+  analysisId: string,
+  gate: Awaited<ReturnType<typeof canCreateTickets>>,
+  promotion: PromotionOutcome | null,
+): Promise<PublishError> {
+  // #406 — ids, counts and the remedy only. The UI builds the route itself, so
+  // the server holds no knowledge of UI paths and the client follows no URL it
+  // was handed.
   if (gate.allowed) {
+    // Issue #723 — count the REQUIREMENT approvals, not every rejection: an
+    // evidence or clarification rejection excludes no requirement, so only
+    // "approved none, rejected some" means the reviewer left everything out.
+    const [approvedRequirements, rejectedRequirements] = await Promise.all([
+      prisma.approvalRequest.count({
+        where: { analysisId, type: "requirement", status: "approved" },
+      }),
+      prisma.approvalRequest.count({
+        where: { analysisId, type: "requirement", status: "rejected" },
+      }),
+    ]);
+    if (approvedRequirements > 0) {
+      // Approved requirements exist and promotion was just retried, yet no row
+      // is visible. Say that — never that they were rejected.
+      const why =
+        promotion && "reason" in promotion
+          ? promotion.reason
+          : promotion?.status === "already-promoted"
+            ? "every promoted requirement has since been deleted"
+            : "promotion did not produce any requirement rows";
+      return new PublishError(
+        400,
+        "NO_REQUIREMENTS",
+        `analysis has no requirements — ${approvedRequirements} approved requirement(s) could not be promoted (${why})`,
+        true,
+        { analysisId, approvedCount: approvedRequirements },
+      );
+    }
+    if (rejectedRequirements > 0) {
+      // A rejected approval can be reopened on the Analysis page, so point
+      // there rather than at a re-run.
+      return new PublishError(
+        400,
+        "APPROVALS_BLOCKING",
+        `analysis has no requirements — all ${rejectedRequirements} reviewed requirement(s) were rejected; reopen and approve the ones to keep on the Analysis page`,
+        false,
+        {
+          analysisId,
+          pendingCount: gate.pendingCount,
+          rejectedCount: gate.rejectedCount,
+          action: "resolve",
+        },
+      );
+    }
     return new PublishError(
       400,
       "NO_REQUIREMENTS",
       "analysis has no requirements — run analysis first",
-    );
-  }
-  // #406 — ids, counts and the remedy only. The UI builds the route itself, so
-  // the server holds no knowledge of UI paths and the client follows no URL it
-  // was handed.
-  // A rejection is final (a reviewed approval cannot be re-reviewed, 409
-  // APPROVAL_ALREADY_REVIEWED), so a run holding one can never produce
-  // requirements: the remedy is a new run, not the approvals panel (PR #404 panel).
-  if (gate.rejectedCount > 0) {
-    return new PublishError(
-      400,
-      "APPROVALS_BLOCKING",
-      `analysis has no requirements — ${gate.rejectedCount} approval(s) were rejected, so this run cannot produce requirements; re-run the analysis`,
-      false,
-      {
-        analysisId,
-        pendingCount: gate.pendingCount,
-        rejectedCount: gate.rejectedCount,
-        action: "rerun",
-      },
     );
   }
   return new PublishError(
@@ -106,6 +140,67 @@ async function noRequirementsError(analysisId: string): Promise<PublishError> {
   );
 }
 
+function findLiveRequirements(analysisId: string) {
+  return prisma.requirement.findMany({
+    where: { analysisId, deletedAt: null },
+    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+  });
+}
+
+/**
+ * Issue #723 — the analysis's requirements, promoting them first when the gate
+ * is open but nothing was promoted. The review PUT promotes as each approval
+ * resolves (including a reopened-and-re-reviewed one), but a run stranded
+ * before rejections counted as resolved (32 approved, 1 rejected, 0 rows) has
+ * an open gate and no review left to make: publishing is one place that run
+ * recovers. `promoteApprovedRequirements` is idempotent and never replaces an
+ * existing set.
+ *
+ * Never while the analysis is pending or running: mid-run there is a window
+ * where synthesis has finished but cross-doc detection is still running and the
+ * orchestrator has not saved its requirements yet. Promoting in that window
+ * (a draft generation, or a double-clicked Generate) would race the
+ * orchestrator's own save. A failed or cancelled run is terminal, so — like the
+ * Analysis page's promote route — it promotes its resolved approvals.
+ */
+async function loadOrPromoteRequirements(analysisId: string, analysisStatus: string) {
+  const requirements = await findLiveRequirements(analysisId);
+  if (requirements.length > 0) return requirements;
+
+  const gate = await canCreateTickets(analysisId);
+  if (gate.allowed && (analysisStatus === "pending" || analysisStatus === "running")) {
+    throw stillRunningError(analysisId, analysisStatus);
+  }
+  let promotion: PromotionOutcome | null = null;
+  if (gate.allowed) {
+    try {
+      promotion = await promoteApprovedRequirements(analysisId);
+    } catch (err) {
+      log.warn("lazy promotion before draft generation failed", {
+        analysisId,
+        error: (err as Error).message,
+      });
+      promotion = { status: "unavailable", reason: "promoting the requirements failed" };
+    }
+    if (promotion.status === "promoted" && promotion.requirementCount > 0) {
+      const promoted = await findLiveRequirements(analysisId);
+      if (promoted.length > 0) return promoted;
+    }
+  }
+  throw await noRequirementsError(analysisId, gate, promotion);
+}
+
+/** #723 — the analysis is still running, so its requirements are not saved yet. */
+function stillRunningError(analysisId: string, analysisStatus: string): PublishError {
+  return new PublishError(
+    400,
+    "NO_REQUIREMENTS",
+    "analysis has no requirements yet — the analysis is still running; generate drafts once it completes",
+    true,
+    { analysisId, analysisStatus },
+  );
+}
+
 export async function generateDrafts(opts: GenerateDraftsOptions): Promise<GeneratedDraftSummary> {
   const project = await prisma.project.findFirst({
     where: { id: opts.projectId, deletedAt: null },
@@ -119,13 +214,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   if (!analysis) {
     throw new PublishError(404, "ANALYSIS_NOT_FOUND", `analysis not found: ${opts.analysisId}`);
   }
-  const requirements = await prisma.requirement.findMany({
-    where: { analysisId: opts.analysisId, deletedAt: null },
-    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
-  });
-  if (requirements.length === 0) {
-    throw await noRequirementsError(opts.analysisId);
-  }
+  const requirements = await loadOrPromoteRequirements(opts.analysisId, analysis.status);
 
   const summary: GeneratedDraftSummary = {
     total: 0,

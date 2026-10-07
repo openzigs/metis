@@ -200,6 +200,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await metadata()).synthesisDegraded).toBeUndefined();
     });
 
+    // Issue #723 — an EMPTY proposed set returns [] whether it replaced or was
+    // withheld, so the withholding is reported to the caller explicitly.
+    it("reports a withheld EMPTY replacement through onWithheld, and only then", async () => {
+      const [a] = await seedSet(["A"]);
+      const replaced: unknown[] = [];
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis(["B"]),
+        findingIdsByIndex: [],
+        degraded: null,
+        onWithheld: (w) => replaced.push(w),
+      });
+      expect(replaced).toEqual([]);
+
+      const [b] = await db.requirement.findMany({ where: { analysisId: ANALYSIS } });
+      expect(b?.id).not.toBe(a);
+      await db.requirement.update({ where: { id: b!.id }, data: { reviewStatus: "approved" } });
+      const withheld: unknown[] = [];
+      const ids = await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([]),
+        findingIdsByIndex: [],
+        degraded: null,
+        onWithheld: (w) => withheld.push(w),
+      });
+      expect(ids).toEqual([]);
+      expect(withheld).toEqual([
+        expect.objectContaining({ reason: "reviewed-work", existingCount: 1, proposedCount: 0 }),
+      ]);
+      expect(await titles()).toEqual(["B"]);
+    });
+
     // Each kind of human work, ALONE, must protect the set.
     const signals: Array<[string, (reqId: string, otherId: string) => Promise<unknown>]> = [
       [

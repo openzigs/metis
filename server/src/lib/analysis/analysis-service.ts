@@ -243,6 +243,12 @@ export interface AnalysisEnhancementPatch {
    * until somebody reads the persisted agent output by hand.
    */
   synthesisDegraded?: SynthesisDegradation;
+  /**
+   * Issue #723 — the structured requirement ids already promoted into rows, so
+   * a rejection that is reopened and approved after promotion adds exactly
+   * that requirement instead of being ignored as "already promoted".
+   */
+  promotedStructuredIds?: string[];
 }
 
 function parseMetadata(raw: string | null): Record<string, unknown> {
@@ -274,6 +280,9 @@ export async function persistAnalysisEnhancement(
     next.clarificationApplication = patch.clarificationApplication;
   }
   if (patch.synthesisDegraded !== undefined) next.synthesisDegraded = patch.synthesisDegraded;
+  if (patch.promotedStructuredIds !== undefined) {
+    next.promotedStructuredIds = patch.promotedStructuredIds;
+  }
   await prisma.analysis.update({ where: { id }, data: { metadata: JSON.stringify(next) } });
 }
 
@@ -637,6 +646,12 @@ export interface PersistRequirementsInput {
    * never replaces a healthy one.
    */
   degraded?: SynthesisDegradation | null;
+  /**
+   * Issue #723 — called when the replacement is withheld (#769). The returned
+   * id list is empty either way when the proposed set is empty, so a caller
+   * that must tell "withheld" from "replaced with nothing" listens here.
+   */
+  onWithheld?: (withheld: RequirementReplacementWithheld) => void;
 }
 
 /**
@@ -730,8 +745,14 @@ async function assessRequirementReplacement(
  * analysis run one after the other instead of interleaving their inserts.
  *
  * SQLite needs nothing: the driver adapter runs one transaction at a time.
+ *
+ * Issue #723 — exported for the post-promotion append, which writes the same
+ * set and so takes the same locks in the same order.
  */
-async function lockRequirementSet(tx: Prisma.TransactionClient, analysisId: string): Promise<void> {
+export async function lockRequirementSet(
+  tx: Prisma.TransactionClient,
+  analysisId: string,
+): Promise<void> {
   if (resolveDatabaseProvider() !== "postgresql") return;
   await tx.$queryRaw`SELECT 1 FROM "analyses" WHERE "id" = ${analysisId} FOR NO KEY UPDATE`;
   await tx.$queryRaw`SELECT 1 FROM "requirements" WHERE "analysisId" = ${analysisId} FOR UPDATE`;
@@ -783,6 +804,7 @@ async function replaceRequirementSet(
       where: { id: input.analysisId },
       data: { metadata: JSON.stringify({ ...metadata, requirementReplacementWithheld: withheld }) },
     });
+    input.onWithheld?.(withheld);
     return [];
   }
 

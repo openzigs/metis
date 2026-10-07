@@ -90,11 +90,11 @@ describe("assertPromotionAllowed (#257)", () => {
     });
   });
 
-  it("throws PROMOTION_BLOCKED when an analysis has rejected approvals", async () => {
+  // Issue #723 — a rejected approval is resolved: its requirement was left out
+  // of the promoted set, so it cannot block publishing the approved ones.
+  it("allows an analysis whose only non-approved approvals are rejected", async () => {
     approvals.set("ana-rej", { pending: 0, rejected: 1 });
-    await expect(assertPromotionAllowed(["ana-rej"])).rejects.toMatchObject({
-      code: "PROMOTION_BLOCKED",
-    });
+    await expect(assertPromotionAllowed(["ana-rej"])).resolves.toBeUndefined();
   });
 });
 

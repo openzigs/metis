@@ -3391,7 +3391,6 @@ export class AnalysisOrchestrator {
             : result.output.requirements.length;
         const { reason: blockedReason } = describePromotionGate({
           pendingCount: ticketStatus.pendingCount,
-          rejectedCount: ticketStatus.rejectedCount,
           awaitingRequirementCount,
         });
         // Issue #769 — the marker describes the PERSISTED set. When a (healthy,
@@ -3501,6 +3500,9 @@ export class AnalysisOrchestrator {
         codeAnalysisRan,
       );
 
+      // Issue #723 — reported explicitly: an empty id list cannot tell a
+      // withheld replacement from an approved set that is genuinely empty.
+      let replacementWithheld = false;
       const requirementIds = await persistRequirements({
         analysisId: input.analysisId,
         projectId: input.projectId,
@@ -3511,6 +3513,9 @@ export class AnalysisOrchestrator {
         // Issue #769 — a degraded set never replaces a healthy one. A reviewed
         // set is the reviewer's, not the degraded synthesis's (#730).
         degraded: reviewed ? null : (result.degraded ?? null),
+        onWithheld: () => {
+          replacementWithheld = true;
+        },
       });
 
       // feat/req-code-traceability — auto-seed the requirement→code spine from
@@ -3533,8 +3538,23 @@ export class AnalysisOrchestrator {
       // `allowed` outcome in a SINGLE metadata patch (one DB write instead of
       // two) now that promotion succeeded.
       await persistAnalysisEnhancement(input.analysisId, {
-        promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 0 },
+        promotionBlocked: {
+          blocked: false,
+          pendingCount: 0,
+          rejectedCount: ticketStatus.rejectedCount,
+        },
         promotionStatus: "allowed",
+        // #723 — which reviewed requirements are now rows, so one reopened and
+        // approved later is appended rather than ignored. Only on a real
+        // replacement: a withheld one (#769) persisted nothing, and recording
+        // its ids — even an empty list — would overwrite the earlier record.
+        ...(reviewed && !replacementWithheld
+          ? {
+              promotedStructuredIds: structured
+                .filter((r) => approvedIds.has(r.id))
+                .map((r) => r.id),
+            }
+          : {}),
       });
       this.emit({
         analysisId: input.analysisId,

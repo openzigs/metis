@@ -21,14 +21,17 @@ interface Draft {
 }
 
 const drafts = new Map<string, Draft>();
-/** #362 — approval-checkpoint counts by status for the gated-analysis cases. */
+/** #362 — `requirement` approval counts by status for the gated-analysis cases. */
 const approvalCounts: Record<string, number> = { pending: 0, rejected: 0 };
+/** #723 — every OTHER approval type (evidence, clarification), by type then status. */
+const otherApprovalCounts: Record<string, Record<string, number>> = {};
 let nextId = 0;
 
 const fakeProject = { id: "proj_1", name: "Apollo", deletedAt: null as Date | null };
 const fakeAnalysis = {
   id: "analysis_1",
   projectId: "proj_1",
+  status: "completed",
   startedAt: new Date("2026-09-29T14:05:00.000Z"),
   metadata: JSON.stringify({ extraInstructions: "Self-service password reset\nDetails…" }) as
     string | null,
@@ -76,9 +79,17 @@ vi.mock("../src/lib/prisma.js", () => ({
       findMany: vi.fn(async () => requirements),
     },
     approvalRequest: {
-      count: vi.fn(
-        async ({ where }: { where: { status: string } }) => approvalCounts[where.status] ?? 0,
-      ),
+      // Honours `type`: a query without one (the gate) counts every type; a
+      // `type: "requirement"` query counts only the requirement approvals.
+      count: vi.fn(async ({ where }: { where: { status: string; type?: string } }) => {
+        const requirementCount = approvalCounts[where.status] ?? 0;
+        if (where.type === "requirement") return requirementCount;
+        if (where.type) return otherApprovalCounts[where.type]?.[where.status] ?? 0;
+        return Object.values(otherApprovalCounts).reduce(
+          (sum, byStatus) => sum + (byStatus[where.status] ?? 0),
+          requirementCount,
+        );
+      }),
     },
     issueDraft: {
       findFirst: vi.fn(async ({ where }: { where: { dedupHash?: string } }) => {
@@ -123,6 +134,17 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+// #723 — publishing promotes a stranded run's approved requirements first.
+const promoteApprovedRequirements = vi.hoisted(() =>
+  vi.fn(async (_analysisId: string): Promise<Record<string, unknown>> => ({
+    status: "unavailable",
+    reason: "This analysis has no usable synthesis output to promote.",
+  })),
+);
+vi.mock("../src/lib/analysis/promote-requirements.js", () => ({
+  promoteApprovedRequirements,
+}));
+
 import { estimateStoryPoints, generateDrafts } from "../src/lib/publishing/draft-generator.js";
 import { PublishError } from "../src/lib/publishing/types.js";
 
@@ -131,6 +153,7 @@ beforeEach(() => {
   nextId = 0;
   approvalCounts.pending = 0;
   approvalCounts.rejected = 0;
+  for (const type of Object.keys(otherApprovalCounts)) delete otherApprovalCounts[type];
 });
 
 afterEach(() => {
@@ -664,9 +687,8 @@ describe("generateDrafts", () => {
       expect(message).toContain("Analysis page");
       expect(message).not.toContain("run analysis first");
 
-      // PR #404 panel — a rejection is final, so any rejected checkpoint means
-      // this run can never produce requirements: point at a new run, not at the
-      // approvals panel, even while other approvals are still pending.
+      // Issue #723 — a rejection is a resolution, so while another approval is
+      // still pending the remedy is the approvals panel, not a re-run.
       approvalCounts.rejected = 1;
       const rejected = await generateDrafts({
         projectId: "proj_1",
@@ -676,30 +698,25 @@ describe("generateDrafts", () => {
       }).catch((e: unknown) => e);
       expect(rejected).toMatchObject({
         code: "APPROVALS_BLOCKING",
-        message: expect.stringContaining("1 approval(s) were rejected"),
-        details: {
-          pendingCount: 3,
-          rejectedCount: 1,
-          action: "rerun",
-        },
+        details: { pendingCount: 3, rejectedCount: 1, action: "resolve" },
       });
-      expect((rejected as PublishError).details).not.toHaveProperty("resolveUrl");
-      expect((rejected as PublishError).message).toContain("re-run the analysis");
-      expect((rejected as PublishError).message).not.toContain("resolve them");
+      expect((rejected as PublishError).message).not.toContain("re-run");
 
-      // Rejected alone: the same re-run remedy.
+      // Rejected alone: every reviewed requirement was rejected. A rejection can
+      // be reopened, so the remedy is still the approvals panel, never a re-run.
       approvalCounts.pending = 0;
-      await expect(
-        generateDrafts({
-          projectId: "proj_1",
-          analysisId: "analysis_1",
-          targetOwner: "acme",
-          targetRepo: "metis",
-        }),
-      ).rejects.toMatchObject({
+      const allRejected = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+      expect(allRejected).toMatchObject({
         code: "APPROVALS_BLOCKING",
-        details: { action: "rerun" },
+        details: { pendingCount: 0, rejectedCount: 1, action: "resolve" },
       });
+      expect((allRejected as PublishError).message).toContain("reopen");
+      expect((allRejected as PublishError).message).not.toContain("re-run");
     } finally {
       requirements.push(
         {
@@ -725,6 +742,164 @@ describe("generateDrafts", () => {
           deletedAt: null,
         },
       );
+    }
+  });
+
+  // Issue #723 — a run stranded before rejections counted as resolved: the gate
+  // is open, approved requirements exist, and nothing ever re-ran promotion
+  // (only the review route did). Publishing must recover it, not tell the
+  // reviewer every approval was rejected.
+  describe("an open gate with nothing promoted (#723)", () => {
+    const saved: typeof requirements = [];
+    beforeEach(() => {
+      saved.splice(0, saved.length, ...requirements);
+      requirements.length = 0;
+      approvalCounts.approved = 32;
+      approvalCounts.rejected = 1;
+    });
+    afterEach(() => {
+      requirements.splice(0, requirements.length, ...saved);
+      delete approvalCounts.approved;
+      promoteApprovedRequirements.mockReset();
+      promoteApprovedRequirements.mockResolvedValue({
+        status: "unavailable",
+        reason: "This analysis has no usable synthesis output to promote.",
+      });
+    });
+
+    it("promotes the approved requirements, then generates drafts from them", async () => {
+      promoteApprovedRequirements.mockImplementationOnce(async () => {
+        requirements.push(...saved);
+        return { status: "promoted", requirementCount: saved.length };
+      });
+
+      const summary = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      });
+
+      expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1");
+      expect(summary.features).toBe(2);
+    });
+
+    it("says the approved requirements could not be promoted — never that they were rejected", async () => {
+      promoteApprovedRequirements.mockResolvedValueOnce({
+        status: "unavailable",
+        reason: "This analysis has no usable synthesis output to promote.",
+      });
+
+      const err = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(PublishError);
+      const message = (err as PublishError).message;
+      expect(message).toContain("32 approved requirement(s) could not be promoted");
+      expect(message).toContain("no usable synthesis output");
+      expect(message).not.toContain("rejected");
+      expect(message).not.toContain("reopen");
+    });
+
+    // Mid-run window: synthesis is done but the orchestrator has not saved the
+    // requirements yet. Promoting here would race its save (#723 review).
+    it.each(["running", "pending"])(
+      "does not promote while the analysis is %s — says it is still running",
+      async (status) => {
+        fakeAnalysis.status = status;
+        try {
+          const err = await generateDrafts({
+            projectId: "proj_1",
+            analysisId: "analysis_1",
+            targetOwner: "acme",
+            targetRepo: "metis",
+          }).catch((e: unknown) => e);
+
+          expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+          expect(err).toBeInstanceOf(PublishError);
+          expect(err).toMatchObject({
+            status: 400,
+            code: "NO_REQUIREMENTS",
+            retryable: true,
+            details: { analysisId: "analysis_1", analysisStatus: status },
+          });
+          expect((err as PublishError).message).toContain("still running");
+          expect((err as PublishError).message).not.toContain("could not be promoted");
+        } finally {
+          fakeAnalysis.status = "completed";
+        }
+      },
+    );
+
+    // A failed or cancelled run is terminal: the orchestrator saves nothing more,
+    // and its approvals were resolved — so it promotes, like the promote route.
+    it.each(["failed", "cancelled"])(
+      "promotes the resolved approvals of a %s analysis",
+      async (status) => {
+        fakeAnalysis.status = status;
+        promoteApprovedRequirements.mockImplementationOnce(async () => {
+          requirements.push(...saved);
+          return { status: "promoted", requirementCount: saved.length };
+        });
+        try {
+          const summary = await generateDrafts({
+            projectId: "proj_1",
+            analysisId: "analysis_1",
+            targetOwner: "acme",
+            targetRepo: "metis",
+          });
+
+          expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1");
+          expect(summary.features).toBe(2);
+        } finally {
+          fakeAnalysis.status = "completed";
+        }
+      },
+    );
+
+    it("does not try to promote while approvals are still pending", async () => {
+      approvalCounts.pending = 2;
+
+      const err = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+
+      expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+      expect(err).toMatchObject({ code: "APPROVALS_BLOCKING", details: { pendingCount: 2 } });
+    });
+  });
+
+  // Issue #723 — only REQUIREMENT approvals decide the message: an evidence or
+  // clarification approval/rejection excludes no requirement, so it must never
+  // read as "all N reviewed requirement(s) were rejected" (or as approved
+  // requirements that could not be promoted).
+  it("ignores evidence and clarification approvals when naming the empty set", async () => {
+    const saved = requirements.splice(0, requirements.length);
+    otherApprovalCounts.evidence = { approved: 2, rejected: 1 };
+    otherApprovalCounts.clarification = { rejected: 1 };
+    try {
+      const err = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(PublishError);
+      const message = (err as PublishError).message;
+      expect(message).not.toContain("were rejected");
+      expect(message).not.toContain("could not be promoted");
+      expect(err).toMatchObject({ code: "NO_REQUIREMENTS" });
+      expect(message).toContain("run analysis first");
+    } finally {
+      requirements.push(...saved);
     }
   });
 

@@ -94,8 +94,8 @@ function approvalsResolveLink(
   if (!(err instanceof ApiError) || err.code !== "APPROVALS_BLOCKING") return null;
   const details = err.details as { analysisId?: unknown; action?: unknown } | undefined;
   const analysisPath = `/projects/${encodeURIComponent(projectId)}/analysis`;
-  // A rejected approval is final, so the server sends `action: "rerun"` and the
-  // remedy is a new analysis run, not the approvals panel (PR #404 panel).
+  // #723 — rejected approvals can be reopened, so the server no longer sends
+  // `action: "rerun"`; an older server still might, and a re-run is its remedy.
   if (details?.action === "rerun") return { href: analysisPath, label: "Re-run analysis" };
   if (typeof details?.analysisId !== "string") return null;
   const query = new URLSearchParams({ analysisId: details.analysisId, tab: "approvals" });

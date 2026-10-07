@@ -29,6 +29,10 @@ import { useOnReconnect } from "@/hooks/use-on-reconnect";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  countApprovedRequirements,
+  PromoteApprovedRequirementsButton,
+} from "./PromoteApprovedRequirementsButton";
 
 interface ApprovalsPanelProps {
   projectId: string;
@@ -39,6 +43,17 @@ interface ApprovalsPanelProps {
    * instead of rendering a bare UUID.
    */
   metadata?: Record<string, unknown> | null;
+  /**
+   * #723 — the run's requirement rows, so the resolved banner says whether
+   * anything was actually promoted. Omitted: the banner makes no such claim.
+   */
+  requirementCount?: number;
+  /**
+   * #723 — the run's status. While it is pending or running the orchestrator
+   * has not saved its requirements yet (the server refuses to promote), so the
+   * Promote action is not offered.
+   */
+  analysisStatus?: string;
 }
 
 /**
@@ -115,31 +130,81 @@ export function summarisePendingByType(pending: ReadonlyArray<{ type: string }>)
   return parts.join(", ");
 }
 
+/**
+ * Issue #723 — what the resolved rejections actually DID, per approval type.
+ * Only a rejected `requirement` is left out of the promoted set; a rejected
+ * `evidence` or `clarification` approval is recorded but excludes nothing, so
+ * claiming it "was left out" would tell the reviewer something false.
+ */
+export function describeRejections(rejected: ReadonlyArray<{ type: string }>): string | null {
+  if (rejected.length === 0) return null;
+  const requirementCount = rejected.filter((a) => a.type === "requirement").length;
+  const otherCount = rejected.length - requirementCount;
+  const parts: string[] = [];
+  if (requirementCount > 0) {
+    parts.push(`${requirementCount} rejected requirement(s) were left out of the promoted set.`);
+  }
+  if (otherCount > 0) {
+    parts.push(
+      `${otherCount} rejected evidence or clarification item(s) were recorded; they do not change which requirements are promoted.`,
+    );
+  }
+  parts.push("Reopen one below to review it again.");
+  return parts.join(" ");
+}
+
 function PromotionBanner({
   status,
   awaitingRequirementCount,
   pendingByType,
+  rejectionSummary,
+  requirementCount,
+  approvedRequirementCount = 0,
+  promoteAction,
 }: {
   status: TicketStatus;
+  /** #723 — the run's requirement rows; undefined when the caller does not know. */
+  requirementCount?: number;
+  /** #723 — `requirement` approvals that are approved. */
+  approvedRequirementCount?: number;
+  /** #723 — the recovery control for an open gate with nothing promoted. */
+  promoteAction?: React.ReactNode;
   /** #1104 — how many synthesized requirements the gate is holding back. */
   awaitingRequirementCount?: number;
   /** #1117 (finding E) — breakdown of the pending approvals, e.g. "16 requirement, 11 evidence". */
   pendingByType?: string | null;
+  /** #723 — what the rejections did, per approval type ({@link describeRejections}). */
+  rejectionSummary?: string | null;
 }): React.ReactElement | null {
   if (status.allowed) {
+    // #723 — "promotion is unblocked" is only true once something was promoted.
+    // With no requirement rows, say what actually happened instead.
+    const nothingPromoted = requirementCount === 0;
+    const stranded = nothingPromoted && approvedRequirementCount > 0;
     return (
       <div
         role="status"
         data-testid="promotion-banner"
-        className="rounded border border-success/40 bg-success-muted px-3 py-2 text-sm text-success"
+        className={
+          stranded
+            ? "space-y-2 rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
+            : "rounded border border-success/40 bg-success-muted px-3 py-2 text-sm text-success"
+        }
       >
-        All approvals resolved — artifact promotion is unblocked.
+        {stranded
+          ? `All approvals resolved, but the ${approvedRequirementCount} approved requirement(s) have not been promoted yet.`
+          : nothingPromoted
+            ? "All approvals resolved — no requirement was approved, so none were promoted."
+            : "All approvals resolved — artifact promotion is unblocked."}
+        {/* #723 — a rejection is a resolution: say what it did, and how to undo it. */}
+        {rejectionSummary && ` ${rejectionSummary}`}
+        {stranded && promoteAction && <div>{promoteAction}</div>}
       </div>
     );
   }
+  // #723 — rejected approvals are resolved; only pending ones hold the gate.
   const parts: string[] = [];
   if (status.pendingCount > 0) parts.push(`${status.pendingCount} pending`);
-  if (status.rejectedCount > 0) parts.push(`${status.rejectedCount} rejected`);
   return (
     <div
       role="alert"
@@ -221,6 +286,17 @@ function ApprovalCard({
       // #364 — someone (or another tab) resolved it first: refresh so the card
       // moves to Resolved instead of leaving a button that can only 409.
       if (err instanceof ApiError && err.code === "APPROVAL_ALREADY_REVIEWED") onChange();
+    },
+  });
+  // Issue #723 — a rejection used to be final. Reopening returns it to pending
+  // (the server refuses anything but `rejected`), which closes the gate again
+  // until it is re-reviewed.
+  const reopenMutation = useMutation({
+    mutationFn: () => analysisApi.reopenApproval(projectId, analysisId, approval.id),
+    onSuccess: () => {
+      onChange();
+      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(analysisId) });
     },
   });
   // #364 — once a decision has been recorded the card stays on screen until the
@@ -320,6 +396,27 @@ function ApprovalCard({
       {isResolved && approval.reviewNote && (
         <p className="text-xs text-muted-foreground">Note: {approval.reviewNote}</p>
       )}
+
+      {approval.status === "rejected" && (
+        <div className="space-y-1">
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label={`Reopen ${itemName}`}
+            onClick={() => reopenMutation.mutate()}
+            disabled={reopenMutation.isPending || reopenMutation.isSuccess}
+          >
+            Reopen
+          </Button>
+          {reopenMutation.isError && (
+            <p role="alert" className="text-xs text-destructive">
+              {reopenMutation.error instanceof ApiError
+                ? reopenMutation.error.message
+                : "Could not reopen this approval. Try again."}
+            </p>
+          )}
+        </div>
+      )}
     </Card>
   );
 }
@@ -328,7 +425,10 @@ export function ApprovalsPanel({
   projectId,
   analysisId,
   metadata,
+  requirementCount,
+  analysisStatus,
 }: ApprovalsPanelProps): React.ReactElement | null {
+  const inFlight = analysisStatus === "pending" || analysisStatus === "running";
   // #922 — index structured requirements by id so each `requirement` approval
   // can be enriched with its real title + open questions.
   const requirementsById = new Map<string, StructuredRequirement>();
@@ -400,7 +500,8 @@ export function ApprovalsPanel({
         <h3 className="text-lg font-semibold">Approvals</h3>
         <p className="text-sm text-muted-foreground">
           Review and resolve the human-in-the-loop checkpoints below. Specs are not promoted until
-          every approval is resolved.
+          every approval is resolved; rejected requirements are left out, and any rejection can be
+          reopened.
         </p>
       </div>
 
@@ -422,6 +523,14 @@ export function ApprovalsPanel({
               readEnhancementMetadata(metadata).promotionBlocked?.awaitingRequirementCount
             }
             pendingByType={summarisePendingByType(pending)}
+            rejectionSummary={describeRejections(resolved.filter((a) => a.status === "rejected"))}
+            requirementCount={requirementCount}
+            approvedRequirementCount={countApprovedRequirements(items)}
+            promoteAction={
+              inFlight ? undefined : (
+                <PromoteApprovedRequirementsButton projectId={projectId} analysisId={analysisId} />
+              )
+            }
           />
         )
       )}
