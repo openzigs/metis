@@ -156,18 +156,19 @@ function findLiveRequirements(analysisId: string) {
  * recovers. `promoteApprovedRequirements` is idempotent and never replaces an
  * existing set.
  *
- * Only once the analysis has COMPLETED: mid-run there is a window where
- * synthesis has finished but cross-doc detection is still running and the
+ * Never while the analysis is pending or running: mid-run there is a window
+ * where synthesis has finished but cross-doc detection is still running and the
  * orchestrator has not saved its requirements yet. Promoting in that window
  * (a draft generation, or a double-clicked Generate) would race the
- * orchestrator's own save.
+ * orchestrator's own save. A failed or cancelled run is terminal, so — like the
+ * Analysis page's promote route — it promotes its resolved approvals.
  */
 async function loadOrPromoteRequirements(analysisId: string, analysisStatus: string) {
   const requirements = await findLiveRequirements(analysisId);
   if (requirements.length > 0) return requirements;
 
   const gate = await canCreateTickets(analysisId);
-  if (gate.allowed && analysisStatus !== "completed") {
+  if (gate.allowed && (analysisStatus === "pending" || analysisStatus === "running")) {
     throw stillRunningError(analysisId, analysisStatus);
   }
   let promotion: PromotionOutcome | null = null;
@@ -189,16 +190,13 @@ async function loadOrPromoteRequirements(analysisId: string, analysisStatus: str
   throw await noRequirementsError(analysisId, gate, promotion);
 }
 
-/** #723 — the analysis has not completed, so its requirements are not saved yet. */
+/** #723 — the analysis is still running, so its requirements are not saved yet. */
 function stillRunningError(analysisId: string, analysisStatus: string): PublishError {
-  const inFlight = analysisStatus === "pending" || analysisStatus === "running";
   return new PublishError(
     400,
     "NO_REQUIREMENTS",
-    inFlight
-      ? "analysis has no requirements yet — the analysis is still running; generate drafts once it completes"
-      : `analysis has no requirements — the analysis did not complete (status: ${analysisStatus}); re-run it`,
-    inFlight,
+    "analysis has no requirements yet — the analysis is still running; generate drafts once it completes",
+    true,
     { analysisId, analysisStatus },
   );
 }

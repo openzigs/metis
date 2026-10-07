@@ -835,23 +835,31 @@ describe("generateDrafts", () => {
       },
     );
 
-    it("does not promote a failed analysis, and says it did not complete", async () => {
-      fakeAnalysis.status = "failed";
-      try {
-        const err = await generateDrafts({
-          projectId: "proj_1",
-          analysisId: "analysis_1",
-          targetOwner: "acme",
-          targetRepo: "metis",
-        }).catch((e: unknown) => e);
+    // A failed or cancelled run is terminal: the orchestrator saves nothing more,
+    // and its approvals were resolved — so it promotes, like the promote route.
+    it.each(["failed", "cancelled"])(
+      "promotes the resolved approvals of a %s analysis",
+      async (status) => {
+        fakeAnalysis.status = status;
+        promoteApprovedRequirements.mockImplementationOnce(async () => {
+          requirements.push(...saved);
+          return { status: "promoted", requirementCount: saved.length };
+        });
+        try {
+          const summary = await generateDrafts({
+            projectId: "proj_1",
+            analysisId: "analysis_1",
+            targetOwner: "acme",
+            targetRepo: "metis",
+          });
 
-        expect(promoteApprovedRequirements).not.toHaveBeenCalled();
-        expect(err).toMatchObject({ code: "NO_REQUIREMENTS", retryable: false });
-        expect((err as PublishError).message).toContain("did not complete (status: failed)");
-      } finally {
-        fakeAnalysis.status = "completed";
-      }
-    });
+          expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1");
+          expect(summary.features).toBe(2);
+        } finally {
+          fakeAnalysis.status = "completed";
+        }
+      },
+    );
 
     it("does not try to promote while approvals are still pending", async () => {
       approvalCounts.pending = 2;

@@ -23,6 +23,11 @@ const tabRenders = vi.hoisted(() => [] as { value: string; urlTab: string | null
 const approvalsRenders = vi.hoisted(
   () => [] as { analysisId: string; urlRun: string | null; urlTab: string | null }[],
 );
+/**
+ * #723 — when set, the Approvals tab mounts the REAL panel, so a test can prove
+ * the page hands it what the stranded banner and its Promote action need.
+ */
+const realApprovalsPanel = vi.hoisted(() => ({ on: false }));
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -147,7 +152,14 @@ const { SNAPSHOT } = vi.hoisted(() => {
   };
 });
 
-vi.mock("@/lib/analysis-api", () => ({
+vi.mock("@/lib/analysis-api", async () => ({
+  // #723 — pure metadata readers the real ApprovalsPanel and the requirements
+  // empty state use; the API calls below stay stubbed.
+  readEnhancementMetadata: (
+    await vi.importActual<typeof import("@/lib/analysis-api")>("@/lib/analysis-api")
+  ).readEnhancementMetadata,
+  ambiguitiesOf: (await vi.importActual<typeof import("@/lib/analysis-api")>("@/lib/analysis-api"))
+    .ambiguitiesOf,
   isCodeCitation: () => false,
   analysisApi: {
     listForProject: vi.fn().mockResolvedValue({
@@ -169,6 +181,7 @@ vi.mock("@/lib/analysis-api", () => ({
     regenerateAgent: vi.fn(),
     updateRequirement: vi.fn(),
     listApprovals: vi.fn().mockResolvedValue({ ticketStatus: { allowed: true } }),
+    promoteApprovedRequirements: vi.fn(),
   },
 }));
 
@@ -228,9 +241,14 @@ vi.mock("@/components/analysis/EnhancementResults", () => ({
 // ["approvals", analysisId] (ApprovalsPanel.tsx).
 vi.mock("@/components/analysis/ApprovalsPanel", async () => {
   const { useQueryClient } = await import("@tanstack/react-query");
+  const actual = await vi.importActual<typeof import("@/components/analysis/ApprovalsPanel")>(
+    "@/components/analysis/ApprovalsPanel",
+  );
   return {
-    ApprovalsPanel: ({ analysisId }: { analysisId: string }) => {
+    ApprovalsPanel: (props: Parameters<typeof actual.ApprovalsPanel>[0]) => {
+      const { analysisId } = props;
       const qc = useQueryClient();
+      if (realApprovalsPanel.on) return <actual.ApprovalsPanel {...props} />;
       approvalsRenders.push({
         analysisId,
         urlRun: nav.search.get("analysisId"),
@@ -373,6 +391,7 @@ beforeEach(() => {
   };
   nav.search = new URLSearchParams();
   approvalsRenders.length = 0;
+  realApprovalsPanel.on = false;
   tabRenders.length = 0;
   apiMock.get.mockResolvedValue(SNAPSHOT);
   apiMock.listApprovals.mockResolvedValue({
@@ -608,6 +627,100 @@ describe("Generate GitHub Issues on the Findings tab", () => {
     expect(
       screen.queryByRole("button", { name: /Generate GitHub Issues/ }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// #723 — a run stranded before rejections counted as resolved: the gate is
+// open, approved requirements exist, and there are no requirement rows. The
+// components' own tests cannot see the page forget to hand them the counts.
+describe("a stranded run on the Analysis page (#723)", () => {
+  const approvalItem = (id: string, status: string) => ({
+    id,
+    analysisId: "an-1",
+    type: "requirement",
+    itemId: `req-${id}`,
+    status,
+    reviewerId: null,
+    reviewNote: null,
+    createdAt: new Date().toISOString(),
+    reviewedAt: null,
+  });
+  const STRANDED = {
+    items: [
+      approvalItem("a1", "approved"),
+      approvalItem("a2", "approved"),
+      approvalItem("a3", "rejected"),
+    ],
+    ticketStatus: { allowed: true, pendingCount: 0, rejectedCount: 1 },
+  };
+  const promoteButton = () =>
+    screen.queryByRole("button", { name: "Promote approved requirements" });
+
+  beforeEach(() => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, requirements: [] });
+    apiMock.listApprovals.mockResolvedValue(STRANDED);
+  });
+
+  it("offers to promote the approved requirements from the Findings tab", async () => {
+    nav.search = new URLSearchParams("tab=findings");
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
+        "2 approved requirement(s) have not been promoted yet.",
+      ),
+    );
+    expect(promoteButton()).toBeInTheDocument();
+  });
+
+  it("shows the stranded banner and its Promote action on the Approvals tab", async () => {
+    realApprovalsPanel.on = true;
+    nav.search = new URLSearchParams("tab=approvals");
+    renderPage();
+
+    const banner = await screen.findByTestId("promotion-banner");
+    expect(banner).toHaveTextContent(
+      "All approvals resolved, but the 2 approved requirement(s) have not been promoted yet.",
+    );
+    expect(
+      within(banner).getByRole("button", { name: "Promote approved requirements" }),
+    ).toBeInTheDocument();
+  });
+
+  it("withholds the Promote action while the run is still running", async () => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, status: "running", requirements: [] });
+    realApprovalsPanel.on = true;
+    nav.search = new URLSearchParams("tab=approvals");
+    renderPage();
+
+    expect(await screen.findByTestId("promotion-banner")).toHaveTextContent(
+      "have not been promoted yet",
+    );
+    expect(promoteButton()).not.toBeInTheDocument();
+  });
+
+  it("points the empty Requirements tab at Promote once the live gate is open", async () => {
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      requirements: [],
+      metadata: {
+        promotionBlocked: {
+          blocked: true,
+          pendingCount: 3,
+          rejectedCount: 0,
+          awaitingRequirementCount: 2,
+        },
+      },
+    });
+    nav.search = new URLSearchParams("tab=requirements");
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("requirements-gated")).toHaveTextContent(
+        "Promote the approved requirements",
+      ),
+    );
+    expect(screen.getByTestId("requirements-gated")).not.toHaveTextContent(/must be resolved/);
   });
 });
 

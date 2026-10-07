@@ -47,6 +47,7 @@ function renderPanel(
   ticketStatus: TicketStatus,
   metadata: Record<string, unknown> | null = null,
   requirementCount?: number,
+  analysisStatus?: string,
 ) {
   analysisApi.listApprovals.mockResolvedValue({ items, ticketStatus });
   const qc = new QueryClient({
@@ -59,6 +60,7 @@ function renderPanel(
         analysisId="ana-1"
         metadata={metadata}
         requirementCount={requirementCount}
+        analysisStatus={analysisStatus}
       />
     </QueryClientProvider>,
   );
@@ -338,6 +340,30 @@ describe("ApprovalsPanel", () => {
         screen.getByRole("button", { name: "Promote approved requirements" }),
       ).toBeInTheDocument();
     });
+
+    // The server refuses to promote mid-run (the orchestrator has not saved its
+    // requirements yet), so the panel must not offer a button that can only 409.
+    it.each(["pending", "running"])("offers no Promote action while the run is %s", async (s) => {
+      renderPanel(stranded, { allowed: true, pendingCount: 0, rejectedCount: 1 }, null, 0, s);
+
+      expect(await screen.findByTestId("promotion-banner")).toHaveTextContent(
+        "have not been promoted yet",
+      );
+      expect(
+        screen.queryByRole("button", { name: "Promote approved requirements" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it.each(["completed", "failed", "cancelled"])(
+      "offers the Promote action on a %s run",
+      async (s) => {
+        renderPanel(stranded, { allowed: true, pendingCount: 0, rejectedCount: 1 }, null, 0, s);
+
+        expect(
+          await screen.findByRole("button", { name: "Promote approved requirements" }),
+        ).toBeInTheDocument();
+      },
+    );
 
     it("promotes from the panel and refreshes the approvals", async () => {
       analysisApi.promoteApprovedRequirements.mockResolvedValueOnce({

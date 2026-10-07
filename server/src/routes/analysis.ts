@@ -1100,8 +1100,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * as resolved has no review left to make, so the review PUT never fires again
    * and the Analysis page had no way to recover it. Same permission and scope
    * as the review PUT (#1097); `promoteApprovedRequirements` is idempotent and
-   * never replaces an existing set. Only on a COMPLETED analysis: mid-run, the
-   * orchestrator has not saved its own requirements yet.
+   * never replaces an existing set. Refused only while the analysis is pending
+   * or running: mid-run, the orchestrator has not saved its own requirements
+   * yet. A failed or cancelled run is terminal — its approvals were resolved,
+   * and the review PUT above would promote the very same run — so it is allowed.
    */
   projectScoped.post(
     "/:id/approvals/promote",
@@ -1112,7 +1114,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       const analysis = await ensureAnalysisVisible(analysisId, projectId);
-      if (analysis.status !== "completed") {
+      if (analysis.status === "pending" || analysis.status === "running") {
         throw new AppError(
           409,
           "ANALYSIS_NOT_COMPLETED",

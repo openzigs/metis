@@ -1008,7 +1008,10 @@ export default function AnalysisPage(): React.ReactElement {
                       {detail.data.requirements.length === 0 ? (
                         /* Issue #1104 (finding B) — distinguish "produced nothing"
                        from "produced N and the approval gate is holding them". */
-                        <RequirementsEmptyState metadata={detail.data.metadata} />
+                        <RequirementsEmptyState
+                          metadata={detail.data.metadata}
+                          ticketStatus={approvals.data?.ticketStatus}
+                        />
                       ) : null}
                       {requirementsView.items.map((req) => (
                         <div
@@ -1377,6 +1380,7 @@ export default function AnalysisPage(): React.ReactElement {
                     analysisId={detail.data.id}
                     metadata={detail.data.metadata}
                     requirementCount={detail.data.requirements.length}
+                    analysisStatus={detail.data.status}
                   />
                 </TabsContent>
 

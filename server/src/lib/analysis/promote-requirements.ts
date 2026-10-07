@@ -112,7 +112,6 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
       : (synthesis?.requirements.length ?? 0);
     const { reason } = describePromotionGate({
       pendingCount: ticketStatus.pendingCount,
-      rejectedCount: ticketStatus.rejectedCount,
       awaitingRequirementCount,
     });
     return {

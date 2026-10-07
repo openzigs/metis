@@ -77,28 +77,77 @@ describe("#1104 B — the empty requirements list explains the gate", () => {
     expect(link).toHaveAttribute("href", "#approvals");
   });
 
-  it("still explains the gate on a legacy record with no withheld count", () => {
+  it("names only the pending approvals as outstanding — never the rejected ones (#723)", () => {
     render(
       <RequirementsEmptyState
         metadata={{
-          promotionBlocked: { blocked: true, pendingCount: 0, rejectedCount: 2 },
+          promotionBlocked: { blocked: true, pendingCount: 3, rejectedCount: 2 },
         }}
       />,
     );
 
     const notice = screen.getByRole("alert");
     expect(notice).toHaveTextContent(/awaiting approval/i);
-    expect(notice).toHaveTextContent(/2 rejected/i);
+    expect(notice).toHaveTextContent("3 pending approval(s) must be resolved.");
+    expect(notice).not.toHaveTextContent(/rejected/i);
   });
 
-  it("names the generic remedy when neither count is set", () => {
+  // #723 — a record written before rejections counted as resolved: no pending
+  // approval is left, so there is nothing to resolve; point at Promote.
+  it("points a legacy record with no pending approval at the Promote action", () => {
     render(
       <RequirementsEmptyState
-        metadata={{ promotionBlocked: { blocked: true, pendingCount: 0, rejectedCount: 0 } }}
+        metadata={{
+          promotionBlocked: {
+            blocked: true,
+            pendingCount: 0,
+            rejectedCount: 1,
+            awaitingRequirementCount: 32,
+          },
+        }}
       />,
     );
 
-    expect(screen.getByRole("alert")).toHaveTextContent(/Resolve the outstanding approvals/i);
+    const notice = screen.getByRole("alert");
+    expect(notice).toHaveTextContent(
+      "All approvals are resolved, but the 32 requirement(s) have not been promoted yet.",
+    );
+    expect(notice).toHaveTextContent(/Promote the approved requirements/);
+    expect(notice).not.toHaveTextContent(/rejected|must be resolved/i);
+    expect(screen.getByRole("link", { name: "Go to approvals" })).toHaveAttribute(
+      "href",
+      "#approvals",
+    );
+  });
+
+  it("follows the live gate over stale recorded counts", () => {
+    const { rerender } = render(
+      <RequirementsEmptyState
+        metadata={GATED_METADATA}
+        ticketStatus={{ allowed: true, pendingCount: 0, rejectedCount: 1 }}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(/Promote the approved requirements/);
+    expect(screen.getByRole("alert")).not.toHaveTextContent(/must be resolved/);
+
+    rerender(
+      <RequirementsEmptyState
+        metadata={GATED_METADATA}
+        ticketStatus={{ allowed: false, pendingCount: 4, rejectedCount: 0 }}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("4 pending approval(s) must be resolved.");
+  });
+
+  it("names the generic remedy when the pending count is unknown", () => {
+    render(
+      <RequirementsEmptyState
+        metadata={GATED_METADATA}
+        ticketStatus={{ allowed: false, pendingCount: 0, rejectedCount: 0 }}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/Resolve the pending approvals/i);
   });
 
   it("falls back to the plain empty state when nothing is gated", () => {

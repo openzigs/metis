@@ -11,3 +11,5 @@ section: Fixed
   page with **Promote approved requirements**, or by generating drafts; the Approvals banner no
   longer claims promotion is unblocked when nothing was promoted, and generating drafts mid-run no
   longer promotes early. Rejected evidence and clarification items are not described as "left out".
+- Promotion is refused only while a run is pending or running, not for a failed or cancelled one,
+  and rejected approvals are no longer listed as outstanding anywhere.

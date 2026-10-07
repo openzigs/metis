@@ -3391,7 +3391,6 @@ export class AnalysisOrchestrator {
             : result.output.requirements.length;
         const { reason: blockedReason } = describePromotionGate({
           pendingCount: ticketStatus.pendingCount,
-          rejectedCount: ticketStatus.rejectedCount,
           awaitingRequirementCount,
         });
         // Issue #769 — the marker describes the PERSISTED set. When a (healthy,

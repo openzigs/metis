@@ -13,8 +13,12 @@
  * helper into a crash on the blocked path.
  */
 export interface PromotionGateCounts {
+  /**
+   * #723 — only PENDING approvals hold the gate. A rejection is a resolution
+   * (the rejected requirement is left out of the promoted set), so it is never
+   * named as outstanding.
+   */
   pendingCount: number;
-  rejectedCount: number;
   /** How many synthesized requirements the gate is holding back. */
   awaitingRequirementCount: number;
 }
@@ -27,10 +31,7 @@ export function describePromotionGate(gate: PromotionGateCounts): {
     gate.awaitingRequirementCount > 0
       ? `${gate.awaitingRequirementCount} requirement(s) awaiting approval`
       : "promotion awaiting approval";
-  const parts: string[] = [];
-  if (gate.pendingCount > 0) parts.push(`${gate.pendingCount} pending`);
-  if (gate.rejectedCount > 0) parts.push(`${gate.rejectedCount} rejected`);
-  const outstanding = parts.length > 0 ? parts.join(", ") : "unresolved";
+  const outstanding = gate.pendingCount > 0 ? `${gate.pendingCount} pending` : "the pending";
   return {
     summary,
     reason: `Promotion blocked: ${summary}. Resolve ${outstanding} approval(s) to save them.`,

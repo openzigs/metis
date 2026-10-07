@@ -260,8 +260,29 @@ describe("POST .../approvals/promote — #723", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("ANALYSIS_NOT_COMPLETED");
+    expect(res.body.error.message).toContain("still running");
     expect(promoteApprovedRequirements).not.toHaveBeenCalled();
   });
+
+  // A failed or cancelled run is terminal and its approvals were resolved; the
+  // review PUT would promote it, so the recovery route must too — never claim
+  // such a run is "still running".
+  it.each(["failed", "cancelled"])(
+    "promotes the resolved approvals of a %s analysis",
+    async (status) => {
+      analysisRow.status = status;
+      promoteApprovedRequirements.mockResolvedValueOnce({
+        status: "promoted",
+        requirementCount: 3,
+      });
+
+      const res = await promote();
+
+      expect(res.status).toBe(200);
+      expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1");
+      expect(res.body.data.promotion).toEqual({ status: "promoted", requirementCount: 3 });
+    },
+  );
 
   it("reports a failed promotion as unavailable instead of a 500", async () => {
     promoteApprovedRequirements.mockRejectedValueOnce(new Error("db down"));

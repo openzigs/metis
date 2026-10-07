@@ -48,6 +48,12 @@ interface ApprovalsPanelProps {
    * anything was actually promoted. Omitted: the banner makes no such claim.
    */
   requirementCount?: number;
+  /**
+   * #723 — the run's status. While it is pending or running the orchestrator
+   * has not saved its requirements yet (the server refuses to promote), so the
+   * Promote action is not offered.
+   */
+  analysisStatus?: string;
 }
 
 /**
@@ -420,7 +426,9 @@ export function ApprovalsPanel({
   analysisId,
   metadata,
   requirementCount,
+  analysisStatus,
 }: ApprovalsPanelProps): React.ReactElement | null {
+  const inFlight = analysisStatus === "pending" || analysisStatus === "running";
   // #922 — index structured requirements by id so each `requirement` approval
   // can be enriched with its real title + open questions.
   const requirementsById = new Map<string, StructuredRequirement>();
@@ -519,7 +527,9 @@ export function ApprovalsPanel({
             requirementCount={requirementCount}
             approvedRequirementCount={countApprovedRequirements(items)}
             promoteAction={
-              <PromoteApprovedRequirementsButton projectId={projectId} analysisId={analysisId} />
+              inFlight ? undefined : (
+                <PromoteApprovedRequirementsButton projectId={projectId} analysisId={analysisId} />
+              )
             }
           />
         )
