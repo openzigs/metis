@@ -244,7 +244,7 @@ const standInEmbedder: EmbedService & { model: string; dimension: number } = {
       }
       // A text matching no concept must still be a legal vector, not a zero one
       // the cosine would divide by. Park it on an inert axis.
-      if (v.every((x) => x === 0)) v[CONCEPT_KEYS.indexOf("http")] = 0.001;
+      if (!v.some((x) => x !== 0)) v[CONCEPT_KEYS.indexOf("http")] = 0.001;
       return v;
     });
     return { vectors, model: STANDIN_MODEL, dimension: CONCEPT_KEYS.length };

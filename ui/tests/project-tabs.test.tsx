@@ -85,9 +85,6 @@ describe("getProjectTabModel — pipeline order (#28)", () => {
       ["Code Overview", `${B}/overview`],
       ["Changes", `${B}/changes`],
       ["Pull Requests", `${B}/pulls`],
-      ["Bug Rules", `${B}/rule-sets`],
-      ["Bug Scans", `${B}/scans`],
-      ["Test Coverage", `${B}/test-coverage`],
     ]);
     expect(items.settings).toEqual([
       ["General", `${B}/settings`],
@@ -135,9 +132,6 @@ describe("getProjectTabModel — pipeline order (#28)", () => {
       "/overview",
       "/changes",
       "/pulls",
-      "/rule-sets",
-      "/scans",
-      "/test-coverage",
       "/documentation",
       "/settings/templates",
       "/baselines",
@@ -176,8 +170,6 @@ describe("resolveActiveProjectTab", () => {
     expect(active(`${B}/baselines/b1`)).toEqual(["requirements", "Baselines"]);
     expect(active(`${B}/discussions/d1`)).toEqual(["requirements", "Discussions"]);
     expect(active(`${B}/pulls/12`)).toEqual(["code", "Pull Requests"]);
-    expect(active(`${B}/scans/s1`)).toEqual(["code", "Bug Scans"]);
-    expect(active(`${B}/test-coverage/connections`)).toEqual(["code", "Test Coverage"]);
   });
 
   it("prefers the longest match, so Templates is Docs even under /settings", () => {
@@ -187,12 +179,12 @@ describe("resolveActiveProjectTab", () => {
   });
 
   it("maps routes that are not in the sub-nav to their section", () => {
-    expect(active(`${B}/repositories/r1/scanner`)).toEqual(["sources", null]);
+    expect(active(`${B}/repositories`)).toEqual(["sources", null]);
     expect(active(`${B}/sync`)).toEqual(["publish", null]);
   });
 
   it("does not match a sibling that merely shares a prefix", () => {
-    expect(active(`${B}/scanstwo`)).toBeNull();
+    expect(active(`${B}/pullstwo`)).toBeNull();
     expect(active("/projects/p2/analysis")).toBeNull();
   });
 
@@ -230,8 +222,8 @@ describe("isProjectTabActive", () => {
     expect(isProjectTabActive(`${B}/analysis`, B, B)).toBe(false);
   });
   it("matches section prefixes", () => {
-    expect(isProjectTabActive(`${B}/scans/123`, `${B}/scans`, B)).toBe(true);
-    expect(isProjectTabActive(`${B}/scanstwo`, `${B}/scans`, B)).toBe(false);
+    expect(isProjectTabActive(`${B}/pulls/123`, `${B}/pulls`, B)).toBe(true);
+    expect(isProjectTabActive(`${B}/pullstwo`, `${B}/pulls`, B)).toBe(false);
   });
 });
 
@@ -281,14 +273,7 @@ describe("<ProjectTabs />", () => {
     const names = within(sub)
       .getAllByRole("link")
       .map((l) => l.textContent);
-    expect(names).toEqual([
-      "Code Overview",
-      "Changes",
-      "Pull Requests",
-      "Bug Rules",
-      "Bug Scans",
-      "Test Coverage",
-    ]);
+    expect(names).toEqual(["Code Overview", "Changes", "Pull Requests"]);
     expect(within(sub).getByRole("link", { name: "Changes" })).toHaveAttribute(
       "aria-current",
       "page",

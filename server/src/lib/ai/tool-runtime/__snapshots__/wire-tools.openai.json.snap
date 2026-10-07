@@ -121,7 +121,7 @@
     "type": "function",
     "function": {
       "name": "search-knowledge",
-      "description": "Retrieve the top-k most relevant document chunks from a project's knowledge base. Returns ranked snippets with source attribution.",
+      "description": "Retrieve the top-k most relevant document chunks from a project's knowledge base. Returns ranked snippets with source attribution. In a project-scoped session, omit projectId: the session's own project is always searched.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -142,7 +142,6 @@
           }
         },
         "required": [
-          "projectId",
           "query"
         ]
       }

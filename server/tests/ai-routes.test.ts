@@ -548,7 +548,7 @@ describe("POST /api/ai/stream — slowloris protections", () => {
       },
       async *stream(_messages, opts) {
         // Hang until aborted by the hard ceiling.
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((_resolve, reject) => {
           const onAbort = (): void => {
             opts?.signal?.removeEventListener("abort", onAbort);
             reject(Object.assign(new Error("aborted"), { name: "AbortError" }));

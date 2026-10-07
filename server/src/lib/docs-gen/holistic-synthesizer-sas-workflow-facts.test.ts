@@ -89,7 +89,6 @@ function sasModule(): ModuleGroup {
     syms: [
       {
         id: "s1",
-        codeGraphId: "graph-a",
         qualifiedName: "risk_calc.sas::risk_calc",
         kind: "function",
         language: "sas",
@@ -172,7 +171,6 @@ describe("extractModuleFacts — SAS workflow + lineage enrichment", () => {
       syms: [
         {
           id: "t1",
-          codeGraphId: "graph-a",
           qualifiedName: "svc.ts::handler",
           kind: "function",
           language: "ts",

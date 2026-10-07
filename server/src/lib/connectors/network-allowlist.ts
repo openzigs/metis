@@ -26,6 +26,7 @@ import { promises as dns } from "node:dns";
 import { isPrivateIp } from "@metis/shared";
 import { type ConfigChangedEvent, type ConfigService, getConfigService } from "../config/index.js";
 import { createChildLogger } from "../logger.js";
+import { makePinnedLookup } from "../net/pinned-lookup.js";
 import type { DispatcherLike } from "../net/safe-fetch.js";
 import { ConnectorError } from "./types.js";
 
@@ -310,48 +311,9 @@ export async function resolveAndAssertConnectorHost(
   };
 }
 
-/**
- * Build a Node-style `lookup` callback that always resolves to the pre-pinned
- * IP address regardless of what `hostname` is requested. Wire this into pg /
- * mysql2 / mssql / Octokit's https.Agent so the kernel-level DNS lookup that
- * happens AFTER `assertConnectorHostAllowed` can't be hijacked (M1 — DNS
- * rebinding TOCTOU defence).
- *
- * Returns `undefined` when no address is pinned (e.g., loopback that wasn't
- * routed through the allow-list); callers can pass `undefined` straight to
- * the underlying driver, which falls back to the OS resolver.
- */
-export function makePinnedLookup(
-  pinnedAddress: string | undefined,
-  family: 4 | 6 | undefined,
-):
-  | ((
-      hostname: string,
-      options: unknown,
-      cb: (err: Error | null, address: string, family: number) => void,
-    ) => void)
-  | undefined {
-  if (!pinnedAddress) return undefined;
-  const fam = family ?? (isIP(pinnedAddress) === 6 ? 6 : 4);
-  return (_hostname, options, cb) => {
-    // Node's `net.connect` asks for EVERY address (`{ all: true }`) whenever
-    // `autoSelectFamily` is on, which is the default from Node 20. That form
-    // expects an array of `{ address, family }` back; answering with the
-    // single-address form makes Node read `undefined` as the IP and fail with
-    // "Invalid IP address: undefined" — which broke every GitHub connector
-    // test and ingest on Node 22. Answer in whichever shape was asked for.
-    if (options && typeof options === "object" && (options as { all?: unknown }).all === true) {
-      (
-        cb as unknown as (
-          err: Error | null,
-          addresses: { address: string; family: number }[],
-        ) => void
-      )(null, [{ address: pinnedAddress, family: fam }]);
-      return;
-    }
-    cb(null, pinnedAddress, fam);
-  };
-}
+// The pinned lookup lives next to `safeFetch` so every pinned transport shares
+// one implementation (#750). Re-exported here for the existing callers.
+export { makePinnedLookup };
 
 /**
  * Build an undici `Agent` whose connection layer always resolves to the

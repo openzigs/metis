@@ -6,7 +6,7 @@
  * |---|-----------------------------------------------------------------------|-----------------------------------------------|
  * | 1 | #268 Tabs: arrow keys / Home / End; axe WCAG 2.2 AA clean             | Library tabs are keyboard-operable + axe      |
  * | 2 | #268 Dialog: focus trap, Escape, focus return; axe clean              | Sync drift dialog                             |
- * | 3 | #268 AlertDialog replaces window.confirm; axe clean                   | Test-management delete confirmation           |
+ * | 3 | #268 AlertDialog replaces window.confirm; axe clean                   | Jira connection delete confirmation (#818)    |
  * | 4 | #267 status tokens ≥4.5:1, chart tokens ≥3:1, in the COMPILED CSS     | status + chart token contrast probe           |
  * | 5 | #267 amber/warning badges ≥4.5:1 in the light theme (#285 carry-over) | covered by 4 (`text-warning` on its tint)     |
  *
@@ -24,7 +24,7 @@ import { seedDriftViaCli } from "../fixtures/seed-drift.js";
 import { LoginPage } from "../pages/login.page.js";
 import { AppShellPage } from "../pages/app-shell.page.js";
 import { SyncPage } from "../pages/sync.page.js";
-import { TestManagementConnectionsPage } from "../pages/test-management-connections.page.js";
+import { JiraPage } from "../pages/jira.page.js";
 
 const API_BASE = apiBase();
 const WCAG_22_AA = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
@@ -253,15 +253,19 @@ for (const theme of ["light", "dark"] as const) {
 
     test("an AlertDialog, not window.confirm, gates delete (#268)", async ({ page }) => {
       const now = new Date().toISOString();
+      // #818 — re-pointed from the removed Xray/Zephyr/TestRail page at the Jira
+      // connection delete, which uses the same ConfirmDialog primitive.
       const row = {
         id: "conn-a11y",
         projectId,
-        label: "A11y TestRail",
-        kind: "testrail",
-        baseUrl: "https://example.testrail.io",
-        authConfig: {},
-        proxyConfig: null,
-        tlsConfig: null,
+        label: "A11y Jira",
+        edition: "cloud",
+        baseUrl: "https://a11y.atlassian.net",
+        username: "a11y@example.com",
+        secretMasked: "••••••••",
+        proxyUrl: null,
+        tlsRejectUnauthorized: true,
+        hasTlsCa: false,
         status: "untested",
         errorMessage: null,
         lastTestedAt: null,
@@ -270,7 +274,7 @@ for (const theme of ["light", "dark"] as const) {
         updatedAt: now,
       };
       let deleted = false;
-      await page.route("**/api/test-management/connections**", (route) => {
+      await page.route("**/api/jira/connections**", (route) => {
         if (route.request().method() === "DELETE") {
           deleted = true;
           return route.fulfill({ status: 204, body: "" });
@@ -290,14 +294,14 @@ for (const theme of ["light", "dark"] as const) {
         throw new Error(`native ${d.type()} dialog opened: ${d.message()}`);
       });
 
-      const tmc = new TestManagementConnectionsPage(page, projectId);
-      await tmc.goto();
+      const jira = new JiraPage(page);
+      await jira.goto(projectId);
       await chooseTheme(page, theme);
-      const del = tmc.deleteButton(row.id);
+      const del = jira.connectionCard(row.label).getByRole("button", { name: "Delete" });
       await del.click();
 
       const confirm = page.getByRole("alertdialog", {
-        name: 'Delete saved test-management connection "A11y TestRail"?',
+        name: "Delete this Jira connection?",
       });
       await expect(confirm).toBeVisible();
       await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();

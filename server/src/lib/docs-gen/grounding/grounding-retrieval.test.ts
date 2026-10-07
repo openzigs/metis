@@ -16,6 +16,7 @@ const policy: EvidencePolicy = {
   projectId: "p1",
   generatedDocumentId: "gen1",
   actor: { userId: "alice", role: "developer" },
+  aclSubjects: [{ kind: "user", value: "alice" }],
   sharedDocumentIds: [],
   allowWebResearch: true,
 };
@@ -252,7 +253,13 @@ describe("buildSectionGroundingRetriever (#264)", () => {
     // A knowledge service that ONLY returns section-relevant chunks when the
     // query mentions the section topic ("domain"), and nothing for a bare
     // doc-title query. This models the #264 root cause directly.
-    const sectionChunk = { documentId: "domain", chunkId: "c1", filename: "domain.ts", text: "x" };
+    const sectionChunk = {
+      documentId: "domain",
+      chunkId: "c1",
+      filename: "domain.ts",
+      text: "x",
+      source: "upload",
+    };
     const search = vi.fn(async (_p: string, query: string) => {
       if (query.toLowerCase().includes("domain")) {
         return { hits: [{ ...sectionChunk }] };

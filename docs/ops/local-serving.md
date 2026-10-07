@@ -478,6 +478,16 @@ Cloud warnings now name their own knob (`DOCS_GEN_BEDROCK_FACTS_CHAR_CAP` /
 `DOCS_GEN_ANTHROPIC_FACTS_CHAR_CAP`, default 150,000); which modules are selected
 is unchanged.
 
+**#778 — condensed digests before omission.** A section whose facts exceed the
+cap no longer drops the overflow to the name-only catalog. Up to 40% of the
+**same** cap is reserved for a condensed digest of every module that does not
+fit in full: its slice headings and leading bullets, sampled round-robin, at
+200–2,000 characters each (`server/src/lib/docs-gen/fact-digest.ts`). The input
+per section is unchanged, so this costs no extra tokens. A module is omitted, and
+`facts-truncated` raised, only when even a 200-character digest no longer fits.
+Digested modules are logged (`"… modules condensed to digests"`, with
+`condensedModules`), not warned on.
+
 **Operator action when you see a `facts-truncated` warning:** the local run
 dropped relevant facts. Either raise `OLLAMA_CONTEXT_LENGTH` / vLLM
 `--max-model-len` and the matching `DOCS_GEN_LOCAL_FACTS_CHAR_CAP` per the table

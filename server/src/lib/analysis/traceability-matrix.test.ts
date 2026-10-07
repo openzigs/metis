@@ -191,13 +191,13 @@ describe("buildTraceabilityMatrix", () => {
     expect(sources).toEqual(["citation", "deterministic-mapping"]);
   });
 
-  it("attaches detected tests via the referenced symbol ids, de-duped", () => {
+  it("#815 — takes each row's tests from the resolver's per-requirement map, in order", () => {
     const tests = new Map<string, TraceabilityTestLink[]>([
       [
-        "sym-a",
+        "req-1",
         [
-          { filePath: "server/src/auth.test.ts", symbol: "describe login" },
-          { filePath: "server/src/auth.test.ts", symbol: "describe login" }, // dup
+          { filePath: "server/src/auth.test.ts", symbol: "login", relation: "exercises" },
+          { filePath: "server/src/auth_test.go", symbol: "TestLogin", relation: "naming" },
         ],
       ],
     ]);
@@ -210,22 +210,17 @@ describe("buildTraceabilityMatrix", () => {
           title: "R",
           coverage: "grounded_in_code",
           verdict: "implemented",
-          evidenceFindingIds: ["f-1"],
+          evidenceFindingIds: [],
         },
+        { id: "req-2", title: "S", coverage: null, verdict: null, evidenceFindingIds: [] },
       ],
-      findingsById: findingsMap([
-        {
-          id: "f-1",
-          title: "A",
-          severity: "high",
-          citations: [codeCitation("auth.ts", 1, 2, "sym-a")],
-        },
-      ]),
-      testsBySymbolId: tests,
+      findingsById: findingsMap([]),
+      testsByRequirement: tests,
     });
-    expect(matrix.rows[0]!.tests).toEqual([
-      { filePath: "server/src/auth.test.ts", symbol: "describe login" },
-    ]);
+    // Independent of code citations: the row has none, yet carries the resolver's tests.
+    expect(matrix.rows[0]!.tests).toEqual(tests.get("req-1"));
+    expect(matrix.rows[1]!.tests).toEqual([]);
+    expect(matrix.testsDetection).toBe("heuristic");
   });
 });
 

@@ -283,6 +283,7 @@ describe("reindexAll", () => {
       durationMs: 5,
       resumedChunks: 0,
       embeddedChunks: 10,
+      symbols: null,
     };
   }
 

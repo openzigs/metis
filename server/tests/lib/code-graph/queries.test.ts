@@ -11,11 +11,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-import { getCallGraph } from "../../../../images/mcp-wrappers/code-graph-runner-sse/queries/get_call_graph.js";
-import { whoCalls } from "../../../../images/mcp-wrappers/code-graph-runner-sse/queries/who_calls.js";
-import { definedIn } from "../../../../images/mcp-wrappers/code-graph-runner-sse/queries/defined_in.js";
-import { importsOf } from "../../../../images/mcp-wrappers/code-graph-runner-sse/queries/imports_of.js";
-import { outline } from "../../../../images/mcp-wrappers/code-graph-runner-sse/queries/outline.js";
+// Through a typed seam: the image package type-checks against its own zod/Prisma.
+import { getCallGraph, whoCalls, definedIn, importsOf, outline } from "./code-graph-queries.js";
 
 interface MockSymbolRow {
   id: string;

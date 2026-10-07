@@ -13,7 +13,7 @@ import express from "express";
 const { synthesizeSpy, updateSpy, claimState, authState } = vi.hoisted(() => ({
   claimState: { codeGraphHash: null as string | null },
   synthesizeSpy: vi.fn(),
-  updateSpy: vi.fn(async () => ({})),
+  updateSpy: vi.fn(async (_args: { data: Record<string, unknown> }) => ({})),
   // The caller `requireAuth` installs. Mutable so the suite exercises a
   // NON-admin as well: an admin bypasses `assertProjectAccess`, so an
   // admin-only fixture could not notice the object-level guard disappearing
@@ -166,8 +166,7 @@ async function generateAndReadFinalUpdate(): Promise<Record<string, unknown>> {
   await vi.waitFor(
     () => {
       const last = updateSpy.mock.calls.at(-1)?.[0] as
-        | { data?: Record<string, unknown> }
-        | undefined;
+        { data?: Record<string, unknown> } | undefined;
       expect(last?.data?.status).not.toBe("generating");
       expect(last?.data?.generatedAt).toBeDefined();
     },

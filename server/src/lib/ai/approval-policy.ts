@@ -68,8 +68,13 @@ export function policyToJson(policy: ApprovalPolicy): string {
  * What a prompter may answer. `true`/`false` are approve/deny (the original
  * contract); `"expired"` means nobody answered before the request lapsed, which
  * is a denial recorded as `expired` (#142: a timeout counts as deny).
+ * `"unavailable"` (#861) means nobody COULD answer — no client is there to be
+ * asked — so the call is denied at once rather than after the timeout.
  */
-export type PrompterAnswer = boolean | "approve" | "deny" | "expired";
+export type PrompterAnswer = boolean | "approve" | "deny" | "expired" | "unavailable";
+
+/** #861 — the audit reason of a call nobody was there to approve. */
+export const NO_INTERACTIVE_APPROVER = "no_interactive_approver";
 
 export interface ApprovalPrompter {
   /**
@@ -231,6 +236,7 @@ export class ApprovalGateService implements ApprovalGate {
       return finish(false, "error", err instanceof Error ? err.message : "prompter_error");
     }
     if (answer === "expired") return finish(false, "expired", "approval_timeout");
+    if (answer === "unavailable") return finish(false, "deny", NO_INTERACTIVE_APPROVER);
     const approved = answer === true || answer === "approve";
     if (!approved) return finish(false, "deny", "user_denied");
     // Only a `prompt-once` answer is tagged as one: that tag is what the

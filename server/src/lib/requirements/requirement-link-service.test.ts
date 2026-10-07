@@ -53,7 +53,7 @@ const {
   searchWorkspaceRequirements,
 } = await import("./requirement-link-service.js");
 
-const actor = { id: "user-1", role: "member" as const };
+const actor = { id: "user-1", role: "developer" as const };
 
 function reqRow(id: string, projectId: string, workspaceId: string | null, title = `req ${id}`) {
   return {

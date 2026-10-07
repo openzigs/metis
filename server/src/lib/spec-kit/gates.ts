@@ -71,11 +71,13 @@ export interface RequireGateOptions {
   command?: string;
 }
 
+// #786 — each names a command that can satisfy it: since #786 `speckit.tasks`
+// with a `featureSlug` writes the feature's own `tasks.md`.
 const GATE_MESSAGES: Record<GateName, string> = {
   specGate: "spec.md is required — run /speckit.specify first",
-  planGate: "plan.md is required — run /speckit.plan first",
-  tasksGate: "tasks.md is required — run /speckit.tasks first",
-  implementGate: "tasks.md is required — run /speckit.tasks first",
+  planGate: "plan.md is required — run /speckit.plan with this featureSlug first",
+  tasksGate: "tasks.md is required — run /speckit.tasks with this featureSlug first",
+  implementGate: "tasks.md is required — run /speckit.tasks with this featureSlug first",
 };
 
 /**

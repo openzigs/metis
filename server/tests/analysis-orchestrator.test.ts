@@ -83,7 +83,15 @@ let quarantineRows: Array<{
 }> = [];
 
 vi.mock("../src/lib/prisma.js", () => ({
+  // #779 — `persistRequirements` locks by provider on Postgres only; this
+  // fake has no raw SQL, so it pins the SQLite path on either generated client.
+  resolveDatabaseProvider: () => "sqlite" as const,
   prisma: {
+    // #779 — `persistRequirements` runs in an interactive transaction; this
+    // fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../src/lib/prisma.js")).prisma),
+    ),
     project: {
       findFirst: vi.fn(async ({ where }: { where: { id: string; deletedAt: null } }) => {
         const p = projects.get(where.id);
@@ -205,6 +213,10 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     requirement: {
+      // Issue #769 — this fake models no review work and no prior set, so the
+      // replacement guard proceeds; the guard itself is exercised against a real
+      // SQLite database in tests/requirement-set-preservation-769.sqlite.test.ts.
+      count: vi.fn(async () => 0),
       deleteMany: vi.fn(async ({ where }: { where: { analysisId: string } }) => {
         for (const [k, v] of requirements)
           if (v.analysisId === where.analysisId) requirements.delete(k);
@@ -311,7 +323,12 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
   getAuditService: vi.fn(),
 }));
 
-import type { AIProvider, ChatMessage, ChatResponse } from "../src/lib/ai/types.js";
+import {
+  messageText,
+  type AIProvider,
+  type ChatMessage,
+  type ChatResponse,
+} from "../src/lib/ai/types.js";
 import { runAgent } from "../src/lib/analysis/agent-runner.js";
 import { persistAgentResult } from "../src/lib/analysis/analysis-service.js";
 import {
@@ -323,7 +340,7 @@ import { RETRIEVAL_QUERIES } from "../src/lib/analysis/retrieval.js";
 import { __resetConfigSingleton } from "../src/lib/config/config-service.js";
 import { genericFailureMessage } from "../src/lib/socket/job-events.js";
 import type { KnowledgeService } from "../src/lib/rag/knowledge-service.js";
-import { isAnalysisDegraded, type DbTableInfo } from "@metis/shared";
+import { analysisRoom, isAnalysisDegraded, type DbTableInfo } from "@metis/shared";
 
 /**
  * #750 — a no-op knowledge service so the agentic code path can assemble its
@@ -331,8 +348,11 @@ import { isAnalysisDegraded, type DbTableInfo } from "@metis/shared";
  * never invoked: the offline provider returns a final answer on turn 1, so no
  * tool ever executes.
  */
+// #755 — `search` resolves `{ hits }`, as `KnowledgeService.search` does. A bare
+// `[]` made every specialist using it crash (`res.hits is not iterable`), which a
+// phantom success in the orchestrator used to hide behind a `completed` status.
 const stubKnowledge = (): KnowledgeService =>
-  ({ search: async () => [] }) as unknown as KnowledgeService;
+  ({ search: async () => ({ hits: [] }) }) as unknown as KnowledgeService;
 
 interface FakeIO {
   events: Array<{ room: string; event: string; data: unknown }>;
@@ -683,6 +703,11 @@ describe("AnalysisOrchestrator.start", () => {
     expect(evtTypes.filter((t) => t.startsWith("analysis:agent/started"))).toHaveLength(5);
     expect(evtTypes.filter((t) => t.startsWith("analysis:agent/completed"))).toHaveLength(5);
     expect(evtTypes).toContain("analysis:completed/");
+
+    // #676 — every analysis event goes to the room `subscribe:analysis` joins.
+    const analysisEvents = io.events.filter((e) => e.event.startsWith("analysis:"));
+    expect(analysisEvents.length).toBeGreaterThan(0);
+    expect(new Set(analysisEvents.map((e) => e.room))).toEqual(new Set([analysisRoom(analysisId)]));
   });
 
   it("runs cross-doc detection post-synthesis and persists findings (#203/#221)", async () => {
@@ -2137,7 +2162,7 @@ function makeCapturingProvider(): { provider: AIProvider; userPrompts: string[] 
       chatOpts?: { signal?: AbortSignal; systemMessage?: string },
     ): Promise<ChatResponse> {
       const sys = chatOpts?.systemMessage ?? "";
-      const userMsg = messages[0]?.content ?? "";
+      const userMsg = messages[0] ? messageText(messages[0]) : "";
       userPrompts.push(userMsg);
       let detected = "synthesis";
       if (sys.includes("Mary")) detected = "document";
@@ -2351,6 +2376,60 @@ describe("AnalysisOrchestrator requirement-grounded code agent (#916)", () => {
     return [...agentResults.values()].find((a) => a.agentKey === "code")!;
   };
 
+  // #717 — the grounded evidence names a repository file by its real path; an
+  // upload carrying a repo-shaped name keeps it (#547).
+  it("labels repo evidence by its repository-relative path in the grounded prompt", async () => {
+    const key = "connector:repo:c1:src/internal/model/feed.go";
+    const prompts: string[] = [];
+    const provider = makeCodeProvider();
+    const chat = provider.chat.bind(provider);
+    provider.chat = (async (messages: Array<{ content: unknown }>, opts: unknown) => {
+      prompts.push(String(messages[0]?.content));
+      return chat(messages as never, opts as never);
+    }) as never;
+    const knowledge = {
+      search: vi.fn(async (_p: string, query: string) => ({
+        hits: [
+          {
+            chunkId: query.includes("password") ? "chunk-repo" : "chunk-up",
+            documentId: "doc-1234567890",
+            position: 1,
+            filename: key,
+            source: query.includes("password") ? "repo" : "upload",
+            text: "type Feed struct {}",
+            score: 0,
+            embeddingModel: "stub",
+          },
+        ],
+        embeddingModel: "stub",
+        elapsedMs: 1,
+      })),
+    };
+    const orch = new AnalysisOrchestrator({
+      provider,
+      knowledge:
+        knowledge as unknown as import("../src/lib/rag/knowledge-service.js").KnowledgeService,
+    });
+    await (
+      orch as unknown as {
+        runRequirementGroundedCodeAgent: (input: unknown) => Promise<unknown>;
+      }
+    ).runRequirementGroundedCodeAgent({
+      analysisId: "ana_rg_path",
+      projectId: "proj-abcdefghij",
+      projectName: "Acme",
+      projectDescription: "monolith",
+      requirements: requirementsFixture,
+      documentIds: ["doc-1234567890"],
+      signal: new AbortController().signal,
+    });
+    const prompt = prompts.join("\n");
+    expect(prompt).toContain("file=internal/model/feed.go\n");
+    // REQ-002's hit is an upload under the same name: it keeps the stored key.
+    expect(prompt).toContain(`file=${key}`);
+    expect(prompt.split("file=internal/model/feed.go").length - 1).toBe(1);
+  });
+
   it("searches per-requirement using the requirement text and document filter", async () => {
     const knowledge = makeKnowledge();
     await runGrounded(knowledge);
@@ -2527,7 +2606,7 @@ describe("runEnhancementPipeline (Epic #922)", () => {
         messages: ChatMessage[],
         chatOpts?: { systemMessage?: string },
       ): Promise<ChatResponse> {
-        const sys = chatOpts?.systemMessage ?? messages[0]?.content ?? "";
+        const sys = chatOpts?.systemMessage ?? (messages[0] ? messageText(messages[0]) : "");
         if (sys.includes("requirements analyst")) {
           return stubResponse(
             JSON.stringify({
@@ -3147,7 +3226,11 @@ describe("AnalysisOrchestrator derived source-code retrieval queries (#731)", ()
   const makeKnowledge = () => ({
     // Empty hits ⇒ no quarantine fallback is triggered; we only assert on the
     // QUERY strings the source-code half passes to `search`.
-    search: vi.fn(async () => ({ hits: [], embeddingModel: "stub", elapsedMs: 1 })),
+    search: vi.fn(async (_projectId: string, _query: string) => ({
+      hits: [],
+      embeddingModel: "stub",
+      elapsedMs: 1,
+    })),
   });
 
   // Invoke the private `retrieveContext` directly. With NO `documentIds` and no

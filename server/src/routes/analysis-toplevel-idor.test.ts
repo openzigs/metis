@@ -46,7 +46,7 @@ const SYS_ADMIN: AuthPayload = {
   userId: "user-root",
   username: "root",
   role: "admin",
-  workspaces: [],
+  workspaces: [] as string[],
 } as AuthPayload;
 
 let currentUser: AuthPayload = READER_WS_B;
@@ -67,7 +67,12 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
 
 const analysisFindFirst = vi.fn();
 /** `assertProjectAccess` resolves the owning project's workspace through this. */
-const projectFindUnique = vi.fn(async () => ({
+/** The project row it reads; a legacy project has no workspace. */
+interface ProjectRow {
+  workspaceId: string | null;
+  workspace?: { deletedAt: Date | null; members: { id: string }[] };
+}
+const projectFindUnique = vi.fn(async (): Promise<ProjectRow> => ({
   workspaceId: "ws-a",
   workspace: { deletedAt: null, members: [{ id: "member-row" }] },
 }));
@@ -139,8 +144,10 @@ vi.mock("../lib/rag/knowledge-service.js", () => ({ getKnowledgeService: vi.fn((
 vi.mock("../lib/ai/providers/bedrock-direct-provider.js", () => ({
   BedrockDirectProvider: class {},
 }));
-vi.mock("../lib/scanner/prisma-adapter.js", () => ({ publishAnalysisFinding: vi.fn() }));
-vi.mock("../lib/scanner/finding-publisher.js", () => ({ PublishError: class extends Error {} }));
+vi.mock("../lib/publishing/analysis-finding-publish.js", () => ({
+  publishAnalysisFinding: vi.fn(),
+}));
+vi.mock("../lib/publishing/finding-publisher.js", () => ({ PublishError: class extends Error {} }));
 
 const { initAnalysisRouter } = await import("./analysis.js");
 const { errorHandler } = await import("../middleware/error-handler.js");

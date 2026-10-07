@@ -29,14 +29,14 @@ const PRINTF_TOKEN = /%[sdifjoO]/;
 
 function mockProvider(content: string): AIProvider {
   return {
-    key: "test",
+    key: "offline-stub",
     model: "test-model",
     offline: false,
     chat: vi.fn().mockResolvedValue({
       content,
       usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
       model: "test-model",
-      provider: "test",
+      provider: "offline-stub",
     } as ChatResponse),
     stream: vi.fn(),
     embed: vi.fn(),

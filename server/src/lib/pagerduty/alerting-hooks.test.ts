@@ -17,10 +17,10 @@ import {
 
 function makeAlerter() {
   return {
-    publishRollback: vi.fn(async () => undefined),
-    vaultRotationFailure: vi.fn(async () => undefined),
-    providerDown: vi.fn(async () => undefined),
-    providerRecovered: vi.fn(async () => undefined),
+    publishRollback: vi.fn(async (_input: unknown) => undefined),
+    vaultRotationFailure: vi.fn(async (_input: unknown) => undefined),
+    providerDown: vi.fn(async (_input: unknown) => undefined),
+    providerRecovered: vi.fn(async (_input: unknown) => undefined),
   };
 }
 

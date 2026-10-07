@@ -17,10 +17,8 @@ import { createSocketPublishEmitter } from "./lib/publishing/socket-emitter.js";
 import { configureKnowledgeService } from "./lib/rag/knowledge-service.js";
 import { configureIngestQueue, getIngestQueue } from "./lib/rag/ingest-queue.js";
 import { createSocketDocumentEmitter } from "./lib/rag/socket-emitter.js";
-import { configureTestCoverageRuntime } from "./lib/testcoverage/task-runner.js";
-import { createProviderJudgeCaller } from "./lib/testcoverage/judge-caller.js";
-import { createSocketTestCoverageEmitter } from "./lib/testcoverage/socket-emitter.js";
 import { setUsageEmitter } from "./lib/finops/index.js";
+import { createSocketUsageEmitter } from "./lib/finops/socket-emitter.js";
 import { autoDiscoverFromWorkspace } from "./lib/library/index.js";
 import { bootstrapScheduler, subscribeSchedulerToConfig } from "./lib/scheduler/index.js";
 import { resolveLeaderElection, type LeaderElector } from "./lib/scheduler/leader-election.js";
@@ -37,7 +35,8 @@ import { registerPostgresSamlRequestIdCache } from "./lib/auth/saml-request-id-c
 import { registerS3Storage } from "./lib/documents/storage-backend-s3.js";
 import { registerPgVectorStore } from "./lib/rag/vector-store-pgvector.js";
 import { ensureBuiltInAgents } from "./lib/custom-agents/index.js";
-import { configureAsyncRunner, type RunnerEmitter } from "./lib/async/runner.js";
+import { configureAsyncRunner } from "./lib/async/runner.js";
+import { createSocketRunnerEmitter } from "./lib/async/socket-emitter.js";
 import { registerBuiltinRunHandlers } from "./lib/async/handlers.js";
 import { attachAcpServer, type AcpServerHandle } from "./lib/acp/server.js";
 import { getToolRegistry } from "./lib/ai/tool-registry.js";
@@ -284,7 +283,10 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // Epic #728 — register IO in the global registry so lib code (e.g.
   // @mention fan-out, presence) can access it without DI threading.
   registerSocketServer(io);
-  wirePresenceHandlers(io);
+  wirePresenceHandlers(io, {
+    clustered: Boolean(socketCluster),
+    ...(socketCluster ? { onAdapterListening: socketCluster.onListening } : {}),
+  });
   // Issue #251 — preload vault-backed runtime secrets into ConfigService so
   // synchronous `get(key)` calls in provider factories see vault values
   // ahead of env on the very first request. Failures are non-fatal: callers
@@ -307,10 +309,8 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   }
   // Wire the analysis orchestrator with the live io reference so
   // analysis:agent events broadcast into the analysis:{id} rooms.
-  let aiProvider: import("./lib/ai/types.js").AIProvider | undefined;
   try {
-    aiProvider = buildServerProvider();
-    setOrchestratorForTests(new AnalysisOrchestrator({ provider: aiProvider, io }));
+    setOrchestratorForTests(new AnalysisOrchestrator({ provider: buildServerProvider(), io }));
   } catch {
     // Provider construction failure (missing creds in dev) is non-fatal \u2014
     // the route handler will lazy-init with a stub on first request.
@@ -338,22 +338,10 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // first upload.
   getIngestQueue();
 
-  // Epic #880 issue #886 — wire the test-coverage runner with a live LLM
-  // caller + socket emitter so the judge + suggestion phases actually run in
-  // production. Without a caller the runner silently skips those phases
-  // (the original #886 bug). When the provider could not be built (missing
-  // creds in dev), only the emitter is wired so progress events still flow.
-  configureTestCoverageRuntime({
-    emitter: createSocketTestCoverageEmitter(io),
-    ...(aiProvider ? { caller: createProviderJudgeCaller(aiProvider) } : {}),
-  });
-
   // Epic #164 — wire the FinOps usage emitter so `recordUsage` ticks fan
   // out to the `project:{id}` Socket.IO room and the UI usage page can
   // re-render without polling.
-  setUsageEmitter((projectId, payload) => {
-    io.to(`project:${projectId}`).emit("usage:tick", payload);
-  });
+  setUsageEmitter(createSocketUsageEmitter(io));
 
   // Phase 11 — bootstrap scheduler + task queue. Cron registration is
   // started asynchronously; failures are non-fatal so the API stays up.
@@ -427,18 +415,7 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
 
   // Epic #156 \u2014 wire the async background runner with a socket emitter so
   // bg-run:status / bg-run:step events broadcast into project rooms.
-  const bgEmitter: RunnerEmitter = {
-    status: (run) => {
-      io.to(`project:${run.projectId}`).emit("bg-run:status", {
-        ...run,
-        ts: Date.now(),
-      });
-    },
-    step: (e) => {
-      io.to(`run:${e.runId}`).emit("bg-run:step", e);
-    },
-  };
-  const runner = configureAsyncRunner({ emitter: bgEmitter });
+  const runner = configureAsyncRunner({ emitter: createSocketRunnerEmitter(io) });
   registerBuiltinRunHandlers(runner);
   // Epic #195 — register the morph-apply diff editor as a regular AI tool.
   // Idempotent so test reloads don't crash the registry.

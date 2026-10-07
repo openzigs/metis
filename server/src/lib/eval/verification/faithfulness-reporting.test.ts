@@ -90,19 +90,23 @@ class StubProvider implements AIProvider {
 const TWO_OF_THREE = {
   extractor: {
     decompose: vi.fn(async () => ({
-      claims: [{ claim: "c1" }, { claim: "c2" }, { claim: "c3" }],
+      claims: [
+        { claim: "c1", sourceIds: [] },
+        { claim: "c2", sourceIds: [] },
+        { claim: "c3", sourceIds: [] },
+      ],
     })),
   },
   judge: {
     judge: vi.fn(async (claims: string[]) =>
-      claims.map((claim, i) => ({ claim, supported: i < 2 })),
+      claims.map((claim, i) => ({ claim, supported: i < 2, sourceIds: [] })),
     ),
   },
 };
 
 /** A judge that cannot return a usable verdict set — UNVERIFIABLE, not zero. */
 const UNVERIFIABLE_DEPS = {
-  extractor: { decompose: vi.fn(async () => ({ claims: [{ claim: "c1" }] })) },
+  extractor: { decompose: vi.fn(async () => ({ claims: [{ claim: "c1", sourceIds: [] }] })) },
   judge: { judge: vi.fn(async () => null) },
 };
 

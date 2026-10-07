@@ -17,7 +17,7 @@ import {
 
 const ADAPTIVE = "application/vnd.microsoft.card.adaptive";
 
-function cardOf(activity: { attachments?: { contentType: string; content: unknown }[] }) {
+function cardOf(activity: { attachments?: { contentType: string; content?: unknown }[] }) {
   expect(activity.attachments).toHaveLength(1);
   expect(activity.attachments?.[0].contentType).toBe(ADAPTIVE);
   return activity.attachments?.[0].content as {

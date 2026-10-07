@@ -8,6 +8,7 @@
  * analysisId) and re-runs `canCreateTickets`.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CreatePublishBatchInput } from "@metis/shared";
 
 interface DraftRow {
   id: string;
@@ -98,15 +99,13 @@ describe("assertPromotionAllowed (#257)", () => {
 });
 
 describe("createBatch promotion guard (#257)", () => {
-  const input = {
+  const input: Omit<CreatePublishBatchInput, "draftIds"> = {
     projectId: "proj_1",
     targetOwner: "acme",
     targetRepo: "metis",
-    targetBaseUrl: null,
-    provider: "github" as const,
+    provider: "github",
     dryRun: false,
     additionalLabels: [],
-    milestone: null,
     secretRef: "${vault:gh}",
   };
 

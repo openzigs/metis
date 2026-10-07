@@ -149,28 +149,22 @@ describe("summarizeFactsBudget (#337) — facts-cap truncation is observable", (
 
   it("reports omission (exceeded=true) when the facts overflow a tight cap", () => {
     // Several large modules against a deliberately tight cap → some are dropped.
-    const facts = [
-      moduleWith("a", 4_000),
-      moduleWith("b", 4_000),
-      moduleWith("c", 4_000),
-      moduleWith("d", 4_000),
-    ];
-    const summary = summarizeFactsBudget(facts, group, "business-requirements", 6_000);
+    // #778 — modules past the cap are read as ~200-char digests, so only a cap
+    // too small for every module's digest still omits any.
+    const facts = Array.from({ length: 8 }, (_, i) => moduleWith(`m${i}`, 4_000));
+    const summary = summarizeFactsBudget(facts, group, "business-requirements", 1_000);
     expect(summary.exceeded).toBe(true);
     expect(summary.omittedModules).toBeGreaterThan(0);
-    expect(summary.includedModules + summary.omittedModules).toBe(4);
+    expect(summary.includedModules + summary.omittedModules).toBe(8);
     // The included facts never exceed the cap they were selected against.
-    expect(summary.includedChars).toBeLessThanOrEqual(6_000);
+    expect(summary.includedChars).toBeLessThanOrEqual(1_000);
   });
 
   it("raising the cap admits more modules (fewer omitted) — the #337 remedy", () => {
-    const facts = [
-      moduleWith("a", 4_000),
-      moduleWith("b", 4_000),
-      moduleWith("c", 4_000),
-      moduleWith("d", 4_000),
-    ];
-    const tight = summarizeFactsBudget(facts, group, "business-requirements", 6_000);
+    // #778 — modules past the cap are read as ~200-char digests, so only a cap
+    // too small for every module's digest still omits any.
+    const facts = Array.from({ length: 8 }, (_, i) => moduleWith(`m${i}`, 4_000));
+    const tight = summarizeFactsBudget(facts, group, "business-requirements", 1_000);
     const roomy = summarizeFactsBudget(facts, group, "business-requirements", 48_000);
     expect(roomy.omittedModules).toBeLessThan(tight.omittedModules);
     expect(roomy.exceeded).toBe(false);

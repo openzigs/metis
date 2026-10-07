@@ -73,6 +73,7 @@ import { generateOverview, OverviewError } from "../lib/code-graph/overview.js";
 import { createDefaultCodeSearcher } from "../lib/code-graph/project-code-searcher.js";
 import { codeSearchRateLimiter } from "../middleware/code-search-rate-limit.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
+import { recordJobScope } from "../lib/socket/job-scope-store.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
@@ -1064,6 +1065,9 @@ export function projectsRouter(): Router {
       if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
 
       const jobId = randomUUID();
+      // #674 — durably, before the id leaves the server, so `subscribe:job`
+      // is authorized on any replica.
+      await recordJobScope(jobId, "overview-regenerate", projectId);
       jobEvents.started("overview-regenerate", jobId, projectId, "Regenerating project overview");
       try {
         const result = await generateOverview(prisma, projectId);
@@ -1131,6 +1135,8 @@ export function projectsRouter(): Router {
           publishDestination: project.publishDestination ?? "github",
           jiraProjectKey: project.jiraProjectKey ?? null,
           jiraConnectionId: project.jiraConnectionId ?? null,
+          githubOwner: project.publishGithubOwner ?? null,
+          githubRepo: project.publishGithubRepo ?? null,
         }),
       );
     },
@@ -1187,6 +1193,12 @@ export function projectsRouter(): Router {
           publishDestination: parsed.data.publishDestination,
           jiraProjectKey: parsed.data.jiraProjectKey ?? null,
           jiraConnectionId: parsed.data.jiraConnectionId ?? null,
+          // #733 — omitted leaves the stored target alone (a Jira-only edit
+          // must not erase it); the schema pairs owner and repo.
+          ...(parsed.data.githubOwner !== undefined && {
+            publishGithubOwner: parsed.data.githubOwner,
+            publishGithubRepo: parsed.data.githubRepo ?? null,
+          }),
         },
       });
       audit({
@@ -1196,6 +1208,8 @@ export function projectsRouter(): Router {
         metadata: {
           publishDestination: parsed.data.publishDestination,
           jiraProjectKey: parsed.data.jiraProjectKey ?? null,
+          githubOwner: updated.publishGithubOwner,
+          githubRepo: updated.publishGithubRepo,
         },
       });
       res.json(
@@ -1203,6 +1217,8 @@ export function projectsRouter(): Router {
           publishDestination: updated.publishDestination,
           jiraProjectKey: updated.jiraProjectKey,
           jiraConnectionId: updated.jiraConnectionId,
+          githubOwner: updated.publishGithubOwner,
+          githubRepo: updated.publishGithubRepo,
         }),
       );
     },

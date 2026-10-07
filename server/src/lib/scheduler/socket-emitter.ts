@@ -2,6 +2,7 @@
  * Phase 11 socket emitter — bridges scheduler/task lifecycle events into
  * the `scheduler:status` and `task:{id}` rooms.
  */
+import { taskRoom } from "@metis/shared";
 import type { MetisIOServer } from "../socket/server.js";
 import type { SchedulerEmitter } from "./types.js";
 
@@ -11,13 +12,13 @@ export function createSchedulerEmitter(io: MetisIOServer): SchedulerEmitter {
       io.to("scheduler:status").emit("scheduler:status", { ...event, ts: Date.now() });
     },
     taskStatus(event) {
-      io.to(`task:${event.taskId}`).emit("task:status", { ...event, ts: Date.now() });
+      io.to(taskRoom(event.taskId)).emit("task:status", { ...event, ts: Date.now() });
       // Also broadcast on the scheduler:status channel so the /tasks queue
       // view updates without subscribing to every task individually.
       io.to("scheduler:status").emit("task:status", { ...event, ts: Date.now() });
     },
     taskProgress(event) {
-      io.to(`task:${event.taskId}`).emit("task:progress", { ...event, ts: Date.now() });
+      io.to(taskRoom(event.taskId)).emit("task:progress", { ...event, ts: Date.now() });
     },
   };
 }

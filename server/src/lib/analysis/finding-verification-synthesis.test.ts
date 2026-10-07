@@ -99,6 +99,7 @@ describe("verification changes synthesis behaviour (#740)", () => {
     });
 
     const userMsg = captured.messages.find((m) => m.role === "user")?.content ?? "";
+    if (typeof userMsg !== "string") throw new Error("expected a text user message");
     // The unverified finding reached synthesis (visible), flagged for down-weight.
     expect(userMsg).toContain("Unverified one");
     expect(userMsg).toContain("[UNVERIFIED]");

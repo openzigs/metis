@@ -37,8 +37,20 @@ const ANALYSIS_ID = "an_1";
 const PROJECT_ID = "pr_1";
 
 vi.mock("../prisma.js", () => ({
+  // #779 — `persistRequirements` locks by provider on Postgres only; this
+  // fake has no raw SQL, so it pins the SQLite path on either generated client.
+  resolveDatabaseProvider: () => "sqlite" as const,
   prisma: {
+    // #779 — `persistRequirements` runs in an interactive transaction; this
+    // fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../prisma.js")).prisma),
+    ),
     requirement: {
+      // Issue #769 — this fake models no review work and no prior set, so the
+      // replacement guard proceeds; the guard itself is exercised against a real
+      // SQLite database in tests/requirement-set-preservation-769.sqlite.test.ts.
+      count: vi.fn(async () => 0),
       deleteMany: vi.fn(async ({ where }: { where: { analysisId: string } }) => {
         const before = store.requirements.length;
         store.requirements = store.requirements.filter((r) => r.analysisId !== where.analysisId);
@@ -115,6 +127,7 @@ function synthesis(): SynthesisOutput {
         priority: "high",
         labels: [],
         evidenceFindingIndexes: [0],
+        acceptanceCriteria: [],
       },
       {
         type: "feature",
@@ -123,6 +136,7 @@ function synthesis(): SynthesisOutput {
         priority: "medium",
         labels: [],
         evidenceFindingIndexes: [1],
+        acceptanceCriteria: [],
       },
       {
         type: "feature",
@@ -131,6 +145,7 @@ function synthesis(): SynthesisOutput {
         priority: "low",
         labels: [],
         evidenceFindingIndexes: [2],
+        acceptanceCriteria: [],
       },
     ],
   };

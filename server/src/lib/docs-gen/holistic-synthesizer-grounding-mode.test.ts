@@ -205,7 +205,7 @@ function routerFor(provider: AIProvider): Phase2Router {
     factsCharCap: tuning.factsCharCap,
     tuning,
   };
-  return { primary: bundle };
+  return { primary: bundle, hybrid: null };
 }
 
 async function run(

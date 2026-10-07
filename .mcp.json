@@ -25,11 +25,6 @@
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@playwright/mcp@latest"]
-    },
-    "playwright-headed": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest", "--headed"]
     }
   }
 }

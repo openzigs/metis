@@ -9,7 +9,11 @@ const serverAddress = prototype.serverAddress;
 
 /** Keep Supertest on its own listener's address family, not a parallel fixture's. */
 export function isolateSupertestLoopback(): void {
-  vi.spyOn(prototype, "serverAddress").mockImplementation(function (server, path) {
+  vi.spyOn(prototype, "serverAddress").mockImplementation(function (
+    this: typeof prototype,
+    server,
+    path,
+  ) {
     const url = serverAddress.call(this, server, path);
     const address = server.address();
     // Supertest listens on :: but hardcodes 127.0.0.1. On macOS a separate

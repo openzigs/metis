@@ -42,12 +42,14 @@ function gapReqEntry(requirementId: string, citations: CodeCitation[]): GapRepor
       citedFindingCount: citations.length,
     },
     gapFindings: [],
+    unverifiedFindings: [],
+    verdict: null,
     noEvidence: citations.length === 0,
   };
 }
 
 function gapReport(analysisId: string, entries: GapReportRequirement[]): GapReport {
-  return { analysisId, projectId: "proj-1", requirements: entries };
+  return { analysisId, projectId: "proj-1", requirements: entries, retrieval: null };
 }
 
 describe("buildRequirementDiff", () => {

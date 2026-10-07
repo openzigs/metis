@@ -11,6 +11,7 @@
  */
 import { describe, expect, it, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
+import type { ConversationAccount } from "botbuilder";
 
 import {
   TeamsNotificationTargetStore,
@@ -85,12 +86,20 @@ function makeStore(): { store: TeamsNotificationTargetStore; db: FakeDb } {
   return { store: new TeamsNotificationTargetStore(db as unknown as PrismaClient), db };
 }
 
+/** A Teams channel conversation, as a `ConversationReference` carries it. */
+const conversation = (id: string): ConversationAccount => ({
+  id,
+  isGroup: true,
+  conversationType: "channel",
+  name: "General",
+});
+
 const base = {
   workspaceId: "ws-1",
   eventType: "analysis-complete",
   conversationId: "convo-1",
   channelId: "msteams",
-  reference: { conversation: { id: "convo-1" }, serviceUrl: "https://svc" },
+  reference: { conversation: conversation("convo-1"), serviceUrl: "https://svc" },
 };
 
 describe("TeamsNotificationTargetStore (#67)", () => {
@@ -130,7 +139,7 @@ describe("TeamsNotificationTargetStore (#67)", () => {
     const second = await store.register({
       ...base,
       conversationId: "convo-2",
-      reference: { conversation: { id: "convo-2" } },
+      reference: { conversation: conversation("convo-2") },
     });
     expect(second.id).toBe(first.id); // same row, not a duplicate
     expect(db.rows).toHaveLength(1);
@@ -147,7 +156,10 @@ describe("TeamsNotificationTargetStore (#67)", () => {
     await store.register(base);
     const t = await store.getByEvent("ws-1", "analysis-complete");
     expect(t?.conversationId).toBe("convo-1");
-    expect(t?.reference).toEqual({ conversation: { id: "convo-1" }, serviceUrl: "https://svc" });
+    expect(t?.reference).toEqual({
+      conversation: conversation("convo-1"),
+      serviceUrl: "https://svc",
+    });
     // Other workspace cannot read it.
     expect(await store.getByEvent("ws-2", "analysis-complete")).toBeNull();
     // Unregistered event → null.

@@ -8,8 +8,10 @@ describe("formatDocLabel", () => {
     const label = formatDocLabel(raw, "repo");
     expect(label.kind).toBe("repo");
     expect(label.primary).toBe("CarrierWithdrawnVO.java");
+    // #717 — the leading `src/` is the ingester's marker, not a directory; the
+    // repository's own nested `src/` stays.
     expect(label.secondary).toBe(
-      "src/components/wmsCommon/wms-common-db/src/main/java/com/acme/wms/common/mybatis/inv/vo",
+      "components/wmsCommon/wms-common-db/src/main/java/com/acme/wms/common/mybatis/inv/vo",
     );
     // The noisy connector prefix must not appear in the human label.
     expect(label.primary).not.toContain("connector:repo:");

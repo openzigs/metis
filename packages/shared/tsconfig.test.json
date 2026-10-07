@@ -1,0 +1,12 @@
+{
+  // Issue #697 — type-checks tests/** and co-located src tests (and vitest.config.ts), which
+  // tsconfig.json excludes so that `build` compiles only the library. Vitest transpiles
+  // without type-checking, so without this a test type error reaches main. Never used by `build`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*", "tests/**/*", "vitest.config.ts"],
+  "exclude": ["dist", "node_modules"]
+}

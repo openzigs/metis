@@ -11,7 +11,12 @@
  * a few well-known phrases in its message — never echoed. The raw error stays
  * in the server log, where `generateDocumentAsync` already writes it.
  */
-import { GENERATION_INTERRUPTED_MESSAGE } from "./interrupted-generations.js";
+import {
+  GENERATION_CANCELLED_MESSAGE,
+  GENERATION_INTERRUPTED_MESSAGE,
+} from "./interrupted-generations.js";
+
+export { GENERATION_CANCELLED_MESSAGE };
 import { sectionFailedWarning } from "./grounding/degraded-warnings.js";
 import { PATH_SCOPE_EMPTY_CODE } from "./path-scope.js";
 
@@ -74,8 +79,26 @@ export const GENERATION_PROVIDER_CLOSED_MESSAGE =
 export const GENERATION_PATH_SCOPE_EMPTY_MESSAGE =
   "The document's path scope matched no documentable code (test files are excluded). Check the path prefixes — they are repository-relative, for example packages/fit/ — then generate again.";
 
+/** #855 — a generation stopped at its per-document cost ceiling with nothing finished. */
+export const GENERATION_COST_CEILING_MESSAGE =
+  "Generation stopped at its cost ceiling (DOCS_GEN_MAX_RUN_COST_CENTS / DOCS_GEN_MAX_RUN_TOKENS) before any section was finished. Narrow the document or raise the ceiling, then regenerate it.";
+
+/** #856 — the project's sources changed mid-run, before any section was finished. */
+export const GENERATION_INPUTS_CHANGED_MESSAGE =
+  "The project's sources changed while this document was being generated, so it was stopped. Regenerate the document to write it from the current sources.";
+
+/** The run-stop reasons (`UnpublishableGenerationError`) with a message of their own. */
+const STOP_MESSAGES: Readonly<Record<string, string>> = {
+  aborted: GENERATION_CANCELLED_MESSAGE,
+  budget: GENERATION_COST_CEILING_MESSAGE,
+  "inputs-changed": GENERATION_INPUTS_CHANGED_MESSAGE,
+};
+
 /** Every string a client may receive as a failed generation's `errorMessage`. */
 const SAFE_MESSAGES: ReadonlySet<string> = new Set([
+  GENERATION_CANCELLED_MESSAGE,
+  GENERATION_COST_CEILING_MESSAGE,
+  GENERATION_INPUTS_CHANGED_MESSAGE,
   GENERATION_INTERRUPTED_MESSAGE,
   GENERATION_FAILED_MESSAGE,
   GENERATION_PROVIDER_BALANCE_MESSAGE,
@@ -314,6 +337,14 @@ function readMessage(err: unknown): string {
  */
 export function generationFailureMessage(err: unknown): string {
   if (typeof err === "string" && SAFE_MESSAGES.has(err)) return err;
+  // #855 / #856 — a run METIS stopped on purpose (`UnpublishableGenerationError`,
+  // matched by shape: that module imports this one).
+  if (err instanceof Error && err.name === "UnpublishableGenerationError") {
+    const reason = (err as { reason?: unknown }).reason;
+    if (typeof reason === "string" && Object.hasOwn(STOP_MESSAGES, reason)) {
+      return STOP_MESSAGES[reason];
+    }
+  }
   const status = readStatus(err);
   const message = readMessage(err);
 

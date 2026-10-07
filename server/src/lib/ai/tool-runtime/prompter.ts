@@ -19,11 +19,28 @@ export interface BrokerPrompterOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: ToolEvent) => void;
+  /**
+   * #861 — is anyone there to answer? Consulted before each prompt; `false`
+   * answers `"unavailable"` at once (the gate denies the call) instead of
+   * waiting out the timeout for an answer that cannot come. Absent: always
+   * ask. A failed read asks too — that only ever waits, never approves.
+   */
+  approverPresent?: () => Promise<boolean>;
+}
+
+async function nobodyToAsk(opts: BrokerPrompterOptions): Promise<boolean> {
+  if (!opts.approverPresent) return false;
+  try {
+    return !(await opts.approverPresent());
+  } catch {
+    return false;
+  }
 }
 
 export function brokerPrompter(opts: BrokerPrompterOptions): ApprovalPrompter {
   return {
     async ask(req): Promise<PrompterAnswer> {
+      if (await nobodyToAsk(opts)) return "unavailable";
       const tool = opts.toolset.resolve(req.toolName);
       return opts.broker.request(
         {

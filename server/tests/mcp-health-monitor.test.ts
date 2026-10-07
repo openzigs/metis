@@ -29,12 +29,13 @@ function transport(opts: { fail?: boolean } = {}): MCPTransportClient {
     start: vi.fn(async () => undefined),
     stop: vi.fn(async () => undefined),
     notify: vi.fn(async () => undefined),
-    closed: vi.fn(() => new Promise(() => undefined)),
+    closed: vi.fn<MCPTransportClient["closed"]>(() => new Promise(() => undefined)),
+    // request<TResult> is generic; a canned-response stub cannot satisfy it without an assertion.
     request: vi.fn(async (m: string) => {
       if (m === "initialize") return { protocolVersion: "2025-06-18" };
       if (m === "tools/list" && opts.fail) throw new Error("dead");
       return { tools: [] };
-    }),
+    }) as MCPTransportClient["request"],
   };
 }
 

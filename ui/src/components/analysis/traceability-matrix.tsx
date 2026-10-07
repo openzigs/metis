@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { CoverageBadge } from "@/components/analysis/CoverageBadge";
 import { VerdictBadge } from "@/components/analysis/VerdictBadge";
+import { TEST_RELATION_LABEL } from "@/components/traceability/test-relation";
 
 interface Props {
   projectId: string;
@@ -176,14 +177,22 @@ export function TraceabilityMatrix({
                       <span className="text-muted-foreground">none detected</span>
                     ) : (
                       <ul className="space-y-1">
-                        {row.tests.map((t) => (
-                          <li
-                            key={`${t.filePath}:${t.symbol}`}
-                            className="font-mono text-foreground"
-                          >
-                            {t.filePath}
-                          </li>
-                        ))}
+                        {row.tests.map((t) => {
+                          // #816 — how the resolver linked the test, when it says.
+                          const relation = t.relation ? TEST_RELATION_LABEL[t.relation] : null;
+                          return (
+                            <li
+                              key={`${t.filePath}:${t.symbol}`}
+                              className="text-foreground"
+                              title={relation ?? undefined}
+                            >
+                              <span className="font-mono">{t.filePath}</span>
+                              {relation ? (
+                                <span className="text-muted-foreground"> · {relation}</span>
+                              ) : null}
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </td>

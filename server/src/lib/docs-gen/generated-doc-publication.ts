@@ -11,6 +11,7 @@ import { taskAbortSource } from "../scheduler/task-abort.js";
 import { getVectorStore } from "../rag/vector-store.js";
 import { getBM25Index } from "../rag/bm25-index.js";
 import { embedInBoundedBatches } from "../rag/embed-batched.js";
+import { DERIVED_EVIDENCE_CLASS } from "../rag/derived-label.js";
 import {
   EMBED_INPUT_MAX_BYTES,
   exceedsEmbedInputBudget,
@@ -52,7 +53,7 @@ export const DOCSGEN_CHUNKER_IDENTITY = `docsgen:v3:${CHUNK_SIZE}`;
  * (`evidence-filter.ts`); the label makes the same fact readable to any other
  * consumer of the chunk.
  */
-export const GENERATED_DOC_EVIDENCE_CLASS = "derived-generated-doc";
+export const GENERATED_DOC_EVIDENCE_CLASS = DERIVED_EVIDENCE_CLASS;
 
 /** Texts per embed call during publication (#189): bounded, never the whole document. */
 export const PUBLICATION_EMBED_BATCH_SIZE = 32;

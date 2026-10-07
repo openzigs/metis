@@ -5,7 +5,7 @@
  * without a real cluster. The provisioner accepts an `apis` injection point
  * exactly for this purpose — no need to mock @kubernetes/client-node directly.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const cfgStore = new Map<string, string | null>();
 vi.mock("../src/lib/config/config-service.js", () => {
@@ -31,57 +31,57 @@ vi.mock("../src/lib/config/config-service.js", () => {
   };
 });
 
-import { K8sSseProvisioner, buildResourceName } from "../src/lib/mcp/provisioners/k8s-sse.js";
+import {
+  type K8sApis,
+  K8sSseProvisioner,
+  buildResourceName,
+} from "../src/lib/mcp/provisioners/k8s-sse.js";
 import type { MCPServerConfig } from "../src/lib/mcp/types.js";
 
-interface FakeApis {
-  apps: {
-    createNamespacedDeployment: ReturnType<typeof vi.fn>;
-    readNamespacedDeployment: ReturnType<typeof vi.fn>;
-    deleteNamespacedDeployment: ReturnType<typeof vi.fn>;
-    patchNamespacedDeployment: ReturnType<typeof vi.fn>;
-  };
-  core: {
-    createNamespacedService: ReturnType<typeof vi.fn>;
-    deleteNamespacedService: ReturnType<typeof vi.fn>;
-    createNamespacedServiceAccount: ReturnType<typeof vi.fn>;
-    deleteNamespacedServiceAccount: ReturnType<typeof vi.fn>;
-    createNamespacedSecret: ReturnType<typeof vi.fn>;
-    deleteNamespacedSecret: ReturnType<typeof vi.fn>;
-    readNamespacedService: ReturnType<typeof vi.fn>;
-    listNamespacedPod: ReturnType<typeof vi.fn>;
-  };
-  networking: {
-    createNamespacedNetworkPolicy: ReturnType<typeof vi.fn>;
-    deleteNamespacedNetworkPolicy: ReturnType<typeof vi.fn>;
-  };
-}
+type Mocked<T> = {
+  [M in keyof T]: T[M] extends (...args: never[]) => unknown ? Mock<T[M]> : never;
+};
+type FakeApis = { [G in keyof K8sApis]: Mocked<K8sApis[G]> };
 
 function makeApis(overrides: Partial<{ readyReplicas: number }> = {}): FakeApis {
   const ready = overrides.readyReplicas ?? 1;
   return {
     apps: {
-      createNamespacedDeployment: vi.fn(async () => ({})),
-      readNamespacedDeployment: vi.fn(async () => ({
-        spec: {},
+      createNamespacedDeployment: vi.fn<K8sApis["apps"]["createNamespacedDeployment"]>(
+        async () => ({}),
+      ),
+      readNamespacedDeployment: vi.fn<K8sApis["apps"]["readNamespacedDeployment"]>(async () => ({
+        spec: { selector: {}, template: {} },
         status: { readyReplicas: ready },
       })),
-      deleteNamespacedDeployment: vi.fn(async () => ({})),
-      patchNamespacedDeployment: vi.fn(async () => ({})),
+      deleteNamespacedDeployment: vi.fn<K8sApis["apps"]["deleteNamespacedDeployment"]>(
+        async () => ({}),
+      ),
+      patchNamespacedDeployment: vi.fn<K8sApis["apps"]["patchNamespacedDeployment"]>(
+        async () => ({}),
+      ),
     },
     core: {
-      createNamespacedService: vi.fn(async () => ({})),
-      deleteNamespacedService: vi.fn(async () => ({})),
-      createNamespacedServiceAccount: vi.fn(async () => ({})),
-      deleteNamespacedServiceAccount: vi.fn(async () => ({})),
-      createNamespacedSecret: vi.fn(async () => ({})),
-      deleteNamespacedSecret: vi.fn(async () => ({})),
-      readNamespacedService: vi.fn(async () => ({})),
-      listNamespacedPod: vi.fn(async () => ({ items: [] })),
+      createNamespacedService: vi.fn<K8sApis["core"]["createNamespacedService"]>(async () => ({})),
+      deleteNamespacedService: vi.fn<K8sApis["core"]["deleteNamespacedService"]>(async () => ({})),
+      createNamespacedServiceAccount: vi.fn<K8sApis["core"]["createNamespacedServiceAccount"]>(
+        async () => ({}),
+      ),
+      deleteNamespacedServiceAccount: vi.fn<K8sApis["core"]["deleteNamespacedServiceAccount"]>(
+        async () => ({}),
+      ),
+      createNamespacedSecret: vi.fn<K8sApis["core"]["createNamespacedSecret"]>(async () => ({})),
+      deleteNamespacedSecret: vi.fn<K8sApis["core"]["deleteNamespacedSecret"]>(async () => ({})),
+      readNamespacedService: vi.fn<K8sApis["core"]["readNamespacedService"]>(async () => ({})),
+      listNamespacedPod: vi.fn<K8sApis["core"]["listNamespacedPod"]>(async () => ({ items: [] })),
     },
     networking: {
-      createNamespacedNetworkPolicy: vi.fn(async () => ({})),
-      deleteNamespacedNetworkPolicy: vi.fn(async () => ({})),
+      createNamespacedNetworkPolicy: vi.fn<K8sApis["networking"]["createNamespacedNetworkPolicy"]>(
+        async () => ({}),
+      ),
+      deleteNamespacedNetworkPolicy: vi.fn<K8sApis["networking"]["deleteNamespacedNetworkPolicy"]>(
+        async () => ({}),
+      ),
     },
   };
 }
@@ -233,19 +233,10 @@ describe("K8sSseProvisioner.provision", () => {
       {},
     );
     expect(result.url).toContain(".custom-ns.svc.cluster.local");
-    const depCall = apis.apps.createNamespacedDeployment.mock.calls[0]?.[0] as {
-      body: {
-        spec: {
-          template: {
-            spec: {
-              containers: Array<{ resources: { limits: { memory: string; cpu: string } } }>;
-            };
-          };
-        };
-      };
-    };
-    expect(depCall.body.spec.template.spec.containers[0]?.resources.limits.memory).toBe("2Gi");
-    expect(depCall.body.spec.template.spec.containers[0]?.resources.limits.cpu).toBe("2000m");
+    const depCall = apis.apps.createNamespacedDeployment.mock.calls[0]?.[0];
+    const limits = depCall?.body.spec?.template.spec?.containers[0]?.resources?.limits;
+    expect(limits?.memory).toBe("2Gi");
+    expect(limits?.cpu).toBe("2000m");
   });
 
   it("filters env vars to safe identifiers only", async () => {

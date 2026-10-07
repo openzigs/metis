@@ -26,6 +26,7 @@
  * {@link salvageFindings} with ONE bounded syntax-repair call.
  */
 import {
+  AGENT_DEGRADED_NOTE_PREFIX,
   agentFindingPayloadSchema,
   agentOutputSchema,
   ANALYSIS_AGENT_KEYS,
@@ -373,7 +374,7 @@ export function buildDegradedAgentOutput(input: {
     summary: summary.slice(0, 2048),
     findings: input.salvaged,
     notes: [
-      `DEGRADED (#769): ${REASON_TEXT[input.reason]}.`.slice(0, 512),
+      `${AGENT_DEGRADED_NOTE_PREFIX} ${REASON_TEXT[input.reason]}.`.slice(0, 512),
       `Recovered ${input.salvaged.length} finding(s) from ${input.toolCalls.length} tool call(s).`.slice(
         0,
         512,

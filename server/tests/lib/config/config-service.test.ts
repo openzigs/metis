@@ -10,7 +10,7 @@
  *   - setSecret / clearSecret happy paths + tier guards
  *   - describeSource source identification
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 interface MockRuntimeConfigRow {
   key: string;
@@ -72,18 +72,8 @@ interface VaultEntry {
   plaintext: string;
 }
 
-function makeStubVault(initial: VaultEntry[] = []): {
-  vault: VaultService;
-  store: Map<string, VaultEntry>;
-  spies: {
-    list: ReturnType<typeof vi.fn>;
-    read: ReturnType<typeof vi.fn>;
-    create: ReturnType<typeof vi.fn>;
-    rotate: ReturnType<typeof vi.fn>;
-    upsert: ReturnType<typeof vi.fn>;
-    delete: ReturnType<typeof vi.fn>;
-  };
-} {
+// Return type inferred so each spy keeps its own signature.
+function makeStubVault(initial: VaultEntry[] = []) {
   const store = new Map<string, VaultEntry>();
   for (const entry of initial) store.set(entry.id, entry);
   let nextId = store.size + 1;
@@ -675,7 +665,9 @@ describe("ConfigService — concurrent writes of one key (#112)", () => {
   it("two concurrent tunable sets leave cache and runtime_config on the same value", async () => {
     __runtimeRows.length = 0;
     const { prisma } = await import("../../../src/lib/prisma.js");
-    const upsert = prisma.runtimeConfig.upsert as unknown as ReturnType<typeof vi.fn>;
+    const upsert = prisma.runtimeConfig.upsert as unknown as Mock<
+      (...args: unknown[]) => Promise<unknown>
+    >;
     const realUpsert = upsert.getMockImplementation()!;
     let calls = 0;
     const slow = async (...args: unknown[]) => {

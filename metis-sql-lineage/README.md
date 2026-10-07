@@ -45,6 +45,32 @@ miner, etc.) and calls this service to resolve it.
 }
 ```
 
+#### `access` semantics (#760)
+
+- **Table `access`** is `persist` for an `INSERT` target, `write` for an
+  `UPDATE` / `DELETE` / `MERGE` target, and `read` for every other table (#859).
+  A table read through `UPDATE … FROM`, `DELETE … USING`, `MERGE … USING`, a
+  join or an `INSERT … SELECT` source is `read`. A write is classified by its own
+  node wherever it sits, so `WITH u AS (UPDATE t … RETURNING …) SELECT …` writes
+  `t`. A target named by alias (T-SQL `UPDATE x … FROM t x`) lands on `t`.
+- **Column `access`** is per access and can differ from its table's. Only a `SET`
+  target (`UPDATE`, MERGE `WHEN MATCHED THEN UPDATE`, `ON CONFLICT DO UPDATE`) is
+  `write`; an `INSERT` target column (including MERGE `WHEN NOT MATCHED THEN
+  INSERT (…)`) is `persist`; every predicate, join, source and projected column
+  is `read`. So `DELETE FROM t WHERE x = 1` writes `t` but only reads `t.x`.
+- **Column entries may repeat**, one per distinct access: `UPDATE t SET s = $1
+  WHERE s = $2` returns `t.s` twice, once `write` and once `read`. A
+  `(table, column, access)` triple is never repeated. A consumer whose edge does
+  not carry the access (a routine's `calls` edge) must collapse the entries
+  to one per `table.column`.
+- **Bind parameters are never columns** (`$1`, `?`, `:name`, `@name`).
+- **Built-in SQL functions are never routines** (#859): `now()`, `to_tsvector()`,
+  `pg_size_pretty()` and the like produce no `routines` entry. A schema-qualified
+  call outside `pg_catalog` (`app.to_tsvector()`) is still a user routine.
+- An unqualified column in a multi-table statement is attached only when it is a
+  write target (it belongs to the statement's target table); otherwise it is
+  reported in `uncertain` (`unqualified column: <name>`) rather than guessed.
+
 `GET /healthz` → `{ status, service, version, tokenConfigured }` (no auth).
 
 ### Safety

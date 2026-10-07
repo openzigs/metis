@@ -3,8 +3,8 @@
 /**
  * Global terminal-toast consumer — Issue #425 (Epic #406, terminal layer).
  *
- * Closes the silent-failure gap for LIST-view users. doc-gen / analysis /
- * test-coverage write a failure to the row and emit `job:lifecycle failed`, but
+ * Closes the silent-failure gap for LIST-view users. doc-gen / analysis jobs
+ * write a failure to the row and emit `job:lifecycle failed`, but
  * the per-surface toasts added by #421–#424 only fire when that op's OWN detail
  * page is mounted. A user watching a project's documentation / analysis LIST
  * (which joins `project:{projectId}` via `useProjectJobEvents`, so its socket

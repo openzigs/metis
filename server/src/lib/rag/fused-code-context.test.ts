@@ -73,6 +73,7 @@ describe("fuseCodeContext — rendering + locators (AC a)", () => {
       droppedDuplicate: 0,
       droppedBudget: 0,
       hits: [],
+      covered: [],
     });
   });
 
@@ -107,6 +108,8 @@ describe("fuseCodeContext — dedupe against RAG doc chunks (AC b)", () => {
       { tokenBudget: 10_000 },
     );
     expect(res.droppedDuplicate).toBe(1);
+    // #853 — the dropped hit is returned so a caller can still cite its lines.
+    expect(res.covered.map((h) => h.symbolId)).toEqual(["dup"]);
     expect(res.usedSymbols).toBe(1);
     expect(res.block).toContain("Bar");
     expect(res.block).not.toContain("[1] Foo");

@@ -675,9 +675,19 @@ removal) take sockets out of the room on every pod, and room emits are delivered
 cluster-wide. It relays over Postgres `LISTEN` / `NOTIFY` on the same database —
 no new managed service.
 
-- **Presence is the exception:** "who is viewing" avatars still show only the
-  users connected to the same pod as the viewer, as before the adapter. Each pod
-  knows only its own viewers, so their lists are not relayed (#651).
+- **Presence spans every pod (#651):** "who is viewing" avatars list the users
+  connected to every pod. Each pod asks the others for their viewers on each
+  change and sends the merged list to its own viewers. A pod that dies without
+  its connections closing drops off every list within about 11 seconds (the
+  adapter's 10-second heartbeat timeout plus its 1-second sweep). After a
+  database outage or failover, each pod re-merges the lists once its `LISTEN`
+  connection is back, with no viewer having to act.
+
+- **Rolling deploys:** while pods from before #651 are still running, presence
+  avatars on the new pods can lag by about 5 seconds per change. The old pods
+  never answer a new pod's request for their viewers, so each request waits
+  out the adapter's 5-second request timeout. The lag ends once every old pod
+  has been replaced.
 
 - **Cost:** a pool of at most 2 extra connections per pod, one of which is held
   for `LISTEN`. Count them against the database's connection limit.
@@ -697,9 +707,39 @@ no new managed service.
   disconnect whose `NOTIFY` (or attachments `INSERT`) fails does not reach
   sockets on other pods, and is not retried. When the outage also drops the
   other pods' `LISTEN` connections — a failover or restart does — their
-  re-check on reconnect (below, #649) applies the revocations they missed; a
-  publish that fails while the other pods stay connected is still lost to them.
-  The pod logs a warning for each.
+  re-check on reconnect (below, #649) applies the revocations they missed. A
+  publish that fails while the other pods stay connected (only the publishing
+  pod's pool timing out, say) gives them no reconnect to react to, so every pod
+  also re-checks its sockets once a minute (#659, below). The pod logs a warning
+  for each failed publish.
+- **Revocation bound (#659):** every pod re-checks every socket it holds against
+  the database every **60 s** (`SOCKET_REVALIDATE_INTERVAL_MS`), exactly as it
+  does after a `LISTEN` reconnect. A SCIM deprovision, role change or workspace
+  membership removal whose cross-replica publish failed therefore reaches every
+  pod's sockets within **60 s plus up to two re-check passes** (users re-read
+  four at a time): a tick that fires while a pass is running only queues one
+  more pass, so the worst case is the interval, plus the rest of the running
+  pass, plus one full pass. The cost, per pod per interval, is one pass: the
+  handshake's live-identity read for each connected user. Once a pass takes
+  longer than the interval, passes run back to back, a constant four reads at a
+  time per pod.
+- **Sweep interval override:** set `METIS_SOCKET_REVALIDATE_INTERVAL_MS` on the
+  server (`server.env` in the Helm values) to change the 60 s interval. It takes
+  plain decimal milliseconds, minimum `10000` (10 s); any other value is ignored
+  with a warning and the pod keeps 60 s. A shorter interval tightens the bound
+  above and raises the read load in proportion; the setting has no effect
+  without the cluster adapter.
+- **Failed lookups — the sweep fails open, a reconnect fails closed:** a user
+  lookup that fails during a pass a `LISTEN` reconnect asked for closes that
+  user's transports, so the client re-handshakes; a publish may really have been
+  missed then, and while the database is unreachable that handshake is refused,
+  as it would be anyway. A lookup that fails during a pass only the periodic
+  sweep asked for keeps the user's sockets and logs a warning, and the next
+  sweep retries: a failed read on a timer is not evidence of revocation, and
+  closing every socket a database blip reaches would have them all reconnect
+  at once against the same struggling database. For that user the bound above
+  stretches by however long the lookups keep failing. A pass that serves both
+  triggers fails closed.
 - **Timeouts:** the adapter's pool gives up on a connection attempt, a query or
   a statement after 5 s, so a hung database connection fails those cross-replica
   publishes within seconds instead of queueing every later one behind it.
@@ -718,6 +758,16 @@ no new managed service.
 - **PgBouncer:** `LISTEN` needs a session-pooled connection. A transaction-mode
   pooler between the pods and Postgres silently drops notifications.
 - With SQLite (single-replica dev) the in-memory adapter is kept unchanged.
+- **Room-join rate limit (#682):** each `subscribe:*` / `presence:join` takes a
+  token from the socket's bucket and from the user's bucket **on that pod**, so a
+  user whose sockets land on N replicas gets up to N times the per-user rate. A
+  join over the limit is refused with a room-scoped `auth:error` before any access
+  check or audit write runs; the refusal carries `code: "RATE_LIMITED"` and
+  `retryAfterMs`, and the UI keeps the room and re-subscribes after that delay
+  (plus up to 250 ms of jitter). Defaults: socket burst 100 at 5/s, user burst
+  300 at 5/s — at most 18,000 audit rows an hour from one user's probe loop per
+  replica. Refusals are logged at most once a minute per socket. Tune with the
+  `METIS_SOCKET_JOIN_*` settings in `.env.example`.
 
 ---
 

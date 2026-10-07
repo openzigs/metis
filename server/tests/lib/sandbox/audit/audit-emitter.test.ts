@@ -29,6 +29,9 @@ class InMemoryRepo implements SandboxAuditEventRepo {
     this.rows.push(row);
     return row;
   }
+  async findById(id: string): Promise<SandboxAuditEventRow | null> {
+    return this.rows.find((r) => r.id === id) ?? null;
+  }
   async listForSession(sessionId: string): Promise<SandboxAuditEventRow[]> {
     return this.rows.filter((r) => r.sessionId === sessionId);
   }

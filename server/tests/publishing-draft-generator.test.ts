@@ -90,23 +90,25 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
       create: vi.fn(async ({ data }: { data: Partial<Draft> }) => {
         nextId += 1;
-        const row: Draft = {
-          id: `draft_${nextId}`,
-          projectId: fakeProject.id,
-          requirementId: null,
-          parentDraftId: null,
-          draftType: "feature",
-          title: "",
-          body: "",
-          labels: "[]",
-          assignees: "[]",
-          storyPoints: 1,
-          status: "draft",
-          dedupHash: null,
-          metadata: null,
-          deletedAt: null,
-          ...(data as Draft),
-        };
+        const row: Draft = Object.assign(
+          {
+            id: `draft_${nextId}`,
+            projectId: fakeProject.id,
+            requirementId: null,
+            parentDraftId: null,
+            draftType: "feature",
+            title: "",
+            body: "",
+            labels: "[]",
+            assignees: "[]",
+            storyPoints: 1,
+            status: "draft",
+            dedupHash: null,
+            metadata: null,
+            deletedAt: null,
+          },
+          data,
+        );
         drafts.set(row.id, row);
         return row;
       }),
@@ -169,6 +171,21 @@ describe("generateDrafts", () => {
     expect(second.refreshed).toBe(3);
     // Total drafts unchanged — no duplicates.
     expect(drafts.size).toBe(3);
+  });
+
+  it("#733 — records the target each draft was generated for, epic and features alike", async () => {
+    await generateDrafts({
+      projectId: "proj_1",
+      analysisId: "analysis_1",
+      targetOwner: "openzigs",
+      targetRepo: "flux-v2",
+    });
+    expect(drafts.size).toBe(3);
+    for (const d of drafts.values()) {
+      const meta = JSON.parse(d.metadata ?? "{}");
+      expect(meta.targetOwner).toBe("openzigs");
+      expect(meta.targetRepo).toBe("flux-v2");
+    }
   });
 
   // #23 — the epic is titled from the analysed feature, never the analysis id.

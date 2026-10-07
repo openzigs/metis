@@ -200,6 +200,8 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
   recordUsage({
     projectId: input.project.id,
     sessionId: sessionId ?? "",
+    ...(input.actorId ? { userId: input.actorId } : {}),
+    agentStep: `spec-kit.${input.command}`,
     provider: response.provider,
     model: response.model,
     inputTokens: response.usage.promptTokens,

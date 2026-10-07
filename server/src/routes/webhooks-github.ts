@@ -30,6 +30,7 @@ import type { PrReviewQueue } from "../lib/agents/pr-reviewer/queue.js";
 import { getPrReviewWorker } from "../lib/agents/pr-reviewer/worker-singleton.js";
 import { executePrReviewJob } from "../lib/agents/pr-reviewer/pr-review-job.js";
 import { createChildLogger } from "../lib/logger.js";
+import { recordJobScope } from "../lib/socket/job-scope-store.js";
 
 const log = createChildLogger("webhooks-github");
 
@@ -140,24 +141,32 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
         // review in production.
         const liveQueue = deps.queue ?? getPrReviewWorker()?.queue ?? null;
         if (liveQueue) {
-          liveQueue.enqueue({
-            deliveryId,
-            projectId: project.id,
-            owner,
-            repo: repoName,
-            prNumber: pr.number,
-            context: {
-              action,
-              prTitle: pr.title ?? `PR #${pr.number}`,
-              prBody: pr.body ?? "",
-              prUrl,
-              installationId,
-              headSha: pr.head?.sha ?? null,
-              branchName: pr.head?.ref ?? null,
-              maxDiffBytes: project.prReviewMaxDiffBytes ?? null,
-              skipGlobsRaw: project.prReviewSkipGlobs ?? null,
+          // #674 — the queue dispatches in the enqueue tick, and `started`
+          // names the job on `project:{id}`; so the durable scope is written
+          // in the pre-dispatch hook, and a socket on any replica that learns
+          // the id from that broadcast is authorized for `job:{id}`. A
+          // shutdown-rejected enqueue records nothing.
+          await liveQueue.enqueueAfter(
+            {
+              deliveryId,
+              projectId: project.id,
+              owner,
+              repo: repoName,
+              prNumber: pr.number,
+              context: {
+                action,
+                prTitle: pr.title ?? `PR #${pr.number}`,
+                prBody: pr.body ?? "",
+                prUrl,
+                installationId,
+                headSha: pr.head?.sha ?? null,
+                branchName: pr.head?.ref ?? null,
+                maxDiffBytes: project.prReviewMaxDiffBytes ?? null,
+                skipGlobsRaw: project.prReviewSkipGlobs ?? null,
+              },
             },
-          });
+            (jobId) => recordJobScope(jobId, "pr-review", project.id),
+          );
           return;
         }
 

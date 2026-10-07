@@ -90,6 +90,12 @@ export interface FuseCodeContextResult {
    * dedupe + budget outcome instead of re-parsing the rendered block.
    */
   hits: FusedSymbolHit[];
+  /**
+   * #853 — the symbol hits dropped as duplicates of a source chunk. The chunk
+   * names its file by chunk number (`entry.go#8`), not by line, so a caller
+   * that needs a symbol's real span can still list these locators.
+   */
+  covered: FusedSymbolHit[];
 }
 
 /** The raw shape returned by `HybridCodeSearch.search` (structural seam). */
@@ -188,19 +194,21 @@ export function fuseCodeContext(
     droppedDuplicate: 0,
     droppedBudget: 0,
     hits: [],
+    covered: [],
   };
 
   // 1. Dedupe against RAG doc chunks.
   const deduped: FusedSymbolHit[] = [];
-  let droppedDuplicate = 0;
+  const covered: FusedSymbolHit[] = [];
   for (const hit of symbolHits) {
     if (isCoveredByRag(hit, ragChunks)) {
-      droppedDuplicate += 1;
+      covered.push(hit);
       continue;
     }
     deduped.push(hit);
   }
-  if (deduped.length === 0) return { ...empty, droppedDuplicate };
+  const droppedDuplicate = covered.length;
+  if (deduped.length === 0) return { ...empty, droppedDuplicate, covered };
 
   // 2. Budget the rendered block (header + entries). Truncate the ranked tail.
   let total = estTokens(HEADER);
@@ -226,7 +234,7 @@ export function fuseCodeContext(
   }
 
   if (entries.length === 0) {
-    return { block: "", usedSymbols: 0, droppedDuplicate, droppedBudget, hits: [] };
+    return { block: "", usedSymbols: 0, droppedDuplicate, droppedBudget, hits: [], covered };
   }
 
   return {
@@ -235,6 +243,7 @@ export function fuseCodeContext(
     droppedDuplicate,
     droppedBudget,
     hits: usedHits,
+    covered,
   };
 }
 
@@ -261,6 +270,7 @@ export async function buildFusedCodeBlock(opts: {
     droppedDuplicate: 0,
     droppedBudget: 0,
     hits: [],
+    covered: [],
   };
 
   if (!opts.enabled) return empty;

@@ -17,9 +17,11 @@ import {
   type SynthesisDegradationReason,
   type SynthesisOutput,
   synthesisOutputSchema,
+  synthesizedRequirementSchema,
 } from "@metis/shared";
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
 import { clampToModelOutputCeiling } from "../ai/model-output-limits.js";
+import { boundNonStreamingOutputTokens } from "../ai/nonstreaming-output-bound.js";
 import { getConfigService } from "../config/config-service.js";
 import { ConfigValidationError } from "../config/errors.js";
 // #1226 owns the single table of provider stop signals that mean "the OUTPUT
@@ -27,9 +29,14 @@ import { ConfigValidationError } from "../config/errors.js";
 // Anthropic's). Imported rather than re-listed — a second copy would drift, and
 // the module is a dependency-free leaf despite living under `docs-gen/`.
 import { isTruncationFinishReason } from "../docs-gen/truncation.js";
+// #751 — the ONE allow-list of models that reason by default from the same
+// output budget, and the allowance granted them. Imported, not re-listed: a
+// second copy is how the synthesis cap was missed when docs-gen got it.
+import { reasoningAllowanceTokens } from "../docs-gen/output-caps.js";
 import { createChildLogger } from "../logger.js";
 import { extractJsonObject } from "./agent-runner.js";
 import { buildSynthesisPrompt } from "./prompts.js";
+import { salvageSynthesisPrefix } from "./synthesis-salvage.js";
 
 const log = createChildLogger("analysis-synthesis");
 
@@ -81,6 +88,20 @@ export interface SynthesisRunResult {
    * two symptoms as two separate defects with two separate wrong theories.
    */
   degraded?: SynthesisDegradation;
+  /**
+   * #751 — present when the run needed more than one model call: how many
+   * calls it made, how many replies were salvaged from an output-cap
+   * truncation, and how many times a finding set was split because a reply
+   * held nothing salvageable. Absent on a single clean call.
+   */
+  recovery?: SynthesisRecovery;
+}
+
+/** #751 — how a multi-call synthesis got its answer. */
+export interface SynthesisRecovery {
+  calls: number;
+  salvagedResponses: number;
+  splits: number;
 }
 
 /**
@@ -100,6 +121,26 @@ const RETRYABLE_REASONS: ReadonlySet<SynthesisDegradationReason> = new Set([
   "non-json",
   "schema-invalid",
 ]);
+
+/**
+ * #751 — the most model calls one synthesis run may make, across retries,
+ * continuations after a truncation, and split halves.
+ *
+ * A thinking model (DeepSeek `deepseek-flash`) spends its reasoning from the
+ * same output cap as its answer, and on the `anthropic` provider that cap
+ * cannot be raised: `chat()` is non-streaming and the SDK refuses more than
+ * 21,333 (#1257). So a requirement set that does not fit one reply is written
+ * in pieces instead — the complete requirements of a truncated reply are kept,
+ * and the next call is asked only for the findings they do not cover.
+ *
+ * Six bounds the worst case at six capped replies (~126k output tokens at
+ * 21,000) while leaving room for the cases measured: run 3's 29 requirements
+ * need two calls, and a table whose reasoning alone fills the cap needs one
+ * split (two halves) plus a possible continuation. When the budget runs out the
+ * findings no call reached are grouped by the deterministic fallback, and the
+ * run is marked degraded — but the requirements the model DID write are kept.
+ */
+export const MAX_SYNTHESIS_CALLS = 6;
 
 /**
  * #1223 — the ceiling on a NON-STREAMING Anthropic request, imposed by the SDK
@@ -156,10 +197,10 @@ export const SYNTHESIS_MAX_OUTPUT_TOKENS_KEY = "ANALYSIS_SYNTHESIS_MAX_OUTPUT_TO
  * The registry entry is already `z.coerce.number().int().positive()`, so
  * validating through it means ONE statement of what a legal value is.
  */
-function readConfiguredSynthesisMaxOutputTokens(): number {
+function readConfiguredSynthesisMaxOutputTokens(): number | undefined {
   const cfg = getConfigService();
   const raw = cfg.get(SYNTHESIS_MAX_OUTPUT_TOKENS_KEY);
-  if (raw === undefined) return DEFAULT_SYNTHESIS_MAX_OUTPUT_TOKENS;
+  if (raw === undefined) return undefined;
 
   const def = cfg.getKeyDef(SYNTHESIS_MAX_OUTPUT_TOKENS_KEY);
   const parsed = def?.schema.safeParse(raw);
@@ -206,7 +247,32 @@ export function resolveSynthesisMaxOutputTokens(
   model?: string | null,
   providerKey?: string | null,
 ): number {
-  return clampToModelOutputCeiling(readConfiguredSynthesisMaxOutputTokens(), model, undefined, {
+  const configured = readConfiguredSynthesisMaxOutputTokens();
+  let requested = configured ?? DEFAULT_SYNTHESIS_MAX_OUTPUT_TOKENS;
+  if (configured === undefined) {
+    // #751 — a model that reasons by default spends that reasoning from this
+    // same cap, so the DEFAULT grows by docs-gen's reasoning allowance (#25)
+    // for exactly those models. An operator's explicit value is used as given.
+    //
+    // The transport bound is applied here, silently, before the clamp below:
+    // on the `anthropic` provider (DeepSeek's endpoint included) the SDK will
+    // not send more than 21,333 non-streaming, and the clamp's warning names
+    // the knob as if the operator had set it too high — they set nothing.
+    // That bound is why the allowance alone cannot fix #751 on that provider,
+    // and why `runSynthesis` recovers from a truncation instead.
+    const allowance = reasoningAllowanceTokens(model ?? undefined);
+    if (allowance > 0) {
+      const silent = { warn: (): void => undefined };
+      requested = Math.max(
+        requested,
+        boundNonStreamingOutputTokens(requested + allowance, providerKey, {
+          logger: silent,
+          model,
+        }).value,
+      );
+    }
+  }
+  return clampToModelOutputCeiling(requested, model, undefined, {
     // #1257 — was NOT wired into this clamp at all, and #1223 declined to do it
     // mid-flight because the warning named the OTHER key literally. It now
     // names whichever knob the caller passes.
@@ -279,10 +345,19 @@ function panelMarks(panel: FindingSupportPanel | null | undefined): {
   return { prefix, tail };
 }
 
-export const formatFindingsTable = (findings: FlatFinding[]): string => {
+export const formatFindingsTable = (
+  findings: FlatFinding[],
+  /**
+   * #751 — render only these rows, under their ORIGINAL indexes, for a
+   * continuation call. The model answers with `evidenceFindingIndexes`, so the
+   * numbers must still resolve against the full list. Omitted ⇒ every row.
+   */
+  indexes?: readonly number[],
+): string => {
   if (findings.length === 0) return "(no findings)";
-  return findings
-    .map((f, i) => {
+  return (indexes ?? findings.map((_, i) => i))
+    .map((i) => {
+      const f = findings[i]!;
       // #740 — prefix `unverified` findings with an explicit [UNVERIFIED] marker
       // so the synthesis model down-weights claims whose code evidence failed the
       // #734 grounding gate (rule 4 in buildSynthesisPrompt). `confirmed`/`null`
@@ -404,6 +479,27 @@ export function fallbackSynthesize(
   };
 }
 
+type SynthesizedRequirement = SynthesisOutput["requirements"][number];
+
+/** #751 — a slice of the findings table one synthesis call is asked about. */
+interface SynthesisSegment {
+  /** Original indexes into `input.findings`, ascending. */
+  indexes: number[];
+  /** 1-based retry count for THIS slice; bounded by {@link MAX_SYNTHESIS_ATTEMPTS}. */
+  attempt: number;
+}
+
+/** Caps a kept or merged requirement must stay inside (`synthesisOutputSchema`). */
+const MAX_REQUIREMENTS = 100;
+const MAX_EVIDENCE = 50;
+const MAX_LABELS = 16;
+const MAX_CRITERIA = 20;
+
+const normalizeTitle = (title: string): string => title.trim().toLowerCase().replace(/\s+/g, " ");
+
+const union = <T>(a: readonly T[], b: readonly T[], cap: number): T[] =>
+  Array.from(new Set([...a, ...b])).slice(0, cap);
+
 export async function runSynthesis(
   provider: AIProvider,
   input: SynthesisInput,
@@ -414,26 +510,22 @@ export async function runSynthesis(
   }
   if (input.findings.length === 0) {
     return {
-      output: { summary: "No findings produced by specialist agents.", requirements: [] },
+      output: {
+        summary: "No findings produced by specialist agents.",
+        requirements: [],
+      },
       usage: DEFAULT_USAGE,
       durationMs: Date.now() - start,
     };
   }
-  const { systemMessage, userMessage } = buildSynthesisPrompt({
-    projectName: input.projectName,
-    findingsTable: formatFindingsTable(input.findings),
-    refinedRequirements: input.refinedRequirements,
-    affectedSchema: input.affectedSchema,
-    // #1110 — the panel rule is added only when a panel actually ran, so a
-    // flag-off run sends a byte-identical system prompt to a pre-#1109 one.
-    panelGuidance: hasPanelSignal(input.findings),
-  });
-  const messages: ChatMessage[] = [{ role: "user", content: userMessage }];
+  const total = input.findings.length;
 
-  log.info("Synthesis run starting", { findingCount: input.findings.length });
+  log.info("Synthesis run starting", { findingCount: total });
 
-  // Usage accumulates across attempts: a retried run really did spend the
-  // tokens of the attempt that failed, and the cost accounting must say so.
+  // Usage accumulates across calls: a retried, continued or split run really
+  // did spend the tokens of every call, and the cost accounting must say so.
+  // (Each call is ALSO metered individually to `token_usages` by the provider
+  // decorator in `analysis-usage.ts`; this sum is the analysis's own total.)
   const usage: TokenUsage = { ...DEFAULT_USAGE };
   const addUsage = (u: TokenUsage | undefined): void => {
     if (!u) return;
@@ -442,26 +534,144 @@ export async function runSynthesis(
     usage.totalTokens += u.totalTokens;
   };
 
-  let failure: { reason: SynthesisDegradationReason; detail?: string } | null = null;
-  let attempts = 0;
-
   // #1223 — an EXPLICIT output cap. Left unset this inherited whatever the
   // provider defaults to (16,000 on `anthropic`, 4096 on the
   // OpenAI-compatible/Bedrock class), and on the configured provider that was
-  // not enough: thinking tokens spend the same budget as the answer, so the
-  // reconciled requirement set came back cut off mid-JSON and every run
-  // degraded to the deterministic fallback with `reason: non-json`.
+  // not enough: thinking tokens spend the same budget as the answer.
   // #1257 — resolved against the model AND the provider this call will actually
   // run on: `provider.chat` is non-streaming, so the cap is additionally bounded
   // by what the Anthropic SDK agrees to send. `provider.model` is the fallback
   // because that is what the adapter uses when `input.model` is unset.
+  // #751 — grown by the reasoning allowance for a thinking-by-default model.
   const maxOutputTokens = resolveSynthesisMaxOutputTokens(
     input.model ?? provider.model,
     provider.key,
   );
 
-  for (let attempt = 1; attempt <= MAX_SYNTHESIS_ATTEMPTS; attempt++) {
-    attempts = attempt;
+  const isValidIndex = (i: number): boolean => Number.isInteger(i) && i >= 0 && i < total;
+
+  // #751 — requirements kept so far, in the order the model wrote them.
+  const kept: SynthesizedRequirement[] = [];
+  /** Requirements kept by EARLIER calls, by normalised title (several may share one). */
+  const keptByTitle = new Map<string, SynthesizedRequirement[]>();
+  /**
+   * #868 review — what the schema caps cut while keeping or merging. Never
+   * dropped silently: logged at the end of the run, and named in the detail of
+   * a degraded one.
+   */
+  const capDrops = {
+    requirementsDropped: 0,
+    evidenceLinksDropped: 0,
+    acceptanceCriteriaDropped: 0,
+  };
+  /**
+   * Keep one call's requirements. Evidence indexes are clamped to the table
+   * (the model occasionally invents findings). A requirement that repeats one
+   * kept from an EARLIER call is merged into it rather than duplicated — a
+   * continuation is told what exists, but may still restate it. "Repeats" means
+   * the normalised title matches AND the two cite at least one finding in
+   * common: generic titles ("Input validation", "Error handling") recur across
+   * split halves for unrelated findings, and fusing those would discard one
+   * requirement's type and description and pin its criteria on the other.
+   * Titles within one call are not merged: that is the model's own output, and
+   * a single clean call must come back exactly as it always has.
+   */
+  const keep = (reqs: readonly SynthesizedRequirement[]): void => {
+    const fromThisCall: Array<[string, SynthesizedRequirement]> = [];
+    for (const r of reqs) {
+      const clean = {
+        ...r,
+        evidenceFindingIndexes: r.evidenceFindingIndexes.filter(isValidIndex),
+      };
+      const key = normalizeTitle(clean.title);
+      const evidence = new Set(clean.evidenceFindingIndexes);
+      const prior = keptByTitle
+        .get(key)
+        ?.find((p) => p.evidenceFindingIndexes.some((i) => evidence.has(i)));
+      if (prior) {
+        const evidenceAll = new Set([
+          ...prior.evidenceFindingIndexes,
+          ...clean.evidenceFindingIndexes,
+        ]);
+        const criteriaAll = new Set([...prior.acceptanceCriteria, ...clean.acceptanceCriteria]);
+        capDrops.evidenceLinksDropped += Math.max(0, evidenceAll.size - MAX_EVIDENCE);
+        capDrops.acceptanceCriteriaDropped += Math.max(0, criteriaAll.size - MAX_CRITERIA);
+        prior.evidenceFindingIndexes = union(
+          prior.evidenceFindingIndexes,
+          clean.evidenceFindingIndexes,
+          MAX_EVIDENCE,
+        );
+        prior.labels = union(prior.labels, clean.labels, MAX_LABELS);
+        prior.acceptanceCriteria = union(
+          prior.acceptanceCriteria,
+          clean.acceptanceCriteria,
+          MAX_CRITERIA,
+        );
+        continue;
+      }
+      if (kept.length >= MAX_REQUIREMENTS) {
+        capDrops.requirementsDropped += 1;
+        continue;
+      }
+      kept.push(clean);
+      fromThisCall.push([key, clean]);
+    }
+    for (const [key, r] of fromThisCall) {
+      const list = keptByTitle.get(key);
+      if (list) list.push(r);
+      else keptByTitle.set(key, [r]);
+    }
+  };
+  /** Indexes of `segment` that some KEPT requirement cites (after every cap). */
+  const keptCitations = (segment: readonly number[]): Set<number> => {
+    const cited = new Set(kept.flatMap((r) => r.evidenceFindingIndexes));
+    return new Set(segment.filter((i) => cited.has(i)));
+  };
+
+  let summary: string | undefined;
+  let failure: { reason: SynthesisDegradationReason; detail?: string } | null = null;
+  let calls = 0;
+  let salvagedResponses = 0;
+  let splits = 0;
+  /** Findings no successful call covered: the budget ran out, or a slice gave up. */
+  const unreached: number[] = [];
+  const queue: SynthesisSegment[] = [{ indexes: input.findings.map((_, i) => i), attempt: 1 }];
+
+  const retryOrGiveUp = (segment: SynthesisSegment): void => {
+    if (segment.attempt < MAX_SYNTHESIS_ATTEMPTS) {
+      queue.unshift({ ...segment, attempt: segment.attempt + 1 });
+    } else {
+      unreached.push(...segment.indexes);
+    }
+  };
+
+  while (queue.length > 0) {
+    const segment = queue.shift()!;
+    // #868 review — once the set holds MAX_REQUIREMENTS, no call can add a
+    // requirement for these findings; spending one would only bill tokens.
+    if (calls >= MAX_SYNTHESIS_CALLS || kept.length >= MAX_REQUIREMENTS) {
+      unreached.push(...segment.indexes);
+      continue;
+    }
+    calls += 1;
+    const partialTable = segment.indexes.length < total;
+    const segmentFindings = segment.indexes.map((i) => input.findings[i]!);
+    const { systemMessage, userMessage } = buildSynthesisPrompt({
+      projectName: input.projectName,
+      // The first call renders the whole table exactly as before #751.
+      findingsTable: formatFindingsTable(
+        input.findings,
+        partialTable ? segment.indexes : undefined,
+      ),
+      refinedRequirements: input.refinedRequirements,
+      affectedSchema: input.affectedSchema,
+      // #1110 — the panel rule is added only when a panel actually ran on a
+      // finding in THIS table, so a flag-off run sends a byte-identical prompt.
+      panelGuidance: hasPanelSignal(segmentFindings),
+      ...(kept.length > 0 ? { alreadySynthesizedTitles: kept.map((r) => r.title) } : {}),
+    });
+    const messages: ChatMessage[] = [{ role: "user", content: userMessage }];
+
     let raw: string;
     let finishReason: string | undefined;
     try {
@@ -476,103 +686,260 @@ export async function runSynthesis(
       addUsage(response.usage);
     } catch (err) {
       if ((err as { name?: string }).name === "AbortError") throw err;
+      // A provider error (cost cap, auth, outage) is not the model's output and
+      // is not retried: stop calling, keep whatever earlier calls produced.
       failure = { reason: "provider-error", detail: (err as Error).message };
+      unreached.push(...segment.indexes);
+      for (const rest of queue.splice(0)) unreached.push(...rest.indexes);
       break;
     }
 
     let parsed: unknown;
+    let parseError: Error | null = null;
     try {
       parsed = extractJsonObject(raw);
     } catch (err) {
-      // #1223 — the log line this replaces carried the reason and nothing else,
-      // which could not separate the three candidate causes from one another.
-      // `finishReason` settles the first outright, and the TAIL settles it a
-      // second way: a cap-truncated payload simply stops mid-token, where a
-      // model that wrapped its JSON in prose ends with prose.
-      const capTruncated = isTruncationFinishReason(finishReason);
-      log.warn("Synthesis response was not parseable JSON", {
-        attempt,
+      parseError = err as Error;
+    }
+
+    if (parseError === null) {
+      const validation = synthesisOutputSchema.safeParse(parsed);
+      if (!validation.success) {
+        failure = {
+          reason: "schema-invalid",
+          detail: JSON.stringify(validation.error.flatten().fieldErrors),
+        };
+        retryOrGiveUp(segment);
+        continue;
+      }
+      // Zero requirements for the WHOLE table means the model produced nothing
+      // usable, and re-asking tends to get nothing again.
+      if (validation.data.requirements.length === 0) {
+        if (!partialTable) {
+          failure = { reason: "empty-requirements" };
+          break;
+        }
+        // #868 review — zero for a remainder or a split half leaves its
+        // findings cited by NOTHING: a continuation is shown only uncovered
+        // findings, and a half split off a reply that salvaged nothing has no
+        // kept requirement to lean on. Accepting it as "covered" dropped them
+        // with no degradation; they are unreached, so they reach the fallback
+        // and the run says so.
+        failure = {
+          reason: "empty-requirements",
+          detail: `a partial table of ${segment.indexes.length} finding(s) returned no requirements`,
+        };
+        unreached.push(...segment.indexes);
+        continue;
+      }
+      summary ??= validation.data.summary;
+      keep(validation.data.requirements);
+      continue;
+    }
+
+    // #1223 — `finishReason` says whether the cap cut the reply off; the
+    // detail leads with it so `truncateDetail` can never cut it away, and the
+    // reader of the persisted degradation sees the cause before the symptom.
+    const capTruncated = isTruncationFinishReason(finishReason);
+    failure = {
+      reason: "non-json",
+      detail:
+        `finishReason=${finishReason ?? "unknown"}` +
+        `${capTruncated ? " (output-cap truncation)" : ""}: ${parseError.message}`,
+    };
+
+    // #751 — keep every requirement the reply completed before it broke off,
+    // and ask again only for the findings those requirements do not cover.
+    const salvage = salvageSynthesisPrefix(raw);
+    const whole = salvage.requirements.flatMap((r) => {
+      const v = synthesizedRequirementSchema.safeParse(r);
+      return v.success ? [v.data] : [];
+    });
+    // #868 review — "covered" is decided by what was actually KEPT after the
+    // requirement and evidence caps, not by everything salvaged: a requirement
+    // the cap refused, or an evidence link a merge cut, covers nothing.
+    // A salvage citing nothing in this segment is not kept at all (as before):
+    // the segment is about to be split or re-asked, and would write it again.
+    const inSegment = new Set(segment.indexes);
+    const citesSegment = whole.some((r) => r.evidenceFindingIndexes.some((i) => inSegment.has(i)));
+    const coveredBefore = keptCitations(segment.indexes);
+    if (citesSegment) keep(whole);
+    const coveredNow = keptCitations(segment.indexes);
+    if (coveredNow.size > coveredBefore.size) {
+      salvagedResponses += 1;
+      if (salvage.summary) summary ??= salvage.summary;
+      const rest = segment.indexes.filter((i) => !coveredNow.has(i));
+      log.info("Synthesis reply was cut short; kept its complete requirements", {
+        call: calls,
         finishReason: finishReason ?? "unknown",
         capTruncated,
         maxOutputTokens,
-        contentLength: raw.length,
-        parseError: (err as Error).message,
-        contentHead: raw.slice(0, 300),
-        contentTail: raw.slice(-300),
-        ...(capTruncated
-          ? {
-              hint: "Raise ANALYSIS_SYNTHESIS_MAX_OUTPUT_TOKENS, or lower it if the model rejects the request outright.",
-            }
-          : {}),
+        salvagedRequirements: whole.length,
+        coveredFindings: coveredNow.size,
+        remainingFindings: rest.length,
       });
-      failure = {
-        reason: "non-json",
-        // The stop signal leads so `truncateDetail` can never cut it away, and
-        // so the reader of the persisted degradation — the analysis page's
-        // #1117 notice — sees the cause before the parser's symptom.
-        detail:
-          `finishReason=${finishReason ?? "unknown"}` +
-          `${capTruncated ? " (output-cap truncation)" : ""}: ${(err as Error).message}`,
-      };
-      if (attempt < MAX_SYNTHESIS_ATTEMPTS) continue;
-      break;
+      if (rest.length > 0) queue.unshift({ indexes: rest, attempt: 1 });
+      continue;
     }
 
-    const validation = synthesisOutputSchema.safeParse(parsed);
-    if (!validation.success) {
-      failure = {
-        reason: "schema-invalid",
-        detail: JSON.stringify(validation.error.flatten().fieldErrors),
-      };
-      if (attempt < MAX_SYNTHESIS_ATTEMPTS) continue;
-      break;
+    log.warn("Synthesis response was not parseable JSON", {
+      call: calls,
+      attempt: segment.attempt,
+      finishReason: finishReason ?? "unknown",
+      capTruncated,
+      maxOutputTokens,
+      findingCount: segment.indexes.length,
+      contentLength: raw.length,
+      parseError: parseError.message,
+      contentHead: raw.slice(0, 300),
+      contentTail: raw.slice(-300),
+    });
+
+    // #751 — a truncated reply with NOTHING whole in it spent the cap before
+    // finishing one requirement (on a thinking model, mostly on reasoning). The
+    // same table would do the same again; half of it reasons less and writes
+    // less, so split it rather than retry it.
+    if (capTruncated && segment.indexes.length > 1) {
+      splits += 1;
+      const mid = Math.ceil(segment.indexes.length / 2);
+      queue.unshift(
+        { indexes: segment.indexes.slice(0, mid), attempt: 1 },
+        { indexes: segment.indexes.slice(mid), attempt: 1 },
+      );
+      continue;
     }
-
-    // Clamp evidence indexes to valid range \u2014 the model occasionally invents
-    // findings.
-    const sanitized: SynthesisOutput = {
-      summary: validation.data.summary,
-      requirements: validation.data.requirements.map((r) => ({
-        ...r,
-        evidenceFindingIndexes: r.evidenceFindingIndexes.filter(
-          (i) => Number.isInteger(i) && i >= 0 && i < input.findings.length,
-        ),
-      })),
-    };
-
-    // If the model returned zero requirements but the deterministic fallback
-    // would have produced some, prefer the fallback so we never hand the user
-    // an empty Requirements tab on a populated finding set.
-    if (sanitized.requirements.length === 0 && input.findings.length > 0) {
-      failure = { reason: "empty-requirements" };
-      break;
-    }
-
-    return { output: sanitized, usage, durationMs: Date.now() - start };
+    retryOrGiveUp(segment);
   }
 
-  // Every path out of the loop that reaches here degraded. `failure` is always
-  // set on those paths; the fallback keeps the run useful, and `degraded` is
-  // what stops it from presenting as a clean success.
-  const reason = failure?.reason ?? "empty-requirements";
-  const output = fallbackSynthesize(input.findings);
+  const recovery: SynthesisRecovery | undefined =
+    calls > 1 ? { calls, salvagedResponses, splits } : undefined;
+  const withRecovery = recovery ? { recovery } : {};
+
+  if (kept.length === 0) {
+    // Nothing usable from any call. The fallback keeps the run useful, and
+    // `degraded` is what stops it from presenting as a clean success.
+    const reason = failure?.reason ?? "empty-requirements";
+    const output = fallbackSynthesize(input.findings);
+    // #868 review — the clusterer stops at 100 groups; a finding past that is
+    // in no requirement, and the notice must not say "Nothing was dropped".
+    const placed = new Set(output.requirements.flatMap((r) => r.evidenceFindingIndexes));
+    const findingsWithoutRequirement = total - placed.size;
+    const degraded: SynthesisDegradation = {
+      reason,
+      ...(failure?.detail ? { detail: truncateDetail(failure.detail) } : {}),
+      attempts: calls,
+      requirementCount: output.requirements.length,
+      ...(findingsWithoutRequirement > 0 ? { findingsWithoutRequirement } : {}),
+      at: new Date().toISOString(),
+    };
+    log.warn("Synthesis degraded to the deterministic fallback", {
+      reason,
+      attempts: calls,
+      retryable: RETRYABLE_REASONS.has(reason),
+      requirementCount: output.requirements.length,
+      maxOutputTokens,
+      detail: degraded.detail,
+    });
+    return {
+      output,
+      usage,
+      durationMs: Date.now() - start,
+      degraded,
+      ...withRecovery,
+    };
+  }
+
+  const resolvedSummary =
+    summary ?? `Synthesized ${kept.length} requirement(s) from ${total} finding(s).`;
+
+  // #868 review — a cap that cut data is recorded, never silent.
+  const logCapDrops = (extra: Record<string, number> = {}): void => {
+    const all = { ...capDrops, ...extra };
+    if (Object.values(all).some((n) => n > 0)) {
+      log.warn("Synthesis output caps dropped data", {
+        ...all,
+        maxRequirements: MAX_REQUIREMENTS,
+        maxEvidence: MAX_EVIDENCE,
+        maxAcceptanceCriteria: MAX_CRITERIA,
+      });
+    }
+  };
+
+  if (unreached.length === 0) {
+    logCapDrops();
+    if (recovery) {
+      log.info("Synthesis recovered across several calls", {
+        ...recovery,
+        requirementCount: kept.length,
+        maxOutputTokens,
+      });
+    }
+    return {
+      output: { summary: resolvedSummary, requirements: kept },
+      usage,
+      durationMs: Date.now() - start,
+      ...withRecovery,
+    };
+  }
+
+  // #751 — PARTIAL: the model wrote some requirements, and some findings were
+  // never reached (the call budget ran out, a slice gave up, or the provider
+  // failed). Keep the model's requirements — discarding typed requirements with
+  // acceptance criteria to group everything by keyword would be the #751
+  // failure again — and group ONLY the unreached findings deterministically, so
+  // nothing is dropped. The run is still marked degraded, and the detail says
+  // which requirements are which.
+  const orderedUnreached = [...new Set(unreached)].sort((a, b) => a - b);
+  const allGrouped = fallbackSynthesize(
+    orderedUnreached.map((i) => input.findings[i]!),
+  ).requirements.map((r) => ({
+    ...r,
+    evidenceFindingIndexes: r.evidenceFindingIndexes.map((j) => orderedUnreached[j]!),
+  }));
+  const grouped = allGrouped.slice(0, Math.max(0, MAX_REQUIREMENTS - kept.length));
+  const groupedRequirementsDropped = allGrouped.length - grouped.length;
+  // Findings the requirement cap shut out of BOTH the model's set and the
+  // keyword groups: represented by no requirement at all.
+  const represented = new Set([...kept, ...grouped].flatMap((r) => r.evidenceFindingIndexes));
+  const findingsShutOut = orderedUnreached.filter((i) => !represented.has(i)).length;
+  logCapDrops({ groupedRequirementsDropped, findingsShutOut });
+  const capNote =
+    findingsShutOut > 0
+      ? `The ${MAX_REQUIREMENTS}-requirement cap was reached, so ${findingsShutOut} finding(s) ` +
+        `are in no requirement. `
+      : "";
+  const reason = failure?.reason ?? "non-json";
   const degraded: SynthesisDegradation = {
     reason,
-    ...(failure?.detail ? { detail: truncateDetail(failure.detail) } : {}),
-    attempts,
-    requirementCount: output.requirements.length,
+    detail: truncateDetail(
+      (
+        `partial: ${kept.length} model-written requirement(s) kept; ` +
+        `${orderedUnreached.length} finding(s) no call reached were grouped deterministically ` +
+        `into ${grouped.length}. ${capNote}${failure?.detail ?? ""}`
+      ).trimEnd(),
+    ),
+    attempts: calls,
+    requirementCount: grouped.length,
+    // #751 — lets the banner say which requirements are model-written.
+    modelRequirementCount: kept.length,
+    // #868 review — and whether "Nothing was dropped" is true.
+    ...(findingsShutOut > 0 ? { findingsWithoutRequirement: findingsShutOut } : {}),
     at: new Date().toISOString(),
   };
-  log.warn("Synthesis degraded to the deterministic fallback", {
+  log.warn("Synthesis partially degraded: unreached findings grouped deterministically", {
     reason,
-    attempts,
-    retryable: RETRYABLE_REASONS.has(reason),
-    requirementCount: output.requirements.length,
-    // #1223 — `detail` now leads with the provider's own stop signal on the
-    // parse-failure path, so this line is diagnosable without correlating it
-    // against the per-attempt warning above.
+    attempts: calls,
+    keptRequirements: kept.length,
+    unreachedFindings: orderedUnreached.length,
+    groupedRequirements: grouped.length,
     maxOutputTokens,
     detail: degraded.detail,
   });
-  return { output, usage, durationMs: Date.now() - start, degraded };
+  return {
+    output: { summary: resolvedSummary, requirements: [...kept, ...grouped] },
+    usage,
+    durationMs: Date.now() - start,
+    degraded,
+    ...withRecovery,
+  };
 }

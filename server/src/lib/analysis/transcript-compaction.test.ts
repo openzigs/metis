@@ -327,6 +327,62 @@ describe("compactTranscript (#1225)", () => {
   });
 });
 
+/**
+ * #726 — file reads are the only results that carry a function BODY, and the
+ * agent cannot re-derive one from a locator. Searches are elided first; a read
+ * is elided only when eliding every eligible search did not bring the
+ * transcript under its target, so the ceiling still holds.
+ */
+describe("compactTranscript — file reads are elided last (#726)", () => {
+  const READ_BODY = "14| func ValidateFeedCreation() {\n" + "15|   body line\n".repeat(200);
+
+  function mixed(): ChatMessage[] {
+    const messages: ChatMessage[] = [{ role: "user", content: "TASK" }];
+    messages.push(assistantCall("read_file_slice"));
+    messages.push(toolResult("read_file_slice", READ_BODY));
+    for (let i = 0; i < 6; i++) {
+      messages.push(assistantCall(`search_${i}`));
+      messages.push(toolResult(`search_${i}`, `hit-${i} `.repeat(600)));
+    }
+    return messages;
+  }
+
+  it("keeps the oldest file read whole while eliding searches suffices", () => {
+    const messages = mixed();
+    const readTokens = estimateTokens(String(messages[2].content));
+    const result = compactTranscript(messages, 1, {
+      maxTranscriptTokens: readTokens + 3_000,
+      preserveRecentTurns: 1,
+      targetRatio: 1,
+    });
+    expect(result.compacted).toBe(true);
+    expect(String(messages[2].content)).toBe(`Tool result for read_file_slice:\n${READ_BODY}`);
+    expect(String(messages[4].content)).toContain(TRANSCRIPT_ELISION_MARKER);
+  });
+
+  it("still elides a file read when the ceiling cannot be met otherwise", () => {
+    const messages = mixed();
+    const result = compactTranscript(messages, 1, {
+      maxTranscriptTokens: 1_000,
+      preserveRecentTurns: 1,
+    });
+    expect(result.compacted).toBe(true);
+    expect(String(messages[2].content)).toContain(TRANSCRIPT_ELISION_MARKER);
+  });
+
+  it("treats every tool alike when no tool is deferred", () => {
+    const messages = mixed();
+    const readTokens = estimateTokens(String(messages[2].content));
+    compactTranscript(messages, 1, {
+      maxTranscriptTokens: readTokens + 3_000,
+      preserveRecentTurns: 1,
+      targetRatio: 1,
+      deferTools: [],
+    });
+    expect(String(messages[2].content)).toContain(TRANSCRIPT_ELISION_MARKER);
+  });
+});
+
 describe("compaction telemetry survives log redaction (#1225)", () => {
   /** The meta the module ACTUALLY logs, not a copy of it. */
   const meta = compactionLogMeta(

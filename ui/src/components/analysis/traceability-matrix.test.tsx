@@ -6,7 +6,7 @@
  * and trigger a download.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { TraceabilityMatrix as TMatrix } from "@metis/shared";
 
@@ -87,6 +87,30 @@ describe("TraceabilityMatrix", () => {
     // Coverage badges rendered per row (grounded_in_code + no_evidence).
     expect(screen.getByTestId("coverage-badge-grounded_in_code")).toBeInTheDocument();
     expect(screen.getByTestId("coverage-badge-no_evidence")).toBeInTheDocument();
+  });
+
+  it("suffixes each test with its relation when the resolver supplied one (#816)", async () => {
+    getTraceability.mockResolvedValue({
+      ...MATRIX,
+      rows: [
+        {
+          ...MATRIX.rows[0],
+          tests: [
+            { filePath: "server/src/auth.test.ts", symbol: "login suite", relation: "exercises" },
+            { filePath: "server/src/legacy.test.ts", symbol: "legacy" },
+          ],
+        },
+      ],
+    });
+    renderMatrix();
+    const row = await screen.findByTestId("traceability-row-req-1");
+    const withRelation = within(row).getByText("server/src/auth.test.ts").closest("li");
+    expect(withRelation).toHaveTextContent("server/src/auth.test.ts · Calls the code");
+    expect(withRelation).toHaveAttribute("title", "Calls the code");
+    // A pre-#815 link with no relation renders the bare path, no suffix.
+    const bare = within(row).getByText("server/src/legacy.test.ts").closest("li");
+    expect(bare).toHaveTextContent(/^server\/src\/legacy\.test\.ts$/);
+    expect(bare).not.toHaveAttribute("title");
   });
 
   it("shows explicit empty cells for a requirement with no trace", async () => {

@@ -19,6 +19,7 @@ import type {
   RequirementSupportConfidence,
   RequirementVerdict,
   SynthesisDegradation,
+  RequirementReplacementWithheld,
   TraceabilityMatrix,
   GapReport,
   RequirementDiff,
@@ -180,6 +181,8 @@ export interface AgentResultSummary {
   completedAt: string | null;
   errorMessage: string | null;
   summary: string | null;
+  /** #766 — the agent output's notes (carries the degraded marker). */
+  notes?: string[];
   findings: AnalysisFinding[];
 }
 
@@ -387,6 +390,7 @@ export const analysisApi = {
         completedAt: agent.completedAt ?? null,
         errorMessage: agent.errorMessage ?? null,
         summary: agent.summary ?? null,
+        notes: agent.notes ?? [],
         source: agent.source ?? null,
         findings: agent.findings ?? [],
       })) as AgentResultSummary[],
@@ -708,6 +712,8 @@ export interface PublishFindingInput {
   provider?: "github" | "jira";
   draft: FindingIssueDraft;
   extraLabels?: string[];
+  /** #733 — the GitHub repository to file into; else the project's saved target. */
+  target?: { owner: string; repo: string };
 }
 
 export interface PublishedIssueLink {
@@ -906,6 +912,12 @@ export interface EnhancementMetadata {
    * typed "feature" and carries no acceptance criteria.
    */
   synthesisDegraded?: SynthesisDegradation;
+  /**
+   * Issue #769 — present when a re-synthesis was refused permission to replace
+   * the requirement set (reviewed work, or a degraded result over a healthy
+   * one). Cleared by the next replacement that is allowed.
+   */
+  requirementReplacementWithheld?: RequirementReplacementWithheld;
 }
 
 /** Narrow a snapshot's untyped `metadata` blob into the enhancement view. */

@@ -146,7 +146,6 @@ function makeUser(overrides: Partial<AuthPayload> & { role: RoleKey }): AuthPayl
   return {
     userId: "u-mine",
     username: "mine",
-    role: overrides.role,
     permissions: [],
     workspaces: ["ws-mine"],
     ...overrides,

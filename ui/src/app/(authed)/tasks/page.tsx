@@ -14,6 +14,7 @@ import { tasksApi, type TaskRow } from "@/lib/scheduler-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
+import { schedulerJoin } from "@/lib/socket-rooms";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -45,9 +46,10 @@ export default function TasksPage() {
 
   useEffect(() => {
     if (!socket) return;
-    // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(socket, () => socket.emit("subscribe:scheduler"));
     const onChange = () => invalidate();
+    // #642 — re-join on reconnect; the server drops rooms with the old session.
+    // #646 — and refetch, for task events sent while the socket was down.
+    const release = keepSubscribed(socket, schedulerJoin(socket), onChange);
     socket.on("task:status", onChange);
     socket.on("task:progress", onChange);
     return () => {

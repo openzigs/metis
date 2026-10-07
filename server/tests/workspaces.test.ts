@@ -58,6 +58,16 @@ import { workspacesRouter } from "../src/routes/workspaces.js";
 import { requireWorkspaceRole } from "../src/middleware/require-workspace-role.js";
 import { AppError } from "../src/middleware/error-handler.js";
 
+/**
+ * Prisma delegates return a fluent `PrismaPromise` that no in-memory double can
+ * construct; the code under test only awaits the result, so a plain async
+ * function stands in for it. Asserting the delegate's type here is the double's
+ * one cast.
+ */
+function prismaImpl<F>(impl: (...args: never[]) => Promise<unknown>): F {
+  return impl as F;
+}
+
 function createApp(authUser?: { userId: string; role: string; workspaces?: string[] }): Express {
   const app = express();
   app.use(express.json());
@@ -276,12 +286,12 @@ describe("Workspace Routes", () => {
     it("rejects invite for existing member", async () => {
       const app = createApp(mockAdmin);
       vi.mocked(prisma.workspaceMember.findUnique).mockImplementation(
-        async (args: { where: Record<string, unknown> }) => {
+        prismaImpl(async (args: { where: Record<string, unknown> }) => {
           if (args.where.workspaceId_userId) {
-            return { id: "mem-existing" } as never;
+            return { id: "mem-existing" };
           }
-          return { id: "mem-1", role: "admin", workspaceId: "ws-1", userId: "user-1" } as never;
-        },
+          return { id: "mem-1", role: "admin", workspaceId: "ws-1", userId: "user-1" };
+        }),
       );
       vi.mocked(prisma.user.findUnique).mockResolvedValue({
         id: "user-2",

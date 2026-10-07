@@ -75,7 +75,9 @@ vi.mock("../lib/impact-analysis/used-schema-service.js", () => ({
 vi.mock("../lib/prisma.js", () => ({ prisma: {} }));
 
 const listDbConnectors = vi.fn(async () => [{ id: "db-1" }] as { id: string }[]);
-const inspectDbConnector = vi.fn(async () => ({ tables: [] }));
+const inspectDbConnector = vi.fn(
+  async (): Promise<{ tables: unknown[]; routines?: unknown[] }> => ({ tables: [] }),
+);
 vi.mock("../lib/connectors/db/db-service.js", () => ({
   listDbConnectors,
   inspectDbConnector,

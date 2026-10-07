@@ -10,7 +10,7 @@
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
-import Database from "better-sqlite3";
+import { createRequire } from "node:module";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
@@ -18,6 +18,17 @@ import {
   type MigratedSqlite,
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
 } from "./helpers/sqlite-migrated-db.js";
+
+// `better-sqlite3` ships no type declarations and `@types/better-sqlite3` is not a
+// dependency, so the import is typed by hand with only the surface this file uses.
+interface ReadonlySqlite {
+  prepare(sql: string): { all(): unknown[] };
+  close(): void;
+}
+const Database = createRequire(import.meta.url)("better-sqlite3") as new (
+  file: string,
+  options: { readonly: boolean },
+) => ReadonlySqlite;
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("../src/lib/prisma.js", async () => {
@@ -30,13 +41,7 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 
-// The exporter's batch calls are stubbed: the drafts it writes are the subject.
-const publishing = vi.hoisted(() => ({ createBatch: vi.fn(), executeBatch: vi.fn() }));
-vi.mock("../src/lib/publishing/publishing-service.js", () => publishing);
-
 const { generateDrafts } = await import("../src/lib/publishing/draft-generator.js");
-const { exportSuggestionsToGithub } =
-  await import("../src/lib/testcoverage/exporters/github-exporter.js");
 
 const MIGRATION = "20261001000000_issue369_issue_draft_dedup_unique";
 const T0 = "2026-09-01T00:00:00.000Z";
@@ -100,6 +105,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Same hash in another project is not a duplicate.
       draft("d_other", "p2", "h1", "draft", T0);
       sqlite.apply(MIGRATION);
+      // The generateDrafts cases below run today's generator, whose client
+      // selects every project column — so the file must reach the head schema.
+      // No later migration touches the rows seeded above (#402 repoints only
+      // parentDraftId, null on every row here).
+      sqlite.applyRemaining();
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
@@ -357,57 +367,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const meta = after.map((d) => JSON.parse(d.metadata ?? "{}") as Record<string, unknown>);
         expect(meta.map((m) => m.bodyHeld)).toEqual([undefined, undefined]);
       });
-    });
-
-    it("lets a test-coverage export be retried after createBatch refused the first attempt", async () => {
-      const suggestion = (id: string) => ({
-        id,
-        title: `Case ${id}`,
-        gwt: { given: ["g"], when: ["w"], then: ["t"] },
-        steps: [],
-        priority: "high" as const,
-        tags: [],
-        mappedRequirementIds: [],
-        faithfulness: 0.9,
-        lowConfidence: false,
-      });
-      const opts = { projectId: "p2", targetOwner: "acme", targetRepo: "metis", actorId: "u1" };
-      const live = () =>
-        db.issueDraft.findMany({
-          where: { projectId: "p2", dedupHash: { in: ["sg1", "sg2"] }, deletedAt: null },
-          orderBy: { dedupHash: "asc" },
-        });
-
-      // First attempt: the drafts are written, then the #619 approval gate refuses the batch.
-      publishing.createBatch.mockRejectedValueOnce(
-        Object.assign(new Error("approval required"), { status: 409, code: "APPROVAL_REQUIRED" }),
-      );
-      await expect(
-        exportSuggestionsToGithub([suggestion("sg1"), suggestion("sg2")], opts),
-      ).rejects.toMatchObject({ code: "APPROVAL_REQUIRED" });
-      const stranded = await live();
-      expect(stranded.map((d) => d.status)).toEqual(["draft", "draft"]);
-
-      // Retry after approval: the stranded drafts are reused, not duplicated.
-      publishing.createBatch.mockResolvedValueOnce({ id: "batch-1" });
-      const retry = await exportSuggestionsToGithub([suggestion("sg1"), suggestion("sg2")], opts);
-      expect(retry.draftIds).toEqual(stranded.map((d) => d.id));
-      expect(publishing.createBatch.mock.calls.at(-1)?.[0].input.draftIds).toEqual(
-        stranded.map((d) => d.id),
-      );
-
-      // A published draft re-exports as a draft again; an in-flight one is left alone.
-      await db.issueDraft.update({ where: { id: stranded[0].id }, data: { status: "published" } });
-      await db.issueDraft.update({ where: { id: stranded[1].id }, data: { status: "publishing" } });
-      publishing.createBatch.mockResolvedValueOnce({ id: "batch-2" });
-      await exportSuggestionsToGithub(
-        [{ ...suggestion("sg1"), title: "Renamed" }, suggestion("sg2")],
-        opts,
-      );
-      const after = await live();
-      expect(after.map((d) => d.id)).toEqual(stranded.map((d) => d.id));
-      expect(after.map((d) => d.status)).toEqual(["draft", "publishing"]);
-      expect(after[0].title).toBe("Renamed");
     });
   },
 );

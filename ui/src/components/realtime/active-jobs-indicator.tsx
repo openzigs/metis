@@ -6,7 +6,7 @@
  * A compact header button that shows "N jobs running" and opens a drawer listing
  * every currently-active long-running job (kind, project, live progress). It is
  * driven entirely by the unified job-events bus via {@link useActiveJobs}, so it
- * reflects ANY `JobKind` (analysis, doc-gen, scan, pr-review, …), not just
+ * reflects ANY `JobKind` (analysis, doc-gen, pr-review, …), not just
  * doc-generation — the single chokepoint Epic #406 mandates.
  *
  * Behaviour required by #420:

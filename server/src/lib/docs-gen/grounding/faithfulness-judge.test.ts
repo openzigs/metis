@@ -116,8 +116,8 @@ describe("FaithfulnessJudge.parseVerdicts", () => {
       2,
     );
     expect(out).toHaveLength(2);
-    expect(out[0].supported).toBe(true);
-    expect(out[1].supported).toBe(false);
+    expect(out![0].supported).toBe(true);
+    expect(out![1].supported).toBe(false);
   });
 
   it("strips markdown fences before parsing", () => {
@@ -126,7 +126,7 @@ describe("FaithfulnessJudge.parseVerdicts", () => {
       1,
     );
     expect(out).toHaveLength(1);
-    expect(out[0].supported).toBe(true);
+    expect(out![0].supported).toBe(true);
   });
 
   it("returns null on unparseable JSON so the caller can decide a fallback", () => {

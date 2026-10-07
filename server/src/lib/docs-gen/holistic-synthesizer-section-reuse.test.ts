@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatChunk } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
 import type { AIConfig } from "../ai/config.js";
 import { OpenAICompatibleProvider } from "../ai/providers/openai-compatible-provider.js";
 import { BedrockDirectProvider } from "../ai/providers/bedrock-direct-provider.js";
@@ -19,6 +19,7 @@ import {
   legacyGeneratedDocVersionManifest,
   normalizeGeneratedDocVersionRecord,
   parseGeneratedDocVersionManifest,
+  type GeneratedDocVersionRecord,
 } from "./generated-doc-provenance.js";
 import { recordSectionSynthesis, SECTION_SYNTHESIS_VERSION } from "./section-reuse.js";
 
@@ -42,11 +43,13 @@ const calls = {
   empty: false,
   phase1Requests: [] as { prompt: string; maxTokens?: number }[],
 };
+// Partial double: implements only the methods the synthesizer calls (no embed/models/ping,
+// chat returns content only), so it cannot overlap AIProvider without an unknown hop.
 const provider = {
   key: "bedrock-gateway",
   model: "fixture",
   offline: false,
-  chat: vi.fn(async (messages) => {
+  chat: vi.fn(async (messages: ChatMessage[]) => {
     calls.grounding++;
     const judge = messages.some((m) => String(m.content).includes("strict faithfulness judge"));
     return {
@@ -57,7 +60,7 @@ const provider = {
       ),
     };
   }),
-  async *stream(messages, options): AsyncGenerator<ChatChunk> {
+  async *stream(messages: ChatMessage[], options?: ChatOptions): AsyncGenerator<ChatChunk> {
     const prompt = String(messages.at(-1)?.content);
     if (prompt.includes("section group now")) {
       const label = /Section group: \*\*(.+?)\*\*/.exec(prompt)![1];
@@ -70,7 +73,7 @@ const provider = {
     }
     yield { type: "done", finishReason: calls.truncated ? "length" : "stop" };
   },
-} as AIProvider;
+} as unknown as AIProvider; // see the partial-double note above
 vi.mock("../ai/index.js", () => ({
   loadAIConfig: loadConfig,
   buildProvider: ({ config }: { config: AIConfig }) => ({
@@ -415,10 +418,16 @@ describe("#262 — reuse records written under an older grounding contract", () 
       const manifest = parseGeneratedDocVersionManifest(stored);
       expect(manifest.sectionSynthesis).toEqual(JSON.parse(JSON.stringify(stale)));
       // The read path that serves old versions re-serialises without loss.
-      const normalized = normalizeGeneratedDocVersionRecord(
-        { documentId: "d", version: 1, revisionId: null, provenanceManifest: stored },
-        { projectId: "p", generatedDocumentId: "d" },
-      );
+      const record: GeneratedDocVersionRecord = {
+        documentId: "d",
+        version: 1,
+        revisionId: null,
+        provenanceManifest: stored,
+      };
+      const normalized = normalizeGeneratedDocVersionRecord(record, {
+        projectId: "p",
+        generatedDocumentId: "d",
+      });
       expect(JSON.parse(normalized.provenanceManifest).sectionSynthesis).toEqual(
         JSON.parse(JSON.stringify(stale)),
       );

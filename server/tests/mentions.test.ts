@@ -10,17 +10,51 @@ const mockPrisma = {
   mention: { upsert: vi.fn(), updateMany: vi.fn() },
   // #614 — no stored rows: inApp × mention defaults ON (send).
   notificationPreference: { findMany: vi.fn(async () => []) },
+  // #734/#735 — where the comment lives (link, text, audience).
+  comment: { findUnique: vi.fn() },
+  userRole: { findFirst: vi.fn() },
+  notification: { create: vi.fn() },
 };
 
 vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
+const mockEmit = vi.fn();
+const mockIoTo = vi.fn(() => ({ emit: mockEmit }));
 vi.mock("../src/lib/socket/registry.js", () => ({
-  getSocketServer: vi.fn(() => ({
-    to: vi.fn(() => ({ emit: vi.fn() })),
-  })),
+  getSocketServer: vi.fn(() => ({ to: mockIoTo })),
 }));
 
-const { parseMentions, resolveUsernames, fanOutMentions, dispatchMentions } =
-  await import("../src/lib/collaboration/mentions.js");
+const canAccessProjectDiscussions = vi.fn();
+vi.mock("../src/lib/discussions/access.js", () => ({
+  canAccessProjectDiscussions: (...a: unknown[]) => canAccessProjectDiscussions(...a),
+}));
+
+/** A comment on requirement `req-1` of project `p-1`, by Alice. */
+function requirementComment(title = "Login works") {
+  mockPrisma.comment.findUnique.mockResolvedValue({
+    author: { displayName: "Alice", username: "alice" },
+    thread: {
+      specKitProjectId: null,
+      specKitArtifactName: null,
+      requirement: { id: "req-1", title, projectId: "p-1", analysisId: "a-1" },
+    },
+  });
+}
+
+function resetFanOutDoubles() {
+  vi.clearAllMocks();
+  requirementComment();
+  mockPrisma.userRole.findFirst.mockResolvedValue(null);
+  mockPrisma.notification.create.mockResolvedValue({});
+  canAccessProjectDiscussions.mockResolvedValue(true);
+}
+
+const {
+  parseMentions,
+  resolveUsernames,
+  fanOutMentions,
+  dispatchMentions,
+  resolveCommentMentionContext,
+} = await import("../src/lib/collaboration/mentions.js");
 
 // ---- Tests -----------------------------------------------------------------
 
@@ -100,7 +134,7 @@ describe("resolveUsernames", () => {
 });
 
 describe("dispatchMentions", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(resetFanOutDoubles);
 
   it("does not throw when fan-out rejects (fire-and-forget is safe)", async () => {
     mockPrisma.user.findMany.mockRejectedValue(new Error("boom"));
@@ -121,7 +155,7 @@ describe("dispatchMentions", () => {
 });
 
 describe("fanOutMentions", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(resetFanOutDoubles);
 
   it("skips fan-out when no mentions", async () => {
     await fanOutMentions("comment-1", "no mentions here", "author-1");
@@ -154,6 +188,12 @@ describe("fanOutMentions", () => {
         data: { notified: true },
       }),
     );
+    // #686 — the mention reaches the mentioned user's personal room.
+    expect(mockIoTo).toHaveBeenCalledWith("user:user-2");
+    expect(mockEmit).toHaveBeenCalledWith(
+      "comment:mention",
+      expect.objectContaining({ commentId: "comment-1", mentionedUserId: "user-2" }),
+    );
   });
 
   it("does not throw even if socket is not registered", async () => {
@@ -164,5 +204,104 @@ describe("fanOutMentions", () => {
     mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
 
     await expect(fanOutMentions("c-1", "@bob hi", "author-1")).resolves.toBeUndefined();
+  });
+
+  // ---- #734 — only users who can open the project are notified ------------
+
+  it("skips a mentioned user who cannot open the comment's project (#734)", async () => {
+    mockPrisma.user.findMany.mockResolvedValue([
+      { id: "user-2", username: "bob" },
+      { id: "user-3", username: "eve" },
+    ]);
+    canAccessProjectDiscussions.mockImplementation(
+      async (actor: { id: string }) => actor.id === "user-2",
+    );
+    mockPrisma.mention.upsert.mockResolvedValue({});
+    mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
+
+    await fanOutMentions("comment-1", "@bob @eve check", "author-1");
+
+    expect(canAccessProjectDiscussions).toHaveBeenCalledWith(
+      { id: "user-3", role: "reader" },
+      "p-1",
+    );
+    expect(mockPrisma.mention.upsert).toHaveBeenCalledTimes(1);
+    expect(mockIoTo).toHaveBeenCalledWith("user:user-2");
+    expect(mockIoTo).not.toHaveBeenCalledWith("user:user-3");
+  });
+
+  it("checks a system admin as an admin", async () => {
+    mockPrisma.user.findMany.mockResolvedValue([{ id: "user-9", username: "root" }]);
+    mockPrisma.userRole.findFirst.mockResolvedValue({ userId: "user-9" });
+
+    await fanOutMentions("comment-1", "@root", "author-1");
+
+    expect(canAccessProjectDiscussions).toHaveBeenCalledWith(
+      { id: "user-9", role: "admin" },
+      "p-1",
+    );
+  });
+
+  it("fails closed when the eligibility check errors", async () => {
+    mockPrisma.user.findMany.mockResolvedValue([{ id: "user-2", username: "bob" }]);
+    canAccessProjectDiscussions.mockRejectedValue(new Error("db down"));
+
+    await fanOutMentions("comment-1", "@bob", "author-1");
+
+    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing when the comment cannot be resolved to a project", async () => {
+    mockPrisma.comment.findUnique.mockResolvedValue(null);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: "user-2", username: "bob" }]);
+
+    await fanOutMentions("comment-gone", "@bob", "author-1");
+
+    expect(mockPrisma.user.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveCommentMentionContext (#735)", () => {
+  beforeEach(resetFanOutDoubles);
+
+  it("links a requirement comment to the requirement on the analysis page", async () => {
+    await expect(resolveCommentMentionContext("c-1")).resolves.toEqual({
+      projectId: "p-1",
+      href: "/projects/p-1/analysis?analysisId=a-1&requirementId=req-1&comments=1",
+      message: 'Alice mentioned you on "Login works"',
+    });
+  });
+
+  it("shortens a long requirement title in the message", async () => {
+    requirementComment("x".repeat(300));
+
+    const ctx = await resolveCommentMentionContext("c-1");
+
+    expect(ctx?.message.length).toBeLessThan(160);
+    expect(ctx?.message.endsWith('…"')).toBe(true);
+  });
+
+  it("links an artifact comment to the Spec Kit artifact", async () => {
+    mockPrisma.comment.findUnique.mockResolvedValue({
+      author: { displayName: "", username: "alice" },
+      thread: { specKitProjectId: "p 1", specKitArtifactName: "plan.md", requirement: null },
+    });
+
+    await expect(resolveCommentMentionContext("c-1")).resolves.toEqual({
+      projectId: "p 1",
+      href: "/projects/p%201/spec-kit?artifact=plan.md",
+      message: "alice mentioned you on plan.md",
+    });
+  });
+
+  it("returns null for a thread anchored to nothing", async () => {
+    mockPrisma.comment.findUnique.mockResolvedValue({
+      author: null,
+      thread: { specKitProjectId: null, specKitArtifactName: null, requirement: null },
+    });
+
+    await expect(resolveCommentMentionContext("c-1")).resolves.toBeNull();
   });
 });

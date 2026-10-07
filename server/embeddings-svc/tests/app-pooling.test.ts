@@ -7,9 +7,16 @@
  *
  * The runtime itself is mocked — pooling MATH is proved against real weights in
  * `pooling.integration.test.ts` (download-gated).
+ *
+ * Issue #692 — every request here goes through `invoke()` (tests/helpers/invoke-app.ts),
+ * never `supertest`. supertest calls `app.listen(0)`, a WILDCARD bind, then dials
+ * `127.0.0.1:<port>`; on macOS another process can bind the more specific
+ * `127.0.0.1:<port>` and receive the request instead (the #689 flake mechanism). In
+ * process there is no port to steal. The `listen` spy below keeps it that way.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import request from "supertest";
+import { send } from "./helpers/invoke-app.js";
+import { createListenGuard } from "./helpers/listen-guard.js";
 
 interface PipeCall {
   model: string;
@@ -35,7 +42,11 @@ vi.mock("../src/pipelines.js", () => ({
 
 const AUTH = { Authorization: "Bearer test-secret-token-12345" };
 
+// Issue #692 — no test in this file may open a TCP listener. See the header.
+const listenGuard = createListenGuard("#692");
+
 beforeEach(() => {
+  listenGuard.arm();
   calls.length = 0;
   process.env.EMBEDDINGS_TOKEN = "test-secret-token-12345";
   delete process.env.EMBED_POOLING;
@@ -48,6 +59,7 @@ afterEach(() => {
   delete process.env.EMBED_POOLING;
   delete process.env.EMBED_POOLING_MAP;
   delete process.env.EMBED_DTYPE;
+  listenGuard.check();
 });
 
 async function loadApp() {
@@ -63,10 +75,7 @@ describe("POST /embed pooling", () => {
     // (#788 arm C: 0.254 nDCG@10 — level with the model this replaced) and no
     // status code, log line or metric anywhere would say so.
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set(AUTH)
-      .send({ texts: ["hello"] });
+    const res = await send(app, "POST", "/embed", { texts: ["hello"] }, AUTH);
 
     expect(res.status).toBe(200);
     expect(calls[0].model).toBe("Alibaba-NLP/gte-modernbert-base");
@@ -78,10 +87,13 @@ describe("POST /embed pooling", () => {
 
   it("CLS-pools a CLS model BY DEFAULT (regression guard against the old hardcode)", async () => {
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set(AUTH)
-      .send({ texts: ["throttle failed logins"], model: "Alibaba-NLP/gte-modernbert-base" });
+    const res = await send(
+      app,
+      "POST",
+      "/embed",
+      { texts: ["throttle failed logins"], model: "Alibaba-NLP/gte-modernbert-base" },
+      AUTH,
+    );
 
     expect(res.status).toBe(200);
     expect(calls[0].opts.pooling).toBe("cls");
@@ -90,20 +102,26 @@ describe("POST /embed pooling", () => {
 
   it("CLS-pools Granite by default too", async () => {
     const app = await loadApp();
-    await request(app)
-      .post("/embed")
-      .set(AUTH)
-      .send({ texts: ["x"], model: "onnx-community/granite-embedding-small-english-r2-ONNX" });
+    await send(
+      app,
+      "POST",
+      "/embed",
+      { texts: ["x"], model: "onnx-community/granite-embedding-small-english-r2-ONNX" },
+      AUTH,
+    );
 
     expect(calls[0].opts.pooling).toBe("cls");
   });
 
   it("honours an explicit pooling field over the per-model map", async () => {
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set(AUTH)
-      .send({ texts: ["x"], model: "Alibaba-NLP/gte-modernbert-base", pooling: "mean" });
+    const res = await send(
+      app,
+      "POST",
+      "/embed",
+      { texts: ["x"], model: "Alibaba-NLP/gte-modernbert-base", pooling: "mean" },
+      AUTH,
+    );
 
     expect(res.status).toBe(200);
     expect(calls[0].opts.pooling).toBe("mean");
@@ -112,20 +130,14 @@ describe("POST /embed pooling", () => {
   it("honours EMBED_POOLING_MAP for a model the built-in map does not know", async () => {
     process.env.EMBED_POOLING_MAP = "acme/custom-embedder=cls";
     const app = await loadApp();
-    await request(app)
-      .post("/embed")
-      .set(AUTH)
-      .send({ texts: ["x"], model: "acme/custom-embedder" });
+    await send(app, "POST", "/embed", { texts: ["x"], model: "acme/custom-embedder" }, AUTH);
 
     expect(calls[0].opts.pooling).toBe("cls");
   });
 
   it("rejects an unknown pooling value with 400 (never silently mean-pools)", async () => {
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set(AUTH)
-      .send({ texts: ["x"], pooling: "max" });
+    const res = await send(app, "POST", "/embed", { texts: ["x"], pooling: "max" }, AUTH);
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("bad_request");
@@ -135,10 +147,7 @@ describe("POST /embed pooling", () => {
   it("passes the configured EMBED_DTYPE through to the pipeline", async () => {
     process.env.EMBED_DTYPE = "fp32";
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set(AUTH)
-      .send({ texts: ["x"] });
+    const res = await send(app, "POST", "/embed", { texts: ["x"] }, AUTH);
 
     expect(calls[0].dtype).toBe("fp32");
     expect(res.body.dtype).toBe("fp32");
@@ -172,10 +181,7 @@ describe("createApp() env validation (crashloop, not per-request 500)", () => {
     // Boot validation must not swallow request-level validation: the pooling
     // field is untrusted input and stays a genuine 400.
     const app = await loadApp();
-    const res = await request(app)
-      .post("/embed")
-      .set(AUTH)
-      .send({ texts: ["x"], pooling: "clss" });
+    const res = await send(app, "POST", "/embed", { texts: ["x"], pooling: "clss" }, AUTH);
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("bad_request");

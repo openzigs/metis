@@ -12,7 +12,9 @@ import { prReviewsApi } from "@/lib/pr-reviews-api";
 
 const mockApi = apiFetch as unknown as ReturnType<typeof vi.fn>;
 
-beforeEach(() => mockApi.mockReset());
+beforeEach(() => {
+  mockApi.mockReset();
+});
 
 describe("prReviewsApi.list", () => {
   it("issues GET without query string when no opts are provided", async () => {

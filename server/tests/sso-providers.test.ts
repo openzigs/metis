@@ -21,6 +21,7 @@ describe("SSOAuthProviderShim", () => {
     const shim = new SSOAuthProviderShim("saml");
     const result = await shim.authenticate("user", "pass");
     expect(result.success).toBe(false);
+    if (result.success) throw new Error("unreachable: asserted a failed result above");
     expect(result.error).toContain("SSO login flow");
     expect(result.error).toContain("saml");
   });
@@ -29,6 +30,7 @@ describe("SSOAuthProviderShim", () => {
     const shim = new SSOAuthProviderShim("oidc");
     const result = await shim.authenticate("user", "pass");
     expect(result.success).toBe(false);
+    if (result.success) throw new Error("unreachable: asserted a failed result above");
     expect(result.error).toContain("SSO login flow");
     expect(result.error).toContain("oidc");
   });

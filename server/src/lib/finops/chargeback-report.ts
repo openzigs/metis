@@ -7,9 +7,12 @@
  * emails it to each workspace owner via the #50 email channel.
  *
  * Data sources:
- *   - Per-project cost: `TokenUsage.costCents` aggregated by projectId.
- *   - Per-user cost:     `AITokenUsage.estimatedCostUsd` aggregated by userId
- *     (converted to integer cents for consistency).
+ *   - Per-project cost: `TokenUsage.costUsd` aggregated by projectId.
+ *   - Per-user cost:    `TokenUsage.costUsd` aggregated by userId — the same
+ *     ledger, so the per-user lines add up to the project total (#854). A row
+ *     with no user (written before #792, or by a caller that knew none) is an
+ *     "Unattributed" line rather than dropped spend.
+ *   Both sum the unrounded `costUsd` and round once to integer cents (#761).
  *
  * SECURITY: every user-controlled value (workspace/project name, username,
  * email) is HTML-escaped before it reaches the PDF renderer to prevent
@@ -20,6 +23,7 @@ import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { exportDocument } from "../docs-gen/exporters.js";
 import { resolveEmailSender, type EmailSender } from "./channels/email-sender.js";
+import { LEGACY_COST_ROW_WHERE, sumLedgerCents } from "./ledger-cost.js";
 
 const log = createChildLogger("finops-chargeback");
 
@@ -55,9 +59,38 @@ export interface ChargebackData {
   byUser: CostLine[];
 }
 
-function usdToCents(usd: number | null | undefined): number {
-  if (!usd || !Number.isFinite(usd)) return 0;
-  return Math.round(usd * 100);
+/**
+ * #761 / #868 review — per-key ledger cost in WHOLE cents, rounded once.
+ *
+ * `_sum: { costUsd }` alone skips a row whose writer set only `costCents` (an
+ * old replica mid rolling-deploy), which every row-level reader counts through
+ * `ledgerRowCents`. The second, legacy query adds exactly those rows.
+ */
+async function groupedLedgerCents(
+  key: "projectId" | "userId",
+  where: { projectId: { in: string[] }; createdAt: { gte: Date; lt: Date } },
+): Promise<Map<string | null, number>> {
+  const [priced, legacy] = await Promise.all([
+    prisma.tokenUsage.groupBy({ by: [key], where, _sum: { costUsd: true } }),
+    prisma.tokenUsage.groupBy({
+      by: [key],
+      where: { ...where, ...LEGACY_COST_ROW_WHERE },
+      _sum: { costCents: true },
+    }),
+  ]);
+  const usdByKey = new Map<string | null, number | null>();
+  const legacyByKey = new Map<string | null, number | null>();
+  for (const g of priced) {
+    usdByKey.set(g[key] ?? null, g._sum.costUsd ?? null);
+  }
+  for (const g of legacy) {
+    legacyByKey.set(g[key] ?? null, g._sum.costCents ?? null);
+  }
+  const out = new Map<string | null, number>();
+  for (const k of new Set([...usdByKey.keys(), ...legacyByKey.keys()])) {
+    out.set(k, Math.round(sumLedgerCents(usdByKey.get(k), legacyByKey.get(k))));
+  }
+  return out;
 }
 
 /** Aggregate per-project cost (cents) for a workspace over a window. */
@@ -71,21 +104,17 @@ async function projectCosts(workspaceId: string, range: MonthRange): Promise<Cos
 
   // N1: single grouped aggregate instead of one query per project — mirrors
   // the `userCosts` pattern below.
-  const grouped = await prisma.tokenUsage.groupBy({
-    by: ["projectId"],
-    where: {
-      projectId: { in: projects.map((p) => p.id) },
-      createdAt: { gte: range.start, lt: range.end },
-    },
-    _sum: { costCents: true },
+  const grouped = await groupedLedgerCents("projectId", {
+    projectId: { in: projects.map((p) => p.id) },
+    createdAt: { gte: range.start, lt: range.end },
   });
 
-  return grouped
-    .map((g) => ({
-      id: g.projectId,
-      name: nameById.get(g.projectId) ?? g.projectId,
-      costCents: g._sum.costCents ?? 0,
-    }))
+  return [...grouped]
+    .flatMap(([projectId, costCents]) =>
+      projectId === null
+        ? []
+        : [{ id: projectId, name: nameById.get(projectId) ?? projectId, costCents }],
+    )
     .filter((l) => l.costCents > 0)
     .sort((a, b) => b.costCents - a.costCents);
 }
@@ -99,25 +128,21 @@ async function userCosts(workspaceId: string, range: MonthRange): Promise<CostLi
   const projectIds = projects.map((p) => p.id);
   if (projectIds.length === 0) return [];
 
-  const rows = await prisma.aITokenUsage.findMany({
-    where: {
-      projectId: { in: projectIds },
-      ts: { gte: range.start, lt: range.end },
-    },
-    select: { userId: true, estimatedCostUsd: true },
+  const grouped = await groupedLedgerCents("userId", {
+    projectId: { in: projectIds },
+    createdAt: { gte: range.start, lt: range.end },
   });
-  const byUser = new Map<string, number>();
-  for (const r of rows) {
-    byUser.set(r.userId, (byUser.get(r.userId) ?? 0) + usdToCents(r.estimatedCostUsd));
-  }
-  const userIds = [...byUser.keys()];
+  const userIds = [...grouped.keys()].flatMap((id) => (id === null ? [] : [id]));
   const users = await prisma.user.findMany({
     where: { id: { in: userIds } },
     select: { id: true, displayName: true, username: true },
   });
   const nameById = new Map(users.map((u) => [u.id, u.displayName || u.username]));
-  return [...byUser.entries()]
-    .map(([id, costCents]) => ({ id, name: nameById.get(id) ?? id, costCents }))
+  return [...grouped]
+    .map(([userId, costCents]) => {
+      if (userId === null) return { id: "unattributed", name: "Unattributed", costCents };
+      return { id: userId, name: nameById.get(userId) ?? userId, costCents };
+    })
     .filter((l) => l.costCents > 0)
     .sort((a, b) => b.costCents - a.costCents);
 }

@@ -1,8 +1,13 @@
 /**
  * Epic #394 P2 (#403) — in-memory queue unit tests.
  */
-import { describe, expect, it } from "vitest";
-import { createPrReviewQueue, type PrReviewJob } from "./queue.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  createPrReviewQueue,
+  SHUTDOWN_REJECTED_JOB_ID,
+  type PrReviewJob,
+  type PrReviewLifecycleEvent,
+} from "./queue.js";
 
 function makePayload(
   overrides: Partial<{ deliveryId: string; owner: string; repo: string; prNumber: number }> = {},
@@ -400,6 +405,59 @@ describe("createPrReviewQueue", () => {
       // Idempotent — second call resolves immediately and does not throw.
       await q.shutdown();
       expect(q.depth()).toBe(0);
+    });
+  });
+
+  // #674 — the pre-dispatch hook the row-less PR-review scope is written in.
+  describe("enqueueAfter()", () => {
+    it("completes the hook before the job's first lifecycle event, then returns the same id", async () => {
+      const order: string[] = [];
+      const q = createPrReviewQueue({
+        processor: async () => {},
+        onLifecycle: (e: PrReviewLifecycleEvent) => order.push(`${e.phase}:${e.jobId}`),
+      });
+      const out = await q.enqueueAfter(makePayload({ deliveryId: "h" }), async (jobId) => {
+        await new Promise((r) => setTimeout(r, 5));
+        order.push(`hook:${jobId}`);
+      });
+      await q.drain();
+      expect(out.jobId).toBe("prr-1-h");
+      expect(order[0]).toBe("hook:prr-1-h");
+      expect(order[1]).toBe("started:prr-1-h");
+    });
+
+    it("never calls the hook, and returns the sentinel, once the queue is shutting down", async () => {
+      const hook = vi.fn(async () => {});
+      const processor = vi.fn(async () => {});
+      const q = createPrReviewQueue({ processor });
+      await q.shutdown();
+      const out = await q.enqueueAfter(makePayload(), hook);
+      expect(out).toEqual({ jobId: SHUTDOWN_REJECTED_JOB_ID, queueDepth: -1 });
+      expect(hook).not.toHaveBeenCalled();
+      expect(processor).not.toHaveBeenCalled();
+    });
+
+    it("rejects, and never dispatches, a job whose hook was still running when shutdown began", async () => {
+      const processor = vi.fn(async () => {});
+      const q = createPrReviewQueue({ processor });
+      const out = await q.enqueueAfter(makePayload(), async () => {
+        await q.shutdown();
+      });
+      expect(out).toEqual({ jobId: SHUTDOWN_REJECTED_JOB_ID, queueDepth: -1 });
+      expect(processor).not.toHaveBeenCalled();
+      expect(q.depth()).toBe(0);
+    });
+
+    it("admits nothing when the hook throws", async () => {
+      const processor = vi.fn(async () => {});
+      const q = createPrReviewQueue({ processor });
+      await expect(
+        q.enqueueAfter(makePayload(), async () => {
+          throw new Error("hook failed");
+        }),
+      ).rejects.toThrow("hook failed");
+      await q.drain();
+      expect(processor).not.toHaveBeenCalled();
     });
   });
 });

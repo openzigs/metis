@@ -11,6 +11,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthPayload } from "@metis/shared";
+
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock("../logger.js", () => ({
+  createChildLogger: () => ({ warn, info: vi.fn(), debug: vi.fn(), error: vi.fn() }),
+}));
+
 import {
   clearThreadPresence,
   getThreadPresence,
@@ -21,7 +27,7 @@ import {
 const USER: AuthPayload = {
   userId: "u1",
   username: "alice",
-  role: "member",
+  role: "developer",
   permissions: [],
 };
 
@@ -103,7 +109,36 @@ describe("presence:thread:join", () => {
     expect(getThreadPresence().has("thread:t1")).toBe(false);
     expect(emit).toHaveBeenCalledWith("auth:error", {
       message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:t1",
     });
+  });
+
+  it("an unknown / deleted thread gets the same room-scoped refusal (#685)", async () => {
+    const notFound = () => Promise.resolve({ ok: false, reason: "not_found" });
+    const { socket, handlers, join, emit } = makeFakeSocket();
+    wireDiscussionPresenceHandlers(socket, { canAccessThread: notFound });
+
+    await fire(handlers, "presence:thread:join", { threadId: "gone" });
+
+    expect(join).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith("auth:error", {
+      message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:gone",
+    });
+  });
+
+  it("logs a refusal at warn with userId, threadId and reason (OWASP A09)", async () => {
+    const forbidden = () => Promise.resolve({ ok: false, reason: "forbidden" });
+    const { socket, handlers } = makeFakeSocket();
+    wireDiscussionPresenceHandlers(socket, { canAccessThread: forbidden });
+
+    await fire(handlers, "presence:thread:join", { threadId: "t1" });
+
+    expect(warn).toHaveBeenCalledWith(
+      "Socket presence:thread:join rejected",
+      expect.objectContaining({ userId: "u1", threadId: "t1", reason: "forbidden" }),
+    );
   });
 
   it("the member list aggregates multiple sockets in the same thread", async () => {
@@ -141,6 +176,7 @@ describe("presence:thread:join", () => {
     expect(getThreadPresence().has("thread:t1")).toBe(false);
     expect(emit).toHaveBeenCalledWith("auth:error", {
       message: "FORBIDDEN: no access to discussion thread",
+      room: "thread:t1",
     });
   });
 });

@@ -6,9 +6,18 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  # #844 — nightly full run. `postgres-adapter` and the `api` image build/smoke
+  # are path-gated on pull requests (see the `changes` job); this run, and every
+  # push to `main`, always does both, so whatever the path lists miss is caught
+  # within a night. Scheduled runs use the default branch's copy of this file.
+  schedule:
+    - cron: "17 4 * * *"
 
+# #844 — the nightly run gets its OWN group: sharing `ci-refs/heads/main` would
+# let a merge to `main` cancel the nightly half-way (or the nightly cancel the
+# merge's run). Every other event keeps exactly `ci-${{ github.ref }}`.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || '' }}
   cancel-in-progress: true
 
 # Least privilege, stated rather than inherited from the repository default (which
@@ -23,8 +32,43 @@ permissions:
 # repositories, so do not reach for one to recover speed — cache instead.
 
 jobs:
+  # #844 — which conditional work this run needs. Pure logic and its reasoning:
+  # scripts/lib/ci-changes-core.mjs; the pinned path lists are there too.
+  #   postgres: run `postgres-adapter`
+  #   images:   run the `api` job's image build, size gate and container smoke
+  # Both are always `true` on push, schedule and workflow_dispatch, and on a PR
+  # whose diff cannot be computed (fail-open). Consumers compare `!= 'false'`,
+  # not `== 'true'`, so an EMPTY output (this job failed) also runs the work.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      postgres: ${{ steps.classify.outputs.postgres }}
+      images: ${{ steps.classify.outputs.images }}
+    steps:
+      # A PR run checks out the MERGE commit; depth 2 brings its first parent
+      # (the base tip), which is what the diff is taken against.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Classify changed paths
+        id: classify
+        run: node scripts/ci-changes.mjs
+
   api:
     runs-on: ubuntu-latest
+    # #844 — needs `changes` for the image-step gate only. `!cancelled()` so a
+    # FAILED `changes` job still lets lint/typecheck/tests run (and the image
+    # steps too: their `!= 'false'` gate reads an empty output as "run").
+    needs: [changes]
+    if: ${{ !cancelled() }}
     # A wedged docker build previously held the runner for HOURS: with no
     # `timeout-minutes`, GitHub's 6-hour default applies, and cancelling does not kill
     # a hung `docker build` promptly. The image builds below now cache across runs
@@ -126,12 +170,21 @@ jobs:
       - name: Test (packages no other job tests)
         run: pnpm -r --filter '!metis' --filter '!@metis/e2e' --filter '!@metis/ui' --filter '!@metis/server' run test
 
+      # #844 — say so, in the log and the job summary, when the image work is
+      # skipped: a green `api` must not read as "images built and smoked".
+      - name: Report skipped image build
+        if: ${{ needs.changes.outputs.images == 'false' }}
+        run: |
+          echo "::notice title=api image build skipped (#844)::No image-relevant paths changed on this PR, so the image build, size gate and smoke were skipped. They always run on main and nightly."
+          echo "- Image build, size gate and smoke: **skipped** — no image-relevant paths changed (see the \`changes\` job)." >> "$GITHUB_STEP_SUMMARY"
+
       # #3 — a run on main ran OUT OF DISK building these ("Free space left:
       # 55 MB"). Drop the preinstalled toolchains this job never uses (.NET,
       # Android SDK, GHC, CodeQL bundles, the runner's cached Docker images)
       # before building. Measured on #38: 83 GB -> 110 GB free, in 1m21s.
       # Runs on Dependabot PRs too (#51): they build and smoke metis-server.
       - name: Free runner disk for image builds
+        if: ${{ needs.changes.outputs.images != 'false' }}
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
@@ -140,6 +193,7 @@ jobs:
           df -h /
 
       - name: Set up Buildx
+        if: ${{ needs.changes.outputs.images != 'false' }}
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
       # Issue #145 — image-size budget gate. The `metis-embeddings` sidecar is
@@ -195,6 +249,7 @@ jobs:
       # `load: true` puts each image in the runner's daemon so the size gate
       # below can `docker image inspect` it. #801 — run-scoped tag.
       - name: Build metis-server
+        if: ${{ needs.changes.outputs.images != 'false' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -211,7 +266,7 @@ jobs:
           cache-to: type=gha,scope=metis-server,mode=max,ignore-error=true
 
       - name: Build metis-ui
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -228,7 +283,7 @@ jobs:
       # from HuggingFace at build time, which flakes on the runner; skip it
       # here. The sidecar downloads at runtime.
       - name: Build metis-embeddings
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -246,7 +301,7 @@ jobs:
       # Python, NO model bake / NO heavy native deps, so this build is fast and
       # cannot reintroduce the model-bake flake fixed in #290.
       - name: Build metis-sql-lineage
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -262,7 +317,7 @@ jobs:
       # DEFAULT_MAX_SERVER_IMAGE_MB in scripts/lib/verify-image-size.mjs);
       # metis-ui stays on the general 350.
       - name: Verify image size budget
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
         env:
           MAX_IMAGE_MB: "350"
           IMAGE_TAG: "ci-${{ github.run_id }}" # #801 — must match the build step
@@ -295,10 +350,11 @@ jobs:
       # #51 — runs on Dependabot PRs too, and passes its per-run secrets through
       # docker's environment rather than its command line.
       - name: Smoke-test metis-server (starts, serves /healthz)
+        if: ${{ needs.changes.outputs.images != 'false' }}
         run: node scripts/lib/smoke-server-image.mjs --image "metis-server:ci-${{ github.run_id }}" --timeout 180
 
       - name: Clean up test images
-        if: always()
+        if: ${{ always() && needs.changes.outputs.images != 'false' }}
         env:
           # #801 — run-scoped tag, STEP-scoped on purpose: at job level it also
           # reaches `pnpm test`, whose verify-image-size mocks key on the default
@@ -602,9 +658,17 @@ jobs:
   # Runs on a GitHub-hosted Linux runner; the postgres service is a Docker
   # container the runner host provides (same Docker daemon the image-size gate
   # uses). It is intentionally NOT a heavy job — no image builds, no UI.
+  #
+  # #844 — on a PR this job runs only when `changes` reports a Postgres-relevant
+  # path (scripts/lib/ci-changes-core.mjs, POSTGRES_PATTERNS); otherwise its check
+  # still appears, as `skipping`. It always runs on push to `main`, nightly and on
+  # dispatch. `!cancelled()` plus `!= 'false'` keep a FAILED `changes` job from
+  # silently skipping it: an empty output runs the job.
   postgres-adapter:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.postgres != 'false' }}
     env:
       NODE_ENV: development
       NPM_CONFIG_PRODUCTION: "false"
@@ -819,6 +883,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration invite-accept-workspace-delete-race-601-postgres
 
+      # Issue #871 — on READ COMMITTED two requirement edits can both read version N
+      # inside their transactions. The write is conditional on that version; prove
+      # exactly one same-version edit wins and the other is a VERSION_CONFLICT.
+      - name: Prove concurrent same-version requirement edits conflict on real Postgres
+        working-directory: server
+        run: pnpm test:integration requirement-concurrent-edit-871-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing
@@ -851,6 +922,13 @@ jobs:
       - name: Prove exactly-once leader election + failover on real Postgres
         working-directory: server
         run: pnpm test:integration leader-election-postgres
+
+      # Issue #779 — a re-synthesis checked for review work, then deleted the set in a
+      # separate statement, so a comment committed in between was cascaded away. The
+      # set is now locked before the check; prove that comment waits and is refused.
+      - name: Prove review work racing a requirement-set replace is never lost on real Postgres
+        working-directory: server
+        run: pnpm test:integration requirement-set-replace-toctou-779-postgres
 
   # Issue #556 (Epic #518) — prove the Postgres migration HISTORY applies from
   # an EMPTY database via the real `prisma migrate deploy`.
@@ -1111,12 +1189,24 @@ jobs:
   # embedder, a per-run SQLite database, and mock auth. Specs that genuinely
   # need a live model or live infra skip themselves WITH A REASON
   # (`e2e/fixtures/ai-mode.ts`, the E2B sandbox spec), which the report shows.
+  #
+  # #844 — SHARDED across three runners. Every spec still runs on every PR;
+  # `--shard=N/3` only splits the files. Each shard boots its own stack on its
+  # own VM, exactly as the single job did. The `e2e-outcome` job below is the ONE
+  # aggregate check to read, so the expected check set does not depend on the
+  # matrix size.
   e2e:
+    name: e2e (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    # The full suite is ~590 specs on one worker. Measured ~25 min end to end,
-    # so 45 leaves headroom for a cold Next.js compile without letting a wedged
-    # run hold a runner for GitHub's 6-hour default.
+    # The full suite was ~16 min on one runner; a shard is about a third of that
+    # plus the stack boot. 45 still bounds a wedged run without cutting a cold
+    # Next.js compile.
     timeout-minutes: 45
+    strategy:
+      # Let every shard finish: a failure in one must not hide another's.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     env:
       NPM_CONFIG_PRODUCTION: "false"
       CI: "true"
@@ -1168,8 +1258,8 @@ jobs:
         # step of the FAILED first attempt — the retry's trace cannot say where
         # a 120 s timeout went. The log output is unchanged (list stays on).
         run: |
-          echo "e2e stack: API=${E2E_API_PORT} UI=${E2E_UI_PORT}"
-          pnpm --filter @metis/e2e test --fail-on-flaky-tests
+          echo "e2e stack (shard ${{ matrix.shard }}/3): API=${E2E_API_PORT} UI=${E2E_UI_PORT}"
+          pnpm --filter @metis/e2e test --fail-on-flaky-tests --shard=${{ matrix.shard }}/3
 
       - name: Upload Playwright report
         # Only upload on failure to avoid accumulating report artifacts on
@@ -1177,7 +1267,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-report
+          name: playwright-report-shard-${{ matrix.shard }}
           path: e2e/playwright-report
           if-no-files-found: ignore
           retention-days: 3
@@ -1186,7 +1276,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-traces
+          name: playwright-traces-shard-${{ matrix.shard }}
           # #260 — `stack-data/` is the stack's own SQLite/LanceDB/uploads, not
           # test evidence, and LanceDB names table directories `tc:<id>`. One
           # colon in any path fails the WHOLE upload, which is how a flake's
@@ -1196,3 +1286,80 @@ jobs:
             !e2e/test-results/stack-data
           if-no-files-found: ignore
           retention-days: 3
+
+  # #844 — the ONE e2e check to read. The matrix above reports one check per
+  # shard; this job reduces them to a single always-present pass/fail, so the
+  # expected check set stays fixed whatever the shard count.
+  #
+  # Unlike `api-outcome`, ANYTHING but `success` fails here, `cancelled` and
+  # `skipped` included: a job that hits `timeout-minutes` can conclude
+  # `cancelled`, and a suite that did not run is not a suite that passed. A
+  # genuine supersede cancels this run's checks too, so read the newer run.
+  e2e-outcome:
+    name: e2e-outcome
+    runs-on: ubuntu-latest
+    needs: [e2e]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Classify e2e shard outcome
+        env:
+          E2E_RESULT: ${{ needs.e2e.result }}
+        run: |
+          echo "e2e shards: $E2E_RESULT"
+          echo "- \`e2e\` (all shards): **$E2E_RESULT**" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$E2E_RESULT" != "success" ]; then
+            echo "::error title=e2e not green::The sharded e2e suite concluded '$E2E_RESULT'. Read the failing 'e2e (N/3)' job's log; a cancelled shard may have timed out."
+            exit 1
+          fi
+
+  # #848 — a red nightly must not go unnoticed. GitHub tells only the user who
+  # last edited the `cron` line, and since #844 the nightly (with `main` pushes)
+  # is the only run of the path-gated `postgres-adapter` and `api` image work.
+  # This job opens a `ci-nightly` issue (or comments on the open one) with the run
+  # URL and the failing jobs, and comments on and closes it when a later nightly
+  # passes. Logic and tests: scripts/lib/ci-nightly-report-core.mjs.
+  #
+  # Schedule-only: on a PR (and on push / workflow_dispatch) this job reads
+  # `skipping`, which is expected. `needs` lists EVERY other job
+  # (ci-nightly-report-repo.test.mjs enforces it), so a job added later cannot
+  # fail the nightly without being reported.
+  nightly-report:
+    name: nightly-report
+    runs-on: ubuntu-latest
+    needs:
+      - changes
+      - api
+      - api-outcome
+      - ui
+      - server
+      - changelog
+      - sql-lineage
+      - postgres-adapter
+      - postgres-migrate-deploy
+      - generative-e2e
+      - e2e
+      - e2e-outcome
+    if: ${{ always() && github.event_name == 'schedule' }}
+    timeout-minutes: 5
+    # The ONLY job that writes anything; the workflow default stays `contents: read`.
+    # Job-level permissions replace the workflow's, so `contents: read` is restated
+    # for the checkout. `actions: read` lists the run's jobs (per-shard names).
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Open, update or close the ci-nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node scripts/ci-nightly-report.mjs

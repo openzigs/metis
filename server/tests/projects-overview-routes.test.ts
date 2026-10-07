@@ -97,7 +97,7 @@ vi.mock("../src/lib/prisma.js", async () => {
           if (!select) return p;
           const out: Record<string, unknown> = {};
           for (const k of Object.keys(select)) {
-            if (select[k]) out[k] = (p as Record<string, unknown>)[k];
+            if (select[k]) out[k] = p[k as keyof MockProject];
           }
           return out;
         }),
@@ -195,6 +195,16 @@ vi.mock("../src/lib/socket/job-events.js", () => ({
   genericFailureMessage: (kind: string) => `GENERIC:${kind}`,
 }));
 
+// #674 — the durable job-scope record; `settled` holds the ids whose write landed.
+const scopeStore = vi.hoisted(() => ({ settled: [] as string[] }));
+const recordJobScope = vi.hoisted(() =>
+  vi.fn(async (jobId: string) => {
+    await new Promise((r) => setTimeout(r, 5));
+    scopeStore.settled.push(jobId);
+  }),
+);
+vi.mock("../src/lib/socket/job-scope-store.js", () => ({ recordJobScope }));
+
 import request from "supertest";
 import { createApp } from "../src/app.js";
 import { __resetArchiveHooks } from "../src/lib/projects/project-service.js";
@@ -280,6 +290,8 @@ beforeEach(async () => {
   edges.length = 0;
   findings.length = 0;
   auditCalls.length = 0;
+  scopeStore.settled = [];
+  recordJobScope.mockClear();
   __resetArchiveHooks();
   app = createApp();
   adminToken = await login("admin", "password");
@@ -369,6 +381,16 @@ describe("POST /api/projects/:id/overview/regenerate", () => {
     expect(res.status).toBe(200);
     expect(typeof res.body.data.jobId).toBe("string");
     expect(res.body.data.jobId.length).toBeGreaterThan(0);
+    // #674 — the scope was committed durably before the job's first event.
+    expect(recordJobScope).toHaveBeenCalledWith(
+      res.body.data.jobId,
+      "overview-regenerate",
+      "proj_overview_1",
+    );
+    expect(scopeStore.settled).toEqual([res.body.data.jobId]);
+    expect(recordJobScope.mock.invocationCallOrder[0]).toBeLessThan(
+      jobEvents.started.mock.invocationCallOrder[0],
+    );
     expect(jobEvents.started).toHaveBeenCalledWith(
       "overview-regenerate",
       res.body.data.jobId,

@@ -24,7 +24,7 @@ vi.mock("../prisma.js", () => ({
 
 // ---- Socket registry double -------------------------------------------------
 const emit = vi.fn();
-const to = vi.fn(() => ({ emit }));
+const to = vi.fn((_room: string) => ({ emit }));
 let io: { to: typeof to } | null = { to };
 vi.mock("../socket/registry.js", () => ({
   getSocketServer: () => io,
@@ -34,7 +34,7 @@ vi.mock("../socket/registry.js", () => ({
 // Defaults to the REAL `shouldNotify` (so suppression/fail-open tests exercise
 // the genuine #614 resolution against the mocked prisma); individual tests can
 // force a rejection to cover the fan-out's own error paths.
-const shouldNotifySpy = vi.fn();
+const shouldNotifySpy = vi.fn<typeof import("../notifications/preferences.js").shouldNotify>();
 vi.mock("../notifications/preferences.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../notifications/preferences.js")>();
   return {

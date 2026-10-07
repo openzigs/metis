@@ -1,6 +1,7 @@
 /**
  * MCP service — Prisma is mocked in-memory; lifecycle is stubbed.
  */
+import type { CreateMCPServerInput } from "@metis/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Issue #315 / #277 — control the user-scope feature flag + concurrency cap
@@ -122,7 +123,8 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
       create: vi.fn(async ({ data }: { data: Partial<Row> }) => {
         next += 1;
-        const row: Row = {
+        // The mocked create trusts the caller-supplied columns; the defaults cover the rest.
+        const row = {
           id: `mcp_${next}`,
           envSecretId: null,
           version: null,
@@ -136,8 +138,8 @@ vi.mock("../src/lib/prisma.js", () => ({
           updatedAt: new Date(),
           deletedAt: null,
           createdById: null,
-          ...(data as Row),
-        };
+          ...data,
+        } as Row;
         servers.set(row.id, row);
         return row;
       }),
@@ -190,6 +192,26 @@ import {
   MCPRegistryService,
   normalizeRuntimeForConfig,
 } from "../src/lib/mcp/mcp-service.js";
+import type { MCPTransportClient } from "../src/lib/mcp/types.js";
+
+/**
+ * The route hands the service `createMCPServerSchema`-parsed input. This fills the
+ * same defaults the schema applies, without its refinements, so the service's own
+ * guards stay reachable with inputs the route would reject first.
+ */
+function mcpInput(
+  over: Pick<CreateMCPServerInput, "label" | "transport"> & Partial<CreateMCPServerInput>,
+): CreateMCPServerInput {
+  return {
+    scope: "global",
+    runtime: "native",
+    trustLevel: "untrusted",
+    defaultToolRisk: "medium",
+    healthCheckIntervalSec: 60,
+    enabled: true,
+    ...over,
+  };
+}
 
 beforeEach(() => {
   servers.clear();
@@ -205,11 +227,12 @@ function makeService() {
       start: vi.fn(async () => undefined),
       stop: vi.fn(async () => undefined),
       notify: vi.fn(async () => undefined),
-      closed: vi.fn(() => new Promise(() => undefined)),
+      closed: vi.fn<MCPTransportClient["closed"]>(() => new Promise(() => undefined)),
+      // request<TResult> is generic; a canned-response stub cannot satisfy it without an assertion.
       request: vi.fn(async (m: string) => {
         if (m === "initialize") return { protocolVersion: "2025-06-18" };
         return { tools: [] };
-      }),
+      }) as MCPTransportClient["request"],
     }),
   });
   return new MCPRegistryService(lifecycle);
@@ -219,12 +242,12 @@ describe("MCPRegistryService", () => {
   it("creates and lists, masking plaintext env values", async () => {
     const svc = makeService();
     const created = await svc.create(
-      {
+      mcpInput({
         label: "demo",
         transport: "stdio",
         command: "node",
         env: { FOO: "plain", TOKEN: "${vault:t}" },
-      },
+      }),
       { id: "u1" },
       // #577 — the ids the route's binding check approved.
       { secretBindings: { t: "sec-t" } },
@@ -237,15 +260,17 @@ describe("MCPRegistryService", () => {
 
   it("rejects duplicate label", async () => {
     const svc = makeService();
-    await svc.create({ label: "dup", transport: "stdio", command: "node" }, { id: "u1" });
+    await svc.create(mcpInput({ label: "dup", transport: "stdio", command: "node" }), { id: "u1" });
     await expect(
-      svc.create({ label: "dup", transport: "stdio", command: "node" }, { id: "u1" }),
+      svc.create(mcpInput({ label: "dup", transport: "stdio", command: "node" }), { id: "u1" }),
     ).rejects.toBeInstanceOf(MCPRegistryError);
   });
 
   it("update + remove flow", async () => {
     const svc = makeService();
-    const c = await svc.create({ label: "x", transport: "stdio", command: "node" }, { id: "u1" });
+    const c = await svc.create(mcpInput({ label: "x", transport: "stdio", command: "node" }), {
+      id: "u1",
+    });
     const u = await svc.update(c.id, { label: "x2", enabled: false }, { id: "u1" });
     expect(u.label).toBe("x2");
     expect(u.enabled).toBe(false);
@@ -262,7 +287,12 @@ describe("MCPRegistryService", () => {
       for (const secretBindings of [undefined, { other: "sec_o" }]) {
         await expect(
           svc.create(
-            { label: "unchecked", transport: "stdio", command: "node", env: { T: "${vault:t}" } },
+            mcpInput({
+              label: "unchecked",
+              transport: "stdio",
+              command: "node",
+              env: { T: "${vault:t}" },
+            }),
             { id: "u1" },
             { secretBindings },
           ),
@@ -274,7 +304,11 @@ describe("MCPRegistryService", () => {
     it("create with no references needs no checked set (registry / federation installs)", async () => {
       const svc = makeService();
       const c = await svc.create(
-        { label: "catalog", transport: "http", url: "https://example.test/mcp" },
+        mcpInput({
+          label: "catalog",
+          transport: "http",
+          url: "https://example.test/mcp",
+        }),
         { id: "u1" },
         { source: { kind: "catalog", catalogId: "x" } },
       );
@@ -284,7 +318,12 @@ describe("MCPRegistryService", () => {
     it("update adding an unchecked reference is refused; the row is unchanged", async () => {
       const svc = makeService();
       const c = await svc.create(
-        { label: "u", transport: "stdio", command: "node", env: { K: "${vault:k}" } },
+        mcpInput({
+          label: "u",
+          transport: "stdio",
+          command: "node",
+          env: { K: "${vault:k}" },
+        }),
         { id: "u1" },
         { secretBindings: { k: "sec_k" } },
       );
@@ -313,7 +352,12 @@ describe("MCPRegistryService", () => {
     it("update without env or headers binds nothing and keeps the stored bindings", async () => {
       const svc = makeService();
       const c = await svc.create(
-        { label: "keep", transport: "stdio", command: "node", env: { K: "${vault:k}" } },
+        mcpInput({
+          label: "keep",
+          transport: "stdio",
+          command: "node",
+          env: { K: "${vault:k}" },
+        }),
         { id: "u1" },
         { secretBindings: { k: "sec_k" } },
       );
@@ -330,8 +374,12 @@ describe("MCPRegistryService", () => {
 
   it("setAllowList persists project mappings", async () => {
     const svc = makeService();
-    const a = await svc.create({ label: "a", transport: "stdio", command: "node" }, { id: "u1" });
-    const b = await svc.create({ label: "b", transport: "stdio", command: "node" }, { id: "u1" });
+    const a = await svc.create(mcpInput({ label: "a", transport: "stdio", command: "node" }), {
+      id: "u1",
+    });
+    const b = await svc.create(mcpInput({ label: "b", transport: "stdio", command: "node" }), {
+      id: "u1",
+    });
     const ids = await svc.setAllowList("proj1", [a.id, b.id, a.id], { id: "u1" });
     expect(ids.sort()).toEqual([a.id, b.id].sort());
   });
@@ -339,17 +387,22 @@ describe("MCPRegistryService", () => {
   it("listForProject returns project-scoped + globally-allowed", async () => {
     const svc = makeService();
     const global = await svc.create(
-      { label: "g", transport: "stdio", command: "node", scope: "global" },
+      mcpInput({
+        label: "g",
+        transport: "stdio",
+        command: "node",
+        scope: "global",
+      }),
       { id: "u1" },
     );
     const local = await svc.create(
-      {
+      mcpInput({
         label: "p",
         transport: "stdio",
         command: "node",
         scope: "project",
         projectId: "proj1",
-      },
+      }),
       { id: "u1" },
     );
     expect(local.scope).toBe("project");
@@ -361,14 +414,18 @@ describe("MCPRegistryService", () => {
 
   it("start persists status from lifecycle", async () => {
     const svc = makeService();
-    const c = await svc.create({ label: "x", transport: "stdio", command: "node" }, { id: "u1" });
+    const c = await svc.create(mcpInput({ label: "x", transport: "stdio", command: "node" }), {
+      id: "u1",
+    });
     const updated = await svc.start(c.id, { id: "u1" });
     expect(updated.status).toBe("ready");
   });
 
   it("stop returns idle status", async () => {
     const svc = makeService();
-    const c = await svc.create({ label: "x", transport: "stdio", command: "node" }, { id: "u1" });
+    const c = await svc.create(mcpInput({ label: "x", transport: "stdio", command: "node" }), {
+      id: "u1",
+    });
     await svc.start(c.id, { id: "u1" });
     const stopped = await svc.stop(c.id, { id: "u1" });
     expect(stopped.status).toBe("idle");
@@ -376,7 +433,9 @@ describe("MCPRegistryService", () => {
 
   it("test reports ok=true for ready server", async () => {
     const svc = makeService();
-    const c = await svc.create({ label: "x", transport: "stdio", command: "node" }, { id: "u1" });
+    const c = await svc.create(mcpInput({ label: "x", transport: "stdio", command: "node" }), {
+      id: "u1",
+    });
     const r = await svc.test(c.id, { id: "u1" });
     expect(r.ok).toBe(true);
   });
@@ -385,12 +444,12 @@ describe("MCPRegistryService", () => {
   it("forces transport='sse' on create when runtime='k8s-sse'", async () => {
     const svc = makeService();
     const created = await svc.create(
-      {
+      mcpInput({
         label: "k8s",
         transport: "stdio", // user requested stdio, should be overridden.
         runtime: "k8s-sse",
         command: "ghcr.io/metis-mcps/uvx-runner-sse:1.0",
-      },
+      }),
       { id: "u1" },
     );
     expect(created.transport).toBe("sse");
@@ -399,7 +458,9 @@ describe("MCPRegistryService", () => {
 
   it("forces transport='sse' on update when runtime promoted to k8s-sse", async () => {
     const svc = makeService();
-    const c = await svc.create({ label: "x", transport: "stdio", command: "node" }, { id: "u1" });
+    const c = await svc.create(mcpInput({ label: "x", transport: "stdio", command: "node" }), {
+      id: "u1",
+    });
     const u = await svc.update(c.id, { runtime: "k8s-sse" }, { id: "u1" });
     expect(u.transport).toBe("sse");
     expect(u.runtime).toBe("k8s-sse");
@@ -408,7 +469,7 @@ describe("MCPRegistryService", () => {
   it("persists k8s-sse tunables on create", async () => {
     const svc = makeService();
     const created = await svc.create(
-      {
+      mcpInput({
         label: "k8s2",
         transport: "sse",
         runtime: "k8s-sse",
@@ -417,7 +478,7 @@ describe("MCPRegistryService", () => {
         k8sMemoryLimit: "1Gi",
         k8sCpuLimit: "500m",
         coldStart: true,
-      },
+      }),
       { id: "u1" },
     );
     expect(created.egressAllowlist).toBe("host:api.github.com");
@@ -459,12 +520,12 @@ describe("MCPRegistryService.create — user-scope concurrency cap is atomic (is
     const settled = await Promise.allSettled(
       Array.from({ length: attempts }, (_, i) =>
         svc.create(
-          {
+          mcpInput({
             label: `race-${i}`,
             transport: "stdio",
             command: "node",
             scope: "user",
-          },
+          }),
           { id: userId },
         ),
       ),
@@ -485,19 +546,34 @@ describe("MCPRegistryService.create — user-scope concurrency cap is atomic (is
     const svc = makeService();
     const userId = "u-recover";
     const first = await svc.create(
-      { label: "a", transport: "stdio", command: "node", scope: "user" },
+      mcpInput({
+        label: "a",
+        transport: "stdio",
+        command: "node",
+        scope: "user",
+      }),
       { id: userId },
     );
     await expect(
       svc.create(
-        { label: "b", transport: "stdio", command: "node", scope: "user" },
+        mcpInput({
+          label: "b",
+          transport: "stdio",
+          command: "node",
+          scope: "user",
+        }),
         { id: userId },
       ),
     ).rejects.toMatchObject({ code: "USER_QUOTA_EXCEEDED" });
     // Disable the first server (frees a slot) and try again.
     await svc.update(first.id, { enabled: false }, { id: userId });
     const second = await svc.create(
-      { label: "c", transport: "stdio", command: "node", scope: "user" },
+      mcpInput({
+        label: "c",
+        transport: "stdio",
+        command: "node",
+        scope: "user",
+      }),
       { id: userId },
     );
     expect(second.label).toBe("c");
@@ -508,12 +584,22 @@ describe("MCPRegistryService.create — user-scope concurrency cap is atomic (is
     cfgStore.set("MCP_USER_MAX_CONCURRENT", cap);
     const svc = makeService();
     await svc.create(
-      { label: "u1-a", transport: "stdio", command: "node", scope: "user" },
+      mcpInput({
+        label: "u1-a",
+        transport: "stdio",
+        command: "node",
+        scope: "user",
+      }),
       { id: "user-A" },
     );
     // user-B should still be able to create — separate quota.
     const b = await svc.create(
-      { label: "u2-a", transport: "stdio", command: "node", scope: "user" },
+      mcpInput({
+        label: "u2-a",
+        transport: "stdio",
+        command: "node",
+        scope: "user",
+      }),
       { id: "user-B" },
     );
     expect(b.label).toBe("u2-a");

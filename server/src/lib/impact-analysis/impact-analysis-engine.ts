@@ -32,6 +32,8 @@ import {
 import type { CodeGraphDataSource, GraphEdge, GraphSymbol } from "../code-graph/query-service.js";
 import { randomUUID } from "node:crypto";
 import { blastRadius, type RadiusSymbol } from "./blast-radius.js";
+import { addDataPathWriters, pruneTangentialSchemaSeeds } from "./data-path-writers.js";
+import { loadResolvedGoCalls } from "./go-call-resolution.js";
 import {
   crossToSchema,
   PrismaSchemaImpactDataSource,
@@ -286,10 +288,9 @@ export async function computeProjectImpact(
     }
   }
 
-  const affectedSymbols = [...byKey.values()].sort(
+  let affectedSymbols = [...byKey.values()].sort(
     (a, b) => a.depth - b.depth || b.confidence - a.confidence,
   );
-  const fileSet = new Set(affectedSymbols.map((s) => s.filePath));
 
   // #961 — grade how well the requirement SEEDED into code from the DEDUPED
   // direct (depth-0) match confidences. Deriving over the merged/deduped direct
@@ -298,11 +299,7 @@ export async function computeProjectImpact(
   // persisted direct symbols (`relation === "direct"`). A mapper emitting
   // duplicate seed ids, or null-id same-`qualifiedName` collisions, can no longer
   // diverge the two derivations (they collapse identically in both places).
-  const { quality: matchQuality, reason: matchQualityReason } = deriveMatchQualityDetailed(
-    affectedSymbols
-      .filter((s) => s.relation === "direct")
-      .map((s) => ({ confidence: s.confidence, filePath: s.filePath })),
-  );
+  // (Derived below, once #791 has pruned direct schema seeds of tangential tables.)
 
   const severity = computeSeverity(
     change.changeType,
@@ -325,10 +322,11 @@ export async function computeProjectImpact(
     const impactedIds = affectedSymbols
       .map((s) => s.codeSymbolId)
       .filter((id): id is string => Boolean(id));
+    const schemaDataSource = deps.schemaDataSourceFor(projectId);
     try {
       affectedTables = await crossToSchema(
         impactedIds,
-        deps.schemaDataSourceFor(projectId),
+        schemaDataSource,
         deps.liveIndexFor?.(projectId) ?? null,
         // Epic #954 (#956) — link affected rows to their canonical cross-project
         // identity when the analyzed project is linked to a shared resource.
@@ -360,6 +358,25 @@ export async function computeProjectImpact(
         affectedTablesSecondary = filtered.secondary;
       } catch (err) {
         log.warn("table relevance filter failed; keeping unfiltered crossing", {
+          projectId,
+          error: String(err),
+        });
+      }
+    }
+
+    // #791 — a column the mapper matched by name (`api_keys.last_used_at` for
+    // "last successful refresh") is no longer a directly affected symbol once the
+    // #936 filter has judged its whole table tangential. Best-effort.
+    if (affectedTablesSecondary.length > 0) {
+      try {
+        affectedSymbols = await pruneTangentialSchemaSeeds(
+          affectedSymbols,
+          affectedTables,
+          affectedTablesSecondary,
+          schemaDataSource,
+        );
+      } catch (err) {
+        log.warn("tangential schema-seed pruning failed; keeping seeds", {
           projectId,
           error: String(err),
         });
@@ -426,7 +443,32 @@ export async function computeProjectImpact(
         });
       }
     }
+
+    // #791 — the functions that WRITE the data this change touches, found through
+    // SQL lineage rather than a word match, plus their callers. Runs on the final
+    // primary set so a table the #936 filter judged tangential contributes none.
+    // Best-effort: a failure leaves the code impact as it was.
+    try {
+      affectedSymbols = await addDataPathWriters(affectedSymbols, {
+        requirementText: `${change.title}\n${change.body}`,
+        seedIds,
+        primaryTables: affectedTables,
+        dataSource: schemaDataSource,
+        graph: deps.dataSourceFor(projectId),
+      });
+    } catch (err) {
+      log.warn("data-path writer expansion failed; keeping code impact", {
+        projectId,
+        error: String(err),
+      });
+    }
   }
+  const fileSet = new Set(affectedSymbols.map((s) => s.filePath));
+  const { quality: matchQuality, reason: matchQualityReason } = deriveMatchQualityDetailed(
+    affectedSymbols
+      .filter((s) => s.relation === "direct")
+      .map((s) => ({ confidence: s.confidence, filePath: s.filePath })),
+  );
 
   // #1005 — CLAUSE-vs-IMPACT reconciliation. Runs LAST, over the FINAL surfaced
   // set (primary + the #936 secondary bucket: a demoted table is still on screen,
@@ -661,7 +703,7 @@ export class InMemoryCodeGraphDataSource implements CodeGraphDataSource {
  * `InMemoryCodeGraphDataSource`. Two Prisma queries replace the thousands of
  * per-hop queries that the BFS would otherwise issue.
  */
-async function loadProjectGraph(
+export async function loadProjectGraph(
   prisma: Pick<PrismaClient, "codeSymbol" | "codeEdge">,
   projectId: string,
 ): Promise<InMemoryCodeGraphDataSource> {
@@ -679,6 +721,18 @@ async function loadProjectGraph(
     toSymbolId: e.toSymbolId as string,
     kind: e.kind as GraphEdge["kind"],
   }));
+  // #791 — a Go handler's `h.store.X()` call is stored unresolved, so without
+  // this its callers never enter the blast radius. Bound on package visibility
+  // only; an ambiguous name stays unresolved (see go-call-resolution.ts).
+  const goCalls = await loadResolvedGoCalls(prisma, projectId);
+  goCalls.forEach((c, i) =>
+    edges.push({
+      id: `go-call:${i}`,
+      fromSymbolId: c.fromSymbolId,
+      toSymbolId: c.toSymbolId,
+      kind: "calls",
+    }),
+  );
   log.debug("loaded project graph into memory", {
     projectId,
     symbols: symbols.length,

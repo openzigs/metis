@@ -56,19 +56,6 @@ const repositoryColumns: ResponsiveColumn<AggregatedRepo>[] = [
       </Link>
     ),
   },
-  {
-    key: "scan",
-    header: "Scan",
-    cell: (row) => (
-      <Link
-        href={`/projects/${row.projectId}/repositories/${row.id}/scanner`}
-        className={`${touchTargetClass} underline`}
-        data-testid={`repositories-top-scan-${row.id}`}
-      >
-        Scan for bugs →
-      </Link>
-    ),
-  },
 ];
 
 export default function RepositoriesTopLevelPage() {

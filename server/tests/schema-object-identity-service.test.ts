@@ -335,20 +335,22 @@ describe("traverseLineageDb", () => {
   });
 
   it("emits sqlite `?` placeholders when the engine is sqlite", async () => {
-    const queryRawUnsafe = vi.fn(async () => []);
+    const queryRawUnsafe = vi.fn(async (_sql: string, ..._params: unknown[]) => []);
     await traverseLineageDb(
       { $queryRawUnsafe: queryRawUnsafe } as never,
       ["a"],
       ["reads"],
       "sqlite",
     );
-    const sql = queryRawUnsafe.mock.calls[0][0] as string;
+    const sql = queryRawUnsafe.mock.calls[0][0];
     expect(sql).toContain("?");
     expect(sql).not.toMatch(/\$\d/);
   });
 
   it("emits postgres `$n` placeholders when the engine is postgres (bound, no interpolation)", async () => {
-    const queryRawUnsafe = vi.fn(async () => [{ symbol_id: "s1" }]);
+    const queryRawUnsafe = vi.fn(async (_sql: string, ..._params: unknown[]) => [
+      { symbol_id: "s1" },
+    ]);
     const out = await traverseLineageDb(
       { $queryRawUnsafe: queryRawUnsafe } as never,
       ["a", "b"],
@@ -356,7 +358,7 @@ describe("traverseLineageDb", () => {
       "postgres",
     );
     expect(out).toEqual(["s1"]);
-    const sql = queryRawUnsafe.mock.calls[0][0] as string;
+    const sql = queryRawUnsafe.mock.calls[0][0];
     // 2 seeds + 1 kind → $1,$2 (seeds), $3 (kind); never the sqlite `?` style.
     expect(sql).toContain("$1");
     expect(sql).toContain("$3");

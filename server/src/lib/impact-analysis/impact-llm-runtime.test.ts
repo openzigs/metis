@@ -18,7 +18,20 @@ import {
   type ImpactLlmRuntimeOptions,
 } from "./impact-llm-runtime.js";
 import { runInImpactProjectScope } from "./impact-llm-scope.js";
-import type { AIProvider, ChatChunk, ChatOptions, ChatResponse, TokenUsage } from "../ai/types.js";
+import type { RecordUsageInput } from "../finops/token-tracker.js";
+import {
+  providerSupports,
+  resolveCapabilities,
+  supportsResponseFormat,
+} from "../ai/capabilities.js";
+import type {
+  AIProvider,
+  ChatChunk,
+  ChatOptions,
+  ChatResponse,
+  ProviderCapabilities,
+  TokenUsage,
+} from "../ai/types.js";
 
 const USAGE: TokenUsage = { promptTokens: 900, completionTokens: 120, totalTokens: 1020 };
 
@@ -53,15 +66,19 @@ function fakeProvider(opts: FakeProviderOptions = {}): AIProvider {
 
 function runtimeWith(overrides: Partial<ImpactLlmRuntimeOptions> = {}) {
   const record = vi.fn();
+  const recordProjectUsage = vi.fn((_input: RecordUsageInput) => ({
+    persisted: Promise.resolve(),
+  }));
   const createSession = vi.fn(async () => "sess-1");
   const runtime = createImpactLlmRuntime({
     actorId: "user-1",
     projectIds: ["proj-1"],
     tracker: { record } as never,
+    recordProjectUsage,
     createSession,
     ...overrides,
   });
-  return { runtime, record, createSession };
+  return { runtime, record, recordProjectUsage, createSession };
 }
 
 describe("impactLlmTimeoutMs", () => {
@@ -97,6 +114,74 @@ describe("createImpactLlmRuntime — metering (#1021)", () => {
       agentStep: IMPACT_LLM_AGENT_STEP["table-filter"],
     });
     expect(record.mock.calls[0][0].usage.totalTokens).toBe(1020);
+  });
+
+  it("#792 — also records every call in the project ledger (token_usages) that usage-summary and the budget read", async () => {
+    const { runtime, recordProjectUsage } = runtimeWith();
+    const provider = runtime.instrument(
+      fakeProvider({
+        usage: {
+          promptTokens: 900,
+          completionTokens: 120,
+          totalTokens: 1020,
+          cacheReadTokens: 300,
+          cacheWriteTokens: 7,
+        },
+      }),
+      "table-filter",
+    );
+
+    await runInImpactProjectScope("proj-42", () => provider.chat([]));
+    await runtime.flush();
+
+    expect(recordProjectUsage).toHaveBeenCalledTimes(1);
+    expect(recordProjectUsage.mock.calls[0][0]).toEqual({
+      projectId: "proj-42",
+      sessionId: "sess-1",
+      userId: "user-1",
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      inputTokens: 900,
+      outputTokens: 120,
+      cacheReadTokens: 300,
+      cacheWriteTokens: 7,
+      agentStep: IMPACT_LLM_AGENT_STEP["table-filter"],
+    });
+  });
+
+  it("#792 — the project ledger still sees the spend when no backing session could be created", async () => {
+    const { runtime, record, recordProjectUsage } = runtimeWith({
+      createSession: vi.fn(async () => null),
+    });
+    const provider = runtime.instrument(fakeProvider(), "summary-run");
+
+    await provider.chat([]);
+    await runtime.flush();
+
+    expect(record).not.toHaveBeenCalled();
+    expect(recordProjectUsage).toHaveBeenCalledTimes(1);
+    expect(recordProjectUsage.mock.calls[0][0]).toMatchObject({
+      projectId: "proj-1",
+      sessionId: "",
+      agentStep: IMPACT_LLM_AGENT_STEP["summary-run"],
+    });
+  });
+
+  it("#792 — flush() waits for the project-ledger write to land", async () => {
+    let land!: () => void;
+    const landed = new Promise<void>((r) => (land = r));
+    let done = false;
+    const { runtime } = runtimeWith({
+      recordProjectUsage: vi.fn(() => ({ persisted: landed })),
+    });
+    const provider = runtime.instrument(fakeProvider(), "seeding");
+    await provider.chat([]);
+    const flushed = runtime.flush().then(() => (done = true));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(done).toBe(false);
+    land();
+    await flushed;
+    expect(done).toBe(true);
   });
 
   it("falls back to the run's first project outside a scope (never an unattributed row)", async () => {
@@ -215,6 +300,56 @@ describe("createImpactLlmRuntime — metering (#1021)", () => {
     expect(await wrapped.models()).toEqual(["claude-sonnet-5"]);
     expect(await wrapped.ping()).toBe(true);
     expect((await wrapped.embed(["x"])).model).toBe("e");
+  });
+
+  it("#754 — forwards capabilities, capabilitiesFor and servesRouterModel (not 'supports nothing')", () => {
+    const { runtime } = runtimeWith();
+    const caps = { responseFormat: true, jsonSchema: true, nativeToolCalls: true };
+    const inner = {
+      ...fakeProvider(),
+      capabilities: { responseFormat: false, nativeToolCalls: false },
+      routerIds: new Set(["us.anthropic.claude-sonnet-5"]),
+      capabilitiesFor(this: { capabilities: ProviderCapabilities }, model: string) {
+        return model === "claude-sonnet-5" ? caps : this.capabilities;
+      },
+      servesRouterModel(this: { routerIds: Set<string> }, modelId: string) {
+        // Reads `this`, so an unbound forward would throw.
+        return this.routerIds.has(modelId);
+      },
+    } as unknown as AIProvider;
+    const wrapped = runtime.instrument(inner, "seeding");
+
+    expect(wrapped.capabilities).toBe(inner.capabilities);
+    expect(wrapped.capabilitiesFor?.("claude-sonnet-5")).toEqual(caps);
+    expect(wrapped.servesRouterModel?.("us.anthropic.claude-sonnet-5")).toBe(true);
+    expect(wrapped.servesRouterModel?.("gpt-5")).toBe(false);
+    // The structured-output gate a stage branches on takes the capable branch.
+    expect(supportsResponseFormat(wrapped, "claude-sonnet-5", "json_schema")).toBe(true);
+    expect(providerSupports(wrapped, "nativeToolCalls", "claude-sonnet-5")).toBe(true);
+    expect(resolveCapabilities(wrapped, "claude-sonnet-5")).toEqual(caps);
+  });
+
+  it("#754 — keeps an absent optional member absent", () => {
+    const { runtime } = runtimeWith();
+    const wrapped = runtime.instrument(fakeProvider(), "seeding");
+
+    expect(wrapped.capabilitiesFor).toBeUndefined();
+    expect(wrapped.servesRouterModel).toBeUndefined();
+    expect("servesRouterModel" in wrapped).toBe(false);
+    expect(supportsResponseFormat(wrapped)).toBe(false);
+  });
+
+  it("#754 — still meters a call made through the forwarding wrapper", async () => {
+    const { runtime, record } = runtimeWith();
+    const inner = {
+      ...fakeProvider(),
+      capabilities: { responseFormat: true, nativeToolCalls: true },
+    } as unknown as AIProvider;
+    const wrapped = runtime.instrument(inner, "seeding");
+
+    await runInImpactProjectScope("proj-1", () => wrapped.chat([{ role: "user", content: "x" }]));
+    await runtime.flush();
+    expect(record).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -23,7 +23,7 @@
  *   npx vitest run --disable-console-intercept \
  *     src/lib/analysis/transcript-compaction-loop.test.ts
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
 import type { AgentTool, ToolContext } from "./tools/types.js";
 import { runAgentLoop } from "./agent-loop.js";
@@ -207,7 +207,7 @@ describe("runAgentLoop transcript compaction — measured (#1225)", () => {
     const billed: Billed[] = [];
     const provider = makeMeteredProvider(billed);
     const seen: Array<{ system?: string; lead: string }> = [];
-    const spy = provider.chat as unknown as ReturnType<typeof vi.fn>;
+    const spy = provider.chat as Mock<AIProvider["chat"]>;
     const inner = spy.getMockImplementation()!;
     spy.mockImplementation(async (messages: ChatMessage[], opts?: ChatOptions) => {
       seen.push({ system: opts?.systemMessage, lead: String(messages[0].content) });
@@ -227,7 +227,7 @@ describe("runAgentLoop transcript compaction — measured (#1225)", () => {
     const transcripts: string[][] = [];
     const billed: Billed[] = [];
     const provider = makeMeteredProvider(billed);
-    const spy = provider.chat as unknown as ReturnType<typeof vi.fn>;
+    const spy = provider.chat as Mock<AIProvider["chat"]>;
     const inner = spy.getMockImplementation()!;
     spy.mockImplementation(async (messages: ChatMessage[], opts?: ChatOptions) => {
       transcripts.push(messages.map((m) => String(m.content)));

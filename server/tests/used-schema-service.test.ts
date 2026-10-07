@@ -282,7 +282,7 @@ describe("computeUsageClassification", () => {
       return args.where.id.in.map((id) => map[id]).filter(Boolean);
     });
     const deleteMany = vi.fn(async () => ({ count: 0 }));
-    const createMany = vi.fn(async () => ({ count: 5 }));
+    const createMany = vi.fn(async (_args: unknown) => ({ count: 5 }));
     const tx = { schemaUsageClassification: { deleteMany, createMany } };
     const prisma = {
       codeEdge: { findMany: edgeFindMany },

@@ -13,7 +13,7 @@
  * still records what already ran — nothing is silently dropped.
  */
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse, TokenUsage } from "../types.js";
-import { runAgentLoop, type AgentLoopResult } from "../../analysis/agent-loop.js";
+import { isToolCallReply, runAgentLoop, type AgentLoopResult } from "../../analysis/agent-loop.js";
 import { withInvokeAgentSpan } from "../../otel/genai-spans.js";
 import type { ApprovalGateService } from "../approval-policy.js";
 import type { RuntimeToolset } from "./toolset.js";
@@ -22,6 +22,47 @@ import type { RuntimeToolContext, ToolEvent, ToolSource } from "./types.js";
 
 /** Model turns per chat turn: a few rounds of tool calls plus the answer. */
 export const CHAT_TOOL_MAX_TURNS = 6;
+
+/**
+ * #736 — how many turns one chat turn may get back because every call in them
+ * expired waiting for the user's approval. A tool call that nobody answered is
+ * not the model's spent step, so it should not cost one; the bound keeps an
+ * unattended session from waiting out approval timeouts indefinitely.
+ */
+export const CHAT_TOOL_MAX_APPROVAL_REFUNDS = 2;
+
+/**
+ * #772 — the last user turn of the ONE tool-free call a chat turn makes when
+ * its step budget ran out mid-investigation. Before it, everything the tools
+ * had read was discarded for a canned "reached the tool-call limit" message
+ * the user was still billed for.
+ */
+export const CHAT_FINAL_SYNTHESIS_INSTRUCTION =
+  "You have used every tool call available for this question, and no more tools can be run. " +
+  "Answer the user's question now, using only the evidence already gathered above, and cite " +
+  "the files and line ranges it came from. Say plainly what you could not verify.";
+
+/**
+ * PR #783 review — the synthesis instruction for a run whose answer has a
+ * server-authored output contract (a custom agent's findings JSON, say). The
+ * chat wording alone invited a prose answer that the caller then could not
+ * parse, so the contract is restated after it: it is the last thing the model
+ * reads before the one call that has to produce the answer.
+ */
+export function finalSynthesisInstruction(outputContract?: string): string {
+  const contract = outputContract?.trim();
+  if (!contract) return CHAT_FINAL_SYNTHESIS_INSTRUCTION;
+  return (
+    `${CHAT_FINAL_SYNTHESIS_INSTRUCTION}\n\n` +
+    "Keep the required output format: reply exactly as this output contract specifies, " +
+    `and nothing else.\n\n${contract}`
+  );
+}
+
+/** A synthesis reply counts only if it says something and is not tool protocol. */
+function isChatAnswer(text: string, toolNames: readonly string[]): boolean {
+  return text.trim().length > 0 && !isToolCallReply(text, toolNames);
+}
 
 /** One call as the transcript records it (full result, never capped). */
 export interface ChatToolRecord {
@@ -35,6 +76,8 @@ export interface ChatToolRecord {
   decision?: ExecutedToolCall["decision"];
   /** Fixed-vocabulary code for a refused or failed call. */
   errorCode?: ExecutedToolCall["errorCode"];
+  /** #861 — the gate's machine reason for a refused call. */
+  reason?: string;
   executed: boolean;
   /** #147 — the sub-agent run this call started (its stored transcript). */
   subAgentRunId?: string;
@@ -87,6 +130,12 @@ export interface ChatToolTurnOptions {
    * earlier ones cost. The loop's `usage` (on success) is the sum of these.
    */
   onUsage?: (usage: TokenUsage) => void;
+  /**
+   * PR #783 review — the run's server-authored output contract, if any. The
+   * #772 final-synthesis call restates it so a spent step budget still ends in
+   * the required format, not chat prose.
+   */
+  outputContract?: string;
 }
 
 function capForModel(text: string, maxChars: number | undefined): string {
@@ -127,6 +176,11 @@ export async function runChatToolTurn(
   const turnTexts: string[] = [];
   const callModel =
     options.callModel ?? ((m: ChatMessage[], o: ChatOptions) => provider.chat(m, o));
+  // #736 — the error codes of the reply's calls, read and reset by `refundTurn`.
+  let batchCodes: Array<string | undefined> = [];
+  let refunds = 0;
+
+  const wireNames = input.toolset.tools.map((t) => t.wireName);
 
   const result = await withInvokeAgentSpan("chat", async (span) => {
     span.setAttribute("metis.session.id", input.ctx.sessionId);
@@ -154,6 +208,20 @@ export async function runChatToolTurn(
         initialMessages: input.messages,
         providerChatOptions: options.providerChatOptions,
         fenceToolResults: true,
+        // #772 — a spent step budget still ends in an answer: one bounded,
+        // tool-free call over what the tools already returned.
+        finalAnswerRetry: {
+          instruction: finalSynthesisInstruction(options.outputContract),
+          isValidFinalAnswer: (text) => isChatAnswer(text, wireNames),
+        },
+        refundTurn: () => {
+          const expired =
+            batchCodes.length > 0 && batchCodes.every((c) => c === "TOOL_APPROVAL_EXPIRED");
+          batchCodes = [];
+          if (!expired || refunds >= CHAT_TOOL_MAX_APPROVAL_REFUNDS) return false;
+          refunds++;
+          return true;
+        },
         ...(input.native ? { native: { tools: input.toolset.specs() } } : {}),
         callModel: async (m, o) => {
           const r = await callModel(m, o);
@@ -178,6 +246,7 @@ export async function runChatToolTurn(
               onEvent: options.onToolEvent,
             },
           );
+          batchCodes.push(executed.errorCode);
           const record: ChatToolRecord = {
             callId: executed.callId,
             tool: executed.tool,
@@ -187,6 +256,7 @@ export async function runChatToolTurn(
             ...(executed.isError ? { isError: true } : {}),
             ...(executed.decision ? { decision: executed.decision } : {}),
             ...(executed.errorCode ? { errorCode: executed.errorCode } : {}),
+            ...(executed.reason ? { reason: executed.reason } : {}),
             ...(executed.subAgentRunId ? { subAgentRunId: executed.subAgentRunId } : {}),
           };
           const source = input.toolset.resolve(executed.tool)?.source;

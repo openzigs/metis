@@ -30,10 +30,12 @@ import type {
   RequirementVerdict,
 } from "./constants.js";
 import { dateSchema, idSchema, timestampsSchema } from "./common.js";
+import { githubPublishTargetSchema } from "./publishing.js";
 import type { DocumentSource } from "./project.js";
 import type { AgentKind, AgentRef } from "./agents.js";
 import type { CrossDocFindings } from "./cross-doc.js";
 import type { ImpactAffectedRelation } from "./impact.js";
+import type { TestLinkRelation } from "./traceability.js";
 // Type-only, and the dependency runs the other way at runtime: the presentation
 // seam imports this module's types. Erased at build, so no import cycle exists.
 import type { RequirementSupportConfidence } from "./support-panel-view.js";
@@ -796,6 +798,19 @@ export interface SynthesisDegradation {
   attempts: number;
   /** How many requirements the deterministic fallback ended up emitting. */
   requirementCount: number;
+  /**
+   * #751 — on a PARTIAL run, how many requirements the model wrote (typed,
+   * with acceptance criteria) and were kept alongside the
+   * {@link requirementCount} keyword-grouped ones. Absent or 0 when the whole
+   * set came from the fallback, which is how every record before #751 reads.
+   */
+  modelRequirementCount?: number;
+  /**
+   * #868 review — findings the 100-requirement cap left out of EVERY
+   * requirement, model-written or grouped. Absent or 0 when every finding is
+   * in some requirement; the notice says "Nothing was dropped" only then.
+   */
+  findingsWithoutRequirement?: number;
   /** ISO timestamp of the degraded run. */
   at: string;
 }
@@ -818,12 +833,93 @@ export function describeSynthesisDegradation(degradation: SynthesisDegradation):
   const { reason, attempts, requirementCount } = degradation;
   const attemptNote = attempts > 1 ? ` after ${attempts} attempts` : "";
   const count = requirementCount === 1 ? "requirement" : "requirements";
+  const modelCount = degradation.modelRequirementCount ?? 0;
+  const lost = degradation.findingsWithoutRequirement ?? 0;
+  // #868 review — "Nothing was dropped" is a claim, made only when it is true.
+  const lostNote =
+    lost > 0
+      ? `${lost} ${lost === 1 ? "finding is" : "findings are"} in no requirement, because the ` +
+        `100-requirement limit was reached.`
+      : "Nothing was dropped.";
+  if (modelCount > 0) {
+    // #751 — a partial run: most of the list IS typed and has criteria, so the
+    // whole-fallback sentence ("every requirement is typed feature") is false.
+    const counted = (n: number): string =>
+      `${n} ${n === 1 ? "requirement was" : "requirements were"}`;
+    return (
+      `Requirement synthesis was partly degraded: ${DEGRADATION_CAUSE[reason]}${attemptNote}. ` +
+      `${counted(modelCount)} written by the model, with model-assigned types and acceptance ` +
+      `criteria. The other ${counted(requirementCount)} grouped deterministically by keyword ` +
+      `overlap from findings no model call reached — those are typed "feature" and have ` +
+      `no acceptance criteria because the fallback cannot derive them. ${lostNote} ` +
+      `Re-run the analysis to get model-assigned types and criteria for all of them.`
+    );
+  }
   return (
     `Requirement synthesis was degraded: ${DEGRADATION_CAUSE[reason]}${attemptNote}, ` +
     `so the ${requirementCount} ${count} below were grouped deterministically by keyword ` +
-    `overlap instead. Nothing was dropped, but nothing was classified either \u2014 every ` +
+    `overlap instead. ${lost > 0 ? `${lostNote} Nothing` : "Nothing was dropped, but nothing"} ` +
+    `was classified either \u2014 every ` +
     `requirement is typed "feature" and has no acceptance criteria because the fallback ` +
     `cannot derive them. Re-run the analysis to get model-assigned types and criteria.`
+  );
+}
+
+/**
+ * Issue #769 \u2014 why a re-synthesis was refused permission to replace the
+ * analysis's requirement set.
+ *
+ * - `reviewed-work`: at least one existing requirement carries human work
+ *   (a review status, an edit, a link, a data mapping, a baseline pin, a review
+ *   item, a comment thread or an assignment). Replacing the set hard-deletes it.
+ * - `degraded-synthesis`: the new synthesis fell back to the keyword clusterer
+ *   while the existing set came from a healthy one.
+ */
+export type RequirementReplacementWithheldReason = "reviewed-work" | "degraded-synthesis";
+
+/**
+ * Durable record of a refused replacement. Persisted to
+ * `Analysis.metadata.requirementReplacementWithheld` (additive, no migration)
+ * and cleared the next time a replacement is allowed.
+ */
+export interface RequirementReplacementWithheld {
+  reason: RequirementReplacementWithheldReason;
+  /** Requirements kept (the set that was NOT replaced). */
+  existingCount: number;
+  /** How many of the kept requirements carry human review work. */
+  reviewedCount: number;
+  /** Requirements the refused synthesis produced (not persisted). */
+  proposedCount: number;
+  /** ISO timestamp of the refusal. */
+  at: string;
+}
+
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
+
+/** The sentence a user reads when a re-synthesis was not applied (#769). */
+export function describeRequirementReplacementWithheld(
+  withheld: RequirementReplacementWithheld,
+): string {
+  const { reason, existingCount, reviewedCount, proposedCount } = withheld;
+  const kept =
+    `METIS kept the existing ${existingCount} ` +
+    `${plural(existingCount, "requirement", "requirements")} unchanged`;
+  const discarded =
+    `The ${proposedCount} newly synthesized ` +
+    `${plural(proposedCount, "requirement was", "requirements were")} not applied.`;
+  if (reason === "degraded-synthesis") {
+    return (
+      `${kept}: the latest re-synthesis was degraded (the model output could not be used), ` +
+      `and a degraded result never overwrites a successful one. ${discarded}`
+    );
+  }
+  return (
+    `${kept}, because ${reviewedCount} of them ` +
+    `${plural(reviewedCount, "carries", "carry")} review work (a review status, edit, link, ` +
+    `data mapping, baseline pin, comment or assignment) that a re-synthesis would have ` +
+    `deleted. ${discarded}`
   );
 }
 
@@ -952,6 +1048,12 @@ export const publishFindingSchema = z
     provider: z.enum(["github", "jira"]).optional(),
     draft: findingIssueDraftSchema,
     extraLabels: z.array(z.string().min(1).max(64)).max(20).optional(),
+    /**
+     * #733 — the GitHub repository to file into. Omitted = the project's
+     * configured publish target; with neither, a GitHub publish is refused
+     * rather than defaulting to the analysed repo connector's repository.
+     */
+    target: githubPublishTargetSchema.optional(),
   })
   .strict();
 export type PublishFindingInput = z.infer<typeof publishFindingSchema>;
@@ -1430,11 +1532,16 @@ export interface TraceabilityCodeLocation {
   symbolId?: string;
 }
 
-/** A test the code graph associates with a requirement's implicated code. */
+/**
+ * A test associated with a requirement's mapped code. Since #815 the matrix fills
+ * these from the same "Tested by" resolver as the requirement chain (#814).
+ */
 export interface TraceabilityTestLink {
   filePath: string;
-  /** Qualified name of the test symbol (function/describe) that references the code. */
+  /** Qualified name of the test symbol, or the file path for a file-only `direct` hit. */
   symbol: string;
+  /** How the resolver linked the test (#815). */
+  relation?: TestLinkRelation;
 }
 
 /** The finding a requirement is grounded in, projected to the matrix columns. */

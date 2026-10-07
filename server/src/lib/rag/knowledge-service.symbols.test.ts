@@ -84,15 +84,13 @@ function symbolPort(over: Partial<SymbolEmbeddingsPort> = {}): SymbolEmbeddingsP
   return {
     coverage: vi.fn(async () => ({ totalSymbols: 0, modelCounts: {} })),
     deploymentCoverage: vi.fn(async () => new Map<string, Record<string, number>>()),
-    reindexProject: vi.fn(
-      async (projectId: string): Promise<SymbolReindexResult> => ({
-        projectId,
-        totalSymbols: 0,
-        resumedSymbols: 0,
-        embeddedSymbols: 0,
-        currentModel: MODEL,
-      }),
-    ),
+    reindexProject: vi.fn(async (projectId: string): Promise<SymbolReindexResult> => ({
+      projectId,
+      totalSymbols: 0,
+      resumedSymbols: 0,
+      embeddedSymbols: 0,
+      currentModel: MODEL,
+    })),
     dropProject: vi.fn(async () => {}),
     retagToActiveModel: vi.fn(async () => 0),
     isBusy: vi.fn(() => false),
@@ -184,7 +182,11 @@ describe("deploymentCoverage", () => {
 describe("reindexProject", () => {
   it("runs the symbol reindex as phase 2, HANDING IT THE LEASE (not merely nesting it)", async () => {
     const reindexProject = vi.fn(
-      async (projectId: string): Promise<SymbolReindexResult> => ({
+      async (
+        projectId: string,
+        _opts?: unknown,
+        _fence?: unknown,
+      ): Promise<SymbolReindexResult> => ({
         projectId,
         totalSymbols: 200,
         resumedSymbols: 0,

@@ -25,15 +25,36 @@ vi.mock("../src/lib/prisma.js", () => ({
   prisma: { project: { findUnique: vi.fn(async () => ({ workspaceId: null })) } },
 }));
 
+// #763 — the vault-secret binding check has its own real-SQLite suite
+// (`import-secret-binding.sqlite.test.ts`); here it is a seam the route must call.
+const binding = vi.hoisted(() => ({
+  authorizeImportSecretRef: vi.fn(
+    async (
+      _user: unknown,
+      _projectId: string,
+      ref: string | null | undefined,
+      _target: unknown,
+    ): Promise<{ secretId: string | null; until: Date | null }> => ({
+      secretId: ref ? "sec_bound" : null,
+      until: null,
+    }),
+  ),
+}));
+vi.mock("../src/lib/importers/import-secret-binding.js", () => binding);
+
 import { importsRouter } from "../src/routes/imports.js";
 import { errorHandler } from "../src/middleware/error-handler.js";
 import type { ImportService } from "../src/lib/importers/import-service.js";
 import { parseImportFilter, type ImportSourceKind } from "@metis/shared";
 
-function buildApp(service: Partial<ImportService>) {
+/** A route stub: any subset of the service, returning only the fields a test reads. */
+type ImportServiceStub = { [K in keyof ImportService]?: (...args: never[]) => Promise<unknown> };
+
+function buildApp(service: ImportServiceStub) {
   const app = express();
   app.use(express.json());
-  app.use("/projects/:projectId/imports", importsRouter(service as ImportService));
+  // The route only serialises the stub's partial views.
+  app.use("/projects/:projectId/imports", importsRouter(service as unknown as ImportService));
   app.use(errorHandler);
   return app;
 }
@@ -55,6 +76,7 @@ describe("imports routes", () => {
     expect(service.preview).toHaveBeenCalledWith(
       "p1",
       expect.objectContaining({ source: "github" }),
+      { secretId: null },
     );
   });
 
@@ -120,7 +142,9 @@ describe("imports routes", () => {
         token: "t",
       });
     expect(res.status).toBe(201);
-    expect(service.createSource).toHaveBeenCalledWith("p1", expect.any(Object), "user_1");
+    expect(service.createSource).toHaveBeenCalledWith("p1", expect.any(Object), "user_1", {
+      secretId: null,
+    });
   });
 
   it("POST /sources/:id/run enqueues a task and returns 202", async () => {
@@ -165,5 +189,129 @@ describe("imports routes", () => {
     const res = await request(buildApp(service)).get("/projects/p1/imports/runs?sourceId=src_1");
     expect(res.status).toBe(200);
     expect(service.listRuns).toHaveBeenCalledWith("p1", "src_1");
+  });
+});
+
+describe("#763 — imports take a vault secret reference", () => {
+  const ghBody = { source: "github", filter: { owner: "o", repo: "r", state: "open" } };
+
+  it("POST /preview binds secretRef through the binding check and hands the service only the id", async () => {
+    binding.authorizeImportSecretRef.mockClear();
+    const service = { preview: vi.fn(async () => ({ source: "github", count: 0, sample: [] })) };
+    const res = await request(buildApp(service))
+      .post("/projects/p1/imports/preview")
+      .send({ ...ghBody, secretRef: "${vault:github-flux-v2-sandbox}" });
+    expect(res.status).toBe(200);
+    expect(binding.authorizeImportSecretRef).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "user_1" }),
+      "p1",
+      "${vault:github-flux-v2-sandbox}",
+      { type: "import_source", id: "preview" },
+    );
+    expect(service.preview).toHaveBeenCalledWith("p1", expect.any(Object), {
+      secretId: "sec_bound",
+    });
+    // The secret id is a server-side binding — it is not echoed back.
+    expect(JSON.stringify(res.body)).not.toContain("sec_bound");
+  });
+
+  it("POST /sources binds secretRef and passes the bound id to the service", async () => {
+    binding.authorizeImportSecretRef.mockClear();
+    const service = {
+      createSource: vi.fn(async () => ({ source: { id: "src_1" }, run: { id: "run_1" } })),
+    };
+    const res = await request(buildApp(service))
+      .post("/projects/p1/imports/sources")
+      .send({ ...ghBody, label: "GH", secretRef: "${vault:gh}" });
+    expect(res.status).toBe(201);
+    expect(binding.authorizeImportSecretRef).toHaveBeenCalledWith(
+      expect.anything(),
+      "p1",
+      "${vault:gh}",
+      { type: "import_source", id: "new" },
+    );
+    expect(service.createSource).toHaveBeenCalledWith("p1", expect.any(Object), "user_1", {
+      secretId: "sec_bound",
+    });
+  });
+
+  it("refuses a vault reference pasted into the token field instead of vaulting it as plaintext", async () => {
+    const service = { createSource: vi.fn(), preview: vi.fn() };
+    for (const path of ["/projects/p1/imports/preview", "/projects/p1/imports/sources"]) {
+      const res = await request(buildApp(service))
+        .post(path)
+        .send({ ...ghBody, label: "GH", token: "${vault:gh}" });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    }
+    expect(service.createSource).not.toHaveBeenCalled();
+    expect(service.preview).not.toHaveBeenCalled();
+  });
+
+  it("refuses a malformed secretRef and a request carrying both credentials", async () => {
+    const service = { preview: vi.fn() };
+    for (const extra of [
+      { secretRef: "vault:gh" },
+      { secretRef: "${vault: }" },
+      { secretRef: "${vault:gh}", token: "ghp_x" },
+    ]) {
+      const res = await request(buildApp(service))
+        .post("/projects/p1/imports/preview")
+        .send({ ...ghBody, ...extra });
+      expect(res.status).toBe(400);
+      // A pasted token is never reflected back in the error envelope.
+      expect(JSON.stringify(res.body)).not.toContain("ghp_x");
+    }
+    expect(service.preview).not.toHaveBeenCalled();
+  });
+
+  it("a refused binding stops the request before the service runs", async () => {
+    const { AppError } = await import("../src/middleware/error-handler.js");
+    binding.authorizeImportSecretRef.mockRejectedValueOnce(
+      new AppError(403, "SECRET_BINDING_FORBIDDEN", "not yours"),
+    );
+    const service = { createSource: vi.fn() };
+    const res = await request(buildApp(service))
+      .post("/projects/p1/imports/sources")
+      .send({ ...ghBody, label: "GH", secretRef: "${vault:someone-elses}" });
+    expect(res.status).toBe(403);
+    expect(service.createSource).not.toHaveBeenCalled();
+  });
+
+  it("POST /sources refuses (409) a write whose #552 binding window has closed, writing nothing", async () => {
+    // The binding check passed and stamped, but its window ended before the write.
+    binding.authorizeImportSecretRef.mockResolvedValueOnce({
+      secretId: "sec_bound",
+      until: new Date(Date.now() - 1_000),
+    });
+    const service = { createSource: vi.fn() };
+    const res = await request(buildApp(service))
+      .post("/projects/p1/imports/sources")
+      .send({ ...ghBody, label: "GH", secretRef: "${vault:gh}" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("SECRET_BINDING_WINDOW_EXPIRED");
+    expect(service.createSource).not.toHaveBeenCalled();
+  });
+
+  it("POST /sources writes while its #552 binding window is still open", async () => {
+    binding.authorizeImportSecretRef.mockResolvedValueOnce({
+      secretId: "sec_bound",
+      until: new Date(Date.now() + 60_000),
+    });
+    const service = {
+      createSource: vi.fn(async () => ({ source: { id: "src_1" }, run: { id: "run_1" } })),
+    };
+    const res = await request(buildApp(service))
+      .post("/projects/p1/imports/sources")
+      .send({ ...ghBody, label: "GH", secretRef: "${vault:gh}" });
+    expect(res.status).toBe(201);
+    expect(service.createSource).toHaveBeenCalledTimes(1);
+  });
+
+  it("with no secretRef the binding binds nothing and the service gets no secret id", async () => {
+    binding.authorizeImportSecretRef.mockClear();
+    const service = { preview: vi.fn(async () => ({ source: "github", count: 0, sample: [] })) };
+    await request(buildApp(service)).post("/projects/p1/imports/preview").send(ghBody);
+    expect(service.preview).toHaveBeenCalledWith("p1", expect.any(Object), { secretId: null });
   });
 });

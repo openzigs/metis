@@ -152,6 +152,7 @@ describe("summarizeArmRuns", () => {
         wallClockMs: 10,
         tokensPerFinding: tokens,
       },
+      faithfulness: null,
     };
   }
 

@@ -156,6 +156,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       analysisId: opts.analysisId,
       requirementIds: requirements.map((r) => r.id),
       generator: "draft-generator/v1",
+      ...draftTarget(opts),
     },
   });
   const epicTitle = epic.title;
@@ -214,6 +215,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
           analysisId: opts.analysisId,
           type: req.type,
           requirementKey: key,
+          ...draftTarget(opts),
         },
       },
       { requirementKey: key, reservedKeys },
@@ -284,6 +286,15 @@ async function claimTitle(
       fallback = { title, hash };
     }
   }
+}
+
+/**
+ * #733 — the repository a draft was generated for (its dedup hash is keyed on
+ * it), recorded so the publish batch form can inherit it instead of
+ * defaulting to the repo connector's own repository.
+ */
+function draftTarget(opts: GenerateDraftsOptions): { targetOwner: string; targetRepo: string } {
+  return { targetOwner: opts.targetOwner, targetRepo: opts.targetRepo };
 }
 
 /** #490 — how a feature requirement recognises the draft generated from it. */
@@ -396,6 +407,14 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
             ...args.metadata,
             requirementKey: storedKey,
             bodyHeld: true,
+            // #776 — a reviewer's edit outlives the re-link too.
+            ...(existingMeta.userEdited === true
+              ? {
+                  userEdited: true,
+                  editedAt: existingMeta.editedAt,
+                  editedById: existingMeta.editedById,
+                }
+              : {}),
           }),
         },
       });
@@ -403,6 +422,29 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
         draftId: existing.id,
         requirementId: args.requirementId,
         status: existing.status,
+      });
+      return { id: existing.id, created: false };
+    }
+    // #776 — a reviewer edited this draft's text. A re-generate refreshes its
+    // links and metadata but keeps their title, body and labels; the edit is
+    // the point of the review, and silently reverting it would publish the
+    // very text they corrected.
+    if (existingMeta.userEdited === true) {
+      await prisma.issueDraft.update({
+        where: { id: existing.id },
+        data: {
+          requirementId: args.requirementId,
+          parentDraftId: args.parentDraftId,
+          draftType: args.draftType,
+          metadata: JSON.stringify({
+            ...args.metadata,
+            userEdited: true,
+            editedAt: existingMeta.editedAt,
+            editedById: existingMeta.editedById,
+          }),
+          status:
+            existing.status === "failed" || existing.status === "draft" ? "draft" : existing.status,
+        },
       });
       return { id: existing.id, created: false };
     }

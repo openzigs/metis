@@ -51,7 +51,7 @@ function fakeWriter(): { writer: SchemaGraphWriter; recorded: Recorded } {
         return undefined;
       },
     },
-  } as unknown as SchemaGraphPrisma;
+  };
   return { writer: new SchemaGraphWriter(prisma, "g1", "p1"), recorded };
 }
 

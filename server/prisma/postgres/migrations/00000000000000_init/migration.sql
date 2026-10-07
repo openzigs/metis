@@ -3266,6 +3266,21 @@ CREATE INDEX "import_runs_importSourceId_idx" ON "import_runs"("importSourceId")
 -- CreateIndex
 CREATE INDEX "import_runs_projectId_createdAt_idx" ON "import_runs"("projectId", "createdAt");
 
+-- Issue #674 — durable scope of a job id that names no row.
+-- CreateTable
+CREATE TABLE "job_scopes" (
+    "jobId" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "projectId" TEXT,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "job_scopes_pkey" PRIMARY KEY ("jobId")
+);
+
+-- CreateIndex
+CREATE INDEX "job_scopes_expiresAt_idx" ON "job_scopes"("expiresAt");
+
 -- AddForeignKey
 ALTER TABLE "import_runs" ADD CONSTRAINT "import_runs_importSourceId_fkey" FOREIGN KEY ("importSourceId") REFERENCES "import_sources"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 

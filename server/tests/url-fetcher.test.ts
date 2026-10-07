@@ -144,7 +144,7 @@ describe("assertResolvesToPublic", () => {
 
 describe("fetchUrlForIngest (integration)", () => {
   function mockFetch(handler: (url: string) => Response | Promise<Response>): typeof fetch {
-    return ((input: RequestInfo | URL) => {
+    return ((input: Parameters<typeof fetch>[0]) => {
       const url = typeof input === "string" ? input : input.toString();
       return Promise.resolve(handler(url));
     }) as typeof fetch;

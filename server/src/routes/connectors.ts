@@ -111,6 +111,7 @@ import {
 import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js";
 import { createChildLogger } from "../lib/logger.js";
 import { genericFailureMessage, jobEvents } from "../lib/socket/job-events.js";
+import { recordJobScope } from "../lib/socket/job-scope-store.js";
 import {
   ingestConfluenceSpace,
   ingestJiraQuery,
@@ -213,14 +214,26 @@ async function resolveIngestSource(
   userId: string,
   /** The connector, when the caller already looked it up in this project. */
   known?: Awaited<ReturnType<typeof getRepoConnector>>,
-): Promise<{ path: string; sizeBytes: number; boundary?: string; isGit: boolean }> {
+): Promise<{
+  path: string;
+  sizeBytes: number;
+  boundary?: string;
+  isGit: boolean;
+  /** #714 — the commit a git clone checked out. */
+  commitSha?: string;
+}> {
   const conn = known ?? (await getRepoConnector(projectId, connectorId));
   if (conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD) {
     const root = await resolveNonGitIngestRoot(projectId, connectorId);
     return { path: root.path, sizeBytes: 0, boundary: root.boundary, isGit: false };
   }
   const clone = await shallowCloneRepo(projectId, connectorId, userId);
-  return { path: clone.path, sizeBytes: clone.sizeBytes, isGit: true };
+  return {
+    path: clone.path,
+    sizeBytes: clone.sizeBytes,
+    isGit: true,
+    commitSha: clone.commitSha ?? undefined,
+  };
 }
 
 /**
@@ -294,8 +307,11 @@ async function runDeepIngest(
       projectId,
       rootDir: source.path,
       repoConnectionId: connectorId,
+      // #714 — label the graph with the commit it was built from.
+      commitSha: source.commitSha,
       triggeredByUserId: userId,
       introspectedSchema: deepSchemaWiring.introspectedSchema,
+      introspectionFailed: deepSchemaWiring.introspectionFailed,
       routines: deepSchemaWiring.routines,
       fetchRoutineBody: deepSchemaWiring.fetchRoutineBody,
       routineDialect: deepSchemaWiring.routineDialect,
@@ -702,10 +718,21 @@ export function connectorsRouter(): Router {
         // Project-scoped lookup first (#217 review): another project's caller
         // gets 404, never a 409 that reveals the id exists and is ingesting.
         const conn = await getRepoConnector(projectId, id);
+        const jobId = randomUUID();
+        // #674 — the scope is recorded durably BEFORE the lease is taken, so
+        // every id this route hands out — in the 202, or as the running job's
+        // `details.jobId` in a second click's 409 — is authorized for
+        // `subscribe:job` on any replica by the time a client holds it. Taking
+        // the lease first would publish the id to concurrent 409s during this
+        // await. Should the write throw, there is no lease or job name to leak.
+        await recordJobScope(jobId, "repo-ingest", projectId);
         // Concurrency guard — held by the background run, which releases it.
+        // A refused click is told the RUNNING job, whose scope was recorded
+        // when that job started; the scope just written for the refused id is
+        // inert — nothing returns or emits that id, and it expires on its TTL.
         const lease = tryAcquireConnectorIngest(id, "deep-ingest");
         if (!lease) throw deepIngestInProgress(id);
-        const jobId = randomUUID();
+        // Named in the same tick as the lease, so no 409 sees one without the other.
         activeDeepIngestJobs.set(id, jobId);
         jobEvents.started("repo-ingest", jobId, projectId, "Deep ingest started");
         void runDeepIngest(projectId, id, a, lease, { jobId, known: conn })
@@ -745,7 +772,13 @@ export function connectorsRouter(): Router {
         if (!lease) throw ingestInProgress();
         const isNonGit =
           conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD;
-        let clone: { path: string; sizeBytes: number; pulled: boolean; filesChanged: number };
+        let clone: {
+          path: string;
+          sizeBytes: number;
+          pulled: boolean;
+          filesChanged: number;
+          commitSha?: string | null;
+        };
         let boundary: string | undefined;
         if (isNonGit) {
           const root = await resolveNonGitIngestRoot(projectId, id);
@@ -762,8 +795,12 @@ export function connectorsRouter(): Router {
           projectId,
           rootDir: clone.path,
           repoConnectionId: id,
+          // #714/#758 — label the graph with the pulled commit; ingestCodeGraph
+          // records it as lastCommitSha too, once the graph is complete.
+          commitSha: clone.commitSha ?? undefined,
           triggeredByUserId: a,
           introspectedSchema: refreshSchemaWiring.introspectedSchema,
+          introspectionFailed: refreshSchemaWiring.introspectionFailed,
           routines: refreshSchemaWiring.routines,
           fetchRoutineBody: refreshSchemaWiring.fetchRoutineBody,
           routineDialect: refreshSchemaWiring.routineDialect,
@@ -778,7 +815,7 @@ export function connectorsRouter(): Router {
           boundary,
           lease,
         });
-        // Step 4: refresh metadata (README, head SHA, etc.) — github only
+        // Step 4: refresh metadata (README, etc.) — github only
         const metadata = { failures: 0, stepFailed: false };
         if (!isNonGit) {
           try {
@@ -827,6 +864,12 @@ export function connectorsRouter(): Router {
               filesSkipped: stats.filesSkipped,
               symbolsUpserted: stats.symbolsUpserted,
               edgesUpserted: stats.edgesUpserted,
+              // #715 — the graph's size, so the Sync panel can tell it apart
+              // from the incremental delta above.
+              filesUnchanged: stats.filesUnchanged,
+              graphFiles: stats.graphFiles,
+              graphSymbols: stats.graphSymbols,
+              graphEdges: stats.graphEdges,
               durationMs: stats.durationMs,
             },
             sourceKnowledge: {
@@ -875,7 +918,8 @@ export function connectorsRouter(): Router {
           conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD;
         const clone = isNonGit
           ? await resolveNonGitIngestRoot(projectId, id)
-          : await pullOrCloneRepo(projectId, id, a);
+          : // Reads the checkout only; lastCommitSha moves with a graph ingest (#758).
+            await pullOrCloneRepo(projectId, id, a);
         const discovery = await discoverAndUpsertConnections(projectId, clone.path);
         if (discovery.connectionsFound > 0) {
           const connector = await getRepoConnector(projectId, id);

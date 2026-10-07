@@ -118,7 +118,7 @@ describe("analysis domain", () => {
         createFindingSchema.parse({
           agentResultId: validId,
           category: "security",
-          // @ts-expect-error — runtime check
+          // runtime check: parse() takes unknown, so this is not a type error
           severity: "doomsday",
           title: "x",
           body: "y",

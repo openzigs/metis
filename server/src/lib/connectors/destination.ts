@@ -142,37 +142,3 @@ export function jiraDestinationChanged(
     Boolean(input.tlsCaCert)
   );
 }
-
-/** The test-management counterpart of {@link jiraDestinationChanged}. */
-export function testMgmtDestinationChanged(
-  existing: { baseUrl: string; proxyConfigJson: string | null; tlsConfigJson: string | null },
-  input: {
-    baseUrl?: string;
-    proxyConfig?: { url: string } | null;
-    tlsConfig?: { rejectUnauthorized?: boolean; caCert?: string | null } | null;
-  },
-): boolean {
-  if (input.baseUrl !== undefined && input.baseUrl !== existing.baseUrl) return true;
-  if (input.proxyConfig !== undefined) {
-    const before = existing.proxyConfigJson ? parseOrNull(existing.proxyConfigJson) : null;
-    if (!isDeepStrictEqual(input.proxyConfig ?? null, before)) return true;
-  }
-  if (input.tlsConfig !== undefined) {
-    if (input.tlsConfig?.caCert) return true;
-    const before = existing.tlsConfigJson
-      ? (parseOrNull(existing.tlsConfigJson) as { rejectUnauthorized?: boolean } | null)
-      : null;
-    const rejectBefore = before?.rejectUnauthorized ?? true;
-    const rejectAfter = input.tlsConfig?.rejectUnauthorized ?? true;
-    if (rejectBefore && !rejectAfter) return true;
-  }
-  return false;
-}
-
-function parseOrNull(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}

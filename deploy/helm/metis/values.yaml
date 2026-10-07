@@ -78,6 +78,11 @@ server:
     # degradation). SQL_LINEAGE_TOKEN is injected from the secret (keyMap).
     SQL_LINEAGE_MODE: sidecar
     SQL_LINEAGE_URL: http://{{ .Release.Name }}-sql-lineage:5070
+    # #659 — with replicaCount > 1 (Postgres DATABASE_URL), each pod re-checks its
+    # sockets against the database on this interval, the bound on a revocation
+    # whose cross-replica publish failed. Plain ms; default 60000, min 10000;
+    # an invalid value is ignored with a warning. docs/EKS_DEPLOYMENT.md §9f.1.
+    # METIS_SOCKET_REVALIDATE_INTERVAL_MS: "60000"
   probes:
     liveness:
       path: /healthz

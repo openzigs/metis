@@ -399,13 +399,9 @@ describe("registerBuiltInHandlers", () => {
     );
   });
 
-  it("scanner.run-scan requires scanId and a wired handler", async () => {
+  it("#804 — the bug scanner's scanner.run-scan task is no longer registered", () => {
     const reg = new InMemoryTaskHandlerRegistry();
     registerBuiltInHandlers(reg, { httpWebhookHandler: vi.fn() });
-
-    await expect(reg.get("scanner.run-scan")!.handler(makeCtx({}))).rejects.toThrow(/scanId/);
-    await expect(
-      reg.get("scanner.run-scan")!.handler(makeCtx({ scanId: "scan-1" })),
-    ).rejects.toThrow(/not wired/);
+    expect(reg.get("scanner.run-scan")).toBeUndefined();
   });
 });

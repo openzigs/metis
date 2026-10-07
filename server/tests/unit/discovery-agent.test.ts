@@ -24,7 +24,7 @@ import {
   isSasBusinessSymbol,
 } from "../../src/lib/docs-gen/discovery-agent.js";
 
-const mockPrisma = vi.mocked(prisma);
+const mockPrisma = vi.mocked(prisma, true);
 
 describe("runDiscoveryAgent", () => {
   beforeEach(() => {

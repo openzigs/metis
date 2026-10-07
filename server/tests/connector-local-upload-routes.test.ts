@@ -16,7 +16,12 @@ import type { Task } from "@prisma/client";
 const h = vi.hoisted(() => ({
   tasks: new Map<string, Task>(),
   finished: vi.fn(),
-  shallowCloneRepo: vi.fn(async () => ({ path: "/tmp/clone", sizeBytes: 10 })),
+  shallowCloneRepo: vi.fn(
+    async (): Promise<{ path: string; sizeBytes: number; commitSha?: string }> => ({
+      path: "/tmp/clone",
+      sizeBytes: 10,
+    }),
+  ),
   resolveNonGitIngestRoot: vi.fn(async () => ({ path: "/tmp/extract" })),
   createRepoConnector: vi.fn(async (_p: string, input: Record<string, unknown>) => ({
     id: "repo_local_1",
@@ -174,6 +179,12 @@ vi.mock("../src/lib/code-graph/ingest.js", () => ({
   })),
 }));
 
+// #721 — the real SQL-lineage wiring runs unless a test overrides one call.
+vi.mock("../src/lib/connectors/db/db-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/connectors/db/db-service.js")>();
+  return { ...actual, buildCodeGraphSchemaWiring: vi.fn(actual.buildCodeGraphSchemaWiring) };
+});
+
 vi.mock("../src/lib/connectors/connector-ingest.js", () => ({
   ingestSourceAsKnowledge: vi.fn(async () => ({
     documentsCreated: 1,
@@ -195,11 +206,22 @@ vi.mock("../src/lib/connectors/repo/connection-discovery.js", () => ({
     filesScanned: 0,
     connectionsFound: 0,
     suggestionsUpserted: 0,
-    errors: [],
+    errors: 0,
   })),
 }));
 
+// #674 — the durable job-scope record; `settled` holds the ids whose write landed.
+const scopeStore = vi.hoisted(() => ({ settled: [] as string[] }));
+const recordJobScope = vi.hoisted(() =>
+  vi.fn(async (jobId: string) => {
+    await new Promise((r) => setTimeout(r, 5));
+    scopeStore.settled.push(jobId);
+  }),
+);
+vi.mock("../src/lib/socket/job-scope-store.js", () => ({ recordJobScope }));
+
 import request from "supertest";
+import { ingestCodeGraph } from "../src/lib/code-graph/ingest.js";
 import { createApp } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
 import {
@@ -209,6 +231,7 @@ import {
 import {
   fetchRepoMetadata,
   getRepoConnectorEmitter,
+  pullOrCloneRepo,
 } from "../src/lib/connectors/repo/repo-service.js";
 import { REPO_INGEST_FAILED_MESSAGE } from "../src/routes/connectors.js";
 import {
@@ -220,6 +243,7 @@ import {
   isConnectorIngestActive,
 } from "../src/lib/connectors/ingest-guard.js";
 import { discoverAndUpsertConnections } from "../src/lib/connectors/repo/connection-discovery.js";
+import { buildCodeGraphSchemaWiring } from "../src/lib/connectors/db/db-service.js";
 import { getLastJobLifecycle, genericFailureMessage } from "../src/lib/socket/job-events.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
 import {
@@ -365,13 +389,94 @@ describe("generic POST /repos refuses non-git providers", () => {
 describe("provider routing on deep-ingest", () => {
   it("github connector shallow-clones (clone path), never resolveNonGitIngestRoot", async () => {
     const token = await login("admin");
+    scopeStore.settled = [];
+    recordJobScope.mockClear();
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos/repo_github_x/deep-ingest")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(202);
+    // #674 — the scope was committed durably before the 202 handed the id out.
+    expect(recordJobScope).toHaveBeenCalledWith(res.body.data.jobId, "repo-ingest", "proj_1");
+    expect(scopeStore.settled).toEqual([res.body.data.jobId]);
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+    expect(shallowCloneRepo).toHaveBeenCalledTimes(1);
+    expect(resolveNonGitIngestRoot).not.toHaveBeenCalled();
+  });
+
+  it("#714 — labels the code graph with the commit the clone checked out", async () => {
+    const SHA = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+    shallowCloneRepo.mockResolvedValueOnce({ path: "/tmp/clone", sizeBytes: 10, commitSha: SHA });
+    const token = await login("admin");
     const res = await request(app)
       .post("/api/projects/proj_1/connectors/repos/repo_github_x/deep-ingest")
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(202);
     await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
-    expect(shallowCloneRepo).toHaveBeenCalledTimes(1);
-    expect(resolveNonGitIngestRoot).not.toHaveBeenCalled();
+    expect(vi.mocked(ingestCodeGraph)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ repoConnectionId: "repo_github_x", commitSha: SHA }),
+    );
+  });
+
+  it("#757 — refresh-ingest (the Sync button) labels the code graph with the pulled commit", async () => {
+    // The pull records this SHA as lastCommitSha; an unlabelled graph would keep
+    // the old commit and every finding would fail the stale-commit publish gate.
+    const SHA = "703fe82693ef91054f1163435e2495ed118b3f25";
+    vi.mocked(pullOrCloneRepo).mockResolvedValueOnce({
+      path: "/tmp/clone",
+      sizeBytes: 10,
+      pulled: true,
+      filesChanged: 2,
+      commitSha: SHA,
+    });
+    const token = await login("admin");
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos/repo_github_x/refresh-ingest")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(ingestCodeGraph)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ repoConnectionId: "repo_github_x", commitSha: SHA }),
+    );
+  });
+
+  it("#715 — refresh-ingest reports the graph's totals from the ingest stats, apart from the delta", async () => {
+    // An incremental Sync re-parses one file of a 40-file graph: the response
+    // must carry both the delta and the whole graph's size, each from the stats.
+    vi.mocked(ingestCodeGraph).mockResolvedValueOnce({
+      codeGraphId: "cg_1",
+      filesScanned: 41,
+      filesParsed: 1,
+      filesSkipped: 40,
+      symbolsUpserted: 3,
+      edgesUpserted: 2,
+      rationaleFindings: 0,
+      schemaEdges: 0,
+      routineEdges: 0,
+      filesRebound: 0,
+      lineageBackfill: false,
+      filesLineageRefreshed: 0,
+      filesUnchanged: 39,
+      graphFiles: 40,
+      graphSymbols: 517,
+      graphEdges: 1203,
+      languageStats: {},
+      durationMs: 7,
+    });
+    const token = await login("admin");
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos/repo_github_x/refresh-ingest")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.codeGraph).toMatchObject({
+      filesParsed: 1,
+      symbolsUpserted: 3,
+      edgesUpserted: 2,
+      filesUnchanged: 39,
+      graphFiles: 40,
+      graphSymbols: 517,
+      graphEdges: 1203,
+    });
   });
 
   it("local connector skips the clone (resolveNonGitIngestRoot, never shallowCloneRepo)", async () => {
@@ -456,6 +561,34 @@ describe("per-connector ingest guard on the sync routes (#217)", () => {
       await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
       expect(leaseSeen).toMatchObject({ connectorId: "repo_github_x", held: true });
       expect(isConnectorIngestActive("repo_github_x")).toBe(false);
+    });
+  }
+});
+
+// #721 — a DB connector that could not be introspected must reach the lineage
+// fingerprint as an outage, not as "no schema", from Deep Ingest and from Sync.
+describe("SQL-lineage introspection outage reaches the code-graph ingest (#721)", () => {
+  for (const route of ["deep-ingest", "refresh-ingest"] as const) {
+    it(`${route} passes introspectionFailed from the wiring to ingestCodeGraph`, async () => {
+      const token = await login("admin");
+      vi.mocked(buildCodeGraphSchemaWiring).mockResolvedValueOnce({
+        introspectedSchema: null,
+        introspectionFailed: true,
+        routines: [],
+        packages: [],
+        dependencies: [],
+        sqlLineageOverride: true,
+      });
+      const res = await request(app)
+        .post(`/api/projects/proj_1/connectors/repos/repo_github_x/${route}`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(route === "deep-ingest" ? 202 : 200);
+      await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+      expect(buildCodeGraphSchemaWiring).toHaveBeenCalledTimes(1);
+      expect(ingestCodeGraph).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ repoConnectionId: "repo_github_x", introspectionFailed: true }),
+      );
     });
   }
 });
@@ -594,6 +727,79 @@ describe("asynchronous deep-ingest (#373)", () => {
     expect(getLastJobLifecycle(jobId)!.failureCount).toBe(0);
   });
 
+  // #674 panel — every job id a 409 names must already be durably scoped when
+  // the 409 is sent, or the UI's `subscribe:job` on it is refused on another
+  // replica. The scope write is awaited before the lease, so a click that lands
+  // while another's write is slow never learns an id whose record is pending.
+  it("a 409's job id is durably scoped before the 409 is sent, even with a slow scope write", async () => {
+    const token = await login("admin");
+    scopeStore.settled = [];
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let slowId: string | undefined;
+    recordJobScope.mockImplementationOnce(async (id: string) => {
+      slowId = id;
+      await held;
+      scopeStore.settled.push(id);
+    });
+    // Each response is paired with the durable records present when it arrived.
+    const send = () => deepIngest(token).then((res) => ({ res, settled: [...scopeStore.settled] }));
+    // Whichever request wins the lease keeps its run in flight until the end.
+    const open = gateSourceIngest();
+    let slow: Awaited<ReturnType<typeof send>>;
+    let other: Awaited<ReturnType<typeof send>>;
+    try {
+      const slowReq = send();
+      try {
+        await vi.waitFor(() => expect(slowId).toBeDefined());
+        other = await send();
+      } finally {
+        release();
+      }
+      slow = await slowReq;
+    } finally {
+      open();
+    }
+    const responses = [slow, other!];
+    const refused = responses.filter((r) => r.res.status === 409);
+    const started = responses.filter((r) => r.res.status === 202);
+    expect(refused).toHaveLength(1);
+    expect(started).toHaveLength(1);
+    const runningId = started[0].res.body.data.jobId as string;
+    expect(refused[0].res.body.error.code).toBe("INGEST_IN_PROGRESS");
+    // The 409 names the running job, whose record had landed when it was sent.
+    expect(refused[0].res.body.error.details).toEqual({ jobId: runningId });
+    expect(refused[0].settled).toContain(runningId);
+    expect(started[0].settled).toContain(runningId);
+    await vi.waitFor(() => expect(getLastJobLifecycle(runningId)?.status).toBe("completed"));
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+  });
+
+  it("a scope write that throws frees the connector and names no job", async () => {
+    const token = await login("admin");
+    recordJobScope.mockImplementationOnce(async () => {
+      throw new Error("scope write blew up");
+    });
+    const failed = await deepIngest(token);
+    expect(failed.status).toBe(500);
+    expect(isConnectorIngestActive("repo_github_x")).toBe(false);
+    // The aborted job's id is not left behind for another holder's 409.
+    const other = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
+    try {
+      const busy = await deepIngest(token);
+      expect(busy.status).toBe(409);
+      expect(busy.body.error.details).toBeUndefined();
+    } finally {
+      other.release();
+    }
+    // The connector is free, and the next click starts a fresh job.
+    const next = await deepIngest(token);
+    expect(next.status).toBe(202);
+    await vi.waitFor(() =>
+      expect(getLastJobLifecycle(next.body.data.jobId)?.status).toBe("completed"),
+    );
+  });
+
   it("a 409 from another entry point's claim carries no job id", async () => {
     const token = await login("admin");
     const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
@@ -699,6 +905,7 @@ describe("auto-ingest failure progress event", () => {
       id: "repo_github_x",
       provider: input.provider,
       label: input.label,
+      localPath: input.localPath,
     }));
     vi.mocked(ingestSourceAsKnowledge).mockRejectedValueOnce(new Error(RAW));
     const finished = new Promise<void>((resolve) => h.finished.mockImplementation(resolve));
@@ -749,7 +956,6 @@ describe("manual connector regeneration callers (#1356)", () => {
         id: "doc_manual",
         projectId: "proj_1",
         title: "Manual regeneration",
-        docType: "architecture",
         scope: "full",
         scopeFilter: "{}",
         evidencePolicy: JSON.stringify({
@@ -764,7 +970,7 @@ describe("manual connector regeneration callers (#1356)", () => {
       filesScanned: 1,
       connectionsFound: 1,
       suggestionsUpserted: 1,
-      errors: [],
+      errors: 0,
     });
     token = await login("admin");
   });
@@ -832,7 +1038,10 @@ describe("manual connector regeneration callers (#1356)", () => {
             projectId: "proj_1",
             autoUpdate: true,
             deletedAt: null,
-            status: { in: ["ready", "degraded", "failed", "generating"] },
+            OR: [
+              { status: { in: ["ready", "degraded", "failed", "generating"] } },
+              { status: { in: ["cancelled", "cancelling"] }, versions: { some: {} } },
+            ],
             scope: { in: ["full", "repository", "module", "symbol"] },
           },
         });

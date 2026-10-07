@@ -23,7 +23,12 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { Citation, FindingSupportPanel, FindingVerificationStatus } from "@metis/shared";
+import type {
+  Citation,
+  FindingFaithfulness,
+  FindingSupportPanel,
+  FindingVerificationStatus,
+} from "@metis/shared";
 import { applyFindingFaithfulness } from "./finding-faithfulness.js";
 import { verifyFinding } from "./finding-verification.js";
 import { applySupportPanel, type PanelEvidence } from "./support-panel.js";
@@ -213,7 +218,7 @@ interface GradedFinding {
   citations: Citation[];
   verificationStatus: FindingVerificationStatus | null;
   supportPanel?: FindingSupportPanel | null;
-  faithfulness?: unknown;
+  faithfulness?: FindingFaithfulness | null;
 }
 
 const EVIDENCE: PanelEvidence[] = [
@@ -284,9 +289,11 @@ describe("#1318 — neither grader can promote a finding the gate flagged", () =
     const scored = await applyFindingFaithfulness(provider, panelled.findings, EVIDENCE, {
       enabled: true,
       // A perfect 1.0 — the most promoting number the metric can produce.
-      extractor: { decompose: vi.fn(async () => ({ claims: [{ claim: "c1" }] })) },
+      extractor: { decompose: vi.fn(async () => ({ claims: [{ claim: "c1", sourceIds: [] }] })) },
       judge: {
-        judge: vi.fn(async (c: string[]) => c.map((claim) => ({ claim, supported: true }))),
+        judge: vi.fn(async (c: string[]) =>
+          c.map((claim) => ({ claim, supported: true, sourceIds: [] })),
+        ),
       },
     });
 
@@ -308,9 +315,11 @@ describe("#1318 — neither grader can promote a finding the gate flagged", () =
     const input = gradedFindings();
     const scored = await applyFindingFaithfulness(new EnthusiasticProvider(), input, EVIDENCE, {
       enabled: true,
-      extractor: { decompose: vi.fn(async () => ({ claims: [{ claim: "c1" }] })) },
+      extractor: { decompose: vi.fn(async () => ({ claims: [{ claim: "c1", sourceIds: [] }] })) },
       judge: {
-        judge: vi.fn(async (c: string[]) => c.map((claim) => ({ claim, supported: false }))),
+        judge: vi.fn(async (c: string[]) =>
+          c.map((claim) => ({ claim, supported: false, sourceIds: [] })),
+        ),
       },
     });
     expect(scored.findings).toHaveLength(input.length);

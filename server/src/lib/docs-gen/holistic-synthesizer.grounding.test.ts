@@ -14,7 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import path from "node:path";
-import type { AIProvider, ChatChunk } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
 import { buildGroundingContext } from "./grounding/grounding-context.js";
 
 // ── prisma mock ─────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ function makeProvider(): AIProvider {
     embed: vi.fn(),
     models: vi.fn().mockResolvedValue(["mock"]),
     ping: vi.fn().mockResolvedValue(true),
-    async *stream(messages, _opts): AsyncGenerator<ChatChunk> {
+    async *stream(messages: ChatMessage[], _opts?: ChatOptions): AsyncGenerator<ChatChunk> {
       const user = String(messages[messages.length - 1]?.content ?? "");
       // Phase-2 section calls carry the section-group banner; capture them.
       if (user.includes("section group now")) {
@@ -338,6 +338,7 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
         actorId: "forged-admin",
         docType: "architecture",
       }),
+      // Nullable as the column is: a legacy row carries no policy.
       evidencePolicy: createEvidencePolicy(
         {
           userId: "alice",
@@ -346,7 +347,7 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
           permissions: ["project.update"],
         },
         { sharedDocumentIds: ["reference"] },
-      ),
+      ) as string | null,
     });
     let current: ReturnType<typeof doc>;
     const rows = () => [
@@ -481,8 +482,14 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
       await generateDocumentAsync("self", "p1");
       expect(mockPrisma.generatedDocumentVersion.create).toHaveBeenCalled();
       expect(mockPrisma.$transaction).toHaveBeenCalledOnce();
-      expect(mockPrisma.generatedDocument.updateMany).toHaveBeenCalledTimes(2);
+      // Claim + commit; every other write is a #782 per-section checkpoint.
+      const writes = mockPrisma.generatedDocument.updateMany.mock.calls.map(([args]) => args);
+      const checkpoints = writes.filter(
+        (w) => Object.keys(w.data).join() === "generationCheckpoint",
+      );
+      expect(writes.length - checkpoints.length).toBe(2);
       const claim = mockPrisma.generatedDocument.updateMany.mock.calls[0][0].data.codeGraphHash;
+      for (const w of checkpoints) expect(w.where).toMatchObject({ codeGraphHash: claim });
       expect(claim).toMatch(/^regenerating:/);
       expect(mockPrisma.generatedDocument.updateMany).toHaveBeenLastCalledWith(
         expect.objectContaining({ where: expect.objectContaining({ codeGraphHash: claim }) }),
@@ -570,7 +577,7 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
       expect(manifest.generation.model.phase2.model).toBe(
         resolvePhase2Router(1).primary.tuning.phase2Model,
       );
-      expect(manifest.graphFingerprint.fingerprint.length).toBeGreaterThan(0);
+      expect(manifest.graphFingerprint.fingerprint!.length).toBeGreaterThan(0);
       expect(manifest.generation.prompts.phase1.version).toBeGreaterThan(0);
       expect(manifest.selectedEvidence.primary.some((row) => row.documentId === "reference")).toBe(
         true,
@@ -713,6 +720,22 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
     expect(result.markdown).not.toContain("%5B%22conn-a%22");
     // The prose itself survives — this strips ids, it does not delete content.
     expect(result.markdown).toContain("Grounded prose.");
+  });
+
+  /**
+   * #737 — an id that resolves to an admitted source is not stripped but
+   * rendered: one document-scoped footnote, cited from every section that used
+   * it, with a definition naming the file — never empty punctuation.
+   */
+  it("renders a cited admitted source as a document-wide footnote (#737)", async () => {
+    leakSourceId = "([rag:doc1:c1])";
+    const result = await synthesizeHolisticDocument("p1", "architecture", "Arch", { grounding });
+
+    expect(result.markdown).toContain("Grounded prose.[^src-1]");
+    expect(result.markdown).not.toContain("[^src-2]");
+    expect(result.markdown).toMatch(/^\[\^src-1\]: `A\.ts` \(retrieved excerpt\)$/m);
+    expect(result.markdown).not.toContain("[rag:");
+    expect(result.markdown).not.toMatch(/\(\s*\)/);
   });
 
   it("strips the legacy module-scoped id shape too (#1360)", async () => {

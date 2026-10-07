@@ -53,12 +53,12 @@ vi.mock("../prisma.js", () => ({
   },
 }));
 
-const persistRequirements = vi.fn(async () => ["rq_1", "rq_2"]);
+const persistRequirements = vi.fn(async (..._args: unknown[]) => ["rq_1", "rq_2"]);
 const persistAnalysisEnhancement = vi.fn(async () => undefined);
 /** Persisted findings the promotion re-derives coverage + verdicts from. */
 const findings: Array<Record<string, unknown>> = [];
 vi.mock("./analysis-service.js", () => ({
-  persistRequirements: (...a: unknown[]) => persistRequirements(...(a as [])),
+  persistRequirements: (...a: unknown[]) => persistRequirements(...a),
   persistAnalysisEnhancement: (...a: unknown[]) => persistAnalysisEnhancement(...(a as [])),
   readFlattenedFindings: vi.fn(async () => findings),
 }));

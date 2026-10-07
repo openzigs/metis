@@ -46,6 +46,8 @@ vi.mock("@/lib/api-client", () => ({
 }));
 
 import { useSocket } from "@/lib/socket-client";
+import { followedRooms } from "@/lib/socket-subscription";
+import { presenceRoom, threadRoom } from "@metis/shared";
 import { createFakeSocket } from "./helpers/fake-socket";
 import { listMessages, postMessage, streamAiReply } from "@/lib/discussions-api";
 import { toast } from "sonner";
@@ -346,8 +348,17 @@ describe("DiscussionThreadView", () => {
     await waitFor(() =>
       expect(socket.emit).toHaveBeenCalledWith("subscribe:thread", { threadId: "t1" }),
     );
+    // #672 — counted under the server's room names, not hand-typed keys. The
+    // view also mounts PresenceAvatars for the thread.
+    expect(followedRooms(socket as never)).toEqual(
+      new Map([
+        [threadRoom("t1"), 1],
+        [presenceRoom("discussion", "t1"), 1],
+      ]),
+    );
     unmount();
     expect(socket.emit).toHaveBeenCalledWith("unsubscribe:thread", { threadId: "t1" });
+    expect(followedRooms(socket as never).size).toBe(0);
   });
 
   it("re-joins the thread room after a reconnect and keeps rendering live messages (#642)", async () => {
@@ -372,6 +383,177 @@ describe("DiscussionThreadView", () => {
     expect(live.emitted("unsubscribe:thread", { threadId: "t1" })).toBe(1);
     live.reconnect();
     expect(live.emitted("subscribe:thread", { threadId: "t1" })).toBe(2);
+  });
+
+  it("shows a message posted while the socket was down, once reconnected (#646)", async () => {
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    listMessagesMock.mockResolvedValue([humanMsg({ id: "m1", body: "before the gap" })]);
+    renderView();
+    expect(await screen.findByText("before the gap")).toBeInTheDocument();
+    // A message streaming in when the socket drops...
+    act(() =>
+      live.fire("message:stream", {
+        threadId: "t1",
+        messageId: "ai-gap",
+        delta: "Half",
+        done: false,
+      }),
+    );
+    expect(await screen.findByText("Half")).toBeInTheDocument();
+
+    act(() => live.disconnect());
+    // ...finishes, and a member posts; both `message:new` events are lost.
+    listMessagesMock.mockResolvedValue([
+      humanMsg({ id: "m1", body: "before the gap" }),
+      aiMsg({ id: "ai-gap", body: "Half and whole" }),
+      humanMsg({ id: "m2", body: "posted in the gap" }),
+    ]);
+    act(() => live.connect());
+
+    expect(await screen.findByText("posted in the gap")).toBeInTheDocument();
+    expect(await screen.findByText("Half and whole")).toBeInTheDocument();
+    expect(screen.getAllByText("before the gap")).toHaveLength(1);
+  });
+
+  it("ignores a reconnect re-read that settles after the thread changed (#646)", async () => {
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    // One Wrapper for both renders, so the view re-renders rather than remounts.
+    const Wrapper = makeWrapper({});
+    const { rerender } = render(
+      <Wrapper>
+        <DiscussionThreadView threadId="t1" currentUserId="u1" />
+      </Wrapper>,
+    );
+    await waitFor(() => expect(listMessagesMock).toHaveBeenCalledTimes(1));
+    let resolveStale: (m: DiscussionListMessage[]) => void = () => {};
+    listMessagesMock.mockReturnValueOnce(new Promise((r) => (resolveStale = r)));
+    act(() => live.reconnect());
+    rerender(
+      <Wrapper>
+        <DiscussionThreadView threadId="t2" currentUserId="u1" />
+      </Wrapper>,
+    );
+    await waitFor(() => expect(listMessagesMock).toHaveBeenCalledWith("t2", { limit: 100 }));
+    await act(async () => resolveStale([humanMsg({ id: "stale", body: "from the old thread" })]));
+    expect(screen.queryByText("from the old thread")).not.toBeInTheDocument();
+  });
+
+  it("keeps the thread when the reconnect re-read fails (#646)", async () => {
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    listMessagesMock.mockResolvedValue([humanMsg({ id: "m1", body: "kept" })]);
+    renderView();
+    expect(await screen.findByText("kept")).toBeInTheDocument();
+    listMessagesMock.mockRejectedValueOnce(new Error("offline"));
+    act(() => live.reconnect());
+    await waitFor(() => expect(listMessagesMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("kept")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("recovers a message missed during the gap on a thread longer than one page (#646)", async () => {
+    // A fake of the route: oldest-first, `limit`, and a `cursor` that pages
+    // forward from a message id (pinned against real SQLite on the server).
+    const server = Array.from({ length: 100 }, (_, i) =>
+      humanMsg({ id: `m${i + 1}`, body: `message ${i + 1}` }),
+    );
+    listMessagesMock.mockImplementation(
+      async (_id: string, opts: { limit?: number; cursor?: string } = {}) => {
+        const from = opts.cursor ? server.findIndex((m) => m.id === opts.cursor) + 1 : 0;
+        return server.slice(from, from + (opts.limit ?? 50));
+      },
+    );
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    renderView();
+    expect(await screen.findByText("message 100")).toBeInTheDocument();
+    // The 101st message arrives live: the thread is now longer than one page.
+    const m101 = humanMsg({ id: "m101", body: "message 101" });
+    server.push(m101);
+    act(() => live.fire("message:new", { threadId: "t1", message: m101, ts: 1 }));
+    expect(await screen.findByText("message 101")).toBeInTheDocument();
+
+    act(() => live.disconnect());
+    server.push(humanMsg({ id: "m102", body: "missed in the gap" }));
+    act(() => live.connect());
+
+    expect(await screen.findByText("missed in the gap")).toBeInTheDocument();
+    expect(listMessagesMock).toHaveBeenLastCalledWith("t1", { limit: 100, cursor: "m101" });
+    expect(screen.getAllByText("message 101")).toHaveLength(1);
+  });
+
+  it("keeps paging forward until the re-read returns a short page (#646)", async () => {
+    const server = [humanMsg({ id: "m0", body: "held" })];
+    listMessagesMock.mockImplementation(
+      async (_id: string, opts: { limit?: number; cursor?: string } = {}) => {
+        const from = opts.cursor ? server.findIndex((m) => m.id === opts.cursor) + 1 : 0;
+        return server.slice(from, from + (opts.limit ?? 50));
+      },
+    );
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    renderView();
+    expect(await screen.findByText("held")).toBeInTheDocument();
+    act(() => live.disconnect());
+    for (let i = 1; i <= 150; i++) server.push(humanMsg({ id: `g${i}`, body: `gap ${i}` }));
+    act(() => live.connect());
+    expect(await screen.findByText("gap 150")).toBeInTheDocument();
+    expect(listMessagesMock).toHaveBeenCalledWith("t1", { limit: 100, cursor: "m0" });
+    expect(listMessagesMock).toHaveBeenCalledWith("t1", { limit: 100, cursor: "g100" });
+  });
+
+  it("drops the local SSE placeholder when the reconnect re-read brings the AI reply (#646)", async () => {
+    postMessageMock.mockResolvedValue(humanMsg({ id: "server-1", body: "@AI hi" }));
+    // The reply streams over SSE (which survives a socket drop) and never ends
+    // here; the room `message:new` for its server row is lost in the gap.
+    streamAiReplyMock.mockReturnValue(gen([{ type: "delta", content: "partial" }]));
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    const user = userEvent.setup();
+    renderView({ aiResponseMode: "on_mention" });
+    await screen.findByLabelText("Message");
+    await user.type(screen.getByLabelText("Message"), "@AI hi");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    expect(await screen.findByText("partial")).toBeInTheDocument();
+
+    act(() => live.disconnect());
+    listMessagesMock.mockResolvedValue([
+      humanMsg({ id: "server-1", body: "@AI hi" }),
+      aiMsg({ id: "ai-real", body: "final answer" }),
+    ]);
+    act(() => live.connect());
+
+    expect(await screen.findByText("final answer")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("partial")).not.toBeInTheDocument());
+    expect(
+      screen
+        .getAllByTestId("discussion-message")
+        .filter((row) => row.getAttribute("data-author-kind") === "ai"),
+    ).toHaveLength(1);
+  });
+
+  it("keeps the local SSE placeholder when the re-read brings no new AI reply (#646)", async () => {
+    postMessageMock.mockResolvedValue(humanMsg({ id: "server-1", body: "@AI hi" }));
+    streamAiReplyMock.mockReturnValue(gen([{ type: "delta", content: "still streaming" }]));
+    listMessagesMock.mockResolvedValue([aiMsg({ id: "ai-old", body: "an older reply" })]);
+    const live = createFakeSocket();
+    useSocketMock.mockReturnValue(live);
+    const user = userEvent.setup();
+    renderView({ aiResponseMode: "on_mention" });
+    expect(await screen.findByText("an older reply")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Message"), "@AI hi");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    expect(await screen.findByText("still streaming")).toBeInTheDocument();
+
+    listMessagesMock.mockResolvedValue([
+      aiMsg({ id: "ai-old", body: "an older reply" }),
+      humanMsg({ id: "server-1", body: "@AI hi" }),
+    ]);
+    act(() => live.reconnect());
+    await waitFor(() => expect(listMessagesMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("still streaming")).toBeInTheDocument();
   });
 
   it("renders a live message:new event from another member", async () => {

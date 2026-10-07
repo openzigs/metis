@@ -80,7 +80,12 @@ vi.mock("../src/lib/prisma.js", async () => {
         async ({
           data,
         }: {
-          data: Omit<MockProject, "id" | "createdAt" | "updatedAt" | "deletedAt">;
+          data: Omit<
+            MockProject,
+            "id" | "createdAt" | "updatedAt" | "deletedAt" | "description"
+          > & {
+            description?: string;
+          };
         }) => {
           pNext += 1;
           const row: MockProject = {

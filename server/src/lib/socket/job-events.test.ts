@@ -7,18 +7,19 @@ import type { MetisIOServer } from "./server.js";
 import {
   createJobEventEmitter,
   genericFailureMessage,
+  getJobScope,
   getLastDocSections,
   getLastJobLifecycle,
   JOB_KINDS,
   NOOP_JOB_EMITTER,
   jobEvents,
   _resetJobLifecycleMemory,
+  rememberJobScope,
 } from "./job-events.js";
 import * as registry from "./registry.js";
 
 /** The new long-running kinds added by Epic #406 (#419) on top of the original 3. */
 const NEW_JOB_KINDS: readonly JobKind[] = [
-  "scan",
   "pr-review",
   "import-sync",
   "embeddings-reindex",
@@ -198,21 +199,21 @@ describe("createJobEventEmitter", () => {
     const { io, emit } = makeFakeIo();
     const e = createJobEventEmitter(io);
 
-    e.started("scan", "scan-1", "proj-1", "queued");
-    e.progress("scan", "scan-1", "proj-1", 55, "scanning files");
-    e.completed("scan", "scan-1", "proj-1", "done");
+    e.started("pr-review", "review-1", "proj-1", "queued");
+    e.progress("pr-review", "review-1", "proj-1", 55, "reviewing files");
+    e.completed("pr-review", "review-1", "proj-1", "done");
 
     expect(emit).toHaveBeenCalledWith(
       "job:lifecycle",
-      expect.objectContaining({ kind: "scan", status: "started" }),
+      expect.objectContaining({ kind: "pr-review", status: "started" }),
     );
     expect(emit).toHaveBeenCalledWith(
       "job:lifecycle",
-      expect.objectContaining({ kind: "scan", status: "progress", progress: 55 }),
+      expect.objectContaining({ kind: "pr-review", status: "progress", progress: 55 }),
     );
     expect(emit).toHaveBeenCalledWith(
       "job:lifecycle",
-      expect.objectContaining({ kind: "scan", status: "completed", progress: 100 }),
+      expect.objectContaining({ kind: "pr-review", status: "completed", progress: 100 }),
     );
   });
 
@@ -309,7 +310,6 @@ describe("genericFailureMessage (#254)", () => {
   });
 
   it("returns a user-safe failure string for each NEW kind", () => {
-    expect(genericFailureMessage("scan")).toBe("The scan failed. Please try again.");
     expect(genericFailureMessage("pr-review")).toBe(
       "The pull request review failed. Please try again.",
     );
@@ -325,7 +325,7 @@ describe("genericFailureMessage (#254)", () => {
     );
   });
 
-  it("exposes JOB_KINDS: the original 3, the 6 from #419 and `repo-ingest` (#373) — 10 total", () => {
+  it("exposes JOB_KINDS: the original 3, the 5 left from #419 and `repo-ingest` (#373) — 9 total", () => {
     expect(JOB_KINDS).toContain("analysis");
     expect(JOB_KINDS).toContain("doc-generation");
     expect(JOB_KINDS).toContain("impact-analysis");
@@ -334,7 +334,9 @@ describe("genericFailureMessage (#254)", () => {
     }
     expect(JOB_KINDS).toContain("repo-ingest");
     expect(new Set(JOB_KINDS).size).toBe(JOB_KINDS.length); // no duplicates
-    expect(JOB_KINDS).toHaveLength(10);
+    // #804 — `scan` went with the bug scanner.
+    expect(JOB_KINDS).not.toContain("scan");
+    expect(JOB_KINDS).toHaveLength(9);
   });
 
   it("emits only the generic message on a failed event — never the raw error", () => {
@@ -384,8 +386,8 @@ describe("last-event memory for late subscribers", () => {
   it("keeps jobs apart and reports nothing for an unknown job", () => {
     const { io } = makeFakeIo();
     const emitter = createJobEventEmitter(io);
-    emitter.started("scan", "job-a", null);
-    emitter.failed("scan", "job-b", null, genericFailureMessage("scan"));
+    emitter.started("pr-review", "job-a", null);
+    emitter.failed("pr-review", "job-b", null, genericFailureMessage("pr-review"));
 
     expect(getLastJobLifecycle("job-a")?.status).toBe("started");
     expect(getLastJobLifecycle("job-b")?.status).toBe("failed");
@@ -401,7 +403,7 @@ describe("last-event memory for late subscribers", () => {
     const { io } = makeFakeIo();
     const emitter = createJobEventEmitter(io);
     for (let i = 0; i < 520; i += 1) {
-      emitter.started("scan", `bounded-${i}`, null);
+      emitter.started("pr-review", `bounded-${i}`, null);
     }
     expect(getLastJobLifecycle("bounded-0")).toBeUndefined();
     expect(getLastJobLifecycle("bounded-519")?.status).toBe("started");
@@ -511,5 +513,82 @@ describe("last doc-section memory for re-subscribers (#510)", () => {
     NOOP_JOB_EMITTER.docSection(section("doc-reset", "Overview", "done"));
     _resetJobLifecycleMemory();
     expect(getLastDocSections("doc-reset")).toEqual([]);
+  });
+});
+
+/** #655 — the scope a `job:{id}` room join is authorized against. */
+describe("job scope memory (#655)", () => {
+  beforeEach(() => {
+    _resetJobLifecycleMemory();
+  });
+
+  it("takes a job's kind and project from its lifecycle events", () => {
+    NOOP_JOB_EMITTER.started("spec-kit", "job-1", "proj-1");
+    expect(getJobScope("job-1")).toEqual({ kind: "spec-kit", projectId: "proj-1" });
+    NOOP_JOB_EMITTER.started("impact-analysis", "job-2", null);
+    expect(getJobScope("job-2")).toEqual({ kind: "impact-analysis", projectId: null });
+    expect(getJobScope("job-never-seen")).toBeUndefined();
+  });
+
+  it("scopes a job named only by doc-section events as a doc generation", () => {
+    NOOP_JOB_EMITTER.docSection({
+      jobId: "doc-1",
+      projectId: "proj-1",
+      section: "A",
+      status: "done",
+    });
+    expect(getJobScope("doc-1")).toEqual({ kind: "doc-generation", projectId: "proj-1" });
+  });
+
+  it("keeps a lifecycle-derived scope when a doc-section names another project", () => {
+    NOOP_JOB_EMITTER.started("doc-generation", "doc-2", "proj-1");
+    NOOP_JOB_EMITTER.docSection({
+      jobId: "doc-2",
+      projectId: "proj-x",
+      section: "A",
+      status: "done",
+    });
+    expect(getJobScope("doc-2")).toEqual({ kind: "doc-generation", projectId: "proj-1" });
+  });
+
+  it("records a scope handed out before the job's first event, and the event refreshes it", () => {
+    rememberJobScope("prr-1", "pr-review", "proj-1");
+    expect(getJobScope("prr-1")).toEqual({ kind: "pr-review", projectId: "proj-1" });
+    expect(getLastJobLifecycle("prr-1")).toBeUndefined();
+    NOOP_JOB_EMITTER.started("pr-review", "prr-1", "proj-1");
+    expect(getJobScope("prr-1")).toEqual({ kind: "pr-review", projectId: "proj-1" });
+  });
+
+  it("evicts the least recently touched event-derived scopes beyond the cap", () => {
+    NOOP_JOB_EMITTER.started("pr-review", "kept", "proj-1");
+    for (let i = 0; i < 499; i += 1) NOOP_JOB_EMITTER.started("pr-review", `filler-${i}`, "proj-1");
+    // Touching `kept` makes `filler-0` the oldest.
+    NOOP_JOB_EMITTER.progress("pr-review", "kept", "proj-1", 50);
+    NOOP_JOB_EMITTER.started("pr-review", "one-more", "proj-1");
+    expect(getJobScope("filler-0")).toBeUndefined();
+    expect(getJobScope("kept")).toBeDefined();
+    expect(getJobScope("one-more")).toBeDefined();
+  });
+
+  it("keeps a remembered scope however many other jobs emit before its first event", () => {
+    // A queued PR review: its id is handed out, then 500+ other jobs run.
+    rememberJobScope("prr-queued", "pr-review", "proj-1");
+    for (let i = 0; i < 600; i += 1) NOOP_JOB_EMITTER.started("pr-review", `busy-${i}`, "proj-2");
+    expect(getJobScope("prr-queued")).toEqual({ kind: "pr-review", projectId: "proj-1" });
+  });
+
+  it("bounds remembered scopes on their own cap", () => {
+    rememberJobScope("first", "pr-review", "proj-1");
+    for (let i = 0; i < 500; i += 1) rememberJobScope(`prr-${i}`, "pr-review", "proj-1");
+    expect(getJobScope("first")).toBeUndefined();
+    expect(getJobScope("prr-499")).toBeDefined();
+  });
+
+  it("is cleared by the test seam", () => {
+    rememberJobScope("gone", "pr-review", "proj-1");
+    NOOP_JOB_EMITTER.started("pr-review", "gone-too", "proj-1");
+    _resetJobLifecycleMemory();
+    expect(getJobScope("gone")).toBeUndefined();
+    expect(getJobScope("gone-too")).toBeUndefined();
   });
 });

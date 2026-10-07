@@ -340,7 +340,8 @@ describe.runIf(enabled)("Issue #798 — the reindex lease on a real Postgres", (
     const bLease = {
       holder: "pod-b:run-1",
       renew: () => backendB.renew(name, "pod-b:run-1", Date.now(), 60_000),
-      assertHeld: () => backendB.assertHeld(projectId, name, "pod-b:run-1"),
+      assertHeld: () =>
+        backendB.assertHeld(projectId, name, "pod-b:run-1", undefined, Date.now() + 60_000),
     };
 
     // GATE 1 — the per-batch fence. B's renew fails, so B aborts BEFORE its upsert:
@@ -362,7 +363,8 @@ describe.runIf(enabled)("Issue #798 — the reindex lease on a real Postgres", (
     await store.upsert(reindexShadowId(projectId), [vecRow("partial-1", "a PARTIAL shadow")]);
 
     const fencedGuard = {
-      assertHeld: () => backendB.assertHeld(projectId, name, "pod-b:run-1"),
+      assertHeld: () =>
+        backendB.assertHeld(projectId, name, "pod-b:run-1", undefined, Date.now() + 60_000),
     };
     await expect(
       store.swapTable(projectId, reindexShadowId(projectId), fencedGuard),
@@ -530,7 +532,7 @@ describe.runIf(enabled)("Issue #798 — the reindex lease on a real Postgres", (
     // steal landed strictly AFTER it — never inside it, which is the only outcome the
     // half-open window could have produced.
     const live = await store.listChunkRefs(projectId);
-    expect(live.map((r) => r.chunkId ?? r.id).sort()).toEqual(["new-1"]);
+    expect(live.map((r) => r.chunkId).sort()).toEqual(["new-1"]);
     expect(await store.count(reindexShadowId(projectId))).toBe(0);
 
     await resetVectors(store, projectId);
@@ -609,7 +611,7 @@ describe.runIf(enabled)("Issue #798 — the reindex lease on a real Postgres", (
 
     // Pre-#798 this swap SUCCEEDED and cut a 1-chunk shadow over a 2-chunk live index.
     const live = await store.listChunkRefs(projectId);
-    expect(live.map((r) => r.chunkId ?? r.id).sort()).toEqual(["live-1", "live-2"]);
+    expect(live.map((r) => r.chunkId).sort()).toEqual(["live-1", "live-2"]);
     // The transaction rolled back, so the shadow is intact and still resumable.
     expect(await store.count(reindexShadowId(projectId))).toBe(1);
 
@@ -696,7 +698,7 @@ describe.runIf(enabled)("Issue #798 — the reindex lease on a real Postgres", (
 
     // And the cut-over itself is whole, as always.
     const live = await store.listChunkRefs(projectId);
-    expect(live.map((r) => r.chunkId ?? r.id).sort()).toEqual(["new-1"]);
+    expect(live.map((r) => r.chunkId).sort()).toEqual(["new-1"]);
 
     await backendB.release(name, "pod-b:run-1");
     await resetVectors(store, projectId);

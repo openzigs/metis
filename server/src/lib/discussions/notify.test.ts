@@ -12,16 +12,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---- Prisma double ----------------------------------------------------------
 const notificationCreate = vi.fn();
-const projectFindFirst = vi.fn();
 const userRoleFindFirst = vi.fn();
 const prefFindMany = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
     notification: { create: (...a: unknown[]) => notificationCreate(...a) },
-    project: { findFirst: (...a: unknown[]) => projectFindFirst(...a) },
     userRole: { findFirst: (...a: unknown[]) => userRoleFindFirst(...a) },
     notificationPreference: { findMany: (...a: unknown[]) => prefFindMany(...a) },
   },
+}));
+
+// ---- Project-access seam double (#734) --------------------------------------
+// Eligibility is the discussions access rule (`canAccessProjectDiscussions`,
+// itself the canonical `assertProjectAccess`); its own tests pin that rule.
+const canAccessProjectDiscussions = vi.fn();
+vi.mock("./access.js", () => ({
+  canAccessProjectDiscussions: (...a: unknown[]) => canAccessProjectDiscussions(...a),
 }));
 
 // ---- Socket registry double -------------------------------------------------
@@ -73,8 +79,8 @@ describe("discussion mention notifications", () => {
     io = { to };
     delete process.env.DISCUSSION_MENTION_NOTIFY_MAX;
     delete process.env.DISCUSSION_MENTION_NOTIFY_WINDOW_MS;
-    // Default: bob is the project creator (a member).
-    projectFindFirst.mockResolvedValue({ createdById: "bob" });
+    // Default: everyone mentioned can access the project; nobody is an admin.
+    canAccessProjectDiscussions.mockResolvedValue(true);
     userRoleFindFirst.mockResolvedValue(null);
     notificationCreate.mockResolvedValue({ id: "n1" });
     // #614 — default: no stored preference rows (inApp × mention defaults ON).
@@ -107,8 +113,7 @@ describe("discussion mention notifications", () => {
 
   it("does NOT notify a non-member (OWASP A01 — no spam/probe of outsiders)", async () => {
     resolveUsernames.mockResolvedValue([{ id: "outsider", username: "outsider" }]);
-    projectFindFirst.mockResolvedValue({ createdById: "someone-else" });
-    userRoleFindFirst.mockResolvedValue(null); // not an admin
+    canAccessProjectDiscussions.mockResolvedValue(false);
 
     await notifyDiscussionMentions(baseInput({ body: "hey @outsider" }));
 
@@ -116,10 +121,25 @@ describe("discussion mention notifications", () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it("#734 — notifies a project member who did not create the project", async () => {
+    resolveUsernames.mockResolvedValue([{ id: "developer", username: "developer" }]);
+
+    await notifyDiscussionMentions(baseInput({ body: "@developer can you check?" }));
+
+    expect(canAccessProjectDiscussions).toHaveBeenCalledWith(
+      { id: "developer", role: "reader" },
+      "p1",
+    );
+    expect(notificationCreate).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
   it("notifies an admin mentioned user even if not the project creator", async () => {
     resolveUsernames.mockResolvedValue([{ id: "adminUser", username: "adminuser" }]);
-    projectFindFirst.mockResolvedValue({ createdById: "someone-else" });
     userRoleFindFirst.mockResolvedValue({ userId: "adminUser" }); // has admin role
+    canAccessProjectDiscussions.mockImplementation(
+      async (a: { role: string }) => a.role === "admin",
+    );
 
     await notifyDiscussionMentions(baseInput({ body: "hey @adminuser" }));
 
@@ -213,26 +233,29 @@ describe("discussion mention notifications", () => {
   });
 
   describe("isProjectMember", () => {
-    it("returns true for the project creator", async () => {
-      projectFindFirst.mockResolvedValue({ createdById: "bob" });
-      expect(await isProjectMember("bob", "p1")).toBe(true);
-    });
-    it("returns true for an admin who is not the creator", async () => {
-      projectFindFirst.mockResolvedValue({ createdById: "other" });
+    it("asks the project-access rule, as an admin when the user holds the admin role", async () => {
       userRoleFindFirst.mockResolvedValue({ userId: "adm" });
       expect(await isProjectMember("adm", "p1")).toBe(true);
+      expect(userRoleFindFirst).toHaveBeenCalledWith({
+        where: { userId: "adm", role: { key: "admin" } },
+        select: { userId: true },
+      });
+      expect(canAccessProjectDiscussions).toHaveBeenCalledWith({ id: "adm", role: "admin" }, "p1");
     });
-    it("returns false for a non-creator non-admin", async () => {
-      projectFindFirst.mockResolvedValue({ createdById: "other" });
-      userRoleFindFirst.mockResolvedValue(null);
+    it("asks as a non-admin otherwise, without an audit context", async () => {
+      expect(await isProjectMember("dev", "p1")).toBe(true);
+      expect(canAccessProjectDiscussions).toHaveBeenCalledWith({ id: "dev", role: "reader" }, "p1");
+    });
+    it("returns false when the rule denies", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(false);
       expect(await isProjectMember("nope", "p1")).toBe(false);
     });
-    it("returns false (fails closed) when the project is missing", async () => {
-      projectFindFirst.mockResolvedValue(null);
+    it("returns false (fails closed) when the role lookup throws", async () => {
+      userRoleFindFirst.mockRejectedValue(new Error("db boom"));
       expect(await isProjectMember("x", "p1")).toBe(false);
     });
-    it("returns false (fails closed) when the lookup throws", async () => {
-      projectFindFirst.mockRejectedValue(new Error("db boom"));
+    it("returns false (fails closed) when the access check throws", async () => {
+      canAccessProjectDiscussions.mockRejectedValue(new Error("db boom"));
       expect(await isProjectMember("x", "p1")).toBe(false);
     });
   });

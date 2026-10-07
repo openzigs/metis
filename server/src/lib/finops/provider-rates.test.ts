@@ -68,7 +68,7 @@ describe("provider-rates — anthropic cost attribution (#428)", () => {
   );
 
   it("prices claude-sonnet-4-6 at the published 0.3/1.5 cents-per-1k", () => {
-    const rate = getRate("anthropic", "claude-sonnet-4-6");
+    const rate = getRate("anthropic", "claude-sonnet-4-6")!;
     expect(rate.inputPer1k).toBe(0.3);
     expect(rate.outputPer1k).toBe(1.5);
     expect(rate.cacheReadPer1k).toBe(0.03);
@@ -76,20 +76,20 @@ describe("provider-rates — anthropic cost attribution (#428)", () => {
   });
 
   it("prices claude-opus-4-8 at the published 0.5/2.5 cents-per-1k", () => {
-    const rate = getRate("anthropic", "claude-opus-4-8");
+    const rate = getRate("anthropic", "claude-opus-4-8")!;
     expect(rate.inputPer1k).toBe(0.5);
     expect(rate.outputPer1k).toBe(2.5);
   });
 
   it("prices claude-haiku-4-5 at the published 0.1/0.5 cents-per-1k", () => {
-    const rate = getRate("anthropic", "claude-haiku-4-5");
+    const rate = getRate("anthropic", "claude-haiku-4-5")!;
     expect(rate.inputPer1k).toBe(0.1);
     expect(rate.outputPer1k).toBe(0.5);
   });
 
   it("computes the same cost for a known sonnet token volume (regression guard)", () => {
     // 1M input + 1M output of Sonnet 4.6 = $3 + $15 = $18.00 = 1800 cents.
-    const rate = getRate("anthropic", "claude-sonnet-4-6");
+    const rate = getRate("anthropic", "claude-sonnet-4-6")!;
     const cost = computeCostCents(rate, { inputTokens: 1_000_000, outputTokens: 1_000_000 });
     expect(cost).toBe(1800);
   });
@@ -109,21 +109,21 @@ describe("provider-rates — anthropic cost attribution (#428)", () => {
 
   it("maps dated/suffixed anthropic ids to the correct family tier (#428)", () => {
     // Opus family — most expensive tier.
-    const opus = getRate("anthropic", "claude-opus-4-8-20260101");
+    const opus = getRate("anthropic", "claude-opus-4-8-20260101")!;
     expect(opus.inputPer1k).toBe(0.5);
     expect(opus.outputPer1k).toBe(2.5);
     // Sonnet family.
-    const sonnet = getRate("anthropic", "claude-sonnet-4-5-20250929");
+    const sonnet = getRate("anthropic", "claude-sonnet-4-5-20250929")!;
     expect(sonnet.inputPer1k).toBe(0.3);
     expect(sonnet.outputPer1k).toBe(1.5);
     // Haiku family — cheapest tier.
-    const haiku = getRate("anthropic", "claude-haiku-4-5-20251001");
+    const haiku = getRate("anthropic", "claude-haiku-4-5-20251001")!;
     expect(haiku.inputPer1k).toBe(0.1);
     expect(haiku.outputPer1k).toBe(0.5);
   });
 
   it("bills explicit anthropic cache-read/write rates when present", () => {
-    const rate = getRate("anthropic", "claude-sonnet-4-6");
+    const rate = getRate("anthropic", "claude-sonnet-4-6")!;
     // 1M cache-read @ $0.30/MTok = $0.30 = 30 cents; 1M cache-write(5m) @
     // $3.75/MTok = $3.75 = 375 cents. Total = 405 cents.
     const cost = computeCostCents(rate, {
@@ -138,7 +138,7 @@ describe("provider-rates — anthropic cost attribution (#428)", () => {
   it("falls back to the input rate for cache when a rate omits cache prices", () => {
     // The legacy bare sonnet entry has no explicit cache rates, so cache
     // tokens are billed at the input rate (0.3 cents/1k) — never $0.00.
-    const rate = getRate("anthropic", "claude-3-5-sonnet");
+    const rate = getRate("anthropic", "claude-3-5-sonnet")!;
     expect(rate.cacheReadPer1k).toBeUndefined();
     const cost = computeCostCents(rate, {
       inputTokens: 0,
@@ -158,7 +158,7 @@ describe("provider-rates — anthropic cost attribution (#428)", () => {
     expect(keys).toContain("bedrock-gateway:us.anthropic.claude-sonnet-4-6");
     // #42 — the bedrock `us.` Sonnet 4.6 profile is at Bedrock's Regional SKU,
     // $3.30 / $16.50 per MTok (published-claude-prices.test.ts pins every row).
-    const bedrock = getRate("bedrock-gateway", "us.anthropic.claude-sonnet-4-6");
+    const bedrock = getRate("bedrock-gateway", "us.anthropic.claude-sonnet-4-6")!;
     expect(bedrock.inputPer1k).toBe(0.33);
     expect(bedrock.outputPer1k).toBe(1.65);
   });

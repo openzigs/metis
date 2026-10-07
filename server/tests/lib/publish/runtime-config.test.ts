@@ -40,10 +40,7 @@ const ORIG_ENV = { ...process.env };
 
 function setSingletonEnv(env: NodeJS.ProcessEnv): ConfigService {
   __resetConfigSingleton();
-  // Force the singleton to read from a curated env by constructing it
-  // ourselves and substituting in the module-level slot.
-  const _svc = new ConfigService({ env });
-  // Replace the lazily-constructed singleton.
+  // Force the singleton to read from a curated env.
   // Trick: call `getConfigService` once to materialise it, then mutate
   // its private `env` to our curated record.
   const live = getConfigService();

@@ -37,6 +37,7 @@ import { extractSasProcSql } from "./sas-rule-miner.js";
 import { extractRoutineUsage } from "./routine-usage-extractor.js";
 import { extractRoutineBodies, type RoutineBodyFetcher } from "./routine-body-extractor.js";
 import { SchemaGraphWriter } from "./schema-graph.js";
+import { createChildLogger } from "../logger.js";
 import { persistOrmFile } from "./orm-extractor.js";
 import {
   buildEfCoreEntityResolver,
@@ -81,6 +82,8 @@ import {
 import {
   buildIntrospectedSchemaFromSymbols,
   isSqlLineageEnabled,
+  probeSqlLineageSidecar,
+  trackSqlLineageReachability,
   type IntrospectedSchema,
   type SqlLineageClient,
 } from "./sql-lineage-client.js";
@@ -92,12 +95,19 @@ import {
 import { enqueueSymbolEmbeddings } from "./symbol-embedding-service.js";
 import { reconcileProjectSchemaIdentities } from "../cross-project/schema-object-identity-service.js";
 
+const log = createChildLogger("code-graph-ingest");
+
 export interface IngestOptions {
   projectId: string;
   rootDir: string;
   /** Optional connector-id used for the CodeGraph FK. */
   repoConnectionId?: string;
-  /** Optional commit SHA to record on the CodeGraph row. */
+  /**
+   * Optional commit SHA the graph is built from. Recorded on the CodeGraph row
+   * and, with `repoConnectionId`, as `RepoConnection.lastCommitSha` — both only
+   * once the ingest has finished, so a failed run leaves the two labels on the
+   * commit the graph still reflects (#758).
+   */
   commitSha?: string;
   /**
    * When true, skip files whose recorded `contentHash` matches the on-disk
@@ -121,6 +131,15 @@ export interface IngestOptions {
    * `driver.introspect()` via `buildIntrospectedSchema`.
    */
   introspectedSchema?: IntrospectedSchema | null;
+  /**
+   * #721 — true when the project HAS a DB connector but introspecting it failed
+   * (an outage, missing grants), so {@link introspectedSchema} is null for want
+   * of an answer rather than because there is no database. The lineage
+   * fingerprint then keeps the schema component it was last built with: a
+   * transient outage neither forces a re-parse nor makes the DB's return force
+   * a second one. Omit (false) when there is no connector, or it was read.
+   */
+  introspectionFailed?: boolean;
   /**
    * Live-introspected routines (procedures & functions) whose BODIES should be
    * parsed for `calls` edges — Epic #294 (#316B). Supplied together with
@@ -216,6 +235,42 @@ export interface IngestStats {
    * ingest and on an incremental one that changed nothing they reference.
    */
   filesRebound: number;
+  /**
+   * #721 — true when an incremental ingest re-extracted the lineage of every
+   * file because the SQL-lineage inputs (lineage decision or introspected
+   * schema) differ from the ones the graph was last built with, so lineage
+   * backfills over files whose content did not change. Since #856 those files
+   * are not re-parsed: only their lineage rows are rewritten (see
+   * {@link filesLineageRefreshed}). False on a fresh graph, an unchanged run
+   * and an explicitly non-incremental one.
+   *
+   * Turning lineage OFF also changes the inputs, so it too forces one backfill
+   * — the one that removes the lineage edges every file carried — and
+   * reports `true` here. So does the first ingest with a reachable sidecar
+   * after one where lineage was on but the sidecar could not be reached.
+   */
+  lineageBackfill: boolean;
+  /**
+   * #856 — unchanged files whose SQL lineage a backfill re-extracted without
+   * re-persisting them: their symbols, parser edges, embeddings and every link
+   * into them keep their ids. Zero unless {@link lineageBackfill} is true.
+   */
+  filesLineageRefreshed: number;
+  /**
+   * #715 — files an incremental run skipped because their content hash matched
+   * the graph: they are in the graph, just not re-parsed. Counted inside
+   * {@link filesSkipped}, which also holds files in no code-graph language.
+   */
+  filesUnchanged: number;
+  /**
+   * #715 — the graph as a whole after this run, not this run's delta: the
+   * files it holds (one `module` symbol each), its symbols and its edges.
+   * `filesParsed` / `symbolsUpserted` / `edgesUpserted` describe only what an
+   * incremental run re-parsed, which read as the graph's size.
+   */
+  graphFiles: number;
+  graphSymbols: number;
+  graphEdges: number;
   languageStats: Record<string, number>;
   durationMs: number;
 }
@@ -241,6 +296,73 @@ export function stripNulBytes(s: string): string {
   return s.includes("\u0000") ? s.replace(/\u0000/g, "") : s;
 }
 
+/**
+ * #760 / #807 — version of what the SQL-lineage pass writes for unchanged
+ * inputs. Bump it whenever the extractors (or the sidecar contract) change the
+ * edges an unchanged file produces: a stored fingerprint with another version
+ * (or none — every pre-#807 graph) compares as changed, so the next ingest with
+ * lineage on re-parses everything once and rewrites the edges, without a manual
+ * re-ingest. History: unversioned = #721; 2 = #760 (bind parameters dropped,
+ * WHERE columns read not written, edges from the enclosing function).
+ */
+export const LINEAGE_EXTRACTOR_VERSION = 2;
+
+/**
+ * #721 — fingerprint of the inputs that decide what the SQL-lineage pass
+ * (Step 6) writes for a file: whether lineage is enabled and, when it is, the
+ * extractor version and the introspected schema. With lineage off nothing is
+ * written, so neither is included — adding a DB connector or upgrading the
+ * extractor then does not force a re-parse. Schema keys are sorted, so the same
+ * schema introspected in another order hashes the same.
+ *
+ * Format: `off` | `<on|unreached>:v<version>:<schemaHash>`.
+ */
+export function lineageFingerprint(
+  lineageEnabled: boolean,
+  schema: IntrospectedSchema | null | undefined,
+  opts: {
+    /** A stored schema component to keep instead of hashing `schema` — the
+     *  connector could not be introspected, so `schema` says nothing. */
+    preservedSchema?: string;
+    /** Lineage was on but the sidecar never answered: record `unreached`. */
+    sidecarUnreached?: boolean;
+  } = {},
+): string {
+  if (!lineageEnabled) return "off";
+  const schemaPart = opts.preservedSchema ?? schemaFingerprint(schema);
+  const state = opts.sidecarUnreached ? "unreached" : "on";
+  return `${state}:v${LINEAGE_EXTRACTOR_VERSION}:${schemaPart}`;
+}
+
+/** The schema component of a {@link lineageFingerprint}. */
+function schemaFingerprint(schema: IntrospectedSchema | null | undefined): string {
+  const sortKeys = (v: unknown): unknown =>
+    v && typeof v === "object"
+      ? Object.fromEntries(
+          Object.keys(v as Record<string, unknown>)
+            .sort()
+            .map((k) => [k, sortKeys((v as Record<string, unknown>)[k])]),
+        )
+      : v;
+  return sha256(JSON.stringify(sortKeys(schema ?? null)));
+}
+
+/**
+ * #721 — split a stored fingerprint. `on:…` means lineage ran against that
+ * schema; `unreached:…` means lineage was on but the sidecar could not be
+ * reached, so no file got lineage and the next reachable run must backfill.
+ * `off` and a pre-#721 `null` carry no schema component. The `v<n>:` segment
+ * is optional so a pre-#807 `on:<schema>` still yields its schema part (kept
+ * across an introspection outage); its missing version alone forces the
+ * backfill, through the string comparison in {@link ingestCodeGraph}.
+ */
+function parseLineageFingerprint(
+  stored: string | null,
+): { state: "on" | "unreached"; schema: string } | null {
+  const m = /^(on|unreached):(?:v\d+:)?([^:]+)$/.exec(stored ?? "");
+  return m ? { state: m[1] as "on" | "unreached", schema: m[2] } : null;
+}
+
 export async function ingestCodeGraph(
   prisma: PrismaClient,
   options: IngestOptions,
@@ -259,7 +381,21 @@ export async function ingestCodeGraph(
   const maybeYield = createEventLoopYielder();
 
   // Step 1 — locate or create the CodeGraph row.
-  const graph = await upsertCodeGraph(prisma, projectId, repoConnectionId, commitSha);
+  const graph = await upsertCodeGraph(prisma, projectId, repoConnectionId);
+
+  // #721 — Step 6 runs only over re-parsed files, so an incremental run whose
+  // lineage inputs changed would leave every unchanged file without lineage.
+  // Re-parse everything when they differ. A graph built before #721 has no
+  // fingerprint: re-parse once if lineage is on now, since it may predate it.
+  //
+  // A connector that could not be introspected says nothing about the schema,
+  // so keep the stored schema component rather than fingerprinting "no schema".
+  const lineageOn = isSqlLineageEnabled(options.sqlLineageOverride);
+  const stored = parseLineageFingerprint(graph.lineageFingerprint);
+  const preservedSchema = options.introspectionFailed ? stored?.schema : undefined;
+  const fingerprint = lineageFingerprint(lineageOn, options.introspectedSchema, {
+    preservedSchema,
+  });
 
   // Step 2 — load .metisignore (file or default).
   const metisignorePath = path.join(rootDir, ".metisignore");
@@ -274,6 +410,15 @@ export async function ingestCodeGraph(
   // Step 3 — load the graph's existing files: their hashes drive the
   // incremental skip, and a file no longer in the tree is pruned (#313).
   const existingFiles = await loadExistingFiles(prisma, graph.id);
+  let lineageBackfill =
+    incremental && existingFiles.size > 0 && (graph.lineageFingerprint ?? "off") !== fingerprint;
+  // The last run had lineage on but no sidecar. Re-parsing everything against a
+  // sidecar that is still down would write nothing, so check it answers first.
+  let sidecarStillDown = false;
+  if (lineageBackfill && lineageOn && stored?.state === "unreached") {
+    sidecarStillDown = !(await probeSqlLineageSidecar());
+    if (sidecarStillDown) lineageBackfill = false;
+  }
 
   // Step 4 — walk the tree.
   const stats: IngestStats = {
@@ -287,6 +432,12 @@ export async function ingestCodeGraph(
     schemaEdges: 0,
     routineEdges: 0,
     filesRebound: 0,
+    lineageBackfill,
+    filesLineageRefreshed: 0,
+    filesUnchanged: 0,
+    graphFiles: 0,
+    graphSymbols: 0,
+    graphEdges: 0,
     languageStats: {},
     durationMs: 0,
   };
@@ -336,6 +487,13 @@ export async function ingestCodeGraph(
   // resolves edges against the whole tree, not only the files re-parsed.
   const walkedPaths = new Set<string>();
   const unchangedFiles = new Map<string, { language: string }>();
+  // #856 — on a lineage backfill an unchanged file is NOT re-parsed: re-creating
+  // its symbols would give them new ids and unlink every finding, mapping and
+  // embedding that pointed at the old ones (#706 run 3 lost them on a same-SHA
+  // refresh). Only its lineage (Step 6) depends on the changed inputs, so only
+  // that is redone; these carry what Step 6 reads — path, language and source.
+  const lineageOnlyFiles: ParsedFile[] = [];
+  const lineageOnlySources = new Map<string, string>();
   for await (const filePath of walkTree(rootDir, ignoreRules)) {
     stats.filesScanned += 1;
     walkedPaths.add(path.relative(rootDir, filePath).split(path.sep).join("/"));
@@ -381,6 +539,19 @@ export async function ingestCodeGraph(
     if (incremental && existing?.contentHash === fileHash) {
       unchangedFiles.set(relPath, { language: existing.language });
       stats.filesSkipped += 1;
+      stats.filesUnchanged += 1;
+      if (lineageBackfill && (EMBEDDED_SQL_LANGUAGES.has(lang) || lang === "sas")) {
+        lineageOnlyFiles.push({
+          filePath: relPath,
+          language: lang,
+          symbols: [],
+          edges: [],
+          fileHash,
+          rationaleHints: [],
+        });
+        lineageOnlySources.set(relPath, source);
+        stats.filesLineageRefreshed += 1;
+      }
       continue;
     }
     await maybeYield();
@@ -539,16 +710,45 @@ export async function ingestCodeGraph(
   // (routine→object) edges (#316), feeding the introspected schema (#317).
   // Feature-gated on SQL_LINEAGE_MODE and degrades gracefully when the sidecar is
   // absent — never throws, never blocks ingest.
-  await extractSchemaUsage(prisma, graph.id, projectId, parsedFiles, sourceByRelPath, stats, {
-    schema: options.introspectedSchema ?? null,
-    routines: options.routines,
-    fetchRoutineBody: options.fetchRoutineBody,
-    routineDialect: options.routineDialect,
-    packages: options.packages,
-    fetchPackageBody: options.fetchPackageBody,
-    dependencies: options.dependencies,
-    sqlLineageOverride: options.sqlLineageOverride,
-  });
+  //
+  // #856 — on a lineage backfill the unchanged files join this step only: their
+  // previous lineage rows are cleared first (a re-parsed file's went with its
+  // other rows in Step 5), and the writer reuses the persisted table/column ids.
+  const lineagePaths = lineageOnlyFiles.map((f) => f.filePath);
+  if (lineagePaths.length > 0) await clearFileLineage(prisma, graph.id, lineagePaths);
+  const lineageFiles =
+    lineagePaths.length > 0 ? [...parsedFiles, ...lineageOnlyFiles] : parsedFiles;
+  const lineageSources =
+    lineagePaths.length > 0
+      ? new Map([...sourceByRelPath, ...lineageOnlySources])
+      : sourceByRelPath;
+  const { reachability } = await trackSqlLineageReachability(() =>
+    extractSchemaUsage(prisma, graph.id, projectId, lineageFiles, lineageSources, stats, {
+      lineageRefreshPaths: new Set(lineagePaths),
+      schema: options.introspectedSchema ?? null,
+      routines: options.routines,
+      fetchRoutineBody: options.fetchRoutineBody,
+      routineDialect: options.routineDialect,
+      packages: options.packages,
+      fetchPackageBody: options.fetchPackageBody,
+      dependencies: options.dependencies,
+      sqlLineageOverride: options.sqlLineageOverride,
+    }),
+  );
+  if (lineagePaths.length > 0) await pruneOrphanLineageSymbols(prisma, graph.id, lineagePaths);
+
+  // #721 — record lineage as "on" only if the sidecar actually served this run
+  // (or nothing needed it). If every call failed, or a due backfill was skipped
+  // because the sidecar was still down, record `unreached` so the next run with
+  // a reachable sidecar re-parses everything.
+  const sidecarUnreached =
+    lineageOn && (sidecarStillDown || (reachability.unreachable > 0 && reachability.reached === 0));
+  const recordedFingerprint = sidecarUnreached
+    ? lineageFingerprint(lineageOn, options.introspectedSchema, {
+        preservedSchema,
+        sidecarUnreached,
+      })
+    : fingerprint;
 
   // Step 6.5 — reconcile the project's schema graph into canonical cross-project
   // SchemaObjectIdentity rows (#955). The identity service (#308) shipped with
@@ -581,6 +781,13 @@ export async function ingestCodeGraph(
   // Step 8 — finalise CodeGraph counts.
   const totalSymbols = await prisma.codeSymbol.count({ where: { codeGraphId: graph.id } });
   const totalEdges = await prisma.codeEdge.count({ where: { codeGraphId: graph.id } });
+  // #715 — one `module` symbol per file, the same index `loadExistingFiles` reads.
+  const totalFiles = await prisma.codeSymbol.count({
+    where: { codeGraphId: graph.id, kind: "module" },
+  });
+  stats.graphFiles = totalFiles;
+  stats.graphSymbols = totalSymbols;
+  stats.graphEdges = totalEdges;
   const langGrouping = await prisma.codeSymbol.groupBy({
     by: ["language"],
     where: { codeGraphId: graph.id },
@@ -590,15 +797,32 @@ export async function ingestCodeGraph(
   for (const row of langGrouping) {
     langStatsRecord[row.language] = row._count._all;
   }
-  await prisma.codeGraph.update({
+  const finalise = prisma.codeGraph.update({
     where: { id: graph.id },
     data: {
       symbolCount: totalSymbols,
       edgeCount: totalEdges,
       languageStats: JSON.stringify(langStatsRecord),
       lastIndexedAt: new Date(),
+      lineageFingerprint: recordedFingerprint,
+      // #758 — the commit label moves only when the graph is complete.
+      ...(commitSha ? { commitSha } : {}),
     },
   });
+  if (commitSha && repoConnectionId) {
+    // #758 — the connector's `lastCommitSha` (the commit the connections page
+    // says the graph reflects) is written here and nowhere else in an ingest,
+    // in the same transaction as the graph's label, so the two cannot drift.
+    await prisma.$transaction([
+      finalise,
+      prisma.repoConnection.updateMany({
+        where: { id: repoConnectionId },
+        data: { lastCommitSha: commitSha },
+      }),
+    ]);
+  } else {
+    await finalise;
+  }
 
   // Step 9 — Epic #780 / Issue #797. Symbols (and their index-time text) are
   // durable now; hand the embedding off to a background job. Fire-and-forget:
@@ -638,25 +862,20 @@ async function upsertCodeGraph(
   prisma: PrismaClient,
   projectId: string,
   repoConnectionId: string | undefined,
-  commitSha: string | undefined,
-): Promise<{ id: string }> {
+): Promise<{ id: string; lineageFingerprint: string | null }> {
+  // #758 — the commit label is written by Step 8, not here: a run that fails
+  // part-way must not relabel a graph it never finished rebuilding.
   const existing = await prisma.codeGraph.findFirst({
     where: { projectId, repoConnectionId: repoConnectionId ?? null },
   });
-  if (existing) {
-    if (commitSha && existing.commitSha !== commitSha) {
-      await prisma.codeGraph.update({ where: { id: existing.id }, data: { commitSha } });
-    }
-    return existing;
-  }
+  if (existing) return existing;
   return prisma.codeGraph.create({
     data: {
       projectId,
       repoConnectionId: repoConnectionId ?? null,
-      commitSha: commitSha ?? null,
     },
-    select: { id: true },
-  }) as Promise<{ id: string }>;
+    select: { id: true, lineageFingerprint: true },
+  });
 }
 
 async function loadExistingFiles(
@@ -1154,6 +1373,93 @@ const CLASS_NAME_QUERY_CHUNK = 500;
 /** Values per `IN (...)` list in the #313 incremental-edge queries — same limit. */
 const IN_LIST_CHUNK = 500;
 
+/** #856 — the synthetic origin a Step 6 extractor writes when no function encloses the SQL. */
+const LINEAGE_ORIGIN = /::(?:sql|exec|procsql)@\d+$/;
+
+/**
+ * #856 — remove what Step 6 wrote for files a lineage backfill re-extracts
+ * without re-parsing: their `sqlglot` edges, their synthetic `sql@`/`exec@`/
+ * `procsql@` origins. Table, column and (#867) routine symbols stay, so their
+ * ids survive for the edges the backfill rewrites (and
+ * any other pass's edges into them); {@link pruneOrphanLineageSymbols} removes
+ * the ones nothing points at afterwards. Parser rows are never touched.
+ */
+async function clearFileLineage(
+  prisma: PrismaClient,
+  codeGraphId: string,
+  filePaths: readonly string[],
+): Promise<void> {
+  for (let k = 0; k < filePaths.length; k += IN_LIST_CHUNK) {
+    const chunk = filePaths.slice(k, k + IN_LIST_CHUNK);
+    await prisma.codeEdge.deleteMany({
+      where: { codeGraphId, filePath: { in: chunk }, source: "sqlglot" },
+    });
+    const candidates = await prisma.codeSymbol.findMany({
+      where: { codeGraphId, filePath: { in: chunk }, language: "sql" },
+      select: { id: true, kind: true, qualifiedName: true, filePath: true, source: true },
+    });
+    // #867 — routines are kept, like tables and columns: a `catalog-deps` edge
+    // may point at one, and that pass is not rewritten on every ingest.
+    const stale = candidates
+      .filter(
+        (s) =>
+          s.source === null &&
+          s.kind === "method" &&
+          s.qualifiedName.startsWith(`${s.filePath}::`) &&
+          LINEAGE_ORIGIN.test(s.qualifiedName),
+      )
+      .map((s) => s.id);
+    for (let j = 0; j < stale.length; j += IN_LIST_CHUNK) {
+      await prisma.codeSymbol.deleteMany({
+        where: { codeGraphId, id: { in: stale.slice(j, j + IN_LIST_CHUNK) } },
+      });
+    }
+  }
+}
+
+/**
+ * #856 — after a lineage backfill, drop the `sqlglot` table/column/routine symbols filed
+ * under its re-extracted files that no edge points at (or, for a routine, leaves) any more: the columns a
+ * dropped schema no longer expands to, or every lineage symbol once lineage is
+ * turned off. A full re-parse removed these with the file's other rows.
+ */
+async function pruneOrphanLineageSymbols(
+  prisma: PrismaClient,
+  codeGraphId: string,
+  filePaths: readonly string[],
+): Promise<void> {
+  for (let k = 0; k < filePaths.length; k += IN_LIST_CHUNK) {
+    const chunk = filePaths.slice(k, k + IN_LIST_CHUNK);
+    const ids = (
+      await prisma.codeSymbol.findMany({
+        where: {
+          codeGraphId,
+          filePath: { in: chunk },
+          source: "sqlglot",
+          kind: { in: ["table", "column", "procedure", "function"] },
+        },
+        select: { id: true },
+      })
+    ).map((s) => s.id);
+    for (let j = 0; j < ids.length; j += IN_LIST_CHUNK) {
+      const slice = ids.slice(j, j + IN_LIST_CHUNK);
+      // A routine with an edge out of it (a body's `calls`) is in use too.
+      const edges = await prisma.codeEdge.findMany({
+        where: {
+          codeGraphId,
+          OR: [{ toSymbolId: { in: slice } }, { fromSymbolId: { in: slice } }],
+        },
+        select: { toSymbolId: true, fromSymbolId: true },
+      });
+      const referenced = new Set(edges.flatMap((e) => [e.toSymbolId, e.fromSymbolId]));
+      const orphans = slice.filter((id) => !referenced.has(id));
+      if (orphans.length > 0) {
+        await prisma.codeSymbol.deleteMany({ where: { codeGraphId, id: { in: orphans } } });
+      }
+    }
+  }
+}
+
 /** Rows per `codeEdge.createMany` in {@link persistParsed} (#16). */
 const EDGE_INSERT_BATCH = 500;
 
@@ -1174,6 +1480,15 @@ export interface SchemaUsageWiring {
   dependencies?: DbDependencyInfo[];
   /** Resolved per-project SQL-lineage override (#894). */
   sqlLineageOverride?: boolean | null;
+  /**
+   * #856 — unchanged files a lineage backfill re-extracts without re-parsing.
+   * When non-empty the writer is seeded with the graph's persisted `table`/
+   * `column` symbols, so it reuses their ids rather than writing duplicates
+   * beside the rows it kept; and the `sqlglot` symbols filed under these files
+   * are left out of the #901 graph-derived schema, as a full re-parse (which
+   * deletes them first) would leave them out.
+   */
+  lineageRefreshPaths?: ReadonlySet<string>;
   /**
    * Inject a sql-lineage client (tests only) — threaded into the routine-body
    * and PL/SQL package-lineage passes so an ingest-level test can exercise the
@@ -1304,20 +1619,11 @@ export async function extractOrmSchema(
           findOrmCallSites(sourceByRelPath.get(f.filePath) as string, models).length > 0,
       );
       if (candidates.length > 0) {
-        const symbolRows = await prisma.codeSymbol.findMany({
-          where: {
-            codeGraphId,
-            filePath: { in: candidates.map((f) => f.filePath) },
-            kind: { in: ["function", "method"] },
-          },
-          select: { id: true, filePath: true, startLine: true, endLine: true },
-        });
-        const symbolsByFile = new Map<string, EnclosingSymbol[]>();
-        for (const s of symbolRows) {
-          const list = symbolsByFile.get(s.filePath) ?? [];
-          list.push({ id: s.id, startLine: s.startLine, endLine: s.endLine });
-          symbolsByFile.set(s.filePath, list);
-        }
+        const symbolsByFile = await loadEnclosingFunctionSymbols(
+          prisma,
+          codeGraphId,
+          candidates.map((f) => f.filePath),
+        );
         for (const file of candidates) {
           try {
             stats.schemaEdges += await persistOrmCallSiteEdges(
@@ -1527,20 +1833,11 @@ export async function extractMyBatisSchema(
           (f) => f.language === "java" && myBatisSources.has(f.filePath),
         );
         if (candidates.length > 0) {
-          const callerSymbolRows = await prisma.codeSymbol.findMany({
-            where: {
-              codeGraphId,
-              filePath: { in: candidates.map((f) => f.filePath) },
-              kind: { in: ["function", "method"] },
-            },
-            select: { id: true, filePath: true, startLine: true, endLine: true },
-          });
-          const callerSymbolsByFile = new Map<string, EnclosingSymbol[]>();
-          for (const s of callerSymbolRows) {
-            const list = callerSymbolsByFile.get(s.filePath) ?? [];
-            list.push({ id: s.id, startLine: s.startLine, endLine: s.endLine });
-            callerSymbolsByFile.set(s.filePath, list);
-          }
+          const callerSymbolsByFile = await loadEnclosingFunctionSymbols(
+            prisma,
+            codeGraphId,
+            candidates.map((f) => f.filePath),
+          );
           for (const file of candidates) {
             try {
               stats.schemaEdges += await persistMapperCallerEdges(
@@ -1617,20 +1914,11 @@ export async function extractJooqSchema(
     });
     writer.prewarm(existingSchemaSymbols);
 
-    const symbolRows = await prisma.codeSymbol.findMany({
-      where: {
-        codeGraphId,
-        filePath: { in: candidates.map((f) => f.filePath) },
-        kind: { in: ["function", "method"] },
-      },
-      select: { id: true, filePath: true, startLine: true, endLine: true },
-    });
-    const symbolsByFile = new Map<string, EnclosingSymbol[]>();
-    for (const s of symbolRows) {
-      const list = symbolsByFile.get(s.filePath) ?? [];
-      list.push({ id: s.id, startLine: s.startLine, endLine: s.endLine });
-      symbolsByFile.set(s.filePath, list);
-    }
+    const symbolsByFile = await loadEnclosingFunctionSymbols(
+      prisma,
+      codeGraphId,
+      candidates.map((f) => f.filePath),
+    );
     for (const file of candidates) {
       try {
         stats.schemaEdges += await persistJooqCallSiteEdges(
@@ -1703,20 +1991,11 @@ export async function extractSqlAlchemySchema(
     });
     writer.prewarm(existingSchemaSymbols);
 
-    const symbolRows = await prisma.codeSymbol.findMany({
-      where: {
-        codeGraphId,
-        filePath: { in: candidates.map((f) => f.filePath) },
-        kind: { in: ["function", "method"] },
-      },
-      select: { id: true, filePath: true, startLine: true, endLine: true },
-    });
-    const symbolsByFile = new Map<string, EnclosingSymbol[]>();
-    for (const s of symbolRows) {
-      const list = symbolsByFile.get(s.filePath) ?? [];
-      list.push({ id: s.id, startLine: s.startLine, endLine: s.endLine });
-      symbolsByFile.set(s.filePath, list);
-    }
+    const symbolsByFile = await loadEnclosingFunctionSymbols(
+      prisma,
+      codeGraphId,
+      candidates.map((f) => f.filePath),
+    );
     for (const file of candidates) {
       try {
         stats.schemaEdges += await persistSqlAlchemyCallSiteEdges(
@@ -1784,20 +2063,11 @@ export async function extractGoSchema(
     });
     writer.prewarm(existingSchemaSymbols);
 
-    const symbolRows = await prisma.codeSymbol.findMany({
-      where: {
-        codeGraphId,
-        filePath: { in: candidates.map((f) => f.filePath) },
-        kind: { in: ["function", "method"] },
-      },
-      select: { id: true, filePath: true, startLine: true, endLine: true },
-    });
-    const symbolsByFile = new Map<string, EnclosingSymbol[]>();
-    for (const s of symbolRows) {
-      const list = symbolsByFile.get(s.filePath) ?? [];
-      list.push({ id: s.id, startLine: s.startLine, endLine: s.endLine });
-      symbolsByFile.set(s.filePath, list);
-    }
+    const symbolsByFile = await loadEnclosingFunctionSymbols(
+      prisma,
+      codeGraphId,
+      candidates.map((f) => f.filePath),
+    );
     for (const file of candidates) {
       try {
         stats.schemaEdges += await persistGormCallSiteEdges(
@@ -1869,20 +2139,11 @@ export async function extractEfCoreSchema(
     });
     writer.prewarm(existingSchemaSymbols);
 
-    const symbolRows = await prisma.codeSymbol.findMany({
-      where: {
-        codeGraphId,
-        filePath: { in: candidates.map((f) => f.filePath) },
-        kind: { in: ["function", "method"] },
-      },
-      select: { id: true, filePath: true, startLine: true, endLine: true },
-    });
-    const symbolsByFile = new Map<string, EnclosingSymbol[]>();
-    for (const s of symbolRows) {
-      const list = symbolsByFile.get(s.filePath) ?? [];
-      list.push({ id: s.id, startLine: s.startLine, endLine: s.endLine });
-      symbolsByFile.set(s.filePath, list);
-    }
+    const symbolsByFile = await loadEnclosingFunctionSymbols(
+      prisma,
+      codeGraphId,
+      candidates.map((f) => f.filePath),
+    );
     for (const file of candidates) {
       try {
         stats.schemaEdges += await persistEfCallSiteEdges(
@@ -1899,6 +2160,41 @@ export async function extractEfCoreSchema(
   } catch {
     // Writer construction failure — degrade to no EF schema edges.
   }
+}
+
+/** Languages whose string literals ride the embedded-SQL path (#305/#888/#900). */
+const EMBEDDED_SQL_LANGUAGES: ReadonlySet<string> = new Set(["ts", "js", "py", "go", "java", "cs"]);
+
+/**
+ * The persisted function/method symbols of `filePaths`, grouped by file — the
+ * enclosing-code lookup every call-site pass shares (ORM, MyBatis callers,
+ * jOOQ, SQLAlchemy, GORM, EF Core, embedded SQL), so a lineage edge hangs off
+ * the real `UpdateFeed` method rather than a synthetic origin.
+ *
+ * Synthetic origins are excluded: they are `method` rows too (`language:
+ * "sql"`, e.g. the MyBatis annotation statements written in Step 5c, or
+ * `sql@<line>`), and being one line long they would always win the
+ * narrowest-span match in {@link enclosingSymbolFor} (#760 / #807). Throws on
+ * a failed query; each caller decides how to degrade.
+ */
+export async function loadEnclosingFunctionSymbols(
+  store: Pick<PrismaClient, "codeSymbol">,
+  codeGraphId: string,
+  filePaths: readonly string[],
+): Promise<Map<string, EnclosingSymbol[]>> {
+  const byFile = new Map<string, EnclosingSymbol[]>();
+  if (filePaths.length === 0) return byFile;
+  const rows = await store.codeSymbol.findMany({
+    where: { codeGraphId, filePath: { in: [...filePaths] }, kind: { in: ["function", "method"] } },
+    select: { id: true, filePath: true, startLine: true, endLine: true, language: true },
+  });
+  for (const s of rows) {
+    if (s.language === "sql") continue;
+    const list = byFile.get(s.filePath) ?? [];
+    list.push({ id: s.id, startLine: s.startLine, endLine: s.endLine });
+    byFile.set(s.filePath, list);
+  }
+  return byFile;
 }
 
 export async function extractSchemaUsage(
@@ -1931,9 +2227,14 @@ export async function extractSchemaUsage(
     try {
       const schemaSymbols = await prisma.codeSymbol.findMany({
         where: { codeGraphId, kind: { in: ["table", "column"] } },
-        select: { kind: true, qualifiedName: true },
+        select: { kind: true, qualifiedName: true, filePath: true, source: true },
       });
-      schema = buildIntrospectedSchemaFromSymbols(schemaSymbols);
+      const refreshed = wiring.lineageRefreshPaths;
+      schema = buildIntrospectedSchemaFromSymbols(
+        refreshed && refreshed.size > 0
+          ? schemaSymbols.filter((s) => !(s.source === "sqlglot" && refreshed.has(s.filePath)))
+          : schemaSymbols,
+      );
     } catch {
       // Symbol query failed — keep the null schema (no regression).
       schema = null;
@@ -1947,6 +2248,41 @@ export async function extractSchemaUsage(
       codeGraphId,
       projectId,
     );
+    if (wiring.lineageRefreshPaths && wiring.lineageRefreshPaths.size > 0) {
+      writer.prewarm(
+        await prisma.codeSymbol.findMany({
+          where: { codeGraphId, kind: { in: ["table", "column"] } },
+          select: { id: true, kind: true, qualifiedName: true },
+        }),
+      );
+      // #867 — routines too, so a `catalog-deps` edge into one keeps its target.
+      writer.prewarmRoutines(
+        await prisma.codeSymbol.findMany({
+          where: {
+            codeGraphId,
+            language: "sql",
+            source: { not: null },
+            kind: { in: ["procedure", "function"] },
+          },
+          select: { id: true, kind: true, qualifiedName: true },
+        }),
+      );
+    }
+    // #760 — a failed lookup degrades to synthetic `sql@<line>` origins, which
+    // is a silent lineage-quality loss, so say so (#807).
+    let enclosingByFile = new Map<string, EnclosingSymbol[]>();
+    try {
+      enclosingByFile = await loadEnclosingFunctionSymbols(
+        prisma,
+        codeGraphId,
+        parsedFiles.filter((f) => EMBEDDED_SQL_LANGUAGES.has(f.language)).map((f) => f.filePath),
+      );
+    } catch (err) {
+      log.warn(
+        "enclosing-symbol lookup failed; embedded-SQL edges fall back to synthetic sql@<line> origins",
+        { projectId, codeGraphId, error: err instanceof Error ? err.message : String(err) },
+      );
+    }
     for (const file of parsedFiles) {
       const source = sourceByRelPath.get(file.filePath);
       if (!source) continue;
@@ -1959,29 +2295,26 @@ export async function extractSchemaUsage(
             sqlLineageOverride: wiring.sqlLineageOverride,
           });
           stats.schemaEdges += res.edges;
-        } else if (
-          file.language === "ts" ||
-          file.language === "js" ||
-          file.language === "py" ||
-          file.language === "go" ||
-          file.language === "java" ||
-          file.language === "cs"
-        ) {
+        } else if (EMBEDDED_SQL_LANGUAGES.has(file.language)) {
           // #305 — embedded SQL string literals across the supported languages.
           // #900 — C# ADO.NET/Dapper raw SQL rides this same extractor + gate.
           // #888 — Java raw JDBC (PreparedStatement/Statement string SQL) rides
           // the same extractor + gate; `extractRoutineUsage` below still only
           // scans ts/js/py/go internally (self-guarded), so this is a no-op
           // addition for routine-invocation detection until that's in scope.
+          // #760 — edges originate from the enclosing function/method.
+          const enclosingSymbols = enclosingByFile.get(file.filePath) ?? [];
           const res = await extractEmbeddedSql(writer, file.filePath, source, {
             schema,
             sqlLineageOverride: wiring.sqlLineageOverride,
+            enclosingSymbols,
           });
           stats.schemaEdges += res.edges;
           // #316A — routine invocations in the same code → `executes` edges.
           const routineRes = await extractRoutineUsage(writer, file.filePath, source, {
             schema,
             sqlLineageOverride: wiring.sqlLineageOverride,
+            enclosingSymbols,
           });
           stats.routineEdges += routineRes.edges;
         }

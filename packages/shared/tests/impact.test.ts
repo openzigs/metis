@@ -19,7 +19,13 @@ describe("impact domain", () => {
       expect(IMPACT_ANALYSIS_STATUSES).toEqual(["pending", "running", "completed", "failed"]);
     });
     it("exposes affected-symbol relations", () => {
-      expect(IMPACT_AFFECTED_RELATIONS).toEqual(["direct", "caller", "importer", "dependency"]);
+      expect(IMPACT_AFFECTED_RELATIONS).toEqual([
+        "direct",
+        "caller",
+        "importer",
+        "dependency",
+        "data-writer", // #791
+      ]);
     });
     it("exposes mapping sources", () => {
       expect(REQUIREMENT_CODE_MAPPING_SOURCES).toEqual(["semantic", "manual"]);

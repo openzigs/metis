@@ -170,13 +170,7 @@ describe("conventionForProvider", () => {
   });
 
   it("maps every gateway/openai-compatible key to the inclusive convention", () => {
-    for (const key of [
-      "bedrock-gateway",
-      "openai",
-      "azure",
-      "local-gemma",
-      "copilot-native",
-    ] as const) {
+    for (const key of ["bedrock-gateway", "openai", "azure", "local-gemma"] as const) {
       expect(conventionForProvider(key)).toBe("openai-compatible");
     }
   });

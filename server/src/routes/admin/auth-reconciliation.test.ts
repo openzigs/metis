@@ -76,7 +76,7 @@ function tokens(claim: RoleKey = "admin", userId = "admin-1") {
   });
 }
 
-function post(endpoint: string, body: unknown, token = tokens().accessToken) {
+function post(endpoint: string, body: object, token = tokens().accessToken) {
   return request(app())
     .post(`${base}/${endpoint}`)
     .set("Authorization", `Bearer ${token}`)

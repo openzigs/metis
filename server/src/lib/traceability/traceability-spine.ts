@@ -23,10 +23,17 @@ import type {
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
+import { classifyTestSymbol } from "../code-graph/test-conventions.js";
+import { resolveTestedByForTargets, type TestedByPrisma } from "./tested-by.js";
 
 type SpinePrisma = Pick<
   PrismaClient,
-  "requirement" | "requirementSpecMapping" | "specCodeMapping" | "requirementCodeMapping"
+  | "requirement"
+  | "requirementSpecMapping"
+  | "specCodeMapping"
+  | "requirementCodeMapping"
+  | "codeSymbol"
+  | "codeEdge"
 >;
 
 export interface TraceabilityDeps {
@@ -52,6 +59,7 @@ function toCodeNode(row: {
     endLine: row.endLine,
     confidence: row.confidence,
     source: row.source as SpecMappingSource,
+    isTest: classifyTestSymbol({ filePath: row.filePath }).isTestFile,
   };
 }
 
@@ -68,7 +76,7 @@ export async function getRequirementChain(
 
   const requirement = await prisma.requirement.findFirst({
     where: { id: requirementId, projectId, deletedAt: null },
-    select: { id: true, title: true },
+    select: { id: true, title: true, body: true },
   });
   if (!requirement) {
     throw new AppError(404, "REQUIREMENT_NOT_FOUND", "requirement not found in this project");
@@ -130,12 +138,23 @@ export async function getRequirementChain(
     orderBy: [{ confidence: "desc" }],
   });
 
+  // #814 — the tests that cover this requirement, resolved from the code rows
+  // just read (the resolver issues only its code-graph queries).
+  const tested = await resolveTestedByForTargets(
+    projectId,
+    [requirement],
+    new Map([[requirement.id, [...directRows, ...specCodeRows]]]),
+    undefined,
+    { prisma: prisma as unknown as TestedByPrisma },
+  );
+
   return {
     requirementId: requirement.id,
     requirementTitle: requirement.title,
     projectId,
     specs,
     directCode: directRows.map(toCodeNode),
+    testedBy: tested.get(requirement.id) ?? [],
   };
 }
 

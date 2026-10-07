@@ -61,7 +61,7 @@ describe("servesRouterModel (#512)", () => {
       expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(true);
     });
 
-    it.each([{}, { ANTHROPIC_BASE_URL_BILLS_AS: "auto" }])(
+    it.each<Record<string, string>>([{}, { ANTHROPIC_BASE_URL_BILLS_AS: "auto" }])(
       "the same proxy host without the opt-in (%o) does not",
       (env) => {
         const p = new AnthropicProvider({ apiKey: "k", baseUrl: proxy, config: configWith(env) });

@@ -149,7 +149,14 @@ describe("bindCheckedSecretRefs (PR #585 review) — binds only what was checked
 
   it("refuses a reference the checked set does not cover (500), even when its label resolves", () => {
     secret("s1", "global:a", "u-coord");
-    for (const covered of [undefined, null, {}, { other: "s9" }, { a: "" }]) {
+    const coverings: Array<Parameters<typeof bindCheckedSecretRefs>[1]> = [
+      undefined,
+      null,
+      {},
+      { other: "s9" },
+      { a: "" },
+    ];
+    for (const covered of coverings) {
       expect(() => bindCheckedSecretRefs(["a"], covered)).toThrow(
         expect.objectContaining({ statusCode: 500, code: SECRET_BINDING_UNCHECKED }),
       );

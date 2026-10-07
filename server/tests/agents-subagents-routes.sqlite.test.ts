@@ -55,8 +55,7 @@ const { __resetToolApprovalBroker, getToolApprovalBroker } =
   await import("../src/lib/ai/tool-runtime/approval-broker.js");
 type Stub = InstanceType<typeof OfflineStubProvider>;
 type Turn = NonNullable<ConstructorParameters<typeof OfflineStubProvider>[0]>["script"] extends
-  | Array<infer T>
-  | undefined
+  Array<infer T> | undefined
   ? T
   : never;
 
@@ -399,13 +398,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await send(sid, "SCN-BLOCKED go");
         const [first] = parentRequests("SCN-BLOCKED");
         expect(systemText(first!.messages)).not.toContain("blocked-skill");
-        const tools = (first!.opts.tools ?? []) as Array<{
-          name: string;
-          parameters: { properties: { name: { enum: string[] } } };
-        }>;
-        expect(tools.find((t) => t.name === "load_skill")!.parameters.properties.name.enum).toEqual(
-          ["style-guide"],
-        );
+        const tools = first!.opts.tools ?? [];
+        // `parameters` is an open JSON Schema record; narrow to the load_skill shape.
+        const loadSkillParams = tools.find((t) => t.name === "load_skill")!.parameters as {
+          properties: { name: { enum: string[] } };
+        };
+        expect(loadSkillParams.properties.name.enum).toEqual(["style-guide"]);
         const [part] = await toolParts(sid);
         expect(String(part!.text)).toContain('no skill named "blocked-skill"');
         expect(String(part!.text)).not.toContain(bodyMarker("blocked-skill"));
@@ -715,6 +713,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(dangerExec).toHaveBeenCalledTimes(1);
       });
 
+      it("#861 /chat with no client in the session's room: a sub-agent's prompt is refused at once, never waited out", async () => {
+        const sid = await newSession({
+          projectId: IDS.project,
+          policy: { medium: "auto", high: "always-prompt" },
+        });
+        const started = Date.now();
+        // The real 120 s approval timeout: only an immediate refusal returns in time.
+        const res = await as(alice).post("/api/ai/chat", {
+          sessionId: sid,
+          message: "SCN-WRITER go",
+        });
+        expect(Date.now() - started).toBeLessThan(10_000);
+        expect(res.status).toBe(200);
+        expect(dangerExec).not.toHaveBeenCalled();
+        expect(getToolApprovalBroker().size).toBe(0);
+        const row = await db.aIToolApproval.findFirst({
+          where: { sessionId: sid, toolName: "danger_write" },
+        });
+        expect(row).toMatchObject({ decision: "deny", reason: "no_interactive_approver" });
+      });
+
       it("the sub-agent CALL itself passes the gate: denied, the agent never runs", async () => {
         const sid = await newSession({
           projectId: IDS.project,
@@ -845,8 +864,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const sid = await newSession({ projectId: IDS.project, policy: { medium: "auto" } });
         await send(sid, "SCN-BUDGET go");
         // Recording is queued (non-blocking): wait for the rows to land.
-        let session: Array<{ totalTokens: number }> = [];
-        let project: Array<{ inputTokens: number; outputTokens: number }> = [];
+        let session: Array<{ totalTokens: number; userId: string }> = [];
+        let project: Array<{
+          inputTokens: number;
+          outputTokens: number;
+          agentStep: string | null;
+          userId: string | null;
+        }> = [];
         for (let i = 0; i < 200; i++) {
           session = await db.aITokenUsage.findMany({
             where: { sessionId: sid, agentStep: "subagent" },
@@ -860,6 +884,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // Two delegations of 500 tokens each (400 in / 100 out).
         expect(session.reduce((n, r) => n + r.totalTokens, 0)).toBe(1000);
         expect(project).toHaveLength(2);
+        // #792 — the project ledger rows name the sub-agent step and the user.
+        for (const row of project) {
+          expect(row.agentStep).toBe("subagent");
+          expect(row.userId).toBe(session[0]!.userId);
+        }
       });
 
       it("an agent of ANOTHER project is never offered, and naming it runs nothing", async () => {

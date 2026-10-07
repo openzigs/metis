@@ -38,7 +38,7 @@ describe("createOfflineExtractor", () => {
     expect(createOfflineExtractor({ name: "custom" }).name).toBe("custom");
   });
 
-  it("extracts only modal requirement statements", () => {
+  it("extracts only modal requirement statements", async () => {
     const doc = [
       "## Overview",
       "This document captures the scope of the portal.",
@@ -47,14 +47,14 @@ describe("createOfflineExtractor", () => {
       "- Customers should be able to reset a password.",
       "- Customers may optionally enable dark mode.",
     ].join("\n");
-    const { requirements } = createOfflineExtractor().extract(item(doc));
+    const { requirements } = await createOfflineExtractor().extract(item(doc));
     expect(requirements).toHaveLength(3);
     // The non-modal overview sentence is not extracted.
     expect(requirements.every((r) => /must|should|may/i.test(r.description))).toBe(true);
   });
 
-  it("maps modal strength to priority + confidence", () => {
-    const { requirements } = createOfflineExtractor().extract(
+  it("maps modal strength to priority + confidence", async () => {
+    const { requirements } = await createOfflineExtractor().extract(
       item(
         [
           "- The system must support email login.",
@@ -71,8 +71,8 @@ describe("createOfflineExtractor", () => {
     expect(byPriority.low.confidence).toBeCloseTo(0.5, 5);
   });
 
-  it("classifies bug and chore statements by keyword", () => {
-    const { requirements } = createOfflineExtractor().extract(
+  it("classifies bug and chore statements by keyword", async () => {
+    const { requirements } = await createOfflineExtractor().extract(
       item(
         [
           "- The service must fix the incorrect ranking defect.",
@@ -87,33 +87,33 @@ describe("createOfflineExtractor", () => {
     expect(types).toContain("feature");
   });
 
-  it("is deterministic and de-duplicates identical statements", () => {
+  it("is deterministic and de-duplicates identical statements", async () => {
     const doc = ["- The system must export a report.", "- The system must export a report."].join(
       "\n",
     );
-    const first = createOfflineExtractor().extract(item(doc)).requirements;
-    const second = createOfflineExtractor().extract(item(doc)).requirements;
+    const first = (await createOfflineExtractor().extract(item(doc))).requirements;
+    const second = (await createOfflineExtractor().extract(item(doc))).requirements;
     expect(first).toHaveLength(1);
     expect(first).toEqual(second);
   });
 
-  it("truncates long titles with an ellipsis while keeping the full description", () => {
+  it("truncates long titles with an ellipsis while keeping the full description", async () => {
     const long = `- The platform must ${"alpha ".repeat(20)}succeed.`;
-    const [r] = createOfflineExtractor().extract(item(long)).requirements;
+    const [r] = (await createOfflineExtractor().extract(item(long))).requirements;
     expect(r.title.endsWith("…")).toBe(true);
     expect(r.description.length).toBeGreaterThan(r.title.length);
   });
 
-  it("scales confidence down for a degraded run simulation", () => {
+  it("scales confidence down for a degraded run simulation", async () => {
     const doc = "- The system must support email login.";
-    const normal = createOfflineExtractor().extract(item(doc)).requirements[0];
-    const degraded = createOfflineExtractor({ confidenceScale: 0.5 }).extract(item(doc))
+    const normal = (await createOfflineExtractor().extract(item(doc))).requirements[0];
+    const degraded = (await createOfflineExtractor({ confidenceScale: 0.5 }).extract(item(doc)))
       .requirements[0];
     expect(degraded.confidence!).toBeCloseTo(normal.confidence! * 0.5, 5);
   });
 
-  it("reports a token estimate proportional to document length", () => {
-    const { tokens } = createOfflineExtractor().extract(
+  it("reports a token estimate proportional to document length", async () => {
+    const { tokens } = await createOfflineExtractor().extract(
       item("- The system must do something useful."),
     );
     expect(tokens).toBeGreaterThan(0);

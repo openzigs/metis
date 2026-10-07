@@ -29,6 +29,7 @@ const keepFirstTable: RunImpactRecallOptions["tableRelevanceFilter"] = async (_t
   primary: tables.slice(0, 1),
   secondary: tables.slice(1),
   decisions: [],
+  applied: true,
 });
 
 describe("describeConfiguration", () => {

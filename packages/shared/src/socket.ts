@@ -5,6 +5,7 @@
 import type { AGENT_RESULT_STATUSES, ANALYSIS_AGENT_KEYS } from "./constants.js";
 import type { AnalysisCapability, AnalysisSkippedRepo } from "./analysis.js";
 import type { AiToolEvent } from "./conversation.js";
+import type { PresenceArtifactType } from "./socket-rooms.js";
 
 export interface ProjectRoomEvent {
   projectId: string;
@@ -23,6 +24,39 @@ export interface JobRoomEvent {
 export interface ThreadRoomEvent {
   threadId: string;
 }
+
+/**
+ * #655 — the payload of `auth:error`. Without `room` it is a connection-level
+ * failure the user must see. With `room` it is the refusal of one room join
+ * (`connector:{id}`, `run:{id}`, `job:{id}`, `presence:{type}:{id}` since
+ * #679, and `thread:{id}` since #685): the client re-subscribes to those rooms on its own, after every
+ * reconnect, so a refusal there is not an error to show — the follower drops
+ * the room instead (a presence follower just shows no viewers). The payload is the same for
+ * an unknown id, a foreign id and a failed lookup, so it is no existence oracle.
+ */
+export interface SocketAuthErrorEvent {
+  message: string;
+  /**
+   * The room whose join was refused, named by its `@metis/shared` factory
+   * (`connectorRoom`, `bgRunRoom`, `jobRoom`, `presenceRoom`, and `threadRoom`
+   * since #685) so a client
+   * compares it against the same factory's output (#676). A rate-limited
+   * refusal (#682) names the room of any rate-limited join, including
+   * `projectRoom` and `SCHEDULER_STATUS_ROOM`.
+   */
+  room?: string;
+  /**
+   * #682 — set only when the join was refused by the room-join rate limit, never
+   * on an authorization denial (those stay indistinguishable from each other).
+   * A follower keeps a rate-limited room and re-subscribes after `retryAfterMs`.
+   */
+  code?: typeof SOCKET_JOIN_RATE_LIMITED_CODE;
+  /** #682 — with `code`: milliseconds until the join would be admitted. */
+  retryAfterMs?: number;
+}
+
+/** #682 — the `SocketAuthErrorEvent.code` of a rate-limited room join. */
+export const SOCKET_JOIN_RATE_LIMITED_CODE = "RATE_LIMITED" as const;
 
 export type AnalysisAgentEventType = "started" | "chunk" | "completed" | "failed" | "cancelled";
 
@@ -100,9 +134,10 @@ export interface AnalysisReposSkippedEvent {
  * `ui/src/hooks/use-job-events.ts` handles new kinds generically.
  *
  * Original kinds (#238/#239): `analysis`, `doc-generation`, `impact-analysis`.
- * Added by #406/#419: `scan`, `pr-review`, `import-sync`, `embeddings-reindex`,
+ * Added by #406/#419: `pr-review`, `import-sync`, `embeddings-reindex`,
  * `spec-kit`, `overview-regenerate`.
  * Added by #373: `repo-ingest` (a repository connector's Deep Ingest).
+ * Removed by #804: `scan` (the bug scanner never emitted it).
  *
  * See `docs/ARCHITECTURE.md` § "Realtime job-events bus" for the full contract.
  */
@@ -110,7 +145,6 @@ export type JobKind =
   | "analysis"
   | "doc-generation"
   | "impact-analysis"
-  | "scan"
   | "pr-review"
   | "import-sync"
   | "embeddings-reindex"
@@ -249,7 +283,7 @@ export interface ServerToClientEvents {
   /** Epic #238 (#243) — per-section doc-generation progress + warnings. */
   "job:doc-section": (data: DocSectionProgressEvent) => void;
   "auth:ok": (data: { userId: string; username: string }) => void;
-  "auth:error": (data: { message: string }) => void;
+  "auth:error": (data: SocketAuthErrorEvent) => void;
   "analysis:agent": (data: AnalysisAgentEvent) => void;
   /**
    * Epic #202 follow-up (#256) — distinct promotion-blocked outcome. Emitted
@@ -361,10 +395,6 @@ export interface ServerToClientEvents {
   }) => void;
   /** Epic #156 — per-step progress event for an active background run. */
   "bg-run:step": (data: { runId: string; kind: string; content: string; ts: number }) => void;
-  /** Epic #856/#880 — test-coverage run progress (queued/started/progress). */
-  "testcoverage:run-update": (data: TestCoverageRunSocketEvent) => void;
-  /** Epic #856/#880 — test-coverage run terminal state (completed/failed). */
-  "testcoverage:run-finished": (data: TestCoverageRunSocketEvent) => void;
   heartbeat: (data: { ts: number }) => void;
   /** Epic #728 — presence update for an artifact room. */
   "presence:update": (data: {
@@ -420,16 +450,6 @@ export interface ServerToClientEvents {
     slaDeadline: string | undefined;
     ts: number;
   }) => void;
-}
-
-/** Epic #856/#880 — test-coverage run lifecycle socket payload. */
-export interface TestCoverageRunSocketEvent {
-  type: "run:queued" | "run:started" | "run:progress" | "run:completed" | "run:failed";
-  runId: string;
-  projectId: string;
-  phase?: string;
-  detail?: Record<string, unknown>;
-  error?: string;
 }
 
 export interface ConnectorRoomEvent {
@@ -554,9 +574,12 @@ export interface ClientToServerEvents {
    */
   "typing:start": (data: ThreadRoomEvent) => void;
   "typing:stop": (data: ThreadRoomEvent) => void;
-  /** Epic #728 — presence rooms per artifact. */
-  "presence:join": (data: { artifactType: string; artifactId: string }) => void;
-  "presence:leave": (data: { artifactType: string; artifactId: string }) => void;
+  /**
+   * Epic #728 — presence rooms per artifact. #679: joined only by a user who
+   * could read the artifact through REST; otherwise a room-scoped `auth:error`.
+   */
+  "presence:join": (data: { artifactType: PresenceArtifactType; artifactId: string }) => void;
+  "presence:leave": (data: { artifactType: PresenceArtifactType; artifactId: string }) => void;
 }
 
 // ---- Phase 11: Scheduler + Tasks -------------------------------------------

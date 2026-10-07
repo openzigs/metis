@@ -335,7 +335,7 @@ describe("#1318 — grader output survives the storage boundary", () => {
       title: "Login lacks rate limiting",
       body: "The login route has no limiter.",
       citations: [
-        { type: "code", filePath: "src/auth/login.ts", startLine: 10, endLine: 30 },
+        { filePath: "src/auth/login.ts", startLine: 10, endLine: 30 },
       ] as AgentOutput["findings"][number]["citations"],
       tags: [],
       verificationStatus: "unverified" as const,
@@ -344,12 +344,15 @@ describe("#1318 — grader output survives the storage boundary", () => {
       enabled: true,
       extractor: {
         decompose: vi.fn(async (_t: string, _c: GroundingContext) => ({
-          claims: [{ claim: "login has no limiter" }, { claim: "login is a route" }],
+          claims: [
+            { claim: "login has no limiter", sourceIds: [] },
+            { claim: "login is a route", sourceIds: [] },
+          ],
         })),
       },
       judge: {
         judge: vi.fn(async (claims: string[]) =>
-          claims.map((claim, i) => ({ claim, supported: i === 0 })),
+          claims.map((claim, i) => ({ claim, supported: i === 0, sourceIds: [] })),
         ),
       },
     });

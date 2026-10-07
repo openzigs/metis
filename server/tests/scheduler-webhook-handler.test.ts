@@ -146,7 +146,7 @@ describe("createHttpWebhookHandler()", () => {
   });
 
   it("posts JSON to allow-listed hosts and returns the status", async () => {
-    const fetchImpl = vi.fn(async () => ({
+    const fetchImpl = vi.fn(async (_url: unknown, _init?: unknown) => ({
       status: 204,
       headers: new Headers(),
       body: { cancel: async () => undefined },
@@ -253,8 +253,8 @@ describe("createHttpWebhookHandler()", () => {
 describe("createHttpWebhookHandler() — SSRF + redirect controls", () => {
   it("uses the pinned-IP dispatcher returned by dispatcherFactory (C1)", async () => {
     const tearDown = vi.fn(async () => undefined);
-    const dispatcherFactory = vi.fn(async () => ({ close: tearDown }));
-    const fetchImpl = vi.fn(async () => ({
+    const dispatcherFactory = vi.fn(async (_target: unknown) => ({ close: tearDown }));
+    const fetchImpl = vi.fn(async (_url: unknown, _init?: unknown) => ({
       status: 200,
       headers: new Headers(),
       body: { cancel: async () => undefined },

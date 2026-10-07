@@ -17,6 +17,7 @@ import {
   getFederatedSearchService,
   type FederatedSearchService,
 } from "./federated-search-service.js";
+import { formatHitLocator } from "./hit-locator.js";
 
 const argsSchema = z.object({
   query: z.string().min(1).max(2048),
@@ -63,9 +64,10 @@ export function buildSearchKnowledgeGlobalTool(
         };
       }
 
+      // #717 — a repository file by its real path; the fused score is #824's.
       const lines = result.hits.map(
         (h, i) =>
-          `[${i + 1}] (score=${h.score.toFixed(4)}) [${h.projectName}] ${h.filename}#${h.position}\n${h.text}`,
+          `[${i + 1}] (score=${h.score.toFixed(4)}) [${h.projectName}] ${formatHitLocator(h)}\n${h.text}`,
       );
 
       const header =

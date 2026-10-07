@@ -7,8 +7,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { type ReactNode } from "react";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { projectRoom } from "@metis/shared";
 import { createFakeSocket, type FakeSocket } from "./helpers/fake-socket";
 
 let socket: FakeSocket;
@@ -18,6 +19,10 @@ vi.mock("@/lib/projects-api", () => ({
   documentsApi: { list: vi.fn().mockResolvedValue({ items: [] }) },
 }));
 vi.mock("sonner", () => ({ toast: { info: vi.fn() } }));
+// #646 — useTaskProgress re-reads the task on reconnect.
+vi.mock("@/lib/scheduler-api", () => ({
+  tasksApi: { get: vi.fn().mockResolvedValue({ id: "t1", status: "running" }) },
+}));
 
 import { useProjectDocuments } from "@/hooks/use-project-documents";
 import { useProjectDriftCount } from "@/hooks/use-drift-count";
@@ -106,10 +111,40 @@ describe("project-room hooks re-subscribe after a reconnect", () => {
     const { unmount } = renderHook(() => useConnectorDiscovery("p1", onDiscovery));
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:project", project)).toBe(2);
-    act(() => socket.fire("connector:discovery", { connectionsFound: 1, repoLabel: "r" }));
+    // #646 — the reconnect itself runs the refresh once.
     expect(onDiscovery).toHaveBeenCalledTimes(1);
+    act(() => socket.fire("connector:discovery", { connectionsFound: 1, repoLabel: "r" }));
+    expect(onDiscovery).toHaveBeenCalledTimes(2);
     unmount();
     expect(socket.listeners("connect")).toBe(0);
+  });
+});
+
+describe("project-room hooks retry a rate-limited join (#682)", () => {
+  const hooks: Array<[string, () => unknown]> = [
+    ["useProjectDocuments", () => useProjectDocuments("p1")],
+    ["useProjectDriftCount", () => useProjectDriftCount("p1")],
+    ["useProjectJobEvents", () => useProjectJobEvents("p1")],
+    ["useConnectorProgress", () => useConnectorProgress("p1")],
+    ["useConnectorDiscovery", () => useConnectorDiscovery("p1")],
+  ];
+
+  it.each(hooks)("%s re-sends subscribe:project after the refusal's delay", async (_, hook) => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const { unmount } = renderHook(hook, { wrapper });
+    expect(socket.emitted("subscribe:project", project)).toBe(1);
+    act(() =>
+      socket.fire("auth:error", {
+        message: "RATE_LIMITED",
+        room: projectRoom("p1"),
+        code: "RATE_LIMITED",
+        retryAfterMs: 0,
+      }),
+    );
+    await waitFor(() => expect(socket.emitted("subscribe:project", project)).toBe(2));
+    unmount();
+    expect(socket.listeners("auth:error")).toBe(0);
+    vi.restoreAllMocks();
   });
 });
 

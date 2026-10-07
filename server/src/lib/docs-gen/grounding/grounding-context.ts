@@ -369,6 +369,10 @@ export function renderGroundingBlock(
     "=== RETRIEVED GROUNDING SOURCES ===",
     "Every factual claim you write MUST be grounded in one or more of the",
     "sources below and cite their `id` value(s). Do NOT invent source ids.",
+    // #737 — citations are turned into document-wide footnotes at assembly.
+    `Cite by writing the id in square brackets straight after the claim, e.g. [${ctx.sources[0].sourceId}].`,
+    "Do NOT write your own footnotes, source keys, handles (S1, S2 …) or reference",
+    "tables — the citations are rendered into numbered references automatically.",
     ...(referenced > 0
       ? [
           "A `kind=facts` source listed without its text is the named MODULE entry in",

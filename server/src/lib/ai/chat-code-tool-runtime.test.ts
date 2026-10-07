@@ -60,12 +60,16 @@ describe("buildChatCodeToolRuntime", () => {
     expect(rt.schemaBlock).toBe("");
   });
 
-  it("offers search_code_graph + search_code_symbols with a deterministic, name-ordered schema block", () => {
+  it("offers search_code_graph + search_code_symbols + read_file_slice (#736) with a deterministic, name-ordered schema block", () => {
     const a = buildChatCodeToolRuntime({ enabled: true, projectId: "p1" });
     const b = buildChatCodeToolRuntime({ enabled: true, projectId: "p1" });
 
     expect(a.enabled).toBe(true);
-    expect(a.tools.map((t) => t.name).sort()).toEqual(["search_code_graph", "search_code_symbols"]);
+    expect(a.tools.map((t) => t.name).sort()).toEqual([
+      "read_file_slice",
+      "search_code_graph",
+      "search_code_symbols",
+    ]);
 
     // Byte-identical across builds (feeds the cache-stable prompt lead).
     expect(a.schemaBlock).toBe(b.schemaBlock);

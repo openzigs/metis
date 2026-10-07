@@ -104,7 +104,7 @@ describe("useActiveJobs", () => {
   it("tracks multiple jobs of DIFFERENT kinds simultaneously (not just doc-gen)", () => {
     const { result } = renderHook(() => useActiveJobs());
     act(() => fake.fire("job:lifecycle", lifecycle({ jobId: "a", kind: "doc-generation", ts: 1 })));
-    act(() => fake.fire("job:lifecycle", lifecycle({ jobId: "b", kind: "scan", ts: 2 })));
+    act(() => fake.fire("job:lifecycle", lifecycle({ jobId: "b", kind: "pr-review", ts: 2 })));
     act(() =>
       fake.fire(
         "job:lifecycle",
@@ -114,7 +114,7 @@ describe("useActiveJobs", () => {
 
     expect(result.current).toHaveLength(3);
     const kinds = result.current.map((j) => j.kind);
-    expect(kinds).toContain("scan");
+    expect(kinds).toContain("pr-review");
     expect(kinds).toContain("analysis");
     // Oldest-first ordering by ts.
     expect(result.current.map((j) => j.jobId)).toEqual(["a", "b", "c"]);
@@ -166,7 +166,6 @@ describe("jobKindLabel", () => {
       "analysis",
       "doc-generation",
       "impact-analysis",
-      "scan",
       "pr-review",
       "import-sync",
       "embeddings-reindex",
@@ -177,7 +176,7 @@ describe("jobKindLabel", () => {
       expect(jobKindLabel(k)).toMatch(/\S/);
     }
     expect(jobKindLabel("doc-generation")).toBe("Documentation");
-    expect(jobKindLabel("scan")).toBe("Security scan");
+    expect(jobKindLabel("pr-review")).toBe("PR review");
   });
 
   it("title-cases an unknown future kind without a code edit", () => {

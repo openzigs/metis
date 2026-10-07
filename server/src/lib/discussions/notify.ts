@@ -16,10 +16,10 @@
  *
  * Governance guarantees (OWASP A01 / cost + spam abuse, #490):
  *   - **Member-only delivery.** A mentioned user only receives a notification if
- *     they can actually access the thread's project (admin OR project creator,
- *     mirroring `actorCanAccessProject`). Mentioning a non-member is a no-op — no
- *     notification, no socket emit — so the feature can't be used to spam or to
- *     probe membership of arbitrary users.
+ *     they can actually open the thread — the same project-access rule the
+ *     thread routes enforce (`canAccessProjectDiscussions`, #734). Mentioning a
+ *     non-member is a no-op — no notification, no socket emit — so the feature
+ *     can't be used to spam or to probe membership of arbitrary users.
  *   - **Self-mention skip.** The author never notifies themselves.
  *   - **Dedup / rate-limit.** Per (thread, mentionedUser) sliding window caps how
  *     many mention notifications one thread can generate for one user in a
@@ -28,12 +28,14 @@
  *   - **Never throws.** Fan-out is a fire-and-forget side effect; a failure here
  *     can never break message creation (the #281 lesson).
  */
+import { userRoom } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
 import { parseMentions, resolveUsernames } from "../collaboration/mentions.js";
 import { shouldNotify } from "../notifications/preferences.js";
 import { resolveRateLimitStore, type RateLimitStore } from "./rate-limit-store.js";
+import { canAccessProjectDiscussions } from "./access.js";
 
 const log = createChildLogger("discussions:notify");
 
@@ -49,29 +51,29 @@ export interface DiscussionMentionInput {
 // ---- Membership predicate ---------------------------------------------------
 
 /**
- * Is `userId` a member of `projectId`? Mirrors `actorCanAccessProject`'s rule
- * (admin OR project creator) but keyed by a *target* user id rather than the
- * request actor, because here we are deciding whether to notify a third party,
- * not whether the request is authorized.
+ * May `userId` open `projectId`'s discussions? The thread routes' own rule
+ * (`canAccessProjectDiscussions` → `assertProjectAccess`, #734), keyed by a
+ * *target* user id rather than the request actor, because here we decide
+ * whether to notify a third party. It used to be "admin OR project creator",
+ * which silently dropped every mention of a teammate.
  *
- * Returns false (never throws) on any DB error — failing CLOSED means a transient
+ * The target's workspaces are read from the database by the rule; only the
+ * admin bypass needs the role, so any non-admin is passed as `reader`. Not
+ * audited: an ineligible mention is not an access attempt by that user.
+ *
+ * Returns false (never throws) on any error — failing CLOSED means a transient
  * error suppresses a notification rather than leaking one to a non-member.
  */
 export async function isProjectMember(userId: string, projectId: string): Promise<boolean> {
   try {
-    const project = await prisma.project.findFirst({
-      where: { id: projectId, deletedAt: null },
-      select: { createdById: true },
-    });
-    if (!project) return false;
-    if (project.createdById === userId) return true;
-
-    // Admins can access every project.
     const adminRole = await prisma.userRole.findFirst({
       where: { userId, role: { key: "admin" } },
       select: { userId: true },
     });
-    return adminRole != null;
+    return await canAccessProjectDiscussions(
+      { id: userId, role: adminRole ? "admin" : "reader" },
+      projectId,
+    );
   } catch (err) {
     log.warn("isProjectMember check failed; treating as non-member", { userId, projectId, err });
     return false;
@@ -234,7 +236,7 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
             // Deliver to the user's personal room (joined from the verified JWT
             // only — OWASP A01, never a client-supplied room id).
             if (io) {
-              io.to(`user:${u.id}`).emit("discussion:mention", payload);
+              io.to(userRoom(u.id)).emit("discussion:mention", payload);
             }
           } catch (err) {
             log.warn("Failed to fan out discussion mention", { threadId, userId: u.id, err });

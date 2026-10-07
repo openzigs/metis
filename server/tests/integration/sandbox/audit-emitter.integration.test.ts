@@ -58,7 +58,6 @@ class InMemorySessionRepo implements SandboxSessionRepo {
       wallClockMs: null,
       cpuTimeMs: null,
       costMicroUsd: null,
-      runId: null,
       outcome: null,
       errorMessage: null,
     };
@@ -80,6 +79,9 @@ class InMemorySessionRepo implements SandboxSessionRepo {
   async listForProject(): Promise<SandboxSessionRow[]> {
     return Array.from(this.rows.values());
   }
+  async listForRun(runId: string): Promise<SandboxSessionRow[]> {
+    return Array.from(this.rows.values()).filter((r) => r.runId === runId);
+  }
 }
 
 class InMemoryAuditRepo implements SandboxAuditEventRepo {
@@ -94,6 +96,9 @@ class InMemoryAuditRepo implements SandboxAuditEventRepo {
     };
     this.rows.push(row);
     return row;
+  }
+  async findById(id: string): Promise<SandboxAuditEventRow | null> {
+    return this.rows.find((r) => r.id === id) ?? null;
   }
   async listForSession(sessionId: string): Promise<SandboxAuditEventRow[]> {
     return this.rows

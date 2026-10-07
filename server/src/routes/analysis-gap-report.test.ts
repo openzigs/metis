@@ -82,8 +82,10 @@ vi.mock("../lib/rag/knowledge-service.js", () => ({ getKnowledgeService: vi.fn((
 vi.mock("../lib/ai/providers/bedrock-direct-provider.js", () => ({
   BedrockDirectProvider: class {},
 }));
-vi.mock("../lib/scanner/prisma-adapter.js", () => ({ publishAnalysisFinding: vi.fn() }));
-vi.mock("../lib/scanner/finding-publisher.js", () => ({ PublishError: class extends Error {} }));
+vi.mock("../lib/publishing/analysis-finding-publish.js", () => ({
+  publishAnalysisFinding: vi.fn(),
+}));
+vi.mock("../lib/publishing/finding-publisher.js", () => ({ PublishError: class extends Error {} }));
 
 const { initAnalysisRouter } = await import("./analysis.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
@@ -91,6 +93,7 @@ const { errorHandler } = await import("../middleware/error-handler.js");
 const REPORT: GapReport = {
   analysisId: "analysis-1",
   projectId: "proj-1",
+  retrieval: null,
   requirements: [
     {
       requirementId: "req-1",
@@ -112,9 +115,12 @@ const REPORT: GapReport = {
           body: "add throttle",
           severity: "high",
           verificationStatus: "confirmed",
+          verdict: null,
           citations: [{ filePath: "auth.ts", startLine: 1, endLine: 9 }],
         },
       ],
+      unverifiedFindings: [],
+      verdict: null,
       noEvidence: false,
     },
   ],

@@ -32,8 +32,16 @@ export type RequirementCodeMappingSource = (typeof REQUIREMENT_CODE_MAPPING_SOUR
  *   - `caller`     — transitively calls a directly-affected symbol.
  *   - `importer`   — transitively imports a directly-affected symbol.
  *   - `dependency` — a downstream dependency reached via the graph.
+ *   - `data-writer` — writes a column the change touches (#791): found through
+ *                    SQL lineage, not through a call path or a word match.
  */
-export const IMPACT_AFFECTED_RELATIONS = ["direct", "caller", "importer", "dependency"] as const;
+export const IMPACT_AFFECTED_RELATIONS = [
+  "direct",
+  "caller",
+  "importer",
+  "dependency",
+  "data-writer",
+] as const;
 export type ImpactAffectedRelation = (typeof IMPACT_AFFECTED_RELATIONS)[number];
 
 // ---- Match quality (#961) --------------------------------------------------

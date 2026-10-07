@@ -344,7 +344,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       // Read back through the path the model uses.
-      const catalog = await resolveSkillCatalog({ skillKeys: ["pdf"], db });
+      const catalog = await resolveSkillCatalog({ skillKeys: ["pdf"], projectId: null, db });
       expect(catalog.map((c) => c.key)).toEqual(["pdf"]);
       const tool = loadSkillTool({ catalog, db });
       const ctx = { sessionId: "s", userId: "u", projectId: null } as never;

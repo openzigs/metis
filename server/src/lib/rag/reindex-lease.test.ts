@@ -110,11 +110,15 @@ describe("MemoryReindexLeaseBackend — the semantics every backend must have", 
 
   it("assertHeld throws ReindexFencedError for a stolen or missing lease", async () => {
     const be = new MemoryReindexLeaseBackend();
-    await expect(be.assertHeld(P, NAME, "pod-a")).rejects.toBeInstanceOf(ReindexFencedError);
+    await expect(be.assertHeld(P, NAME, "pod-a", undefined, 61_000)).rejects.toBeInstanceOf(
+      ReindexFencedError,
+    );
     await be.acquire(NAME, "pod-a", 1_000, 60_000);
-    await expect(be.assertHeld(P, NAME, "pod-a")).resolves.toBeUndefined();
+    await expect(be.assertHeld(P, NAME, "pod-a", undefined, 61_000)).resolves.toBeUndefined();
     await be.acquire(NAME, "pod-b", 2_000, 60_000, { force: true });
-    await expect(be.assertHeld(P, NAME, "pod-a")).rejects.toBeInstanceOf(ReindexFencedError);
+    await expect(be.assertHeld(P, NAME, "pod-a", undefined, 61_000)).rejects.toBeInstanceOf(
+      ReindexFencedError,
+    );
   });
 
   it("forceRelease returns what it removed, and reset clears everything", async () => {

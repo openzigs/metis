@@ -13,8 +13,9 @@ describe("formatSourceLabel (#427)", () => {
       expect(r.repoLabel).toBe("acmerp");
       expect(r.repoLabel).toBe("cmexample0000000000acmerp".slice(-6));
       expect(r.label).toBe("ShipmentAllocationsVO.java — acmerp");
+      // #717 — the leading `src/` is the ingester's marker, not a directory.
       expect(r.path).toBe(
-        "src/components/wmsCommon/wms-common-db/src/main/java/com/acme/wms/common/mybatis/inv/vo/ShipmentAllocationsVO.java",
+        "components/wmsCommon/wms-common-db/src/main/java/com/acme/wms/common/mybatis/inv/vo/ShipmentAllocationsVO.java",
       );
       // The noisy connector prefix must never leak into the human label.
       expect(r.label).not.toContain("connector:repo:");

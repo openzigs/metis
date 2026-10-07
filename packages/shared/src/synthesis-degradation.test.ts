@@ -57,6 +57,76 @@ describe("describeSynthesisDegradation", () => {
     for (const cause of causes) expect(cause.length).toBeGreaterThan(0);
   });
 
+  it("whole fallback: does not claim nothing was dropped when findings are in no requirement", () => {
+    const message = describeSynthesisDegradation(degradation({ findingsWithoutRequirement: 7 }));
+    expect(message).not.toContain("Nothing was dropped");
+    expect(message).toContain("7 findings are in no requirement");
+    // The classification consequences are still named.
+    expect(message).toContain('typed "feature"');
+    expect(message).toContain("no acceptance criteria");
+  });
+
+  describe("#751 partial run (some requirements were model-written)", () => {
+    const partial = degradation({ requirementCount: 3, modelRequirementCount: 12 });
+
+    it("says how many were model-written and how many were keyword-grouped", () => {
+      const message = describeSynthesisDegradation(partial);
+      expect(message).toContain("12 requirements were written by the model");
+      expect(message).toContain("3 requirements were grouped deterministically");
+    });
+
+    it("does not claim that EVERY requirement is untyped or criteria-less", () => {
+      const message = describeSynthesisDegradation(partial);
+      expect(message).not.toMatch(/every requirement/i);
+      // The consequences are still named — but scoped to the grouped ones.
+      expect(message).toContain('typed "feature"');
+      expect(message).toContain("no acceptance criteria");
+      expect(message).toContain("Nothing was dropped");
+    });
+
+    it("singularises both counts", () => {
+      const message = describeSynthesisDegradation(
+        degradation({ requirementCount: 1, modelRequirementCount: 1 }),
+      );
+      expect(message).toContain("1 requirement was written by the model");
+      expect(message).toContain("1 requirement was grouped deterministically");
+    });
+
+    it("says how many findings are in no requirement when the cap shut some out", () => {
+      const message = describeSynthesisDegradation(
+        degradation({
+          requirementCount: 3,
+          modelRequirementCount: 97,
+          findingsWithoutRequirement: 20,
+        }),
+      );
+      expect(message).not.toContain("Nothing was dropped");
+      expect(message).toContain("20 findings are in no requirement");
+      const one = describeSynthesisDegradation(
+        degradation({
+          requirementCount: 3,
+          modelRequirementCount: 97,
+          findingsWithoutRequirement: 1,
+        }),
+      );
+      expect(one).toContain("1 finding is in no requirement");
+    });
+
+    it("says nothing was dropped only when nothing was", () => {
+      expect(
+        describeSynthesisDegradation(
+          degradation({ modelRequirementCount: 5, findingsWithoutRequirement: 0 }),
+        ),
+      ).toContain("Nothing was dropped");
+    });
+
+    it("keeps the whole-fallback wording when no requirement was model-written", () => {
+      expect(describeSynthesisDegradation(degradation({ modelRequirementCount: 0 }))).toBe(
+        describeSynthesisDegradation(degradation()),
+      );
+    });
+  });
+
   it("describes a provider error differently from a parse failure", () => {
     expect(describeSynthesisDegradation(degradation({ reason: "provider-error" }))).toContain(
       "the model call failed",

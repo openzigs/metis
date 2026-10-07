@@ -41,6 +41,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     },
     userRole: {},
     auditLog: { create: vi.fn(async () => ({})) },
+    // #717 — the deep-dive reads each cited document's source (none resolve here).
+    document: { findMany: vi.fn(async () => []) },
     analysis: {
       // Cost-cap usage query — return an empty set so the cap is never hit
       // unless the cost-cap module mock is told to throw.
@@ -112,6 +114,13 @@ vi.mock("../src/lib/analysis/cost-cap.js", async (importOriginal) => {
     }),
   };
 });
+
+// #724 — observe project-usage writes without touching the ledger.
+const recordUsageSpy = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/finops/token-tracker.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/finops/token-tracker.js")>()),
+  recordUsage: recordUsageSpy,
+}));
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
@@ -218,6 +227,14 @@ describe("POST /api/projects/:projectId/analyses/:id/findings/:findingId/deep-di
     expect(res.body.data.meta.tokensUsed).toBe(180);
     expect(res.body.data.meta.model).toContain("haiku");
     expect(orch.chatMock).toHaveBeenCalledTimes(1);
+    // #724 — the call is billed to the project, under the analysis.
+    expect(recordUsageSpy).toHaveBeenCalledTimes(1);
+    expect(recordUsageSpy.mock.calls[0]![0]).toMatchObject({
+      projectId: PROJECT_ID,
+      sessionId: ANALYSIS_ID,
+      inputTokens: 120,
+      outputTokens: 60,
+    });
   });
 
   it("forwards optional instructions and still makes exactly one call", async () => {

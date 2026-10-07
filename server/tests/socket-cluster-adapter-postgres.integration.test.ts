@@ -52,6 +52,7 @@ vi.mock("../src/lib/auth/jwt.js", async (importOriginal) => ({
 import { db, seed } from "./helpers/two-replica-prisma.js";
 import { connectUser, startReplica, type Replica } from "./helpers/two-replica-sockets.js";
 import {
+  SOCKET_CLUSTER_POOL_TIMEOUTS,
   SOCKET_IO_ATTACHMENTS_TABLE,
   resolveSocketClusterAdapter,
   socketClusterPoolConfig,
@@ -360,6 +361,112 @@ describe.runIf(enabled)("#622 Socket.IO cluster adapter on real Postgres (integr
       await admin.end();
     }
   });
+
+  // #659 — C's publishes fail (its pool times out) while D stays LISTENing, so
+  // no NOTIFY and no reconnect ever tells D; D's periodic re-validation sweep
+  // closes the socket within the documented bound (one interval plus one pass).
+  // A dedicated pair, so the short sweep cannot race the suite's other tests.
+  it("a deprovision on C whose publish fails is applied on D, still listening, within one sweep", async () => {
+    const SWEEP_MS = 2_000;
+    const REPLICA_C_APP = "metis-socket-cluster-c";
+    const REPLICA_D_APP = "metis-socket-cluster-d";
+    const env = { ...process.env, NODE_ENV: "production" };
+    let poolC!: pg.Pool;
+    const pools = {
+      c: (url: string) =>
+        (poolC = new pg.Pool({ ...socketClusterPoolConfig(url), application_name: REPLICA_C_APP })),
+      d: (url: string) =>
+        new pg.Pool({ ...socketClusterPoolConfig(url), application_name: REPLICA_D_APP }),
+    };
+    const [clusterC, clusterD] = (await Promise.all([
+      resolveSocketClusterAdapter(env, pools.c),
+      resolveSocketClusterAdapter(env, pools.d),
+    ])) as SocketClusterAdapter[];
+    const c = await startReplica(clusterC.adapter, clusterC.onListening);
+    const d = await startReplica(clusterD.adapter, clusterD.onListening, SWEEP_MS);
+    const admin = new pg.Pool({ connectionString: databaseUrl, max: 1 });
+    const listenPidsOfD = async () =>
+      (
+        await admin.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity
+            WHERE datname = current_database() AND application_name = $1
+              AND query LIKE 'LISTEN "socket.io#%'`,
+          [REPLICA_D_APP],
+        )
+      ).rows.map((r) => r.pid);
+    let done = () => {};
+    try {
+      registerSocketServer(c.io);
+      await vi.waitFor(
+        async () => {
+          // Both LISTEN clients up: C and D (and the suite's A and B) hear each other.
+          expect(await c.io.of("/").adapter.serverCount()).toBeGreaterThanOrEqual(2);
+          expect(await listenPidsOfD()).toHaveLength(1);
+        },
+        { timeout: 15_000 },
+      );
+      seed(["u-unpublished", "u-unpublished-kept"], []);
+      const gone = await connectUser(d, "u-unpublished", open);
+      const kept = await connectUser(d, "u-unpublished-kept", open);
+      const listenD = await listenPidsOfD();
+
+      // Take C's only non-LISTEN connection (the callback form passes straight
+      // through the adapter's checkout wrapper), so its every NOTIFY waits on
+      // the pool and times out after `connectionTimeoutMillis`.
+      await new Promise<void>((resolve, reject) =>
+        poolC.connect((err, client, release) => {
+          if (err || !client) return reject(err);
+          done = () => release();
+          resolve();
+        }),
+      );
+      expect(poolC.totalCount).toBe(2);
+      expect(poolC.idleCount).toBe(0);
+
+      // Record C's NOTIFYs that reject (the adapter only logs them).
+      const failedNotifies: string[] = [];
+      const query = poolC.query.bind(poolC) as (...args: unknown[]) => Promise<unknown>;
+      poolC.query = ((...args: unknown[]) => {
+        const result = query(...args);
+        if (typeof args[0] === "string" && args[0].includes("pg_notify")) {
+          result.catch((err: Error) => failedNotifies.push(err.message));
+        }
+        return result;
+      }) as typeof poolC.query;
+
+      const started = Date.now();
+      const res = await request(app)
+        .delete("/scim/v2/Users/u-unpublished")
+        .set("Authorization", SCIM_AUTH);
+      expect(res.status).toBe(204);
+      // The deprovision's publishes are queued behind the held connection.
+      await vi.waitFor(() => expect(poolC.waitingCount).toBeGreaterThan(0), { timeout: 2_000 });
+
+      await vi.waitFor(() => expect(gone.disconnectReason).toBe("io server disconnect"), {
+        timeout: SWEEP_MS * 3,
+        interval: 50,
+      });
+      // Within the bound — one interval plus a pass of two users — and before
+      // C's publish could have gone anywhere: its connection is still held.
+      expect(Date.now() - started).toBeLessThan(SWEEP_MS + 1_500);
+      expect(poolC.waitingCount).toBeGreaterThan(0);
+      expect(await listenPidsOfD()).toEqual(listenD);
+      expect(kept.socket.connected).toBe(true);
+
+      // And the publish did fail: C's NOTIFY rejects on the pool's connect timeout.
+      await vi.waitFor(() => expect(failedNotifies.some((m) => /timeout/i.test(m))).toBe(true), {
+        timeout: SOCKET_CLUSTER_POOL_TIMEOUTS.connectionTimeoutMillis + 2_000,
+        interval: 100,
+      });
+    } finally {
+      done();
+      registerSocketServer(a.io);
+      await c.close();
+      await d.close();
+      await Promise.all([clusterC.close(), clusterD.close()]);
+      await admin.end();
+    }
+  }, 30_000);
 
   // Last: it drops every replica's LISTEN connection. Before the client-level
   // 'error' listener, pg emitted the termination on the checked-out client with

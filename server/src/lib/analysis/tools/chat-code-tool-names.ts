@@ -4,4 +4,9 @@
  * dependency-free module so the agent service can import it without pulling in
  * the code-search implementations.
  */
-export const CHAT_CODE_TOOL_NAMES: readonly string[] = ["search_code_graph", "search_code_symbols"];
+export const CHAT_CODE_TOOL_NAMES: readonly string[] = [
+  "search_code_graph",
+  "search_code_symbols",
+  // #736 — chat's bounded file read.
+  "read_file_slice",
+];

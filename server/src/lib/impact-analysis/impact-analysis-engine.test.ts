@@ -799,7 +799,7 @@ function serviceePrismaMock() {
       }),
     },
     knowledgeChunk: { findMany: vi.fn(async () => []) },
-    quarantineChunk: { findMany: vi.fn(async () => []) },
+    quarantineChunk: { findMany: vi.fn(async (): Promise<{ text: string }[]> => []) },
     document: {},
     codeSymbol: {},
     codeEdge: {},
@@ -1123,6 +1123,8 @@ describe("triggerImpactAnalysis / executeImpactAnalysis", () => {
             : { ...r, relevanceTier: "likely" as const, confidence: 0.8 },
         ),
         secondary: [],
+        decisions: [],
+        applied: true,
       }),
       impactSummarizer: capturingSummarizer,
     });

@@ -82,7 +82,9 @@ describe("applyHttpKeepAliveTimeout (#221)", () => {
 });
 
 describe("0 in production warns at boot (review of PR #326)", () => {
-  beforeEach(() => logWarn.mockReset());
+  beforeEach(() => {
+    logWarn.mockReset();
+  });
 
   it("warns, naming the setting, and still applies 0", () => {
     const server = http.createServer();
@@ -118,7 +120,7 @@ describe("what a keep-alive client is told (#221)", () => {
     server = undefined;
   });
 
-  async function keepAliveHint(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  async function keepAliveHint(env: NodeJS.ProcessEnv): Promise<string | string[] | undefined> {
     server = http.createServer((_req, res) => res.end("ok"));
     applyHttpKeepAliveTimeout(server, env);
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));

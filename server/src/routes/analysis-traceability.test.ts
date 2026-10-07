@@ -84,8 +84,10 @@ vi.mock("../lib/rag/knowledge-service.js", () => ({ getKnowledgeService: vi.fn((
 vi.mock("../lib/ai/providers/bedrock-direct-provider.js", () => ({
   BedrockDirectProvider: class {},
 }));
-vi.mock("../lib/scanner/prisma-adapter.js", () => ({ publishAnalysisFinding: vi.fn() }));
-vi.mock("../lib/scanner/finding-publisher.js", () => ({ PublishError: class extends Error {} }));
+vi.mock("../lib/publishing/analysis-finding-publish.js", () => ({
+  publishAnalysisFinding: vi.fn(),
+}));
+vi.mock("../lib/publishing/finding-publisher.js", () => ({ PublishError: class extends Error {} }));
 
 const { initAnalysisRouter } = await import("./analysis.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
@@ -99,6 +101,7 @@ const MATRIX: TraceabilityMatrix = {
       requirementId: "req-1",
       title: "Users can log in",
       coverage: "grounded_in_code",
+      verdict: null,
       findings: [{ id: "f-1", title: "Login", severity: "high" }],
       codeLocations: [{ filePath: "auth.ts", startLine: 1, endLine: 9, source: "citation" }],
       tests: [],

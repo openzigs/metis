@@ -10,6 +10,8 @@
  * one private (fail-closed), DNS lookup empty, DNS lookup error,
  * IP-literal short circuit.
  */
+import http from "node:http";
+import net, { type AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import {
   safeFetch,
@@ -399,7 +401,7 @@ describe("safeFetch — redirects", () => {
 describe("safeFetch — request-init pass-through", () => {
   it("forwards method/headers/body to the underlying fetch", async () => {
     const resolver = publicResolver();
-    const fetchImpl = vi.fn(async () => mkResponse("ok"));
+    const fetchImpl = vi.fn<typeof fetch>(async () => mkResponse("ok"));
     await safeFetch("https://api.example/", {
       method: "PUT",
       headers: { "x-marker": "abc" },
@@ -420,7 +422,7 @@ describe("safeFetch — request-init pass-through", () => {
 
   it("does not allow callers to override the dispatcher", async () => {
     const resolver = publicResolver();
-    const fetchImpl = vi.fn(async () => mkResponse("ok"));
+    const fetchImpl = vi.fn<typeof fetch>(async () => mkResponse("ok"));
     const evil = { close: async () => undefined };
     // Cast: the public type intentionally omits `dispatcher`, but a sloppy
     // caller could try to sneak it through with `as any`. Verify it's
@@ -465,5 +467,70 @@ describe("safeFetch — request-init pass-through", () => {
       redirect: "follow",
     });
     expect(closes.length).toBe(2);
+  });
+});
+
+describe("safeFetch — default pinned dispatcher on a real connection (#716)", () => {
+  // Every other test injects `dispatcherFactory`, which is how the pinned
+  // lookup's single-address answer went unnoticed: only Node's own connect
+  // path asks for `{ all: true }` (whenever `autoSelectFamily` is on, the
+  // default from Node 20). Drive the real dispatcher and the real `fetch`
+  // against a local listener, so a lookup that answers in the wrong shape
+  // fails here with "Invalid IP address: undefined".
+  async function withServer(run: (port: number) => Promise<void>): Promise<void> {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("pinned-ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      await run(port);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  it("connects a resolved hostname to the pinned address", async () => {
+    expect(net.getDefaultAutoSelectFamily()).toBe(true);
+    await withServer(async (port) => {
+      const resolver = vi
+        .fn<SafeFetchResolver>()
+        .mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+      const res = await safeFetch(`http://pinned.invalid:${port}/`, {
+        resolver,
+        allowedHosts: new Set(["pinned.invalid"]),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("pinned-ok");
+    });
+  });
+
+  it("still answers the single-address form when autoSelectFamily is off", async () => {
+    const previous = net.getDefaultAutoSelectFamily();
+    net.setDefaultAutoSelectFamily(false);
+    try {
+      await withServer(async (port) => {
+        const resolver = vi
+          .fn<SafeFetchResolver>()
+          .mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+        const res = await safeFetch(`http://pinned.invalid:${port}/`, {
+          resolver,
+          allowedHosts: new Set(["pinned.invalid"]),
+        });
+        expect(await res.text()).toBe("pinned-ok");
+      });
+    } finally {
+      net.setDefaultAutoSelectFamily(previous);
+    }
+  });
+
+  it("connects an allowed loopback name to the pinned address", async () => {
+    await withServer(async (port) => {
+      const res = await safeFetch(`http://localhost:${port}/`, { allowLoopback: true });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("pinned-ok");
+    });
   });
 });

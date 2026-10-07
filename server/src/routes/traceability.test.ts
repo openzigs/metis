@@ -12,7 +12,9 @@ import request from "supertest";
 const mockPrisma = {
   requirement: { findFirst: vi.fn(), findMany: vi.fn() },
   generatedDocument: { findFirst: vi.fn(), findMany: vi.fn() },
-  codeSymbol: { findFirst: vi.fn() },
+  codeSymbol: { findFirst: vi.fn(), findMany: vi.fn() },
+  codeEdge: { findMany: vi.fn() },
+  analysis: { findFirst: vi.fn() },
   requirementSpecMapping: {
     findMany: vi.fn(),
     findFirst: vi.fn(),
@@ -35,12 +37,27 @@ vi.mock("../lib/prisma.js", () => ({ prisma: mockPrisma }));
 
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: unknown, _res: unknown, next: () => void) => {
-    (req as { user: { userId: string; role: string } }).user = {
-      userId: "user-1",
-      role: "member",
-    };
+    // `x-test-user` lets a test act as a second user (#815 per-user limiter).
+    const r = req as { headers: Record<string, string | undefined>; user: unknown };
+    r.user = { userId: r.headers["x-test-user"] ?? "user-1", role: "member" };
     next();
   },
+}));
+
+// #814 — the router mounts `requireProjectAccess()` itself; a flag drives the
+// real middleware's 404 (non-member) outcome without a workspace fixture.
+let projectAccessible = true;
+const requireProjectAccessCalls: string[] = [];
+vi.mock("../middleware/require-project-access.js", () => ({
+  requireProjectAccess:
+    () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      requireProjectAccessCalls.push(String(req.params.projectId));
+      if (!projectAccessible) {
+        res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "no" } });
+        return;
+      }
+      next();
+    },
 }));
 
 let permitWrite = true;
@@ -95,8 +112,16 @@ describe("traceability router", () => {
   let app: ReturnType<typeof createApp>;
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps queued `mockResolvedValueOnce` values; drop them too.
+    for (const model of Object.values(mockPrisma)) {
+      if (typeof model === "object") for (const fn of Object.values(model)) fn.mockReset();
+    }
+    mockPrisma.codeSymbol.findMany.mockResolvedValue([]);
+    mockPrisma.codeEdge.findMany.mockResolvedValue([]);
     permitWrite = true;
     permitRead = true;
+    projectAccessible = true;
+    requireProjectAccessCalls.length = 0;
     app = createApp();
   });
 
@@ -285,6 +310,233 @@ describe("traceability router", () => {
     });
   });
 
+  // ---- #814 "Tested by" + project scope ------------------------------------
+  describe("project scope (#814)", () => {
+    it("runs requireProjectAccess before every handler and 404s a non-member", async () => {
+      projectAccessible = false;
+      const res = await request(app).get(`${BASE}/requirements/req-1/traceability`);
+      expect(res.status).toBe(404);
+      expect(requireProjectAccessCalls).toEqual(["proj-1"]);
+      expect(mockPrisma.requirement.findFirst).not.toHaveBeenCalled();
+
+      const gaps = await request(app).get(`${BASE}/traceability/test-gaps`);
+      expect(gaps.status).toBe(404);
+      expect(mockPrisma.requirement.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("GET /requirements/:id/traceability testedBy (#814)", () => {
+    it("adds testedBy and isTest; every pre-#814 field is unchanged", async () => {
+      mockPrisma.requirement.findFirst.mockResolvedValue({
+        id: "req-1",
+        title: "Password length",
+        body: "Password must be at least 6 characters",
+      });
+      mockPrisma.requirementSpecMapping.findMany.mockResolvedValue([
+        {
+          specDocumentId: "spec-1",
+          confidence: 0.9,
+          source: "derived",
+          specDocument: { title: "Auth" },
+        },
+      ]);
+      mockPrisma.specCodeMapping.findMany.mockResolvedValue([
+        {
+          specDocumentId: "spec-1",
+          codeSymbolId: null,
+          filePath: "internal/validator/user_test.go",
+          startLine: null,
+          endLine: null,
+          confidence: 0.8,
+          source: "derived",
+        },
+      ]);
+      mockPrisma.requirementCodeMapping.findMany.mockResolvedValue([
+        {
+          codeSymbolId: "sym-v",
+          filePath: "internal/validator/user.go",
+          startLine: 10,
+          endLine: 20,
+          confidence: 0.7,
+          source: "semantic",
+        },
+      ]);
+      mockPrisma.codeSymbol.findMany
+        .mockResolvedValueOnce([
+          {
+            id: "sym-v",
+            name: "validatePassword",
+            qualifiedName: "internal/validator/user.go::validatePassword",
+            filePath: "internal/validator/user.go",
+            kind: "function",
+            language: "go",
+            startLine: 10,
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            id: "sym-t",
+            name: "TestValidatePassword",
+            qualifiedName: "internal/validator/user_test.go::TestValidatePassword",
+            filePath: "internal/validator/user_test.go",
+            kind: "function",
+            language: "go",
+            startLine: 55,
+          },
+        ]);
+
+      const res = await request(app).get(`${BASE}/requirements/req-1/traceability`);
+
+      expect(res.status).toBe(200);
+      const { testedBy, ...rest } = res.body.data;
+      const strip = (nodes: Array<Record<string, unknown>>) =>
+        nodes.map(({ isTest: _isTest, ...n }) => n);
+      // The #229 shape, byte for byte, once the two additive fields are removed.
+      expect(
+        JSON.stringify({
+          ...rest,
+          specs: rest.specs.map((sp: { code: Array<Record<string, unknown>> }) => ({
+            ...sp,
+            code: strip(sp.code),
+          })),
+          directCode: strip(rest.directCode),
+        }),
+      ).toMatchInlineSnapshot(
+        `"{"requirementId":"req-1","requirementTitle":"Password length","projectId":"proj-1","specs":[{"specDocumentId":"spec-1","specTitle":"Auth","confidence":0.9,"source":"derived","code":[{"codeSymbolId":null,"filePath":"internal/validator/user_test.go","startLine":null,"endLine":null,"confidence":0.8,"source":"derived"}]}],"directCode":[{"codeSymbolId":"sym-v","filePath":"internal/validator/user.go","startLine":10,"endLine":20,"confidence":0.7,"source":"semantic"}]}"`,
+      );
+      expect(rest.specs[0].code[0].isTest).toBe(true);
+      expect(rest.directCode[0].isTest).toBe(false);
+      expect(
+        testedBy.map((t: { symbol: string; relation: string }) => [t.symbol, t.relation]),
+      ).toEqual([
+        ["internal/validator/user_test.go", "direct"],
+        ["internal/validator/user_test.go::TestValidatePassword", "naming"],
+      ]);
+    });
+  });
+
+  describe("GET /traceability/test-gaps (#814)", () => {
+    const reqRow = (id: string, title: string) => ({
+      id,
+      title,
+      body: "",
+      analysisId: "an-1",
+    });
+
+    it("lists untested requirements, counts the unmapped ones, and paginates", async () => {
+      mockPrisma.analysis.findFirst.mockResolvedValue({ id: "an-1" });
+      mockPrisma.requirement.findMany.mockResolvedValue([
+        reqRow("r3", "C"),
+        reqRow("r1", "A"),
+        reqRow("r2", "B"),
+        reqRow("r4", "No code"),
+      ]);
+      mockPrisma.requirementCodeMapping.findMany.mockResolvedValue([
+        { requirementId: "r1", codeSymbolId: null, filePath: "a.go", startLine: null },
+        { requirementId: "r2", codeSymbolId: null, filePath: "b.go", startLine: null },
+        { requirementId: "r3", codeSymbolId: null, filePath: "c.go", startLine: null },
+      ]);
+      mockPrisma.requirementSpecMapping.findMany.mockResolvedValue([]);
+
+      const res = await request(app).get(`${BASE}/traceability/test-gaps?analysisId=an-1&limit=2`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({
+        total: 4,
+        tested: 0,
+        noCode: 1,
+        untested: [
+          {
+            requirementId: "r1",
+            title: "A",
+            analysisId: "an-1",
+            reason: "no-test",
+            mappedFiles: 1,
+          },
+          {
+            requirementId: "r2",
+            title: "B",
+            analysisId: "an-1",
+            reason: "no-test",
+            mappedFiles: 1,
+          },
+        ],
+        nextCursor: "r2",
+      });
+      expect(mockPrisma.analysis.findFirst).toHaveBeenCalledWith({
+        where: { id: "an-1", projectId: "proj-1" },
+        select: { id: true },
+      });
+      expect(mockPrisma.requirement.findMany.mock.calls[0][0].where).toEqual({
+        projectId: "proj-1",
+        deletedAt: null,
+        analysisId: "an-1",
+      });
+
+      const next = await request(app).get(`${BASE}/traceability/test-gaps?limit=2&cursor=r2`);
+      expect(
+        next.body.data.untested.map((g: { requirementId: string }) => g.requirementId),
+      ).toEqual(["r3"]);
+      expect(next.body.data.nextCursor).toBeNull();
+    });
+
+    it("returns an empty report for an empty project", async () => {
+      mockPrisma.requirement.findMany.mockResolvedValue([]);
+      const res = await request(app).get(`${BASE}/traceability/test-gaps`);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({
+        total: 0,
+        tested: 0,
+        untested: [],
+        noCode: 0,
+        nextCursor: null,
+      });
+      expect(mockPrisma.requirementCodeMapping.findMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["limit=0"],
+      ["limit=201"],
+      ["limit=abc"],
+      ["limit=1.5"],
+      ["cursor=a%20b"],
+      ["cursor=" + "x".repeat(65)],
+      ["analysisId=%27%3B--"],
+    ])("400s on a bad query (%s) before touching Prisma", async (qs) => {
+      const res = await request(app).get(`${BASE}/traceability/test-gaps?${qs}`);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("VALIDATION_ERROR");
+      expect(mockPrisma.requirement.findMany).not.toHaveBeenCalled();
+    });
+
+    it("is rate-limited per user", async () => {
+      mockPrisma.requirement.findMany.mockResolvedValue([]);
+      process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX = "1";
+      try {
+        await request(app).get(`${BASE}/traceability/test-gaps`);
+        const res = await request(app).get(`${BASE}/traceability/test-gaps`);
+        expect(res.status).toBe(429);
+        expect(res.body.error.code).toBe("TRACEABILITY_GAPS_RATE_LIMITED");
+      } finally {
+        delete process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX;
+      }
+    });
+
+    it("403s without analysis.read", async () => {
+      permitRead = false;
+      const res = await request(app).get(`${BASE}/traceability/test-gaps`);
+      expect(res.status).toBe(403);
+    });
+
+    it("404s for an analysisId outside the project", async () => {
+      mockPrisma.analysis.findFirst.mockResolvedValue(null);
+      const res = await request(app).get(`${BASE}/traceability/test-gaps?analysisId=foreign`);
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("ANALYSIS_NOT_FOUND");
+      expect(mockPrisma.requirement.findMany).not.toHaveBeenCalled();
+    });
+  });
+
   // ---- #626 linked chains (includeLinked / depth) -------------------------
   describe("GET /requirements/:id/traceability?includeLinked (#626)", () => {
     it("keeps the #229 single-project behaviour when includeLinked is absent", async () => {
@@ -400,6 +652,39 @@ describe("workspace traceability router (#626)", () => {
       { id: "user-1", role: "member" },
       "ws-1",
     );
+  });
+
+  it("rate-limits the summary per user before it runs the per-project resolver (#815)", async () => {
+    getWorkspaceTraceabilitySummary.mockResolvedValue({ projects: [], crossProjectLinks: [] });
+    process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX = "1";
+    try {
+      await request(app).get("/workspaces/ws-1/traceability/summary");
+      getWorkspaceTraceabilitySummary.mockClear();
+      const res = await request(app).get("/workspaces/ws-1/traceability/summary");
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe("TRACEABILITY_GAPS_RATE_LIMITED");
+      expect(getWorkspaceTraceabilitySummary).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX;
+    }
+  });
+
+  it("keys the summary limiter by user, not IP, so one user cannot exhaust another's budget (#815)", async () => {
+    getWorkspaceTraceabilitySummary.mockResolvedValue({ projects: [], crossProjectLinks: [] });
+    process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX = "1";
+    try {
+      await request(app).get("/workspaces/ws-1/traceability/summary").set("x-test-user", "user-a");
+      const limited = await request(app)
+        .get("/workspaces/ws-1/traceability/summary")
+        .set("x-test-user", "user-a");
+      expect(limited.status).toBe(429);
+      const other = await request(app)
+        .get("/workspaces/ws-1/traceability/summary")
+        .set("x-test-user", "user-b");
+      expect(other.status).toBe(200);
+    } finally {
+      delete process.env.TRACEABILITY_GAPS_RATE_LIMIT_MAX;
+    }
   });
 
   it("denies the summary without analysis.read (403)", async () => {

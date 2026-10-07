@@ -79,7 +79,6 @@ function finding(overrides: Partial<FlatFinding> & { title: string }): FlatFindi
     agentKey: "code",
     category: "security",
     severity: "high",
-    title: overrides.title,
     body: "b",
     tags: [],
     citations: [],
@@ -310,7 +309,9 @@ describe("ranking reaches the model and the deterministic fallback (#1110)", () 
     let systemMessage = "";
     const provider = {
       chat: async (messages: ChatMessage[], opts?: ChatOptions) => {
-        userMessage = messages.find((m) => m.role === "user")?.content ?? "";
+        const content = messages.find((m) => m.role === "user")?.content;
+        // A non-text turn leaves it empty, which fails every assertion below.
+        userMessage = typeof content === "string" ? content : "";
         systemMessage = opts?.systemMessage ?? "";
         return {
           content: JSON.stringify({

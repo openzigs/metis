@@ -22,9 +22,15 @@ export interface Replica {
 export async function startReplica(
   adapter?: ServerOptions["adapter"],
   onAdapterListening?: (listener: () => void) => void,
+  /** #659 — the re-validation sweep interval; omitted, the production default. */
+  revalidateIntervalMs?: number,
 ): Promise<Replica> {
   const httpServer = http.createServer();
-  const io = createSocketServer(httpServer, { adapter, onAdapterListening });
+  const io = createSocketServer(httpServer, {
+    adapter,
+    onAdapterListening,
+    ...(revalidateIntervalMs !== undefined ? { revalidateIntervalMs } : {}),
+  });
   const port = await new Promise<number>((resolve) => {
     httpServer.listen(0, "127.0.0.1", () => {
       const addr = httpServer.address();

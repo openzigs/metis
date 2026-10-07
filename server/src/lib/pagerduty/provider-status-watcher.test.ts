@@ -14,14 +14,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // The default (no-override) hook wiring delegates to alerting-hooks; mock it so we
 // can prove the watcher reaches the real hooks without constructing a network
 // client or PagerDuty config.
-const downSpy = vi.fn(async () => undefined);
-const recoveredSpy = vi.fn(async () => undefined);
+const downSpy = vi.fn(async (..._args: unknown[]) => undefined);
+const recoveredSpy = vi.fn(async (..._args: unknown[]) => undefined);
 vi.mock("./alerting-hooks.js", () => ({
   pagerDutyProviderDown: (...args: unknown[]) => downSpy(...args),
   pagerDutyProviderRecovered: (...args: unknown[]) => recoveredSpy(...args),
 }));
 
-import { PagerDutyProviderStatusWatcher } from "./provider-status-watcher.js";
+import {
+  PagerDutyProviderStatusWatcher,
+  type ProviderStatusWatcherDeps,
+} from "./provider-status-watcher.js";
 import type { MCPStatusEvent } from "../mcp/types.js";
 
 function ev(over: Partial<MCPStatusEvent>): MCPStatusEvent {
@@ -41,8 +44,8 @@ function ev(over: Partial<MCPStatusEvent>): MCPStatusEvent {
 
 function makeHooks() {
   return {
-    down: vi.fn(async () => undefined),
-    recovered: vi.fn(async () => undefined),
+    down: vi.fn<NonNullable<ProviderStatusWatcherDeps["down"]>>(async () => undefined),
+    recovered: vi.fn<NonNullable<ProviderStatusWatcherDeps["recovered"]>>(async () => undefined),
   };
 }
 

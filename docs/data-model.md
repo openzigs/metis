@@ -55,7 +55,7 @@ fails if the two schema bodies diverge or if regeneration would produce a diff.
 | `Analysis` | 1, 4 | Multi-agent analysis run. | `analysis.ts` |
 | `AgentResult` | 1, 4 | Per-specialist output within an Analysis. | `analysis.ts` |
 | `Finding` | 1, 4 | Atomic finding emitted by an AgentResult. Carries `derivation` (`extracted` \| `inferred` \| `ambiguous`) and `confidence` (0.0–1.0) per Epic #298. | `analysis.ts` |
-| `CodeGraph` | 7 (Epic #298) | One per Project / RepoConnection. Tracks `commitSha`, aggregate `symbolCount` / `edgeCount`, JSON `languageStats`, `lastIndexedAt`. | — (server-only) |
+| `CodeGraph` | 7 (Epic #298) | One per Project / RepoConnection. Tracks `commitSha`, aggregate `symbolCount` / `edgeCount`, JSON `languageStats`, `lastIndexedAt`, and nullable `lineageFingerprint` (#721): the SQL-lineage inputs the graph was built with (`off`, `on:<schema hash>`, or `unreached:<schema hash>` when lineage was on but the sidecar could not be reached). An incremental ingest whose inputs differ re-parses every file. | — (server-only) |
 | `CodeSymbol` | 7 (Epic #298) | One row per AST-extracted definition (`function` \| `class` \| `interface` \| `type` \| `module` \| `method`). Carries `qualifiedName`, file path, line range, `language`, `contentHash` for incremental ingest. | — |
 | `CodeEdge` | 7 (Epic #298) | One row per AST-extracted relationship (`calls` \| `imports` \| `defines` \| `references`). Nullable `toSymbolId` (with `toQualifiedName`) for unresolved external refs. JSON `metadata` carries edge-specific data such as `{ "typeOnly": true }` for TS type-only imports. | — |
 | `Requirement` | 1, 4 | Synthesized requirement; supports parent/child hierarchy. | `analysis.ts` |
@@ -164,6 +164,7 @@ erDiagram
         int    edgeCount
         string languageStats "JSON {lang: count}"
         datetime lastIndexedAt
+        string lineageFingerprint "nullable — SQL-lineage inputs (#721)"
     }
 ```
 
@@ -243,25 +244,28 @@ whole failure mode.
 The known writers: `analysis-service.ts` coerces a model-authored `extracted`
 down to `inferred` (`resolveFindingProvenance`) so the mandatory-1.0 branch is
 unreachable from model output; `code-graph/ingest.ts` hard-codes `extracted` /
-`1.0`; the two `scripts/e2e-seed-*.ts` seeds hard-code `inferred` / `0.7`; and
-`scanner/prisma-adapter.ts` hard-codes `inferred` when materialising an approved
-scan finding (#1330).
+`1.0`; and the two `scripts/e2e-seed-*.ts` seeds hard-code `inferred` / `0.7`.
+A fourth writer, `scanner/prisma-adapter.ts` (materialising an approved scan
+finding, #1330), was deleted with the AI bug scanner (#799).
 
 ### `Finding.agentResultId` is nullable (Issue #1330, ADR 0011)
 
 A `Finding` has **exactly one** of two provenances, and they are mutually
-exclusive:
+exclusive. Only the first is still written: the AI bug scanner that wrote the
+second was removed in #799 ([ADR 0018](decisions/0018-remove-the-ai-bug-scanner.md)).
+Rows it materialised before then keep `scanFindingId` set until #806 drops the
+column:
 
 | Provenance | `agentResultId` | `scanFindingId` |
 |---|---|---|
 | Analysis pipeline (`persistAgentResult`, `code-graph/ingest.ts`, the seeds) | set | `null` |
-| Materialised from an approved `ScanFinding` (`materializeTriagedFinding`) | `null` | set (`@unique`) |
+| Materialised from an approved `ScanFinding` (no writer since #799; pre-existing rows only) | `null` | set (`@unique`) |
 
 `agentResultId` was `NOT NULL` until #1330, which made the second row shape
 impossible to write — approved triage 500'd for eight months, and because the
 throw landed inside the transaction after the triage stamp, the rollback
-destroyed the reviewer's decision too. The AI bug scanner is not an analysis
-agent and creates no `AgentResult`; synthesising one was rejected in
+destroyed the reviewer's decision too. The AI bug scanner was not an analysis
+agent and created no `AgentResult`; synthesising one was rejected in
 [ADR 0011](decisions/0011-scan-finding-materialisation-provenance.md) because it
 fabricates a run that never happened and pollutes every consumer that reasons
 over `AgentResult`.
@@ -273,8 +277,8 @@ Two reader consequences, both deliberate:
   contract still types it `string`.
 - `getFindingForPublish` returns `null` for a finding with no `AgentResult`. A
   materialised scan finding is **not** publishable through the analysis path —
-  it has no analysis, project name or agent key. The scanner has its own
-  publish route.
+  it has no analysis, project name or agent key. Its own publish route went
+  with the scanner (#799).
 
 **The generated Prisma types do not check the payload of an inline `create`.**
 `delegate.create` is generic
@@ -369,41 +373,26 @@ Idempotency table for `/speckit.taskstoissues` — records the GitHub issue numb
 
 Unique: `(projectId, featureSlug, taskId)`.
 
-## AI Bug Scanner
+## Retired AI bug-scanner tables (awaiting #806)
 
-See [docs/AI_BUG_SCANNER.md](./AI_BUG_SCANNER.md) for the full architectural narrative.
-The Prisma source-of-truth is `server/prisma/schema.prisma`.
-
-### `RuleSet`
-- `id`, `projectId`, `name`, `description?`, `isActive`, `createdAt`, `updatedAt`
-- `@@unique([projectId, name])` — keep duplicate set names out of the same project.
-
-### `Rule`
-- `id`, `ruleSetId`, `createdById`
-- `naturalLanguage` (≥10 chars), `severity`, `category` (default `correctness`)
-- `status` ∈ `draft | compiling | awaiting_grading | active | failed`
-- `compiledMeta` (JSON string), `exemplarGrades` (JSON string)
-- `errorMessage?` for compile failures
-
-### `Scan`
-- `id`, `projectId`, `repoConnectionId`, `commitSha`
-- `status` ∈ `pending | running | completed | failed | aborted`
-- `mode` ∈ `rules | heuristic | both` (default `both`)
-- `totalSymbols`, `scannedSymbols`, `totalTokens`, `costCents?`
-- `budgetCapTokens` (default 2,000,000), `errorMessage?`
-- `startedAt?`, `completedAt?`
-
-### `ScanFinding`
-- `id`, `scanId`, `projectId`, `repoConnectionId`, `symbolId`, `qualifiedName`
-- `ruleId?` (heuristic findings leave this `null`)
-- `title`, `body`, `severity`, `category`, `evidenceLines` (JSON-encoded number[])
-- `filePath`, `fingerprint`, `confidence` (0–1)
-- `triageStatus` ∈ `pending | approved | rejected | deferred`, `triageNote?`
-- `triagedById?`, `triagedAt?`
-- `materializedFindingId?` — set only after triage `approved` (links to `Finding`)
-- `@@unique([scanId, fingerprint])` — idempotent across reruns of the same commit.
+The AI bug scanner was removed in #799 ([ADR 0018](decisions/0018-remove-the-ai-bug-scanner.md)).
+Its tables are **kept in the schema, unused, for one release** so operators have one upgrade
+in which to export the data before #806's destructive drop (export guidance is in #806),
+and so the removal can be reverted cleanly: `Scan`, `ScanFinding`, `RuleSet`, `Rule`, plus the
+`Finding.scanFindingId` and `IssueLink.scanFindingId` columns. Nothing writes
+them. The one remaining read is the project-scope lookup in `POST
+/findings/:id/review-ack` (`server/src/routes/findings.ts`), which reaches a
+materialised finding through `scanFinding.scan.projectId`. #806 drops them. The Prisma source-of-truth is
+`server/prisma/schema.prisma`.
 
 ### `IssueLink`
-- `id`, `scanFindingId`, `findingId?`, `provider` ∈ `github | jira`
+
+Records the external issue a published finding or impact analysis became, so a
+republish is idempotent. Exactly one id slot is set per row.
+
+- `id`, `findingId?`, `impactAnalysisId?`, `provider` ∈ `github | jira`
 - `externalId`, `externalUrl`, `fingerprint`
-- `@@unique([scanFindingId, provider])` — one external issue per finding per provider.
+- `@@unique([findingId, provider])` and `@@unique([impactAnalysisId, provider])` —
+  one external issue per source per provider.
+- `scanFindingId?` and `@@unique([scanFindingId, provider])` are retired with the
+  scanner and go in #806.

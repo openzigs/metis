@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { GithubImporter } from "../src/lib/importers/github-importer.js";
-import type { ExternalIssue } from "../src/lib/importers/types.js";
+import type { ExternalIssue, FetchFn } from "../src/lib/importers/types.js";
 
 function res(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   const h = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
@@ -80,7 +80,7 @@ describe("GithubImporter", () => {
   });
 
   it("uses the GitHub Enterprise base URL when configured", async () => {
-    const fetchFn = vi.fn(async () => res(200, []));
+    const fetchFn = vi.fn<FetchFn>(async () => res(200, []));
     const imp = new GithubImporter({
       token: "t",
       baseUrl: "https://ghe.corp.local/",

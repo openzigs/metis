@@ -70,7 +70,7 @@ function interceptPipeline(
   embedder: XenovaEmbedder,
   around: (real: PipelineFn, args: unknown[]) => Promise<unknown>,
 ): Promise<void> {
-  const holder = embedder as unknown as { pipeline: PipelineFn & Record<string, unknown> };
+  const holder = embedder as unknown as { pipeline: PipelineFn & { close?: unknown } };
   const real = holder.pipeline;
   let signal!: () => void;
   const called = new Promise<void>((resolve) => (signal = resolve));
@@ -79,7 +79,7 @@ function interceptPipeline(
     signal();
     return result;
   };
-  holder.pipeline = Object.assign(wrapped, { close: real.close }) as typeof holder.pipeline;
+  holder.pipeline = Object.assign(wrapped, { close: real.close });
   return called;
 }
 

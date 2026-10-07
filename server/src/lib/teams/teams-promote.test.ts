@@ -67,7 +67,11 @@ function user(): ResolvedMetisUser {
   return { userId: "user-1", username: "ada", email: "ada@example.com" };
 }
 
-function makeDeps(over: Partial<PromoteHandlerDeps> = {}): PromoteHandlerDeps {
+/** Every collaborator injected; the tenant policy falls back to the env allowlist. */
+type TestDeps = Omit<PromoteHandlerDeps, "tenantPolicy"> &
+  Partial<Pick<PromoteHandlerDeps, "tenantPolicy">>;
+
+function makeDeps(over: Partial<PromoteHandlerDeps> = {}): TestDeps {
   return {
     workspaceId: WS,
     resolver: {

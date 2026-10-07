@@ -146,6 +146,30 @@ describe("buildSqlLineageCoverage", () => {
     expect(cov!.unresolvedRefs[0].source).toBe("unknown");
   });
 
+  // #721 — a project with only code→code `calls` edges (tree-sitter, `source`
+  // null) reported "100% resolved" over 21,666 edges that were not table edges.
+  it("excludes ordinary code calls edges (null source) from the table-edge count", () => {
+    const rows = [
+      edge({ id: "code1", kind: "calls", source: null, toQualifiedName: "helper" }),
+      edge({ id: "code2", kind: "calls", source: null, toQualifiedName: "other" }),
+      edge({ id: "t1", kind: "reads", source: "sqlglot" }),
+      edge({ id: "r1", kind: "calls", source: "catalog-deps" }),
+    ];
+    const cov = buildSqlLineageCoverage(rows)!;
+    expect(cov.totalEdges).toBe(2);
+    expect(cov.resolvedEdges).toBe(1);
+    expect(cov.unresolvedEdges).toBe(1);
+    expect(cov.bySource).not.toHaveProperty("unknown");
+  });
+
+  it("returns null when every edge is an ordinary code call (no SQL lineage extracted)", () => {
+    const rows = [
+      edge({ id: "code1", kind: "calls", source: null }),
+      edge({ id: "code2", kind: "calls", source: null }),
+    ];
+    expect(buildSqlLineageCoverage(rows)).toBeNull();
+  });
+
   it("caps unresolvedRefs at SQL_LINEAGE_COVERAGE_MAX_REFS but keeps the full unresolvedEdges count", () => {
     const n = SQL_LINEAGE_COVERAGE_MAX_REFS + 5;
     const rows = Array.from({ length: n }, (_, i) =>
@@ -166,9 +190,16 @@ describe("computeSqlLineageCoverage", () => {
     const cov = await computeSqlLineageCoverage("proj-1", prisma);
     expect(cov!.totalEdges).toBe(2);
     expect(cov!.unresolvedEdges).toBe(1);
-    // Only the schema lineage edge kinds are queried (denominator = table/object edges).
+    // Only the schema lineage edge kinds are queried (denominator = table/object
+    // edges); a `calls` edge only with a provenance, so code calls are not loaded.
     expect(findMany).toHaveBeenCalledWith({
-      where: { projectId: "proj-1", kind: { in: ["reads", "writes", "persists-to", "calls"] } },
+      where: {
+        projectId: "proj-1",
+        OR: [
+          { kind: { in: ["reads", "writes", "persists-to"] } },
+          { kind: "calls", source: { not: null } },
+        ],
+      },
       select: {
         id: true,
         kind: true,
