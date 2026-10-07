@@ -25,14 +25,18 @@
  *    symbol. The whole-file `module` symbol every parser emits does not count:
  *    the seeder (#768) binds a licence-header citation to it, because it is the
  *    only symbol enclosing lines 1-3, and writes the module's 1-EOF span.
- *  - A **hub** target — any mapping, symbol or file, exercised from test files
- *    in at least `TESTED_BY_HUB_MIN_TEST_DIRS` distinct directories, like a
- *    config constructor every package's tests build — links an `exercises` test
- *    only when the test, or the symbol it calls, shares the requirement TITLE's
- *    words (see {@link sharesRequirementWords}). Directories, not files: a
- *    function tested from many files of its own package (`Sanitize`) is
- *    focused testing, not fan-in. A flat test layout (one `tests/` directory)
- *    therefore never forms a hub, which is the behaviour before #860.
+ *  - A **hub** target — any mapping, symbol or file, exercised from FOREIGN
+ *    test directories (not the target's own, see {@link ownTestDirs}) in at
+ *    least `TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS` (default 2) places, like a
+ *    config constructor other packages' tests call to set up — keeps a foreign
+ *    `exercises` test only when the test, or the symbol it calls, shares the
+ *    requirement TITLE's words (see {@link sharesRequirementWords}). A test in
+ *    the target's own directory is never filtered: it tests the target, where a
+ *    test elsewhere that calls it is almost always setup. So `Sanitize`, tested
+ *    from its own package, is not a hub, and Miniflux's `NewConfigOptions`,
+ *    called by `reader/sanitizer` and `reader/rewrite` tests, is. A flat test
+ *    layout (one `tests/` directory) is a single foreign directory and never
+ *    forms a hub at the default.
  *
  * Within a relation, tests are ordered by BM25 relevance of `name + qualifiedName`
  * against `denoiseRequirementQuery(title + body)`, folded into `score`. Results
@@ -72,14 +76,18 @@ export interface TestedByDeps {
   prisma?: TestedByPrisma;
   /** Overrides `TESTED_BY_MAX_SYMBOLS_PER_FILE`. */
   maxSymbolsPerFile?: number;
-  /** Overrides `TESTED_BY_HUB_MIN_TEST_DIRS`. */
-  hubMinTestDirs?: number;
+  /** Overrides `TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS`. */
+  hubMinForeignTestDirs?: number;
 }
 
 /** Default cap on the symbols a file-only target expands to. */
 export const DEFAULT_TESTED_BY_MAX_SYMBOLS_PER_FILE = 500;
-/** Default number of distinct exercising test directories that makes a target a hub (#860). */
-export const DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS = 5;
+/**
+ * Default number of distinct exercising test directories, other than the
+ * target's own, that makes a target a hub (#860). Measured on Miniflux 2.3.3:
+ * `NewConfigOptions` has 2 (a hub), `NewConfigParser` 10, `SanitizeHTML` 0.
+ */
+export const DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS = 2;
 export const DEFAULT_TESTED_BY_LIMIT = 10;
 
 const BASE_SCORE: Record<TestLinkRelation, number> = { direct: 1, exercises: 0.8, naming: 0.6 };
@@ -103,10 +111,13 @@ function maxSymbolsPerFile(deps?: TestedByDeps): number {
   );
 }
 
-function hubMinTestDirs(deps?: TestedByDeps): number {
+function hubMinForeignTestDirs(deps?: TestedByDeps): number {
   return (
-    deps?.hubMinTestDirs ??
-    getConfigService().getNumber("TESTED_BY_HUB_MIN_TEST_DIRS", DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS)
+    deps?.hubMinForeignTestDirs ??
+    getConfigService().getNumber(
+      "TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS",
+      DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS,
+    )
   );
 }
 
@@ -264,6 +275,17 @@ function dirname(filePath: string): string {
   return p.slice(0, Math.max(0, p.lastIndexOf("/")));
 }
 
+/**
+ * The directories a target's OWN tests live in (#860): its file's directory and
+ * those of its conventional sibling test paths (`__tests__/`, `tests/`,
+ * `src/test/`). A test anywhere else that calls the target is foreign.
+ */
+function ownTestDirs(filePath: string, language: string | null | undefined): Set<string> {
+  const dirs = new Set([dirname(filePath)]);
+  for (const p of siblingTestPaths(filePath, language)) dirs.add(dirname(p));
+  return dirs;
+}
+
 /** The whole-file symbol every parser emits; never evidence of a cited test (#860). */
 const isModule = (s: Pick<SymbolRow, "kind">): boolean => s.kind === "module";
 
@@ -410,6 +432,13 @@ async function loadGraph(
  * bound to the `module` symbol and carrying that symbol's own span has no
  * evidence of WHICH lines were cited — the seeder writes the module's span when
  * no real symbol enclosed the citation (a header, imports) — so it does not.
+ *
+ * Except when the file has no real symbol at all: then nothing tells a header
+ * from a test, and the link is kept as it was before #860. That is the common
+ * case for a TS/JS test file — its `describe`/`it` callbacks are anonymous, so
+ * the parser emits only the `module` symbol — and dropping it would lose every
+ * citation of such a file. A Go `_test.go` or pytest file always has its test
+ * functions, so the licence-header rule still applies there.
  */
 function isDirectTestCitation(
   t: TestedByTarget,
@@ -417,11 +446,11 @@ function isDirectTestCitation(
   graph: GraphRows,
 ): boolean {
   if (bound && !isModule(bound)) return true;
+  const fileSymbols = (graph.symbolsByFile.get(t.filePath) ?? []).filter((s) => !isModule(s));
+  if (fileSymbols.length === 0) return true;
   if (bound && (t.startLine == null || coversSpan(t, bound))) return false;
   if (t.startLine == null) return true;
-  const fileSymbols = (graph.symbolsByFile.get(t.filePath) ?? []).filter((s) => !isModule(s));
-  // No real symbol known for the file: nothing to tell a header from a test by.
-  return fileSymbols.length === 0 || fileSymbols.some((s) => inTargetRange(s, t));
+  return fileSymbols.some((s) => inTargetRange(s, t));
 }
 
 /** True when the target's range covers all of `sym`'s span. */
@@ -483,16 +512,22 @@ function resolveOne(
     for (const ts of targetSymbols) {
       for (const from of graph.edgesInto.get(ts.id) ?? []) exercised.push({ from, ts });
     }
-    // #860 — through a hub, being called is not evidence of testing THIS
-    // requirement: keep only tests about it (by the test's or the callee's name).
-    // Symbol mappings included: the seeder binds a ranged citation of a config
-    // constructor (`options.go:64-621`) to that symbol, and every package's tests
-    // call it. Fan-in is counted by directory so a function tested from many
-    // files of its own package is not a hub.
-    const hub = new Set(exercised.map((x) => dirname(x.from.filePath))).size >= hubThreshold;
+    // #860 — through a hub, a FOREIGN test calling the target is setup, not
+    // evidence of testing THIS requirement: keep it only when it is about it
+    // (by the test's or the callee's name). Symbol mappings included: the seeder
+    // binds a ranged citation of a config constructor (`options.go:64-621`) to
+    // that symbol, and other packages' tests call it to build their fixtures.
+    // Tests in the target's own directory are never filtered.
+    const own = ownTestDirs(t.filePath, one?.language);
+    const isForeign = (from: SymbolRow): boolean => !own.has(dirname(from.filePath));
+    const foreignDirs = new Set(
+      exercised.filter((x) => isForeign(x.from)).map((x) => dirname(x.from.filePath)),
+    );
+    const hub = foreignDirs.size >= hubThreshold;
     for (const { from, ts } of exercised) {
       if (
         hub &&
+        isForeign(from) &&
         !sharesRequirementWords(from.name, requirementWords) &&
         !sharesRequirementWords(ts.name, requirementWords)
       ) {
@@ -608,7 +643,7 @@ export async function resolveTestedByForTargets(
   const limit = opts?.limit ?? DEFAULT_TESTED_BY_LIMIT;
   const all = requirements.flatMap((r) => targetsByRequirement.get(r.id) ?? []);
   const graph = await loadGraph(prisma, projectId, all, maxSymbolsPerFile(deps));
-  const hubThreshold = hubMinTestDirs(deps);
+  const hubThreshold = hubMinForeignTestDirs(deps);
   const out = new Map<string, TraceabilityTestNode[]>();
   for (const r of requirements) {
     out.set(r.id, resolveOne(r, targetsByRequirement.get(r.id) ?? [], graph, limit, hubThreshold));

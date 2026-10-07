@@ -7,7 +7,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS,
+  DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS,
   listUntestedRequirements,
   matchTestSubject,
   resolveTestedBy,
@@ -480,84 +480,246 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
       startLine: 1,
       endLine,
     });
-  const OPTIONS = "internal/config/options.go";
-  const optionSymbols = [
-    mod("o-mod", OPTIONS, 900),
-    sym("o-new", OPTIONS, "NewConfigOptions", { startLine: 64, endLine: 621 }),
-    sym("o-oauth", OPTIONS, "OAuth2UserCreationAllowed", { startLine: 640, endLine: 642 }),
-    sym("o-yt", OPTIONS, "YouTubeEmbedUrlOverride", { startLine: 700, endLine: 702 }),
-  ];
-  // Five YouTube tests in five packages read a YouTube option; one OAuth test
-  // reads the OAuth option. All six build the config, as every package's tests do.
-  const youtubeTests = Array.from({ length: 5 }, (_, i) =>
-    sym(`t-yt-${i}`, `internal/reader/p${i}/youtube_test.go`, `TestRewriteYouTubeIframe${i}`),
-  );
-  const oauthTest = sym("t-oauth", "internal/oauth2/user_test.go", "TestOAuth2UserCreation");
   const calls = (from: string, to: string) => ({
     projectId: P,
     kind: "calls",
     fromSymbolId: from,
     toSymbolId: to,
   });
+
+  // ── Miniflux 2.3.3, as the code graph holds it (#706 run 3) ──────────────
+  // `internal/config/options.go:64` is `func NewConfigOptions()`, ending at 621;
+  // `IsOAuth2UserCreationAllowed` is at 829. `grep -rl NewConfigOptions
+  // --include=*_test.go` finds 3 files in 3 directories, and these are the 14
+  // test functions whose `calls` edges reach it: 1 in its own package, 2
+  // foreign directories.
+  const OPTIONS = "internal/config/options.go";
+  const SANITIZER_TEST = "internal/reader/sanitizer/sanitizer_test.go";
+  const REWRITE_TEST = "internal/reader/rewrite/content_rewrite_test.go";
+  const optionSymbols = [
+    mod("o-mod", OPTIONS, 1044),
+    sym("o-new", OPTIONS, "NewConfigOptions", { startLine: 64, endLine: 621 }),
+    sym("o-oauth", OPTIONS, "IsOAuth2UserCreationAllowed", { startLine: 829, endLine: 831 }),
+  ];
+  const sanitizerTests = [
+    "TestInvalidIFrame",
+    "TestBlockedIFrameWithChildElements",
+    "TestSameDomainIFrame",
+    "TestInvidiousIFrame",
+    "TestIFrameAllowList",
+    "TestIFrameWithChildElements",
+    "TestIFrameWithReferrerPolicy",
+  ].map((name, i) => sym(`t-san-${i}`, SANITIZER_TEST, name, { startLine: 389 + 12 * i }));
+  const rewriteTests = [
+    "TestRewriteYoutubeVideoLink",
+    "TestRewriteYoutubeShortLink",
+    "TestRewriteIncorrectYoutubeLink",
+    "TestRewriteYoutubeVideoLinkUsingInvidious",
+    "TestRewriteYoutubeShortLinkUsingInvidious",
+    "TestAddYoutubeVideoFromId",
+  ].map((name, i) => sym(`t-rw-${i}`, REWRITE_TEST, name, { startLine: 69 + 20 * i }));
+  const configMapTest = sym(
+    "t-cfgmap",
+    "internal/config/options_parsing_test.go",
+    "TestConfigMap",
+    { startLine: 1764, endLine: 1775 },
+  );
+  const foreignCallers = [...sanitizerTests, ...rewriteTests];
+  const OAUTH_TITLE = "OAuth2 user auto-creation gated by OAUTH2_USER_CREATION";
+
   type Mapping = ReturnType<typeof fileMap> & { startLine?: number; endLine?: number };
-  const hubFixture = (mapping: Mapping, title: string): Fixture => ({
+  /** The seeder's (#768) row for the `options.go:64-621` citation: bound to the constructor. */
+  const constructorRow: Mapping = {
+    ...fileMap("r1", OPTIONS, "o-new"),
+    startLine: 64,
+    endLine: 621,
+  };
+  const minifluxFixture = (mapping: Mapping, title: string): Fixture => ({
     requirements: [req("r1", title)],
     codeMappings: [mapping],
-    symbols: [...optionSymbols, ...youtubeTests, oauthTest],
-    edges: [
-      ...youtubeTests.map((t) => calls(t.id, "o-yt")),
-      ...youtubeTests.map((t) => calls(t.id, "o-new")),
-      calls("t-oauth", "o-oauth"),
-      calls("t-oauth", "o-new"),
-    ],
+    symbols: [...optionSymbols, ...foreignCallers, configMapTest],
+    edges: [...foreignCallers, configMapTest].map((t) => calls(t.id, "o-new")),
   });
-  const names = async (d: TestedByDeps) =>
-    ((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1") ?? []).map((t) => t.name).sort();
+  const resolve = async (d: TestedByDeps) =>
+    (await resolveTestedBy(P, ["r1"], { limit: 50 }, d)).get("r1") ?? [];
+  const names = async (d: TestedByDeps) => (await resolve(d)).map((t) => t.name).sort();
 
-  it("a file-only mapping onto a config hub links only the tests about the requirement", async () => {
-    const { deps: d } = deps(hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION"));
-    expect(await names(d)).toEqual(["TestOAuth2UserCreation"]);
+  it("drops every iframe and YouTube setup caller of NewConfigOptions from OAUTH2_USER_CREATION", async () => {
+    const { deps: d } = deps(minifluxFixture(constructorRow, OAUTH_TITLE));
+    // The two foreign packages call the constructor to build their fixtures; the
+    // config package's own TestConfigMap tests it and is kept.
+    expect(await names(d)).toEqual(["TestConfigMap"]);
   });
 
-  it("a file-only range spanning the hub constructor drops the unrelated callers", async () => {
-    const mapping = { ...fileMap("r1", OPTIONS), startLine: 64, endLine: 621 };
-    const { deps: d } = deps(hubFixture(mapping, "OIDC discovery endpoint"));
-    expect(await names(d)).toEqual([]);
+  it("does the same for the stored run-3 shape: a file-level row ranged over the constructor", async () => {
+    const fileRow = { ...fileMap("r1", OPTIONS), startLine: 64, endLine: 621 };
+    const { deps: d } = deps(minifluxFixture(fileRow, OAUTH_TITLE));
+    expect(await names(d)).toEqual(["TestConfigMap"]);
   });
 
-  it("a SYMBOL mapping onto the hub constructor, as the seeder writes it, drops unrelated callers", async () => {
-    // The #860 evidence on real data: the seeder (#768) binds the `options.go:64-621`
-    // citation to `NewConfigOptions` and writes that symbol's span.
-    const mapping = { ...fileMap("r1", OPTIONS, "o-new"), startLine: 64, endLine: 621 };
-    const { deps: d } = deps(hubFixture(mapping, "OIDC discovery endpoint"));
-    // Six test packages call the constructor; none is about OIDC: still untested.
-    expect(await names(d)).toEqual([]);
-    const { deps: oauth } = deps(hubFixture(mapping, "OAUTH2_USER_CREATION"));
-    expect(await names(oauth)).toEqual(["TestOAuth2UserCreation"]);
+  it("is a hub at exactly DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS (2) foreign directories", async () => {
+    expect(DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS).toBe(2);
+    const { deps: atDefault } = deps(minifluxFixture(constructorRow, OAUTH_TITLE), {
+      hubMinForeignTestDirs: DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS,
+    });
+    expect(await names(atDefault)).toEqual(["TestConfigMap"]);
+    // One more required directory than Miniflux has: not a hub, all 14 callers count.
+    const { deps: above } = deps(minifluxFixture(constructorRow, OAUTH_TITLE), {
+      hubMinForeignTestDirs: 3,
+    });
+    const out = await resolve(above);
+    expect(out).toHaveLength(14);
+    expect(out.every((t) => t.relation === "exercises")).toBe(true);
   });
 
-  it("a precise symbol mapping tested from many files of its own package keeps them all", async () => {
-    // Five test files in the sanitizer's own package: focused testing, not fan-in,
-    // so `Sanitize` is not a hub and no title word is required of its callers.
+  it("counts only FOREIGN directories: the target's own package never makes it a hub", async () => {
+    // Drop the rewrite package: 1 foreign directory (sanitizer) + the own one = 2
+    // directories in all, which the cycle-2 all-directory count would have read as 2.
+    const f = minifluxFixture(constructorRow, OAUTH_TITLE);
+    f.symbols = f.symbols!.filter((s) => s.filePath !== REWRITE_TEST);
+    f.edges = f.edges!.filter((e) => !e.fromSymbolId.startsWith("t-rw-"));
+    const { deps: d } = deps(f);
+    expect(await names(d)).toEqual(["TestConfigMap", ...sanitizerTests.map((t) => t.name)].sort());
+  });
+
+  it("keeps a foreign caller whose TEST name shares two title words", async () => {
+    const { deps: d } = deps(minifluxFixture(constructorRow, "Invidious video link rewriting"));
+    // Two of `invidious`, `video`, `link`; `TestInvidiousIFrame` and
+    // `TestAddYoutubeVideoFromId` share one each.
+    expect(await names(d)).toEqual([
+      "TestConfigMap",
+      "TestRewriteYoutubeShortLinkUsingInvidious",
+      "TestRewriteYoutubeVideoLink",
+      "TestRewriteYoutubeVideoLinkUsingInvidious",
+    ]);
+  });
+
+  it("keeps a foreign caller whose CALLEE is named for the requirement", async () => {
+    // A rangeless file-level row expands to every symbol of options.go, so a call
+    // into `IsOAuth2UserCreationAllowed` is judged by that callee's name.
+    const f = minifluxFixture(fileMap("r1", OPTIONS), OAUTH_TITLE);
+    f.symbols!.push(sym("t-cb", "internal/ui/oauth2_callback_test.go", "TestCallback"));
+    f.edges!.push(calls("t-cb", "o-oauth"));
+    const { deps: d } = deps(f);
+    expect(await names(d)).toEqual(["TestCallback", "TestConfigMap"]);
+  });
+
+  it("matches hub links against the requirement TITLE, not the common words of its body", async () => {
+    const f = minifluxFixture(constructorRow, "Allow OAuth2 user creation");
+    f.requirements = [
+      req(
+        "r1",
+        "Allow OAuth2 user creation",
+        "A new user account is created automatically the first time someone signs in " +
+          "through an OAuth2 provider. The account gets the default iframe settings.",
+      ),
+    ];
+    // Shares `default`, `account` and `provider` with the body, nothing with the title.
+    f.symbols!.push(sym("t-acct", "internal/model/account_test.go", "TestDefaultAccountProvider"));
+    f.edges!.push(calls("t-acct", "o-new"));
+    const { deps: d } = deps(f);
+    expect(await names(d)).toEqual(["TestConfigMap"]);
+  });
+
+  it("NewConfigParser — 10 foreign directories — keeps the config package's OIDC tests", async () => {
+    // `internal/config/parser.go:25-29`. `grep -rl NewConfigParser --include=*_test.go`:
+    // 13 files in 11 directories, 10 of them foreign; one real caller from each.
+    const PARSER = "internal/config/parser.go";
+    const OPTS_TEST = "internal/config/options_parsing_test.go";
+    const foreign = [
+      ["internal/http/client/client_test.go", "configureIntegrationAllowPrivateNetworksOption"],
+      [
+        "internal/integration/linktaco/linktaco_test.go",
+        "configureIntegrationAllowPrivateNetworksOption",
+      ],
+      [
+        "internal/integration/linkwarden/linkwarden_test.go",
+        "configureIntegrationAllowPrivateNetworksOption",
+      ],
+      [
+        "internal/integration/readeck/readeck_test.go",
+        "configureIntegrationAllowPrivateNetworksOption",
+      ],
+      [
+        "internal/integration/wallabag/wallabag_test.go",
+        "configureIntegrationAllowPrivateNetworksOption",
+      ],
+      [
+        "internal/mediaproxy/media_proxy_test.go",
+        "TestRewriteDocumentWithRelativeProxyURL_None_Image",
+      ],
+      ["internal/model/feed_test.go", "TestFeedScheduleNextCheckRoundRobinDefault"],
+      [
+        "internal/reader/fetcher/request_builder_test.go",
+        "configureFetcherAllowPrivateNetworksOption",
+      ],
+      [REWRITE_TEST, "TestRewriteYoutubeLinkAndCustomEmbedURL"],
+      [SANITIZER_TEST, "TestCustomYoutubeEmbedURL"],
+    ].map(([file, name], i) => sym(`t-p-${i}`, file, name));
+    const own = [
+      "TestValidateOIDCProviderRequiresDiscoveryEndpoint",
+      "TestValidateOIDCProviderWithDiscoveryEndpoint",
+      "TestMetricsUsernameOptionParsing",
+    ].map((name, i) => sym(`t-own-${i}`, OPTS_TEST, name, { startLine: 1801 + 20 * i }));
+    const { deps: d } = deps({
+      requirements: [req("r1", "OIDC provider discovery endpoint")],
+      codeMappings: [{ ...fileMap("r1", PARSER, "p-new"), startLine: 25, endLine: 29 }],
+      symbols: [
+        mod("p-mod", PARSER, 360),
+        sym("p-new", PARSER, "NewConfigParser", { startLine: 25, endLine: 29 }),
+        ...foreign,
+        ...own,
+      ],
+      edges: [...foreign, ...own].map((t) => calls(t.id, "p-new")),
+    });
+    // Every foreign caller is setup; the own package's tests all stay.
+    expect(await names(d)).toEqual(own.map((t) => t.name).sort());
+  });
+
+  it("SanitizeHTML, tested only from its own package, is not a hub", async () => {
+    // `internal/reader/sanitizer/sanitizer.go:165-201`, reached from its own test
+    // file only (via the `sanitizeHTMLWithDefaultOptions` helper and two tests).
     const SANITIZER = "internal/reader/sanitizer/sanitizer.go";
-    const sanitize = sym("s-fn", SANITIZER, "Sanitize", { startLine: 10, endLine: 40 });
-    const callers = Array.from({ length: 5 }, (_, i) =>
-      sym(`t-s-${i}`, `internal/reader/sanitizer/s${i}_test.go`, `TestCase${i}`),
-    );
+    const callers = [
+      sym("t-h", SANITIZER_TEST, "sanitizeHTMLWithDefaultOptions", { startLine: 17, endLine: 21 }),
+      sym("t-l1", SANITIZER_TEST, "TestLinkWithTarget", { startLine: 510, endLine: 518 }),
+      sym("t-l2", SANITIZER_TEST, "TestLinkWithNoTarget", { startLine: 520, endLine: 528 }),
+    ];
     const { deps: d } = deps({
       requirements: [req("r1", "Strip unsafe iframe markup")],
-      codeMappings: [{ ...fileMap("r1", SANITIZER, "s-fn"), startLine: 10, endLine: 40 }],
-      symbols: [mod("s-mod", SANITIZER, 200), sanitize, ...callers],
+      codeMappings: [{ ...fileMap("r1", SANITIZER, "s-fn"), startLine: 165, endLine: 201 }],
+      symbols: [
+        mod("s-mod", SANITIZER, 700),
+        sym("s-fn", SANITIZER, "SanitizeHTML", { startLine: 165, endLine: 201 }),
+        ...callers,
+      ],
       edges: callers.map((t) => calls(t.id, "s-fn")),
     });
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(out.map((t) => t.name).sort()).toEqual(callers.map((t) => t.name));
+    // No title word is shared, and none is needed.
+    const out = await resolve(d);
+    expect(out.map((t) => t.name).sort()).toEqual(callers.map((t) => t.name).sort());
     expect(out.every((t) => t.relation === "exercises")).toBe(true);
+  });
+
+  it("a conventional sibling test directory (`__tests__/`) is the target's own", async () => {
+    const LIB = "src/lib/password.ts";
+    const { deps: d } = deps({
+      requirements: [req("r1", "Session expiry")],
+      codeMappings: [{ ...fileMap("r1", LIB, "pw"), startLine: 1, endLine: 20 }],
+      symbols: [
+        sym("pw", LIB, "hashPassword", { startLine: 1, endLine: 20 }),
+        sym("t-own", "src/lib/__tests__/password.test.ts", "hashCase"),
+        sym("t-a", "src/routes/login.test.ts", "loginCase"),
+        sym("t-b", "src/jobs/rotate.test.ts", "rotateCase"),
+      ],
+      edges: [calls("t-own", "pw"), calls("t-a", "pw"), calls("t-b", "pw")],
+    });
+    // Two foreign directories make it a hub; the `__tests__/` sibling is kept.
+    expect(await names(d)).toEqual(["hashCase"]);
   });
 
   it("a two-word title needs only one shared word through a hub (Password length)", async () => {
     const USER_GO = "internal/validator/user.go";
-    const pkgs = ["api", "storage", "cli", "ui"];
     const { deps: d } = deps({
       requirements: [req("r1", "Password length")],
       codeMappings: [fileMap("r1", USER_GO)],
@@ -565,73 +727,44 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
         mod("u-mod", USER_GO, 120),
         sym("u-pw", USER_GO, "ValidatePassword", { startLine: 10, endLine: 30 }),
         sym("u-name", USER_GO, "ValidateUsername", { startLine: 40, endLine: 60 }),
-        sym("t-pw", "internal/validator/user_test.go", "TestValidatePassword"),
-        ...pkgs.map((p) => sym(`t-${p}`, `internal/${p}/user_test.go`, `TestCreateUser${p}`)),
+        sym("t-ui", "internal/ui/settings_test.go", "TestUpdatePasswordForm"),
+        sym("t-api", "internal/api/user_test.go", "TestCreateUser"),
+        sym("t-cli", "internal/cli/user_test.go", "TestResetUser"),
       ],
-      edges: [calls("t-pw", "u-pw"), ...pkgs.map((p) => calls(`t-${p}`, "u-name"))],
+      edges: [calls("t-ui", "u-name"), calls("t-api", "u-name"), calls("t-cli", "u-name")],
     });
-    // Five test directories make `user.go` a hub; `password` is shared, `length` is
-    // not. The link must stay `exercises`: the sibling `naming` link alone would
-    // not count as strictly tested (workspace-rollup.ts).
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(out.map((t) => [t.name, t.relation])).toEqual([["TestValidatePassword", "exercises"]]);
+    // Three foreign directories make `user.go` a hub; `password` is shared, `length`
+    // is not, and the callee `ValidateUsername` shares neither.
+    const out = await resolve(d);
+    expect(out.map((t) => [t.name, t.relation])).toEqual([["TestUpdatePasswordForm", "exercises"]]);
   });
 
-  it("keeps a hub link whose TEST is named for the requirement when the callee is not", async () => {
-    const f = hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION");
-    f.symbols!.push(sym("t-flow", "internal/oauth2/flow_test.go", "TestOAuth2UserCreationFlow"));
-    f.edges!.push(calls("t-flow", "o-new"));
-    const { deps: d } = deps(f);
-    expect(await names(d)).toEqual(["TestOAuth2UserCreation", "TestOAuth2UserCreationFlow"]);
-  });
-
-  it("a target exercised from exactly the threshold number of test directories is a hub", async () => {
-    // Four YouTube packages + the OAuth package = 5 = DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS.
-    const f = hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION");
-    const dropped = new Set(["t-yt-4"]);
-    f.symbols = f.symbols!.filter((s) => !dropped.has(s.id));
-    f.edges = f.edges!.filter((e) => !dropped.has(e.fromSymbolId));
-    const { deps: d } = deps(f, { hubMinTestDirs: DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS });
-    expect(DEFAULT_TESTED_BY_HUB_MIN_TEST_DIRS).toBe(5);
-    expect(await names(d)).toEqual(["TestOAuth2UserCreation"]);
-  });
-
-  it("counts directories, not files: many test files in one package are not a hub", async () => {
-    const f = hubFixture(fileMap("r1", OPTIONS), "OIDC discovery endpoint");
-    // Move every caller into the config package's own test files.
-    f.symbols = f.symbols!.map((s) =>
-      s.filePath.endsWith("_test.go") ? { ...s, filePath: `internal/config/${s.id}_test.go` } : s,
+  it("a flat single `tests/` directory is one foreign directory and never a hub", async () => {
+    const LIB = "app/billing.py";
+    const callers = ["test_invoice", "test_refund", "test_export"].map((n, i) =>
+      sym(`t-py-${i}`, `tests/test_${n.slice(5)}.py`, n),
     );
-    const { deps: d } = deps(f);
-    expect(await names(d)).toHaveLength(6);
-  });
-
-  it("matches hub links against the requirement TITLE, not the common words of its body", async () => {
-    const f = hubFixture(fileMap("r1", OPTIONS), "Allow OAuth2 user creation");
-    f.requirements = [
-      req(
-        "r1",
-        "Allow OAuth2 user creation",
-        "A new user account is created automatically the first time someone signs in " +
-          "through an OAuth2 provider. The account gets the default settings.",
-      ),
-    ];
-    // Shares `default`, `account` and `provider` with the body, nothing with the title.
-    f.symbols!.push(sym("t-acct", "internal/model/account_test.go", "TestDefaultAccountProvider"));
-    f.edges!.push(calls("t-acct", "o-new"));
-    const { deps: d } = deps(f);
-    expect(await names(d)).toEqual(["TestOAuth2UserCreation"]);
+    const { deps: d } = deps({
+      requirements: [req("r1", "Unrelated title words")],
+      codeMappings: [fileMap("r1", LIB, "b-fn")],
+      symbols: [sym("b-fn", LIB, "charge"), ...callers],
+      edges: callers.map((t) => calls(t.id, "b-fn")),
+    });
+    expect(await names(d)).toEqual(callers.map((t) => t.name).sort());
   });
 
   it("filters a ranged file-only target by range BEFORE the per-file cap", async () => {
     // Symbols are ordered by startLine, so a cap of 1 applied first would keep only
-    // the module symbol (line 1) or `NewConfigOptions` (line 64); the cited range
-    // 630-650 holds `OAuth2UserCreationAllowed`.
-    const mapping = { ...fileMap("r1", OPTIONS), startLine: 630, endLine: 650 };
-    const { deps: d } = deps(hubFixture(mapping, "Something unrelated"), { maxSymbolsPerFile: 1 });
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    // `NewConfigOptions` (line 64); the cited range 829-831 holds the accessor.
+    const f = minifluxFixture({ ...fileMap("r1", OPTIONS), startLine: 829, endLine: 831 }, "x");
+    f.symbols!.push(
+      sym("t-oa", "internal/config/options_parsing_test.go", "TestOAuth2UserCreationOptionParsing"),
+    );
+    f.edges!.push(calls("t-oa", "o-oauth"));
+    const { deps: d } = deps(f, { maxSymbolsPerFile: 1 });
+    const out = await resolve(d);
     expect(out.map((t) => [t.name, t.subject?.symbol])).toEqual([
-      ["TestOAuth2UserCreation", `${OPTIONS}::OAuth2UserCreationAllowed`],
+      ["TestOAuth2UserCreationOptionParsing", `${OPTIONS}::IsOAuth2UserCreationAllowed`],
     ]);
   });
 
@@ -654,33 +787,6 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
     expect(out.map((t) => [t.filePath, t.relation])).toEqual([[T, "direct"]]);
   });
-
-  it("keeps a hub link whose CALLEE is named for the requirement", async () => {
-    const f = hubFixture(fileMap("r1", OPTIONS), "Allow OAuth2 user creation");
-    f.symbols!.push(sym("t-misc", "internal/api/misc_test.go", "TestMisc"));
-    f.edges!.push(calls("t-misc", "o-oauth"));
-    const { deps: d } = deps(f);
-    expect(await names(d)).toEqual(["TestMisc", "TestOAuth2UserCreation"]);
-  });
-
-  it("below the hub threshold every exercising test still counts", async () => {
-    const { deps: d } = deps(hubFixture(fileMap("r1", OPTIONS), "OAUTH2_USER_CREATION"), {
-      hubMinTestDirs: 7,
-    });
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(out).toHaveLength(6);
-    expect(out.every((t) => t.relation === "exercises")).toBe(true);
-  });
-
-  it("a file-only mapping with a line range expands only to the symbols in that range", async () => {
-    const mapping = { ...fileMap("r1", OPTIONS), startLine: 630, endLine: 650 };
-    const { deps: d } = deps(hubFixture(mapping, "Something unrelated"));
-    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(out.map((t) => [t.name, t.subject?.symbol])).toEqual([
-      ["TestOAuth2UserCreation", `${OPTIONS}::OAuth2UserCreationAllowed`],
-    ]);
-  });
-
   describe("a test file cited only for its licence header is not a direct link", () => {
     const FINDER_TEST = "internal/reader/icon/finder_test.go";
     // As the parsers produce it: the module symbol, then the test function.
@@ -724,6 +830,20 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
       expect((await resolve(narrowed)).map((t) => [t.filePath, t.relation])).toEqual([
         [FINDER_TEST, "direct"],
       ]);
+    });
+
+    it("keeps a module-bound row when the module is the file's only symbol (TS describe/it)", async () => {
+      // A TS/JS test file's `it()` callbacks are anonymous, so the parser emits only
+      // the module symbol, and the seeder binds every citation of it to the module
+      // with the module's span. Nothing tells a header from a test: keep the link.
+      const SPEC = "src/lib/__tests__/icon.test.ts";
+      const { deps: d } = deps({
+        requirements: [req("r1", "Find the feed icon")],
+        codeMappings: [{ ...fileMap("r1", SPEC, "ts-mod"), startLine: 1, endLine: 80 }],
+        symbols: [mod("ts-mod", SPEC, 80)],
+      });
+      const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+      expect(out.map((t) => [t.filePath, t.relation])).toEqual([[SPEC, "direct"]]);
     });
 
     it("keeps a whole-file test mapping with neither a symbol nor a range", async () => {

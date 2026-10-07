@@ -1637,7 +1637,7 @@
     "array": "REJECT",
     "object": "REJECT"
   },
-  "TESTED_BY_HUB_MIN_TEST_DIRS": {
+  "TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS": {
     "undefined": "REJECT",
     "null": "REJECT",
     "empty": "REJECT",
