@@ -27,11 +27,17 @@ import { PageHeader } from "@/components/ui/page-header";
  * #135 — the model options come from the server's model catalog (the
  * `availableModels` of the preferences response, which the server builds from
  * the catalog's router scope). Only the tier wording lives here.
+ *
+ * #713 — the wording makes no cost claim: a tier says nothing about price
+ * (Claude Fable 5 is routed `fast` yet is the dearest option), so "cheapest" /
+ * "most expensive" are derived from the listed prices instead (`costRank`).
  */
 const TIER_DESCRIPTIONS: Record<string, string> = {
-  fast: "Faster and cheaper — best for simple tasks",
+  fast: "Best for simple tasks",
   balanced: "More capable — best for complex reasoning",
-  complex: "Highest capability — most expensive",
+  complex: "Highest capability",
+  // #713 — a provider that does not serve the Claude tiers offers its own model.
+  configured: "The model this deployment's provider runs",
 };
 
 const AUTO_OPTION = {
@@ -59,16 +65,30 @@ export default function ProjectModelSettingsPage() {
     enabled: Boolean(projectId),
   });
 
-  const modelOptions = [AUTO_OPTION, ...(data?.availableModels ?? []).map(toOption)];
+  const availableModels = data?.availableModels ?? [];
+  const modelOptions = [AUTO_OPTION, ...availableModels.map((m) => toOption(m, availableModels))];
+  // #713 — absent from an older server: assume the tiers, as it did.
+  const servesTierModels = data?.servesTierModels ?? true;
 
   const [defaultModel, setDefaultModel] = useState<string>("auto");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [threshold, setThreshold] = useState<number>(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  // #713 — a model saved under another provider and absent from this one's list
+  // (a Claude tier after a switch to DeepSeek, or DeepSeek's model after a switch
+  // back): the server rejects an id the provider cannot run, so it shows, and
+  // saves, as Auto — and the page says so, since the server keeps it until then.
+  const staleSavedModel =
+    data?.defaultModel && !availableModels.some((m) => m.id === data.defaultModel)
+      ? data.defaultModel
+      : null;
+
   useEffect(() => {
     if (!data) return;
-    setDefaultModel(data.defaultModel ?? "auto");
+    const stale =
+      data.defaultModel != null && !data.availableModels.some((m) => m.id === data.defaultModel);
+    setDefaultModel(stale ? "auto" : (data.defaultModel ?? "auto"));
     setOverrides(data.taskTypeOverrides ?? {});
     setThreshold(data.budgetDowngradeThreshold ?? 0);
   }, [data]);
@@ -128,15 +148,22 @@ export default function ProjectModelSettingsPage() {
             </option>
           ))}
         </select>
+        {staleSavedModel && defaultModel === "auto" && (
+          <p className="text-xs text-warning" data-testid="stale-default-model-notice">
+            Your saved model {staleSavedModel} isn&apos;t available on this provider; saving will
+            switch to Auto.
+          </p>
+        )}
       </Card>
 
       {/* Budget downgrade threshold */}
       <Card className="space-y-4 p-4">
         <div>
           <Label htmlFor="budget-threshold">Budget Downgrade Threshold</Label>
-          <p className="text-xs text-muted-foreground">
-            When monthly token usage exceeds this threshold, METIS automatically downgrades from
-            Sonnet to Haiku to save costs. Set to 0 to disable.
+          <p className="text-xs text-muted-foreground" data-testid="budget-threshold-help">
+            {servesTierModels
+              ? "When monthly token usage exceeds this threshold, METIS automatically downgrades from Sonnet to Haiku to save costs. Set to 0 to disable."
+              : "This deployment's provider runs a single model, so there is no cheaper model to downgrade to and this threshold has no effect."}
           </p>
         </div>
         <div className="flex items-center gap-4">
@@ -148,6 +175,7 @@ export default function ProjectModelSettingsPage() {
             max={1_000_000}
             step={10_000}
             className="flex-1"
+            disabled={!servesTierModels}
             value={threshold}
             onChange={(e) => setThreshold(Number(e.target.value))}
           />
@@ -232,9 +260,36 @@ export default function ProjectModelSettingsPage() {
   );
 }
 
-/** One catalog model → a picker option: tier wording plus its price when known. */
-function toOption(m: ModelPreferencesData["availableModels"][number]) {
+type AvailableModel = ModelPreferencesData["availableModels"][number];
+
+/** Input plus output price per MTok, or null when the price is unknown. */
+function blendedPrice(m: AvailableModel): number | null {
+  return m.price ? m.price.inputPerMTok + m.price.outputPerMTok : null;
+}
+
+/**
+ * #713 — "cheapest" or "most expensive" when the listed prices say so: the
+ * model's price is strictly below (above) every other priced option. Nothing
+ * when fewer than two options are priced.
+ */
+function costRank(m: AvailableModel, all: AvailableModel[]): string | null {
+  const own = blendedPrice(m);
+  if (own === null) return null;
+  const others = all
+    .filter((o) => o.id !== m.id)
+    .map(blendedPrice)
+    .filter((p): p is number => p !== null);
+  if (others.length === 0) return null;
+  if (others.every((p) => own < p)) return "cheapest";
+  if (others.every((p) => own > p)) return "most expensive";
+  return null;
+}
+
+/** One catalog model → a picker option: tier wording, cost rank, and price when known. */
+function toOption(m: AvailableModel, all: AvailableModel[]) {
   const price = formatModelPrice({ price: m.price ?? null });
   const tier = TIER_DESCRIPTIONS[m.tier] ?? m.tier;
-  return { value: m.id, label: m.name, description: price ? `${tier} (${price})` : tier };
+  const rank = costRank(m, all);
+  const text = rank ? `${tier} — ${rank}` : tier;
+  return { value: m.id, label: m.name, description: price ? `${text} (${price})` : text };
 }

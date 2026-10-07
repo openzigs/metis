@@ -41,6 +41,9 @@ const db = {
   analysis: { projectId: PROJECT_ID } as { projectId: string } | null,
   synthesisOutput: JSON.stringify(SYNTHESIS_OUTPUT) as string | null,
   requirementCount: 0,
+  /** #730 — the reviewed structured list and its per-requirement approvals. */
+  structured: null as { requirements: Array<Record<string, unknown>> } | null,
+  approvals: [] as Array<{ itemId: string; status: string }>,
 };
 
 vi.mock("../prisma.js", () => ({
@@ -50,6 +53,11 @@ vi.mock("../prisma.js", () => ({
       findFirst: vi.fn(async () => (db.synthesisOutput ? { output: db.synthesisOutput } : null)),
     },
     requirement: { count: vi.fn(async () => db.requirementCount) },
+    approvalRequest: {
+      findMany: vi.fn(async ({ where }: { where: { type?: string } }) =>
+        db.approvals.filter(() => where.type === "requirement"),
+      ),
+    },
   },
 }));
 
@@ -61,6 +69,7 @@ vi.mock("./analysis-service.js", () => ({
   persistRequirements: (...a: unknown[]) => persistRequirements(...a),
   persistAnalysisEnhancement: (...a: unknown[]) => persistAnalysisEnhancement(...(a as [])),
   readFlattenedFindings: vi.fn(async () => findings),
+  getStructuredRequirements: vi.fn(async () => db.structured),
 }));
 
 /**
@@ -69,7 +78,8 @@ vi.mock("./analysis-service.js", () => ({
  * written into them.
  */
 const applyClarificationsToRequirements = vi.fn(async () => null);
-vi.mock("./clarification-enrichment.js", () => ({
+vi.mock("./clarification-enrichment.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./clarification-enrichment.js")>()),
   applyClarificationsToRequirements: (...a: unknown[]) =>
     applyClarificationsToRequirements(...(a as [])),
 }));
@@ -95,6 +105,8 @@ beforeEach(() => {
   db.analysis = { projectId: PROJECT_ID };
   db.synthesisOutput = JSON.stringify(SYNTHESIS_OUTPUT);
   db.requirementCount = 0;
+  db.structured = null;
+  db.approvals = [];
   findings.length = 0;
 });
 
@@ -221,5 +233,160 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
     const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
 
     expect(outcome.status).toBe("unavailable");
+  });
+});
+
+describe("#730 — promote the requirements the user approved, not a different set", () => {
+  const structuredReq = (id: string, title: string, description: string) => ({
+    id,
+    title,
+    description,
+    type: "functional",
+    stakeholders: [],
+    priority: "must-have",
+    ambiguities: [],
+    evidenceNeeds: [],
+    rawSource: "",
+  });
+
+  beforeEach(() => {
+    // The degraded-synthesis shape from the walkthrough: finding-titled
+    // fallback rows, one of them an open question, none with criteria.
+    db.synthesisOutput = JSON.stringify({
+      summary: "Auto-synthesized 3 requirement(s) from 3 finding(s).",
+      requirements: [
+        {
+          type: "feature",
+          title: "Could not verify: PORT overrides LISTEN_ADDR",
+          body: "(config) PORT may override LISTEN_ADDR.",
+          priority: "medium",
+          labels: [],
+          acceptanceCriteria: [],
+          evidenceFindingIndexes: [0],
+        },
+        {
+          type: "bug",
+          title: "Duplicate feed subscriptions are rejected by a unique index",
+          body: "(database) unique (user_id, feed_url) prevents duplicate feed url subscription.",
+          priority: "high",
+          labels: ["database"],
+          acceptanceCriteria: ["Subscribing to the same feed URL twice returns a conflict"],
+          evidenceFindingIndexes: [1],
+        },
+        {
+          type: "feature",
+          title: "Observability is metrics plus a health endpoint",
+          body: "(code) metrics and /healthcheck.",
+          priority: "low",
+          labels: [],
+          acceptanceCriteria: [],
+          evidenceFindingIndexes: [2],
+        },
+      ],
+    });
+    db.structured = {
+      requirements: [
+        structuredReq(
+          "REQ-1",
+          "Duplicate Feed URL Subscription Prevention",
+          "A user cannot subscribe to the same feed URL twice.",
+        ),
+        structuredReq(
+          "REQ-2",
+          "Duplicate Category Title Prevention",
+          "Category titles are unique per user.",
+        ),
+        structuredReq("REQ-3", "OAuth2 User Creation Disabled by Default", "Off unless enabled."),
+      ],
+    };
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "approved" },
+      { itemId: "REQ-3", status: "approved" },
+    ];
+  });
+
+  function persistedRequirements() {
+    const input = persistRequirements.mock.calls[0]?.[0] as {
+      synthesis: {
+        requirements: Array<{
+          title: string;
+          body: string;
+          type: string;
+          priority: string;
+          acceptanceCriteria: string[];
+          evidenceFindingIndexes: number[];
+        }>;
+      };
+    };
+    return input.synthesis.requirements;
+  }
+
+  it("persists exactly the approved structured requirements, with the reviewed titles and descriptions", async () => {
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
+    const reqs = persistedRequirements();
+    expect(reqs.map((r) => r.title)).toEqual([
+      "Duplicate Feed URL Subscription Prevention",
+      "Duplicate Category Title Prevention",
+      "OAuth2 User Creation Disabled by Default",
+    ]);
+    expect(reqs[0]?.body).toBe("A user cannot subscribe to the same feed URL twice.");
+    expect(reqs.some((r) => r.title.startsWith("Could not verify"))).toBe(false);
+  });
+
+  it("carries a matching synthesized requirement's criteria and evidence onto the approved one", async () => {
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    const [feed, category, oauth] = persistedRequirements();
+    expect(feed).toMatchObject({
+      type: "bug",
+      priority: "high",
+      acceptanceCriteria: ["Subscribing to the same feed URL twice returns a conflict"],
+      evidenceFindingIndexes: [1],
+    });
+    // No synthesized counterpart: an honest empty set, never another row's evidence.
+    expect(category).toMatchObject({ acceptanceCriteria: [], evidenceFindingIndexes: [] });
+    expect(oauth).toMatchObject({ acceptanceCriteria: [], evidenceFindingIndexes: [] });
+  });
+
+  it("leaves out a requirement the reviewer did not approve", async () => {
+    db.approvals[1] = { itemId: "REQ-2", status: "rejected" };
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(persistedRequirements().map((r) => r.title)).toEqual([
+      "Duplicate Feed URL Subscription Prevention",
+      "OAuth2 User Creation Disabled by Default",
+    ]);
+  });
+
+  it("counts the reviewed list, not the synthesis set, while the gate is closed", async () => {
+    gate.allowed = false;
+    gate.pendingCount = 3;
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toMatchObject({ status: "blocked", awaitingRequirementCount: 3 });
+    expect(persistRequirements).not.toHaveBeenCalled();
+  });
+
+  it("promotes the approved list even when there is no usable synthesis output", async () => {
+    db.synthesisOutput = null;
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome.status).toBe("promoted");
+    expect(persistedRequirements()).toHaveLength(3);
+  });
+
+  it("keeps promoting the synthesis output when no requirement went through the checkpoint", async () => {
+    db.approvals = [];
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(persistedRequirements()).toHaveLength(3);
+    expect(persistedRequirements()[0]?.title).toBe("Could not verify: PORT overrides LISTEN_ADDR");
   });
 });
