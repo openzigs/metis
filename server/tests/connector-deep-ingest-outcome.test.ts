@@ -87,6 +87,65 @@ describe("deepIngestCompletionMessage (#399)", () => {
   });
 });
 
+describe("the code graph's size, apart from the run's delta (#715)", () => {
+  // The #706 walkthrough: miniflux v2.3.3, a second ingest after the graph existed.
+  const incremental: DeepIngestOutcome = {
+    codeGraph: {
+      filesScanned: 655,
+      filesParsed: 42,
+      symbolsUpserted: 689,
+      edgesUpserted: 5936,
+      filesUnchanged: 379,
+      graphFiles: 421,
+      graphSymbols: 3533,
+      graphEdges: 26941,
+    },
+    source: { documentsCreated: 0, chunkCount: 2675, failures: 0 },
+    metadata: { failures: 0, stepFailed: false },
+    cloneSizeBytes: 5.9 * 1024 * 1024,
+  };
+
+  it("leads with the graph's totals and labels the re-parse as changed files", () => {
+    expect(deepIngestCompletionMessage(incremental)).toBe(
+      "Deep ingest complete: code graph of 421 files, 3533 symbols, 26941 edges " +
+        "(42 changed files re-parsed, 379 unchanged), 2675 RAG chunks, " +
+        "0 documents created, 5.9 MB cloned.",
+    );
+  });
+
+  it("an unchanged re-ingest still reports the whole graph, never '0 of 655 files parsed'", () => {
+    const msg = deepIngestCompletionMessage({
+      ...incremental,
+      codeGraph: {
+        ...incremental.codeGraph,
+        filesParsed: 0,
+        symbolsUpserted: 0,
+        edgesUpserted: 0,
+        filesUnchanged: 421,
+      },
+    });
+    expect(msg).toContain("code graph of 421 files, 3533 symbols, 26941 edges");
+    expect(msg).toContain("(0 changed files re-parsed, 421 unchanged)");
+    expect(msg).not.toContain("of 655");
+  });
+
+  it("uses the singular for one file", () => {
+    expect(
+      deepIngestCompletionMessage({
+        ...incremental,
+        codeGraph: {
+          ...incremental.codeGraph,
+          filesParsed: 1,
+          filesUnchanged: 0,
+          graphFiles: 1,
+          graphSymbols: 1,
+          graphEdges: 1,
+        },
+      }),
+    ).toContain("code graph of 1 file, 1 symbol, 1 edge (1 changed file re-parsed, 0 unchanged)");
+  });
+});
+
 describe("a scheduling warning (#449)", () => {
   const warning = "Scheduling regeneration failed; it is retried automatically.";
 

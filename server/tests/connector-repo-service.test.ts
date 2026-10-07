@@ -154,6 +154,7 @@ import {
   readCloneHeadSha,
   shallowCloneRepo,
   testRepoConnector,
+  configureRepoConnectorService,
   updateRepoConnector,
   type OctokitLike,
   type SimpleGitLike,
@@ -1134,6 +1135,28 @@ describe("#714 — pinned ref survives Test", () => {
   });
 });
 
+describe("#762 — Test sends no progress event", () => {
+  afterEach(() => configureRepoConnectorService({}));
+
+  it("reports through its response and status, never a count-less progress row", async () => {
+    const progress = vi.fn();
+    const status = vi.fn();
+    configureRepoConnectorService({
+      emitter: { progress, status, discovery: vi.fn() } as never,
+    });
+    __setOctokitFactory(() => makeOctokit({}));
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "t762", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.ok).toBe(true);
+    expect(progress).not.toHaveBeenCalled();
+    expect(status).toHaveBeenCalledWith(expect.objectContaining({ status: "connected" }));
+  });
+});
+
 describe("#714 — metadata reads the commit at the configured ref", () => {
   it("asks listCommits for the configured ref, not the repo default branch", async () => {
     const listCommits = vi.fn(async () => ({ data: [{ sha: "c4d54f8" }] }));
@@ -1152,7 +1175,26 @@ describe("#714 — metadata reads the commit at the configured ref", () => {
     const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
     expect(listCommits).toHaveBeenCalledWith(expect.objectContaining({ sha: "v2.3.3" }));
     expect(meta.headSha).toBe("c4d54f8");
-    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe("c4d54f8");
+  });
+
+  // #758 — the remote tip can move during a long ingest; the metadata step must
+  // not relabel the connector with a commit the code graph was not built from.
+  it("never writes the remote tip as lastCommitSha", async () => {
+    const GRAPH_SHA = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+    __setOctokitFactory(() =>
+      makeOctokit({ listCommits: async () => ({ data: [{ sha: "newer-tip" }] }) }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "meta-tip-moved", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = GRAPH_SHA; // what the graph ingest recorded
+    const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
+    expect(meta.headSha).toBe("newer-tip");
+    const after = await getRepoConnector("proj_1", c.id);
+    expect(after.lastCommitSha).toBe(GRAPH_SHA);
+    expect(after.status).toBe("connected");
   });
 
   it("does not wipe a known lastCommitSha when listCommits fails", async () => {
@@ -1226,7 +1268,9 @@ describe("#714 — the clone records the commit it checked out", () => {
     expect(await readCloneHeadSha(dir)).toBeNull();
   });
 
-  it("shallowCloneRepo returns and persists the cloned commit as lastCommitSha", async () => {
+  // #758 — the clone only reports its commit; ingestCodeGraph records it as
+  // lastCommitSha once a graph built from it is complete.
+  it("shallowCloneRepo returns the cloned commit without persisting it", async () => {
     const fakeGit = {
       clone: vi.fn(async (_url: string, target: string) => {
         await writeGit(target, { HEAD: `${SHA}\n` });
@@ -1247,37 +1291,13 @@ describe("#714 — the clone records the commit it checked out", () => {
     rows.get(c.id)!.lastCommitSha = SHA2; // stale, from an earlier ingest of main
     const out = await shallowCloneRepo("proj_1", c.id, "user_1");
     expect(out.commitSha).toBe(SHA);
-    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA);
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
   });
 
-  it("pullOrCloneRepo records the commit an existing clone was fast-forwarded to", async () => {
+  it("pullOrCloneRepo returns the fast-forwarded commit but leaves lastCommitSha alone", async () => {
     const c = await createRepoConnector(
       "proj_1",
       { provider: "github", label: "pull-sha", ownerOrOrg: "o", repoName: "r" },
-      "user_1",
-    );
-    const target = nodePath.join(dir, c.id);
-    await writeGit(target, { HEAD: "ref: refs/heads/main\n", "refs/heads/main": `${SHA2}\n` });
-    const fakeGit = {
-      clone: vi.fn(),
-      pull: vi.fn(async () => {
-        await writeGit(target, { "refs/heads/main": `${SHA}\n` });
-        return { files: ["a.go"] };
-      }),
-    } as unknown as SimpleGitLike;
-    __setSimpleGitFactory(() => fakeGit);
-    const out = await pullOrCloneRepo("proj_1", c.id, "user_1");
-    expect(out.pulled).toBe(true);
-    expect(out.commitSha).toBe(SHA);
-    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA);
-  });
-
-  // #757 — a read-only caller (the bug scanner) must not move lastCommitSha past
-  // the code graph's label, or every finding fails the stale-commit publish gate.
-  it("pullOrCloneRepo with recordCommit:false fast-forwards but leaves lastCommitSha alone", async () => {
-    const c = await createRepoConnector(
-      "proj_1",
-      { provider: "github", label: "pull-no-record", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     rows.get(c.id)!.lastCommitSha = SHA2; // what the current graph is labelled with
@@ -1291,13 +1311,13 @@ describe("#714 — the clone records the commit it checked out", () => {
       }),
     } as unknown as SimpleGitLike;
     __setSimpleGitFactory(() => fakeGit);
-    const out = await pullOrCloneRepo("proj_1", c.id, "user_1", { recordCommit: false });
+    const out = await pullOrCloneRepo("proj_1", c.id, "user_1");
     expect(out.pulled).toBe(true);
     expect(out.commitSha).toBe(SHA);
     expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
   });
 
-  it("pullOrCloneRepo with recordCommit:false carries the opt-out into its fresh-clone fallback", async () => {
+  it("pullOrCloneRepo leaves lastCommitSha alone on its fresh-clone fallback", async () => {
     const fakeGit = {
       clone: vi.fn(async (_url: string, target: string) => {
         await writeGit(target, { HEAD: `${SHA}\n` });
@@ -1310,15 +1330,15 @@ describe("#714 — the clone records the commit it checked out", () => {
       "user_1",
     );
     rows.get(c.id)!.lastCommitSha = SHA2;
-    const out = await pullOrCloneRepo("proj_1", c.id, "user_1", { recordCommit: false });
+    const out = await pullOrCloneRepo("proj_1", c.id, "user_1");
     expect(out.pulled).toBe(false);
     expect(out.commitSha).toBe(SHA);
     expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
   });
   // The OTHER fallback: an existing clone whose pull fails (diverged history, a
-  // shallow clone too short) is re-cloned. The opt-out must survive that path too,
-  // or a scan after a failed pull moves lastCommitSha past the graph's label.
-  it("pullOrCloneRepo with recordCommit:false carries the opt-out into the failed-pull re-clone", async () => {
+  // shallow clone too short) is re-cloned. That path must not record either,
+  // or a read-only pull after a failed pull moves lastCommitSha past the graph's label.
+  it("pullOrCloneRepo leaves lastCommitSha alone on the failed-pull re-clone", async () => {
     const c = await createRepoConnector(
       "proj_1",
       { provider: "github", label: "pull-fails-no-record", ownerOrOrg: "o", repoName: "r" },
@@ -1335,7 +1355,7 @@ describe("#714 — the clone records the commit it checked out", () => {
     });
     const fakeGit = { pull, clone } as unknown as SimpleGitLike;
     __setSimpleGitFactory(() => fakeGit);
-    const out = await pullOrCloneRepo("proj_1", c.id, "user_1", { recordCommit: false });
+    const out = await pullOrCloneRepo("proj_1", c.id, "user_1");
     expect(pull).toHaveBeenCalledTimes(1);
     expect(clone).toHaveBeenCalledTimes(1);
     expect(out.pulled).toBe(false);

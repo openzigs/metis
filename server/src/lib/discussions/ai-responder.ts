@@ -23,6 +23,10 @@
  *      `AITokenUsage` row and ONE project-ledger `TokenUsage` row for the whole
  *      reply — every model call it made, tool rounds included.
  *
+ * #775 — before any of that, the project budget gate (`assertWithinBudget`), as
+ * `/stream` runs it: a project over its monthly token budget gets an `error`
+ * chunk (`BUDGET_EXCEEDED`) and no provider call, no session and no message.
+ *
  * On an error we surface an `error` chunk to the caller and rethrow; we do NOT
  * persist a partial message as complete. What the failed reply had already
  * spent is metered (`discussion-failed`), as a failed chat turn is (#243).
@@ -42,6 +46,7 @@ import {
 } from "../ai/index.js";
 import { runChatToolTurn } from "../ai/tool-runtime/chat-turn.js";
 import { recordUsage as recordProjectUsage } from "../finops/token-tracker.js";
+import { assertWithinBudget, BudgetExceededError } from "../finops/budget-enforcer.js";
 import { buildAiMessageData } from "./message-invariant.js";
 import {
   DISCUSSION_TOOL_MAX_TURNS,
@@ -277,6 +282,20 @@ async function resolveToolsSafely(
  */
 export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAIReplyResult> {
   const { thread, actor, provider, onChunk, signal } = input;
+
+  // 0. #775 — the project budget gate, before anything is spent. Every caller
+  //    (the REST route and the Teams @AI participant) passes through here.
+  try {
+    await assertWithinBudget(thread.projectId);
+  } catch (err) {
+    // Every throw here ends the reply, so the caller always gets a frame for it.
+    onChunk?.(
+      err instanceof BudgetExceededError
+        ? { type: "error", code: err.code, message: err.message }
+        : { type: "error", code: "BUDGET_CHECK_FAILED", message: "Could not check the budget" },
+    );
+    throw err;
+  }
 
   // 1. Backing session for token accounting + audit linkage.
   const session = await prisma.aISession.create({

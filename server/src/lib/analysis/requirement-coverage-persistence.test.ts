@@ -37,7 +37,15 @@ const ANALYSIS_ID = "an_1";
 const PROJECT_ID = "pr_1";
 
 vi.mock("../prisma.js", () => ({
+  // #779 — `persistRequirements` locks by provider on Postgres only; this
+  // fake has no raw SQL, so it pins the SQLite path on either generated client.
+  resolveDatabaseProvider: () => "sqlite" as const,
   prisma: {
+    // #779 — `persistRequirements` runs in an interactive transaction; this
+    // fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../prisma.js")).prisma),
+    ),
     requirement: {
       // Issue #769 — this fake models no review work and no prior set, so the
       // replacement guard proceeds; the guard itself is exercised against a real

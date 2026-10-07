@@ -344,8 +344,12 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
             "@huggingface/transformers (^0.34.1) was forced to 0.35.2 while next's own " +
             "`sharp: ^0.35.4` resolved untouched — a second copy the old selector never " +
             "governed. `<0.35.4` is the advisory's `fixed` event and covers the whole " +
-            "affected band.",
-        ).toBe(FIXED.join("."));
+            "affected band. A LATER bound also covers it — #903 moved it to 0.35.5.",
+        ).toBeDefined();
+        expect(
+          resolvedVersionMeetsFloor(ceiling, FIXED),
+          `override key "${key}" bounds at ${ceiling}, below the fixed 0.35.4`,
+        ).toBe(true);
       }
     });
 
