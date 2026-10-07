@@ -92,16 +92,17 @@ export async function runReindexJob(
     const result = await getKnowledgeService().reindexProject(projectId, {
       ...(opts.batchSize !== undefined ? { batchSize: opts.batchSize } : {}),
       ...(opts.fresh !== undefined ? { fresh: opts.fresh } : {}),
-      onProgress: ({ processed, total }) => {
+      onProgress: ({ processed, total, phase }) => {
         const pct =
           total > 0 ? Math.min(100, Math.max(0, Math.round((processed / total) * 100))) : 0;
-        jobEvents.progress(
-          "embeddings-reindex",
-          jobId,
-          projectId,
-          pct,
-          `Re-embedded ${processed}/${total} chunks`,
-        );
+        // #862 — name the phase. The code-symbol phase (#797) runs after the
+        // document chunks reach 100%; without its own events the page sat on
+        // "Re-embedded N/N chunks" for the whole symbol re-embed.
+        const message =
+          phase === "symbols"
+            ? `Re-embedded ${processed}/${total} code symbols`
+            : `Re-embedded ${processed}/${total} chunks`;
+        jobEvents.progress("embeddings-reindex", jobId, projectId, pct, message);
       },
     });
     // #787 — say so when the run RESUMED. An operator watching a restarted job
@@ -111,11 +112,12 @@ export async function runReindexJob(
       result.resumedChunks > 0
         ? ` (${result.resumedChunks} resumed from an interrupted run, ${result.embeddedChunks} re-embedded)`
         : "";
+    const symbols = result.symbols ? ` and ${result.symbols.totalSymbols} code symbols` : "";
     jobEvents.completed(
       "embeddings-reindex",
       jobId,
       projectId,
-      `Reindexed ${result.reindexedChunks} of ${result.totalChunks} chunks to ${result.currentModel} (${result.currentDimension}d)${resumed}.`,
+      `Reindexed ${result.reindexedChunks} of ${result.totalChunks} chunks${symbols} to ${result.currentModel} (${result.currentDimension}d)${resumed}.`,
     );
   } catch (err) {
     // ReindexConflictError and any other failure surface the SAME generic,

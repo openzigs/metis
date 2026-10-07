@@ -50,6 +50,11 @@ function isColumnMigratable(store: unknown): store is ColumnMigratableStore {
   return typeof (store as ColumnMigratableStore).migrateColumnDimension === "function";
 }
 
+/** #862 — a reindex reports document chunks, then code symbols (#797). */
+function unitOf(phase: "chunks" | "symbols" | undefined): string {
+  return phase === "symbols" ? "code symbols" : "chunks";
+}
+
 function flag(argv: string[], name: string): boolean {
   return argv.includes(`--${name}`);
 }
@@ -219,8 +224,8 @@ async function main(): Promise<number> {
         const result = await getKnowledgeService().reindexProject(projectId, {
           ...(batchSize !== undefined ? { batchSize } : {}),
           fresh,
-          onProgress: ({ processed, total }) =>
-            process.stdout.write(`\r  ${projectId}: ${processed}/${total} chunks`),
+          onProgress: ({ processed, total, phase }) =>
+            process.stdout.write(`\r  ${projectId}: ${processed}/${total} ${unitOf(phase)}`),
         });
         process.stdout.write(
           `\r  ${projectId}: ${result.totalChunks}/${result.totalChunks} chunks — done ` +
@@ -239,8 +244,8 @@ async function main(): Promise<number> {
         ...(batchSize !== undefined ? { batchSize } : {}),
         fresh,
         onProject: (id, i, total) => process.stdout.write(`\n[${i}/${total}] ${id}\n`),
-        onProgress: (id, processed, total) =>
-          process.stdout.write(`\r  ${id}: ${processed}/${total} chunks`),
+        onProgress: (id, processed, total, phase) =>
+          process.stdout.write(`\r  ${id}: ${processed}/${total} ${unitOf(phase)}`),
       });
 
       process.stdout.write("\n\n");
