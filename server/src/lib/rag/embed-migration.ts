@@ -43,6 +43,7 @@ import {
   getKnowledgeService,
   KnowledgeService,
   type DeploymentCoverageReport,
+  type ReindexProgress,
   type ReindexResult,
 } from "./knowledge-service.js";
 import type { ReindexLeaseInfo } from "./reindex-lease.js";
@@ -375,7 +376,13 @@ export interface ReindexAllOptions {
   batchSize?: number;
   fresh?: boolean;
   onProject?: (projectId: string, index: number, total: number) => void;
-  onProgress?: (projectId: string, processed: number, total: number) => void;
+  onProgress?: (
+    projectId: string,
+    processed: number,
+    total: number,
+    /** #862 — which corpus the counts are of; absent means `"chunks"`. */
+    phase?: ReindexProgress["phase"],
+  ) => void;
 }
 
 export interface ReindexAllResult {
@@ -419,7 +426,8 @@ export async function reindexAll(
       const result = await deps.knowledge.reindexProject(projectId, {
         ...(opts.batchSize !== undefined ? { batchSize: opts.batchSize } : {}),
         ...(opts.fresh !== undefined ? { fresh: opts.fresh } : {}),
-        onProgress: ({ processed, total }) => opts.onProgress?.(projectId, processed, total),
+        onProgress: ({ processed, total, phase }) =>
+          opts.onProgress?.(projectId, processed, total, phase),
       });
       results.push(result);
     } catch (err) {

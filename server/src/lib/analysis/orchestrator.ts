@@ -1554,6 +1554,9 @@ export class AnalysisOrchestrator {
               totals.promptTokens += codeResult.usage.promptTokens;
               totals.completionTokens += codeResult.usage.completionTokens;
               totals.totalTokens += codeResult.usage.totalTokens;
+              // #755 — count the success explicitly; the all-failed gate must
+              // not rely on a placeholder to see the code agent succeed.
+              recordAgentOutcome({ status: "fulfilled", value: codeResult });
             } else {
               // Multi-repo — run agent per connector sequentially, split token
               // budget. When the even split falls below the per-repo floor the
@@ -1608,6 +1611,9 @@ export class AnalysisOrchestrator {
                 totals.completionTokens += result.usage.completionTokens;
                 totals.totalTokens += result.usage.totalTokens;
               }
+              if (multiResults.length > 0) {
+                recordAgentOutcome({ status: "fulfilled", value: multiResults });
+              }
             }
           } catch (err) {
             if ((err as { name?: string }).name !== "AbortError") {
@@ -1643,6 +1649,7 @@ export class AnalysisOrchestrator {
             totals.promptTokens += codeResult.usage.promptTokens;
             totals.completionTokens += codeResult.usage.completionTokens;
             totals.totalTokens += codeResult.usage.totalTokens;
+            recordAgentOutcome({ status: "fulfilled", value: codeResult });
           } catch (err) {
             if ((err as { name?: string }).name !== "AbortError") {
               log.error("Requirement-grounded code agent failed", {
@@ -1660,32 +1667,35 @@ export class AnalysisOrchestrator {
 
       // Non-sequenced path (backward compat when doc+code don't both exist)
       if (!needsSequencing && !run.cancelled) {
+        // #755 — only agents that have NOT run yet. This used to map every key
+        // and answer an already-run one with a zero-usage placeholder, which
+        // settled `fulfilled` and was counted as a specialist SUCCESS — so an
+        // agent's failure was always cancelled out by its own phantom, and the
+        // all-failed gate below could never fire unless document AND code ran.
         const settled = await Promise.allSettled(
-          agentKeys.map(async (agentKey) => {
-            if (run.controllers.has(agentKey))
-              return {
-                usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-              } as AgentRunResult;
-            const controller = new AbortController();
-            run.controllers.set(agentKey, controller);
-            return this.runOneAgent({
-              analysisId,
-              projectId: opts.projectId,
-              projectName,
-              projectDescription,
-              agentKey,
-              documentIds: opts.documentIds,
-              model: opts.model,
-              extraInstructions: opts.extraInstructions,
-              signal: controller.signal,
-              replayRunId,
-              actorId: opts.startedById,
-              // #824 — Sally (database) renders it; other specialists ignore it.
-              // `runAffectedSchemaBlock` is the hoisted string form; the
-              // `affectedSchema` object is scoped to the `!run.cancelled` block above.
-              affectedSchema: runAffectedSchemaBlock,
-            });
-          }),
+          agentKeys
+            .filter((agentKey) => !run.controllers.has(agentKey))
+            .map(async (agentKey) => {
+              const controller = new AbortController();
+              run.controllers.set(agentKey, controller);
+              return this.runOneAgent({
+                analysisId,
+                projectId: opts.projectId,
+                projectName,
+                projectDescription,
+                agentKey,
+                documentIds: opts.documentIds,
+                model: opts.model,
+                extraInstructions: opts.extraInstructions,
+                signal: controller.signal,
+                replayRunId,
+                actorId: opts.startedById,
+                // #824 — Sally (database) renders it; other specialists ignore it.
+                // `runAffectedSchemaBlock` is the hoisted string form; the
+                // `affectedSchema` object is scoped to the `!run.cancelled` block above.
+                affectedSchema: runAffectedSchemaBlock,
+              });
+            }),
         );
 
         for (const r of settled) {

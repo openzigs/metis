@@ -48,7 +48,7 @@ describe("AssigneePicker", () => {
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
-        <AssigneePicker requirementId="req-1" />
+        <AssigneePicker requirementId="req-1" projectId="proj-1" />
       </Wrapper>,
     );
     await waitFor(() => expect(screen.queryByRole("button")).toBeTruthy());
@@ -72,7 +72,7 @@ describe("AssigneePicker", () => {
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
-        <AssigneePicker requirementId="req-1" />
+        <AssigneePicker requirementId="req-1" projectId="proj-1" />
       </Wrapper>,
     );
     await waitFor(() =>
@@ -85,7 +85,7 @@ describe("AssigneePicker", () => {
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
-        <AssigneePicker requirementId="req-1" />
+        <AssigneePicker requirementId="req-1" projectId="proj-1" />
       </Wrapper>,
     );
     await waitFor(() => expect(screen.getByRole("button")).toBeInTheDocument());
@@ -103,7 +103,7 @@ describe("AssigneePicker", () => {
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
-        <AssigneePicker requirementId="req-1" />
+        <AssigneePicker requirementId="req-1" projectId="proj-1" />
       </Wrapper>,
     );
     await waitFor(() => expect(screen.getByRole("button")).toBeInTheDocument());
@@ -114,6 +114,25 @@ describe("AssigneePicker", () => {
     const option = await screen.findByRole("option");
     expect(option).toHaveTextContent("@bob");
     expect(screen.queryByText(/No users found/i)).toBeNull();
+  });
+
+  // #870 — the search is scoped to the requirement's project, never the
+  // cross-tenant user list.
+  it("scopes the user search to the requirement's project", async () => {
+    const user = userEvent.setup();
+    apiFetchMock.mockResolvedValue([]);
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <AssigneePicker requirementId="req-1" projectId="proj 1" />
+      </Wrapper>,
+    );
+    await waitFor(() => expect(screen.getByRole("button")).toBeInTheDocument());
+    await user.click(screen.getByRole("button"));
+    await user.type(await screen.findByPlaceholderText(/Search/i), "bo");
+    await waitFor(() =>
+      expect(apiFetchMock).toHaveBeenCalledWith("/users?search=bo&limit=8&projectId=proj%201"),
+    );
   });
 });
 

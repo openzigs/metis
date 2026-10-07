@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { PROACTIVE_REFRESH_MS, useAuth } from "@/lib/auth-context";
-import { _resetAuthRetryState } from "@/lib/api-client";
+import { _resetAuthRetryState, apiFetch } from "@/lib/api-client";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import { useRouter } from "next/navigation";
 
@@ -121,6 +121,27 @@ describe("AuthProvider", () => {
     expect(result.current.user).toBeNull();
     const router = (useRouter as unknown as () => { push: ReturnType<typeof vi.fn> })();
     expect(router.push).toHaveBeenCalledWith("/login");
+  });
+
+  it("exposes isSigningOut from logout until the next login (#720)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(ok({ success: true, data: null })) // /auth/logout
+      .mockResolvedValueOnce(ok({ success: true, data: { user: TEST_USER } })); // /auth/login
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    expect(result.current.isSigningOut).toBe(false);
+
+    await act(async () => {
+      await result.current.logout();
+    });
+    expect(result.current.isSigningOut).toBe(true);
+
+    await act(async () => {
+      await result.current.login({ username: "admin", password: "password" });
+    });
+    expect(result.current.isSigningOut).toBe(false);
+    expect(result.current.user).toEqual(TEST_USER);
   });
 
   it("logout still clears state when the upstream call throws", async () => {
@@ -323,6 +344,29 @@ describe("AuthProvider — onRefreshFailure redirect (#411)", () => {
 
   // The workspace-invite landing page is read by people who have no session
   // yet; an involuntary bounce to /login makes the invite link useless.
+  // #720 — a request that 401s after a deliberate sign-out (the cookies are
+  // gone, so its refresh fails) is not an expired session.
+  it("does NOT redirect with reason=expired after a deliberate logout", async () => {
+    stubLocation("/dashboard");
+    fetchMock.mockResolvedValueOnce(ok({ success: true, data: null })); // /auth/logout
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    await act(async () => {
+      await result.current.logout();
+    });
+    fetchMock.mockImplementation((url: unknown) => {
+      if (String(url) === "/api/auth/refresh") return Promise.resolve(ok({ success: false }, 401));
+      return Promise.resolve(ok({ success: false, error: { code: "TOKEN_EXPIRED" } }, 401));
+    });
+    await act(async () => {
+      await apiFetch("/auth/me").catch(() => undefined);
+    });
+    const router = (useRouter as unknown as () => { replace: ReturnType<typeof vi.fn> })();
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/refresh", expect.anything());
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
   it("does NOT redirect an anonymous visitor away from an invite link", async () => {
     stubLocation("/invites/tok-123");
     const { result } = mountWithFailingRefresh();

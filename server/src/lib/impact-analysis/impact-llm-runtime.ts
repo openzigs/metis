@@ -46,6 +46,7 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { getTokenTracker } from "../ai/token-tracker.js";
 import { recordUsage, type RecordUsageInput } from "../finops/token-tracker.js";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
+import { decorateProvider } from "../ai/provider-decorator.js";
 import { currentImpactProjectId } from "./impact-llm-scope.js";
 
 const log = createChildLogger("impact-llm-runtime");
@@ -349,11 +350,11 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
     }
   };
 
-  const instrument = (provider: AIProvider, stage: ImpactLlmStage): AIProvider => {
-    const wrapped: AIProvider = {
-      key: provider.key,
-      model: provider.model,
-      offline: provider.offline,
+  // #754 — `decorateProvider`, not a hand-built object: a literal restating
+  // `key`/`model`/`offline` dropped `capabilities`, `capabilitiesFor` and
+  // `servesRouterModel`, so every stage saw a provider that "supports nothing".
+  const instrument = (provider: AIProvider, stage: ImpactLlmStage): AIProvider =>
+    decorateProvider(provider, {
       async chat(messages: ChatMessage[], chatOpts?: ChatOptions): Promise<ChatResponse> {
         const res = await withDeadline(stage, chatOpts?.signal, (signal) =>
           provider.chat(messages, { ...chatOpts, signal }),
@@ -386,12 +387,7 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
           log.debug("impact LLM stream produced no usage chunk; nothing metered", { stage });
         }
       },
-      embed: (texts: string[]) => provider.embed(texts),
-      models: () => provider.models(),
-      ping: () => provider.ping(),
-    };
-    return wrapped;
-  };
+    });
 
   return {
     instrument,
