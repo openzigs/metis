@@ -19,13 +19,15 @@
  *
  * Three guards keep a broad mapping from fanning out (#860):
  *  - A file-only target that records a line range expands only to the symbols
- *    overlapping that range, not the whole file.
+ *    overlapping that range, not the whole file. The range is applied before the
+ *    per-file cap, so a cited symbol deep in a large file is not capped away.
  *  - A test file mapped by a line range that covers none of its symbols (a
  *    citation of its licence header or imports) is not a `direct` link.
- *  - A **hub** target — one exercised by tests in at least
- *    `TESTED_BY_HUB_MIN_TEST_FILES` distinct test files, like a config file or a
- *    constructor every test calls — links an `exercises` test only when the test,
- *    or the symbol it calls, shares at least two of the requirement's words.
+ *  - A file-only (or ranged) **hub** target — one exercised by tests in at least
+ *    `TESTED_BY_HUB_MIN_TEST_FILES` distinct test files, like a config file —
+ *    links an `exercises` test only when the test, or the symbol it calls, shares
+ *    at least two of the requirement TITLE's words. A precise `codeSymbolId`
+ *    mapping is exempt: a test calling that exact symbol is the evidence.
  *
  * Within a relation, tests are ordered by BM25 relevance of `name + qualifiedName`
  * against `denoiseRequirementQuery(title + body)`, folded into `score`. Results
@@ -271,7 +273,10 @@ function testNodeFromSymbol(
 /** Code graph rows loaded once for a whole batch of requirements. */
 interface GraphRows {
   symbolById: Map<string, SymbolRow>;
+  /** Every symbol of a file-only or ranged-test-file target's file, uncapped. */
   symbolsByFile: Map<string, SymbolRow[]>;
+  /** `TESTED_BY_MAX_SYMBOLS_PER_FILE`, applied per target by {@link fileTargetSymbols}. */
+  perFileCap: number;
   edgesInto: Map<string, SymbolRow[]>;
   siblingSymbolsByFile: Map<string, SymbolRow[]>;
 }
@@ -280,6 +285,17 @@ function pushTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   const list = map.get(key);
   if (list) list.push(value);
   else map.set(key, [value]);
+}
+
+/**
+ * A file-only target's symbols: those overlapping its range, THEN capped (#860).
+ * Range first, so a cited symbol beyond the first `perFileCap` of a large file
+ * is not lost to the cap.
+ */
+function fileTargetSymbols(t: TestedByTarget, graph: GraphRows): SymbolRow[] {
+  return (graph.symbolsByFile.get(t.filePath) ?? [])
+    .filter((s) => inTargetRange(s, t))
+    .slice(0, graph.perFileCap);
 }
 
 const targetIsTest = (t: TestedByTarget): boolean =>
@@ -305,6 +321,7 @@ async function loadGraph(
   const graph: GraphRows = {
     symbolById: new Map(),
     symbolsByFile: new Map(),
+    perFileCap,
     edgesInto: new Map(),
     siblingSymbolsByFile: new Map(),
   };
@@ -322,15 +339,13 @@ async function loadGraph(
     : [];
   for (const row of targetRows) {
     if (symbolIds.has(row.id)) graph.symbolById.set(row.id, row);
-    if (!byFile.has(row.filePath)) continue;
-    const list = graph.symbolsByFile.get(row.filePath) ?? [];
-    if (list.length < perFileCap) list.push(row);
-    graph.symbolsByFile.set(row.filePath, list);
+    if (byFile.has(row.filePath)) pushTo(graph.symbolsByFile, row.filePath, row);
   }
 
   const edgeTargets = new Set<string>(graph.symbolById.keys());
-  for (const file of fileOnly) {
-    for (const s of graph.symbolsByFile.get(file) ?? []) edgeTargets.add(s.id);
+  for (const t of targets) {
+    if (t.codeSymbolId || targetIsTest(t)) continue;
+    for (const s of fileTargetSymbols(t, graph)) edgeTargets.add(s.id);
   }
   if (edgeTargets.size) {
     const edges = await prisma.codeEdge.findMany({
@@ -376,7 +391,9 @@ function resolveOne(
 ): TraceabilityTestNode[] {
   const query = denoiseRequirementQuery(`${requirement.title} ${requirement.body ?? ""}`);
   const queryTokens = new Set(nameTokens(query));
-  const requirementWords = words(query);
+  // #860 — the hub guard matches the TITLE only: body prose brings in common
+  // words (`account`, `default`, `provider`) that let unrelated hub tests back in.
+  const requirementWords = words(denoiseRequirementQuery(requirement.title));
   const byKey = new Map<string, Candidate>();
   const offer = (node: TraceabilityTestNode): void => {
     const key = `${node.filePath}::${node.symbol}`;
@@ -414,11 +431,7 @@ function resolveOne(
 
     const fileOnly = !t.codeSymbolId;
     const one = t.codeSymbolId ? graph.symbolById.get(t.codeSymbolId) : undefined;
-    const targetSymbols = fileOnly
-      ? (graph.symbolsByFile.get(t.filePath) ?? []).filter((s) => inTargetRange(s, t))
-      : one
-        ? [one]
-        : [];
+    const targetSymbols = fileOnly ? fileTargetSymbols(t, graph) : one ? [one] : [];
 
     const exercised: Array<{ from: SymbolRow; ts: SymbolRow }> = [];
     for (const ts of targetSymbols) {
@@ -426,7 +439,9 @@ function resolveOne(
     }
     // #860 — through a hub, being called is not evidence of testing THIS
     // requirement: keep only tests about it (by the test's or the callee's name).
-    const hub = new Set(exercised.map((x) => x.from.filePath)).size >= hubThreshold;
+    // A precise symbol mapping is exempt: calling the exact mapped symbol IS the
+    // evidence; the fan-out #860 saw comes from file-only and ranged mappings.
+    const hub = fileOnly && new Set(exercised.map((x) => x.from.filePath)).size >= hubThreshold;
     for (const { from, ts } of exercised) {
       if (
         hub &&
