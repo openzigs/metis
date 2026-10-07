@@ -11,4 +11,5 @@ section: Fixed
 - Model Preferences no longer calls a model "cheaper" or "most expensive" by its routing tier:
   Claude Fable 5 was labelled "Faster and cheaper" at the highest price on the list. Those words
   now appear only where the listed prices bear them out. Saving a Claude model on a provider that
-  does not run it is rejected, and a Claude model pinned before such a switch shows as Auto.
+  does not run it is rejected. A saved model the current provider does not run, after a switch in
+  either direction, now shows and saves as Auto, with a notice naming the saved model.

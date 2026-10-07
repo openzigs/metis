@@ -286,4 +286,66 @@ describe("ProjectModelSettingsPage", () => {
       expect(screen.getByTestId("budget-threshold-slider")).not.toBeDisabled();
     });
   });
+
+  // #713 cycle 2 — a model saved under one provider and absent from the
+  // current provider's list must not survive in state behind an "Auto" display,
+  // whatever the provider: every Save would send it and the server would 400.
+  describe("a saved model the current provider does not list (#713)", () => {
+    it("on a tier-serving provider, shows a DeepSeek pin as Auto and saves Auto", async () => {
+      mockGet.mockResolvedValue({ ...MOCK_PREFS, defaultModel: "deepseek-flash" });
+      const user = userEvent.setup();
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByTestId("save-model-prefs")).toBeInTheDocument();
+      });
+      expect((screen.getByTestId("default-model-select") as HTMLSelectElement).value).toBe("auto");
+      await user.click(screen.getByTestId("save-model-prefs"));
+      await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+      expect(mockUpdate.mock.calls[0][1]).toMatchObject({ defaultModel: null });
+    });
+
+    it("says the saved model is unavailable and that saving switches to Auto", async () => {
+      mockGet.mockResolvedValue({ ...MOCK_PREFS, defaultModel: "deepseek-flash" });
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByTestId("default-model-select")).toBeInTheDocument();
+      });
+      expect(screen.getByTestId("stale-default-model-notice").textContent).toBe(
+        "Your saved model deepseek-flash isn't available on this provider; saving will switch to Auto.",
+      );
+    });
+
+    it("withdraws the notice once another model is picked", async () => {
+      mockGet.mockResolvedValue({ ...MOCK_PREFS, defaultModel: "deepseek-flash" });
+      const user = userEvent.setup();
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByTestId("stale-default-model-notice")).toBeInTheDocument();
+      });
+      await user.selectOptions(
+        screen.getByTestId("default-model-select"),
+        "us.anthropic.claude-sonnet-5",
+      );
+      expect(screen.queryByTestId("stale-default-model-notice")).not.toBeInTheDocument();
+    });
+
+    it("shows no notice when the saved model is listed", async () => {
+      mockGet.mockResolvedValue({ ...MOCK_PREFS, defaultModel: "us.anthropic.claude-sonnet-5" });
+      renderPage();
+      await waitFor(() => {
+        expect((screen.getByTestId("default-model-select") as HTMLSelectElement).value).toBe(
+          "us.anthropic.claude-sonnet-5",
+        );
+      });
+      expect(screen.queryByTestId("stale-default-model-notice")).not.toBeInTheDocument();
+    });
+
+    it("shows no notice when nothing is saved", async () => {
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByTestId("default-model-select")).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId("stale-default-model-notice")).not.toBeInTheDocument();
+    });
+  });
 });

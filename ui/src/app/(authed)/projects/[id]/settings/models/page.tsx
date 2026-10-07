@@ -75,14 +75,19 @@ export default function ProjectModelSettingsPage() {
   const [threshold, setThreshold] = useState<number>(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  // #713 — a model saved under another provider and absent from this one's list
+  // (a Claude tier after a switch to DeepSeek, or DeepSeek's model after a switch
+  // back): the server rejects an id the provider cannot run, so it shows, and
+  // saves, as Auto — and the page says so, since the server keeps it until then.
+  const staleSavedModel =
+    data?.defaultModel && !availableModels.some((m) => m.id === data.defaultModel)
+      ? data.defaultModel
+      : null;
+
   useEffect(() => {
     if (!data) return;
-    // #713 — on a provider that does not serve the Claude tiers, a tier pinned
-    // before the switch (not in its list) shows, and saves, as Auto: the server
-    // rejects an id the provider cannot run.
     const stale =
-      data.servesTierModels === false &&
-      !data.availableModels.some((m) => m.id === data.defaultModel);
+      data.defaultModel != null && !data.availableModels.some((m) => m.id === data.defaultModel);
     setDefaultModel(stale ? "auto" : (data.defaultModel ?? "auto"));
     setOverrides(data.taskTypeOverrides ?? {});
     setThreshold(data.budgetDowngradeThreshold ?? 0);
@@ -143,6 +148,12 @@ export default function ProjectModelSettingsPage() {
             </option>
           ))}
         </select>
+        {staleSavedModel && defaultModel === "auto" && (
+          <p className="text-xs text-warning" data-testid="stale-default-model-notice">
+            Your saved model {staleSavedModel} isn&apos;t available on this provider; saving will
+            switch to Auto.
+          </p>
+        )}
       </Card>
 
       {/* Budget downgrade threshold */}
