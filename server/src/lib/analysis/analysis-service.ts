@@ -646,6 +646,12 @@ export interface PersistRequirementsInput {
    * never replaces a healthy one.
    */
   degraded?: SynthesisDegradation | null;
+  /**
+   * Issue #723 — called when the replacement is withheld (#769). The returned
+   * id list is empty either way when the proposed set is empty, so a caller
+   * that must tell "withheld" from "replaced with nothing" listens here.
+   */
+  onWithheld?: (withheld: RequirementReplacementWithheld) => void;
 }
 
 /**
@@ -726,6 +732,7 @@ export async function persistRequirements(input: PersistRequirementsInput): Prom
       where: { id: input.analysisId },
       data: { metadata: JSON.stringify({ ...metadata, requirementReplacementWithheld: withheld }) },
     });
+    input.onWithheld?.(withheld);
     return [];
   }
 

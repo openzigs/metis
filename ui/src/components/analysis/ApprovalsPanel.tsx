@@ -29,6 +29,10 @@ import { useOnReconnect } from "@/hooks/use-on-reconnect";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  countApprovedRequirements,
+  PromoteApprovedRequirementsButton,
+} from "./PromoteApprovedRequirementsButton";
 
 interface ApprovalsPanelProps {
   projectId: string;
@@ -39,6 +43,11 @@ interface ApprovalsPanelProps {
    * instead of rendering a bare UUID.
    */
   metadata?: Record<string, unknown> | null;
+  /**
+   * #723 — the run's requirement rows, so the resolved banner says whether
+   * anything was actually promoted. Omitted: the banner makes no such claim.
+   */
+  requirementCount?: number;
 }
 
 /**
@@ -143,8 +152,17 @@ function PromotionBanner({
   awaitingRequirementCount,
   pendingByType,
   rejectionSummary,
+  requirementCount,
+  approvedRequirementCount = 0,
+  promoteAction,
 }: {
   status: TicketStatus;
+  /** #723 — the run's requirement rows; undefined when the caller does not know. */
+  requirementCount?: number;
+  /** #723 — `requirement` approvals that are approved. */
+  approvedRequirementCount?: number;
+  /** #723 — the recovery control for an open gate with nothing promoted. */
+  promoteAction?: React.ReactNode;
   /** #1104 — how many synthesized requirements the gate is holding back. */
   awaitingRequirementCount?: number;
   /** #1117 (finding E) — breakdown of the pending approvals, e.g. "16 requirement, 11 evidence". */
@@ -153,15 +171,28 @@ function PromotionBanner({
   rejectionSummary?: string | null;
 }): React.ReactElement | null {
   if (status.allowed) {
+    // #723 — "promotion is unblocked" is only true once something was promoted.
+    // With no requirement rows, say what actually happened instead.
+    const nothingPromoted = requirementCount === 0;
+    const stranded = nothingPromoted && approvedRequirementCount > 0;
     return (
       <div
         role="status"
         data-testid="promotion-banner"
-        className="rounded border border-success/40 bg-success-muted px-3 py-2 text-sm text-success"
+        className={
+          stranded
+            ? "space-y-2 rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
+            : "rounded border border-success/40 bg-success-muted px-3 py-2 text-sm text-success"
+        }
       >
-        All approvals resolved — artifact promotion is unblocked.
+        {stranded
+          ? `All approvals resolved, but the ${approvedRequirementCount} approved requirement(s) have not been promoted yet.`
+          : nothingPromoted
+            ? "All approvals resolved — no requirement was approved, so none were promoted."
+            : "All approvals resolved — artifact promotion is unblocked."}
         {/* #723 — a rejection is a resolution: say what it did, and how to undo it. */}
         {rejectionSummary && ` ${rejectionSummary}`}
+        {stranded && promoteAction && <div>{promoteAction}</div>}
       </div>
     );
   }
@@ -388,6 +419,7 @@ export function ApprovalsPanel({
   projectId,
   analysisId,
   metadata,
+  requirementCount,
 }: ApprovalsPanelProps): React.ReactElement | null {
   // #922 — index structured requirements by id so each `requirement` approval
   // can be enriched with its real title + open questions.
@@ -484,6 +516,11 @@ export function ApprovalsPanel({
             }
             pendingByType={summarisePendingByType(pending)}
             rejectionSummary={describeRejections(resolved.filter((a) => a.status === "rejected"))}
+            requirementCount={requirementCount}
+            approvedRequirementCount={countApprovedRequirements(items)}
+            promoteAction={
+              <PromoteApprovedRequirementsButton projectId={projectId} analysisId={analysisId} />
+            }
           />
         )
       )}

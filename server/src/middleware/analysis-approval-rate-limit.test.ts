@@ -5,7 +5,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
-import { analysisApprovalReopenRateLimiter } from "./analysis-approval-rate-limit.js";
+import {
+  analysisApprovalPromoteRateLimiter,
+  analysisApprovalReopenRateLimiter,
+} from "./analysis-approval-rate-limit.js";
 
 function app(userId?: string) {
   const a = express();
@@ -47,6 +50,51 @@ describe("analysisApprovalReopenRateLimiter", () => {
     try {
       const res = await request(app("reopen-user-3")).post("/");
       expect(res.headers["ratelimit-limit"]).toBe("120");
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+});
+
+describe("analysisApprovalPromoteRateLimiter (#723)", () => {
+  function promoteApp(userId?: string) {
+    const a = express();
+    a.use((req, _res, next) => {
+      if (userId) (req as unknown as { user: { userId: string } }).user = { userId };
+      next();
+    });
+    a.use(analysisApprovalPromoteRateLimiter);
+    a.post("/", (_req, res) => res.json({ ok: true }));
+    return a;
+  }
+
+  afterEach(() => {
+    delete process.env.ANALYSIS_APPROVAL_PROMOTE_RATE_LIMIT_MAX;
+  });
+
+  it("caps each user separately, under its own key and env var", async () => {
+    process.env.ANALYSIS_APPROVAL_PROMOTE_RATE_LIMIT_MAX = "1";
+    const a = promoteApp("promote-user-1");
+    expect((await request(a).post("/")).status).toBe(200);
+    const limited = await request(a).post("/");
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.message).toContain("promotion");
+    expect((await request(promoteApp("promote-user-2")).post("/")).status).toBe(200);
+  });
+
+  it("keys an unauthenticated caller by IP", async () => {
+    process.env.ANALYSIS_APPROVAL_PROMOTE_RATE_LIMIT_MAX = "1";
+    const a = promoteApp();
+    expect((await request(a).post("/")).status).toBe(200);
+    expect((await request(a).post("/")).status).toBe(429);
+  });
+
+  it("defaults to 30 per window outside tests", async () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const res = await request(promoteApp("promote-user-3")).post("/");
+      expect(res.headers["ratelimit-limit"]).toBe("30");
     } finally {
       process.env.NODE_ENV = prev;
     }

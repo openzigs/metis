@@ -3501,6 +3501,9 @@ export class AnalysisOrchestrator {
         codeAnalysisRan,
       );
 
+      // Issue #723 — reported explicitly: an empty id list cannot tell a
+      // withheld replacement from an approved set that is genuinely empty.
+      let replacementWithheld = false;
       const requirementIds = await persistRequirements({
         analysisId: input.analysisId,
         projectId: input.projectId,
@@ -3511,6 +3514,9 @@ export class AnalysisOrchestrator {
         // Issue #769 — a degraded set never replaces a healthy one. A reviewed
         // set is the reviewer's, not the degraded synthesis's (#730).
         degraded: reviewed ? null : (result.degraded ?? null),
+        onWithheld: () => {
+          replacementWithheld = true;
+        },
       });
 
       // feat/req-code-traceability — auto-seed the requirement→code spine from
@@ -3540,10 +3546,10 @@ export class AnalysisOrchestrator {
         },
         promotionStatus: "allowed",
         // #723 — which reviewed requirements are now rows, so one reopened and
-        // approved later is appended rather than ignored. Only when they ARE
-        // rows: a withheld replacement (#769) persisted nothing, and recording
-        // its ids would make a later append skip requirements that never landed.
-        ...(reviewed && requirementIds.length === toPersist.requirements.length
+        // approved later is appended rather than ignored. Only on a real
+        // replacement: a withheld one (#769) persisted nothing, and recording
+        // its ids — even an empty list — would overwrite the earlier record.
+        ...(reviewed && !replacementWithheld
           ? {
               promotedStructuredIds: structured
                 .filter((r) => approvedIds.has(r.id))

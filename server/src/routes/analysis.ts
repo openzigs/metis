@@ -37,7 +37,10 @@ import { optimisticLock } from "../middleware/optimistic-lock.js";
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
-import { analysisApprovalReopenRateLimiter } from "../middleware/analysis-approval-rate-limit.js";
+import {
+  analysisApprovalPromoteRateLimiter,
+  analysisApprovalReopenRateLimiter,
+} from "../middleware/analysis-approval-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   AnalysisOrchestrator,
@@ -1087,6 +1090,55 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       }
 
       res.json(ok({ ...updated, promotion }));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/approvals/promote
+   * Issue #723 — promote the approved requirements of a run whose gate is open
+   * but which has no requirement rows: a run stranded before rejections counted
+   * as resolved has no review left to make, so the review PUT never fires again
+   * and the Analysis page had no way to recover it. Same permission and scope
+   * as the review PUT (#1097); `promoteApprovedRequirements` is idempotent and
+   * never replaces an existing set. Only on a COMPLETED analysis: mid-run, the
+   * orchestrator has not saved its own requirements yet.
+   */
+  projectScoped.post(
+    "/:id/approvals/promote",
+    requireAuth,
+    requirePermission("analysis.run"),
+    analysisApprovalPromoteRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      const analysis = await ensureAnalysisVisible(analysisId, projectId);
+      if (analysis.status !== "completed") {
+        throw new AppError(
+          409,
+          "ANALYSIS_NOT_COMPLETED",
+          "The analysis is still running — its requirements are saved when it completes.",
+        );
+      }
+
+      let promotion: PromotionOutcome;
+      try {
+        promotion = await promoteApprovedRequirements(analysisId);
+      } catch {
+        promotion = {
+          status: "unavailable",
+          reason: "Promoting the requirements failed. Try again.",
+        };
+      }
+
+      const actor = actorFromReq(req);
+      audit({
+        actor: { id: actor.id },
+        action: "analysis.approval.promote",
+        target: { type: "analysis", id: analysisId },
+        metadata: { outcome: promotion.status },
+      });
+
+      res.json(ok({ promotion }));
     },
   );
 

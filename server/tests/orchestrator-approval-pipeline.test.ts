@@ -106,6 +106,15 @@ vi.mock("../src/lib/analysis/analysis-service.js", () => ({
   markAnalysisFailed: vi.fn(),
 }));
 
+/** #723 — the record `persistRequirements` hands `onWithheld` (#769). */
+const withheldRecord = (proposedCount: number) => ({
+  reason: "reviewed-work" as const,
+  existingCount: 1,
+  reviewedCount: 1,
+  proposedCount,
+  at: new Date().toISOString(),
+});
+
 const extractMock = vi.fn();
 vi.mock("../src/lib/analysis/requirements-extractor.js", () => ({
   RequirementsExtractor: class {
@@ -490,6 +499,7 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     });
     vi.mocked(svc.persistRequirements).mockImplementationOnce((input) => {
       persisted.requirements.push(input as unknown as Record<string, unknown>);
+      input.onWithheld?.(withheldRecord(1));
       return Promise.resolve([]);
     });
     await approvalSvc.createApprovalRequests("ana-withheld", [
@@ -510,6 +520,75 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
     expect(cleared).toBeDefined();
     expect(cleared).not.toHaveProperty("promotedStructuredIds");
+  });
+
+  // Issue #723 — with every requirement rejected the approved set is EMPTY, so
+  // a withheld replacement also returns [] and a length comparison (0 === 0)
+  // cannot tell the two apart. Only the explicit signal can: nothing is recorded
+  // over the earlier promotion record.
+  describe("an all-rejected re-run (#723)", () => {
+    const rejectAll = async (analysisId: string) => {
+      const svc = await import("../src/lib/analysis/analysis-service.js");
+      vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+        requirements: [
+          {
+            id: "r1",
+            title: "Feed URL must be absolute",
+            description: "Feed URL must be absolute.",
+            type: "functional" as const,
+            stakeholders: [],
+            priority: "should-have" as const,
+            ambiguities: [],
+            evidenceNeeds: [],
+            rawSource: "",
+          },
+        ],
+        totalAmbiguities: 0,
+        totalEvidenceNeeds: 0,
+      });
+      await approvalSvc.createApprovalRequests(analysisId, [{ type: "requirement", itemId: "r1" }]);
+      await approvalSvc.reviewApprovalRequest(analysisId, "ap-1", {
+        status: "rejected",
+        reviewerId: "u1",
+      });
+      return svc;
+    };
+
+    it("records nothing when the empty replacement was withheld", async () => {
+      const svc = await rejectAll("ana-all-rejected-withheld");
+      vi.mocked(svc.persistRequirements).mockImplementationOnce((input) => {
+        persisted.requirements.push(input as unknown as Record<string, unknown>);
+        input.onWithheld?.(withheldRecord(0));
+        return Promise.resolve([]);
+      });
+
+      const { orch } = makeOrchestrator();
+      await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+        analysisId: "ana-all-rejected-withheld",
+        ...synthInput,
+      });
+
+      const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+      expect(cleared).toBeDefined();
+      expect(cleared).not.toHaveProperty("promotedStructuredIds");
+    });
+
+    it("records the empty set when the replacement really happened", async () => {
+      const svc = await rejectAll("ana-all-rejected-replaced");
+      vi.mocked(svc.persistRequirements).mockImplementationOnce((input) => {
+        persisted.requirements.push(input as unknown as Record<string, unknown>);
+        return Promise.resolve([]);
+      });
+
+      const { orch } = makeOrchestrator();
+      await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+        analysisId: "ana-all-rejected-replaced",
+        ...synthInput,
+      });
+
+      const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+      expect(cleared).toMatchObject({ promotedStructuredIds: [] });
+    });
   });
 
   // Issue #730 — the gate being open at synthesis time must not swap the

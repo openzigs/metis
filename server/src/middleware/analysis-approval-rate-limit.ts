@@ -54,3 +54,33 @@ export const analysisApprovalReopenRateLimiter: RequestHandler = rateLimit({
     },
   } satisfies ApiResponse,
 }) as unknown as RequestHandler;
+
+/**
+ * Rate limiter for `POST /api/projects/:projectId/analyses/:id/approvals/promote`
+ * (#723). Promotion writes the requirement set, so it is bounded like the
+ * reopen route above (CodeQL `js/missing-rate-limiting`), under its own key
+ * and cap. A reviewer clicks it once per stranded run; 30 / 15 min is ample.
+ */
+export const ANALYSIS_APPROVAL_PROMOTE_DEFAULT_MAX = 30;
+
+// `as unknown as RequestHandler` bridges the Express 4↔5 type split.
+export const analysisApprovalPromoteRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("analysis-approval-promote"),
+  windowMs: envMs("ANALYSIS_APPROVAL_PROMOTE_RATE_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS, { min: 1 }),
+  limit: () =>
+    intFromEnv("ANALYSIS_APPROVAL_PROMOTE_RATE_LIMIT_MAX", ANALYSIS_APPROVAL_PROMOTE_DEFAULT_MAX),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req, res) => {
+    const userId = req.user?.userId;
+    if (userId) return `user:${userId}`;
+    return `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`;
+  },
+  message: {
+    success: false,
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many requirement promotion requests — please try again later",
+    },
+  } satisfies ApiResponse,
+}) as unknown as RequestHandler;

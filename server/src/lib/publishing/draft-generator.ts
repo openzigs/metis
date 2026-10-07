@@ -149,17 +149,27 @@ function findLiveRequirements(analysisId: string) {
 
 /**
  * Issue #723 — the analysis's requirements, promoting them first when the gate
- * is open but nothing was promoted. Promotion only ever ran from the approval
- * review route, so a run stranded before rejections counted as resolved (32
- * approved, 1 rejected, 0 rows) had an open gate and nothing left to trigger
- * it: publishing is where that run recovers. `promoteApprovedRequirements` is
- * idempotent and never replaces an existing set.
+ * is open but nothing was promoted. The review PUT promotes as each approval
+ * resolves (including a reopened-and-re-reviewed one), but a run stranded
+ * before rejections counted as resolved (32 approved, 1 rejected, 0 rows) has
+ * an open gate and no review left to make: publishing is one place that run
+ * recovers. `promoteApprovedRequirements` is idempotent and never replaces an
+ * existing set.
+ *
+ * Only once the analysis has COMPLETED: mid-run there is a window where
+ * synthesis has finished but cross-doc detection is still running and the
+ * orchestrator has not saved its requirements yet. Promoting in that window
+ * (a draft generation, or a double-clicked Generate) would race the
+ * orchestrator's own save.
  */
-async function loadOrPromoteRequirements(analysisId: string) {
+async function loadOrPromoteRequirements(analysisId: string, analysisStatus: string) {
   const requirements = await findLiveRequirements(analysisId);
   if (requirements.length > 0) return requirements;
 
   const gate = await canCreateTickets(analysisId);
+  if (gate.allowed && analysisStatus !== "completed") {
+    throw stillRunningError(analysisId, analysisStatus);
+  }
   let promotion: PromotionOutcome | null = null;
   if (gate.allowed) {
     try {
@@ -179,6 +189,20 @@ async function loadOrPromoteRequirements(analysisId: string) {
   throw await noRequirementsError(analysisId, gate, promotion);
 }
 
+/** #723 — the analysis has not completed, so its requirements are not saved yet. */
+function stillRunningError(analysisId: string, analysisStatus: string): PublishError {
+  const inFlight = analysisStatus === "pending" || analysisStatus === "running";
+  return new PublishError(
+    400,
+    "NO_REQUIREMENTS",
+    inFlight
+      ? "analysis has no requirements yet — the analysis is still running; generate drafts once it completes"
+      : `analysis has no requirements — the analysis did not complete (status: ${analysisStatus}); re-run it`,
+    inFlight,
+    { analysisId, analysisStatus },
+  );
+}
+
 export async function generateDrafts(opts: GenerateDraftsOptions): Promise<GeneratedDraftSummary> {
   const project = await prisma.project.findFirst({
     where: { id: opts.projectId, deletedAt: null },
@@ -192,7 +216,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   if (!analysis) {
     throw new PublishError(404, "ANALYSIS_NOT_FOUND", `analysis not found: ${opts.analysisId}`);
   }
-  const requirements = await loadOrPromoteRequirements(opts.analysisId);
+  const requirements = await loadOrPromoteRequirements(opts.analysisId, analysis.status);
 
   const summary: GeneratedDraftSummary = {
     total: 0,

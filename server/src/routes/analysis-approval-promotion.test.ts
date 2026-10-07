@@ -34,6 +34,8 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
 // #723 — the reopen route must sit behind its own limiter (CodeQL
 // js/missing-rate-limiting). The stub lets a test flip it to "limited".
 const reopenLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
+const promoteLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
+const analysisRow = vi.hoisted(() => ({ status: "completed" }));
 vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
   analysisApprovalReopenRateLimiter: (
     _req: express.Request,
@@ -47,11 +49,29 @@ vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
     }
     next();
   },
+  analysisApprovalPromoteRateLimiter: (
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    promoteLimiter.calls += 1;
+    if (promoteLimiter.limited) {
+      res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "slow" } });
+      return;
+    }
+    next();
+  },
 }));
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
-    analysis: { findFirst: vi.fn(async () => ({ id: "analysis-1", projectId: "proj-1" })) },
+    analysis: {
+      findFirst: vi.fn(async () => ({
+        id: "analysis-1",
+        projectId: "proj-1",
+        status: analysisRow.status,
+      })),
+    },
     project: { findUnique: vi.fn(async () => ({ workspaceId: null })) },
   },
 }));
@@ -133,6 +153,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   reopenLimiter.limited = false;
   reopenLimiter.calls = 0;
+  promoteLimiter.limited = false;
+  promoteLimiter.calls = 0;
+  analysisRow.status = "completed";
 });
 
 describe("PUT .../approvals/:approvalId — #1104 promotion retry", () => {
@@ -211,5 +234,51 @@ describe("POST .../approvals/:approvalId/reopen — #723", () => {
     expect(res.status).toBe(429);
     expect(reopenLimiter.calls).toBe(1);
     expect(reopenApprovalRequest).not.toHaveBeenCalled();
+  });
+});
+
+// Issue #723 — the Analysis page's recovery for a run whose gate is open but
+// which has no requirement rows (no review left to fire the PUT above).
+describe("POST .../approvals/promote — #723", () => {
+  const promote = () =>
+    request(createApp()).post("/api/projects/proj-1/analyses/analysis-1/approvals/promote");
+
+  it("promotes the approved requirements and reports the outcome", async () => {
+    promoteApprovedRequirements.mockResolvedValueOnce({ status: "promoted", requirementCount: 32 });
+
+    const res = await promote();
+
+    expect(res.status).toBe(200);
+    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1");
+    expect(res.body.data.promotion).toEqual({ status: "promoted", requirementCount: 32 });
+  });
+
+  it.each(["running", "pending"])("refuses with 409 while the analysis is %s", async (status) => {
+    analysisRow.status = status;
+
+    const res = await promote();
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("ANALYSIS_NOT_COMPLETED");
+    expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed promotion as unavailable instead of a 500", async () => {
+    promoteApprovedRequirements.mockRejectedValueOnce(new Error("db down"));
+
+    const res = await promote();
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.promotion.status).toBe("unavailable");
+  });
+
+  it("is rate limited before the promotion runs", async () => {
+    promoteLimiter.limited = true;
+
+    const res = await promote();
+
+    expect(res.status).toBe(429);
+    expect(promoteLimiter.calls).toBe(1);
+    expect(promoteApprovedRequirements).not.toHaveBeenCalled();
   });
 });

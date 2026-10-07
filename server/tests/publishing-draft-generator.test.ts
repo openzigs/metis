@@ -21,14 +21,17 @@ interface Draft {
 }
 
 const drafts = new Map<string, Draft>();
-/** #362 — approval-checkpoint counts by status for the gated-analysis cases. */
+/** #362 — `requirement` approval counts by status for the gated-analysis cases. */
 const approvalCounts: Record<string, number> = { pending: 0, rejected: 0 };
+/** #723 — every OTHER approval type (evidence, clarification), by type then status. */
+const otherApprovalCounts: Record<string, Record<string, number>> = {};
 let nextId = 0;
 
 const fakeProject = { id: "proj_1", name: "Apollo", deletedAt: null as Date | null };
 const fakeAnalysis = {
   id: "analysis_1",
   projectId: "proj_1",
+  status: "completed",
   startedAt: new Date("2026-09-29T14:05:00.000Z"),
   metadata: JSON.stringify({ extraInstructions: "Self-service password reset\nDetails…" }) as
     string | null,
@@ -76,9 +79,17 @@ vi.mock("../src/lib/prisma.js", () => ({
       findMany: vi.fn(async () => requirements),
     },
     approvalRequest: {
-      count: vi.fn(
-        async ({ where }: { where: { status: string } }) => approvalCounts[where.status] ?? 0,
-      ),
+      // Honours `type`: a query without one (the gate) counts every type; a
+      // `type: "requirement"` query counts only the requirement approvals.
+      count: vi.fn(async ({ where }: { where: { status: string; type?: string } }) => {
+        const requirementCount = approvalCounts[where.status] ?? 0;
+        if (where.type === "requirement") return requirementCount;
+        if (where.type) return otherApprovalCounts[where.type]?.[where.status] ?? 0;
+        return Object.values(otherApprovalCounts).reduce(
+          (sum, byStatus) => sum + (byStatus[where.status] ?? 0),
+          requirementCount,
+        );
+      }),
     },
     issueDraft: {
       findFirst: vi.fn(async ({ where }: { where: { dedupHash?: string } }) => {
@@ -142,6 +153,7 @@ beforeEach(() => {
   nextId = 0;
   approvalCounts.pending = 0;
   approvalCounts.rejected = 0;
+  for (const type of Object.keys(otherApprovalCounts)) delete otherApprovalCounts[type];
 });
 
 afterEach(() => {
@@ -793,6 +805,54 @@ describe("generateDrafts", () => {
       expect(message).not.toContain("reopen");
     });
 
+    // Mid-run window: synthesis is done but the orchestrator has not saved the
+    // requirements yet. Promoting here would race its save (#723 review).
+    it.each(["running", "pending"])(
+      "does not promote while the analysis is %s — says it is still running",
+      async (status) => {
+        fakeAnalysis.status = status;
+        try {
+          const err = await generateDrafts({
+            projectId: "proj_1",
+            analysisId: "analysis_1",
+            targetOwner: "acme",
+            targetRepo: "metis",
+          }).catch((e: unknown) => e);
+
+          expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+          expect(err).toBeInstanceOf(PublishError);
+          expect(err).toMatchObject({
+            status: 400,
+            code: "NO_REQUIREMENTS",
+            retryable: true,
+            details: { analysisId: "analysis_1", analysisStatus: status },
+          });
+          expect((err as PublishError).message).toContain("still running");
+          expect((err as PublishError).message).not.toContain("could not be promoted");
+        } finally {
+          fakeAnalysis.status = "completed";
+        }
+      },
+    );
+
+    it("does not promote a failed analysis, and says it did not complete", async () => {
+      fakeAnalysis.status = "failed";
+      try {
+        const err = await generateDrafts({
+          projectId: "proj_1",
+          analysisId: "analysis_1",
+          targetOwner: "acme",
+          targetRepo: "metis",
+        }).catch((e: unknown) => e);
+
+        expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+        expect(err).toMatchObject({ code: "NO_REQUIREMENTS", retryable: false });
+        expect((err as PublishError).message).toContain("did not complete (status: failed)");
+      } finally {
+        fakeAnalysis.status = "completed";
+      }
+    });
+
     it("does not try to promote while approvals are still pending", async () => {
       approvalCounts.pending = 2;
 
@@ -806,6 +866,33 @@ describe("generateDrafts", () => {
       expect(promoteApprovedRequirements).not.toHaveBeenCalled();
       expect(err).toMatchObject({ code: "APPROVALS_BLOCKING", details: { pendingCount: 2 } });
     });
+  });
+
+  // Issue #723 — only REQUIREMENT approvals decide the message: an evidence or
+  // clarification approval/rejection excludes no requirement, so it must never
+  // read as "all N reviewed requirement(s) were rejected" (or as approved
+  // requirements that could not be promoted).
+  it("ignores evidence and clarification approvals when naming the empty set", async () => {
+    const saved = requirements.splice(0, requirements.length);
+    otherApprovalCounts.evidence = { approved: 2, rejected: 1 };
+    otherApprovalCounts.clarification = { rejected: 1 };
+    try {
+      const err = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(PublishError);
+      const message = (err as PublishError).message;
+      expect(message).not.toContain("were rejected");
+      expect(message).not.toContain("could not be promoted");
+      expect(err).toMatchObject({ code: "NO_REQUIREMENTS" });
+      expect(message).toContain("run analysis first");
+    } finally {
+      requirements.push(...saved);
+    }
   });
 
   it("renders a Mermaid diagram and traceability footer in the epic", async () => {
