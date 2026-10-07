@@ -146,6 +146,68 @@ describe("ProjectModelSettingsPage", () => {
     expect(options[4].textContent).toContain("Claude Opus 4.8");
   });
 
+  // #713 — "Claude Fable 5" is routed `fast` but is the dearest option; it was
+  // labelled "Faster and cheaper" at $11 / $55, and Opus "most expensive" at
+  // $5.50 / $27.50. Cost wording now follows the listed prices, not the tier.
+  describe("cost wording follows the listed prices (#713)", () => {
+    const price = (inputPerMTok: number, outputPerMTok: number) => ({
+      inputPerMTok,
+      outputPerMTok,
+    });
+    const PRICED = {
+      ...MOCK_PREFS,
+      availableModels: [
+        { ...MOCK_PREFS.availableModels[0], price: price(1.1, 5.5) },
+        { ...MOCK_PREFS.availableModels[1], price: price(2.2, 11) },
+        { ...MOCK_PREFS.availableModels[2], price: price(11, 55) },
+        { ...MOCK_PREFS.availableModels[3], price: price(5.5, 27.5) },
+      ],
+    };
+
+    async function optionTexts(): Promise<string[]> {
+      mockGet.mockResolvedValue(PRICED);
+      renderPage();
+      await waitFor(() => {
+        expect(
+          (screen.getByTestId("default-model-select") as HTMLSelectElement).options,
+        ).toHaveLength(5);
+      });
+      return Array.from(
+        (screen.getByTestId("default-model-select") as HTMLSelectElement).options,
+      ).map((o) => o.textContent ?? "");
+    }
+
+    it("never calls Fable cheaper, and calls it the most expensive", async () => {
+      const fable = (await optionTexts())[3];
+      expect(fable).toContain("Claude Fable 5");
+      expect(fable).not.toMatch(/cheap/i);
+      expect(fable).toContain("most expensive ($11 / $55 per MTok)");
+    });
+
+    it("calls only the cheapest model cheapest, and Opus not the most expensive", async () => {
+      const texts = await optionTexts();
+      expect(texts[1]).toContain("Claude Haiku 4.5 — Best for simple tasks — cheapest");
+      expect(texts.filter((t) => /cheap/i.test(t))).toHaveLength(1);
+      expect(texts[4]).toContain("Claude Opus 4.8 — Highest capability ($5.50");
+      expect(texts[4]).not.toContain("most expensive");
+    });
+
+    it("makes no cost claim when prices are unknown", async () => {
+      renderPage();
+      await waitFor(() => {
+        expect(
+          (screen.getByTestId("default-model-select") as HTMLSelectElement).options,
+        ).toHaveLength(5);
+      });
+      const all = Array.from(
+        (screen.getByTestId("default-model-select") as HTMLSelectElement).options,
+      )
+        .map((o) => o.textContent)
+        .join(" ");
+      expect(all).not.toMatch(/cheap|expensive/i);
+    });
+  });
+
   describe("on a provider that does not serve the Claude tiers (#713)", () => {
     const DEEPSEEK_PREFS = {
       ...MOCK_PREFS,
@@ -182,6 +244,23 @@ describe("ProjectModelSettingsPage", () => {
       await user.click(screen.getByTestId("save-model-prefs"));
       await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
       expect(mockUpdate.mock.calls[0][1]).toMatchObject({ defaultModel: "deepseek-flash" });
+    });
+
+    it("shows a Claude tier pinned before the switch as Auto, and saves Auto", async () => {
+      mockGet.mockResolvedValue({
+        ...DEEPSEEK_PREFS,
+        defaultModel: "us.anthropic.claude-sonnet-5",
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await waitFor(() => {
+        expect((screen.getByTestId("default-model-select") as HTMLSelectElement).value).toBe(
+          "auto",
+        );
+      });
+      await user.click(screen.getByTestId("save-model-prefs"));
+      await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+      expect(mockUpdate.mock.calls[0][1]).toMatchObject({ defaultModel: null });
     });
 
     it("does not promise a Sonnet-to-Haiku downgrade, and disables the threshold", async () => {

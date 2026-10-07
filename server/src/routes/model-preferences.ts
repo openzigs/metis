@@ -284,12 +284,24 @@ interface AvailableModel {
 type PreferenceProvider = RouterProvider & Partial<Pick<AIProvider, "offline">>;
 
 /**
+ * #713 — the offline stub, which answers any model id and runs no real model.
+ * Two shapes: the stub itself (`offline: true`), and the e2e `AI_REPLAY=1`
+ * wrapper around it — a `ReplayProvider` that reports `offline: false` (it is
+ * not the stub when a fixture hits) but keeps the stub's `key`
+ * (`fixtures/install.ts`). Testing `offline` alone listed only "Offline stub"
+ * under replay.
+ */
+function isOfflineStub(provider: PreferenceProvider): boolean {
+  return provider.offline === true || provider.key === "offline-stub";
+}
+
+/**
  * #713 — true when the router's Claude tier ids run as sent. With no resolvable
- * provider, or on the offline stub (which answers any id and runs no real
- * model), the tier list is reported unchanged, as before.
+ * provider, or on the offline stub, the tier list is reported unchanged, as
+ * before.
  */
 function servesTierModels(provider: PreferenceProvider | undefined): boolean {
-  if (!provider || provider.offline === true) return true;
+  if (!provider || isOfflineStub(provider)) return true;
   return routerCatalog().some((m) => provider.servesRouterModel?.(m.id) === true);
 }
 
@@ -305,8 +317,7 @@ async function availableModelsFor(
   if (servesTierModels(provider)) {
     return routerCatalog()
       .filter(
-        (m) =>
-          !provider || provider.offline === true || provider.servesRouterModel?.(m.id) === true,
+        (m) => !provider || isOfflineStub(provider) || provider.servesRouterModel?.(m.id) === true,
       )
       .map((m) => ({
         id: m.id,
@@ -346,12 +357,14 @@ async function availableModelsFor(
 }
 
 /**
- * #713 — a default model a project may save: a router tier id (the current
- * ones, and the legacy Sonnet id saved before the Sonnet 5 rename), or the
- * active provider's configured model.
+ * #713 — a default model a project may save: `auto`; a router tier id (the
+ * current ones, and the legacy Sonnet id saved before the Sonnet 5 rename) only
+ * where the provider serves the tiers — the same test that decides whether GET
+ * lists them; or the active provider's configured model.
  */
 function acceptsDefaultModel(id: string, provider: PreferenceProvider | undefined): boolean {
-  if ((validModelIds as readonly string[]).includes(id)) return true;
+  if (id === "auto") return true;
+  if ((validModelIds as readonly string[]).includes(id) && servesTierModels(provider)) return true;
   return provider !== undefined && id === provider.model;
 }
 

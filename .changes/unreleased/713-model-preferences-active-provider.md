@@ -8,3 +8,7 @@ section: Fixed
   offers that provider's configured model (for example `deepseek-flash`) instead of Claude models at
   Anthropic prices. Its price is shown only when you have set one in `MODEL_PRICES`. The budget
   downgrade setting now says it has no effect when there is no cheaper model to downgrade to.
+- Model Preferences no longer calls a model "cheaper" or "most expensive" by its routing tier:
+  Claude Fable 5 was labelled "Faster and cheaper" at the highest price on the list. Those words
+  now appear only where the listed prices bear them out. Saving a Claude model on a provider that
+  does not run it is rejected, and a Claude model pinned before such a switch shows as Auto.

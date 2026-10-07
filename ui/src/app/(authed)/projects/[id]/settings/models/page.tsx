@@ -27,11 +27,15 @@ import { PageHeader } from "@/components/ui/page-header";
  * #135 — the model options come from the server's model catalog (the
  * `availableModels` of the preferences response, which the server builds from
  * the catalog's router scope). Only the tier wording lives here.
+ *
+ * #713 — the wording makes no cost claim: a tier says nothing about price
+ * (Claude Fable 5 is routed `fast` yet is the dearest option), so "cheapest" /
+ * "most expensive" are derived from the listed prices instead (`costRank`).
  */
 const TIER_DESCRIPTIONS: Record<string, string> = {
-  fast: "Faster and cheaper — best for simple tasks",
+  fast: "Best for simple tasks",
   balanced: "More capable — best for complex reasoning",
-  complex: "Highest capability — most expensive",
+  complex: "Highest capability",
   // #713 — a provider that does not serve the Claude tiers offers its own model.
   configured: "The model this deployment's provider runs",
 };
@@ -61,7 +65,8 @@ export default function ProjectModelSettingsPage() {
     enabled: Boolean(projectId),
   });
 
-  const modelOptions = [AUTO_OPTION, ...(data?.availableModels ?? []).map(toOption)];
+  const availableModels = data?.availableModels ?? [];
+  const modelOptions = [AUTO_OPTION, ...availableModels.map((m) => toOption(m, availableModels))];
   // #713 — absent from an older server: assume the tiers, as it did.
   const servesTierModels = data?.servesTierModels ?? true;
 
@@ -72,7 +77,13 @@ export default function ProjectModelSettingsPage() {
 
   useEffect(() => {
     if (!data) return;
-    setDefaultModel(data.defaultModel ?? "auto");
+    // #713 — on a provider that does not serve the Claude tiers, a tier pinned
+    // before the switch (not in its list) shows, and saves, as Auto: the server
+    // rejects an id the provider cannot run.
+    const stale =
+      data.servesTierModels === false &&
+      !data.availableModels.some((m) => m.id === data.defaultModel);
+    setDefaultModel(stale ? "auto" : (data.defaultModel ?? "auto"));
     setOverrides(data.taskTypeOverrides ?? {});
     setThreshold(data.budgetDowngradeThreshold ?? 0);
   }, [data]);
@@ -238,9 +249,36 @@ export default function ProjectModelSettingsPage() {
   );
 }
 
-/** One catalog model → a picker option: tier wording plus its price when known. */
-function toOption(m: ModelPreferencesData["availableModels"][number]) {
+type AvailableModel = ModelPreferencesData["availableModels"][number];
+
+/** Input plus output price per MTok, or null when the price is unknown. */
+function blendedPrice(m: AvailableModel): number | null {
+  return m.price ? m.price.inputPerMTok + m.price.outputPerMTok : null;
+}
+
+/**
+ * #713 — "cheapest" or "most expensive" when the listed prices say so: the
+ * model's price is strictly below (above) every other priced option. Nothing
+ * when fewer than two options are priced.
+ */
+function costRank(m: AvailableModel, all: AvailableModel[]): string | null {
+  const own = blendedPrice(m);
+  if (own === null) return null;
+  const others = all
+    .filter((o) => o.id !== m.id)
+    .map(blendedPrice)
+    .filter((p): p is number => p !== null);
+  if (others.length === 0) return null;
+  if (others.every((p) => own < p)) return "cheapest";
+  if (others.every((p) => own > p)) return "most expensive";
+  return null;
+}
+
+/** One catalog model → a picker option: tier wording, cost rank, and price when known. */
+function toOption(m: AvailableModel, all: AvailableModel[]) {
   const price = formatModelPrice({ price: m.price ?? null });
   const tier = TIER_DESCRIPTIONS[m.tier] ?? m.tier;
-  return { value: m.id, label: m.name, description: price ? `${tier} (${price})` : tier };
+  const rank = costRank(m, all);
+  const text = rank ? `${tier} — ${rank}` : tier;
+  return { value: m.id, label: m.name, description: price ? `${text} (${price})` : text };
 }

@@ -157,6 +157,27 @@ describe("GET model-preferences on a provider that serves Claude tiers", () => {
     expect(data.availableModels).toHaveLength(4);
     expect(data.servesTierModels).toBe(true);
   });
+
+  // e2e runs with AI_REPLAY=1: `fixtures/install.ts` wraps the stub in a
+  // ReplayProvider that reports `offline: false` but keeps the stub's key and
+  // model. Testing `offline` alone listed only "Offline stub" there.
+  it("keeps the tier list under replay of the offline stub (offline: false)", async () => {
+    activeProvider = {
+      key: "offline-stub",
+      model: "offline-stub",
+      offline: false,
+      servesRouterModel: () => false,
+    };
+    activeConfig = { provider: "offline-stub", model: "offline-stub" };
+    const data = await getPrefs();
+    expect(data.availableModels.map((m) => m.name)).toEqual([
+      "Claude Haiku 4.5",
+      "Claude Sonnet 5",
+      "Claude Fable 5",
+      "Claude Opus 4.8",
+    ]);
+    expect(data.servesTierModels).toBe(true);
+  });
 });
 
 describe("PUT model-preferences default model (#713)", () => {
@@ -170,8 +191,25 @@ describe("PUT model-preferences default model (#713)", () => {
     expect(res.body.data.defaultModel).toBe("deepseek-flash");
   });
 
-  it("still accepts a tier id, including the legacy Sonnet id", async () => {
+  it("accepts a tier id, including the legacy Sonnet id, where the tiers are served", async () => {
+    activeProvider = claudeGateway;
     expect((await put("us.anthropic.claude-haiku-4-5-20251001-v1:0")).status).toBe(200);
+    expect((await put("us.anthropic.claude-sonnet-4-6")).status).toBe(200);
+  });
+
+  it("rejects a tier id the active provider does not serve", async () => {
+    const res = await put("us.anthropic.claude-haiku-4-5-20251001-v1:0");
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("accepts auto on any provider", async () => {
+    expect((await put("auto")).status).toBe(200);
+  });
+
+  it("accepts a tier id under replay of the offline stub", async () => {
+    activeProvider = { key: "offline-stub", model: "offline-stub", offline: false };
     expect((await put("us.anthropic.claude-sonnet-4-6")).status).toBe(200);
   });
 
