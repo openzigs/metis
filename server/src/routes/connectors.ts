@@ -864,6 +864,12 @@ export function connectorsRouter(): Router {
               filesSkipped: stats.filesSkipped,
               symbolsUpserted: stats.symbolsUpserted,
               edgesUpserted: stats.edgesUpserted,
+              // #715 — the graph's size, so the Sync panel can tell it apart
+              // from the incremental delta above.
+              filesUnchanged: stats.filesUnchanged,
+              graphFiles: stats.graphFiles,
+              graphSymbols: stats.graphSymbols,
+              graphEdges: stats.graphEdges,
               durationMs: stats.durationMs,
             },
             sourceKnowledge: {

@@ -1069,10 +1069,26 @@ export default function ConnectionsPage() {
                 <p className="mb-1 text-warning">{refreshIngestResult.summary.warning}</p>
               ) : null}
               <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-foreground">
-                <span>Files re-parsed</span>
+                {/* #715 — the graph's size first; the rows below are only what
+                    this incremental run changed. */}
+                {refreshIngestResult.summary.codeGraph.graphFiles !== undefined ? (
+                  <>
+                    <span>Code graph</span>
+                    <span data-testid="sync-graph-totals">
+                      {refreshIngestResult.summary.codeGraph.graphFiles.toLocaleString()} files ·{" "}
+                      {(refreshIngestResult.summary.codeGraph.graphSymbols ?? 0).toLocaleString()}{" "}
+                      symbols ·{" "}
+                      {(refreshIngestResult.summary.codeGraph.graphEdges ?? 0).toLocaleString()}{" "}
+                      edges
+                    </span>
+                  </>
+                ) : null}
+                <span>Changed files re-parsed</span>
                 <span>
-                  {refreshIngestResult.summary.codeGraph.filesParsed} /{" "}
-                  {refreshIngestResult.summary.codeGraph.filesScanned} scanned
+                  {refreshIngestResult.summary.codeGraph.filesParsed}
+                  {refreshIngestResult.summary.codeGraph.filesUnchanged !== undefined
+                    ? ` · ${refreshIngestResult.summary.codeGraph.filesUnchanged} unchanged`
+                    : ` / ${refreshIngestResult.summary.codeGraph.filesScanned} scanned`}
                 </span>
                 <span>Symbols upserted</span>
                 <span>
