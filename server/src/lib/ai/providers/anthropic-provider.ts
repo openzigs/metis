@@ -40,6 +40,7 @@ import {
   type ProviderCapabilities,
 } from "../capabilities.js";
 import { catalogCapabilities } from "../model-catalog.js";
+import { recordCacheHit } from "../cache-hit-telemetry.js";
 import {
   cacheControlFor,
   resolveAnthropicCacheTtl,
@@ -383,6 +384,7 @@ export class AnthropicProvider implements AIProvider {
     const toolCalls = extractToolCalls(message.content);
     const nativeContent = extractNativeContent(message.content);
     logCacheUsage("chat", usage);
+    emitCacheTelemetry(usage, message.model ?? model, opts);
     logOutputBudget("chat", params.max_tokens, usage, message.stop_reason);
     return {
       content: extractText(message.content),
@@ -517,6 +519,7 @@ export class AnthropicProvider implements AIProvider {
       }
       const usage = mapUsage(final.usage);
       logCacheUsage("stream", usage);
+      emitCacheTelemetry(usage, final.model ?? model, opts);
       // #1257 — streaming is NOT subject to the SDK's non-streaming bound, but
       // it spends thinking from the same budget, so the accounting is the same.
       logOutputBudget("stream", params.max_tokens, usage, final.stop_reason);
@@ -1015,6 +1018,31 @@ function logCacheUsage(op: string, usage: TokenUsage): void {
       promptTokens: usage.promptTokens,
     });
   }
+}
+
+/**
+ * #796 — feed one completed call into the prompt-cache hit-ratio telemetry
+ * (#390) behind `GET /api/admin/cache-telemetry`. Before this only the Bedrock
+ * gateway provider recorded, so the readout was empty on every Anthropic and
+ * Anthropic-compatible (DeepSeek) deployment even while the ledger showed
+ * millions of cache-read tokens.
+ *
+ * `input_tokens` on this wire EXCLUDES the cache fields (see
+ * `cache-verification.ts`), so the hit-ratio denominator is the full prompt:
+ * fresh input + reads + writes. Passing `promptTokens` alone would push every
+ * warm call's ratio past 1 and clamp it there. `recordCacheHit` never throws
+ * and logs only the model id, call type and token counts.
+ */
+function emitCacheTelemetry(usage: TokenUsage, model: string, opts: ChatOptions): void {
+  const cacheReadTokens = usage.cacheReadTokens ?? 0;
+  const cacheWriteTokens = usage.cacheWriteTokens ?? 0;
+  recordCacheHit({
+    callType: opts.callType,
+    model,
+    cacheReadTokens,
+    cacheWriteTokens,
+    promptTokens: usage.promptTokens + cacheReadTokens + cacheWriteTokens,
+  });
 }
 
 function makeAbortError(): Error {
