@@ -135,6 +135,10 @@ overrides:
   #   range; solid-js 1.9.16 itself moves to `~1.6.8` but is younger than
   #   minimumReleaseAge. Delete this line once the tree takes solid-js >=1.9.16.
   seroval@<1.6.3: ^1.6.3
+  #   source-map-js GHSA-68fv-2mgg-jv7q (CVSS 8.7, event-loop DoS), fixed 1.2.2
+  #   — via postcss, @tailwindcss/node, css-tree (jsdom) and magicast. 1.2.2 was
+  #   published 2026-09-30T14:08Z and resolved only after it cleared the gate.
+  source-map-js@<1.2.2: ^1.2.2
   # axios, FIVE Highs published 2026-09-30 15:01-15:03Z, all fixed in 1.20.0 (#554):
   #   GHSA-3pq3-5fj3-cg6v  CVSS 7.0  HTTP/2 adapter bypasses DNS lookup/proxy
   #   GHSA-542g-h47m-68v8  CVSS 8.2  DoS via unhandled HTTP/2 'error' event
