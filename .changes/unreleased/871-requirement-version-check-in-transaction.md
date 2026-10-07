@@ -3,12 +3,11 @@ issue: 871
 section: Fixed
 ---
 
-- Two concurrent edits to the same requirement that carry the same `version`
-  can no longer both succeed. The version check used to run before the write
-  transaction opened, so the second edit silently overwrote the first. It is now
-  checked again inside the transaction with a write conditional on the version,
-  so the losing edit gets `409 VERSION_CONFLICT` with the usual field diff.
-  This applies to `PUT /api/requirements/:id` and
-  `PATCH /api/analyses/:id/requirements/:reqId`, on SQLite and Postgres. Edits
-  sent without a `version` still apply last-writer-wins, now with a gap-free
-  version history instead of an occasional 500 on Postgres.
+- Two concurrent edits to the same requirement carrying the same `version` can
+  no longer both succeed: the version is now checked inside the write
+  transaction with a version-conditional write, so the loser gets
+  `409 VERSION_CONFLICT` with the usual field diff (`PUT /api/requirements/:id`,
+  `PATCH /api/analyses/:id/requirements/:reqId`, SQLite and Postgres). Edits
+  without a `version` stay last-writer-wins with a gap-free history; no-op edits
+  still succeed. Restoring a version uses the same conditional write, so it no
+  longer overwrites a concurrent edit from a stale snapshot.
