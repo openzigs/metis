@@ -128,6 +128,52 @@ describe("renderTableBlock (#732)", () => {
     expect(block).toContain("fks: user_id → public.users.id");
   });
 
+  it("renders unique indexes so the model sees DB-enforced uniqueness (#725)", () => {
+    const block = renderTableBlock(
+      table({
+        name: "feeds",
+        indexes: [
+          { name: "feeds_pkey", columns: ["id"], isUnique: true },
+          { name: "feeds_user_id_feed_url_key", columns: ["user_id", "feed_url"], isUnique: true },
+          { name: "feeds_slug_key", columns: ["slug"], isUnique: true },
+          { name: "feeds_user_id_idx", columns: ["user_id"], isUnique: false },
+        ],
+      }),
+    );
+    expect(block).toContain("  unique: (user_id, feed_url); (slug)");
+    // The primary key is already flagged `pk` on its column; a non-unique
+    // index says nothing about uniqueness.
+    expect(block).not.toContain("(id)");
+    expect(block).not.toContain("feeds_user_id_idx");
+  });
+
+  it("de-duplicates unique indexes over the same columns (#725)", () => {
+    const block = renderTableBlock(
+      table({
+        indexes: [
+          { name: "a_key", columns: ["email"], isUnique: true },
+          { name: "a_idx", columns: ["email"], isUnique: true },
+        ],
+      }),
+    );
+    expect(block).toContain("  unique: (email)");
+    expect(block.match(/\(email\)/g)).toHaveLength(1);
+  });
+
+  it("keeps a unique index over the pk columns when the pk is composite-different (#725)", () => {
+    const block = renderTableBlock(
+      table({
+        primaryKey: ["id"],
+        indexes: [{ name: "k", columns: ["id", "email"], isUnique: true }],
+      }),
+    );
+    expect(block).toContain("unique: (id, email)");
+  });
+
+  it("omits the unique line when there is no unique index (#725)", () => {
+    expect(renderTableBlock(table())).not.toContain("unique:");
+  });
+
   it("omits refSchema from the FK target when absent", () => {
     const block = renderTableBlock(
       table({

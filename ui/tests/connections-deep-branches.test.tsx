@@ -4,7 +4,7 @@
  * uncovered state transitions.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 
 vi.mock("next/navigation", async () => {
@@ -222,6 +222,43 @@ describe("ConnectionsPage — progress map rendering", () => {
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
     await waitFor(() => expect(screen.getByTestId("progress-r1")).toBeInTheDocument());
+  });
+});
+
+describe("ConnectionsPage — a run that ends refreshes the card (#762)", () => {
+  it("refetches the repo list when the progress hook reports a settled run", async () => {
+    repoList.mockResolvedValue([makeRepo({ id: "r1", status: "pending", lastCommitSha: null })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("pending")).toBeInTheDocument());
+    const opts = useConnectorProgressMock.mock.calls.at(-1)?.[1] as {
+      onSettled: (id: string) => void;
+    };
+    // The auto-ingest finished: the server now reports the connector connected.
+    repoList.mockResolvedValue([
+      makeRepo({
+        id: "r1",
+        status: "connected",
+        lastCommitSha: "c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+      }),
+    ]);
+    act(() => {
+      opts.onSettled("r1");
+    });
+    await waitFor(() => expect(screen.getByText("connected")).toBeInTheDocument());
+    expect(screen.getByTestId("repo-commit-sha")).toHaveTextContent("c4d54f8");
+  });
+
+  it("labels a count-less progress row for people, with no empty count", async () => {
+    useConnectorProgressMock.mockReturnValue({
+      progressMap: { r1: { phase: "test", step: "repo.get" } },
+      clearProgress: vi.fn(),
+    });
+    repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
+    renderPage();
+    const row = await screen.findByTestId("progress-r1");
+    expect(row).toHaveTextContent("Testing connection");
+    expect(row).not.toHaveTextContent("repo.get");
+    expect(row).not.toHaveTextContent("/");
   });
 });
 
