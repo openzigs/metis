@@ -22,15 +22,14 @@ import {
 } from "./helpers/sqlite-migrated-db.js";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
-vi.mock("../src/lib/prisma.js", async () => {
-  const { Prisma } = await import("@prisma/client");
-  return {
-    get prisma() {
-      return state.db;
-    },
-    Prisma,
-  };
-});
+// The real module, so `persistRequirements` picks its locking by the real
+// provider seam (#779); only the client is swapped.
+vi.mock("../src/lib/prisma.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/prisma.js")>()),
+  get prisma() {
+    return state.db;
+  },
+}));
 
 const { persistRequirements } = await import("../src/lib/analysis/analysis-service.js");
 
@@ -84,6 +83,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     beforeEach(async () => {
+      state.db = db;
       await db.baseline.deleteMany({});
       await db.reviewRequest.deleteMany({});
       await db.databaseConnection.deleteMany({});
@@ -111,6 +111,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         select: { title: true },
       });
       return rows.map((r) => r.title);
+    }
+
+    /** A generated spec document to map a requirement to (#779). */
+    async function specDocument() {
+      return db.generatedDocument.create({
+        data: { projectId: PROJECT, title: "Spec" },
+      });
     }
 
     async function metadata(): Promise<Record<string, unknown>> {
@@ -313,6 +320,69 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             data: { requirementId: id, assigneeId: USER, assignedById: USER },
           }),
       ],
+      // Issue #779 — the rest of the work a person can attach to a requirement.
+      [
+        "a stakeholder link",
+        async (id) => {
+          const sh = await db.stakeholder.create({
+            data: { projectId: PROJECT, name: "Ops lead" },
+          });
+          return db.requirementStakeholder.create({
+            data: { requirementId: id, stakeholderId: sh.id },
+          });
+        },
+      ],
+      [
+        "a manual spec mapping",
+        async (id) =>
+          db.requirementSpecMapping.create({
+            data: {
+              requirementId: id,
+              specDocumentId: (await specDocument()).id,
+              projectId: PROJECT,
+              source: "manual",
+            },
+          }),
+      ],
+      [
+        "a manual code mapping",
+        (id) =>
+          db.requirementCodeMapping.create({
+            data: { requirementId: id, projectId: PROJECT, filePath: "a.ts", source: "manual" },
+          }),
+      ],
+      [
+        "an implementation",
+        (id) =>
+          db.requirementImplementation.create({
+            data: {
+              requirementId: id,
+              prNumber: 7,
+              prUrl: "https://example.test/pr/7",
+              commitSha: "abc",
+              filePath: "a.ts",
+              mergedAt: new Date(),
+            },
+          }),
+      ],
+      [
+        "an issue draft",
+        (id) =>
+          db.issueDraft.create({
+            data: { projectId: PROJECT, requirementId: id, title: "t", body: "b" },
+          }),
+      ],
+      [
+        "a discussion thread",
+        (id) =>
+          db.discussionThread.create({
+            data: { projectId: PROJECT, requirementId: id, createdById: USER },
+          }),
+      ],
+      [
+        "a soft delete",
+        (id) => db.requirement.update({ where: { id }, data: { deletedAt: new Date() } }),
+      ],
     ];
 
     it.each(signals)("keeps the set when one requirement carries %s", async (label, add) => {
@@ -330,8 +400,122 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // A link is work on BOTH of its endpoints.
       expect((await metadata()).requirementReplacementWithheld).toMatchObject({
         reason: "reviewed-work",
-        reviewedCount: label.includes("link") ? 2 : 1,
+        reviewedCount: /(outgoing|incoming) link/.test(label) ? 2 : 1,
       });
+    });
+
+    // #779 — generated mappings and abandoned drafts/threads are not review work.
+    const nonSignals: Array<[string, (reqId: string) => Promise<unknown>]> = [
+      [
+        "a derived spec mapping",
+        async (id) =>
+          db.requirementSpecMapping.create({
+            data: {
+              requirementId: id,
+              specDocumentId: (await specDocument()).id,
+              projectId: PROJECT,
+            },
+          }),
+      ],
+      [
+        "a semantic code mapping",
+        (id) =>
+          db.requirementCodeMapping.create({
+            data: { requirementId: id, projectId: PROJECT, filePath: "a.ts" },
+          }),
+      ],
+      [
+        "a deleted issue draft",
+        (id) =>
+          db.issueDraft.create({
+            data: {
+              projectId: PROJECT,
+              requirementId: id,
+              title: "t",
+              body: "b",
+              deletedAt: new Date(),
+            },
+          }),
+      ],
+      [
+        "a deleted discussion thread",
+        (id) =>
+          db.discussionThread.create({
+            data: {
+              projectId: PROJECT,
+              requirementId: id,
+              createdById: USER,
+              deletedAt: new Date(),
+            },
+          }),
+      ],
+    ];
+
+    it.each(nonSignals)("replaces the set when a requirement carries only %s", async (_l, add) => {
+      const [a] = await seedSet(["A"]);
+      await add(a!);
+      await seedSet(["C"]);
+      expect(await titles()).toEqual(["C"]);
+    });
+
+    // #779 — the check, the markers, the delete and the inserts are one
+    // transaction: a failed insert leaves the previous set AND its markers.
+    it("a failed insert rolls back the delete and the metadata markers", async () => {
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis(["F1", "F2"]),
+        findingIdsByIndex: [],
+        degraded: DEGRADED,
+      });
+      const before = await metadata();
+      expect(before.synthesisDegraded).toMatchObject({ reason: "non-json" });
+
+      // The second insert of the replacement fails, wherever it is issued.
+      let creates = 0;
+      const failSecondCreate = (requirement: PrismaClient["requirement"]) =>
+        new Proxy(requirement, {
+          get(target, prop, receiver) {
+            if (prop !== "create") return Reflect.get(target, prop, receiver);
+            return (args: Parameters<PrismaClient["requirement"]["create"]>[0]) => {
+              creates += 1;
+              if (creates === 2) return Promise.reject(new Error("disk full"));
+              return target.create(args);
+            };
+          },
+        });
+      const withRequirement = <T extends object>(client: T, requirement: unknown): T =>
+        new Proxy(client, {
+          get: (target, prop, receiver) =>
+            prop === "requirement" ? requirement : Reflect.get(target, prop, receiver),
+        });
+      state.db = new Proxy(withRequirement(db, failSecondCreate(db.requirement)), {
+        get(target, prop, receiver) {
+          if (prop !== "$transaction") return Reflect.get(target, prop, receiver);
+          return (fn: (tx: unknown) => Promise<unknown>, opts?: { timeout?: number }) =>
+            db.$transaction(
+              (tx) => fn(withRequirement(tx, failSecondCreate(tx.requirement))),
+              opts,
+            );
+        },
+      });
+
+      try {
+        await expect(
+          persistRequirements({
+            analysisId: ANALYSIS,
+            projectId: PROJECT,
+            synthesis: synthesis(["H1", "H2", "H3"]),
+            findingIdsByIndex: [],
+            degraded: null,
+          }),
+        ).rejects.toThrow("disk full");
+      } finally {
+        state.db = db;
+      }
+
+      expect(await titles()).toEqual(["F1", "F2"]);
+      expect(await metadata()).toEqual(before);
     });
 
     it("an explicit 'draft' review status is not review work — the set is replaced", async () => {

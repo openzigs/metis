@@ -32,7 +32,7 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
-import { optimisticLock } from "../middleware/optimistic-lock.js";
+import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lock.js";
 // Issue #1099 — the top-level `/api/analyses` router has no path project to
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
@@ -85,6 +85,7 @@ import {
   serializeFindingIssueDraftMarkdown,
   serializeAnalysisReportMarkdown,
 } from "../lib/analysis/index.js";
+import { RequirementVersionError } from "../lib/requirements/requirement-version-service.js";
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 // Issue #743 — diff-style current-vs-proposed view for changed requirements.
 import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-service.js";
@@ -231,6 +232,39 @@ async function ensureAnalysisAccessible(req: Request, analysisId: string) {
 interface InitOptions {
   /** Inject an orchestrator (tests). */
   orchestrator?: AnalysisOrchestrator;
+}
+
+/**
+ * #865 / #871 — the optimistic-lock view of an analysis-scoped requirement,
+ * used by the lock middleware and again by the PATCH handler when the write
+ * transaction itself detects a conflict.
+ */
+async function loadLockedAnalysisRequirement(req: Request) {
+  const row = await prisma.requirement.findFirst({
+    where: {
+      id: String(req.params.reqId),
+      analysisId: String(req.params.id),
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      version: true,
+      title: true,
+      body: true,
+      priority: true,
+      type: true,
+      labels: true,
+      storyPoints: true,
+      reviewStatus: true,
+    },
+  });
+  if (!row) return null;
+  // The lock diffs against the request body, which carries labels as a
+  // string[]; present the stored JSON column in that shape — and only the
+  // labels the caller sees. The hidden `finding:*` / `review:*` labels are
+  // preserved by the write, so they are never a conflict and never offered
+  // as the "server" value in the merge modal.
+  return { ...row, labels: visibleRequirementLabels(row.labels) };
 }
 
 export function initAnalysisRouter(opts: InitOptions = {}): {
@@ -495,33 +529,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     // a body `version` that is not the current one is a 409 with a field diff;
     // no `version` skips the check. The loader is scoped to this analysis, so a
     // requirement of another one is the same 404 the handler gives.
-    optimisticLock("requirement", async (req) => {
-      const row = await prisma.requirement.findFirst({
-        where: {
-          id: String(req.params.reqId),
-          analysisId: String(req.params.id),
-          deletedAt: null,
-        },
-        select: {
-          id: true,
-          version: true,
-          title: true,
-          body: true,
-          priority: true,
-          type: true,
-          labels: true,
-          storyPoints: true,
-          reviewStatus: true,
-        },
-      });
-      if (!row) return null;
-      // The lock diffs against the request body, which carries labels as a
-      // string[]; present the stored JSON column in that shape — and only the
-      // labels the caller sees. The hidden `finding:*` / `review:*` labels are
-      // preserved by the write, so they are never a conflict and never offered
-      // as the "server" value in the merge modal.
-      return { ...row, labels: visibleRequirementLabels(row.labels) };
-    }),
+    optimisticLock("requirement", loadLockedAnalysisRequirement),
     async (req: Request, res: Response) => {
       const id = String(req.params.id);
       const reqId = String(req.params.reqId);
@@ -532,12 +540,40 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         });
       }
       const actor = actorFromReq(req);
-      const updated = await updateRequirementRow({
-        analysisId: id,
-        requirementId: reqId,
-        patch: parsed.data,
-        actorId: actor.id,
-      });
+      // #871 — the lock middleware's read is outside the write transaction, so
+      // two concurrent edits with the same version both pass it. The service
+      // re-checks the version inside the transaction. (The shared schema strips
+      // `version`; the middleware has already validated it is a number.)
+      const bodyVersion = (req.body as Record<string, unknown> | undefined)?.version;
+      const expectedVersion = typeof bodyVersion === "number" ? bodyVersion : undefined;
+      let updated: Awaited<ReturnType<typeof updateRequirementRow>>;
+      try {
+        updated = await updateRequirementRow({
+          analysisId: id,
+          requirementId: reqId,
+          patch: parsed.data,
+          actorId: actor.id,
+          expectedVersion,
+        });
+      } catch (err) {
+        if (
+          err instanceof RequirementVersionError &&
+          err.code === "VERSION_CONFLICT" &&
+          expectedVersion !== undefined
+        ) {
+          const current = await loadLockedAnalysisRequirement(req);
+          if (!current) throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+          sendVersionConflict(
+            res,
+            "requirement",
+            current,
+            req.body as Record<string, unknown>,
+            expectedVersion,
+          );
+          return;
+        }
+        throw err;
+      }
       if (!updated) {
         // 404 covers both "requirement does not exist" and "requirement
         // belongs to a different analysis" — never leak the difference.

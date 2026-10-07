@@ -62,6 +62,11 @@ export interface SourceIngestState {
   /** Already indexed with identical content — skipped by checksum. */
   unchanged: number;
   failed: number;
+  /**
+   * #756 — documents removed because their file is absent from the checkout.
+   * Absent from states recorded before #756.
+   */
+  pruned?: number;
   chunkCount: number;
   skipped: SourceIngestSkipped;
   /** #217 — which files were skipped as oversize (first {@link SKIPPED_PATHS_RECORDED}). */

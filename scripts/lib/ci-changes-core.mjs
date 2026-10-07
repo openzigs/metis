@@ -57,6 +57,7 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/tests/lib/pg/**",
   // Direct `../src/` imports (and `vi.mock` targets) of the server/tests/*-postgres and
   // *-pgvector integration suites.
+  "server/src/lib/analysis/analysis-service.ts",
   "server/src/lib/auth/jwt.ts",
   "server/src/lib/auth/live-auth-payload.ts",
   "server/src/lib/auth/sso-state-store.ts",
@@ -73,6 +74,7 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/rag/knowledge-service.ts",
   "server/src/lib/rag/reindex-lease.ts",
   "server/src/lib/rag/vector-store.ts",
+  "server/src/lib/requirements/requirement-version-service.ts",
   "server/src/lib/scheduler/leader-election.ts",
   "server/src/lib/socket/cluster-adapter.ts",
   "server/src/lib/socket/mcp-status-eviction.ts",

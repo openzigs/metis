@@ -440,6 +440,45 @@ describe("provider routing on deep-ingest", () => {
     );
   });
 
+  it("#715 — refresh-ingest reports the graph's totals from the ingest stats, apart from the delta", async () => {
+    // An incremental Sync re-parses one file of a 40-file graph: the response
+    // must carry both the delta and the whole graph's size, each from the stats.
+    vi.mocked(ingestCodeGraph).mockResolvedValueOnce({
+      codeGraphId: "cg_1",
+      filesScanned: 41,
+      filesParsed: 1,
+      filesSkipped: 40,
+      symbolsUpserted: 3,
+      edgesUpserted: 2,
+      rationaleFindings: 0,
+      schemaEdges: 0,
+      routineEdges: 0,
+      filesRebound: 0,
+      lineageBackfill: false,
+      filesLineageRefreshed: 0,
+      filesUnchanged: 39,
+      graphFiles: 40,
+      graphSymbols: 517,
+      graphEdges: 1203,
+      languageStats: {},
+      durationMs: 7,
+    });
+    const token = await login("admin");
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos/repo_github_x/refresh-ingest")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.codeGraph).toMatchObject({
+      filesParsed: 1,
+      symbolsUpserted: 3,
+      edgesUpserted: 2,
+      filesUnchanged: 39,
+      graphFiles: 40,
+      graphSymbols: 517,
+      graphEdges: 1203,
+    });
+  });
+
   it("local connector skips the clone (resolveNonGitIngestRoot, never shallowCloneRepo)", async () => {
     const token = await login("admin");
     const res = await request(app)

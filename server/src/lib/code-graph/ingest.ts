@@ -102,7 +102,12 @@ export interface IngestOptions {
   rootDir: string;
   /** Optional connector-id used for the CodeGraph FK. */
   repoConnectionId?: string;
-  /** Optional commit SHA to record on the CodeGraph row. */
+  /**
+   * Optional commit SHA the graph is built from. Recorded on the CodeGraph row
+   * and, with `repoConnectionId`, as `RepoConnection.lastCommitSha` — both only
+   * once the ingest has finished, so a failed run leaves the two labels on the
+   * commit the graph still reflects (#758).
+   */
   commitSha?: string;
   /**
    * When true, skip files whose recorded `contentHash` matches the on-disk
@@ -251,6 +256,21 @@ export interface IngestStats {
    * into them keep their ids. Zero unless {@link lineageBackfill} is true.
    */
   filesLineageRefreshed: number;
+  /**
+   * #715 — files an incremental run skipped because their content hash matched
+   * the graph: they are in the graph, just not re-parsed. Counted inside
+   * {@link filesSkipped}, which also holds files in no code-graph language.
+   */
+  filesUnchanged: number;
+  /**
+   * #715 — the graph as a whole after this run, not this run's delta: the
+   * files it holds (one `module` symbol each), its symbols and its edges.
+   * `filesParsed` / `symbolsUpserted` / `edgesUpserted` describe only what an
+   * incremental run re-parsed, which read as the graph's size.
+   */
+  graphFiles: number;
+  graphSymbols: number;
+  graphEdges: number;
   languageStats: Record<string, number>;
   durationMs: number;
 }
@@ -361,7 +381,7 @@ export async function ingestCodeGraph(
   const maybeYield = createEventLoopYielder();
 
   // Step 1 — locate or create the CodeGraph row.
-  const graph = await upsertCodeGraph(prisma, projectId, repoConnectionId, commitSha);
+  const graph = await upsertCodeGraph(prisma, projectId, repoConnectionId);
 
   // #721 — Step 6 runs only over re-parsed files, so an incremental run whose
   // lineage inputs changed would leave every unchanged file without lineage.
@@ -414,6 +434,10 @@ export async function ingestCodeGraph(
     filesRebound: 0,
     lineageBackfill,
     filesLineageRefreshed: 0,
+    filesUnchanged: 0,
+    graphFiles: 0,
+    graphSymbols: 0,
+    graphEdges: 0,
     languageStats: {},
     durationMs: 0,
   };
@@ -515,6 +539,7 @@ export async function ingestCodeGraph(
     if (incremental && existing?.contentHash === fileHash) {
       unchangedFiles.set(relPath, { language: existing.language });
       stats.filesSkipped += 1;
+      stats.filesUnchanged += 1;
       if (lineageBackfill && (EMBEDDED_SQL_LANGUAGES.has(lang) || lang === "sas")) {
         lineageOnlyFiles.push({
           filePath: relPath,
@@ -756,6 +781,13 @@ export async function ingestCodeGraph(
   // Step 8 — finalise CodeGraph counts.
   const totalSymbols = await prisma.codeSymbol.count({ where: { codeGraphId: graph.id } });
   const totalEdges = await prisma.codeEdge.count({ where: { codeGraphId: graph.id } });
+  // #715 — one `module` symbol per file, the same index `loadExistingFiles` reads.
+  const totalFiles = await prisma.codeSymbol.count({
+    where: { codeGraphId: graph.id, kind: "module" },
+  });
+  stats.graphFiles = totalFiles;
+  stats.graphSymbols = totalSymbols;
+  stats.graphEdges = totalEdges;
   const langGrouping = await prisma.codeSymbol.groupBy({
     by: ["language"],
     where: { codeGraphId: graph.id },
@@ -765,7 +797,7 @@ export async function ingestCodeGraph(
   for (const row of langGrouping) {
     langStatsRecord[row.language] = row._count._all;
   }
-  await prisma.codeGraph.update({
+  const finalise = prisma.codeGraph.update({
     where: { id: graph.id },
     data: {
       symbolCount: totalSymbols,
@@ -773,8 +805,24 @@ export async function ingestCodeGraph(
       languageStats: JSON.stringify(langStatsRecord),
       lastIndexedAt: new Date(),
       lineageFingerprint: recordedFingerprint,
+      // #758 — the commit label moves only when the graph is complete.
+      ...(commitSha ? { commitSha } : {}),
     },
   });
+  if (commitSha && repoConnectionId) {
+    // #758 — the connector's `lastCommitSha` (the commit the connections page
+    // says the graph reflects) is written here and nowhere else in an ingest,
+    // in the same transaction as the graph's label, so the two cannot drift.
+    await prisma.$transaction([
+      finalise,
+      prisma.repoConnection.updateMany({
+        where: { id: repoConnectionId },
+        data: { lastCommitSha: commitSha },
+      }),
+    ]);
+  } else {
+    await finalise;
+  }
 
   // Step 9 — Epic #780 / Issue #797. Symbols (and their index-time text) are
   // durable now; hand the embedding off to a background job. Fire-and-forget:
@@ -814,22 +862,17 @@ async function upsertCodeGraph(
   prisma: PrismaClient,
   projectId: string,
   repoConnectionId: string | undefined,
-  commitSha: string | undefined,
 ): Promise<{ id: string; lineageFingerprint: string | null }> {
+  // #758 — the commit label is written by Step 8, not here: a run that fails
+  // part-way must not relabel a graph it never finished rebuilding.
   const existing = await prisma.codeGraph.findFirst({
     where: { projectId, repoConnectionId: repoConnectionId ?? null },
   });
-  if (existing) {
-    if (commitSha && existing.commitSha !== commitSha) {
-      await prisma.codeGraph.update({ where: { id: existing.id }, data: { commitSha } });
-    }
-    return existing;
-  }
+  if (existing) return existing;
   return prisma.codeGraph.create({
     data: {
       projectId,
       repoConnectionId: repoConnectionId ?? null,
-      commitSha: commitSha ?? null,
     },
     select: { id: true, lineageFingerprint: true },
   });

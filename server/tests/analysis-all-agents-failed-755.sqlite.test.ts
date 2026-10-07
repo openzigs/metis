@@ -30,6 +30,9 @@ vi.mock("../src/lib/prisma.js", async () => {
       return state.db;
     },
     Prisma,
+    // #779 — `persistRequirements` picks its row locking by provider; this
+    // suite runs a real SQLite client, so it pins the SQLite path.
+    resolveDatabaseProvider: () => "sqlite" as const,
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));

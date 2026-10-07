@@ -14,6 +14,7 @@ const mockPrisma = {
   requirement: {
     findUnique: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
     findMany: vi.fn(async (): Promise<Array<{ id: string; version: number }>> => []),
   },
   requirementVersion: { findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
@@ -289,13 +290,16 @@ describe("requirement history router", () => {
 
   describe("POST /:id/restore/:version", () => {
     function primeRestore() {
-      mockPrisma.requirement.findUnique.mockResolvedValue(CURRENT);
+      // The in-transaction read selects the tracked fields; the post-write
+      // re-read selects only id/version/updatedAt.
+      mockPrisma.requirement.findUnique.mockImplementation(
+        async (args: { select?: Record<string, unknown> }) =>
+          args.select && "title" in args.select
+            ? CURRENT
+            : { id: "req-1", version: 4, updatedAt: new Date("2026-04-04T00:00:00Z") },
+      );
       mockPrisma.requirementVersion.findMany.mockResolvedValue(VERSION_ROWS);
-      mockPrisma.requirement.update.mockResolvedValue({
-        id: "req-1",
-        version: 4,
-        updatedAt: new Date("2026-04-04T00:00:00Z"),
-      });
+      mockPrisma.requirement.updateMany.mockResolvedValue({ count: 1 });
       mockPrisma.requirementVersion.create.mockResolvedValue({});
     }
 
@@ -323,7 +327,7 @@ describe("requirement history router", () => {
       primeRestore();
       const res = await request(app).post("/requirements/req-1/restore/1");
       expect(res.status).toBe(403);
-      expect(mockPrisma.requirement.update).not.toHaveBeenCalled();
+      expect(mockPrisma.requirement.updateMany).not.toHaveBeenCalled();
       expect(auditSpy).not.toHaveBeenCalled();
     });
 
@@ -344,6 +348,16 @@ describe("requirement history router", () => {
       const res = await request(app).post("/requirements/req-1/restore/99");
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe("VERSION_NOT_FOUND");
+    });
+
+    it("#871 — returns 409 VERSION_CONFLICT when concurrent edits keep winning the write", async () => {
+      primeRestore();
+      mockPrisma.requirement.updateMany.mockResolvedValue({ count: 0 });
+      const res = await request(app).post("/requirements/req-1/restore/1");
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("VERSION_CONFLICT");
+      expect(mockPrisma.requirementVersion.create).not.toHaveBeenCalled();
+      expect(auditSpy).not.toHaveBeenCalled();
     });
 
     it("returns 404 REQUIREMENT_NOT_FOUND when the requirement is missing", async () => {

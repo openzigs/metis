@@ -78,6 +78,8 @@ export const queryKeys = {
       [...queryKeys.skills.all, "list", filters ?? {}] as const,
     detail: (id: string) => [...queryKeys.skills.all, "detail", id] as const,
     versions: (id: string) => [...queryKeys.skills.all, "versions", id] as const,
+    diff: (id: string, left: string, right: string) =>
+      [...queryKeys.skills.all, "diff", id, left, right] as const,
   },
   library: {
     all: ["library"] as const,

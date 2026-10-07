@@ -119,7 +119,26 @@ overrides:
   # latest release; verified 2026-09-20 that it returns ZERO vulns on
   # api.osv.dev — a fix version is a bet that no later advisory covers it, and
   # that bet has lost at #1240/#1273/#1291/#1324/#1345.
-  sharp@<0.35.4: ^0.35.4
+  # ...and lost again at #903: GHSA-wq5f-xc86-pv6w (CVSS 8.9, librsvg
+  # CVE-2026-96889, published 2026-10-06) covers `introduced 0, fixed 0.35.5`.
+  # Bound and floor moved together (#1208). 0.35.5 published 2026-09-27.
+  sharp@<0.35.5: ^0.35.5
+  # #903 — advisories published 2026-10-05/06; each fixed version is past
+  # minimumReleaseAge and returns zero vulns on api.osv.dev (2026-10-07).
+  # Guarded by scripts/lib/dependency-audit-903-advisories.test.mjs.
+  #   proxy-addr GHSA-jqcg-44mw-7w3h (CVSS 9.1, IPv4-mapped IPv6 trust bypass),
+  #   fixed 2.0.8 — via express@5.2.1 (`~2.0.7`) in server and embeddings-svc.
+  proxy-addr@<2.0.8: ^2.0.8
+  #   seroval GHSA-p6vx-979v-rg4c (CVSS 9.8, fixed 1.6.2) and GHSA-jp82-f5mq-hwhp
+  #   (CVSS 7.5, fixed 1.6.3) — via solid-js@1.9.15 (`seroval: ~1.5.4`) under
+  #   ui's @tanstack/react-query-devtools. This crosses solid-js's declared
+  #   range; solid-js 1.9.16 itself moves to `~1.6.8` but is younger than
+  #   minimumReleaseAge. Delete this line once the tree takes solid-js >=1.9.16.
+  seroval@<1.6.3: ^1.6.3
+  #   source-map-js GHSA-68fv-2mgg-jv7q (CVSS 8.7, event-loop DoS), fixed 1.2.2
+  #   — via postcss, @tailwindcss/node, css-tree (jsdom) and magicast. 1.2.2 was
+  #   published 2026-09-30T14:08Z and resolved only after it cleared the gate.
+  source-map-js@<1.2.2: ^1.2.2
   # axios, FIVE Highs published 2026-09-30 15:01-15:03Z, all fixed in 1.20.0 (#554):
   #   GHSA-3pq3-5fj3-cg6v  CVSS 7.0  HTTP/2 adapter bypasses DNS lookup/proxy
   #   GHSA-542g-h47m-68v8  CVSS 8.2  DoS via unhandled HTTP/2 'error' event

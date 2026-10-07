@@ -68,10 +68,10 @@ export interface PipelineFacts {
 
 /**
  * The `connector:progress` phases that are an ingest. The server also emits
- * `test`, `metadata` and `introspect` progress with no `current`/`total`, and
- * `useConnectorProgress` clears an entry only on an error or when
- * `current >= total` — so those entries never clear, and counting them left the
- * Ingest stage on "Ingesting…" for good (review of #63).
+ * `test`, `metadata` and `introspect` progress with no `current`/`total`; those
+ * are not an ingest, and counting them left the Ingest stage on "Ingesting…"
+ * (review of #63). `useConnectorProgress` now also clears such an entry after
+ * a few idle seconds (#762).
  */
 const INGEST_PHASES = new Set(["ingest", "deep-ingest"]);
 
