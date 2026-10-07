@@ -1,8 +1,7 @@
 /**
  * #574 — every secret a request creates is withdrawn when the request fails
  * before its write commits: a failing LATER vault write (the Jira TLS CA cert
- * after the token, the second xray credential, the test-management CA cert
- * after the auth config) and a refused MCP create after auto-vaulting.
+ * after the token) and a refused MCP create after auto-vaulting.
  *
  * Real SQLite built by the migration chain, the real `VaultService`, the real
  * MCP router; the only thing faked is the one failure each test forces. Every
@@ -43,7 +42,6 @@ const { audit } = await import("../src/lib/audit/audit-service.js");
 const { getVaultService, __resetVaultSingleton } =
   await import("../src/lib/vault/vault-service.js");
 const jira = await import("../src/lib/connectors/jira/jira-service.js");
-const testmgmt = await import("../src/lib/connectors/testmgmt/connection-service.js");
 const { mcpRouter } = await import("../src/routes/mcp.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
@@ -65,7 +63,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const prevKey = process.env.VAULT_MASTER_KEY;
     let seq = 0;
     const uniq = (p: string) => `${p}-${++seq}`;
-    const refIdOf = (ref: string) => /^\$\{vault:([^}]+)\}$/.exec(ref)![1];
 
     /** Every secret row `actor` ever created, withdrawn ones included. */
     const secretsBy = async (actor: string) =>
@@ -216,121 +213,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // The owner's secrets were never superseded, so neither was retired.
       for (const id of [before.secretId, before.tlsCaSecretId!]) {
         expect((await db.secret.findUniqueOrThrow({ where: { id } })).deletedAt).toBeNull();
-      }
-    });
-
-    // ---- Test management ---------------------------------------------------
-
-    const tmDeps = () => ({
-      prisma: db,
-      vault: getVaultService(),
-      assertHost: async () => undefined,
-    });
-    const xrayInput = (withCa: boolean) => ({
-      label: uniq("x"),
-      kind: "xray" as const,
-      baseUrl: "https://xray.example.test",
-      auth: { kind: "xray" as const, clientId: "owner-id", clientSecret: "owner-secret" },
-      ...(withCa ? { tlsConfig: { rejectUnauthorized: true, caCert: "owner-ca" } } : {}),
-    });
-
-    it("xray create: the client_secret write failing withdraws the client_id secret", async () => {
-      failVaultCreateOn(2);
-      const input = xrayInput(false);
-
-      const r = await madeDuring(OWNER, () =>
-        testmgmt.createTestManagementConnection("p1", input, OWNER, tmDeps()),
-      );
-
-      expect((r.threw as Error).message).toBe("vault unavailable");
-      expect(r.live).toEqual([]);
-      expect(r.withdrawn).toHaveLength(1);
-      expect(await db.testManagementConnection.count({ where: { label: input.label } })).toBe(0);
-    });
-
-    it("xray create: the TLS CA write failing withdraws both xray secrets", async () => {
-      failVaultCreateOn(3);
-
-      const r = await madeDuring(OWNER, () =>
-        testmgmt.createTestManagementConnection("p1", xrayInput(true), OWNER, tmDeps()),
-      );
-
-      expect((r.threw as Error).message).toBe("vault unavailable");
-      expect(r.live).toEqual([]);
-      expect(r.withdrawn).toHaveLength(2);
-    });
-
-    it("xray create: a successful create keeps all three secrets", async () => {
-      const r = await madeDuring(OWNER, () =>
-        testmgmt.createTestManagementConnection("p1", xrayInput(true), OWNER, tmDeps()),
-      );
-      expect(r.threw).toBeNull();
-      expect(r.live).toHaveLength(3);
-    });
-
-    async function ownerXray() {
-      const made = await testmgmt.createTestManagementConnection(
-        "p1",
-        xrayInput(true),
-        OWNER,
-        tmDeps(),
-      );
-      return db.testManagementConnection.findUniqueOrThrow({ where: { id: made.id } });
-    }
-
-    it("xray update: the client_secret write failing withdraws the fresh client_id secret", async () => {
-      const before = await ownerXray();
-      failVaultCreateOn(2);
-
-      const r = await madeDuring(COORD, () =>
-        testmgmt.updateTestManagementConnection(
-          before.id,
-          { auth: { kind: "xray", clientId: "coord-id", clientSecret: "coord-secret" } },
-          COORD,
-          undefined,
-          tmDeps(),
-        ),
-      );
-
-      expect((r.threw as Error).message).toBe("vault unavailable");
-      expect(r.live).toEqual([]);
-      expect(r.withdrawn).toHaveLength(1);
-      const after = await db.testManagementConnection.findUniqueOrThrow({
-        where: { id: before.id },
-      });
-      expect(after.authConfigJson).toBe(before.authConfigJson);
-    });
-
-    it("test management update: the TLS CA write failing withdraws the fresh auth secrets", async () => {
-      const before = await ownerXray();
-      failVaultCreateOn(3);
-
-      const r = await madeDuring(COORD, () =>
-        testmgmt.updateTestManagementConnection(
-          before.id,
-          {
-            auth: { kind: "xray", clientId: "coord-id", clientSecret: "coord-secret" },
-            tlsConfig: { rejectUnauthorized: true, caCert: "coord-ca" },
-          },
-          COORD,
-          undefined,
-          tmDeps(),
-        ),
-      );
-
-      expect((r.threw as Error).message).toBe("vault unavailable");
-      expect(r.live).toEqual([]);
-      expect(r.withdrawn).toHaveLength(2);
-      const after = await db.testManagementConnection.findUniqueOrThrow({
-        where: { id: before.id },
-      });
-      expect(after.authConfigJson).toBe(before.authConfigJson);
-      expect(after.tlsConfigJson).toBe(before.tlsConfigJson);
-      // The owner's secrets stay: nothing replaced them.
-      const auth = JSON.parse(before.authConfigJson) as Record<string, string>;
-      for (const ref of [auth.clientIdRef, auth.clientSecretRef]) {
-        const row = await db.secret.findUniqueOrThrow({ where: { id: refIdOf(ref) } });
-        expect(row.deletedAt).toBeNull();
       }
     });
 

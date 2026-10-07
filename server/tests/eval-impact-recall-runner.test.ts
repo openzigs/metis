@@ -149,7 +149,7 @@ describe("searcherKind:'llm' path (#931) — mocked provider, no network", () =>
           provider: "offline-stub",
         };
       }),
-    } as unknown as Parameters<typeof LlmCodeSymbolSearcher.prototype.constructor>[1];
+    } as unknown as ConstructorParameters<typeof LlmCodeSymbolSearcher>[1];
 
     const fx = buildSyntheticFixture();
     const result = await runImpactRecallEval(fx, {
@@ -443,6 +443,7 @@ describe("toMarkdownReport — no-code dimension + failing thresholds", () => {
             precision: 1,
           },
           code: null,
+          consumers: null,
         },
       ],
       aggregate: {

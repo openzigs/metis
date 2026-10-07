@@ -68,10 +68,10 @@ export interface PipelineFacts {
 
 /**
  * The `connector:progress` phases that are an ingest. The server also emits
- * `test`, `metadata` and `introspect` progress with no `current`/`total`, and
- * `useConnectorProgress` clears an entry only on an error or when
- * `current >= total` — so those entries never clear, and counting them left the
- * Ingest stage on "Ingesting…" for good (review of #63).
+ * `test`, `metadata` and `introspect` progress with no `current`/`total`; those
+ * are not an ingest, and counting them left the Ingest stage on "Ingesting…"
+ * (review of #63). `useConnectorProgress` now also clears such an entry after
+ * a few idle seconds (#762).
  */
 const INGEST_PHASES = new Set(["ingest", "deep-ingest"]);
 
@@ -121,7 +121,14 @@ export function isDocumentIngesting(d: { status: string; indexState?: string | n
 export function quarantineHref(projectId: string): string {
   return `/projects/${projectId}/settings#quarantine`;
 }
-const RUNNING_GENERATED_DOC_STATUSES = new Set(["pending", "generating"]);
+// #867 — `cancelling` is still running: the run is winding down and will
+// record its final state, so the view keeps reading it as live.
+const RUNNING_GENERATED_DOC_STATUSES = new Set(["pending", "generating", "cancelling"]);
+
+/** A generated document whose generation has not reached a final state yet. */
+export function isGeneratedDocRunning(d: { status: string }): boolean {
+  return RUNNING_GENERATED_DOC_STATUSES.has(d.status);
+}
 const RUNNING_JOB_STATUSES = new Set(["pending", "running"]);
 
 function plural(n: number, singular: string, pluralForm = `${singular}s`): string {
@@ -340,7 +347,7 @@ function reviewStage(base: string, projectId: string, f: PipelineFacts): Pipelin
 
 function docsStage(base: string, f: PipelineFacts): PipelineStage {
   const action = { label: "Generate docs", href: `${base}/documentation` };
-  const generating = f.docs.filter((d) => RUNNING_GENERATED_DOC_STATUSES.has(d.status)).length;
+  const generating = f.docs.filter(isGeneratedDocRunning).length;
   const failed = f.docs.filter((d) => d.status === "failed").length;
   if (generating > 0) {
     return {

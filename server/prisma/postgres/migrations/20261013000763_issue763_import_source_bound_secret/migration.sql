@@ -1,0 +1,14 @@
+-- Issue #763 — an import source may refer to an EXISTING vault secret.
+--
+-- `secretId` used to name only a secret the source vaulted for itself from a
+-- pasted token, and deleting the source deleted that secret. A source can now
+-- be bound to a secret the user chose by `${vault:label}`; `secretBound` marks
+-- that case so deleting the source never deletes someone else's secret.
+--
+-- Additive only: one column, default false, which is exactly what every
+-- existing row is (a source-owned secret, or none).
+--
+-- Rollback (documentation):
+--   ALTER TABLE "import_sources" DROP COLUMN "secretBound";
+-- Lossy: after rollback, deleting a bound source would delete the shared secret.
+ALTER TABLE "import_sources" ADD COLUMN IF NOT EXISTS "secretBound" BOOLEAN NOT NULL DEFAULT false;

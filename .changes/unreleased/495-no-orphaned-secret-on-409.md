@@ -3,7 +3,7 @@ issue: 495
 section: Security
 ---
 
-- A PATCH to a Jira or test-management connection or an MCP server that loses the race and fails
+- A PATCH to a Jira connection or an MCP server that loses the race and fails
   with 409 `CONCURRENT_UPDATE` no longer leaves a new vault secret behind. The record is compared
   with the one the secret-binding check read before any credential is written; a secret written
   before the conditional update finds the row moved is withdrawn, audited as `vault.delete`

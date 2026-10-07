@@ -103,6 +103,31 @@ describe("extractRoutineBodies", () => {
     expect(fromSym?.source).toBe("sqlglot");
   });
 
+  it("writes ONE `calls` edge to a column that is both SET and filtered (#760 / #807)", async () => {
+    const { prisma, recorded } = fakePrisma();
+    const writer = new SchemaGraphWriter(prisma, "g1", "p1");
+    const fetchBody: RoutineBodyFetcher = async () =>
+      "CREATE PROCEDURE recalc AS BEGIN UPDATE t SET status = 1 WHERE status = 0; END;";
+    // The sidecar returns one column entry per access: `status` is write AND read.
+    const client = stubClient(() => ({
+      ...EMPTY,
+      tables: [{ schema: "", name: "t", qualifiedName: "t", access: "write" }],
+      columns: [
+        { table: "t", column: "status", qualifiedName: "t.status", access: "read" },
+        { table: "t", column: "status", qualifiedName: "t.status", access: "write" },
+      ],
+    }));
+
+    const res = await extractRoutineBodies(writer, [PROC], fetchBody, { client });
+
+    const statusEdges = recorded.edges.filter(
+      (e) => e.kind === "calls" && e.toQualifiedName === "t.status",
+    );
+    expect(statusEdges).toHaveLength(1);
+    // table edge + one column edge.
+    expect(res.edges).toBe(2);
+  });
+
   it("emits a routine→routine `calls` edge when a body invokes another routine", async () => {
     const { prisma, recorded } = fakePrisma();
     const writer = new SchemaGraphWriter(prisma, "g1", "p1");

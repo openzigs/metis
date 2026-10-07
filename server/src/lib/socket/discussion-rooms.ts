@@ -25,8 +25,11 @@ import type {
   ServerToClientEvents,
   RoleKey,
 } from "@metis/shared";
+import { THREAD_DENIAL, threadRoom } from "@metis/shared";
 import { canAccessThread } from "../discussions/access.js";
 import { createChildLogger } from "../logger.js";
+import { onClientEvent } from "./client-event-handler.js";
+import { onRoomJoin, roomFromField } from "./join-rate-limit.js";
 
 const log = createChildLogger("socket:discussion");
 
@@ -36,10 +39,21 @@ export type ThreadRoomSocket = Pick<
   "id" | "on" | "join" | "leave" | "emit" | "data"
 >;
 
-/** The room name for a discussion thread's realtime fan-out. */
-export function threadRoom(threadId: string): string {
-  return `thread:${threadId}`;
-}
+/**
+ * The room name for a discussion thread's realtime fan-out. Defined in
+ * `@metis/shared` so the UI's reference count keys on the same name (#672).
+ */
+export { threadRoom };
+
+/**
+ * #685 — the one refusal for a thread room, whatever the cause. Defined in
+ * `@metis/shared` beside `threadRoom`; sent as `{ message, room }`, the
+ * room-scoped shape (#655), so the UI treats it as that room's refusal rather
+ * than a connection error. No thread follower handles that refusal, so a thread
+ * revoked or deleted while open silently stops receiving live updates until the
+ * next REST load — deliberately, as #685 asks.
+ */
+export { THREAD_DENIAL };
 
 /**
  * Attach `subscribe:thread` / `unsubscribe:thread` handlers to `socket`.
@@ -53,10 +67,10 @@ export function threadRoom(threadId: string): string {
 export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
   const user = socket.data.user;
 
-  socket.on("subscribe:thread", (payload) => {
+  onRoomJoin(socket, "subscribe:thread", roomFromField("threadId", threadRoom), (payload) => {
     const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
-    void (async () => {
+    return (async () => {
       try {
         const access = await canAccessThread(
           { id: user.userId, role: user.role as RoleKey },
@@ -69,12 +83,7 @@ export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
             threadId,
             reason: access.reason,
           });
-          socket.emit("auth:error", {
-            message:
-              access.reason === "not_found"
-                ? "NOT_FOUND: discussion thread not found"
-                : "FORBIDDEN: no access to discussion thread",
-          });
+          socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
           return;
         }
         await socket.join(threadRoom(threadId));
@@ -89,14 +98,14 @@ export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
           threadId,
           error: (err as Error).message,
         });
-        socket.emit("auth:error", { message: "FORBIDDEN: no access to discussion thread" });
+        socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
       }
     })();
   });
 
-  socket.on("unsubscribe:thread", (payload) => {
+  onClientEvent(socket, "unsubscribe:thread", (payload) => {
     const threadId: unknown = payload?.threadId;
     if (!threadId || typeof threadId !== "string") return;
-    void socket.leave(threadRoom(threadId));
+    return socket.leave(threadRoom(threadId));
   });
 }

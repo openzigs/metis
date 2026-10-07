@@ -21,6 +21,7 @@ import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { MCPTransportClient } from "../src/lib/mcp/types.js";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
   createMigratedSqlite,
@@ -102,11 +103,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           stop: async () => undefined,
           notify: async () => undefined,
           closed: () => new Promise(() => undefined),
-          request: async (m: string) => {
+          // request<TResult> is generic; a canned-response stub cannot satisfy it without an assertion.
+          request: (async (m: string) => {
             if (m === "initialize") return { protocolVersion: "2025-06-18" };
             if (m === "tools/list") return { tools: [{ name: "echo", description: "echo" }] };
             throw new Error(`unexpected ${m}`);
-          },
+          }) as MCPTransportClient["request"],
         }),
       });
       registry = new MCPRegistryService(lifecycle);

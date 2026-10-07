@@ -1,0 +1,85 @@
+/**
+ * #672 — one factory per server room kind that the UI follows and later leaves.
+ *
+ * Each returns a `RoomFollow` whose `room` is the `@metis/shared` room name the
+ * server's handler joins, paired with the subscribe and unsubscribe events that
+ * join and leave exactly that room. `keepRoomSubscribed` reference-counts by
+ * `room`, so deriving all three from one id here is what stops a call site's
+ * count key drifting from the room it actually joined.
+ */
+import type { Socket } from "socket.io-client";
+import {
+  analysisRoom,
+  presenceRoom,
+  projectRoom,
+  publishRoom,
+  SCHEDULER_STATUS_ROOM,
+  sessionRoom,
+  taskRoom,
+  threadRoom,
+  type ClientToServerEvents,
+  type PresenceArtifactType,
+} from "@metis/shared";
+import type { RoomFollow, RoomJoin } from "./socket-subscription";
+
+type EmitSocket = Pick<Socket, "emit">;
+
+/** #676 — a client event the server handles, so a typo is a type error. */
+type ClientEvent = keyof ClientToServerEvents;
+
+function roomFollow(
+  socket: EmitSocket,
+  room: string,
+  subscribeEvent: ClientEvent,
+  unsubscribeEvent: ClientEvent,
+  payload: Record<string, string>,
+): RoomFollow {
+  return {
+    room,
+    subscribe: () => socket.emit(subscribeEvent, payload),
+    unsubscribe: () => socket.emit(unsubscribeEvent, payload),
+  };
+}
+
+export const threadFollow = (socket: EmitSocket, threadId: string): RoomFollow =>
+  roomFollow(socket, threadRoom(threadId), "subscribe:thread", "unsubscribe:thread", { threadId });
+
+export const sessionFollow = (socket: EmitSocket, sessionId: string): RoomFollow =>
+  roomFollow(socket, sessionRoom(sessionId), "subscribe:session", "unsubscribe:session", {
+    sessionId,
+  });
+
+export const taskFollow = (socket: EmitSocket, taskId: string): RoomFollow =>
+  roomFollow(socket, taskRoom(taskId), "subscribe:task", "unsubscribe:task", { taskId });
+
+export const analysisFollow = (socket: EmitSocket, analysisId: string): RoomFollow =>
+  roomFollow(socket, analysisRoom(analysisId), "subscribe:analysis", "unsubscribe:analysis", {
+    analysisId,
+  });
+
+export const publishFollow = (socket: EmitSocket, batchId: string): RoomFollow =>
+  roomFollow(socket, publishRoom(batchId), "subscribe:publish", "unsubscribe:publish", { batchId });
+
+export const presenceFollow = (
+  socket: EmitSocket,
+  artifactType: PresenceArtifactType,
+  artifactId: string,
+): RoomFollow =>
+  roomFollow(socket, presenceRoom(artifactType, artifactId), "presence:join", "presence:leave", {
+    artifactType,
+    artifactId,
+  });
+
+/**
+ * #682 — joins the UI makes and never leaves (`keepSubscribed`). Each names the
+ * room the server joins, so a rate-limited refusal of it can be retried.
+ */
+export const projectJoin = (socket: EmitSocket, projectId: string): RoomJoin => ({
+  room: projectRoom(projectId),
+  subscribe: () => socket.emit("subscribe:project", { projectId }),
+});
+
+export const schedulerJoin = (socket: EmitSocket): RoomJoin => ({
+  room: SCHEDULER_STATUS_ROOM,
+  subscribe: () => socket.emit("subscribe:scheduler"),
+});

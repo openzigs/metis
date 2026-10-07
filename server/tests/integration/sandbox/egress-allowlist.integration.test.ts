@@ -53,7 +53,6 @@ class StubSessionRepo implements SandboxSessionRepo {
       wallClockMs: null,
       cpuTimeMs: null,
       costMicroUsd: null,
-      runId: null,
       outcome: null,
       errorMessage: null,
     };
@@ -75,6 +74,9 @@ class StubSessionRepo implements SandboxSessionRepo {
   async listForProject(): Promise<SandboxSessionRow[]> {
     return Array.from(this.rows.values());
   }
+  async listForRun(runId: string): Promise<SandboxSessionRow[]> {
+    return Array.from(this.rows.values()).filter((r) => r.runId === runId);
+  }
 }
 
 class StubAuditRepo implements SandboxAuditEventRepo {
@@ -87,6 +89,9 @@ class StubAuditRepo implements SandboxAuditEventRepo {
       payload: JSON.stringify(input.payload ?? {}),
       timestamp: new Date(),
     };
+  }
+  async findById(id: string): Promise<SandboxAuditEventRow | null> {
+    return this.rows.find((r) => r.id === id) ?? null;
   }
   async listForSession(): Promise<SandboxAuditEventRow[]> {
     return [];

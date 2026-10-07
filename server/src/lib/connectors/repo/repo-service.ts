@@ -118,8 +118,14 @@ export interface OctokitLike {
       listCommits: (params: {
         owner: string;
         repo: string;
+        /** Branch, tag or SHA to list from; GitHub uses the default branch when absent. */
+        sha?: string;
         per_page?: number;
       }) => Promise<{ data: Array<{ sha: string }> }>;
+    };
+    git: {
+      /** `ref` is `heads/<branch>` or `tags/<tag>`; rejects with `status: 404` when absent. */
+      getRef: (params: { owner: string; repo: string; ref: string }) => Promise<unknown>;
     };
   };
 }
@@ -190,15 +196,37 @@ let gitFactoryOverride: SimpleGitFactory | null = null;
 export function __setSimpleGitFactory(factory: SimpleGitFactory | null): void {
   gitFactoryOverride = factory;
 }
+/**
+ * Every `GIT_*` key `authenticatedGitEnv` passes through `.env()`. simple-git 4
+ * REJECTS a guarded (`GIT_*`) key supplied via `.env()` unless it is named in
+ * `allowEnvironment` — on 3.x the same env was accepted, so a missing entry here
+ * fails every authenticated clone/pull at runtime (#903). Guarded by
+ * `tests/repo-service-simple-git-real.test.ts`, which runs the real client.
+ */
+export const SIMPLE_GIT_ALLOWED_ENV = [
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_KEY_0",
+  "GIT_CONFIG_VALUE_0",
+  "GIT_TERMINAL_PROMPT",
+  "GIT_CONFIG_NOSYSTEM",
+] as const;
+
 async function defaultGit(cwd: string): Promise<SimpleGitLike> {
   const mod = (await import("simple-git")) as unknown as {
     simpleGit: (c: string, opts?: Record<string, unknown>) => SimpleGitLike;
   };
-  // simple-git blocks GIT_CONFIG_COUNT/_KEY_n/_VALUE_n by default (same class
-  // of guard as allowUnsafeAskPass/allowUnsafeEditor) — opt in since
-  // `basicAuthConfigEnv` relies on it to carry the auth header.
-  return mod.simpleGit(cwd, { unsafe: { allowUnsafeConfigEnvCount: true } });
+  // Two opt-ins, both required on simple-git 4: `allowEnvironment` lets the named
+  // keys through the env guard at all, and `allowUnsafeConfigEnvCount` then permits
+  // GIT_CONFIG_COUNT/_KEY_n/_VALUE_n specifically (same class of guard as
+  // allowUnsafeAskPass/allowUnsafeEditor) — `basicAuthConfigEnv` relies on it to
+  // carry the auth header.
+  return mod.simpleGit(cwd, {
+    allowEnvironment: SIMPLE_GIT_ALLOWED_ENV,
+    unsafe: { allowUnsafeConfigEnvCount: true },
+  });
 }
+/** The real client factory, exported only so a test can execute it (#903). */
+export const __defaultGitForTest = defaultGit;
 
 // Builds env vars that make git send `Authorization: Basic <token>` on every
 // request via Git's env-var config mechanism (`GIT_CONFIG_COUNT`/`_KEY_n`/
@@ -744,17 +772,19 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
   const start = Date.now();
   try {
     const octokit = await acquireOctokit(conn.apiBaseUrl, conn.secretRef);
-    emitter().progress({
-      connectorId: id,
-      projectId,
-      kind: "repo",
-      phase: "test",
-      step: "repo.get",
-    });
+    // #762 — no `connector:progress` here: a Test is one request answered in
+    // well under a second, and its count-less progress event left a stuck
+    // "repo.get /" row under the card. The response (and its toast) reports it.
     const repoData = await octokit.rest.repos.get({
       owner: git.ownerOrOrg,
       repo: git.repoName,
     });
+    const upstreamDefault = repoData.data.default_branch;
+    // #714 — Test used to write `default_branch` over the configured ref
+    // unconditionally, so a connector pinned to a tag silently reverted to
+    // `main`. Keep the configured ref; only the implicit create-time default
+    // (`main`) may be replaced, and only when it does not exist upstream.
+    const ref = await resolveConfiguredRef(octokit, git, conn.defaultBranch, upstreamDefault);
     const latencyMs = Date.now() - start;
     await prisma.repoConnection.update({
       where: { id },
@@ -762,7 +792,7 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
         status: "connected",
         lastTestedAt: new Date(),
         errorMessage: null,
-        defaultBranch: repoData.data.default_branch,
+        ...(ref !== conn.defaultBranch ? { defaultBranch: ref } : {}),
       },
     });
     emitter().status({ connectorId: id, kind: "repo", status: "connected" });
@@ -775,7 +805,9 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
     return {
       ok: true,
       latencyMs,
-      defaultBranch: repoData.data.default_branch,
+      defaultBranch: upstreamDefault,
+      /** The ref deep ingest will clone (#714). */
+      ref,
       private: repoData.data.private,
       archived: repoData.data.archived,
       sizeKb: repoData.data.size,
@@ -800,6 +832,58 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
     });
     throw ce;
   }
+}
+
+/** The ref a connector gets when it is created without one. */
+const IMPLICIT_DEFAULT_REF = "main";
+
+/**
+ * #714 — does `ref` name a branch or a tag upstream? `false` only on a 404 for
+ * both; any other lookup failure (rate limit, permissions) is treated as
+ * "unknown" and reported as `true`, so a transient error never rewrites or
+ * rejects a ref the user chose.
+ */
+async function refExistsUpstream(
+  octokit: OctokitLike,
+  git: { ownerOrOrg: string; repoName: string },
+  ref: string,
+): Promise<boolean> {
+  for (const kind of ["heads", "tags"] as const) {
+    try {
+      await octokit.rest.git.getRef({
+        owner: git.ownerOrOrg,
+        repo: git.repoName,
+        ref: `${kind}/${ref}`,
+      });
+      return true;
+    } catch (err) {
+      if ((err as { status?: number }).status !== 404) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * #714 — the ref a tested connector should keep. The configured ref wins when
+ * it exists upstream. The implicit `main` (a connector created with no ref)
+ * that does not exist falls back to the repo's default branch, which is what
+ * Test always did for e.g. `master` repos. A ref the user chose that does not
+ * exist fails the test with `REF_NOT_FOUND` rather than being swapped out.
+ */
+async function resolveConfiguredRef(
+  octokit: OctokitLike,
+  git: { ownerOrOrg: string; repoName: string },
+  configured: string,
+  upstreamDefault: string,
+): Promise<string> {
+  if (configured === upstreamDefault) return configured;
+  if (await refExistsUpstream(octokit, git, configured)) return configured;
+  if (configured === IMPLICIT_DEFAULT_REF) return upstreamDefault;
+  throw new ConnectorError(
+    422,
+    "REF_NOT_FOUND",
+    `Branch or tag "${configured}" was not found in ${git.ownerOrOrg}/${git.repoName}`,
+  );
 }
 
 export interface RepoMetadata {
@@ -902,9 +986,12 @@ export async function fetchRepoMetadata(
 
   let headSha: string | null = null;
   try {
+    // #714 — the commit at the configured ref (a tag, say), not the tip of
+    // the repo's default branch.
     const commits = await octokit.rest.repos.listCommits({
       owner: git.ownerOrOrg,
       repo: git.repoName,
+      sha: conn.defaultBranch,
       per_page: 1,
     });
     headSha = commits.data[0]?.sha ?? null;
@@ -914,7 +1001,10 @@ export async function fetchRepoMetadata(
 
   await prisma.repoConnection.update({
     where: { id },
-    data: { lastCommitSha: headSha, status: "connected", errorMessage: null },
+    // #758 — `headSha` is the remote tip NOW, which after a long ingest can be
+    // newer than the commit the graph was built from, so it is returned for the
+    // metadata document but never written as `lastCommitSha`.
+    data: { status: "connected", errorMessage: null },
   });
   audit({
     actor: { id: actorId },
@@ -997,6 +1087,50 @@ export async function openRepoContentFetcher(
 export interface ShallowCloneResult {
   path: string;
   sizeBytes: number;
+  /**
+   * The commit the clone checked out (#714); null when HEAD cannot be read.
+   * Only returned, never persisted: `RepoConnection.lastCommitSha` is written
+   * by `ingestCodeGraph` once a graph built from this commit is complete, so a
+   * read-only pull, or an ingest that fails, cannot move it (#757, #758).
+   */
+  commitSha?: string | null;
+}
+
+const SHA_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/**
+ * #714 — the commit a clone's HEAD points at, read from `.git` directly so no
+ * extra `git` subprocess is spawned. Handles a detached HEAD (a tag clone), a
+ * loose branch ref and a packed one. Returns null when it cannot tell.
+ */
+export async function readCloneHeadSha(cloneDir: string): Promise<string | null> {
+  const gitDir = path.join(cloneDir, ".git");
+  let head: string;
+  try {
+    head = (await fs.readFile(path.join(gitDir, "HEAD"), "utf8")).trim();
+  } catch {
+    return null;
+  }
+  if (SHA_RE.test(head)) return head;
+  const m = /^ref: (refs\/[A-Za-z0-9._\-/]+)$/.exec(head);
+  if (!m || m[1].includes("..")) return null;
+  const ref = m[1];
+  try {
+    const loose = (await fs.readFile(path.join(gitDir, ref), "utf8")).trim();
+    if (SHA_RE.test(loose)) return loose;
+  } catch {
+    /* fall through to packed-refs */
+  }
+  try {
+    const packed = await fs.readFile(path.join(gitDir, "packed-refs"), "utf8");
+    for (const line of packed.split("\n")) {
+      const [sha, name] = line.trim().split(" ");
+      if (name === ref && SHA_RE.test(sha)) return sha;
+    }
+  } catch {
+    /* no packed refs */
+  }
+  return null;
 }
 
 /**
@@ -1027,6 +1161,22 @@ function forwardedGitEnv(): Record<string, string> {
     if (v !== undefined) out[key] = v;
   }
   return out;
+}
+
+/**
+ * The complete env for an authenticated clone or pull. `simple-git#env(obj)`
+ * REPLACES rather than merges the spawned env, so PATH/HTTPS_PROXY/etc. are
+ * forwarded explicitly or a proxied network's `git` hangs. Every `GIT_*` key
+ * here must also be in `SIMPLE_GIT_ALLOWED_ENV` (#903).
+ */
+export function authenticatedGitEnv(token: string): Record<string, string> {
+  return {
+    ...forwardedGitEnv(),
+    ...basicAuthConfigEnv(token),
+    GIT_TERMINAL_PROMPT: "0",
+    // Disable libcurl's netrc lookup so a rogue ~/.netrc can't override us.
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
 }
 
 export async function shallowCloneRepo(
@@ -1072,13 +1222,7 @@ export async function shallowCloneRepo(
     // its spawn env, which they never did here. Symptom: `git clone` to a
     // public GitHub host hangs until libcurl's own timeout and fails with
     // "Recv failure: Operation timed out" (observed live, 2026-09-10).
-    cloneEnv = {
-      ...forwardedGitEnv(),
-      ...basicAuthConfigEnv(token),
-      GIT_TERMINAL_PROMPT: "0",
-      // Disable libcurl's netrc lookup so a rogue ~/.netrc can't override us.
-      GIT_CONFIG_NOSYSTEM: "1",
-    };
+    cloneEnv = authenticatedGitEnv(token);
   }
 
   // M6 — cap clone size BEFORE the working tree exists by combining
@@ -1130,7 +1274,8 @@ export async function shallowCloneRepo(
     target: { type: "repo_connector", id },
     metadata: { projectId, sizeBytes, path: target.replace(os.homedir(), "~") },
   });
-  return { path: target, sizeBytes };
+  const commitSha = await readCloneHeadSha(target);
+  return { path: target, sizeBytes, commitSha };
 }
 
 export interface PullOrCloneResult extends ShallowCloneResult {
@@ -1178,15 +1323,7 @@ export async function pullOrCloneRepo(
   // `basicAuthConfigEnv` for why GIT_ASKPASS was replaced.
   let pullEnv: Record<string, string> = {};
   if (token) {
-    pullEnv = {
-      // Same fix as `shallowCloneRepo`'s `cloneEnv` — `simple-git#env(obj)`
-      // REPLACES rather than merges the spawned env, so PATH/HTTPS_PROXY/etc.
-      // must be forwarded explicitly or a proxied network's `git pull` hangs.
-      ...forwardedGitEnv(),
-      ...basicAuthConfigEnv(token),
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_CONFIG_NOSYSTEM: "1",
-    };
+    pullEnv = authenticatedGitEnv(token);
   }
 
   try {
@@ -1210,7 +1347,8 @@ export async function pullOrCloneRepo(
       target: { type: "repo_connector", id },
       metadata: { projectId, sizeBytes, filesChanged },
     });
-    return { path: target, sizeBytes, pulled: true, filesChanged };
+    const commitSha = await readCloneHeadSha(target);
+    return { path: target, sizeBytes, pulled: true, filesChanged, commitSha };
   } catch (pullErr) {
     // Pull failed (diverged, shallow history too short, corrupt, etc.) — fall
     // back to a fresh clone. Log at warn so ops can see it without alarming.

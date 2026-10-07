@@ -7,7 +7,7 @@
  * are mocked; every Phase-1 reply ends with finish_reason "length".
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatChunk } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
 
 const mockPrisma = {
   project: { findUnique: vi.fn() },
@@ -54,7 +54,7 @@ function makeProvider(): AIProvider {
     embed: vi.fn(),
     models: vi.fn().mockResolvedValue(["mock"]),
     ping: vi.fn().mockResolvedValue(true),
-    async *stream(messages): AsyncGenerator<ChatChunk> {
+    async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
       const user = String(messages[messages.length - 1]?.content ?? "");
       if (user.includes("section group now")) {
         yield { type: "delta", content: `## Section\n\nProse.` };

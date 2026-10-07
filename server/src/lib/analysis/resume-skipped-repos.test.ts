@@ -77,13 +77,16 @@ function readCapability(): AnalysisCapability | null {
   return parsed.capability ?? null;
 }
 
+/** A private orchestrator collaborator, typed as a callable so `vi.spyOn` can see it. */
+type Spyable<K extends string> = Record<K, (...args: unknown[]) => Promise<unknown>>;
+
 function makeOrch(provider: object = {}) {
   const orch = new AnalysisOrchestrator({ provider: provider as never });
   // Heavy / provider-backed collaborators — spied so the resume orchestration is
   // isolated. `runAgenticCodeAgent` returns canned usage; the append-merge it
   // performs is proven separately in resume-persistence.test.ts.
   const runAgenticCodeAgent = vi
-    .spyOn(orch as never as { runAgenticCodeAgent: unknown }, "runAgenticCodeAgent")
+    .spyOn(orch as never as Spyable<"runAgenticCodeAgent">, "runAgenticCodeAgent")
     .mockResolvedValue({
       agentKey: "code",
       output: { agentKey: "code", summary: "", notes: [], findings: [] },
@@ -91,20 +94,19 @@ function makeOrch(provider: object = {}) {
       durationMs: 1,
     } as never);
   const runSynthesisAndPersist = vi
-    .spyOn(orch as never as { runSynthesisAndPersist: unknown }, "runSynthesisAndPersist")
+    .spyOn(orch as never as Spyable<"runSynthesisAndPersist">, "runSynthesisAndPersist")
     .mockResolvedValue(undefined as never);
   vi.spyOn(
-    orch as never as { extractRequirementsFromDocAgent: unknown },
+    orch as never as Spyable<"extractRequirementsFromDocAgent">,
     "extractRequirementsFromDocAgent",
   ).mockResolvedValue([{ id: "REQ-001", text: "req" }] as never);
   vi.spyOn(
-    orch as never as { computeAffectedCode: unknown },
+    orch as never as Spyable<"computeAffectedCode">,
     "computeAffectedCode",
   ).mockResolvedValue({ block: "", tokens: 0, filePaths: [], result: { candidates: [] } } as never);
-  vi.spyOn(
-    orch as never as { computeEscalations: unknown },
-    "computeEscalations",
-  ).mockResolvedValue(undefined as never);
+  vi.spyOn(orch as never as Spyable<"computeEscalations">, "computeEscalations").mockResolvedValue(
+    undefined as never,
+  );
   return { orch, runAgenticCodeAgent, runSynthesisAndPersist };
 }
 
@@ -201,6 +203,31 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     const cap = readCapability();
     expect(cap?.skippedRepos.map((r) => r.connectorId)).toEqual(["c4"]);
     expect(cap?.reasons).toContain("repos-skipped-budget");
+  });
+
+  // #724 — the resumed repos' and the re-synthesis's model calls are billed to
+  // the analysis's project: both run inside its usage scope.
+  it("runs the resumed passes inside the analysis's project usage scope", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { orch, runAgenticCodeAgent, runSynthesisAndPersist } = makeOrch();
+    const { currentAnalysisUsageScope } = await import("./analysis-usage.js");
+    const scopes: unknown[] = [];
+    const capture = <T>(value: T) => {
+      scopes.push(currentAnalysisUsageScope());
+      return value;
+    };
+    const agentResult = await runAgenticCodeAgent.getMockImplementation()!();
+    runAgenticCodeAgent.mockImplementation(async () => capture(agentResult));
+    runSynthesisAndPersist.mockImplementation(async () => capture(undefined));
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    expect(scopes).toEqual([
+      { projectId: PROJECT_ID, sessionId: ANALYSIS_ID },
+      { projectId: PROJECT_ID, sessionId: ANALYSIS_ID },
+    ]);
+    expect(currentAnalysisUsageScope()).toBeNull();
   });
 
   it("is an idempotent no-op when nothing was skipped (never registers a run)", async () => {

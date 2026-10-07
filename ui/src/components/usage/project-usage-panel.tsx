@@ -343,7 +343,9 @@ export function ProjectUsagePanel({ projectId: id }: { projectId: string }) {
                       ? row.dayBucket.slice(5)
                       : groupBy === "model"
                         ? (row.model.split(".").pop()?.slice(0, 10) ?? row.model)
-                        : (row.userId ?? "").slice(0, 8);
+                        : row.userId
+                          ? row.userId.slice(0, 8)
+                          : "unattributed";
                   return (
                     <div key={i} className="flex flex-1 flex-col items-center gap-1">
                       <div

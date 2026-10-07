@@ -6,7 +6,7 @@
  *   - ingestDocument: 100-chunk doc → 100 vectors persisted
  *   - search: returns ranked snippets with source attribution
  *   - deleteDocument: removes chunks + vectors + blob
- *   - search-knowledge tool returns ranked text and refuses cross-project
+ *   - search-knowledge tool returns ranked text and never searches across projects
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -43,6 +43,7 @@ interface MockChunk {
   vectorRef: string | null;
   metadata: string | null;
   aclSubjects?: string;
+  chunkerIdentity?: string;
 }
 
 interface MockQuarantineChunk {
@@ -119,13 +120,19 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     knowledgeChunk: {
-      create: vi.fn(async ({ data }: { data: Omit<MockChunk, "id"> & { id?: string } }) => {
-        nextChunkId += 1;
-        const id = data.id ?? `chunk_${nextChunkId}`;
-        const row: MockChunk = { id, vectorRef: null, ...data } as MockChunk;
-        chunks.set(id, row);
-        return row;
-      }),
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: Omit<MockChunk, "id" | "vectorRef"> & { id?: string; vectorRef?: string | null };
+        }) => {
+          nextChunkId += 1;
+          const id = data.id ?? `chunk_${nextChunkId}`;
+          const row: MockChunk = { id, vectorRef: null, ...data } as MockChunk;
+          chunks.set(id, row);
+          return row;
+        },
+      ),
       update: vi.fn(
         async ({ where, data }: { where: { id: string }; data: Partial<MockChunk> }) => {
           const c = chunks.get(where.id);
@@ -691,15 +698,18 @@ describe("search-knowledge tool", () => {
     expect(result.resultCount).toBeGreaterThan(0);
   });
 
-  it("refuses cross-project access when ctx.projectId is bound", async () => {
+  it("never reaches another project when ctx.projectId is bound (#736: the bound project is searched)", async () => {
+    await seedDocument("d-other", "p2", "# Secret\n\nOther project's vectors.");
+    await svc.ingestDocument("d-other");
     const tool = buildSearchKnowledgeTool({ service: svc });
     const result = await tool.exec(
-      { projectId: "p2", query: "x" },
+      { projectId: "p2", query: "vectors" },
       { sessionId: "s1", userId: "u1", projectId: "p1" },
     );
-    expect(result.isError).toBe(true);
-    expect(result.text).toContain("cross-project");
-    expect(result.resultCount).toBeUndefined();
+    expect(result.text).not.toContain("Other project");
+    const hits = (result.data as { hits: Array<{ documentId: string }> }).hits;
+    expect(hits.every((h) => h.documentId !== "d-other")).toBe(true);
+    expect(result.text).toContain("projectId argument was ignored");
   });
 
   it("returns '(no matches)' when the project has no chunks", async () => {

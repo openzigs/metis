@@ -18,6 +18,8 @@ interface CommentThreadProps {
   thread: CommentThread;
   currentUserId?: string;
   onUpdated: () => void;
+  /** #734 — scopes the reply box's @mention picker to this project. */
+  projectId?: string;
 }
 
 function timeAgo(dateStr: string): string {
@@ -139,7 +141,12 @@ function CommentBubble({
   );
 }
 
-export function CommentThreadComponent({ thread, currentUserId, onUpdated }: CommentThreadProps) {
+export function CommentThreadComponent({
+  thread,
+  currentUserId,
+  onUpdated,
+  projectId,
+}: CommentThreadProps) {
   const [comments, setComments] = useState<CommentItem[]>(thread.comments);
   const [replyBody, setReplyBody] = useState("");
   const [replying, setReplying] = useState(false);
@@ -188,6 +195,7 @@ export function CommentThreadComponent({ thread, currentUserId, onUpdated }: Com
           value={replyBody}
           onChange={setReplyBody}
           placeholder="Reply… Use @username to mention"
+          projectId={projectId}
           className="min-h-[60px] text-sm"
         />
         <Button size="sm" onClick={handleReply} disabled={replying || !replyBody.trim()}>

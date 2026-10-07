@@ -80,7 +80,7 @@ function fakeIngestPrisma(connections: { projectId: string; databaseResourceId: 
         for (const d of data) await prisma.codeEdge.create({ data: d });
         return { count: data.length };
       },
-      create: async () => undefined,
+      create: async (_args: { data: unknown }) => undefined,
       deleteMany: async () => ({ count: 0 }),
       count: async () => 0,
     },

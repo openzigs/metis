@@ -11,6 +11,7 @@ const policy: EvidencePolicy = {
   projectId: "p1",
   generatedDocumentId: "gen1",
   actor: { userId: "alice", role: "developer" },
+  aclSubjects: [{ kind: "user", value: "alice" }],
   repoConnectorId: "repo-a",
   codeGraphId: "graph-a",
   sharedDocumentIds: [],

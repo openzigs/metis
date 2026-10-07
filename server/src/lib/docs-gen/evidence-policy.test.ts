@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import type { Prisma } from "@prisma/client";
 
 vi.mock("../prisma.js", () => ({
   prisma: {
@@ -123,15 +124,20 @@ describe("trusted generation evidence policy #1353", () => {
       "Generation authorization unavailable",
     );
   });
-  it.each([[], [{ role: { key: "reader" } }], [{ role: { key: "unknown" } }]])(
+  it.each([[[]], [[{ role: { key: "reader" } }]], [[{ role: { key: "unknown" } }]]])(
     "rejects revoked or unknown role %j",
     async (roles) => {
+      // A valid id and membership so the call reaches the role guard, and the exact
+      // denial message so an earlier "Project not found" cannot satisfy the test.
       vi.mocked(prisma.user.findFirst).mockResolvedValue({
+        id: "alice",
         username: "alice",
         roles,
-        workspaceMemberships: [],
+        workspaceMemberships: [{ workspaceId: "w1" }],
       } as never);
-      await expect(resolveEvidencePolicy(record)).rejects.toThrow();
+      await expect(resolveEvidencePolicy(record)).rejects.toThrow(
+        "Generation authorization unavailable",
+      );
     },
   );
   it("denies background execution after a formerly-admin principal is revoked to reader", async () => {
@@ -233,18 +239,22 @@ describe("trusted generation evidence policy #1353", () => {
                 },
               },
             ];
-      vi.mocked(prisma.codeGraph.findFirst).mockImplementation(async (args) => {
+      // The mocked client resolves a plain Promise, not Prisma's lazy PrismaPromise.
+      const findFirst = prisma.codeGraph.findFirst as unknown as Mock<
+        (args?: Prisma.CodeGraphFindFirstArgs) => Promise<unknown>
+      >;
+      findFirst.mockImplementation(async (args) => {
         const where = args?.where;
         const connection = where?.repoConnection as
           { projectId?: string; deletedAt?: null } | undefined;
         return (
-          (graphs.find(
+          graphs.find(
             (g) =>
               g.projectId === where?.projectId &&
               g.repoConnectionId === where?.repoConnectionId &&
               (!connection?.projectId || g.repoConnection.projectId === connection.projectId) &&
               (connection?.deletedAt !== null || g.repoConnection.deletedAt === null),
-          ) as never) ?? null
+          ) ?? null
         );
       });
       await expect(requireRepositoryGraph("p1", "repo-a")).rejects.toThrow(

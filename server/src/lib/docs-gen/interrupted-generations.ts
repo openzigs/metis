@@ -45,6 +45,10 @@ export const INTERRUPTED_SWEEP_INTERVAL_MS = 60_000;
 export const GENERATION_INTERRUPTED_MESSAGE =
   "Generation was interrupted before it finished: the server restarted or stopped while it was running. Regenerate the document to try again.";
 
+/** #855 — a generation the user cancelled. Stored on the row and shown in the UI. */
+export const GENERATION_CANCELLED_MESSAGE =
+  "Generation was cancelled. Finished sections are kept; regenerate the document to complete it.";
+
 /**
  * Keep a claimed generation's row fresh until the returned stop function is
  * called. Writes only while this run still holds `claim`, so a run that has
@@ -55,22 +59,40 @@ export function startGenerationHeartbeat(
   projectId: string,
   claim: string,
   intervalMs: number = GENERATION_HEARTBEAT_MS,
+  /**
+   * #855 — called when a beat finds the run should stop: `aborted` when a
+   * cancel marked the row `cancelling` (possibly from another replica), and
+   * `superseded` when the row was deleted or its claim taken. Either way the
+   * run can never publish, so it should stop spending.
+   */
+  onStop?: (reason: "aborted" | "superseded") => void,
 ): () => void {
+  const beat = async (): Promise<void> => {
+    const refreshed = await prisma.generatedDocument.updateMany({
+      where: {
+        id: docId,
+        projectId,
+        deletedAt: null,
+        status: { in: ["generating", "cancelling"] },
+        codeGraphHash: claim,
+      },
+      data: { updatedAt: new Date() },
+    });
+    if (!onStop) return;
+    if (!refreshed.count) {
+      onStop("superseded");
+      return;
+    }
+    const row = await prisma.generatedDocument.findFirst({
+      where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
+      select: { status: true },
+    });
+    if (row?.status === "cancelling") onStop("aborted");
+  };
   const timer = setInterval(() => {
-    prisma.generatedDocument
-      .updateMany({
-        where: {
-          id: docId,
-          projectId,
-          deletedAt: null,
-          status: "generating",
-          codeGraphHash: claim,
-        },
-        data: { updatedAt: new Date() },
-      })
-      .catch((err: unknown) =>
-        log.warn("Generation heartbeat failed", { docId, err: String(err) }),
-      );
+    beat().catch((err: unknown) =>
+      log.warn("Generation heartbeat failed", { docId, err: String(err) }),
+    );
   }, intervalMs);
   timer.unref?.();
   return () => clearInterval(timer);
@@ -87,7 +109,10 @@ export async function failInterruptedGenerations(now: Date = new Date()): Promis
     where: {
       deletedAt: null,
       OR: [
-        { status: "generating", updatedAt: { lt: new Date(now.getTime() - GENERATING_STALE_MS) } },
+        {
+          status: { in: ["generating", "cancelling"] },
+          updatedAt: { lt: new Date(now.getTime() - GENERATING_STALE_MS) },
+        },
         { status: "pending", updatedAt: { lt: new Date(now.getTime() - PENDING_STALE_MS) } },
       ],
     },
@@ -95,6 +120,9 @@ export async function failInterruptedGenerations(now: Date = new Date()): Promis
   });
   let failed = 0;
   for (const doc of stale) {
+    // #855 — a run that died after a cancel was asked for is simply cancelled.
+    const cancelled = doc.status === "cancelling";
+    const message = cancelled ? GENERATION_CANCELLED_MESSAGE : GENERATION_INTERRUPTED_MESSAGE;
     const result = await prisma.generatedDocument.updateMany({
       where: {
         id: doc.id,
@@ -104,16 +132,17 @@ export async function failInterruptedGenerations(now: Date = new Date()): Promis
         updatedAt: doc.updatedAt,
       },
       data: {
-        status: "failed",
-        errorMessage: GENERATION_INTERRUPTED_MESSAGE,
+        status: cancelled ? "cancelled" : "failed",
+        errorMessage: message,
         // A `generating` row holds the dead run's claim here; clearing it means
         // that run can never commit or fail over this row if it was only stalled.
-        ...(doc.status === "generating" ? { codeGraphHash: null } : {}),
+        ...(doc.status === "pending" ? {} : { codeGraphHash: null }),
       },
     });
     if (!result.count) continue;
     failed += 1;
-    jobEvents.failed("doc-generation", doc.id, doc.projectId, GENERATION_INTERRUPTED_MESSAGE);
+    if (cancelled) jobEvents.completed("doc-generation", doc.id, doc.projectId, message);
+    else jobEvents.failed("doc-generation", doc.id, doc.projectId, message);
   }
   if (failed > 0) log.warn("Failed interrupted documentation generations", { count: failed });
   return failed;

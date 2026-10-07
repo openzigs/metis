@@ -32,6 +32,7 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
+import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lock.js";
 // Issue #1099 — the top-level `/api/analyses` router has no path project to
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
@@ -79,10 +80,13 @@ import {
   serializeFindingIssueDraftMarkdown,
   serializeAnalysisReportMarkdown,
 } from "../lib/analysis/index.js";
+import { RequirementVersionError } from "../lib/requirements/requirement-version-service.js";
+import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 // Issue #743 — diff-style current-vs-proposed view for changed requirements.
 import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-service.js";
 import type { StructuredRequirements } from "../lib/analysis/types/requirements.js";
 import { clarifyRequestSchema } from "../lib/analysis/clarify-request-schema.js";
+import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/analysis-usage.js";
 // Issue #1116 — carry the submitted answers into the persisted requirement rows
 // (and therefore into the drafts/issues they become), not just the metadata the
 // approval view reads.
@@ -99,9 +103,9 @@ import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
 import { BedrockDirectProvider } from "../lib/ai/providers/bedrock-direct-provider.js";
 import { prisma } from "../lib/prisma.js";
-// Epic #176 / #179 — publish an analysis finding via the shared scanner publisher.
-import { publishAnalysisFinding } from "../lib/scanner/prisma-adapter.js";
-import { PublishError } from "../lib/scanner/finding-publisher.js";
+// Epic #176 / #179 — publish an analysis finding via the shared finding publisher.
+import { publishAnalysisFinding } from "../lib/publishing/analysis-finding-publish.js";
+import { PublishError } from "../lib/publishing/finding-publisher.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -223,6 +227,39 @@ async function ensureAnalysisAccessible(req: Request, analysisId: string) {
 interface InitOptions {
   /** Inject an orchestrator (tests). */
   orchestrator?: AnalysisOrchestrator;
+}
+
+/**
+ * #865 / #871 — the optimistic-lock view of an analysis-scoped requirement,
+ * used by the lock middleware and again by the PATCH handler when the write
+ * transaction itself detects a conflict.
+ */
+async function loadLockedAnalysisRequirement(req: Request) {
+  const row = await prisma.requirement.findFirst({
+    where: {
+      id: String(req.params.reqId),
+      analysisId: String(req.params.id),
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      version: true,
+      title: true,
+      body: true,
+      priority: true,
+      type: true,
+      labels: true,
+      storyPoints: true,
+      reviewStatus: true,
+    },
+  });
+  if (!row) return null;
+  // The lock diffs against the request body, which carries labels as a
+  // string[]; present the stored JSON column in that shape — and only the
+  // labels the caller sees. The hidden `finding:*` / `review:*` labels are
+  // preserved by the write, so they are never a conflict and never offered
+  // as the "server" value in the merge modal.
+  return { ...row, labels: visibleRequirementLabels(row.labels) };
 }
 
 export function initAnalysisRouter(opts: InitOptions = {}): {
@@ -476,35 +513,75 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     "/:id/requirements/:reqId",
     requireAuth,
     requirePermission("analysis.run"),
+    // #1099 — no path project here; authorize against the analysis's own.
+    // Runs BEFORE the lock, whose 409 diff would otherwise describe a row the
+    // caller cannot reach.
+    async (req: Request, _res: Response, next: NextFunction) => {
+      await ensureAnalysisAccessible(req, String(req.params.id));
+      next();
+    },
+    // #865 — the optimistic-concurrency contract of `PUT /api/requirements/:id`:
+    // a body `version` that is not the current one is a 409 with a field diff;
+    // no `version` skips the check. The loader is scoped to this analysis, so a
+    // requirement of another one is the same 404 the handler gives.
+    optimisticLock("requirement", loadLockedAnalysisRequirement),
     async (req: Request, res: Response) => {
       const id = String(req.params.id);
       const reqId = String(req.params.reqId);
-      // #1099 — no path project here; authorize against the analysis's own.
-      await ensureAnalysisAccessible(req, id);
       const parsed = updateRequirementSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         throw new AppError(400, "VALIDATION_ERROR", "Invalid requirement patch", {
           issues: parsed.error.flatten(),
         });
       }
-      const updated = await updateRequirementRow({
-        analysisId: id,
-        requirementId: reqId,
-        patch: parsed.data,
-      });
+      const actor = actorFromReq(req);
+      // #871 — the lock middleware's read is outside the write transaction, so
+      // two concurrent edits with the same version both pass it. The service
+      // re-checks the version inside the transaction. (The shared schema strips
+      // `version`; the middleware has already validated it is a number.)
+      const bodyVersion = (req.body as Record<string, unknown> | undefined)?.version;
+      const expectedVersion = typeof bodyVersion === "number" ? bodyVersion : undefined;
+      let updated: Awaited<ReturnType<typeof updateRequirementRow>>;
+      try {
+        updated = await updateRequirementRow({
+          analysisId: id,
+          requirementId: reqId,
+          patch: parsed.data,
+          actorId: actor.id,
+          expectedVersion,
+        });
+      } catch (err) {
+        if (
+          err instanceof RequirementVersionError &&
+          err.code === "VERSION_CONFLICT" &&
+          expectedVersion !== undefined
+        ) {
+          const current = await loadLockedAnalysisRequirement(req);
+          if (!current) throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+          sendVersionConflict(
+            res,
+            "requirement",
+            current,
+            req.body as Record<string, unknown>,
+            expectedVersion,
+          );
+          return;
+        }
+        throw err;
+      }
       if (!updated) {
         // 404 covers both "requirement does not exist" and "requirement
         // belongs to a different analysis" — never leak the difference.
         throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
       }
-      const actor = actorFromReq(req);
       audit({
         actor: { id: actor.id },
         action: "analysis.requirement.update",
         target: { type: "requirement", id: reqId },
         metadata: { analysisId: id, fields: Object.keys(parsed.data) },
       });
-      res.json(ok({ id: reqId }));
+      // `version` is additive: the next optimistic-lock token for the caller.
+      res.json(ok({ id: reqId, version: updated.version }));
     },
   );
 
@@ -561,7 +638,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const body = parsed.data;
 
       const config = loadAIConfig();
-      const provider = buildProvider({ config });
+      // #724 — clarify rounds are project spend: meter them, billed below.
+      const provider = meterAnalysisProvider(buildProvider({ config }));
+      const usageScope = { projectId, sessionId: analysisId };
       // Self-resolution (clarify-self-resolve): give the dialog a retriever +
       // projectId so it can ground each clarifying question against the
       // project's ingested knowledge before asking. Grounding only runs on the
@@ -596,7 +675,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             "requirements field is required to submit clarification answers",
           );
         }
-        const result = await dialog.submitAnswers(analysisId, body.answers, requirements);
+        const answers = body.answers;
+        const result = await runInAnalysisUsageScope(usageScope, () =>
+          dialog.submitAnswers(analysisId, answers, requirements),
+        );
         // Epic #201 (#211) — close the feedback loop: persist the refined
         // requirements via the existing enhancement path so they reach
         // `Analysis.metadata` and flow downstream into synthesis (#212).
@@ -621,7 +703,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             "requirements field is required to start clarification",
           );
         }
-        const state = await dialog.startOrContinue(analysisId, requirements);
+        const state = await runInAnalysisUsageScope(usageScope, () =>
+          dialog.startOrContinue(analysisId, requirements),
+        );
         res.json(ok(state));
       }
     },
@@ -929,13 +1013,16 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           );
         }
         const config = loadAIConfig();
-        const provider = buildProvider({ config });
+        // #724 — a CSV-imported round is clarify spend too.
+        const provider = meterAnalysisProvider(buildProvider({ config }));
         const dialog = new ClarificationDialog({
           provider,
           retriever: getKnowledgeService(),
           projectId,
         });
-        const result = await dialog.submitAnswers(analysisId, applied, requirements);
+        const result = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
+          dialog.submitAnswers(analysisId, applied, requirements),
+        );
         await persistAnalysisEnhancement(analysisId, {
           structuredRequirements: result.updatedRequirements,
         });
@@ -1088,19 +1175,22 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       }
 
       const actor = actorFromReq(req);
-      const result = await deepDiveFinding(ensureOrch().provider, {
-        projectName: finding.projectName,
-        agentKey: finding.agentKey,
-        finding: {
-          title: finding.title,
-          body: finding.body,
-          category: finding.category,
-          severity: finding.severity,
-          citations: finding.citations,
-          requirementId: finding.requirementId,
-        },
-        instructions: parsed.data.instructions,
-      });
+      // #724 — the orchestrator's provider is metered; bill this call to the project.
+      const result = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
+        deepDiveFinding(ensureOrch().provider, {
+          projectName: finding.projectName,
+          agentKey: finding.agentKey,
+          finding: {
+            title: finding.title,
+            body: finding.body,
+            category: finding.category,
+            severity: finding.severity,
+            citations: finding.citations,
+            requirementId: finding.requirementId,
+          },
+          instructions: parsed.data.instructions,
+        }),
+      );
 
       audit({
         actor: { id: actor.id },
@@ -1173,7 +1263,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * POST /api/projects/:projectId/analyses/:id/findings/:findingId/publish
    *
    * Publishes an operator-edited issue draft for a finding to the project's
-   * configured destination(s). Reuses the scanner finding-publisher (marker
+   * configured destination(s). Reuses the shared finding-publisher (marker
    * dedup + idempotent IssueLink) — no parallel publishing path. The finding
    * is loaded scoped to its analysis + project (IDOR defence → 404).
    */
@@ -1236,11 +1326,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             analysisId,
             findingId,
             agentKey: finding.agentKey,
+            agentSource: finding.agentSource,
             severity: finding.severity,
             category: finding.category,
             draft: parsed.data.draft,
             provider,
             extraLabels: parsed.data.extraLabels,
+            target: parsed.data.target,
           });
           links.push({ provider, url: link.externalUrl, issueKey: link.externalId });
         }
@@ -1263,11 +1355,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           const msg = err.message?.slice(0, 1000) ?? "publish failed";
           // Missing/incomplete destination config is a client-actionable 400
           // for the analysis publish flow (mirrors the Jira preflight above).
-          if (err.code === "ERR_NOT_IMPLEMENTED") {
+          // #733 — no explicit or configured GitHub target is the same kind
+          // of client-actionable gap.
+          if (err.code === "ERR_NOT_IMPLEMENTED" || err.code === "ERR_NO_PUBLISH_TARGET") {
             throw new AppError(400, err.code, msg);
-          }
-          if (err.code === "ERR_STALE_COMMIT") {
-            throw new AppError(409, err.code, msg);
           }
           throw new AppError(502, err.code || "PUBLISH_FAILED", msg);
         }

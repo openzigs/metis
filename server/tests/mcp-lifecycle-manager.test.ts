@@ -40,7 +40,8 @@ function makeTransport(
     start: vi.fn(async () => undefined),
     stop: vi.fn(async () => undefined),
     notify: vi.fn(async () => undefined),
-    closed: vi.fn(() => new Promise(() => undefined)),
+    closed: vi.fn<MCPTransportClient["closed"]>(() => new Promise(() => undefined)),
+    // request<TResult> is generic; a canned-response stub cannot satisfy it without an assertion.
     request: vi.fn(async (method: string) => {
       if (method === "initialize") {
         return opts.initResult ?? { protocolVersion: "2025-06-18", serverInfo: { name: "x" } };
@@ -50,7 +51,7 @@ function makeTransport(
         return opts.toolsResult ?? { tools: [{ name: "read", description: "" }] };
       }
       throw new Error(`unexpected method ${method}`);
-    }),
+    }) as MCPTransportClient["request"],
   };
 }
 
@@ -102,7 +103,7 @@ describe("MCPLifecycleManager", () => {
         }),
         stop: vi.fn(async () => undefined),
         notify: vi.fn(async () => undefined),
-        closed: vi.fn(() => new Promise(() => undefined)),
+        closed: vi.fn<MCPTransportClient["closed"]>(() => new Promise(() => undefined)),
         request: vi.fn(),
       }),
       maxRestarts: 2,

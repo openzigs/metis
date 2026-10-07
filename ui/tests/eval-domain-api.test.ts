@@ -18,7 +18,9 @@ import { domainEvalApi } from "@/lib/eval-api";
 
 const mockApi = apiFetch as unknown as ReturnType<typeof vi.fn>;
 
-beforeEach(() => mockApi.mockReset());
+beforeEach(() => {
+  mockApi.mockReset();
+});
 
 describe("domainEvalApi.listRuns", () => {
   it("forwards the days window as a query param", async () => {

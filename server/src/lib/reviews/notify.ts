@@ -27,6 +27,7 @@
  * the requester) — never derived from request input — and delivery goes to
  * personal socket rooms joined from the verified JWT only.
  */
+import { userRoom } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
@@ -42,10 +43,7 @@ const PREFERENCE_EVENT = "requirementsApproved" as const;
 
 /** Machine-readable `Notification.type` values written by this module. */
 export type ReviewNotificationKind =
-  | "review_requested"
-  | "review_decided"
-  | "review_approved"
-  | "review_rejected";
+  "review_requested" | "review_decided" | "review_approved" | "review_rejected";
 
 /** Deep link to the review detail page (`ui/src/app/(authed)/reviews/[id]`). */
 export function reviewHref(reviewId: string): string {
@@ -102,7 +100,7 @@ async function persistAndEmit(n: ReviewNotification): Promise<void> {
     // Personal room joined from the verified JWT only (never client-supplied).
     // Literal event name — the shared socket-contract guard scans for it.
     const io = getSocketServer();
-    if (io) io.to(`user:${n.userId}`).emit("review:notification", payload);
+    if (io) io.to(userRoom(n.userId)).emit("review:notification", payload);
   } catch (err) {
     log.warn("Failed to emit review notification", {
       reviewId: n.reviewId,

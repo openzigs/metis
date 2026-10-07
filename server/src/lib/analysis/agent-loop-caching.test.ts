@@ -87,7 +87,7 @@ describe("runAgentLoop — promptCaching option (#652)", () => {
         systemMessage: "You are an analyst.",
         userMessage: "Analyze the code.",
         tools: [],
-        toolContext: { sessionId: "s1", userId: "u1" },
+        toolContext: { projectId: "p1" },
       },
       options,
     );
@@ -107,7 +107,7 @@ describe("runAgentLoop — promptCaching option (#652)", () => {
         systemMessage: "You are an analyst.",
         userMessage: "Analyze.",
         tools: [],
-        toolContext: { sessionId: "s1", userId: "u1" },
+        toolContext: { projectId: "p1" },
       },
       options,
     );

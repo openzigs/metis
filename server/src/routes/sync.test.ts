@@ -64,7 +64,7 @@ vi.mock("../lib/sync/index.js", () => ({
 // request would reach it, so that arm is exercised rather than assumed.
 let authedUser: unknown = { userId: "user-1", role: "coordinator", username: "test" };
 vi.mock("../middleware/auth.js", () => ({
-  requireAuth: (req: Request & { user?: unknown }, _res: Response, next: NextFunction) => {
+  requireAuth: (req: { user?: unknown }, _res: Response, next: NextFunction) => {
     if (authedUser) req.user = authedUser;
     next();
   },

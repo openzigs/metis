@@ -23,7 +23,7 @@ const fakeProvider = {
   ping: vi.fn(),
 } as unknown as AIProvider;
 
-const buildProviderMock = vi.fn(() => fakeProvider);
+const buildProviderMock = vi.fn((..._args: unknown[]) => fakeProvider);
 const loadAIConfigMock = vi.fn();
 
 vi.mock("../ai/index.js", () => ({
@@ -176,7 +176,12 @@ describe("buildDocsGenProvider — anthropic provider", () => {
     loadAIConfigMock.mockReturnValue(configFor("anthropic"));
     const resolved = buildDocsGenProvider(2, 8192);
     expect(resolved.supportsCaching).toBe(true);
-    expect(resolved.provider).toBe(fakeProvider);
+    // #855 — the factory's provider, wrapped so each call carries the run's
+    // AbortSignal; outside a run a call reaches it unchanged.
+    expect(resolved.provider.key).toBe(fakeProvider.key);
+    expect(resolved.provider.model).toBe(fakeProvider.model);
+    void resolved.provider.chat([], { sessionId: "s" });
+    expect(fakeProvider.chat).toHaveBeenCalledWith([], { sessionId: "s" });
     // The factory was asked to build a provider (the native AnthropicProvider).
     expect(buildProviderMock).toHaveBeenCalledTimes(1);
   });
@@ -191,7 +196,7 @@ describe("buildDocsGenProvider — anthropic provider", () => {
 });
 
 describe("buildDocsGenProvider — non-caching fallback", () => {
-  it("resolves supportsCaching=false when no gateway is configured (copilot fallback)", () => {
+  it("resolves supportsCaching=false when no gateway is configured (openai fallback)", () => {
     // A non-anthropic, non-local provider with no Bedrock gateway env falls
     // through to the default buildProvider path with caching OFF.
     const prev = {
@@ -201,7 +206,7 @@ describe("buildDocsGenProvider — non-caching fallback", () => {
     delete process.env.BEDROCK_GATEWAY_URL;
     delete process.env.BEDROCK_GATEWAY_BASE_URL;
     try {
-      loadAIConfigMock.mockReturnValue(configFor("copilot-native"));
+      loadAIConfigMock.mockReturnValue(configFor("openai"));
       const resolved = buildDocsGenProvider(2, 8192);
       expect(resolved.supportsCaching).toBe(false);
     } finally {

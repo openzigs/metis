@@ -26,7 +26,13 @@ export async function checkIncrementalRegeneration(
       projectId,
       autoUpdate: true,
       deletedAt: null,
-      status: { in: ["ready", "degraded", "failed", "generating"] },
+      OR: [
+        { status: { in: ["ready", "degraded", "failed", "generating"] } },
+        // #855 / #867 — a cancelled (or cancelling) document keeps tracking
+        // ingests only once it has a published version. One that never
+        // published would restart as a full run: a cancel must stop the spend.
+        { status: { in: ["cancelled", "cancelling"] }, versions: { some: {} } },
+      ],
       scope: { in: ["full", "repository", "module", "symbol"] },
     },
     select: {
@@ -58,14 +64,12 @@ export async function checkIncrementalRegeneration(
       try {
         policy = await resolveEvidencePolicy(doc);
       } catch (err) {
-        if (
-          !(
-            err instanceof AppError &&
-            ((err.statusCode === 403 && err.code === "GENERATION_AUTH_UNAVAILABLE") ||
-              (err.statusCode === 404 &&
-                ["NOT_FOUND", "REPOSITORY_GRAPH_UNAVAILABLE"].includes(err.code)))
-          )
-        )
+        if (!(
+          err instanceof AppError &&
+          ((err.statusCode === 403 && err.code === "GENERATION_AUTH_UNAVAILABLE") ||
+            (err.statusCode === 404 &&
+              ["NOT_FOUND", "REPOSITORY_GRAPH_UNAVAILABLE"].includes(err.code)))
+        ))
           throw err;
         log.warn("Skipping automatic regeneration: authorization unavailable");
         continue;

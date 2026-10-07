@@ -381,6 +381,30 @@ carrying the current workflow and probe, then
 the `embed-parity-fixture` artifact, whose file name carries the runner's key. The ISA
 class is random per run, so dispatch a few and keep one per class.
 
+### 6.3 The `token_usages.costUsd` column (#761): no upgrade step
+
+Migration `20261014000761_issue761_token_usage_cost_usd` only adds the nullable
+`token_usages.costUsd` column. On Postgres that is a metadata-only change: a brief
+lock, and no rewrite of the table. It does **not** backfill. Rows written before the
+upgrade keep `costUsd` NULL and are read through `costCents`, which every reader
+falls back to. Row readers do this through `ledgerRowCents`, and aggregate readers
+through `LEGACY_COST_ROW_WHERE` / `sumLedgerCents` (`server/src/lib/finops/ledger-cost.ts`).
+The same fallback covers rows that an old replica writes during a rolling deploy.
+The totals are therefore the same with or without a backfill, so there is nothing to
+run.
+
+**Optional.** If you want `costUsd` populated anyway, for example for external SQL
+that reads the column directly, backfill in short batches. The values can only be
+`costCents / 100`, because prices live in code and in `MODEL_PRICES`. Repeat until
+the statement reports `UPDATE 0`:
+
+```sql
+UPDATE "token_usages" SET "costUsd" = "costCents" / 100.0
+ WHERE "id" IN (SELECT "id" FROM "token_usages"
+                 WHERE "costCents" IS NOT NULL AND "costUsd" IS NULL
+                 LIMIT 10000);
+```
+
 ---
 
 ## 7. Container Image Sizes
@@ -1262,11 +1286,18 @@ available on **all** current models.
   `ttl` and the billed premium can never drift apart.
 
 **Hit-ratio telemetry** (`server/src/lib/ai/cache-hit-telemetry.ts`, #390):
-after every `chat()` / `stream()` the gateway provider emits one structured log
-line — `cacheReadTokens`, `promptTokens`, the derived read-based hit ratio, and
+after every `chat()` / `stream()` the gateway provider and the native Anthropic
+provider (including Anthropic-compatible endpoints such as DeepSeek, #796) emit
+one structured log line — `cacheReadTokens`, `promptTokens`, the derived read-based hit ratio, and
 the **call type** (`agent-loop` · `synthesis` · `grounding` · `chat` ·
 `unknown`) and **model** tags — and accumulates per-(call type, model) rolling
-totals in a small in-process aggregator. This is in-process and dependency-free:
+totals in a small in-process aggregator. On the native Anthropic path the
+hit-ratio denominator is the full prompt (`input_tokens` + cache reads + cache
+writes), because `input_tokens` there excludes the cache fields. The
+OpenAI-compatible provider (OpenAI, Azure, local runtimes) does not parse cache
+tokens and records nothing. The aggregator starts empty on every server restart;
+the persisted ledgers (`token_usages`, `ai_token_usages`) are the durable record.
+This is in-process and dependency-free:
 **no external metrics backend, no dashboard panel, and no alert wiring are
 shipped here** — those remain ops follow-ups. A hit ratio that trends to ~0 on a
 caching-enabled path signals a regressed/unstable cacheable prefix or a prefix
@@ -1540,34 +1571,45 @@ buttons in the page header. The button POSTs to
 - `status: "disabled"` → the server flag is unset; the inline banner
   links operators to this section.
 
-## AI Bug Scanner
+## After the AI bug scanner's removal (#799)
 
-Epic #708. Detailed feature docs:
-[docs/AI_BUG_SCANNER.md](./AI_BUG_SCANNER.md).
+The AI bug scanner (scans, triage, rule sets, the `scanner.run-scan` scheduler
+task and `server/src/lib/scanner/`) was removed in #799; see
+[ADR 0018](decisions/0018-remove-the-ai-bug-scanner.md). CodeQL, Semgrep, the code
+agent and Deep Dive cover what it did. Three things an operator may still meet after
+upgrading:
 
-### Component map
+### Leftover `scanner.run-scan` task rows
 
-| Concern             | Implementation                                                     |
-| ------------------- | ------------------------------------------------------------------ |
-| Scheduler task type | `scanner.run-scan` (`server/src/lib/scheduler/task-handlers.ts`)   |
-| Orchestrator        | `server/src/lib/scanner/orchestrator.ts` + `prisma-adapter.ts`     |
-| Prompt fence        | `server/src/lib/scanner/prompt-fence.ts`                           |
-| Two-tier LLM        | `per-symbol-scanner.ts` (Haiku) → `fp-filter.ts` (Sonnet, 3 votes) |
-| Publish             | `prisma-adapter.publishScanFinding` → existing publisher infra     |
-| RAG isolation       | per-project keys via `code-graph` query service                    |
+`scanner.run-scan` is no longer a registered task type. A row that was already
+`pending` or `running` when the upgrade landed is **not** picked up again: the
+type is not in `DURABLE_TASK_TYPES`, and `TaskQueue.resume()` returns early on
+an unregistered type, so the row stays `pending` or `running` indefinitely. It
+does no work and holds no worker. Only a retry or a new enqueue of that type is
+refused, and that attempt is saved as `failed` with `UNKNOWN_TASK_TYPE`. #806
+does **not** clear them: the `tasks` table is not a scanner table, and #806 leaves
+old `scanner.run-scan` rows in place as history. They are harmless; if you want them
+out of the pending/running lists, set `status = 'cancelled'` on the rows with
+`type = 'scanner.run-scan'` by hand.
 
-### Common failure modes
+### Publish audit actions
 
-| Symptom                          | Likely cause / response                                              |
-| -------------------------------- | -------------------------------------------------------------------- |
-| `ERR_STALE_COMMIT`               | Repo head moved during scan. Re-trigger the scan.                    |
-| Rule stuck in `compiling`        | LLM call failed; check audit `rule.compile_failed`; retry compile.   |
-| Rule stuck in `awaiting_grading` | <5 exemplars graded. Add more in the rule editor.                    |
-| Findings empty after scan        | No active rules + heuristic mode produced no hits. Check `Scan.mode`.|
-| Publish 502 `PUBLISH_FAILED`     | Provider credential rejected. Check vault + GH/Jira connector.        |
-| Triage 409 `TRIAGE_NOT_APPROVED` | Publishing requires `triageStatus="approved"`.                       |
+Deep Dive → Issue and Impact Analysis → Jira publishes write
+`publish.<github|jira>.<created|reused>`, with `metadata.source` set to
+`analysis` or `impact-analysis` and the target typed `finding` or
+`impact_analysis`. Before #804 they were written as
+`scanner.scanner.publish.*` against a `scan_finding` target. The new actions
+share the `publish.jira.*` namespace with the batch Jira publisher
+(`publish.jira.issue_created`, `publish.jira.batch_completed`), so a
+`publish.jira.` prefix filter mixes the two flows: filter on `metadata.source`
+to tell them apart.
 
-### Token spend
+### Log names
 
-Every scan tracks `Scan.totalTokens` (Haiku + Sonnet combined) and aborts when the
-`budgetCapTokens` cap (default 2,000,000) is exceeded. Tune via the start-scan API.
+The JSON model-call helper used by requirement → data-mapping suggestions now
+lives at `server/src/lib/ai/json-llm-client.ts` and logs as `json-llm-client`
+(previously `scanner-llm-client`). Its exports were renamed from `Scanner*` to
+`JsonLlm*`. Update any log filter or alert keyed on the old name.
+
+The scanner's own error codes (`ERR_STALE_COMMIT`, `TRIAGE_NOT_APPROVED`) and
+its `rule.compile_failed` audit action no longer occur.

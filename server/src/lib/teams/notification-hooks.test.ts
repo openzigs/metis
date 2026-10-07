@@ -11,7 +11,7 @@
  * contract is exercised end-to-end). Workspace-broadcast cards (no
  * `targetUserId`, and ALL budget-exceeded cards) are preference-exempt.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import type { Activity } from "botbuilder";
 
@@ -27,6 +27,7 @@ import {
   EVENT_ANALYSIS_COMPLETE,
   EVENT_PUBLISH_ROLLED_BACK,
   EVENT_BUDGET_EXCEEDED,
+  type NotificationScheduler,
 } from "./notification-hooks.js";
 
 function dbWithProject(project: { name: string; workspaceId: string | null } | null): PrismaClient {
@@ -41,7 +42,7 @@ interface Scheduled {
   activity: Partial<Activity>;
 }
 
-function scheduler(): { schedule: ReturnType<typeof vi.fn>; calls: Scheduled[] } {
+function scheduler(): { schedule: Mock<NotificationScheduler>; calls: Scheduled[] } {
   const calls: Scheduled[] = [];
   const schedule = vi.fn((workspaceId: string, eventType: string, activity: Partial<Activity>) => {
     calls.push({ workspaceId, eventType, activity });

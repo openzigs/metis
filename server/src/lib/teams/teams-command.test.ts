@@ -124,7 +124,7 @@ describe("command parsing", () => {
   it("strips the bot @mention before parsing", () => {
     const activity = {
       text: "<at>METIS</at> /metis status",
-      recipient: { id: "28:bot" },
+      recipient: { id: "28:bot", name: "METIS" },
       entities: [{ type: "mention", text: "<at>METIS</at>", mentioned: { id: "28:bot" } }],
     };
     expect(stripBotMention(activity)).toBe("/metis status");

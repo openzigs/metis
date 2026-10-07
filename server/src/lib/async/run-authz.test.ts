@@ -19,7 +19,7 @@ vi.mock("../custom-agents/authz.js", () => ({
   assertProjectAccess: (...args: unknown[]) => assertProjectAccessMock(...(args as [])),
 }));
 
-import type { AuthPayload } from "@metis/shared";
+import { getPermissionsForRole, type AuthPayload } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
 import {
   authorizeBackgroundRun,
@@ -33,6 +33,7 @@ const member: AuthPayload = {
   username: "coordinator",
   role: "coordinator",
   workspaces: ["ws_b"],
+  permissions: getPermissionsForRole("coordinator"),
 };
 
 beforeEach(() => {

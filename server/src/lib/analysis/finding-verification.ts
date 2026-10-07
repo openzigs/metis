@@ -42,6 +42,7 @@
  * claim about what the code does NOT contain, and nothing supports it.
  *
  * Rule (pure, first match wins), per finding, from the #734 gate output:
+ *   0. its gated VERDICT is `could-not-verify` (#726)        → `could-not-verify`
  *   1. it ASSERTS AN ABSENCE and the run's retrieval cannot back an
  *      absence claim (#773)                                   → `could-not-verify`
  *   2. else retained ≥1 CODE citation (survived provenance)   → `confirmed`
@@ -62,7 +63,12 @@
  * citation proves the agent SAW some code, never that the code it did not see is
  * absent. The two surfaces now agree, by construction.
  */
-import { isCodeCitation, type Citation, type FindingVerificationStatus } from "@metis/shared";
+import {
+  isCodeCitation,
+  type Citation,
+  type FindingVerificationStatus,
+  type RequirementVerdict,
+} from "@metis/shared";
 import type { DroppedCitation } from "./code-citations.js";
 
 export interface FindingVerificationInput {
@@ -90,6 +96,13 @@ export interface FindingVerificationInput {
    * (`absenceIsConfirmable`)? Omitted ⇒ rule (3) is inert.
    */
   absenceConfirmable?: boolean;
+  /**
+   * #726 — the finding's GATED verdict (`gateFindingVerdict`), when the caller
+   * has one. A `could-not-verify` verdict wins over a surviving citation: the
+   * agent citing the test it found while saying it could not verify the rule
+   * is still an unverified claim. Omitted ⇒ rule (0) is inert.
+   */
+  verdict?: RequirementVerdict | null;
 }
 
 /**
@@ -100,6 +113,10 @@ export interface FindingVerificationInput {
 export function verifyFinding(input: FindingVerificationInput): FindingVerificationStatus | null {
   const grounded = input.groundedCitations ?? [];
   const dropped = input.droppedCitations ?? [];
+  // (0) #726 — the finding's own gated verdict says it could not be verified.
+  // A citation proves the agent SAW the code it cites, never that the claim it
+  // declined to make is true; "Confirmed" beside "Could not verify" was the bug.
+  if (input.verdict === "could-not-verify") return "could-not-verify";
   // (1) #773 — it claimed an ABSENCE and the run's retrieval cannot support such a
   // claim. This OUTRANKS the citation rules on purpose: a citation (possibly from
   // the #729 passive seed) proves the agent saw SOME code, never that the code it

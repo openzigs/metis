@@ -1,12 +1,13 @@
 /**
- * #481 — when another user's Jira or test-management credentials are replaced,
- * the previous secret is soft-deleted unless something else still references
- * it. Runs against a REAL SQLite database built by the migration chain and the
+ * #481 — when another user's Jira credentials are replaced, the previous
+ * secret is soft-deleted unless something else still references it. A leftover
+ * `test_management_connections` row still counts as a reference (#819 removed
+ * the service that wrote them; the table goes in #821). Runs against a REAL SQLite database built by the migration chain and the
  * REAL `VaultService`; every assertion reads the secret row back from the
  * database rather than trusting the object the service returned.
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
@@ -51,7 +52,6 @@ const {
 } = await import("../src/lib/vault/secret-retirement.js");
 const { audit } = await import("../src/lib/audit/audit-service.js");
 const jira = await import("../src/lib/connectors/jira/jira-service.js");
-const testmgmt = await import("../src/lib/connectors/testmgmt/connection-service.js");
 const { TASK_RETRY_WINDOW_MS } = await import("../src/lib/scheduler/task-retry-window.js");
 const { markBindingWrite, BINDING_WRITE_WINDOW_MS } =
   await import("../src/lib/vault/binding-write-mark.js");
@@ -64,7 +64,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#481 — a replaced foreign secret is retired unless still referenced (real SQLite)",
   () => {
     let sqlite: MigratedSqlite;
-    let db: PrismaClient;
+    let db: PrismaClient<Prisma.PrismaClientOptions, "query">;
     let vault: InstanceType<typeof VaultService>;
     const prevKey = process.env.VAULT_MASTER_KEY;
     let seq = 0;
@@ -74,7 +74,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     const isLive = async (id: string) =>
       (await db.secret.findUniqueOrThrow({ where: { id } })).deletedAt === null;
-    const refIdOf = (ref: string) => /^\$\{vault:([^}]+)\}$/.exec(ref)![1];
     const nameOf = async (id: string) =>
       (await db.secret.findUniqueOrThrow({ where: { id } })).name;
     const labelOf = (name: string) => name.slice(name.indexOf(":") + 1);
@@ -195,114 +194,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(after.secretId).not.toBe(before.secretId);
       expect(await isLive(before.secretId)).toBe(true);
       expect((await vault.read(before.secretId)).plaintext).toBe("owner-token");
-    });
-
-    // ---- Test management ----------------------------------------------------
-
-    const tmDeps = () => ({ prisma: db, vault, assertHost: async () => undefined });
-
-    async function ownerZephyr(withCa = false) {
-      const created = await testmgmt.createTestManagementConnection(
-        "p1",
-        {
-          label: uniq("z"),
-          kind: "zephyr",
-          baseUrl: "https://zephyr.example.test",
-          auth: { kind: "zephyr", bearerToken: "owner-bearer" },
-          ...(withCa ? { tlsConfig: { rejectUnauthorized: true, caCert: "owner-ca" } } : {}),
-        },
-        OWNER,
-        tmDeps(),
-      );
-      const row = await db.testManagementConnection.findUniqueOrThrow({
-        where: { id: created.id },
-      });
-      const auth = JSON.parse(row.authConfigJson) as { bearerTokenRef: string };
-      const tls = row.tlsConfigJson
-        ? (JSON.parse(row.tlsConfigJson) as { caCertRef: string })
-        : null;
-      return {
-        id: row.id,
-        bearerId: refIdOf(auth.bearerTokenRef),
-        caId: tls ? refIdOf(tls.caCertRef) : null,
-      };
-    }
-
-    async function storedBearerId(id: string): Promise<string> {
-      const row = await db.testManagementConnection.findUniqueOrThrow({ where: { id } });
-      return refIdOf((JSON.parse(row.authConfigJson) as { bearerTokenRef: string }).bearerTokenRef);
-    }
-
-    it("test management: a coordinator replacing the owner's credential soft-deletes the old secret", async () => {
-      const before = await ownerZephyr();
-
-      await testmgmt.updateTestManagementConnection(
-        before.id,
-        { auth: { kind: "zephyr", bearerToken: "coord-bearer" } },
-        COORD,
-        undefined,
-        tmDeps(),
-      );
-
-      const newId = await storedBearerId(before.id);
-      expect(newId).not.toBe(before.bearerId);
-      expect((await vault.read(newId)).plaintext).toBe("coord-bearer");
-      expect(await isLive(before.bearerId)).toBe(false);
-    });
-
-    it("test management: a replaced TLS CA secret is retired", async () => {
-      const before = await ownerZephyr(true);
-
-      await testmgmt.updateTestManagementConnection(
-        before.id,
-        { tlsConfig: { rejectUnauthorized: true, caCert: "coord-ca" } },
-        COORD,
-        undefined,
-        tmDeps(),
-      );
-
-      expect(await isLive(before.caId!)).toBe(false);
-      expect(await isLive(before.bearerId)).toBe(true);
-    });
-
-    it.each([
-      ["dropping the CA from the TLS config", { rejectUnauthorized: false }],
-      ["clearing the TLS config", null],
-    ] as const)("test management: %s replaces nothing, so nothing is retired", async (_w, tls) => {
-      const before = await ownerZephyr(true);
-
-      await testmgmt.updateTestManagementConnection(
-        before.id,
-        { tlsConfig: tls },
-        COORD,
-        undefined,
-        tmDeps(),
-      );
-
-      expect(await isLive(before.caId!)).toBe(true);
-    });
-
-    it("test management: an old secret an MCP server references by label is left alone", async () => {
-      const before = await ownerZephyr();
-      const label = labelOf(await nameOf(before.bearerId));
-      await db.mCPServer.create({
-        data: {
-          label: uniq("mcp"),
-          transport: "stdio",
-          envJson: JSON.stringify({ TOKEN: `\${vault:project:${label}}` }),
-        },
-      });
-
-      await testmgmt.updateTestManagementConnection(
-        before.id,
-        { auth: { kind: "zephyr", bearerToken: "coord-bearer" } },
-        COORD,
-        undefined,
-        tmDeps(),
-      );
-
-      expect(await storedBearerId(before.id)).not.toBe(before.bearerId);
-      expect(await isLive(before.bearerId)).toBe(true);
     });
 
     // ---- isSecretReferenced, one column at a time ---------------------------
@@ -520,7 +411,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const plan = raw
           .prepare(`EXPLAIN QUERY PLAN ${sql}`)
           .all(...params)
-          .map((r) => (r as { detail: string }).detail)
+          .map((r: unknown) => (r as { detail: string }).detail)
           .join("\n");
         expect(plan).toMatch(/SEARCH .*tasks USING INDEX tasks_type_status_idx/);
         expect(plan).not.toMatch(/SCAN .*tasks/);
@@ -664,38 +555,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect.stringContaining("Secret soft-deleted"),
         { secretId: before.secretId },
       );
-    });
-
-    it("#614 — test management: a replacement during the owner's binding write keeps the old secret until the sweep", async () => {
-      const before = await ownerZephyr();
-      const stampedAt = new Date();
-      // The owner is binding their bearer-token secret somewhere new while a
-      // coordinator replaces the credential on the connection.
-      const until = await markBindingWrite([{ id: before.bearerId }], OWNER, stampedAt);
-      expect(until).not.toBeNull();
-
-      await testmgmt.updateTestManagementConnection(
-        before.id,
-        { auth: { kind: "zephyr", bearerToken: "coord-bearer" } },
-        COORD,
-        undefined,
-        tmDeps(),
-      );
-
-      // The connection was repointed, but the old secret is kept and marked.
-      expect(await storedBearerId(before.id)).not.toBe(before.bearerId);
-      expect(await isLive(before.bearerId)).toBe(true);
-      expect(await markOf(before.bearerId)).toBeInstanceOf(Date);
-      expect(await isSecretReferenced(before.bearerId, await nameOf(before.bearerId))).toBe(false);
-
-      // While the window is open the sweep leaves it alone.
-      expect((await sweepDue(stampedAt)).retired).not.toContain(before.bearerId);
-      expect(await isLive(before.bearerId)).toBe(true);
-
-      // Once the window has closed, the sweep retires it.
-      const result = await sweepDue(new Date(until!.getTime() + 1));
-      expect(result.retired).toContain(before.bearerId);
-      expect(await isLive(before.bearerId)).toBe(false);
     });
 
     // ---- withdrawCreatedSecrets (#495) --------------------------------------

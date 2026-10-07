@@ -36,7 +36,10 @@ interface CommentPanelProps {
   onClose: () => void;
   /** Requirement mode */
   requirementId?: string;
-  /** Spec Kit artifact mode */
+  /**
+   * Spec Kit artifact mode — and, in either mode, the project whose users the
+   * @mention picker offers (#734).
+   */
   projectId?: string;
   artifactName?: string;
   currentUserId?: string;
@@ -128,6 +131,7 @@ export function CommentPanel({
                   thread={thread}
                   currentUserId={currentUserId}
                   onUpdated={handleUpdated}
+                  projectId={projectId}
                 />
                 <Separator className="mt-4" />
               </div>
@@ -142,6 +146,7 @@ export function CommentPanel({
             value={newBody}
             onChange={setNewBody}
             placeholder="Write a comment… Use @username to mention"
+            projectId={projectId}
             className="mb-2 min-h-[70px] text-sm"
           />
           <Button

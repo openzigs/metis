@@ -284,7 +284,18 @@ import {
   parseGeneratedDocVersionManifest,
 } from "../src/lib/docs-gen/generated-doc-provenance.js";
 import type { RegenerationTask } from "../src/lib/docs-gen/regeneration-plan.js";
+import { sectionSynthesisSchema } from "../src/lib/docs-gen/section-reuse.js";
 import type { TaskHandlerContext } from "../src/lib/scheduler/types.js";
+
+/**
+ * The code under test only awaits these Prisma calls, so a native Promise stands in for
+ * Prisma's lazy PrismaPromise / fluent client in a mocked implementation.
+ */
+function awaitedImpl<F extends (...args: never[]) => PromiseLike<unknown>>(
+  impl: (...args: Parameters<F>) => Promise<Awaited<ReturnType<F>>>,
+): F {
+  return impl as unknown as F;
+}
 
 let scheduler: ReturnType<typeof bootstrapScheduler>;
 const document = () =>
@@ -610,12 +621,14 @@ describe("successful ingest regeneration (#1356)", () => {
     "preserves a concurrently %s document on pre-claim failure",
     async (status) => {
       state.doc.status = "pending";
-      vi.mocked(prisma.user.findFirst).mockImplementationOnce(async () => {
-        state.doc.status = status;
-        state.doc.updatedAt = new Date(Date.now() + 1000);
-        if (status === "deleted") state.doc.deletedAt = new Date();
-        return null;
-      });
+      vi.mocked(prisma.user.findFirst).mockImplementationOnce(
+        awaitedImpl<typeof prisma.user.findFirst>(async () => {
+          state.doc.status = status;
+          state.doc.updatedAt = new Date(Date.now() + 1000);
+          if (status === "deleted") state.doc.deletedAt = new Date();
+          return null;
+        }),
+      );
       await generateDocumentAsync("d", "p");
       expect(state.doc.status).toBe(status);
       expect(jobEvents.failed).not.toHaveBeenCalled();
@@ -626,10 +639,12 @@ describe("successful ingest regeneration (#1356)", () => {
     state.doc.status = "pending";
     vi.mocked(prisma.generatedDocument.findFirst)
       .mockResolvedValueOnce({ ...state.doc } as never)
-      .mockImplementationOnce(async () => {
-        state.doc.codeGraphHash = "other-claim";
-        throw new Error("read failed");
-      });
+      .mockImplementationOnce(
+        awaitedImpl<typeof prisma.generatedDocument.findFirst>(async () => {
+          state.doc.codeGraphHash = "other-claim";
+          throw new Error("read failed");
+        }),
+      );
     await generateDocumentAsync("d", "p");
     expect(state.doc).toMatchObject({ status: "generating", codeGraphHash: "other-claim" });
     expect(jobEvents.failed).not.toHaveBeenCalled();
@@ -641,10 +656,12 @@ describe("successful ingest regeneration (#1356)", () => {
       state.doc.status = "pending";
       state.doc.codeGraphHash = codeGraphHash;
       const updatedAt = state.doc.updatedAt;
-      vi.mocked(prisma.user.findFirst).mockImplementationOnce(async () => {
-        state.doc.codeGraphHash = "concurrent-job";
-        return null;
-      });
+      vi.mocked(prisma.user.findFirst).mockImplementationOnce(
+        awaitedImpl<typeof prisma.user.findFirst>(async () => {
+          state.doc.codeGraphHash = "concurrent-job";
+          return null;
+        }),
+      );
       await generateDocumentAsync("d", "p");
       expect(state.doc).toMatchObject({
         status: "pending",
@@ -699,7 +716,8 @@ describe("successful ingest regeneration (#1356)", () => {
     await ingest();
     const first = parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest);
     expect(first.sectionSynthesis?.complete).toBe(true);
-    const target = first.sectionSynthesis!.records[1];
+    const firstSections = sectionSynthesisSchema.parse(first.sectionSynthesis);
+    const target = firstSections.records[1];
     state.chunks.push({
       id: "c",
       documentId: "ref",
@@ -735,7 +753,9 @@ describe("successful ingest regeneration (#1356)", () => {
       messages.at(-1).content.includes("section group now"),
     );
     expect(sectionCalls).toHaveLength(1);
-    expect(second.sectionSynthesis!.records[0]).toEqual(first.sectionSynthesis!.records[0]);
+    expect(sectionSynthesisSchema.parse(second.sectionSynthesis).records[0]).toEqual(
+      firstSections.records[0],
+    );
     expect(state.doc.status).toBe("degraded");
     expect(state.publications).toHaveBeenCalledTimes(2);
   });

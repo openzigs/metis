@@ -26,6 +26,8 @@ export interface DiscussionComposerProps {
   onSubmit: (body: string) => void | Promise<void>;
   /** Thread id — drives the `typing:*` socket events. */
   threadId?: string;
+  /** #734 — scopes the @mention picker to the thread's project. */
+  projectId?: string;
   disabled?: boolean;
   busy?: boolean;
   placeholder?: string;
@@ -42,6 +44,7 @@ const TYPING_STOP_MS = 2500;
 export function DiscussionComposer({
   onSubmit,
   threadId,
+  projectId,
   disabled,
   busy,
   placeholder = "Message the team… mention @AI to ask the assistant",
@@ -120,6 +123,7 @@ export function DiscussionComposer({
             placeholder={placeholder}
             disabled={disabled}
             ariaLabel="Message"
+            projectId={projectId}
             extraSuggestions={[AI_MENTION_SUGGESTION]}
             className="resize-none"
             onKeyDown={(e) => {

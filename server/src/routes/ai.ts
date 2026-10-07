@@ -20,6 +20,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
   patchSchemaOf,
+  sessionRoom,
   type ApiResponse,
   type CompactionEventDto,
   type ModelCatalogResponse,
@@ -73,6 +74,7 @@ import {
 } from "../lib/ai/tool-runtime/session-tools.js";
 import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/chat-turn.js";
 import {
+  CHAT_TURN_AGENT_STEP,
   ESTIMATED_TURN_AGENT_STEP,
   TurnUsageMeter,
   billableTurnUsage,
@@ -113,6 +115,8 @@ import { messageText } from "../lib/ai/index.js";
 import { AIError, AIOfflineError, AIProviderError } from "../lib/ai/errors.js";
 import { getSemanticCache, shouldSkipCache } from "../lib/ai/semantic-cache.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
+import { formatDerivedLabel } from "../lib/rag/derived-label.js";
+import { formatHitLocator, formatHitScore } from "../lib/rag/hit-locator.js";
 import {
   countProjectToolReads,
   describeGrounding,
@@ -346,6 +350,13 @@ const chatBodySchema = z.object({
   model: z.string().max(120).optional(),
   systemMessage: z.string().max(20_000).optional(),
   reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+  /**
+   * #861 — `/chat` only. With no client subscribed to the session's socket
+   * room nobody can be shown an approval prompt, so a tool that needs one is
+   * refused at once. A client that answers `POST …/approvals/:id` itself while
+   * this request is open sets this to wait for that answer instead.
+   */
+  awaitToolApproval: z.boolean().optional(),
 });
 
 type ChatBody = z.infer<typeof chatBodySchema>;
@@ -562,7 +573,9 @@ export async function buildAutoRagContext(
       });
       const projectName = project?.name?.trim() || "this project";
       const chunkList = hits.map(
-        (h, i) => `[${i + 1}] ${h.filename}#${h.position} (score=${h.score.toFixed(3)})\n${h.text}`,
+        (h, i) =>
+          `[${i + 1}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
+          `(${formatHitScore(h, 3)})\n${h.text}`,
       );
       if (capture) {
         capture.contexts.push(...chunkList);
@@ -572,10 +585,12 @@ export async function buildAutoRagContext(
       ragBlock =
         `## Retrieved Knowledge (project-scoped RAG)\n` +
         `This chat session is scoped to the project "${projectName}". The excerpts below were ` +
-        `retrieved from "${projectName}"'s own knowledge base and are the authoritative source for ` +
+        `retrieved from "${projectName}"'s own knowledge base and are the primary source for ` +
         `any question about "the project" or "this project" — that phrase always means "${projectName}", ` +
         `never METIS (the platform this chat runs on) and never any other topic raised earlier in this ` +
-        `conversation. Prefer these excerpts over your own background knowledge or earlier chat history:\n\n${chunks}`;
+        `conversation. Prefer these excerpts over your own background knowledge or earlier chat history. ` +
+        `An excerpt marked DERIVED is generated documentation about the project, not a primary source: ` +
+        `use it as a pointer, prefer an unmarked excerpt when they disagree, and say so when you rely on one:\n\n${chunks}`;
       // #547/#573 — only a repo-sourced chunk can stand in for a code symbol;
       // `fuseCodeContext` enforces that on the `source` carried here.
       ragChunks = hits.map((h) => ({ filename: h.filename, source: h.source }));
@@ -756,10 +771,43 @@ function emitToolEventToSession(event: ToolEvent): void {
   const io = getSocketServer();
   if (!io) return;
   try {
-    io.to(`session:${event.sessionId}`).emit("ai:tool:event", event);
+    io.to(sessionRoom(event.sessionId)).emit("ai:tool:event", event);
   } catch (err) {
     log.warn("Tool event socket emit failed", { error: (err as Error).message });
   }
+}
+
+/**
+ * #861 — is a client subscribed to the session's socket room, where approval
+ * prompts are shown? Joining it requires owning the session (see
+ * `subscribe:session`), so any member is someone who may answer.
+ */
+async function sessionHasApprover(sessionId: string): Promise<boolean> {
+  const io = getSocketServer();
+  if (!io) return false;
+  const sockets = await io.in(sessionRoom(sessionId)).fetchSockets();
+  return sockets.length > 0;
+}
+
+/** #861 — a tool call the approval step refused, as the `/chat` response reports it. */
+interface ToolApprovalOutcome {
+  callId: string;
+  tool: string;
+  decision: string;
+  reason?: string;
+  code: string;
+}
+
+function toolApprovalOutcome(r: ChatToolRecord): ToolApprovalOutcome | null {
+  if (r.executed || !r.decision) return null;
+  if (r.errorCode !== "TOOL_DENIED" && r.errorCode !== "TOOL_APPROVAL_EXPIRED") return null;
+  return {
+    callId: r.callId,
+    tool: r.tool,
+    decision: r.decision,
+    ...(r.reason ? { reason: r.reason } : {}),
+    code: r.errorCode,
+  };
 }
 
 /** #136/#142 — the transcript's view of one tool call (full result + decision). */
@@ -798,6 +846,8 @@ function bindSubAgents(
     toolResultMaxChars: number;
     meter: { sessionId: string; userId: string; projectId: string | null };
     queueHooks?: Pick<SubAgentChatOptions, "onSlotQueued" | "onSlotAcquired">;
+    /** #861 — `/chat`: whether anyone can answer a sub-agent's approval prompt. */
+    approverPresent?: () => Promise<boolean>;
   },
 ): void {
   const ctx = tools.subAgents;
@@ -813,6 +863,7 @@ function bindSubAgents(
   } = live.providerChatOptions;
   ctx.signal = live.signal;
   ctx.onToolEvent = live.onToolEvent;
+  ctx.approverPresent = live.approverPresent;
   ctx.providerChatOptions = { ...providerChatOptions, ...(live.queueHooks ?? {}) };
   ctx.toolResultMaxChars = live.toolResultMaxChars;
   ctx.onUsage = (usage, model) => {
@@ -829,6 +880,8 @@ function bindSubAgents(
       recordProjectUsage({
         projectId: live.meter.projectId,
         sessionId: live.meter.sessionId,
+        userId: live.meter.userId,
+        agentStep: "subagent",
         provider: ctx.provider.key,
         model,
         inputTokens: usage.promptTokens,
@@ -1343,6 +1396,12 @@ export function aiRouter(): Router {
     let prepared: PreparedTurn | null = null;
     // #142 — every tool call this turn made or refused, in order, as it finished.
     const toolCalls: ReplyToolCall[] = [];
+    // #861 — the calls the approval step refused, reported in the response.
+    const toolApprovals: ToolApprovalOutcome[] = [];
+    // #861 — a prompt nobody can see is refused at once (see `awaitToolApproval`).
+    const approverPresent = parsed.data.awaitToolApproval
+      ? undefined
+      : () => sessionHasApprover(session.id);
     // Set once the reply is on record: a later failure must not add a second,
     // error-marked reply to the same question.
     let replyRecorded = false;
@@ -1527,6 +1586,7 @@ export function aiRouter(): Router {
           providerChatOptions: chatProviderOptions,
           toolResultMaxChars: turn.build.toolResultMaxChars,
           meter: { sessionId: session.id, userId, projectId: session.projectId },
+          ...(approverPresent ? { approverPresent } : {}),
         });
         const loop = await runChatToolTurn(
           providerInstance,
@@ -1540,6 +1600,7 @@ export function aiRouter(): Router {
               runtime: tools,
               signal: ac.signal,
               onEvent: emitToolEventToSession,
+              ...(approverPresent ? { approverPresent } : {}),
             }),
           },
           {
@@ -1548,7 +1609,11 @@ export function aiRouter(): Router {
             toolResultMaxChars: turn.build.toolResultMaxChars,
             onToolEvent: emitToolEventToSession,
             // Recorded as each call finishes, so a later failure keeps them.
-            onToolRecord: (rec) => toolCalls.push(replyToolCall(rec)),
+            onToolRecord: (rec) => {
+              toolCalls.push(replyToolCall(rec));
+              const refused = toolApprovalOutcome(rec);
+              if (refused) toolApprovals.push(refused);
+            },
             // #243 — each model call's usage as it returns.
             onUsage: (u) => turnMeter.add(u),
           },
@@ -1590,6 +1655,8 @@ export function aiRouter(): Router {
         recordProjectUsage({
           projectId: session.projectId,
           sessionId: session.id,
+          userId,
+          agentStep: billed.estimated ? ESTIMATED_TURN_AGENT_STEP : CHAT_TURN_AGENT_STEP,
           provider: response.provider,
           model: response.model,
           inputTokens: billed.usage.promptTokens,
@@ -1693,6 +1760,7 @@ export function aiRouter(): Router {
           transcript: { userOrdinal: turn.userRow.ordinal, replyOrdinal: replyRow.ordinal },
           grounding,
           ...(turn.compaction ? { compaction: compactionEvent(turn.compaction) } : {}),
+          ...(toolApprovals.length > 0 ? { toolApprovals } : {}),
         }),
       );
 
@@ -2303,6 +2371,8 @@ export function aiRouter(): Router {
         recordProjectUsage({
           projectId: session.projectId,
           sessionId: session.id,
+          userId,
+          agentStep: billed.estimated ? ESTIMATED_TURN_AGENT_STEP : CHAT_TURN_AGENT_STEP,
           provider: streamProvider.key,
           model,
           inputTokens: billed.usage.promptTokens,

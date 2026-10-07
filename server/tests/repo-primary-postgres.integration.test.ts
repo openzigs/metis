@@ -167,7 +167,11 @@ describe.runIf(enabled)(
         state.db = countBarrier(db, 2);
         const created = await Promise.all(
           ["a", "b"].map((label) =>
-            createRepoConnector(projectId, { label, ownerOrOrg: "o", repoName: label }, userId),
+            createRepoConnector(
+              projectId,
+              { label, provider: "github", ownerOrOrg: "o", repoName: label },
+              userId,
+            ),
           ),
         );
         expect(created.map((c) => c.isPrimary).sort()).toEqual([false, true]);
@@ -214,7 +218,7 @@ describe.runIf(enabled)(
         const race = () =>
           createRepoConnector(
             projects.race,
-            { label: "good", ownerOrOrg: "o", repoName: "good" },
+            { label: "good", provider: "github", ownerOrOrg: "o", repoName: "good" },
             userId,
           );
         state.db = overrideRepoConnection(db, {
@@ -258,7 +262,7 @@ describe.runIf(enabled)(
           await expect(
             createRepoConnector(
               projects.clash,
-              { label: "old", ownerOrOrg: "o", repoName: "old" },
+              { label: "old", provider: "github", ownerOrOrg: "o", repoName: "old" },
               userId,
             ),
           ).resolves.toMatchObject({ label: "old" });

@@ -33,6 +33,7 @@ import {
   planMigration,
 } from "../../lib/rag/embed-migration.js";
 import { jobEvents, genericFailureMessage } from "../../lib/socket/job-events.js";
+import { recordJobScope } from "../../lib/socket/job-scope-store.js";
 import { createChildLogger } from "../../lib/logger.js";
 
 const log = createChildLogger("admin:embeddings");
@@ -91,16 +92,17 @@ export async function runReindexJob(
     const result = await getKnowledgeService().reindexProject(projectId, {
       ...(opts.batchSize !== undefined ? { batchSize: opts.batchSize } : {}),
       ...(opts.fresh !== undefined ? { fresh: opts.fresh } : {}),
-      onProgress: ({ processed, total }) => {
+      onProgress: ({ processed, total, phase }) => {
         const pct =
           total > 0 ? Math.min(100, Math.max(0, Math.round((processed / total) * 100))) : 0;
-        jobEvents.progress(
-          "embeddings-reindex",
-          jobId,
-          projectId,
-          pct,
-          `Re-embedded ${processed}/${total} chunks`,
-        );
+        // #862 — name the phase. The code-symbol phase (#797) runs after the
+        // document chunks reach 100%; without its own events the page sat on
+        // "Re-embedded N/N chunks" for the whole symbol re-embed.
+        const message =
+          phase === "symbols"
+            ? `Re-embedded ${processed}/${total} code symbols`
+            : `Re-embedded ${processed}/${total} chunks`;
+        jobEvents.progress("embeddings-reindex", jobId, projectId, pct, message);
       },
     });
     // #787 — say so when the run RESUMED. An operator watching a restarted job
@@ -110,11 +112,12 @@ export async function runReindexJob(
       result.resumedChunks > 0
         ? ` (${result.resumedChunks} resumed from an interrupted run, ${result.embeddedChunks} re-embedded)`
         : "";
+    const symbols = result.symbols ? ` and ${result.symbols.totalSymbols} code symbols` : "";
     jobEvents.completed(
       "embeddings-reindex",
       jobId,
       projectId,
-      `Reindexed ${result.reindexedChunks} of ${result.totalChunks} chunks to ${result.currentModel} (${result.currentDimension}d)${resumed}.`,
+      `Reindexed ${result.reindexedChunks} of ${result.totalChunks} chunks${symbols} to ${result.currentModel} (${result.currentDimension}d)${resumed}.`,
     );
   } catch (err) {
     // ReindexConflictError and any other failure surface the SAME generic,
@@ -281,6 +284,9 @@ export function embeddingsAdminRouter(): Router {
           });
         }
         const jobId = randomUUID();
+        // #674 — durably, before the 202 hands the id out, so `subscribe:job`
+        // is authorized on any replica.
+        await recordJobScope(jobId, "embeddings-reindex", projectId);
         // Fire-and-forget: the worker owns all lifecycle emission + error
         // handling and always resolves, so this never rejects into the request.
         void runReindexJob(jobId, projectId, {

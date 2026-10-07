@@ -63,11 +63,12 @@ export function bumpEpoch(io: MetisIOServer, kind: EpochKind): void {
  * The server-side-event surface. `MetisIOServer` declares no server-side
  * events, and widening its generic would ripple through every typed `Socket`.
  */
-interface RelayServer {
+export interface RelayServer {
   on(event: string, listener: (...args: unknown[]) => void): unknown;
   serverSideEmit(event: string, ...args: unknown[]): unknown;
 }
-function asRelayServer(io: MetisIOServer): RelayServer {
+/** Also used by #651 presence (`cluster-presence.ts`) for its replica relay. */
+export function asRelayServer(io: MetisIOServer): RelayServer {
   return io as unknown as RelayServer;
 }
 

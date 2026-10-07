@@ -23,7 +23,9 @@ import {
 import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
-import { keepSubscribed } from "@/lib/socket-subscription";
+import { keepRoomSubscribed } from "@/lib/socket-subscription";
+import { analysisFollow } from "@/lib/socket-rooms";
+import { useOnReconnect } from "@/hooks/use-on-reconnect";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,8 +47,13 @@ interface ApprovalsPanelProps {
  * inferring it from polled metadata. Returns the latest blocked event (if any)
  * for the current analysis and refetches the approvals query on each event so
  * the counts/banner stay live without waiting for the poll interval.
+ *
+ * Exported only so a probe component can pin the #648 latest-callback ref
+ * (#661): the panel passes a fresh arrow each render, but it only wraps the
+ * stable `query.refetch`, so a stale callback behaves identically and no test
+ * through the panel can tell whether a new `onBlocked` is ever picked up.
  */
-function usePromotionBlockedEvent(
+export function usePromotionBlockedEvent(
   analysisId: string,
   onBlocked: () => void,
 ): PromotionBlockedEvent | null {
@@ -63,11 +70,7 @@ function usePromotionBlockedEvent(
   useEffect(() => {
     if (!socket || !analysisId) return;
     // #642 — re-join on reconnect; the server drops rooms with the old session.
-    const release = keepSubscribed(
-      socket,
-      () => socket.emit("subscribe:analysis", { analysisId }),
-      () => socket.emit("unsubscribe:analysis", { analysisId }),
-    );
+    const release = keepRoomSubscribed(socket, analysisFollow(socket, analysisId));
     const handler = (event: PromotionBlockedEvent): void => {
       if (event.analysisId !== analysisId) return;
       setBlocked(event);
@@ -346,6 +349,11 @@ export function ApprovalsPanel({
   // approvals so the banner + counts update immediately when the server gates
   // promotion, rather than inferring it from the next poll of metadata.
   const blockedEvent = usePromotionBlockedEvent(analysisId, () => {
+    void query.refetch();
+  });
+  // #646 — a promotion-blocked event sent while the socket was down is lost;
+  // re-read the approvals on reconnect so the banner and counts catch up.
+  useOnReconnect(() => {
     void query.refetch();
   });
 

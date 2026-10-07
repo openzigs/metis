@@ -16,6 +16,11 @@
  * external metrics backend, NO dashboard, NO alert wiring (those are ops infra,
  * out of scope here and flagged as follow-ups on the PR).
  *
+ * WHO RECORDS (#796): the Bedrock gateway provider and the native Anthropic
+ * provider (which also serves Anthropic-compatible endpoints such as DeepSeek).
+ * The OpenAI-compatible provider does not parse cache tokens, so it records
+ * nothing. The aggregator is in-process, so it starts empty on every restart.
+ *
  * READS vs WRITES (important): the OpenAI-compatible gateway path
  * (`bedrock-direct-provider.ts`) reports cache **reads** only — the
  * OpenAI-compatible `usage` shape surfaces `prompt_tokens_details.cached_tokens`

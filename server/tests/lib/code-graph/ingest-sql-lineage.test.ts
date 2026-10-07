@@ -32,6 +32,10 @@ import type { DbRoutineInfo, DbTableInfo } from "@metis/shared";
 // us a scripted sidecar with no HTTP, and a toggleable feature gate.
 let sidecarEnabled = true;
 let sidecarResponder: (params: ExtractUsageParams) => ExtractUsageResult | null = () => null;
+// #721 — when true the sidecar is UNREACHABLE: extraction goes through the real
+// `extractUsageSafe` with a client whose every call fails at the network, so the
+// real reachability accounting runs, and the health probe reports it down.
+let sidecarDown = false;
 
 vi.mock("../../../src/lib/code-graph/sql-lineage-client.js", async (importOriginal) => {
   const actual =
@@ -39,13 +43,42 @@ vi.mock("../../../src/lib/code-graph/sql-lineage-client.js", async (importOrigin
   return {
     ...actual,
     isSqlLineageEnabled: () => sidecarEnabled,
-    extractUsageSafe: async (params: ExtractUsageParams) =>
-      sidecarEnabled ? sidecarResponder(params) : null,
+    extractUsageSafe: async (params: ExtractUsageParams) => {
+      if (!sidecarEnabled) return null;
+      if (sidecarDown) {
+        const unreachable = {
+          extractUsage: async () => {
+            throw new actual.SqlLineageClientError("connect ECONNREFUSED", 0, true);
+          },
+        } as unknown as InstanceType<typeof actual.SqlLineageClient>;
+        return actual.extractUsageSafe(params, unreachable, true);
+      }
+      return sidecarResponder(params);
+    },
+    probeSqlLineageSidecar: async () => !sidecarDown,
+  };
+});
+
+// #807 — capture the ingest module's own logger (only), so a test can assert
+// the enclosing-symbol fallback warns. Every other module keeps its real logger.
+const ingestLog = vi.hoisted(() => ({
+  warn: vi.fn(),
+  info: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+}));
+vi.mock("../../../src/lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/logger.js")>();
+  return {
+    ...actual,
+    createChildLogger: (module: string) =>
+      module === "code-graph-ingest" ? ingestLog : actual.createChildLogger(module),
   };
 });
 
 // Imported AFTER the mock is registered.
-const { ingestCodeGraph } = await import("../../../src/lib/code-graph/ingest.js");
+const { ingestCodeGraph, extractSchemaUsage } =
+  await import("../../../src/lib/code-graph/ingest.js");
 // The reconciler/classifier path is NOT mocked — the runtime-edge test below
 // proves an `executes` edge produced by ingest classifies a routine `used`
 // through the EXISTING pipeline (no parallel path).
@@ -253,11 +286,13 @@ function sqlglotEdges(store: { codeEdges: Row[] }): Row[] {
 beforeEach(() => {
   vi.clearAllMocks();
   sidecarEnabled = true;
+  sidecarDown = false;
   sidecarResponder = () => null;
 });
 
 afterEach(() => {
   sidecarEnabled = true;
+  sidecarDown = false;
   sidecarResponder = () => null;
 });
 
@@ -744,5 +779,501 @@ describe("#901: the INGESTED schema graph feeds column-level lineage (no live DB
     expect(fed).toBeDefined();
     // The live schema (with `name`) was used, not the 2-column graph-derived one.
     expect(Object.keys(fed!.public.users).sort()).toEqual(["email", "id", "name"]);
+  });
+});
+
+// Issue #721 — an incremental ingest skipped every unchanged file, and Step 6
+// (SQL lineage) runs only over re-parsed files, so enabling lineage or adding a
+// DB connector after the first ingest never backfilled a single reads/writes
+// edge. The graph now records the lineage inputs it was built with and
+// re-parses every file when they change.
+describe("SQL lineage backfills on an already-ingested graph (#721)", () => {
+  const SRC = `export function load() { return db.query("SELECT id FROM users"); }\n`;
+  const usersResponder = (p: ExtractUsageParams) =>
+    /users/i.test(p.sql) ? tableResult("users", "read") : EMPTY;
+
+  it("enabling lineage after a lineage-off ingest re-extracts unchanged files and writes edges", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+
+    sidecarEnabled = false;
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(sqlglotEdges(store)).toHaveLength(0);
+
+    sidecarEnabled = true;
+    const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
+    expect(stats.lineageBackfill).toBe(true);
+    const edge = sqlglotEdges(store).find((e) => (e as any).toQualifiedName === "users");
+    expect((edge as any)?.kind).toBe("reads");
+  });
+
+  it("a second ingest with unchanged lineage inputs stays incremental", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+
+    const first = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    // A fresh graph has nothing to backfill.
+    expect(first.lineageBackfill).toBe(false);
+    const before = sqlglotEdges(store).length;
+    const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.lineageBackfill).toBe(false);
+    // The unchanged file's lineage edges survive the skip.
+    expect(sqlglotEdges(store).length).toBe(before);
+    expect(before).toBeGreaterThan(0);
+  });
+
+  it("a changed introspected schema re-extracts the lineage of unchanged files", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    const stats = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: { public: { users: { id: "INT" } } },
+    });
+
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
+    expect(stats.lineageBackfill).toBe(true);
+  });
+
+  it("with lineage off, adding a DB schema does not force a re-parse", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarEnabled = false;
+    const { prisma } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    const stats = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: { public: { users: { id: "INT" } } },
+    });
+
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.lineageBackfill).toBe(false);
+  });
+
+  it("a graph built before #721 (no fingerprint) backfills once when lineage is on", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+
+    sidecarEnabled = false;
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    // Simulate a pre-migration row.
+    for (const g of store.codeGraphs) (g as any).lineageFingerprint = null;
+
+    sidecarEnabled = true;
+    const first = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    const second = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(first.filesParsed).toBe(0);
+    expect(first.filesLineageRefreshed).toBe(1);
+    expect(second.filesParsed).toBe(0);
+  });
+
+  it("a pre-#721 graph with lineage off is not re-parsed", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarEnabled = false;
+    const { prisma, store } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    for (const g of store.codeGraphs) (g as any).lineageFingerprint = null;
+    const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+
+    expect(stats.filesParsed).toBe(0);
+  });
+
+  it("turning lineage OFF backfills once to drop the lineage edges, and reports it", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(sqlglotEdges(store).length).toBeGreaterThan(0);
+
+    sidecarEnabled = false;
+    const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
+    expect(stats.lineageBackfill).toBe(true);
+    expect(sqlglotEdges(store)).toHaveLength(0);
+  });
+
+  // Review of PR #752 — a connector that exists but cannot be read is an outage,
+  // not "no database": it must not look like a schema change.
+  it("a failed DB introspection keeps the stored schema: no re-parse, fingerprint preserved", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+    const schema = { public: { users: { id: "INT" } } };
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root, introspectedSchema: schema });
+    const built = (store.codeGraphs[0] as any).lineageFingerprint;
+
+    const outage = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: null,
+      introspectionFailed: true,
+    });
+    expect(outage.filesParsed).toBe(0);
+    expect(outage.lineageBackfill).toBe(false);
+    expect((store.codeGraphs[0] as any).lineageFingerprint).toBe(built);
+
+    const recovered = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: schema,
+    });
+    expect(recovered.filesParsed).toBe(0);
+    expect(recovered.lineageBackfill).toBe(false);
+  });
+
+  it("no DB connector at all (null schema, not a failure) is still a schema change", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: { public: { users: { id: "INT" } } },
+    });
+    const stats = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: null,
+    });
+
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
+    expect(stats.lineageBackfill).toBe(true);
+  });
+
+  // Review of PR #752 — the issue's own reproduction: lineage on, sidecar not
+  // yet running. That ingest must not record lineage as done, or starting the
+  // sidecar later never backfills.
+  it("lineage on with the sidecar unreachable backfills once the sidecar is reachable", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+
+    sidecarDown = true;
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(sqlglotEdges(store)).toHaveLength(0);
+    // Still down: no point re-parsing everything against it.
+    const stillDown = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(stillDown.filesParsed).toBe(0);
+
+    sidecarDown = false;
+    const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.filesLineageRefreshed).toBe(1);
+    expect(stats.lineageBackfill).toBe(true);
+    const edge = sqlglotEdges(store).find((e) => (e as any).toQualifiedName === "users");
+    expect((edge as any)?.kind).toBe("reads");
+
+    const settled = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(settled.filesParsed).toBe(0);
+  });
+
+  // Review of PR #807 — the #760 extractor fixes change the edges an UNCHANGED
+  // file produces, so a graph ingested before them must rewrite its lineage on
+  // the next ingest, not wait for a manual full re-ingest.
+  const stripVersion = (fp: string) => fp.replace(/^(on|unreached):v\d+:/, "$1:");
+
+  it("a pre-#807 (unversioned) fingerprint with lineage on backfills once, then settles", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    const current = (store.codeGraphs[0] as any).lineageFingerprint as string;
+    // Simulate a graph written by the pre-#807 extractor: `on:<schema>`.
+    (store.codeGraphs[0] as any).lineageFingerprint = stripVersion(current);
+    expect((store.codeGraphs[0] as any).lineageFingerprint).not.toBe(current);
+
+    const upgraded = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    // #856 — a backfill re-extracts lineage; it no longer re-persists the file.
+    expect(upgraded.filesParsed).toBe(0);
+    expect(upgraded.filesLineageRefreshed).toBe(1);
+    expect(upgraded.lineageBackfill).toBe(true);
+    expect((store.codeGraphs[0] as any).lineageFingerprint).toBe(current);
+    const edge = sqlglotEdges(store).find((e) => (e as any).toQualifiedName === "users");
+    expect((edge as any)?.kind).toBe("reads");
+
+    const settled = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(settled.filesParsed).toBe(0);
+    expect(settled.lineageBackfill).toBe(false);
+  });
+
+  it("a pre-#807 fingerprint keeps its schema part through an introspection outage", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarResponder = usersResponder;
+    const { prisma, store } = makePrismaMock();
+    const schema = { public: { users: { id: "INT" } } };
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root, introspectedSchema: schema });
+    const current = (store.codeGraphs[0] as any).lineageFingerprint as string;
+    (store.codeGraphs[0] as any).lineageFingerprint = stripVersion(current);
+
+    // The version alone forces the backfill; the failed introspection must not
+    // also rewrite the schema part to "no schema".
+    const outage = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      introspectedSchema: null,
+      introspectionFailed: true,
+    });
+    expect(outage.lineageBackfill).toBe(true);
+    expect((store.codeGraphs[0] as any).lineageFingerprint).toBe(current);
+  });
+
+  it("an `off` fingerprint stays off: no extractor-version re-parse with lineage off", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    sidecarEnabled = false;
+    const { prisma, store } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect((store.codeGraphs[0] as any).lineageFingerprint).toBe("off");
+    const stats = await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    expect(stats.filesParsed).toBe(0);
+    expect(stats.lineageBackfill).toBe(false);
+  });
+
+  it("an explicit incremental:false ingest is a full parse but not reported as a backfill", async () => {
+    const root = await makeFixture({ "src/repo.ts": SRC });
+    const { prisma } = makePrismaMock();
+
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+    const stats = await ingestCodeGraph(prisma, {
+      projectId: "p1",
+      rootDir: root,
+      incremental: false,
+    });
+
+    expect(stats.filesParsed).toBe(1);
+    expect(stats.lineageBackfill).toBe(false);
+  });
+});
+
+describe("lineageFingerprint (#721)", () => {
+  it("is independent of schema key order", async () => {
+    const { lineageFingerprint } = await import("../../../src/lib/code-graph/ingest.js");
+    const a = lineageFingerprint(true, { s: { t: { a: "INT", b: "TEXT" }, u: { x: "INT" } } });
+    const b = lineageFingerprint(true, { s: { u: { x: "INT" }, t: { b: "TEXT", a: "INT" } } });
+    expect(a).toBe(b);
+  });
+
+  it("ignores the schema when lineage is off, and distinguishes on from off", async () => {
+    const { lineageFingerprint } = await import("../../../src/lib/code-graph/ingest.js");
+    expect(lineageFingerprint(false, { s: { t: { a: "INT" } } })).toBe(
+      lineageFingerprint(false, null),
+    );
+    expect(lineageFingerprint(true, null)).not.toBe(lineageFingerprint(false, null));
+    expect(lineageFingerprint(true, { s: { t: { a: "INT" } } })).not.toBe(
+      lineageFingerprint(true, { s: { t: { a: "TEXT" } } }),
+    );
+  });
+
+  it("keeps a preserved schema part, and records an unreachable sidecar as unreached", async () => {
+    const { lineageFingerprint } = await import("../../../src/lib/code-graph/ingest.js");
+    const schema = { s: { t: { a: "INT" } } };
+    const built = lineageFingerprint(true, schema);
+    const schemaPart = built.slice(built.lastIndexOf(":") + 1);
+    expect(lineageFingerprint(true, null, { preservedSchema: schemaPart })).toBe(built);
+    expect(lineageFingerprint(true, schema, { sidecarUnreached: true })).toBe(
+      built.replace(/^on:/, "unreached:"),
+    );
+    expect(lineageFingerprint(false, schema, { sidecarUnreached: true })).toBe("off");
+  });
+
+  it("carries the extractor version when on, and stays a bare `off` when off (#807)", async () => {
+    const { lineageFingerprint, LINEAGE_EXTRACTOR_VERSION } =
+      await import("../../../src/lib/code-graph/ingest.js");
+    const v = `v${LINEAGE_EXTRACTOR_VERSION}`;
+    expect(lineageFingerprint(true, null)).toMatch(new RegExp(`^on:${v}:[0-9a-f]{64}$`));
+    expect(lineageFingerprint(true, null, { sidecarUnreached: true })).toMatch(
+      new RegExp(`^unreached:${v}:[0-9a-f]{64}$`),
+    );
+    expect(lineageFingerprint(false, null)).toBe("off");
+  });
+});
+
+describe("#760: embedded-SQL edges hang off the enclosing function", () => {
+  // miniflux `UpdateFeed` (internal/storage/feed.go:331) and `MarkAllAsRead`
+  // (internal/storage/entry.go:506), trimmed. Each SQL literal opens on the
+  // line after its `func` line, exactly as in v2.3.3.
+  const FEED_GO = [
+    "package storage",
+    "",
+    "func (s *Storage) UpdateFeed(feed *Feed) error {",
+    "\tquery := `UPDATE feeds SET checked_at=$1, parsing_error_count=$2 WHERE id=$3 AND user_id=$4`",
+    "\t_, err := s.db.Exec(query, feed.CheckedAt, feed.ParsingErrorCount, feed.ID, feed.UserID)",
+    "\treturn err",
+    "}",
+    "",
+  ].join("\n");
+
+  it("a walk from UpdateFeed reaches feeds and its written columns, with no sql@ symbol", async () => {
+    const root = await makeFixture({ "internal/storage/feed.go": FEED_GO });
+    sidecarResponder = () => ({
+      ...EMPTY,
+      tables: [{ schema: "", name: "feeds", qualifiedName: "feeds", access: "write" }],
+      columns: [
+        {
+          table: "feeds",
+          column: "checked_at",
+          qualifiedName: "feeds.checked_at",
+          access: "write",
+        },
+        {
+          table: "feeds",
+          column: "parsing_error_count",
+          qualifiedName: "feeds.parsing_error_count",
+          access: "write",
+        },
+        { table: "feeds", column: "id", qualifiedName: "feeds.id", access: "read" },
+      ],
+    });
+
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p1", rootDir: root });
+
+    const updateFeed = store.codeSymbols.find((s) =>
+      String((s as any).qualifiedName).endsWith("::UpdateFeed"),
+    );
+    expect(updateFeed).toBeDefined();
+    const fromUpdateFeed = sqlglotEdges(store).filter(
+      (e) => (e as any).fromSymbolId === updateFeed!.id,
+    );
+    expect(
+      fromUpdateFeed.map((e) => `${(e as any).kind}|${(e as any).toQualifiedName}`).sort(),
+    ).toEqual([
+      "reads|feeds.id",
+      "writes|feeds",
+      "writes|feeds.checked_at",
+      "writes|feeds.parsing_error_count",
+    ]);
+    expect(store.codeSymbols.some((s) => String((s as any).name).startsWith("sql@"))).toBe(false);
+  });
+
+  it("never picks a one-line synthetic (language sql) method symbol as the enclosing function", async () => {
+    const { prisma, store } = makePrismaMock();
+    // The real function spans lines 3-7; a synthetic statement symbol (as the
+    // MyBatis pass writes) sits on line 4, the SQL literal's own line.
+    store.codeSymbols.push(
+      {
+        id: "fn-real",
+        codeGraphId: "g1",
+        kind: "function",
+        filePath: "internal/storage/feed.go",
+        startLine: 3,
+        endLine: 7,
+        language: "go",
+        qualifiedName: "internal/storage/feed.go::UpdateFeed",
+      },
+      {
+        id: "synthetic",
+        codeGraphId: "g1",
+        kind: "method",
+        filePath: "internal/storage/feed.go",
+        startLine: 4,
+        endLine: 4,
+        language: "sql",
+        qualifiedName: "internal/storage/feed.go::stmt@4",
+      },
+    );
+    sidecarResponder = () => tableResult("feeds", "write", "checked_at");
+    const stats = { schemaEdges: 0, routineEdges: 0 } as any;
+    await extractSchemaUsage(
+      prisma,
+      "g1",
+      "p1",
+      [{ filePath: "internal/storage/feed.go", language: "go" } as any],
+      new Map([["internal/storage/feed.go", FEED_GO]]),
+      stats,
+    );
+    const edges = sqlglotEdges(store);
+    expect(edges.length).toBe(2);
+    expect(edges.every((e) => (e as any).fromSymbolId === "fn-real")).toBe(true);
+  });
+
+  it("a failed enclosing-symbol lookup degrades to synthetic origins, never to zero edges", async () => {
+    const { prisma, store } = makePrismaMock();
+    const realFindMany = prisma.codeSymbol.findMany;
+    prisma.codeSymbol.findMany = vi.fn(async (args: any) => {
+      if (args?.where?.kind?.in?.includes("function")) throw new Error("db down");
+      return realFindMany(args);
+    });
+    sidecarResponder = () => tableResult("feeds", "write", "checked_at");
+    const stats = { schemaEdges: 0, routineEdges: 0 } as any;
+    await extractSchemaUsage(
+      prisma,
+      "g1",
+      "p1",
+      [{ filePath: "internal/storage/feed.go", language: "go" } as any],
+      new Map([["internal/storage/feed.go", FEED_GO]]),
+      stats,
+    );
+    expect(sqlglotEdges(store).length).toBe(2);
+    expect(store.codeSymbols.some((s) => (s as any).name === "sql@4")).toBe(true);
+  });
+
+  it("warns with the project/graph id and the error when it falls back to synthetic origins (#807)", async () => {
+    ingestLog.warn.mockClear();
+    const { prisma } = makePrismaMock();
+    const realFindMany = prisma.codeSymbol.findMany;
+    prisma.codeSymbol.findMany = vi.fn(async (args: any) => {
+      if (args?.where?.kind?.in?.includes("function")) throw new Error("db down");
+      return realFindMany(args);
+    });
+    sidecarResponder = () => tableResult("feeds", "write", "checked_at");
+    await extractSchemaUsage(
+      prisma,
+      "g1",
+      "p1",
+      [{ filePath: "internal/storage/feed.go", language: "go" } as any],
+      new Map([["internal/storage/feed.go", FEED_GO]]),
+      { schemaEdges: 0, routineEdges: 0 } as any,
+    );
+    expect(ingestLog.warn).toHaveBeenCalledTimes(1);
+    expect(ingestLog.warn).toHaveBeenCalledWith(
+      expect.stringContaining("synthetic"),
+      expect.objectContaining({ projectId: "p1", codeGraphId: "g1", error: "db down" }),
+    );
+  });
+
+  it("does not warn when the enclosing-symbol lookup succeeds", async () => {
+    ingestLog.warn.mockClear();
+    const { prisma } = makePrismaMock();
+    sidecarResponder = () => tableResult("feeds", "write", "checked_at");
+    await extractSchemaUsage(
+      prisma,
+      "g1",
+      "p1",
+      [{ filePath: "internal/storage/feed.go", language: "go" } as any],
+      new Map([["internal/storage/feed.go", FEED_GO]]),
+      { schemaEdges: 0, routineEdges: 0 } as any,
+    );
+    expect(ingestLog.warn).not.toHaveBeenCalled();
   });
 });

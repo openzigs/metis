@@ -1,6 +1,10 @@
 # 0011 — A materialised scan finding's provenance is `scanFindingId`, not a synthetic `AgentResult`
 
-- **Status**: Accepted
+- **Status**: Superseded by the AI bug scanner's removal (#799,
+  [ADR 0018](0018-remove-the-ai-bug-scanner.md)). The writer this record
+  describes was deleted in #804; nothing writes `Finding.scanFindingId` any more.
+  The `scanFindingId` provenance branch, the column and the `ScanFinding` table
+  go in #806. The record is kept as the history of #1330.
 - **Date**: 2026-08-28
 - **Issue**: [#1330](https://github.com/openzigs/metis-private/issues/1330)
 - **Follows**: [0010 — The Finding provenance invariant is a CI ratchet](0010-finding-provenance-invariant-is-a-ci-ratchet.md)

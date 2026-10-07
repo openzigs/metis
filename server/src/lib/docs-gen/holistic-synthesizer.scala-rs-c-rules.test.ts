@@ -13,7 +13,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AIProvider, ChatChunk } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
 import { projectLanguageLabel, synthesizeHolisticDocument } from "./holistic-synthesizer.js";
 import {
   parsePersistedMinedRules,
@@ -37,12 +37,14 @@ vi.mock("../prisma.js", () => ({ prisma: db }));
 vi.mock("../finops/index.js", () => ({ recordUsage: vi.fn() }));
 
 const phase1Prompts: string[] = [];
+// Partial double: implements only the methods the synthesizer calls (no embed/models/ping,
+// chat returns content only), so it cannot overlap AIProvider without an unknown hop.
 const provider = {
   key: "bedrock-gateway",
   model: "fixture",
   offline: false,
   chat: vi.fn(async () => ({ content: JSON.stringify({ claims: [] }) })),
-  async *stream(messages): AsyncGenerator<ChatChunk> {
+  async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
     const prompt = String(messages.at(-1)?.content);
     if (prompt.includes("section group now")) {
       const label = /Section group: \*\*(.+?)\*\*/.exec(prompt)![1];
@@ -53,7 +55,7 @@ const provider = {
     }
     yield { type: "done", finishReason: "stop" };
   },
-} as AIProvider;
+} as unknown as AIProvider; // see the partial-double note above
 vi.mock("../ai/index.js", () => ({
   loadAIConfig: () => ({
     provider: "bedrock-gateway",

@@ -28,10 +28,13 @@ interface Row {
   updatedAt: Date;
 }
 
-function makeFakePrisma() {
+/** The service's (unexported) Prisma surface, read off its signature. */
+type OverridePrisma = Parameters<typeof upsertManualOverride>[0];
+
+function makeFakePrisma(): OverridePrisma & { rows: Row[] } {
   const rows: Row[] = [];
   let seq = 0;
-  return {
+  const fake = {
     rows,
     schemaUsageOverride: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,6 +83,9 @@ function makeFakePrisma() {
       },
     },
   };
+  // Prisma delegates return a fluent `PrismaPromise` no in-memory double can
+  // construct; the service only awaits each call, so plain Promises stand in.
+  return fake as unknown as OverridePrisma & { rows: Row[] };
 }
 
 let prisma: ReturnType<typeof makeFakePrisma>;

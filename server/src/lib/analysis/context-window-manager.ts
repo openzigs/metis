@@ -125,6 +125,15 @@ export interface TranscriptCompactionOptions {
    * upward past 1.
    */
   targetRatio?: number;
+  /**
+   * #726 — tools whose results are elided only after every other eligible
+   * result. A `read_file_slice` result is the one carrying a function BODY;
+   * eliding it oldest-first meant a 20-line function the agent had read in
+   * full reached its answer as a header and a few lines. Searches carry
+   * locators the agent can act on from a head slice, so they go first. The
+   * ceiling still holds: a deferred result is elided when nothing else is left.
+   */
+  deferTools?: readonly string[];
 }
 
 /**
@@ -138,6 +147,7 @@ export const DEFAULT_TRANSCRIPT_COMPACTION: Required<TranscriptCompactionOptions
   preserveRecentTurns: 3,
   headChars: 600,
   targetRatio: 0.6,
+  deferTools: ["read_file_slice"],
 };
 
 export interface TranscriptCompactionResult {
@@ -200,7 +210,7 @@ export function compactTranscript(
   baseLength: number,
   options: TranscriptCompactionOptions = {},
 ): TranscriptCompactionResult {
-  const { maxTranscriptTokens, preserveRecentTurns, headChars, targetRatio } = {
+  const { maxTranscriptTokens, preserveRecentTurns, headChars, targetRatio, deferTools } = {
     ...DEFAULT_TRANSCRIPT_COMPACTION,
     ...options,
   };
@@ -226,8 +236,15 @@ export function compactTranscript(
   for (let i = start; i < messages.length; i++) {
     if (isCompactibleToolResult(messages[i])) candidates.push(i);
   }
-  const eligible =
+  const inOrder =
     preserveRecentTurns > 0 ? candidates.slice(0, -preserveRecentTurns) : candidates.slice();
+  // #726 — results from a deferred tool go to the back of the queue, each
+  // group still oldest first.
+  const deferred = (index: number): boolean =>
+    deferTools.some((tool) =>
+      (contentOf(messages[index]) ?? "").includes(`${TOOL_RESULT_PREFIX}${tool}:`),
+    );
+  const eligible = [...inOrder.filter((i) => !deferred(i)), ...inOrder.filter((i) => deferred(i))];
 
   let messagesCompacted = 0;
   let tokensAfter = tokensBefore;

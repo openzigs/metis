@@ -71,8 +71,11 @@ vi.mock("@anthropic-ai/sdk", () => {
 import Anthropic from "@anthropic-ai/sdk";
 import { AnthropicProvider } from "../../../src/lib/ai/providers/anthropic-provider.js";
 import { AIError } from "../../../src/lib/ai/errors.js";
+import type { ChatChunk } from "../../../src/lib/ai/types.js";
 
-const MockAPIError = (Anthropic as unknown as { APIError: typeof Error }).APIError;
+const MockAPIError = (
+  Anthropic as unknown as { APIError: new (message: string, status?: number) => Error }
+).APIError;
 const MockAuthenticationError = (
   Anthropic as unknown as { AuthenticationError: new (m?: string) => Error }
 ).AuthenticationError;
@@ -284,6 +287,8 @@ describe("AnthropicProvider.stream", () => {
         cacheReadTokens: 7,
         cacheWriteTokens: 2,
       },
+      // #724 — the served model, so a metered stream is priced against it.
+      model: "claude-sonnet-4-6",
     });
     expect(chunks[chunks.length - 1]).toEqual({ type: "done" });
     // streaming requests a larger budget by default
@@ -312,7 +317,7 @@ describe("AnthropicProvider.stream", () => {
     };
     streamMock.mockReturnValue(handle);
     const p = new AnthropicProvider({ apiKey: "k" });
-    const out = [];
+    const out: ChatChunk[] = [];
     await expect(
       (async () => {
         for await (const c of p.stream([{ role: "user", content: "x" }])) out.push(c);

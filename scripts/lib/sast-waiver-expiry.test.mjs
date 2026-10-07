@@ -184,8 +184,8 @@ describe("sast.yml advisory waivers are all still in date (#1324)", () => {
           "cannot be installed yet, or it is just a mute.",
       ).toBe(true);
     }
-    // Vacuously true today (the dict is empty), and deliberately so: this arm is the
-    // ratchet that meets the next waiver, not an assertion about the current tree.
+    // This arm is the ratchet that meets every waiver, so it holds whether the dict is
+    // empty or not.
     expect(new Set(ids).size, "duplicate advisory IDs in WAIVERS").toBe(ids.length);
   });
 });

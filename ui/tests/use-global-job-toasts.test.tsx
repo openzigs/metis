@@ -2,8 +2,8 @@
  * Issue #425 (Epic #406) — global terminal-toast consumer tests.
  *
  * Asserts the AC that closes the silent-failure gap: a LIST-view watcher (whose
- * socket is in the `project:{id}` room, so it receives doc-gen / analysis /
- * test-coverage lifecycle events) sees a terminal toast on completion AND on
+ * socket is in the `project:{id}` room, so it receives doc-gen / analysis
+ * lifecycle events) sees a terminal toast on completion AND on
  * failure WITHOUT being on the op's detail page. Also asserts the
  * NO-DUPLICATE-TOAST invariant: re-delivery of the same terminal event toasts
  * once.
@@ -110,7 +110,7 @@ describe("useGlobalJobToasts", () => {
     expect(toast.success).toHaveBeenCalledWith("Analysis complete");
   });
 
-  it("toasts test-coverage / scan-style kinds generically (any JobKind)", () => {
+  it("toasts other job kinds generically (any JobKind)", () => {
     renderHook(() => useGlobalJobToasts());
     act(() =>
       fake.fire(

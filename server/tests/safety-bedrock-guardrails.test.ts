@@ -10,13 +10,18 @@ import {
   __setBedrockSdkLoaderForTests,
 } from "../src/lib/safety/bedrock-guardrails.js";
 
-function makeClient(response: Record<string, unknown>) {
+/** The client shape the hook's SDK loader resolves to. */
+type BedrockClient = Awaited<
+  ReturnType<NonNullable<Parameters<typeof __setBedrockSdkLoaderForTests>[0]>>
+>;
+
+function makeClient(response: Awaited<ReturnType<BedrockClient["send"]>>) {
   return {
     send: vi.fn(async () => response),
   };
 }
 
-function installSdk(client: { send: ReturnType<typeof vi.fn> }): void {
+function installSdk(client: BedrockClient): void {
   __setBedrockSdkLoaderForTests(
     async () => client,
     async (input: Record<string, unknown>) => ({ input }),

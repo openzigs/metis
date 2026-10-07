@@ -33,10 +33,21 @@ vi.mock("../lib/socket/job-events.js", () => ({
   genericFailureMessage: (kind: string) => `GENERIC:${kind}`,
 }));
 
+// #674 — the durable scope record; `settled` flips only once the write lands.
+const scopeStore = vi.hoisted(() => ({ settled: [] as string[] }));
+const recordJobScope = vi.hoisted(() =>
+  vi.fn(async (jobId: string) => {
+    await new Promise((r) => setTimeout(r, 5));
+    scopeStore.settled.push(jobId);
+  }),
+);
+vi.mock("../lib/socket/job-scope-store.js", () => ({ recordJobScope }));
+
 import { runSpecKitCommandJob, extractCompletionMessage } from "./spec-kit.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  scopeStore.settled = [];
 });
 
 describe("extractCompletionMessage", () => {
@@ -62,8 +73,13 @@ describe("runSpecKitCommandJob — lifecycle streaming", () => {
       tokensUsed: 900,
     }));
 
+    jobEvents.started.mockImplementationOnce(() =>
+      // #674 — the scope is committed before the job's first event.
+      expect(scopeStore.settled).toEqual(["job-1"]),
+    );
     await runSpecKitCommandJob("job-1", "p1", "/specify", dispatch);
 
+    expect(recordJobScope).toHaveBeenCalledWith("job-1", "spec-kit", "p1");
     expect(jobEvents.started).toHaveBeenCalledWith("spec-kit", "job-1", "p1", expect.any(String));
     expect(jobEvents.progress).toHaveBeenCalledWith(
       "spec-kit",

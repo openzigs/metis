@@ -61,7 +61,7 @@ describe("createSpecKitMcpServer", () => {
 
   it("dispatches a tool invocation through fetch and returns text content", async () => {
     await withAllowlist("https://metis.local", async () => {
-      const fetchImpl = vi.fn(async () => ({
+      const fetchImpl = vi.fn<FetchLike>(async () => ({
         status: 200,
         ok: true,
         text: async () =>
@@ -73,7 +73,7 @@ describe("createSpecKitMcpServer", () => {
           projectId: "p1",
           token: "tok",
         },
-        fetchImpl: fetchImpl as unknown as FetchLike,
+        fetchImpl,
       });
       const tool = (
         server as unknown as {

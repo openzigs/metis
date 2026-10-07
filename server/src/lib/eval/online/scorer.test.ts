@@ -460,6 +460,13 @@ describe("drift baseline selection", () => {
       judgeMeaningful: true,
       sampleCount: 1,
       meanScores: FLAT,
+      scored: { context_precision: 1, context_recall: 1, faithfulness: 1, answer_relevancy: 1 },
+      unverifiable: {
+        context_precision: 0,
+        context_recall: 0,
+        faithfulness: 0,
+        answer_relevancy: 0,
+      },
       trendedMetrics: ["faithfulness", "answer_relevancy"],
       drift: {
         metric: "faithfulness",
@@ -522,7 +529,7 @@ describe("drift baseline selection", () => {
         judge: new FakeModelJudge({ ...FLAT, faithfulness: 0.6 }),
         dispatchAlert: async (w) => {
           dispatched.push(w);
-          return { dispatched: true, status: 200 };
+          return { dispatched: true, reason: "OK", status: 200 };
         },
       },
     );
@@ -659,7 +666,10 @@ describe("drift alerting is gated twice", () => {
   };
 
   it("does not dispatch when ONLINE_EVAL_DRIFT_ALERTS_ENABLED is off", async () => {
-    const dispatchAlert = vi.fn(async () => ({ dispatched: true, reason: "OK" }));
+    const dispatchAlert = vi.fn(async (_window: OnlineEvalWindowSummary) => ({
+      dispatched: true,
+      reason: "OK",
+    }));
     const { scorer } = makeScorer(
       { windowSize: 1, driftAlertsEnabled: false },
       { judge: drifting(), dispatchAlert },
@@ -670,7 +680,10 @@ describe("drift alerting is gated twice", () => {
   });
 
   it("dispatches when alerting is enabled AND the judge is real", async () => {
-    const dispatchAlert = vi.fn(async () => ({ dispatched: true, reason: "OK" }));
+    const dispatchAlert = vi.fn(async (_window: OnlineEvalWindowSummary) => ({
+      dispatched: true,
+      reason: "OK",
+    }));
     const { scorer } = makeScorer(
       { windowSize: 1, driftAlertsEnabled: true },
       { judge: drifting(), dispatchAlert },
@@ -684,7 +697,10 @@ describe("drift alerting is gated twice", () => {
   });
 
   it("never dispatches for the stub judge even with alerting enabled", async () => {
-    const dispatchAlert = vi.fn(async () => ({ dispatched: true, reason: "OK" }));
+    const dispatchAlert = vi.fn(async (_window: OnlineEvalWindowSummary) => ({
+      dispatched: true,
+      reason: "OK",
+    }));
     let n = 0;
     // The real stub, wrapped so we can drive its scores down between windows.
     const stub = new StubRagasJudge() as unknown as OnlineJudge & { judgeName?: string };
@@ -862,7 +878,10 @@ describe("drift cannot fire on an unverifiable metric (#1329)", () => {
   // alerting enabled, a real (non-stub) judge, and a healthy same-judge
   // baseline on disk to drift away from.
   it("raises NO drift alert when an entire window is unverifiable", async () => {
-    const dispatchAlert = vi.fn(async () => ({ dispatched: true, reason: "OK" }));
+    const dispatchAlert = vi.fn(async (_window: OnlineEvalWindowSummary) => ({
+      dispatched: true,
+      reason: "OK",
+    }));
     let n = 0;
     const judge = new FakeModelJudge(() => {
       n += 1;
@@ -886,7 +905,10 @@ describe("drift cannot fire on an unverifiable metric (#1329)", () => {
   });
 
   it("does not treat a recovered window as drift against an unverifiable baseline", async () => {
-    const dispatchAlert = vi.fn(async () => ({ dispatched: true, reason: "OK" }));
+    const dispatchAlert = vi.fn(async (_window: OnlineEvalWindowSummary) => ({
+      dispatched: true,
+      reason: "OK",
+    }));
     let n = 0;
     const judge = new FakeModelJudge(() => {
       n += 1;

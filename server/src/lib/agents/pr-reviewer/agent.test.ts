@@ -305,7 +305,7 @@ describe("runPrReview", () => {
         spentCents: 0,
         resetAt: "2026-05-01T00:00:00Z",
       })),
-      record: vi.fn(async () => undefined),
+      record: vi.fn(async (_usage: unknown) => undefined),
     };
     const out = await runPrReview(
       {

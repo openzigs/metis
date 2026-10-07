@@ -16,7 +16,9 @@ import WorkspaceFinopsRedirect from "@/app/(authed)/workspaces/[id]/finops/page"
 
 const query = (q: Record<string, string> = {}) => Promise.resolve(q);
 
-beforeEach(() => redirect.mockClear());
+beforeEach(() => {
+  redirect.mockClear();
+});
 
 describe("retired route pages (#31)", () => {
   it("sends /admin to Settings", async () => {

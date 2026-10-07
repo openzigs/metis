@@ -200,7 +200,7 @@ describe("POST /api/ai/chat — online eval observer (#1321)", () => {
     let headersSentAtObserve: boolean | null = null;
     const app = express();
     app.use(express.json());
-    app.use((req, res, next) => {
+    app.use((_req, res, next) => {
       const original = recorder.observe.bind(recorder);
       recorder.observe = (c: LiveRunCandidate) => {
         headersSentAtObserve = res.headersSent;

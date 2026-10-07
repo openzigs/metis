@@ -12,7 +12,9 @@ vi.mock("../prisma.js", () => ({ prisma: { workspaceMember: { findMany } } }));
 import { readLiveWorkspaceIds } from "./live-workspace-ids.js";
 
 describe("readLiveWorkspaceIds", () => {
-  beforeEach(() => findMany.mockReset());
+  beforeEach(() => {
+    findMany.mockReset();
+  });
 
   it("filters on a live workspace and a live, active user", async () => {
     findMany.mockResolvedValue([{ workspaceId: "ws-1" }, { workspaceId: "ws-2" }]);

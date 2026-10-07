@@ -59,11 +59,6 @@ export interface BaselineEntry {
  */
 export const PROJECT_ACCESS_BASELINE: readonly BaselineEntry[] = [
   {
-    path: "/projects/:projectId/publishing",
-    expression: "publishingRouter()",
-    note: "drafts/batches are now scoped to the PATH projectId (#1072) — but the path project itself is unchecked",
-  },
-  {
     path: "/projects/:projectId/model-preferences",
     expression: "initModelPreferenceRouter()",
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
@@ -114,34 +109,9 @@ export const PROJECT_ACCESS_BASELINE: readonly BaselineEntry[] = [
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
   },
   {
-    path: "/projects/:projectId/rule-sets",
-    expression: "rulesRouter()",
-    note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
-  },
-  {
-    path: "/projects/:projectId",
-    expression: "scansRouter()",
-    note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
-  },
-  {
-    path: "/projects/:projectId",
-    expression: "triageRouter()",
-    note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
-  },
-  {
-    path: "/projects/:projectId/test-coverage",
-    expression: "testCoverageRouter()",
-    note: "test-coverage.ts:76 ensureProject checks existence + archived status, not access",
-  },
-  {
     path: "/projects/:projectId",
     expression: "dataMappingsRouter()",
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
-  },
-  {
-    path: "/projects/:projectId",
-    expression: "traceabilityRouter()",
-    note: "path-scoped, but the includeLinked=true cross-project branch (traceability.ts:69) needs a human look",
   },
   {
     path: "/projects/:projectId",

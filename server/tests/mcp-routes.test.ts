@@ -113,7 +113,8 @@ vi.mock("../src/lib/prisma.js", async () => {
       ),
       create: vi.fn(async ({ data }: { data: Partial<Row> }) => {
         next += 1;
-        const row: Row = {
+        // The mocked create trusts the caller-supplied columns; the defaults cover the rest.
+        const row = {
           id: `mcp_${next}`,
           envSecretId: null,
           version: null,
@@ -127,8 +128,8 @@ vi.mock("../src/lib/prisma.js", async () => {
           updatedAt: new Date(),
           deletedAt: null,
           createdById: null,
-          ...(data as Row),
-        };
+          ...data,
+        } as Row;
         servers.set(row.id, row);
         return row;
       }),
@@ -206,12 +207,13 @@ function fakeTransport(): MCPTransportClient {
     start: vi.fn(async () => undefined),
     stop: vi.fn(async () => undefined),
     notify: vi.fn(async () => undefined),
-    closed: vi.fn(() => new Promise(() => undefined)),
+    closed: vi.fn<MCPTransportClient["closed"]>(() => new Promise(() => undefined)),
+    // request<TResult> is generic; a canned-response stub cannot satisfy it without an assertion.
     request: vi.fn(async (m: string) => {
       if (m === "initialize") return { protocolVersion: "2025-06-18" };
       if (m === "tools/list") return { tools: [] };
       return {};
-    }),
+    }) as MCPTransportClient["request"],
   };
 }
 

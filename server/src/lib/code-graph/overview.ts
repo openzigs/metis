@@ -133,6 +133,29 @@ export function isJavaEntryPoint(symbol: {
   return JAVA_ENTRY_POINT_FILE_PATTERNS.some((p) => p.test(symbol.filePath));
 }
 
+/**
+ * #719 — Go's entry point is `func main` in `package main`, most often a root
+ * `main.go`, which none of the file patterns above match (they need a `src/`,
+ * `cmd/` or `bin/` segment). The name is the whole test, and it is a heuristic:
+ * any Go package may declare an ordinary top-level `func main`, and only the one
+ * in `package main` is a program entry point. `CodeSymbol` records no Go package
+ * name (the Go extractor does not keep the package clause), so this cannot
+ * require `package main`; a `func main` in a library package is a known false
+ * positive (pinned in `overview.entry-points.test.ts`).
+ */
+export function isGoEntryPoint(symbol: {
+  name?: string;
+  qualifiedName: string;
+  filePath: string;
+  language: string;
+  kind?: string;
+}): boolean {
+  if (symbol.language !== "go") return false;
+  if (symbol.kind !== undefined && symbol.kind !== "function") return false;
+  if (isTestFilePath(symbol.filePath)) return false;
+  return simpleSymbolName(symbol) === "main";
+}
+
 const TOP_GOD_NODES = 20;
 /** Ranked symbol ids fetched per round trip while skipping test-file symbols. */
 const GOD_NODE_PAGE = 100;
@@ -284,7 +307,12 @@ export async function generateOverview(
   });
   const entryPoints = candidateEntryPoints
     .filter((s) => !calledIds.has(s.id))
-    .filter((s) => ENTRY_POINT_PATTERNS.some((p) => p.test(s.filePath)) || isJavaEntryPoint(s))
+    .filter(
+      (s) =>
+        ENTRY_POINT_PATTERNS.some((p) => p.test(s.filePath)) ||
+        isJavaEntryPoint(s) ||
+        isGoEntryPoint(s),
+    )
     .sort((a, b) => a.qualifiedName.localeCompare(b.qualifiedName))
     .slice(0, TOP_ENTRY_POINTS);
 
@@ -363,7 +391,7 @@ export async function generateOverview(
   lines.push("");
   if (entryPoints.length === 0) {
     lines.push(
-      "_No entry-point candidates were found. (Looking for `bin/*`, `cmd/*`, `src/index.*`, `src/main.*`, `**/server.*`, `**/cli.*`, and for Java a `main` method or `*Application.java` / `*Initializer.java` / `*Servlet.java` / `Main.java`.)_",
+      "_No entry-point candidates were found. (Looking for `bin/*`, `cmd/*`, `src/index.*`, `src/main.*`, `**/server.*`, `**/cli.*`, for Go a `func main`, and for Java a `main` method or `*Application.java` / `*Initializer.java` / `*Servlet.java` / `Main.java`.)_",
     );
   } else {
     lines.push("| Symbol | Kind | File |");

@@ -61,7 +61,7 @@ vi.mock("../src/lib/ai/providers/bedrock-direct-provider.js", () => ({
   BedrockDirectProvider: vi.fn(),
 }));
 
-import { synthesizeHolisticDocument } from "../../src/lib/docs-gen/holistic-synthesizer.js";
+import { synthesizeHolisticDocument } from "../src/lib/docs-gen/holistic-synthesizer.js";
 import { buildProvider } from "../src/lib/ai/index.js";
 
 // ---------------------------------------------------------------------------

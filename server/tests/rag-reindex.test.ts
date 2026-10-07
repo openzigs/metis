@@ -411,7 +411,7 @@ describe("KnowledgeService.reindexProject", () => {
     expect(result.currentDimension).toBe(6);
     // Batches of 2 over 5 chunks → progress reported 3 times, last = 5/5.
     expect(progress.length).toBe(3);
-    expect(progress.at(-1)).toEqual({ processed: 5, total: 5 });
+    expect(progress.at(-1)).toEqual({ processed: 5, total: 5, phase: "chunks" });
 
     // Persisted chunks now carry the new model.
     const coverage = await svc.coverageReport("p1");
@@ -425,6 +425,54 @@ describe("KnowledgeService.reindexProject", () => {
       expect(h.row.vector.length).toBe(6);
       expect(h.row.metadata.embeddingModel).toBe("model-b");
     }
+  });
+
+  // #862 — phase 2 (code symbols, #797) runs after the chunks reach 100%. Its
+  // progress must reach the caller, tagged as such, or the reindex page shows
+  // "N/N chunks, 100%" with no further events for the whole symbol re-embed.
+  it("forwards the code-symbol phase's progress to onProgress, tagged phase=symbols", async () => {
+    const embedder = fakeEmbedder("model-b", 6);
+    await seedChunk(store, embedder, {
+      id: "c0",
+      projectId: "p1",
+      documentId: "d1",
+      position: 0,
+      text: "chunk 0",
+      embeddingModel: "model-a",
+      filename: "a.md",
+    });
+    const symbolEmbeddings = {
+      coverage: async () => ({ totalSymbols: 2, modelCounts: { "model-a": 2 } }),
+      deploymentCoverage: async () => new Map(),
+      reindexProject: async (
+        projectId: string,
+        opts?: { onProgress?: (p: { processed: number; total: number }) => void },
+      ) => {
+        opts?.onProgress?.({ processed: 0, total: 2 });
+        opts?.onProgress?.({ processed: 2, total: 2 });
+        return {
+          projectId,
+          totalSymbols: 2,
+          resumedSymbols: 0,
+          embeddedSymbols: 2,
+          currentModel: "model-b",
+        };
+      },
+      dropProject: async () => {},
+      retagToActiveModel: async () => 0,
+      isBusy: () => false,
+    };
+    const svc = new KnowledgeService({ vectorStore: store, embedder, symbolEmbeddings });
+
+    const progress: ReindexProgress[] = [];
+    const result = await svc.reindexProject("p1", { onProgress: (p) => progress.push(p) });
+
+    expect(progress).toEqual([
+      { processed: 1, total: 1, phase: "chunks" },
+      { processed: 0, total: 2, phase: "symbols" },
+      { processed: 2, total: 2, phase: "symbols" },
+    ]);
+    expect(result.symbols?.totalSymbols).toBe(2);
   });
 
   it("cuts over an empty project to a durable generation that validates later approvals", async () => {
@@ -801,7 +849,14 @@ describe("LocalVectorStore.swapTable", () => {
       {
         id: "old",
         vector: [1, 0, 0, 0],
-        metadata: { chunkId: "old", documentId: "d", filename: "a", position: 0, text: "old" },
+        metadata: {
+          chunkId: "old",
+          documentId: "d",
+          filename: "a",
+          position: 0,
+          text: "old",
+          embeddingModel: "m",
+        },
       },
     ]);
     const shadow = reindexShadowId("p1");
@@ -810,7 +865,14 @@ describe("LocalVectorStore.swapTable", () => {
       {
         id: "new",
         vector: [0, 1, 0, 0, 0, 0],
-        metadata: { chunkId: "new", documentId: "d", filename: "a", position: 0, text: "new" },
+        metadata: {
+          chunkId: "new",
+          documentId: "d",
+          filename: "a",
+          position: 0,
+          text: "new",
+          embeddingModel: "m",
+        },
       },
     ]);
 

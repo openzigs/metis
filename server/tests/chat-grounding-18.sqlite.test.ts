@@ -442,14 +442,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await replyGroundings(sessionId)).toEqual([grounded]);
       });
 
-      it("a search of another project is refused and leaves the turn no-context", async () => {
+      it("a search naming another project never reaches it: the session's own project is searched (#736)", async () => {
         native.toolCalls = [searchKnowledge("p-other")];
         const sessionId = await newSession(PROJECT);
         const res = await post("/api/ai/stream", { sessionId, message: "How is DNS handled?" });
         expect(res.text).toContain("event: done");
-        expect(groundingFrames(res.text)).toEqual([noContext]);
         expect(state.searched).not.toContain("p-other");
-        expect(await replyGroundings(sessionId)).toEqual([noContext]);
+        // Auto-retrieval's search, then the tool's — both on the bound project.
+        expect(state.searched).toEqual([PROJECT, PROJECT]);
+        expect(groundingFrames(res.text)).toEqual([noContext, grounded]);
+        expect(await replyGroundings(sessionId)).toEqual([grounded]);
       });
 
       it("a search that found nothing leaves the turn no-context", async () => {

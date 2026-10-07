@@ -1,0 +1,17 @@
+-- Issue #782 — a per-section checkpoint for document generation.
+--
+-- A full-scope BRD ran for 77 minutes, finished five sections, and then failed:
+-- nothing it had produced was saved, and a regenerate started over. Generation
+-- now writes each finished section's reuse record (markdown, warnings and
+-- input hashes; never source text) to this column as it goes. A late failure
+-- keeps those sections, and a regenerate reuses every section whose inputs are
+-- unchanged. The column is cleared when a generation is published.
+--
+-- Additive only: a nullable column, NULL meaning "no checkpoint", which is how
+-- every existing document behaves.
+--
+-- Rollback (documentation):
+--   ALTER TABLE "generated_documents" DROP COLUMN "generationCheckpoint";
+-- Lossless for published documents; a failed generation's next regenerate
+-- would start from scratch again.
+ALTER TABLE "generated_documents" ADD COLUMN "generationCheckpoint" JSONB;

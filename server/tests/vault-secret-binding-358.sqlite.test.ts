@@ -8,9 +8,9 @@
  *
  *   - `POST /api/projects/:id/github/projects-v2-boards` (`secretRef` + `targetBaseUrl`)
  *   - `POST /api/projects/:projectId/publishing/batches` (live: `secretRef` + `targetBaseUrl`)
- *   - `PATCH /api/jira/connections/:id` and `PATCH /api/test-management/connections/:id`,
- *     which move a connection holding a credential someone else supplied to a new
- *     base URL / proxy / TLS setting without re-supplying it.
+ *   - `PATCH /api/jira/connections/:id`, which moves a connection holding a
+ *     credential someone else supplied to a new base URL / proxy / TLS setting
+ *     without re-supplying it.
  *
  * Every path runs through its REAL router, REAL auth, REAL vault and REAL audit
  * service against a REAL SQLite database built from the migration chain. Only
@@ -72,7 +72,6 @@ vi.mock("../src/lib/publishing/octokit-factory.js", async (importOriginal) => {
 const { projectsRouter } = await import("../src/routes/projects.js");
 const { publishingRouter } = await import("../src/routes/publishing.js");
 const { jiraRouter } = await import("../src/routes/jira.js");
-const { testManagementRouter } = await import("../src/routes/test-management.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getVaultService, __resetVaultSingleton } =
@@ -108,7 +107,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use("/api/projects/:projectId/publishing", publishingRouter());
       a.use("/api/projects", projectsRouter());
       a.use("/api/jira", jiraRouter());
-      a.use("/api/test-management", testManagementRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -423,90 +421,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(a.status, JSON.stringify(a.body)).toBe(200);
         const theirs = await create(COORD);
         const b = await call("patch", `/api/jira/connections/${theirs}`, ADMIN, {
-          baseUrl: "https://elsewhere.example.test",
-        });
-        expect(b.status, JSON.stringify(b.body)).toBe(200);
-      });
-    });
-
-    // ── Test-management connections ──────────────────────────────────────────
-    describe("PATCH /api/test-management/connections/:id", () => {
-      const conns = `/api/test-management/connections?projectId=${PROJ}`;
-      const create = async (bearer: string) => {
-        const res = await call("post", conns, bearer, {
-          label: `tm-${next()}`,
-          kind: "zephyr",
-          baseUrl: "https://zephyr.internal.example.test",
-          auth: { kind: "zephyr", bearerToken: "zephyr-token-358" },
-        });
-        expect(res.status, JSON.stringify(res.body)).toBe(201);
-        return res.body.data.id as string;
-      };
-      const row = (id: string) => db.testManagementConnection.findUnique({ where: { id } });
-      const tokenId = async (id: string) =>
-        /\$\{vault:([^}]+)\}/.exec(
-          (JSON.parse((await row(id))!.authConfigJson) as { bearerTokenRef: string })
-            .bearerTokenRef,
-        )![1];
-
-      it("the credentials are owned by whoever supplied them", async () => {
-        const id = await create(COORD);
-        expect(
-          (await db.secret.findUnique({ where: { id: await tokenId(id) } }))?.createdById,
-        ).toBe("u-coord");
-      });
-
-      it("a coordinator cannot move a connection holding credentials they did not supply", async () => {
-        for (const patch of [
-          { baseUrl: "https://attacker.example.test" },
-          { proxyConfig: { url: "https://attacker.example.test" } },
-          { tlsConfig: { rejectUnauthorized: false } },
-          { tlsConfig: { caCert: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----" } },
-        ]) {
-          const id = await create(ADMIN);
-          const before = await row(id);
-          const res = await call("patch", `/api/test-management/connections/${id}`, COORD, patch);
-          expect(res.status, JSON.stringify(patch)).toBe(403);
-          expect(res.body.error.code).toBe(FORBIDDEN);
-          expect(await row(id)).toEqual(before);
-        }
-        expect((await refusals("test_management_connection")).length).toBeGreaterThanOrEqual(4);
-      });
-
-      it("a coordinator may edit what does not move the credentials, or move them with their own", async () => {
-        const id = await create(ADMIN);
-        const adminSecret = await tokenId(id);
-        const adminCiphertext = (await db.secret.findUniqueOrThrow({ where: { id: adminSecret } }))
-          .ciphertext;
-        const renamed = await call("patch", `/api/test-management/connections/${id}`, COORD, {
-          label: `renamed-${next()}`,
-          baseUrl: "https://zephyr.internal.example.test",
-          tlsConfig: { rejectUnauthorized: true },
-        });
-        expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
-        const moved = await call("patch", `/api/test-management/connections/${id}`, COORD, {
-          baseUrl: "https://mine.example.test",
-          auth: { kind: "zephyr", bearerToken: "coord-zephyr-token" },
-        });
-        expect(moved.status, JSON.stringify(moved.body)).toBe(200);
-        expect((await row(id))?.baseUrl).toBe("https://mine.example.test");
-        expect(await tokenId(id)).not.toBe(adminSecret);
-        // #481 — the admin's secret is not overwritten, and is retired once unreferenced.
-        const old = await db.secret.findUniqueOrThrow({ where: { id: adminSecret } });
-        expect(old.ciphertext).toBe(adminCiphertext);
-        expect(old.deletedAt).not.toBeNull();
-        expect((await getVaultService().read(await tokenId(id))).plaintext).toBe(
-          "coord-zephyr-token",
-        );
-      });
-
-      it("a coordinator may move their own connection; an admin may move any", async () => {
-        const own = await create(COORD);
-        const a = await call("patch", `/api/test-management/connections/${own}`, COORD, {
-          baseUrl: "https://mine.example.test",
-        });
-        expect(a.status, JSON.stringify(a.body)).toBe(200);
-        const b = await call("patch", `/api/test-management/connections/${own}`, ADMIN, {
           baseUrl: "https://elsewhere.example.test",
         });
         expect(b.status, JSON.stringify(b.body)).toBe(200);

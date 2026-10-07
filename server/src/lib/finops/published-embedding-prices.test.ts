@@ -3,8 +3,8 @@
  * embedder that ran, and every built-in embedding price is its vendor's
  * published price.
  *
- * Before #58 test-coverage embedding tokens were recorded on `offline-stub`
- * under the Claude Haiku model id, so `resolveRate` family-matched them to
+ * Before #58 the (since removed, #819) coverage indexer's embedding tokens were
+ * recorded on `offline-stub` under the Claude Haiku model id, so `resolveRate` family-matched them to
  * Haiku 4.5's $1/MTok input price — another model's price.
  *
  * Embedding usage is recorded under `embed:<registry key>` (see

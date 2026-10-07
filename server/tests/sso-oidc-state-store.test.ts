@@ -65,6 +65,7 @@ vi.mock("../src/lib/auth/oidc-provider.js", () => ({
       email: "alice@example.com",
       groups: [],
       mfaPassed: true,
+      rawClaims: {},
     },
   })),
 }));
@@ -78,15 +79,26 @@ import { verifyAccessToken } from "../src/lib/auth/jwt.js";
 
 const app = createApp();
 
+/**
+ * Prisma delegates return a fluent `PrismaPromise` that no in-memory double can
+ * construct; the route only awaits the result, so a plain async function stands
+ * in for it. Asserting the delegate's type here is the double's one cast.
+ */
+function prismaImpl<F>(impl: (...args: never[]) => Promise<unknown>): F {
+  return impl as F;
+}
+
 const prismaState = {
   userUpsert: { id: "user-1", authRolesInitializedAt: null as Date | null },
   userRoles: [] as Array<{ role: { key: string | null }; source?: string | null }>,
 };
 
-vi.mocked(prisma.user.upsert).mockImplementation(async () => prismaState.userUpsert as never);
-vi.mocked(prisma.userRole.findMany).mockImplementation(async () => prismaState.userRoles as never);
+vi.mocked(prisma.user.upsert).mockImplementation(prismaImpl(async () => prismaState.userUpsert));
+vi.mocked(prisma.userRole.findMany).mockImplementation(
+  prismaImpl(async () => prismaState.userRoles),
+);
 vi.mocked(prisma.userRole.findFirst).mockImplementation(
-  async () => (prismaState.userRoles[0] ?? null) as never,
+  prismaImpl(async () => prismaState.userRoles[0] ?? null),
 );
 
 function configureOIDC(): void {
@@ -100,6 +112,7 @@ function configureOIDC(): void {
       clientSecret: "client-secret",
       redirectUri: "https://app/api/auth/oidc/callback",
       scopes: ["openid", "profile", "email"],
+      pkceEnabled: true,
     },
     defaultRole: "reader",
     groupMappings: [
@@ -117,23 +130,31 @@ beforeEach(() => {
   vi.mocked(prisma.$transaction).mockImplementation(
     async (fn) => (fn as (tx: typeof prisma) => Promise<unknown>)(prisma) as never,
   );
-  vi.mocked(prisma.user.findFirst).mockImplementation(async () => prismaState.userUpsert as never);
-  vi.mocked(prisma.userRole.deleteMany).mockImplementation(async () => {
-    const before = prismaState.userRoles.length;
-    prismaState.userRoles = prismaState.userRoles.filter((row) => row.source !== "provider");
-    return { count: before - prismaState.userRoles.length };
-  });
-  vi.mocked(prisma.userRole.create).mockImplementation(async ({ data }) => {
-    prismaState.userRoles.push({
-      role: { key: data.roleId?.replace("role-", "") ?? null },
-      source: data.source,
-    });
-    return data as never;
-  });
-  vi.mocked(prisma.user.update).mockImplementation(async () => {
-    prismaState.userUpsert.authRolesInitializedAt = new Date();
-    return prismaState.userUpsert as never;
-  });
+  vi.mocked(prisma.user.findFirst).mockImplementation(
+    prismaImpl(async () => prismaState.userUpsert),
+  );
+  vi.mocked(prisma.userRole.deleteMany).mockImplementation(
+    prismaImpl(async () => {
+      const before = prismaState.userRoles.length;
+      prismaState.userRoles = prismaState.userRoles.filter((row) => row.source !== "provider");
+      return { count: before - prismaState.userRoles.length };
+    }),
+  );
+  vi.mocked(prisma.userRole.create).mockImplementation(
+    prismaImpl(async ({ data }: { data: { roleId?: string; source?: string } }) => {
+      prismaState.userRoles.push({
+        role: { key: data.roleId?.replace("role-", "") ?? null },
+        source: data.source,
+      });
+      return data;
+    }),
+  );
+  vi.mocked(prisma.user.update).mockImplementation(
+    prismaImpl(async () => {
+      prismaState.userUpsert.authRolesInitializedAt = new Date();
+      return prismaState.userUpsert;
+    }),
+  );
 });
 
 afterEach(() => {
@@ -174,6 +195,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-admins"],
         mfaPassed: true,
+        rawClaims: {},
       },
     });
     __resetProviders();
@@ -187,6 +209,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         clientSecret: "client-secret",
         redirectUri: "https://app/api/auth/oidc/callback",
         scopes: ["openid", "profile", "email"],
+        pkceEnabled: true,
       },
       groupMappings: [{ claimValue: "metis-admins", role: "admin" }],
       defaultRole: "reader",
@@ -220,6 +243,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-readers"],
         mfaPassed: true,
+        rawClaims: {},
       },
     });
     prismaState.userUpsert = {
@@ -238,6 +262,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         clientSecret: "client-secret",
         redirectUri: "https://app/api/auth/oidc/callback",
         scopes: ["openid", "profile", "email"],
+        pkceEnabled: true,
       },
       groupMappings: [
         { claimValue: "metis-admins", role: "admin" },
@@ -271,6 +296,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-readers"],
         mfaPassed: true,
+        rawClaims: {},
       },
     });
     prismaState.userUpsert = {
@@ -292,6 +318,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         clientSecret: "client-secret",
         redirectUri: "https://app/api/auth/oidc/callback",
         scopes: ["openid", "profile", "email"],
+        pkceEnabled: true,
       },
       groupMappings: [
         { claimValue: "metis-admins", role: "admin" },
@@ -321,6 +348,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-admins"],
         mfaPassed: true,
+        rawClaims: {},
       },
     });
     prismaState.userUpsert = {
@@ -353,6 +381,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-admins"],
         mfaPassed: true,
+        rawClaims: {},
       },
     });
     prismaState.userUpsert = {
@@ -371,6 +400,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         clientSecret: "client-secret",
         redirectUri: "https://app/api/auth/oidc/callback",
         scopes: ["openid", "profile", "email"],
+        pkceEnabled: true,
       },
       groupMappings: [{ claimValue: "metis-admins", role: "admin" }],
       defaultRole: "reader",

@@ -7,6 +7,11 @@
  * requirement: the specs it satisfies and, under each, the code that implements
  * the spec, plus the direct requirement→code spine (#159). Loading / empty /
  * error states are handled and every confidence is surfaced as a badge.
+ *
+ * #816 — a "Tested by" section lists the tests resolved from the mapped code
+ * (#814), each with a text relation badge. Its two empty states are distinct:
+ * mapped code with no test is "No linked test"; no mapped code at all means
+ * testedness cannot be told, and says so.
  */
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -14,10 +19,12 @@ import type {
   RequirementTraceabilityChain,
   TraceabilityCodeNode,
   TraceabilitySpecNode,
+  TraceabilityTestNode,
 } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { traceabilityApi } from "@/lib/traceability-api";
 import { Badge } from "@/components/ui/badge";
+import { TEST_RELATION_LABEL } from "./test-relation";
 
 export interface TraceabilityViewProps {
   projectId: string;
@@ -50,8 +57,66 @@ function CodeRow({ c }: { c: TraceabilityCodeNode }): React.ReactElement {
       className="flex items-center justify-between gap-2 py-1 pl-4 text-sm"
     >
       <code className="truncate font-mono text-xs">{codeLocation(c)}</code>
-      <ConfidenceBadge confidence={c.confidence} />
+      <span className="flex shrink-0 items-center gap-1">
+        {c.isTest ? <Badge variant="outline">test</Badge> : null}
+        <ConfidenceBadge confidence={c.confidence} />
+      </span>
     </li>
+  );
+}
+
+/** `file:startLine`, or the bare path for a file-only hit. */
+function testLocation(t: TraceabilityTestNode): string {
+  return t.startLine == null ? t.filePath : `${t.filePath}:${t.startLine}`;
+}
+
+function TestRow({ t }: { t: TraceabilityTestNode }): React.ReactElement {
+  return (
+    <li
+      data-testid="traceability-test-row"
+      className="flex items-center justify-between gap-2 py-1 pl-4 text-sm"
+    >
+      <span className="min-w-0 truncate">
+        <code className="font-mono text-xs">{testLocation(t)}</code>
+        <span aria-hidden="true" className="px-1 text-muted-foreground">
+          ›
+        </span>
+        <span>{t.name}</span>
+      </span>
+      <Badge variant="secondary">{TEST_RELATION_LABEL[t.relation]}</Badge>
+    </li>
+  );
+}
+
+function TestedBy({
+  tests,
+  hasCode,
+}: {
+  tests: TraceabilityTestNode[];
+  hasCode: boolean;
+}): React.ReactElement {
+  const headingId = React.useId();
+  return (
+    <section aria-labelledby={headingId} className="space-y-1">
+      <h4 id={headingId} className="text-sm font-medium">
+        {tests.length > 0 ? `Tested by (${tests.length})` : "Tested by"}
+      </h4>
+      {tests.length > 0 ? (
+        <ul className="rounded-md border p-2">
+          {tests.map((t) => (
+            <TestRow key={t.symbol} t={t} />
+          ))}
+        </ul>
+      ) : hasCode ? (
+        <p data-testid="traceability-no-test" className="text-sm text-muted-foreground">
+          No linked test
+        </p>
+      ) : (
+        <p data-testid="traceability-no-code" className="text-sm text-muted-foreground">
+          No code mapped yet, so tests can&apos;t be linked
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -107,6 +172,7 @@ export function TraceabilityView({
   if (!chain) return <></>;
 
   const hasAnything = chain.specs.length > 0 || chain.directCode.length > 0;
+  const hasCode = chain.directCode.length > 0 || chain.specs.some((s) => s.code.length > 0);
 
   return (
     <section aria-label="Requirement traceability" className="space-y-4">
@@ -141,6 +207,8 @@ export function TraceabilityView({
           </ul>
         </div>
       )}
+
+      <TestedBy tests={chain.testedBy} hasCode={hasCode} />
     </section>
   );
 }

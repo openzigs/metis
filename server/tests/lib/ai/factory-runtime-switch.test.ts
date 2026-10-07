@@ -63,13 +63,10 @@ describe("AI runtime config switching (#258)", () => {
 
     // ...but an admin has overridden via the runtime config tier.
     const svc = getConfigService();
-    // @ts-expect-error — test seam that exercises the cache directly.
+    // Test seam that exercises the cache directly (bracket access reaches the private field).
     svc["tunableCache"].set("AI_PROVIDER", "bedrock-gateway");
-    // @ts-expect-error — see above.
     svc["tunableCache"].set("AI_DEFAULT_MODEL", "claude-sonnet-4.5");
-    // @ts-expect-error — see above.
     svc["tunableDbBacked"].add("AI_PROVIDER");
-    // @ts-expect-error — see above.
     svc["tunableDbBacked"].add("AI_DEFAULT_MODEL");
 
     process.env.BEDROCK_GATEWAY_URL = "https://gateway.internal.example.com";
@@ -87,10 +84,9 @@ describe("AI runtime config switching (#258)", () => {
     expect(cfg.provider).toBe("offline-stub");
 
     const svc = getConfigService();
-    // @ts-expect-error — test seam.
+    // Test seam: bracket access reaches the private field.
     svc["tunableCache"].set("AI_PROVIDER", "offline-stub");
     // Now flip it.
-    // @ts-expect-error — test seam.
     svc["tunableCache"].set("AI_PROVIDER", "offline-stub");
     cfg = loadAIConfig(process.env);
     expect(cfg.provider).toBe("offline-stub");
@@ -102,9 +98,8 @@ describe("AI runtime config switching (#258)", () => {
     process.env.LOCAL_GEMMA_BASE_URL = "http://localhost:11434/v1";
 
     const svc = getConfigService();
-    // @ts-expect-error — test seam that exercises the cache directly.
+    // Test seam that exercises the cache directly (bracket access reaches the private field).
     svc["tunableCache"].set("AI_PROVIDER", "local-gemma");
-    // @ts-expect-error — see above.
     svc["tunableDbBacked"].add("AI_PROVIDER");
 
     const cfg = loadAIConfig(process.env);

@@ -14,9 +14,11 @@
  * `LISTEN` / `NOTIFY` so it closes the user's sockets on EVERY replica. Without
  * it (SQLite dev, or `NODE_ENV=test`) the in-memory adapter reaches only the
  * sockets on this replica — which is all there is in a single-replica setup.
- * A replica whose adapter is cut off from Postgres at that moment misses the
- * relay and keeps that socket until it disconnects; a reconnect is refused by
- * the live-user handshake (#617).
+ * A replica that misses the relay applies it from the database instead: after
+ * its own `LISTEN` connection drops, on the reconnect re-check (#649); when the
+ * publish itself failed, on its next periodic sweep (#659,
+ * `SOCKET_REVALIDATE_INTERVAL_MS`). A reconnect is refused by the live-user
+ * handshake (#617).
  *
  * Every disconnect / reconnect here bumps the revocation epoch first (#613), on
  * this replica and — through `wireUserRevocationRelay` — on every other one, so
@@ -27,6 +29,7 @@
  * adapter error is logged, never thrown, so the route cannot answer 500 for a
  * change that already landed.
  */
+import { userRoom } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "./registry.js";
 import type { MetisIOServer } from "./server.js";
@@ -59,7 +62,7 @@ export function disconnectUserSockets(userId: string): void {
   if (!io) return;
   bumpEpoch(io, "revocation");
   try {
-    io.in(`user:${userId}`).disconnectSockets(true);
+    io.in(userRoom(userId)).disconnectSockets(true);
   } catch (err) {
     log.warn("could not disconnect a deprovisioned user's sockets", {
       userId,
@@ -125,12 +128,12 @@ export function wireUserRevocationRelay(io: MetisIOServer, clustered: boolean): 
   });
   onRelayedRevocation(io, clustered, DISCONNECT_USER_EVENT, 1, (userId) => {
     bumpEpoch(io, "revocation");
-    io.local.in(`user:${userId}`).disconnectSockets(true);
+    io.local.in(userRoom(userId)).disconnectSockets(true);
   });
 }
 
 /** Close the transport of every socket of `userId` connected to this replica. */
 function closeLocalUserTransports(io: MetisIOServer, userId: string): void {
-  const sids = io.sockets.adapter.rooms.get(`user:${userId}`);
+  const sids = io.sockets.adapter.rooms.get(userRoom(userId));
   for (const sid of [...(sids ?? [])]) io.sockets.sockets.get(sid)?.conn.close();
 }

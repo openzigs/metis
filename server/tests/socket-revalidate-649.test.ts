@@ -6,9 +6,9 @@
  * is `socket-cluster-reconnect-649.test.ts`.
  */
 import http from "node:http";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
-import type { AuthPayload } from "@metis/shared";
+import type { AuthPayload, RoleKey } from "@metis/shared";
 
 const live = vi.hoisted(() => ({
   users: new Map<string, AuthPayload | Error | null>(),
@@ -56,9 +56,10 @@ import {
   type MetisIOServer,
 } from "../src/lib/socket/server.js";
 import { readEpoch } from "../src/lib/socket/revocation-relay.js";
+import { logger } from "../src/lib/logger.js";
 import { mcpStatusWorkspaceRoom } from "../src/lib/mcp/status-rooms.js";
 
-const payload = (userId: string, role = "coordinator"): AuthPayload => ({
+const payload = (userId: string, role: RoleKey = "coordinator"): AuthPayload => ({
   userId,
   username: userId,
   role,
@@ -148,7 +149,7 @@ describe("#649 revalidateLocalSockets", () => {
 
   it("closes the transport of a socket whose role changed", async () => {
     const demoted = await connect("u-role");
-    live.users.set("u-role", payload("u-role", "viewer"));
+    live.users.set("u-role", payload("u-role", "reader"));
 
     await revalidateLocalSockets(io);
 
@@ -298,4 +299,194 @@ describe("#649 revalidateLocalSockets", () => {
     expect(inRoom("ws-gone", c)).toBe(false);
     expect(inRoom("ws-old", c)).toBe(true);
   });
+});
+
+describe("#659 revalidateLocalSockets log level by trigger", () => {
+  /** The level of each re-validation pass logged by the socket module. */
+  function passLevels(write: MockInstance<typeof logger.write>): string[] {
+    return write.mock.calls
+      .map(([info]) => info as { level: string; message: string; module?: string })
+      .filter((i) => i.module === "socket" && /re-validat/i.test(i.message))
+      .map((i) => i.level);
+  }
+
+  it("logs a LISTEN pass at info and a periodic sweep at debug", async () => {
+    await connect("u-log");
+    const write = vi.spyOn(logger, "write");
+    try {
+      await revalidateLocalSockets(io, "listen");
+      await revalidateLocalSockets(io, "sweep");
+      expect(passLevels(write)).toEqual(["info", "debug"]);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("logs the coalesced pass at info when a LISTEN signal joined a running sweep", async () => {
+    await connect("u-log-join");
+    let unblock!: () => void;
+    live.userGate = new Promise<void>((r) => (unblock = r));
+    const write = vi.spyOn(logger, "write");
+    try {
+      const sweep = revalidateLocalSockets(io, "sweep");
+      await vi.waitFor(() => expect(loadLiveAuthPayload).toHaveBeenCalledWith("u-log-join"));
+      void revalidateLocalSockets(io, "listen");
+      void revalidateLocalSockets(io, "sweep");
+      unblock();
+      live.userGate = undefined;
+      await sweep;
+      expect(passLevels(write)).toEqual(["debug", "info"]);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("logs the trailing pass at debug when only a sweep joined a running LISTEN pass", async () => {
+    await connect("u-log-trail");
+    let unblock!: () => void;
+    live.userGate = new Promise<void>((r) => (unblock = r));
+    const write = vi.spyOn(logger, "write");
+    try {
+      const pass = revalidateLocalSockets(io, "listen");
+      await vi.waitFor(() => expect(loadLiveAuthPayload).toHaveBeenCalledWith("u-log-trail"));
+      void revalidateLocalSockets(io, "sweep");
+      unblock();
+      live.userGate = undefined;
+      await pass;
+      expect(passLevels(write)).toEqual(["info", "debug"]);
+    } finally {
+      write.mockRestore();
+    }
+  });
+});
+
+describe("#659 a failed lookup: a sweep keeps the socket, a LISTEN pass closes it", () => {
+  /** Long enough for a transport close to reach the client, were one sent. */
+  const settle = () => new Promise((r) => setTimeout(r, 100));
+
+  /** The warnings the socket module logged. */
+  function socketWarnings(write: MockInstance<typeof logger.write>): string[] {
+    return write.mock.calls
+      .map(([info]) => info as { level: string; message: string; module?: string })
+      .filter((i) => i.module === "socket" && i.level === "warn")
+      .map((i) => i.message);
+  }
+
+  it("a sweep-only pass keeps the sockets of a user whose live-user lookup throws, and warns", async () => {
+    const c = await connect("u-sweep-blip", ["ws-1"]);
+    live.users.set("u-sweep-blip", new Error("db blip"));
+    vi.mocked(readLiveWorkspaceIds).mockClear();
+    const write = vi.spyOn(logger, "write");
+    try {
+      await revalidateLocalSockets(io, "sweep");
+      await settle();
+
+      expect(c.reason).toBeNull();
+      expect(c.socket.connected).toBe(true);
+      expect(inRoom("ws-1", c)).toBe(true);
+      // Left to the next pass: no membership read against a failing database.
+      expect(readLiveWorkspaceIds).not.toHaveBeenCalled();
+      expect(socketWarnings(write)).toEqual([
+        expect.stringMatching(/live-user lookup failed — keeping sockets/),
+      ]);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("a sweep-only pass keeps a user's workspace rooms when the membership lookup throws, and warns", async () => {
+    const c = await connect("u-sweep-ws-blip", ["ws-1"]);
+    live.workspaces.set("u-sweep-ws-blip", new Error("db blip"));
+    const write = vi.spyOn(logger, "write");
+    try {
+      await revalidateLocalSockets(io, "sweep");
+      await settle();
+
+      expect(c.reason).toBeNull();
+      expect(inRoom("ws-1", c)).toBe(true);
+      expect(socketWarnings(write)).toEqual([
+        expect.stringMatching(/membership lookup failed — keeping workspace rooms/),
+      ]);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("the next sweep acts on the user once the lookup succeeds", async () => {
+    const c = await connect("u-sweep-retry");
+    live.users.set("u-sweep-retry", new Error("db blip"));
+    await revalidateLocalSockets(io, "sweep");
+    await settle();
+    expect(c.socket.connected).toBe(true);
+
+    live.users.set("u-sweep-retry", null);
+    await revalidateLocalSockets(io, "sweep");
+
+    await vi.waitFor(() => expect(c.reason).toBe("io server disconnect"));
+  });
+
+  it("a LISTEN pass still closes the transport when the live-user lookup throws", async () => {
+    const c = await connect("u-listen-blip");
+    live.users.set("u-listen-blip", new Error("db blip"));
+
+    await revalidateLocalSockets(io, "listen");
+
+    await vi.waitFor(() => expect(c.reason).toBe("transport close"));
+  });
+
+  it("a LISTEN pass still closes the transport when the membership lookup throws", async () => {
+    const c = await connect("u-listen-ws-blip", ["ws-1"]);
+    live.workspaces.set("u-listen-ws-blip", new Error("db blip"));
+
+    await revalidateLocalSockets(io, "listen");
+
+    await vi.waitFor(() => expect(c.reason).toBe("transport close"));
+  });
+
+  it("a pass serving both a sweep and a LISTEN signal fails closed", async () => {
+    // A LISTEN signal joins a running sweep: the trailing pass serves both.
+    const c = await connect("u-combined");
+    let unblock!: () => void;
+    live.userGate = new Promise<void>((r) => (unblock = r));
+    const sweep = revalidateLocalSockets(io, "sweep");
+    await vi.waitFor(() => expect(loadLiveAuthPayload).toHaveBeenCalledWith("u-combined"));
+    void revalidateLocalSockets(io, "listen");
+    void revalidateLocalSockets(io, "sweep");
+    live.users.set("u-combined", new Error("db blip"));
+    unblock();
+    live.userGate = undefined;
+    await sweep;
+
+    await vi.waitFor(() => expect(c.reason).toBe("transport close"));
+  });
+
+  for (const trigger of ["sweep", "listen"] as const) {
+    it(`a ${trigger} pass still disconnects a user no longer live`, async () => {
+      const gone = await connect(`u-gone-${trigger}`);
+      live.users.set(`u-gone-${trigger}`, null);
+
+      await revalidateLocalSockets(io, trigger);
+
+      await vi.waitFor(() => expect(gone.reason).toBe("io server disconnect"));
+    });
+
+    it(`a ${trigger} pass still closes the transport of a socket whose role changed`, async () => {
+      const demoted = await connect(`u-role-${trigger}`);
+      live.users.set(`u-role-${trigger}`, payload(`u-role-${trigger}`, "reader"));
+
+      await revalidateLocalSockets(io, trigger);
+
+      await vi.waitFor(() => expect(demoted.reason).toBe("transport close"));
+    });
+
+    it(`a ${trigger} pass still takes a socket out of a workspace room it lost`, async () => {
+      const c = await connect(`u-ws-${trigger}`, ["ws-lost", "ws-kept"]);
+      live.workspaces.set(`u-ws-${trigger}`, ["ws-kept"]);
+
+      await revalidateLocalSockets(io, trigger);
+
+      expect(inRoom("ws-lost", c)).toBe(false);
+      expect(inRoom("ws-kept", c)).toBe(true);
+    });
+  }
 });

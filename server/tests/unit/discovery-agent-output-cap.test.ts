@@ -11,6 +11,7 @@
  * stub providers have no output cap of their own (#1224).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { CodeSymbol } from "@prisma/client";
 import type { ChatOptions } from "../../src/lib/ai/types.js";
 
 const { chatSpy, providerState } = vi.hoisted(() => ({
@@ -47,19 +48,23 @@ import {
 } from "../../src/lib/docs-gen/discovery-agent.js";
 import { modelOutputCeiling } from "../../src/lib/docs-gen/output-caps.js";
 
-const mockPrisma = vi.mocked(prisma);
+const mockPrisma = vi.mocked(prisma, true);
 
-function symbol(overrides: Record<string, unknown> = {}) {
+function symbol(overrides: Partial<CodeSymbol> = {}): CodeSymbol {
   return {
     id: "sym-1",
+    codeGraphId: "graph-1",
     projectId: "proj-1",
+    name: "Invoice",
     qualifiedName: "billing.Invoice",
     kind: "class",
     filePath: "src/billing/invoice.ts",
-    signature: "class Invoice",
     startLine: 1,
     endLine: 40,
     language: "typescript",
+    contentHash: "h1",
+    source: null,
+    createdAt: new Date(0),
     ...overrides,
   };
 }

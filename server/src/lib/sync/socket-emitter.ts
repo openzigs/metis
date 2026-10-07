@@ -20,6 +20,7 @@
  * registered (tests / pre-bootstrap), and swallows transport errors so a socket
  * hiccup never fails the webhook that triggered it.
  */
+import { projectRoom } from "@metis/shared";
 import type { DriftEventRow } from "@metis/shared";
 import { getSocketServer } from "../socket/registry.js";
 import { createChildLogger } from "../logger.js";
@@ -32,7 +33,7 @@ export function createSocketDriftEmitter(): (projectId: string, event: DriftEven
     const io = getSocketServer();
     if (!io) return;
     try {
-      io.to(`project:${projectId}`).emit("drift:detected", {
+      io.to(projectRoom(projectId)).emit("drift:detected", {
         projectId,
         driftEventId: event.id,
         requirementId: event.requirementId,

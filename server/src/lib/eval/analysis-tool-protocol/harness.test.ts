@@ -375,7 +375,7 @@ describe("pass fidelity — the orchestrator's prompt blocks and budget carve-ou
       maxTokens: 10_000,
     });
     // 10,000 − 1,000 − 2,000 − 500, above the 5,000 half-budget floor.
-    expect(loop.mock.calls[0]![2].maxTokens).toBe(6_500);
+    expect(loop.mock.calls[0]![2]!.maxTokens).toBe(6_500);
     expect(agenticPassEffectiveBudget(10_000, SEEDS)).toBe(6_500);
     expect(cmp.records[0]!.tokenBudget).toBe(6_500);
   });
@@ -397,7 +397,7 @@ describe("pass fidelity — the orchestrator's prompt blocks and budget carve-ou
       modes: ["text"],
     });
     // 8 requirements × 2 turns = 16; one requirement gets the floor of 10.
-    expect(loop.mock.calls.map((c) => c[2].maxTurns)).toEqual([16, 10]);
+    expect(loop.mock.calls.map((c) => c[2]!.maxTurns)).toEqual([16, 10]);
   });
 
   it("defaults to the orchestrator's ANALYSIS_AGENT_TOKEN_BUDGET and keeps the half-budget floor", async () => {
@@ -411,7 +411,7 @@ describe("pass fidelity — the orchestrator's prompt blocks and budget carve-ou
       modes: ["text"],
     });
     // Default budget 100,000; the seed would leave 7,500, so the floor (50,000) wins.
-    expect(loop.mock.calls[0]![2].maxTokens).toBe(50_000);
+    expect(loop.mock.calls[0]![2]!.maxTokens).toBe(50_000);
 
     // …and it is the operator's configured budget, not a constant.
     process.env.ANALYSIS_AGENT_TOKEN_BUDGET = "40000";
@@ -425,7 +425,7 @@ describe("pass fidelity — the orchestrator's prompt blocks and budget carve-ou
     } finally {
       delete process.env.ANALYSIS_AGENT_TOKEN_BUDGET;
     }
-    expect(loop.mock.calls[1]![2].maxTokens).toBe(40_000);
+    expect(loop.mock.calls[1]![2]!.maxTokens).toBe(40_000);
   });
 });
 

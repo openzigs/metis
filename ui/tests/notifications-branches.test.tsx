@@ -13,6 +13,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
+import { act } from "react";
+import { createFakeSocket } from "./helpers/fake-socket";
 
 // ---- Mock socket-client -----------------------------------------------------
 const mockSocketHandlers: Map<string, (payload: unknown) => void> = new Map();
@@ -374,5 +376,43 @@ describe("NotificationsDrawer — mark-all-read persistence (#416)", () => {
       ([path]) => path === "/notifications/read-all",
     );
     expect(readAllCalled).toBe(false);
+  });
+});
+
+describe("NotificationsDrawer — reconciles mentions missed while disconnected (#646)", () => {
+  it("re-reads the persisted history on the first connect after a mid-gap mount, and on each reconnect", async () => {
+    const socket = createFakeSocket(false);
+    useSocketMock.mockReturnValue(socket);
+    const Wrapper = makeWrapper({});
+    const reads = () => mockApiFetch.mock.calls.filter(([path]) => path === "/notifications");
+    const { unmount } = render(
+      <Wrapper>
+        <NotificationsDrawer />
+      </Wrapper>,
+    );
+    await waitFor(() => expect(reads()).toHaveLength(1));
+    // Mounted while the socket was down: the first connect re-reads too (#646),
+    // since a mention emitted after the mount-time read never reached it.
+    act(() => socket.connect());
+    await waitFor(() => expect(reads()).toHaveLength(2));
+
+    act(() => socket.disconnect());
+    // The `comment:mention` is emitted now — and lost; the server persisted it.
+    const missed = {
+      id: "n-gap",
+      type: "mention",
+      title: "Mentioned while offline",
+      message: "hi",
+      read: false,
+      createdAt: new Date().toISOString(),
+    };
+    mockApiFetch.mockResolvedValue({ notifications: [missed] });
+    act(() => socket.connect());
+
+    await waitFor(() => expect(mockStore.hydrate).toHaveBeenCalledWith([missed]));
+    expect(reads()).toHaveLength(3);
+
+    unmount();
+    expect(socket.listeners("connect")).toBe(0);
   });
 });

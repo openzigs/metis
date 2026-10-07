@@ -41,6 +41,8 @@ export interface DiscussionMessage {
   body: string;
   createdAt: string;
   editedAt: string | null;
+  /** #734 — the human author's display name, on history reads. */
+  authorName?: string;
 }
 
 export interface PromoteResult {

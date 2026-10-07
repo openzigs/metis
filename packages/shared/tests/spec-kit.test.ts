@@ -12,7 +12,7 @@ import {
   specKitCommandRequestSchema,
   specKitListResponseSchema,
   specKitWriteRequestSchema,
-} from "../src/spec-kit";
+} from "../src/spec-kit.js";
 
 describe("Spec Kit constants + guards", () => {
   it("declares the canonical six commands", () => {

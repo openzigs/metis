@@ -25,6 +25,9 @@ import { estimateTextTokens, type TokenRatio } from "./token-estimator.js";
 
 const log = createChildLogger("chat-turn-usage");
 
+/** #792 — `agentStep` on the project-ledger row of a chat turn. */
+export const CHAT_TURN_AGENT_STEP = "chat";
+
 /** `agentStep` on the per-user row of a turn that failed after spending tokens. */
 export const FAILED_TURN_AGENT_STEP = "chat-failed";
 
@@ -171,6 +174,8 @@ export class TurnUsageMeter {
         recordProjectUsage({
           projectId,
           sessionId,
+          userId,
+          agentStep: FAILED_TURN_AGENT_STEP,
           provider,
           model,
           inputTokens: u.promptTokens,

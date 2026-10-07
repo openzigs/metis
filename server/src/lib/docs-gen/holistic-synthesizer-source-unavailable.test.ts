@@ -81,7 +81,6 @@ function tsModule(): ModuleGroup {
     syms: [
       {
         id: "t1",
-        codeGraphId: "graph-a",
         qualifiedName: "svc.ts::handler",
         kind: "function",
         language: "ts",

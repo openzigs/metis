@@ -55,7 +55,8 @@ const { __resetToolApprovalBroker } = await import("../src/lib/ai/tool-runtime/a
 const { resetLocalConcurrencyLimitersForTests } =
   await import("../src/lib/ai/providers/local-concurrency-limiter.js");
 const { __resetModelCatalogForTests } = await import("../src/lib/ai/model-catalog.js");
-const { ESTIMATED_TURN_AGENT_STEP } = await import("../src/lib/ai/conversation/turn-usage.js");
+const { CHAT_TURN_AGENT_STEP, ESTIMATED_TURN_AGENT_STEP } =
+  await import("../src/lib/ai/conversation/turn-usage.js");
 const { nativeToolChars } = await import("../src/lib/ai/conversation/turn.js");
 
 type Body = Record<string, unknown>;
@@ -328,6 +329,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
       for (const p of project) {
         expect(p).toMatchObject({ inputTokens: 120, outputTokens: 7, cacheReadTokens: 100 });
+        // #792 — the project ledger carries the step and the user it bills.
+        expect(p.agentStep).toBe(CHAT_TURN_AGENT_STEP);
+        expect(p.userId).toBe(perUser[0]!.userId);
         // prompt_tokens INCLUDES the 100 cached: counted once, not 220.
         expect(p.totalTokens).toBe(127);
       }
@@ -400,6 +404,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             inputTokens: u.promptTokens,
             outputTokens: u.completionTokens,
             cacheReadTokens: 0,
+            agentStep: ESTIMATED_TURN_AGENT_STEP,
           });
         }
         expect(openaiSeen.every((b) => (b.tools === undefined) === (tools === "no tools"))).toBe(

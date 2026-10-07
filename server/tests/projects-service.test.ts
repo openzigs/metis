@@ -100,17 +100,24 @@ vi.mock("../src/lib/prisma.js", () => ({
         async ({
           data,
         }: {
-          data: Omit<MockProjectRow, "id" | "createdAt" | "updatedAt" | "deletedAt">;
+          data: Omit<
+            MockProjectRow,
+            "id" | "createdAt" | "updatedAt" | "deletedAt" | "description"
+          > & {
+            description?: string;
+          };
         }) => {
           nextId += 1;
-          const row: MockProjectRow = {
-            id: `proj_${nextId}`,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            deletedAt: null,
-            description: "",
-            ...data,
-          };
+          const row: MockProjectRow = Object.assign(
+            {
+              id: `proj_${nextId}`,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              deletedAt: null,
+              description: "",
+            },
+            data,
+          );
           projects.set(row.id, row);
           return row;
         },

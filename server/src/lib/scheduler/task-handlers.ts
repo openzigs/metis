@@ -97,8 +97,6 @@ export interface BuiltInHandlerDeps {
     },
     reason: string,
   ): Promise<void>;
-  /** Run an AI Bug Scanner scan by id (Epic #708). */
-  runScannerScan?(scanId: string, signal: AbortSignal): Promise<Record<string, unknown> | void>;
 }
 
 /**
@@ -260,21 +258,5 @@ export function registerBuiltInHandlers(
     type: "http-webhook",
     description: "POST a JSON payload to a vetted external webhook URL.",
     handler: deps.httpWebhookHandler,
-  });
-
-  registry.register({
-    type: "scanner.run-scan",
-    description: "Run an AI Bug Scanner scan against a project's repo (Epic #708).",
-    handler: async (ctx) => {
-      const scanId = String(ctx.task.payload.scanId ?? "");
-      if (!scanId) throw new Error("payload.scanId is required");
-      ctx.reportProgress({ step: "scanner.run-scan:start" });
-      if (!deps.runScannerScan) {
-        throw new Error("scanner.run-scan handler not wired");
-      }
-      const result = (await deps.runScannerScan(scanId, ctx.signal)) ?? {};
-      ctx.reportProgress({ step: "scanner.run-scan:complete", pct: 100 });
-      return { scanId, ...result };
-    },
   });
 }

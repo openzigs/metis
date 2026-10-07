@@ -93,7 +93,7 @@ describe("clampSandboxOptions", () => {
       { projectId: project, egressAllowlist: ["a.example", "b.example"] },
       { sandboxEgressAllowlist: ["b.example", "c.example"] },
     );
-    expect(out.egressAllowlist.sort()).toEqual(["a.example", "b.example", "c.example"]);
+    expect([...out.egressAllowlist].sort()).toEqual(["a.example", "b.example", "c.example"]);
   });
 
   it("retains userId when supplied", () => {

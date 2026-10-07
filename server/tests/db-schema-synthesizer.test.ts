@@ -55,7 +55,7 @@ import {
   DEFAULT_LLM_BATCH_SIZE,
   DEFAULT_LLM_CALL_BUDGET,
   DEFAULT_LLM_TOKEN_BUDGET,
-} from "../../src/lib/docs-gen/db-schema-synthesizer.js";
+} from "../src/lib/docs-gen/db-schema-synthesizer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

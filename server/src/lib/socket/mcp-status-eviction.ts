@@ -25,6 +25,7 @@
  * change that already landed. A socket missed here is still pruned on its next
  * `subscribe:mcp` or reconnect.
  */
+import { userRoom } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { mcpStatusWorkspaceRoom } from "../mcp/status-rooms.js";
 import { getSocketServer } from "./registry.js";
@@ -74,7 +75,7 @@ export function evictMemberMcpStatusRoom(userId: string, workspaceId: string): v
   if (!io) return;
   bumpEpoch(io, "eviction");
   try {
-    io.in(`user:${userId}`).socketsLeave(mcpStatusWorkspaceRoom(workspaceId));
+    io.in(userRoom(userId)).socketsLeave(mcpStatusWorkspaceRoom(workspaceId));
   } catch (err) {
     log.warn("could not evict a removed member's sockets from an MCP status room", {
       userId,
@@ -100,6 +101,6 @@ export function wireMcpStatusEvictionRelay(io: MetisIOServer, clustered: boolean
   });
   onRelayedRevocation(io, clustered, EVICT_MEMBER_EVENT, 2, (userId, workspaceId) => {
     bumpEpoch(io, "eviction");
-    io.local.in(`user:${userId}`).socketsLeave(mcpStatusWorkspaceRoom(workspaceId));
+    io.local.in(userRoom(userId)).socketsLeave(mcpStatusWorkspaceRoom(workspaceId));
   });
 }

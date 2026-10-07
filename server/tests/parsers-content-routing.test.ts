@@ -84,7 +84,9 @@ describe("other declared types: does the library re-dispatch on content?", () =>
     const ExcelJS = (await import("exceljs")).default;
     const workbook = new ExcelJS.Workbook();
 
-    await expect(workbook.xlsx.load(pdfBytes)).rejects.toThrow();
+    // exceljs declares a global `Buffer extends ArrayBuffer` that no real Buffer satisfies.
+    const input = pdfBytes as unknown as Parameters<typeof workbook.xlsx.load>[0];
+    await expect(workbook.xlsx.load(input)).rejects.toThrow();
   });
 
   it("refuses PDF bytes declared as docx at the routing decision", async () => {

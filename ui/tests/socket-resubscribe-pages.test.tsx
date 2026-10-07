@@ -6,6 +6,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { followedRooms } from "@/lib/socket-subscription";
+import { analysisRoom, presenceRoom, SCHEDULER_STATUS_ROOM } from "@metis/shared";
 import { createFakeSocket, type FakeSocket } from "./helpers/fake-socket";
 
 let socket: FakeSocket;
@@ -58,13 +60,32 @@ describe("SchedulerPage (#642)", () => {
 
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:scheduler")).toBe(2);
+    // #646 — the reconnect itself refetches once.
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
 
     act(() => socket.fire("scheduler:status", {}));
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
 
     unmount();
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:scheduler")).toBe(2);
+  });
+
+  it("re-sends subscribe:scheduler after a rate-limited refusal's delay (#682)", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const { unmount } = renderWithClient(<SchedulerPage />);
+    expect(socket.emitted("subscribe:scheduler")).toBe(1);
+    act(() =>
+      socket.fire("auth:error", {
+        message: "RATE_LIMITED",
+        room: SCHEDULER_STATUS_ROOM,
+        code: "RATE_LIMITED",
+        retryAfterMs: 0,
+      }),
+    );
+    await waitFor(() => expect(socket.emitted("subscribe:scheduler")).toBe(2));
+    unmount();
+    vi.restoreAllMocks();
   });
 });
 
@@ -77,10 +98,14 @@ describe("ApprovalsPanel (#642, #648)", () => {
     // a ref those re-renders must not re-run the subscription effect.
     expect(socket.emitted("subscribe:analysis", room)).toBe(1);
     expect(socket.emitted("unsubscribe:analysis", room)).toBe(0);
+    // #672 — counted under the server's room name, not a hand-typed key.
+    expect(followedRooms(socket as never)).toEqual(new Map([[analysisRoom("ana-1"), 1]]));
 
     act(() => socket.reconnect());
     expect(socket.emitted("subscribe:analysis", room)).toBe(2);
     expect(socket.emitted("unsubscribe:analysis", room)).toBe(0);
+    // #646 — the reconnect itself re-reads the approvals once.
+    await waitFor(() => expect(listApprovals).toHaveBeenCalledTimes(2));
 
     const fetchesBefore = listApprovals.mock.calls.length;
     act(() =>
@@ -130,6 +155,10 @@ describe("PresenceAvatars (#642)", () => {
     const { unmount } = render(<PresenceAvatars artifactType="discussion" artifactId="d1" />);
     const room = { artifactType: "discussion", artifactId: "d1" };
     expect(socket.emitted("presence:join", room)).toBe(1);
+    // #672 — counted under the server's room name, not a hand-typed key.
+    expect(followedRooms(socket as never)).toEqual(
+      new Map([[presenceRoom("discussion", "d1"), 1]]),
+    );
 
     // The server's disconnect handler dropped this socket from the room's
     // presence list, so without a re-join the user vanishes for everyone else.
@@ -149,5 +178,41 @@ describe("PresenceAvatars (#642)", () => {
     expect(socket.emitted("presence:leave", room)).toBe(1);
     act(() => socket.reconnect());
     expect(socket.emitted("presence:join", room)).toBe(2);
+  });
+});
+
+describe("missed events are reconciled after a reconnect (#646)", () => {
+  it("SchedulerPage shows a job change made while the socket was down", async () => {
+    list.mockResolvedValue([]);
+    renderWithClient(<SchedulerPage />);
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+
+    act(() => socket.disconnect());
+    // The `scheduler:status` for this change is emitted now — and lost.
+    list.mockResolvedValue([{ id: "j1", name: "Nightly gap job" }]);
+    act(() => socket.connect());
+
+    expect(await screen.findByText("Nightly gap job")).toBeInTheDocument();
+  });
+
+  it("ApprovalsPanel shows a promotion block made while the socket was down", async () => {
+    listApprovals.mockResolvedValue({
+      items: [],
+      ticketStatus: { allowed: true, pendingCount: 0, rejectedCount: 0 },
+    });
+    renderWithClient(<ApprovalsPanel projectId="proj-1" analysisId="ana-1" />);
+    await waitFor(() => expect(listApprovals).toHaveBeenCalledTimes(1));
+
+    act(() => socket.disconnect());
+    // The `analysis:promotion-blocked` is emitted now — and lost.
+    listApprovals.mockResolvedValue({
+      items: [{ id: "ap-1", type: "requirement", itemId: "r1", status: "pending" }],
+      ticketStatus: { allowed: false, pendingCount: 1, rejectedCount: 0 },
+    });
+
+    expect(screen.queryByTestId("approvals-panel")).not.toBeInTheDocument();
+    act(() => socket.connect());
+
+    expect(await screen.findByTestId("approvals-panel")).toBeInTheDocument();
   });
 });

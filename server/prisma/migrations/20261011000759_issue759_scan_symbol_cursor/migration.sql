@@ -1,0 +1,15 @@
+-- Issue #759 — a resume cursor for AI Bug Scanner scans.
+--
+-- A scan task that times out is retried, and each retry used to restart from
+-- symbol 0: it re-scanned (and re-billed) every finished symbol and re-created
+-- their findings under new LLM-written titles. The orchestrator now persists
+-- the index of the next symbol to scan after every symbol, and a retry resumes
+-- there.
+--
+-- Additive only: one integer column defaulting to 0 ("start at the first
+-- symbol"), which is exactly how every existing scan behaved.
+--
+-- Rollback (documentation):
+--   ALTER TABLE "scanner_scans" DROP COLUMN "symbolCursor";
+-- Lossless for finished scans; a scan mid-retry would restart from symbol 0.
+ALTER TABLE "scanner_scans" ADD COLUMN "symbolCursor" INTEGER NOT NULL DEFAULT 0;

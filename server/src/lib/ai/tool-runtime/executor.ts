@@ -16,7 +16,7 @@ import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { withExecuteToolSpan } from "../../otel/genai-spans.js";
 import { scanForHiddenChars } from "../../mcp/hidden-char-scanner.js";
-import { hashArgs, type ApprovalGateService } from "../approval-policy.js";
+import { hashArgs, NO_INTERACTIVE_APPROVER, type ApprovalGateService } from "../approval-policy.js";
 import type { ApprovalDecision } from "../types.js";
 import type { RuntimeToolset } from "./toolset.js";
 import {
@@ -53,6 +53,8 @@ export interface ExecutedToolCall {
   executed: boolean;
   decision?: ApprovalDecision;
   errorCode?: ToolErrorCode;
+  /** #861 — the gate's machine reason for a refused call (`policy=deny`, …). */
+  reason?: string;
   /** #147 — the sub-agent run the call started, when the tool ran an agent. */
   subAgentRunId?: string;
 }
@@ -78,9 +80,18 @@ function refusalText(code: ToolErrorCode, reason?: string): string {
     case "TOOL_APPROVAL_EXPIRED":
       return "Error: the user did not approve this tool call in time, so it did not run.";
     case "TOOL_DENIED":
-      return reason === "policy=deny"
-        ? "Error: this session's approval policy does not allow this tool. Do not call it again."
-        : "Error: the user denied this tool call, so it did not run. Do not retry it unless the user asks.";
+      if (reason === "policy=deny") {
+        return "Error: this session's approval policy does not allow this tool. Do not call it again.";
+      }
+      // #861 — not a refusal by the user: nobody could be asked.
+      if (reason === NO_INTERACTIVE_APPROVER) {
+        return (
+          "Error: this tool needs the user's approval and no one is available to approve it " +
+          "on this request, so it did not run. Answer as well as you can without this tool, " +
+          "and say what it would have checked. Do not call it again in this reply."
+        );
+      }
+      return "Error: the user denied this tool call, so it did not run. Do not retry it unless the user asks.";
     default:
       return `Error: ${TOOL_ERROR_MESSAGES[code]}`;
   }
@@ -124,6 +135,7 @@ export async function executeToolCall(
       isError: true,
       executed: false,
       ...(extra.decision ? { decision: extra.decision } : {}),
+      ...(extra.reason ? { reason: extra.reason } : {}),
       errorCode: code,
     };
   };

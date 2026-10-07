@@ -11,7 +11,12 @@ import { describe, expect, it } from "vitest";
 import type { Citation } from "@metis/shared";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
 import { StructuredVerdictMetrics } from "./structured-verdict.js";
-import { applySupportPanel, runSupportPanel, type PanelEvidence } from "./support-panel.js";
+import {
+  applySupportPanel,
+  runSupportPanel,
+  type PanelableFinding,
+  type PanelEvidence,
+} from "./support-panel.js";
 
 const FILE = "server/src/lib/change-analysis/change-analysis-engine.ts";
 
@@ -235,7 +240,7 @@ describe("runSupportPanel + absence check (#1111 — cost and evidence bounds)",
 
 describe("applySupportPanel + absence check (#1111 — still never drops a finding)", () => {
   it("keeps a contradicted absence finding, marked low", async () => {
-    const findings = [{ ...ABSENCE_FINDING, citations: CITATIONS }];
+    const findings: PanelableFinding[] = [{ ...ABSENCE_FINDING, citations: CITATIONS }];
     const out = await applySupportPanel(
       new PanelProvider("supported", { verdict: "contradicted" }),
       findings,
@@ -248,7 +253,7 @@ describe("applySupportPanel + absence check (#1111 — still never drops a findi
   });
 
   it("folds the absence call's tokens into the agent's usage", async () => {
-    const findings = [{ ...ABSENCE_FINDING, citations: CITATIONS }];
+    const findings: PanelableFinding[] = [{ ...ABSENCE_FINDING, citations: CITATIONS }];
     const out = await applySupportPanel(
       new PanelProvider("supported", { verdict: "supported" }),
       findings,

@@ -127,7 +127,7 @@ describe("GET /api/settings/env", () => {
     const res = await request(app).get("/api/settings/env").set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    const items: Array<{ key: string; value: string; classification: string }> =
+    const items: Array<{ key: string; value: string; classification: string; set?: boolean }> =
       res.body.data.items;
     expect(items.length).toBeGreaterThan(0);
     expect(items.find((i) => i.key === "NODE_ENV")).toBeDefined();

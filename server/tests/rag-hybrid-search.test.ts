@@ -29,6 +29,7 @@ interface MockDocument {
   autoApproveTrusted?: boolean;
   aclSubjects?: string;
   uploadedById?: string;
+  source?: string;
 }
 
 interface MockChunk {
@@ -124,13 +125,19 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     knowledgeChunk: {
-      create: vi.fn(async ({ data }: { data: Omit<MockChunk, "id"> & { id?: string } }) => {
-        nextChunkId += 1;
-        const id = data.id ?? `chunk_${nextChunkId}`;
-        const row: MockChunk = { id, vectorRef: null, ...data } as MockChunk;
-        chunks.set(id, row);
-        return row;
-      }),
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: Omit<MockChunk, "id" | "vectorRef"> & { id?: string; vectorRef?: string | null };
+        }) => {
+          nextChunkId += 1;
+          const id = data.id ?? `chunk_${nextChunkId}`;
+          const row: MockChunk = { id, vectorRef: null, ...data } as MockChunk;
+          chunks.set(id, row);
+          return row;
+        },
+      ),
       update: vi.fn(
         async ({ where, data }: { where: { id: string }; data: Partial<MockChunk> }) => {
           const c = chunks.get(where.id);
@@ -167,7 +174,10 @@ vi.mock("../src/lib/prisma.js", () => ({
           if (select?.document) {
             rows = rows.map((r) => {
               const doc = documents.get(r.documentId);
-              return { ...r, document: { filename: doc?.filename ?? "" } } as MockChunk;
+              return {
+                ...r,
+                document: { filename: doc?.filename ?? "", source: doc?.source ?? "upload" },
+              } as MockChunk;
             });
           }
           return rows;
@@ -285,6 +295,7 @@ async function seedDocument(
   projectId: string,
   text: string,
   filename = "doc.md",
+  source = "upload",
 ): Promise<void> {
   const blob = await storage.write({ projectId, buffer: Buffer.from(text) });
   documents.set(id, {
@@ -302,6 +313,7 @@ async function seedDocument(
     autoApproveTrusted: true,
     aclSubjects: "[]",
     uploadedById: "u1",
+    source,
   } as MockDocument);
 }
 
@@ -492,6 +504,140 @@ describe("hybrid retrieval", () => {
     expect(res.mode).toBe("hybrid");
     // Dense path still returns hits.
     expect(res.hits.length).toBeGreaterThan(0);
+  });
+
+  // #717 — the list is ordered by the fused rank, but `score` is the dense
+  // cosine, so a lexical-only hit printed 0.000 above weaker dense hits.
+  it("hybrid hits carry a monotonic rankScore and say which retriever matched", async () => {
+    await seedDocument("d1", "prank", "alpha bravo charlie");
+    await seedDocument("d2", "prank", "delta echo foxtrot", "b.md");
+    await seedDocument("d3", "prank", "golf hotel india", "c.md");
+    await svc.ingestDocument("d1");
+    await svc.ingestDocument("d2");
+    await svc.ingestDocument("d3");
+    // Make d2's chunk invisible to the dense retriever, so only BM25 can find it.
+    const lexicalOnly = [...chunks.values()].find((c) => c.documentId === "d2")!.id;
+    const realSearch = store.search.bind(store);
+    store.search = (async (...args: Parameters<typeof store.search>) =>
+      (await realSearch(...args)).filter(
+        (h) => h.row.metadata.chunkId !== lexicalOnly,
+      )) as typeof store.search;
+
+    const res = await svc.search("prank", "echo", { mode: "hybrid", k: 3 });
+    const ranks = res.hits.map((h) => h.rankScore!);
+    expect(ranks.every((r) => typeof r === "number" && r > 0 && r <= 1)).toBe(true);
+    expect([...ranks].sort((a, b) => b - a)).toEqual(ranks);
+
+    const lexical = res.hits.find((h) => h.chunkId === lexicalOnly)!;
+    expect(lexical).toBeDefined();
+    expect(lexical.score).toBe(0);
+    expect(lexical.matchedBy).toEqual(["lexical"]);
+    // Ranked first by BM25 alone: one vote of two, normalised.
+    expect(lexical.rankScore).toBeCloseTo(0.5, 6);
+    for (const h of res.hits.filter((x) => x.chunkId !== lexicalOnly)) {
+      expect(h.matchedBy).toContain("dense");
+      expect(h.matchedBy).not.toContain("lexical");
+    }
+  });
+
+  it("a chunk both retrievers rank first scores rankScore 1", async () => {
+    await seedDocument("d1", "pboth", "zulu zulu zulu");
+    await svc.ingestDocument("d1");
+    const res = await svc.search("pboth", "zulu", { mode: "hybrid" });
+    expect(res.hits[0].matchedBy).toEqual(["dense", "lexical"]);
+    expect(res.hits[0].rankScore).toBeCloseTo(1, 6);
+  });
+
+  it("dense mode's rankScore is the cosine itself", async () => {
+    await seedDocument("d1", "pdense", "alpha bravo charlie");
+    await svc.ingestDocument("d1");
+    const res = await svc.search("pdense", "alpha", { mode: "dense" });
+    expect(res.hits.length).toBeGreaterThan(0);
+    for (const h of res.hits) {
+      expect(h.rankScore).toBe(h.score);
+      expect(h.matchedBy).toEqual(["dense"]);
+    }
+  });
+
+  it("a reranked list's rankScore is the reranker's score", async () => {
+    const stub: Reranker = {
+      enabled: true,
+      async rerank(_query, cands) {
+        return [...cands].reverse().map((c, i) => ({ ...c, score: 0.9 - i * 0.1 }));
+      },
+    };
+    svc = new KnowledgeService({
+      storage,
+      vectorStore: store,
+      embedder: new Embedder(),
+      chunkOptions: { chunkSize: 80, overlap: 0 },
+      bm25,
+      reranker: stub,
+    });
+    await seedDocument("d1", "prr", "alpha alpha alpha");
+    await seedDocument("d2", "prr", "alpha bravo", "b.md");
+    await svc.ingestDocument("d1");
+    await svc.ingestDocument("d2");
+    const res = await svc.search("prr", "alpha");
+    expect(res.hits.map((h) => h.rankScore)).toEqual(
+      res.hits.map((_, i) => expect.closeTo(0.9 - i * 0.1, 6)),
+    );
+  });
+
+  it("a reranker that falls back keeps the fused rankScore and is not reported as reranked", async () => {
+    const seedAndSearch = async (reranker: Reranker | undefined) => {
+      svc = new KnowledgeService({
+        storage,
+        vectorStore: store,
+        embedder: new Embedder(),
+        chunkOptions: { chunkSize: 80, overlap: 0 },
+        bm25,
+        ...(reranker ? { reranker } : {}),
+      });
+      return svc.search("prfb", "alpha");
+    };
+    await seedDocument("d1", "prfb", "alpha alpha alpha");
+    await seedDocument("d2", "prfb", "alpha bravo", "b.md");
+    await seedDocument("d3", "prfb", "zulu yankee xray", "c.md");
+    for (const id of ["d1", "d2", "d3"]) await svc.ingestDocument(id);
+    const baseline = await seedAndSearch(undefined);
+    // Every reranker fallback path returns the candidates untouched.
+    const fallback: Reranker = {
+      enabled: true,
+      async rerank(_query, cands) {
+        return cands;
+      },
+    };
+    const res = await seedAndSearch(fallback);
+    expect(res.reranked).toBe(false);
+    expect(res.hits.map((h) => h.rankScore)).toEqual(baseline.hits.map((h) => h.rankScore));
+  });
+
+  // #717 — a repository file's stored key carries the ingester's `src/` marker.
+  it("a repo-sourced hit carries its repository-relative path; an upload never does", async () => {
+    await seedDocument(
+      "d1",
+      "ppath",
+      "func ScheduleNextCheck() {}",
+      "connector:repo:conn1:src/internal/model/feed.go",
+      "repo",
+    );
+    await seedDocument(
+      "d2",
+      "ppath",
+      "ScheduleNextCheck notes",
+      "connector:repo:conn1:src/spoof.go",
+      "upload",
+    );
+    await svc.ingestDocument("d1");
+    await svc.ingestDocument("d2");
+    const res = await svc.search("ppath", "ScheduleNextCheck", { k: 5 });
+    const repo = res.hits.find((h) => h.documentId === "d1")!;
+    const upload = res.hits.find((h) => h.documentId === "d2")!;
+    expect(repo.path).toBe("internal/model/feed.go");
+    expect(repo.filename).toBe("connector:repo:conn1:src/internal/model/feed.go");
+    expect(upload).toBeDefined();
+    expect(upload.path).toBeUndefined();
   });
 
   it("drops stale dense hits whose live SQL chunks were deleted", async () => {

@@ -70,7 +70,9 @@ describe("singleShotPromptCaching (#389)", () => {
 
   it("never sets messages:true under any input (the regression #389 guards)", () => {
     for (const supported of [true, false]) {
-      const directive = singleShotPromptCaching(supported);
+      // Widened on purpose: the runtime check guards a field the type already excludes.
+      const directive: { system?: true; messages?: unknown } | undefined =
+        singleShotPromptCaching(supported);
       expect(directive?.messages).toBeUndefined();
     }
   });

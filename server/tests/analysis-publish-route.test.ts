@@ -22,6 +22,8 @@ interface FindingRow {
   severity: string;
   evidence: string | null;
   projectName: string;
+  /** #338 — the AgentResult output blob (an agent-phase row carries `source`). */
+  output?: string | null;
 }
 
 interface ProjectRow {
@@ -100,6 +102,7 @@ vi.mock("../src/lib/prisma.js", async () => {
             evidence: f.evidence,
             agentResult: {
               agentKey: f.agentKey,
+              output: f.output ?? null,
               analysis: { project: { name: f.projectName } },
             },
           };
@@ -117,8 +120,9 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
 
 // Stub the adapter's publish path; assert the route hands it the right args.
 const publishAnalysisFindingMock = vi.fn();
-vi.mock("../src/lib/scanner/prisma-adapter.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/lib/scanner/prisma-adapter.js")>();
+vi.mock("../src/lib/publishing/analysis-finding-publish.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/publishing/analysis-finding-publish.js")>();
   return {
     ...actual,
     publishAnalysisFinding: (...args: unknown[]) => publishAnalysisFindingMock(...args),
@@ -127,7 +131,7 @@ vi.mock("../src/lib/scanner/prisma-adapter.js", async (importOriginal) => {
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import { PublishError } from "../src/lib/scanner/finding-publisher.js";
+import { PublishError } from "../src/lib/publishing/finding-publisher.js";
 
 let app: ReturnType<typeof createApp>;
 let adminToken: string;
@@ -231,6 +235,41 @@ describe("POST /api/projects/:projectId/analyses/:id/findings/:findingId/publish
     });
   });
 
+  it("#338 — attributes an agent-phase finding to its agent, not the code specialist", async () => {
+    findings.set(FINDING_ID, {
+      ...findings.get(FINDING_ID)!,
+      agentKey: "custom:c1",
+      output: JSON.stringify({
+        summary: "s",
+        findings: [],
+        notes: [],
+        source: { kind: "custom", ref: "custom:c1", name: "Threat Modeller" },
+      }),
+    });
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ draft: VALID_DRAFT });
+
+    expect(res.status).toBe(200);
+    expect(publishAnalysisFindingMock.mock.calls[0][0].agentSource).toEqual({
+      kind: "custom",
+      ref: "custom:c1",
+      name: "Threat Modeller",
+    });
+  });
+
+  it("#338 — a specialist finding publishes with no agent source", async () => {
+    await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ draft: VALID_DRAFT });
+    expect(publishAnalysisFindingMock.mock.calls[0][0]).toMatchObject({
+      agentKey: "code",
+      agentSource: null,
+    });
+  });
+
   it("honours an explicit provider override", async () => {
     projects.get(PROJECT_ID)!.jiraConnectionId = "jc_1";
     projects.get(PROJECT_ID)!.jiraProjectKey = "ACME";
@@ -294,13 +333,37 @@ describe("POST /api/projects/:projectId/analyses/:id/findings/:findingId/publish
     expect(res.body.error.code).toBe("ERR_NOT_IMPLEMENTED");
   });
 
-  it("maps ERR_STALE_COMMIT to 409", async () => {
-    publishAnalysisFindingMock.mockRejectedValue(new PublishError("ERR_STALE_COMMIT", "stale"));
+  it("#733 — forwards an explicit GitHub target to the publisher", async () => {
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ draft: VALID_DRAFT, target: { owner: "openzigs", repo: "flux-v2" } });
+    expect(res.status).toBe(200);
+    expect(publishAnalysisFindingMock.mock.calls[0][0].target).toEqual({
+      owner: "openzigs",
+      repo: "flux-v2",
+    });
+  });
+
+  it("#733 — rejects a malformed target (400) before publishing", async () => {
+    const res = await request(app)
+      .post(url)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ draft: VALID_DRAFT, target: { owner: "openzigs", repo: "../issues" } });
+    expect(res.status).toBe(400);
+    expect(publishAnalysisFindingMock).not.toHaveBeenCalled();
+  });
+
+  it("#733 — maps ERR_NO_PUBLISH_TARGET to 400", async () => {
+    publishAnalysisFindingMock.mockRejectedValue(
+      new PublishError("ERR_NO_PUBLISH_TARGET", "no target configured"),
+    );
     const res = await request(app)
       .post(url)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ draft: VALID_DRAFT });
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("ERR_NO_PUBLISH_TARGET");
   });
 
   it("maps an unexpected publisher failure to 502", async () => {

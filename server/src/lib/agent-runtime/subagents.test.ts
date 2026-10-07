@@ -409,7 +409,7 @@ describe("running a sub-agent", () => {
     const provider = new OfflineStubProvider({
       script: [{ toolCalls: [{ id: "r", name: "read", args: {} }] }, { content: "done" }],
     });
-    const broker = { request: vi.fn(async () => "deny" as const) };
+    const broker = { request: vi.fn(async (_req: unknown) => "deny" as const) };
     const { t } = setup(provider, d, { broker: broker as never }, [tool("read", readRun)]);
     await t.execute({ task: "go" }, rctx);
     expect(broker.request).toHaveBeenCalledTimes(1);
@@ -426,7 +426,7 @@ describe("running a sub-agent", () => {
     const provider = new OfflineStubProvider({
       script: [{ toolCalls: [{ id: "r", name: "read", args: {} }] }, { content: "done" }],
     });
-    const broker = { request: vi.fn(async () => "deny" as const) };
+    const broker = { request: vi.fn(async (_req: unknown) => "deny" as const) };
     const { t } = setup(provider, d, { broker: broker as never }, [tool("read", readRun)], {
       policy: { ...ALL_AUTO, low: "always-prompt" },
     });
@@ -455,7 +455,7 @@ describe("running a sub-agent", () => {
         { content: "middle done" },
       ],
     });
-    const broker = { request: vi.fn(async () => "deny" as const) };
+    const broker = { request: vi.fn(async (_req: unknown) => "deny" as const) };
     const mem = memoryStore();
     const ctx = ctxFor(provider, {
       callable: [middle, inner],

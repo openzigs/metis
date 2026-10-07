@@ -123,6 +123,8 @@ type ImportSourceRow = {
   baseUrl: string | null;
   jiraConnectionId: string | null;
   secretId: string | null;
+  /** #763 — `secretId` is an existing vault secret the source refers to (never deleted with it). */
+  secretBound?: boolean;
   syncEnabled: boolean;
   syncIntervalMinutes: number;
   scheduledJobId: string | null;
@@ -162,6 +164,40 @@ export function intervalToCron(minutes: number): string {
     return hours >= 24 ? "0 0 * * *" : `0 */${hours} * * *`;
   }
   return `*/${minutes} * * * *`;
+}
+
+/**
+ * #763 — a vault secret the route has already authorized and bound
+ * (`authorizeImportSecretRef`). Only its id crosses into the service; the
+ * plaintext is read here, by id, at the moment it is used.
+ */
+export interface BoundImportSecret {
+  secretId?: string | null;
+}
+
+/** #763 — shown with an unauthenticated GitHub preview. */
+export const GITHUB_ANONYMOUS_WARNING =
+  "No credential supplied: GitHub was read anonymously, which only works for public " +
+  "repositories, under a rate limit of 60 requests per hour. Choose a vault secret for " +
+  "private repositories or large imports.";
+
+/** #763 — refuse a request that names a pasted token AND a vault secret. */
+function assertOneCredential(
+  token: string | null | undefined,
+  secretId: string | null | undefined,
+) {
+  if (token && secretId) {
+    throw new AppError(
+      400,
+      "IMPORT_CREDENTIAL_CONFLICT",
+      "provide either an API token or a vault secret, not both",
+    );
+  }
+}
+
+/** #763 — GitHub issues of a public repository can be read without a token. */
+function tokenOptional(source: ImportSourceKind): boolean {
+  return source === "github";
 }
 
 export class ImportService {
@@ -209,21 +245,27 @@ export class ImportService {
         this.deps.importerDeps,
       );
     }
-    if (!creds.token) {
+    if (!creds.token && !tokenOptional(source)) {
       throw new AppError(400, "IMPORT_TOKEN_REQUIRED", `${source} import requires an API token`);
     }
     return createImporter(
-      { source, token: creds.token, baseUrl: creds.baseUrl ?? null },
+      { source, token: creds.token ?? "", baseUrl: creds.baseUrl ?? null },
       this.deps.importerDeps,
     );
   }
 
   // ---------- preview ----------
 
-  async preview(projectId: string, req: ImportPreviewRequest): Promise<ImportPreview> {
+  async preview(
+    projectId: string,
+    req: ImportPreviewRequest,
+    bound: BoundImportSecret = {},
+  ): Promise<ImportPreview> {
     const filter = parseImportFilter(req.source, req.filter);
+    assertOneCredential(req.token, bound.secretId);
+    const token = req.token ?? (await this.readBoundToken(bound.secretId));
     const importer = await this.buildImporterFor(req.source, filter, projectId, {
-      token: req.token ?? null,
+      token,
       baseUrl: req.baseUrl ?? null,
     });
     const count = await importer.count(filter, { signal: undefined });
@@ -234,7 +276,15 @@ export class ImportService {
       sample.push(toPreview(mapped));
       if (sample.length >= limit) break;
     }
-    return { source: req.source, count, sample };
+    const warnings = req.source === "github" && !token ? [GITHUB_ANONYMOUS_WARNING] : [];
+    return { source: req.source, count, sample, warnings };
+  }
+
+  /** #763 — the plaintext of a route-bound vault secret, read by id only. */
+  private async readBoundToken(secretId: string | null | undefined): Promise<string | null> {
+    if (!secretId) return null;
+    const { plaintext } = await this.deps.vault.read(secretId);
+    return plaintext;
   }
 
   // ---------- CRUD ----------
@@ -260,11 +310,14 @@ export class ImportService {
     projectId: string,
     req: CreateImportSourceRequest,
     userId: string,
+    bound: BoundImportSecret = {},
   ): Promise<{ source: ImportSourceView; run: ImportRunView }> {
     const filter = parseImportFilter(req.source, req.filter);
+    assertOneCredential(req.token, bound.secretId);
+    const boundSecretId = bound.secretId ?? null;
 
     // Validate credentials up-front so we never persist an unusable source.
-    if (sourceUsesToken(req.source) && !req.token) {
+    if (sourceUsesToken(req.source) && !req.token && !boundSecretId && !tokenOptional(req.source)) {
       throw new AppError(
         400,
         "IMPORT_TOKEN_REQUIRED",
@@ -292,8 +345,9 @@ export class ImportService {
       },
     });
 
-    // Store the API token in the vault (token-based sources only).
-    let secretId: string | null = null;
+    // Store the API token in the vault (token-based sources only). #763 — a
+    // bound vault secret is referenced by id instead, and never copied.
+    let secretId: string | null = boundSecretId;
     if (req.token) {
       // #258 — each source owns its own secret (by id), so the label only has
       // to be unique: a name fixed by source + project + label was taken by the
@@ -318,6 +372,7 @@ export class ImportService {
         baseUrl: req.baseUrl ?? null,
         jiraConnectionId,
         secretId,
+        secretBound: boundSecretId !== null,
         syncEnabled: false,
         syncIntervalMinutes: req.syncIntervalMinutes,
         createdById: userId,
@@ -371,7 +426,9 @@ export class ImportService {
         });
       });
     }
-    if (row.secretId) {
+    // #763 — only a secret the source vaulted for itself goes with it; one it
+    // merely referred to belongs to whoever created it.
+    if (row.secretId && !row.secretBound) {
       await this.deps.vault.delete(row.secretId).catch(() => undefined);
     }
     await this.deps.prisma.importSource.update({
@@ -543,11 +600,7 @@ export class ImportService {
 
     try {
       const filter = parseImportFilter(row.source as ImportSourceKind, JSON.parse(row.filter));
-      let token: string | null = null;
-      if (row.secretId) {
-        const secret = await this.deps.vault.read(row.secretId);
-        token = secret.plaintext;
-      }
+      const token = await this.readBoundToken(row.secretId);
       const importer = await this.buildImporterFor(
         row.source as ImportSourceKind,
         filter,
@@ -767,6 +820,7 @@ export class ImportService {
       baseUrl: row.baseUrl,
       jiraConnectionId: row.jiraConnectionId,
       hasToken: Boolean(row.secretId),
+      usesVaultSecret: Boolean(row.secretId && row.secretBound),
       syncEnabled: row.syncEnabled,
       syncIntervalMinutes: row.syncIntervalMinutes,
       consecutiveFailures: row.consecutiveFailures,

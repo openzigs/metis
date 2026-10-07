@@ -3,7 +3,9 @@
  *
  *   GET    /drafts                      list drafts                (issue.draft)
  *   POST   /drafts/generate             generate from analysis     (issue.draft)
+ *   PATCH  /drafts/:id                  edit title/body/labels     (issue.draft)          #776
  *   POST   /drafts/:id/approve          approve a draft            (issue.draft)
+ *   POST   /drafts/:id/pull-request     draft PR, dry-run default  (issue.preview | issue.publish live) #776
  *   GET    /batches                     list batches               (issue.preview)
  *   GET    /batches/:id                 batch detail + issues      (issue.preview)
  *   POST   /batches                     create + immediately run   (issue.publish | issue.preview for dry-run)
@@ -16,12 +18,17 @@ import { z, ZodError } from "zod";
 import {
   archivePublishBatchSchema,
   createPublishBatchSchema,
+  draftPullRequestRequestSchema,
+  editIssueDraftSchema,
   generateDraftsSchema,
+  githubOwnerSchema,
   hasPermission,
   type ApiResponse,
   type RoleKey,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
+import { publishingPreAuthRateLimiter } from "../middleware/publishing-rate-limit.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { assertPublishSecretBinding } from "../lib/publishing/publish-secret-binding.js";
 import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js";
@@ -40,6 +47,8 @@ import {
   VAULT_REF_FORMAT_MESSAGE,
 } from "../lib/publishing/publishing-service.js";
 import { PublishError } from "../lib/publishing/types.js";
+import { editDraft } from "../lib/publishing/draft-edit.js";
+import { openDraftPullRequest } from "../lib/publishing/draft-pull-request.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -117,7 +126,12 @@ function asAppError(err: unknown): unknown {
 
 export function publishingRouter(): Router {
   const r = Router({ mergeParams: true });
-  r.use(requireAuth);
+  // PR #850 review — object-level project scope for every route below, as
+  // `traceabilityRouter` does since #814, so this router's safety no longer
+  // rests on the mount order of `projectsRouter()` upstream. A per-IP ceiling
+  // runs ahead of auth (CodeQL js/missing-rate-limiting, #815).
+  r.use(publishingPreAuthRateLimiter);
+  r.use(requireAuth, requireProjectAccess());
 
   // ---- Drafts ----
   r.get("/drafts", requirePermission("issue.draft"), async (req, res, next) => {
@@ -135,7 +149,8 @@ export function publishingRouter(): Router {
       const projectId = projectIdOf(req);
       const body = generateDraftsSchema
         .extend({
-          targetOwner: z.string().min(1).max(128),
+          // #733 — the one shared owner schema, as batch publish and Deep Dive use.
+          targetOwner: githubOwnerSchema,
           targetRepo: z.string().min(1).max(128),
         })
         .parse(req.body);
@@ -148,6 +163,51 @@ export function publishingRouter(): Router {
         actorId: actor(req),
       });
       res.status(201).json(ok(result));
+    } catch (err) {
+      next(asAppError(err));
+    }
+  });
+
+  // #776 — edit a draft's title, body or labels before a batch publishes it.
+  r.patch("/drafts/:id", requirePermission("issue.draft"), async (req, res, next) => {
+    try {
+      const input = editIssueDraftSchema.parse(req.body ?? {});
+      // #1072: the draft must belong to the PATH project.
+      const updated = await editDraft({
+        draftId: String(req.params.id),
+        projectId: projectIdOf(req),
+        actorId: actor(req),
+        input,
+      });
+      res.json(ok(updated));
+    } catch (err) {
+      next(asAppError(err));
+    }
+  });
+
+  // #776 — open one draft as a DRAFT pull request on the saved publish target.
+  // The body takes no target (the schema is strict); dry run is the default
+  // and needs only `issue.preview`, a live run `issue.publish` — as batches.
+  r.post("/drafts/:id/pull-request", async (req, res, next) => {
+    try {
+      const body = draftPullRequestRequestSchema.parse(req.body ?? {});
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      const requiredPerm = body.dryRun ? "issue.preview" : "issue.publish";
+      if (!hasPermission(req.user.role, requiredPerm)) {
+        throw new AppError(403, "FORBIDDEN", `permission ${requiredPerm} required`);
+      }
+      // A live run writes to the repository, so `openDraftPullRequest` itself
+      // requires the caller to own the secret (#344, judged as a new
+      // destination) and checks the #552 window before the token is used.
+      const result = await openDraftPullRequest({
+        projectId: projectIdOf(req),
+        draftId: String(req.params.id),
+        actorId: actor(req),
+        actorRole: req.user.role,
+        dryRun: body.dryRun,
+        secretRef: body.secretRef,
+      });
+      res.status(body.dryRun ? 200 : 201).json(ok(result));
     } catch (err) {
       next(asAppError(err));
     }

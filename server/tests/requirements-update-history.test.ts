@@ -6,7 +6,7 @@ import express from "express";
 import request from "supertest";
 
 const mockPrisma = {
-  requirement: { findUnique: vi.fn(), update: vi.fn() },
+  requirement: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   requirementVersion: { findMany: vi.fn(), create: vi.fn(), count: vi.fn() },
   assignment: { findMany: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
   $transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(mockPrisma)),
@@ -24,7 +24,10 @@ vi.mock("../src/middleware/require-permission.js", () => ({
   requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 // Pass-through optimistic lock — concurrency is covered by optimistic-lock.test.ts.
-vi.mock("../src/middleware/optimistic-lock.js", () => ({
+// `sendVersionConflict` stays real: the handler answers an in-transaction
+// conflict (#871) with the middleware's own 409 payload.
+vi.mock("../src/middleware/optimistic-lock.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/middleware/optimistic-lock.js")>()),
   optimisticLock: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 vi.mock("../src/routes/comments.js", () => ({
@@ -69,12 +72,12 @@ describe("PUT /requirements/:id with version history", () => {
   });
 
   it("bumps the version and appends a history row when a field changes", async () => {
-    mockPrisma.requirement.findUnique.mockResolvedValue(EXISTING);
-    mockPrisma.requirement.update.mockResolvedValue({
+    mockPrisma.requirement.findUnique.mockResolvedValueOnce(EXISTING).mockResolvedValueOnce({
       id: "req-1",
       version: 3,
       updatedAt: new Date("2026-05-05T00:00:00Z"),
     });
+    mockPrisma.requirement.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.requirementVersion.create.mockResolvedValue({});
 
     const res = await request(app).put("/requirements/req-1").send({ title: "New", reason: "fix" });
@@ -92,18 +95,50 @@ describe("PUT /requirements/:id with version history", () => {
   });
 
   it("does not append a history row for a no-op update", async () => {
-    mockPrisma.requirement.findUnique.mockResolvedValue(EXISTING);
-    mockPrisma.requirement.update.mockResolvedValue({
+    mockPrisma.requirement.findUnique.mockResolvedValueOnce(EXISTING).mockResolvedValueOnce({
       id: "req-1",
       version: 2,
       updatedAt: new Date("2026-05-05T00:00:00Z"),
     });
+    mockPrisma.requirement.updateMany.mockResolvedValue({ count: 1 });
 
     const res = await request(app).put("/requirements/req-1").send({ title: "Old" });
 
     expect(res.status).toBe(200);
     expect(res.body.data.version).toBe(2);
     expect(mockPrisma.requirementVersion.create).not.toHaveBeenCalled();
+  });
+
+  // #871 — the middleware's check ran before the transaction; the write
+  // transaction sees the row already moved on and answers the lock's 409.
+  it("answers 409 VERSION_CONFLICT with a diff when the version moved under the write", async () => {
+    mockPrisma.requirement.findUnique
+      .mockResolvedValueOnce({ ...EXISTING, version: 3, title: "Winner" }) // in-transaction read
+      .mockResolvedValueOnce({ ...EXISTING, version: 3, title: "Winner" }); // 409 diff reload
+
+    const res = await request(app).put("/requirements/req-1").send({ title: "Loser", version: 2 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatchObject({
+      code: "VERSION_CONFLICT",
+      conflict: true,
+      serverVersion: 3,
+      clientVersion: 2,
+      diff: [{ field: "title", server: "Winner", client: "Loser" }],
+    });
+    expect(mockPrisma.requirement.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.requirementVersion.create).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 when the requirement vanished between the conflict and the diff reload", async () => {
+    mockPrisma.requirement.findUnique
+      .mockResolvedValueOnce({ ...EXISTING, version: 3 })
+      .mockResolvedValueOnce(null);
+
+    const res = await request(app).put("/requirements/req-1").send({ title: "Loser", version: 2 });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
   });
 
   it("returns 404 when the requirement does not exist", async () => {

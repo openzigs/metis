@@ -352,3 +352,64 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     expect(capture.contexts).toEqual([]);
   });
 });
+
+describe("buildAutoRagContext — derived label for generated documents (#199)", () => {
+  const genHit = (derived?: { status?: string; scope?: string }) => ({
+    ...docHit,
+    filename: "generated-doc-abc.md",
+    source: "generated" as const,
+    ...(derived ? { derived } : {}),
+  });
+
+  it("labels a generated-document excerpt as derived, with degraded status and module scope", async () => {
+    search.mockResolvedValue({ hits: [genHit({ status: "degraded", scope: "module" })] });
+    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    expect(out).toContain("[1] generated-doc-abc.md#0 [DERIVED: generated documentation");
+    expect(out).toContain("status=degraded");
+    expect(out).toContain("scope=module");
+  });
+
+  it("omits status and scope for a ready, full-scope generated document", async () => {
+    search.mockResolvedValue({ hits: [genHit({ status: "ready", scope: "full" })] });
+    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    expect(out).toContain("DERIVED");
+    expect(out).not.toContain("status=");
+    expect(out).not.toContain("scope=");
+  });
+
+  it("leaves a primary excerpt unlabelled", async () => {
+    search.mockResolvedValue({ hits: [docHit] });
+    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    expect(out).not.toContain("DERIVED:");
+  });
+
+  it("never calls generated-document excerpts authoritative", async () => {
+    search.mockResolvedValue({ hits: [genHit({})] });
+    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    expect(out).not.toContain("authoritative");
+    expect(out).toContain("not a primary source");
+  });
+});
+
+// #717 — the model copies what it reads: a repo hit must be named by its real
+// path, and a lexical-only hit must not print as `score=0.000`.
+describe("buildAutoRagContext — hit naming and scores (#717)", () => {
+  it("names a repo hit by its path and prints the rank score", async () => {
+    __resetConfigSingleton();
+    search.mockResolvedValue({
+      hits: [
+        {
+          ...docHit,
+          filename: "connector:repo:cid1:src/internal/model/feed.go",
+          path: "internal/model/feed.go",
+          score: 0,
+          rankScore: 0.5,
+          matchedBy: ["lexical"],
+        },
+      ],
+    });
+    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    expect(out).toContain("[1] internal/model/feed.go#0 (score=0.500, keyword match)");
+    expect(out).not.toContain("connector:repo:cid1:src/internal");
+  });
+});

@@ -64,10 +64,6 @@ export const ROUTE_FIXTURE_BASELINE: readonly FixtureBaselineEntry[] = [
     note: "project-scoped: /projects/:projectId/change-analyses; admin-only caller",
   },
   {
-    file: "tests/comments-mentions.test.ts",
-    note: "project-scoped comments/mentions; admin-only caller",
-  },
-  {
     file: "tests/import-routes.test.ts",
     note: "project-scoped imports; stubs requireAuth with no role literal at all",
   },
@@ -96,10 +92,6 @@ export const ROUTE_FIXTURE_BASELINE: readonly FixtureBaselineEntry[] = [
     note: "project-scoped generated docs; admin-only caller",
   },
   {
-    file: "tests/routes/test-management.test.ts",
-    note: "id-resolved test-management connections; no role literal (cross-tenant cases live in test-management-connection-idor.test.ts)",
-  },
-  {
     file: "src/routes/data-mappings.test.ts",
     note: "project-scoped /projects/:projectId data mappings; no role literal",
   },
@@ -108,19 +100,7 @@ export const ROUTE_FIXTURE_BASELINE: readonly FixtureBaselineEntry[] = [
     note: "project-scoped /projects/:projectId/pr-reviews; no role literal",
   },
   {
-    file: "src/routes/rules.test.ts",
-    note: "project-scoped /projects/:projectId/rule-sets; no role literal",
-  },
-  {
-    file: "src/routes/scans.test.ts",
-    note: "project-scoped /projects/:projectId scans; no role literal",
-  },
-  {
     file: "src/routes/spec-kit-route.test.ts",
     note: "project-scoped spec-kit; admin-only caller",
-  },
-  {
-    file: "src/routes/triage.test.ts",
-    note: "project-scoped /projects/:projectId triage; no role literal",
   },
 ];

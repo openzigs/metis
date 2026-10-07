@@ -23,6 +23,9 @@ const authDb = vi.hoisted(() => ({
   lookupError: null as Error | null,
 }));
 
+/** #674 review — set to make every `job_scopes` read fail. */
+const jobScopeDb = vi.hoisted(() => ({ readError: null as Error | null }));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     $queryRawUnsafe: vi.fn(async () => 1),
@@ -83,6 +86,85 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     auditLog: { create: vi.fn(async () => ({})) },
+    // #679 — a discussion presence room takes the thread read rule
+    // (`canAccessThread`): thread `t1` lives in `p1`, in workspace `w1` (#734);
+    // `t-boom` makes the lookup throw; `t-deleted` is soft-deleted.
+    discussionThread: {
+      findFirst: vi.fn(async (args: { where: { id: string; deletedAt?: null } }) => {
+        if (args.where.id === "t-boom") throw new Error("db down");
+        if (args.where.id === "t-deleted" && args.where.deletedAt !== null) {
+          return { id: "t-deleted", projectId: "p1" };
+        }
+        return args.where.id === "t1" ? { id: "t1", projectId: "p1" } : null;
+      }),
+    },
+    // #655 — connector, background-run and job rooms authorize like their REST
+    // reads. Every row below lives in `p1` (workspace `w1`, member `u1`); a
+    // `*-boom` id makes the lookup throw; `*-slow` resolves late; a
+    // `*-deleted` row is soft-deleted, so a lookup filtering on
+    // `deletedAt: null` does not see it.
+    repoConnection: {
+      findFirst: vi.fn(async (args: { where: { id: string; deletedAt?: null } }) => {
+        if (args.where.id === "c-boom") throw new Error("db down");
+        if (args.where.id === "c-repo-deleted" && args.where.deletedAt !== null) {
+          return { projectId: "p1" };
+        }
+        if (args.where.id === "c-slow") {
+          await new Promise((r) => setTimeout(r, 50));
+          return { projectId: "p1" };
+        }
+        // The project lookup behind this one throws.
+        if (args.where.id === "c-projboom") return { projectId: "p-boom" };
+        return args.where.id === "c-repo" ? { projectId: "p1" } : null;
+      }),
+    },
+    databaseConnection: {
+      findFirst: vi.fn(async (args: { where: { id: string; deletedAt?: null } }) => {
+        if (args.where.id === "c-db-deleted" && args.where.deletedAt !== null) {
+          return { projectId: "p1" };
+        }
+        return args.where.id === "c-db" ? { projectId: "p1" } : null;
+      }),
+    },
+    backgroundRun: {
+      findUnique: vi.fn(async (args: { where: { id: string } }) => {
+        if (args.where.id === "r-boom") throw new Error("db down");
+        return args.where.id === "r1" ? { projectId: "p1" } : null;
+      }),
+    },
+    generatedDocument: {
+      findFirst: vi.fn(async (args: { where: { id: string; deletedAt?: null } }) => {
+        if (args.where.id === "d-deleted" && args.where.deletedAt !== null) {
+          return { projectId: "p1" };
+        }
+        return args.where.id === "d1" ? { projectId: "p1" } : null;
+      }),
+    },
+    importRun: {
+      findFirst: vi.fn(async (args: { where: { id: string } }) =>
+        args.where.id === "ir1" ? { projectId: "p1" } : null,
+      ),
+    },
+    impactAnalysis: {
+      findFirst: vi.fn(async (args: { where: { id: string } }) =>
+        args.where.id === "ia1" ? { id: "ia1" } : null,
+      ),
+    },
+    // #674 — the durable scope of a row-less job: `rec-p1` is a spec-kit job
+    // in `p1`; `rec-expired` lapsed; `rec-bogus` names no known kind.
+    jobScopeRecord: {
+      findFirst: vi.fn(async (args: { where: { jobId: string; expiresAt?: { gt: Date } } }) => {
+        if (jobScopeDb.readError) throw jobScopeDb.readError;
+        const rows: Record<string, { kind: string; projectId: string; expiresAt: Date }> = {
+          "rec-p1": { kind: "spec-kit", projectId: "p1", expiresAt: new Date(8.64e15) },
+          "rec-expired": { kind: "spec-kit", projectId: "p1", expiresAt: new Date(0) },
+          "rec-bogus": { kind: "not-a-kind", projectId: "p1", expiresAt: new Date(8.64e15) },
+        };
+        const row = rows[args.where.jobId];
+        const after = args.where.expiresAt?.gt;
+        return row && (!after || row.expiresAt > after) ? row : null;
+      }),
+    },
     // #142 — `subscribe:session` authorises like every session read: `u1`
     // owns the unscoped session `s1`; nobody else owns anything.
     aISession: {
@@ -100,6 +182,11 @@ vi.mock("../src/lib/prisma.js", () => ({
         const createdById = args?.where?.createdById;
         if (createdById === "u1") return [{ id: "p1", name: "P1" }];
         return [];
+      }),
+      // #734 — the discussions seam's live-project check: only `p1` exists.
+      findFirst: vi.fn(async (args: { where: { id: string } }) => {
+        if (args.where.id === "p-boom") throw new Error("db down");
+        return args.where.id === "p1" ? { id: "p1" } : null;
       }),
       // #645 — `assertProjectAccess`: `p1` sits in workspace `w1`, whose only
       // member is `u1`.
@@ -121,12 +208,38 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+// #655 — the impact-analysis read rule behind a `job:{id}` join: `ia1` touches
+// `p1` only, which `u1` created (`listAccessibleProjectIds`).
+vi.mock("../src/lib/impact-analysis/impact-analysis-read.js", () => ({
+  getImpactAnalysisDetail: vi.fn(async (id: string) =>
+    id === "ia1" ? { id: "ia1", projectIds: ["p1"], startedById: "u1" } : null,
+  ),
+}));
+
 import { createSocketServer, type MetisIOServer } from "../src/lib/socket/server.js";
-import { createJobEventEmitter, _resetJobLifecycleMemory } from "../src/lib/socket/job-events.js";
+import {
+  createJobEventEmitter,
+  _resetJobLifecycleMemory,
+  rememberJobScope,
+} from "../src/lib/socket/job-events.js";
 import { issueTokens } from "../src/lib/auth/jwt.js";
 import { canJoinAnalysisRoom } from "../src/lib/socket/analysis-room-access.js";
+import { canJoinConnectorRoom, resolveJobRoomScope } from "../src/lib/socket/room-access.js";
+import { prisma } from "../src/lib/prisma.js";
 import { wirePresenceHandlers } from "../src/lib/collaboration/presence.js";
-import type { ClientToServerEvents } from "@metis/shared";
+import {
+  JOIN_RATE_LIMITED,
+  JoinRateLimiter,
+  MAX_RETRY_AFTER_MS,
+  setJoinRateLimiter,
+  type RoomJoinEvent,
+} from "../src/lib/socket/join-rate-limit.js";
+import { presenceRoom, publishRoom, taskRoom } from "@metis/shared";
+import type {
+  ClientToServerEvents,
+  PresenceArtifactType,
+  SocketAuthErrorEvent,
+} from "@metis/shared";
 
 let httpServer: http.Server;
 let io: MetisIOServer;
@@ -265,6 +378,39 @@ describe("Socket.IO server", () => {
     expect((await denied).message).toMatch(/FORBIDDEN/);
     expect(io.sockets.adapter.rooms.get("session:s1")?.size ?? 0).toBe(0);
     socket.close();
+  });
+
+  // #672 — the publish and task rooms are named by the shared factories the
+  // emitters use; a join under any other name would receive nothing.
+  describe("#672 publish and task rooms join the shared room names", () => {
+    const roomsOf = (socket: ClientSocket): string[] =>
+      [...(io.sockets.adapter.sids.get(socket.id!) ?? [])].sort();
+
+    it("subscribe:publish joins exactly publishRoom(batchId) and unsubscribe:publish leaves it", async () => {
+      const socket = await connectAs("u1", "u1");
+      const base = roomsOf(socket);
+      expect(base).toEqual([socket.id!, "user:u1"].sort());
+
+      socket.emit("subscribe:publish", { batchId: "b1" });
+      await vi.waitFor(() => expect(roomsOf(socket)).toEqual([...base, publishRoom("b1")].sort()));
+
+      socket.emit("unsubscribe:publish", { batchId: "b1" });
+      await vi.waitFor(() => expect(roomsOf(socket)).toEqual(base));
+      socket.close();
+    });
+
+    it("subscribe:task joins exactly taskRoom(taskId) and unsubscribe:task leaves it", async () => {
+      const socket = await connectAs("u1", "u1");
+      const base = roomsOf(socket);
+      expect(base).toEqual([socket.id!, "user:u1"].sort());
+
+      socket.emit("subscribe:task", { taskId: "t1" });
+      await vi.waitFor(() => expect(roomsOf(socket)).toEqual([...base, taskRoom("t1")].sort()));
+
+      socket.emit("unsubscribe:task", { taskId: "t1" });
+      await vi.waitFor(() => expect(roomsOf(socket)).toEqual(base));
+      socket.close();
+    });
   });
 
   describe("#645 subscribe:analysis authorizes against the analysis's project", () => {
@@ -412,7 +558,7 @@ describe("Socket.IO server", () => {
     createJobEventEmitter(io).completed(
       "embeddings-reindex",
       "late-job",
-      null,
+      "p1",
       "Reindexed 4 of 4 chunks.",
     );
 
@@ -642,6 +788,415 @@ describe("Socket.IO server", () => {
     socket.emit("subscribe:job", { jobId: "outage-job" });
     await vi.waitFor(() => expect(statuses).toEqual(["generating", "done"]));
     socket.close();
+  });
+
+  describe("#655 connector, background-run and job rooms authorize like their REST reads", () => {
+    type RoomEvent = "subscribe:connector" | "subscribe:bg-run" | "subscribe:job";
+    const FIELD: Record<RoomEvent, string> = {
+      "subscribe:connector": "connectorId",
+      "subscribe:bg-run": "runId",
+      "subscribe:job": "jobId",
+    };
+    const ROOM: Record<RoomEvent, string> = {
+      "subscribe:connector": "connector",
+      "subscribe:bg-run": "run",
+      "subscribe:job": "job",
+    };
+    const DENIAL: Record<RoomEvent, string> = {
+      "subscribe:connector": "FORBIDDEN: no access to connector",
+      "subscribe:bg-run": "FORBIDDEN: no access to background run",
+      "subscribe:job": "FORBIDDEN: no access to job",
+    };
+
+    /**
+     * Subscribe and settle: resolves on the denial, or once the socket is in
+     * the room — never on a fixed sleep, which would fail open on a slow check.
+     */
+    async function subscribe(
+      userId: string,
+      event: RoomEvent,
+      id: string,
+    ): Promise<{ joined: boolean; errors: SocketAuthErrorEvent[] }> {
+      const socket = await connectAs(userId, userId);
+      const errors: SocketAuthErrorEvent[] = [];
+      socket.on("auth:error", (payload: SocketAuthErrorEvent) => errors.push(payload));
+      const room = `${ROOM[event]}:${id}`;
+      (socket.emit as (ev: string, ...args: unknown[]) => void)(event, { [FIELD[event]]: id });
+      await vi.waitFor(() =>
+        expect(
+          errors.length > 0 || (io.sockets.adapter.rooms.get(room)?.has(socket.id!) ?? false),
+        ).toBe(true),
+      );
+      const joined = io.sockets.adapter.rooms.get(room)?.has(socket.id!) ?? false;
+      socket.close();
+      return { joined, errors };
+    }
+
+    const cases: Array<[RoomEvent, string, string]> = [
+      ["subscribe:connector", "c-repo", "c-boom"],
+      ["subscribe:connector", "c-db", "c-boom"],
+      ["subscribe:bg-run", "r1", "r-boom"],
+      // A job no event has named yet is scoped from its row.
+      ["subscribe:job", "a1", "a-boom"],
+      ["subscribe:job", "d1", "a-boom"],
+      ["subscribe:job", "ir1", "a-boom"],
+    ];
+
+    it.each(cases)("%s %s joins a member of the owning project", async (event, id) => {
+      expect(await subscribe("u1", event, id)).toEqual({ joined: true, errors: [] });
+    });
+
+    it.each(cases)(
+      "%s %s refuses an outsider, an unknown id and a failed lookup alike",
+      async (event, id, boomId) => {
+        // Exactly `{ message, room }`: the same message whatever the reason,
+        // and the room the client itself named, so nothing tells them apart.
+        const denied = (roomId: string) => ({
+          joined: false,
+          errors: [{ message: DENIAL[event], room: `${ROOM[event]}:${roomId}` }],
+        });
+        expect(await subscribe("u2", event, id)).toEqual(denied(id));
+        expect(await subscribe("u1", event, `${id}-missing`)).toEqual(denied(`${id}-missing`));
+        expect(await subscribe("u1", event, boomId)).toEqual(denied(boomId));
+      },
+    );
+
+    // A soft-deleted connector or job is refused to a member of its project,
+    // exactly as the REST read 404s it. Each mock only hides its `*-deleted`
+    // row when the lookup filters on `deletedAt: null`, so dropping that
+    // filter from any lookup in `room-access.ts` turns its row red here.
+    it.each<[RoomEvent, string]>([
+      ["subscribe:connector", "c-repo-deleted"],
+      ["subscribe:connector", "c-db-deleted"],
+      ["subscribe:job", "d-deleted"],
+      ["subscribe:job", "a-deleted"],
+    ])("%s %s refuses a soft-deleted resource to a project member", async (event, id) => {
+      expect(await subscribe("u1", event, id)).toEqual({
+        joined: false,
+        errors: [{ message: DENIAL[event], room: `${ROOM[event]}:${id}` }],
+      });
+    });
+
+    // A denial answers `false`; only a failure that is not an access decision
+    // (the database) propagates, so the handler logs it as a failed check.
+    it("answers a denial with false and rethrows a database failure", async () => {
+      const user = { userId: "u2", username: "u2", role: "developer", permissions: [] } as never;
+      await expect(canJoinConnectorRoom(user, "c-repo")).resolves.toBe(false);
+      await expect(canJoinConnectorRoom(user, "c-projboom")).rejects.toThrow("db down");
+      expect(await subscribe("u1", "subscribe:connector", "c-projboom")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to connector", room: "connector:c-projboom" }],
+      });
+    });
+
+    it("does not join when unsubscribed before the access check resolves", async () => {
+      const socket = await connectAs("u1", "u1");
+      const inRoom = (): boolean =>
+        io.sockets.adapter.rooms.get("connector:c-slow")?.has(socket.id!) ?? false;
+      socket.emit("subscribe:connector", { connectorId: "c-slow" });
+      socket.emit("unsubscribe:connector", { connectorId: "c-slow" });
+      await new Promise((r) => setTimeout(r, 150));
+      expect(inRoom()).toBe(false);
+      socket.emit("subscribe:connector", { connectorId: "c-slow" });
+      await vi.waitFor(() => expect(inRoom()).toBe(true));
+      socket.emit("unsubscribe:connector", { connectorId: "c-slow" });
+      await vi.waitFor(() => expect(inRoom()).toBe(false));
+      socket.close();
+    });
+
+    it("leaves background-run and job rooms on unsubscribe", async () => {
+      const socket = await connectAs("u1", "u1");
+      const rooms = (): string[] => [...(io.sockets.adapter.sids.get(socket.id!) ?? [])];
+      socket.emit("subscribe:bg-run", { runId: "r1" });
+      socket.emit("subscribe:job", { jobId: "a1" });
+      await vi.waitFor(() => expect(rooms()).toEqual(expect.arrayContaining(["run:r1", "job:a1"])));
+      socket.emit("unsubscribe:bg-run", { runId: "r1" });
+      socket.emit("unsubscribe:job", { jobId: "a1" });
+      await vi.waitFor(() => expect(rooms()).not.toContain("run:r1"));
+      await vi.waitFor(() => expect(rooms()).not.toContain("job:a1"));
+      socket.close();
+    });
+
+    it("authorizes a job named by an event against that event's project", async () => {
+      _resetJobLifecycleMemory();
+      const emitter = createJobEventEmitter(io);
+      emitter.started("spec-kit", "mem-p1", "p1");
+      emitter.started("spec-kit", "mem-other", "p-other");
+      expect(await subscribe("u1", "subscribe:job", "mem-p1")).toEqual({
+        joined: true,
+        errors: [],
+      });
+      expect(await subscribe("u2", "subscribe:job", "mem-p1")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:mem-p1" }],
+      });
+      expect(await subscribe("u1", "subscribe:job", "mem-other")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:mem-other" }],
+      });
+    });
+
+    it("authorizes a queued job whose scope was recorded before its first event", async () => {
+      _resetJobLifecycleMemory();
+      rememberJobScope("prr-1-manual", "pr-review", "p1");
+      expect(await subscribe("u1", "subscribe:job", "prr-1-manual")).toEqual({
+        joined: true,
+        errors: [],
+      });
+      expect(await subscribe("u2", "subscribe:job", "prr-1-manual")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:prr-1-manual" }],
+      });
+    });
+
+    it("authorizes a row-less job from its durable scope record when this process remembers none", async () => {
+      // #674 — another replica (or this one before a restart) recorded the scope.
+      _resetJobLifecycleMemory();
+      expect(await subscribe("u1", "subscribe:job", "rec-p1")).toEqual({
+        joined: true,
+        errors: [],
+      });
+      expect(await subscribe("u2", "subscribe:job", "rec-p1")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:rec-p1" }],
+      });
+      for (const jobId of ["rec-expired", "rec-bogus"]) {
+        expect(await subscribe("u1", "subscribe:job", jobId)).toEqual({
+          joined: false,
+          errors: [{ message: "FORBIDDEN: no access to job", room: `job:${jobId}` }],
+        });
+      }
+    });
+
+    describe("#674 review — job_scopes is a last resort, and its failure is a miss", () => {
+      const member = {
+        userId: "u1",
+        username: "u1",
+        role: "developer",
+        permissions: [],
+        workspaces: ["w1"],
+      } as never;
+      const findRecorded = () => vi.mocked(prisma.jobScopeRecord.findFirst);
+
+      afterEach(() => {
+        jobScopeDb.readError = null;
+      });
+
+      it.each(["a1", "d1", "ir1"])(
+        "a failing job_scopes read still admits a member to row-backed job %s",
+        async (jobId) => {
+          _resetJobLifecycleMemory();
+          jobScopeDb.readError = new Error("job_scopes down");
+          expect(await subscribe("u1", "subscribe:job", jobId)).toEqual({
+            joined: true,
+            errors: [],
+          });
+        },
+      );
+
+      it.each(["a1", "d1", "ir1", "ia1"])(
+        "does not query job_scopes when row-backed job %s matches",
+        async (jobId) => {
+          _resetJobLifecycleMemory();
+          findRecorded().mockClear();
+          expect(await resolveJobRoomScope(member, jobId)).not.toBeNull();
+          expect(findRecorded()).not.toHaveBeenCalled();
+        },
+      );
+
+      it("queries job_scopes once every row lookup has missed", async () => {
+        _resetJobLifecycleMemory();
+        findRecorded().mockClear();
+        expect(await resolveJobRoomScope(member, "rec-p1")).toEqual({
+          kind: "spec-kit",
+          projectId: "p1",
+        });
+        expect(findRecorded()).toHaveBeenCalledTimes(1);
+      });
+
+      it("refuses an unknown id when the job_scopes read fails, without throwing", async () => {
+        _resetJobLifecycleMemory();
+        jobScopeDb.readError = new Error("job_scopes down");
+        await expect(resolveJobRoomScope(member, "unknown-job")).resolves.toBeNull();
+        // A recorded scope cannot be read either, so it fails closed too.
+        await expect(resolveJobRoomScope(member, "rec-p1")).resolves.toBeNull();
+        for (const jobId of ["unknown-job", "rec-p1"]) {
+          expect(await subscribe("u1", "subscribe:job", jobId)).toEqual({
+            joined: false,
+            errors: [{ message: "FORBIDDEN: no access to job", room: `job:${jobId}` }],
+          });
+        }
+      });
+    });
+
+    it("authorizes an impact-analysis job by the impact analysis's read rule", async () => {
+      _resetJobLifecycleMemory();
+      // From its row, and from a remembered event, which carries no project.
+      expect(await subscribe("u1", "subscribe:job", "ia1")).toEqual({ joined: true, errors: [] });
+      expect(await subscribe("u2", "subscribe:job", "ia1")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:ia1" }],
+      });
+      createJobEventEmitter(io).started("impact-analysis", "ia1", null);
+      expect(await subscribe("u1", "subscribe:job", "ia1")).toEqual({ joined: true, errors: [] });
+      expect(await subscribe("u2", "subscribe:job", "ia1")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:ia1" }],
+      });
+    });
+
+    it("admits only an admin to any other job without a project", async () => {
+      _resetJobLifecycleMemory();
+      createJobEventEmitter(io).completed("pr-review", "prr-system", null, "done");
+      expect(await subscribe("u1", "subscribe:job", "prr-system")).toEqual({
+        joined: false,
+        errors: [{ message: "FORBIDDEN: no access to job", room: "job:prr-system" }],
+      });
+      const admin = await connectAs("u-admin", "root");
+      const replayed = new Promise<{ jobId: string }>((resolve) =>
+        admin.on("job:lifecycle", resolve),
+      );
+      admin.emit("subscribe:job", { jobId: "prr-system" });
+      expect((await replayed).jobId).toBe("prr-system");
+      expect(io.sockets.adapter.rooms.get("job:prr-system")?.has(admin.id!)).toBe(true);
+      admin.close();
+    });
+
+    it("delivers live job events to a member only", async () => {
+      _resetJobLifecycleMemory();
+      const emitter = createJobEventEmitter(io);
+      emitter.started("spec-kit", "live-job", "p1");
+      const member = await connectAs("u1", "u1");
+      const outsider = await connectAs("u2", "u2");
+      const got: Record<string, string[]> = { member: [], outsider: [] };
+      member.on("job:lifecycle", (e: { status: string }) => got.member!.push(e.status));
+      outsider.on("job:lifecycle", (e: { status: string }) => got.outsider!.push(e.status));
+      const denied = new Promise<void>((resolve) => outsider.on("auth:error", () => resolve()));
+      member.emit("subscribe:job", { jobId: "live-job" });
+      outsider.emit("subscribe:job", { jobId: "live-job" });
+      await denied;
+      await vi.waitFor(() => expect(got.member).toEqual(["started"]));
+      emitter.completed("spec-kit", "live-job", "p1");
+      await vi.waitFor(() => expect(got.member).toEqual(["started", "completed"]));
+      expect(got.outsider).toEqual([]);
+      member.close();
+      outsider.close();
+    });
+  });
+
+  // #679 — `presence:{type}:{id}` lists who is viewing an artifact, so joining
+  // it takes the REST read rule of that artifact; it used to admit any id.
+  describe("#679 presence:join admits only a reader of the artifact", () => {
+    type Artifact = { artifactType: PresenceArtifactType; artifactId: string };
+    const DENIAL = "FORBIDDEN: no access to artifact";
+    const denied = (a: Artifact) => ({
+      joined: false,
+      errors: [{ message: DENIAL, room: presenceRoom(a.artifactType, a.artifactId) }],
+    });
+
+    /** Join and settle on the denial or the membership — never on a fixed sleep. */
+    async function join(
+      userId: string,
+      artifact: Artifact,
+    ): Promise<{ joined: boolean; errors: SocketAuthErrorEvent[] }> {
+      const socket = await connectAs(userId, userId);
+      const errors: SocketAuthErrorEvent[] = [];
+      socket.on("auth:error", (payload: SocketAuthErrorEvent) => errors.push(payload));
+      const room = presenceRoom(artifact.artifactType, artifact.artifactId);
+      const inRoom = () => io.sockets.adapter.rooms.get(room)?.has(socket.id!) ?? false;
+      socket.emit("presence:join", artifact);
+      await vi.waitFor(() => expect(errors.length > 0 || inRoom()).toBe(true));
+      const joined = inRoom();
+      socket.close();
+      return { joined, errors };
+    }
+
+    // [readable artifact, unknown id, id whose lookup throws]
+    const cases: Array<[PresenceArtifactType, string, string, string]> = [
+      ["discussion", "t1", "t-missing", "t-boom"],
+      ["spec-kit-artifact", "p1:spec.md", "p-missing:spec.md", "p-boom:spec.md"],
+    ];
+
+    it.each(cases)("%s %s admits a reader", async (artifactType, artifactId) => {
+      expect(await join("u1", { artifactType, artifactId })).toEqual({
+        joined: true,
+        errors: [],
+      });
+    });
+
+    it.each(cases)(
+      "%s %s refuses an outsider, an unknown id and a failed lookup alike",
+      async (artifactType, artifactId, unknownId, boomId) => {
+        for (const [userId, id] of [
+          ["u2", artifactId],
+          ["u1", unknownId],
+          ["u1", boomId],
+        ] as const) {
+          const artifact = { artifactType, artifactId: id };
+          expect(await join(userId, artifact)).toEqual(denied(artifact));
+        }
+      },
+    );
+
+    it.each([["p1:not-an-artifact.md"], ["p1"], [":spec.md"], ["p1:"]])(
+      "refuses the spec-kit artifact id %j, which no read route serves",
+      async (artifactId) => {
+        const artifact = { artifactType: "spec-kit-artifact" as const, artifactId };
+        expect(await join("u1", artifact)).toEqual(denied(artifact));
+      },
+    );
+
+    // An admin passes every project check, so only the id's own shape refuses
+    // these: without the separator check, `spec.md` would name project `spec.m`.
+    it.each([["spec.md"], [":spec.md"]])(
+      "refuses the malformed spec-kit artifact id %j even to an admin",
+      async (artifactId) => {
+        const artifact = { artifactType: "spec-kit-artifact" as const, artifactId };
+        expect(await join("u-admin", artifact)).toEqual(denied(artifact));
+        expect(await join("u-admin", { ...artifact, artifactId: "p1:spec.md" })).toEqual({
+          joined: true,
+          errors: [],
+        });
+      },
+    );
+
+    it("refuses a soft-deleted discussion thread to a member of its project", async () => {
+      const artifact = { artifactType: "discussion" as const, artifactId: "t-deleted" };
+      expect(await join("u1", artifact)).toEqual(denied(artifact));
+    });
+
+    it("never shows a refused socket to the room, nor the room to it", async () => {
+      const artifact = { artifactType: "discussion" as const, artifactId: "t1" };
+      const room = presenceRoom(artifact.artifactType, artifact.artifactId);
+      type Update = { room: string; users: Array<{ userId: string }> };
+      const member = await connectAs("u1", "u1");
+      const outsider = await connectAs("u2", "u2");
+      const seen: Record<"member" | "outsider", string[][]> = { member: [], outsider: [] };
+      member.on("presence:update", (u: Update) => {
+        if (u.room === room) seen.member.push(u.users.map((x) => x.userId));
+      });
+      outsider.on("presence:update", (u: Update) => {
+        if (u.room === room) seen.outsider.push(u.users.map((x) => x.userId));
+      });
+      member.emit("presence:join", artifact);
+      await vi.waitFor(() => expect(seen.member.length).toBeGreaterThan(0));
+      const refused = new Promise<SocketAuthErrorEvent>((r) => outsider.on("auth:error", r));
+      outsider.emit("presence:join", artifact);
+      expect(await refused).toEqual({ message: DENIAL, room });
+      // A second member join after the refusal: its update is the proof that
+      // any update the outsider could have caused has already been delivered.
+      const second = await connectAs("u1", "u1-tab2");
+      second.emit("presence:join", artifact);
+      const twoTabs = (ids: string[]) => ids.filter((id) => id === "u1").length >= 2;
+      await vi.waitFor(() => expect(seen.member.some(twoTabs)).toBe(true));
+      // Sockets an earlier test closed may still be leaving, so the lists are
+      // searched for the outsider rather than compared whole.
+      expect(seen.member.flat()).not.toContain("u2");
+      expect(seen.outsider).toEqual([]);
+      member.close();
+      outsider.close();
+      second.close();
+    });
   });
 
   // SEC-5: subscribe:mcp must be admin-only.
@@ -933,9 +1488,9 @@ describe("#654 a null, missing or primitive payload never crashes the process", 
       expect(joined.filter((room) => /:(undefined|null|42)$/.test(room))).toEqual([]);
       // The same socket is still connected and still subscribes normally.
       expect(socket.connected).toBe(true);
-      socket.emit("subscribe:connector", { connectorId: "c-654" });
+      socket.emit("subscribe:connector", { connectorId: "c-repo" });
       await vi.waitFor(() =>
-        expect(io.sockets.adapter.rooms.get("connector:c-654")?.has(socket.id!) ?? false).toBe(
+        expect(io.sockets.adapter.rooms.get("connector:c-repo")?.has(socket.id!) ?? false).toBe(
           true,
         ),
       );
@@ -957,5 +1512,107 @@ describe("#654 a null, missing or primitive payload never crashes the process", 
     await new Promise((r) => setTimeout(r, 150));
     expect(errors).toEqual([]);
     socket.close();
+  });
+});
+
+describe("#682 room joins are rate-limited per socket and per user", () => {
+  afterEach(() => setJoinRateLimiter(undefined));
+
+  /** A limiter whose buckets, once drained, do not refill within a test. */
+  const limiterWith = (socketBurst: number, userBurst: number) =>
+    new JoinRateLimiter({
+      socket: { burst: socketBurst, perSecond: 1e-9 },
+      user: { burst: userBurst, perSecond: 1e-9 },
+    });
+
+  // A `Record` over every join event, so a new `subscribe:*` fails typecheck
+  // until it is listed — and so proven to sit behind the limit — here too.
+  const JOINS: Record<RoomJoinEvent, [payload: unknown, room: string]> = {
+    "subscribe:project": [{ projectId: "p1" }, "project:p1"],
+    "subscribe:analysis": [{ analysisId: "a1" }, "analysis:a1"],
+    "subscribe:session": [{ sessionId: "s1" }, "session:s1"],
+    "subscribe:mcp": [undefined, "mcp:status"],
+    "subscribe:connector": [{ connectorId: "c-db" }, "connector:c-db"],
+    "subscribe:publish": [{ batchId: "b1" }, publishRoom("b1")],
+    "subscribe:scheduler": [undefined, "scheduler:status"],
+    "subscribe:task": [{ taskId: "t1" }, taskRoom("t1")],
+    "subscribe:job": [{ jobId: "rec-p1" }, "job:rec-p1"],
+    "subscribe:bg-run": [{ runId: "r1" }, "run:r1"],
+    "subscribe:thread": [{ threadId: "t1" }, "thread:t1"],
+    "presence:thread:join": [{ threadId: "t1" }, "thread:t1"],
+    "presence:join": [
+      { artifactType: "discussion", artifactId: "t1" },
+      presenceRoom("discussion", "t1"),
+    ],
+  };
+
+  it("refuses every room join over the limit with a room-scoped refusal, joining nothing", async () => {
+    setJoinRateLimiter(limiterWith(1, 1000));
+    const socket = await connectAs("u1", "u1");
+    const errors: SocketAuthErrorEvent[] = [];
+    socket.on("auth:error", (e: SocketAuthErrorEvent) => errors.push(e));
+    // The one token admits this join.
+    socket.emit("subscribe:connector", { connectorId: "c-repo" });
+    await vi.waitFor(() =>
+      expect(io.sockets.adapter.rooms.get("connector:c-repo")?.has(socket.id!) ?? false).toBe(true),
+    );
+    const roomsBefore = [...(io.sockets.adapter.sids.get(socket.id!) ?? [])].sort();
+    const rawEmit = socket.emit as (ev: string, ...rest: unknown[]) => void;
+    for (const [event, [payload]] of Object.entries(JOINS)) {
+      if (payload === undefined) rawEmit.call(socket, event);
+      else rawEmit.call(socket, event, payload);
+    }
+    // The buckets never refill here, so every refusal names the capped wait.
+    const expected = Object.values(JOINS).map(([, room]) => ({
+      message: JOIN_RATE_LIMITED,
+      room,
+      code: "RATE_LIMITED",
+      retryAfterMs: MAX_RETRY_AFTER_MS,
+    }));
+    await vi.waitFor(() => expect(errors).toHaveLength(expected.length));
+    expect(errors).toEqual(expected);
+    expect([...(io.sockets.adapter.sids.get(socket.id!) ?? [])].sort()).toEqual(roomsBefore);
+    // Leaving is never limited.
+    socket.emit("unsubscribe:connector", { connectorId: "c-repo" });
+    await vi.waitFor(() =>
+      expect(io.sockets.adapter.rooms.get("connector:c-repo")?.has(socket.id!) ?? false).toBe(
+        false,
+      ),
+    );
+    socket.close();
+  });
+
+  it("bounds audit rows under a probe loop across several of one user's sockets", async () => {
+    const USER_BURST = 5;
+    setJoinRateLimiter(limiterWith(1000, USER_BURST));
+    const sockets = [await connectAs("u1", "u1"), await connectAs("u1", "u1")];
+    const errors: SocketAuthErrorEvent[] = [];
+    for (const s of sockets) s.on("auth:error", (e: SocketAuthErrorEvent) => errors.push(e));
+    const audits = vi.mocked(prisma.auditLog.create);
+    const auditsBefore = audits.mock.calls.length;
+    const PROBES = 20;
+    for (const s of sockets) {
+      for (let i = 0; i < PROBES; i++) {
+        const id = `t-probe-${Math.random().toString(36).slice(2)}`;
+        s.emit("presence:join", { artifactType: "discussion", artifactId: id });
+        s.emit("subscribe:thread", { threadId: id });
+      }
+    }
+    const total = sockets.length * PROBES * 2;
+    await vi.waitFor(() => expect(errors).toHaveLength(total));
+    const limited = errors.filter((e) => e.message === JOIN_RATE_LIMITED);
+    expect(limited).toHaveLength(total - USER_BURST);
+    expect(limited.every((e) => typeof e.room === "string" && e.room !== "")).toBe(true);
+    expect(limited.every((e) => e.code === "RATE_LIMITED" && e.retryAfterMs! > 0)).toBe(true);
+    // The admitted probes were denied by authorization: no rate-limit marker,
+    // so a follower drops those rooms as before.
+    const denied = errors.filter((e) => e.message !== JOIN_RATE_LIMITED);
+    expect(denied).toHaveLength(USER_BURST);
+    expect(denied.every((e) => !("code" in e) && !("retryAfterMs" in e))).toBe(true);
+    // Only the admitted probes reached `canAccessThread`, which audits each.
+    await vi.waitFor(() => expect(audits.mock.calls.length - auditsBefore).toBe(USER_BURST));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(audits.mock.calls.length - auditsBefore).toBe(USER_BURST);
+    for (const s of sockets) s.close();
   });
 });

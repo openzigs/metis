@@ -38,8 +38,9 @@ function matches(row: Record<string, unknown>, where: Where): boolean {
     const value = row[key];
     if (cond instanceof Date) return value instanceof Date && value.getTime() === cond.getTime();
     if (cond && typeof cond === "object") {
-      const c = cond as { lt?: Date };
+      const c = cond as { lt?: Date; in?: unknown[] };
       if (c.lt !== undefined) return value instanceof Date && value < c.lt;
+      if (c.in !== undefined) return c.in.includes(value);
       throw new Error(`unsupported where operator on ${key}`);
     }
     return (value ?? null) === (cond ?? null);
@@ -60,6 +61,10 @@ vi.mock("../prisma.js", () => ({
         between?.();
         return hit;
       }),
+      findFirst: vi.fn(async ({ where }: { where: Where }) => {
+        const hit = [...state.rows.values()].find((r) => matches(r, where));
+        return hit ? { ...hit } : null;
+      }),
       updateMany: vi.fn(async ({ where, data }: { where: Where; data: Where }) => {
         const hit = [...state.rows.values()].filter((r) => matches(r, where));
         for (const r of hit) Object.assign(r, data);
@@ -74,10 +79,14 @@ vi.mock("../logger.js", () => ({
 }));
 
 const failedEvent = vi.hoisted(() => vi.fn());
-vi.mock("../socket/job-events.js", () => ({ jobEvents: { failed: failedEvent } }));
+const completedEvent = vi.hoisted(() => vi.fn());
+vi.mock("../socket/job-events.js", () => ({
+  jobEvents: { failed: failedEvent, completed: completedEvent },
+}));
 
 import {
   GENERATING_STALE_MS,
+  GENERATION_CANCELLED_MESSAGE,
   GENERATION_INTERRUPTED_MESSAGE,
   failInterruptedGenerations,
   startGenerationHeartbeat,
@@ -109,6 +118,7 @@ beforeEach(() => {
   state.rows.clear();
   state.betweenReadAndWrite = null;
   failedEvent.mockClear();
+  completedEvent.mockClear();
 });
 
 afterEach(() => {
@@ -184,5 +194,52 @@ describe("startGenerationHeartbeat — claim and status guards (#56)", () => {
     stop();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(row().updatedAt).toEqual(STALE);
+  });
+});
+
+describe("#855 — cancelling, deleted and superseded runs", () => {
+  async function beat(claim: string, onStop: (reason: string) => void): Promise<void> {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const stop = startGenerationHeartbeat("doc-1", "proj-1", claim, 1_000, onStop);
+    await vi.advanceTimersByTimeAsync(1_000);
+    stop();
+  }
+
+  it("keeps a cancelling run alive and tells it to stop", async () => {
+    seed({ status: "cancelling" });
+    const onStop = vi.fn();
+    await beat("claim-mine", onStop);
+    expect(row().updatedAt.getTime()).toBe(NOW.getTime() + 1_000);
+    expect(onStop).toHaveBeenCalledWith("aborted");
+  });
+
+  it("tells a run whose row was deleted or re-claimed that it was superseded", async () => {
+    for (const overrides of [{ deletedAt: NOW }, { codeGraphHash: "claim-other" }]) {
+      state.rows.clear();
+      seed(overrides);
+      const onStop = vi.fn();
+      await beat("claim-mine", onStop);
+      expect(onStop).toHaveBeenCalledWith("superseded");
+    }
+  });
+
+  it("says nothing to a live, generating run", async () => {
+    seed();
+    const onStop = vi.fn();
+    await beat("claim-mine", onStop);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("marks a cancelling row whose run died as cancelled, not failed", async () => {
+    seed({ status: "cancelling" });
+    await expect(failInterruptedGenerations(NOW)).resolves.toBe(1);
+    expect(row()).toMatchObject({
+      status: "cancelled",
+      errorMessage: GENERATION_CANCELLED_MESSAGE,
+      codeGraphHash: null,
+    });
+    expect(completedEvent).toHaveBeenCalledOnce();
+    expect(failedEvent).not.toHaveBeenCalled();
   });
 });

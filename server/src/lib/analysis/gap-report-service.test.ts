@@ -25,9 +25,12 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
     capability: null,
     affectedCode: null,
     escalation: null,
+    retrieval: null,
+    databaseAware: null,
     agents: [
       {
         agentKey: "code",
+        source: null,
         status: "completed",
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
@@ -37,7 +40,7 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
         findings: [
           {
             id: "f-1",
-            category: "gap",
+            category: "other",
             severity: "high",
             title: "No account lockout",
             body: "Requirement asks for lockout; auth.ts logs in but has no throttle; add attempt counting.",
@@ -67,6 +70,9 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
         evidenceFindingIds: ["f-1"],
         coverage: "grounded_in_code",
         version: 1,
+        verdict: null,
+        acceptanceCriteria: [],
+        supportConfidence: null,
       },
     ],
     ...overrides,

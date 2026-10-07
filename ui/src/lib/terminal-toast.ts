@@ -5,8 +5,8 @@
  *
  * Epic #406 added per-surface progress + terminal toasts (PR-review #421, scan
  * #422, embeddings/Spec Kit/overview #423, import/sync #424). Each surface only
- * toasts when its OWN detail page is mounted, so doc-gen / analysis /
- * test-coverage still fail SILENTLY for a user merely watching a LIST view. #425
+ * toasts when its OWN detail page is mounted, so doc-gen / analysis jobs
+ * still fail SILENTLY for a user merely watching a LIST view. #425
  * closes that gap with a single global `job:lifecycle` consumer (see
  * {@link useGlobalJobToasts}) — but that introduces a NEW hazard: a job whose
  * terminal event is observed by BOTH its detail surface AND the global layer

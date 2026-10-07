@@ -19,17 +19,18 @@ vi.mock("../src/lib/prisma.js", () => ({
       findFirst: vi.fn(),
     },
     codeSymbol: {
-      findFirst: vi.fn(),
       findMany: vi.fn(),
     },
     codeEdge: {
       findMany: vi.fn(),
+      // #740 — calledBy also counts unresolved (NULL toSymbolId) callees.
+      count: vi.fn(async () => 0),
     },
   },
 }));
 
 import { prisma } from "../src/lib/prisma.js";
-const mockPrisma = vi.mocked(prisma);
+const mockPrisma = vi.mocked(prisma, true);
 
 // ── Shared context ──────────────────────────────────────────────────────
 const baseContext: ToolContext = { projectId: "proj-123" };
@@ -88,7 +89,19 @@ describe("searchCodeGraphTool", () => {
 
   it("handles calledBy edge queries", async () => {
     mockPrisma.codeGraph.findFirst.mockResolvedValue({ id: "cg-1" } as never);
-    mockPrisma.codeSymbol.findFirst.mockResolvedValue({ id: "sym-caller" } as never);
+    mockPrisma.codeSymbol.findMany.mockResolvedValueOnce([
+      // #774 — the name lookup: an exact match on the bare name.
+      {
+        id: "sym-caller",
+        name: "main",
+        qualifiedName: "src/main.ts::main",
+        kind: "function",
+        filePath: "src/x.ts",
+        startLine: 1,
+        endLine: 2,
+        language: "typescript",
+      },
+    ] as never);
     mockPrisma.codeEdge.findMany.mockResolvedValue([{ toSymbolId: "sym-callee" }] as never);
     mockPrisma.codeSymbol.findMany.mockResolvedValue([
       {
@@ -107,7 +120,8 @@ describe("searchCodeGraphTool", () => {
 
   it("returns message when calledBy symbol not found", async () => {
     mockPrisma.codeGraph.findFirst.mockResolvedValue({ id: "cg-1" } as never);
-    mockPrisma.codeSymbol.findFirst.mockResolvedValue(null);
+    // #774 — neither the exact nor the substring name lookup finds a symbol.
+    mockPrisma.codeSymbol.findMany.mockResolvedValue([] as never);
 
     const result = await searchCodeGraphTool.execute({ calledBy: "nonexistent" }, baseContext);
     expect(result.content).toContain('No symbol matching "nonexistent"');
@@ -115,7 +129,19 @@ describe("searchCodeGraphTool", () => {
 
   it("handles calls edge queries", async () => {
     mockPrisma.codeGraph.findFirst.mockResolvedValue({ id: "cg-1" } as never);
-    mockPrisma.codeSymbol.findFirst.mockResolvedValue({ id: "sym-callee" } as never);
+    mockPrisma.codeSymbol.findMany.mockResolvedValueOnce([
+      // #774 — the name lookup: an exact match on the bare name.
+      {
+        id: "sym-callee",
+        name: "query",
+        qualifiedName: "Database.query",
+        kind: "function",
+        filePath: "src/x.ts",
+        startLine: 1,
+        endLine: 2,
+        language: "typescript",
+      },
+    ] as never);
     mockPrisma.codeEdge.findMany.mockResolvedValue([{ fromSymbolId: "sym-caller" }] as never);
     mockPrisma.codeSymbol.findMany.mockResolvedValue([
       {
@@ -184,6 +210,30 @@ describe("readFileSliceTool", () => {
     expect(result.content).toContain("lines 50-60");
     expect(result.content).toContain("50| line 50");
     expect(result.content).toContain("60| line 60");
+  });
+
+  /**
+   * #726 — a read that returns exactly the range the agent asked for is NOT
+   * truncated, even though the file continues past it. Flagging it appended
+   * "[Results truncated]" to every symbol-sized read, and the agent reported a
+   * fully-read 20-line Go validator as "truncated after its header".
+   */
+  it("does not flag an explicit in-file range as truncated", async () => {
+    const result = await readFileSliceTool.execute(
+      { filePath: "example.ts", startLine: 14, endLine: 56 },
+      context,
+    );
+    expect(result.content).toContain("example.ts (lines 14-56 of 300)");
+    expect(result.truncated).toBe(false);
+  });
+
+  it("does not flag a range that runs past the end of the file as truncated", async () => {
+    const result = await readFileSliceTool.execute(
+      { filePath: "example.ts", startLine: 250, endLine: 400 },
+      context,
+    );
+    expect(result.content).toContain("lines 250-300 of 300");
+    expect(result.truncated).toBe(false);
   });
 
   it("enforces max 200 lines per call", async () => {
@@ -366,6 +416,52 @@ describe("searchKnowledgeTool", () => {
     expect(mockKnowledge.search).toHaveBeenCalledWith("proj-123", "authentication requirements", {
       k: 5,
     });
+  });
+
+  // #717 — the analysis agents' tool names a repository file by its real path
+  // and prints the rank score, never the 0.000 cosine of a keyword-only hit.
+  it("prints a repo hit's real path and rank score, not the raw key or 0.000", async () => {
+    mockKnowledge.search.mockResolvedValue({
+      hits: [
+        {
+          documentId: "doc-repo",
+          filename: "connector:repo:c1:src/internal/model/feed.go",
+          path: "internal/model/feed.go",
+          source: "repo",
+          position: 4,
+          text: "type Feed struct {}",
+          score: 0,
+          rankScore: 0.0164,
+          matchedBy: ["lexical"],
+        },
+      ],
+      mode: "hybrid",
+    });
+    const result = await tool.execute({ query: "Feed struct" }, baseContext);
+    expect(result.content).toContain("internal/model/feed.go#chunk4 documentId=doc-repo chunk=4");
+    expect(result.content).not.toContain("connector:repo:");
+    expect(result.content).not.toContain("0.000");
+    expect(result.content).toContain("score=0.016, keyword match");
+  });
+
+  it("keeps the stored name of a non-repo hit with a repo-shaped name (#547)", async () => {
+    mockKnowledge.search.mockResolvedValue({
+      hits: [
+        {
+          documentId: "doc-up",
+          filename: "connector:repo:c1:src/internal/model/feed.go",
+          source: "upload",
+          position: 0,
+          text: "spoof",
+          score: 0.8,
+          rankScore: 0.8,
+          matchedBy: ["dense"],
+        },
+      ],
+      mode: "hybrid",
+    });
+    const result = await tool.execute({ query: "Feed" }, baseContext);
+    expect(result.content).toContain("connector:repo:c1:src/internal/model/feed.go#chunk0");
   });
 
   it("respects custom k parameter", async () => {

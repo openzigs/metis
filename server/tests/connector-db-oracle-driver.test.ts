@@ -11,6 +11,19 @@ import {
 } from "../src/lib/connectors/db/drivers/oracle.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
 
+/**
+ * `execute<T>` lets the caller name the row type, as oracledb does; a canned
+ * fake can only return the rows it was given, so the generic is asserted here.
+ */
+function fakeExecute(
+  impl: (
+    sql: string,
+    params?: unknown[],
+  ) => Promise<{ rows?: Record<string, unknown>[]; metaData?: { name: string }[] }>,
+): OracleConnectionLike["execute"] {
+  return vi.fn(impl) as OracleConnectionLike["execute"];
+}
+
 function makeConn(opts: {
   queries: string[];
   rows?: Record<string, unknown>[];
@@ -18,7 +31,7 @@ function makeConn(opts: {
   fail?: Error;
 }): OracleConnectionLike {
   return {
-    execute: vi.fn(async (sql: string) => {
+    execute: fakeExecute(async (sql: string) => {
       opts.queries.push(sql);
       if (opts.fail) throw opts.fail;
       return { rows: opts.rows ?? [], metaData: opts.meta ?? [] };
@@ -44,6 +57,7 @@ describe("OracleDriverAdapter", () => {
 
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -64,6 +78,7 @@ describe("OracleDriverAdapter", () => {
 
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -92,6 +107,7 @@ describe("OracleDriverAdapter", () => {
 
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -119,6 +135,7 @@ describe("OracleDriverAdapter", () => {
 
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -138,6 +155,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => pool);
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -158,7 +176,7 @@ describe("OracleDriverAdapter", () => {
   it("introspect() returns grouped tables (USER variant)", async () => {
     const queries: string[] = [];
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async (sql: string) => {
+      execute: fakeExecute(async (sql: string) => {
         queries.push(sql);
         return {
           rows: [
@@ -183,6 +201,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -209,6 +228,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -247,7 +267,7 @@ describe("OracleDriverAdapter", () => {
     const queries: string[] = [];
     let capturedParams: unknown[] | undefined;
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async (sql: string, params?: unknown[]) => {
+      execute: fakeExecute(async (sql: string, params?: unknown[]) => {
         queries.push(sql);
         capturedParams = params;
         return {
@@ -263,6 +283,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -296,6 +317,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -313,7 +335,7 @@ describe("OracleDriverAdapter", () => {
     const queries: string[] = [];
     let capturedParams: unknown[] | undefined;
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async (sql: string, params?: unknown[]) => {
+      execute: fakeExecute(async (sql: string, params?: unknown[]) => {
         queries.push(sql);
         capturedParams = params;
         return {
@@ -329,6 +351,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -358,6 +381,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -378,7 +402,7 @@ describe("OracleDriverAdapter", () => {
     const queries: string[] = [];
     let capturedParams: unknown[] | undefined;
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async (sql: string, params?: unknown[]) => {
+      execute: fakeExecute(async (sql: string, params?: unknown[]) => {
         queries.push(sql);
         capturedParams = params;
         return {
@@ -400,6 +424,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -439,6 +464,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -455,7 +481,7 @@ describe("OracleDriverAdapter", () => {
   it("introspectDependencies({allowDba: true}) tries DBA_DEPENDENCIES first, owner-bound (#890)", async () => {
     const queries: string[] = [];
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async (sql: string) => {
+      execute: fakeExecute(async (sql: string) => {
         queries.push(sql);
         return {
           rows: [
@@ -476,6 +502,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -493,7 +520,7 @@ describe("OracleDriverAdapter", () => {
     const queries: string[] = [];
     let calls = 0;
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async (sql: string) => {
+      execute: fakeExecute(async (sql: string) => {
         queries.push(sql);
         calls += 1;
         if (calls === 1) {
@@ -518,6 +545,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -539,6 +567,7 @@ describe("OracleDriverAdapter", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -717,6 +746,7 @@ describe("OracleDriverAdapter — coverage uplift", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -733,6 +763,7 @@ describe("OracleDriverAdapter — coverage uplift", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -758,6 +789,7 @@ describe("OracleDriverAdapter — coverage uplift", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -777,6 +809,7 @@ describe("OracleDriverAdapter — coverage uplift", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -840,7 +873,7 @@ describe("OracleDriverAdapter — introspectPackages (#891)", () => {
     const paramsByCall: unknown[][] = [];
     let call = 0;
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async (sql: string, params?: unknown[]) => {
+      execute: fakeExecute(async (sql: string, params?: unknown[]) => {
         queries.push(sql);
         paramsByCall.push(params ?? []);
         call += 1;
@@ -869,6 +902,7 @@ describe("OracleDriverAdapter — introspectPackages (#891)", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -919,6 +953,7 @@ describe("OracleDriverAdapter — introspectPackages (#891)", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -941,7 +976,7 @@ describe("OracleDriverAdapter — fetchPackageBody (#891)", () => {
     const queries: string[] = [];
     let capturedParams: unknown[] | undefined;
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async (sql: string, params?: unknown[]) => {
+      execute: fakeExecute(async (sql: string, params?: unknown[]) => {
         queries.push(sql);
         capturedParams = params;
         return {
@@ -958,6 +993,7 @@ describe("OracleDriverAdapter — fetchPackageBody (#891)", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -983,7 +1019,7 @@ describe("OracleDriverAdapter — fetchPackageBody (#891)", () => {
     const queries: string[] = [];
     let capturedParams: unknown[] | undefined;
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async (sql: string, params?: unknown[]) => {
+      execute: fakeExecute(async (sql: string, params?: unknown[]) => {
         queries.push(sql);
         capturedParams = params;
         return { rows: [{ TEXT: "PACKAGE BODY pkg AS END pkg;" }], metaData: [] };
@@ -993,6 +1029,7 @@ describe("OracleDriverAdapter — fetchPackageBody (#891)", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -1012,6 +1049,7 @@ describe("OracleDriverAdapter — fetchPackageBody (#891)", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -1025,7 +1063,7 @@ describe("OracleDriverAdapter — fetchPackageBody (#891)", () => {
 
   it("gracefully skips (returns null, never throws) when the body is wrapped/obfuscated", async () => {
     const conn: OracleConnectionLike = {
-      execute: vi.fn(async () => ({
+      execute: fakeExecute(async () => ({
         rows: [
           { TEXT: 'PACKAGE BODY "APP"."PKG_SECRET" wrapped\n' },
           { TEXT: "a000000\n" },
@@ -1038,6 +1076,7 @@ describe("OracleDriverAdapter — fetchPackageBody (#891)", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -1058,6 +1097,7 @@ describe("OracleDriverAdapter — standalone routine regression (#891)", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",
@@ -1076,6 +1116,7 @@ describe("OracleDriverAdapter — standalone routine regression (#891)", () => {
     __setOraclePoolFactory(async () => makePool(conn));
     const adapter = new OracleDriverAdapter();
     await adapter.init({
+      driver: "oracle",
       host: "x",
       port: 1521,
       database: "ORCL",

@@ -383,6 +383,14 @@ export class TaskQueue {
     } catch (err) {
       clearTimeout(timeoutHandle);
       const message = err instanceof Error ? err.message : String(err);
+      // #867 — the handler reports that the user cancelled its work through
+      // another route (a generated document's own cancel): terminal, as a
+      // queue cancel is. Retrying would restart what the user stopped.
+      if (err instanceof TaskAbortError && err.source === "user") {
+        const cancelled = await this.store.markCancelled(running.id, message, new Date());
+        this.emitStatus(cancelled);
+        return;
+      }
       // Shutdown interruptions remain durable; user cancellation stays terminal.
       if (
         (controller.signal.aborted && entry.abortSource !== "timeout") ||

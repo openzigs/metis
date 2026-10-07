@@ -10,6 +10,7 @@ const policy: EvidencePolicy = {
   projectId: "p1",
   generatedDocumentId: "gen1",
   actor: { userId: "alice", role: "developer" },
+  aclSubjects: [{ kind: "user", value: "alice" }],
   sharedDocumentIds: [],
   allowWebResearch: false,
 };

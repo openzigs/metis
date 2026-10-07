@@ -255,6 +255,26 @@ describe("stage grid", () => {
     }
   });
 
+  it("#867 — reads a generation that is being cancelled as still running, and keeps polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      listAnalyses.mockResolvedValue({ items: [COMPLETED] });
+      getAnalysis.mockResolvedValue({ requirements: [] } as never);
+      generatedDocs = [{ status: "cancelling" }];
+      renderOverview();
+      expect(await screen.findByTestId("pipeline-status-docs")).toHaveTextContent(
+        "Generating 1 document",
+      );
+      const docsReads = () =>
+        fetchMock.mock.calls.filter(([url]) => url === "/projects/p1/docs").length;
+      const before = docsReads();
+      await act(() => vi.advanceTimersByTimeAsync(16_000));
+      expect(docsReads()).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("links the code summary as 'Code Overview'", async () => {
     renderOverview();
     const link = await screen.findByTestId("pipeline-code-overview-link");

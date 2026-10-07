@@ -78,8 +78,34 @@ const documents = new Map<
 let id = 0;
 const nid = (p: string) => `${p}_${++id}`;
 
+const requirementVersions: Array<{
+  requirementId: string;
+  version: number;
+  changedFields: string;
+}> = [];
+
 vi.mock("../src/lib/prisma.js", () => ({
+  // #779 — `persistRequirements` locks by provider on Postgres only; this
+  // fake has no raw SQL, so it pins the SQLite path on either generated client.
+  resolveDatabaseProvider: () => "sqlite" as const,
   prisma: {
+    // #865 — `updateRequirementRow` writes through the versioned service, which
+    // runs in an interactive transaction; this fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../src/lib/prisma.js")).prisma),
+    ),
+    requirementVersion: {
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: { requirementId: string; version: number; changedFields: string };
+        }) => {
+          requirementVersions.push(data);
+          return data;
+        },
+      ),
+    },
     analysis: {
       create: vi.fn(async ({ data }: { data: Partial<AnalysisRow> }) => {
         const row: AnalysisRow = {
@@ -198,8 +224,50 @@ vi.mock("../src/lib/prisma.js", () => ({
         }
         return out;
       }),
+      // #338 — the Deep Dive → Issue lookup. Honours the
+      // `Finding → AgentResult → Analysis → Project` scoping join and returns
+      // the `include` shape `loadFindingForDeepDive` asks for.
+      findFirst: vi.fn(
+        async ({
+          where,
+          include,
+        }: {
+          where: {
+            id: string;
+            agentResult: {
+              analysis: { id: string; deletedAt: null; project: { id: string } };
+            };
+          };
+          include: { agentResult: { select: { agentKey?: boolean; output?: boolean } } };
+        }) => {
+          // Like Prisma, only the selected AgentResult columns come back.
+          const sel = include.agentResult.select;
+          for (const ar of agentResults.values()) {
+            const f = ar.findings.find((x) => x.id === where.id);
+            if (!f) continue;
+            const an = analyses.get(ar.analysisId);
+            const scope = where.agentResult.analysis;
+            if (!an || an.deletedAt || an.id !== scope.id || an.projectId !== scope.project.id) {
+              return null;
+            }
+            return {
+              ...f,
+              agentResult: {
+                ...(sel.agentKey ? { agentKey: ar.agentKey } : {}),
+                ...(sel.output ? { output: ar.output } : {}),
+                analysis: { project: { name: "Acme" } },
+              },
+            };
+          }
+          return null;
+        },
+      ),
     },
     requirement: {
+      // Issue #769 — this fake models no review work and no prior set, so the
+      // replacement guard proceeds; the guard itself is exercised against a real
+      // SQLite database in tests/requirement-set-preservation-769.sqlite.test.ts.
+      count: vi.fn(async () => 0),
       deleteMany: vi.fn(async ({ where }: { where: { analysisId: string } }) => {
         for (const [k, v] of requirements) {
           if (v.analysisId === where.analysisId) requirements.delete(k);
@@ -233,12 +301,36 @@ vi.mock("../src/lib/prisma.js", () => ({
           return r;
         },
       ),
+      findUnique: vi.fn(
+        async ({ where }: { where: { id: string; analysisId?: string; deletedAt: null } }) => {
+          const r = requirements.get(where.id);
+          if (!r || r.deletedAt) return null;
+          if (where.analysisId !== undefined && r.analysisId !== where.analysisId) return null;
+          return r;
+        },
+      ),
       update: vi.fn(
         async ({ where, data }: { where: { id: string }; data: Partial<RequirementRow> }) => {
           const r = requirements.get(where.id);
           if (!r) throw new Error("not found");
           Object.assign(r, data);
           return r;
+        },
+      ),
+      // #871 — the versioned write is conditional on the version it read.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; version?: number };
+          data: Partial<RequirementRow>;
+        }) => {
+          const r = requirements.get(where.id);
+          if (!r || r.deletedAt) return { count: 0 };
+          if (where.version !== undefined && r.version !== where.version) return { count: 0 };
+          Object.assign(r, data);
+          return { count: 1 };
         },
       ),
     },
@@ -281,6 +373,7 @@ import {
   getAnalysisSnapshot,
   getStructuredRequirements,
   listAnalysesForProject,
+  loadFindingForDeepDive,
   markAnalysisCancelled,
   markAnalysisCompleted,
   markAnalysisFailed,
@@ -390,6 +483,173 @@ describe("persistAgentResult + readFlattenedFindings", () => {
   });
 });
 
+describe("loadFindingForDeepDive — agent attribution (#338)", () => {
+  const FINDING = {
+    category: "security" as const,
+    severity: "high" as const,
+    title: "Unauthenticated admin route",
+    body: "The /admin route has no auth guard.",
+    tags: [],
+    citations: [],
+  };
+  const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+  async function seedAnalysis() {
+    return createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["code"],
+    });
+  }
+
+  it.each([
+    ["custom", "custom:c1", "Threat Modeller"],
+    ["library", "library:owasp-auditor", "OWASP Auditor"],
+  ] as const)(
+    "attributes a %s agent-phase finding to its agent, not the code specialist",
+    async (kind, ref, name) => {
+      const a = await seedAnalysis();
+      const ar = await persistAgentResult({
+        analysisId: a.id,
+        agentKey: ref,
+        status: "completed",
+        output: { summary: "s", findings: [FINDING], notes: [], source: { kind, ref, name } },
+        startedAt: new Date(),
+        completedAt: new Date(),
+        usage,
+      });
+
+      const loaded = await loadFindingForDeepDive({
+        projectId: "proj-abcdefghij",
+        analysisId: a.id,
+        findingId: ar.findingIds[0],
+      });
+
+      expect(loaded?.agentSource).toEqual({ kind, ref, name });
+    },
+  );
+
+  it("falls back to the ref when the persisted blob carries no agent name", async () => {
+    const a = await seedAnalysis();
+    const ar = await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "custom:c2",
+      status: "completed",
+      output: {
+        summary: "s",
+        findings: [FINDING],
+        notes: [],
+        source: { kind: "custom", ref: "custom:c2", name: "   " },
+      },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage,
+    });
+    const loaded = await loadFindingForDeepDive({
+      projectId: "proj-abcdefghij",
+      analysisId: a.id,
+      findingId: ar.findingIds[0],
+    });
+    expect(loaded?.agentSource).toEqual({ kind: "custom", ref: "custom:c2", name: "custom:c2" });
+  });
+
+  it("keeps a specialist finding's agent key and gives it no agent source", async () => {
+    const a = await seedAnalysis();
+    const ar = await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "database",
+      status: "completed",
+      output: { agentKey: "database", summary: "s", findings: [FINDING], notes: [] },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage,
+    });
+    const loaded = await loadFindingForDeepDive({
+      projectId: "proj-abcdefghij",
+      analysisId: a.id,
+      findingId: ar.findingIds[0],
+    });
+    expect(loaded).toMatchObject({ agentKey: "database", agentSource: null, projectName: "Acme" });
+  });
+
+  // #717 — the deep-dive names a repo citation by its real path, so each
+  // document citation must carry its row's source, read in THIS project only.
+  it("attaches each cited document's source, scoped to the finding's project", async () => {
+    documents.set("doc-repo-000001", {
+      id: "doc-repo-000001",
+      filename: "connector:repo:conn1:src/internal/database/migrations.go",
+      source: "repo",
+      projectId: "proj-abcdefghij",
+    });
+    documents.set("doc-foreign-0001", {
+      id: "doc-foreign-0001",
+      filename: "connector:repo:conn9:src/x.go",
+      source: "repo",
+      projectId: "proj-otherproject",
+    });
+    const a = await seedAnalysis();
+    const ar = await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "code",
+      status: "completed",
+      output: {
+        agentKey: "code",
+        summary: "s",
+        findings: [
+          {
+            ...FINDING,
+            citations: [
+              {
+                documentId: "doc-repo-000001",
+                chunkIndex: 0,
+                filename: "connector:repo:conn1:src/internal/database/migrations.go",
+              },
+              {
+                documentId: "doc-foreign-0001",
+                chunkIndex: 1,
+                filename: "connector:repo:conn9:src/x.go",
+              },
+            ],
+          },
+        ],
+        notes: [],
+      },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage,
+    });
+    const loaded = await loadFindingForDeepDive({
+      projectId: "proj-abcdefghij",
+      analysisId: a.id,
+      findingId: ar.findingIds[0],
+    });
+    expect(loaded?.citations).toEqual([
+      expect.objectContaining({ documentId: "doc-repo-000001", source: "repo" }),
+      expect.not.objectContaining({ source: expect.anything() }),
+    ]);
+  });
+
+  it("returns null for a finding addressed through another project", async () => {
+    const a = await seedAnalysis();
+    const ar = await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "database",
+      status: "completed",
+      output: { agentKey: "database", summary: "s", findings: [FINDING], notes: [] },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage,
+    });
+    expect(
+      await loadFindingForDeepDive({
+        projectId: "proj-otherproject",
+        analysisId: a.id,
+        findingId: ar.findingIds[0],
+      }),
+    ).toBeNull();
+  });
+});
+
 describe("persistRequirements", () => {
   it("links requirements to findings via labels", async () => {
     const a = await createAnalysis({
@@ -434,6 +694,7 @@ describe("persistRequirements", () => {
             priority: "high",
             labels: ["x"],
             evidenceFindingIndexes: [0],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -570,6 +831,7 @@ describe("updateRequirementRow", () => {
             priority: "medium",
             labels: ["auth"],
             evidenceFindingIndexes: [0],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -581,10 +843,14 @@ describe("updateRequirementRow", () => {
       patch: { labels: ["security"], reviewStatus: "approved" },
     });
     expect(updated).not.toBeNull();
-    const labels = JSON.parse(updated!.labels) as string[];
+    const row = requirements.get(ids[0])!;
+    const labels = JSON.parse(row.labels) as string[];
     expect(labels).toContain("security");
     // Review status now lives on the typed column, not in the labels blob.
-    expect((updated as unknown as { reviewStatus: string }).reviewStatus).toBe("approved");
+    expect(row.reviewStatus).toBe("approved");
+    // #865 — a versioned write: the version moves and a history row is appended.
+    expect(updated).toMatchObject({ id: ids[0], version: row.version, changed: true });
+    expect(requirementVersions.filter((v) => v.requirementId === ids[0])).toHaveLength(1);
     expect(labels.some((l) => l.startsWith("review:"))).toBe(false);
     expect(labels).toContain(`finding:${ar.findingIds[0]}`);
   });
@@ -622,6 +888,7 @@ describe("updateRequirementRow", () => {
             priority: "low",
             labels: [],
             evidenceFindingIndexes: [],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -797,6 +1064,7 @@ describe("getAnalysisSnapshot rendering", () => {
             priority: "high",
             labels: ["audit"],
             evidenceFindingIndexes: [0],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -859,6 +1127,7 @@ describe("getAnalysisSnapshot rendering", () => {
             priority: "low",
             labels: [],
             evidenceFindingIndexes: [0],
+            acceptanceCriteria: [],
           },
         ],
       },
@@ -939,6 +1208,7 @@ describe("getAnalysisSnapshot rendering", () => {
       priority: "low",
       labels: JSON.stringify([]),
       storyPoints: null,
+      version: 1,
       reviewStatus: "totally-bogus-status",
       createdAt: new Date(),
       deletedAt: null,
@@ -976,9 +1246,9 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
             id: "req-1",
             title: "Audit logging",
             description: "Retain audit logs",
-            type: "feature",
+            type: "functional",
             stakeholders: [],
-            priority: "high",
+            priority: "must-have",
             ambiguities: [],
             evidenceNeeds: [],
             rawSource: "raw",
@@ -1063,7 +1333,7 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
 
 // ── Issue #733 — capability record persistence + snapshot surfacing ──────────
 describe("persistAnalysisCapability + snapshot surfacing (#733)", () => {
-  const capabilityFixture = {
+  const capabilityFixture: Parameters<typeof persistAnalysisCapability>[1] = {
     codeAnalysisRequested: true,
     databaseAnalysisRequested: false,
     codeGraphPresent: false,
@@ -1073,7 +1343,7 @@ describe("persistAnalysisCapability + snapshot surfacing (#733)", () => {
     schemaContextEnabled: false,
     quarantineFallbackUsed: false,
     skippedRepos: [],
-    reasons: ["no-code-graph", "source-not-ingested"] as const,
+    reasons: ["no-code-graph", "source-not-ingested"],
   };
 
   it("merges the capability into metadata without clobbering existing keys", async () => {
@@ -1225,7 +1495,7 @@ describe("toResolvedEvidenceRef (#448) — pure mapper", () => {
       documentId: "doc-1234567890",
       chunkIndex: 1,
       filename: "spec.pdf",
-      // @ts-expect-error — snippet is on Citation but deliberately not read here.
+      // snippet is on Citation but deliberately not read here.
       snippet: "leaked-secret-snippet",
     });
     expect(JSON.stringify(ref)).not.toContain("leaked-secret-snippet");

@@ -425,7 +425,7 @@ describe("crossToSchema — additive-intent ADD COLUMN without a live schema (#9
     const account = rows.find((r) => r.tableName === "account")!;
     expect(account.changeKind).toBe("add-column");
     expect(account.suggestedDdl).toContain("ALTER TABLE account ADD COLUMN status BOOLEAN;");
-    expect(account.suggestedDdl.toUpperCase()).toContain("SUGGESTED");
+    expect(account.suggestedDdl!.toUpperCase()).toContain("SUGGESTED");
     // Suggestion confidence stays in the low/medium band.
     expect(account.confidence).toBeLessThanOrEqual(0.6);
   });
@@ -1168,6 +1168,70 @@ describe("crossToSchema — direct schema-symbol hits promote at HIGH confidence
     expect(account.confidence).toBe(DIRECT_SCHEMA_HIT_CONFIDENCE);
   });
 
+  it("#791 — a symbol reached only through a name-bound call contributes its writes, not its reads", async () => {
+    // handler -(inferred Go call)-> MarkAllAsRead -(resolved)-> helper.
+    // MarkAllAsRead writes entries and reads users; helper reads sessions.
+    const ds: SchemaImpactDataSource = {
+      async getSchemaEdgesFrom(ids) {
+        const edges = [
+          { fromSymbolId: "mark-all", toSymbolId: "t-entries", kind: "writes" as const },
+          { fromSymbolId: "mark-all", toSymbolId: "t-users", kind: "reads" as const },
+          { fromSymbolId: "helper", toSymbolId: "t-sessions", kind: "reads" as const },
+          { fromSymbolId: "handler", toSymbolId: "t-feeds", kind: "reads" as const },
+        ];
+        return edges.filter((e) => ids.includes(e.fromSymbolId));
+      },
+      async getSchemaSymbolsByIds(ids) {
+        return ["entries", "users", "sessions", "feeds"]
+          .map((t) => ({
+            id: `t-${t}`,
+            kind: "table" as const,
+            name: t,
+            qualifiedName: t,
+            source: "sqlglot" as const,
+          }))
+          .filter((s) => ids.includes(s.id));
+      },
+      getDownstreamCallEdgesFrom: async (ids) =>
+        [
+          { fromSymbolId: "handler", toSymbolId: "mark-all", inferred: true },
+          { fromSymbolId: "mark-all", toSymbolId: "helper" },
+        ].filter((e) => ids.includes(e.fromSymbolId)),
+    };
+    const rows = await crossToSchema(["handler"], ds);
+    // The seed's own read stays; the inferred path keeps only its write.
+    expect(rows.map((r) => r.tableName).sort()).toEqual(["entries", "feeds"]);
+  });
+
+  it("#791 — a symbol also reached over a resolved edge keeps its reads, whatever the row order", async () => {
+    const ds: SchemaImpactDataSource = {
+      async getSchemaEdgesFrom(ids) {
+        return [{ fromSymbolId: "store", toSymbolId: "t-users", kind: "reads" as const }].filter(
+          (e) => ids.includes(e.fromSymbolId),
+        );
+      },
+      async getSchemaSymbolsByIds(ids) {
+        return [
+          {
+            id: "t-users",
+            kind: "table" as const,
+            name: "users",
+            qualifiedName: "users",
+            source: "sqlglot" as const,
+          },
+        ].filter((s) => ids.includes(s.id));
+      },
+      // The name-bound edge comes first in row order.
+      getDownstreamCallEdgesFrom: async (ids) =>
+        [
+          { fromSymbolId: "handler", toSymbolId: "store", inferred: true },
+          { fromSymbolId: "service", toSymbolId: "store" },
+        ].filter((e) => ids.includes(e.fromSymbolId)),
+    };
+    const rows = await crossToSchema(["handler", "service"], ds);
+    expect(rows.map((r) => r.tableName)).toEqual(["users"]);
+  });
+
   it("applies the additive ADD COLUMN suggestion to a directly-hit table at high confidence", async () => {
     const ds = directHitDs([
       {
@@ -1288,7 +1352,8 @@ describe("crossToSchema — deep tangential fan-out is dampened (#942 FIX 2)", (
 describe("PrismaSchemaImpactDataSource — downstream call edges (#928)", () => {
   it("queries calls/executes edges out of the given symbols, project-scoped", async () => {
     const prisma = {
-      codeSymbol: { findMany: vi.fn() },
+      // #791 — no Go functions, so no name-bound Go calls are added.
+      codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
       codeEdge: {
         findMany: vi.fn().mockResolvedValue([{ fromSymbolId: "svc", toSymbolId: "mapper" }]),
       },

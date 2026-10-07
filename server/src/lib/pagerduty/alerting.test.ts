@@ -9,12 +9,20 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { PagerDutyAlerter } from "./alerting.js";
+import { PagerDutyAlerter, type AlerterClient } from "./alerting.js";
 
 function makeClient() {
   return {
-    trigger: vi.fn(async () => ({ dedupKey: "k", status: "success", message: null })),
-    resolve: vi.fn(async () => ({ dedupKey: "k", status: "success", message: null })),
+    trigger: vi.fn(async (_input: Parameters<AlerterClient["trigger"]>[0]) => ({
+      dedupKey: "k",
+      status: "success",
+      message: null,
+    })),
+    resolve: vi.fn(async (_input: Parameters<AlerterClient["resolve"]>[0]) => ({
+      dedupKey: "k",
+      status: "success",
+      message: null,
+    })),
   };
 }
 
@@ -44,7 +52,7 @@ describe("PagerDutyAlerter", () => {
 
     expect(configStore.resolveRoutingKey).toHaveBeenCalledWith("ws-1", "default");
     expect(client.trigger).toHaveBeenCalledTimes(1);
-    const arg = client.trigger.mock.calls[0][0];
+    const arg = client.trigger.mock.calls[0]![0];
     expect(arg.routingKey).toBe("RK");
     expect(arg.severity).toBe("critical");
     expect(arg.dedupKey).toBe("metis:publish-rollback:batch-9");
@@ -73,7 +81,7 @@ describe("PagerDutyAlerter", () => {
       reason: "decrypt failed: auth tag mismatch",
     });
 
-    const arg = client.trigger.mock.calls[0][0];
+    const arg = client.trigger.mock.calls[0]![0];
     expect(arg.dedupKey).toBe("metis:vault-rotation-failure:sec-7");
     expect(arg.severity).toBe("critical");
     expect(arg.customDetails).toMatchObject({ secretId: "sec-7", label: "teams-bot-password" });
@@ -94,7 +102,7 @@ describe("PagerDutyAlerter", () => {
       lastError: "transport_closed:exited",
     });
 
-    const arg = client.trigger.mock.calls[0][0];
+    const arg = client.trigger.mock.calls[0]![0];
     expect(arg.dedupKey).toBe("metis:provider-down:srv-3");
     expect(arg.severity).toBe("critical");
     expect(arg.customDetails).toMatchObject({ serverId: "srv-3", label: "filesystem-mcp" });
@@ -110,7 +118,7 @@ describe("PagerDutyAlerter", () => {
     await alerter.providerRecovered({ workspaceId: "ws-1", serverId: "srv-3" });
 
     expect(client.resolve).toHaveBeenCalledTimes(1);
-    const arg = client.resolve.mock.calls[0][0];
+    const arg = client.resolve.mock.calls[0]![0];
     expect(arg.routingKey).toBe("RK");
     expect(arg.dedupKey).toBe("metis:provider-down:srv-3");
     expect(client.trigger).not.toHaveBeenCalled();

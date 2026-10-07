@@ -200,8 +200,8 @@ export function pushSchema(databaseUrl: string, run: ExecRunner = execFileSync):
   );
 }
 
-/** Options {@link runChunkSweep} needs from its caller. */
-export interface ChunkSweepOptions {
+/** Options {@link runChunkSweep} needs; spread into every arm, so arm injectables too. */
+export interface ChunkSweepOptions extends Partial<Omit<ArmDeps, "storagePaths" | "docIds">> {
   corpusId?: string;
   /** The production embedder, constructed by the CLI so weights load once. */
   embedder: Embedder;

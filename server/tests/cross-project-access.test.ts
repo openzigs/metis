@@ -21,7 +21,7 @@ import {
 } from "../src/lib/cross-project/cross-project-access.js";
 import type { SchedulerActor } from "../src/lib/scheduler/project-access.js";
 
-const MEMBER: SchedulerActor = { id: "user-1", role: "member" };
+const MEMBER: SchedulerActor = { id: "user-1", role: "developer" };
 const ADMIN: SchedulerActor = { id: "admin-1", role: "admin" };
 
 /**

@@ -268,6 +268,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
         withTools.onToolRecord?.(rec);
       },
       callModel,
+      ...(input.outputContract ? { outputContract: input.outputContract } : {}),
     },
   );
   return {

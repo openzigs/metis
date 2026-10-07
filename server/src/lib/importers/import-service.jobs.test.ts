@@ -21,7 +21,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // hoisted (vi.mock), so the controllable importer lives on a module-level ref.
 const importerRef: {
   count: ReturnType<typeof vi.fn>;
-  fetchAll: () => AsyncGenerator<unknown>;
+  fetchAll: (
+    filter: unknown,
+    ctx?: { onProgress?: (i: { fetched: number }) => void },
+  ) => AsyncGenerator<unknown>;
   map: ReturnType<typeof vi.fn>;
 } = {
   count: vi.fn(),

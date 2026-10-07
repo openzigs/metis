@@ -282,7 +282,8 @@ export async function reconcileProjectSchemaIdentities(
 
   // 3. The project's schema-object symbols (tables + routines; columns excluded).
   const symbols = (await db.codeSymbol.findMany({
-    where: { projectId, kind: { in: [...SCHEMA_OBJECT_SYMBOL_KINDS] } },
+    // #791 — schema objects are `sql` symbols; a Go/TS `function` is code.
+    where: { projectId, kind: { in: [...SCHEMA_OBJECT_SYMBOL_KINDS] }, language: "sql" },
     select: { kind: true, qualifiedName: true },
   })) as { kind: string; qualifiedName: string }[];
 

@@ -19,7 +19,7 @@
  * below assert both halves — the format IS explained, and the submitted value
  * is NOT echoed.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 interface DraftRow {
   id: string;
@@ -327,7 +327,10 @@ describe("#1092 — a rejected request leaves no orphaned batch row", () => {
     // Archiving is a deliberate operator action; a failed run must not
     // silently rewrite its terminal state.
     const token = await login("coordinator");
-    const create = prisma.publishBatch.create as ReturnType<typeof vi.fn>;
+    // `prisma` is vi.mock'ed: this delegate is the in-memory mock, not the fluent client.
+    const create = prisma.publishBatch.create as unknown as Mock<
+      (args: { data: Record<string, unknown> }) => Promise<unknown>
+    >;
     const realCreate = create.getMockImplementation()!;
     create.mockImplementation(async (args: { data: Record<string, unknown> }) => {
       const row = (await realCreate(args)) as { id: string };

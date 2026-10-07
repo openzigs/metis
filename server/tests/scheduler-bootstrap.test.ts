@@ -136,19 +136,39 @@ describe("createSchedulerEmitter()", () => {
     const to = vi.fn(() => ({ emit }));
     const io = { to } as unknown as Parameters<typeof createSchedulerEmitter>[0];
     const e = createSchedulerEmitter(io);
-    e.schedulerStatus({ jobId: "j1", status: "registered" });
+    e.schedulerStatus({ jobId: "j1", key: "k1", status: "registered", enabled: true, ts: 0 });
     expect(to).toHaveBeenLastCalledWith("scheduler:status");
-    e.taskStatus({ taskId: "t1", status: "running", attempts: 1 });
+    e.taskStatus({
+      taskId: "t1",
+      type: "noop",
+      status: "running",
+      attempts: 1,
+      maxAttempts: 3,
+      ts: 0,
+    });
     expect(to).toHaveBeenCalledWith("task:t1");
-    e.taskProgress({ taskId: "t1", step: "go" });
+    e.taskProgress({ taskId: "t1", step: "go", ts: 0 });
     expect(to).toHaveBeenLastCalledWith("task:t1");
   });
 
   it("NOOP_SCHEDULER_EMITTER is a no-op", () => {
     expect(() => {
-      NOOP_SCHEDULER_EMITTER.schedulerStatus({ jobId: "j1", status: "registered" });
-      NOOP_SCHEDULER_EMITTER.taskStatus({ taskId: "t1", status: "pending", attempts: 0 });
-      NOOP_SCHEDULER_EMITTER.taskProgress({ taskId: "t1", step: "x" });
+      NOOP_SCHEDULER_EMITTER.schedulerStatus({
+        jobId: "j1",
+        key: "k1",
+        status: "registered",
+        enabled: true,
+        ts: 0,
+      });
+      NOOP_SCHEDULER_EMITTER.taskStatus({
+        taskId: "t1",
+        type: "noop",
+        status: "pending",
+        attempts: 0,
+        maxAttempts: 3,
+        ts: 0,
+      });
+      NOOP_SCHEDULER_EMITTER.taskProgress({ taskId: "t1", step: "x", ts: 0 });
     }).not.toThrow();
   });
 });
@@ -253,6 +273,45 @@ describe("bootstrapScheduler()", () => {
       status: "completed",
       result: { generatedDocumentId: "d1", status: "published", chunkCount: 3 },
     });
+    await boot.shutdown();
+  });
+
+  // #804 — the bug scanner is gone. Rows persisted before the upgrade are left
+  // untouched; whatever reaches the queue with that type fails safe.
+  it("#804 — a leftover scanner.run-scan task is refused, marked failed, and the queue keeps running", async () => {
+    const httpWebhookHandler = vi.fn(async () => ({ ok: true }));
+    const boot = bootstrapScheduler({ handlerOverrides: { httpWebhookHandler } });
+    expect(boot.registry.get("scanner.run-scan")).toBeUndefined();
+
+    const leftover = (await readTaskRecord(
+      makeRow({
+        type: "scanner.run-scan",
+        status: "failed",
+        payload: JSON.stringify({ scanId: "scan-1" }),
+        completedAt: new Date(),
+      }).id as string,
+    ))!;
+    await expect(boot.queue.retry(leftover.id, leftover)).rejects.toMatchObject({
+      code: "UNKNOWN_TASK_TYPE",
+    });
+    const retried = [...taskRows.values()].find((r) => r.trigger === "retry");
+    expect(retried).toMatchObject({
+      type: "scanner.run-scan",
+      status: "failed",
+      errorMessage: "unknown task type: scanner.run-scan",
+    });
+
+    // A pending leftover is never dispatched to a handler.
+    const pending = (await readTaskRecord(
+      makeRow({ type: "scanner.run-scan", status: "pending", payload: "{}" }).id as string,
+    ))!;
+    boot.queue.resume(pending);
+
+    const next = await boot.queue.enqueue({ type: "http-webhook", payload: {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(httpWebhookHandler).toHaveBeenCalledOnce();
+    expect((await readTaskRecord(next.id))?.status).toBe("completed");
+    expect(taskRows.get(pending.id)).toMatchObject({ status: "pending", attempts: 0 });
     await boot.shutdown();
   });
 

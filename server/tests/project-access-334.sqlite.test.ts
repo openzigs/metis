@@ -250,7 +250,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    beforeEach(() => auditSpy.mockClear());
+    beforeEach(() => {
+      auditSpy.mockClear();
+    });
 
     // ── GET /api/baselines/:baselineId ─────────────────────────────────────
     describe("GET /api/baselines/:baselineId", () => {

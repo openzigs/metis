@@ -119,3 +119,18 @@ describe("reviewGateApi (#619)", () => {
     });
   });
 });
+
+describe("publishingApi — #776 draft edit and draft PR", () => {
+  it("PATCHes a draft and POSTs a draft pull request under the project path", async () => {
+    await publishingApi.editDraft("p1", "d1", { title: "T" });
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/projects/p1/publishing/drafts/d1", {
+      method: "PATCH",
+      body: { title: "T" },
+    });
+    await publishingApi.draftPullRequest("p1", "d1", { dryRun: true });
+    expect(apiFetchMock).toHaveBeenLastCalledWith(
+      "/projects/p1/publishing/drafts/d1/pull-request",
+      { method: "POST", body: { dryRun: true } },
+    );
+  });
+});

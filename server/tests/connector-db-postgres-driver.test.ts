@@ -55,6 +55,7 @@ describe("PostgresDriverAdapter", () => {
 
     const adapter = new PostgresDriverAdapter();
     await adapter.init({
+      driver: "postgres",
       host: "db.example",
       port: 5432,
       database: "app",
@@ -79,6 +80,7 @@ describe("PostgresDriverAdapter", () => {
 
     const adapter = new PostgresDriverAdapter();
     await adapter.init({
+      driver: "postgres",
       host: "db.example",
       port: 5432,
       database: "app",
@@ -109,6 +111,7 @@ describe("PostgresDriverAdapter", () => {
 
     const adapter = new PostgresDriverAdapter();
     await adapter.init({
+      driver: "postgres",
       host: "x",
       port: 5432,
       database: "y",
@@ -129,6 +132,7 @@ describe("PostgresDriverAdapter", () => {
 
     const adapter = new PostgresDriverAdapter();
     await adapter.init({
+      driver: "postgres",
       host: "nope",
       port: 5432,
       database: "y",
@@ -148,6 +152,7 @@ describe("PostgresDriverAdapter", () => {
     __setPostgresPoolFactory(() => pool);
     const adapter = new PostgresDriverAdapter();
     await adapter.init({
+      driver: "postgres",
       host: "x",
       port: 5432,
       database: "y",
@@ -173,6 +178,7 @@ describe("PostgresDriverAdapter", () => {
     __setPostgresPoolFactory(factory);
     const adapter = new PostgresDriverAdapter();
     await adapter.init({
+      driver: "postgres",
       host: "x",
       port: 5432,
       database: "y",
@@ -181,6 +187,7 @@ describe("PostgresDriverAdapter", () => {
       statementTimeoutMs: 1000,
     });
     await adapter.init({
+      driver: "postgres",
       host: "x",
       port: 5432,
       database: "y",
@@ -222,6 +229,7 @@ describe("PostgresDriverAdapter", () => {
     __setPostgresPoolFactory(() => pool);
     const adapter = new PostgresDriverAdapter();
     await adapter.init({
+      driver: "postgres",
       host: "x",
       port: 5432,
       database: "y",

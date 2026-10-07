@@ -179,7 +179,9 @@ export function PlatformUsagePanel() {
                       : groupBy === "model"
                         ? (row.model.split(".").pop()?.slice(0, 10) ?? row.model)
                         : groupBy === "user"
-                          ? (row.userId ?? "").slice(0, 8)
+                          ? row.userId
+                            ? row.userId.slice(0, 8)
+                            : "unattributed"
                           : (row.projectId ?? "").slice(0, 8);
                   return (
                     <div key={i} className="flex flex-1 flex-col items-center gap-1">

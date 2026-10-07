@@ -2,6 +2,7 @@
  * Epic #272 / Sub-issue #292 — Log streamer + token-bucket unit tests.
  */
 import { describe, expect, it, vi } from "vitest";
+import type { Logger } from "winston";
 import {
   K8sLogStreamer,
   LOG_LINE_MAX_BYTES,
@@ -9,11 +10,11 @@ import {
   sanitiseLogLine,
 } from "../src/lib/mcp/provisioners/log-streamer.js";
 
+type LogCall = (message: string, meta?: unknown) => void;
 function makeLogger() {
-  return {
-    info: vi.fn(),
-    warn: vi.fn(),
-  } as { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> };
+  const logger = { info: vi.fn<LogCall>(), warn: vi.fn<LogCall>() };
+  // winston's LeveledLogMethod is overloaded and returns Logger; a recording stub cannot satisfy it structurally.
+  return logger as typeof logger & Pick<Logger, "info" | "warn">;
 }
 
 describe("TokenBucket", () => {

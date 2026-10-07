@@ -41,7 +41,10 @@ const { prismaMock } = vi.hoisted(() => ({
           ({
             workspaceId: "ws_a",
             workspace: { deletedAt: null, members: [{ id: "member-row" }] },
-          }) as { workspaceId: string | null } | null,
+          }) as {
+            workspaceId: string | null;
+            workspace?: { deletedAt: Date | null; members: { id: string }[] } | null;
+          } | null,
       ),
     },
     jiraConnection: {

@@ -1,0 +1,752 @@
+/**
+ * "Tested by" for requirements — Issue #814 (Epic #812).
+ *
+ * Resolves which TESTS cover a requirement from the code it is already mapped
+ * to (`RequirementCodeMapping`, and `RequirementSpecMapping` → `SpecCodeMapping`),
+ * with no model call and no new table. Three relations, strongest first:
+ *
+ * | relation    | rule                                                                    | base |
+ * |-------------|-------------------------------------------------------------------------|------|
+ * | `direct`    | a mapped target's file classifies as a test                             | 1.0  |
+ * | `exercises` | a test-file symbol has an incoming `calls`/`references` edge into a      | 0.8  |
+ * |             | target symbol (a file-only target = every symbol in that file, capped)  |      |
+ * | `naming`    | a test case in `siblingTestPaths(target)` is named for a target symbol  | 0.6  |
+ * |             | (prefix match, see {@link matchTestSubject}), or — file-only target —   |      |
+ * |             | shares a denoised requirement token                                     |      |
+ *
+ * `imports` edges are deliberately NOT followed: for a file-only target they
+ * would link every test that imports the package.
+ *
+ * Three guards keep a broad mapping from fanning out (#860):
+ *  - A file-only target that records a line range expands only to the symbols
+ *    overlapping that range, not the whole file. The range is applied before the
+ *    per-file cap, so a cited symbol deep in a large file is not capped away.
+ *  - A test-file mapping is `direct` only when it lands on a real test-file
+ *    symbol. The whole-file `module` symbol every parser emits does not count:
+ *    the seeder (#768) binds a licence-header citation to it, because it is the
+ *    only symbol enclosing lines 1-3, and writes the module's 1-EOF span.
+ *  - A **hub** target — any mapping, symbol or file, exercised from FOREIGN
+ *    test directories (not the target's own, see {@link ownTestDirs}) in at
+ *    least `TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS` (default 2) places, like a
+ *    config constructor other packages' tests call to set up — keeps a foreign
+ *    `exercises` test only when the test, or the symbol it calls, shares the
+ *    requirement TITLE's words (see {@link sharesRequirementWords}). A test in
+ *    the target's own directory is never filtered: it tests the target, where a
+ *    test elsewhere that calls it is almost always setup. So `Sanitize`, tested
+ *    from its own package, is not a hub, and Miniflux's `NewConfigOptions`,
+ *    called by `reader/sanitizer` and `reader/rewrite` tests, is. A flat test
+ *    layout (one `tests/` directory) is a single foreign directory and never
+ *    forms a hub at the default.
+ *
+ * Within a relation, tests are ordered by BM25 relevance of `name + qualifiedName`
+ * against `denoiseRequirementQuery(title + body)`, folded into `score`. Results
+ * are deduplicated by `(filePath, qualifiedName)`, keeping the strongest relation.
+ *
+ * Batched: the Prisma query count is constant in the number of requirements.
+ * Every query filters on `projectId`; file-path matching against sibling-test
+ * conventions is done in code on stored rows and passed to Prisma only as bound
+ * `in` values, never interpolated into SQL.
+ */
+import type {
+  RequirementTestGap,
+  RequirementTestGaps,
+  TestLinkRelation,
+  TraceabilityTestNode,
+} from "@metis/shared";
+import type { PrismaClient } from "@prisma/client";
+import { prisma as defaultPrisma } from "../prisma.js";
+import { AppError } from "../../middleware/error-handler.js";
+import { BM25Index, tokenizeCodeRoots } from "../code-graph/hybrid-search.js";
+import { classifyTestSymbol, siblingTestPaths } from "../code-graph/test-conventions.js";
+import { getConfigService } from "../config/config-service.js";
+import { denoiseRequirementQuery } from "./requirement-code-mapping.js";
+
+export type TestedByPrisma = Pick<
+  PrismaClient,
+  | "analysis"
+  | "requirement"
+  | "requirementCodeMapping"
+  | "requirementSpecMapping"
+  | "specCodeMapping"
+  | "codeSymbol"
+  | "codeEdge"
+>;
+
+export interface TestedByDeps {
+  prisma?: TestedByPrisma;
+  /** Overrides `TESTED_BY_MAX_SYMBOLS_PER_FILE`. */
+  maxSymbolsPerFile?: number;
+  /** Overrides `TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS`. */
+  hubMinForeignTestDirs?: number;
+}
+
+/** Default cap on the symbols a file-only target expands to. */
+export const DEFAULT_TESTED_BY_MAX_SYMBOLS_PER_FILE = 500;
+/**
+ * Default number of distinct exercising test directories, other than the
+ * target's own, that makes a target a hub (#860). Measured on Miniflux 2.3.3:
+ * `NewConfigOptions` has 2 (a hub), `NewConfigParser` 10, `SanitizeHTML` 0.
+ */
+export const DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS = 2;
+export const DEFAULT_TESTED_BY_LIMIT = 10;
+
+const BASE_SCORE: Record<TestLinkRelation, number> = { direct: 1, exercises: 0.8, naming: 0.6 };
+const RELATION_RANK: Record<TestLinkRelation, number> = { direct: 0, exercises: 1, naming: 2 };
+/** Name tokens that mark a test rather than say what it tests. */
+const TEST_NAME_TOKENS = new Set(["test", "tests", "benchmark", "fuzz", "example", "spec"]);
+/** Shortest folded symbol name a test-name prefix may match (`Val` must not win). */
+const MIN_SUBJECT_LENGTH = 3;
+
+function pickPrisma(deps?: TestedByDeps): TestedByPrisma {
+  return deps?.prisma ?? (defaultPrisma as unknown as TestedByPrisma);
+}
+
+function maxSymbolsPerFile(deps?: TestedByDeps): number {
+  return (
+    deps?.maxSymbolsPerFile ??
+    getConfigService().getNumber(
+      "TESTED_BY_MAX_SYMBOLS_PER_FILE",
+      DEFAULT_TESTED_BY_MAX_SYMBOLS_PER_FILE,
+    )
+  );
+}
+
+function hubMinForeignTestDirs(deps?: TestedByDeps): number {
+  return (
+    deps?.hubMinForeignTestDirs ??
+    getConfigService().getNumber(
+      "TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS",
+      DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS,
+    )
+  );
+}
+
+/** A requirement's mapped code location (direct or via a spec). */
+export interface TestedByTarget {
+  codeSymbolId: string | null;
+  filePath: string;
+  startLine: number | null;
+  /** End of the mapped range; absent or null means the range is `startLine` alone. */
+  endLine?: number | null;
+}
+
+/** The requirement fields resolution reads. */
+export interface TestedByRequirement {
+  id: string;
+  title: string;
+  body?: string | null;
+}
+
+interface SymbolRow {
+  id: string;
+  name: string;
+  qualifiedName: string;
+  filePath: string;
+  kind: string;
+  language: string | null;
+  startLine: number;
+  endLine: number;
+}
+
+const SYMBOL_SELECT = {
+  id: true,
+  name: true,
+  qualifiedName: true,
+  filePath: true,
+  kind: true,
+  language: true,
+  startLine: true,
+  endLine: true,
+} as const;
+
+const fold = (s: string): string => s.replace(/[_\-.]/g, "").toLowerCase();
+const isSeparator = (ch: string): boolean => ch === "_" || ch === "-" || ch === ".";
+
+/**
+ * True when, in `original`, the position just after its first `foldedLength`
+ * non-separator characters is a word boundary: the end, a separator, an
+ * upper-case letter or a digit (`ValidatePassword|RejectsEmpty`, `validate_password|_x`).
+ */
+function boundaryAfter(original: string, foldedLength: number): boolean {
+  let seen = 0;
+  let i = 0;
+  for (; i < original.length && seen < foldedLength; i++) {
+    if (!isSeparator(original[i])) seen++;
+  }
+  if (i >= original.length) return true;
+  const ch = original[i];
+  return isSeparator(ch) || /[A-Z0-9]/.test(ch);
+}
+
+/** The keys a symbol can be matched by: its name, and its `Type.method` tail. */
+function symbolKeys(sym: Pick<SymbolRow, "name" | "qualifiedName">): string[] {
+  const tail = sym.qualifiedName.slice(sym.qualifiedName.lastIndexOf("::") + 2);
+  return tail && tail !== sym.name ? [sym.name, tail] : [sym.name];
+}
+
+/**
+ * Pick the target symbol a test is named for: the LONGEST symbol key whose folded
+ * form is a prefix of the test's folded subject, ending on a word boundary and at
+ * least {@link MIN_SUBJECT_LENGTH} long. So `TestValidatePasswordRejectsEmpty`
+ * matches `ValidatePassword` over `Validate`, `TestUser_Validate` matches
+ * `User.Validate` over the type `User`, and `Val` never matches.
+ *
+ * The subject starts where the classifier's `subjectHint` starts in the test
+ * name, so a Go `_`-suffix the classifier drops (`User_Validate`) is kept.
+ */
+export function matchTestSubject<T extends Pick<SymbolRow, "name" | "qualifiedName">>(
+  testName: string,
+  subjectHint: string | null,
+  candidates: readonly T[],
+): T | null {
+  if (!subjectHint) return null;
+  const at = testName.indexOf(subjectHint);
+  const subject = at >= 0 ? testName.slice(at) : subjectHint;
+  const folded = fold(subject);
+  let best: T | null = null;
+  let bestLength = 0;
+  for (const candidate of candidates) {
+    for (const key of symbolKeys(candidate)) {
+      const k = fold(key);
+      if (k.length < MIN_SUBJECT_LENGTH || k.length <= bestLength) continue;
+      if (folded.startsWith(k) && boundaryAfter(subject, k.length)) {
+        best = candidate;
+        bestLength = k.length;
+      }
+    }
+  }
+  return best;
+}
+
+function nameTokens(name: string): string[] {
+  return tokenizeCodeRoots(name).filter((t) => !TEST_NAME_TOKENS.has(t));
+}
+
+/**
+ * The words of an identifier or sentence, split at every case, digit and
+ * underscore boundary (`OAuth2UserCreation`, `OAUTH2_USER_CREATION` and
+ * "oauth2 user creation" all give `oauth2 user creation`). Used only by the hub
+ * relevance check (#860), which compares requirement words against names;
+ * `tokenizeCodeRoots` keeps `snake_case` whole and so cannot.
+ */
+function words(text: string): Set<string> {
+  const split = text
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/);
+  return new Set(split.filter((w) => w.length >= MIN_SUBJECT_LENGTH && !TEST_NAME_TOKENS.has(w)));
+}
+
+/**
+ * True when `name` shares enough of the requirement title's words to count as a
+ * hub link: one word for a title of one or two words ("Password length" keeps
+ * `TestValidatePassword`), two for a longer title, so one common word such as
+ * `config` cannot carry a link through a hub.
+ */
+function sharesRequirementWords(name: string, requirementWords: ReadonlySet<string>): boolean {
+  if (requirementWords.size === 0) return false;
+  const needed = requirementWords.size <= 2 ? 1 : 2;
+  let shared = 0;
+  for (const w of words(name)) if (requirementWords.has(w) && ++shared >= needed) return true;
+  return false;
+}
+
+/** True when `sym` overlaps the target's recorded line range (always, with no range). */
+function inTargetRange(sym: Pick<SymbolRow, "startLine" | "endLine">, t: TestedByTarget): boolean {
+  if (t.startLine == null) return true;
+  const end = t.endLine ?? t.startLine;
+  return sym.startLine <= end && sym.endLine >= t.startLine;
+}
+
+interface Candidate {
+  node: TraceabilityTestNode;
+  key: string;
+  qualifiedName: string;
+}
+
+function basename(filePath: string): string {
+  const p = filePath.replace(/\\/g, "/");
+  return p.slice(p.lastIndexOf("/") + 1);
+}
+
+function dirname(filePath: string): string {
+  const p = filePath.replace(/\\/g, "/");
+  return p.slice(0, Math.max(0, p.lastIndexOf("/")));
+}
+
+/**
+ * The directories a target's OWN tests live in (#860): its file's directory and
+ * those of its conventional sibling test paths (`__tests__/`, `tests/`,
+ * `src/test/`). A test anywhere else that calls the target is foreign.
+ */
+function ownTestDirs(filePath: string, language: string | null | undefined): Set<string> {
+  const dirs = new Set([dirname(filePath)]);
+  for (const p of siblingTestPaths(filePath, language)) dirs.add(dirname(p));
+  return dirs;
+}
+
+/** The whole-file symbol every parser emits; never evidence of a cited test (#860). */
+const isModule = (s: Pick<SymbolRow, "kind">): boolean => s.kind === "module";
+
+function testNodeFromSymbol(
+  sym: SymbolRow,
+  relation: TestLinkRelation,
+  subject: TraceabilityTestNode["subject"],
+): TraceabilityTestNode {
+  return {
+    codeSymbolId: sym.id,
+    filePath: sym.filePath,
+    symbol: sym.qualifiedName,
+    name: sym.name,
+    startLine: sym.startLine,
+    convention: classifyTestSymbol(sym).convention,
+    relation,
+    subject,
+    score: BASE_SCORE[relation],
+  };
+}
+
+/** Code graph rows loaded once for a whole batch of requirements. */
+interface GraphRows {
+  symbolById: Map<string, SymbolRow>;
+  /** Every symbol of a file-only or ranged-test-file target's file, uncapped. */
+  symbolsByFile: Map<string, SymbolRow[]>;
+  /** `TESTED_BY_MAX_SYMBOLS_PER_FILE`, applied per target by {@link fileTargetSymbols}. */
+  perFileCap: number;
+  edgesInto: Map<string, SymbolRow[]>;
+  siblingSymbolsByFile: Map<string, SymbolRow[]>;
+}
+
+function pushTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
+}
+
+/**
+ * A file-only target's symbols: those overlapping its range, THEN capped (#860).
+ * Range first, so a cited symbol beyond the first `perFileCap` of a large file
+ * is not lost to the cap.
+ */
+function fileTargetSymbols(t: TestedByTarget, graph: GraphRows): SymbolRow[] {
+  const inRange = (graph.symbolsByFile.get(t.filePath) ?? []).filter((s) => inTargetRange(s, t));
+  // The whole-file module symbol sorts first (line 1) and overlaps every range;
+  // it must not take one of the cap's slots from a cited symbol.
+  return [
+    ...inRange.filter((s) => !isModule(s)).slice(0, graph.perFileCap),
+    ...inRange.filter(isModule),
+  ];
+}
+
+const targetIsTest = (t: TestedByTarget): boolean =>
+  classifyTestSymbol({ filePath: t.filePath }).isTestFile;
+
+/** Load symbols, incoming edges and sibling test symbols: three queries at most. */
+async function loadGraph(
+  prisma: TestedByPrisma,
+  projectId: string,
+  targets: TestedByTarget[],
+  perFileCap: number,
+): Promise<GraphRows> {
+  const symbolIds = new Set<string>();
+  const fileOnly = new Set<string>();
+  // #860 — a test file mapped by a line range or a symbol: load its symbols to
+  // tell a cited test from a cited licence header. Not an edge target.
+  const rangedTestFiles = new Set<string>();
+  for (const t of targets) {
+    if (t.codeSymbolId) symbolIds.add(t.codeSymbolId);
+    if (!targetIsTest(t)) {
+      if (!t.codeSymbolId) fileOnly.add(t.filePath);
+    } else if (t.codeSymbolId || t.startLine != null) {
+      rangedTestFiles.add(t.filePath);
+    }
+  }
+  const graph: GraphRows = {
+    symbolById: new Map(),
+    symbolsByFile: new Map(),
+    perFileCap,
+    edgesInto: new Map(),
+    siblingSymbolsByFile: new Map(),
+  };
+
+  const or: Array<Record<string, unknown>> = [];
+  if (symbolIds.size) or.push({ id: { in: [...symbolIds] } });
+  const byFile = new Set([...fileOnly, ...rangedTestFiles]);
+  if (byFile.size) or.push({ filePath: { in: [...byFile] } });
+  const targetRows: SymbolRow[] = or.length
+    ? await prisma.codeSymbol.findMany({
+        where: { projectId, OR: or },
+        select: SYMBOL_SELECT,
+        orderBy: [{ filePath: "asc" }, { startLine: "asc" }, { id: "asc" }],
+      })
+    : [];
+  for (const row of targetRows) {
+    if (symbolIds.has(row.id)) graph.symbolById.set(row.id, row);
+    if (byFile.has(row.filePath)) pushTo(graph.symbolsByFile, row.filePath, row);
+  }
+
+  const edgeTargets = new Set<string>(graph.symbolById.keys());
+  for (const t of targets) {
+    if (t.codeSymbolId || targetIsTest(t)) continue;
+    for (const s of fileTargetSymbols(t, graph)) edgeTargets.add(s.id);
+  }
+  if (edgeTargets.size) {
+    const edges = await prisma.codeEdge.findMany({
+      where: {
+        projectId,
+        kind: { in: ["calls", "references"] },
+        toSymbolId: { in: [...edgeTargets] },
+        fromSymbol: { projectId },
+      },
+      select: { toSymbolId: true, fromSymbol: { select: SYMBOL_SELECT } },
+    });
+    for (const e of edges) {
+      if (!e.toSymbolId || !e.fromSymbol) continue;
+      if (!classifyTestSymbol(e.fromSymbol).isTestFile) continue;
+      pushTo(graph.edgesInto, e.toSymbolId, e.fromSymbol);
+    }
+  }
+
+  const siblings = new Set<string>();
+  for (const t of targets) {
+    if (targetIsTest(t)) continue;
+    const language = t.codeSymbolId ? graph.symbolById.get(t.codeSymbolId)?.language : undefined;
+    for (const p of siblingTestPaths(t.filePath, language)) siblings.add(p);
+  }
+  if (siblings.size) {
+    const rows = await prisma.codeSymbol.findMany({
+      where: { projectId, filePath: { in: [...siblings] } },
+      select: SYMBOL_SELECT,
+      orderBy: [{ filePath: "asc" }, { startLine: "asc" }, { id: "asc" }],
+    });
+    for (const row of rows) pushTo(graph.siblingSymbolsByFile, row.filePath, row);
+  }
+  return graph;
+}
+
+/**
+ * Whether a test-file target cites a test (#860). A target bound to a real
+ * symbol does; a file-level target with no range (the whole test file) does.
+ * Otherwise the target must overlap a non-`module` symbol of the file. A target
+ * bound to the `module` symbol and carrying that symbol's own span has no
+ * evidence of WHICH lines were cited — the seeder writes the module's span when
+ * no real symbol enclosed the citation (a header, imports) — so it does not.
+ *
+ * Except when the file has no real symbol at all: then nothing tells a header
+ * from a test, and the link is kept as it was before #860. That is the common
+ * case for a TS/JS test file — its `describe`/`it` callbacks are anonymous, so
+ * the parser emits only the `module` symbol — and dropping it would lose every
+ * citation of such a file. A Go `_test.go` or pytest file always has its test
+ * functions, so the licence-header rule still applies there.
+ */
+function isDirectTestCitation(
+  t: TestedByTarget,
+  bound: SymbolRow | undefined,
+  graph: GraphRows,
+): boolean {
+  if (bound && !isModule(bound)) return true;
+  const fileSymbols = (graph.symbolsByFile.get(t.filePath) ?? []).filter((s) => !isModule(s));
+  if (fileSymbols.length === 0) return true;
+  if (bound && (t.startLine == null || coversSpan(t, bound))) return false;
+  if (t.startLine == null) return true;
+  return fileSymbols.some((s) => inTargetRange(s, t));
+}
+
+/** True when the target's range covers all of `sym`'s span. */
+function coversSpan(t: TestedByTarget, sym: Pick<SymbolRow, "startLine" | "endLine">): boolean {
+  return (
+    t.startLine != null && t.startLine <= sym.startLine && (t.endLine ?? t.startLine) >= sym.endLine
+  );
+}
+
+/** Resolve one requirement's tests from its targets against the loaded graph. */
+function resolveOne(
+  requirement: TestedByRequirement,
+  targets: TestedByTarget[],
+  graph: GraphRows,
+  limit: number,
+  hubThreshold: number,
+): TraceabilityTestNode[] {
+  const query = denoiseRequirementQuery(`${requirement.title} ${requirement.body ?? ""}`);
+  const queryTokens = new Set(nameTokens(query));
+  // #860 — the hub guard matches the TITLE only: body prose brings in common
+  // words (`account`, `default`, `provider`) that let unrelated hub tests back in.
+  const requirementWords = words(denoiseRequirementQuery(requirement.title));
+  const byKey = new Map<string, Candidate>();
+  const offer = (node: TraceabilityTestNode): void => {
+    const key = `${node.filePath}::${node.symbol}`;
+    const existing = byKey.get(key);
+    if (existing && RELATION_RANK[existing.node.relation] <= RELATION_RANK[node.relation]) return;
+    byKey.set(key, { node, key, qualifiedName: node.symbol });
+  };
+
+  for (const t of targets) {
+    if (targetIsTest(t)) {
+      const bound = t.codeSymbolId ? graph.symbolById.get(t.codeSymbolId) : undefined;
+      if (!isDirectTestCitation(t, bound, graph)) continue;
+      const sym = bound && !isModule(bound) ? bound : undefined;
+      offer(
+        sym
+          ? testNodeFromSymbol(sym, "direct", null)
+          : {
+              codeSymbolId: t.codeSymbolId,
+              filePath: t.filePath,
+              symbol: t.filePath,
+              name: basename(t.filePath),
+              startLine: t.startLine,
+              convention: classifyTestSymbol({ filePath: t.filePath }).convention,
+              relation: "direct",
+              subject: null,
+              score: BASE_SCORE.direct,
+            },
+      );
+      continue;
+    }
+
+    const fileOnly = !t.codeSymbolId;
+    const one = t.codeSymbolId ? graph.symbolById.get(t.codeSymbolId) : undefined;
+    const targetSymbols = fileOnly ? fileTargetSymbols(t, graph) : one ? [one] : [];
+
+    const exercised: Array<{ from: SymbolRow; ts: SymbolRow }> = [];
+    for (const ts of targetSymbols) {
+      for (const from of graph.edgesInto.get(ts.id) ?? []) exercised.push({ from, ts });
+    }
+    // #860 — through a hub, a FOREIGN test calling the target is setup, not
+    // evidence of testing THIS requirement: keep it only when it is about it
+    // (by the test's or the callee's name). Symbol mappings included: the seeder
+    // binds a ranged citation of a config constructor (`options.go:64-621`) to
+    // that symbol, and other packages' tests call it to build their fixtures.
+    // Tests in the target's own directory are never filtered.
+    const own = ownTestDirs(t.filePath, one?.language);
+    const isForeign = (from: SymbolRow): boolean => !own.has(dirname(from.filePath));
+    const foreignDirs = new Set(
+      exercised.filter((x) => isForeign(x.from)).map((x) => dirname(x.from.filePath)),
+    );
+    const hub = foreignDirs.size >= hubThreshold;
+    for (const { from, ts } of exercised) {
+      if (
+        hub &&
+        isForeign(from) &&
+        !sharesRequirementWords(from.name, requirementWords) &&
+        !sharesRequirementWords(ts.name, requirementWords)
+      ) {
+        continue;
+      }
+      offer(
+        testNodeFromSymbol(from, "exercises", {
+          filePath: ts.filePath,
+          symbol: ts.qualifiedName,
+        }),
+      );
+    }
+
+    for (const p of siblingTestPaths(t.filePath, one?.language)) {
+      for (const sym of graph.siblingSymbolsByFile.get(p) ?? []) {
+        const c = classifyTestSymbol(sym);
+        if (!c.isTestSymbol) continue;
+        const matched = matchTestSubject(sym.name, c.subjectHint, targetSymbols);
+        if (matched) {
+          offer(
+            testNodeFromSymbol(sym, "naming", {
+              filePath: matched.filePath,
+              symbol: matched.qualifiedName,
+            }),
+          );
+        } else if (fileOnly && nameTokens(sym.name).some((tok) => queryTokens.has(tok))) {
+          offer(testNodeFromSymbol(sym, "naming", { filePath: t.filePath, symbol: null }));
+        }
+      }
+    }
+  }
+
+  const candidates = [...byKey.values()];
+  if (candidates.length === 0) return [];
+  const index = new BM25Index();
+  index.build(
+    candidates.map((c) => ({
+      symbolId: c.key,
+      name: c.node.name,
+      qualifiedName: c.qualifiedName,
+      kind: "function",
+      filePath: c.node.filePath,
+    })),
+  );
+  const raw = new Map(index.score(query).map((r) => [r.symbolId, r.score] as const));
+  const max = Math.max(0, ...raw.values());
+  for (const c of candidates) {
+    const relevance = max > 0 ? (raw.get(c.key) ?? 0) / max : 0;
+    c.node.score = Math.round(BASE_SCORE[c.node.relation] * (0.8 + 0.2 * relevance) * 1000) / 1000;
+  }
+  candidates.sort(
+    (a, b) =>
+      RELATION_RANK[a.node.relation] - RELATION_RANK[b.node.relation] ||
+      b.node.score - a.node.score ||
+      (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+  );
+  return candidates.slice(0, limit).map((c) => c.node);
+}
+
+/**
+ * Load the direct and spec→code targets of every requirement: three queries at
+ * most. A requirement absent from the map has no mapped code (`no-code`).
+ */
+export async function loadTestedByTargets(
+  prisma: TestedByPrisma,
+  projectId: string,
+  requirementIds: string[],
+): Promise<Map<string, TestedByTarget[]>> {
+  const targets = new Map<string, TestedByTarget[]>();
+  if (requirementIds.length === 0) return targets;
+  const select = { codeSymbolId: true, filePath: true, startLine: true, endLine: true } as const;
+  const [direct, specLinks] = await Promise.all([
+    prisma.requirementCodeMapping.findMany({
+      where: { projectId, requirementId: { in: requirementIds } },
+      select: { requirementId: true, ...select },
+    }),
+    prisma.requirementSpecMapping.findMany({
+      where: { projectId, requirementId: { in: requirementIds } },
+      select: { requirementId: true, specDocumentId: true },
+    }),
+  ]);
+  for (const row of direct) pushTo(targets, row.requirementId, row);
+
+  const specIds = [...new Set(specLinks.map((s) => s.specDocumentId))];
+  if (specIds.length) {
+    const specCode = await prisma.specCodeMapping.findMany({
+      where: { projectId, specDocumentId: { in: specIds } },
+      select: { specDocumentId: true, ...select },
+    });
+    const bySpec = new Map<string, TestedByTarget[]>();
+    for (const row of specCode) pushTo(bySpec, row.specDocumentId, row);
+    for (const link of specLinks) {
+      for (const row of bySpec.get(link.specDocumentId) ?? []) {
+        pushTo(targets, link.requirementId, row);
+      }
+    }
+  }
+  return targets;
+}
+
+/**
+ * Resolve tests for requirements whose mapped targets the caller already holds
+ * (the traceability spine has just read them). Three queries at most.
+ */
+export async function resolveTestedByForTargets(
+  projectId: string,
+  requirements: readonly TestedByRequirement[],
+  targetsByRequirement: ReadonlyMap<string, TestedByTarget[]>,
+  opts?: { limit?: number },
+  deps?: TestedByDeps,
+): Promise<Map<string, TraceabilityTestNode[]>> {
+  const prisma = pickPrisma(deps);
+  const limit = opts?.limit ?? DEFAULT_TESTED_BY_LIMIT;
+  const all = requirements.flatMap((r) => targetsByRequirement.get(r.id) ?? []);
+  const graph = await loadGraph(prisma, projectId, all, maxSymbolsPerFile(deps));
+  const hubThreshold = hubMinForeignTestDirs(deps);
+  const out = new Map<string, TraceabilityTestNode[]>();
+  for (const r of requirements) {
+    out.set(r.id, resolveOne(r, targetsByRequirement.get(r.id) ?? [], graph, limit, hubThreshold));
+  }
+  return out;
+}
+
+/**
+ * Tests covering each requirement, strongest first, at most `limit` (default 10)
+ * each. Requirements not in the project (or soft-deleted) are absent from the map.
+ */
+export async function resolveTestedBy(
+  projectId: string,
+  requirementIds: string[],
+  opts?: { limit?: number },
+  deps?: TestedByDeps,
+): Promise<Map<string, TraceabilityTestNode[]>> {
+  const prisma = pickPrisma(deps);
+  if (requirementIds.length === 0) return new Map();
+  const requirements = await prisma.requirement.findMany({
+    where: { projectId, id: { in: requirementIds }, deletedAt: null },
+    select: { id: true, title: true, body: true },
+  });
+  const ids = requirements.map((r) => r.id);
+  const targets = await loadTestedByTargets(prisma, projectId, ids);
+  return resolveTestedByForTargets(projectId, requirements, targets, opts, deps);
+}
+
+/**
+ * The project's requirements that have mapped code but no resolved test, one
+ * page at a time (ordered by requirement id; `cursor` = the last id of the
+ * previous page). A requirement with no mapped code cannot be judged, so it is
+ * counted in `noCode` and never listed. Soft-deleted requirements are excluded.
+ * An `analysisId` outside the project is a 404.
+ */
+export async function listUntestedRequirements(
+  projectId: string,
+  opts?: { analysisId?: string; limit?: number; cursor?: string },
+  deps?: TestedByDeps,
+): Promise<RequirementTestGaps> {
+  const prisma = pickPrisma(deps);
+  const limit = opts?.limit ?? 50;
+  if (opts?.analysisId) {
+    const analysis = await prisma.analysis.findFirst({
+      where: { id: opts.analysisId, projectId },
+      select: { id: true },
+    });
+    if (!analysis) {
+      throw new AppError(404, "ANALYSIS_NOT_FOUND", "analysis not found in this project");
+    }
+  }
+
+  const requirements = await prisma.requirement.findMany({
+    where: {
+      projectId,
+      deletedAt: null,
+      ...(opts?.analysisId ? { analysisId: opts.analysisId } : {}),
+    },
+    select: { id: true, title: true, body: true, analysisId: true },
+  });
+  requirements.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  const targets = await loadTestedByTargets(
+    prisma,
+    projectId,
+    requirements.map((r) => r.id),
+  );
+  const tests = await resolveTestedByForTargets(
+    projectId,
+    requirements,
+    targets,
+    { limit: 1 },
+    deps,
+  );
+
+  let tested = 0;
+  let noCode = 0;
+  const untested: RequirementTestGap[] = [];
+  for (const r of requirements) {
+    const mappedFiles = new Set((targets.get(r.id) ?? []).map((t) => t.filePath)).size;
+    if (mappedFiles === 0) {
+      noCode++;
+    } else if ((tests.get(r.id) ?? []).length > 0) {
+      tested++;
+    } else {
+      untested.push({
+        requirementId: r.id,
+        title: r.title,
+        analysisId: r.analysisId ?? null,
+        reason: "no-test",
+        mappedFiles,
+      });
+    }
+  }
+
+  const after = opts?.cursor;
+  const remaining = after ? untested.filter((g) => g.requirementId > after) : untested;
+  const page = remaining.slice(0, limit);
+  return {
+    total: requirements.length,
+    tested,
+    untested: page,
+    noCode,
+    nextCursor: remaining.length > limit ? page[page.length - 1].requirementId : null,
+  };
+}

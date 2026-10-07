@@ -164,6 +164,13 @@ function mockProvider(): AIProvider {
   return { key: "offline-stub", model: "stub", offline: true, chat: chatMock } as any;
 }
 
+// #724 — observe project-usage writes without touching the ledger.
+const recordUsageSpy = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/finops/token-tracker.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/finops/token-tracker.js")>()),
+  recordUsage: recordUsageSpy,
+}));
+
 const { customAgentsRouter } = await import("../src/routes/custom-agents.js");
 
 function createApp() {
@@ -264,6 +271,25 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     const inv = auditRows.find((a) => a.action === "custom_agent.invoked");
     expect(inv).toBeTruthy();
     expect(inv.targetId).toBe(agent.id);
+  });
+
+  it("bills the invocation's tokens to the invoking project (#724)", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "member");
+    const agent = seedAgent({ projectId: "p1" });
+    recordUsageSpy.mockClear();
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(res.status).toBe(200);
+    expect(recordUsageSpy).toHaveBeenCalledTimes(1);
+    expect(recordUsageSpy.mock.calls[0]![0]).toMatchObject({
+      projectId: "p1",
+      // Per agent AND project, so projects sharing an agent do not share a session.
+      sessionId: `playground:${agent.id}:p1`,
+      inputTokens: 3,
+      outputTokens: 4,
+    });
   });
 
   it("404s when the agent is not enabled for the project (IDOR)", async () => {

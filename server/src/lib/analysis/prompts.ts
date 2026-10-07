@@ -554,7 +554,23 @@ export interface SynthesisPromptInput {
    * `ANALYSIS_LLM_SUPPORT_PANEL` off is unchanged in every respect.
    */
   panelGuidance?: boolean;
+  /**
+   * #751 — set ONLY on a continuation call, after an earlier call in the same
+   * run was cut off at the output cap. Holds the titles of the requirements
+   * already kept from that run, so the model writes requirements for the
+   * findings that remain and does not repeat the ones that exist. Undefined or
+   * empty ⇒ the prompt is byte-identical to a single-call synthesis.
+   */
+  alreadySynthesizedTitles?: string[];
 }
+
+/**
+ * #751 — the continuation rule. Spells out that the table is a remainder (so an
+ * empty answer is legitimate when every remaining finding is covered) and that
+ * evidence indexes are still the original row numbers.
+ */
+const SYNTHESIS_CONTINUATION_RULE =
+  "This is a CONTINUATION of a synthesis whose earlier output was cut off. The FINDINGS table lists only the findings no kept requirement covers yet, under their ORIGINAL [N] indexes — use those numbers in `evidenceFindingIndexes`. The ALREADY SYNTHESISED REQUIREMENTS section lists requirements that already exist: do NOT repeat or rename them. Write requirements only for the remaining findings; if every remaining finding is already covered by a listed requirement, return an empty `requirements` array.";
 
 /**
  * Epic #1107 (#1110) — how the synthesis model must treat the panel's markers.
@@ -594,6 +610,12 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
   // #824 — the deterministic AFFECTED SCHEMA block, escaped as untrusted data.
   // Empty ⇒ the reconciliation rule + section are omitted (byte-identical lead).
   const safeSchema = input.affectedSchema ? escapeContext(input.affectedSchema) : "";
+  // #751 — titles the model itself wrote earlier in this run; still escaped,
+  // because they derive from untrusted findings.
+  const safeAlready =
+    input.alreadySynthesizedTitles && input.alreadySynthesizedTitles.length > 0
+      ? escapeContext(input.alreadySynthesizedTitles.map((t) => `- ${t}`).join("\n"))
+      : "";
 
   const systemMessage = [
     `You are ${persona.name}, the reviewer/synthesis agent in METIS.`,
@@ -617,6 +639,8 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     safeSchema ? `10. ${SYNTHESIS_SCHEMA_RULE}` : "",
     // #1110 — only when the #1109 panel actually graded something in this table.
     input.panelGuidance ? `11. ${SYNTHESIS_PANEL_RULE}` : "",
+    // #751 — only on a continuation after an output-cap truncation.
+    safeAlready ? `12. ${SYNTHESIS_CONTINUATION_RULE}` : "",
     "",
     "Respond with a single JSON object:",
     `{
@@ -645,6 +669,9 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     "",
     safeRefined
       ? `${FENCE} BEGIN CLARIFIED REQUIREMENTS ${FENCE}\n${safeRefined}\n${FENCE} END CLARIFIED REQUIREMENTS ${FENCE}\n`
+      : "",
+    safeAlready
+      ? `${FENCE} BEGIN ALREADY SYNTHESISED REQUIREMENTS ${FENCE}\n${safeAlready}\n${FENCE} END ALREADY SYNTHESISED REQUIREMENTS ${FENCE}\n`
       : "",
     `${FENCE} BEGIN FINDINGS ${FENCE}`,
     safeFindings,

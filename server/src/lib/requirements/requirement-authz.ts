@@ -5,8 +5,7 @@
  * `/api/requirements` is mounted with **no `:projectId` segment**
  * (`routes/index.ts`), so the `requireProjectAccess()` chokepoint (#674) cannot
  * be mounted here: the owning project is not known until a row is read. This is
- * the same shape as `/api/jira`, `/api/test-management` (#1055) and `/api/runs`
- * (#1056), and it is resolved the same way — resolve the requirement, walk to
+ * the same shape as `/api/jira` (#1055) and `/api/runs` (#1056), and it is resolved the same way — resolve the requirement, walk to
  * its own `projectId`, and authorize through the canonical `assertProjectAccess`
  * seam (`lib/custom-agents/authz.ts`).
  *
@@ -28,6 +27,7 @@ import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { assertProjectAccess } from "../custom-agents/authz.js";
+import { audit } from "../audit/audit-service.js";
 
 /** A request that has passed {@link requireRequirementAccess}. */
 export interface RequirementScopedRequest extends Request {
@@ -72,7 +72,16 @@ export async function assertRequirementAccessible(
     // 404 from the seam — collapse them into the requirement-level 404 so an
     // out-of-tenant id is byte-identical to a nonexistent one. Non-404 failures
     // (DB faults, etc.) propagate untouched so a real error is never masked.
-    if (err instanceof AppError && err.statusCode === 404) throw requirementNotFound();
+    if (err instanceof AppError && err.statusCode === 404) {
+      // #734 — the refusal answers like an unknown id; the reason is kept here.
+      audit({
+        actor: { id: user.userId },
+        action: "requirement.access.denied",
+        target: { type: "requirement", id: requirementId },
+        metadata: { reason: "project-access-denied", projectId: row.projectId },
+      });
+      throw requirementNotFound();
+    }
     throw err;
   }
 

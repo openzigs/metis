@@ -21,8 +21,8 @@ describe("fixtureKey", () => {
     const a = fixtureKey(msgs("hi"), {
       model: "m",
       signal: new AbortController().signal,
-      skillDirectories: ["/tmp/x"],
-      disabledSkills: ["y"],
+      // Keys outside ChatOptions (the removed Copilot skill options) must not key either.
+      ...({ skillDirectories: ["/tmp/x"], disabledSkills: ["y"] } as object),
     });
     const b = fixtureKey(msgs("hi"), { model: "m" });
     expect(a).toBe(b);

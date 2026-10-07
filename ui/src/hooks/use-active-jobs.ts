@@ -5,7 +5,7 @@
  *
  * The unified job-events bus (#238/#239, widened by #419) broadcasts
  * `job:lifecycle` transitions for EVERY long-running op (analysis, doc-generation,
- * impact-analysis, scan, pr-review, import-sync, embeddings-reindex, spec-kit,
+ * impact-analysis, pr-review, import-sync, embeddings-reindex, spec-kit,
  * overview-regenerate). The doc detail / list views consume these per-job via
  * `useJobLifecycle` / `useDocSectionProgress`; this hook is the cross-cutting
  * consumer that powers the global "N jobs running" header indicator.
@@ -125,7 +125,6 @@ const KIND_LABELS: Record<JobKind, string> = {
   analysis: "Analysis",
   "doc-generation": "Documentation",
   "impact-analysis": "Impact analysis",
-  scan: "Security scan",
   "pr-review": "PR review",
   "import-sync": "Import / sync",
   "embeddings-reindex": "Embeddings reindex",

@@ -13,6 +13,12 @@ const readFileMock = vi.hoisted(() => vi.fn());
 const readdirMock = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 const upsertMock = vi.hoisted(() => vi.fn().mockResolvedValue({}));
 const findUniqueMock = vi.hoisted(() => vi.fn().mockResolvedValue(null));
+const recordUsageMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../finops/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../finops/index.js")>();
+  return { ...actual, recordUsage: recordUsageMock };
+});
 
 vi.mock("../prisma.js", () => ({
   prisma: {
@@ -171,14 +177,16 @@ describe("#154 buildRelevantFactsBlob sends only the section's slices", () => {
     const cap = 2_000;
     const rules = selectRelevantFacts(all, rulesGroup(), "business-requirements", cap);
     expect(rules.included).toHaveLength(10);
-    // The same facts sent whole (a group reading every slice) no longer fit.
+    expect(rules.condensed.size).toBe(0);
+    // The same facts sent whole (a group reading every slice) no longer fit in
+    // full; since #778 the rest are read as condensed digests instead.
     const whole = selectRelevantFacts(
       all,
       { id: "unknown-reads-all", label: "x", instructions: "" },
       "business-requirements",
       cap,
     );
-    expect(whole.included.length).toBeLessThan(3);
+    expect(whole.included.length - whole.condensed.size).toBeLessThan(3);
   });
 
   it("ranks by the section's own slices, not by other topics", () => {
@@ -216,7 +224,8 @@ describe("#154 facts-truncated budget is measured on the section's slices", () =
   it("still reports omitted modules when the section's own slices do not fit", () => {
     const all = [big(1), big(2), big(3)];
     const notes = groupById("architecture", "ops-and-stack");
-    const budget = summarizeFactsBudget(all, notes, "architecture", 1_000);
+    // #778 — a cap too small even for a ~200-char digest of every module.
+    const budget = summarizeFactsBudget(all, notes, "architecture", 500);
     expect(budget.exceeded).toBe(true);
     expect(budget.omittedModules).toBeGreaterThan(0);
   });
@@ -266,6 +275,7 @@ function scriptedProvider(
         usage: {
           promptTokens: 100,
           completionTokens: 8192,
+          totalTokens: 8292,
           cacheReadTokens: 0,
           cacheWriteTokens: 40,
         },
@@ -292,7 +302,6 @@ function tsModule(): ModuleGroup {
     syms: [
       {
         id: "t1",
-        codeGraphId: "graph-a",
         qualifiedName: "billing.ts::charge",
         kind: "function",
         language: "ts",
@@ -329,6 +338,19 @@ describe("#155 a TypeScript module's guard clauses reach the Rules section input
 
     const [source] = buildSectionFactsSources([f!], rulesGroup(), "business-requirements");
     expect(source.text).toMatch(/\(src\/billing\/billing\.ts:2\)/);
+  });
+
+  it("#792 — a Phase-1 call's project-ledger row carries the docs-gen step", async () => {
+    const provider = scriptedProvider([{ text: "PURPOSE\nx", finishReason: "stop" }]);
+    await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
+    expect(recordUsageMock).toHaveBeenCalledTimes(1);
+    expect(recordUsageMock.mock.calls[0][0]).toMatchObject({
+      projectId: "p1",
+      sessionId: expect.stringMatching(/^docs-facts-p1-/),
+      agentStep: "docs-gen",
+      inputTokens: 100,
+      outputTokens: 8192,
+    });
   });
 
   it("labels each mined rule in the Phase-1 prompt with file:line, not a bare line number", async () => {

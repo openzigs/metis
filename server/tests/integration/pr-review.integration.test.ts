@@ -118,7 +118,7 @@ function mkPrisma(state: MockPrismaState): PrismaClient {
 
 function mkOctokit(opts: { diffResponse?: unknown; reviewId?: number; reviewUrl?: string }) {
   const get = vi.fn(async () => ({ data: opts.diffResponse ?? SAMPLE_DIFF }));
-  const createReview = vi.fn(async () => ({
+  const createReview = vi.fn(async (_params: { event: string; pull_number: number }) => ({
     data: {
       id: opts.reviewId ?? 1234,
       html_url: opts.reviewUrl ?? "https://github.com/acme/proj/pull/7#review-1234",
@@ -360,11 +360,6 @@ describeMaybe("PR-review MVP integration", () => {
   });
 
   it("flags diff_too_large and posts no review when the diff exceeds the cap", async () => {
-    const _prisma = mkPrisma({
-      publishedIssues: [{ issueNumber: 42, draft: { id: "d1", body: ISSUE_BODY } }],
-      project: { prReviewMonthlyBudgetCents: null },
-      tokenUsageRows: [],
-    });
     const octokit = mkOctokit({ diffResponse: "x".repeat(2_000) });
     const diff = await fetchPrDiff({
       octokit,

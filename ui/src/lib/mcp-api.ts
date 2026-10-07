@@ -130,6 +130,14 @@ export interface MCPImportResponse {
   dryRun: boolean;
 }
 
+/** `POST /mcp/:id/test` — a one-shot probe of the server. */
+export interface MCPTestResult {
+  ok: boolean;
+  latencyMs: number;
+  tools: MCPToolDescriptor[];
+  error?: string;
+}
+
 export const mcpApi = {
   list: (params?: { scope?: MCPServerScope; projectId?: string }) =>
     apiFetch<{ items: MCPServerView[] }>("/mcp", { params }),
@@ -145,13 +153,7 @@ export const mcpApi = {
   /** #537 — bind the references the #504 backfill flagged, as the caller. */
   rebindSecrets: (id: string) =>
     apiFetch<MCPServerView>(`/mcp/${id}/rebind-secrets`, { method: "POST" }),
-  test: (id: string) =>
-    apiFetch<{
-      ok: boolean;
-      latencyMs: number;
-      tools: MCPToolDescriptor[];
-      error?: string;
-    }>(`/mcp/${id}/test`, { method: "POST" }),
+  test: (id: string) => apiFetch<MCPTestResult>(`/mcp/${id}/test`, { method: "POST" }),
   import: (input: {
     mcpJson: unknown;
     dryRun?: boolean;

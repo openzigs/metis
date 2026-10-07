@@ -24,6 +24,12 @@ export interface ModelPreferencesData {
     price?: ModelCatalogEntry["price"];
     capabilities?: ModelCatalogEntry["capabilities"];
   }>;
+  /**
+   * #713 — false when the active provider does not run the Claude tier ids
+   * (DeepSeek's Anthropic-compatible endpoint, OpenAI, a local runtime): the
+   * list is then its one configured model and there is no tier to downgrade to.
+   */
+  servesTierModels?: boolean;
 }
 
 export interface ModelPreferencesInput {

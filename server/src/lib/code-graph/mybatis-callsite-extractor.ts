@@ -96,8 +96,8 @@ export interface MapperSymbolLookupPrisma {
   codeSymbol: {
     findMany(args: {
       where: { codeGraphId: string; filePath: { in: string[] }; kind: { in: string[] } };
-      select: { id: true; filePath: true; name: true };
-    }): Promise<Array<{ id: string; filePath: string; name: string }>>;
+      select: { id: true; filePath: true; name: true; language: true };
+    }): Promise<Array<{ id: string; filePath: string; name: string; language: string }>>;
   };
 }
 
@@ -109,6 +109,13 @@ export interface MapperSymbolLookupPrisma {
  * names within one file collapse onto the first-seen id — MyBatis mapper
  * interfaces cannot have overloaded methods (statement ids must be unique
  * per namespace), so this is not expected to matter in practice.
+ *
+ * `sql`-language symbols are skipped (#822): the MyBatis pass writes a
+ * one-line synthetic `method` symbol for each annotated statement into the
+ * Java mapper file itself, under the same name as the interface method. Kept,
+ * it could take the first-seen slot and a call site would resolve to the
+ * synthetic statement instead of the real Java method — the same exclusion
+ * `loadEnclosingFunctionSymbols` in `ingest.ts` applies to range lookups (#807).
  */
 export async function buildMapperMethodSymbolIndex(
   prisma: MapperSymbolLookupPrisma,
@@ -123,9 +130,10 @@ export async function buildMapperMethodSymbolIndex(
       filePath: { in: [...new Set(mapperFilePaths)] },
       kind: { in: ["method"] },
     },
-    select: { id: true, filePath: true, name: true },
+    select: { id: true, filePath: true, name: true, language: true },
   });
   for (const row of rows) {
+    if (row.language === "sql") continue;
     const byName = out.get(row.filePath) ?? new Map<string, string>();
     if (!byName.has(row.name)) byName.set(row.name, row.id);
     out.set(row.filePath, byName);

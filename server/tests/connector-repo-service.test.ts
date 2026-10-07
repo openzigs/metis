@@ -26,6 +26,11 @@ interface RepoRow {
   updatedAt: Date;
   deletedAt: Date | null;
 }
+// Non-null columns of the mock row with no mock default: every create here supplies them.
+type RepoCreateRequired = Pick<
+  RepoRow,
+  "projectId" | "label" | "provider" | "ownerOrOrg" | "repoName" | "defaultBranch"
+>;
 
 const rows = new Map<string, RepoRow>();
 let nextId = 0;
@@ -48,7 +53,7 @@ vi.mock("../src/lib/prisma.js", () => ({
         }
         return null;
       }),
-      create: vi.fn(async ({ data }: { data: Partial<RepoRow> }) => {
+      create: vi.fn(async ({ data }: { data: Partial<RepoRow> & RepoCreateRequired }) => {
         nextId += 1;
         const row: RepoRow = {
           id: `repo_${nextId}`,
@@ -64,7 +69,7 @@ vi.mock("../src/lib/prisma.js", () => ({
           createdAt: new Date(),
           updatedAt: new Date(),
           deletedAt: null,
-          ...(data as RepoRow),
+          ...data,
         };
         rows.set(row.id, row);
         return row;
@@ -145,13 +150,19 @@ import {
   getRepoConnector,
   listRepoConnectors,
   resolveRepoCloneMaxBytes,
+  pullOrCloneRepo,
+  readCloneHeadSha,
   shallowCloneRepo,
   testRepoConnector,
+  configureRepoConnectorService,
   updateRepoConnector,
   type OctokitLike,
   type SimpleGitLike,
 } from "../src/lib/connectors/repo/repo-service.js";
 import { MAX_REPO_CLONE_BYTES } from "@metis/shared";
+import { promises as fsp } from "node:fs";
+import os from "node:os";
+import nodePath from "node:path";
 
 describe("resolveRepoCloneMaxBytes (REPO_CLONE_MAX_BYTES override)", () => {
   const original = process.env.REPO_CLONE_MAX_BYTES;
@@ -184,11 +195,18 @@ function makeOctokit(
     listLanguages: () => Promise<unknown>;
     getReadme: () => Promise<unknown>;
     getContent: (params: { path: string }) => Promise<unknown>;
-    listCommits: () => Promise<unknown>;
+    listCommits: (params: Record<string, unknown>) => Promise<unknown>;
+    getRef: (params: { ref: string }) => Promise<unknown>;
   }> = {},
 ): OctokitLike {
   return {
     rest: {
+      git: {
+        getRef: vi.fn(
+          (overrides.getRef ??
+            (async ({ ref }: { ref: string }) => ({ data: { ref: `refs/${ref}` } }))) as never,
+        ),
+      },
       repos: {
         get: vi.fn(
           (overrides.get ??
@@ -287,7 +305,7 @@ describe("Repo connector service — CRUD", () => {
   it("#182 — exposes the latest source ingest, reporting a dead run as interrupted", async () => {
     const created = await createRepoConnector(
       "proj_1",
-      { label: "ingested", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "ingested", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     expect(created.sourceIngest).toBeNull();
@@ -310,9 +328,17 @@ describe("Repo connector service — CRUD", () => {
   });
 
   it("rejects duplicate label per project", async () => {
-    await createRepoConnector("proj_1", { label: "dup", ownerOrOrg: "o", repoName: "r" }, "user_1");
+    await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "dup", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
     await expect(
-      createRepoConnector("proj_1", { label: "dup", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+      createRepoConnector(
+        "proj_1",
+        { provider: "github", label: "dup", ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      ),
     ).rejects.toMatchObject({ code: "REPO_LABEL_TAKEN" });
   });
 
@@ -321,6 +347,7 @@ describe("Repo connector service — CRUD", () => {
       createRepoConnector(
         "proj_1",
         {
+          provider: "github",
           label: "http-bad",
           ownerOrOrg: "o",
           repoName: "r",
@@ -334,17 +361,17 @@ describe("Repo connector service — CRUD", () => {
   it("#448 — marks a project's first repository primary and later ones not", async () => {
     const first = await createRepoConnector(
       "proj_1",
-      { label: "first", ownerOrOrg: "o", repoName: "r1" },
+      { provider: "github", label: "first", ownerOrOrg: "o", repoName: "r1" },
       "user_1",
     );
     const second = await createRepoConnector(
       "proj_1",
-      { label: "second", ownerOrOrg: "o", repoName: "r2" },
+      { provider: "github", label: "second", ownerOrOrg: "o", repoName: "r2" },
       "user_1",
     );
     const other = await createRepoConnector(
       "proj_2",
-      { label: "first", ownerOrOrg: "o", repoName: "r3" },
+      { provider: "github", label: "first", ownerOrOrg: "o", repoName: "r3" },
       "user_1",
     );
     expect(first.isPrimary).toBe(true);
@@ -365,7 +392,7 @@ describe("Repo connector service — CRUD", () => {
     const { prisma } = await import("../src/lib/prisma.js");
     const created = await createRepoConnector(
       "proj_1",
-      { label: "only", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "only", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     expect(prisma.repoConnection.update).not.toHaveBeenCalled();
@@ -389,7 +416,7 @@ describe("Repo connector service — CRUD", () => {
     try {
       const created = await createRepoConnector(
         "proj_1",
-        { label: "loser", ownerOrOrg: "o", repoName: "r" },
+        { provider: "github", label: "loser", ownerOrOrg: "o", repoName: "r" },
         "user_1",
       );
       expect(create.mock.calls.map(([a]) => a.data.isPrimary)).toEqual([true, false]);
@@ -410,7 +437,11 @@ describe("Repo connector service — CRUD", () => {
     }) as never);
     try {
       await expect(
-        createRepoConnector("proj_1", { label: "x", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+        createRepoConnector(
+          "proj_1",
+          { provider: "github", label: "x", ownerOrOrg: "o", repoName: "r" },
+          "user_1",
+        ),
       ).rejects.toMatchObject({ code: "P1001" });
       expect(create).toHaveBeenCalledTimes(1);
     } finally {
@@ -420,7 +451,11 @@ describe("Repo connector service — CRUD", () => {
 
   describe("#492 — renaming onto a used label", () => {
     const make = (label: string) =>
-      createRepoConnector("proj_1", { label, ownerOrOrg: "o", repoName: "r" }, "user_1");
+      createRepoConnector(
+        "proj_1",
+        { provider: "github", label, ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      );
 
     it("a live connector's label is a 409 and the row keeps its label", async () => {
       await make("taken");
@@ -492,14 +527,22 @@ describe("Repo connector service — CRUD", () => {
     };
 
     it("is a 409 when a live row holds the label (a create that lost the race)", async () => {
-      await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
+      await createRepoConnector(
+        "proj_1",
+        { provider: "github", label: "a", ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      );
       const { prisma } = await import("../src/lib/prisma.js");
       // The pre-check misses the racing row; the post-violation lookup sees it.
       vi.mocked(prisma.repoConnection.findFirst).mockResolvedValueOnce(null);
       const { create, restore } = await shapeless();
       try {
         await expect(
-          createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+          createRepoConnector(
+            "proj_1",
+            { provider: "github", label: "a", ownerOrOrg: "o", repoName: "r" },
+            "user_1",
+          ),
         ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
         expect(create).toHaveBeenCalledTimes(2); // the first create above, then one attempt
       } finally {
@@ -508,11 +551,19 @@ describe("Repo connector service — CRUD", () => {
     });
 
     it("is rethrown as it is when no live row holds the label", async () => {
-      await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
+      await createRepoConnector(
+        "proj_1",
+        { provider: "github", label: "a", ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      );
       const { restore } = await shapeless();
       try {
         await expect(
-          createRepoConnector("proj_1", { label: "b", ownerOrOrg: "o", repoName: "r" }, "user_1"),
+          createRepoConnector(
+            "proj_1",
+            { provider: "github", label: "b", ownerOrOrg: "o", repoName: "r" },
+            "user_1",
+          ),
         ).rejects.toMatchObject({ code: "P2002" });
       } finally {
         restore();
@@ -534,7 +585,11 @@ describe("Repo connector service — CRUD", () => {
       return () => create.mockImplementation(insert);
     };
     const create = (label: string) =>
-      createRepoConnector("proj_1", { label, ownerOrOrg: "o", repoName: "r" }, "user_1");
+      createRepoConnector(
+        "proj_1",
+        { provider: "github", label, ownerOrOrg: "o", repoName: "r" },
+        "user_1",
+      );
 
     it("the SQLite adapter's (projectId, label) fields shape is a 409", async () => {
       const restore = await failFirstInsert(
@@ -600,7 +655,7 @@ describe("Repo connector service — CRUD", () => {
   it("project isolation enforced", async () => {
     const c = await createRepoConnector(
       "proj_a",
-      { label: "x", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "x", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(getRepoConnector("proj_b", c.id)).rejects.toMatchObject({
@@ -614,7 +669,7 @@ describe("Repo connector service — test()", () => {
     __setOctokitFactory(() => makeOctokit());
     const c = await createRepoConnector(
       "proj_1",
-      { label: "t", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "t", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     const result = await testRepoConnector("proj_1", c.id, "user_1");
@@ -635,7 +690,7 @@ describe("Repo connector service — test()", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "t2", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "t2", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
@@ -654,7 +709,7 @@ describe("Repo connector service — test()", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "t3", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "t3", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
@@ -668,7 +723,7 @@ describe("Repo connector service — fetchRepoMetadata()", () => {
     __setOctokitFactory(() => makeOctokit());
     const c = await createRepoConnector(
       "proj_1",
-      { label: "m", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "m", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
@@ -690,7 +745,7 @@ describe("Repo connector service — fetchRepoMetadata()", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "m2", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "m2", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
@@ -702,7 +757,7 @@ describe("Repo connector service — update + auth/clone", () => {
   it("PATCH apiBaseUrl with non-HTTPS rejected", async () => {
     const c = await createRepoConnector(
       "proj_1",
-      { label: "u", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "u", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(
@@ -713,7 +768,7 @@ describe("Repo connector service — update + auth/clone", () => {
   it("PATCH supports updating multiple fields and secret", async () => {
     const c = await createRepoConnector(
       "proj_1",
-      { label: "u2", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "u2", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     const updated = await updateRepoConnector(
@@ -741,7 +796,13 @@ describe("Repo connector service — #480 keep a re-sent bound reference", () =>
     const { bindSecretRef } = await import("../src/lib/vault/bound-secret.js");
     const c = await createRepoConnector(
       "proj_1",
-      { label: "keep", ownerOrOrg: "o", repoName: "r", secretRef: "${vault:sec-bound}" },
+      {
+        provider: "github",
+        label: "keep",
+        ownerOrOrg: "o",
+        repoName: "r",
+        secretRef: "${vault:sec-bound}",
+      },
       "user_1",
     );
     vi.mocked(bindSecretRef).mockClear();
@@ -764,6 +825,7 @@ describe("Repo connector service — extractRefBody validation", () => {
       createRepoConnector(
         "proj_1",
         {
+          provider: "github",
           label: "bad-secret",
           ownerOrOrg: "o",
           repoName: "r",
@@ -777,7 +839,7 @@ describe("Repo connector service — extractRefBody validation", () => {
   it("rejects malformed secretRef on update", async () => {
     const c = await createRepoConnector(
       "proj_1",
-      { label: "u3", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "u3", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(
@@ -797,7 +859,7 @@ describe("Repo connector service — toOctokitError fallback", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "fb", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "fb", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
@@ -815,7 +877,7 @@ describe("Repo connector service — toOctokitError fallback", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "ie", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "ie", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
@@ -836,7 +898,7 @@ describe("Repo connector service — fetchRepoMetadata edge cases", () => {
     );
     const c = await createRepoConnector(
       "proj_1",
-      { label: "lang-fail", ownerOrOrg: "o", repoName: "r" },
+      { provider: "github", label: "lang-fail", ownerOrOrg: "o", repoName: "r" },
       "user_1",
     );
     // Service may either propagate or swallow; verify it's a defined behaviour
@@ -867,6 +929,7 @@ describe("Repo connector service — shallowCloneRepo", () => {
     const c = await createRepoConnector(
       "proj_1",
       {
+        provider: "github",
         label: "clone1",
         ownerOrOrg: "octocat",
         repoName: "demo",
@@ -926,6 +989,7 @@ describe("Repo connector service — shallowCloneRepo", () => {
     const c = await createRepoConnector(
       "proj_1",
       {
+        provider: "github",
         label: "clone-fail",
         ownerOrOrg: "octocat",
         repoName: "missing",
@@ -950,11 +1014,352 @@ describe("Repo connector service — shallowCloneRepo", () => {
     __setSimpleGitFactory(() => fakeGit);
     const c = await createRepoConnector(
       "proj_1",
-      { label: "noauth", ownerOrOrg: "octocat", repoName: "demo" },
+      { provider: "github", label: "noauth", ownerOrOrg: "octocat", repoName: "demo" },
       "user_1",
     );
     await shallowCloneRepo("proj_1", c.id, "user_1");
     // env() never called when there's no token
     expect(envApplied).toBeNull();
+  });
+});
+
+// #714 — a connector pinned to a tag or ref keeps that ref through Test, and
+// the connector reports the commit the ingest actually cloned.
+describe("#714 — pinned ref survives Test", () => {
+  const notFound = async () => {
+    throw Object.assign(new Error("Not Found"), { status: 404 });
+  };
+
+  it("keeps a pinned tag that resolves upstream (does not overwrite with default_branch)", async () => {
+    const getRef = vi.fn(async ({ ref }: { ref: string }) => {
+      if (ref === "tags/v2.3.3") return { data: { ref: "refs/tags/v2.3.3" } };
+      return notFound();
+    });
+    __setOctokitFactory(() => makeOctokit({ getRef }));
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "pin", ownerOrOrg: "o", repoName: "r", defaultBranch: "v2.3.3" },
+      "user_1",
+    );
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.ok).toBe(true);
+    expect(result.defaultBranch).toBe("main");
+    expect(result.ref).toBe("v2.3.3");
+    // Read back through the same path the UI uses.
+    expect((await getRepoConnector("proj_1", c.id)).defaultBranch).toBe("v2.3.3");
+  });
+
+  it("keeps a pinned non-default branch that resolves as a branch", async () => {
+    const getRef = vi.fn(async ({ ref }: { ref: string }) =>
+      ref === "heads/release/1.x" ? { data: { ref: `refs/${ref}` } } : notFound(),
+    );
+    __setOctokitFactory(() => makeOctokit({ getRef }));
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label: "pin-b",
+        ownerOrOrg: "o",
+        repoName: "r",
+        defaultBranch: "release/1.x",
+      },
+      "user_1",
+    );
+    await testRepoConnector("proj_1", c.id, "user_1");
+    expect((await getRepoConnector("proj_1", c.id)).defaultBranch).toBe("release/1.x");
+  });
+
+  it("adopts the upstream default when the implicit `main` does not exist upstream", async () => {
+    __setOctokitFactory(() =>
+      makeOctokit({
+        get: async () => ({
+          data: {
+            full_name: "o/r",
+            default_branch: "master",
+            private: false,
+            archived: false,
+            size: 1,
+          },
+        }),
+        getRef: notFound,
+      }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "legacy", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.ref).toBe("master");
+    expect((await getRepoConnector("proj_1", c.id)).defaultBranch).toBe("master");
+  });
+
+  it("fails the test with REF_NOT_FOUND for a pinned ref that does not exist, keeping the ref", async () => {
+    __setOctokitFactory(() => makeOctokit({ getRef: notFound }));
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label: "typo",
+        ownerOrOrg: "o",
+        repoName: "r",
+        defaultBranch: "v9.9.9",
+      },
+      "user_1",
+    );
+    await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
+      status: 422,
+      code: "REF_NOT_FOUND",
+    });
+    const after = await getRepoConnector("proj_1", c.id);
+    expect(after.defaultBranch).toBe("v9.9.9");
+    expect(after.status).toBe("error");
+  });
+
+  it("keeps the pinned ref when the ref lookup fails for a reason other than 404", async () => {
+    __setOctokitFactory(() =>
+      makeOctokit({
+        getRef: async () => {
+          throw Object.assign(new Error("rate limited"), { status: 403 });
+        },
+      }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "rl", ownerOrOrg: "o", repoName: "r", defaultBranch: "v2.3.3" },
+      "user_1",
+    );
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.ok).toBe(true);
+    expect((await getRepoConnector("proj_1", c.id)).defaultBranch).toBe("v2.3.3");
+  });
+});
+
+describe("#762 — Test sends no progress event", () => {
+  afterEach(() => configureRepoConnectorService({}));
+
+  it("reports through its response and status, never a count-less progress row", async () => {
+    const progress = vi.fn();
+    const status = vi.fn();
+    configureRepoConnectorService({
+      emitter: { progress, status, discovery: vi.fn() } as never,
+    });
+    __setOctokitFactory(() => makeOctokit({}));
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "t762", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.ok).toBe(true);
+    expect(progress).not.toHaveBeenCalled();
+    expect(status).toHaveBeenCalledWith(expect.objectContaining({ status: "connected" }));
+  });
+});
+
+describe("#714 — metadata reads the commit at the configured ref", () => {
+  it("asks listCommits for the configured ref, not the repo default branch", async () => {
+    const listCommits = vi.fn(async () => ({ data: [{ sha: "c4d54f8" }] }));
+    __setOctokitFactory(() => makeOctokit({ listCommits }));
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label: "meta-pin",
+        ownerOrOrg: "o",
+        repoName: "r",
+        defaultBranch: "v2.3.3",
+      },
+      "user_1",
+    );
+    const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
+    expect(listCommits).toHaveBeenCalledWith(expect.objectContaining({ sha: "v2.3.3" }));
+    expect(meta.headSha).toBe("c4d54f8");
+  });
+
+  // #758 — the remote tip can move during a long ingest; the metadata step must
+  // not relabel the connector with a commit the code graph was not built from.
+  it("never writes the remote tip as lastCommitSha", async () => {
+    const GRAPH_SHA = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+    __setOctokitFactory(() =>
+      makeOctokit({ listCommits: async () => ({ data: [{ sha: "newer-tip" }] }) }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "meta-tip-moved", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = GRAPH_SHA; // what the graph ingest recorded
+    const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
+    expect(meta.headSha).toBe("newer-tip");
+    const after = await getRepoConnector("proj_1", c.id);
+    expect(after.lastCommitSha).toBe(GRAPH_SHA);
+    expect(after.status).toBe("connected");
+  });
+
+  it("does not wipe a known lastCommitSha when listCommits fails", async () => {
+    __setOctokitFactory(() =>
+      makeOctokit({
+        listCommits: async () => {
+          throw new Error("network");
+        },
+      }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "meta-keep", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+    await fetchRepoMetadata("proj_1", c.id, "user_1");
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(
+      "c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+    );
+  });
+});
+
+describe("#714 — the clone records the commit it checked out", () => {
+  const SHA = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+  const SHA2 = "703fe82693ef91054f1163435e2495ed118b3f25";
+  let dir: string;
+  const original = process.env.REPO_CLONE_DIR;
+
+  beforeEach(async () => {
+    dir = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "metis-714-"));
+    process.env.REPO_CLONE_DIR = dir;
+  });
+  afterEach(async () => {
+    if (original === undefined) delete process.env.REPO_CLONE_DIR;
+    else process.env.REPO_CLONE_DIR = original;
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  async function writeGit(target: string, files: Record<string, string>) {
+    for (const [rel, body] of Object.entries(files)) {
+      const p = nodePath.join(target, ".git", rel);
+      await fsp.mkdir(nodePath.dirname(p), { recursive: true });
+      await fsp.writeFile(p, body);
+    }
+  }
+
+  it("readCloneHeadSha reads a detached HEAD (a tag clone)", async () => {
+    await writeGit(dir, { HEAD: `${SHA}\n` });
+    expect(await readCloneHeadSha(dir)).toBe(SHA);
+  });
+
+  it("readCloneHeadSha follows a loose branch ref", async () => {
+    await writeGit(dir, { HEAD: "ref: refs/heads/main\n", "refs/heads/main": `${SHA2}\n` });
+    expect(await readCloneHeadSha(dir)).toBe(SHA2);
+  });
+
+  it("readCloneHeadSha follows a packed branch ref", async () => {
+    await writeGit(dir, {
+      HEAD: "ref: refs/heads/main\n",
+      "packed-refs": `# pack-refs with: peeled fully-peeled sorted\n${SHA} refs/heads/dev\n${SHA2} refs/heads/main\n`,
+    });
+    expect(await readCloneHeadSha(dir)).toBe(SHA2);
+  });
+
+  it("readCloneHeadSha returns null for a missing or malformed HEAD", async () => {
+    expect(await readCloneHeadSha(dir)).toBeNull();
+    await writeGit(dir, { HEAD: "garbage\n" });
+    expect(await readCloneHeadSha(dir)).toBeNull();
+    await writeGit(dir, { HEAD: "ref: refs/heads/gone\n" });
+    expect(await readCloneHeadSha(dir)).toBeNull();
+  });
+
+  // #758 — the clone only reports its commit; ingestCodeGraph records it as
+  // lastCommitSha once a graph built from it is complete.
+  it("shallowCloneRepo returns the cloned commit without persisting it", async () => {
+    const fakeGit = {
+      clone: vi.fn(async (_url: string, target: string) => {
+        await writeGit(target, { HEAD: `${SHA}\n` });
+      }),
+    } as unknown as SimpleGitLike;
+    __setSimpleGitFactory(() => fakeGit);
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label: "clone-sha",
+        ownerOrOrg: "o",
+        repoName: "r",
+        defaultBranch: "v2.3.3",
+      },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = SHA2; // stale, from an earlier ingest of main
+    const out = await shallowCloneRepo("proj_1", c.id, "user_1");
+    expect(out.commitSha).toBe(SHA);
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
+  });
+
+  it("pullOrCloneRepo returns the fast-forwarded commit but leaves lastCommitSha alone", async () => {
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "pull-sha", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = SHA2; // what the current graph is labelled with
+    const target = nodePath.join(dir, c.id);
+    await writeGit(target, { HEAD: "ref: refs/heads/main\n", "refs/heads/main": `${SHA2}\n` });
+    const fakeGit = {
+      clone: vi.fn(),
+      pull: vi.fn(async () => {
+        await writeGit(target, { "refs/heads/main": `${SHA}\n` });
+        return { files: ["a.go"] };
+      }),
+    } as unknown as SimpleGitLike;
+    __setSimpleGitFactory(() => fakeGit);
+    const out = await pullOrCloneRepo("proj_1", c.id, "user_1");
+    expect(out.pulled).toBe(true);
+    expect(out.commitSha).toBe(SHA);
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
+  });
+
+  it("pullOrCloneRepo leaves lastCommitSha alone on its fresh-clone fallback", async () => {
+    const fakeGit = {
+      clone: vi.fn(async (_url: string, target: string) => {
+        await writeGit(target, { HEAD: `${SHA}\n` });
+      }),
+    } as unknown as SimpleGitLike;
+    __setSimpleGitFactory(() => fakeGit);
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "clone-no-record", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = SHA2;
+    const out = await pullOrCloneRepo("proj_1", c.id, "user_1");
+    expect(out.pulled).toBe(false);
+    expect(out.commitSha).toBe(SHA);
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
+  });
+  // The OTHER fallback: an existing clone whose pull fails (diverged history, a
+  // shallow clone too short) is re-cloned. That path must not record either,
+  // or a read-only pull after a failed pull moves lastCommitSha past the graph's label.
+  it("pullOrCloneRepo leaves lastCommitSha alone on the failed-pull re-clone", async () => {
+    const c = await createRepoConnector(
+      "proj_1",
+      { provider: "github", label: "pull-fails-no-record", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    rows.get(c.id)!.lastCommitSha = SHA2; // what the current graph is labelled with
+    const target = nodePath.join(dir, c.id);
+    await writeGit(target, { HEAD: "ref: refs/heads/main\n", "refs/heads/main": `${SHA2}\n` });
+    const pull = vi.fn(async () => {
+      throw new Error("fatal: Not possible to fast-forward, aborting.");
+    });
+    const clone = vi.fn(async (_url: string, cloneTarget: string) => {
+      await writeGit(cloneTarget, { HEAD: `${SHA}\n` });
+    });
+    const fakeGit = { pull, clone } as unknown as SimpleGitLike;
+    __setSimpleGitFactory(() => fakeGit);
+    const out = await pullOrCloneRepo("proj_1", c.id, "user_1");
+    expect(pull).toHaveBeenCalledTimes(1);
+    expect(clone).toHaveBeenCalledTimes(1);
+    expect(out.pulled).toBe(false);
+    expect(out.commitSha).toBe(SHA);
+    expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
   });
 });

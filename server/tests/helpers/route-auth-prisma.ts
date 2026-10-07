@@ -30,10 +30,12 @@ export function withRouteAuth<
     grants = [];
   });
 
-  const originalUpsert = fixture.user.upsert;
+  // Leave the caller's `upsert` out of the spread: intersected with the wrapper
+  // below, it would become an overload whose return type shadows `User`.
+  const { upsert: originalUpsert, ...userRest } = fixture.user;
   const user = {
-    ...fixture.user,
-    upsert: vi.fn(async (...args: Parameters<typeof originalUpsert>) => {
+    ...userRest,
+    upsert: vi.fn(async (...args: Parameters<T["user"]["upsert"]>) => {
       const row = (await originalUpsert(...args)) as User;
       const previous = users.get(row.id);
       const [input] = args as unknown as [{ update?: Row }];
@@ -100,8 +102,11 @@ export function withRouteAuth<
     }),
     ...fixture.userRole,
   };
+  // Same reason as `userRest`: a generic spread of `fixture` would intersect its
+  // `user` with the wrapper's instead of replacing it.
+  const { user: _callerUser, ...fixtureRest } = fixture;
   const client = {
-    ...fixture,
+    ...fixtureRest,
     user,
     userRole,
     role: {

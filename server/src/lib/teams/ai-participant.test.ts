@@ -65,6 +65,8 @@ interface Harness {
   streamReply: ReturnType<typeof vi.fn>;
   emit: ReturnType<typeof vi.fn>;
   scheduleMirror: ReturnType<typeof vi.fn>;
+  buildRetriever: ReturnType<typeof vi.fn>;
+  retrieve: ReturnType<typeof vi.fn>;
 }
 
 function harness(
@@ -97,6 +99,8 @@ function harness(
   const emit = vi.fn();
   const scheduleMirror = vi.fn();
   const loadRateLimitConfig = vi.fn().mockReturnValue({ max: 10, windowMs: 60_000 });
+  const retrieve = vi.fn().mockResolvedValue({ block: "## Retrieved", sources: 1 });
+  const buildRetriever = vi.fn().mockReturnValue(retrieve);
 
   const opts: AIParticipantOptions = {
     provider: fakeProvider,
@@ -107,8 +111,18 @@ function harness(
     streamReply: streamReply as unknown as AIParticipantOptions["streamReply"],
     emit: emit as unknown as AIParticipantOptions["emit"],
     scheduleMirror: scheduleMirror as unknown as AIParticipantOptions["scheduleMirror"],
+    buildRetriever: buildRetriever as unknown as AIParticipantOptions["buildRetriever"],
   };
-  return { opts, shouldRespond, checkRateLimit, streamReply, emit, scheduleMirror };
+  return {
+    opts,
+    shouldRespond,
+    checkRateLimit,
+    streamReply,
+    emit,
+    scheduleMirror,
+    buildRetriever,
+    retrieve,
+  };
 }
 
 describe("canonicalizeAIMention", () => {
@@ -212,6 +226,19 @@ describe("maybeRespondAsAI", () => {
     // Rate-limit still gated before the (single) provider invocation.
     expect(h.checkRateLimit).toHaveBeenCalledTimes(1);
     expect(h.streamReply).toHaveBeenCalledTimes(1);
+  });
+
+  // #739 / PR #850 review — a Teams-triggered reply is grounded like the in-app
+  // one: the thread's project excerpts. It is NOT given tools (no tool execution
+  // on this path by design).
+  it("grounds the reply in the thread's project excerpts, with no tools", async () => {
+    const h = harness();
+    await maybeRespondAsAI(fakeContext({ text: "@AI where is the scheduler?" }), trigger(), h.opts);
+
+    expect(h.buildRetriever).toHaveBeenCalledWith(PROJECT);
+    const call = h.streamReply.mock.calls[0][0];
+    expect(call.retrieve).toBe(h.retrieve);
+    expect(call).not.toHaveProperty("resolveTools");
   });
 
   it("does NOT call the provider when the gate declines (off mode)", async () => {

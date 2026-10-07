@@ -13,6 +13,7 @@
  *
  * Sets `notifiedAt` to prevent duplicate notifications.
  */
+import { userRoom } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
@@ -69,7 +70,7 @@ export async function runSlaCheck(): Promise<void> {
 
       // Notify the assignee.
       if (io) {
-        io.to(`user:${assignment.assigneeId}`).emit("sla:deadline_expired", payload);
+        io.to(userRoom(assignment.assigneeId)).emit("sla:deadline_expired", payload);
       }
 
       // Issue #416 — persist SLA notification for the assignee. Best-effort.
@@ -95,7 +96,7 @@ export async function runSlaCheck(): Promise<void> {
       // Notify the project coordinator if different from the assignee.
       const coordinatorId = assignment.requirement.project?.createdById;
       if (coordinatorId && coordinatorId !== assignment.assigneeId && io) {
-        io.to(`user:${coordinatorId}`).emit("sla:deadline_expired", payload);
+        io.to(userRoom(coordinatorId)).emit("sla:deadline_expired", payload);
 
         // Issue #416 — persist SLA notification for the coordinator too.
         try {

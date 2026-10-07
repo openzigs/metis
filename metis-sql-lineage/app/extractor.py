@@ -27,6 +27,7 @@ import re
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import OptimizeError, ParseError, SqlglotError
 from sqlglot.lineage import lineage as sqlglot_lineage
 from sqlglot.optimizer.qualify import qualify
@@ -175,13 +176,139 @@ def _try_qualify(expression: exp.Expression, schema: dict | None, dialect: str) 
 # ---------------------------------------------------------------------------
 
 
-def _statement_access(statement: exp.Expression) -> str:
-    """Classify a top-level statement's access kind for schema-graph edges."""
-    if isinstance(statement, exp.Insert):
-        return ACCESS_PERSIST
-    if isinstance(statement, (exp.Update, exp.Delete, exp.Merge)):
+_ACCESS_RANK = {ACCESS_READ: 0, ACCESS_WRITE: 1, ACCESS_PERSIST: 2}
+
+# Statement nodes that modify a table. They are found wherever they sit in the
+# tree — a top-level statement, a data-modifying CTE (`WITH u AS (UPDATE ...)
+# SELECT ...`) or a routine body — so a write is classified by its own node, not
+# by the statement that happens to contain it (#859).
+_WRITE_NODES = (exp.Insert, exp.Update, exp.Delete, exp.Merge)
+
+
+def _write_node_access(node: exp.Expression) -> str:
+    return ACCESS_PERSIST if isinstance(node, exp.Insert) else ACCESS_WRITE
+
+
+def _resolve_target_ref(ref: exp.Table, scope: exp.Expression) -> exp.Table:
+    """Resolve a write target named by an alias to the table it aliases (#859).
+
+    T-SQL ``UPDATE x SET ... FROM tbl x`` / ``DELETE x FROM tbl x`` and MySQL
+    ``DELETE a FROM a JOIN b`` name the target by alias or name; the real table is
+    declared elsewhere in the same statement. A target that carries its own alias
+    or schema is already the real table."""
+    if ref.alias or ref.db:
+        return ref
+    name = _norm(ref.name)
+    for table in scope.find_all(exp.Table):
+        if table is not ref and table.alias and _norm(table.alias) == name:
+            return table
+    return ref
+
+
+def _write_targets(node: exp.Expression) -> list[exp.Table]:
+    """The Table nodes a write node actually writes (#859): the UPDATE / DELETE /
+    MERGE / INSERT target only — never a table it merely reads through
+    FROM / USING / JOIN / a source SELECT. A MERGE ``WHEN MATCHED THEN UPDATE``
+    clause has no table of its own and yields nothing (the MERGE carries it)."""
+    if isinstance(node, exp.Insert):
+        target = node.this
+        if isinstance(target, exp.Schema):
+            target = target.this
+        refs = [target]
+    elif isinstance(node, exp.Delete):
+        # Multi-table DELETE (`DELETE a FROM a JOIN b`) lists its targets.
+        refs = list(node.args.get("tables") or []) or [node.this]
+    elif isinstance(node, exp.Update) and isinstance(node.this, exp.Table) and node.this.args.get("joins"):
+        # MySQL multi-table UPDATE (`UPDATE a JOIN b ... SET b.y = 1`): only the
+        # tables whose columns are assigned are written.
+        joined = [node.this, *(j.this for j in node.this.args["joins"] if isinstance(j.this, exp.Table))]
+        by_ref = {_norm(t.alias or t.name): t for t in joined}
+        assigned = {
+            _norm(eq.this.table)
+            for eq in node.expressions
+            if isinstance(eq, exp.EQ) and isinstance(eq.this, exp.Column) and eq.this.table
+        }
+        refs = [by_ref[r] for r in sorted(assigned) if r in by_ref] or [node.this]
+    else:
+        refs = [node.this]
+    return [
+        _resolve_target_ref(ref, node)
+        for ref in refs
+        if isinstance(ref, exp.Table) and not _is_dynamic_table(ref)
+    ]
+
+
+def _raw_target_refs(node: exp.Expression) -> list[exp.Table]:
+    refs = list(node.args.get("tables") or []) if isinstance(node, exp.Delete) else []
+    refs.append(node.this)
+    return [r for r in refs if isinstance(r, exp.Table)]
+
+
+def _table_write_accesses(statement: exp.Expression) -> tuple[dict[int, str], set[int]]:
+    """Map ``id(Table node)`` → write/persist access for every write target in the
+    statement, and return the ids of target references that were only an alias
+    for another table (those are not tables in their own right)."""
+    accesses: dict[int, str] = {}
+    alias_refs: set[int] = set()
+    for node in statement.find_all(*_WRITE_NODES):
+        access = _write_node_access(node)
+        for target in _write_targets(node):
+            current = accesses.get(id(target), ACCESS_READ)
+            if _ACCESS_RANK[access] > _ACCESS_RANK[current]:
+                accesses[id(target)] = access
+        # A target named by alias resolves to another node; the alias node itself
+        # (T-SQL `UPDATE x ... FROM tbl x`) must not surface as a table `x`.
+        for ref in _raw_target_refs(node):
+            resolved = _resolve_target_ref(ref, node)
+            if resolved is not ref:
+                alias_refs.add(id(ref))
+    return accesses, alias_refs
+
+
+# A bind parameter is never a column (#760). Under the permissive default
+# dialect sqlglot parses a Postgres positional parameter (`$1`) as a Column
+# named "$1" (`?`, `:name` and `@name` already parse as Placeholder/Parameter
+# nodes, never as Columns). Anchored literal pattern (ReDoS-safe).
+_POSITIONAL_PARAM_RE = re.compile(r"^\$\d+$")
+
+
+def _is_bind_parameter(column: exp.Column) -> bool:
+    return bool(_POSITIONAL_PARAM_RE.match(column.name or ""))
+
+
+def _is_assignment_target(column: exp.Column) -> bool:
+    """True when ``column`` is the left side of a ``SET col = ...`` assignment in an
+    UPDATE, a MERGE ``WHEN MATCHED THEN UPDATE`` or an ``ON CONFLICT DO UPDATE``.
+    A tuple target (``SET (a, b) = (...)``) counts for each of its columns."""
+    node: exp.Expression = column
+    if isinstance(node.parent, exp.Tuple):
+        node = node.parent
+    eq = node.parent
+    if not isinstance(eq, exp.EQ) or node.arg_key != "this":
+        return False
+    return eq.arg_key == "expressions" and isinstance(eq.parent, (exp.Update, exp.OnConflict))
+
+
+def _is_insert_target(column: exp.Column) -> bool:
+    """True for a MERGE ``WHEN NOT MATCHED THEN INSERT (a, b)`` target column."""
+    parent = column.parent
+    return (
+        isinstance(parent, exp.Tuple)
+        and parent.arg_key == "this"
+        and isinstance(parent.parent, exp.Insert)
+    )
+
+
+def _column_access(column: exp.Column) -> str:
+    """Per-column access (#760). Only the columns actually assigned are written
+    (or persisted, for INSERT targets); predicate, join and source columns are
+    reads — so "who writes ``entries.user_id``?" does not match a
+    ``WHERE user_id = ...``. Decided by the column's own position, so a SET inside
+    a data-modifying CTE under a SELECT is still a write (#859)."""
+    if _is_assignment_target(column):
         return ACCESS_WRITE
-    # SELECT / WITH / CTE / set-ops and anything else default to a read.
+    if _is_insert_target(column):
+        return ACCESS_PERSIST
     return ACCESS_READ
 
 
@@ -220,7 +347,8 @@ def _is_dynamic_table(table: exp.Table) -> bool:
 
 
 def _collect_tables(statement: exp.Expression, exclude: set[str]) -> dict[str, dict]:
-    """Collect referenced tables keyed by qualified name.
+    """Collect referenced tables keyed by qualified name, each with its own access
+    (read, or write/persist when it is a write node's target — #859).
 
     ``exclude`` holds routine self-names (a CREATE PROCEDURE target) that must not
     be reported as a referenced table.
@@ -228,14 +356,20 @@ def _collect_tables(statement: exp.Expression, exclude: set[str]) -> dict[str, d
     tables: dict[str, dict] = {}
     # CTE names are local aliases, not real tables — exclude them.
     cte_names = {_norm(cte.alias_or_name) for cte in statement.find_all(exp.CTE)}
+    write_accesses, alias_refs = _table_write_accesses(statement)
     for table in statement.find_all(exp.Table):
-        if _is_dynamic_table(table):
+        if _is_dynamic_table(table) or id(table) in alias_refs:
             continue
         schema, name = _table_identity(table)
         if not name or name in exclude or name in cte_names:
             continue
         qn = _table_qualified_name(schema, name)
-        tables.setdefault(qn, {"schema": schema, "name": name, "columns": set()})
+        info = tables.setdefault(qn, {"schema": schema, "name": name, "access": ACCESS_READ, "columns": {}})
+        # Only a write node's own target is written (#859); every other
+        # reference — FROM / USING / JOIN / a source SELECT — is a read.
+        access = write_accesses.get(id(table), ACCESS_READ)
+        if _ACCESS_RANK[access] > _ACCESS_RANK[info["access"]]:
+            info["access"] = access
 
     # INSERT target columns live in the `Schema` node (`INSERT INTO t (a, b) ...`)
     # as Identifier children, NOT as Column nodes, so attach them here.
@@ -249,12 +383,30 @@ def _collect_tables(statement: exp.Expression, exclude: set[str]) -> dict[str, d
                     if isinstance(ident, exp.Identifier):
                         col = _norm(ident.name)
                         if col:
-                            tables[qn]["columns"].add(col)
+                            tables[qn]["columns"].setdefault(col, set()).add(ACCESS_PERSIST)
     return tables
 
 
+def _write_target_qn(column: exp.Column) -> str | None:
+    """Qualified name of the table a SET / MERGE-INSERT target column writes to
+    (#807): the nearest enclosing UPDATE, MERGE or INSERT's own target. A MERGE
+    ``WHEN MATCHED THEN UPDATE`` / ``WHEN NOT MATCHED THEN INSERT (a, b)`` clause
+    has no table of its own, so the walk continues up to the MERGE; an
+    ``ON CONFLICT DO UPDATE`` reaches the INSERT. A dynamic target never made it
+    into ``tables``, so the caller's membership check drops it."""
+    node = column.parent
+    while node is not None:
+        if isinstance(node, (exp.Update, exp.Merge, exp.Insert)):
+            targets = _write_targets(node)
+            if targets:
+                return _table_qualified_name(*_table_identity(targets[0]))
+        node = node.parent
+    return None
+
+
 def _attach_columns(statement: exp.Expression, tables: dict[str, dict]) -> set[str]:
-    """Attach resolved columns to their tables. Returns unqualified column names
+    """Attach resolved columns (with their per-column access, #760) to their
+    tables. Bind parameters are skipped. Returns unqualified column names
     (columns we could not tie to a specific table) for diagnostics."""
     # Build alias → qualified-name map so `u.email` (u = users) lands on `users`.
     alias_to_qn: dict[str, str] = {}
@@ -271,20 +423,28 @@ def _attach_columns(statement: exp.Expression, tables: dict[str, dict]) -> set[s
     unqualified: set[str] = set()
     for column in statement.find_all(exp.Column):
         col = _norm(column.name)
-        if not col or col == "*":
+        if not col or col == "*" or _is_bind_parameter(column):
             continue
+        access = _column_access(column)
         tbl_ref = _norm(column.table) if column.table else ""
         if tbl_ref and tbl_ref in alias_to_qn:
             qn = alias_to_qn[tbl_ref]
             if qn in tables:
-                tables[qn]["columns"].add(col)
+                tables[qn]["columns"].setdefault(col, set()).add(access)
                 continue
         if len(tables) == 1:
             # Single-table statement: an unqualified column belongs to it.
             only_qn = next(iter(tables))
-            tables[only_qn]["columns"].add(col)
-        else:
-            unqualified.add(col)
+            tables[only_qn]["columns"].setdefault(col, set()).add(access)
+            continue
+        if access != ACCESS_READ:
+            # A SET / MERGE-INSERT target can only belong to the statement's
+            # target table, however many tables the statement reads (#807).
+            target_qn = _write_target_qn(column)
+            if target_qn in tables:
+                tables[target_qn]["columns"].setdefault(col, set()).add(access)
+                continue
+        unqualified.add(col)
     return unqualified
 
 
@@ -336,6 +496,59 @@ def _lineage_edges(
     return edges
 
 
+# SQL builtins are not routines (#859). sqlglot types most builtins (COUNT, UPPER,
+# ...) so they never reach the Anonymous path, but which ones it types depends on
+# the dialect — under the permissive default `now()` is Anonymous — and it leaves
+# many Postgres builtins untyped altogether (`to_tsvector`, `pg_size_pretty`).
+# Every name sqlglot knows as a function in the dialects METIS targets, plus the
+# Postgres builtins it does not model. Only an unqualified or `pg_catalog.` call is
+# treated as a builtin: Postgres resolves unqualified names through `pg_catalog`
+# first, while `app.to_tsvector(...)` is a user routine that shares the name.
+_BUILTIN_SCHEMAS = {"", "pg_catalog"}
+_POSTGRES_BUILTINS = {
+    # text search
+    "to_tsvector", "to_tsquery", "plainto_tsquery", "phraseto_tsquery", "websearch_to_tsquery",
+    "setweight", "ts_rank", "ts_rank_cd", "ts_headline", "tsvector_to_array", "array_to_tsvector",
+    "numnode", "querytree", "strip",
+    # sizes, locks, notifications and session/system information
+    "pg_size_pretty", "pg_size_bytes", "pg_total_relation_size", "pg_relation_size",
+    "pg_table_size", "pg_indexes_size", "pg_database_size", "pg_column_size",
+    "pg_advisory_lock", "pg_advisory_unlock", "pg_advisory_xact_lock", "pg_try_advisory_lock",
+    "pg_try_advisory_xact_lock", "pg_notify", "pg_sleep", "pg_backend_pid", "pg_typeof",
+    "pg_get_serial_sequence", "pg_cancel_backend", "pg_terminate_backend", "current_setting",
+    "set_config", "txid_current", "version",
+    # sequences
+    "nextval", "currval", "setval", "lastval",
+    # json / jsonb
+    "json_build_object", "jsonb_build_object", "json_build_array", "jsonb_build_array",
+    "json_agg", "jsonb_agg", "json_object_agg", "jsonb_object_agg", "jsonb_set", "jsonb_insert",
+    "json_array_elements", "jsonb_array_elements", "json_array_elements_text",
+    "jsonb_array_elements_text", "json_each", "jsonb_each", "json_each_text", "jsonb_each_text",
+    "json_array_length", "jsonb_array_length", "jsonb_typeof", "jsonb_strip_nulls",
+    "jsonb_pretty", "jsonb_path_query", "to_json", "to_jsonb", "row_to_json",
+    # arrays, dates, strings
+    "array_append", "array_remove", "array_position", "array_cat", "cardinality",
+    "array_to_string", "string_to_array", "clock_timestamp", "statement_timestamp",
+    "transaction_timestamp", "timeofday", "make_interval", "age", "justify_interval",
+    "quote_ident", "quote_literal", "quote_nullable", "format", "uuid_generate_v4",
+}
+
+
+def _known_builtins() -> frozenset[str]:
+    names = set(_POSTGRES_BUILTINS)
+    for dialect in ("", "postgres", "mysql", "tsql", "oracle"):
+        parser = Dialect.get_or_raise(dialect or None).parser_class
+        names.update(_norm(name) for name in parser.FUNCTIONS)
+    return frozenset(names)
+
+
+_BUILTIN_FUNCTIONS = _known_builtins()
+
+
+def _is_builtin_call(schema: str, name: str) -> bool:
+    return _norm(schema) in _BUILTIN_SCHEMAS and _norm(name) in _BUILTIN_FUNCTIONS
+
+
 def _routine_ref(schema: str, name: str) -> dict:
     qn = f"{schema}.{name}" if schema else name
     return {"schema": schema, "name": name, "qualifiedName": qn}
@@ -361,8 +574,8 @@ def _collect_routine_refs(
       * ``CALL [schema.]proc(...)`` / ``EXEC[UTE] [schema.]proc`` — sqlglot models
         these as a ``Command`` (CALL) or ``Execute`` node.
       * ``SELECT [schema.]fn(...)`` — a user-defined function call sqlglot leaves as
-        an ``Anonymous`` node (built-ins like COUNT/SUM are typed nodes, NOT
-        Anonymous, so they are correctly excluded).
+        an ``Anonymous`` node. Built-ins are excluded: most are typed nodes (COUNT,
+        SUM), and the untyped rest are filtered by name (``_is_builtin_call``).
 
     ``exclude`` holds CREATE PROCEDURE/FUNCTION target names so a routine body does
     not report a self-call. The caller turns each ref into a code→routine
@@ -409,7 +622,9 @@ def _collect_routine_refs(
         if isinstance(dot.expression, exp.Anonymous) and isinstance(dot.this, exp.Identifier):
             schema_by_anon[id(dot.expression)] = dot.this.name
     for anon in statement.find_all(exp.Anonymous):
-        add(schema_by_anon.get(id(anon), ""), anon.name)
+        schema = schema_by_anon.get(id(anon), "")
+        if not _is_builtin_call(schema, anon.name):
+            add(schema, anon.name)
 
     return refs
 
@@ -457,7 +672,7 @@ def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = No
 
     # Accumulate across statements, merging tables/columns by qualified name and
     # keeping the strongest access (persist > write > read) per table.
-    access_rank = {ACCESS_READ: 0, ACCESS_WRITE: 1, ACCESS_PERSIST: 2}
+    access_rank = _ACCESS_RANK
     table_acc: dict[str, dict] = {}
     # Routine invocations referenced anywhere across the statements (#316),
     # keyed by qualified name so a routine called twice is reported once.
@@ -489,7 +704,6 @@ def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = No
         exclude = _routine_target_names(statement)
         tables = _collect_tables(qualified, exclude)
         unqualified_cols = _attach_columns(qualified, tables)
-        access = _statement_access(statement)
 
         # Routine invocations referenced by this statement (#316): `SELECT fn(...)`
         # in app code → a code→routine `executes` edge; a routine BODY calling
@@ -523,13 +737,14 @@ def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = No
                 table_acc[qn] = {
                     "schema": info["schema"],
                     "name": info["name"],
-                    "access": access,
-                    "columns": set(info["columns"]),
+                    "access": info["access"],
+                    "columns": {c: set(a) for c, a in info["columns"].items()},
                 }
             else:
-                if access_rank[access] > access_rank[existing["access"]]:
-                    existing["access"] = access
-                existing["columns"].update(info["columns"])
+                if access_rank[info["access"]] > access_rank[existing["access"]]:
+                    existing["access"] = info["access"]
+                for col, accesses in info["columns"].items():
+                    existing["columns"].setdefault(col, set()).update(accesses)
 
         result["lineage_edges"].extend(_lineage_edges(qualified, schema, resolved_dialect))
 
@@ -545,14 +760,17 @@ def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = No
             }
         )
         for col in sorted(info["columns"]):
-            result["columns"].append(
-                {
-                    "table": qn,
-                    "column": col,
-                    "qualifiedName": f"{qn}.{col}",
-                    "access": info["access"],
-                }
-            )
+            # One entry per (column, access): `SET status = $1 WHERE status = $3`
+            # both writes and reads `status` (#760).
+            for col_access in sorted(info["columns"][col], key=access_rank.__getitem__):
+                result["columns"].append(
+                    {
+                        "table": qn,
+                        "column": col,
+                        "qualifiedName": f"{qn}.{col}",
+                        "access": col_access,
+                    }
+                )
 
     # Materialize routine invocations deterministically (#316).
     for qn in sorted(routine_acc):

@@ -41,6 +41,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CodeCitation } from "@/components/findings/code-citation";
+import {
+  CodeCitationRepoContext,
+  useCodeCitationRepo,
+} from "@/components/findings/code-citation-repo-context";
 import { DerivationBadge } from "@/components/findings/derivation-badge";
 import { PersonaTag } from "@/components/findings/persona-tag";
 import { agentSourcePersonas } from "@/components/findings/agent-source-persona";
@@ -54,6 +58,7 @@ import { GenerateIssuesAction } from "@/components/analysis/GenerateIssuesAction
 // Issue #1104 — a gated run's empty requirements list must explain itself.
 import { RequirementsEmptyState } from "@/components/analysis/RequirementsEmptyState";
 import { SynthesisDegradedNotice } from "@/components/analysis/SynthesisDegradedNotice";
+import { RequirementReplacementWithheldNotice } from "@/components/analysis/RequirementReplacementWithheldNotice";
 import { AddDocumentsPanel } from "@/components/analysis/add-documents-panel";
 import { formatSourceLabel } from "@/lib/format-source-label";
 import { useRepoNames } from "@/hooks/use-repo-names";
@@ -92,6 +97,7 @@ import { RequirementDiff } from "@/components/analysis/requirement-diff";
 import { DataMappingsPanel } from "@/components/traceability/data-mappings-panel";
 import { RequirementLinksPanel } from "@/components/requirements/requirement-links-panel";
 import { TraceabilityView } from "@/components/traceability/traceability-view";
+import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
 import { findingsApi } from "@/lib/findings-api";
 // Epic #34 — collaboration on requirements (comments, assignees/SLA, optimistic-lock merge).
@@ -115,6 +121,7 @@ import {
   FINDINGS_PAGE_SIZE,
   NO_FINDING_FILTERS,
   REQUIREMENTS_PAGE_SIZE,
+  agentDisplayStatus,
   analysisTabCounts,
   analysisViewHref,
   collectFindings,
@@ -145,11 +152,13 @@ function StatusBadge({ status }: { status: string }): React.ReactElement {
   const colour =
     status === "completed"
       ? "bg-success-muted text-success border-success/30"
-      : status === "failed"
-        ? "bg-destructive/10 text-destructive border-destructive/30"
-        : status === "cancelled"
-          ? "bg-muted text-foreground border-border/30"
-          : "bg-info-muted text-info border-info/30";
+      : status === "degraded"
+        ? "bg-warning-muted text-warning border-warning/30"
+        : status === "failed"
+          ? "bg-destructive/10 text-destructive border-destructive/30"
+          : status === "cancelled"
+            ? "bg-muted text-foreground border-border/30"
+            : "bg-info-muted text-info border-info/30";
   return (
     <span className={`inline-block rounded border px-2 py-0.5 text-xs font-medium ${colour}`}>
       {status}
@@ -162,6 +171,8 @@ export default function AnalysisPage(): React.ReactElement {
   const projectId = params?.id ?? "";
   // #23 — connector id → repository name for citation labels.
   const repoNames = useRepoNames(projectId);
+  // #728 — the single GitHub repo code citations link into (null = plain text).
+  const citationRepo = useCodeCitationRepo(projectId);
   const qc = useQueryClient();
   const [selectedAnalysisId, setSelectedAnalysisId] = useState<string | null>(null);
 
@@ -627,7 +638,10 @@ export default function AnalysisPage(): React.ReactElement {
   // opens the page that holds it and scrolls to its card. Applied once per run,
   // so a refetch never pulls a reader back after they page away. With no
   // `?tab=`, the link opens the Requirements tab, as `#approvals` does.
+  // #735 — a comment @mention adds `&comments=1`: open that requirement's
+  // comment panel too, as the Spec Kit page does for `?artifact=`.
   const requestedRequirementId = searchParams?.get("requirementId") ?? null;
+  const requestedComments = searchParams?.get("comments") === "1";
   const appliedRequirementLink = useRef<string | null>(null);
   const snapshot = detail.data;
   useEffect(() => {
@@ -648,11 +662,12 @@ export default function AnalysisPage(): React.ReactElement {
     if (!requestedTab) setTab("requirements");
     if (!requestedTab || parseAnalysisTab(requestedTab) === "requirements")
       setPendingAnchor(`#requirement-${requestedRequirementId}`);
-  }, [snapshot, requestedRequirementId, requestedTab]);
+    if (requestedComments) setCommentsReqId(requestedRequirementId);
+  }, [snapshot, requestedRequirementId, requestedTab, requestedComments]);
 
   if (!projectId) return <p className="p-6">Missing project id.</p>;
 
-  return (
+  const content = (
     <div className="space-y-6 p-6">
       <PageHeader
         title={<>Requirements Analysis — {project.data?.name ?? "loading…"}</>}
@@ -992,6 +1007,9 @@ export default function AnalysisPage(): React.ReactElement {
                       acceptance criteria because the fallback cannot classify.
                       Rendered above the list so it is read before them. */}
                       <SynthesisDegradedNotice metadata={detail.data.metadata} />
+                      {/* Issue #769 — a re-synthesis was refused permission to
+                      replace this (reviewed or healthy) set; say so. */}
+                      <RequirementReplacementWithheldNotice metadata={detail.data.metadata} />
                       {detail.data.requirements.length === 0 ? (
                         /* Issue #1104 (finding B) — distinguish "produced nothing"
                        from "produced N and the approval gate is holding them". */
@@ -1078,7 +1096,7 @@ export default function AnalysisPage(): React.ReactElement {
                             </div>
                           </div>
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
-                          <RequirementCollabRow requirementId={req.id} />
+                          <RequirementCollabRow requirementId={req.id} projectId={projectId} />
                           <p className="mt-1 max-w-prose text-sm leading-relaxed text-foreground">
                             {req.body}
                           </p>
@@ -1392,7 +1410,7 @@ export default function AnalysisPage(): React.ReactElement {
                                   </div>
                                 </div>
                               </div>
-                              <StatusBadge status={agent.status} />
+                              <StatusBadge status={agentDisplayStatus(agent)} />
                             </div>
                             {isSpecialist && detail.data.status === "completed" ? (
                               <div className="mt-2">
@@ -1431,6 +1449,13 @@ export default function AnalysisPage(): React.ReactElement {
                   ) : null}
                   {/* Issue #737 — requirement→findings→code→tests traceability matrix. */}
                   <TraceabilityMatrix
+                    projectId={projectId}
+                    analysisId={detail.data.id}
+                    enabled={detail.data.status === "completed"}
+                  />
+
+                  {/* Issue #816 — requirements whose mapped code has no linked test. */}
+                  <UntestedRequirementsPanel
                     projectId={projectId}
                     analysisId={detail.data.id}
                     enabled={detail.data.status === "completed"}
@@ -1479,6 +1504,7 @@ export default function AnalysisPage(): React.ReactElement {
         open={commentsReqId !== null}
         onClose={() => setCommentsReqId(null)}
         requirementId={commentsReqId ?? undefined}
+        projectId={projectId || undefined}
         currentUserId={user?.id}
         title={
           detail.data?.requirements.find((r) => r.id === commentsReqId)?.title ??
@@ -1497,6 +1523,13 @@ export default function AnalysisPage(): React.ReactElement {
       />
     </div>
   );
+  // #728 — every CodeCitation below (findings, gap report, requirement diff)
+  // links into this repo; null keeps them plain text.
+  return (
+    <CodeCitationRepoContext.Provider value={citationRepo}>
+      {content}
+    </CodeCitationRepoContext.Provider>
+  );
 }
 
 /**
@@ -1504,7 +1537,13 @@ export default function AnalysisPage(): React.ReactElement {
  * to drive the SLA badge and renders the assignee picker. Kept as its own
  * component so each requirement card owns one `assignmentApi.list` query.
  */
-function RequirementCollabRow({ requirementId }: { requirementId: string }): React.ReactElement {
+function RequirementCollabRow({
+  requirementId,
+  projectId,
+}: {
+  requirementId: string;
+  projectId: string;
+}): React.ReactElement {
   const { data: assignments = [] } = useQuery({
     queryKey: ["assignments", requirementId],
     queryFn: () => assignmentApi.list(requirementId),
@@ -1518,7 +1557,7 @@ function RequirementCollabRow({ requirementId }: { requirementId: string }): Rea
   return (
     <div className="mt-2 flex items-center gap-2" data-testid={`req-collab-${requirementId}`}>
       <span className="text-xs text-muted-foreground">Assignees</span>
-      <AssigneePicker requirementId={requirementId} />
+      <AssigneePicker requirementId={requirementId} projectId={projectId} />
       <SLABadge deadline={nextDeadline ?? null} />
     </div>
   );

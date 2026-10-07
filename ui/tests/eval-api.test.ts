@@ -18,7 +18,9 @@ import { evalApi } from "@/lib/eval-api";
 
 const mockApi = apiFetch as unknown as ReturnType<typeof vi.fn>;
 
-beforeEach(() => mockApi.mockReset());
+beforeEach(() => {
+  mockApi.mockReset();
+});
 
 describe("evalApi.listLeaderboard", () => {
   it("forwards bench + days as query params", async () => {

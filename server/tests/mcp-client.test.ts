@@ -11,10 +11,11 @@ function fakeTransport(canned: Record<string, unknown>): MCPTransportClient {
     stop: vi.fn(async () => undefined),
     notify: vi.fn(async () => undefined),
     closed: vi.fn(async () => ({ code: 0, reason: "ok" })),
+    // request<TResult> is generic; a canned-response stub cannot satisfy it without an assertion.
     request: vi.fn(async (method: string) => {
       if (method in canned) return canned[method];
       throw new Error(`no canned response for ${method}`);
-    }),
+    }) as MCPTransportClient["request"],
   };
 }
 
@@ -46,10 +47,11 @@ describe("MCPClient", () => {
       stop: vi.fn(async () => undefined),
       notify: vi.fn(async () => undefined),
       closed: vi.fn(async () => ({ code: 0, reason: "ok" })),
+      // request<TResult> is generic; a canned-response stub cannot satisfy it without an assertion.
       request: vi.fn(async (method: string) => {
         if (method === "initialize") return { protocolVersion: "2025-06-18" };
         throw new Error("nope");
-      }),
+      }) as MCPTransportClient["request"],
     };
     const c = new MCPClient(t);
     const hs = await c.handshake();

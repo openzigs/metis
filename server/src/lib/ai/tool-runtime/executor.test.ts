@@ -121,6 +121,21 @@ describe("executeToolCall — the gate runs before execute, on every path", () =
     expect(approvalRows.map((r) => r.decision)).toEqual(["deny"]);
   });
 
+  it("#861 nobody can approve: never executes; the model is told to carry on without it", async () => {
+    const t = tool();
+    const { out } = await run(t, gate(ALWAYS, { ask: async () => "unavailable" }));
+    expect(t.execute).not.toHaveBeenCalled();
+    expect(out).toMatchObject({
+      executed: false,
+      decision: "deny",
+      errorCode: "TOOL_DENIED",
+      reason: "no_interactive_approver",
+    });
+    expect(out.text).toMatch(/no one is available to approve/);
+    expect(out.text).toMatch(/without this tool/);
+    expect(out.text).not.toMatch(/user denied/);
+  });
+
   it("approval expires: never executes; recorded as expired", async () => {
     const t = tool();
     const { out, events } = await run(t, gate(ALWAYS, { ask: async () => "expired" }));
