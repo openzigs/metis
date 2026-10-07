@@ -298,7 +298,7 @@ describe("AssigneePicker", () => {
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
-        <AssigneePicker requirementId="req1" />
+        <AssigneePicker requirementId="req1" projectId="proj-1" />
       </Wrapper>,
     );
   }
@@ -348,7 +348,7 @@ describe("AssigneePicker", () => {
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
-        <AssigneePicker requirementId="req1" />
+        <AssigneePicker requirementId="req1" projectId="proj-1" />
       </Wrapper>,
     );
     await waitFor(() => screen.getByText("@alice"));

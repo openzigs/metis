@@ -550,3 +550,110 @@ def test_insert_select_conflict_set_target_lands_on_the_insert_target():
     )
     assert ("b", "write") in _column_access(result, "t")
     assert ("b", "write") not in _column_access(result, "u")
+
+
+# --- #859: write attribution by statement node, not by whole statement ------
+
+
+def _table_access(result: dict) -> dict[str, str]:
+    return {t["qualifiedName"]: t["access"] for t in result["tables"]}
+
+
+@pytest.mark.parametrize("dialect", ["", "postgres"])
+def test_update_inside_a_cte_is_a_write(dialect):
+    # Miniflux SetEntriesStatusAndCountVisible: a data-modifying CTE under a
+    # SELECT. `entries` is written; `feeds` (joined by the outer SELECT) is read.
+    result = extract_usage(
+        "WITH updated AS (UPDATE entries SET status = $1 WHERE user_id = $2 "
+        "RETURNING id, feed_id) "
+        "SELECT count(*) FROM updated JOIN feeds ON feeds.id = updated.feed_id",
+        dialect=dialect,
+    )
+    assert _table_access(result) == {"entries": "write", "feeds": "read"}
+    assert ("status", "write") in _column_access(result, "entries")
+
+
+@pytest.mark.parametrize("dialect", ["", "postgres"])
+def test_delete_and_insert_inside_ctes_keep_their_own_kind(dialect):
+    result = extract_usage(
+        "WITH gone AS (DELETE FROM sessions WHERE expired = 1 RETURNING user_id), "
+        "logged AS (INSERT INTO audit (user_id) SELECT user_id FROM gone RETURNING 1) "
+        "SELECT name FROM users",
+        dialect=dialect,
+    )
+    assert _table_access(result) == {"sessions": "write", "audit": "persist", "users": "read"}
+
+
+@pytest.mark.parametrize("dialect", ["", "postgres"])
+def test_update_from_writes_only_the_target_table(dialect):
+    # Miniflux MarkCategoryAsRead: `feeds` is only read through FROM.
+    result = extract_usage(
+        "UPDATE entries SET status = $1, changed_at = now() FROM feeds "
+        "WHERE feeds.id = entries.feed_id AND feeds.category_id = $2",
+        dialect=dialect,
+    )
+    assert _table_access(result) == {"entries": "write", "feeds": "read"}
+    assert _column_access(result, "feeds") == {("category_id", "read"), ("id", "read")}
+
+
+def test_delete_using_writes_only_the_target_table():
+    result = extract_usage(
+        "DELETE FROM entries USING feeds WHERE feeds.id = entries.feed_id", dialect="postgres"
+    )
+    assert _table_access(result) == {"entries": "write", "feeds": "read"}
+
+
+def test_merge_source_table_is_read():
+    result = extract_usage(
+        "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET v = s.v",
+        dialect="postgres",
+    )
+    assert _table_access(result) == {"t": "write", "s": "read"}
+
+
+def test_insert_select_source_table_is_read():
+    result = extract_usage(
+        "INSERT INTO archive (id, title) SELECT e.id, e.title FROM entries e", dialect="postgres"
+    )
+    assert _table_access(result) == {"archive": "persist", "entries": "read"}
+
+
+def test_mysql_multi_table_update_writes_only_assigned_tables():
+    result = extract_usage("UPDATE a JOIN b ON a.x = b.x SET b.y = 1", dialect="mysql")
+    assert _table_access(result) == {"a": "read", "b": "write"}
+
+
+def test_mysql_multi_table_delete_writes_only_the_named_targets():
+    result = extract_usage("DELETE a FROM a JOIN b ON a.x = b.x", dialect="mysql")
+    assert _table_access(result) == {"a": "write", "b": "read"}
+
+
+def test_tsql_update_through_an_alias_writes_the_aliased_table():
+    # `UPDATE x ... FROM tbl x` names the target by its alias: the write lands on
+    # `tbl`, and the alias is never reported as a table of its own.
+    result = extract_usage(
+        "UPDATE x SET y = 1 FROM tbl x JOIN u ON u.id = x.id", dialect="tsql"
+    )
+    assert _table_access(result) == {"tbl": "write", "u": "read"}
+    assert ("y", "write") in _column_access(result, "tbl")
+
+
+def test_tsql_delete_through_an_alias_writes_the_aliased_table():
+    result = extract_usage("DELETE x FROM tbl x JOIN u ON u.id = x.id", dialect="tsql")
+    assert _table_access(result) == {"tbl": "write", "u": "read"}
+
+
+# --- #859: SQL builtins are not routines -------------------------------------
+
+
+@pytest.mark.parametrize("dialect", ["", "postgres", "mysql"])
+def test_sql_builtins_are_not_reported_as_routines(dialect):
+    result = extract_usage(
+        "SELECT now(), setweight(to_tsvector($1), 'A'), "
+        "pg_size_pretty(pg_total_relation_size('entries')), jsonb_build_object('a', 1), "
+        "pg_catalog.now(), calc_total(1), app.to_tsvector(2) FROM t",
+        dialect=dialect,
+    )
+    # User routines survive, including a schema-qualified one that shares a
+    # builtin's name; builtins (bare or pg_catalog-qualified) do not.
+    assert _routine_names(result) == {"calc_total", "app.to_tsvector"}
