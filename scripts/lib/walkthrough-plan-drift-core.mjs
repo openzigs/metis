@@ -37,6 +37,13 @@
  * (`scripts/lib/walkthrough-plan-runners.test.mjs`) pins that the walk resolves every
  * mount in the real tree, so a server refactor that outgrows the regexes fails a
  * test rather than silently shrinking the route set.
+ *
+ * A mount whose last argument is a call the walk cannot follow is reported
+ * (`unresolved`), and the runner fails on it — unless the call is into a
+ * package import (`app.use("/api/public", cors({…}))`), which is middleware and
+ * registers none of our routes, or the mount's line carries
+ * `// drift-check: skip`. A RELATIVE import that does not resolve still fails:
+ * that is a router whose routes the walk lost.
  */
 
 /** HTTP methods a route registration can use. `all` answers every method. */
@@ -53,8 +60,19 @@ const REGISTRATION_RE =
 /** A mount: `receiver.use("/prefix",` — the arguments after it are parsed by hand. */
 const USE_RE = /\b([A-Za-z_$][\w$]*)\s*\.\s*use\(\s*(["'`])(\/[^"'`]*)\2\s*,/g;
 
-/** `import { a, b as c } from "./x.js"` (single or multi-line). */
-const IMPORT_RE = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
+/** `import { a, b as c } from "./x.js"`, optionally after a default (`import d, { a }`). */
+const IMPORT_RE =
+  /import\s*(?:type\s*)?(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
+
+/** `import cors from "cors"`, alone or before `, { … }`. */
+const DEFAULT_IMPORT_RE =
+  /import\s+([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*["']([^"']+)["']/g;
+
+/**
+ * Written on a mount's line in a route source (`// drift-check: skip`), it
+ * waives a mount the walk cannot follow — the same marker the plan uses.
+ */
+export const SOURCE_SKIP_MARKER = "drift-check: skip";
 
 /** A top-level declaration at column 0, which starts a new chunk. */
 const DECLARATION_RE =
@@ -81,7 +99,8 @@ export function joinPath(prefix, suffix) {
 }
 
 /**
- * Local name → `{ specifier, imported }` for every named import.
+ * Local name → `{ specifier, imported }` for every named and default import
+ * (a default import's `imported` is `"default"`).
  *
  * @param {string} source
  * @returns {Map<string, { specifier: string, imported: string }>}
@@ -97,6 +116,9 @@ export function parseImports(source) {
       const [imported, local] = part.split(/\s+as\s+/).map((s) => s.trim());
       imports.set(local ?? imported, { specifier, imported });
     }
+  }
+  for (const match of source.matchAll(DEFAULT_IMPORT_RE)) {
+    imports.set(match[1], { specifier: match[2], imported: "default" });
   }
   return imports;
 }
@@ -198,7 +220,7 @@ export function classifyMountTarget(expr) {
  * @param {string} chunk
  * @returns {{
  *   registrations: { receiver: string, method: string, path: string }[],
- *   mounts: { receiver: string, prefix: string, target: ReturnType<typeof classifyMountTarget> }[],
+ *   mounts: { receiver: string, prefix: string, target: ReturnType<typeof classifyMountTarget>, waived: boolean }[],
  * }}
  */
 export function parseRouterChunk(chunk) {
@@ -208,13 +230,21 @@ export function parseRouterChunk(chunk) {
     if (match[4].includes("${")) continue;
     registrations.push({ receiver: match[1], method: match[2], path: match[4] });
   }
-  /** @type {{ receiver: string, prefix: string, target: ReturnType<typeof classifyMountTarget> }[]} */
+  /** @type {{ receiver: string, prefix: string, target: ReturnType<typeof classifyMountTarget>, waived: boolean }[]} */
   const mounts = [];
   for (const match of chunk.matchAll(USE_RE)) {
     if (match[3].includes("${")) continue;
     const last = lastArgument(chunk, match.index + match[0].length);
     if (last === null) continue;
-    mounts.push({ receiver: match[1], prefix: match[3], target: classifyMountTarget(last) });
+    const lineStart = chunk.lastIndexOf("\n", match.index) + 1;
+    const lineEnd = chunk.indexOf("\n", match.index);
+    const line = chunk.slice(lineStart, lineEnd < 0 ? chunk.length : lineEnd);
+    mounts.push({
+      receiver: match[1],
+      prefix: match[3],
+      target: classifyMountTarget(last),
+      waived: line.includes(SOURCE_SKIP_MARKER),
+    });
   }
   return { registrations, mounts };
 }
@@ -319,7 +349,14 @@ export function collectApiRoutes({ entryFile, readSource }) {
       if (target.kind === "call") {
         const fn = resolveFunction(file, target.name);
         if (fn === null) {
-          unresolved.push({ file, prefix: mountPrefix, target: target.name });
+          // A call into a package (`cors({…})`, `rateLimit()`) is middleware:
+          // it registers none of our routes. A relative import the walk could
+          // not follow might, so that still fails unless the line waives it.
+          const imported = load(file)?.imports.get(target.name);
+          const fromPackage = imported !== undefined && !imported.specifier.startsWith(".");
+          if (!fromPackage && !mount.waived) {
+            unresolved.push({ file, prefix: mountPrefix, target: target.name });
+          }
           continue;
         }
         walkFunction(fn.file, fn.fn, mountPrefix, null, depth + 1);
@@ -331,6 +368,7 @@ export function collectApiRoutes({ entryFile, readSource }) {
         );
         const fn = assigned ? resolveFunction(file, assigned[2]) : null;
         if (fn === null) {
+          if (mount.waived) continue;
           unresolved.push({
             file,
             prefix: mountPrefix,

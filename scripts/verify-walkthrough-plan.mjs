@@ -86,7 +86,7 @@ function main() {
 
   const changes = parseNameStatus(git(["diff", "--name-status", "-M", `${base}...HEAD`]));
   const routeChanges = routeLineChanges(
-    git(["diff", "-U0", "--no-color", `${base}...HEAD`, "--", "server/src/routes"]),
+    git(["diff", "-U1", "--no-color", `${base}...HEAD`, "--", "server/src/routes"]),
   );
   const result = evaluateWalkthroughPlanGate({ changes, routeChanges, labels, author });
 

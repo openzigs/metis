@@ -142,9 +142,11 @@ Phase 9, and create the Phase 13 scheduler job **after** Phase 9's documents fin
   `fetch` calls that send `UPDATE` SQL (the read-only query probe). Plan those with the
   operator — who runs or approves them, using no-op writes (`… WHERE false`) — or verify them
   from the database tables, and record which.
-- **`speckit.taskstoissues`'s real export returns 501 until #936 lands.** Don't spend
-  sandbox slots on it. **Finding-publish has no dry run**: it publishes at once and counts
-  against the cap. Impact analyses have no draft path.
+- **Spec Kit issue export (S21) cannot publish until #953 lands.** The dry run lists the
+  titles and the target repo; Publish then stays disabled with the "not available on this
+  server yet" reason. Spend no sandbox slot on it. If Publish is enabled, #953 has landed:
+  publish within the 2-issue cap, to `openzigs/flux-v2` only. **Finding-publish has no dry
+  run**: it publishes at once and counts against the cap. Impact analyses have no draft path.
 - Afterwards, both must return `[]`:
   ```bash
   gh search issues --repo miniflux/v2 --author <user> --json url

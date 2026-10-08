@@ -45,6 +45,20 @@ describe("parseImports", () => {
     expect(imports.get("d")).toEqual({ specifier: "../y.js", imported: "d" });
     expect(imports.get("T")).toEqual({ specifier: "../y.js", imported: "T" });
   });
+
+  it("maps default imports, alone or before named ones", () => {
+    const imports = parseImports(
+      [
+        'import cors from "cors";',
+        'import express, { type Application } from "express";',
+        'import local from "./local.js";',
+      ].join("\n"),
+    );
+    expect(imports.get("cors")).toEqual({ specifier: "cors", imported: "default" });
+    expect(imports.get("express")).toEqual({ specifier: "express", imported: "default" });
+    expect(imports.get("Application")).toEqual({ specifier: "express", imported: "Application" });
+    expect(imports.get("local")).toEqual({ specifier: "./local.js", imported: "default" });
+  });
 });
 
 describe("splitTopLevel", () => {
@@ -99,12 +113,27 @@ describe("parseRouterChunk", () => {
       { receiver: "r", method: "post", path: "/:id/b" },
     ]);
     expect(mounts).toEqual([
-      { receiver: "r", prefix: "/m", target: { kind: "call", name: "fooRouter" } },
+      { receiver: "r", prefix: "/m", target: { kind: "call", name: "fooRouter" }, waived: false },
       {
         receiver: "r",
         prefix: "/:id/:sub",
         target: { kind: "call", name: "requireProjectAccess" },
+        waived: false,
       },
+    ]);
+  });
+
+  it("marks a mount waived only by `drift-check: skip` on its own `.use(` line", () => {
+    const { mounts } = parseRouterChunk(
+      [
+        'r.use("/a", lostRouter()); // drift-check: skip',
+        "// drift-check: skip",
+        'r.use("/b", lostRouter());',
+      ].join("\n"),
+    );
+    expect(mounts.map((m) => [m.prefix, m.waived])).toEqual([
+      ["/a", true],
+      ["/b", false],
     ]);
   });
 
@@ -208,6 +237,44 @@ describe("collectApiRoutes", () => {
       // Reported whatever it is called: a lost router need not end in "Router".
       { file: "routes/index.ts", prefix: "/api/things", target: "thingRoutes" },
     ]);
+  });
+
+  it("treats a call into a package import as middleware, but still reports a lost relative one", () => {
+    const app = {
+      "app.ts": [
+        'import cors from "cors";',
+        'import { rateLimit } from "express-rate-limit";',
+        'import { lostRouter } from "./routes/lost.js";',
+        "export function createApp() {",
+        '  app.get("/healthz", h);',
+        '  app.use("/api/public", cors({ origin: "*" }));',
+        '  app.use("/api/limited", rateLimit({ max: 5 }));',
+        '  app.use("/api/lost", lostRouter());',
+        "}",
+      ].join("\n"),
+    };
+    const { routes, unresolved } = collectApiRoutes({
+      entryFile: "app.ts",
+      readSource: reader(app),
+    });
+    expect(routes.map((r) => `${r.method} ${r.path}`)).toEqual(["get /healthz"]);
+    expect(unresolved).toEqual([{ file: "app.ts", prefix: "/api/lost", target: "lostRouter" }]);
+  });
+
+  it("lets `drift-check: skip` on the mount's line waive an unfollowable mount", () => {
+    const app = {
+      "app.ts": [
+        'import { lostRouter } from "./routes/lost.js";',
+        "export function createApp() {",
+        "  const lost = lostRouter();",
+        '  app.use("/api/lost", lostRouter()); // drift-check: skip',
+        '  app.use("/api/member", lost.inner); // drift-check: skip',
+        '  app.use("/api/still", lostRouter());',
+        "}",
+      ].join("\n"),
+    };
+    const { unresolved } = collectApiRoutes({ entryFile: "app.ts", readSource: reader(app) });
+    expect(unresolved).toEqual([{ file: "app.ts", prefix: "/api/still", target: "lostRouter" }]);
   });
 
   it("returns nothing for a missing entry file", () => {

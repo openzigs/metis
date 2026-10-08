@@ -82,6 +82,82 @@ describe("check-test-plan.mjs (drift)", () => {
     expect(output).toContain("Both must be non-empty");
   });
 
+  /**
+   * A minimal tree: `app.ts` source (or none), the given page files, and an
+   * empty plan, so only the route walk and page listing decide the outcome.
+   *
+   * @param {string} name @param {string | null} appSource @param {string[]} pages
+   */
+  const tree = (name, appSource, pages) => {
+    const root = path.join(tmp, name);
+    fs.mkdirSync(path.join(root, "ui", "src", "app"), { recursive: true });
+    fs.mkdirSync(path.join(root, "docs", "walkthroughs"), { recursive: true });
+    fs.writeFileSync(path.join(root, "docs", "walkthroughs", "TEST_PLAN.md"), "no references\n");
+    if (appSource !== null) {
+      fs.mkdirSync(path.join(root, "server", "src"), { recursive: true });
+      fs.writeFileSync(path.join(root, "server", "src", "app.ts"), appSource);
+    }
+    for (const page of pages) {
+      const file = path.join(root, "ui", "src", "app", ...page.split("/"));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "export default function P() { return null; }\n");
+    }
+    return root;
+  };
+  const HEALTH_APP = 'export function createApp() {\n  app.get("/api/health", h);\n}\n';
+
+  it("fails with pages but zero routes", () => {
+    const { status, output } = run(DRIFT, ["--root", tree("pages-only", null, ["page.tsx"])]);
+    expect(output).toContain("found 0 API route(s)");
+    expect(output).toContain("and 1 page(s)");
+    expect(status).toBe(1);
+  });
+
+  it("fails with routes but zero pages", () => {
+    const { status, output } = run(DRIFT, ["--root", tree("routes-only", HEALTH_APP, [])]);
+    expect(output).toContain("found 1 API route(s)");
+    expect(output).toContain("and 0 page(s)");
+    expect(status).toBe(1);
+  });
+
+  it("passes a tree with routes and pages and nothing unfollowable", () => {
+    const { status, output } = run(DRIFT, ["--root", tree("minimal", HEALTH_APP, ["page.tsx"])]);
+    expect(output).toContain("Every API route and page the plan names exists.");
+    expect(status).toBe(0);
+  });
+
+  it("fails on a mount into a relative import the walk cannot follow", () => {
+    const app = [
+      'import { lostRouter } from "./routes/lost.js";',
+      "export function createApp() {",
+      '  app.get("/api/health", h);',
+      '  app.use("/api/lost", lostRouter());',
+      "}",
+      "",
+    ].join("\n");
+    const { status, output } = run(DRIFT, ["--root", tree("lost-mount", app, ["page.tsx"])]);
+    expect(output).toContain("could not follow");
+    expect(output).toContain("server/src/app.ts: /api/lost → lostRouter");
+    expect(output).not.toContain("Every API route and page the plan names exists.");
+    expect(status).toBe(1);
+  });
+
+  it("passes a package-middleware mount and a waived relative mount", () => {
+    const app = [
+      'import cors from "cors";',
+      'import { lostRouter } from "./routes/lost.js";',
+      "export function createApp() {",
+      '  app.get("/api/health", h);',
+      '  app.use("/api/public", cors({ origin: "*" }));',
+      '  app.use("/api/lost", lostRouter()); // drift-check: skip',
+      "}",
+      "",
+    ].join("\n");
+    const { status, output } = run(DRIFT, ["--root", tree("waived-mount", app, ["page.tsx"])]);
+    expect(output).not.toContain("could not follow");
+    expect(status).toBe(0);
+  });
+
   it("fails when the app directory is missing", () => {
     const root = path.join(tmp, "no-app");
     fs.mkdirSync(path.join(root, "docs", "walkthroughs"), { recursive: true });
@@ -164,6 +240,25 @@ describe("verify-walkthrough-plan.mjs (PR gate)", () => {
     }
   });
 
+  it("sees a path-only edit on a multi-line registration, whose open call is unchanged", () => {
+    const multi = (/** @type {string} */ p) =>
+      `export function xRouter() {\n  r.get("/a", h);\n  r.post(\n    "${p}",\n    h,\n  );\n}\n`;
+    git(["checkout", "-q", "-b", "multi-base", "main"]);
+    try {
+      write("server/src/routes/x.ts", multi("/old"));
+      git(["commit", "-q", "-am", "multi-line base"]);
+      git(["checkout", "-q", "-b", "multi-path"]);
+      write("server/src/routes/x.ts", multi("/new"));
+      git(["commit", "-q", "-am", "rename path only"]);
+      const { status, output } = gate({}, ["--base", "multi-base"]);
+      expect(output).toContain('route removed in server/src/routes/x.ts: "/old",');
+      expect(output).toContain('route added in server/src/routes/x.ts: "/new",');
+      expect(status).toBe(1);
+    } finally {
+      git(["checkout", "-q", "feature"]);
+    }
+  });
+
   it("fails on an unresolvable base ref instead of skipping", () => {
     const { status, output } = gate({}, ["--base", "no-such-ref"]);
     expect(status).toBe(1);
@@ -196,6 +291,46 @@ describe("verify-walkthrough-plan.mjs (PR gate)", () => {
     const { status, output } = gate();
     expect(output).toContain("verdict=plan-updated");
     expect(status).toBe(0);
+  });
+});
+
+describe("Spec Kit issue export (S21) instructions after #936", () => {
+  const read = (/** @type {string} */ rel) =>
+    fs.readFileSync(path.join(repoRoot, ...rel.split("/")), "utf8");
+  const docs = [
+    "docs/walkthroughs/TEST_PLAN.md",
+    ".github/skills/e2e-walkthrough/SKILL.md",
+    ".github/skills/e2e-walkthrough/briefs/wave-d.md",
+  ];
+
+  it("no longer tells a run to expect or record a 501 against #936", () => {
+    for (const rel of docs) {
+      const text = read(rel);
+      expect(text, rel).not.toMatch(/501 until #936/);
+      expect(text, rel).not.toMatch(/501 against #936/);
+    }
+  });
+
+  it("says Publish stays disabled until #953, spends no slot, and caps any publish at 2 in the sandbox", () => {
+    for (const rel of docs) {
+      const line = read(rel)
+        .split(/\n(?=- |\| |\n)/)
+        .find((para) => para.includes("#953"));
+      expect(line, rel).toBeDefined();
+      expect(line, rel).toMatch(/disabled/);
+      expect(line, rel).toMatch(/target repo/);
+      expect(line, rel).toMatch(/no sandbox slot|Keep the sandbox slot/);
+      expect(line, rel).toMatch(/2-issue cap/);
+      expect(line, rel).toContain("openzigs/flux-v2");
+    }
+  });
+
+  it("quotes the reason the Spec Kit page actually shows", () => {
+    const page = read("ui/src/app/(authed)/projects/[id]/spec-kit/page.tsx");
+    expect(page).toContain("Publishing issues to GitHub is not available on this server yet.");
+    expect(read("docs/walkthroughs/TEST_PLAN.md")).toContain(
+      "Publishing issues to GitHub is not available on this server yet",
+    );
   });
 });
 

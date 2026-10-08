@@ -34,6 +34,10 @@ only matters for one run, the brief carries it.
   - Spec Kit commands are written without a leading slash (`speckit.plan`), so they are not read
     as pages. A line that must name a dead path on purpose ends with
     `<!-- drift-check: skip -->`.
+  - The route walk also fails on a server mount it cannot follow (`r.use("/x", fooRouter())`
+    where `fooRouter` is a relative import it cannot resolve). A call into a package
+    (`cors({…})`) is middleware and passes. A mount that must stay unfollowed on purpose
+    carries `// drift-check: skip` on its `.use(` line.
 
 > **Setup notes (2026-10-02, from #706):**
 > - **DeepSeek:** `.env` already has `AI_PROVIDER=anthropic`, `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` and `ANTHROPIC_MODEL=deepseek-flash`, plus the key.
@@ -435,7 +439,7 @@ Feature for this run: **"Mark all entries as read older than N days"** (Miniflux
 | S18 | **Status gates** | UI: the gate list in the Features panel (`spec-kit-feature-gates`); `GET …/features/:slug/status` | `spec`, `plan`, `tasks` and `implement` gates match what exists | — |
 | S19 | **Checklists** | UI: **Generate checklists** right after S4, before `speckit.plan`, and again after it. *API only:* adding a reviewer line to a checklist (feature artifacts have no Edit) | **412** before `plan.md`, its message shown in `spec-kit-error`. After: five domain checklists (security, performance, accessibility, observability, testability). Re-run (merge is the default): the reviewer's line and its tick survive below the regenerated items (#925) | The items are specific to this feature, for example a bounded `UPDATE` on `entries` or an index on `published_at` |
 | S20 | **Namespaced commands** | UI (S5–S9 already ran them) | Same results as the legacy commands, with no `Deprecation` header | — |
-| S21 | **Issue export** | UI: **Preview issue export (dry run)**, then **Publish issues to the saved target** (`openzigs/flux-v2` only) | The dry run lists the issues it would create; the publish button stays disabled until a dry run of the current `tasks.md`. **The real export returns 501 until #936 lands**: don't spend sandbox slots on it, and record the 501 against #936 | Issue bodies map one-to-one to tasks |
+| S21 | **Issue export** | UI: **Preview issue export (dry run)**, then **Publish issues to the saved target** (`openzigs/flux-v2` only) | The dry run lists the issue titles and the target repo (`openzigs/flux-v2`). **Publish stays disabled after the dry run**, with the reason "Publishing issues to GitHub is not available on this server yet", until the live issue client lands (#953). Spend no sandbox slot. If Publish is ever enabled, #953 has landed: publish within the 2-issue cap, to `openzigs/flux-v2` only | Issue bodies map one-to-one to tasks |
 | S22 | **Archive and restore** | UI: **Archive**, tick **Show archived**, **Restore** (`POST …/features/:slug/archive`, then `…/restore`) | Hidden from `GET …/features`, shown with `?includeArchived=1`, then back | — |
 | S23 | **Install** | *API only:* `POST …/spec-kit/install` | **501 `SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED`**. This is expected; do not file it | — |
 | S24 | *(Optional; needs a public webhook)* **Issue sync** | Close a sandbox issue made by S21 (`routes/webhooks-github.ts` → `syncIssueEvent`, #433) | The matching `tasks.md` item is ticked | — |

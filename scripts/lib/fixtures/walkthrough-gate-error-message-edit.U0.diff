@@ -1,0 +1,7 @@
+diff --git a/server/src/routes/spec-kit.ts b/server/src/routes/spec-kit.ts
+index 5a82ed24..58daac26 100644
+--- a/server/src/routes/spec-kit.ts
++++ b/server/src/routes/spec-kit.ts
+@@ -678 +678 @@ export function specKitRouter(): Router {
+-      "/spec-kit/install is disabled until the AttachedWorkspace model lands. The installer library is reachable for trusted in-process callers (tests + future server-internal code) but the public route refuses caller-supplied workspaceRoot values to prevent path-not-attached bypass (Epic #396 follow-up).",
++      "/spec-kit/install is unavailable until the AttachedWorkspace model lands. The installer library is reachable for trusted in-process callers (tests + future server-internal code) but the public route refuses caller-supplied workspaceRoot values to prevent path-not-attached bypass (Epic #396 follow-up).",

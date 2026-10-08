@@ -26,8 +26,9 @@ commands (#931).
 
 - **S9 handoff:** **Start analysis with these artifacts** once. It must start a new run, never
   `{{ANALYSIS_RUN_ID}}`; record its ID and cost, with test custom agents disabled first.
-- **S21:** the real export returns 501 until #936 lands. Record the 501 against #936 and keep
-  the sandbox slot.
+- **S21:** the dry run lists the titles and the target repo; Publish stays disabled with the
+  "not available on this server yet" reason until #953 lands. Keep the sandbox slot. If
+  Publish is enabled, #953 has landed: publish within the 2-issue cap, to `openzigs/flux-v2` only.
 
 ## Standing rules — never
 

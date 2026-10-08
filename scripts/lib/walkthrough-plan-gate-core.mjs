@@ -18,11 +18,16 @@
  *    lines differ from those on the added lines. A pair comes from a line that
  *    registers a path (`r.get("/x"`), a mount (`r.use("/x", …, fooRouter())`,
  *    keyed by prefix and target), or a bare path literal on its own line — the
- *    second line of a multi-line `r.post(\n  "/x",` call. Editing a
- *    registration in place (new middleware, a renamed handler) leaves the pairs
- *    unchanged and does not trigger; a rename shows as one of each, so it does.
- *    Known blind spot: with `-U0`, changing only the method on an `r.post(` line
- *    whose path sits on the next, unchanged line is not seen.
+ *    second line of a multi-line `r.post(\n  "/x",` call. A bare path line
+ *    counts only straight after a line that opens a registration call, and only
+ *    when its literal holds path characters (no spaces), so a slash-leading
+ *    error message is not a route. Comment lines (`//`, `/*`, `*`) never count,
+ *    even when they quote a registration. Editing a registration in place (new
+ *    middleware, a renamed handler) leaves the pairs unchanged and does not
+ *    trigger; a rename shows as one of each, so it does. The runner diffs with
+ *    `-U1` so the opening line of a multi-line call arrives as context when
+ *    only its path changed. Known blind spot: changing only the method on an
+ *    `r.post(` line whose path sits on the next, unchanged line is not seen.
  *
  * ## Exemptions
  *
@@ -43,8 +48,14 @@ const TEST_SOURCE_RE = /\.test\.ts$/;
 /** A route registration or mount on one line: `x.get("/path"`, `x.use("/path",`. */
 const REGISTRATION_LINE_RE = /\.\s*(?:get|post|put|patch|delete|all|use)\(\s*(["'`])\/[^"'`]*\1/;
 
-/** A path literal alone on its line: the second line of a multi-line registration. */
-const BARE_PATH_LINE_RE = /^\s*(["'`])\/[^"'`]*\1\s*,?\s*$/;
+/**
+ * A path literal alone on its line: the second line of a multi-line
+ * registration. Path characters only — a literal with a space is prose.
+ */
+const BARE_PATH_LINE_RE = /^\s*(["'`])\/[\w\-.:/*?{}+~@]*\1\s*,?\s*$/;
+
+/** A comment line: `// …`, `/* …`, or a ` * …` continuation. */
+const COMMENT_LINE_RE = /^\s*(?:\/\/|\/\*|\*)/;
 
 /** @param {string} path @returns {boolean} */
 export function isPagePath(path) {
@@ -102,13 +113,14 @@ const MOUNT_TARGET_RE = /,\s*([A-Za-z_$][\w$.]*)\s*(?:\([^()]*\))?\s*\)\s*;?\s*$
  * `USE /x → fooRouter` for a mount — its target is part of its identity, since
  * swapping the router changes every route under the prefix. A bare path line
  * takes its method from an open call (`r.post(`) on the line before it on the
- * same diff side, and `?` when that line is not in the diff.
+ * same diff side, and registers nothing without one.
  *
  * @param {string} body the line without its diff sign
  * @param {string | null} pendingMethod the method of an open call on the previous line
  * @returns {string | null} null when the line registers nothing
  */
 export function routeKey(body, pendingMethod) {
+  if (COMMENT_LINE_RE.test(body)) return null;
   const reg = REGISTRATION_KEY_RE.exec(body);
   if (reg) {
     const method = reg[1].toUpperCase();
@@ -116,11 +128,24 @@ export function routeKey(body, pendingMethod) {
     const target = MOUNT_TARGET_RE.exec(body.slice(reg.index + reg[0].length));
     return `USE ${reg[3]} → ${target ? target[1] : "?"}`;
   }
-  if (BARE_PATH_LINE_RE.test(body)) {
+  if (pendingMethod !== null && BARE_PATH_LINE_RE.test(body)) {
     const path = body.trim().replace(/,\s*$/, "").slice(1, -1);
-    return `${pendingMethod ?? "?"} ${path}`;
+    return `${pendingMethod} ${path}`;
   }
   return null;
+}
+
+/**
+ * The method of a registration call left open at the end of this line
+ * (`r.post(`), or null — including for a comment that quotes one.
+ *
+ * @param {string} body
+ * @returns {string | null}
+ */
+function openCallMethod(body) {
+  if (COMMENT_LINE_RE.test(body)) return null;
+  const open = OPEN_CALL_LINE_RE.exec(body);
+  return open ? open[1].toUpperCase() : null;
 }
 
 /**
@@ -131,7 +156,9 @@ export function routeKey(body, pendingMethod) {
  * removed content line that reads `-- x` arrives as `--- x`, so a `---` or
  * `+++` anywhere else is content, not a new file.
  *
- * @param {string} diffText output of `git diff -U0 <base>...HEAD -- server/src/routes`
+ * @param {string} diffText output of `git diff -U1 <base>...HEAD -- server/src/routes`
+ *   (or `-U0`); a context line only supplies the open call that a changed bare
+ *   path line follows
  * @returns {{ file: string, sign: "+" | "-", line: string, key: string }[]}
  */
 export function routeLineChanges(diffText) {
@@ -168,6 +195,13 @@ export function routeLineChanges(diffText) {
     }
     if (file === null || !isRouteSourcePath(file)) continue;
     const sign = line.charAt(0);
+    if (sign === " ") {
+      // A context line is on both sides: it registers nothing new, but it may
+      // open the call whose path the next, changed line holds.
+      const method = openCallMethod(line.slice(1));
+      pending = { "+": method, "-": method };
+      continue;
+    }
     if (sign !== "+" && sign !== "-") {
       pending = { "+": null, "-": null };
       continue;
@@ -177,8 +211,7 @@ export function routeLineChanges(diffText) {
       REGISTRATION_LINE_RE.test(body) || BARE_PATH_LINE_RE.test(body)
         ? routeKey(body, pending[sign])
         : null;
-    const open = OPEN_CALL_LINE_RE.exec(body);
-    pending[sign] = open ? open[1].toUpperCase() : null;
+    pending[sign] = openCallMethod(body);
     if (key !== null) changes.push({ file, sign, line: body.trim(), key });
   }
   return changes;

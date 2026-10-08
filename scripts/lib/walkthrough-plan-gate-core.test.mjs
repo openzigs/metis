@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -125,8 +129,92 @@ describe("routeKey", () => {
     expect(routeKey('r.use("/x", sub);', null)).toBe("USE /x → sub");
     expect(routeKey('r.use("/x",', null)).toBe("USE /x → ?");
     expect(routeKey('  "/x",', "PUT")).toBe("PUT /x");
-    expect(routeKey('  "/x",', null)).toBe("? /x");
     expect(routeKey("const a = 1;", null)).toBeNull();
+  });
+
+  it("counts a bare path line only after an open registration call", () => {
+    expect(routeKey('  "/x",', null)).toBeNull();
+    expect(routeKey('  "/:id/members/:memberId",', "PATCH")).toBe("PATCH /:id/members/:memberId");
+  });
+
+  it("does not read prose as a path, even after an open call", () => {
+    expect(routeKey('  "/spec-kit/install is disabled until later",', "POST")).toBeNull();
+  });
+
+  it("ignores comment lines, including ones that quote a registration", () => {
+    expect(routeKey('    // `r.use("/:id/:sub", …)` workspace-scope chokepoint', null)).toBeNull();
+    expect(routeKey('   * r.get("/x", h);', null)).toBeNull();
+    expect(routeKey('  /* r.post("/y", h) */', null)).toBeNull();
+    expect(routeKey('  // "/x",', "POST")).toBeNull();
+  });
+});
+
+describe("routeLineChanges on real diffs", () => {
+  const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
+
+  it("does not trigger on a one-word edit to a slash-leading error message (git diff -U0)", () => {
+    const diff = fs.readFileSync(
+      path.join(fixtures, "walkthrough-gate-error-message-edit.U0.diff"),
+      "utf8",
+    );
+    // The fixture is the real thing: a changed string literal that starts with `/`.
+    expect(diff).toMatch(/^-\s+"\/spec-kit\/install is disabled/m);
+    expect(diff).toMatch(/^\+\s+"\/spec-kit\/install is unavailable/m);
+    const changes = routeLineChanges(diff);
+    expect(changes).toEqual([]);
+    expect(
+      evaluateWalkthroughPlanGate({
+        changes: [{ status: "M", path: "server/src/routes/spec-kit.ts" }],
+        routeChanges: changes,
+        labels: [],
+        author: "someone",
+      }),
+    ).toMatchObject({ ok: true, verdict: "not-required" });
+  });
+
+  it("does not trigger on an edited comment that quotes a registration", () => {
+    const diff = [
+      "diff --git a/server/src/routes/projects.ts b/server/src/routes/projects.ts",
+      "--- a/server/src/routes/projects.ts",
+      "+++ b/server/src/routes/projects.ts",
+      "@@ -301 +301 @@",
+      '-    // `r.use("/:id/:sub", …)` workspace-scope chokepoint above (which runs',
+      '+    // `r.use("/:id/:sub", …)` workspace scope chokepoint above (which runs',
+      '-    // r.get("/:id/old", h) used to live here',
+    ].join("\n");
+    expect(routeLineChanges(diff)).toEqual([]);
+  });
+
+  it("takes a changed path line's method from the open call on the context line before it (-U1)", () => {
+    const diff = [
+      "diff --git a/server/src/routes/workspaces.ts b/server/src/routes/workspaces.ts",
+      "--- a/server/src/routes/workspaces.ts",
+      "+++ b/server/src/routes/workspaces.ts",
+      "@@ -211,2 +211,2 @@",
+      "   r.post(",
+      '-    "/:id/transfer",',
+      '+    "/:id/handover",',
+      "     requireAuth,",
+    ].join("\n");
+    expect(routeLineChanges(diff).map((c) => [c.sign, c.key])).toEqual([
+      ["-", "POST /:id/transfer"],
+      ["+", "POST /:id/handover"],
+    ]);
+  });
+
+  it("does not take a method from a context line that is not an open call", () => {
+    const diff = [
+      "diff --git a/server/src/routes/x.ts b/server/src/routes/x.ts",
+      "--- a/server/src/routes/x.ts",
+      "+++ b/server/src/routes/x.ts",
+      "@@ -10,2 +10,2 @@",
+      "     throw new AppError(",
+      '-      "/x",',
+      '+      "/y",',
+      "   // r.post(",
+      '+    "/z",',
+    ].join("\n");
+    expect(routeLineChanges(diff)).toEqual([]);
   });
 });
 
@@ -227,6 +315,19 @@ describe("evaluateWalkthroughPlanGate", () => {
       changes: [...base.changes, { status: "M", path: TEST_PLAN_PATH }],
     });
     expect(result).toMatchObject({ ok: true, verdict: "plan-updated" });
+  });
+
+  it("does not count another markdown file as the plan update", () => {
+    const result = evaluateWalkthroughPlanGate({
+      ...base,
+      changes: [
+        ...base.changes,
+        { status: "A", path: ".changes/unreleased/x.md" },
+        { status: "M", path: "docs/walkthroughs/RESULTS_TEMPLATE.md" },
+        { status: "M", path: "docs/TEST_PLAN.md" },
+      ],
+    });
+    expect(result).toMatchObject({ ok: false, verdict: "missing" });
   });
 
   it("passes with the waiver label, and only that label", () => {
