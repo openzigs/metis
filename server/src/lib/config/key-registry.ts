@@ -601,7 +601,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "int",
     schema: z.coerce.number().int().positive(),
     description:
-      "How many distinct FOREIGN test directories (not the mapped code's own directory or its conventional sibling test directory) must exercise one requirement→code mapping before it is treated as a hub (a config constructor other packages' tests call for setup) when resolving \"Tested by\" (#860, `lib/traceability/tested-by.ts`). Through a hub, a foreign `exercises` link counts only when the test or the symbol it calls shares the requirement title's words; tests in the code's own directory always count. Default 2.",
+      "How many distinct FOREIGN test directories (not the mapped code's own directory or its conventional sibling test directory) must exercise one requirement→code mapping before it is treated as a hub (a config constructor other packages' tests call for setup) when resolving \"Tested by\" (#860, `lib/traceability/tested-by.ts`). Through a hub, an `exercises` link, from a foreign or the code's own directory (#905), counts only when the test or the symbol it calls shares the requirement title's words. Default 2.",
     sensitive: false,
   },
   // ── Epic #820 Phase 1 / Issue #824 — deterministic AFFECTED SCHEMA prompt block ─
