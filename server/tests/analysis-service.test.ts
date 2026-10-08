@@ -1364,6 +1364,13 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
     });
     dbProvider.value = "postgresql";
     vi.clearAllMocks();
+    // A transaction client distinct from `prisma`, so a read that bypasses it is visible.
+    const txFindFirst = vi.fn(vi.mocked(prisma.analysis.findFirst).getMockImplementation()!);
+    vi.mocked(prisma.$transaction).mockImplementation((async (fn: (tx: unknown) => unknown) =>
+      fn({
+        $queryRaw: prisma.$queryRaw,
+        analysis: { findFirst: txFindFirst, update: prisma.analysis.update },
+      })) as never);
 
     await persistAnalysisEnhancement(a.id, { promotionStatus: "allowed" });
     await persistAnalysisCapability(a.id, {
@@ -1374,7 +1381,9 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
     } as Parameters<typeof persistAnalysisCapability>[1]);
 
     const queryRaw = vi.mocked(prisma.$queryRaw);
-    const findFirst = vi.mocked(prisma.analysis.findFirst);
+    const findFirst = txFindFirst;
+    expect(prisma.analysis.findFirst).not.toHaveBeenCalled();
+    expect(findFirst).toHaveBeenCalledTimes(2);
     expect(prisma.$transaction).toHaveBeenCalledTimes(2);
     expect(queryRaw).toHaveBeenCalledTimes(2);
     for (let i = 0; i < 2; i++) {
@@ -1388,6 +1397,21 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
     const meta = JSON.parse(analyses.get(a.id)!.metadata!);
     expect(meta.promotionStatus).toBe("allowed");
     expect(meta.capability).toBeDefined();
+  });
+
+  it("#909 — does not freeze the decorated runId into the stored structuredRequirements", async () => {
+    const a = await createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document"],
+    });
+    await persistAnalysisEnhancement(a.id, {
+      structuredRequirements: { requirements: [], runId: "run-1" } as never,
+      structuredRunId: "run-1",
+    });
+    const meta = JSON.parse(analyses.get(a.id)!.metadata!);
+    expect(meta.structuredRequirements).not.toHaveProperty("runId");
+    expect(meta.structuredRunId).toBe("run-1");
   });
 
   it("returns null structured requirements when extraction never ran", async () => {

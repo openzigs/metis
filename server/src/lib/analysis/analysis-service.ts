@@ -323,7 +323,14 @@ function applyEnhancementPatch(
   const next: Record<string, unknown> = { ...current };
   if (patch.enhancement !== undefined) next.enhancement = patch.enhancement;
   if (patch.structuredRequirements !== undefined) {
-    next.structuredRequirements = patch.structuredRequirements;
+    // `getStructuredRequirements` decorates the list with its run id; callers
+    // that round-trip it must not freeze that copy into the stored blob (the
+    // authoritative id lives in `structuredRunId`).
+    const { runId: _runId, ...stored } =
+      patch.structuredRequirements as typeof patch.structuredRequirements & {
+        runId?: string;
+      };
+    next.structuredRequirements = stored;
   }
   if (patch.webResearch !== undefined) next.webResearch = patch.webResearch;
   if (patch.promotionBlocked !== undefined) next.promotionBlocked = patch.promotionBlocked;

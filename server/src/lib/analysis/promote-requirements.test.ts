@@ -722,7 +722,8 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
 
     const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
 
-    expect(outcome).toEqual({ status: "already-promoted", requirementCount: 2 });
+    expect(outcome.status).toBe("unavailable");
+    expect(outcome).toMatchObject({ reason: expect.stringContaining("withheld") });
     expect(persistAnalysisEnhancement).not.toHaveBeenCalled();
     expect(recorded().promotedStructuredRunId).toBe("run-1");
   });
@@ -761,7 +762,8 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
 
     const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
 
-    expect(outcome).toEqual({ status: "already-promoted", requirementCount: 2 });
+    expect(outcome.status).toBe("unavailable");
+    expect(outcome).toMatchObject({ reason: expect.stringContaining("replaced by another run") });
     expect(committed.rows).toEqual([]);
     expect(db.analysis.metadata).toBe(run2);
   });
@@ -771,9 +773,10 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
     db.analysis = { projectId: PROJECT_ID };
     db.approvals = [
       // Run 1's REQ-2 was approved; run 2's REQ-2 — a different requirement — was rejected.
-      { itemId: "REQ-2", status: "approved", createdAt: new Date("2026-01-01T00:00:00Z") },
-      { itemId: "REQ-1", status: "approved", createdAt: new Date("2026-02-01T00:00:00Z") },
+      // Newest row FIRST for REQ-2: production's findMany has no orderBy.
       { itemId: "REQ-2", status: "rejected", createdAt: new Date("2026-02-01T00:00:00Z") },
+      { itemId: "REQ-1", status: "approved", createdAt: new Date("2026-02-01T00:00:00Z") },
+      { itemId: "REQ-2", status: "approved", createdAt: new Date("2026-01-01T00:00:00Z") },
       { itemId: "REQ-3", status: "approved", createdAt: new Date("2026-02-01T00:00:00Z") },
     ];
 

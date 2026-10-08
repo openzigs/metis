@@ -594,6 +594,7 @@ export default function AnalysisPage(): React.ReactElement {
   // #909 — while the approvals load, the button waits instead of guessing.
   const deepDive = deepDiveGate({
     loading: approvals.isLoading,
+    failed: approvals.isError,
     ticketStatus: approvals.data?.ticketStatus,
   });
   const [deepDiveFinding, setDeepDiveFinding] = useState<DeepDiveDialogFinding | null>(null);

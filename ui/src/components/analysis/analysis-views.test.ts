@@ -409,6 +409,11 @@ describe("deepDiveGate (#909)", () => {
     expect(gate.title).toBe("Checking approvals…");
   });
 
+  it("is disabled when the approvals lookup failed, not fail-open", () => {
+    const gate = deepDiveGate({ loading: false, failed: true, ticketStatus: undefined });
+    expect(gate).toEqual({ disabled: true, title: "Could not check approvals" });
+  });
+
   it("is enabled once the gate is open", () => {
     const gate = deepDiveGate({
       loading: false,

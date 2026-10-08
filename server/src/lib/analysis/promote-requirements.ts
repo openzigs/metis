@@ -169,6 +169,7 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
         structuredRunId,
         approvedAt,
       });
+      if (appended === "superseded") return { status: "unavailable", reason: SUPERSEDED_REASON };
       if (appended > 0) return { status: "promoted", requirementCount: appended };
       return { status: "already-promoted", requirementCount: existing };
     }
@@ -204,7 +205,7 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   });
   // #769 — the replacement was refused to protect review work on the existing
   // set; nothing was written, so nothing is recorded as promoted.
-  if (withheld) return { status: "already-promoted", requirementCount: existing };
+  if (withheld) return { status: "unavailable", reason: WITHHELD_REASON };
 
   // Issue #1116 — the rows only exist NOW, so this is the first moment the
   // clarification answers the user submitted while the gate was closed can be
@@ -284,6 +285,11 @@ function readPromotionRecord(metadata: string | null | undefined): {
  * database write lock. Which ids are new is decided only after that, so two
  * approvals resolving at once append each requirement exactly once.
  */
+const SUPERSEDED_REASON =
+  "The requirement set was replaced by another run while you were approving. Reload the analysis and review the new list.";
+const WITHHELD_REASON =
+  "These approvals are for a newer extraction run, but replacing the existing requirements was withheld to protect review work already done on them. Nothing was promoted.";
+
 async function appendNewlyApproved(input: {
   analysisId: string;
   projectId: string;
@@ -292,8 +298,9 @@ async function appendNewlyApproved(input: {
   structuredRunId: string | null;
   /** When each approved structured id was approved (its deciding approval). */
   approvedAt: ReadonlyMap<string, Date | null>;
-}): Promise<number> {
+}): Promise<number | "superseded"> {
   const flat = await readFlattenedFindings(input.analysisId);
+  let superseded = false;
 
   const requirementIds = await prisma.$transaction(async (tx) => {
     await lockRequirementSet(tx, input.analysisId);
@@ -305,7 +312,10 @@ async function appendNewlyApproved(input: {
     const record = readPromotionRecord(locked.metadata);
     // #909 — re-checked under the lock: a replacement for another run may have
     // committed since the caller routed here.
-    if (record.runId !== input.structuredRunId) return [];
+    if (record.runId !== input.structuredRunId) {
+      superseded = true;
+      return [];
+    }
     const recorded = record.ids;
     let isNew: (idx: number) => boolean;
     if (recorded) {
@@ -386,6 +396,7 @@ async function appendNewlyApproved(input: {
     });
     return ids;
   });
+  if (superseded) return "superseded";
   if (requirementIds.length === 0) return 0;
 
   // Best-effort enrichment of the committed rows, as on the first promotion.
