@@ -13,6 +13,7 @@ Phases 9–13 (docs generation, chat, discussions, publishing, drift / scheduler
 | Repo connector / graph | `{{REPO_CONNECTOR_ID}}` / `{{CODE_GRAPH_ID}}` at `{{COMMIT_SHA}}` |
 | Analysis run | `{{ANALYSIS_RUN_ID}}` (reviewed — read only) |
 | Requirement set | `{{REQUIREMENT_SET_ID}}` |
+| Repo source documents after wave A | `{{REPO_DOC_COUNT}}` |
 | Ledger snapshot | `{{LEDGER_SINCE}}` |
 
 ## Do
@@ -31,6 +32,51 @@ its finished sections (#855). Don't regenerate it in a second full run, and don'
 operator to restart the server. Record the wall time, cost and final size. #741 caps a
 section at 60k characters and a document at 250k; run 3's BRD was 2.19 MB.
 
+## Added steps (run 4)
+
+**Phase 9 — measure docs generation against its caps (#855, #741; PR #867).** Record the
+`DOCS_GEN_MAX_RUN_COST_CENTS` in force (default 2500; the skill suggests 500 for a walkthrough),
+`DOCS_GEN_MAX_RUN_TOKENS` (default 20M), `DOCS_GEN_SECTION_MAX_CHARS` (default 60,000) and
+`DOCS_GEN_DOCUMENT_MAX_CHARS` (default 250,000). For each document report: cost against the cost
+ceiling; whether a ceiling stopped it (a degraded draft whose warning names the ceiling);
+the exported body's length and its longest section, both in characters; and any "topics left
+out" note.
+- Expected: no section over the section cap and no body over the document cap; text is never
+  cut mid-sentence.
+- **Cancel once on purpose.** Regenerate the architecture document; after its first section
+  finishes, click **Cancel generation**. Expected: the status leaves `generating` within a
+  minute, the ledger stops growing, and the finished sections are kept. A second regenerate
+  lists the sections it reused (#857). Record the spend of both attempts.
+- The database document's model calls appear in the ledger under `docs-gen` (#858, PR #869).
+
+**Phase 10 — a follow-up keeps its citations (#773, PR #923).** In one project-scoped session,
+ask BA question 1, then follow up with `Show me the exact lines for the first citation`.
+- Expected: the follow-up keeps the earlier verified `file:line` and does not say it "had not
+  actually read" the file.
+- Use the UI if the project scope can be selected; otherwise send both turns to the same
+  session over `POST /api/ai/chat`.
+
+**Phase 11.** The @mention picker offers only users who can open the project (#870, PR #879).
+The notification names the author and opens the comment (#735, PR #869).
+
+**Phase 12 — publishing (#863, PR #922).** All on `openzigs/flux-v2`, dry run first, inside the
+cap of 2.
+- Publish one batch. Expected: its draft is no longer selected afterwards, and the next batch
+  preview does not fail with `DRAFT_INELIGIBLE`.
+- **Archive** a settled batch from the batch row (`archive-batch-<id>`), then confirm with a reason.
+  It leaves the list. Leave **Also close the issues** unticked; wave D may still need them.
+- No draft title reads `[Feature] [Feature]: …`. Count the doubled titles; expected 0.
+- Drafts from the Phase 6 GitHub import carry the upstream issue's acceptance criteria when the
+  issue has an "Acceptance criteria" heading. Name one issue checked each way.
+- Generating drafts from an import of more than 25 requirements opens the requirement picker
+  (`draft-requirement-picker`) instead of drafting them all. Pick 3.
+- `/reviews`: a review started in Phase 8 is listed (#732, PR #929).
+
+**Phase 13 — refresh on an unchanged commit (after Phase 9).** After the manual
+`refresh-ingest`, the code graph is not re-created (same graph ID, #856), and the repo
+connector's source-document count still equals `{{REPO_DOC_COUNT}}`: the refresh prunes only files absent from
+the checkout (#756, PR #892).
+
 ## Standing rules — never
 
 - Never start a repo refresh, re-ingest or scheduler job while a document is generating.
@@ -46,7 +92,8 @@ section at 60k characters and a document at 250k; run 3's BRD was 2.19 MB.
 
 ## Tips
 
-Log in once (20 logins / 15 min) and drive the API with in-page `fetch`. **Fetch doc
+Log in once (20 logins / 15 min). Drive the UI, and keep in-page `fetch` for the ledger and
+for exports. **Fetch doc
 exports — clicking a download button crashes the Playwright page.** Wait 20–40 s after a
 dev-mode navigation before snapshotting. A second user (Phase 11 mentions) needs
 `browser.newContext()`; mock users exist only after their first login, and a workspace
@@ -85,7 +132,8 @@ as plain text.
 ## Return
 
 1. **State hand-off**: document IDs, chat session IDs, the URLs of any sandbox issues
-   created, and the ledger snapshot timestamp at the end of the wave.
+   created, the docs-gen caps table (per document: cost, ceiling hit, body and longest-section
+   characters), and the ledger snapshot timestamp at the end of the wave.
 2. **Per-phase table**:
 
    | Phase | Wall time | Input tok | Output tok | Cache-read tok | Cost | Console errors | Works | Useful |
