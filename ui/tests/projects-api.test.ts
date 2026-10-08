@@ -54,6 +54,19 @@ describe("projectsApi", () => {
     await projectsApi.update("proj_aaaa1", { name: "B" });
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("PATCH");
   });
+
+  // #731 — wire contract with server/src/routes/projects.ts `r.put("/:id/workspace")`,
+  // whose `assignWorkspaceSchema` reads `workspaceId`. The card test mocks this
+  // function, so this is the only test that pins method, path and body.
+  it("assignWorkspace -> PUT /api/projects/:id/workspace with { workspaceId }", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "proj_aaaa1", workspaceId: "ws_bbbb2" }));
+    await projectsApi.assignWorkspace("proj_aaaa1", "ws_bbbb2");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new URL(url, "http://localhost").pathname).toBe("/api/projects/proj_aaaa1/workspace");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ workspaceId: "ws_bbbb2" });
+  });
 });
 
 describe("documentsApi.upload", () => {

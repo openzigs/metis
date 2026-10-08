@@ -36,6 +36,7 @@ import { seedDefaultTemplates } from "../lib/publishing/template-service.js";
 import { assertPublishSecretBinding } from "../lib/publishing/publish-secret-binding.js";
 import {
   archiveProject,
+  assignProjectWorkspace,
   createProject,
   deleteProject,
   getProject,
@@ -71,6 +72,7 @@ import {
 import { PublishError } from "../lib/publishing/types.js";
 import { generateOverview, OverviewError } from "../lib/code-graph/overview.js";
 import { createDefaultCodeSearcher } from "../lib/code-graph/project-code-searcher.js";
+import { projectWorkspaceRateLimiter } from "../middleware/project-workspace-rate-limit.js";
 import { codeSearchRateLimiter } from "../middleware/code-search-rate-limit.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
 import { recordJobScope } from "../lib/socket/job-scope-store.js";
@@ -128,6 +130,8 @@ function primaryRepoLinkError(err: unknown, projectId: string): PrimaryRepoLinkE
   });
   return { code: "PRIMARY_REPO_LINK_FAILED", message: PRIMARY_REPO_LINK_FAILED_MESSAGE };
 }
+
+const assignWorkspaceSchema = z.object({ workspaceId: z.string().min(1).max(64) });
 
 function rethrow(err: unknown): never {
   if (err instanceof ProjectError) {
@@ -312,6 +316,37 @@ export function projectsRouter(): Router {
       rethrow(err);
     }
   });
+
+  // ── Move into a workspace (#731) ────────────────────────────────────────
+  // `/:id/workspace` is covered by the `/:id/:sub` project-scope chokepoint
+  // above; the service adds the mutate rule and the target-workspace admin rule.
+  r.put(
+    "/:id/workspace",
+    // `req.user` is already set by the `/:id/:sub` chokepoint above (which has
+    // run `requireAuth` and the project-access lookup), so this caps the write
+    // and is keyed per user; it does not pre-limit that earlier work.
+    projectWorkspaceRateLimiter,
+    requireAuth,
+    requirePermission("project.update"),
+    async (req, res) => {
+      const parsed = assignWorkspaceSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid workspace payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      try {
+        const project = await assignProjectWorkspace(
+          String(req.params.id),
+          parsed.data.workspaceId,
+          actorFromReq(req),
+        );
+        res.json(ok(project));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
   // ── Delete ──────────────────────────────────────────────────────────────
   r.delete(

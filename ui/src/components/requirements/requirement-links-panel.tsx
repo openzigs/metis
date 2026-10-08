@@ -15,6 +15,7 @@
  * labels, and the dialog is a Radix (shadcn) dialog so focus is trapped and
  * Escape closes it.
  */
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -203,7 +204,10 @@ function AddLinkDialog({
 
         {!workspaceId ? (
           <p className="text-xs text-warning" role="status">
-            This project is not part of a workspace, so requirement linking is unavailable.
+            This project is not part of a workspace, so requirement linking is unavailable.{" "}
+            <Link href={`/projects/${projectId}/settings`} className="underline">
+              Add it to a workspace in project settings.
+            </Link>
           </p>
         ) : (
           <div className="space-y-3">
