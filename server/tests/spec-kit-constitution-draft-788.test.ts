@@ -250,6 +250,66 @@ describe("#788 draftConstitution", () => {
     expect(r.message).toMatch(/no AI provider/);
   });
 
+  it("keeps a tracked constitution when retrieval finds nothing or the provider fails", async () => {
+    await draftConstitution({
+      projectId: "p1",
+      resolveProvider: async () => new Provider(DRAFT) as unknown as AIProvider,
+      knowledgeService: knowledge([README]),
+      fusedCode: noCode,
+      today: TODAY,
+    });
+    const before = stored();
+    const noKnowledge = await draftConstitution({
+      projectId: "p1",
+      resolveProvider: vi.fn(),
+      knowledgeService: knowledge([]),
+      fusedCode: noCode,
+      today: TODAY,
+    });
+    expect(noKnowledge.grounded).toBe(false);
+    expect(noKnowledge.message).toMatch(/Kept the existing/);
+    expect(stored()).toBe(before);
+    const noProvider = await draftConstitution({
+      projectId: "p1",
+      resolveProvider: async () => {
+        throw new AIProviderError("down");
+      },
+      knowledgeService: knowledge([README]),
+      fusedCode: noCode,
+      today: TODAY,
+    });
+    expect(noProvider.message).toMatch(/Kept the existing/);
+    expect(noProvider.meta?.version).toBe("1.0.0");
+    expect(stored()).toBe(before);
+  });
+
+  it("keeps a hand-written untracked constitution on fallback", async () => {
+    const { writeArtifact } = await import("../src/lib/spec-kit/artifacts.js");
+    await writeArtifact({ projectId: "p1", name: "constitution.md", content: "# Mine\nhand" });
+    await draftConstitution({
+      projectId: "p1",
+      resolveProvider: vi.fn(),
+      knowledgeService: knowledge([]),
+      fusedCode: noCode,
+      today: TODAY,
+    });
+    expect(stored()).toBe("# Mine\nhand");
+  });
+
+  it("drops prose around a fenced block", async () => {
+    const fenced = `Here is the constitution:\n\n\`\`\`markdown\n${DRAFT}\n\`\`\`\nHope it helps.`;
+    await draftConstitution({
+      projectId: "p1",
+      resolveProvider: async () => new Provider(fenced) as unknown as AIProvider,
+      knowledgeService: knowledge([README]),
+      fusedCode: noCode,
+      today: TODAY,
+    });
+    expect(stored()).not.toContain("Here is");
+    expect(stored()).not.toContain("```");
+    expect(stored()).not.toContain("Hope it helps");
+  });
+
   it("does not swallow an unexpected provider error", async () => {
     await expect(
       draftConstitution({

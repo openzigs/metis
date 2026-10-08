@@ -65,6 +65,8 @@ export const specKitApi = {
     grounded?: boolean;
     /** #788 — what was written, and why only a skeleton when that is the case. */
     message?: string;
+    /** #788 — semver metadata of the tracked constitution; null for the skeleton. */
+    meta?: { version: string; ratifiedAt: string | null; lastAmendedAt: string | null } | null;
   }> {
     return apiFetch(`/projects/${encodeURIComponent(projectId)}/spec-kit/constitution`, {
       method: "POST",

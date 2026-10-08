@@ -17,13 +17,16 @@
  *
  * When there is nothing to ground on — no retrieved knowledge, no configured
  * or online provider, or a reply with no principles — it writes the old
- * skeleton and the result says so (`grounded: false` plus the reason).
+ * skeleton and the result says so (`grounded: false` plus the reason). If the
+ * project already has a constitution it is kept unchanged instead.
  * Generating an ungrounded constitution would be the same no-op, disguised.
  */
 import type { AIProvider } from "../../ai/types.js";
 import { AIProviderError } from "../../ai/errors.js";
 import { generateConstitution } from "../constitution.js";
+import { getArtifact } from "../artifacts.js";
 import {
+  getConstitutionMeta,
   extractPrinciples,
   upsertConstitution,
   REQUIRED_SECTIONS,
@@ -98,6 +101,21 @@ export async function draftConstitution(
   input: DraftConstitutionInput,
 ): Promise<DraftConstitutionResult> {
   const skeleton = async (reason: string): Promise<DraftConstitutionResult> => {
+    // A fallback must never replace a constitution the project already has
+    // (tracked, or hand-written): the overwrite is unrecoverable.
+    const [existingMeta, existingArtifact] = await Promise.all([
+      getConstitutionMeta(input.projectId),
+      getArtifact(input.projectId, "constitution.md"),
+    ]);
+    const existing = existingArtifact?.content ?? "";
+    if (existingMeta || (existing.trim() !== "" && !existing.includes("BEGIN auto-managed"))) {
+      return {
+        content: existing,
+        grounded: false,
+        meta: existingMeta,
+        message: `Kept the existing constitution.md unchanged — ${reason}. Try again once the cause is resolved.`,
+      };
+    }
     const content = await generateConstitution({
       projectId: input.projectId,
       ...(input.projectOverrides !== undefined ? { projectOverrides: input.projectOverrides } : {}),
@@ -171,11 +189,17 @@ export async function draftConstitution(
  * `# Governance` / `# History` sections. Never invents principles.
  */
 export function completeConstitutionDraft(raw: string, today: string): string {
-  let body = raw
-    .trim()
-    .replace(/^```[a-z]*\s*\n/i, "")
-    .replace(/\n```\s*$/, "")
-    .trim();
+  let body = raw.trim();
+  // Prefer the first fenced block (the model may wrap it in prose); else
+  // slice from the title so leading prose is dropped.
+  const fenced = /```[a-z]*[ \t]*\n([\s\S]*?)\n```/i.exec(body);
+  if (fenced) body = fenced[1]!.trim();
+  else {
+    body = body.replace(/^```[a-z]*\s*\n/i, "").replace(/\n```\s*$/, "");
+    const title = body.search(/^# Project Constitution/m);
+    if (title > 0) body = body.slice(title);
+    body = body.trim();
+  }
 
   const meta: string[] = [];
   if (!/^Version:\s*\d+\.\d+\.\d+/m.test(body)) meta.push("Version: 1.0.0");
