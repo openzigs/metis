@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceRole } from "../middleware/require-workspace-role.js";
+import { inviteAcceptRateLimiter } from "../middleware/invite-accept-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { audit } from "../lib/audit/audit-service.js";
@@ -408,98 +409,103 @@ export function workspacesRouter(): Router {
   // could add the invitee's account to the workspace. The caller must now be
   // signed in, and as the address the invite names; membership goes to that
   // authenticated account, never to whoever the token's email resolves to.
-  r.post("/invites/:token/accept", requireAuth, async (req: Req, res: Response) => {
-    const { token } = req.params;
-    const callerId = actorId(req);
+  r.post(
+    "/invites/:token/accept",
+    inviteAcceptRateLimiter,
+    requireAuth,
+    async (req: Req, res: Response) => {
+      const { token } = req.params;
+      const callerId = actorId(req);
 
-    const invite = await prisma.workspaceInvite.findUnique({
-      where: { token },
-      include: {
-        workspace: { select: { id: true, name: true, slug: true, deletedAt: true } },
-        invitedBy: { select: { displayName: true } },
-      },
-    });
-
-    if (!invite) {
-      throw new AppError(404, "NOT_FOUND", "Invalid invitation token");
-    }
-    // Workspace DELETE is a soft delete (#563) that also voids its outstanding
-    // invites (#601), so a deleted workspace's invite reads as consumed: check
-    // the workspace first, or the reason given is "already used".
-    if (invite.workspace.deletedAt) {
-      throw new AppError(410, "GONE", "This workspace no longer exists");
-    }
-    if (invite.consumedAt) {
-      throw new AppError(410, "GONE", "Invitation has already been used");
-    }
-    if (invite.expiresAt < new Date()) {
-      throw new AppError(410, "GONE", "Invitation has expired");
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: callerId },
-      select: { id: true, email: true },
-    });
-    if (!user) {
-      throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-    }
-    if (!sameEmail(user.email, invite.email)) {
-      throw new AppError(
-        403,
-        "FORBIDDEN",
-        "This invitation was sent to a different email address. Sign in as the invited account to accept it.",
-      );
-    }
-
-    // Consume the invite conditionally, in one transaction with the membership
-    // write (#580). The checks above read a snapshot; a workspace DELETE or a
-    // second accept of the same token can commit after it. The guarded
-    // updateMany re-applies every check at write time, so exactly one accept
-    // wins and a just-deleted workspace gains no member.
-    await prisma.$transaction(async (tx) => {
-      const now = new Date();
-      const { count } = await tx.workspaceInvite.updateMany({
-        where: {
-          id: invite.id,
-          consumedAt: null,
-          expiresAt: { gt: now },
-          workspace: { deletedAt: null },
+      const invite = await prisma.workspaceInvite.findUnique({
+        where: { token },
+        include: {
+          workspace: { select: { id: true, name: true, slug: true, deletedAt: true } },
+          invitedBy: { select: { displayName: true } },
         },
-        data: { consumedAt: now },
       });
-      if (count !== 1) {
-        const current = await tx.workspaceInvite.findUnique({
-          where: { id: invite.id },
-          select: { consumedAt: true, workspace: { select: { deletedAt: true } } },
-        });
-        if (!current) throw new AppError(404, "NOT_FOUND", "Invalid invitation token");
-        // Workspace first: the DELETE that beat this accept also consumed the invite (#601).
-        if (current.workspace.deletedAt) {
-          throw new AppError(410, "GONE", "This workspace no longer exists");
-        }
-        if (current.consumedAt) {
-          throw new AppError(410, "GONE", "Invitation has already been used");
-        }
+
+      if (!invite) {
+        throw new AppError(404, "NOT_FOUND", "Invalid invitation token");
+      }
+      // Workspace DELETE is a soft delete (#563) that also voids its outstanding
+      // invites (#601), so a deleted workspace's invite reads as consumed: check
+      // the workspace first, or the reason given is "already used".
+      if (invite.workspace.deletedAt) {
+        throw new AppError(410, "GONE", "This workspace no longer exists");
+      }
+      if (invite.consumedAt) {
+        throw new AppError(410, "GONE", "Invitation has already been used");
+      }
+      if (invite.expiresAt < new Date()) {
         throw new AppError(410, "GONE", "Invitation has expired");
       }
-      // An existing membership keeps its role, as before.
-      await tx.workspaceMember.upsert({
-        where: { workspaceId_userId: { workspaceId: invite.workspaceId, userId: user.id } },
-        create: { workspaceId: invite.workspaceId, userId: user.id, role: invite.role },
-        update: {},
+
+      const user = await prisma.user.findUnique({
+        where: { id: callerId },
+        select: { id: true, email: true },
       });
-    });
+      if (!user) {
+        throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      }
+      if (!sameEmail(user.email, invite.email)) {
+        throw new AppError(
+          403,
+          "FORBIDDEN",
+          "This invitation was sent to a different email address. Sign in as the invited account to accept it.",
+        );
+      }
 
-    audit({
-      actor: { id: user.id },
-      action: "workspace.invite.accept",
-      target: { type: "workspace", id: invite.workspaceId },
-      metadata: { email: invite.email },
-    });
+      // Consume the invite conditionally, in one transaction with the membership
+      // write (#580). The checks above read a snapshot; a workspace DELETE or a
+      // second accept of the same token can commit after it. The guarded
+      // updateMany re-applies every check at write time, so exactly one accept
+      // wins and a just-deleted workspace gains no member.
+      await prisma.$transaction(async (tx) => {
+        const now = new Date();
+        const { count } = await tx.workspaceInvite.updateMany({
+          where: {
+            id: invite.id,
+            consumedAt: null,
+            expiresAt: { gt: now },
+            workspace: { deletedAt: null },
+          },
+          data: { consumedAt: now },
+        });
+        if (count !== 1) {
+          const current = await tx.workspaceInvite.findUnique({
+            where: { id: invite.id },
+            select: { consumedAt: true, workspace: { select: { deletedAt: true } } },
+          });
+          if (!current) throw new AppError(404, "NOT_FOUND", "Invalid invitation token");
+          // Workspace first: the DELETE that beat this accept also consumed the invite (#601).
+          if (current.workspace.deletedAt) {
+            throw new AppError(410, "GONE", "This workspace no longer exists");
+          }
+          if (current.consumedAt) {
+            throw new AppError(410, "GONE", "Invitation has already been used");
+          }
+          throw new AppError(410, "GONE", "Invitation has expired");
+        }
+        // An existing membership keeps its role, as before.
+        await tx.workspaceMember.upsert({
+          where: { workspaceId_userId: { workspaceId: invite.workspaceId, userId: user.id } },
+          create: { workspaceId: invite.workspaceId, userId: user.id, role: invite.role },
+          update: {},
+        });
+      });
 
-    const { deletedAt: _deletedAt, ...workspace } = invite.workspace;
-    res.json(ok({ workspace, role: invite.role }));
-  });
+      audit({
+        actor: { id: user.id },
+        action: "workspace.invite.accept",
+        target: { type: "workspace", id: invite.workspaceId },
+        metadata: { email: invite.email },
+      });
+
+      const { deletedAt: _deletedAt, ...workspace } = invite.workspace;
+      res.json(ok({ workspace, role: invite.role }));
+    },
+  );
 
   // ── Validate invite token (public — for the accept page UI) ───────────────
   r.get("/invites/:token", async (req: Req, res: Response) => {
