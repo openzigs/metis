@@ -199,6 +199,13 @@ const featureLifecycle = vi.hoisted(() => {
   };
 });
 
+// #789 — the feature-artifact DELETE route's store call, observable.
+const deleteFeatureArtifact = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../src/lib/spec-kit/feature-artifacts.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  deleteFeatureArtifact,
+}));
+
 vi.mock("../src/lib/spec-kit/features.js", () => ({
   archiveFeature: featureLifecycle.archiveFeature,
   restoreFeature: featureLifecycle.restoreFeature,
@@ -626,6 +633,28 @@ describe("/api/projects/:projectId/spec-kit provider injection (#381)", () => {
       .send({ input: "body" });
     expect(res.status).toBe(403);
     expect(resolveProjectProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe("#789 DELETE /features/:slug/artifacts/*key", () => {
+  it("deletes the artifact of the resolved feature, nested keys included", async () => {
+    featureLifecycle.resolveFeatureBySlug.mockResolvedValueOnce({ id: "f1", slug: "001-a" });
+    const res = await request(makeApp()).delete(
+      "/api/projects/p1/spec-kit/features/001-a/artifacts/contracts/api.openapi.yaml",
+    );
+    expect(res.status).toBe(204);
+    expect(featureLifecycle.resolveFeatureBySlug).toHaveBeenCalledWith("p1", "001-a");
+    expect(deleteFeatureArtifact).toHaveBeenCalledWith("f1", "contracts/api.openapi.yaml", "u1");
+  });
+
+  it("404s for an unknown feature and deletes nothing", async () => {
+    featureLifecycle.resolveFeatureBySlug.mockResolvedValueOnce(null);
+    const res = await request(makeApp()).delete(
+      "/api/projects/p1/spec-kit/features/999-x/artifacts/spec.md",
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SPECKIT_FEATURE_NOT_FOUND");
+    expect(deleteFeatureArtifact).not.toHaveBeenCalled();
   });
 });
 

@@ -5821,7 +5821,7 @@ draft / specified / planned / tasked / implementing  ─── archiveFeature �
 - `restoreFeature({projectId, slug, actorId, restoreTo?})` — throws `SpecKitFeatureLifecycleError(409, "SPECKIT_FEATURE_NOT_ARCHIVED")` if currently active. Defaults `restoreTo = "draft"`. Audits as `speckit.feature.restored` with `restoredTo`.
 - `listFeatures(projectId, {includeArchived?})` — defaults to `where.status = {not: "archived"}`; pass `{includeArchived: true}` to see everything.
 
-Routes: `POST /features/:slug/{archive,restore}` (gated on `project.update`); `GET /features?includeArchived=true` opt-in. `SpecKitFeatureLifecycleError` is mapped to `AppError(status, code, message)` in the route's `rethrow()` helper, so 404/409 surface cleanly.
+Routes: `POST /features/:slug/{archive,restore}` (gated on `project.update`); `GET /features?includeArchived=true` opt-in; `DELETE /features/:slug/artifacts/*key` (`project.update`, 204, #789) deletes one feature artifact through `deleteFeatureArtifact`. The Spec Kit page (`ui/src/app/(authed)/projects/[id]/spec-kit/page.tsx` with `components/spec-kit/feature-panel.tsx`) is their consumer, and its palette (`ui/src/lib/spec-kit-palette.ts`) dispatches only the canonical `speckit.*` commands (#789). `SpecKitFeatureLifecycleError` is mapped to `AppError(status, code, message)` in the route's `rethrow()` helper, so 404/409 surface cleanly.
 
 ## 26. Smart Context Selection via Code Graph (Epic #497)
 

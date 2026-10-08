@@ -686,6 +686,10 @@ describe("/implement", () => {
     const r = await runImplement({ projectId: "p1", actorId: "u1" });
     expect(r.context).toEqual(["spec.md", "plan.md", "tasks.md"]);
     expect(r.orchestratorRoute).toBe("/api/projects/p1/analyses");
+    // #789 — the message is for the person on the Spec Kit page, not an API client.
+    expect(r.message).not.toMatch(/POST/);
+    expect(r.message).toContain("3 artifact(s)");
+    expect(r.message).toContain("Start analysis");
     expect(auditCalls.find((c) => c.action === "spec_kit.command.implement")).toBeTruthy();
   });
 });

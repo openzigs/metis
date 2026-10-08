@@ -60,6 +60,7 @@ import {
   SpecKitFeatureLifecycleError,
 } from "../lib/spec-kit/features.js";
 import {
+  deleteFeatureArtifact,
   getFeatureArtifact,
   listFeatureArtifacts,
   writeFeatureArtifact,
@@ -563,6 +564,26 @@ export function specKitRouter(): Router {
           actorId: actorId(req),
         });
         res.json(ok({ artifact }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
+
+  // #789 — the Spec Kit page deletes a feature artifact as it does a
+  // project-level file (`DELETE /files/:name`).
+  r.delete(
+    "/features/:slug/artifacts/*key",
+    requireAuth,
+    requirePermission("project.update"),
+    async (req, res) => {
+      try {
+        const projectId = projectIdFrom(req);
+        await ensureEnabled(projectId);
+        const feature = await resolveFeatureBySlug(projectId, String(req.params.slug ?? ""));
+        if (!feature) throw new AppError(404, "SPECKIT_FEATURE_NOT_FOUND", "Feature not found");
+        await deleteFeatureArtifact(feature.id, wildcardKey(req.params.key), actorId(req));
+        res.status(204).end();
       } catch (err) {
         rethrow(err);
       }

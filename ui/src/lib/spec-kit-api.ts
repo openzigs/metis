@@ -6,19 +6,74 @@
  * dance works automatically.
  */
 import { apiFetch } from "@/lib/api-client";
-import type { SpecKitArtifactDto, SpecKitArtifactName, SpecKitCommand } from "@metis/shared";
+import type {
+  SpecKitArtifactDto,
+  SpecKitArtifactName,
+  SpecKitNamespacedCommand,
+} from "@metis/shared";
 
 export interface SpecKitFilesResponse {
   enabled: boolean;
   artifacts: SpecKitArtifactDto[];
 }
 
+/** #789 — a Spec Kit feature (`specs/<slug>/`), as `GET /features` returns it. */
+export interface SpecKitFeature {
+  id: string;
+  slug: string;
+  title: string;
+  /** `draft` … `archived`. */
+  status: string;
+  branchName: string | null;
+  updatedAt: string;
+}
+
+/** #789 — one artifact under `specs/<slug>/` (`key` may be nested: `contracts/…`). */
+export interface SpecKitFeatureArtifact {
+  id: string;
+  key: string;
+  content: string;
+  version: number;
+  updatedAt: string;
+}
+
+/** #789 — `GET /features/:slug/status`: which phase gates the feature has met. */
+export interface SpecKitFeatureStatus {
+  slug: string;
+  specGate: boolean;
+  planGate: boolean;
+  tasksGate: boolean;
+  implementGate: boolean;
+  lastUpdated: string;
+}
+
+/** Body fields a `speckit.*` command accepts besides `input`. */
+export interface SpecKitRunOptions {
+  input?: string;
+  featureSlug?: string;
+  mode?: "merge" | "overwrite";
+  dryRun?: boolean;
+}
+
+/**
+ * The union of what the `speckit.*` commands return. Every command carries a
+ * `message`; the rest depends on the command: `artifactName` for
+ * tasks/clarify/analyze (the feature key when run in a feature),
+ * `speckit.specify`'s new `feature`, `speckit.plan`'s and
+ * `speckit.checklist`'s `artifacts`, `speckit.implement`'s handoff as
+ * `artifact: { context, orchestratorRoute }`, `speckit.taskstoissues`'s `created`.
+ */
 export interface SpecKitCommandResult {
-  command: SpecKitCommand;
-  artifactName: SpecKitArtifactName | null;
-  artifact: SpecKitArtifactDto | { context: string[]; orchestratorRoute: string } | null;
   message: string;
-  tokensUsed: number;
+  artifactName?: SpecKitArtifactName | null;
+  artifact?:
+    SpecKitArtifactDto | { key: string } | { context: string[]; orchestratorRoute: string } | null;
+  artifacts?: Array<{ key: string }>;
+  feature?: SpecKitFeature;
+  featureSlug?: string;
+  count?: number;
+  created?: Array<{ taskId: string; issueNumber: number; url: string }>;
+  tokensUsed?: number;
 }
 
 export const specKitApi = {
@@ -64,14 +119,52 @@ export const specKitApi = {
       body: projectOverrides ? { projectOverrides } : {},
     });
   },
+  /** #789 — always the canonical `speckit.*` route (no `Deprecation` alias). */
   runCommand(
     projectId: string,
-    command: SpecKitCommand,
-    input: string,
+    command: SpecKitNamespacedCommand,
+    options: SpecKitRunOptions = {},
   ): Promise<SpecKitCommandResult> {
+    const { input = "", ...rest } = options;
     return apiFetch(
       `/projects/${encodeURIComponent(projectId)}/spec-kit/commands/${encodeURIComponent(command)}`,
-      { method: "POST", body: { input } },
+      { method: "POST", body: { input, ...rest } },
     );
   },
+  listFeatures(
+    projectId: string,
+    includeArchived: boolean,
+  ): Promise<{ features: SpecKitFeature[] }> {
+    return apiFetch(`${featuresBase(projectId)}${includeArchived ? "?includeArchived=true" : ""}`);
+  },
+  listFeatureArtifacts(
+    projectId: string,
+    slug: string,
+  ): Promise<{ feature: SpecKitFeature; artifacts: SpecKitFeatureArtifact[] }> {
+    return apiFetch(`${featuresBase(projectId)}/${encodeURIComponent(slug)}/artifacts`);
+  },
+  featureStatus(projectId: string, slug: string): Promise<SpecKitFeatureStatus> {
+    return apiFetch(`${featuresBase(projectId)}/${encodeURIComponent(slug)}/status`);
+  },
+  archiveFeature(projectId: string, slug: string): Promise<{ feature: SpecKitFeature }> {
+    return apiFetch(`${featuresBase(projectId)}/${encodeURIComponent(slug)}/archive`, {
+      method: "POST",
+    });
+  },
+  restoreFeature(projectId: string, slug: string): Promise<{ feature: SpecKitFeature }> {
+    return apiFetch(`${featuresBase(projectId)}/${encodeURIComponent(slug)}/restore`, {
+      method: "POST",
+      body: {},
+    });
+  },
+  deleteFeatureArtifact(projectId: string, slug: string, key: string): Promise<void> {
+    const path = key.split("/").map(encodeURIComponent).join("/");
+    return apiFetch(`${featuresBase(projectId)}/${encodeURIComponent(slug)}/artifacts/${path}`, {
+      method: "DELETE",
+    });
+  },
 };
+
+function featuresBase(projectId: string): string {
+  return `/projects/${encodeURIComponent(projectId)}/spec-kit/features`;
+}
