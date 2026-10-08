@@ -242,6 +242,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ["custom:c-helper", "Helper: row counts are unbounded"],
         ].sort(),
       );
+      // #727 — read back from the database: the agent-phase findings carry the
+      // server's `unverified` stamp (synthesis marks them [UNVERIFIED]); the
+      // specialist's evidence-free doc finding keeps the neutral null.
+      expect(
+        flat
+          .map((f) => [f.agentKey, f.verificationStatus])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      ).toEqual([
+        ["custom:c-helper", "unverified"],
+        ["document", null],
+        ["library:a-lead", "unverified"],
+      ]);
     });
   },
 );

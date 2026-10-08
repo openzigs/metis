@@ -45,6 +45,14 @@ import {
  */
 const MAX_PLAYGROUND_INPUT_CHARS = 20_000;
 
+/**
+ * #727 — shown when an older server sends no `grounding` notice: the
+ * playground is prompt-only either way, so the warning is never omitted.
+ */
+const PLAYGROUND_UNGROUNDED_NOTICE =
+  "Ungrounded answer: the playground runs the agent on your prompt alone and reads no project " +
+  "documents or code. Treat any file, line number or code it quotes as unverified.";
+
 /** Starter prompts shown in the template gallery (step 2). */
 const TEMPLATES: ReadonlyArray<{ id: string; label: string; description: string; prompt: string }> =
   [
@@ -425,7 +433,9 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
           <div className="space-y-3" data-testid="wizard-step-playground">
             <Label htmlFor="wizard-playground">Try it out</Label>
             <p className="text-xs text-muted-foreground">
-              Saving the agent and running a sample prompt confirms it produces a completion.
+              Saving the agent and running a sample prompt confirms it produces a completion. The
+              playground runs on your prompt alone: its tools do not run and it reads no project
+              documents or code, so its answer is not grounded in the project.
             </p>
             <textarea
               id="wizard-playground"
@@ -466,6 +476,14 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
                 className="space-y-1 rounded-md border bg-muted/40 p-3 text-sm"
                 data-testid="wizard-playground-output"
               >
+                {/* #727 — an authoritative-looking answer must not read as grounded. */}
+                <p
+                  role="note"
+                  className="rounded border border-amber-500/50 bg-amber-500/10 p-2 text-xs"
+                  data-testid="wizard-playground-ungrounded"
+                >
+                  {playground.data.grounding?.notice ?? PLAYGROUND_UNGROUNDED_NOTICE}
+                </p>
                 <pre className="whitespace-pre-wrap break-words">{playground.data.content}</pre>
                 <p className="text-xs text-muted-foreground">
                   {playground.data.model} · {playground.data.usage.totalTokens} tokens

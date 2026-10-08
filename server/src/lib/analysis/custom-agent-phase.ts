@@ -184,6 +184,15 @@ export function parseAgentFindingsAnswer(text: string):
  * `RequirementCodeMapping` rows; a `verificationStatus` would render a
  * "confirmed" badge. `citations` is forced empty, as the contract says.
  * (`faithfulness` is already refused at the storage boundary.)
+ *
+ * #727 — and the server then stamps every such finding `unverified`. It was
+ * written from the project's name and description alone, with no evidence, so
+ * it is exactly the claim the #740 verifier exists to flag: synthesis renders
+ * it `[UNVERIFIED]` and down-weights it (rule 4), and the findings view badges
+ * and filters it. Before #727 these findings carried `null` — the neutral
+ * "nothing to verify" state — so an invented module (a `sqlc` layer the
+ * project does not have) reached a requirement's acceptance criteria with the
+ * same weight as a cited specialist finding.
  */
 function stripServerOwnedFields(finding: AgentFindingPayload): AgentFindingPayload {
   const {
@@ -194,7 +203,7 @@ function stripServerOwnedFields(finding: AgentFindingPayload): AgentFindingPaylo
     supportPanel: _supportPanel,
     ...modelAuthored
   } = finding;
-  return { ...modelAuthored, citations: [] };
+  return { ...modelAuthored, citations: [], verificationStatus: "unverified" };
 }
 
 /** #289 — the retry gate: does this answer validate as a findings answer? */
