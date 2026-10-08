@@ -66,4 +66,18 @@ describe("reviewsApi", () => {
       body: { decision: "rejected" },
     });
   });
+
+  it("creates a draft review under the project (#732)", async () => {
+    const input = { title: "T", reviewerIds: ["u1"], items: [{ requirementId: "r1" }] };
+    await reviewsApi.create("proj_1", input);
+    expect(apiFetchMock).toHaveBeenCalledWith("/projects/proj_1/reviews", {
+      method: "POST",
+      body: input,
+    });
+  });
+
+  it("submits a draft review (#732)", async () => {
+    await reviewsApi.submit("rev_1");
+    expect(apiFetchMock).toHaveBeenCalledWith("/reviews/rev_1/submit", { method: "POST" });
+  });
 });
