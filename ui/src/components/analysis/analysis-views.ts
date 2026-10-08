@@ -310,6 +310,32 @@ export function analysisTabCounts(
   };
 }
 
+/**
+ * Issue #909 — the Deep Dive button's state. While the approvals were loading
+ * the button read "blocked until 0 pending approval(s) are resolved" (or was
+ * enabled before the gate was known); say it is checking instead, and wait.
+ */
+export function deepDiveGate(input: {
+  loading: boolean;
+  failed?: boolean;
+  ticketStatus: TicketStatus | undefined;
+}): {
+  disabled: boolean;
+  title: string;
+} {
+  if (input.loading) return { disabled: true, title: "Checking approvals…" };
+  // A failed lookup must not read as an open gate (the server still enforces it).
+  if (input.failed) return { disabled: true, title: "Could not check approvals" };
+  if (input.ticketStatus && !input.ticketStatus.allowed) {
+    // #723 — name the real reason: only PENDING approvals hold the gate.
+    return {
+      disabled: true,
+      title: `Ticket creation is blocked until ${input.ticketStatus.pendingCount} pending approval(s) are resolved`,
+    };
+  }
+  return { disabled: false, title: "Expand this finding into a publishable issue draft" };
+}
+
 /** Accessible wording for a tab's count badge. */
 export function tabCountLabel(tab: AnalysisTab, count: number): string {
   if (tab === "questions") return `${count} open`;
