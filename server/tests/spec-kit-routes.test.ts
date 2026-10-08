@@ -426,6 +426,18 @@ describe("/api/projects/:projectId/spec-kit", () => {
     );
   });
 
+  it("passes the resolved provider to runChecklist as deps.provider (#787)", async () => {
+    const { runChecklist } = await import("../src/lib/spec-kit/commands/checklist.js");
+    (runChecklist as any).mockClear();
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/speckit.checklist")
+      .send({ featureSlug: "001-x" });
+    expect(res.status).toBe(200);
+    const arg = (runChecklist as any).mock.calls[0][0];
+    expect(arg.deps).toBeDefined();
+    expect(arg.deps.provider).toBeDefined();
+  });
+
   it("Without X-Speckit-Force, force=false is passed to runChecklist (S-5)", async () => {
     const { runChecklist } = await import("../src/lib/spec-kit/commands/checklist.js");
     (runChecklist as any).mockClear();

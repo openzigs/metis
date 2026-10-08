@@ -212,6 +212,29 @@ describe("#787 — checklist merge keeps the reviewer's own items", () => {
   });
 });
 
+describe("#787 — parseChecklistSections heading matching", () => {
+  const item = "- [ ] a check — rationale: r — owner: e";
+  it("sends '## Security review' to the longer domain when both are requested", () => {
+    const m = parseChecklistSections(`## Security review\n${item}`, [
+      "security",
+      "security-review",
+    ]);
+    expect(m.has("security-review")).toBe(true);
+    expect(m.has("security")).toBe(false);
+  });
+  it("accepts bold and numbered headings", () => {
+    const m = parseChecklistSections(`## **Performance**\n${item}\n## 1. Accessibility\n${item}`, [
+      "performance",
+      "accessibility",
+    ]);
+    expect([...m.keys()].sort()).toEqual(["accessibility", "performance"]);
+  });
+  it("does not treat a mere string prefix as a match", () => {
+    const m = parseChecklistSections(`## Securityish\n${item}`, ["security"]);
+    expect(m.size).toBe(0);
+  });
+});
+
 describe("#787 — the template is labelled as generic", () => {
   it("says in the rendered file that it is not derived from the feature", () => {
     const md = generateChecklist("security", "001-foo");
