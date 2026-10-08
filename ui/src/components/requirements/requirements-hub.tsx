@@ -15,6 +15,8 @@ import { latestCompletedAnalysisId } from "@/lib/project-pipeline";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { RequestReviewCard } from "@/components/reviews/request-review-card";
+import { useAuth } from "@/lib/auth-context";
 
 const REVIEW_ORDER: ReadonlyArray<[RequirementReviewStatus, string]> = [
   ["draft", "Awaiting review"],
@@ -42,6 +44,9 @@ function runHref(projectId: string, analysisId: string): string {
 }
 
 export function RequirementsHub({ projectId }: { projectId: string }) {
+  const { user } = useAuth();
+  // #732 — the server gates review creation on `review.create`.
+  const canRequestReview = user?.permissions.includes("review.create") ?? false;
   const list = useQuery({
     queryKey: queryKeys.analyses.forProject(projectId),
     queryFn: () => analysisApi.listForProject(projectId),
@@ -115,6 +120,13 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
               : "Open latest analysis"}
           </Link>
         </Button>
+        {canRequestReview && user && latest.data && latest.data.requirements.length > 0 ? (
+          <RequestReviewCard
+            projectId={projectId}
+            requirementIds={latest.data.requirements.map((r) => r.id)}
+            currentUserId={user.id}
+          />
+        ) : null}
       </Card>
 
       <Card className="space-y-2 p-4">
