@@ -341,8 +341,10 @@ export function projectsRouter(): Router {
   // above; the service adds the mutate rule and the target-workspace admin rule.
   r.put(
     "/:id/workspace",
-    requireAuth,
+    // First in the chain, so it also caps `requireAuth`'s work. `req.user` is
+    // already set here by the `/:id/:sub` chokepoint, so the key is per user.
     assignWorkspaceRateLimiter,
+    requireAuth,
     requirePermission("project.update"),
     async (req, res) => {
       const parsed = assignWorkspaceSchema.safeParse(req.body ?? {});
