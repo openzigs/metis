@@ -18,17 +18,23 @@ vi.mock("../src/middleware/auth.js", () => ({
     next();
   },
 }));
-// Denies by permission name so a test can prove WHICH permission a route asks
-// for (a pass-through mock cannot tell project.update from project.read).
+// #788 needs the real `requirePermission` (role tests exercise the gate that
+// actually decides); #931 additionally needs to deny a NAMED permission. So the
+// mock delegates to the real gate unless the permission is explicitly denied.
 const deniedPermissions = vi.hoisted(() => new Set<string>());
 const projectAccessDenied = vi.hoisted(() => ({ value: false }));
-vi.mock("../src/middleware/require-permission.js", async () => {
+vi.mock("../src/middleware/require-permission.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/middleware/require-permission.js")>();
   const { AppError } = await import("../src/middleware/error-handler.js");
   return {
-    requirePermission: (perm: string) => (_req: any, _res: any, next: any) =>
-      deniedPermissions.has(perm)
-        ? next(new AppError(403, "FORBIDDEN", `Missing ${perm}`))
-        : next(),
+    ...actual,
+    requirePermission: (perm: Parameters<typeof actual.requirePermission>[0]) => {
+      const real = actual.requirePermission(perm);
+      return (req: any, res: any, next: any) =>
+        deniedPermissions.has(perm as string)
+          ? next(new AppError(403, "FORBIDDEN", `Missing ${perm}`))
+          : real(req, res, next);
+    },
   };
 });
 vi.mock("../src/middleware/require-project-access.js", async () => {
@@ -121,8 +127,17 @@ vi.mock("../src/lib/spec-kit/artifacts.js", async () => {
   };
 });
 
-vi.mock("../src/lib/spec-kit/constitution.js", () => ({
-  generateConstitution: vi.fn(async () => "# Project Constitution\n... body ..."),
+vi.mock("../src/lib/spec-kit/commands/constitution-draft.js", () => ({
+  draftConstitution: vi.fn(async (input: any) => {
+    // Exercise the lazy resolver the route hands over (#788).
+    await input.resolveProvider();
+    return {
+      content: "# Project Constitution\n... body ...",
+      grounded: true,
+      meta: { version: "1.0.0", ratifiedAt: null, lastAmendedAt: null },
+      message: "Generated constitution.md v1.0.0 from project knowledge.",
+    };
+  }),
 }));
 
 // #381 — the route resolves the project's REAL provider and threads it into
@@ -328,6 +343,16 @@ describe("/api/projects/:projectId/spec-kit", () => {
     const res = await request(makeApp()).post("/api/projects/p1/spec-kit/constitution").send({});
     expect(res.status).toBe(200);
     expect(res.body.data.contentLength).toBeGreaterThan(0);
+    // #788 — the generator gets the project's provider and its outcome is surfaced.
+    const { draftConstitution } =
+      await import("../src/lib/spec-kit/commands/constitution-draft.js");
+    expect(draftConstitution).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "p1", actorId: "u1" }),
+    );
+    expect(resolveProjectProvider).toHaveBeenCalledWith("p1");
+    expect(res.body.data.grounded).toBe(true);
+    expect(res.body.data.meta.version).toBe("1.0.0");
+    expect(res.body.data.message).toMatch(/from project knowledge/);
   });
 
   it("POST /commands/specify dispatches", async () => {
@@ -417,21 +442,21 @@ describe("/api/projects/:projectId/spec-kit", () => {
     expect(res.body.error.code).toBe("SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED");
   });
 
-  it("POST /commands/speckit.constitution requires speckit.constitution.write (S-3)", async () => {
-    // developer role lacks speckit.constitution.write — must 403 before dispatch.
+  it("POST /commands/speckit.constitution is refused without project.update (#788)", async () => {
+    // developer lacks project.update — the route gate refuses before dispatch.
     authRole.value = "developer";
     const res = await request(makeApp())
       .post("/api/projects/p1/spec-kit/commands/speckit.constitution")
       .send({ input: "We hold these truths …" });
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe("FORBIDDEN");
-    expect(res.body.error.message).toContain("speckit.constitution.write");
+    expect(res.body.error.message).toBe("Requires permission project.update");
     const { runConstitution } = await import("../src/lib/spec-kit/commands/constitution.js");
     expect(runConstitution).not.toHaveBeenCalled();
   });
 
-  it("POST /commands/speckit.constitution succeeds for a role that carries the permission (S-3)", async () => {
-    // coordinator carries speckit.constitution.write by default.
+  it("POST /commands/speckit.constitution succeeds for a role with project.update (#788)", async () => {
+    // coordinator holds project.update, and no second constitution check remains.
     authRole.value = "coordinator";
     const res = await request(makeApp())
       .post("/api/projects/p1/spec-kit/commands/speckit.constitution")
@@ -452,6 +477,43 @@ describe("/api/projects/:projectId/spec-kit", () => {
     expect(runChecklist).toHaveBeenCalledWith(
       expect.objectContaining({ force: true, featureSlug: "001-x" }),
     );
+  });
+
+  it("hands runChecklist a lazy resolver for the project's provider (#787)", async () => {
+    const { runChecklist } = await import("../src/lib/spec-kit/commands/checklist.js");
+    (runChecklist as any).mockClear();
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/speckit.checklist")
+      .send({ featureSlug: "001-x" });
+    expect(res.status).toBe(200);
+    const arg = (runChecklist as any).mock.calls[0][0];
+    expect(resolveProjectProvider).not.toHaveBeenCalled();
+    expect(await arg.resolveProvider()).toBe(fakeProvider);
+    expect(resolveProjectProvider).toHaveBeenCalledWith("p1");
+  });
+
+  it("an unbuildable provider override does not fail the checklist with 502 (#787)", async () => {
+    const { AIProviderError } = await import("../src/lib/ai/errors.js");
+    resolveProjectProvider.mockRejectedValue(new AIProviderError("creds gone"));
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/speckit.checklist")
+      .send({ featureSlug: "001-x" });
+    expect(res.status).toBe(200);
+  });
+
+  it("a missing feature is 404 even when the provider is broken (#787)", async () => {
+    const { AIProviderError } = await import("../src/lib/ai/errors.js");
+    const { SpecKitArtifactError } = await import("../src/lib/spec-kit/artifacts.js");
+    const { runChecklist } = await import("../src/lib/spec-kit/commands/checklist.js");
+    resolveProjectProvider.mockRejectedValue(new AIProviderError("creds gone"));
+    (runChecklist as any).mockRejectedValueOnce(
+      new SpecKitArtifactError(404, "SPECKIT_FEATURE_NOT_FOUND", "Feature not found: 099-nope"),
+    );
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/speckit.checklist")
+      .send({ featureSlug: "099-nope" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SPECKIT_FEATURE_NOT_FOUND");
   });
 
   it("Without X-Speckit-Force, force=false is passed to runChecklist (S-5)", async () => {

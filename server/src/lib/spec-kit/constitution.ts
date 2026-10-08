@@ -11,9 +11,9 @@
  *   2. The project-level overrides written via `/specify` wizard or the
  *      `PUT /api/projects/:id/spec-kit/files/constitution.md` endpoint.
  *
- * The generated content is appended onto the existing `constitution.md`
- * artifact when the user has hand-edited the file (we never silently
- * stomp project overrides).
+ * `generateConstitution` OVERWRITES the `constitution.md` artifact. Callers
+ * that must not lose an existing constitution (see `draftConstitution`) check
+ * for one first.
  */
 import fs from "node:fs/promises";
 import path from "node:path";

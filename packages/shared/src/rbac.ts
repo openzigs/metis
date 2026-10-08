@@ -65,7 +65,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly PermissionKey[]> = {
     "task.read",
     "task.cancel",
     "task.retry",
-    "speckit.constitution.write",
     "sync.read",
     "sync.resolve",
     "review.create",
