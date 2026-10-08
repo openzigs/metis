@@ -165,27 +165,28 @@ export async function reopenApprovalRequest(
   analysisId: string,
   requestId: string,
 ): Promise<ApprovalRequestRow> {
-  const existing = await prisma.approvalRequest.findFirst({
+  // Issue #909 — the status predicate rides the WRITE, so a reopen racing an
+  // approval (or another reopen) cannot act on a status it read earlier.
+  const { count } = await prisma.approvalRequest.updateMany({
+    where: { id: requestId, analysisId, status: "rejected" },
+    data: { status: "pending", reviewerId: null, reviewNote: null, reviewedAt: null },
+  });
+  const current = await prisma.approvalRequest.findFirst({
     where: { id: requestId, analysisId },
   });
-  if (!existing) {
+  if (!current) {
     throw new AppError(404, "APPROVAL_NOT_FOUND", `Approval request ${requestId} not found`);
   }
-  if (existing.status !== "rejected") {
+  if (count === 0) {
     throw new AppError(
       409,
       "APPROVAL_NOT_REOPENABLE",
-      `Approval request ${requestId} is ${existing.status}; only a rejected approval can be reopened`,
+      `Approval request ${requestId} is ${current.status}; only a rejected approval can be reopened`,
     );
   }
 
-  log.info("Reopening approval request", { requestId, analysisId });
-
-  const updated = await prisma.approvalRequest.update({
-    where: { id: requestId },
-    data: { status: "pending", reviewerId: null, reviewNote: null, reviewedAt: null },
-  });
-  return updated as ApprovalRequestRow;
+  log.info("Reopened approval request", { requestId, analysisId });
+  return current as ApprovalRequestRow;
 }
 
 /**
