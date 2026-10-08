@@ -1,7 +1,7 @@
 # Wave B — Phases 5–8 (run {{RUN_NUMBER}})
 
 You are wave B of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read
-[#706](https://github.com/openzigs/metis/issues/706) for the definition and pass bars of
+[`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md) for the definition and pass bars of
 Phases 5–8 (database and lineage, import / Jira, analysis and agents,
 requirements and traceability).
 
@@ -19,7 +19,7 @@ requirements and traceability).
 
 1. Phase 5: add the database connector for the Miniflux DB, then record the lineage edge
    count by kind and source (run 2: 1,436 reads/writes edges).
-2. Phases 6–8 as #706 defines them. Record the analysis run ID you create in Phase 7 — later
+2. Phases 6–8 as the plan defines them. Record the analysis run ID you create in Phase 7 — later
    waves need it — and do not touch it afterwards except to read it.
 3. The added steps below, each with its expected outcome. Drive them in the UI; the only
    `fetch` calls are the ledger and SQL reads.
@@ -42,7 +42,7 @@ settings → Workspace** card, choose `{{WORKSPACE_NAME}}`, **Add**, and confirm
 - Enable the library agent and "Go SQL reviewer", then start a **second** analysis run and let it
   finish. Their findings carry the **Not checked against code** badge (`ungrounded`), and the
   findings filter offers **Not checked**. A custom-agent finding shown as Confirmed or Could not
-  verify is a FAIL. Record its ID as the agent run, and cancel a third run for #706's Cancel check.
+  verify is a FAIL. Record its ID as the agent run, and cancel a third run for the plan's Cancel check.
 - On the agent run, **reject** one approval item: the run continues without it and the item has
   **Reopen** (#723, PR #902). This is the re-verification the reject guard-rail waits on; never
   do it on `ANALYSIS_RUN_ID`.

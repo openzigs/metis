@@ -1,7 +1,7 @@
 # Wave A — setup + Phases 1–4 (run {{RUN_NUMBER}})
 
 You are wave A of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read
-[#706](https://github.com/openzigs/metis/issues/706) for the definition and pass bars of
+[`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md) for the definition and pass bars of
 Phases 1–4 before you start; the `e2e-walkthrough` skill has the setup order.
 
 ## State you start from
@@ -22,7 +22,7 @@ Phases 1–4 before you start; the `e2e-walkthrough` skill has the setup order.
 2. **Save the publish target `openzigs/flux-v2`** before adding any connector.
 3. Add the repo connector `https://github.com/miniflux/v2`, **Branch or tag = `v2.3.3`**.
    Confirm `lastCommitSha` and the code graph's `commitSha` both start `c4d54f87`.
-4. Run Phases 1–4 as #706 defines them, skipping `{{REMOVED_PHASES}}`.
+4. Run Phases 1–4 as the plan defines them, skipping `{{REMOVED_PHASES}}`.
 
 Keep creating the project **inside** the workspace even though #731 (PR #927) now lets an
 existing project join one later; wave B exercises that move on a throwaway project, so this
