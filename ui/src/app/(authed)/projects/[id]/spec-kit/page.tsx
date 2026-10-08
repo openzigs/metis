@@ -52,6 +52,9 @@ import { PageHeader } from "@/components/ui/page-header";
 const FAILED = "The Spec Kit operation failed. Please try again.";
 /** Shown on a write control the viewer cannot use (#789 — the server gates it). */
 const REQUIRES_UPDATE = "Requires project.update";
+/** #936 — the server has no production GitHub issue client yet (#784). */
+const PUBLISH_UNAVAILABLE =
+  "Publishing issues to GitHub is not available on this server yet. The dry run lists the issues it would create.";
 
 export default function SpecKitPage() {
   const params = useParams<{ id: string }>();
@@ -98,9 +101,14 @@ export default function SpecKitPage() {
   const [selectedKey, setSelectedKey] = useState("spec.md");
   // #789 — the export may publish only after a dry run of the same feature.
   // It records the tasks.md version previewed, so regenerating tasks.md voids it.
+  // #936 — and what the dry run planned: the target, the titles, and whether
+  // this server can publish at all (no production issue client yet, #784).
   const [previewedExport, setPreviewedExport] = useState<{
     feature: string;
     tasksVersion: number | null;
+    repo: string | null;
+    titles: string[];
+    publishAvailable: boolean;
   } | null>(null);
   // #789 — what `/speckit.implement` handed off, for "Start analysis".
   const [handoff, setHandoff] = useState<{ context: string[]; feature: string | null } | null>(
@@ -198,6 +206,9 @@ export default function SpecKitPage() {
   const commandMutation = useMutation({
     mutationFn: (input: { command: SpecKitNamespacedCommand; options: SpecKitRunOptions }) =>
       specKitApi.runCommand(projectId, input.command, input.options),
+    // #936 — a command is a write (an artifact, a model call, issues on GitHub):
+    // never resend it on a 5xx, which sent one click's request twice.
+    retry: false,
     // Issue #423 — Spec Kit commands stream `job:lifecycle` (kind `spec-kit`).
     // The command is awaited server-side and the response carries the verbatim
     // grounded-completion line ("Generated spec.md (v3) … grounded on N retrieved
@@ -231,6 +242,9 @@ export default function SpecKitPage() {
             ? {
                 feature: input.options.featureSlug,
                 tasksVersion: featureArtifacts.find((a) => a.key === "tasks.md")?.version ?? null,
+                repo: result.repo ? `${result.repo.owner}/${result.repo.name}` : null,
+                titles: (result.created ?? []).map((c) => c.title ?? c.taskId),
+                publishAvailable: result.publishAvailable === true,
               }
             : null,
         );
@@ -296,6 +310,13 @@ export default function SpecKitPage() {
   const hasArtifacts = (filesQuery.data?.artifacts.length ?? 0) > 0;
   const suggestions = useMemo(() => suggestPaletteCommands(commandBuffer), [commandBuffer]);
   const busy = commandMutation.isPending;
+  // #789 / #936 — the dry run that Publish acts on: same feature, same tasks.md.
+  const tasksVersion = featureArtifacts.find((a) => a.key === "tasks.md")?.version ?? null;
+  const exportPreview =
+    previewedExport?.feature === selectedFeature && previewedExport.tasksVersion === tasksVersion
+      ? previewedExport
+      : null;
+  const publishUnavailable = exportPreview !== null && !exportPreview.publishAvailable;
 
   const run = (command: SpecKitNamespacedCommand, options: SpecKitRunOptions = {}): void => {
     commandMutation.mutate({ command, options });
@@ -736,7 +757,13 @@ export default function SpecKitPage() {
             </Button>
             <ConfirmDialog
               title={`Publish the tasks of ${selectedFeature}?`}
-              description="This creates an issue for every task in the project's saved issue target."
+              description={
+                exportPreview
+                  ? `This creates ${exportPreview.titles.length} ${
+                      exportPreview.titles.length === 1 ? "issue" : "issues"
+                    } in ${exportPreview.repo ?? "the project's saved issue target"}.`
+                  : "This creates an issue for every task in the project's saved issue target."
+              }
               confirmLabel="Publish"
               confirmVariant="default"
               onConfirm={() =>
@@ -748,14 +775,9 @@ export default function SpecKitPage() {
                   size="sm"
                   variant="outline"
                   className="w-full"
-                  title={writeHint}
+                  title={writeHint ?? (publishUnavailable ? PUBLISH_UNAVAILABLE : undefined)}
                   disabled={
-                    !canWrite ||
-                    !enabled ||
-                    busy ||
-                    previewedExport?.feature !== selectedFeature ||
-                    previewedExport.tasksVersion !==
-                      (featureArtifacts.find((a) => a.key === "tasks.md")?.version ?? null)
+                    !canWrite || !enabled || busy || exportPreview === null || publishUnavailable
                   }
                   data-testid="spec-kit-export-publish"
                 >
@@ -763,10 +785,31 @@ export default function SpecKitPage() {
                 </Button>
               }
             />
-            <p className="text-xs text-muted-foreground">
-              Publishing is enabled after a dry run of this feature, and uses the target saved for
-              the project.
-            </p>
+            {exportPreview && exportPreview.titles.length > 0 ? (
+              <div className="space-y-1 text-xs">
+                <p className="text-muted-foreground">
+                  Would create in {exportPreview.repo ?? "the saved target"}:
+                </p>
+                <ul className="list-disc pl-4" data-testid="spec-kit-export-titles">
+                  {exportPreview.titles.map((t, i) => (
+                    <li key={`${i}-${t}`}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {publishUnavailable ? (
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="spec-kit-export-unavailable"
+              >
+                {PUBLISH_UNAVAILABLE}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Publishing is enabled after a dry run of this feature, and uses the target saved for
+                the project.
+              </p>
+            )}
           </Card>
         ) : null}
 

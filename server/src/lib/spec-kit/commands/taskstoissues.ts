@@ -73,9 +73,22 @@ export interface TasksToIssuesInput {
 
 export interface TasksToIssuesResult {
   count: number;
-  created: Array<{ taskId: string; issueNumber: number; url: string; upserted: boolean }>;
+  /** `title` is the issue title, planned or created (#936: a dry run lists them). */
+  created: Array<{
+    taskId: string;
+    title: string;
+    issueNumber: number;
+    url: string;
+    upserted: boolean;
+  }>;
   repo: { owner: string; name: string };
   parentEpicNumber: number | null;
+  /**
+   * #936 — whether a non-dry run of this call would reach a real issue client.
+   * False until a production client is wired (#784), so a UI can say so
+   * instead of offering a Publish that is refused 501.
+   */
+  publishAvailable: boolean;
   message: string;
 }
 
@@ -125,6 +138,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
       created: [],
       repo: input.repo ?? { owner: "", name: "" },
       parentEpicNumber: input.parentEpicNumber ?? null,
+      publishAvailable: Boolean(input.client),
       message: "No tasks found in tasks.md.",
     };
   }
@@ -136,7 +150,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     throw new SpecKitArtifactError(
       501,
       "SPECKIT_ISSUE_EXPORT_UNAVAILABLE",
-      "Exporting tasks to GitHub issues is not available on this server yet. Re-run with dryRun: true to preview the export.",
+      "Exporting tasks to GitHub issues is not available on this server yet. Preview the export with a dry run instead.",
     );
   }
   const repo = input.repo ?? (await resolveRepo(input.projectId));
@@ -166,6 +180,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     let issueNumber: number;
     let url: string;
     let wasUpsert = false;
+    const title = `[${task.id}] ${task.title}`;
     if (existing) {
       issueNumber = existing.issueNumber;
       url = `https://github.com/${existing.repoOwner}/${existing.repoName}/issues/${issueNumber}`;
@@ -174,7 +189,6 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
       const body = renderIssueBody(task, feature.slug);
       const labels = [`speckit:${feature.slug}`];
       if (task.userStorySlug) labels.push(`story:${task.userStorySlug}`);
-      const title = `[${task.id}] ${task.title}`;
       const resp = client
         ? await client.create(repo.owner, repo.name, { title, body, labels })
         : plannedIssue(title);
@@ -228,7 +242,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
         }
       }
     }
-    created.push({ taskId: task.id, issueNumber, url, upserted: wasUpsert });
+    created.push({ taskId: task.id, title, issueNumber, url, upserted: wasUpsert });
   }
 
   audit({
@@ -249,6 +263,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     created,
     repo,
     parentEpicNumber,
+    publishAvailable: Boolean(input.client),
     message: `${input.dryRun ? "Would export" : "Exported"} ${created.length} task(s) to ${repo.owner}/${repo.name}.`,
   };
 }

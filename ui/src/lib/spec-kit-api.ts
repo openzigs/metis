@@ -72,7 +72,12 @@ export interface SpecKitCommandResult {
   feature?: SpecKitFeature;
   featureSlug?: string;
   count?: number;
-  created?: Array<{ taskId: string; issueNumber: number; url: string }>;
+  /** `speckit.taskstoissues`: one row per task; `title` is the planned or created issue title. */
+  created?: Array<{ taskId: string; title?: string; issueNumber: number; url: string }>;
+  /** `speckit.taskstoissues`: the resolved target repository. */
+  repo?: { owner: string; name: string };
+  /** `speckit.taskstoissues` (#936): whether a non-dry run would reach a real issue client. */
+  publishAvailable?: boolean;
   tokensUsed?: number;
 }
 
