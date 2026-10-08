@@ -62,6 +62,7 @@ describe("WorkspaceAssignCard", () => {
       target: { value: "ws-adm" },
     });
     fireEvent.click(screen.getByTestId("workspace-assign-button"));
+    fireEvent.click(screen.getByTestId("workspace-assign-confirm-button"));
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["projects"] }));
     expect(assignWorkspace).toHaveBeenCalledWith("p1", "ws-adm");
     expect(refreshAccessToken).toHaveBeenCalledTimes(1);
@@ -79,6 +80,7 @@ describe("WorkspaceAssignCard", () => {
       target: { value: "ws-own" },
     });
     fireEvent.click(screen.getByTestId("workspace-assign-button"));
+    fireEvent.click(screen.getByTestId("workspace-assign-confirm-button"));
     expect(await screen.findByRole("alert")).toHaveTextContent("Workspace admin role required");
     expect(refreshAccessToken).not.toHaveBeenCalled();
   });
@@ -98,5 +100,40 @@ describe("WorkspaceAssignCard", () => {
       expect(screen.getByTestId("workspace-assign-current")).toHaveTextContent("Member only"),
     );
     expect(screen.queryByTestId("workspace-assign-select")).not.toBeInTheDocument();
+  });
+
+  it("asks for confirmation naming the irreversibility and the access loss, and cancel does nothing", async () => {
+    renderCard(<WorkspaceAssignCard projectId="p1" workspaceId={null} />);
+    fireEvent.change(await screen.findByTestId("workspace-assign-select"), {
+      target: { value: "ws-own" },
+    });
+    fireEvent.click(screen.getByTestId("workspace-assign-button"));
+    expect(assignWorkspace).not.toHaveBeenCalled();
+    const confirm = screen.getByTestId("workspace-assign-confirm");
+    expect(confirm).toHaveTextContent(/cannot be undone/);
+    expect(confirm).toHaveTextContent(/lose access/);
+    fireEvent.click(screen.getByTestId("workspace-assign-cancel-button"));
+    expect(screen.queryByTestId("workspace-assign-confirm")).not.toBeInTheDocument();
+    expect(assignWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("tells the user when the session could not be refreshed after a move", async () => {
+    assignWorkspace.mockResolvedValue({ id: "p1", workspaceId: "ws-adm" });
+    refreshAccessToken.mockResolvedValue(false);
+    renderCard(<WorkspaceAssignCard projectId="p1" workspaceId={null} />);
+    fireEvent.change(await screen.findByTestId("workspace-assign-select"), {
+      target: { value: "ws-adm" },
+    });
+    fireEvent.click(screen.getByTestId("workspace-assign-button"));
+    fireEvent.click(screen.getByTestId("workspace-assign-confirm-button"));
+    expect(await screen.findByRole("status")).toHaveTextContent(/could not be refreshed/);
+  });
+
+  it("shows a load error, not the missing-role message, when the workspaces query fails", async () => {
+    apiFetch.mockRejectedValue(new ApiError(500, "boom", "INTERNAL"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderCard(<WorkspaceAssignCard projectId="p1" workspaceId={null} />, queryClient);
+    expect(await screen.findByTestId("workspace-assign-load-error")).toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-assign-none")).not.toBeInTheDocument();
   });
 });

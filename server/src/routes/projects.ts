@@ -8,7 +8,6 @@
  * cannot see.
  */
 import { Router, type Request, type Response } from "express";
-import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import {
   type ApiResponse,
   PROJECT_STATUSES,
@@ -73,6 +72,7 @@ import {
 import { PublishError } from "../lib/publishing/types.js";
 import { generateOverview, OverviewError } from "../lib/code-graph/overview.js";
 import { createDefaultCodeSearcher } from "../lib/code-graph/project-code-searcher.js";
+import { projectWorkspaceRateLimiter } from "../middleware/project-workspace-rate-limit.js";
 import { codeSearchRateLimiter } from "../middleware/code-search-rate-limit.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
 import { recordJobScope } from "../lib/socket/job-scope-store.js";
@@ -132,25 +132,6 @@ function primaryRepoLinkError(err: unknown, projectId: string): PrimaryRepoLinkE
 }
 
 const assignWorkspaceSchema = z.object({ workspaceId: z.string().min(1).max(64) });
-
-/**
- * #731 — moving a project into a workspace is a rare, admin-level write;
- * 30 per 15 minutes per user is far above any real use. Module scope:
- * express-rate-limit@8 refuses to be created inside a request handler.
- */
-const assignWorkspaceRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "test" ? 10_000 : 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req, res) =>
-    req.user?.userId ??
-    ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32),
-  message: {
-    success: false,
-    error: { code: "RATE_LIMIT", message: "Too many workspace changes. Try again later." },
-  },
-});
 
 function rethrow(err: unknown): never {
   if (err instanceof ProjectError) {
@@ -341,9 +322,10 @@ export function projectsRouter(): Router {
   // above; the service adds the mutate rule and the target-workspace admin rule.
   r.put(
     "/:id/workspace",
-    // First in the chain, so it also caps `requireAuth`'s work. `req.user` is
-    // already set here by the `/:id/:sub` chokepoint, so the key is per user.
-    assignWorkspaceRateLimiter,
+    // `req.user` is already set by the `/:id/:sub` chokepoint above (which has
+    // run `requireAuth` and the project-access lookup), so this caps the write
+    // and is keyed per user; it does not pre-limit that earlier work.
+    projectWorkspaceRateLimiter,
     requireAuth,
     requirePermission("project.update"),
     async (req, res) => {

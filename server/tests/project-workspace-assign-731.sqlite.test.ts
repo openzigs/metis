@@ -154,6 +154,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await workspaceOf(id)).toBeNull();
     });
 
+    it("a coordinator who did not create the project cannot capture it into their workspace", async () => {
+      const id = await newProject("u-member");
+      const res = await put(id, bearer("u-owner", "coordinator", [WS]), { workspaceId: WS });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("FORBIDDEN");
+      expect(await workspaceOf(id)).toBeNull();
+      // The creator still reads it.
+      const read = await request(app())
+        .get(`/api/projects/${id}`)
+        .set("Authorization", bearer("u-member", "coordinator", [WS]));
+      expect(read.status).toBe(200);
+    });
+
     it("a non-member of the target gets the same 404 as an unknown or deleted workspace", async () => {
       const id = await newProject("u-outsider");
       for (const workspaceId of [WS, "ws-does-not-exist"]) {

@@ -195,7 +195,7 @@ const WORKSPACE_ADMIN_ROLES = new Set(["owner", "admin"]);
  * workspace could never get requirement linking, workspace traceability or
  * shared-database identities.
  *
- * The caller must be allowed to mutate the project AND be an owner/admin of the
+ * The caller must be the project creator or a system admin AND be an owner/admin of the
  * live target workspace (system admins bypass the workspace role, read from the
  * membership table rather than the token claim, as in #560). Unknown, deleted
  * and not-a-member are one 404, so the body cannot probe workspace ids.
@@ -211,7 +211,10 @@ export async function assignProjectWorkspace(
   actor: ProjectActor,
 ) {
   const project = await getProjectOrThrow(projectId);
-  assertCanMutate(project, actor);
+  // Creator or system admin only (as archive): unassigned projects are open to
+  // every authenticated user, so letting any coordinator move one would let
+  // them capture it into a workspace the creator cannot see, irreversibly.
+  assertCanMove(project, actor);
   if (project.workspaceId === workspaceId) return project;
   if (project.workspaceId) {
     throw new ProjectError(
@@ -350,6 +353,13 @@ function assertCanMutate(project: { createdById: string }, actor: ProjectActor):
   }
   if (project.createdById !== actor.id && actor.role !== "coordinator") {
     throw new ProjectError(403, "FORBIDDEN", "Only the project owner or admin can mutate");
+  }
+}
+
+function assertCanMove(project: { createdById: string }, actor: ProjectActor): void {
+  if (actor.role === "admin") return;
+  if (actor.role === "reader" || project.createdById !== actor.id) {
+    throw new ProjectError(403, "FORBIDDEN", "Only the project owner or admin can move a project");
   }
 }
 
