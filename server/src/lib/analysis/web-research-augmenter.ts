@@ -402,6 +402,25 @@ export function createSearchProvider(): WebSearchProvider {
   }
 }
 
+/**
+ * #864 — said once, in place of one "No web sources found" digest per evidence
+ * need, when no web search provider is configured. Also the web specialist's
+ * summary when it is skipped for the same reason (see the orchestrator).
+ */
+export const NO_WEB_SEARCH_PROVIDER_NOTICE =
+  "Web research was skipped: no web search provider is configured. Set WEB_SEARCH_PROVIDER (tavily, brave or google) and its API key to enable it.";
+
+/**
+ * #864 — whether a real web search backend is configured. The stub is what
+ * `createSearchProvider` falls back to for every unconfigured, misconfigured
+ * or offline case, so "is it the stub" is the one test for all of them.
+ */
+export function isWebSearchConfigured(
+  searchProvider: WebSearchProvider = createSearchProvider(),
+): boolean {
+  return !(searchProvider instanceof StubWebSearchProvider);
+}
+
 export class WebResearchAugmenter {
   private readonly provider: AIProvider;
   private readonly searchProvider: WebSearchProvider;
@@ -428,6 +447,21 @@ export class WebResearchAugmenter {
 
     if (allNeeds.length === 0) {
       return { digests: [], totalSources: 0, reviewRequired: 0 };
+    }
+
+    // #864 — the stub can only ever answer "nothing", so asking it once per
+    // evidence need produced N identical "No web sources found" digests (and
+    // N wasted query-generation calls). Say so once and add nothing.
+    if (!isWebSearchConfigured(this.searchProvider)) {
+      log.info("Web research skipped — no web search provider configured", {
+        evidenceNeeds: allNeeds.length,
+      });
+      return {
+        digests: [],
+        totalSources: 0,
+        reviewRequired: 0,
+        notice: NO_WEB_SEARCH_PROVIDER_NOTICE,
+      };
     }
 
     log.info("Augmenting evidence needs", {

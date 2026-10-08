@@ -95,3 +95,43 @@ describe("cancelDisabledHint", () => {
     expect(cancelDisabledHint(60_000)).toMatch(/cannot recall issues already created/i);
   });
 });
+
+describe("BatchRowActions — Archive (#863)", () => {
+  it("offers Archive on a settled batch and reports the batch id", () => {
+    const onArchive = vi.fn();
+    render(
+      <BatchRowActions
+        batch={batch({ status: "completed" })}
+        onWatch={() => {}}
+        onCancel={() => {}}
+        onArchive={onArchive}
+        now={NOW}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("archive-batch-cms3u7y09003g259kej42fn4q"));
+    expect(onArchive).toHaveBeenCalledWith("cms3u7y09003g259kej42fn4q");
+  });
+
+  it("never offers Archive while a batch may still be running, or once archived", () => {
+    const { rerender } = render(
+      <BatchRowActions
+        batch={batch({ status: "running" })}
+        onWatch={() => {}}
+        onCancel={() => {}}
+        onArchive={() => {}}
+        now={NOW}
+      />,
+    );
+    expect(screen.queryByTestId("archive-batch-cms3u7y09003g259kej42fn4q")).toBeNull();
+    rerender(
+      <BatchRowActions
+        batch={batch({ status: "completed", archived: true })}
+        onWatch={() => {}}
+        onCancel={() => {}}
+        onArchive={() => {}}
+        now={NOW}
+      />,
+    );
+    expect(screen.queryByTestId("archive-batch-cms3u7y09003g259kej42fn4q")).toBeNull();
+  });
+});

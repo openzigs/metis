@@ -182,7 +182,12 @@ import { createRunDocumentLookup, projectDocumentQueries } from "./run-document-
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
 import { RequirementsExtractor } from "./requirements-extractor.js";
-import { WebResearchAugmenter, createSearchProvider } from "./web-research-augmenter.js";
+import {
+  NO_WEB_SEARCH_PROVIDER_NOTICE,
+  WebResearchAugmenter,
+  createSearchProvider,
+  isWebSearchConfigured,
+} from "./web-research-augmenter.js";
 import {
   searchCodeGraphTool,
   readFileSliceTool,
@@ -346,6 +351,13 @@ export interface OrchestratorDeps {
    * byte-identical to the pre-#824 behaviour.
    */
   affectedSchemaMapping?: RunAffectedSchemaDeps;
+  /**
+   * #864 — whether a web search provider is configured. Defaults to the
+   * env-driven {@link isWebSearchConfigured}. When false the `web` specialist
+   * is not run: it has no web access of its own, and run over document-RAG
+   * alone it cited an unrelated test file's licence header as "evidence".
+   */
+  webSearchConfigured?: () => boolean;
 }
 /** Agent execution mode for the analysis pipeline. */
 export type AgentMode = "single-shot" | "agentic" | "requirement-grounded";
@@ -2082,6 +2094,9 @@ export class AnalysisOrchestrator {
       status: "running",
       ts: Date.now(),
     });
+    if (input.agentKey === "web" && !this.isWebSearchAvailable()) {
+      return this.skipWebAgentWithoutProvider(input.analysisId, startedAt);
+    }
     return withInvokeAgentSpan(input.agentKey, async () => {
       try {
         const retrieved = await this.retrieveContext({
@@ -2169,6 +2184,47 @@ export class AnalysisOrchestrator {
         throw err;
       }
     });
+  }
+
+  private isWebSearchAvailable(): boolean {
+    return (this.deps.webSearchConfigured ?? isWebSearchConfigured)();
+  }
+
+  /**
+   * #864 — with no web search provider the web specialist says so ONCE, in its
+   * summary, and adds no findings. It is persisted `completed` (the run did
+   * what it could and nothing failed) with zero usage, because no model call
+   * was made.
+   */
+  private async skipWebAgentWithoutProvider(
+    analysisId: string,
+    startedAt: Date,
+  ): Promise<AgentRunResult> {
+    const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    const output: AgentOutput = {
+      agentKey: "web",
+      summary: NO_WEB_SEARCH_PROVIDER_NOTICE,
+      findings: [],
+      notes: [],
+    };
+    await persistAgentResult({
+      analysisId,
+      agentKey: "web",
+      status: "completed",
+      output,
+      startedAt,
+      completedAt: new Date(),
+      usage,
+    });
+    this.emit({
+      analysisId,
+      agentKey: "web",
+      type: "completed",
+      status: "completed",
+      findingCount: 0,
+      ts: Date.now(),
+    });
+    return { agentKey: "web", output, usage, durationMs: Date.now() - startedAt.getTime() };
   }
 
   /**

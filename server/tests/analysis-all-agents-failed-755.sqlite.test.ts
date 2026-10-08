@@ -118,7 +118,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       agentKeys: AnalysisSpecialistAgentKey[],
       p: AIProvider,
     ): Promise<{ status: string; errorMessage: string | null }> {
-      const orch = new AnalysisOrchestrator({ provider: p, knowledge: stubKnowledge });
+      // #864 — the web specialist only runs when a web search provider is configured.
+      const orch = new AnalysisOrchestrator({
+        provider: p,
+        knowledge: stubKnowledge,
+        webSearchConfigured: () => true,
+      });
       const { id } = await orch.start({ projectId: PROJECT, startedById: USER, agentKeys });
       for (let i = 0; i < 400; i++) {
         const row = await db.analysis.findUnique({ where: { id } });

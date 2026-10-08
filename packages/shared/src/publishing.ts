@@ -252,11 +252,43 @@ export const createPublishedIssueSchema = publishedIssueSchema
 export type CreatePublishedIssueInput = z.infer<typeof createPublishedIssueSchema>;
 
 // ---- Generation request ----------------------------------------------------
+/**
+ * #863 — an import run with more requirements than this cannot be drafted
+ * wholesale: generating from a 266-issue import used to create 267 drafts in
+ * one click. Above it, the caller must name the requirements to draft.
+ */
+export const DRAFT_SELECTION_THRESHOLD = 25;
+/** #863 — the most requirements one Generate may name. */
+export const MAX_DRAFT_REQUIREMENT_SELECTION = 500;
+
 export const generateDraftsSchema = z.object({
   analysisId: idSchema,
   defaultLabels: z.array(z.string().min(1).max(64)).max(16).default([]),
+  /** #863 — draft only these requirements of the analysis (all when omitted). */
+  requirementIds: z.array(idSchema).min(1).max(MAX_DRAFT_REQUIREMENT_SELECTION).optional(),
 });
 export type GenerateDraftsInput = z.infer<typeof generateDraftsSchema>;
+
+/** #863 — one requirement a draft can be generated from. */
+export interface DraftCandidate {
+  id: string;
+  title: string;
+  type: string;
+  priority: string;
+  externalUrl: string | null;
+}
+
+/**
+ * #863 — the requirements Generate would draft from an analysis, and whether
+ * the caller must choose among them first (an import run above
+ * {@link DRAFT_SELECTION_THRESHOLD}).
+ */
+export interface DraftCandidates {
+  analysisId: string;
+  source: "analysis" | "import";
+  selectionRequired: boolean;
+  requirements: DraftCandidate[];
+}
 
 // ---- Dry-run plan shape (returned to UI when dryRun=true) -----------------
 export const dryRunActionSchema = z.object({

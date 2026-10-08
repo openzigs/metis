@@ -845,6 +845,8 @@ export interface WebResearchResultPayload {
   digests: EvidenceDigest[];
   totalSources: number;
   reviewRequired: number;
+  /** #864 — why research did not run (e.g. no web search provider), said once. */
+  notice?: string;
 }
 
 /** Epic #597 / #622 — a single ambiguity flagged on a structured requirement. */

@@ -752,6 +752,8 @@ export async function generateDrafts(opts: {
   targetOwner: string;
   targetRepo: string;
   defaultLabels?: string[];
+  /** #863 — draft only these requirements of the analysis. */
+  requirementIds?: string[];
   actorId: string;
 }): Promise<{ summary: ReturnType<typeof toGenerateSummary> }> {
   const summary = await generateDraftsImpl({
@@ -760,6 +762,7 @@ export async function generateDrafts(opts: {
     targetOwner: opts.targetOwner,
     targetRepo: opts.targetRepo,
     defaultLabels: opts.defaultLabels,
+    requirementIds: opts.requirementIds,
   });
   audit({
     actor: { id: opts.actorId },

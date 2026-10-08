@@ -24,7 +24,8 @@ import { describe, it, expect, vi } from "vitest";
 
 vi.mock("../prisma.js", () => ({ prisma: {} }));
 
-const { __testing, NO_ACCEPTANCE_CRITERIA_NOTE } = await import("./draft-generator.js");
+const { __testing, NO_ACCEPTANCE_CRITERIA_NOTE, extractBodyAcceptanceCriteria } =
+  await import("./draft-generator.js");
 const { renderAcceptanceCriteria, renderFeatureBody, renderEpicBody } = __testing;
 
 /** The R3 example from the #1096 report. */
@@ -229,5 +230,70 @@ describe("renderEpicBody sub-issue ids (#1096)", () => {
     // The bug: all three annotations were the identical string `cms3tyeq`.
     expect(new Set(rendered).size).toBe(3);
     for (const r of requirements) expect(body).toContain(`\`${r.id}\``);
+  });
+});
+
+/**
+ * #863 — an imported requirement carries the upstream issue text only, so its
+ * draft read "no acceptance criteria" even when the issue listed them under its
+ * own heading. The criteria must come from that section and nowhere else.
+ */
+describe("acceptance criteria stated in an upstream body (#863)", () => {
+  const ISSUE_BODY = [
+    "### Description",
+    "Export subscriptions as OPML.",
+    "",
+    "- [x] I have searched the existing issues",
+    "",
+    "### Acceptance criteria",
+    "",
+    "- [ ] The export contains every feed URL",
+    "- [x] Categories become OPML outlines",
+    "1. The download is named `feeds.opml`",
+    "",
+    "### Additional context",
+    "- not a criterion",
+  ].join("\n");
+
+  it("extracts the list under an Acceptance criteria heading, and only that list", () => {
+    expect(extractBodyAcceptanceCriteria(ISSUE_BODY)).toEqual([
+      "The export contains every feed URL",
+      "Categories become OPML outlines",
+      "The download is named `feeds.opml`",
+    ]);
+  });
+
+  it("accepts a bold label and stops at the first non-list paragraph", () => {
+    const body = "**Acceptance Criteria:**\n* first\n* second\nTrailing prose.\n* not this";
+    expect(extractBodyAcceptanceCriteria(body)).toEqual(["first", "second"]);
+  });
+
+  it("invents nothing: a template checklist is not a criterion", () => {
+    expect(extractBodyAcceptanceCriteria("- [x] I have searched the existing issues")).toEqual([]);
+    expect(extractBodyAcceptanceCriteria("## Acceptance criteria\n\nTBD")).toEqual([]);
+  });
+
+  it("renders the body's criteria when none were persisted", () => {
+    const out = renderAcceptanceCriteria({ body: ISSUE_BODY, acceptanceCriteria: [] });
+    expect(out).toBe(
+      [
+        "- [ ] The export contains every feed URL",
+        "- [ ] Categories become OPML outlines",
+        "- [ ] The download is named `feeds.opml`",
+      ].join("\n"),
+    );
+    expect(out).not.toContain(NO_ACCEPTANCE_CRITERIA_NOTE);
+  });
+
+  it("persisted criteria still win over the body", () => {
+    const out = renderAcceptanceCriteria({ body: ISSUE_BODY, acceptanceCriteria: ["Persisted"] });
+    expect(out).toBe("- [ ] Persisted");
+  });
+
+  it("is linear on a long hostile line", () => {
+    const hostile = `**${" ".repeat(50_000)}x\n${"- ".repeat(25_000)}`;
+    const started = performance.now();
+    extractBodyAcceptanceCriteria(hostile);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });

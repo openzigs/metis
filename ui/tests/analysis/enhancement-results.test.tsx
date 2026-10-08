@@ -55,6 +55,22 @@ describe("EnhancementResults", () => {
     expect(screen.getByText("No web research evidence to review.")).toBeInTheDocument();
   });
 
+  it("#864 — states once why web research did not run", () => {
+    renderResults({
+      enhancement: { enableWebResearch: true, enableClarification: false },
+      webResearch: {
+        digests: [],
+        totalSources: 0,
+        reviewRequired: 0,
+        notice: "Web research was skipped: no web search provider is configured.",
+      },
+    });
+    expect(screen.getByTestId("web-research-notice")).toHaveTextContent(
+      "Web research was skipped: no web search provider is configured.",
+    );
+    expect(screen.queryByText("No web research evidence to review.")).not.toBeInTheDocument();
+  });
+
   it("renders digests with trust badges and a needs-review marker", () => {
     renderResults({
       enhancement: { enableWebResearch: true, enableClarification: false },

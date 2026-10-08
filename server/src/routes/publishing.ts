@@ -2,6 +2,7 @@
  * /api/projects/:projectId/publishing — Phase 9 routes (#65–#71).
  *
  *   GET    /drafts                      list drafts                (issue.draft)
+ *   GET    /drafts/candidates           requirements to draft from (issue.draft)          #863
  *   POST   /drafts/generate             generate from analysis     (issue.draft)
  *   PATCH  /drafts/:id                  edit title/body/labels     (issue.draft)          #776
  *   POST   /drafts/:id/approve          approve a draft            (issue.draft)
@@ -23,6 +24,7 @@ import {
   generateDraftsSchema,
   githubOwnerSchema,
   hasPermission,
+  idSchema,
   type ApiResponse,
   type RoleKey,
 } from "@metis/shared";
@@ -48,6 +50,7 @@ import {
 } from "../lib/publishing/publishing-service.js";
 import { PublishError } from "../lib/publishing/types.js";
 import { editDraft } from "../lib/publishing/draft-edit.js";
+import { listDraftCandidates } from "../lib/publishing/draft-generator.js";
 import { openDraftPullRequest } from "../lib/publishing/draft-pull-request.js";
 
 function ok<T>(data: T): ApiResponse<T> {
@@ -144,6 +147,16 @@ export function publishingRouter(): Router {
     }
   });
 
+  // #863 — what Generate would draft, so an import run can be narrowed first.
+  r.get("/drafts/candidates", requirePermission("issue.draft"), async (req, res, next) => {
+    try {
+      const analysisId = idSchema.parse(req.query.analysisId);
+      res.json(ok(await listDraftCandidates(projectIdOf(req), analysisId)));
+    } catch (err) {
+      next(asAppError(err));
+    }
+  });
+
   r.post("/drafts/generate", requirePermission("issue.draft"), async (req, res, next) => {
     try {
       const projectId = projectIdOf(req);
@@ -160,6 +173,7 @@ export function publishingRouter(): Router {
         targetOwner: body.targetOwner,
         targetRepo: body.targetRepo,
         defaultLabels: body.defaultLabels,
+        requirementIds: body.requirementIds,
         actorId: actor(req),
       });
       res.status(201).json(ok(result));
