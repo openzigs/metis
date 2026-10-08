@@ -208,6 +208,28 @@ describe("POST /commands/speckit.taskstoissues (real runner, #784)", () => {
     expect(db.taskExports.size).toBe(0);
   });
 
+  it("a dry run lists every planned issue title and says a live export is unavailable (#936)", async () => {
+    Object.assign(db.projects.get("p1"), {
+      publishGithubOwner: "openzigs",
+      publishGithubRepo: "flux-v2",
+    });
+    const res = await request(makeApp()).post(ROUTE).send({ featureSlug: "001-foo", dryRun: true });
+    expect(res.status).toBe(200);
+    expect(res.body.data.created.map((c: any) => c.title)).toEqual([
+      "[T01] Build A",
+      "[T02] Build B",
+    ]);
+    // The route injects no issue client, so the UI must not offer Publish.
+    expect(res.body.data.publishAvailable).toBe(false);
+  });
+
+  it("the 501 speaks to a UI user, not in API field names (#936)", async () => {
+    const res = await request(makeApp()).post(ROUTE).send({ featureSlug: "001-foo" });
+    expect(res.status).toBe(501);
+    expect(res.body.error.message).not.toMatch(/dryRun/);
+    expect(res.body.error.message).toMatch(/dry run/);
+  });
+
   it("a non-admin without project.update is refused 403 before the command runs", async () => {
     auth.user = { userId: "u2", role: "reader" };
     const res = await request(makeApp()).post(ROUTE).send({ featureSlug: "001-foo", dryRun: true });

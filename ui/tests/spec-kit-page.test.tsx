@@ -84,6 +84,8 @@ vi.mock("@/lib/collaboration-api", () => ({
 import { specKitApi } from "@/lib/spec-kit-api";
 import { commentApi } from "@/lib/collaboration-api";
 import SpecKitPage from "@/app/(authed)/projects/[id]/spec-kit/page";
+import { ApiError } from "@/lib/api-client";
+import { createQueryClient } from "@/lib/query-client";
 
 const collabMock = commentApi as unknown as {
   listForArtifact: ReturnType<typeof vi.fn>;
@@ -457,6 +459,19 @@ describe("SpecKitPage — #789", () => {
     );
   }
 
+  /** A dry run of `speckit.taskstoissues` on a server that can publish. */
+  const DRY_RUN = {
+    message: "Would export 2 task(s) to me/sandbox.",
+    count: 2,
+    repo: { owner: "me", name: "sandbox" },
+    parentEpicNumber: null,
+    publishAvailable: true,
+    created: [
+      { taskId: "T01", title: "[T01] Build A", issueNumber: 0, url: "dryrun://a", upserted: false },
+      { taskId: "T02", title: "[T02] Build B", issueNumber: 0, url: "dryrun://b", upserted: false },
+    ],
+  };
+
   /** Let a mutation that WOULD have been fired run, so a not-called assertion means something. */
   const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -552,7 +567,7 @@ describe("SpecKitPage — #789", () => {
     for (const id of FEATURE_WRITES.filter((i) => i !== "spec-kit-export-publish")) {
       expect(screen.getByTestId(id), id).toBeEnabled();
     }
-    m.runCommand!.mockResolvedValue({ message: "dry run ok" });
+    m.runCommand!.mockResolvedValue(DRY_RUN);
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
   });
@@ -689,7 +704,7 @@ describe("SpecKitPage — #789", () => {
   });
 
   it("publishes issues only after a dry run, and only after confirmation", async () => {
-    m.runCommand!.mockResolvedValue({ message: "Would create 3 issue(s)", count: 3 });
+    m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
     expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
@@ -713,8 +728,73 @@ describe("SpecKitPage — #789", () => {
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled());
   });
 
+  it("keeps Publish disabled, saying why, when the server cannot publish yet (#936)", async () => {
+    m.runCommand!.mockResolvedValue({ ...DRY_RUN, publishAvailable: false });
+    await openFeature();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() =>
+      expect(screen.getByTestId("spec-kit-export-unavailable")).toHaveTextContent(
+        /not available on this server yet/,
+      ),
+    );
+    const publish = screen.getByTestId("spec-kit-export-publish");
+    expect(publish).toBeDisabled();
+    expect(publish).toHaveAttribute(
+      "title",
+      expect.stringMatching(/not available on this server yet/),
+    );
+    fireEvent.click(publish);
+    await flush();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(m.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists every issue title the dry run would create (#936)", async () => {
+    m.runCommand!.mockResolvedValue(DRY_RUN);
+    await openFeature();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    const list = await screen.findByTestId("spec-kit-export-titles");
+    expect(
+      within(list)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["[T01] Build A", "[T02] Build B"]);
+  });
+
+  it("names the repository and the issue count in the publish confirmation (#936)", async () => {
+    m.runCommand!.mockResolvedValue(DRY_RUN);
+    await openFeature();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("spec-kit-export-publish"));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("me/sandbox");
+    expect(dialog).toHaveTextContent("2 issues");
+  });
+
+  it("sends a failed command once: a 5xx is not retried (#936)", async () => {
+    m.runCommand!.mockRejectedValue(
+      new ApiError(501, "Exporting is not available", "SPECKIT_ISSUE_EXPORT_UNAVAILABLE"),
+    );
+    m.listFeatures!.mockResolvedValue({ features: [FEATURE] });
+    m.listFeatureArtifacts!.mockResolvedValue({ feature: FEATURE, artifacts: [fa("spec.md")] });
+    render(<SpecKitPage />, {
+      wrapper: makeWrapper({ initialUser: WRITER, queryClient: createQueryClient() }),
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /001-a — Mark read/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByTestId("spec-kit-feature-select"), {
+      target: { value: "001-a" },
+    });
+    fireEvent.click(await screen.findByTestId("spec-kit-export-preview"));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(m.runCommand).toHaveBeenCalledTimes(1);
+  });
+
   it("voids the dry run when tasks.md changes afterwards", async () => {
-    m.runCommand!.mockResolvedValue({ message: "ok", count: 3 });
+    m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).not.toBeDisabled());
@@ -727,7 +807,7 @@ describe("SpecKitPage — #789", () => {
   });
 
   it("voids the dry run when the user leaves the feature and returns", async () => {
-    m.runCommand!.mockResolvedValue({ message: "ok", count: 3 });
+    m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).not.toBeDisabled());
@@ -763,7 +843,7 @@ describe("SpecKitPage — #789", () => {
   });
 
   it("does not publish when the confirmation is declined", async () => {
-    m.runCommand!.mockResolvedValue({ message: "Would create 3 issue(s)" });
+    m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).not.toBeDisabled());
