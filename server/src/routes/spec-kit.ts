@@ -26,7 +26,6 @@ import {
   normalizeSpecKitCommand,
   specKitCommandRequestSchema,
   specKitWriteRequestSchema,
-  hasPermission,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -40,7 +39,7 @@ import {
   setSpecKitEnabled,
   writeArtifact,
 } from "../lib/spec-kit/artifacts.js";
-import { generateConstitution } from "../lib/spec-kit/constitution.js";
+import { draftConstitution } from "../lib/spec-kit/commands/constitution-draft.js";
 import { runSpecify } from "../lib/spec-kit/commands/specify.js";
 import { runPlan } from "../lib/spec-kit/commands/plan.js";
 import { runTasks } from "../lib/spec-kit/commands/tasks.js";
@@ -351,15 +350,26 @@ export function specKitRouter(): Router {
     try {
       const projectId = projectIdFrom(req);
       await ensureEnabled(projectId);
-      const content = await generateConstitution({
+      // #788 — derive the constitution from the project's knowledge; the
+      // skeleton only when there is nothing to ground on (and `message` says so).
+      const result = await draftConstitution({
         projectId,
         ...(parsed.data.projectOverrides !== undefined
           ? { projectOverrides: parsed.data.projectOverrides }
           : {}),
         actorId: actorId(req),
+        resolveProvider: memoizeProviderResolver(() => resolveProjectProvider(projectId)),
       });
       const artifact = await getArtifact(projectId, "constitution.md");
-      res.json(ok({ artifact, contentLength: content.length }));
+      res.json(
+        ok({
+          artifact,
+          contentLength: result.content.length,
+          grounded: result.grounded,
+          meta: result.meta,
+          message: result.message,
+        }),
+      );
     } catch (err) {
       rethrow(err);
     }
@@ -432,15 +442,6 @@ export function specKitRouter(): Router {
       try {
         const projectId = projectIdFrom(req);
         await ensureEnabled(projectId);
-        // S-3 — the per-command `speckit.constitution.write` RBAC gate must run
-        // SYNCHRONOUSLY so a forbidden caller gets a 403 instead of a 202. It is
-        // re-checked inside dispatchNamespaced (defence in depth) but the route
-        // pre-check preserves the synchronous-403 contract under async dispatch.
-        if (normalized.canonical === "speckit.constitution") {
-          if (!req.user || !hasPermission(req.user.role, "speckit.constitution.write")) {
-            throw new AppError(403, "FORBIDDEN", "Requires permission speckit.constitution.write");
-          }
-        }
         const actor = actorId(req);
         const jobId = randomUUID();
         const result = await runSpecKitCommandJob(
@@ -664,9 +665,9 @@ export interface DispatchedCommandResult {
 /**
  * Lazily resolves the project's AI provider on first use. Passing a thunk
  * (rather than an eagerly-built provider) keeps provider construction OUT of
- * code paths that never reach the LLM — notably the `speckit.constitution`
- * RBAC pre-check, so a forbidden caller still gets a 403 rather than a 502
- * from an unrelated provider-credential failure. Resolution is memoized so a
+ * code paths that never reach the LLM — notably `speckit.constitution` and a
+ * constitution generation with nothing retrieved, which then never fail with a
+ * 502 from an unrelated provider-credential problem. Resolution is memoized so a
  * single dispatch builds the provider at most once (#381).
  */
 export type ProviderResolver = () => Promise<AIProvider>;
@@ -795,14 +796,9 @@ async function dispatchNamespaced(
   // Per-feature commands accept a `featureSlug` body field.
   const featureSlug = typeof body.featureSlug === "string" ? body.featureSlug : undefined;
   const force = req.header("x-speckit-force") === "1" || req.header("x-speckit-force") === "true";
-  // S-3 — per-command RBAC: the constitution write requires its own
-  // `speckit.constitution.write` permission on top of the route-level
-  // `project.update` gate.
-  if (cmd === "speckit.constitution") {
-    if (!req.user || !hasPermission(req.user.role, "speckit.constitution.write")) {
-      throw new AppError(403, "FORBIDDEN", "Requires permission speckit.constitution.write");
-    }
-  }
+  // #788 — `speckit.constitution` is gated by the route's `project.update`, like
+  // every other Spec Kit write. A second `speckit.constitution.write` check here
+  // never decided anything: every role holding `project.update` also held it.
   switch (cmd) {
     case "speckit.constitution": {
       const r = await runConstitution({ projectId, content: input, actorId: actor });

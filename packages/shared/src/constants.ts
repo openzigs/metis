@@ -52,10 +52,9 @@ export const PERMISSION_KEYS = [
   "pr.review",
   "pr.review.read",
   "pr.review.manage",
-  // Epic #396 — Spec Kit-compatible workflow (MVP-2): constitution writes
-  // are RBAC-gated independently of `project.update` because the constitution
-  // is "supreme law" for every other Spec Kit phase.
-  "speckit.constitution.write",
+  // #788 — `speckit.constitution.write` was removed: every role holding
+  // `project.update` (which gates every Spec Kit write) also held it, so its
+  // 403 was unreachable. It was never seeded (server/prisma/seed.ts).
   // Epic #739 — Bidirectional Issue Sync permissions.
   "sync.read",
   "sync.resolve",

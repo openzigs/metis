@@ -208,6 +208,53 @@ describe("upsertConstitution", () => {
     expect(second.toVersion).toBe("0.2.0");
     expect(second.meta.ratifiedAt).toBe(ratified);
   });
+
+  // #788 — the `Version:` line is required, so it must also count.
+  const storedBody = (): string =>
+    [...artifactRows.values()].find((r) => r.name === "constitution.md")!.content;
+
+  it("#788 an initial write takes the declared version", async () => {
+    const r = await upsertConstitution({
+      projectId: "p1",
+      content: VALID_CONSTITUTION.replace("Version: 0.1.0", "Version: 1.0.0"),
+    });
+    expect(r.toVersion).toBe("1.0.0");
+    expect(r.meta.version).toBe("1.0.0");
+    expect(r.bump).toBe("major");
+    expect(constitutionRows.get("p1").version).toBe("1.0.0");
+    expect(storedBody()).toMatch(/^Version: 1\.0\.0$/m);
+  });
+
+  it("#788 a declared version ahead of the rule's bump wins", async () => {
+    await upsertConstitution({ projectId: "p1", content: VALID_CONSTITUTION });
+    // Wording-only change (rule: patch → 0.1.1), but the author declares 0.3.0.
+    const r = await upsertConstitution({
+      projectId: "p1",
+      content: VALID_CONSTITUTION.replace("Version: 0.1.0", "Version: 0.3.0").replace(
+        "We always write tests first.",
+        "Tests come first.",
+      ),
+    });
+    expect(r.toVersion).toBe("0.3.0");
+    expect(r.bump).toBe("minor");
+    expect(storedBody()).toMatch(/^Version: 0\.3\.0$/m);
+  });
+
+  it("#788 a declared version below the rule's bump is raised, and the body says so", async () => {
+    await upsertConstitution({ projectId: "p1", content: VALID_CONSTITUTION });
+    // A principle is removed (rule: major → 1.0.0) while the body still says 0.1.0.
+    const r = await upsertConstitution({
+      projectId: "p1",
+      content: VALID_CONSTITUTION.replace(
+        "## Security by default\nEvery endpoint requires auth.",
+        "",
+      ),
+    });
+    expect(r.toVersion).toBe("1.0.0");
+    expect(r.bump).toBe("major");
+    expect(storedBody()).toMatch(/^Version: 1\.0\.0$/m);
+    expect(storedBody()).not.toMatch(/^Version: 0\.1\.0$/m);
+  });
 });
 
 describe("loadAsPreamble", () => {

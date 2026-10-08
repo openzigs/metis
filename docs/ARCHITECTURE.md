@@ -5686,7 +5686,7 @@ Commands enforce their preconditions through `requireGate({featureId, gate, forc
 
 ### 25.4 Constitution governance
 
-`/speckit.constitution` is the only command that may write the per-project constitution (RBAC: `speckit.constitution.write`, admin + coordinator). The agent runner ([`commands/runner.ts`](../server/src/lib/spec-kit/commands/runner.ts)) prepends `loadAsPreamble(projectId)` to every system prompt — when the constitution exists, no Spec Kit agent ever runs without governance.
+`/speckit.constitution` and `POST /spec-kit/constitution` are the two writers of the per-project constitution, both gated by `project.update` (admin + coordinator) like every other Spec Kit write; the dedicated `speckit.constitution.write` permission was removed in #788 because that gate already decided every case. `POST /spec-kit/constitution` ([`commands/constitution-draft.ts`](../server/src/lib/spec-kit/commands/constitution-draft.ts)) retrieves the project's norms (README, contributing guide, manifests) through project RAG and has the project's provider draft the constitution, persisted through `upsertConstitution`; with nothing retrieved, no online provider, or no principles in the reply, it writes the untracked skeleton and its `message` says why. The agent runner ([`commands/runner.ts`](../server/src/lib/spec-kit/commands/runner.ts)) prepends `loadAsPreamble(projectId)` to every system prompt — when the constitution exists, no Spec Kit agent ever runs without governance.
 
 `detectBump(prev, next)` analyses the principle inventory between successive versions:
 
@@ -5696,6 +5696,8 @@ Commands enforce their preconditions through `requireGate({featureId, gate, forc
 | Removed principle | MAJOR (e.g., 1.2.0 → 2.0.0) |
 | Edited principle line (no add/remove) | PATCH (e.g., 1.2.0 → 1.2.1) |
 | Initial write | MINOR (0.0.0 → 0.1.0) |
+
+The body's required `Version:` line counts (#788): a declared version above the rule's result wins; one below it is raised to the rule's result. The stored body's `Version:` line is rewritten to the recorded version either way.
 
 Ratification + amendment timestamps are recorded on the `SpecKitConstitution` row and surface in the preamble's HTML comment (`<!-- speckit.constitution v{ver} ratified {date} amended {date} -->`).
 

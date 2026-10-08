@@ -3606,7 +3606,7 @@ Each command runs through the governance chain: FinOps budget check (402 if exce
 
 ### Constitution
 
-METIS reads your `.github/instructions/*.md` files (sorted alphabetically) and merges them with optional project-level overrides into a **constitution** that is prepended to every agent system prompt. Use `POST /api/projects/:id/spec-kit/constitution` to regenerate it.
+The **constitution** is prepended to every agent system prompt. **Generate constitution.md** (`POST /api/projects/:id/spec-kit/constitution`) drafts it from what the project has ingested: it retrieves the README, contributing guide, dependency manifests and similar documents, and the project's AI provider writes 3-8 principles, each naming its source, in the format `/speckit.constitution` validates. The result is versioned like any `/speckit.constitution` write; review the principles before relying on them. When nothing relevant has been ingested, or no AI provider is configured, it writes an empty skeleton instead and the message says why. Ingest the repository's documentation and generate again, or write the principles yourself with `/speckit.constitution`.
 
 ### The UI
 
@@ -3625,7 +3625,7 @@ The Spec Kit page has three columns:
 
 **Filesystem installer.** `POST /api/projects/:projectId/spec-kit/install` materialises the `.specify/` skeleton + `specs/<slug>/` artifacts + per-host prompt files (Copilot `.github/prompts/*`, Claude `.claude/commands/*`, Cursor `.cursor/commands/*`, Pi `.pi/prompts/*`) onto an attached workspace root. Modes: `skip` (default — never overwrite), `overwrite`, `dryRun`. Requires explicit `consent: true` body flag and passes every write through a path-traversal guard (403 `PATH_NOT_ATTACHED` on any escape).
 
-**`/speckit.constitution`.** Replaces the v1.2 `.github/instructions/*.md` merge model with a first-class artifact tracked under semver. METIS detects added/removed principles vs prior versions and bumps MAJOR/MINOR/PATCH automatically. The structured preamble (with version + ratification date) is prepended to every Spec Kit agent system prompt — no agent runs without governance once a constitution exists.
+**`/speckit.constitution`.** Replaces the v1.2 `.github/instructions/*.md` merge model with a first-class artifact tracked under semver. METIS detects added/removed principles vs prior versions and bumps MAJOR/MINOR/PATCH automatically. A higher `Version:` declared in the body is used as is; a lower one is raised to the automatic bump, and the stored body is updated to match. The structured preamble (with version + ratification date) is prepended to every Spec Kit agent system prompt — no agent runs without governance once a constitution exists.
 
 **`/speckit.checklist`.** Generates per-domain quality checklists (`security`, `performance`, `accessibility`, `observability`, `testability` by default; override via `SpecKitConfig.checklistDomains`). `mode: "merge"` (default) preserves `[x]` check states across re-runs.
 

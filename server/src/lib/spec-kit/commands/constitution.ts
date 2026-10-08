@@ -3,7 +3,7 @@
  *
  * Validates incoming text against the heuristic schema, applies semver
  * bump rules, and persists both the artifact body and the metadata row.
- * RBAC: requires `speckit.constitution.write` (gated by the route layer).
+ * RBAC: `project.update`, enforced by the route layer (#788).
  */
 import { upsertConstitution, type UpsertConstitutionResult } from "../constitution-meta.js";
 import { SpecKitArtifactError } from "../artifacts.js";

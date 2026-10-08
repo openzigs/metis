@@ -115,16 +115,20 @@ export default function SpecKitPage() {
   const constitutionMutation = useMutation({
     mutationFn: () => specKitApi.generateConstitution(projectId),
     onSuccess: (result) => {
-      // The constitution endpoint returns no `message`, so surface our own
-      // confirmation in the shared result card — otherwise it keeps showing the
-      // previous command's output and the user gets no feedback that the
-      // constitution was generated. Also focus the viewer on the new artifact.
+      // Surface the outcome in the shared result card — otherwise it keeps
+      // showing the previous command's output. #788: the server's `message`
+      // says whether the constitution was derived from project knowledge or is
+      // only a skeleton (and why); older servers send none, so fall back to our
+      // own confirmation. Also focus the viewer on the new artifact.
       setLastErrorMessage(null);
-      const confirmation = result.artifact
-        ? `Generated constitution.md (v${result.artifact.version}).`
-        : "Generated constitution.md.";
+      const confirmation =
+        result.message ??
+        (result.artifact
+          ? `Generated constitution.md (v${result.artifact.version}).`
+          : "Generated constitution.md.");
       setLastResultMessage(confirmation);
-      toast.success(confirmation);
+      if (result.grounded === false) toast.warning(confirmation);
+      else toast.success(confirmation);
       setSelectedName("constitution.md");
       queryClient.invalidateQueries({
         queryKey: queryKeys.projects.specKitFiles(projectId),

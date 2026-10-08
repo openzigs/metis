@@ -58,7 +58,14 @@ export const specKitApi = {
   generateConstitution(
     projectId: string,
     projectOverrides?: string,
-  ): Promise<{ artifact: SpecKitArtifactDto | null; contentLength: number }> {
+  ): Promise<{
+    artifact: SpecKitArtifactDto | null;
+    contentLength: number;
+    /** #788 — true when derived from project knowledge, false for the skeleton. */
+    grounded?: boolean;
+    /** #788 — what was written, and why only a skeleton when that is the case. */
+    message?: string;
+  }> {
     return apiFetch(`/projects/${encodeURIComponent(projectId)}/spec-kit/constitution`, {
       method: "POST",
       body: projectOverrides ? { projectOverrides } : {},

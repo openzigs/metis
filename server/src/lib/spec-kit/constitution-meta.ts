@@ -179,10 +179,22 @@ export async function upsertConstitution(
     ratifiedAt = previousMeta.ratifiedAt ? new Date(previousMeta.ratifiedAt) : now;
   }
 
+  // #788 — the body's required `Version:` line counts: a declared version
+  // ahead of the rule's bump wins. One below it (an author who did not bump,
+  // or bumped minor while removing a principle) is raised to the rule's
+  // version. Either way the stored body is rewritten to the version recorded,
+  // so the file and the metadata never disagree.
+  const declared = declaredVersion(input.content);
+  if (declared && compareSemver(declared, newVersion) > 0) {
+    newVersion = declared;
+    bump = classifyBump(fromVersion, declared);
+  }
+  const content = input.content.replace(/^Version:[ \t]*\d+\.\d+\.\d+/m, `Version: ${newVersion}`);
+
   await writeArtifact({
     projectId: input.projectId,
     name: "constitution.md",
-    content: input.content,
+    content,
     actorId: input.actorId ?? null,
   });
 
@@ -205,7 +217,7 @@ export async function upsertConstitution(
       fromVersion,
       toVersion: newVersion,
       bump,
-      sectionsChanged: diffPrincipleSet(previousContent, input.content),
+      sectionsChanged: diffPrincipleSet(previousContent, content),
     },
   });
 
@@ -219,6 +231,35 @@ export async function upsertConstitution(
     toVersion: newVersion,
     bump,
   };
+}
+
+/** #788 — the `x.y.z` on the body's `Version:` line, or null when absent. */
+export function declaredVersion(content: string): string | null {
+  return /^Version:[ \t]*(\d+\.\d+\.\d+)/m.exec(content)?.[1] ?? null;
+}
+
+function semverParts(v: string): [number, number, number] {
+  const [a = 0, b = 0, c = 0] = v.split(".").map((n) => Number.parseInt(n, 10));
+  return [a, b, c];
+}
+
+/** Negative, zero or positive as `a` is below, equal to or above `b`. */
+export function compareSemver(a: string, b: string): number {
+  const pa = semverParts(a);
+  const pb = semverParts(b);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i]! !== pb[i]!) return pa[i]! - pb[i]!;
+  }
+  return 0;
+}
+
+/** The bump that takes `from` to the (higher) `to`. */
+function classifyBump(from: string, to: string): SemverBump {
+  const [fa, fb] = semverParts(from);
+  const [ta, tb] = semverParts(to);
+  if (ta > fa) return "major";
+  if (tb > fb) return "minor";
+  return "patch";
 }
 
 function diffPrincipleSet(prev: string | null, next: string): string[] {
