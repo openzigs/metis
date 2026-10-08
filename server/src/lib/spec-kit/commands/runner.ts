@@ -67,7 +67,7 @@ export interface RunDeps {
 }
 
 export interface RunCommandInput {
-  command: "specify" | "plan" | "tasks" | "clarify" | "analyze" | "implement";
+  command: "specify" | "plan" | "tasks" | "clarify" | "analyze" | "implement" | "checklist";
   project: SpecKitProjectContext;
   systemPrompt: string;
   userPrompt: string;
