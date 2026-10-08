@@ -25,6 +25,10 @@ earlier answers leak into later ones):
 
 Log in once — logins are limited to 20 per 15 min.
 
+Since #861 (PR #869), a tool call that needs approval is refused at once when no chat is open,
+and the response lists it under `toolApprovals`; the answer comes without it. Record any
+`toolApprovals` per question. A call that stalls for about 120 s is a regression.
+
 ## Standing rules — never
 
 - Never publish, comment or review on `miniflux/v2`; the questions are about it, not to it.
@@ -37,7 +41,7 @@ Log in once — logins are limited to 20 per 15 min.
 
 ## Return
 
-1. **Per-question table**: Q | Key claim | Citation | Verified (✅/❌) | Wall time | Hit the tool-call limit?
+1. **Per-question table**: Q | Key claim | Citation | Verified (✅/❌) | Wall time | Hit the tool-call limit? | `toolApprovals`
 2. **Totals**: answered N/8, correct with a valid citation N/8 (pass bar ≥ 6; run 2 after
    #783: 8/8).
 3. **Per-phase cost row** (the BA re-ask is one row in the results table):

@@ -25,8 +25,8 @@ Legend for Works / Useful: ✅ pass · ⚠️ partial (Works) or weak (Useful) �
 
 **Setup.** `miniflux/v2` @ `v2.3.3` (`c4d54f87`), METIS `main` @ `{{METIS_SHA}}`, DeepSeek
 `deepseek-flash` via the Anthropic-compatible endpoint ({{PEAK_OR_OFF_PEAK}} prices), SQL-lineage
-sidecar, project `{{PROJECT_ID}}` in workspace `{{WORKSPACE_ID}}`. Ledgers summed:
-{{`token_usages` + `ai_token_usages` | `token_usages` only (after #792)}}.
+sidecar, project `{{PROJECT_ID}}` in workspace `{{WORKSPACE_ID}}`. Ledger: `token_usages` only
+(since #792 and #854; never summed with `ai_token_usages`).
 
 Phases removed since run 2: {{e.g. Phase 4 bug scan (#799); Phase 17 test coverage → "Tested by" (#812)}}.
 
@@ -100,6 +100,11 @@ Lineage edges (reads + writes): {{…}}.
 | Docs-gen share of spend | 80% (8.86M tok / 485¢) | | |
 | Lineage reads/writes edges | 1,436 | | |
 | Repo connector Go files ingested | 421 / 421 | | |
+| Docs-gen: largest document / longest section (chars) | – (run 3 BRD: 2.19 MB) | | |
+| Docs-gen: any run stopped by a cost or token ceiling | – | | |
+| Promoted requirements with zero acceptance criteria | – | | |
+| Promoted requirements with no code link | – | | |
+| API-only steps left in the briefs (no UI caller) | – | | |
 
 Per phase (run 2 values from its re-run table; "ai ledger" = `ai_token_usages` only):
 
@@ -133,6 +138,7 @@ Only `openzigs/flux-v2`, dry run first, at most 2: {{issue URLs}}
 ### Findings
 
 New this run: {{#… · #…}}. Fixed since run 2 and confirmed: {{#…}}.
+Fixed-but-open issues closed on this run's evidence (skill section 8): {{#…}}.
 
 ### Durable findings
 

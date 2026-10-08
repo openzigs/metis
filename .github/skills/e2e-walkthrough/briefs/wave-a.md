@@ -24,6 +24,24 @@ Phases 1–4 before you start; the `e2e-walkthrough` skill has the setup order.
    Confirm `lastCommitSha` and the code graph's `commitSha` both start `c4d54f87`.
 4. Run Phases 1–4 as #706 defines them, skipping `{{REMOVED_PHASES}}`.
 
+Keep creating the project **inside** the workspace even though #731 (PR #927) now lets an
+existing project join one later; wave B exercises that move on a throwaway project, so this
+run stays comparable with run 3.
+
+## Added steps (run 4)
+
+- **Setup.** The workspace slug field logs no console error and rejects an invalid slug (#729).
+- **Phase 1.** `/projects/:id/settings/models` offers `deepseek-flash` and no Claude model at
+  Anthropic prices, showing its price only from `MODEL_PRICES` (#713, PR #900).
+- **Phase 2.** The clone succeeds under simple-git 4 (PR #906). The connector card reads
+  `connected` with the commit as soon as the first ingest ends, with no reload, and **Test**
+  leaves no stuck `repo.get /` row (#762, PR #899). The Deep Ingest banner reports the graph's
+  totals ("code graph of N files, …"), not the delta (#715, PR #901). The card's commit is the
+  graph's `commitSha` (#758, PR #889).
+- **Phase 3.** The reindex streams a second phase, "Re-embedded X/Y code symbols", and its
+  completion names both phases (#862). Record the repo connector's source-document count;
+  wave C compares it after a refresh.
+
 ## Standing rules — never
 
 - Never publish, comment or review on `miniflux/v2`. Sandbox is `openzigs/flux-v2` only.
@@ -35,7 +53,8 @@ Phases 1–4 before you start; the `e2e-walkthrough` skill has the setup order.
 
 ## Tips
 
-Log in once (20 logins / 15 min) and drive the API with in-page `fetch`. Fetch exports
+Log in once (20 logins / 15 min). Drive the UI, and keep in-page `fetch` for checks with no
+UI, such as the ledger and `GET …/repos/:id`. Fetch exports
 instead of clicking download buttons. Wait 20–40 s after a dev-mode navigation before
 snapshotting. Uploads must come from under the repo.
 
@@ -73,6 +92,7 @@ as plain text.
 
 1. **State hand-off** (the next wave needs every one):
    `PROJECT_ID`, `WORKSPACE_ID`, `REPO_CONNECTOR_ID`, `CODE_GRAPH_ID`, `COMMIT_SHA`,
+   `REPO_DOC_COUNT` (the repo connector's source documents),
    and the ledger snapshot timestamp at the end of the wave.
 2. **Per-phase table**:
 

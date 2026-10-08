@@ -50,8 +50,10 @@ results were not comparable. Do not reorder.
 4. **Server and UI in the operator's own terminal** — `pnpm --filter ./server run dev` and
    `pnpm --filter ./ui run dev`. Agent background shells are killed at 2 h, which is
    shorter than a wave. Sync steps and mock auth: the `run-metis-dev` skill.
-5. **Workspace first, then the project inside it** (#731). Enable lineage and
-   database-aware analysis. **Save the publish target `openzigs/flux-v2` before adding any
+5. **Workspace first, then the project inside it.** #731 (PR #927) now lets an existing
+   project join a workspace, but create it inside so runs stay comparable; wave B tests the
+   move on a throwaway project. Enable lineage and database-aware analysis. **Save the
+   publish target `openzigs/flux-v2` before adding any
    connector.**
 6. **Repo connector** `https://github.com/miniflux/v2` with **Branch or tag = `v2.3.3`**
    (#714). Confirm the connector's `lastCommitSha` and the code graph's `commitSha` both
@@ -108,7 +110,8 @@ Phase 9, and create the Phase 13 scheduler job **after** Phase 9's documents fin
   call; without it the classifier blocks the agent. The operator adds it, not the agent.
 - Never click **Regenerate** on a reviewed run (fixed in #769; keep the warning until it is
   re-verified).
-- Never **reject** approval items on a run that is still needed (#723).
+- Never **reject** approval items on a run that is still needed (#723). PR #902 makes a
+  rejection resolve the gate; keep this rule until wave B re-verifies it on its agent run.
 - **Docs generation has a cancel** (#855): use **Cancel generation** on the doc card, or
   `POST /api/projects/:id/docs/:docId/cancel`. Don't restart the server to stop a runaway
   document. Per-run ceilings `DOCS_GEN_MAX_RUN_COST_CENTS` (default 2500) and
@@ -168,13 +171,24 @@ within a cent per summed view, so a larger mismatch is a finding. Run 3, before 
 999¢ against $9.84 computed.
 `unpriced_rows > 0` fails the "no Unpriced usage" criterion.
 
+**Docs generation against its caps (#855, #741).** Record `DOCS_GEN_MAX_RUN_COST_CENTS`
+(default 2500), `DOCS_GEN_MAX_RUN_TOKENS` (20M), `DOCS_GEN_SECTION_MAX_CHARS` (60,000) and
+`DOCS_GEN_DOCUMENT_MAX_CHARS` (250,000) as set for the run. Per document, report its cost
+against the ceiling, whether a ceiling stopped it, and its body and longest-section length.
+Test **Cancel generation** once on purpose (wave C). Run 3's BRD was 2.19 MB and $4.61.
+
+**Approved requirements.** Report how many promoted requirements have no acceptance criteria and
+no code link (#909, #926; the query is in wave B's brief).
+
 Results go in a comment built from `docs/walkthroughs/RESULTS_TEMPLATE.md`, including its
 run-to-run comparison table, on #706 or a tracking issue that links back.
 
 ## 6. Agent tips (put these in every brief — the templates already do)
 
-- Login is rate-limited to **20 per 15 min**. Log in once; drive the API with `fetch(…,
-  {credentials:'include'})` from inside the logged-in page.
+- Login is rate-limited to **20 per 15 min**. Log in once. **Drive the UI**; use `fetch(…,
+  {credentials:'include'})` from inside the logged-in page only for a check with no UI caller
+  in `ui/src` (the briefs name them). Since run 3, Spec Kit, reviews, baselines and workspace
+  membership all gained UI (#931, #929, #927).
 - Clicking a **download** button crashes the Playwright page. Fetch the export URL instead.
 - In dev mode, snapshots fail for **20–40 s** after a navigation while the route compiles.
   Wait, then retry.
@@ -195,19 +209,22 @@ run-to-run comparison table, on #706 or a tracking issue that links back.
   - Requirement edits use `PUT /api/requirements/:id` with the current `version` in the body
     (409 `VERSION_CONFLICT` on a stale one). Since #865, `PATCH
     /api/analyses/:id/requirements/:reqId` is versioned the same way.
-  - Manual baselines exist only in the API: `POST /api/projects/:id/baselines`
-    `{name, requirementIds}`.
+  - **New baseline** on the Baselines page (review admins) pins every requirement; a subset
+    still needs `POST /api/projects/:id/baselines` `{name, requirementIds}` (#929).
 - **Connector labels** must match `^[A-Za-z0-9][A-Za-z0-9 _.\-]*$`. A label like
   `miniflux/v2 @ v2.3.3` fails with only "invalid payload".
 - **Uploaded and URL documents land in quarantine.** Approve them under Project settings →
   Quarantine before searching.
 - **Waiting for long jobs:**
-  - The embeddings reindex UI stays on "Reindexing…" at 100% (#862). Confirm with
-    `GET /api/admin/embeddings/projects/:id/coverage` (`shadow.inProgress=false`).
+  - The embeddings reindex now streams its code-symbol phase (#862, PR #878). Confirm the
+    end with `GET /api/admin/embeddings/projects/:id/coverage` (`shadow.inProgress=false`).
   - An analysis shows "0 tok" until it ends, so poll `GET /api/analyses/:id`.
   - Issue Playwright waits one at a time: parallel `browser_wait_for` calls run concurrently.
-- **Spec Kit:** per-feature commands have no UI. Drive them with
-  `POST …/spec-kit/commands/speckit.*`, and screenshot the GET JSON in a second tab.
+- **Spec Kit (#931):** drive the Spec Kit page: Features panel, `speckit.*` palette,
+  **Generate checklists**, export preview/publish, Delete, **Start analysis**. Still API-only:
+  the 409/400/403/404 error codes the UI pre-empts, legacy-alias `Deprecation` headers,
+  `x-speckit-force`, writing a *feature* artifact (no Edit button), and `/install`. Chat no
+  longer runs Spec Kit commands.
 - `browser_evaluate` `filename` must be under the repo, for example the wave's evidence
   folder; the scratchpad is outside the allowed roots.
 - A custom agent enabled for a project **joins every later analysis run** on it. Disable it
@@ -273,3 +290,10 @@ shown as plain text; the only formatting is `**bold**`, `` `code` `` and `http(s
 **Sharing.** The decks can optionally be published as a **private** shareable link, for
 example the inline build uploaded somewhere only the team can open. Review the screenshots
 first: they show the run's data, and the decks are not redacted.
+
+## 8. Close what the run confirms
+
+Some issues were merged as partial fixes and left open for the walkthrough to confirm:
+**#726, #741, #768, #785, #791** before run 4. When a wave's fix verification says `holds`
+with evidence, close the issue with a comment linking the results comment. Otherwise leave
+it open and say what is missing. Record the closures under "Findings" in the results.

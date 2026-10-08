@@ -32,6 +32,23 @@ issues" table (#4478, #4511, #4336) with what each must surface.
    with the ledger queries in the skill. All three should now agree with `token_usages`
    (#854), and the ledger cost with the token-computed cost (#761). A mismatch is a finding.
 
+## Added steps (run 4)
+
+- **Phase 16.** Impact on #4478 names Go callers reached through a receiver or field (the
+  #774 example is `h.store.UpdateFeed(...)`) as probable call sites with `file:line`, rather than
+  only tests (#774, PR #896). Impact stages now see the provider's real capabilities
+  (#754, PR #876): a stage degraded for want of structured output or tool calls is a finding.
+- **Phase 17.** "Tested by" lists no test reached only through a config hub, such as another
+  package's tests calling a config constructor for setup, and no test file cited only for its
+  licence header (#860, PR #897). Name one requirement checked.
+- **Phase 19.** On **Settings → MCP → Servers**, **Test** shows its result under the row
+  (pass, latency, tool count), and the row updates after Start or Stop with no reload. A
+  skill's **Versions** dialog shows a `+`/`-` diff (#797).
+- **Phase 20.** `GET /api/admin/cache-telemetry` shows DeepSeek cache reads (#796). Signing out
+  from the account menu lands on the plain sign-in page, not `?reason=expired` (#720).
+  `/settings/auth` loads with no console error after the ldapts 9 upgrade; test an LDAP
+  provider only if one is configured. No page logs a Next.js error after the 16.3.8 upgrade.
+
 ## Standing rules — never
 
 - Never publish, comment or review on `miniflux/v2` — the developer issues are read-only
@@ -45,7 +62,8 @@ issues" table (#4478, #4511, #4336) with what each must surface.
 
 ## Tips
 
-Log in once (20 logins / 15 min) and drive the API with in-page `fetch`. Fetch exports
+Log in once (20 logins / 15 min). Drive the UI, and keep in-page `fetch` for the admin APIs
+and the ledger. Fetch exports
 instead of clicking download buttons. Wait 20–40 s after a dev-mode navigation before
 snapshotting. Phase 20 admin checks with a second user need `browser.newContext()`; mock
 users exist only after their first login, and a membership change needs
