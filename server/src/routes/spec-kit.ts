@@ -848,6 +848,8 @@ async function dispatchNamespaced(
         ...(mode !== undefined ? { mode } : {}),
         ...(Array.isArray(body.domains) ? { domains: body.domains as string[] } : {}),
         actorId: actor,
+        // #787 — derive the items from the feature's spec.md + plan.md.
+        deps: { provider: await resolveProvider() },
       });
     }
     case "speckit.taskstoissues": {

@@ -71,6 +71,7 @@ import { runConstitution } from "../src/lib/spec-kit/commands/constitution.js";
 import {
   generateChecklist,
   mergeChecklists,
+  parseChecklistSections,
   DEFAULT_CHECKLIST_DOMAINS,
 } from "../src/lib/spec-kit/commands/checklist.js";
 import { ensureValidOpenAPI } from "../src/lib/spec-kit/commands/plan-expanded.js";
@@ -170,6 +171,82 @@ describe("checklist helpers", () => {
       "observability",
       "testability",
     ]);
+  });
+});
+
+describe("#787 — checklist merge keeps the reviewer's own items", () => {
+  it("keeps an added line (and its state) that the generated set does not contain", () => {
+    const existing = [
+      "# Security Checklist — 001-foo",
+      "",
+      "- [x] Input validation on all user-supplied data — rationale: x — owner: engineer",
+      "- [ ] Bounded UPDATE on entries scoped by user_id and status — rationale: r — owner: engineer",
+      "- [x] Reviewer note without rationale",
+      "",
+    ].join("\n");
+    const merged = mergeChecklists(existing, generateChecklist("security", "001-foo"));
+    expect(merged).toContain("- [x] Input validation on all user-supplied data");
+    expect(merged).toContain(
+      "- [ ] Bounded UPDATE on entries scoped by user_id and status — rationale: r — owner: engineer",
+    );
+    expect(merged).toContain("- [x] Reviewer note without rationale");
+    // Each kept line appears once, inside the item list (before the trailing blank).
+    expect(merged.match(/Bounded UPDATE/g)).toHaveLength(1);
+    const lines = merged.split("\n");
+    const lastItem = lines.map((l) => /^- \[/.test(l)).lastIndexOf(true);
+    expect(lines[lastItem]).toContain("Reviewer note without rationale");
+  });
+
+  it("does not duplicate a generated item, nor re-add the old title or banner", () => {
+    const first = generateChecklist("security", "001-foo");
+    const merged = mergeChecklists(first, generateChecklist("security", "001-foo"));
+    expect(merged).toBe(generateChecklist("security", "001-foo"));
+  });
+
+  it("keeps the state of an item whose rationale changed", () => {
+    const existing =
+      "- [x] Authentication enforced on every mutating endpoint — rationale: old — owner: x\n";
+    const merged = mergeChecklists(existing, generateChecklist("security", "001-foo"));
+    expect(merged).toContain("- [x] Authentication enforced on every mutating endpoint");
+    expect(merged).not.toContain("rationale: old");
+  });
+});
+
+describe("#787 — the template is labelled as generic", () => {
+  it("says in the rendered file that it is not derived from the feature", () => {
+    const md = generateChecklist("security", "001-foo");
+    expect(md).toMatch(/Generic template/);
+    expect(md).toMatch(/not derived from this feature's spec\.md and plan\.md/);
+  });
+});
+
+describe("#787 — parseChecklistSections", () => {
+  it("splits the model's reply into per-domain items, normalised to unchecked", () => {
+    const reply = [
+      "Here you go:",
+      "## Security",
+      "- [ ] Scope the bulk UPDATE on entries by user_id — rationale: tenant isolation — owner: engineer",
+      "- [x] Reject a negative `days` value — rationale: input validation — owner: engineer",
+      "## Performance checklist",
+      "* [ ] Index entries(published_at) — rationale: range scan — owner: engineer",
+      "not an item",
+      "## Unasked",
+      "- [ ] ignored — rationale: r — owner: o",
+    ].join("\n");
+    const out = parseChecklistSections(reply, ["security", "performance", "accessibility"]);
+    expect(out.get("security")).toEqual([
+      "- [ ] Scope the bulk UPDATE on entries by user_id — rationale: tenant isolation — owner: engineer",
+      "- [ ] Reject a negative `days` value — rationale: input validation — owner: engineer",
+    ]);
+    expect(out.get("performance")).toEqual([
+      "- [ ] Index entries(published_at) — rationale: range scan — owner: engineer",
+    ]);
+    expect(out.has("accessibility")).toBe(false);
+    expect(out.size).toBe(2);
+  });
+
+  it("returns an empty map for a reply with no headings", () => {
+    expect(parseChecklistSections("[offline-stub]\nprompt: x", ["security"]).size).toBe(0);
   });
 });
 

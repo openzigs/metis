@@ -6,7 +6,13 @@
  * The default set is overridable via `SpecKitConfig.checklistDomains`.
  *
  * Precondition (412): feature must have spec.md AND plan.md.
- * Idempotent merge mode preserves checked items via line-level diff.
+ *
+ * #787 — the items are derived from the feature's own `spec.md` and `plan.md`
+ * in ONE model call with the domains as `##` headings. A domain the model left
+ * empty, or every domain when there is no online provider, falls back to the
+ * fixed `DOMAIN_TEMPLATES`, and that file says in its body that it is a generic
+ * template. Merge mode keeps check states AND every line the reviewer added
+ * that the regenerated set does not contain.
  */
 import { prisma } from "../../prisma.js";
 import {
@@ -17,6 +23,7 @@ import {
 import { requireGate } from "../gates.js";
 import { resolveFeatureBySlug } from "../features.js";
 import { SpecKitArtifactError } from "../artifacts.js";
+import { loadProjectContext, runSpecKitAgent, type RunDeps } from "./runner.js";
 
 export const DEFAULT_CHECKLIST_DOMAINS = [
   "security",
@@ -29,19 +36,49 @@ export const DEFAULT_CHECKLIST_DOMAINS = [
 export interface ChecklistInput {
   projectId: string;
   featureSlug: string;
-  /** `merge` preserves existing check states; `overwrite` replaces. */
+  /** `merge` preserves existing check states and added lines; `overwrite` replaces. */
   mode?: "merge" | "overwrite";
   /** Optional override of the configured domain set. */
   domains?: string[];
   /** Bypass the planGate (audit-emitted high-severity event). */
   force?: boolean;
   actorId?: string | null;
+  sessionId?: string | null;
+  /**
+   * #787 — the project's provider. Absent or offline ⇒ no model call, and
+   * every domain is the labelled generic template.
+   */
+  deps?: RunDeps;
 }
+
+/** #787 — where a domain's items came from. */
+export type ChecklistSource = "feature" | "template";
 
 export interface ChecklistResult {
   artifacts: FeatureArtifactDto[];
   domains: string[];
+  sources: Record<string, ChecklistSource>;
+  tokensUsed: number;
   message: string;
+}
+
+const CHECKLIST_SYSTEM_PROMPT_HEAD = [
+  "You are a senior reviewer writing Spec Kit quality checklists for ONE feature.",
+  "",
+  "Derive every item from the feature's spec.md and plan.md given by the user:",
+  "name the concrete endpoint, table, query, scope, component or flow it checks.",
+  "Do not write generic advice that would fit any feature on any project.",
+  "",
+  "Output Markdown ONLY: one `## <Domain>` heading per domain below, in this order,",
+  "each followed by 2-6 items, every item exactly in this form:",
+  "- [ ] <check> — rationale: <why, citing the spec or plan> — owner: <role>",
+  "If a domain genuinely does not apply to this feature, give it one item saying why.",
+  "",
+  "Domains:",
+].join("\n");
+
+function checklistSystemPrompt(domains: string[]): string {
+  return [CHECKLIST_SYSTEM_PROMPT_HEAD, ...domains.map((d) => `## ${capitalize(d)}`)].join("\n");
 }
 
 export async function runChecklist(input: ChecklistInput): Promise<ChecklistResult> {
@@ -64,11 +101,49 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
 
   const domains = input.domains ?? (await loadConfiguredDomains(input.projectId));
   const mode = input.mode ?? "merge";
-  const artifacts: FeatureArtifactDto[] = [];
 
+  // #787 — one model pass over the feature's own spec + plan.
+  let derived = new Map<string, string[]>();
+  let tokensUsed = 0;
+  const provider = input.deps?.provider;
+  const online = provider !== undefined && !provider.offline;
+  if (online) {
+    const spec = await getFeatureArtifact(feature.id, "spec.md");
+    const plan = await getFeatureArtifact(feature.id, "plan.md");
+    const run = await runSpecKitAgent({
+      command: "checklist",
+      project: await loadProjectContext(input.projectId),
+      systemPrompt: checklistSystemPrompt(domains),
+      userPrompt: [
+        `Feature: ${feature.slug} — ${feature.title}`,
+        "",
+        "spec.md:",
+        "```md",
+        spec?.content ?? "(missing — the plan gate was forced)",
+        "```",
+        "",
+        "plan.md:",
+        "```md",
+        plan?.content ?? "(missing — the plan gate was forced)",
+        "```",
+      ].join("\n"),
+      actorId: input.actorId ?? null,
+      sessionId: input.sessionId ?? null,
+      deps: input.deps,
+    });
+    tokensUsed = run.tokensUsed;
+    derived = parseChecklistSections(run.content, domains);
+  }
+
+  const artifacts: FeatureArtifactDto[] = [];
+  const sources: Record<string, ChecklistSource> = {};
   for (const domain of domains) {
     const key = `checklist-${domain}.md`;
-    const generated = generateChecklist(domain, feature.slug);
+    const items = derived.get(domain);
+    sources[domain] = items ? "feature" : "template";
+    const generated = items
+      ? renderChecklist(domain, feature.slug, items)
+      : generateChecklist(domain, feature.slug);
     let next = generated;
     if (mode === "merge") {
       const existing = await getFeatureArtifact(feature.id, key);
@@ -82,10 +157,19 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
     });
     artifacts.push(written);
   }
+  const fromFeature = domains.filter((d) => sources[d] === "feature");
+  const fromTemplate = domains.filter((d) => sources[d] === "template");
+  const why = online ? "the model returned no items" : "no online AI provider";
+  const parts = [
+    fromFeature.length > 0 ? `derived from spec.md and plan.md: ${fromFeature.join(", ")}` : "",
+    fromTemplate.length > 0 ? `generic template: ${fromTemplate.join(", ")} (${why})` : "",
+  ].filter((p) => p.length > 0);
   return {
     artifacts,
     domains,
-    message: `Generated ${artifacts.length} checklist(s) for ${feature.slug}: ${domains.join(", ")}.`,
+    sources,
+    tokensUsed,
+    message: `Generated ${artifacts.length} checklist(s) for ${feature.slug} — ${parts.join("; ")}.`,
   };
 }
 
@@ -170,6 +254,33 @@ const DOMAIN_TEMPLATES: Record<
   ],
 };
 
+/** The marker comment every generated checklist carries (feature or template). */
+const GENERATED_MARKER = "<!-- Generated by /speckit.checklist";
+
+/** #787 — the visible label on a checklist that was NOT derived from the feature. */
+export const GENERIC_TEMPLATE_BANNER =
+  "> Generic template — not derived from this feature's spec.md and plan.md. Edit these items or re-run with an AI provider configured.";
+
+function renderDocument(
+  domain: string,
+  featureSlug: string,
+  items: string[],
+  generic: boolean,
+): string {
+  return [
+    `# ${capitalize(domain)} Checklist — ${featureSlug}`,
+    "",
+    generic
+      ? `${GENERATED_MARKER} from the default ${domain} template. Re-run with mode=merge to keep check states and your own items. -->`
+      : `${GENERATED_MARKER} from this feature's spec.md and plan.md. Re-run with mode=merge to keep check states and your own items. -->`,
+    "",
+    ...(generic ? [GENERIC_TEMPLATE_BANNER, ""] : []),
+    ...items,
+    "",
+  ].join("\n");
+}
+
+/** The fixed, feature-independent template for a domain — labelled as generic. */
 export function generateChecklist(domain: string, featureSlug: string): string {
   const template = DOMAIN_TEMPLATES[domain] ?? [
     {
@@ -178,48 +289,99 @@ export function generateChecklist(domain: string, featureSlug: string): string {
       owner: "engineer",
     },
   ];
-  const items = template
-    .map((t) => `- [ ] ${t.check} — rationale: ${t.rationale} — owner: ${t.owner}`)
-    .join("\n");
-  return [
-    `# ${capitalize(domain)} Checklist — ${featureSlug}`,
-    "",
-    `<!-- Generated by /speckit.checklist (Epic #396 MVP-3). Re-run with mode=merge to preserve check states. -->`,
-    "",
-    items,
-    "",
-  ].join("\n");
+  const items = template.map(
+    (t) => `- [ ] ${t.check} — rationale: ${t.rationale} — owner: ${t.owner}`,
+  );
+  return renderDocument(domain, featureSlug, items, true);
+}
+
+/** #787 — a checklist whose items were derived from the feature's spec + plan. */
+export function renderChecklist(domain: string, featureSlug: string, items: string[]): string {
+  return renderDocument(domain, featureSlug, items, false);
 }
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+const ITEM_RE = /^\s*[-*]\s*\[([ xX])\]\s*(.*)$/;
+
+/** The identity of a checklist item: its text before `— rationale:`. */
+function checkText(rest: string): string {
+  return rest.split(/\s+—\s*rationale:/)[0]!.trim();
+}
+
 /**
- * Merge an existing checklist with a freshly generated one. Preserves the
- * `[x]` / `[X]` / `[ ]` state of items whose `check` text exactly matches
- * the generated entry; appends new items at the end.
+ * #787 — split the model's reply into per-domain item lines. A `## <heading>`
+ * belongs to a domain when it starts with the domain name (case-insensitive),
+ * so `## Performance checklist` counts. Items are normalised to `- [ ] …`;
+ * headings for unasked domains and non-item lines are dropped, and a domain
+ * with no items is absent from the map (the caller falls back to the template).
+ */
+export function parseChecklistSections(reply: string, domains: string[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  let current: string | null = null;
+  for (const line of reply.split(/\r?\n/)) {
+    const heading = /^##\s+(.+?)\s*$/.exec(line);
+    if (heading) {
+      const h = heading[1]!.toLowerCase();
+      current = domains.find((d) => h.startsWith(d.toLowerCase())) ?? null;
+      continue;
+    }
+    const item = ITEM_RE.exec(line);
+    if (!current || !item || item[2]!.trim().length === 0) continue;
+    const list = out.get(current) ?? [];
+    list.push(`- [ ] ${item[2]!.trim()}`);
+    out.set(current, list);
+  }
+  return out;
+}
+
+/**
+ * Merge an existing checklist with a freshly generated one.
+ *
+ * - A generated item whose check text matches an existing item keeps that
+ *   item's `[x]` / `[ ]` state (the rationale may change).
+ * - #787 — every other non-blank line of the existing file (a reviewer's own
+ *   item, with its state, or a note) is kept, after the last generated item.
+ *   The old title, the generated marker comment and the generic banner are
+ *   not carried over, so a re-run does not duplicate them.
  */
 export function mergeChecklists(existing: string, generated: string): string {
   const stateByCheck = new Map<string, string>();
   for (const line of existing.split(/\r?\n/)) {
-    const m = /^-\s*\[([ xX])\]\s*(.*?)\s+—\s*rationale:/.exec(line);
-    if (m) stateByCheck.set(m[2]!.trim(), m[1]!);
+    const m = ITEM_RE.exec(line);
+    if (m) stateByCheck.set(checkText(m[2]!), m[1]!);
   }
   const out: string[] = [];
+  const generatedChecks = new Set<string>();
+  const generatedLines = new Set<string>();
+  let lastItem = -1;
   for (const line of generated.split(/\r?\n/)) {
-    const m = /^(-\s*\[)([ xX])(\]\s*)(.*?)(\s+—\s*rationale:.*)$/.exec(line);
+    generatedLines.add(line.trim());
+    const m = ITEM_RE.exec(line);
     if (!m) {
       out.push(line);
       continue;
     }
-    const check = m[4]!.trim();
+    const check = checkText(m[2]!);
+    generatedChecks.add(check);
     const preserved = stateByCheck.get(check);
-    if (preserved !== undefined) {
-      out.push(`${m[1]}${preserved}${m[3]}${m[4]}${m[5]}`);
-    } else {
-      out.push(line);
-    }
+    out.push(preserved !== undefined ? `- [${preserved}] ${m[2]!.trim()}` : line);
+    lastItem = out.length - 1;
   }
+
+  const kept: string[] = [];
+  for (const line of existing.split(/\r?\n/)) {
+    const t = line.trim();
+    if (t.length === 0 || generatedLines.has(t)) continue;
+    if (/^#\s/.test(t) || t.startsWith(GENERATED_MARKER) || t === GENERIC_TEMPLATE_BANNER) continue;
+    const m = ITEM_RE.exec(line);
+    if (m && generatedChecks.has(checkText(m[2]!))) continue;
+    if (!kept.includes(line)) kept.push(line);
+  }
+  if (kept.length === 0) return out.join("\n");
+  const at = lastItem >= 0 ? lastItem + 1 : out.length;
+  out.splice(at, 0, ...kept);
   return out.join("\n");
 }
