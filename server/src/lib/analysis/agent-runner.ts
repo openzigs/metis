@@ -90,6 +90,12 @@ export interface AgentRunResult {
   output: AgentOutput;
   usage: TokenUsage;
   durationMs: number;
+  /**
+   * #864 — the agent was not run (the web specialist with no web search
+   * provider). Neither a success nor a failure: counting it as a success would
+   * mask an all-failed run (#755).
+   */
+  skipped?: boolean;
 }
 
 const DEFAULT_USAGE: TokenUsage = {

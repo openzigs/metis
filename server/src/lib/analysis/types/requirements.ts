@@ -72,6 +72,11 @@ export interface WebResearchResult {
   digests: EvidenceDigest[];
   totalSources: number;
   reviewRequired: number;
+  /**
+   * #864 — set when research did not run at all (no web search provider is
+   * configured), so the reason is stated once instead of once per need.
+   */
+  notice?: string;
 }
 
 /** Pluggable web search provider interface. */

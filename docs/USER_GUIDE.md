@@ -1248,9 +1248,9 @@ When you click **"Run Analysis"** on a project, here's what happens behind the s
    - **Document Analyst** — reads through all your uploaded documents, extracting business rules, compliance requirements, and user stories
    - **Code Analyst** — examines your connected code repositories, identifying API changes, architectural patterns, and technical debt
    - **Database Analyst** — inspects your connected databases, discovering schema changes, index requirements, and data migration needs
-   - **Web Researcher** — searches for industry standards, best practices, and regulatory compliance information
+   - **Web Researcher** — reviews your uploaded documents (and Confluence or Jira pages) for industry standards, best practices, and regulatory compliance. Despite the name it does not search the web itself, and it never cites repository or database files. It is skipped, with a single notice, when no web search provider is configured. Live web search happens only in the opt-in web research step, whose sources appear under **Evidence Review**; it needs `WEB_SEARCH_PROVIDER` and that provider's API key
 
-   > **What analysis reads vs. writes:** Analysis reads from uploaded documents, connected code repositories, connected databases, and live web search. It does **not** read existing Jira or GitHub issues as input. Jira and GitHub are output-only destinations — approved requirements are *published to* them after analysis.
+   > **What analysis reads vs. writes:** Analysis reads from uploaded documents, connected code repositories, connected databases, and — only when you turn on web research — live web search. It does **not** read existing Jira or GitHub issues as input. Jira and GitHub are output-only destinations — approved requirements are *published to* them after analysis.
 
 2. **Each agent has 60 seconds** to complete its work. They run simultaneously, so the total time is the time of the slowest agent, not the sum of all four.
 
@@ -1736,7 +1736,7 @@ After an analysis produces requirements, you can generate GitHub issue drafts:
 1. Go to the project detail page
 2. Click **"Generate Drafts"** or use the Publishing API
 
-For each requirement, METIS creates a draft issue with:
+For each requirement, METIS creates a draft issue (an import of more than 25 requirements first asks you to choose which ones to draft, up to 500 at a time) with:
 - **Epic or Feature label** — critical/high priority items become Epics; others become Features
 - **Structured template**:
   - Description (from the requirement body)
@@ -3246,7 +3246,7 @@ Here's the full end-to-end workflow for using METIS, from nothing to published G
    - Document Analyst reads your uploaded documents
    - Code Analyst examines your repositories
    - Database Analyst inspects your databases
-   - Web Researcher finds industry best practices
+   - Web Researcher reviews your documents for industry standards and best practices (it does not search the web; see section 35.2)
 4. Wait for completion (typically 1–5 minutes)
 
 ### Step 6: Review Requirements
@@ -4572,7 +4572,7 @@ View approvals at **Analysis → Approvals** tab. Each item shows its status (Pe
 
 ### 35.5 Web Search Configuration
 
-To enable live web search (instead of the offline stub), set the `WEB_SEARCH_API_KEY` environment variable with your [Tavily](https://tavily.com/) API key. Without this key, the system uses a stub provider that returns no results but allows the pipeline to continue.
+To enable live web search (instead of the offline stub), set the `WEB_SEARCH_API_KEY` environment variable with your [Tavily](https://tavily.com/) API key. `WEB_SEARCH_PROVIDER` (`tavily`, `brave` or `google`) selects another provider. Without one, web research is skipped and the analysis says so once, instead of listing an empty digest per evidence need (#864). This step is the only part of an analysis that searches the web: the Web Researcher specialist never does, and never cites repository or database files.
 
 ---
 

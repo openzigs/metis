@@ -172,7 +172,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(before.totalTokens).toBe(0);
 
       const provider = scriptedProvider();
-      const orch = new AnalysisOrchestrator({ provider, knowledge: stubKnowledge });
+      // #864 — the web specialist only runs when a web search provider is configured.
+      const orch = new AnalysisOrchestrator({
+        provider,
+        knowledge: stubKnowledge,
+        webSearchConfigured: () => true,
+      });
 
       const { id } = await orch.start({
         projectId: PROJECT,

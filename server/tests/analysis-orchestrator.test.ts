@@ -323,6 +323,15 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
   getAuditService: vi.fn(),
 }));
 
+// #864 — the web specialist runs only when a web search provider is
+// configured; these suites exercise it, so report one as configured. The
+// augmenter's own short-circuit calls the module-internal binding, so the
+// enhancement pipeline below still sees the unconfigured (stub) provider.
+vi.mock("../src/lib/analysis/web-research-augmenter.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/analysis/web-research-augmenter.js")>()),
+  isWebSearchConfigured: () => true,
+}));
+
 import {
   messageText,
   type AIProvider,
@@ -334,9 +343,11 @@ import { persistAgentResult } from "../src/lib/analysis/analysis-service.js";
 import {
   AnalysisOrchestrator,
   defaultAnalysisDocumentIds,
+  selectWebAgentEvidence,
 } from "../src/lib/analysis/orchestrator.js";
 import { prisma } from "../src/lib/prisma.js";
 import { RETRIEVAL_QUERIES } from "../src/lib/analysis/retrieval.js";
+import { NO_WEB_SEARCH_PROVIDER_NOTICE } from "../src/lib/analysis/web-research-augmenter.js";
 import { __resetConfigSingleton } from "../src/lib/config/config-service.js";
 import { genericFailureMessage } from "../src/lib/socket/job-events.js";
 import type { KnowledgeService } from "../src/lib/rag/knowledge-service.js";
@@ -2730,9 +2741,10 @@ describe("runEnhancementPipeline (Epic #922)", () => {
     const meta = JSON.parse(analyses.get(analysisId)!.metadata!);
     expect(meta.structuredRequirements.requirements).toHaveLength(1);
     expect(meta.webResearch).toBeDefined();
-    expect(meta.webResearch.digests.length).toBeGreaterThan(0);
-    // Stub search yields no sources ⇒ digest is flagged for human review.
-    expect(meta.webResearch.reviewRequired).toBeGreaterThan(0);
+    // #864 — no web search provider is configured here (the stub), so research
+    // says so once instead of persisting one empty digest per evidence need.
+    expect(meta.webResearch.digests).toEqual([]);
+    expect(meta.webResearch.notice).toBe(NO_WEB_SEARCH_PROVIDER_NOTICE);
   });
 });
 
@@ -3848,5 +3860,34 @@ describe("#525 default analysis document set at each call site", () => {
     const queries = defaultSetQueries();
     expect(queries.length).toBeGreaterThan(0);
     for (const where of queries) expect(where).toEqual(expected);
+  });
+});
+
+describe("selectWebAgentEvidence (#864)", () => {
+  const chunk = (
+    filename: string,
+    score: number | undefined,
+    source?: "upload" | "repo" | "db" | "jira" | "code-graph",
+  ) => ({ documentId: `d-${filename}`, chunkIndex: 0, filename, text: filename, score, source });
+
+  it("keeps ranked uploaded and Atlassian chunks", () => {
+    const kept = [chunk("policy.md", 0.7, "upload"), chunk("PROJ-1", 0.4, "jira")];
+    expect(selectWebAgentEvidence(kept)).toEqual(kept);
+  });
+
+  it("drops repository, database and code-graph chunks however well they rank", () => {
+    expect(
+      selectWebAgentEvidence([
+        chunk("finder_test.go", 0.99, "repo"),
+        chunk("orders", 0.9, "db"),
+        chunk("symbol", 0.9, "code-graph"),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("drops unranked chunks: the quarantine fallback's score 0, and a missing score", () => {
+    expect(
+      selectWebAgentEvidence([chunk("a.md", 0, "upload"), chunk("b.md", undefined, "upload")]),
+    ).toEqual([]);
   });
 });

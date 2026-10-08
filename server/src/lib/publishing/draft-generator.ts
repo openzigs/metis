@@ -17,7 +17,9 @@
  */
 import crypto from "node:crypto";
 import {
+  DRAFT_SELECTION_THRESHOLD,
   findingSupportPanelSchema,
+  type DraftCandidates,
   parseAcceptanceCriteria,
   renderPublishedConfidenceNote,
   summarizeSupportPanels,
@@ -51,6 +53,8 @@ export interface GenerateDraftsOptions {
   targetOwner: string;
   targetRepo: string;
   defaultLabels?: string[];
+  /** #863 — draft only these requirements of the analysis (all when omitted). */
+  requirementIds?: string[];
 }
 
 export interface GeneratedDraftSummary {
@@ -190,6 +194,84 @@ async function loadOrPromoteRequirements(analysisId: string, analysisStatus: str
   throw await noRequirementsError(analysisId, gate, promotion);
 }
 
+/** #863 — whether an analysis is the synthetic anchor of an import run. */
+function isImportAnalysis(metadata: string | null): boolean {
+  return parseMetadata(metadata).kind === "import";
+}
+
+/**
+ * #863 — narrow the analysis's requirements to the caller's selection, and
+ * refuse to draft an import run above {@link DRAFT_SELECTION_THRESHOLD}
+ * wholesale: a 266-issue import used to become 267 drafts in one click.
+ * Ids outside the analysis are ignored, never resolved elsewhere.
+ */
+function selectRequirements<T extends { id: string }>(
+  requirements: T[],
+  analysis: { id: string; metadata: string | null },
+  requirementIds: string[] | undefined,
+): T[] {
+  if (requirementIds) {
+    const wanted = new Set(requirementIds);
+    const selected = requirements.filter((r) => wanted.has(r.id));
+    if (selected.length === 0) {
+      throw new PublishError(
+        400,
+        "NO_REQUIREMENTS_SELECTED",
+        "none of the selected requirements belong to this analysis",
+        false,
+        { analysisId: analysis.id },
+      );
+    }
+    return selected;
+  }
+  if (isImportAnalysis(analysis.metadata) && requirements.length > DRAFT_SELECTION_THRESHOLD) {
+    throw new PublishError(
+      400,
+      "DRAFT_SELECTION_REQUIRED",
+      `this import holds ${requirements.length} requirements — choose which to draft`,
+      false,
+      {
+        analysisId: analysis.id,
+        requirementCount: requirements.length,
+        threshold: DRAFT_SELECTION_THRESHOLD,
+      },
+    );
+  }
+  return requirements;
+}
+
+/**
+ * #863 — what Generate would draft from an analysis, so the UI can offer a
+ * selection step before an import run becomes hundreds of drafts. Read-only:
+ * it never promotes requirements (Generate still does, #723). Scoped to the
+ * project, so another project's analysis id is a 404, not a listing.
+ */
+export async function listDraftCandidates(
+  projectId: string,
+  analysisId: string,
+): Promise<DraftCandidates> {
+  const analysis = await prisma.analysis.findFirst({
+    where: { id: analysisId, projectId, deletedAt: null },
+  });
+  if (!analysis) {
+    throw new PublishError(404, "ANALYSIS_NOT_FOUND", `analysis not found: ${analysisId}`);
+  }
+  const requirements = await findLiveRequirements(analysisId);
+  const source = isImportAnalysis(analysis.metadata) ? "import" : "analysis";
+  return {
+    analysisId,
+    source,
+    selectionRequired: source === "import" && requirements.length > DRAFT_SELECTION_THRESHOLD,
+    requirements: requirements.map((r) => ({
+      id: r.id,
+      title: r.title,
+      type: r.type,
+      priority: r.priority,
+      externalUrl: r.externalUrl ?? null,
+    })),
+  };
+}
+
 /** #723 — the analysis is still running, so its requirements are not saved yet. */
 function stillRunningError(analysisId: string, analysisStatus: string): PublishError {
   return new PublishError(
@@ -214,7 +296,11 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   if (!analysis) {
     throw new PublishError(404, "ANALYSIS_NOT_FOUND", `analysis not found: ${opts.analysisId}`);
   }
-  const requirements = await loadOrPromoteRequirements(opts.analysisId, analysis.status);
+  const requirements = selectRequirements(
+    await loadOrPromoteRequirements(opts.analysisId, analysis.status),
+    analysis,
+    opts.requirementIds,
+  );
 
   const summary: GeneratedDraftSummary = {
     total: 0,
@@ -266,7 +352,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   for (const req of requirements) {
     // #369 — `[Type] <requirement title>` is shared by every analysis that
     // found a same-titled requirement, so it is claimed like the epic's title.
-    const reqTitle = `[${capitalize(req.type)}] ${req.title}`;
+    const reqTitle = featureDraftTitle(req.type, req.title);
     const draftType = mapReqTypeToDraftType(req.type);
     const labels = uniq([
       draftType,
@@ -431,6 +517,23 @@ async function claimAndUpsertDraft(
       log.warn("draft title claimed concurrently; re-claiming", { title, attempt });
     }
   }
+}
+
+/**
+ * #863 — a feature draft's `[Type] <title>`, without doubling a tag the title
+ * already carries. An imported upstream issue titled `[Feature]: Add X` used to
+ * publish as `[Feature] [Feature]: Add X`. Only a leading tag naming the SAME
+ * type is dropped; any other text is the upstream author's and is kept.
+ */
+export function featureDraftTitle(type: string, title: string): string {
+  const trimmed = title.trimStart();
+  const tag = /^\[([^\]]{0,64})\]/.exec(trimmed);
+  let rest = title;
+  if (tag && tag[1]!.trim().toLowerCase() === type.toLowerCase()) {
+    const afterTag = trimmed.slice(tag[0].length).trimStart();
+    rest = (afterTag.startsWith(":") ? afterTag.slice(1) : afterTag).trimStart();
+  }
+  return `[${capitalize(type)}] ${rest.length > 0 ? rest : title}`;
 }
 
 function draftAnalysisId(metadata: string | null): unknown {
@@ -698,8 +801,73 @@ function renderFeatureBody(input: {
 export const NO_ACCEPTANCE_CRITERIA_NOTE =
   "_No acceptance criteria were derived from the analysis evidence — add them before implementation._";
 
+const MARKDOWN_HEADING = /^\s*#{1,6}\s/;
+/** A bullet or numbered list marker. Linear: no overlapping quantifiers. */
+const LIST_MARKER = /^\s*(?:[-*+]|\d{1,9}[.)])\s+/;
+const CHECKBOX = /^\[[ xX]\]\s+/;
+
+/**
+ * A heading or bold label introducing an acceptance-criteria section
+ * (`## Acceptance criteria`, `**Acceptance Criteria:**`). String operations
+ * rather than one regex, so a long line of an untrusted body cannot backtrack.
+ */
+function isAcceptanceCriteriaHeading(line: string): boolean {
+  let text = line
+    .trim()
+    .replace(/^#{1,6}/, "")
+    .trim();
+  for (const mark of ["**", "__"]) {
+    if (text.startsWith(mark)) text = text.slice(mark.length);
+    if (text.endsWith(mark)) text = text.slice(0, -mark.length);
+  }
+  text = text.trim();
+  if (text.endsWith(":")) text = text.slice(0, -1);
+  for (const mark of ["**", "__"]) {
+    if (text.endsWith(mark)) text = text.slice(0, -mark.length);
+  }
+  return text.trim().toLowerCase() === "acceptance criteria";
+}
+
+/** The text of a list item (bullet, numbered or checklist), or null. */
+function listItemText(line: string): string | null {
+  const marker = LIST_MARKER.exec(line);
+  if (!marker) return null;
+  const rest = line.slice(marker[0].length);
+  const box = CHECKBOX.exec(rest);
+  const text = (box ? rest.slice(box[0].length) : rest).trim();
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * #863 — the criteria an upstream issue body states itself, under an
+ * "Acceptance criteria" heading. Imported requirements carry the upstream text
+ * only, so without this every imported draft read "no acceptance criteria"
+ * even when the issue listed them. Only that section is read: a stray checklist
+ * elsewhere ("- [x] I searched existing issues") is a template, not a criterion,
+ * and inventing criteria is what #1096 removed.
+ */
+export function extractBodyAcceptanceCriteria(body: string): string[] {
+  const lines = body.split(/\r?\n/);
+  const start = lines.findIndex(isAcceptanceCriteriaHeading);
+  if (start < 0) return [];
+  const items: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (MARKDOWN_HEADING.test(line) || isAcceptanceCriteriaHeading(line)) break;
+    const item = listItemText(line);
+    if (item) items.push(item);
+    else if (line.trim().length > 0) {
+      // An indented line continues the item above; any other prose ends the
+      // section, even before the first item ("None yet." then a template box).
+      if (items.length > 0 && /^\s+\S/.test(line)) items[items.length - 1] += ` ${line.trim()}`;
+      else break;
+    }
+  }
+  return items;
+}
+
 function renderAcceptanceCriteria(req: { body: string; acceptanceCriteria?: string[] }): string {
-  const criteria = (req.acceptanceCriteria ?? []).map((c) => c.trim()).filter((c) => c.length > 0);
+  const persisted = (req.acceptanceCriteria ?? []).map((c) => c.trim()).filter((c) => c.length > 0);
+  const criteria = persisted.length > 0 ? persisted : extractBodyAcceptanceCriteria(req.body);
   if (criteria.length > 0) {
     return criteria.map((c) => `- [ ] ${c}`).join("\n");
   }
@@ -893,6 +1061,7 @@ export const __testing = {
   parseLabels,
   mapReqTypeToDraftType,
   renderAcceptanceCriteria,
+  selectRequirements,
   // #1096 — body renderers exercised directly so the acceptance-criteria and
   // sub-issue-id behaviour is testable without a database.
   renderFeatureBody,

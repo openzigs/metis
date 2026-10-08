@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/api-client";
 import type {
   ArchivePublishBatchInput,
   CreatePublishBatchInput,
+  DraftCandidates,
   DraftPullRequestRequest,
   DraftPullRequestResult,
   DryRunPlan,
@@ -36,9 +37,21 @@ export interface BatchExecuteResponse {
 
 export const publishingApi = {
   listDrafts: (projectId: Id) => apiFetch<IssueDraft[]>(`${base(projectId)}/drafts`),
+  /** #863 — the requirements Generate would draft, and whether to choose first. */
+  listDraftCandidates: (projectId: Id, analysisId: Id) =>
+    apiFetch<DraftCandidates>(
+      `${base(projectId)}/drafts/candidates?analysisId=${encodeURIComponent(analysisId)}`,
+    ),
   generateDrafts: (
     projectId: Id,
-    body: { analysisId: string; targetOwner: string; targetRepo: string; defaultLabels?: string[] },
+    body: {
+      analysisId: string;
+      targetOwner: string;
+      targetRepo: string;
+      defaultLabels?: string[];
+      /** #863 — draft only these requirements. */
+      requirementIds?: string[];
+    },
   ) =>
     apiFetch<GenerateDraftsResponse>(`${base(projectId)}/drafts/generate`, {
       method: "POST",

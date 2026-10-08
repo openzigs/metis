@@ -15,6 +15,10 @@
  * verdict — the very same function the API enforces. A batch inside the
  * in-flight window shows the button disabled *with the reason*, rather than
  * hiding it, so the absence of the remedy is explained instead of mysterious.
+ *
+ * #863 — "Archive" is offered on a SETTLED batch (the API's archive existed but
+ * nothing in the UI reached it). It is never offered while a batch may still be
+ * running: that is what Cancel is for.
  */
 import { publishBatchCancelState, type PublishBatch } from "@metis/shared";
 import { Button } from "@/components/ui/button";
@@ -26,6 +30,8 @@ export interface BatchRowActionsProps {
   batch: BatchRowActionsBatch;
   onWatch: (id: string) => void;
   onCancel: (id: string) => void;
+  /** #863 — archive a settled batch. Omitted ⇒ no Archive button. */
+  onArchive?: (id: string) => void;
   /** True while a cancel request for THIS batch is in flight. */
   cancelPending?: boolean;
   /** Injectable clock for tests. */
@@ -44,11 +50,13 @@ export function BatchRowActions({
   batch,
   onWatch,
   onCancel,
+  onArchive,
   cancelPending = false,
   now,
 }: BatchRowActionsProps) {
   const state = publishBatchCancelState(batch, now ?? Date.now());
   const showCancel = state.reason !== "not_in_progress";
+  const showArchive = Boolean(onArchive) && !showCancel && !batch.archived;
 
   return (
     <div className="flex items-center justify-end gap-1">
@@ -71,6 +79,17 @@ export function BatchRowActions({
           onClick={() => onCancel(batch.id)}
         >
           {cancelPending ? "Cancelling…" : "Cancel"}
+        </Button>
+      )}
+      {showArchive && (
+        <Button
+          size="sm"
+          variant="ghost"
+          className={touchTargetClass}
+          data-testid={`archive-batch-${batch.id}`}
+          onClick={() => onArchive?.(batch.id)}
+        >
+          Archive
         </Button>
       )}
     </div>

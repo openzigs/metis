@@ -182,7 +182,12 @@ import { createRunDocumentLookup, projectDocumentQueries } from "./run-document-
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
 import { RequirementsExtractor } from "./requirements-extractor.js";
-import { WebResearchAugmenter, createSearchProvider } from "./web-research-augmenter.js";
+import {
+  NO_WEB_SEARCH_PROVIDER_NOTICE,
+  WebResearchAugmenter,
+  createSearchProvider,
+  isWebSearchConfigured,
+} from "./web-research-augmenter.js";
 import {
   searchCodeGraphTool,
   readFileSliceTool,
@@ -346,6 +351,16 @@ export interface OrchestratorDeps {
    * byte-identical to the pre-#824 behaviour.
    */
   affectedSchemaMapping?: RunAffectedSchemaDeps;
+  /**
+   * #864 — whether a web search provider is configured. Defaults to the
+   * env-driven {@link isWebSearchConfigured}. When false the `web` specialist
+   * is not run. It never calls the search provider either way: only the opt-in
+   * augmenter does. When it does run, its context is filtered by
+   * {@link selectWebAgentEvidence}, because document-RAG plus the score-0
+   * quarantine fallback once made it cite an unrelated test file's licence
+   * header as "evidence".
+   */
+  webSearchConfigured?: () => boolean;
 }
 /** Agent execution mode for the analysis pipeline. */
 export type AgentMode = "single-shot" | "agentic" | "requirement-grounded";
@@ -550,6 +565,24 @@ export interface ResumeSkippedReposResult {
   remaining: AnalysisSkippedRepo[];
   /** True when there was nothing to resume — an idempotent no-op. */
   noop: boolean;
+}
+
+/**
+ * #864 — the only chunks the `web` specialist may ground on. It has no web
+ * access of its own (the search provider is used only by the opt-in augmenter),
+ * so what it is served is local document-RAG. That is acceptable for an
+ * uploaded standards or policy document, but never for repository or database
+ * connector rows. A score of 0 or below is the quarantine fallback's marker:
+ * an unranked chunk, not a retrieval match. Run 3 of the #706 walkthrough cited
+ * `finder_test.go`'s licence header exactly that way.
+ */
+export function selectWebAgentEvidence(chunks: RetrievalContextChunk[]): RetrievalContextChunk[] {
+  return chunks.filter(
+    (c) =>
+      (c.score ?? 0) > 0 &&
+      c.source !== "code-graph" &&
+      !(c.source !== undefined && CONNECTOR_CODE_SOURCES.includes(c.source)),
+  );
 }
 
 /**
@@ -1281,6 +1314,9 @@ export class AnalysisOrchestrator {
     let firstAgentError: string | null = null;
     const recordAgentOutcome = (r: PromiseSettledResult<unknown>): void => {
       if (r.status === "fulfilled") {
+        // #864 — a skipped agent did no work, so it cannot rescue a run whose
+        // every specialist that DID run failed (#755).
+        if ((r.value as Partial<AgentRunResult> | undefined)?.skipped === true) return;
         specialistSucceeded += 1;
       } else {
         // Aborts are handled by the dedicated cancellation path; don't count
@@ -2082,9 +2118,12 @@ export class AnalysisOrchestrator {
       status: "running",
       ts: Date.now(),
     });
+    if (input.agentKey === "web" && !this.isWebSearchAvailable()) {
+      return this.skipWebAgentWithoutProvider(input.analysisId, startedAt);
+    }
     return withInvokeAgentSpan(input.agentKey, async () => {
       try {
-        const retrieved = await this.retrieveContext({
+        const context = await this.retrieveContext({
           analysisId: input.analysisId,
           projectId: input.projectId,
           agentKey: input.agentKey,
@@ -2094,6 +2133,10 @@ export class AnalysisOrchestrator {
           extraInstructions: input.extraInstructions,
           actorId: input.actorId,
         });
+        // #864 — the web specialist grounds only on ranked, non-connector
+        // document chunks, so it cannot cite a repository file or an unranked
+        // fallback chunk as evidence.
+        const retrieved = input.agentKey === "web" ? selectWebAgentEvidence(context) : context;
         if (input.replayRunId) {
           await recordReplayStep({
             runId: input.replayRunId,
@@ -2169,6 +2212,53 @@ export class AnalysisOrchestrator {
         throw err;
       }
     });
+  }
+
+  private isWebSearchAvailable(): boolean {
+    return (this.deps.webSearchConfigured ?? isWebSearchConfigured)();
+  }
+
+  /**
+   * #864 — with no web search provider the web specialist says so ONCE, in its
+   * summary, and adds no findings. It is persisted `completed` (the run did
+   * what it could and nothing failed) with zero usage, because no model call
+   * was made.
+   */
+  private async skipWebAgentWithoutProvider(
+    analysisId: string,
+    startedAt: Date,
+  ): Promise<AgentRunResult> {
+    const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    const output: AgentOutput = {
+      agentKey: "web",
+      summary: NO_WEB_SEARCH_PROVIDER_NOTICE,
+      findings: [],
+      notes: [],
+    };
+    await persistAgentResult({
+      analysisId,
+      agentKey: "web",
+      status: "completed",
+      output,
+      startedAt,
+      completedAt: new Date(),
+      usage,
+    });
+    this.emit({
+      analysisId,
+      agentKey: "web",
+      type: "completed",
+      status: "completed",
+      findingCount: 0,
+      ts: Date.now(),
+    });
+    return {
+      agentKey: "web",
+      output,
+      usage,
+      durationMs: Date.now() - startedAt.getTime(),
+      skipped: true,
+    };
   }
 
   /**
@@ -3823,8 +3913,16 @@ export class AnalysisOrchestrator {
     // If no approved chunks were found for explicitly-selected documents, fall
     // back to quarantine chunks. This lets the LLM analyze newly-uploaded or
     // pending-approval documents rather than reporting "no context available".
+    // #864 — never for `web`: these chunks are unranked (score 0), and the web
+    // specialist citing one is how a test file's licence header became "web
+    // evidence".
     let baseChunks = chunks;
-    if (chunks.length === 0 && input.documentIds && input.documentIds.length > 0) {
+    if (
+      input.agentKey !== "web" &&
+      chunks.length === 0 &&
+      input.documentIds &&
+      input.documentIds.length > 0
+    ) {
       const fallback = await this.fetchQuarantineFallback(input.projectId, input.documentIds);
       if (fallback.length > 0) baseChunks = fallback;
     }

@@ -12,6 +12,8 @@ import {
   shouldBypassProxy,
   getProxyDispatcher,
   createSearchProvider,
+  isWebSearchConfigured,
+  NO_WEB_SEARCH_PROVIDER_NOTICE,
 } from "../src/lib/analysis/web-research-augmenter.js";
 import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
 import type {
@@ -631,5 +633,48 @@ describe("WebResearchAugmenter", () => {
       const init = fetchSpy.mock.calls[0]![1] as RequestInit & { dispatcher?: unknown };
       expect(init.dispatcher).toBeUndefined();
     });
+  });
+});
+
+describe("#864 — no web search provider configured", () => {
+  const saved = { ...process.env };
+  beforeEach(() => {
+    delete process.env.WEB_SEARCH_PROVIDER;
+    delete process.env.WEB_SEARCH_API_KEY;
+    delete process.env.AI_OFFLINE;
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  it("says so once, adds no digests and makes no model call", async () => {
+    const provider = mockProvider('["q"]');
+    const augmenter = new WebResearchAugmenter({ provider });
+    const twoNeeds = makeRequirement({
+      evidenceNeeds: [
+        { id: "n1", description: "a", domain: "d", searchHints: [] },
+        { id: "n2", description: "b", domain: "d", searchHints: [] },
+      ],
+    });
+    const result = await augmenter.augment([twoNeeds, { ...twoNeeds, id: "req-2" }]);
+    expect(result).toEqual({
+      digests: [],
+      totalSources: 0,
+      reviewRequired: 0,
+      notice: NO_WEB_SEARCH_PROVIDER_NOTICE,
+    });
+    expect(provider.chat).not.toHaveBeenCalled();
+  });
+
+  it("isWebSearchConfigured is false for the stub and for an unconfigured env", () => {
+    expect(isWebSearchConfigured(new StubWebSearchProvider())).toBe(false);
+    expect(isWebSearchConfigured()).toBe(false);
+  });
+
+  it("isWebSearchConfigured is true for a real provider and a configured env", () => {
+    expect(isWebSearchConfigured(new MockSearchProvider())).toBe(true);
+    process.env.WEB_SEARCH_PROVIDER = "brave";
+    process.env.BRAVE_SEARCH_API_KEY = "k";
+    expect(isWebSearchConfigured()).toBe(true);
   });
 });

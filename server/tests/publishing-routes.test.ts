@@ -280,6 +280,12 @@ vi.mock("../src/lib/publishing/draft-generator.js", () => ({
     upserted: 1,
     refreshed: 0,
   })),
+  listDraftCandidates: vi.fn(async (_projectId: string, analysisId: string) => ({
+    analysisId,
+    source: "import",
+    selectionRequired: true,
+    requirements: [],
+  })),
 }));
 
 // #776 — the edit and draft-PR services have their own real-SQLite suite
@@ -305,7 +311,10 @@ vi.mock("../src/lib/publishing/draft-pull-request.js", () => ({
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import { generateDrafts as generateDraftsMock } from "../src/lib/publishing/draft-generator.js";
+import {
+  generateDrafts as generateDraftsMock,
+  listDraftCandidates as listDraftCandidatesMock,
+} from "../src/lib/publishing/draft-generator.js";
 import { PublishError } from "../src/lib/publishing/types.js";
 
 let app: ReturnType<typeof createApp>;
@@ -386,7 +395,54 @@ describe("GET /drafts", () => {
   });
 });
 
+describe("GET /drafts/candidates (#863)", () => {
+  it("lists the candidates of an analysis in the path project", async () => {
+    const token = await login("developer");
+    const res = await request(app)
+      .get("/api/projects/proj_test_001/publishing/drafts/candidates")
+      .query({ analysisId: "analysis_test_001" })
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ source: "import", selectionRequired: true });
+    expect(listDraftCandidatesMock).toHaveBeenCalledWith("proj_test_001", "analysis_test_001");
+  });
+
+  it("rejects a missing analysisId (zod 400)", async () => {
+    const token = await login("developer");
+    const res = await request(app)
+      .get("/api/projects/proj_test_001/publishing/drafts/candidates")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(400);
+  });
+
+  it("is refused to a role without issue.draft", async () => {
+    const token = await login("reader");
+    const res = await request(app)
+      .get("/api/projects/proj_test_001/publishing/drafts/candidates")
+      .query({ analysisId: "analysis_test_001" })
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(403);
+  });
+});
+
 describe("POST /drafts/generate", () => {
+  it("#863 — forwards a requirement selection to the generator", async () => {
+    const token = await login("developer");
+    const res = await request(app)
+      .post("/api/projects/proj_test_001/publishing/drafts/generate")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        analysisId: "analysis_test_001",
+        targetOwner: "acme",
+        targetRepo: "metis",
+        requirementIds: ["requirement_0001", "requirement_0002"],
+      });
+    expect(res.status).toBe(201);
+    expect(generateDraftsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ requirementIds: ["requirement_0001", "requirement_0002"] }),
+    );
+  });
+
   it("developer can generate drafts (issue.draft)", async () => {
     const token = await login("developer");
     const res = await request(app)

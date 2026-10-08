@@ -76,7 +76,12 @@ export function EnhancementResults({
         <ClarificationImpactNote application={enhancement.clarificationApplication} />
       )}
       {clarificationEnabled && structured && <GapsSummaryBanner structured={structured} />}
-      {webResearchEnabled && <EvidenceReview digests={enhancement.webResearch?.digests ?? []} />}
+      {webResearchEnabled && (
+        <EvidenceReview
+          digests={enhancement.webResearch?.digests ?? []}
+          notice={enhancement.webResearch?.notice}
+        />
+      )}
       {clarificationEnabled && (
         <ClarificationSection
           projectId={projectId}
@@ -189,12 +194,21 @@ function GapsSummaryBanner({
   );
 }
 
-function EvidenceReview({ digests }: { digests: EvidenceDigest[] }): React.ReactElement {
+function EvidenceReview({
+  digests,
+  notice,
+}: {
+  digests: EvidenceDigest[];
+  /** #864 — why research did not run, stated once in place of the list. */
+  notice?: string;
+}): React.ReactElement {
   return (
     <Card className="space-y-3 p-4">
       <h3 className="text-lg font-semibold">Evidence Review</h3>
       {digests.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No web research evidence to review.</p>
+        <p className="text-sm text-muted-foreground" data-testid="web-research-notice">
+          {notice ?? "No web research evidence to review."}
+        </p>
       ) : (
         <ul className="space-y-3">
           {digests.map((digest) => (

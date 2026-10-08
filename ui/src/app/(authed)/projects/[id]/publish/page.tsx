@@ -46,6 +46,9 @@ import { vaultRefHint } from "@/lib/vault-ref";
 import { DryRunPlanPanel, parseDryRunPlan } from "@/components/publishing/dry-run-plan-panel";
 import { PublishConfirmDialog } from "@/components/publishing/publish-confirm-dialog";
 import { BatchRowActions } from "@/components/publishing/batch-row-actions";
+import { ArchiveBatchDialog } from "@/components/publishing/archive-batch-dialog";
+import { DraftRequirementPicker } from "@/components/publishing/draft-requirement-picker";
+import { isPublishableDraft, publishableSelection } from "@/components/publishing/draft-selection";
 import { ResponsiveTable, type ResponsiveColumn } from "@/components/tables/responsive-table";
 import type { PublishBatch } from "@metis/shared";
 import { PageHeader } from "@/components/ui/page-header";
@@ -189,12 +192,24 @@ export default function PublishingPage() {
   const targetIsSaved =
     Boolean(savedOwner) && savedOwner === targetOwner.trim() && savedRepo === targetRepo.trim();
 
+  // #863 — an import run above the threshold is drafted from a selection, not
+  // wholesale; the server says which (`selectionRequired`).
+  const candidates = useQuery({
+    queryKey: ["publishing", "draft-candidates", projectId, analysisId] as const,
+    queryFn: () => publishingApi.listDraftCandidates(projectId, analysisId),
+    enabled: Boolean(projectId && analysisId),
+  });
+  const selectionRequired = candidates.data?.selectionRequired === true;
+  const [pickedRequirements, setPickedRequirements] = useState<Set<string>>(new Set());
+  useEffect(() => setPickedRequirements(new Set()), [analysisId]);
+
   const generate = useMutation({
     mutationFn: () =>
       publishingApi.generateDrafts(projectId, {
         analysisId,
         targetOwner,
         targetRepo,
+        requirementIds: selectionRequired ? [...pickedRequirements] : undefined,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.drafts(projectId) }),
   });
@@ -247,7 +262,10 @@ export default function PublishingPage() {
   // `selectedDraftRows` reads it synchronously during render — a later `const`
   // would sit in the temporal dead zone and throw once any draft is present.
   const [selectedDrafts, setSelectedDrafts] = useState<Set<string>>(new Set());
-  const selectedDraftRows = drafts.data?.filter((d) => selectedDrafts.has(d.id)) ?? [];
+  // #863 — only drafts a batch may publish count as selected. A published draft
+  // used to stay in the raw set, so every later batch failed DRAFT_INELIGIBLE.
+  const selectedDraftRows = publishableSelection(drafts.data, selectedDrafts);
+  const selectedCount = selectedDraftRows.length;
   const bulkCounts = computeApprovalCounts(selectedDraftRows);
   async function runBulkApprove(): Promise<void> {
     setBulkPending(true);
@@ -312,7 +330,7 @@ export default function PublishingPage() {
     targetBaseUrl: batchBaseUrl ? batchBaseUrl : undefined,
     provider: (batchBaseUrl ? "github_enterprise" : "github") as "github" | "github_enterprise",
     dryRun,
-    draftIds: [...selectedDrafts],
+    draftIds: selectedDraftRows.map((d) => d.id),
     additionalLabels: batchLabels
       .split(",")
       .map((s) => s.trim())
@@ -360,6 +378,21 @@ export default function PublishingPage() {
     onSettled: () => {
       setCancellingId(null);
       qc.invalidateQueries({ queryKey: keys.batches(projectId) });
+    },
+  });
+
+  // ── Archive a settled batch (#863) ─────────────────────────────────────
+  const [archiveId, setArchiveId] = useState<string | null>(null);
+  const archiveTarget = batches.data?.find((b) => b.id === archiveId) ?? null;
+  const archiveBatch = useMutation({
+    mutationFn: (input: { id: string; reason: string; closeIssues: boolean }) =>
+      publishingApi.archiveBatch(projectId, input.id, {
+        reason: input.reason,
+        closeIssues: input.closeIssues,
+      }),
+    onSuccess: () => {
+      setArchiveId(null);
+      return qc.invalidateQueries({ queryKey: keys.batches(projectId) });
     },
   });
 
@@ -417,12 +450,16 @@ export default function PublishingPage() {
               setCancellingId(id);
               cancelBatch.mutate(id);
             }}
+            onArchive={(id) => {
+              archiveBatch.reset();
+              setArchiveId(id);
+            }}
             cancelPending={cancellingId === b.id}
           />
         ),
       },
     ],
-    [cancelBatch, cancellingId],
+    [cancelBatch, cancellingId, archiveBatch],
   );
 
   useEffect(() => {
@@ -553,6 +590,13 @@ export default function PublishingPage() {
           target={{ owner: targetOwner.trim(), repo: targetRepo.trim() }}
           connector={primaryRepo.data}
         />
+        {selectionRequired && candidates.data && (
+          <DraftRequirementPicker
+            requirements={candidates.data.requirements}
+            selected={pickedRequirements}
+            onChange={setPickedRequirements}
+          />
+        )}
         <div className="mt-3 flex items-center gap-3">
           <Button
             variant="outline"
@@ -581,7 +625,13 @@ export default function PublishingPage() {
           ) : null}
           <Button
             onClick={() => generate.mutate()}
-            disabled={!analysisId || !targetOwner || !targetRepo || generate.isPending}
+            disabled={
+              !analysisId ||
+              !targetOwner ||
+              !targetRepo ||
+              generate.isPending ||
+              (selectionRequired && pickedRequirements.size === 0)
+            }
           >
             {generate.isPending ? "Generating…" : "Generate"}
           </Button>
@@ -616,11 +666,11 @@ export default function PublishingPage() {
           <Button
             size="sm"
             variant="outline"
-            disabled={selectedDrafts.size === 0}
+            disabled={selectedCount === 0}
             onClick={() => setBulkOpen(true)}
             data-testid="bulk-approve-trigger"
           >
-            Bulk approve ({selectedDrafts.size})
+            Bulk approve ({selectedCount})
           </Button>
         </div>
         {/* Issue #1117 (finding F) — the gate block used to render AFTER the
@@ -641,8 +691,8 @@ export default function PublishingPage() {
                     <input
                       type="checkbox"
                       aria-label={`Select draft: ${d.title}`}
-                      checked={selectedDrafts.has(d.id)}
-                      disabled={d.status === "published"}
+                      checked={selectedDrafts.has(d.id) && isPublishableDraft(d)}
+                      disabled={!isPublishableDraft(d)}
                       onChange={(e) => {
                         const next = new Set(selectedDrafts);
                         if (e.target.checked) next.add(d.id);
@@ -837,7 +887,7 @@ export default function PublishingPage() {
             onClick={onPublishClick}
             disabled={
               publish.isPending ||
-              selectedDrafts.size === 0 ||
+              selectedCount === 0 ||
               !effectiveOwner ||
               !effectiveRepo ||
               (!dryRun && !batchSecret)
@@ -845,10 +895,8 @@ export default function PublishingPage() {
           >
             {publish.isPending ? "Publishing…" : dryRun ? "Run dry-run" : "Publish now"}
           </Button>
-          <span className="text-xs text-muted-foreground">
-            {selectedDrafts.size} drafts selected
-          </span>
-          {selectedDrafts.size === 0 && (drafts.data?.length ?? 0) > 0 && (
+          <span className="text-xs text-muted-foreground">{selectedCount} drafts selected</span>
+          {selectedCount === 0 && (drafts.data?.length ?? 0) > 0 && (
             <span className="text-xs text-muted-foreground" data-testid="publish-selection-hint">
               Tick the drafts to include in the list above — approving a draft also selects it.
             </span>
@@ -975,7 +1023,7 @@ export default function PublishingPage() {
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
         target={{ owner: effectiveOwner, repo: effectiveRepo }}
-        draftCount={selectedDrafts.size}
+        draftCount={selectedCount}
         plan={plan.data ?? null}
         planLoading={plan.isPending}
         planError={plan.error}
@@ -985,6 +1033,24 @@ export default function PublishingPage() {
           publish.mutate();
         }}
       />
+      {archiveTarget && (
+        <ArchiveBatchDialog
+          key={archiveTarget.id}
+          batch={archiveTarget}
+          onOpenChange={(open) => {
+            if (!open) setArchiveId(null);
+          }}
+          pending={archiveBatch.isPending}
+          error={
+            archiveBatch.error
+              ? archiveBatch.error instanceof ApiError
+                ? archiveBatch.error.message
+                : "Could not archive the batch."
+              : null
+          }
+          onConfirm={(input) => archiveBatch.mutate({ id: archiveTarget.id, ...input })}
+        />
+      )}
     </div>
   );
 }

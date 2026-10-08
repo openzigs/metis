@@ -89,7 +89,10 @@ const AGENT_CONTEXT_SCOPE: Record<
     lacks: "source code or the code graph",
   },
   web: {
-    has: "the project's indexed documents (uploaded and connector-synced), as retrieved text chunks",
+    // #864 — `selectWebAgentEvidence` (orchestrator) drops repository and
+    // database connector rows and unranked quarantine chunks; no web results
+    // are routed to this agent.
+    has: "the project's indexed documents (uploaded, Confluence and Jira; never repository or database files), as retrieved text chunks — no live web search results",
     lacks: "source code, the code graph, or a database schema",
   },
   code: {
