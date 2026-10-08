@@ -19,11 +19,14 @@
  *     inline code spans: `` `POST /api/projects/:id/analyses` `` is an API
  *     reference and `` `/projects/:id/settings` `` is a page reference.
  *
- * ## What it deliberately does not check
+ * ## Abbreviated paths
  *
  * A span that abbreviates its prefix with an ellipsis (`` `POST …/documents/url` ``)
- * is not checked: it is relative to whatever the sentence last named, and guessing
- * that prefix would turn this into a source of false failures. The plan's own
+ * is relative to whatever the sentence last named. Guessing that prefix would
+ * turn this into a source of false failures, so it is checked as a suffix
+ * instead: some registered route must end with it (`segmentsSuffixMatch`). That
+ * is weaker than a full path but still catches a route that is gone everywhere —
+ * #948's motivating dead route was written in this form. The plan's own
  * header tells authors which forms are checked.
  *
  * ## Why a regex walk and not the TypeScript compiler
@@ -31,7 +34,7 @@
  * The check runs in CI's `changelog` job, which has no `pnpm install` and takes
  * seconds. The route files follow one shape — a router factory function that
  * calls `Router()` and registers literal paths — and the repository test
- * (`walkthrough-plan-drift-repo.test.mjs`) pins that the walk resolves every
+ * (`scripts/lib/walkthrough-plan-runners.test.mjs`) pins that the walk resolves every
  * mount in the real tree, so a server refactor that outgrows the regexes fails a
  * test rather than silently shrinking the route set.
  */
@@ -316,12 +319,7 @@ export function collectApiRoutes({ entryFile, readSource }) {
       if (target.kind === "call") {
         const fn = resolveFunction(file, target.name);
         if (fn === null) {
-          // Middleware factories (`requireProjectAccess("id")`, `express.json()`)
-          // land here and contribute no routes, correctly. A name that reads
-          // like a router is reported so a walk that lost one is visible.
-          if (/router$/i.test(target.name)) {
-            unresolved.push({ file, prefix: mountPrefix, target: target.name });
-          }
+          unresolved.push({ file, prefix: mountPrefix, target: target.name });
           continue;
         }
         walkFunction(fn.file, fn.fn, mountPrefix, null, depth + 1);
@@ -465,23 +463,41 @@ export function segmentsPrefixMatch(ref, pattern) {
  * @returns {boolean}
  */
 export function segmentsMatch(ref, pattern) {
-  if (pattern.length === 0) return ref.length === 0;
+  return literalAlignment(ref, pattern) >= 0;
+}
+
+/**
+ * `segmentsMatch`, scored: -1 when the reference does not fit the pattern,
+ * otherwise the most reference literals that a fit lines up with an equal
+ * pattern literal (rather than letting a placeholder absorb them).
+ *
+ * @param {Segment[]} ref
+ * @param {Segment[]} pattern
+ * @returns {number}
+ */
+export function literalAlignment(ref, pattern) {
+  if (pattern.length === 0) return ref.length === 0 ? 0 : -1;
   const [head, ...tail] = pattern;
   if (head.kind === "rest") {
+    let best = -1;
     for (let take = head.min; take <= ref.length; take += 1) {
-      if (segmentsMatch(ref.slice(take), tail)) return true;
+      best = Math.max(best, literalAlignment(ref.slice(take), tail));
     }
-    return false;
+    return best;
   }
   if (head.kind === "optional") {
-    if (segmentsMatch(ref, tail)) return true;
-    return ref.length > 0 && ref[0].kind !== "rest" && segmentsMatch(ref.slice(1), tail);
+    const skip = literalAlignment(ref, tail);
+    const take =
+      ref.length > 0 && ref[0].kind !== "rest" ? literalAlignment(ref.slice(1), tail) : -1;
+    return Math.max(skip, take);
   }
-  if (ref.length === 0) return false;
+  if (ref.length === 0) return -1;
   const [first, ...rest] = ref;
-  if (first.kind === "rest") return false;
-  if (head.kind === "param") return segmentsMatch(rest, tail);
-  return first.kind === "literal" && first.value === head.value && segmentsMatch(rest, tail);
+  if (first.kind === "rest") return -1;
+  if (head.kind === "param") return literalAlignment(rest, tail);
+  if (first.kind !== "literal" || first.value !== head.value) return -1;
+  const after = literalAlignment(rest, tail);
+  return after < 0 ? -1 : after + 1;
 }
 
 /**
@@ -493,6 +509,16 @@ const API_IN_SPAN_RE =
   /(?:\b((?:GET|POST|PUT|PATCH|DELETE)(?:\/(?:GET|POST|PUT|PATCH|DELETE))*)\s+)?(?<![\w./-])(\/api(?:\/[^\s'"`),{]*)?)/g;
 
 const PAGE_SPAN_RE = /^(\/[^\s?#]*)(?:[?#]\S*)?$/;
+
+/**
+ * A path that abbreviates its prefix: `` `POST …/documents/url` ``,
+ * `` `…/drift/count` ``, or `` `Link: <…/commands/x>` ``. The ellipsis must be
+ * followed directly by `/` and start the span or follow a space, `<` or `(`,
+ * so prose that trails off (`Cannot /implement: missing …`) and a path cut
+ * short (`fetch('/api/...')`, `server/src/routes/…`) are not read as routes.
+ */
+const ELLIPSIS_PATH_RE =
+  /(?:^|[\s<(])(?:((?:GET|POST|PUT|PATCH|DELETE)(?:\/(?:GET|POST|PUT|PATCH|DELETE))*)\s+)?(?:…|\.\.\.)(\/[^\s'"`),{<>;]+)/g;
 
 /** A line carrying this marker is not checked — for a deliberate dead link. */
 export const SKIP_MARKER = "<!-- drift-check: skip -->";
@@ -532,13 +558,15 @@ function cleanPath(path) {
  * Every checkable API and page reference in the plan.
  *
  * Only inline code spans outside fenced blocks are read: a fenced block holds
- * shell and SQL, where a `/path` is a file, not a page.
+ * shell and SQL, where a `/path` is a file, not a page. A span that opens with
+ * an ellipsis (`` `POST …/documents/url` ``) is an API reference with
+ * `suffix: true` — see `findPlanDrift`.
  *
  * @param {string} markdown
- * @returns {{ kind: "api" | "page", methods: string[], path: string, line: number, span: string }[]}
+ * @returns {{ kind: "api" | "page", methods: string[], path: string, line: number, span: string, suffix?: boolean }[]}
  */
 export function extractPlanReferences(markdown) {
-  /** @type {{ kind: "api" | "page", methods: string[], path: string, line: number, span: string }[]} */
+  /** @type {{ kind: "api" | "page", methods: string[], path: string, line: number, span: string, suffix?: boolean }[]} */
   const refs = [];
   let fenced = false;
   markdown.split("\n").forEach((text, index) => {
@@ -551,6 +579,15 @@ export function extractPlanReferences(markdown) {
     for (const spanMatch of text.matchAll(/`([^`]+)`/g)) {
       const span = spanMatch[1].trim();
       if (span.includes("://")) continue;
+      let sawSuffix = false;
+      for (const ellipsis of span.matchAll(ELLIPSIS_PATH_RE)) {
+        sawSuffix = true;
+        const methods = ellipsis[1] ? ellipsis[1].toLowerCase().split("/") : [];
+        for (const path of expandAlternatives(cleanPath(ellipsis[2]))) {
+          refs.push({ kind: "api", methods, path, line, span, suffix: true });
+        }
+      }
+      if (sawSuffix) continue;
       let sawApi = false;
       for (const api of span.matchAll(API_IN_SPAN_RE)) {
         sawApi = true;
@@ -594,7 +631,20 @@ export function findPlanDrift({ refs, apiRoutes, pageFiles }) {
   for (const ref of refs) {
     const segments = referenceSegments(ref.path);
     let ok;
-    if (ref.kind === "api") {
+    if (ref.suffix) {
+      // An ellipsis reference names the end of a route whose prefix the
+      // sentence already gave: some registered route (with that method, when
+      // one is named) must end with it.
+      const endsHere = routePatterns.filter((route) =>
+        segmentsSuffixMatch(segments, route.segments),
+      );
+      ok =
+        ref.methods.length === 0
+          ? endsHere.length > 0
+          : ref.methods.every((method) =>
+              endsHere.some((route) => route.method === "all" || route.method === method),
+            );
+    } else if (ref.kind === "api") {
       // With a method the reference names one endpoint, so it must match a
       // whole route. Without one it may name a resource or a mount point,
       // which is alive while anything is registered under it.
@@ -616,10 +666,50 @@ export function findPlanDrift({ refs, apiRoutes, pageFiles }) {
       problems.push({
         line: ref.line,
         kind: ref.kind,
-        reference: `${methods}${ref.path}`,
+        reference: `${methods}${ref.suffix ? "…" : ""}${ref.path}`,
         span: ref.span,
       });
     }
   }
   return problems;
+}
+
+/**
+ * Does a referenced path fit the end of a registered pattern? The ellipsis
+ * stands for at least one segment, so the whole pattern never counts.
+ *
+ * A suffix is short, and a pattern placeholder fits any literal, so without
+ * further rules `…/test` would fit every route ending in `/:id` and check
+ * nothing. Two rules anchor it:
+ *
+ *  - the segment right after the ellipsis, when it is a literal, must equal
+ *    the route's literal there — `…/spec-kit/install` does not fit
+ *    `…/workspaces/:workspaceId/install` by letting `:workspaceId` take
+ *    `spec-kit`;
+ *  - at least one of the reference's literals must line up with an equal
+ *    route literal — `…/:prNumber/re-review` does not fit `…/:a/:b`, and
+ *    `…/drift/count` does not fit `…/artifacts/*key`, whose splat would
+ *    swallow both.
+ *
+ * A later literal may still fill a placeholder once anchored, as in a full
+ * path: `…/commands/speckit.specify` fits `…/commands/:cmd`.
+ *
+ * @param {Segment[]} ref
+ * @param {Segment[]} pattern
+ * @returns {boolean}
+ */
+export function segmentsSuffixMatch(ref, pattern) {
+  const needed = ref.some((s) => s.kind === "literal") ? 1 : 0;
+  for (let k = 1; k < pattern.length; k += 1) {
+    const tail = pattern.slice(k);
+    const [first] = ref;
+    if (
+      first?.kind === "literal" &&
+      !(tail[0].kind === "literal" && tail[0].value === first.value)
+    ) {
+      continue;
+    }
+    if (literalAlignment(ref, tail) >= needed) return true;
+  }
+  return false;
 }

@@ -148,6 +148,22 @@ describe("verify-walkthrough-plan.mjs (PR gate)", () => {
     expect(gate({ WALKTHROUGH_PR_AUTHOR: "dependabot[bot]" }).status).toBe(0);
   });
 
+  it("does not trigger on a registration edited in place, through a real git diff", () => {
+    git(["checkout", "-q", "-b", "inplace", "main"]);
+    try {
+      write(
+        "server/src/routes/x.ts",
+        'export function xRouter() {\n  r.get("/a", requireAuth, renamedHandler);\n}\n',
+      );
+      git(["commit", "-q", "-am", "middleware"]);
+      const { status, output } = gate();
+      expect(output).toContain("0 trigger(s), verdict=not-required");
+      expect(status).toBe(0);
+    } finally {
+      git(["checkout", "-q", "feature"]);
+    }
+  });
+
   it("fails on an unresolvable base ref instead of skipping", () => {
     const { status, output } = gate({}, ["--base", "no-such-ref"]);
     expect(status).toBe(1);
@@ -196,6 +212,37 @@ describe("CI wiring (#948)", () => {
     expect(job).toContain("fetch-depth: 0");
     expect(job).toContain("node scripts/walkthrough/check-test-plan.mjs");
     expect(job).toContain("node scripts/verify-walkthrough-plan.mjs");
+  });
+
+  it("the drift core's comments name test files that exist", () => {
+    const core = fs.readFileSync(
+      path.join(scriptsDir, "lib", "walkthrough-plan-drift-core.mjs"),
+      "utf8",
+    );
+    const named = [...core.matchAll(/[\w./-]*walkthrough-plan-[\w-]+\.test\.mjs/g)].map((m) =>
+      m[0].replace(/^scripts\//, ""),
+    );
+    expect(named.length).toBeGreaterThan(0);
+    for (const rel of named) {
+      const file = rel.includes("/") ? rel : `lib/${rel}`;
+      expect(fs.existsSync(path.join(scriptsDir, ...file.split("/"))), rel).toBe(true);
+    }
+  });
+
+  it("runs each walkthrough step even when the changelog step before it failed", () => {
+    /** @param {string} name */
+    const step = (name) => {
+      const start = job.indexOf(`- name: ${name}`);
+      const next = job.indexOf("- name:", start + 1);
+      return job.slice(start, next >= 0 ? next : job.length);
+    };
+    for (const name of [
+      "Walkthrough test plan drift check",
+      "Walkthrough test plan updated for route/page changes",
+    ]) {
+      expect(job).toContain(`- name: ${name}`);
+      expect(step(name)).toMatch(/^\s+if: \$\{\{ !cancelled\(\) \}\}$/m);
+    }
   });
 
   it("reads labels from the API at run time and the author from the PR record", () => {

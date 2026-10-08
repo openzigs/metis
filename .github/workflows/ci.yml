@@ -610,7 +610,10 @@ jobs:
 
       # #948 — every API route and UI page that docs/walkthroughs/TEST_PLAN.md
       # names must still exist, so the plan cannot rot between walkthrough runs.
+      # `!cancelled()` on both walkthrough steps: they are independent of the
+      # changelog fragment, so a fragment failure must not hide their results.
       - name: Walkthrough test plan drift check
+        if: ${{ !cancelled() }}
         run: node scripts/walkthrough/check-test-plan.mjs
 
       # #948 — a PR adding or removing a page or a route must change the plan or
@@ -621,6 +624,7 @@ jobs:
       # after labelling is the documented path. Off a PR (push, nightly) there is
       # no PR number, no labels, and the diff against origin/main is empty.
       - name: Walkthrough test plan updated for route/page changes
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

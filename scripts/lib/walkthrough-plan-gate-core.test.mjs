@@ -7,7 +7,9 @@ import {
   isDocsPath,
   isPagePath,
   isRouteSourcePath,
+  netRouteChanges,
   parseNameStatus,
+  routeKey,
   routeLineChanges,
 } from "./walkthrough-plan-gate-core.mjs";
 
@@ -52,31 +54,158 @@ describe("routeLineChanges", () => {
     "diff --git a/server/src/routes/gone.ts b/server/src/routes/gone.ts",
     "--- a/server/src/routes/gone.ts",
     "+++ /dev/null",
+    "@@ -1 +0,0 @@",
     '-  r.delete("/x", h);',
     "diff --git a/server/src/routes/a.test.ts b/server/src/routes/a.test.ts",
     "--- a/server/src/routes/a.test.ts",
     "+++ b/server/src/routes/a.test.ts",
+    "@@ -1 +1 @@",
     '+  await request(app).get("/api/x");',
   ].join("\n");
 
   it("lists added and removed registrations, mounts and multi-line paths, not tests", () => {
+    const P = "server/src/routes/projects.ts";
     expect(routeLineChanges(diff)).toEqual([
-      { file: "server/src/routes/projects.ts", sign: "-", line: 'r.get("/:id/old", h);' },
-      { file: "server/src/routes/projects.ts", sign: "+", line: 'r.get("/:id/new", h);' },
-      { file: "server/src/routes/projects.ts", sign: "+", line: '"/:id/multi",' },
-      { file: "server/src/routes/projects.ts", sign: "+", line: 'r.use("/sub", subRouter());' },
-      { file: "server/src/routes/gone.ts", sign: "-", line: 'r.delete("/x", h);' },
+      { file: P, sign: "-", line: 'r.get("/:id/old", h);', key: "GET /:id/old" },
+      { file: P, sign: "+", line: 'r.get("/:id/new", h);', key: "GET /:id/new" },
+      { file: P, sign: "+", line: '"/:id/multi",', key: "POST /:id/multi" },
+      { file: P, sign: "+", line: 'r.use("/sub", subRouter());', key: "USE /sub → subRouter" },
+      {
+        file: "server/src/routes/gone.ts",
+        sign: "-",
+        line: 'r.delete("/x", h);',
+        key: "DELETE /x",
+      },
     ]);
   });
 
   it("ignores lines before any file header", () => {
     expect(routeLineChanges('+  r.get("/x", h);')).toEqual([]);
   });
+
+  it("reads file names only from the header block after `diff --git`", () => {
+    // With -U0 a removed content line `-- x` arrives as `--- x`, and an added
+    // `++ x` as `+++ x`. Neither may switch the current file.
+    const tricky = [
+      "diff --git a/server/src/routes/x.ts b/server/src/routes/x.ts",
+      "index 1111111..2222222 100644",
+      "--- a/server/src/routes/x.ts",
+      "+++ b/server/src/routes/x.ts",
+      "@@ -3,2 +3,2 @@",
+      "--- docs/elsewhere.md",
+      "+++ docs/elsewhere.md",
+      '-  r.get("/old", h);',
+      '+  r.get("/new", h);',
+    ].join("\n");
+    expect(routeLineChanges(tricky).map((c) => [c.file, c.key])).toEqual([
+      ["server/src/routes/x.ts", "GET /old"],
+      ["server/src/routes/x.ts", "GET /new"],
+    ]);
+  });
+
+  it("names a removed file from its old side", () => {
+    const removed = [
+      "diff --git a/server/src/routes/gone.ts b/server/src/routes/gone.ts",
+      "deleted file mode 100644",
+      "--- a/server/src/routes/gone.ts",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      '-  r.get("/x", h);',
+    ].join("\n");
+    expect(routeLineChanges(removed)).toEqual([
+      { file: "server/src/routes/gone.ts", sign: "-", line: 'r.get("/x", h);', key: "GET /x" },
+    ]);
+  });
+});
+
+describe("routeKey", () => {
+  it("keys registrations by method and path, mounts by prefix and target", () => {
+    expect(routeKey('r.get("/x", auth, h);', null)).toBe("GET /x");
+    expect(routeKey('r.use("/x", auth, fooRouter());', null)).toBe("USE /x → fooRouter");
+    expect(routeKey('r.use("/x", sub);', null)).toBe("USE /x → sub");
+    expect(routeKey('r.use("/x",', null)).toBe("USE /x → ?");
+    expect(routeKey('  "/x",', "PUT")).toBe("PUT /x");
+    expect(routeKey('  "/x",', null)).toBe("? /x");
+    expect(routeKey("const a = 1;", null)).toBeNull();
+  });
+});
+
+describe("netRouteChanges", () => {
+  const F = "server/src/routes/x.ts";
+  const c = (/** @type {"+" | "-"} */ sign, /** @type {string} */ key, line = key) => ({
+    file: F,
+    sign,
+    line,
+    key,
+  });
+
+  it("drops a registration edited in place: same method and path on both sides", () => {
+    expect(
+      netRouteChanges([
+        c("-", "GET /x", 'r.get("/x", h)'),
+        c("+", "GET /x", 'r.get("/x", auth, handler2)'),
+        c("-", "USE /s → sub", 'r.use("/s", sub)'),
+        c("+", "USE /s → sub", 'r.use("/s", limit, sub)'),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("keeps a rename, a method change and a re-targeted mount", () => {
+    const changes = [
+      c("-", "GET /old"),
+      c("+", "GET /new"),
+      c("-", "GET /m"),
+      c("+", "POST /m"),
+      c("-", "USE /s → aRouter"),
+      c("+", "USE /s → bRouter"),
+    ];
+    expect(netRouteChanges(changes)).toEqual(changes);
+  });
+
+  it("counts duplicates: removing one of two identical registrations still triggers", () => {
+    expect(netRouteChanges([c("-", "GET /x"), c("-", "GET /x"), c("+", "GET /x")])).toEqual([
+      c("-", "GET /x"),
+    ]);
+  });
+
+  it("compares per file: a route moved between files triggers", () => {
+    const moved = [
+      { file: "server/src/routes/a.ts", sign: /** @type {"-"} */ ("-"), line: "x", key: "GET /x" },
+      { file: "server/src/routes/b.ts", sign: /** @type {"+"} */ ("+"), line: "x", key: "GET /x" },
+    ];
+    expect(netRouteChanges(moved)).toEqual(moved);
+  });
+});
+
+describe("evaluateWalkthroughPlanGate with an in-place edit", () => {
+  it("does not trigger when only middleware or the handler changed", () => {
+    const diff = [
+      "diff --git a/server/src/routes/x.ts b/server/src/routes/x.ts",
+      "--- a/server/src/routes/x.ts",
+      "+++ b/server/src/routes/x.ts",
+      "@@ -3 +3 @@",
+      '-  r.get("/y", h);',
+      '+  r.get("/y", requireAuth, renamedHandler);',
+    ].join("\n");
+    expect(
+      evaluateWalkthroughPlanGate({
+        changes: [{ status: "M", path: "server/src/routes/x.ts" }],
+        routeChanges: routeLineChanges(diff),
+        labels: [],
+        author: "someone",
+      }),
+    ).toMatchObject({ ok: true, verdict: "not-required", triggers: [] });
+  });
 });
 
 describe("evaluateWalkthroughPlanGate", () => {
   const route = [
-    { file: "server/src/routes/x.ts", sign: /** @type {"+"} */ ("+"), line: 'r.get("/y")' },
+    {
+      file: "server/src/routes/x.ts",
+      sign: /** @type {"+"} */ ("+"),
+      line: 'r.get("/y")',
+      key: "GET /y",
+    },
   ];
   const base = {
     changes: [{ status: "M", path: "server/src/routes/x.ts" }],

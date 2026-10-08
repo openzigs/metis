@@ -153,6 +153,7 @@ describe("collectApiRoutes", () => {
       '  r.use("/analyses", analysis.topLevel);',
       '  r.use("/gone", ghostRouter());',
       '  r.use("/lost", missing.thing);',
+      '  r.use("/things", thingRoutes());',
       '  r.use("/local", localRouter());',
       "  return r;",
       "}",
@@ -204,6 +205,8 @@ describe("collectApiRoutes", () => {
     expect(unresolved).toEqual([
       { file: "routes/index.ts", prefix: "/api/gone", target: "ghostRouter" },
       { file: "routes/index.ts", prefix: "/api/lost", target: "missing.thing" },
+      // Reported whatever it is called: a lost router need not end in "Router".
+      { file: "routes/index.ts", prefix: "/api/things", target: "thingRoutes" },
     ]);
   });
 
@@ -316,12 +319,29 @@ describe("expandAlternatives", () => {
 });
 
 describe("extractPlanReferences", () => {
+  it("reads an ellipsis path as a suffix reference, and prose ellipses as nothing", () => {
+    const refs = extractPlanReferences(
+      [
+        "Then `POST …/documents/url` and `…/drift/count` and `GET/POST .../clarify?x=1`.",
+        "Header `Link: <…/commands/speckit.specify>; rel=x` and `PUT …/enabled {enabled:true}`.",
+        "Not `fetch('/api/...')`, `server/src/routes/…`, `/api/…` or `Cannot /implement: missing …`.",
+      ].join("\n"),
+    );
+    expect(refs.map((r) => [r.line, r.kind, r.methods.join("/"), r.path, r.suffix])).toEqual([
+      [1, "api", "post", "/documents/url", true],
+      [1, "api", "", "/drift/count", true],
+      [1, "api", "get/post", "/clarify", true],
+      [2, "api", "", "/commands/speckit.specify", true],
+      [2, "api", "put", "/enabled", true],
+    ]);
+  });
+
   it("reads API and page spans, skipping fences, URLs, ellipses, files and marked lines", () => {
     const refs = extractPlanReferences(
       [
         "Open `/projects/:id/settings?tab=x`, then `POST /api/projects/:id/analyses {a}`.",
         "Also `GET/PUT /api/x/:id` and `/api/ai/sessions/:id/resume|fork`.",
-        "Skip `POST …/documents/url`, `fetch('/api/...')`, `http://localhost:3000/dashboard`.",
+        "Skip `fetch('/api/...')`, `http://localhost:3000/dashboard`.",
         "Skip `internal/api/entry_handlers.go`, `/features*` and `speckit.plan`.",
         "Dead on purpose: `/old/page` <!-- drift-check: skip -->",
         "```bash",
@@ -388,5 +408,69 @@ describe("findPlanDrift", () => {
 
   it("requires every method of a multi-method reference", () => {
     expect(drift("`GET/PATCH /api/projects/:id/budget`")).toHaveLength(1);
+  });
+});
+
+describe("findPlanDrift — ellipsis (suffix) references", () => {
+  const apiRoutes = [
+    { method: "get", path: "/api/projects/:projectId/requirements/:requirementId/traceability" },
+    { method: "post", path: "/api/projects/:projectId/documents/url" },
+    { method: "get", path: "/api/ai/sessions/:id" },
+    { method: "put", path: "/api/projects/:projectId/spec-kit/features/:slug/artifacts/*key" },
+    { method: "post", path: "/api/projects/:projectId/spec-kit/commands/:cmd" },
+    { method: "post", path: "/api/integrations/slack/workspaces/:workspaceId/install" },
+    { method: "post", path: "/api/x/:a/:b" },
+  ];
+  const drift = (/** @type {string} */ md, routes = apiRoutes) =>
+    findPlanDrift({ refs: extractPlanReferences(md), apiRoutes: routes, pageFiles: [] }).map(
+      (p) => p.reference,
+    );
+
+  it("passes a suffix some route ends with, placeholders fitting placeholders", () => {
+    expect(
+      drift(
+        [
+          "`GET …/requirements/:reqId/traceability`",
+          "`POST …/documents/url` `…/documents/url`",
+          "`PUT …/features/:slug/artifacts/*key`",
+          "`POST …/commands/speckit.specify`",
+          "`Link: <…/commands/speckit.specify>`",
+        ].join("\n"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("flags #948's motivating form once the route is gone", () => {
+    const withoutTraceability = apiRoutes.slice(1);
+    expect(drift("`GET …/requirements/:reqId/traceability`", withoutTraceability)).toEqual([
+      "GET …/requirements/:reqId/traceability",
+    ]);
+  });
+
+  it("flags a suffix with the wrong method", () => {
+    expect(drift("`GET …/documents/url`")).toEqual(["GET …/documents/url"]);
+  });
+
+  it("requires every method of a multi-method suffix", () => {
+    expect(drift("`GET/POST …/documents/url`")).toEqual(["GET/POST …/documents/url"]);
+  });
+
+  it("does not let a placeholder or splat absorb every literal of the suffix", () => {
+    // `/:id` would take `test`; `*key` would take `drift/count`; `/:a/:b`
+    // would take `:n/re-review`.
+    expect(drift("`…/test` `…/drift/count` `POST …/:n/re-review`")).toEqual([
+      "…/test",
+      "…/drift/count",
+      "POST …/:n/re-review",
+    ]);
+  });
+
+  it("anchors the segment after the ellipsis to a literal of the route", () => {
+    // `:workspaceId` must not stand in for `spec-kit`.
+    expect(drift("`POST …/spec-kit/install`")).toEqual(["POST …/spec-kit/install"]);
+  });
+
+  it("never matches the whole route: the ellipsis stands for at least one segment", () => {
+    expect(drift("`…/api/ai/sessions/:id`")).toEqual(["…/api/ai/sessions/:id"]);
   });
 });

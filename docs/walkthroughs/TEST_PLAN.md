@@ -27,7 +27,9 @@ only matters for one run, the brief carries it.
     registered at or under that path.
   - `` `/projects/:id/settings` `` (a bare path) is a UI page. A query string is ignored.
   - `` `POST …/documents/url` `` (with an ellipsis) is relative to the route the sentence last
-    named, and is **not** checked. Prefer a full path when adding a step.
+    named, so it is checked as a suffix: some registered route (with that method) must end with
+    it, and the segment after the ellipsis must be a literal of that route. That cannot tell
+    *which* prefix you meant, so prefer a full path when adding a step.
   - `:id`, `<token>`, `{id}` and `[id]` are placeholders; `a|b` in a segment names both routes.
   - Spec Kit commands are written without a leading slash (`speckit.plan`), so they are not read
     as pages. A line that must name a dead path on purpose ends with

@@ -14,10 +14,15 @@
  *    the walkthrough still reaches it, and requiring a plan edit for every UI
  *    tweak would make the label the normal path and the gate noise.
  *  - **A route registration added or removed** in `server/src/routes/**`
- *    (tests excluded): a changed line that registers a path
- *    (`r.get("/x"`, `r.use("/x", …)`) or is a bare path literal on its own
- *    line — the second line of a multi-line `r.post(\n  "/x",` call. A rename
- *    shows as one of each, so it triggers too.
+ *    (tests excluded): per file, the `(method, path)` pairs on the removed
+ *    lines differ from those on the added lines. A pair comes from a line that
+ *    registers a path (`r.get("/x"`), a mount (`r.use("/x", …, fooRouter())`,
+ *    keyed by prefix and target), or a bare path literal on its own line — the
+ *    second line of a multi-line `r.post(\n  "/x",` call. Editing a
+ *    registration in place (new middleware, a renamed handler) leaves the pairs
+ *    unchanged and does not trigger; a rename shows as one of each, so it does.
+ *    Known blind spot: with `-U0`, changing only the method on an `r.post(` line
+ *    whose path sits on the next, unchanged line is not seen.
  *
  * ## Exemptions
  *
@@ -83,39 +88,132 @@ export function parseNameStatus(text) {
   return changes;
 }
 
+/** A registration or mount whose path is on the next line: `r.post(` alone. */
+const OPEN_CALL_LINE_RE = /\.\s*(get|post|put|patch|delete|all|use)\(\s*$/;
+
+/** The method and path a registration line names. */
+const REGISTRATION_KEY_RE = /\.\s*(get|post|put|patch|delete|all|use)\(\s*(["'`])(\/[^"'`]*)\2/;
+
+/** The last argument of a one-line mount: `subRouter` in `r.use("/x", auth, subRouter());`. */
+const MOUNT_TARGET_RE = /,\s*([A-Za-z_$][\w$.]*)\s*(?:\([^()]*\))?\s*\)\s*;?\s*$/;
+
+/**
+ * What a route line registers, as a comparable key: `GET /x`, or
+ * `USE /x → fooRouter` for a mount — its target is part of its identity, since
+ * swapping the router changes every route under the prefix. A bare path line
+ * takes its method from an open call (`r.post(`) on the line before it on the
+ * same diff side, and `?` when that line is not in the diff.
+ *
+ * @param {string} body the line without its diff sign
+ * @param {string | null} pendingMethod the method of an open call on the previous line
+ * @returns {string | null} null when the line registers nothing
+ */
+export function routeKey(body, pendingMethod) {
+  const reg = REGISTRATION_KEY_RE.exec(body);
+  if (reg) {
+    const method = reg[1].toUpperCase();
+    if (method !== "USE") return `${method} ${reg[3]}`;
+    const target = MOUNT_TARGET_RE.exec(body.slice(reg.index + reg[0].length));
+    return `USE ${reg[3]} → ${target ? target[1] : "?"}`;
+  }
+  if (BARE_PATH_LINE_RE.test(body)) {
+    const path = body.trim().replace(/,\s*$/, "").slice(1, -1);
+    return `${pendingMethod ?? "?"} ${path}`;
+  }
+  return null;
+}
+
 /**
  * Route lines added or removed in a unified diff, per route source file.
  *
+ * File names come only from a `diff --git` line and the `---`/`+++` lines in
+ * the header block right after it, before the first `@@`. With `-U0`, a
+ * removed content line that reads `-- x` arrives as `--- x`, so a `---` or
+ * `+++` anywhere else is content, not a new file.
+ *
  * @param {string} diffText output of `git diff -U0 <base>...HEAD -- server/src/routes`
- * @returns {{ file: string, sign: "+" | "-", line: string }[]}
+ * @returns {{ file: string, sign: "+" | "-", line: string, key: string }[]}
  */
 export function routeLineChanges(diffText) {
-  /** @type {{ file: string, sign: "+" | "-", line: string }[]} */
+  /** @type {{ file: string, sign: "+" | "-", line: string, key: string }[]} */
   const changes = [];
   /** @type {string | null} */
   let file = null;
   /** @type {string | null} */
   let oldFile = null;
+  let inHeader = false;
+  /** @type {{ "+": string | null, "-": string | null }} */
+  let pending = { "+": null, "-": null };
   for (const line of diffText.split("\n")) {
-    if (line.startsWith("--- ")) {
-      oldFile = line.slice(4).replace(/^a\//, "");
+    const gitHeader = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+    if (gitHeader) {
+      inHeader = true;
+      oldFile = gitHeader[1];
+      file = gitHeader[2];
+      pending = { "+": null, "-": null };
       continue;
     }
-    if (line.startsWith("+++ ")) {
-      const newFile = line.slice(4).replace(/^b\//, "");
-      // A deleted file's new side is /dev/null; its routes still went away.
-      file = newFile === "/dev/null" ? oldFile : newFile;
+    if (inHeader) {
+      if (line.startsWith("--- ")) {
+        const old = line.slice(4).replace(/^a\//, "");
+        if (old !== "/dev/null") oldFile = old;
+      } else if (line.startsWith("+++ ")) {
+        const next = line.slice(4).replace(/^b\//, "");
+        // A deleted file's new side is /dev/null; its routes still went away.
+        file = next === "/dev/null" ? oldFile : next;
+      } else if (line.startsWith("@@")) {
+        inHeader = false;
+      }
       continue;
     }
     if (file === null || !isRouteSourcePath(file)) continue;
     const sign = line.charAt(0);
-    if (sign !== "+" && sign !== "-") continue;
-    const body = line.slice(1);
-    if (REGISTRATION_LINE_RE.test(body) || BARE_PATH_LINE_RE.test(body)) {
-      changes.push({ file, sign, line: body.trim() });
+    if (sign !== "+" && sign !== "-") {
+      pending = { "+": null, "-": null };
+      continue;
     }
+    const body = line.slice(1);
+    const key =
+      REGISTRATION_LINE_RE.test(body) || BARE_PATH_LINE_RE.test(body)
+        ? routeKey(body, pending[sign])
+        : null;
+    const open = OPEN_CALL_LINE_RE.exec(body);
+    pending[sign] = open ? open[1].toUpperCase() : null;
+    if (key !== null) changes.push({ file, sign, line: body.trim(), key });
   }
   return changes;
+}
+
+/**
+ * The route lines whose registration actually came or went. Per file, the
+ * multiset of keys on the removed side is compared with the added side and
+ * only the difference survives: editing a registration in place — new
+ * middleware, a renamed handler — removes and re-adds the same key, so it nets
+ * to nothing, while a rename (`/old` → `/new`) leaves one of each.
+ *
+ * @param {{ file: string, sign: "+" | "-", line: string, key: string }[]} lineChanges
+ * @returns {{ file: string, sign: "+" | "-", line: string, key: string }[]}
+ */
+export function netRouteChanges(lineChanges) {
+  /** @type {Map<string, number>} */
+  const balance = new Map();
+  const idOf = (/** @type {{ file: string, key: string }} */ c) => `${c.file}\u0000${c.key}`;
+  for (const c of lineChanges) {
+    balance.set(idOf(c), (balance.get(idOf(c)) ?? 0) + (c.sign === "+" ? 1 : -1));
+  }
+  /** @type {{ file: string, sign: "+" | "-", line: string, key: string }[]} */
+  const net = [];
+  for (const c of lineChanges) {
+    const left = balance.get(idOf(c)) ?? 0;
+    if (left > 0 && c.sign === "+") {
+      net.push(c);
+      balance.set(idOf(c), left - 1);
+    } else if (left < 0 && c.sign === "-") {
+      net.push(c);
+      balance.set(idOf(c), left + 1);
+    }
+  }
+  return net;
 }
 
 /**
@@ -123,7 +221,7 @@ export function routeLineChanges(diffText) {
  *
  * @param {{
  *   changes: { status: string, path: string, from?: string }[],
- *   routeChanges: { file: string, sign: "+" | "-", line: string }[],
+ *   routeChanges: { file: string, sign: "+" | "-", line: string, key: string }[],
  *   labels: string[],
  *   author: string | null,
  * }} input
@@ -148,7 +246,7 @@ export function evaluateWalkthroughPlanGate({ changes, routeChanges, labels, aut
       triggers.push(`page moved: ${change.from} → ${change.path}`);
     }
   }
-  for (const route of routeChanges) {
+  for (const route of netRouteChanges(routeChanges)) {
     triggers.push(
       `route ${route.sign === "+" ? "added" : "removed"} in ${route.file}: ${route.line}`,
     );
