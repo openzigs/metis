@@ -42,10 +42,17 @@ const db = {
   synthesisOutput: JSON.stringify(SYNTHESIS_OUTPUT) as string | null,
   requirementCount: 0,
   /** #730 — the reviewed structured list and its per-requirement approvals. */
-  structured: null as { requirements: Array<Record<string, unknown>> } | null,
-  approvals: [] as Array<{ itemId: string; status: string }>,
-  /** #723 — titles of the rows already promoted (legacy append matching). */
-  existingTitles: [] as string[],
+  structured: null as { requirements: Array<Record<string, unknown>>; runId?: string } | null,
+  approvals: [] as Array<{
+    itemId: string;
+    status: string;
+    createdAt?: Date;
+    reviewedAt?: Date | null;
+  }>,
+  /** #909 — when the first requirement row was created (legacy append matching). */
+  firstPromotedAt: new Date("2026-01-01T00:00:00Z"),
+  /** #909 — make `persistRequirements` withhold the replacement (#769). */
+  withhold: false,
 };
 
 /**
@@ -73,7 +80,7 @@ let txChain: Promise<unknown> = Promise.resolve();
 let lastTx: { analysis: { update: ReturnType<typeof vi.fn> } } | null = null;
 
 vi.mock("../prisma.js", () => {
-  const requirementFindMany = vi.fn(async () => db.existingTitles.map((title) => ({ title })));
+  const requirementFindFirst = vi.fn(async () => ({ createdAt: db.firstPromotedAt }));
   const client = {
     analysis: { findFirst: vi.fn(async () => db.analysis) },
     agentResult: {
@@ -81,7 +88,6 @@ vi.mock("../prisma.js", () => {
     },
     requirement: {
       count: vi.fn(async () => db.requirementCount),
-      findMany: requirementFindMany,
       create: vi.fn(async (args: { data: { title: string } }) => {
         const row = await createRow(args);
         committed.rows.push(args.data.title);
@@ -105,7 +111,7 @@ vi.mock("../prisma.js", () => {
             }),
           },
           requirement: {
-            findMany: requirementFindMany,
+            findFirst: requirementFindFirst,
             create: vi.fn(async (args: { data: { title: string } }) => {
               const row = await createRow(args);
               stagedRows.push(args.data.title);
@@ -126,7 +132,13 @@ vi.mock("../prisma.js", () => {
   return { prisma: client };
 });
 
-const persistRequirements = vi.fn(async (..._args: unknown[]) => ["rq_1", "rq_2"]);
+const persistRequirements = vi.fn(async (...args: unknown[]) => {
+  if (db.withhold) {
+    (args[0] as { onWithheld?: (w: unknown) => void }).onWithheld?.({ reason: "reviewed-work" });
+    return [];
+  }
+  return ["rq_1", "rq_2"];
+});
 const persistAnalysisEnhancement = vi.fn(async () => undefined);
 const lockRequirementSet = vi.fn(async (_tx: unknown, _analysisId: string) => undefined);
 /** Persisted findings the promotion re-derives coverage + verdicts from. */
@@ -174,7 +186,8 @@ beforeEach(() => {
   db.requirementCount = 0;
   db.structured = null;
   db.approvals = [];
-  db.existingTitles = [];
+  db.firstPromotedAt = new Date("2026-01-01T00:00:00Z");
+  db.withhold = false;
   findings.length = 0;
   committed.rows = [];
   committed.failCreateAt = 0;
@@ -424,6 +437,17 @@ describe("#730 — promote the requirements the user approved, not a different s
     expect(oauth).toMatchObject({ acceptanceCriteria: [], evidenceFindingIndexes: [] });
   });
 
+  it("#909 — keeps the reviewed requirement type as a label instead of dropping it", async () => {
+    (db.structured!.requirements[1] as { type: string }).type = "non-functional";
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    const reqs = persistedRequirements() as unknown as Array<{ labels: string[] }>;
+    // Ahead of the matched synthesized requirement's own labels.
+    expect(reqs[0]?.labels).toEqual(["functional", "database"]);
+    expect(reqs[1]?.labels).toEqual(["non-functional"]);
+  });
+
   it("leaves out a requirement the reviewer did not approve", async () => {
     db.approvals[1] = { itemId: "REQ-2", status: "rejected" };
 
@@ -514,6 +538,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
       promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 1 },
       promotionStatus: "allowed",
       promotedStructuredIds: ["REQ-1", "REQ-3"],
+      promotedStructuredRunId: null,
     });
   });
 
@@ -592,10 +617,17 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     expect(recordedIds()).toEqual(["REQ-1", "REQ-3", "REQ-2"]);
   });
 
-  it("matches on title for a set promoted before the ids were recorded", async () => {
+  it("#909 — for a set promoted before the ids were recorded, appends only what was approved after it", async () => {
+    // The promoted rows' titles were edited since; a title match would have
+    // re-created both. Approval time vs. first promotion is edit-proof.
     db.requirementCount = 2;
-    db.existingTitles = ["Feed URL must be absolute", "per-host polling  concurrency limit"];
-    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+    const before = new Date("2025-12-31T00:00:00Z");
+    const after = new Date("2026-01-02T00:00:00Z");
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved", reviewedAt: before },
+      { itemId: "REQ-2", status: "approved", reviewedAt: after },
+      { itemId: "REQ-3", status: "approved", reviewedAt: before },
+    ];
 
     await promoteApprovedRequirements(ANALYSIS_ID);
 
@@ -614,5 +646,145 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
 
     expect(outcome).toEqual({ status: "already-promoted", requirementCount: 2 });
     expect(created()).toEqual([]);
+  });
+});
+
+describe("#909 — promoted ids are scoped to the extraction run", () => {
+  const structuredReq = (id: string, title: string) => ({
+    id,
+    title,
+    description: `${title}.`,
+    type: "functional",
+    stakeholders: [],
+    priority: "should-have",
+    ambiguities: [],
+    evidenceNeeds: [],
+    rawSource: "",
+  });
+  const recorded = () =>
+    JSON.parse(db.analysis?.metadata ?? "{}") as {
+      promotedStructuredIds?: string[];
+      promotedStructuredRunId?: string | null;
+    };
+
+  beforeEach(() => {
+    // Run 1 promoted REQ-1 and REQ-2; a re-run numbered its NEW list from REQ-1 again.
+    db.requirementCount = 2;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({
+        promotedStructuredIds: ["REQ-1", "REQ-2"],
+        promotedStructuredRunId: "run-1",
+      }),
+    };
+    db.structured = {
+      runId: "run-2",
+      requirements: [
+        structuredReq("REQ-1", "Export subscriptions as OPML"),
+        structuredReq("REQ-2", "Import subscriptions from OPML"),
+        structuredReq("REQ-3", "Schedule feed refresh per category"),
+      ],
+    };
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "approved" },
+      { itemId: "REQ-3", status: "approved" },
+    ];
+  });
+
+  it("does not read a re-run's colliding ids as promoted, nor append its list beside the set", async () => {
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    // Nothing appended next to run 1's set ...
+    expect(committed.rows).toEqual([]);
+    // ... the re-run's whole list goes through the replacement path instead.
+    expect(persistRequirements).toHaveBeenCalledTimes(1);
+    const input = persistRequirements.mock.calls[0]?.[0] as {
+      synthesis: { requirements: Array<{ title: string }> };
+    };
+    expect(input.synthesis.requirements.map((r) => r.title)).toEqual([
+      "Export subscriptions as OPML",
+      "Import subscriptions from OPML",
+      "Schedule feed refresh per category",
+    ]);
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
+    expect(persistAnalysisEnhancement).toHaveBeenCalledWith(
+      ANALYSIS_ID,
+      expect.objectContaining({
+        promotedStructuredIds: ["REQ-1", "REQ-2", "REQ-3"],
+        promotedStructuredRunId: "run-2",
+      }),
+    );
+  });
+
+  it("records nothing when that replacement is withheld to protect review work (#769)", async () => {
+    db.withhold = true;
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "already-promoted", requirementCount: 2 });
+    expect(persistAnalysisEnhancement).not.toHaveBeenCalled();
+    expect(recorded().promotedStructuredRunId).toBe("run-1");
+  });
+
+  it("still appends a reopened approval within the SAME run", async () => {
+    db.structured!.runId = "run-1";
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
+    expect(persistRequirements).not.toHaveBeenCalled();
+    expect(committed.rows).toEqual(["Schedule feed refresh per category"]);
+    expect(recorded()).toEqual({
+      promotedStructuredIds: ["REQ-1", "REQ-2", "REQ-3"],
+      promotedStructuredRunId: "run-1",
+    });
+  });
+
+  it("re-checks the run under the lock: a replacement that committed meanwhile wins", async () => {
+    const { prisma } = await import("../prisma.js");
+    db.structured!.runId = "run-1";
+    // Routed on a stale read (run 1's record) ...
+    vi.mocked(prisma.analysis.findFirst).mockResolvedValueOnce({
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({
+        promotedStructuredIds: ["REQ-1", "REQ-2"],
+        promotedStructuredRunId: "run-1",
+      }),
+    } as never);
+    // ... while run 2's replacement had already committed its own record.
+    const run2 = JSON.stringify({
+      promotedStructuredIds: ["REQ-1"],
+      promotedStructuredRunId: "run-2",
+    });
+    db.analysis = { projectId: PROJECT_ID, metadata: run2 };
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "already-promoted", requirementCount: 2 });
+    expect(committed.rows).toEqual([]);
+    expect(db.analysis.metadata).toBe(run2);
+  });
+
+  it("lets the newest approval of an id decide, not an earlier run's", async () => {
+    db.requirementCount = 0;
+    db.analysis = { projectId: PROJECT_ID };
+    db.approvals = [
+      // Run 1's REQ-2 was approved; run 2's REQ-2 — a different requirement — was rejected.
+      { itemId: "REQ-2", status: "approved", createdAt: new Date("2026-01-01T00:00:00Z") },
+      { itemId: "REQ-1", status: "approved", createdAt: new Date("2026-02-01T00:00:00Z") },
+      { itemId: "REQ-2", status: "rejected", createdAt: new Date("2026-02-01T00:00:00Z") },
+      { itemId: "REQ-3", status: "approved", createdAt: new Date("2026-02-01T00:00:00Z") },
+    ];
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    const input = persistRequirements.mock.calls[0]?.[0] as {
+      synthesis: { requirements: Array<{ title: string }> };
+    };
+    expect(input.synthesis.requirements.map((r) => r.title)).toEqual([
+      "Export subscriptions as OPML",
+      "Schedule feed refresh per category",
+    ]);
   });
 });

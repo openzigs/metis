@@ -209,6 +209,12 @@ export interface PromotionBlockedState {
    * this count is what makes "blocked" mean something to the user.
    */
   awaitingRequirementCount?: number;
+  /**
+   * Issue #909 — how many requirements the SYNTHESIS produced. When it differs
+   * from `awaitingRequirementCount` (the reviewed list), approving promotes the
+   * reviewed list, and the Approvals tab says so before anyone approves.
+   */
+  synthesisRequirementCount?: number;
   /** Issue #1104 — UI-ready one-line explanation of the gate. */
   reason?: string;
 }
@@ -249,6 +255,18 @@ export interface AnalysisEnhancementPatch {
    * that requirement instead of being ignored as "already promoted".
    */
   promotedStructuredIds?: string[];
+  /**
+   * Issue #909 — the extraction run `promotedStructuredIds` belongs to. The
+   * model numbers every run's requirements from `REQ-001`, so an id alone
+   * cannot tell this run's REQ-001 from the one a re-run produced.
+   */
+  promotedStructuredRunId?: string | null;
+  /**
+   * Issue #909 — identifies the extraction run that wrote
+   * `structuredRequirements`. Written only by extraction, so a clarification
+   * edit of the same list keeps it.
+   */
+  structuredRunId?: string;
 }
 
 function parseMetadata(raw: string | null): Record<string, unknown> {
@@ -261,12 +279,47 @@ function parseMetadata(raw: string | null): Record<string, unknown> {
   }
 }
 
+/**
+ * Issue #909 — lock the analysis row (`FOR NO KEY UPDATE`, Postgres only) so a
+ * metadata read-modify-write cannot interleave with another one. The same lock
+ * {@link lockRequirementSet} takes first, so it serialises with the promotion
+ * append and set replacement too, in the same order (no deadlock).
+ */
+async function lockAnalysisRow(tx: Prisma.TransactionClient, analysisId: string): Promise<void> {
+  if (resolveDatabaseProvider() !== "postgresql") return;
+  await tx.$queryRaw`SELECT 1 FROM "analyses" WHERE "id" = ${analysisId} FOR NO KEY UPDATE`;
+}
+
+/**
+ * Issue #909 — every metadata merge-writer goes through here. Unlocked, a
+ * writer that read the blob before the promotion append committed wrote its
+ * stale copy back over the append's `promotedStructuredIds`. Only the
+ * analysis row is locked: these writers never touch requirement rows, and
+ * locking those would stall requirement edits on every metadata write.
+ */
+async function mergeAnalysisMetadata(
+  id: string,
+  merge: (current: Record<string, unknown>) => Record<string, unknown>,
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await lockAnalysisRow(tx, id);
+    const row = await tx.analysis.findFirst({ where: { id }, select: { metadata: true } });
+    const next = merge(parseMetadata(row?.metadata ?? null));
+    await tx.analysis.update({ where: { id }, data: { metadata: JSON.stringify(next) } });
+  });
+}
+
 export async function persistAnalysisEnhancement(
   id: string,
   patch: AnalysisEnhancementPatch,
 ): Promise<void> {
-  const row = await prisma.analysis.findFirst({ where: { id }, select: { metadata: true } });
-  const current = parseMetadata(row?.metadata ?? null);
+  await mergeAnalysisMetadata(id, (current) => applyEnhancementPatch(current, patch));
+}
+
+function applyEnhancementPatch(
+  current: Record<string, unknown>,
+  patch: AnalysisEnhancementPatch,
+): Record<string, unknown> {
   const next: Record<string, unknown> = { ...current };
   if (patch.enhancement !== undefined) next.enhancement = patch.enhancement;
   if (patch.structuredRequirements !== undefined) {
@@ -283,7 +336,11 @@ export async function persistAnalysisEnhancement(
   if (patch.promotedStructuredIds !== undefined) {
     next.promotedStructuredIds = patch.promotedStructuredIds;
   }
-  await prisma.analysis.update({ where: { id }, data: { metadata: JSON.stringify(next) } });
+  if (patch.promotedStructuredRunId !== undefined) {
+    next.promotedStructuredRunId = patch.promotedStructuredRunId;
+  }
+  if (patch.structuredRunId !== undefined) next.structuredRunId = patch.structuredRunId;
+  return next;
 }
 
 /**
@@ -297,9 +354,7 @@ export async function persistAnalysisCapability(
   id: string,
   capability: AnalysisCapability,
 ): Promise<void> {
-  const row = await prisma.analysis.findFirst({ where: { id }, select: { metadata: true } });
-  const next = { ...parseMetadata(row?.metadata ?? null), capability };
-  await prisma.analysis.update({ where: { id }, data: { metadata: JSON.stringify(next) } });
+  await mergeAnalysisMetadata(id, (current) => ({ ...current, capability }));
 }
 
 /**
@@ -313,9 +368,7 @@ export async function persistAnalysisAffectedCode(
   id: string,
   affectedCode: AnalysisAffectedCode,
 ): Promise<void> {
-  const row = await prisma.analysis.findFirst({ where: { id }, select: { metadata: true } });
-  const next = { ...parseMetadata(row?.metadata ?? null), affectedCode };
-  await prisma.analysis.update({ where: { id }, data: { metadata: JSON.stringify(next) } });
+  await mergeAnalysisMetadata(id, (current) => ({ ...current, affectedCode }));
 }
 
 /**
@@ -329,9 +382,7 @@ export async function persistAnalysisEscalation(
   id: string,
   escalation: AnalysisEscalation,
 ): Promise<void> {
-  const row = await prisma.analysis.findFirst({ where: { id }, select: { metadata: true } });
-  const next = { ...parseMetadata(row?.metadata ?? null), escalation };
-  await prisma.analysis.update({ where: { id }, data: { metadata: JSON.stringify(next) } });
+  await mergeAnalysisMetadata(id, (current) => ({ ...current, escalation }));
 }
 
 /**
@@ -346,9 +397,7 @@ export async function persistAnalysisDatabaseAware(
   id: string,
   databaseAware: AnalysisDatabaseAware,
 ): Promise<void> {
-  const row = await prisma.analysis.findFirst({ where: { id }, select: { metadata: true } });
-  const next = { ...parseMetadata(row?.metadata ?? null), databaseAware };
-  await prisma.analysis.update({ where: { id }, data: { metadata: JSON.stringify(next) } });
+  await mergeAnalysisMetadata(id, (current) => ({ ...current, databaseAware }));
 }
 
 /**
@@ -357,11 +406,14 @@ export async function persistAnalysisDatabaseAware(
  */
 export async function getStructuredRequirements(
   id: string,
-): Promise<StructuredRequirements | null> {
+): Promise<(StructuredRequirements & { runId?: string }) | null> {
   const row = await prisma.analysis.findFirst({ where: { id }, select: { metadata: true } });
   const meta = parseMetadata(row?.metadata ?? null);
   const value = meta.structuredRequirements;
-  return value ? (value as StructuredRequirements) : null;
+  if (!value) return null;
+  // Issue #909 — which extraction run produced this list (absent before #909).
+  const runId = typeof meta.structuredRunId === "string" ? meta.structuredRunId : undefined;
+  return { ...(value as StructuredRequirements), ...(runId ? { runId } : {}) };
 }
 
 /**
@@ -754,7 +806,7 @@ export async function lockRequirementSet(
   analysisId: string,
 ): Promise<void> {
   if (resolveDatabaseProvider() !== "postgresql") return;
-  await tx.$queryRaw`SELECT 1 FROM "analyses" WHERE "id" = ${analysisId} FOR NO KEY UPDATE`;
+  await lockAnalysisRow(tx, analysisId);
   await tx.$queryRaw`SELECT 1 FROM "requirements" WHERE "analysisId" = ${analysisId} FOR UPDATE`;
 }
 

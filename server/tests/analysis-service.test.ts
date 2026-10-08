@@ -84,11 +84,16 @@ const requirementVersions: Array<{
   changedFields: string;
 }> = [];
 
+/** #909 — flipped to `postgresql` only by the tests that assert the row lock. */
+const dbProvider = vi.hoisted(() => ({ value: "sqlite" as "sqlite" | "postgresql" }));
+
 vi.mock("../src/lib/prisma.js", () => ({
   // #779 — `persistRequirements` locks by provider on Postgres only; this
   // fake has no raw SQL, so it pins the SQLite path on either generated client.
-  resolveDatabaseProvider: () => "sqlite" as const,
+  resolveDatabaseProvider: () => dbProvider.value,
   prisma: {
+    // #909 — records the row-lock statements; only reached on `postgresql`.
+    $queryRaw: vi.fn(async () => []),
     // #865 — `updateRequirementRow` writes through the versioned service, which
     // runs in an interactive transaction; this fake runs it on itself.
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
@@ -396,7 +401,10 @@ beforeEach(() => {
   id = 0;
 });
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  dbProvider.value = "sqlite";
+});
 
 describe("createAnalysis", () => {
   it("persists agentKeys and document subset in metadata", async () => {
@@ -1319,6 +1327,67 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
     });
     meta = JSON.parse(analyses.get(a.id)!.metadata!);
     expect(meta.promotionBlocked.blocked).toBe(false);
+  });
+
+  it("#909 — records the extraction run beside the list, and a clarification edit keeps it", async () => {
+    const a = await createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document"],
+    });
+    const list = { requirements: [], totalAmbiguities: 0, totalEvidenceNeeds: 0 };
+    await persistAnalysisEnhancement(a.id, {
+      structuredRequirements: list,
+      structuredRunId: "run-1",
+    });
+    // A clarification round re-persists the list without a run id.
+    await persistAnalysisEnhancement(a.id, { structuredRequirements: list });
+    await persistAnalysisEnhancement(a.id, {
+      promotedStructuredIds: ["REQ-001"],
+      promotedStructuredRunId: "run-1",
+    });
+
+    expect((await getStructuredRequirements(a.id))?.runId).toBe("run-1");
+    const meta = JSON.parse(analyses.get(a.id)!.metadata!);
+    expect(meta).toMatchObject({
+      promotedStructuredIds: ["REQ-001"],
+      promotedStructuredRunId: "run-1",
+    });
+  });
+
+  it("#909 — locks the analysis row before reading the metadata it merges into (Postgres)", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    const a = await createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document"],
+    });
+    dbProvider.value = "postgresql";
+    vi.clearAllMocks();
+
+    await persistAnalysisEnhancement(a.id, { promotionStatus: "allowed" });
+    await persistAnalysisCapability(a.id, {
+      codeAnalysisRequested: false,
+      databaseAnalysisRequested: false,
+      codeGraphPresent: false,
+      agentMode: "single-shot",
+    } as Parameters<typeof persistAnalysisCapability>[1]);
+
+    const queryRaw = vi.mocked(prisma.$queryRaw);
+    const findFirst = vi.mocked(prisma.analysis.findFirst);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 2; i++) {
+      const sql = (queryRaw.mock.calls[i]![0] as unknown as TemplateStringsArray).join("?");
+      expect(sql).toContain('FROM "analyses"');
+      expect(sql).toContain("FOR NO KEY UPDATE");
+      expect(queryRaw.mock.invocationCallOrder[i]!).toBeLessThan(
+        findFirst.mock.invocationCallOrder[i]!,
+      );
+    }
+    const meta = JSON.parse(analyses.get(a.id)!.metadata!);
+    expect(meta.promotionStatus).toBe("allowed");
+    expect(meta.capability).toBeDefined();
   });
 
   it("returns null structured requirements when extraction never ran", async () => {

@@ -7,6 +7,7 @@ import {
   analysisTabCounts,
   analysisViewHref,
   collectFindings,
+  deepDiveGate,
   filterFindings,
   findingFacets,
   findingFiltersParams,
@@ -398,5 +399,39 @@ describe("agentDisplayStatus", () => {
     expect(agentDisplayStatus({ status: "completed" })).toBe("completed");
     expect(agentDisplayStatus({ status: "failed", notes: ["DEGRADED (#769): x"] })).toBe("failed");
     expect(agentDisplayStatus({ status: "running", notes: [] })).toBe("running");
+  });
+});
+
+describe("deepDiveGate (#909)", () => {
+  it("is disabled and says so while the approvals are still loading — never '0 pending'", () => {
+    const gate = deepDiveGate({ loading: true, ticketStatus: undefined });
+    expect(gate.disabled).toBe(true);
+    expect(gate.title).toBe("Checking approvals…");
+  });
+
+  it("is enabled once the gate is open", () => {
+    const gate = deepDiveGate({
+      loading: false,
+      ticketStatus: { allowed: true, pendingCount: 0, rejectedCount: 0 },
+    });
+    expect(gate).toEqual({
+      disabled: false,
+      title: "Expand this finding into a publishable issue draft",
+    });
+  });
+
+  it("names the pending count when the gate is closed", () => {
+    const gate = deepDiveGate({
+      loading: false,
+      ticketStatus: { allowed: false, pendingCount: 3, rejectedCount: 1 },
+    });
+    expect(gate).toEqual({
+      disabled: true,
+      title: "Ticket creation is blocked until 3 pending approval(s) are resolved",
+    });
+  });
+
+  it("stays enabled when there is no gate to read (approvals not requested)", () => {
+    expect(deepDiveGate({ loading: false, ticketStatus: undefined }).disabled).toBe(false);
   });
 });

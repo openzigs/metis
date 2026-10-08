@@ -124,6 +124,7 @@ import {
   REQUIREMENTS_PAGE_SIZE,
   agentDisplayStatus,
   analysisTabCounts,
+  deepDiveGate,
   analysisViewHref,
   collectFindings,
   filterFindings,
@@ -590,7 +591,11 @@ export default function AnalysisPage(): React.ReactElement {
     queryFn: () => analysisApi.listApprovals(projectId, selectedAnalysisId!),
     enabled: Boolean(projectId && selectedAnalysisId) && detail.data?.status === "completed",
   });
-  const ticketsAllowed = approvals.data?.ticketStatus?.allowed ?? true;
+  // #909 — while the approvals load, the button waits instead of guessing.
+  const deepDive = deepDiveGate({
+    loading: approvals.isLoading,
+    ticketStatus: approvals.data?.ticketStatus,
+  });
   const [deepDiveFinding, setDeepDiveFinding] = useState<DeepDiveDialogFinding | null>(null);
   const [deepDiveOpen, setDeepDiveOpen] = useState(false);
 
@@ -1313,13 +1318,8 @@ export default function AnalysisPage(): React.ReactElement {
                                 size="sm"
                                 variant="outline"
                                 data-testid="deep-dive-action"
-                                disabled={!ticketsAllowed}
-                                title={
-                                  ticketsAllowed
-                                    ? "Expand this finding into a publishable issue draft"
-                                    : // #723 — name the real reason: only PENDING approvals hold the gate.
-                                      `Ticket creation is blocked until ${approvals.data?.ticketStatus?.pendingCount ?? 0} pending approval(s) are resolved`
-                                }
+                                disabled={deepDive.disabled}
+                                title={deepDive.title}
                                 onClick={() => {
                                   setDeepDiveFinding({
                                     id: f.id,
