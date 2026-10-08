@@ -48,10 +48,12 @@ vi.mock("@/lib/socket-client", () => ({
 // Issue #423 — the command/constitution mutations now fire terminal toasts.
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
+const toastWarning = vi.fn();
 vi.mock("sonner", () => ({
   toast: {
     success: (msg: string) => toastSuccess(msg),
     error: (msg: string) => toastError(msg),
+    warning: (msg: string) => toastWarning(msg),
   },
 }));
 
@@ -248,6 +250,33 @@ describe("SpecKitPage", () => {
         "Generated constitution.md (v1).",
       ),
     );
+  });
+
+  it("#788 shows the server's message, which says when only a skeleton was written", async () => {
+    m.generateConstitution!.mockResolvedValue({
+      artifact: artifact("constitution.md", "# Constitution", 2),
+      contentLength: 300,
+      grounded: false,
+      meta: null,
+      message:
+        "Wrote a constitution skeleton with no principles — no project knowledge was retrieved.",
+    });
+    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    await waitFor(() =>
+      expect(screen.getByTestId("spec-kit-generate-constitution")).not.toBeDisabled(),
+    );
+    fireEvent.click(screen.getByTestId("spec-kit-generate-constitution"));
+    await waitFor(() =>
+      expect(screen.getByTestId("spec-kit-result")).toHaveTextContent(
+        "Wrote a constitution skeleton with no principles — no project knowledge was retrieved.",
+      ),
+    );
+    expect(screen.getByTestId("spec-kit-result")).not.toHaveTextContent(
+      "Generated constitution.md",
+    );
+    // A skeleton is a warning, not a success.
+    expect(toastWarning).toHaveBeenCalledWith(expect.stringContaining("skeleton"));
+    expect(toastSuccess).not.toHaveBeenCalledWith(expect.stringContaining("skeleton"));
   });
 
   it("fills the buffer when a suggestion is clicked", async () => {

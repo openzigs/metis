@@ -18,9 +18,8 @@ vi.mock("../src/middleware/auth.js", () => ({
     next();
   },
 }));
-vi.mock("../src/middleware/require-permission.js", () => ({
-  requirePermission: () => (_req: any, _res: any, next: any) => next(),
-}));
+// #788 — the real `requirePermission`, so a role test exercises the gate that
+// actually decides (`project.update` on every Spec Kit write).
 
 const authRole = vi.hoisted(() => ({ value: "admin" as string }));
 const projectFlag = vi.hoisted(() => ({ enabled: true, exists: true }));
@@ -102,8 +101,17 @@ vi.mock("../src/lib/spec-kit/artifacts.js", async () => {
   };
 });
 
-vi.mock("../src/lib/spec-kit/constitution.js", () => ({
-  generateConstitution: vi.fn(async () => "# Project Constitution\n... body ..."),
+vi.mock("../src/lib/spec-kit/commands/constitution-draft.js", () => ({
+  draftConstitution: vi.fn(async (input: any) => {
+    // Exercise the lazy resolver the route hands over (#788).
+    await input.resolveProvider();
+    return {
+      content: "# Project Constitution\n... body ...",
+      grounded: true,
+      meta: { version: "1.0.0", ratifiedAt: null, lastAmendedAt: null },
+      message: "Generated constitution.md v1.0.0 from project knowledge.",
+    };
+  }),
 }));
 
 // #381 — the route resolves the project's REAL provider and threads it into
@@ -300,6 +308,16 @@ describe("/api/projects/:projectId/spec-kit", () => {
     const res = await request(makeApp()).post("/api/projects/p1/spec-kit/constitution").send({});
     expect(res.status).toBe(200);
     expect(res.body.data.contentLength).toBeGreaterThan(0);
+    // #788 — the generator gets the project's provider and its outcome is surfaced.
+    const { draftConstitution } =
+      await import("../src/lib/spec-kit/commands/constitution-draft.js");
+    expect(draftConstitution).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "p1", actorId: "u1" }),
+    );
+    expect(resolveProjectProvider).toHaveBeenCalledWith("p1");
+    expect(res.body.data.grounded).toBe(true);
+    expect(res.body.data.meta.version).toBe("1.0.0");
+    expect(res.body.data.message).toMatch(/from project knowledge/);
   });
 
   it("POST /commands/specify dispatches", async () => {
@@ -389,21 +407,21 @@ describe("/api/projects/:projectId/spec-kit", () => {
     expect(res.body.error.code).toBe("SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED");
   });
 
-  it("POST /commands/speckit.constitution requires speckit.constitution.write (S-3)", async () => {
-    // developer role lacks speckit.constitution.write — must 403 before dispatch.
+  it("POST /commands/speckit.constitution is refused without project.update (#788)", async () => {
+    // developer lacks project.update — the route gate refuses before dispatch.
     authRole.value = "developer";
     const res = await request(makeApp())
       .post("/api/projects/p1/spec-kit/commands/speckit.constitution")
       .send({ input: "We hold these truths …" });
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe("FORBIDDEN");
-    expect(res.body.error.message).toContain("speckit.constitution.write");
+    expect(res.body.error.message).toBe("Requires permission project.update");
     const { runConstitution } = await import("../src/lib/spec-kit/commands/constitution.js");
     expect(runConstitution).not.toHaveBeenCalled();
   });
 
-  it("POST /commands/speckit.constitution succeeds for a role that carries the permission (S-3)", async () => {
-    // coordinator carries speckit.constitution.write by default.
+  it("POST /commands/speckit.constitution succeeds for a role with project.update (#788)", async () => {
+    // coordinator holds project.update, and no second constitution check remains.
     authRole.value = "coordinator";
     const res = await request(makeApp())
       .post("/api/projects/p1/spec-kit/commands/speckit.constitution")
