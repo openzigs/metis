@@ -71,3 +71,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [simple-git 4 env guard](project_simple-git-4-env-guard.md) — GIT_* env needs allowEnvironment; use real-git test (#906)
 - [dependabot tilde + stale audit](project_dependabot-tilde-and-stale-audit.md) — group PRs cross ~0.x minors; old green audit may be stale (#907)
 - [vitest 5 jest-dom second copy](project_vitest5-jest-dom-second-copy.md) — jest-dom/vitest loads another vitest copy; extend expect locally (#668)
+- [float USD to cents](project_float-usd-to-cents.md) — costUsd*100 float error; round to cents before sign/zero checks (#950)
