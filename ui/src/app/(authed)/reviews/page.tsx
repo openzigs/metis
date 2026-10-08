@@ -27,7 +27,8 @@ const TAB_LABELS: Record<Tab, string> = {
 
 const EMPTY_MESSAGES: Record<Tab, string> = {
   assigned: "No reviews assigned to you.",
-  requested: "You haven't requested any reviews yet.",
+  requested:
+    "You haven't requested any reviews yet. Request one from a project's Requirements page.",
 };
 
 /** Query filters per tab — identity resolves server-side from the session. */

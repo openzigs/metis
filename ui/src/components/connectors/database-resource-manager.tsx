@@ -30,6 +30,7 @@
  *   - Server error strings are surfaced via {@link ApiError} messages only;
  *     nothing is ever rendered as raw HTML (no `dangerouslySetInnerHTML`).
  */
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -447,7 +448,11 @@ export function DatabaseResourceManager({
           className="rounded border border-warning/40 bg-warning-muted p-3 text-sm text-warning"
         >
           This project is not part of a workspace, so shared-database identity management is
-          unavailable. Add the project to a workspace to link connections across projects.
+          unavailable.{" "}
+          <Link href={`/projects/${projectId}/settings`} className="underline">
+            Add the project to a workspace in its settings
+          </Link>{" "}
+          to link connections across projects.
         </p>
         {identities.length > 0 ? (
           <ul data-testid="db-unlinked-list" className="space-y-2">

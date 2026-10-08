@@ -152,6 +152,9 @@ export const projectsApi = {
     }>,
   ) => apiFetch<Project>(`/projects/${id}`, { method: "PATCH", body: input }),
   archive: (id: string) => apiFetch<Project>(`/projects/${id}/archive`, { method: "POST" }),
+  // #731 — put an unassigned project into a workspace the caller administers.
+  assignWorkspace: (id: string, workspaceId: string) =>
+    apiFetch<Project>(`/projects/${id}/workspace`, { method: "PUT", body: { workspaceId } }),
   remove: (id: string) => apiFetch<void>(`/projects/${id}`, { method: "DELETE" }),
   // Epic #164 — FinOps + safety endpoints.
   updateSafety: (id: string, body: { safetyMode: "strict" | "standard" | "off" }) =>

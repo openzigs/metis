@@ -296,6 +296,11 @@ describe("RequirementLinksPanel", () => {
 
     await user.click(screen.getByRole("button", { name: "Add link" }));
     expect(await screen.findByText(/not part of a workspace/i)).toBeInTheDocument();
+    // #731 — the guard points at the Settings card that can fix it.
+    expect(screen.getByRole("link", { name: /add it to a workspace/i })).toHaveAttribute(
+      "href",
+      "/projects/proj-1/settings",
+    );
     expect(screen.queryByLabelText("Search requirements")).not.toBeInTheDocument();
     expect(requirementLinksApi.search).not.toHaveBeenCalled();
   });
