@@ -208,7 +208,7 @@ vi.mock("../src/lib/prisma.js", async () => {
     codeGraph: { findFirst: vi.fn(async () => null) },
     document: { findFirst: vi.fn(async () => null) },
   });
-  return { prisma };
+  return { prisma, resolveDatabaseProvider: () => "sqlite" };
 });
 
 vi.mock("../src/lib/audit/audit-service.js", () => ({

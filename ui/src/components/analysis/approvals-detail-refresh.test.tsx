@@ -224,3 +224,47 @@ describe("summarisePendingByType (#1117 E)", () => {
     ).toBe("2 requirement, 1 evidence, 1 unknown-kind");
   });
 });
+
+describe("#909 — warns before approval when the reviewed list is not the synthesis set", () => {
+  it("names both counts in the blocked banner", async () => {
+    renderPanel({
+      promotionBlocked: {
+        blocked: true,
+        pendingCount: 1,
+        rejectedCount: 0,
+        awaitingRequirementCount: 3,
+        synthesisRequirementCount: 28,
+      },
+    });
+
+    expect(await screen.findByTestId("approved-set-difference")).toHaveTextContent(
+      "Approving promotes the 3 requirement(s) reviewed below, not the 28 the synthesis produced.",
+    );
+  });
+
+  it("says nothing when the counts agree, or when the synthesis count is unknown", async () => {
+    const { unmount } = renderPanel({
+      promotionBlocked: {
+        blocked: true,
+        pendingCount: 1,
+        rejectedCount: 0,
+        awaitingRequirementCount: 3,
+        synthesisRequirementCount: 3,
+      },
+    });
+    expect(await screen.findByTestId("promotion-banner")).toBeInTheDocument();
+    expect(screen.queryByTestId("approved-set-difference")).toBeNull();
+    unmount();
+
+    renderPanel({
+      promotionBlocked: {
+        blocked: true,
+        pendingCount: 1,
+        rejectedCount: 0,
+        awaitingRequirementCount: 3,
+      },
+    });
+    expect(await screen.findByTestId("promotion-banner")).toBeInTheDocument();
+    expect(screen.queryByTestId("approved-set-difference")).toBeNull();
+  });
+});

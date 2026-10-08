@@ -9,6 +9,9 @@
  *     the chat code-tool loop feeds them to the model only within the turn that
  *     ran them (capped there — see `tool-runtime/chat-turn.ts`). Later turns
  *     see the assistant's answer; the full results stay in the transcript.
+ *     The answer is prefixed with a capped digest of the tool CALLS (name +
+ *     arguments, never results), so the model knows it did read what it cited
+ *     and does not retract verified citations (#773).
  *   • A summary is sent in the USER role, never `system`: it is derived from
  *     user-supplied text, and must not gain the authority of the system prompt.
  *   • An assistant row with no text (a reply that failed before its first
@@ -73,7 +76,49 @@ export function rowMessages(r: StoredMessage): ChatMessage[] {
   if (r.kind === "summary") return [{ role: "user", content: `${summaryHeader(r)}\n${text}` }];
   if (r.role === "user") return [{ role: "user", content: text }];
   if (r.role !== "assistant" || !text) return [];
-  return [{ role: "assistant", content: text }];
+  const digest = toolCallDigest(r.parts);
+  return [{ role: "assistant", content: digest ? `${digest}\n\n${text}` : text }];
+}
+
+/** Characters of one call's serialised arguments kept in the digest. */
+export const MAX_DIGEST_ARG_CHARS = 200;
+/** Calls listed in one turn's digest; the rest are counted. */
+export const MAX_DIGEST_CALLS = 20;
+
+/** `args` was parsed from the transcript's JSON column, so it re-serialises. */
+function digestArgs(args: unknown): string {
+  const json = JSON.stringify(args ?? {});
+  return json.length > MAX_DIGEST_ARG_CHARS ? `${json.slice(0, MAX_DIGEST_ARG_CHARS)}…` : json;
+}
+
+/**
+ * #773 — a compact record of the tools an earlier turn called, so a later turn
+ * does not conclude it never read the files it cited. Only the tool NAME and
+ * the model's own ARGUMENTS are listed (JSON-serialised, so no raw newlines,
+ * and capped); the RESULTS stay out — they are untrusted data (see the module
+ * comment). Returns "" when the turn called no tool.
+ */
+function toolCallDigest(parts: StoredMessage["parts"]): string {
+  const calls = parts.filter(
+    (p): p is Extract<StoredMessage["parts"][number], { type: "tool_call" }> =>
+      p.type === "tool_call",
+  );
+  if (calls.length === 0) return "";
+  const results = new Map<string, boolean>();
+  for (const p of parts) if (p.type === "tool_result") results.set(p.toolCallId, !!p.isError);
+  const lines = calls.slice(0, MAX_DIGEST_CALLS).map((c) => {
+    const failed = results.get(c.id);
+    const status = failed === undefined ? " (no result)" : failed ? " (failed)" : "";
+    return `- ${c.name} ${digestArgs(c.args)}${status}`;
+  });
+  const more = calls.length - MAX_DIGEST_CALLS;
+  if (more > 0) lines.push(`- …and ${more} more`);
+  return (
+    "[METIS note: in this turn you called the tools below. Their results were " +
+    "verified when you made them and are not repeated here to save context; " +
+    "citations you drew from them stand.]\n" +
+    lines.join("\n")
+  );
 }
 
 /** Build the provider history from a session's active transcript rows. */

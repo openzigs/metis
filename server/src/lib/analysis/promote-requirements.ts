@@ -24,7 +24,10 @@ import {
   readFlattenedFindings,
 } from "./analysis-service.js";
 import { canCreateTickets } from "./approval-checkpoint.js";
-import { buildApprovedRequirementSet } from "./approved-requirement-set.js";
+import {
+  buildApprovedRequirementSet,
+  latestRequirementApprovals,
+} from "./approved-requirement-set.js";
 import { applyClarificationsToRequirements } from "./clarification-enrichment.js";
 import { describePromotionGate } from "./promotion-gate.js";
 import { computeCoverageForRequirements } from "./requirement-coverage.js";
@@ -76,7 +79,7 @@ async function readSynthesisOutput(analysisId: string): Promise<SynthesisOutput 
 export async function promoteApprovedRequirements(analysisId: string): Promise<PromotionOutcome> {
   const analysis = await prisma.analysis.findFirst({
     where: { id: analysisId },
-    select: { projectId: true },
+    select: { projectId: true, metadata: true },
   });
   if (!analysis) {
     return { status: "unavailable", reason: "Analysis not found." };
@@ -88,14 +91,20 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   // the reviewed list is the STRUCTURED one (one `requirement` approval per
   // structured requirement). Promote that list, not the synthesis output, which
   // is a different set (and on a degraded run, finding-titled fallback rows).
-  const structured = (await getStructuredRequirements(analysisId))?.requirements ?? [];
-  const requirementApprovals =
+  const structuredList = await getStructuredRequirements(analysisId);
+  const structured = structuredList?.requirements ?? [];
+  // Issue #909 — the extraction run this list came from (null before #909).
+  const structuredRunId = structuredList?.runId ?? null;
+  const approvalRows =
     structured.length > 0
       ? await prisma.approvalRequest.findMany({
           where: { analysisId, type: "requirement" },
-          select: { itemId: true, status: true },
+          select: { itemId: true, status: true, createdAt: true, reviewedAt: true },
         })
       : [];
+  // Issue #909 — one deciding approval per id: the current run's, never an
+  // earlier run's verdict on a different requirement that shared its id.
+  const requirementApprovals = [...latestRequirementApprovals(approvalRows).values()];
   const reviewed = requirementApprovals.length > 0;
 
   if (!synthesis && !reviewed) {
@@ -139,16 +148,31 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   // would silently discard any human edits made after the first promotion.
   const existing = await prisma.requirement.count({ where: { analysisId } });
   if (existing > 0) {
-    if (reviewed) {
+    if (!reviewed) return { status: "already-promoted", requirementCount: existing };
+    // Issue #909 — the persisted set came from a DIFFERENT extraction run: this
+    // list is a re-synthesis, not a reopened rejection. Its ids say nothing
+    // about which rows exist, so appending would put a second set beside the
+    // reviewed one. Replace instead, as the orchestrator does for a re-run —
+    // `persistRequirements` withholds that replacement when it would destroy
+    // review work (#769).
+    if (readPromotionRecord(analysis.metadata).runId === structuredRunId) {
+      const approvedAt = new Map(
+        requirementApprovals
+          .filter((a) => a.status === "approved")
+          .map((a) => [a.itemId, a.reviewedAt ?? null] as const),
+      );
       const appended = await appendNewlyApproved({
         analysisId,
         projectId: analysis.projectId,
         toPromote,
         promotedStructuredIds,
+        structuredRunId,
+        approvedAt,
       });
+      if (appended === "superseded") return { status: "unavailable", reason: SUPERSEDED_REASON };
       if (appended > 0) return { status: "promoted", requirementCount: appended };
+      return { status: "already-promoted", requirementCount: existing };
     }
-    return { status: "already-promoted", requirementCount: existing };
   }
 
   const flat = await readFlattenedFindings(analysisId);
@@ -167,6 +191,7 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     flat.some((f) => f.agentKey === "code"),
   );
 
+  let withheld = false;
   const requirementIds = await persistRequirements({
     analysisId,
     projectId: analysis.projectId,
@@ -174,7 +199,13 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     findingIdsByIndex,
     coverages,
     verdicts,
+    onWithheld: () => {
+      withheld = true;
+    },
   });
+  // #769 — the replacement was refused to protect review work on the existing
+  // set; nothing was written, so nothing is recorded as promoted.
+  if (withheld) return { status: "unavailable", reason: WITHHELD_REASON };
 
   // Issue #1116 — the rows only exist NOW, so this is the first moment the
   // clarification answers the user submitted while the gate was closed can be
@@ -204,7 +235,7 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
       rejectedCount: ticketStatus.rejectedCount,
     },
     promotionStatus: "allowed",
-    ...(reviewed ? { promotedStructuredIds } : {}),
+    ...(reviewed ? { promotedStructuredIds, promotedStructuredRunId: structuredRunId } : {}),
   });
 
   log.info("Promoted withheld requirements", {
@@ -214,27 +245,33 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   return { status: "promoted", requirementCount: requirementIds.length };
 }
 
-function readPromotedStructuredIds(metadata: string | null): string[] | null {
-  if (!metadata) return null;
-  try {
-    const parsed = JSON.parse(metadata) as { promotedStructuredIds?: unknown };
-    return Array.isArray(parsed.promotedStructuredIds)
-      ? parsed.promotedStructuredIds.filter((x): x is string => typeof x === "string")
-      : null;
-  } catch {
-    return null;
-  }
+/**
+ * Which structured ids are rows, and the extraction run they belong to. `ids`
+ * is null for a set promoted before #723 recorded them; `runId` is null for a
+ * record (or a list) written before #909.
+ */
+function readPromotionRecord(metadata: string | null | undefined): {
+  ids: string[] | null;
+  runId: string | null;
+} {
+  const parsed = parseMetadataObject(metadata ?? null);
+  const ids = Array.isArray(parsed.promotedStructuredIds)
+    ? parsed.promotedStructuredIds.filter((x): x is string => typeof x === "string")
+    : null;
+  const runId =
+    typeof parsed.promotedStructuredRunId === "string" ? parsed.promotedStructuredRunId : null;
+  return { ids, runId };
 }
-
-const normalizeTitle = (title: string): string => title.trim().toLowerCase().replace(/\s+/g, " ");
 
 /**
  * Issue #723 — a rejection can be reopened and approved AFTER the rest of the
  * set was promoted. Replacing the set would discard any review work on the
  * promoted rows, so the newly approved requirement is ADDED instead. Identity
- * is the structured id recorded at promotion; for a set promoted before that
- * record existed, the (reviewed, verbatim) title stands in. A row the user
- * soft-deleted still counts as present, so it is never resurrected.
+ * is the structured id recorded at promotion, scoped to the extraction run
+ * (#909); for a set promoted before that record existed, an approval made after
+ * the set was first promoted marks the new ones (#909 — a title match duplicated
+ * edited rows). A row the user soft-deleted still counts as present, so it is
+ * never resurrected.
  *
  * Atomic: the rows and the record of their structured ids commit together in
  * one transaction, so a failure part-way leaves neither behind (a retry would
@@ -248,13 +285,22 @@ const normalizeTitle = (title: string): string => title.trim().toLowerCase().rep
  * database write lock. Which ids are new is decided only after that, so two
  * approvals resolving at once append each requirement exactly once.
  */
+const SUPERSEDED_REASON =
+  "The requirement set was replaced by another run while you were approving. Reload the analysis and review the new list.";
+const WITHHELD_REASON =
+  "These approvals are for a newer extraction run, but replacing the existing requirements was withheld to protect review work already done on them. Nothing was promoted.";
+
 async function appendNewlyApproved(input: {
   analysisId: string;
   projectId: string;
   toPromote: SynthesisOutput;
   promotedStructuredIds: string[];
-}): Promise<number> {
+  structuredRunId: string | null;
+  /** When each approved structured id was approved (its deciding approval). */
+  approvedAt: ReadonlyMap<string, Date | null>;
+}): Promise<number | "superseded"> {
   const flat = await readFlattenedFindings(input.analysisId);
+  let superseded = false;
 
   const requirementIds = await prisma.$transaction(async (tx) => {
     await lockRequirementSet(tx, input.analysisId);
@@ -263,18 +309,33 @@ async function appendNewlyApproved(input: {
       data: { updatedAt: new Date() },
       select: { metadata: true },
     });
-    const recorded = readPromotedStructuredIds(locked.metadata);
+    const record = readPromotionRecord(locked.metadata);
+    // #909 — re-checked under the lock: a replacement for another run may have
+    // committed since the caller routed here.
+    if (record.runId !== input.structuredRunId) {
+      superseded = true;
+      return [];
+    }
+    const recorded = record.ids;
     let isNew: (idx: number) => boolean;
     if (recorded) {
       const seen = new Set(recorded);
       isNew = (idx) => !seen.has(input.promotedStructuredIds[idx] ?? "");
     } else {
-      const rows = await tx.requirement.findMany({
+      // Issue #909 — a set promoted before the ids were recorded. Matching on
+      // title duplicated any row whose title was edited after promotion. A
+      // requirement in that set was approved BEFORE the set was first
+      // promoted; one approved after it (reopened, then approved) is new.
+      const first = await tx.requirement.findFirst({
         where: { analysisId: input.analysisId },
-        select: { title: true },
+        orderBy: { createdAt: "asc" },
+        select: { createdAt: true },
       });
-      const titles = new Set(rows.map((r) => normalizeTitle(r.title)));
-      isNew = (idx) => !titles.has(normalizeTitle(input.toPromote.requirements[idx]?.title ?? ""));
+      const promotedAt = first?.createdAt.getTime() ?? Number.POSITIVE_INFINITY;
+      isNew = (idx) => {
+        const at = input.approvedAt.get(input.promotedStructuredIds[idx] ?? "");
+        return at != null && at.getTime() > promotedAt;
+      };
     }
     const newIdx = input.toPromote.requirements.map((_, i) => i).filter(isNew);
     if (newIdx.length === 0) return [];
@@ -329,11 +390,13 @@ async function appendNewlyApproved(input: {
           promotedStructuredIds: [
             ...new Set([...(recorded ?? input.promotedStructuredIds), ...appendedIds]),
           ],
+          promotedStructuredRunId: input.structuredRunId,
         }),
       },
     });
     return ids;
   });
+  if (superseded) return "superseded";
   if (requirementIds.length === 0) return 0;
 
   // Best-effort enrichment of the committed rows, as on the first promotion.

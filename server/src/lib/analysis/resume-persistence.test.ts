@@ -57,7 +57,12 @@ function findingsFor(agentResultId: string): FindingRow[] {
 }
 
 vi.mock("../prisma.js", () => ({
+  resolveDatabaseProvider: () => "sqlite",
   prisma: {
+    // #909 — metadata merge-writers run in a transaction; this fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../prisma.js")).prisma),
+    ),
     agentResult: {
       findFirst: vi.fn(
         // Issue #763 — connector-scoped when the caller passes `connectorId`

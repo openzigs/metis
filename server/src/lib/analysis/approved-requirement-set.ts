@@ -32,6 +32,8 @@ const PRIORITY_BY_STRUCTURED: Record<string, SynthesizedRequirement["priority"]>
 
 const MAX_TITLE = 255;
 const MAX_BODY = 4096;
+/** `synthesizedRequirementSchema.labels` caps the list at 16. */
+const MAX_LABELS = 16;
 
 /**
  * Pair each approved structured requirement with at most one synthesized
@@ -68,6 +70,33 @@ function matchSynthesized(
   return byStructuredId;
 }
 
+export interface RequirementApprovalRow {
+  itemId: string;
+  status: string;
+  createdAt?: Date | null;
+  reviewedAt?: Date | null;
+}
+
+/**
+ * Issue #909 — the deciding approval per structured id. Approval rows are never
+ * deleted, and the extractor numbers every run from `REQ-001`, so after a
+ * re-run one id carries an approval from each run. The most recently CREATED
+ * row belongs to the current list; an older run's verdict must not decide it
+ * (an earlier approval would otherwise promote a requirement just rejected).
+ */
+export function latestRequirementApprovals<T extends RequirementApprovalRow>(
+  approvals: readonly T[],
+): Map<string, T> {
+  const latest = new Map<string, T>();
+  for (const a of approvals) {
+    const seen = latest.get(a.itemId);
+    if (!seen || (a.createdAt?.getTime() ?? 0) >= (seen.createdAt?.getTime() ?? 0)) {
+      latest.set(a.itemId, a);
+    }
+  }
+  return latest;
+}
+
 /**
  * The requirement set to persist for an analysis whose requirements went
  * through the approval checkpoint: exactly the approved structured
@@ -91,7 +120,13 @@ export function buildApprovedRequirementSet(input: {
       title,
       body,
       priority: PRIORITY_BY_STRUCTURED[req.priority] ?? match?.priority ?? "medium",
-      labels: match?.labels ?? [],
+      // Issue #909 — the reviewed classification (functional, non-functional,
+      // constraint, …) has no counterpart in the row's `type` enum, so it rides
+      // as a label rather than being dropped.
+      labels: [...new Set([req.type, ...(match?.labels ?? [])].filter(Boolean))].slice(
+        0,
+        MAX_LABELS,
+      ),
       ...(match?.storyPoints !== undefined ? { storyPoints: match.storyPoints } : {}),
       evidenceFindingIndexes: match?.evidenceFindingIndexes ?? [],
       acceptanceCriteria: match?.acceptanceCriteria ?? [],
