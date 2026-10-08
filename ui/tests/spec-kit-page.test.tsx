@@ -288,7 +288,7 @@ describe("SpecKitPage", () => {
       message:
         "Wrote a constitution skeleton with no principles — no project knowledge was retrieved.",
     });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() =>
       expect(screen.getByTestId("spec-kit-generate-constitution")).not.toBeDisabled(),
     );
