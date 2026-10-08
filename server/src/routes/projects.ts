@@ -7,7 +7,8 @@
  * `project-service.ts` because it depends on `createdById` which middleware
  * cannot see.
  */
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type RequestHandler, type Response } from "express";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import {
   type ApiResponse,
   PROJECT_STATUSES,
@@ -131,6 +132,26 @@ function primaryRepoLinkError(err: unknown, projectId: string): PrimaryRepoLinkE
 }
 
 const assignWorkspaceSchema = z.object({ workspaceId: z.string().min(1).max(64) });
+
+/**
+ * #731 — moving a project into a workspace is a rare, admin-level write;
+ * 30 per 15 minutes per user is far above any real use. Module scope:
+ * express-rate-limit@8 refuses to be created inside a request handler.
+ */
+// `as unknown as RequestHandler` bridges the Express 4↔5 type split.
+const assignWorkspaceRateLimiter: RequestHandler = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === "test" ? 10_000 : 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req, res) =>
+    req.user?.userId ??
+    ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32),
+  message: {
+    success: false,
+    error: { code: "RATE_LIMIT", message: "Too many workspace changes. Try again later." },
+  },
+}) as unknown as RequestHandler;
 
 function rethrow(err: unknown): never {
   if (err instanceof ProjectError) {
@@ -319,24 +340,30 @@ export function projectsRouter(): Router {
   // ── Move into a workspace (#731) ────────────────────────────────────────
   // `/:id/workspace` is covered by the `/:id/:sub` project-scope chokepoint
   // above; the service adds the mutate rule and the target-workspace admin rule.
-  r.put("/:id/workspace", requireAuth, requirePermission("project.update"), async (req, res) => {
-    const parsed = assignWorkspaceSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "Invalid workspace payload", {
-        issues: parsed.error.flatten(),
-      });
-    }
-    try {
-      const project = await assignProjectWorkspace(
-        String(req.params.id),
-        parsed.data.workspaceId,
-        actorFromReq(req),
-      );
-      res.json(ok(project));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  r.put(
+    "/:id/workspace",
+    requireAuth,
+    assignWorkspaceRateLimiter,
+    requirePermission("project.update"),
+    async (req, res) => {
+      const parsed = assignWorkspaceSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid workspace payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      try {
+        const project = await assignProjectWorkspace(
+          String(req.params.id),
+          parsed.data.workspaceId,
+          actorFromReq(req),
+        );
+        res.json(ok(project));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
   // ── Delete ──────────────────────────────────────────────────────────────
   r.delete(

@@ -71,7 +71,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       return a;
     };
 
-    const put = (projectId: string, auth: string, body: unknown) =>
+    const put = (projectId: string, auth: string, body: string | object) =>
       request(app())
         .put(`/api/projects/${projectId}/workspace`)
         .set("Authorization", auth)
@@ -123,6 +123,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await put(id, bearer("u-owner", "coordinator", [WS]), { workspaceId: WS });
       expect(res.status).toBe(200);
       expect(await workspaceOf(id)).toBe(WS);
+      // The route is rate limited (express-rate-limit's standard headers).
+      expect(res.headers["ratelimit-limit"]).toBeDefined();
       const read = await request(app())
         .get(`/api/projects/${id}`)
         .set("Authorization", bearer("u-owner", "coordinator", [WS]));
