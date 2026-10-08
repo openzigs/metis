@@ -108,6 +108,7 @@ import { specKitRouter } from "../src/routes/spec-kit.js";
 import { errorHandler } from "../src/middleware/error-handler.js";
 import { prisma } from "../src/lib/prisma.js";
 import { audit } from "../src/lib/audit/audit-service.js";
+import { recordJobScope } from "../src/lib/socket/job-scope-store.js";
 
 const ROUTE = "/api/projects/p1/spec-kit/commands/speckit.taskstoissues";
 
@@ -312,6 +313,8 @@ describe("POST /commands/speckit.taskstoissues (real runner, #784)", () => {
       expect(res.body.error.code).toBe("NOT_FOUND");
     }
     expect(prisma.specKitFeature.findUnique).not.toHaveBeenCalled();
+    // Refused before the job wrapper: no job scope recorded for a project the caller cannot see.
+    expect(recordJobScope).not.toHaveBeenCalled();
   });
 
   it("a non-admin without project.update is refused 403 before the command runs", async () => {

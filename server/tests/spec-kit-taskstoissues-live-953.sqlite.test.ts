@@ -445,5 +445,87 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const links = calls.filter((c) => c.url.endsWith("/issues/9/sub_issues"));
       expect(links.map((c) => c.data)).toEqual([{ sub_issue_id: 9101 }, { sub_issue_id: 9102 }]);
     });
+    it("two concurrent live runs of one approved plan create each issue once", async () => {
+      const plan = await previewTasksExport(base());
+      const run = () =>
+        exportTasksToGitHub({
+          ...base(),
+          expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+        });
+      const results = await Promise.allSettled([run(), run()]);
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      const loser = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+      // Either refusal is safe: the loser saw the winner's claim, or its finished row.
+      expect(loser.reason).toMatchObject({ status: 409 });
+      expect(["SPECKIT_EXPORT_IN_PROGRESS", "SPECKIT_EXPORT_PLAN_CHANGED"]).toContain(
+        loser.reason.code,
+      );
+      expect(issuePosts().map((c) => (c.data as { title: string }).title)).toEqual([
+        "[T01] Build A",
+        "[T02] Build B",
+      ]);
+      const rows = await db.specKitTaskExport.findMany({ orderBy: { taskId: "asc" } });
+      expect(rows.map((r) => [r.taskId, r.issueNumber])).toEqual([
+        ["T01", 101],
+        ["T02", 102],
+      ]);
+    });
+
+    it("a GitHub failure releases the task's claim so a retry can create it", async () => {
+      const plan = await previewTasksExport(base());
+      respond = (c) =>
+        c.method === "POST" && c.url.endsWith("/issues") ? { status: 500, data: {} } : undefined;
+      await expect(
+        exportTasksToGitHub({
+          ...base(),
+          expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+        }),
+      ).rejects.toBeDefined();
+      expect(await db.specKitTaskExport.count()).toBe(0);
+      respond = () => undefined;
+      const out = await exportTasksToGitHub({
+        ...base(),
+        expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+      });
+      expect(out.created).toHaveLength(2);
+    });
+
+    it("refuses (409) while another run's claim is still unresolved", async () => {
+      await db.specKitTaskExport.create({
+        data: {
+          projectId: P,
+          featureSlug: SLUG,
+          taskId: "T01",
+          issueNumber: 0,
+          repoOwner: "openzigs",
+          repoName: "flux-v2",
+        },
+      });
+      const plan = await previewTasksExport(base());
+      expect(plan.created.map((c) => c.title)).toEqual(["[T01] Build A", "[T02] Build B"]);
+      await expect(
+        exportTasksToGitHub({
+          ...base(),
+          expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "SPECKIT_EXPORT_IN_PROGRESS" });
+      expect(issuePosts()).toEqual([]);
+    });
+
+    it("refuses (409) when the parent epic changed since the dry run", async () => {
+      await db.specKitConfig.create({ data: { projectId: P, tasksToIssuesParentEpic: 9 } });
+      const plan = await previewTasksExport(base());
+      await db.specKitConfig.update({
+        where: { projectId: P },
+        data: { tasksToIssuesParentEpic: 10 },
+      });
+      await expect(
+        exportTasksToGitHub({
+          ...base(),
+          expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "SPECKIT_EXPORT_PLAN_CHANGED" });
+      expect(issuePosts()).toEqual([]);
+    });
   },
 );

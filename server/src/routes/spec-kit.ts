@@ -470,6 +470,13 @@ export function specKitRouter(): Router {
           const projectId = projectIdFrom(req);
           await ensureEnabled(projectId);
           const actor = actorId(req);
+          // Object-level scope (BOLA) for the one command that publishes to a
+          // third party: `project.update` alone would let a member of workspace
+          // A publish workspace B's tasks. Checked before the job wrapper so a
+          // refused caller records no job scope and emits no `started` event.
+          if (normalized.canonical === "speckit.taskstoissues" && req.user) {
+            await assertProjectAccess(req.user, projectId);
+          }
           const jobId = randomUUID();
           const result = await runSpecKitCommandJob(
             jobId,
@@ -915,9 +922,7 @@ async function dispatchNamespaced(
       const extra = tasksExportBodySchema.safeParse(body);
       if (!extra.success) throw new AppError(400, "BAD_REQUEST", extra.error.message);
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-      // Object-level scope (BOLA): `project.update` alone would let a member of
-      // workspace A publish workspace B's tasks with their own token.
-      await assertProjectAccess(req.user, projectId);
+      // BOLA: assertProjectAccess already ran in the route, before the job wrapper.
       const exportInput = {
         projectId,
         featureSlug,

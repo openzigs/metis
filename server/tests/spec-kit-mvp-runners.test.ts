@@ -143,9 +143,22 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
       create: vi.fn(async ({ data }: any) => {
         const id = `${data.projectId}|${data.featureSlug}|${data.taskId}`;
+        if (taskExportRows.has(id)) throw new P2002("unique violation");
         const row = { id, createdAt: new Date(), ...data };
         taskExportRows.set(id, row);
         return row;
+      }),
+      update: vi.fn(async ({ where, data }: any) => {
+        const k = where.projectId_featureSlug_taskId;
+        const id = `${k.projectId}|${k.featureSlug}|${k.taskId}`;
+        const row = { ...taskExportRows.get(id), ...data };
+        taskExportRows.set(id, row);
+        return row;
+      }),
+      delete: vi.fn(async ({ where }: any) => {
+        const k = where.projectId_featureSlug_taskId;
+        taskExportRows.delete(`${k.projectId}|${k.featureSlug}|${k.taskId}`);
+        return {};
       }),
     },
     repoConnection: {

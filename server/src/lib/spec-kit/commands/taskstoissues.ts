@@ -133,6 +133,8 @@ export function computePlanDigest(plan: {
   tasksVersion: number;
   repo: { owner: string; name: string };
   titles: string[];
+  /** The epic new issues are linked under; a different one is a different plan. */
+  parentEpicNumber?: number | null;
 }): string {
   return createHash("sha256")
     .update(
@@ -142,6 +144,7 @@ export function computePlanDigest(plan: {
         plan.tasksVersion,
         `${plan.repo.owner}/${plan.repo.name}`.toLowerCase(),
         plan.titles,
+        plan.parentEpicNumber ?? null,
       ]),
     )
     .digest("hex");
@@ -243,6 +246,19 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
         },
       },
     });
+    // #953 — issueNumber 0 is another live run's claim, not an exported issue.
+    // A live run refuses rather than race it; a dry run plans the task as new.
+    if (existing?.issueNumber === 0) {
+      if (input.client && !input.dryRun) {
+        throw new SpecKitArtifactError(
+          409,
+          "SPECKIT_EXPORT_IN_PROGRESS",
+          "Another export of this feature is in progress. Wait for it to finish, then preview again.",
+        );
+      }
+      plan.push({ task, title: `[${task.id}] ${task.title}`, existing: null });
+      continue;
+    }
     plan.push({ task, title: `[${task.id}] ${task.title}`, existing });
   }
   const toCreate = plan.filter((p) => !p.existing).map((p) => p.title);
@@ -252,6 +268,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     tasksVersion,
     repo,
     titles: toCreate,
+    parentEpicNumber,
   });
   if (client) {
     assertPlanUnchanged(input.expectedPlan, tasksVersion, planDigest);
@@ -285,22 +302,53 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
       const body = renderIssueBody(task, feature.slug);
       const labels = [`speckit:${feature.slug}`];
       if (task.userStorySlug) labels.push(`story:${task.userStorySlug}`);
-      const resp = client
-        ? await client.create(repo.owner, repo.name, { title, body, labels })
-        : plannedIssue(title);
+      const rowKey = {
+        projectId_featureSlug_taskId: {
+          projectId: input.projectId,
+          featureSlug: feature.slug,
+          taskId: task.id,
+        },
+      };
+      if (client) {
+        // #953 — claim the task BEFORE calling GitHub: the unique row lets
+        // exactly one concurrent run create it, so no issue is filed twice or
+        // left unrecorded. issueNumber 0 marks the claim until GitHub answers.
+        try {
+          await prisma.specKitTaskExport.create({
+            data: {
+              projectId: input.projectId,
+              featureSlug: feature.slug,
+              taskId: task.id,
+              issueNumber: 0,
+              repoOwner: repo.owner,
+              repoName: repo.name,
+            },
+          });
+        } catch (err) {
+          if ((err as { code?: string }).code === "P2002") {
+            throw new SpecKitArtifactError(
+              409,
+              "SPECKIT_EXPORT_IN_PROGRESS",
+              "Another export of this feature is in progress. Wait for it to finish, then preview again.",
+            );
+          }
+          throw err;
+        }
+      }
+      let resp: { number: number; url: string };
+      try {
+        resp = client
+          ? await client.create(repo.owner, repo.name, { title, body, labels })
+          : plannedIssue(title);
+      } catch (err) {
+        // Nothing was created: release the claim so a retry can create it.
+        if (client) await prisma.specKitTaskExport.delete({ where: rowKey });
+        throw err;
+      }
       issueNumber = resp.number;
       url = resp.url;
       if (client) {
-        await prisma.specKitTaskExport.create({
-          data: {
-            projectId: input.projectId,
-            featureSlug: feature.slug,
-            taskId: task.id,
-            issueNumber,
-            repoOwner: repo.owner,
-            repoName: repo.name,
-          },
-        });
+        await prisma.specKitTaskExport.update({ where: rowKey, data: { issueNumber } });
       }
     }
     idToIssueNumber.set(task.id, issueNumber);
