@@ -303,9 +303,13 @@ export function stripNulBytes(s: string): string {
  * (or none — every pre-#807 graph) compares as changed, so the next ingest with
  * lineage on re-parses everything once and rewrites the edges, without a manual
  * re-ingest. History: unversioned = #721; 2 = #760 (bind parameters dropped,
- * WHERE columns read not written, edges from the enclosing function).
+ * WHERE columns read not written, edges from the enclosing function); 3 = #859
+ * (writes attributed to the modified table only, SQL builtins skipped — shipped
+ * by #873 without a bump, applied by #935). Guarded by
+ * `tests/lib/code-graph/lineage-extractor-version.test.ts`, which pins a hash
+ * of `metis-sql-lineage/app/` to this number.
  */
-export const LINEAGE_EXTRACTOR_VERSION = 2;
+export const LINEAGE_EXTRACTOR_VERSION = 3;
 
 /**
  * #721 — fingerprint of the inputs that decide what the SQL-lineage pass
