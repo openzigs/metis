@@ -185,11 +185,13 @@ export function parseAgentFindingsAnswer(text: string):
  * "confirmed" badge. `citations` is forced empty, as the contract says.
  * (`faithfulness` is already refused at the storage boundary.)
  *
- * #727 — and the server then stamps every such finding `unverified`. It was
- * written from the project's name and description alone, with no evidence, so
- * it is exactly the claim the #740 verifier exists to flag: synthesis renders
- * it `[UNVERIFIED]` and down-weights it (rule 4), and the findings view badges
- * and filters it. Before #727 these findings carried `null` — the neutral
+ * #727 — and the server then stamps every such finding `ungrounded`. It was
+ * written from the project's name and description alone, with no evidence and
+ * no code access. Not `unverified`: that status means "cited code, and every
+ * citation was dropped", and its badge says so — false for a finding that cites
+ * nothing. `ungrounded` says what happened (nothing was checked against the
+ * source); synthesis renders it `[UNGROUNDED]` and down-weights it like
+ * `[UNVERIFIED]` (rule 4), and the findings view badges and filters it. Before #727 these findings carried `null` — the neutral
  * "nothing to verify" state — so an invented module (a `sqlc` layer the
  * project does not have) reached a requirement's acceptance criteria with the
  * same weight as a cited specialist finding.
@@ -203,7 +205,7 @@ function stripServerOwnedFields(finding: AgentFindingPayload): AgentFindingPaylo
     supportPanel: _supportPanel,
     ...modelAuthored
   } = finding;
-  return { ...modelAuthored, citations: [], verificationStatus: "unverified" };
+  return { ...modelAuthored, citations: [], verificationStatus: "ungrounded" };
 }
 
 /** #289 — the retry gate: does this answer validate as a findings answer? */

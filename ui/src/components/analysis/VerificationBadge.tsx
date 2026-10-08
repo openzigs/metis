@@ -4,7 +4,7 @@
  * Epic #727 (#740) — per-finding verification badge.
  *
  * Renders the deterministic verifier verdict set BEFORE synthesis (`confirmed` |
- * `unverified`) as a compact, colour-coded badge with a plain-language tooltip.
+ * `unverified` | `could-not-verify` | `ungrounded`) as a compact, colour-coded badge with a plain-language tooltip.
  * The two states are visually distinct (colour + label) and legible for a
  * non-technical BA: an `unverified` badge signals "the analysis could NOT confirm
  * this finding against the code" so the BA knows to treat it with caution.
@@ -47,6 +47,16 @@ export const VERIFICATION_COPY: Record<FindingVerificationStatus, VerificationCo
     tooltip:
       "This finding claims something is missing from the code — but the analysis could not actually search the code (its searches failed, returned nothing, or ran out of budget). This is NOT a confirmed gap. Do not plan work from it: re-run the analysis or check the code manually.",
     className: "border-dashed border-muted-foreground/60 bg-muted text-foreground",
+  },
+  // #727 — a custom or library agent wrote this from the project's name and
+  // description, with no code access, and it cites nothing. Not `unverified`:
+  // that copy says "every code location it cited was missing", which is false
+  // for a finding that cited none.
+  ungrounded: {
+    label: "Not checked against code",
+    tooltip:
+      "This finding came from an agent that had no access to the code: it cites no code, and nothing in it was checked against the source. Treat it as a suggestion and confirm it in the code before acting on it.",
+    className: "border-dashed border-warning/40 bg-warning-muted text-warning",
   },
 };
 

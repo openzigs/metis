@@ -142,6 +142,8 @@ function evidenceRank(finding: GapReportFindingInput): number {
 function rollUpVerification(findings: GapReportFindingInput[]): FindingVerificationStatus | null {
   if (findings.some((f) => f.verificationStatus === "confirmed")) return "confirmed";
   if (findings.some((f) => f.verificationStatus === "unverified")) return "unverified";
+  // #727 — a requirement backed only by no-code-access agent findings.
+  if (findings.some((f) => f.verificationStatus === "ungrounded")) return "ungrounded";
   return null;
 }
 

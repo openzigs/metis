@@ -96,7 +96,11 @@ export const NO_FINDING_FILTERS: FindingFilters = {
   verification: null,
 };
 
-const VERIFICATION_VALUES: readonly FindingVerificationStatus[] = ["confirmed", "unverified"];
+const VERIFICATION_VALUES: readonly FindingVerificationStatus[] = [
+  "confirmed",
+  "unverified",
+  "ungrounded",
+];
 
 /**
  * Issue #424 — the findings filters as query-string keys, so a filtered view

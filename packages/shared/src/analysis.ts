@@ -1133,7 +1133,8 @@ export interface AnalysisSnapshot {
       /**
        * Epic #727 (#740) — deterministic verifier verdict. `confirmed` when the
        * finding kept a grounded code citation, `unverified` when its code claim
-       * was dropped by the #734 gate, `null` for findings that made no code
+       * was dropped by the #734 gate, `ungrounded` (#727) when an agent with no
+       * code access wrote it, `null` for findings that made no code
        * claim (or were persisted before #740). Drives the UI verification badge.
        */
       verificationStatus?: FindingVerificationStatus | null;
@@ -1730,7 +1731,8 @@ export interface GapReportRequirement {
   storyPoints: number | null;
   /**
    * Roll-up verification: `confirmed` if ANY linked finding is confirmed, else
-   * `unverified` if any made an (unconfirmed) code claim, else null (no claim).
+   * `unverified` if any made an (unconfirmed) code claim, else `ungrounded` if
+   * any came from a no-code-access agent (#727), else null (no claim).
    */
   verificationStatus: FindingVerificationStatus | null;
   /**

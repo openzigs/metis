@@ -64,7 +64,7 @@ export type CaseOutcome =
  * the module doc for why abstention must not be scored as detection.
  */
 export function isFlagged(status: FindingVerificationStatus | null): boolean {
-  return status === "unverified" || status === "could-not-verify";
+  return status === "unverified" || status === "could-not-verify" || status === "ungrounded";
 }
 
 /** Classify one case's outcome from the ground-truth label and the verdict. */
