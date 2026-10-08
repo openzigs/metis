@@ -282,8 +282,9 @@ function checkTotal(obj, at, times, extra, errors) {
   for (const key of Object.keys(obj)) {
     if (!known.has(key)) errors.push(`${at}: unknown field "${key}"`);
   }
-  if (!(Number.isInteger(obj.tokens) && Number(obj.tokens) >= 0)) {
-    errors.push(`${at}: "tokens" must be a non-negative integer`);
+  // A safe integer, so the remainder arithmetic and the printed figure are exact.
+  if (!(Number.isSafeInteger(obj.tokens) && Number(obj.tokens) >= 0)) {
+    errors.push(`${at}: "tokens" must be a non-negative integer no larger than 2^53 - 1`);
   }
   if (!(typeof obj.costUsd === "number" && Number.isFinite(obj.costUsd) && obj.costUsd >= 0)) {
     errors.push(`${at}: "costUsd" must be a non-negative number`);
@@ -631,11 +632,17 @@ export function formatCost(cents) {
  * A signed amount of cents, e.g. the ledger's unattributed remainder. A negative one means the
  * steps claim more than the ledger recorded, which is itself worth seeing.
  *
+ * The amount is rounded to the finest unit `formatCost` prints (a hundredth of a cent) before
+ * the sign is decided. Otherwise float error in a difference that is really zero, such as
+ * `0.29 * 100 - 29`, prints as `-$0.0000`.
+ *
  * @param {number} cents
  * @returns {string}
  */
 export function formatSignedCost(cents) {
-  return cents < 0 ? `-${formatCost(-cents)}` : formatCost(cents);
+  // `+ 0` turns a rounded `-0` into `0`.
+  const rounded = Math.round(cents * 100) / 100 + 0;
+  return rounded < 0 ? `-${formatCost(-rounded)}` : formatCost(rounded);
 }
 
 /**

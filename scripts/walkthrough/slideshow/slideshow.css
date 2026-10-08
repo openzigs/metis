@@ -289,7 +289,9 @@ h2 {
 
 /* New issues filed by the run (#947) */
 .slide--issues {
-  justify-content: center;
+  /* `safe` keeps the heading reachable: a long list scrolls instead of overflowing both ends. */
+  justify-content: safe center;
+  overflow-y: auto;
   padding-inline: clamp(1.5rem, 8vmin, 7rem);
 }
 

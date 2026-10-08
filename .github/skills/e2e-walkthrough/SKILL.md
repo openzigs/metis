@@ -260,7 +260,9 @@ before:
 - `newIssues`: every issue filed from the run, `severity` one of `high` / `medium` / `low`.
 - `ledger`: the run's `token_usages` total from section 5's query, over the whole run window,
   for the walkthrough project, including the BA re-ask's chat rows. `source` must be
-  `token_usages`.
+  `token_usages`. `tokens` is `SUM("inputTokens" + "outputTokens")` and **excludes
+  cache-read tokens**, which is how step `tokens` are counted, so the unattributed remainder
+  compares like with like. `costUsd` is `SUM(COALESCE("costUsd", "costCents" / 100.0))`.
 - `waves`: optional per-wave totals over each wave's window, keyed `A`–`E` and `BA`;
   `since` / `until` are optional here and record the window.
 
@@ -296,7 +298,8 @@ The decks open from disk with no network. Keys: arrows, Page Up/Down, Space, Hom
   the results comment, or compare it with the previous run's report.
 
 The build fails, naming the line, step or field, on an invalid manifest, an invalid `run.json`,
-or a screenshot path outside the evidence folder. It changes nothing on disk until the whole manifest checks out.
+or a screenshot path outside the evidence folder. It writes nothing to disk until the whole manifest, `run.json` (when present) and every
+screenshot path check out.
 
 | Field | Required | Meaning |
 |---|---|---|

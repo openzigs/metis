@@ -695,6 +695,28 @@ describe("filesystem", () => {
         expect(report).not.toContain("slide--issues");
       });
 
+      it("a ledger exactly equal to the step total leaves a zero remainder, not -$0.0000", () => {
+        // Re-price the fixture's three steps at 10 + 9 + 10 = 29 cents; 0.29 * 100 - 29 < 0.
+        const manifest = path.join(evidence, "steps.jsonl");
+        const rows = fs
+          .readFileSync(manifest, "utf8")
+          .trim()
+          .split("\n")
+          .map((l) => JSON.parse(l));
+        rows.forEach((r, i) => Object.assign(r, { tokens: 800, costCents: [10, 9, 10][i] }));
+        fs.writeFileSync(manifest, jsonl(rows));
+        fs.writeFileSync(
+          path.join(evidence, "run.json"),
+          JSON.stringify({ ledger: { ...runInfo().ledger, tokens: 2400, costUsd: 0.29 } }),
+        );
+        buildSlideshow(reportOpts());
+        const report = read("report");
+        expect(report).toContain(
+          "Attributed to steps: 2,400 tokens · $0.2900 · Unattributed: 0 tokens · $0.0000",
+        );
+        expect(report).not.toContain("-$0.0000");
+      });
+
       it("fails the build, naming the field, and writes nothing on an invalid run.json", () => {
         fs.writeFileSync(
           path.join(evidence, "run.json"),
@@ -869,6 +891,51 @@ describe("run.json parsing (#947)", () => {
     expect(formatSignedCost(73)).toBe("$0.7300");
     expect(formatSignedCost(-1)).toBe("-$0.0100");
     expect(formatSignedCost(-250)).toBe("-$2.50");
+  });
+
+  it.each([
+    [0.29, 29],
+    [0.57, 57],
+    [1.13, 113],
+  ])(
+    "a ledger of $%s equal to %s attributed cents leaves $0.0000, never -$0.0000",
+    (usd, cents) => {
+      // The float difference is a hair below zero; it must not decide the sign.
+      expect(usd * 100 - cents).toBeLessThan(0);
+      expect(formatSignedCost(usd * 100 - cents)).toBe("$0.0000");
+    },
+  );
+
+  it.each([
+    ["ledger", (/** @type {any} */ r) => (r.ledger.until = r.ledger.since), 'ledger: "since"'],
+    [
+      "waves.A",
+      (/** @type {any} */ r) => (r.waves.A.until = r.waves.A.since),
+      'waves.A: "since" must be before "until"',
+    ],
+    [
+      "waves.BA",
+      (/** @type {any} */ r) =>
+        Object.assign(r.waves.BA, {
+          since: "2026-10-03T12:00:00Z",
+          until: "2026-10-03T11:00:00Z",
+        }),
+      'waves.BA: "since" must be before "until"',
+    ],
+  ])("rejects an empty or reversed %s window", (_label, mutate, message) => {
+    expect(errorsOf(mutate)).toContain(message);
+  });
+
+  it("rejects ledger and wave tokens above Number.MAX_SAFE_INTEGER", () => {
+    const text = errorsOf((r) => {
+      r.ledger.tokens = Number.MAX_SAFE_INTEGER + 1;
+      r.waves.A.tokens = 2 ** 60;
+    });
+    expect(text).toContain('ledger: "tokens" must be a non-negative integer no larger than');
+    expect(text).toContain('waves.A: "tokens" must be a non-negative integer no larger than');
+    const ok = runInfo();
+    ok.ledger.tokens = Number.MAX_SAFE_INTEGER;
+    expect(parseRunInfo(JSON.stringify(ok)).errors).toEqual([]);
   });
 });
 
