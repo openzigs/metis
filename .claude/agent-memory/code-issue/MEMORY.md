@@ -64,3 +64,10 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Access rule in fixtures](project_access-rule-in-fixtures.md) — socket/discussion tests encode access in mocks; update together
 - [Compaction truncates evidence](project_compaction-truncates-evidence.md) — 600-char tool-result cut; check before blaming tools
 - [Go methods unresolved](project_go-methods-unresolved.md) — Go parser stores methods as file::M; 76% of Miniflux calls unresolved
+- [e2e replay provider is not offline](project_e2e-replay-provider-not-offline.md) — detect stub by key "offline-stub" too (#900)
+- [cancelled no-runner checks](project_cancelled-no-runner-checks.md) — 0 steps + log 404 = queue cancel; re-run, never trust unrun postgres-adapter
+- [seeded mappings symbol-bound](project_seeded-mappings-are-symbol-bound.md) — fixtures must match seeder shapes (#897)
+- [structured req ids repeat](project_structured-req-ids-repeat.md) — REQ-001 ids repeat across re-runs; scope promoted ids to run (#902)
+- [simple-git 4 env guard](project_simple-git-4-env-guard.md) — GIT_* env needs allowEnvironment; use real-git test (#906)
+- [dependabot tilde + stale audit](project_dependabot-tilde-and-stale-audit.md) — group PRs cross ~0.x minors; old green audit may be stale (#907)
+- [vitest 5 jest-dom second copy](project_vitest5-jest-dom-second-copy.md) — jest-dom/vitest loads another vitest copy; extend expect locally (#668)
