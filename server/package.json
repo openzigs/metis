@@ -53,7 +53,7 @@
     "verify:cache": "tsx --env-file=../.env scripts/verify-prompt-cache.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.130.0",
+    "@anthropic-ai/sdk": "0.131.0",
     "@aws-sdk/client-cost-explorer": "^3.1144.0",
     "@aws-sdk/client-s3": "^3.1144.0",
     "@kubernetes/client-node": "^1.4.0",
@@ -150,14 +150,14 @@
     "@types/semver": "^7.8.0",
     "@types/supertest": "^7.2.1",
     "@types/ws": "^8.18.2",
-    "@vitest/coverage-v8": "^5.0.2",
+    "@vitest/coverage-v8": "^5.0.3",
     "@xmldom/xmldom": "^0.9.12",
     "micromark": "4.0.3",
     "socket.io-client": "^4.8.4",
     "supertest": "^7.3.0",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.2",
+    "vitest": "^5.0.3",
     "xml-crypto": "^6.3.2"
   }
 }
