@@ -2,8 +2,9 @@
  * Tests for the Spec Kit Mode page (Epic #193, /projects/[id]/spec-kit).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
-import { makeWrapper } from "./test-utils";
+import { cleanup, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { makeWrapper, TEST_USER } from "./test-utils";
+import type { AuthUser } from "@/lib/auth-types";
 
 // #735 — mutable so a test can open the page from a mention link.
 const nav = vi.hoisted(() => ({ search: "" }));
@@ -88,6 +89,15 @@ const collabMock = commentApi as unknown as {
 
 const m = specKitApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
+// #789 — every write on the page is `project.update` server-side, so the page
+// enables its write controls only for a viewer who holds it.
+const WRITER: AuthUser = {
+  ...TEST_USER,
+  role: "developer",
+  permissions: ["project.read", "project.update"],
+};
+const READER: AuthUser = { ...TEST_USER, role: "developer", permissions: ["project.read"] };
+
 function artifact(name: string, content = "body", version = 1) {
   return {
     id: `a_${name}`,
@@ -119,7 +129,7 @@ describe("SpecKitPage", () => {
     nav.search = "artifact=plan.md";
     collabMock.listForArtifact.mockClear();
 
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
 
     await waitFor(() => expect(collabMock.listForArtifact).toHaveBeenCalledWith("p1", "plan.md"));
   });
@@ -128,14 +138,14 @@ describe("SpecKitPage", () => {
     nav.search = "artifact=..%2Fsecrets";
     collabMock.listForArtifact.mockClear();
 
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
 
     await waitFor(() => expect(screen.getByTestId("spec-kit-root")).toBeInTheDocument());
     expect(collabMock.listForArtifact).not.toHaveBeenCalled();
   });
 
   it("renders the artifact tree, toggle, and slash-command palette", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-root")).toBeInTheDocument());
     expect(screen.getByTestId("spec-kit-tree")).toBeInTheDocument();
     expect(screen.getByTestId("spec-kit-artifact-spec.md")).toBeInTheDocument();
@@ -147,13 +157,13 @@ describe("SpecKitPage", () => {
   it("shows a disabled banner when Spec Kit is off", async () => {
     m.getEnabled!.mockResolvedValue({ enabled: false });
     m.listFiles!.mockResolvedValue({ enabled: false, artifacts: [] });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-disabled-banner")).toBeInTheDocument());
     expect(screen.getByTestId("spec-kit-toggle")).toHaveAttribute("aria-checked", "false");
   });
 
   it("renders the empty banner for a missing artifact", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-empty-banner")).toBeInTheDocument());
   });
 
@@ -162,14 +172,14 @@ describe("SpecKitPage", () => {
       enabled: true,
       artifacts: [artifact("spec.md", "# Spec\nbody", 3)],
     });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-content")).toHaveTextContent("# Spec"));
     expect(screen.getByTestId("spec-kit-artifact-spec.md")).toHaveTextContent("v3");
   });
 
   it("toggles Spec Kit Mode via PUT /enabled", async () => {
     m.setEnabled!.mockResolvedValue({ enabled: false });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() =>
       expect(screen.getByTestId("spec-kit-toggle")).toHaveAttribute("aria-checked", "true"),
     );
@@ -186,7 +196,7 @@ describe("SpecKitPage", () => {
       message: grounded,
       tokensUsed: 25,
     });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
       target: { value: "/specify build a billing dashboard" },
@@ -204,7 +214,7 @@ describe("SpecKitPage", () => {
 
   it("fires a user-safe error toast when a command fails (#423)", async () => {
     m.runCommand!.mockRejectedValue(new Error("boom internal stack"));
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
       target: { value: "/specify go" },
@@ -218,7 +228,7 @@ describe("SpecKitPage", () => {
   });
 
   it("shows slash-command suggestions while typing", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
       target: { value: "/sp" },
@@ -227,7 +237,7 @@ describe("SpecKitPage", () => {
   });
 
   it("shows an error when the buffer is not a slash command", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
       target: { value: "hello" },
@@ -239,7 +249,7 @@ describe("SpecKitPage", () => {
   it("edits an artifact and saves via PUT /files/:name", async () => {
     m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "old")] });
     m.putFile!.mockResolvedValue({ artifact: artifact("spec.md", "new", 2) });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-edit-button")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("spec-kit-edit-button"));
     fireEvent.change(screen.getByTestId("spec-kit-editor"), { target: { value: "new" } });
@@ -252,7 +262,7 @@ describe("SpecKitPage", () => {
       artifact: artifact("constitution.md", "# Constitution", 1),
       contentLength: 1000,
     });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() =>
       expect(screen.getByTestId("spec-kit-generate-constitution")).not.toBeDisabled(),
     );
@@ -268,7 +278,7 @@ describe("SpecKitPage", () => {
   });
 
   it("fills the buffer when a suggestion is clicked", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     fireEvent.change(screen.getByTestId("spec-kit-command-input"), { target: { value: "/sp" } });
     fireEvent.click(screen.getByTestId("spec-kit-suggestion-speckit.specify"));
@@ -285,7 +295,7 @@ describe("SpecKitPage", () => {
       message: "ok",
       tokensUsed: 1,
     });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     const input = screen.getByTestId("spec-kit-command-input");
     fireEvent.change(input, { target: { value: "/specify go" } });
@@ -297,7 +307,7 @@ describe("SpecKitPage", () => {
 
   it("cancels in-flight artifact edits", async () => {
     m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "old")] });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-edit-button")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("spec-kit-edit-button"));
     fireEvent.change(screen.getByTestId("spec-kit-editor"), { target: { value: "abandoned" } });
@@ -309,7 +319,7 @@ describe("SpecKitPage", () => {
   // ---- Epic #34 collaboration mounts -------------------------------------
 
   it("opens the comment panel scoped to the selected artifact (AC1)", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-comments-button")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("spec-kit-comments-button"));
     // Panel self-fetches comments for the default artifact (spec.md) on project p1.
@@ -320,7 +330,7 @@ describe("SpecKitPage", () => {
 
   it("scopes the comment panel to the artifact the user selected (AC1)", async () => {
     m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("plan.md", "p")] });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() =>
       expect(screen.getByTestId("spec-kit-artifact-plan.md")).toBeInTheDocument(),
     );
@@ -332,7 +342,7 @@ describe("SpecKitPage", () => {
   // ---- #372 BA/PM "author the intent" framing (copy only) ----------------
 
   it("frames the header as the BA/PM author-the-intent front-door", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-root")).toBeInTheDocument());
     // Title still names the feature; subtitle carries the BA/PM intent framing.
     expect(screen.getByRole("heading", { name: /Spec Kit/i, level: 1 })).toBeInTheDocument();
@@ -344,7 +354,7 @@ describe("SpecKitPage", () => {
   it("explains the spec → plan → tasks flow and links to Analysis in the empty state", async () => {
     // No artifacts yet → the onboarding empty state should render.
     m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [] });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     const onboarding = await screen.findByTestId("spec-kit-onboarding");
     expect(onboarding).toHaveTextContent(/spec → plan → tasks/i);
     // Links to the adjacent Analysis surface as the downstream consumer.
@@ -359,13 +369,13 @@ describe("SpecKitPage", () => {
       enabled: true,
       artifacts: [artifact("spec.md", "# Spec", 1)],
     });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-content")).toBeInTheDocument());
     expect(screen.queryByTestId("spec-kit-onboarding")).not.toBeInTheDocument();
   });
 
   it("reframes the slash-command palette help text for intent authoring", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     const help = await screen.findByTestId("spec-kit-palette-help");
     expect(help).toHaveTextContent(/author/i);
     expect(help).toHaveTextContent(/spec → plan → tasks/i);
@@ -392,7 +402,7 @@ describe("SpecKitPage — #789", () => {
     updatedAt: new Date().toISOString(),
   });
 
-  async function openFeature(): Promise<void> {
+  async function openFeature(user: AuthUser = WRITER): Promise<void> {
     m.listFeatures!.mockResolvedValue({ features: [FEATURE] });
     m.listFeatureArtifacts!.mockResolvedValue({
       feature: FEATURE,
@@ -406,7 +416,7 @@ describe("SpecKitPage — #789", () => {
       implementGate: false,
       lastUpdated: new Date().toISOString(),
     });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: user }) });
     await waitFor(() =>
       expect(screen.getByRole("option", { name: /001-a — Mark read/ })).toBeInTheDocument(),
     );
@@ -432,8 +442,94 @@ describe("SpecKitPage — #789", () => {
     fireEvent.click(screen.getByTestId("spec-kit-run-button"));
   }
 
+  /** The project-level write controls (no feature selected). */
+  const PROJECT_WRITES = [
+    "spec-kit-toggle",
+    "spec-kit-generate-constitution",
+    "spec-kit-edit-button",
+    "spec-kit-delete-button",
+    "spec-kit-command-input",
+    "spec-kit-run-button",
+  ];
+  /** The per-feature write controls. */
+  const FEATURE_WRITES = [
+    "spec-kit-run-checklist",
+    "spec-kit-export-preview",
+    "spec-kit-export-publish",
+    "spec-kit-feature-archive",
+  ];
+
+  async function openProjectArtifact(user: AuthUser): Promise<void> {
+    m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "S")] });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: user }) });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-content")).toHaveTextContent("S"));
+  }
+
+  it("disables every project-level write for a viewer without project.update, with the reason", async () => {
+    await openProjectArtifact(READER);
+    for (const id of PROJECT_WRITES) {
+      const el = screen.getByTestId(id);
+      expect(el, id).toBeDisabled();
+      expect(el, id).toHaveAttribute("title", "Requires project.update");
+    }
+    // Reading stays available: the artifact is shown and comments still open.
+    expect(screen.getByTestId("spec-kit-content")).toHaveTextContent("S");
+    expect(screen.getByTestId("spec-kit-comments-button")).toBeEnabled();
+  });
+
+  it("sends no write when a viewer without project.update clicks the gated controls", async () => {
+    await openProjectArtifact(READER);
+    fireEvent.click(screen.getByTestId("spec-kit-toggle"));
+    fireEvent.click(screen.getByTestId("spec-kit-generate-constitution"));
+    fireEvent.click(screen.getByTestId("spec-kit-edit-button"));
+    fireEvent.click(screen.getByTestId("spec-kit-delete-button"));
+    await flush();
+    expect(m.setEnabled).not.toHaveBeenCalled();
+    expect(m.generateConstitution).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("spec-kit-editor")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("enables every project-level write for a viewer with project.update, and only for them", async () => {
+    // The same page, as a reader first: the writer's controls are the gate's, not a default.
+    await openProjectArtifact(READER);
+    expect(screen.getByTestId("spec-kit-edit-button")).toBeDisabled();
+    cleanup();
+    await openProjectArtifact(WRITER);
+    for (const id of PROJECT_WRITES) {
+      const el = screen.getByTestId(id);
+      expect(el, id).toBeEnabled();
+      expect(el, id).not.toHaveAttribute("title");
+    }
+  });
+
+  it("disables every feature write for a viewer without project.update", async () => {
+    await openFeature(READER);
+    for (const id of FEATURE_WRITES) {
+      const el = screen.getByTestId(id);
+      expect(el, id).toBeDisabled();
+      expect(el, id).toHaveAttribute("title", "Requires project.update");
+    }
+    // The feature's artifacts and gates are still readable.
+    expect(screen.getByTestId("spec-kit-feature-tree")).toBeInTheDocument();
+    expect(screen.getByTestId("spec-kit-feature-gates")).toBeInTheDocument();
+  });
+
+  it("enables the feature writes (Publish once a dry run is done) with project.update, and only for them", async () => {
+    await openFeature(READER);
+    expect(screen.getByTestId("spec-kit-run-checklist")).toBeDisabled();
+    cleanup();
+    await openFeature(WRITER);
+    for (const id of FEATURE_WRITES.filter((i) => i !== "spec-kit-export-publish")) {
+      expect(screen.getByTestId(id), id).toBeEnabled();
+    }
+    m.runCommand!.mockResolvedValue({ message: "dry run ok" });
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
+  });
+
   it("suggests the speckit.* commands, including those with no legacy alias", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
       target: { value: "/speckit" },
@@ -444,7 +540,7 @@ describe("SpecKitPage — #789", () => {
   });
 
   it("refuses a per-feature command with no feature selected, sending nothing", async () => {
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     typeAndRun("/plan the approach");
     await waitFor(() =>
@@ -514,7 +610,7 @@ describe("SpecKitPage — #789", () => {
       feature: { ...FEATURE, slug: "002-b" },
       artifact: { key: "spec.md" },
     });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     typeAndRun("/speckit.specify mark entries read");
     await waitFor(() =>
@@ -538,7 +634,7 @@ describe("SpecKitPage — #789", () => {
     m.listFeatureArtifacts!.mockResolvedValue({ feature: FEATURE, artifacts: [] });
     m.featureStatus!.mockResolvedValue({ slug: "001-a" });
     m.restoreFeature!.mockResolvedValue({ feature: FEATURE });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() =>
       expect(screen.getByRole("option", { name: /001-a — Mark read \(archived\)/ })).toBeTruthy(),
     );
@@ -616,7 +712,7 @@ describe("SpecKitPage — #789", () => {
   it("offers no Delete while Spec Kit Mode is disabled", async () => {
     m.getEnabled!.mockResolvedValue({ enabled: false });
     m.listFiles!.mockResolvedValue({ enabled: false, artifacts: [artifact("spec.md", "S")] });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-root")).toBeInTheDocument());
     await flush();
     expect(screen.queryByTestId("spec-kit-delete-button")).not.toBeInTheDocument();
@@ -651,7 +747,7 @@ describe("SpecKitPage — #789", () => {
   it("deletes a project artifact after confirmation", async () => {
     m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "S")] });
     m.deleteFile!.mockResolvedValue(undefined);
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     fireEvent.click(await screen.findByTestId("spec-kit-delete-button"));
     expect(m.deleteFile).not.toHaveBeenCalled();
     await answerDialog("Delete");
@@ -663,7 +759,7 @@ describe("SpecKitPage — #789", () => {
     m.listFiles!.mockResolvedValueOnce({ enabled: true, artifacts: [artifact("spec.md", "S")] });
     m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [] });
     m.deleteFile!.mockResolvedValue(undefined);
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     fireEvent.click(await screen.findByTestId("spec-kit-delete-button"));
     await answerDialog("Delete");
     await waitFor(() => expect(screen.getByTestId("spec-kit-empty-banner")).toBeInTheDocument());
@@ -671,7 +767,7 @@ describe("SpecKitPage — #789", () => {
 
   it("does not delete when the confirmation is declined", async () => {
     m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "S")] });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     fireEvent.click(await screen.findByTestId("spec-kit-delete-button"));
     await answerDialog("Cancel");
     await flush();
@@ -703,7 +799,7 @@ describe("SpecKitPage — #789", () => {
       },
     });
     startAnalysis.mockResolvedValue({ id: "an_1" });
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-content")).toBeInTheDocument());
     typeAndRun("/speckit.implement");
     fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));
@@ -746,7 +842,7 @@ describe("SpecKitPage — #789", () => {
       },
     });
     startAnalysis.mockRejectedValue(new Error("db down"));
-    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
     await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
     typeAndRun("/speckit.implement");
     fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));

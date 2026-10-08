@@ -50,6 +50,8 @@ import { MessageSquare } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 
 const FAILED = "The Spec Kit operation failed. Please try again.";
+/** Shown on a write control the viewer cannot use (#789 — the server gates it). */
+const REQUIRES_UPDATE = "Requires project.update";
 
 export default function SpecKitPage() {
   const params = useParams<{ id: string }>();
@@ -57,6 +59,11 @@ export default function SpecKitPage() {
   const queryClient = useQueryClient();
   // Epic #34 (AC1/AC3) — collaboration on Spec Kit artifacts.
   const { user } = useAuth();
+  // #789 — every write on this page (toggle, edit, delete, commands, constitution,
+  // feature archive) is `project.update` server-side; a viewer without it gets
+  // the read-only page rather than controls that 403.
+  const canWrite = user?.permissions.includes("project.update") ?? false;
+  const writeHint = canWrite ? undefined : REQUIRES_UPDATE;
   const [commentsOpen, setCommentsOpen] = useState(false);
 
   const enabledQuery = useQuery({
@@ -360,7 +367,8 @@ export default function SpecKitPage() {
               aria-checked={enabled}
               data-testid="spec-kit-toggle"
               onClick={() => setEnabledMutation.mutate(!enabled)}
-              disabled={setEnabledMutation.isPending}
+              disabled={!canWrite || setEnabledMutation.isPending}
+              title={writeHint}
               className={`inline-flex h-6 w-11 items-center rounded-full transition ${
                 enabled ? "bg-primary" : "bg-muted"
               }`}
@@ -383,6 +391,7 @@ export default function SpecKitPage() {
         <FeaturePanel
           projectId={projectId}
           enabled={enabled}
+          canWrite={canWrite}
           selectedSlug={selectedFeature}
           onSelect={selectFeature}
         />
@@ -459,7 +468,8 @@ export default function SpecKitPage() {
           variant="outline"
           className="w-full"
           onClick={() => constitutionMutation.mutate()}
-          disabled={!enabled || constitutionMutation.isPending}
+          disabled={!canWrite || !enabled || constitutionMutation.isPending}
+          title={writeHint}
           data-testid="spec-kit-generate-constitution"
         >
           {constitutionMutation.isPending ? "Generating…" : "Generate constitution.md"}
@@ -517,7 +527,8 @@ export default function SpecKitPage() {
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={deleteMutation.isPending}
+                    disabled={!canWrite || deleteMutation.isPending}
+                    title={writeHint}
                     data-testid="spec-kit-delete-button"
                   >
                     Delete
@@ -531,6 +542,8 @@ export default function SpecKitPage() {
                 size="sm"
                 variant="outline"
                 onClick={() => setEditingDraft(selectedArtifact.content)}
+                disabled={!canWrite}
+                title={writeHint}
                 data-testid="spec-kit-edit-button"
               >
                 Edit
@@ -647,7 +660,8 @@ export default function SpecKitPage() {
             value={commandBuffer}
             onChange={(e) => setCommandBuffer(e.target.value)}
             placeholder="/speckit.specify build a billing dashboard"
-            disabled={!enabled || commandMutation.isPending}
+            disabled={!canWrite || !enabled || commandMutation.isPending}
+            title={writeHint}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -677,7 +691,8 @@ export default function SpecKitPage() {
             type="button"
             size="sm"
             onClick={submitBuffer}
-            disabled={!enabled || commandMutation.isPending}
+            disabled={!canWrite || !enabled || commandMutation.isPending}
+            title={writeHint}
             data-testid="spec-kit-run-button"
             className="w-full"
           >
@@ -694,7 +709,8 @@ export default function SpecKitPage() {
               size="sm"
               variant="outline"
               className="w-full"
-              disabled={!enabled || busy}
+              disabled={!canWrite || !enabled || busy}
+              title={writeHint}
               onClick={() => run("speckit.checklist", { featureSlug: selectedFeature })}
               data-testid="spec-kit-run-checklist"
             >
@@ -705,7 +721,8 @@ export default function SpecKitPage() {
               size="sm"
               variant="outline"
               className="w-full"
-              disabled={!enabled || busy}
+              disabled={!canWrite || !enabled || busy}
+              title={writeHint}
               onClick={() =>
                 run("speckit.taskstoissues", { featureSlug: selectedFeature, dryRun: true })
               }
@@ -727,7 +744,9 @@ export default function SpecKitPage() {
                   size="sm"
                   variant="outline"
                   className="w-full"
+                  title={writeHint}
                   disabled={
+                    !canWrite ||
                     !enabled ||
                     busy ||
                     previewedExport?.feature !== selectedFeature ||

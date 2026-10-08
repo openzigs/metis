@@ -30,11 +30,13 @@ const GATES: Array<{
 interface Props {
   projectId: string;
   enabled: boolean;
+  /** Whether the viewer holds `project.update`, which archive/restore requires. */
+  canWrite: boolean;
   selectedSlug: string | null;
   onSelect: (slug: string | null) => void;
 }
 
-export function FeaturePanel({ projectId, enabled, selectedSlug, onSelect }: Props) {
+export function FeaturePanel({ projectId, enabled, canWrite, selectedSlug, onSelect }: Props) {
   const queryClient = useQueryClient();
   const [showArchived, setShowArchived] = useState(false);
 
@@ -132,7 +134,8 @@ export function FeaturePanel({ projectId, enabled, selectedSlug, onSelect }: Pro
             size="sm"
             variant="outline"
             className="w-full"
-            disabled={lifecycle.isPending}
+            disabled={!canWrite || lifecycle.isPending}
+            title={canWrite ? undefined : "Requires project.update"}
             onClick={() =>
               lifecycle.mutate({ slug: selectedSlug, action: archived ? "restore" : "archive" })
             }
