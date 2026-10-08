@@ -848,8 +848,10 @@ async function dispatchNamespaced(
         ...(mode !== undefined ? { mode } : {}),
         ...(Array.isArray(body.domains) ? { domains: body.domains as string[] } : {}),
         actorId: actor,
-        // #787 — derive the items from the feature's spec.md + plan.md.
-        deps: { provider: await resolveProvider() },
+        // #787 — derive the items from the feature's spec.md + plan.md. Resolved
+        // lazily inside runChecklist, after its 404/412 checks; a provider that
+        // cannot be built falls back to the labelled template.
+        resolveProvider,
       });
     }
     case "speckit.taskstoissues": {

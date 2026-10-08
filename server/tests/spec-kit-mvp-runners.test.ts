@@ -849,6 +849,82 @@ describe("runChecklist", () => {
     expect(checklistBody("checklist-security.md")).toMatch(/Generic template/);
   });
 
+  it("#787 resolves the provider lazily through resolveProvider and derives the items", async () => {
+    seedPlanned();
+    const provider = new CapturingProvider(MINIFLUX_REPLY);
+    const resolveProvider = vi.fn(async () => provider as AIProvider);
+    const r = await runChecklist({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      domains: ["security"],
+      resolveProvider,
+    });
+    expect(resolveProvider).toHaveBeenCalledTimes(1);
+    expect(provider.users).toHaveLength(1);
+    expect(r.sources).toEqual({ security: "feature" });
+  });
+
+  it("#787 an unbuildable provider (AIProviderError) falls back to the labelled template", async () => {
+    seedPlanned();
+    const { AIProviderError } = await import("../src/lib/ai/errors.js");
+    const resolveProvider = vi.fn(async (): Promise<AIProvider> => {
+      throw new AIProviderError("Provider credentials unavailable for project");
+    });
+    const r = await runChecklist({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      domains: ["security", "performance"],
+      resolveProvider,
+    });
+    expect(resolveProvider).toHaveBeenCalledTimes(1);
+    expect(r.sources).toEqual({ security: "template", performance: "template" });
+    expect(r.tokensUsed).toBe(0);
+    expect(checklistBody("checklist-security.md")).toMatch(/Generic template/);
+    expect(r.message).toMatch(/the project's AI provider is unavailable/);
+  });
+
+  it("#787 a retired provider override also falls back to the template", async () => {
+    seedPlanned();
+    const { AIProviderRetiredError } = await import("../src/lib/ai/errors.js");
+    const r = await runChecklist({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      domains: ["security"],
+      resolveProvider: async () => {
+        throw new AIProviderRetiredError("retired");
+      },
+    });
+    expect(r.sources).toEqual({ security: "template" });
+  });
+
+  it("#787 a non-provider resolution error still propagates", async () => {
+    seedPlanned();
+    await expect(
+      runChecklist({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        domains: ["security"],
+        resolveProvider: async () => {
+          throw new Error("db down");
+        },
+      }),
+    ).rejects.toThrow("db down");
+  });
+
+  it("#787 404 and 412 take precedence: the provider is not resolved first", async () => {
+    const resolveProvider = vi.fn(async (): Promise<AIProvider> => {
+      throw new Error("must not be called");
+    });
+    await expect(
+      runChecklist({ projectId: "p1", featureSlug: "099-nope", resolveProvider }),
+    ).rejects.toMatchObject({ code: "SPECKIT_FEATURE_NOT_FOUND" });
+    seedFeature("p1", "001-foo");
+    await expect(
+      runChecklist({ projectId: "p1", featureSlug: "001-foo", resolveProvider }),
+    ).rejects.toMatchObject({ code: "SPECKIT_GATE_UNMET" });
+    expect(resolveProvider).not.toHaveBeenCalled();
+  });
+
   it("#787 merge (the default) keeps a reviewer-added line across a re-run", async () => {
     seedPlanned();
     await runChecklist({ projectId: "p1", featureSlug: "001-foo", domains: ["security"] });

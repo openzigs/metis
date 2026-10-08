@@ -11,7 +11,9 @@
  * in ONE model call with the domains as `##` headings. A domain the model left
  * empty, or every domain when there is no online provider, falls back to the
  * fixed `DOMAIN_TEMPLATES`, and that file says in its body that it is a generic
- * template. Merge mode keeps check states AND every line the reviewer added
+ * template. The provider is resolved lazily, after the 404/412 checks, and a
+ * provider that cannot be built (`AIProviderError`, or a retired provider)
+ * counts as no provider rather than failing the command. Merge mode keeps check states AND every line the reviewer added
  * that the regenerated set does not contain.
  */
 import { prisma } from "../../prisma.js";
@@ -24,6 +26,8 @@ import { requireGate } from "../gates.js";
 import { resolveFeatureBySlug } from "../features.js";
 import { SpecKitArtifactError } from "../artifacts.js";
 import { loadProjectContext, runSpecKitAgent, type RunDeps } from "./runner.js";
+import type { AIProvider } from "../../ai/types.js";
+import { AIProviderError, AIProviderRetiredError } from "../../ai/errors.js";
 
 export const DEFAULT_CHECKLIST_DOMAINS = [
   "security",
@@ -49,6 +53,12 @@ export interface ChecklistInput {
    * every domain is the labelled generic template.
    */
   deps?: RunDeps;
+  /**
+   * #787 — lazily builds the project's provider, called only after the
+   * feature and gate checks pass and only when `deps.provider` is absent.
+   * An `AIProviderError` (or a retired provider) ⇒ the labelled template.
+   */
+  resolveProvider?: () => Promise<AIProvider>;
 }
 
 /** #787 — where a domain's items came from. */
@@ -117,7 +127,16 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
   // #787 — one model pass over the feature's own spec + plan.
   let derived = new Map<string, string[]>();
   let tokensUsed = 0;
-  const provider = input.deps?.provider;
+  let provider = input.deps?.provider;
+  let unavailable = false;
+  if (provider === undefined && input.resolveProvider) {
+    try {
+      provider = await input.resolveProvider();
+    } catch (err) {
+      if (!(err instanceof AIProviderError || err instanceof AIProviderRetiredError)) throw err;
+      unavailable = true;
+    }
+  }
   const online = provider !== undefined && !provider.offline;
   if (online) {
     const spec = await getFeatureArtifact(feature.id, "spec.md");
@@ -141,7 +160,7 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
       ].join("\n"),
       actorId: input.actorId ?? null,
       sessionId: input.sessionId ?? null,
-      deps: input.deps,
+      deps: { provider },
     });
     tokensUsed = run.tokensUsed;
     derived = parseChecklistSections(run.content, domains);
@@ -171,7 +190,11 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
   }
   const fromFeature = domains.filter((d) => sources[d] === "feature");
   const fromTemplate = domains.filter((d) => sources[d] === "template");
-  const why = online ? "the model returned no items" : "no online AI provider";
+  const why = online
+    ? "the model returned no items"
+    : unavailable
+      ? "the project's AI provider is unavailable"
+      : "no online AI provider";
   const parts = [
     fromFeature.length > 0 ? `derived from spec.md and plan.md: ${fromFeature.join(", ")}` : "",
     fromTemplate.length > 0 ? `generic template: ${fromTemplate.join(", ")} (${why})` : "",
