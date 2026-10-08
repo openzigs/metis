@@ -57,6 +57,10 @@ const IMPORT_RE = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
 const DECLARATION_RE =
   /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*[=:])/gm;
 
+/** `const name = factory(` — how a member mount's object gets its router. */
+const ASSIGNED_CALL_RE =
+  /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(/g;
+
 /** Mount nesting deeper than this is a cycle, not a real router tree. */
 const MAX_MOUNT_DEPTH = 12;
 
@@ -322,10 +326,12 @@ export function collectApiRoutes({ entryFile, readSource }) {
         }
         walkFunction(fn.file, fn.fn, mountPrefix, null, depth + 1);
       } else if (target.kind === "member") {
-        const assigned = new RegExp(
-          `\\b(?:const|let|var)\\s+${target.object.replace(/\$/g, "\\$")}\\s*=\\s*(?:await\\s+)?([A-Za-z_$][\\w$]*)\\s*\\(`,
-        ).exec(chunkText);
-        const fn = assigned ? resolveFunction(file, assigned[1]) : null;
+        // Compare names rather than building a pattern from one: a variable
+        // name interpolated into a RegExp needs escaping to be correct.
+        const assigned = [...chunkText.matchAll(ASSIGNED_CALL_RE)].find(
+          (m) => m[1] === target.object,
+        );
+        const fn = assigned ? resolveFunction(file, assigned[2]) : null;
         if (fn === null) {
           unresolved.push({
             file,
