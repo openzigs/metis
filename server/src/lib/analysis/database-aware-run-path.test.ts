@@ -81,7 +81,12 @@ let failSchemaDataProbe = false;
 let failDatabaseAwarePersist = false;
 
 vi.mock("../prisma.js", () => ({
+  resolveDatabaseProvider: () => "sqlite",
   prisma: {
+    // #909 — metadata merge-writers run in a transaction; this fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../prisma.js")).prisma),
+    ),
     analysis: {
       findFirst: vi.fn(async (args: { where: { id: string }; select?: { metadata?: boolean } }) => {
         const row = analysisRows.get(args.where.id);

@@ -227,6 +227,34 @@ describe("#215 — orchestrator creates approval requests after extraction/clari
     expect(rows.every((r) => r.status === "pending")).toBe(true);
   });
 
+  it("#909 — stamps each extraction with its own run id, in the same write as the list", async () => {
+    extractMock.mockResolvedValue({
+      requirements: [
+        { id: "REQ-001", title: "A", description: "", ambiguities: [], evidenceNeeds: [] },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    const { orch } = makeOrchestrator();
+    const run = () =>
+      (orch as unknown as PrivateOrchestrator).runEnhancementPipeline({
+        analysisId: "ana-runs",
+        extractedRequirements: [{ id: "x", text: "seed requirement text" }],
+        enableWebResearch: false,
+        enableClarification: false,
+        signal: new AbortController().signal,
+      });
+
+    await run();
+    await run();
+
+    const writes = persisted.enhancement.filter((e) => "structuredRequirements" in e);
+    expect(writes).toHaveLength(2);
+    const [first, second] = writes.map((w) => w.structuredRunId);
+    expect(typeof first).toBe("string");
+    expect(first).not.toBe(second);
+  });
+
   it("also creates evidence approvals per digest when web research is enabled", async () => {
     extractMock.mockResolvedValue({
       requirements: [{ id: "r1", title: "A", description: "", ambiguities: [], evidenceNeeds: [] }],
@@ -398,6 +426,8 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     const blocked = persisted.enhancement.find((e) => "promotionBlocked" in e);
     expect(blocked).toBeDefined();
     expect((blocked!.promotionBlocked as { blocked: boolean }).blocked).toBe(true);
+    // #909 — the synthesis count rides along, so the Approvals tab can compare it.
+    expect(blocked!.promotionBlocked).toMatchObject({ synthesisRequirementCount: 1 });
     // #258 — the marker and the coarse status are written in ONE metadata
     // patch (a single persistAnalysisEnhancement call for the blocked path).
     expect(blocked!.promotionStatus).toBe("blocked");
@@ -443,6 +473,7 @@ describe("#216 — promotion is gated on resolved approvals", () => {
       ],
       totalAmbiguities: 0,
       totalEvidenceNeeds: 0,
+      runId: "run-7",
     });
     await approvalSvc.createApprovalRequests("ana-reject", [
       { type: "requirement", itemId: "r1" },
@@ -472,7 +503,52 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     expect(cleared).toMatchObject({
       promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 1 },
       promotedStructuredIds: ["r1"],
+      promotedStructuredRunId: "run-7",
     });
+  });
+
+  // Issue #909 — approvals are never deleted and every run numbers from the
+  // same ids, so an earlier run's approval of "r2" must not override this run's
+  // rejection of a different requirement that is also "r2".
+  it("#909 — the newest approval of an id decides, not an earlier run's", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        {
+          id: "r2",
+          title: "Reading speed validation",
+          description: "Reading speed validation.",
+          type: "functional" as const,
+          stakeholders: [],
+          priority: "should-have" as const,
+          ambiguities: [],
+          evidenceNeeds: [],
+          rawSource: "",
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    await approvalSvc.createApprovalRequests("ana-rerun", [{ type: "requirement", itemId: "r2" }]);
+    await approvalSvc.reviewApprovalRequest("ana-rerun", "ap-1", {
+      status: "approved",
+      reviewerId: "u1",
+    });
+    approvals[0]!.createdAt = new Date("2026-01-01T00:00:00Z");
+    await approvalSvc.createApprovalRequests("ana-rerun", [{ type: "requirement", itemId: "r2" }]);
+    await approvalSvc.reviewApprovalRequest("ana-rerun", "ap-2", {
+      status: "rejected",
+      reviewerId: "u1",
+    });
+
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-rerun",
+      ...synthInput,
+    });
+
+    const synthesis = persisted.requirements[0]!.synthesis as { requirements: unknown[] };
+    expect(synthesis.requirements).toEqual([]);
   });
 
   // Issue #723 — `persistRequirements` withholds a replacement over reviewed
