@@ -9,3 +9,6 @@ section: Fixed
   pick up criteria listed under the issue's own "Acceptance criteria" heading.
 - An import with more than 25 requirements asks which ones to draft, instead of
   drafting them all at once.
+- Re-generating drafts for a project that already holds `[Feature] [Feature]: …`
+  drafts creates new `[Feature] …` drafts alongside them, because the title is the
+  dedup key. Review or discard the old drafts before publishing the new ones.

@@ -8,7 +8,7 @@
  * (`DRAFT_SELECTION_REQUIRED`), and this list is where the user names the
  * requirements to draft instead.
  */
-import type { DraftCandidate } from "@metis/shared";
+import { MAX_DRAFT_REQUIREMENT_SELECTION, type DraftCandidate } from "@metis/shared";
 import { Button } from "@/components/ui/button";
 
 export interface DraftRequirementPickerProps {
@@ -43,9 +43,15 @@ export function DraftRequirementPicker({
           <Button
             size="sm"
             variant="outline"
-            onClick={() => onChange(new Set(requirements.map((r) => r.id)))}
+            onClick={() =>
+              onChange(
+                new Set(requirements.slice(0, MAX_DRAFT_REQUIREMENT_SELECTION).map((r) => r.id)),
+              )
+            }
           >
-            Select all
+            {requirements.length > MAX_DRAFT_REQUIREMENT_SELECTION
+              ? `Select first ${MAX_DRAFT_REQUIREMENT_SELECTION}`
+              : "Select all"}
           </Button>
           <Button
             size="sm"

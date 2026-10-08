@@ -256,6 +256,27 @@ describe("choosing which imported requirements to draft (#863)", () => {
     expect(screen.getByTestId("draft-requirement-picker-count")).toHaveTextContent("0 selected");
   });
 
+  it("select all stops at the server's selection limit", async () => {
+    search.params = new URLSearchParams({ analysisId: "analysis_import_1" });
+    api.listDrafts.mockResolvedValue([]);
+    api.listDraftCandidates.mockResolvedValue({
+      analysisId: "analysis_import_1",
+      source: "import",
+      selectionRequired: true,
+      requirements: Array.from({ length: 600 }, (_, i) => ({
+        id: `big_req_${i + 1}`,
+        title: `Upstream issue ${i + 1}`,
+        type: "feature",
+        priority: "medium",
+        externalUrl: null,
+      })),
+    });
+    renderPage();
+    await screen.findByTestId("draft-requirement-picker");
+    fireEvent.click(screen.getByRole("button", { name: "Select first 500" }));
+    expect(screen.getByTestId("draft-requirement-picker-count")).toHaveTextContent("500 selected");
+  });
+
   it("shows no selection step for an ordinary analysis", async () => {
     search.params = new URLSearchParams({ analysisId: "analysis_1" });
     api.listDrafts.mockResolvedValue([]);

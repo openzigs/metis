@@ -268,6 +268,19 @@ describe("acceptance criteria stated in an upstream body (#863)", () => {
     expect(extractBodyAcceptanceCriteria(body)).toEqual(["first", "second"]);
   });
 
+  it("does not read a template checkbox after prose under the heading", () => {
+    const body = "Acceptance criteria\nNone yet.\n- [x] I searched existing issues";
+    expect(extractBodyAcceptanceCriteria(body)).toEqual([]);
+  });
+
+  it("keeps wrapped list items whole and the items after them", () => {
+    const body = "## Acceptance criteria\n- first item that\n  wraps onto a line\n- second\n";
+    expect(extractBodyAcceptanceCriteria(body)).toEqual([
+      "first item that wraps onto a line",
+      "second",
+    ]);
+  });
+
   it("invents nothing: a template checklist is not a criterion", () => {
     expect(extractBodyAcceptanceCriteria("- [x] I have searched the existing issues")).toEqual([]);
     expect(extractBodyAcceptanceCriteria("## Acceptance criteria\n\nTBD")).toEqual([]);

@@ -1248,7 +1248,7 @@ When you click **"Run Analysis"** on a project, here's what happens behind the s
    - **Document Analyst** — reads through all your uploaded documents, extracting business rules, compliance requirements, and user stories
    - **Code Analyst** — examines your connected code repositories, identifying API changes, architectural patterns, and technical debt
    - **Database Analyst** — inspects your connected databases, discovering schema changes, index requirements, and data migration needs
-   - **Web Researcher** — searches for industry standards, best practices, and regulatory compliance information
+   - **Web Researcher** — searches for industry standards, best practices, and regulatory compliance information. It is skipped, with a single notice, when no web search provider is configured (set `WEB_SEARCH_PROVIDER` and that provider's API key)
 
    > **What analysis reads vs. writes:** Analysis reads from uploaded documents, connected code repositories, connected databases, and live web search. It does **not** read existing Jira or GitHub issues as input. Jira and GitHub are output-only destinations — approved requirements are *published to* them after analysis.
 
@@ -1736,7 +1736,7 @@ After an analysis produces requirements, you can generate GitHub issue drafts:
 1. Go to the project detail page
 2. Click **"Generate Drafts"** or use the Publishing API
 
-For each requirement, METIS creates a draft issue with:
+For each requirement, METIS creates a draft issue (an import of more than 25 requirements first asks you to choose which ones to draft, up to 500 at a time) with:
 - **Epic or Feature label** — critical/high priority items become Epics; others become Features
 - **Structured template**:
   - Description (from the requirement body)

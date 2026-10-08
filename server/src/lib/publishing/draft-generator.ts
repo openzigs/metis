@@ -855,7 +855,12 @@ export function extractBodyAcceptanceCriteria(body: string): string[] {
     if (MARKDOWN_HEADING.test(line) || isAcceptanceCriteriaHeading(line)) break;
     const item = listItemText(line);
     if (item) items.push(item);
-    else if (line.trim().length > 0 && items.length > 0) break;
+    else if (line.trim().length > 0) {
+      // An indented line continues the item above; any other prose ends the
+      // section, even before the first item ("None yet." then a template box).
+      if (items.length > 0 && /^\s+\S/.test(line)) items[items.length - 1] += ` ${line.trim()}`;
+      else break;
+    }
   }
   return items;
 }

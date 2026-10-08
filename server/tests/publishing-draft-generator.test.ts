@@ -71,8 +71,10 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     analysis: {
-      findFirst: vi.fn(async ({ where }: { where: { id: string } }) =>
-        where.id === fakeAnalysis.id ? fakeAnalysis : null,
+      findFirst: vi.fn(async ({ where }: { where: { id: string; projectId?: string } }) =>
+        where.id === fakeAnalysis.id && where.projectId === fakeAnalysis.projectId
+          ? fakeAnalysis
+          : null,
       ),
     },
     requirement: {
@@ -1088,7 +1090,7 @@ describe("#863 — import-run drafts", () => {
     });
 
     it("404s an analysis that is not the project's", async () => {
-      const err = await listDraftCandidates("proj_1", "analysis_other").catch((e: unknown) => e);
+      const err = await listDraftCandidates("proj_other", "analysis_1").catch((e: unknown) => e);
       expect(err).toMatchObject({ status: 404, code: "ANALYSIS_NOT_FOUND" });
     });
   });
