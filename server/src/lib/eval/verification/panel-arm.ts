@@ -128,7 +128,13 @@ export function composeArmStatus(
   panel: FindingSupportPanel | null,
   flagAt: readonly SupportPanelConfidence[] = DEFAULT_PANEL_FLAG_AT,
 ): FindingVerificationStatus | null {
-  if (deterministic === "unverified" || deterministic === "could-not-verify") return deterministic;
+  if (
+    deterministic === "unverified" ||
+    deterministic === "could-not-verify" ||
+    deterministic === "ungrounded"
+  ) {
+    return deterministic;
+  }
   if (panel && flagAt.includes(panel.confidence)) return "unverified";
   return deterministic;
 }
@@ -147,8 +153,7 @@ export function caseEvidence(c: VerificationCase): PanelEvidence[] {
 const addUsage = (
   base: ArmUsage,
   extra:
-    | { usage: { promptTokens: number; completionTokens: number }; llmCalls: number }
-    | undefined,
+    { usage: { promptTokens: number; completionTokens: number }; llmCalls: number } | undefined,
 ): ArmUsage =>
   extra
     ? {

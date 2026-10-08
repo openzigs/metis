@@ -48,6 +48,8 @@ export interface InvokeCustomAgentResult {
   usage: CustomAgentUsage;
   model: string;
   provider: string;
+  /** #727 — the playground runs prompt-only; the server says so on every answer. */
+  grounding?: { mode: "prompt-only"; toolsNotRun: string[]; notice: string };
 }
 
 /** Per-project enablement row (Epic #260 / #79/#80). */

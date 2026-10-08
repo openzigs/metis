@@ -53,6 +53,10 @@ describe("FindingsFilterBar (#30)", () => {
 
     fireEvent.click(screen.getByTestId("verification-filter-unverified"));
     expect(onChange).toHaveBeenLastCalledWith({ ...filters, verification: "unverified" });
+
+    // #727 — custom/library findings with no code access filter separately.
+    fireEvent.click(screen.getByTestId("verification-filter-ungrounded"));
+    expect(onChange).toHaveBeenLastCalledWith({ ...filters, verification: "ungrounded" });
   });
 
   it("marks the active verification button pressed", () => {

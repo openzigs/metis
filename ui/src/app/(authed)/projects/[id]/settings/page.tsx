@@ -17,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { AiProviderPicker } from "@/components/projects/ai-provider-picker";
 import { AiModelPicker } from "@/components/projects/ai-model-picker";
 import { PrimaryRepoCard } from "@/components/projects/primary-repo-card";
+import { WorkspaceAssignCard } from "@/components/projects/workspace-assign-card";
 import { SafetySettingsCard } from "@/components/projects/safety-settings-card";
 import { BudgetSettingsCard } from "@/components/projects/budget-settings-card";
 import { AutopilotSettingsCard } from "@/components/projects/autopilot-settings-card";
@@ -89,6 +90,7 @@ export default function ProjectSettingsPage() {
         <h2 className="text-lg font-semibold">Settings</h2>
         <AiProviderPicker projectId={id} current={p.aiProviderId} />
         <AiModelPicker projectId={id} current={p.aiModel} />
+        <WorkspaceAssignCard projectId={id} workspaceId={p.workspaceId} />
         <PrimaryRepoCard projectId={id} />
         <InferenceProfileCard projectId={id} />
         <SafetySettingsCard projectId={id} current={p.safetyMode} />

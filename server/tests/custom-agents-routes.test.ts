@@ -266,6 +266,9 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
       .send({ projectId: "p1", input: "hello" });
     expect(res.status).toBe(200);
     expect(res.body.data.content).toBe("playground answer");
+    // #727 — the API caller is told the answer is prompt-only, not just the UI.
+    expect(res.body.data.grounding).toMatchObject({ mode: "prompt-only" });
+    expect(res.body.data.grounding.notice).toMatch(/^Ungrounded answer/);
     expect(chatMock).toHaveBeenCalledTimes(1);
     await new Promise((r) => setTimeout(r, 0));
     const inv = auditRows.find((a) => a.action === "custom_agent.invoked");

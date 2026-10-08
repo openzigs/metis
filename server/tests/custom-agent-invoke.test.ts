@@ -11,7 +11,9 @@ import type { AIProvider, ChatMessage, ChatResponse } from "../src/lib/ai/types.
 import {
   InvocationError,
   MAX_INVOKE_PAYLOAD_CHARS,
+  PLAYGROUND_GROUNDING_CONTRACT,
   invokeCustomAgent,
+  playgroundGrounding,
 } from "../src/lib/custom-agents/invoke.js";
 import type { CustomAgentDto } from "@metis/shared";
 
@@ -173,5 +175,44 @@ describe("invokeCustomAgent (#80)", () => {
     );
     const res = await invokeCustomAgent({ provider, agent, input: "hi" });
     expect(res.usage.totalTokens).toBe(0);
+  });
+});
+
+describe("#727 — the playground is prompt-only and says so", () => {
+  it("tells the model it has no project access, after the agent's own persona", async () => {
+    let system = "";
+    const provider = makeProvider((_m, o) => {
+      system = String(o.systemMessage);
+      return stub("x");
+    });
+    await invokeCustomAgent({ provider, agent, input: "Cite file:line for the SQL." });
+    expect(system).toContain(PLAYGROUND_GROUNDING_CONTRACT);
+    // Server-authored, so it follows the operator persona and cannot be pre-empted by it.
+    expect(system.indexOf(PLAYGROUND_GROUNDING_CONTRACT)).toBeGreaterThan(
+      system.indexOf("helpful analyst"),
+    );
+  });
+
+  it("returns a grounding notice naming the declared tools that did not run", async () => {
+    const provider = makeProvider(() => stub("UPDATE entries SET status='read'"));
+    const res = await invokeCustomAgent({
+      provider,
+      agent: { ...agent, tools: ["search-knowledge", "search_code_graph"] },
+      input: "Which SQL marks entries read?",
+    });
+    expect(res.grounding).toEqual({
+      mode: "prompt-only",
+      toolsNotRun: ["search-knowledge", "search_code_graph"],
+      notice: expect.stringContaining("Ungrounded answer"),
+    });
+    expect(res.grounding!.notice).toContain("search-knowledge, search_code_graph");
+    expect(res.grounding!.notice).toContain("unverified");
+  });
+
+  it("says the agent has no tools when it declares none", () => {
+    const g = playgroundGrounding({ tools: [] });
+    expect(g.toolsNotRun).toEqual([]);
+    expect(g.notice).toContain("It has no tools.");
+    expect(g.notice).not.toContain("were not run");
   });
 });

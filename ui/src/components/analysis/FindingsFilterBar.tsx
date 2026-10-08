@@ -17,6 +17,8 @@ const VERIFICATION_OPTIONS: Array<[FindingVerificationStatus | null, string]> = 
   [null, "All"],
   ["confirmed", "Confirmed"],
   ["unverified", "Unverified"],
+  // #727 — custom/library agent findings with no code access.
+  ["ungrounded", "Not checked"],
 ];
 
 const SELECT_CLASS = "rounded border border-border bg-muted/40 px-2 py-1 text-xs text-foreground";
