@@ -325,13 +325,38 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       const body = await res.json();
       const expiredToken = body.data.token;
 
-      // We cannot easily expire the token in the DB from e2e without a direct
-      // DB seed script, so we verify the API-level validation by consuming it
-      // and then checking the "already used" state
+      // #941 — `apiCtx` is signed in as the admin, not as the invited address,
+      // so the accept is refused and the token stays unspent.
       const acceptRes = await apiCtx.post(`/api/workspaces/invites/${expiredToken}/accept`);
-      // The accept might fail if no user matches the email — that's fine,
-      // it proves the token validation path works
-      expect([200, 400, 410].includes(acceptRes.status())).toBe(true);
+      expect(acceptRes.status()).toBe(403);
+      const check = await apiCtx.get(`/api/workspaces/invites/${expiredToken}`);
+      expect((await check.json()).data.valid).toBe(true);
+    });
+
+    // #941 — the token alone no longer grants membership.
+    test("refuses a signed-out accept with 401", async () => {
+      const res = await apiCtx.post(`/api/workspaces/${workspaceBId}/invites`, {
+        data: { email: "signed-out-941@metis.local", role: "member" },
+      });
+      expect(res.status()).toBe(201);
+      const token = (await res.json()).data.token;
+
+      const anon = await request.newContext({ baseURL: API_BASE });
+      const acceptRes = await anon.post(`/api/workspaces/invites/${token}/accept`);
+      expect(acceptRes.status()).toBe(401);
+      await anon.dispose();
+    });
+
+    // #941 — owners and admins invite from Settings → Workspaces.
+    test("creates an invite link from workspace settings", async ({ page }) => {
+      const loginPage = new LoginPage(page);
+      await loginPage.loginAsAdmin();
+      const settings = new WorkspaceSettingsPage(page);
+      await settings.goto(workspaceAId);
+
+      await settings.createInvite("ui-invite-941@metis.local", "member");
+
+      await expect(settings.inviteLinkInput).toHaveValue(/\/invites\/[A-Za-z0-9_-]+$/);
     });
   });
 

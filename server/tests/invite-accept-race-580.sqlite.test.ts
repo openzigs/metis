@@ -40,8 +40,16 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 const { workspacesRouter } = await import("../src/routes/workspaces.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 
+const { issueTokens } = await import("../src/lib/auth/jwt.js");
+
 const INVITEE = "u-invitee-580";
 const INVITER = "u-inviter-580";
+/** #941 — a signed-in account that is not the one the invite names. */
+const OTHER = "u-other-580";
+
+/** A real access token, verified by the real `requireAuth` (#941). */
+const bearer = (userId: string) =>
+  `Bearer ${issueTokens({ userId, username: userId, role: "developer", permissions: [] }).accessToken}`;
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#580 — invite accept consumes the invite conditionally",
@@ -81,8 +89,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       return { workspaceId, token };
     }
 
-    const accept = (token: string) =>
-      request(app()).post(`/api/workspaces/invites/${token}/accept`);
+    const accept = (token: string, as: string | null = INVITEE) => {
+      const req = request(app()).post(`/api/workspaces/invites/${token}/accept`);
+      return as ? req.set("Authorization", bearer(as)) : req;
+    };
 
     const membership = (workspaceId: string) =>
       db.workspaceMember.findUnique({
@@ -92,7 +102,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     beforeAll(async () => {
       sqlite = createMigratedSqlite("580-invite-accept-race");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
-      for (const id of [INVITEE, INVITER]) {
+      for (const id of [INVITEE, INVITER, OTHER]) {
         await db.user.create({
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
         });
@@ -106,6 +116,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     afterAll(async () => {
       await db?.$disconnect();
       sqlite?.cleanup();
+    });
+
+    // #941 — the token alone used to be enough: a leaked link added the invitee.
+    it("refuses a signed-out accept: no membership, invite still unconsumed (#941)", async () => {
+      const { workspaceId, token } = await seedInvite();
+
+      const res = await accept(token, null);
+      expect(res.status).toBe(401);
+      expect(await membership(workspaceId)).toBeNull();
+      const invite = await db.workspaceInvite.findUnique({ where: { token } });
+      expect(invite?.consumedAt).toBeNull();
+    });
+
+    it("refuses an accept signed in as another account, which gains nothing (#941)", async () => {
+      const { workspaceId, token } = await seedInvite();
+
+      const res = await accept(token, OTHER);
+      expect(res.status).toBe(403);
+      expect(await membership(workspaceId)).toBeNull();
+      const otherMember = await db.workspaceMember.findUnique({
+        where: { workspaceId_userId: { workspaceId, userId: OTHER } },
+      });
+      expect(otherMember).toBeNull();
+      const invite = await db.workspaceInvite.findUnique({ where: { token } });
+      expect(invite?.consumedAt).toBeNull();
+
+      // The invited account can still use the same link afterwards.
+      const ok = await accept(token);
+      expect(ok.status).toBe(200);
+      expect(await membership(workspaceId)).toMatchObject({ role: "member" });
     });
 
     it("refuses a second accept of the same token as already used", async () => {

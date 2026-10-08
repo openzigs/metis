@@ -100,7 +100,10 @@ The server now:
 The UI now:
 - Shows workspace switcher in header (only visible with 2+ workspaces)
 - Workspace settings page at `/admin/workspaces/:id/settings`
-- Invite accept page at `/invites/:token`
+- Invite accept page at `/invites/:token`. Anyone with the link can view it, but
+  accepting requires signing in as the invited email address (#941). The token is
+  a bearer secret, so a leaked link alone cannot add a member.
+- Owners and admins create invite links from the workspace settings page (#941)
 
 ### 7. User Re-authentication
 

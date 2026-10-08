@@ -11,7 +11,7 @@
  * role or expiry. An invite that is both expired and used reads as used, matching
  * the accept route, which checks `consumedAt` first.
  */
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const push = vi.fn();
@@ -123,4 +123,68 @@ describe("InviteAcceptPage — deleted-workspace, expired and used invites (#579
       expect(screen.queryByText("Workspace No Longer Exists")).toBeNull();
     },
   );
+});
+
+/**
+ * #941 — accepting needs a session as the invited email. A signed-out click is
+ * sent to sign in and back; a click signed in as someone else shows the refusal.
+ */
+describe("InviteAcceptPage — accepting requires the invited account (#941)", () => {
+  const live = {
+    ...base,
+    valid: true,
+    workspaceDeleted: false,
+    workspace: { id: "ws-1", name: "Live Workspace", slug: "live" },
+    invitedBy: "Inviter",
+  };
+
+  function stubValidateThenAccept(status: number, body: unknown) {
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith("/accept")
+        ? new Response(JSON.stringify(body), { status })
+        : new Response(JSON.stringify({ data: live }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  beforeEach(() => {
+    push.mockReset();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("tells the invitee to sign in as the invited address", async () => {
+    stubValidate(live);
+    render(<InviteAcceptPage />);
+    expect(await screen.findByText(/Sign in as this account to accept it/)).toBeInTheDocument();
+  });
+
+  it("sends a signed-out visitor to sign in, returning to this invite", async () => {
+    stubValidateThenAccept(401, { success: false, error: { code: "AUTH_REQUIRED" } });
+    render(<InviteAcceptPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /accept invitation/i }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/login?next=%2Finvites%2Ftok-579"));
+    expect(screen.queryByText("Welcome!")).toBeNull();
+  });
+
+  it("shows the server's refusal to a different signed-in account and does not join", async () => {
+    stubValidateThenAccept(403, {
+      success: false,
+      error: {
+        code: "FORBIDDEN",
+        message: "This invitation was sent to a different email address.",
+      },
+    });
+    render(<InviteAcceptPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /accept invitation/i }));
+
+    expect(
+      await screen.findByText("This invitation was sent to a different email address."),
+    ).toBeInTheDocument();
+    expect(push).not.toHaveBeenCalled();
+    expect(screen.queryByText("Welcome!")).toBeNull();
+  });
 });

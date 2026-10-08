@@ -38,6 +38,7 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { workspacesRouter } = await import("../src/routes/workspaces.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
+const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
 const LIVE = "ws-live-563";
 const DEAD = "ws-dead-563";
@@ -58,6 +59,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(errorHandler);
       return a;
     };
+
+    // #941 — accepting needs a session as the invited account (real `requireAuth`).
+    const accept = (token: string) =>
+      request(app())
+        .post(`/api/workspaces/invites/${token}/accept`)
+        .set(
+          "Authorization",
+          `Bearer ${issueTokens({ userId: INVITEE, username: INVITEE, role: "developer", permissions: [] }).accessToken}`,
+        );
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("563-invite-deleted-workspace");
@@ -100,7 +110,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
     it("refuses the deleted workspace's invite with 410, creates no membership, leaves the invite unconsumed", async () => {
-      const res = await request(app()).post(`/api/workspaces/invites/token-${DEAD}/accept`);
+      const res = await accept(`token-${DEAD}`);
       expect(res.status).toBe(410);
       // 410 also means expired or used; pin the reason, or a retry passes on "already used".
       expect(res.body.error.message).toBe("This workspace no longer exists");
@@ -110,7 +120,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("accepts the live workspace's invite and the membership reads back", async () => {
-      const res = await request(app()).post(`/api/workspaces/invites/token-${LIVE}/accept`);
+      const res = await accept(`token-${LIVE}`);
       expect(res.status).toBe(200);
       expect(res.body.data.workspace.id).toBe(LIVE);
       expect(await membership(LIVE)).toMatchObject({ role: "member" });
