@@ -186,9 +186,13 @@ describe("#289 — the agent phase keeps each agent's findings", () => {
 
     const f = res.results[0]!.output!.findings[0]!;
     expect(f.citations).toEqual([]);
-    for (const key of ["requirementId", "verificationStatus", "verdict", "supportPanel"]) {
+    for (const key of ["requirementId", "verdict", "supportPanel"]) {
       expect(f).not.toHaveProperty(key);
     }
+    // #727 — the model's "confirmed" is replaced by the server's verdict: an
+    // evidence-free finding is `ungrounded` (no code access, cited nothing) — not
+    // `unverified`, which claims it cited code that was dropped.
+    expect(f.verificationStatus).toBe("ungrounded");
     // Model-assertable fields survive — the strip is a denylist, not a reset.
     expect(f).toMatchObject({ title: FINDING.title, confidence: 0.7, derivation: "ambiguous" });
   });

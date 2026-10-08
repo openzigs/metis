@@ -33,7 +33,8 @@ describe("VerificationBadge (#740)", () => {
     // Issue #773 added a THIRD state: an absence claim the run's retrieval could
     // not back. It gets its own (neutral, dashed) look — conflating it with `unverified` (a wrong
     // citation) would hide the more expensive failure mode.
-    expect(classes.size).toBe(3);
+    // #727 added a FOURTH: `ungrounded` (an agent with no code access).
+    expect(classes.size).toBe(4);
     expect(VERIFICATION_COPY.confirmed.className).toMatch(/\bbg-success-muted\b/);
     expect(VERIFICATION_COPY.unverified.className).toMatch(/\bbg-warning-muted\b/);
     expect(VERIFICATION_COPY["could-not-verify"].className).toMatch(/\bborder-dashed\b/);
@@ -44,6 +45,19 @@ describe("VerificationBadge (#740)", () => {
     const badge = screen.getByTestId("verification-badge-could-not-verify");
     expect(badge).toHaveTextContent("Could not verify");
     expect(badge.getAttribute("title")).toMatch(/not a confirmed gap/i);
+  });
+
+  it("#727 — a citation-less custom-agent finding does NOT claim it cited missing code", () => {
+    render(<VerificationBadge status="ungrounded" />);
+    const badge = screen.getByTestId("verification-badge-ungrounded");
+    const title = badge.getAttribute("title") ?? "";
+    const name = badge.getAttribute("aria-label") ?? "";
+    for (const text of [title, name, badge.textContent ?? ""]) {
+      expect(text).not.toMatch(/cited was missing|code location it cited|unverified/i);
+    }
+    expect(title).toMatch(/no access to the code/i);
+    expect(title).toMatch(/nothing in it was checked against the source/i);
+    expect(badge).toHaveTextContent("Not checked against code");
   });
 
   it("exposes an accessible name that includes the label", () => {

@@ -290,6 +290,10 @@ describe("parseFindingFilters / findingFiltersParams", () => {
     expect(parseFindingFilters(new URLSearchParams("verification=unverified")).verification).toBe(
       "unverified",
     );
+    // #727 — the filter bar has an `ungrounded` button, so a shared link keeps it.
+    expect(parseFindingFilters(new URLSearchParams("verification=ungrounded")).verification).toBe(
+      "ungrounded",
+    );
   });
 
   it("writes a set facet and removes an unset one", () => {

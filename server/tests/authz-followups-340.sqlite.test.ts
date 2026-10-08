@@ -601,6 +601,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      it("#727 — also lists the chat code tools, so an agent author can pick them", async () => {
+        for (const who of [PEER, ADMIN]) {
+          const listed = await names(who);
+          for (const code of ["search_code_graph", "search_code_symbols", "read_file_slice"]) {
+            expect(listed).toContain(code);
+          }
+        }
+      });
+
       it("keeps the descriptor shape — no origin (server id, owner) in the response", async () => {
         const res = await call("get", "/api/ai/tools", ADMIN);
         for (const t of res.body.data.tools as Array<Record<string, unknown>>) {
