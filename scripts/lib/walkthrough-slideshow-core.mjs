@@ -223,6 +223,190 @@ export function parseManifest(text) {
   return { steps, errors };
 }
 
+/** Severities a run's new issues are filed under, in the order the decks list them. */
+export const SEVERITIES = /** @type {const} */ (["high", "medium", "low"]);
+
+/** Rows the per-wave ledger may carry: the five waves plus the BA re-ask, which has no steps. */
+export const LEDGER_WAVES = /** @type {const} */ ([...WAVES, "BA"]);
+
+/** The only ledger table `run.json` may name (`e2e-walkthrough` skill, section 5). */
+export const LEDGER_SOURCE = "token_usages";
+
+/**
+ * @typedef {object} NewIssue
+ * @property {number} number
+ * @property {string} title
+ * @property {"high" | "medium" | "low"} severity
+ */
+
+/**
+ * @typedef {object} LedgerTotal
+ * @property {number} tokens
+ * @property {number} costUsd
+ */
+
+/**
+ * @typedef {object} RunInfo
+ * @property {NewIssue[] | undefined} newIssues issues the run filed; undefined when not given
+ * @property {(LedgerTotal & { source: string, since: string, until: string }) | undefined} ledger
+ * @property {Record<string, LedgerTotal & { since?: string, until?: string }> | undefined} waves
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isIsoTimestamp(value) {
+  return typeof value === "string" && ISO_TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+/**
+ * Check a `{ tokens, costUsd }` total and the time fields it may carry; push errors under `at`.
+ *
+ * @param {Record<string, unknown>} obj
+ * @param {string} at
+ * @param {{ required: string[], optional: string[] }} times
+ * @param {string[]} extra other allowed keys, checked by the caller
+ * @param {string[]} errors
+ */
+function checkTotal(obj, at, times, extra, errors) {
+  const known = new Set(["tokens", "costUsd", ...times.required, ...times.optional, ...extra]);
+  for (const key of Object.keys(obj)) {
+    if (!known.has(key)) errors.push(`${at}: unknown field "${key}"`);
+  }
+  if (!(Number.isInteger(obj.tokens) && Number(obj.tokens) >= 0)) {
+    errors.push(`${at}: "tokens" must be a non-negative integer`);
+  }
+  if (!(typeof obj.costUsd === "number" && Number.isFinite(obj.costUsd) && obj.costUsd >= 0)) {
+    errors.push(`${at}: "costUsd" must be a non-negative number`);
+  }
+  for (const key of times.required) {
+    if (!isIsoTimestamp(obj[key])) errors.push(`${at}: "${key}" must be an ISO-8601 timestamp`);
+  }
+  for (const key of times.optional) {
+    if (obj[key] !== undefined && !isIsoTimestamp(obj[key])) {
+      errors.push(`${at}: "${key}" must be an ISO-8601 timestamp when present`);
+    }
+  }
+  if (
+    isIsoTimestamp(obj.since) &&
+    isIsoTimestamp(obj.until) &&
+    Date.parse(/** @type {string} */ (obj.since)) >= Date.parse(/** @type {string} */ (obj.until))
+  ) {
+    errors.push(`${at}: "since" must be before "until"`);
+  }
+}
+
+/**
+ * Parse and validate an evidence folder's optional `run.json` (#947): the issues the run filed
+ * after its waves, and the ledger's spend for the run and per wave. Strict like the manifest:
+ * an unknown field anywhere is an error, so a typo cannot silently drop data.
+ *
+ * @param {string} text
+ * @returns {{ run: RunInfo | null, errors: string[] }}
+ */
+export function parseRunInfo(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { run: null, errors: ["run.json: not valid JSON"] };
+  }
+  if (!isPlainObject(raw)) return { run: null, errors: ["run.json: expected a JSON object"] };
+  /** @type {string[]} */
+  const errors = [];
+  for (const key of Object.keys(raw)) {
+    if (!["newIssues", "ledger", "waves"].includes(key)) {
+      errors.push(`run.json: unknown field "${key}"`);
+    }
+  }
+
+  if (raw.newIssues !== undefined) {
+    if (!Array.isArray(raw.newIssues)) {
+      errors.push(`run.json: "newIssues" must be an array`);
+    } else {
+      const seen = new Set();
+      raw.newIssues.forEach((item, i) => {
+        const at = `run.json newIssues[${i}]`;
+        if (!isPlainObject(item)) {
+          errors.push(`${at}: expected a JSON object`);
+          return;
+        }
+        for (const key of Object.keys(item)) {
+          if (!["number", "title", "severity"].includes(key)) {
+            errors.push(`${at}: unknown field "${key}"`);
+          }
+        }
+        if (!(Number.isInteger(item.number) && Number(item.number) > 0)) {
+          errors.push(`${at}: "number" must be a positive issue number`);
+        } else if (seen.has(item.number)) {
+          errors.push(`${at}: duplicate issue #${item.number}`);
+        } else {
+          seen.add(item.number);
+        }
+        if (typeof item.title !== "string" || item.title.trim() === "") {
+          errors.push(`${at}: "title" must be a non-empty string`);
+        }
+        if (!SEVERITIES.includes(/** @type {any} */ (item.severity))) {
+          errors.push(`${at}: "severity" must be one of ${SEVERITIES.join(", ")}`);
+        }
+      });
+    }
+  }
+
+  if (raw.ledger !== undefined) {
+    if (!isPlainObject(raw.ledger)) {
+      errors.push(`run.json: "ledger" must be an object`);
+    } else {
+      checkTotal(
+        raw.ledger,
+        "run.json ledger",
+        { required: ["since", "until"], optional: [] },
+        ["source"],
+        errors,
+      );
+      if (raw.ledger.source !== LEDGER_SOURCE) {
+        errors.push(`run.json ledger: "source" must be "${LEDGER_SOURCE}"`);
+      }
+    }
+  }
+
+  if (raw.waves !== undefined) {
+    if (!isPlainObject(raw.waves)) {
+      errors.push(`run.json: "waves" must be an object keyed by wave`);
+    } else {
+      for (const [wave, total] of Object.entries(raw.waves)) {
+        const at = `run.json waves.${wave}`;
+        if (!LEDGER_WAVES.includes(/** @type {any} */ (wave))) {
+          errors.push(`${at}: wave must be one of ${LEDGER_WAVES.join(", ")}`);
+        } else if (!isPlainObject(total)) {
+          errors.push(`${at}: expected a JSON object`);
+        } else {
+          checkTotal(total, at, { required: [], optional: ["since", "until"] }, [], errors);
+        }
+      }
+    }
+  }
+
+  if (errors.length > 0) return { run: null, errors };
+  return {
+    run: {
+      newIssues: /** @type {NewIssue[] | undefined} */ (raw.newIssues),
+      ledger: /** @type {RunInfo["ledger"]} */ (raw.ledger),
+      waves: /** @type {RunInfo["waves"]} */ (raw.waves),
+    },
+    errors: [],
+  };
+}
+
 const PHASE_RE = /^(\D*)(\d*)(.*)$/s;
 
 /**
@@ -444,6 +628,48 @@ export function formatCost(cents) {
 }
 
 /**
+ * A signed amount of cents, e.g. the ledger's unattributed remainder. A negative one means the
+ * steps claim more than the ledger recorded, which is itself worth seeing.
+ *
+ * @param {number} cents
+ * @returns {string}
+ */
+export function formatSignedCost(cents) {
+  return cents < 0 ? `-${formatCost(-cents)}` : formatCost(cents);
+}
+
+/**
+ * @param {string} severity
+ * @returns {string}
+ */
+function severityLabel(severity) {
+  return `${severity[0].toUpperCase()}${severity.slice(1)}`;
+}
+
+/**
+ * Issues the run filed, grouped by severity, as `High: #1 #2 · Medium: #3`.
+ *
+ * @param {NewIssue[]} issues
+ * @returns {string}
+ */
+function renderNewIssuesInline(issues) {
+  const groups = SEVERITIES.map((sev) => ({
+    sev,
+    numbers: issues
+      .filter((i) => i.severity === sev)
+      .map((i) => i.number)
+      .sort((a, b) => a - b),
+  })).filter((g) => g.numbers.length > 0);
+  if (groups.length === 0) return "none";
+  return groups
+    .map(
+      (g) =>
+        `<span class="sev sev--${g.sev}">${severityLabel(g.sev)}:</span> ${renderIssueLinks(g.numbers)}`,
+    )
+    .join(" · ");
+}
+
+/**
  * @param {number[]} issues
  * @returns {string}
  */
@@ -474,6 +700,7 @@ function scoreBadge(value, axis) {
  * @property {(step: Step) => string} imageSrc the `src` for a step's screenshot
  * @property {{ css: string, js: string } | null} inlineAssets inline the CSS and JS, or link them
  * @property {string} [generatedAt] ISO timestamp shown on the title slide
+ * @property {RunInfo | null} [run] the evidence folder's `run.json`, when it has one (#947)
  */
 
 /**
@@ -578,9 +805,33 @@ ${chapters
 </section>`);
   } else {
     const steps = ordered;
+    const run = input.run ?? null;
     const tokens = steps.reduce((sum, s) => sum + (s.tokens ?? 0), 0);
     const cents = steps.reduce((sum, s) => sum + (s.costCents ?? 0), 0);
     const issues = [...new Set(steps.flatMap((s) => s.issues))].sort((a, b) => a - b);
+    const ledgerWaves = run?.waves;
+    // With a per-wave ledger, its rows (including BA, which has no steps) join the table, and
+    // its totals replace the step sums: a step with no attributed tokens is not a free step.
+    const waveRows = LEDGER_WAVES.filter(
+      (w) => steps.some((s) => s.wave === w) || (ledgerWaves !== undefined && w in ledgerWaves),
+    );
+    /** @param {string} w */
+    const waveSpend = (w) => {
+      if (ledgerWaves) {
+        const t = ledgerWaves[w];
+        return t
+          ? `<td>${t.tokens.toLocaleString("en-US")}</td><td>${formatCost(t.costUsd * 100)}</td>`
+          : "<td>–</td><td>–</td>";
+      }
+      const ws = steps.filter((s) => s.wave === w);
+      return `<td>${ws.reduce((t, s) => t + (s.tokens ?? 0), 0).toLocaleString("en-US")}</td><td>${formatCost(ws.reduce((t, s) => t + (s.costCents ?? 0), 0))}</td>`;
+    };
+    const ledger = run?.ledger;
+    const spend = ledger
+      ? `  <p class="spend">Spend (ledger, <code>${escapeHtml(ledger.source)}</code> ${escapeHtml(ledger.since)} to ${escapeHtml(ledger.until)}): <strong>${ledger.tokens.toLocaleString("en-US")}</strong> tokens · <strong>${formatCost(ledger.costUsd * 100)}</strong></p>
+  <p class="spend">Attributed to steps: ${tokens.toLocaleString("en-US")} tokens · ${formatCost(cents)} · Unattributed: ${(ledger.tokens - tokens).toLocaleString("en-US")} tokens · ${formatSignedCost(ledger.costUsd * 100 - cents)}</p>`
+      : `  <p class="spend">Spend: <strong>${tokens.toLocaleString("en-US")}</strong> tokens · <strong>${formatCost(cents)}</strong></p>`;
+    const newIssues = run?.newIssues;
     slides.push(
       titleSlide(input.title, `Run report, ${plural(steps.length, "step")}${generated}`, ""),
     );
@@ -605,19 +856,20 @@ ${scale
     .join("\n")
 }
   <table class="waves">
+    <caption>Tokens and cost per wave: ${ledgerWaves ? "ledger" : "attributed to steps"}</caption>
     <thead><tr><th scope="col">Wave</th>${WORKS.map((v) => `<th scope="col">Works ${v}</th>`).join("")}${USEFUL.map((v) => `<th scope="col">Useful ${v}</th>`).join("")}<th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
     <tbody>
-${WAVES.filter((w) => steps.some((s) => s.wave === w))
+${waveRows
   .map((w) => {
     const ws = steps.filter((s) => s.wave === w);
-    return `      <tr><th scope="row">${w}</th>${WORKS.map((v) => `<td>${ws.filter((s) => s.works === v).length}</td>`).join("")}${USEFUL.map((v) => `<td>${ws.filter((s) => s.useful === v).length}</td>`).join("")}<td>${ws.reduce((t, s) => t + (s.tokens ?? 0), 0).toLocaleString("en-US")}</td><td>${formatCost(ws.reduce((t, s) => t + (s.costCents ?? 0), 0))}</td></tr>`;
+    return `      <tr><th scope="row">${w}</th>${WORKS.map((v) => `<td>${ws.filter((s) => s.works === v).length}</td>`).join("")}${USEFUL.map((v) => `<td>${ws.filter((s) => s.useful === v).length}</td>`).join("")}${waveSpend(w)}</tr>`;
   })
   .join("\n")}
     </tbody>
   </table>
-  <p class="spend">Spend: <strong>${tokens.toLocaleString("en-US")}</strong> tokens · <strong>${formatCost(cents)}</strong></p>
-  <p class="spend">Issues: ${issues.length ? renderIssueLinks(issues) : "none"}</p>
-</section>`);
+${spend}
+  <p class="spend">Issues checked: ${issues.length ? renderIssueLinks(issues) : "none"}</p>
+${newIssues ? `  <p class="spend">New issues filed (${newIssues.length}): ${renderNewIssuesInline(newIssues)}</p>\n` : ""}</section>`);
   }
 
   chapters.forEach((c, ci) => {
@@ -642,6 +894,26 @@ ${c.steps.map((s) => `    <li>${escapeHtml(s.title)}</li>`).join("\n")}
       );
     });
   });
+
+  // Report only: one closing slide listing what the run filed, with titles.
+  const filed = input.run?.newIssues ?? [];
+  if (!tutorial && filed.length > 0) {
+    const blocks = SEVERITIES.map((sev) => ({
+      sev,
+      list: filed.filter((i) => i.severity === sev).sort((a, b) => a.number - b.number),
+    }))
+      .filter((g) => g.list.length > 0)
+      .map(
+        (g) => `  <h3 class="sev sev--${g.sev}">${severityLabel(g.sev)} (${g.list.length})</h3>
+  <ul class="new-issues">
+${g.list.map((i) => `    <li>${renderIssueLinks([i.number])} ${escapeHtml(i.title)}</li>`).join("\n")}
+  </ul>`,
+      );
+    slides.push(`<section class="slide slide--issues" aria-label="New issues filed">
+  <h2>New issues filed (${filed.length})</h2>
+${blocks.join("\n")}
+</section>`);
+  }
   return slides;
 }
 
@@ -810,6 +1082,18 @@ export function buildSlideshow(opts) {
   const { steps, errors } = parseManifest(fs.readFileSync(manifestPath, "utf8"));
   if (errors.length > 0) throw new Error(`invalid manifest:\n  ${errors.join("\n  ")}`);
 
+  // Optional (#947): the issues the run filed and the ledger total. Validated before any write.
+  const runPath = path.join(opts.inDir, "run.json");
+  /** @type {RunInfo | null} */
+  let run = null;
+  if (fs.existsSync(runPath)) {
+    const parsed = parseRunInfo(fs.readFileSync(runPath, "utf8"));
+    if (parsed.errors.length > 0) {
+      throw new Error(`invalid run.json:\n  ${parsed.errors.join("\n  ")}`);
+    }
+    run = parsed.run;
+  }
+
   /** @type {Map<string, string>} step id -> real screenshot path */
   const shots = new Map();
   /** @type {string[]} */
@@ -870,6 +1154,7 @@ export function buildSlideshow(opts) {
       imageSrc: (step) => /** @type {string} */ (src.get(step.id)),
       inlineAssets: opts.inlineImages ? assets : null,
       generatedAt,
+      run,
     });
     const file = path.join(deckDir, "index.html");
     fs.writeFileSync(file, html);

@@ -237,7 +237,42 @@ run-to-run comparison table, on #706 or a tracking issue that links back.
 
 Each wave appends one line per screenshot to `<evidence-dir>/steps.jsonl`, where
 `<evidence-dir>` is `.playwright-mcp/walkthrough-706-run<N>/`; the briefs carry the
-instruction and good and bad wording. After the last wave, build both decks:
+instruction and good and bad wording.
+
+**Write `<evidence-dir>/run.json` after filing the run's issues and before building (#947).**
+The steps only know the issues they *checked* and the tokens attributed to them. The issues the
+run *found* are filed after the waves, and the ledger sees calls no step claims: a wave with no
+attributed tokens, the BA re-ask, a call that finishes in a later wave. Run 4's deck showed
+$3.58 against the ledger's $4.32. `run.json` is optional, and without it the build behaves as
+before:
+
+```json
+{
+  "newIssues": [{ "number": 935, "title": "SQL lineage: …", "severity": "high" }],
+  "ledger": { "tokens": 1234567, "costUsd": 4.32, "source": "token_usages",
+              "since": "2026-10-08T16:33:46Z", "until": "2026-10-08T20:50:00Z" },
+  "waves": { "A": { "tokens": 120000, "costUsd": 0.41,
+                    "since": "2026-10-08T16:33:46Z", "until": "2026-10-08T17:06:43Z" },
+             "BA": { "tokens": 90000, "costUsd": 0.12 } }
+}
+```
+
+- `newIssues`: every issue filed from the run, `severity` one of `high` / `medium` / `low`.
+- `ledger`: the run's `token_usages` total from section 5's query, over the whole run window,
+  for the walkthrough project, including the BA re-ask's chat rows. `source` must be
+  `token_usages`.
+- `waves`: optional per-wave totals over each wave's window, keyed `A`–`E` and `BA`;
+  `since` / `until` are optional here and record the window.
+
+All three keys are optional. Unknown fields are rejected, and an invalid file fails the build,
+naming the field, before anything is written. With `ledger`, the summary shows the ledger
+total as authoritative, the per-step sum as "attributed to steps", and the unattributed
+remainder. With `waves`, the per-wave table uses the ledger, adds a `BA` row, and shows `–`
+for a wave it does not list. The summary lists "Issues checked" (the steps' `issues`) and
+"New issues filed (N)" by severity, and the report deck ends with a slide listing the new
+issues with their titles.
+
+After the last wave and `run.json`, build both decks:
 
 ```bash
 node scripts/walkthrough/build-slideshow.mjs \
@@ -260,8 +295,8 @@ The decks open from disk with no network. Keys: arrows, Page Up/Down, Space, Hom
   links, after a summary slide with the Works and Useful tallies, overall and per wave, and the total spend. Attach it to
   the results comment, or compare it with the previous run's report.
 
-The build fails, naming the line or step, on an invalid manifest or a screenshot path outside
-the evidence folder. It changes nothing on disk until the whole manifest checks out.
+The build fails, naming the line, step or field, on an invalid manifest, an invalid `run.json`,
+or a screenshot path outside the evidence folder. It changes nothing on disk until the whole manifest checks out.
 
 | Field | Required | Meaning |
 |---|---|---|
