@@ -1,68 +1,62 @@
 /**
- * #789 — rate limiter for the Spec Kit feature-artifact DELETE route.
+ * #789 — the Spec Kit feature-artifact DELETE limiter: per-user keys when a
+ * user is known, an IP key otherwise, and a cap read per request. The limiter
+ * is module-level (CodeQL must see the `rateLimit()` result), so every test
+ * uses its own key.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
 import {
+  SPECKIT_DELETE_DEFAULT_MAX,
   specKitDeleteRateLimiter,
-  __resetSpecKitDeleteRateLimiter,
 } from "./spec-kit-delete-rate-limit.js";
 
-function buildApp(userId: string) {
-  const app = express();
-  app.set("trust proxy", 1);
-  app.use((req, _res, next) => {
-    (req as unknown as { user?: { userId: string } }).user = { userId };
+function app(userId?: string) {
+  const a = express();
+  a.use((req, _res, next) => {
+    if (userId) (req as unknown as { user: { userId: string } }).user = { userId };
     next();
   });
-  app.delete("/artifact", specKitDeleteRateLimiter, (_req, res) => {
+  a.delete("/artifact", specKitDeleteRateLimiter, (_req, res) => {
     res.status(204).end();
   });
-  return app;
+  return a;
 }
-
-beforeEach(() => {
-  process.env.SPECKIT_DELETE_LIMIT_MAX = "2";
-  process.env.SPECKIT_DELETE_LIMIT_WINDOW_MS = "60000";
-  __resetSpecKitDeleteRateLimiter();
-});
 
 afterEach(() => {
   delete process.env.SPECKIT_DELETE_LIMIT_MAX;
-  delete process.env.SPECKIT_DELETE_LIMIT_WINDOW_MS;
-  __resetSpecKitDeleteRateLimiter();
 });
 
 describe("specKitDeleteRateLimiter", () => {
-  it("allows deletes up to the configured max", async () => {
-    const app = buildApp("user-a");
-    for (let i = 0; i < 2; i++) {
-      expect((await request(app).delete("/artifact")).status).toBe(204);
-    }
+  it("caps each user separately at SPECKIT_DELETE_LIMIT_MAX, with the standard envelope", async () => {
+    process.env.SPECKIT_DELETE_LIMIT_MAX = "2";
+    const a = app("skd-user-1");
+    expect((await request(a).delete("/artifact")).status).toBe(204);
+    expect((await request(a).delete("/artifact")).status).toBe(204);
+    const limited = await request(a).delete("/artifact");
+    expect(limited.status).toBe(429);
+    expect(limited.body.success).toBe(false);
+    expect(limited.body.error.code).toBe("SPECKIT_DELETE_RATE_LIMITED");
+    // Another user is not throttled by the first one's deletes.
+    expect((await request(app("skd-user-2")).delete("/artifact")).status).toBe(204);
   });
 
-  it("refuses the delete past the max with the standard error envelope", async () => {
-    const app = buildApp("user-a");
-    for (let i = 0; i < 2; i++) await request(app).delete("/artifact");
-    const res = await request(app).delete("/artifact");
-    expect(res.status).toBe(429);
-    expect(res.body.success).toBe(false);
-    expect(res.body.error.code).toBe("SPECKIT_DELETE_RATE_LIMITED");
+  it("keys an anonymous request by IP", async () => {
+    process.env.SPECKIT_DELETE_LIMIT_MAX = "1";
+    const anon = app();
+    expect((await request(anon).delete("/artifact")).status).toBe(204);
+    expect((await request(anon).delete("/artifact")).status).toBe(429);
+    // A signed-in user on the same address has their own budget.
+    expect((await request(app("skd-user-3")).delete("/artifact")).status).toBe(204);
   });
 
-  it("keys by user — another user is not throttled by the first one's deletes", async () => {
-    const a = buildApp("user-a");
-    for (let i = 0; i < 3; i++) await request(a).delete("/artifact");
-    expect((await request(buildApp("user-b")).delete("/artifact")).status).toBe(204);
-  });
-
-  it("falls back to the default max for a malformed setting", async () => {
+  it("falls back to the default cap for a malformed setting", async () => {
     process.env.SPECKIT_DELETE_LIMIT_MAX = "not-a-number";
-    __resetSpecKitDeleteRateLimiter();
-    const app = buildApp("user-c");
+    const a = app("skd-user-4");
     for (let i = 0; i < 3; i++) {
-      expect((await request(app).delete("/artifact")).status).toBe(204);
+      expect((await request(a).delete("/artifact")).status).toBe(204);
     }
+    expect(SPECKIT_DELETE_DEFAULT_MAX).toBeGreaterThan(3);
   });
 });

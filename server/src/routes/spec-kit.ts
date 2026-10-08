@@ -575,8 +575,9 @@ export function specKitRouter(): Router {
   // project-level file (`DELETE /files/:name`).
   r.delete(
     "/features/:slug/artifacts/*key",
-    requireAuth,
+    // In front of every auth check (CodeQL js/missing-rate-limiting).
     specKitDeleteRateLimiter,
+    requireAuth,
     requirePermission("project.update"),
     async (req, res) => {
       try {
