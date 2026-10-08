@@ -909,6 +909,12 @@ export interface EnhancementMetadata {
     pendingCount: number;
     rejectedCount: number;
     awaitingRequirementCount?: number;
+    /**
+     * Issue #909 — how many requirements the synthesis produced. When it differs
+     * from `awaitingRequirementCount` (the reviewed list), approving promotes the
+     * reviewed list, and the Approvals tab says so before anyone approves.
+     */
+    synthesisRequirementCount?: number;
     reason?: string;
   };
   promotionStatus?: "allowed" | "blocked";

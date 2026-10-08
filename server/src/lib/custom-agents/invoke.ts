@@ -46,6 +46,45 @@ export interface InvokeCustomAgentInput {
   projectId?: string | null;
 }
 
+/**
+ * #727 — the playground is prompt-only: no tool runs and no project document
+ * or code is read. This server-authored contract (appended to the agent's
+ * system prompt, after its persona) tells the model so, because an agent whose
+ * persona says "cite file:line" otherwise invents the file, the line and the
+ * code it quotes.
+ */
+export const PLAYGROUND_GROUNDING_CONTRACT = [
+  "PLAYGROUND RUN — set by METIS, and it applies whatever your role says about citing sources.",
+  "In this run you have NO access to the project's documents, code or database, and none of your tools run.",
+  "Do not quote code, SQL, file paths or line numbers as if you had read them. When the question needs",
+  "them, say plainly that you cannot verify them from this run, and answer only what you can state generally.",
+].join("\n");
+
+/** #727 — what the playground's answer was grounded in, returned with every invocation. */
+export interface PlaygroundGrounding {
+  /** Always `prompt-only`: the answer is from the prompt alone. */
+  mode: "prompt-only";
+  /** The tools the agent declares, none of which ran in this invocation. */
+  toolsNotRun: string[];
+  /** The operator-facing warning the playground renders beside the answer. */
+  notice: string;
+}
+
+export function playgroundGrounding(agent: Pick<CustomAgentDto, "tools">): PlaygroundGrounding {
+  const toolsNotRun = [...agent.tools];
+  const tools =
+    toolsNotRun.length > 0
+      ? ` Its tools (${toolsNotRun.join(", ")}) were not run.`
+      : " It has no tools.";
+  return {
+    mode: "prompt-only",
+    toolsNotRun,
+    notice:
+      "Ungrounded answer: the playground runs the agent on your prompt alone and reads no " +
+      `project documents or code.${tools} Treat any file, line number or code it quotes as unverified.`,
+  };
+}
+
 export interface InvokeCustomAgentResult {
   content: string;
   usage: TokenUsage;
@@ -55,6 +94,8 @@ export interface InvokeCustomAgentResult {
   warnings?: string[];
   /** #289 — set when the caller asked for a final-answer retry. */
   finalAnswerRetry?: { attempted: boolean; succeeded: boolean };
+  /** #727 — set on a playground invocation: the answer is ungrounded. */
+  grounding?: PlaygroundGrounding;
 }
 
 const DEFAULT_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -96,13 +137,15 @@ export async function invokeCustomAgent(
     inputChars: payload.length,
   });
 
-  return invokeAgentDefinition({
+  const result = await invokeAgentDefinition({
     provider,
     definition: customDtoDefinition(agent),
     input: payload,
     ...(input.signal ? { signal: input.signal } : {}),
     projectId: input.projectId ?? agent.projectId ?? null,
+    outputContract: PLAYGROUND_GROUNDING_CONTRACT,
   });
+  return { ...result, grounding: playgroundGrounding(agent) };
 }
 
 export interface InvokeAgentDefinitionInput {

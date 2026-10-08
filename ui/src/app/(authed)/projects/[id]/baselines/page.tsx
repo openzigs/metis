@@ -5,17 +5,20 @@
  *
  * Baselines list + compare view. A baseline is a named, immutable set of
  * `(requirementId, version)` pins produced automatically when a review is
- * approved (or manually by a review administrator via the API). Pick two
+ * approved (or manually by a review administrator with New baseline, #732). Pick two
  * baselines to see added / removed / changed (field-level) / unchanged sets.
  */
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { hasPermission } from "@metis/shared";
+import { useAuth } from "@/lib/auth-context";
 import { Card } from "@/components/ui/card";
 import { baselinesApi, type BaselineSummary } from "@/lib/baselines-api";
 import { queryKeys } from "@/lib/query-keys";
 import { BaselineCompareView } from "@/components/baselines/BaselineCompareView";
+import { NewBaselineForm } from "@/components/baselines/new-baseline-form";
 import { PageHeader } from "@/components/ui/page-header";
 
 /** One-line baseline row summary. Exported for unit testing. */
@@ -38,6 +41,9 @@ export default function ProjectBaselinesPage() {
   const projectId = String(params?.id ?? "");
   const [compareA, setCompareA] = useState("");
   const [compareB, setCompareB] = useState("");
+  const { user } = useAuth();
+  // The server gates manual baselines on `review.admin`; offer it only to them.
+  const canCreate = user ? hasPermission(user.role, "review.admin") : false;
 
   const list = useQuery({
     queryKey: queryKeys.baselines.list(projectId),
@@ -61,6 +67,8 @@ export default function ProjectBaselinesPage() {
         description="Immutable snapshots of approved requirement versions. A baseline is created automatically when a review is approved; compare two baselines to see what changed between sign-offs."
       />
 
+      {canCreate ? <NewBaselineForm projectId={projectId} /> : null}
+
       {list.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading baselines…</p>
       ) : list.isError ? (
@@ -68,8 +76,14 @@ export default function ProjectBaselinesPage() {
           Failed to load baselines. Please try again.
         </p>
       ) : baselines.length === 0 ? (
-        <Card className="p-6 text-sm text-muted-foreground">
-          No baselines yet. Approve a review of requirements to create the first one.
+        <Card className="p-6 text-sm text-muted-foreground" data-testid="baselines-empty">
+          No baselines yet. One is created when a review of requirements is approved: request a
+          review from the{" "}
+          <Link href={`/projects/${projectId}/requirements`} className="underline">
+            Requirements
+          </Link>{" "}
+          page.
+          {canCreate ? " You can also pin the current requirements now with New baseline." : null}
         </Card>
       ) : (
         <>

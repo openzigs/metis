@@ -100,8 +100,8 @@ export default function WorkspacesPage() {
         <form onSubmit={handleSubmit} className="rounded-lg border bg-card p-4 space-y-4 max-w-lg">
           <h2 className="text-lg font-semibold">Create a workspace</h2>
           <p className="text-sm text-muted-foreground">
-            A workspace groups projects, members, and secrets together. You can move existing
-            projects into it later.
+            A workspace groups projects, members, and secrets together. You can add an existing
+            project that has no workspace from that project&apos;s settings.
           </p>
 
           <div className="space-y-2">

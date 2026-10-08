@@ -58,8 +58,9 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
-const { knownToolNames, unknownToolRefs, visibleTools } =
+const { agentSelectableTools, knownToolNames, unknownToolRefs, visibleTools } =
   await import("../src/lib/agent-runtime/tool-refs.js");
+const { CHAT_CODE_TOOL_NAMES } = await import("../src/lib/analysis/tools/chat-code-tool-names.js");
 const { ToolRegistry, __resetToolRegistrySingleton, getToolRegistry } =
   await import("../src/lib/ai/tool-registry.js");
 const { __resetSearchKnowledgeRegistration, registerSearchKnowledgeTool } =
@@ -257,6 +258,69 @@ describe("#340 visibleTools — the GET /api/ai/tools listing", () => {
     for (const t of visibleTools(r, { userId: "u-admin", role: "admin" })) {
       expect(Object.keys(t).sort()).toEqual(["description", "name", "risk"]);
     }
+  });
+});
+
+describe("#727 agentSelectableTools — the authoring picker offers the code tools", () => {
+  const r = new ToolRegistry();
+  r.register({
+    name: "search-knowledge",
+    description: "kb",
+    schema: z.object({}),
+    risk: "low",
+    exec: async () => ({ text: "" }),
+  } as never);
+  r.register({
+    name: "mcp:alice:read",
+    description: "a",
+    schema: z.object({}),
+    risk: "low",
+    origin: {
+      kind: "mcp",
+      serverId: "a",
+      serverLabel: "alice",
+      serverScope: "user",
+      serverOwnerId: "u-alice",
+    },
+    exec: async () => ({ text: "" }),
+  } as never);
+
+  it("lists the registry's visible tools and then every chat code tool, as low risk", () => {
+    const listed = agentSelectableTools(r, { userId: "u-bob", role: "coordinator" });
+    expect(listed.map((t) => t.name)).toEqual([
+      "search-knowledge",
+      "search_code_graph",
+      "search_code_symbols",
+      "read_file_slice",
+    ]);
+    for (const t of listed.slice(1)) {
+      expect(t.risk).toBe("low");
+      expect(t.description.length).toBeGreaterThan(0);
+      expect(Object.keys(t).sort()).toEqual(["description", "name", "risk"]);
+    }
+  });
+
+  it("offers code tools the save accepts — never a code tool the save would refuse", () => {
+    const listed = agentSelectableTools(r, { userId: "u-bob", role: "coordinator" }).map(
+      (t) => t.name,
+    );
+    expect(unknownToolRefs(listed, knownToolNames(r))).toEqual([]);
+    for (const code of CHAT_CODE_TOOL_NAMES) expect(listed).toContain(code);
+  });
+
+  it("lists a code tool once when the registry already carries one of that name", () => {
+    const dup = new ToolRegistry();
+    dup.register({
+      name: "read_file_slice",
+      description: "registry copy",
+      schema: z.object({}),
+      risk: "medium",
+      exec: async () => ({ text: "" }),
+    } as never);
+    const listed = agentSelectableTools(dup, { userId: "u", role: "admin" });
+    expect(listed.filter((t) => t.name === "read_file_slice")).toEqual([
+      { name: "read_file_slice", description: "registry copy", risk: "medium" },
+    ]);
   });
 });
 

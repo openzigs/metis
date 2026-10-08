@@ -353,7 +353,8 @@ describe("Analysis results hierarchy (#1232)", () => {
     await waitForResults();
 
     expect(screen.getByTestId("verification-filter")).toBeInTheDocument();
-    expect(screen.getByTestId("deep-dive-action")).toBeEnabled();
+    // #909 — the action waits for the approvals before it enables.
+    await waitFor(() => expect(screen.getByTestId("deep-dive-action")).toBeEnabled());
 
     // Filtering to "confirmed" drops the null-status finding.
     await user.click(screen.getByTestId("verification-filter-confirmed"));

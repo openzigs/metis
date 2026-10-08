@@ -240,6 +240,10 @@ describe("DatabaseResourceManager — states", () => {
     renderManager({ workspaceId: null });
 
     expect(await screen.findByTestId("db-identity-no-workspace")).toBeInTheDocument();
+    // #731 — the notice points at the Settings card that can fix it.
+    expect(
+      within(screen.getByTestId("db-identity-no-workspace")).getByRole("link"),
+    ).toHaveAttribute("href", "/projects/proj-1/settings");
     const row = screen.getByTestId("db-unlinked-connection");
     expect(within(row).getByTestId("db-unlinked-reason")).toHaveTextContent(/no workspace/i);
     // No link/unlink/re-resolve actions when the project has no workspace.

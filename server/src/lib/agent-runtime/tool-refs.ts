@@ -23,7 +23,10 @@
  * to give, so it is refused when the definition is saved.
  */
 import { LOAD_SKILL_TOOL_NAME, SUBAGENT_TOOL_PREFIX } from "@metis/shared";
-import { CHAT_CODE_TOOL_NAMES } from "../analysis/tools/chat-code-tool-names.js";
+import {
+  CHAT_CODE_TOOL_DESCRIPTORS,
+  CHAT_CODE_TOOL_NAMES,
+} from "../analysis/tools/chat-code-tool-names.js";
 import type { ToolDescriptor, ToolRegistry, ToolRuntimeView } from "../ai/tool-registry.js";
 import { parseAgentRef } from "./definition.js";
 
@@ -73,6 +76,26 @@ export function visibleTools(
         (!!v.origin?.serverOwnerId && v.origin.serverOwnerId === viewer.userId),
     )
     .map((v) => ({ name: v.name, description: v.description, risk: v.risk }));
+}
+
+/**
+ * #727 — the tools an agent author may pick (`GET /api/ai/tools`): the
+ * registered tools `viewer` may see ({@link visibleTools}) plus the chat code
+ * tools, which the chat runtime offers but the registry does not carry. A code
+ * tool is listed once even if a registry entry of the same name exists. This
+ * adds exactly the names {@link knownToolNames} already accepts on save beyond
+ * the registry, so the picker no longer hides a tool the save would accept.
+ */
+export function agentSelectableTools(
+  registry: Pick<ToolRegistry, "describeAll">,
+  viewer: { userId: string; role: string },
+): ToolDescriptor[] {
+  const listed = visibleTools(registry, viewer);
+  const names = new Set(listed.map((t) => t.name));
+  return [
+    ...listed,
+    ...CHAT_CODE_TOOL_DESCRIPTORS.filter((t) => !names.has(t.name)).map((t) => ({ ...t })),
+  ];
 }
 
 /**

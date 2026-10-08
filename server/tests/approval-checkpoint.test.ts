@@ -45,10 +45,28 @@ vi.mock("../src/lib/prisma.js", () => ({
         return Promise.resolve(filtered);
       }),
       findFirst: vi.fn(({ where }: { where: { id: string; analysisId: string } }) => {
-        return Promise.resolve(
-          rows.find((r) => r.id === where.id && r.analysisId === where.analysisId) ?? null,
-        );
+        // A snapshot, as a real read returns — not a live reference to the row.
+        const row = rows.find((r) => r.id === where.id && r.analysisId === where.analysisId);
+        return Promise.resolve(row ? { ...row } : null);
       }),
+      updateMany: vi.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: { id: string; analysisId: string; status?: string };
+          data: Record<string, unknown>;
+        }) => {
+          const matched = rows.filter(
+            (r) =>
+              r.id === where.id &&
+              r.analysisId === where.analysisId &&
+              (where.status === undefined || r.status === where.status),
+          );
+          for (const row of matched) Object.assign(row, data);
+          return Promise.resolve({ count: matched.length });
+        },
+      ),
       update: vi.fn(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
         const row = rows.find((r) => r.id === where.id);
         if (!row) return Promise.resolve(null);
@@ -386,6 +404,23 @@ describe("reopenApprovalRequest (#723)", () => {
     await expect(reopenApprovalRequest("analysis-1", "approval-1")).rejects.toMatchObject({
       code: "APPROVAL_NOT_REOPENABLE",
     });
+  });
+
+  it("reopens exactly once when two reopens race (#909: status predicate on the write)", async () => {
+    await createApprovalRequests("analysis-1", [{ type: "requirement" as const, itemId: "r-1" }]);
+    await reviewApprovalRequest("analysis-1", "approval-1", {
+      status: "rejected",
+      reviewerId: "user-1",
+    });
+
+    const results = await Promise.allSettled([
+      reopenApprovalRequest("analysis-1", "approval-1"),
+      reopenApprovalRequest("analysis-1", "approval-1"),
+    ]);
+
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const failed = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(failed.reason).toMatchObject({ statusCode: 409, code: "APPROVAL_NOT_REOPENABLE" });
   });
 
   it("is scoped to its analysis (404 for another analysis's approval)", async () => {

@@ -263,6 +263,44 @@ describe("<AgentAuthoringWizard /> (#84)", () => {
       "agent-1",
       expect.objectContaining({ projectId: "proj-1", input: "Summarize the spec." }),
     );
+    // #727 — no server notice (older server): the warning still renders.
+    expect(screen.getByTestId("wizard-playground-ungrounded")).toHaveTextContent(
+      /^Ungrounded answer: the playground runs the agent on your prompt alone/,
+    );
+  });
+
+  it("#727 — labels the playground answer with the server's ungrounded notice", async () => {
+    const notice =
+      "Ungrounded answer: … Its tools (search-knowledge, search_code_graph) were not run.";
+    invokeAgent.mockResolvedValue({
+      content: "UPDATE entries SET status='read'",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "deepseek-flash",
+      provider: "deepseek",
+      grounding: {
+        mode: "prompt-only",
+        toolsNotRun: ["search-knowledge", "search_code_graph"],
+        notice,
+      },
+    });
+    createAgent.mockResolvedValue({ id: "agent-g", projectId: "proj-1", tools: [] });
+    renderWizard();
+    await flush();
+    fireEvent.change(screen.getByTestId("wizard-name-input"), { target: { value: "Go SQL" } });
+    fireEvent.change(screen.getByTestId("wizard-project-select"), { target: { value: "proj-1" } });
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.change(screen.getByTestId("wizard-prompt-input"), { target: { value: "Review." } });
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.change(screen.getByTestId("wizard-playground-input"), {
+      target: { value: "Which SQL?" },
+    });
+    fireEvent.click(screen.getByTestId("wizard-playground-run"));
+
+    const banner = await screen.findByTestId("wizard-playground-ungrounded");
+    expect(banner).toHaveTextContent(notice);
+    expect(banner).toHaveAttribute("role", "note");
   });
 
   it("surfaces an error if the playground invocation fails", async () => {

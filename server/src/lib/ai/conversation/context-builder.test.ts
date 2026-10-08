@@ -6,6 +6,8 @@ import {
   buildHistory,
   capToolResult,
   joinAdjacentUserMessages,
+  MAX_DIGEST_ARG_CHARS,
+  MAX_DIGEST_CALLS,
   rowMessages,
 } from "./context-builder.js";
 import type { StoredMessage } from "./transcript-store.js";
@@ -91,7 +93,7 @@ describe("buildHistory", () => {
     expect(JSON.stringify(out)).not.toContain("old q");
   });
 
-  it("never replays past tool results; only the answer the user saw", () => {
+  it("never replays past tool results, but says which tools the turn called (#773)", () => {
     const r = row({
       role: "assistant",
       parts: [
@@ -100,7 +102,100 @@ describe("buildHistory", () => {
         { type: "text", text: "answer" },
       ],
     });
-    expect(buildHistory([r])).toEqual([{ role: "assistant", content: "answer" }]);
+    const out = buildHistory([r]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.role).toBe("assistant");
+    const content = out[0]!.content as string;
+    expect(content).not.toContain("IGNORE ALL RULES");
+    expect(content).toContain('search {"q":"x"}');
+    expect(content).toContain("verified when you made them");
+    expect(content.endsWith("answer")).toBe(true);
+  });
+
+  it("digests every read in order, so earlier citations keep their evidence (#773)", () => {
+    const r = row({
+      role: "assistant",
+      parts: [
+        {
+          type: "tool_call",
+          id: "a",
+          name: "read_file_slice",
+          args: { filePath: "internal/ui/feed_update.go", startLine: 1, endLine: 84 },
+        },
+        { type: "tool_result", toolCallId: "a", name: "read_file_slice", text: "package ui" },
+        {
+          type: "tool_call",
+          id: "b",
+          name: "read_file_slice",
+          args: { filePath: "internal/storage/feed.go", startLine: 331, endLine: 360 },
+        },
+        { type: "tool_result", toolCallId: "b", name: "read_file_slice", text: "func" },
+        { type: "text", text: "UpdateFeed is at feed_update.go:76" },
+      ],
+    });
+    const content = rowMessages(r)[0]!.content as string;
+    const first = content.indexOf("internal/ui/feed_update.go");
+    const second = content.indexOf("internal/storage/feed.go");
+    expect(first).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(first);
+    expect(content).toContain('"startLine":331,"endLine":360');
+    expect(content).not.toContain("package ui");
+  });
+
+  it("marks a call whose result was an error, and one with no result at all (#773)", () => {
+    const r = row({
+      role: "assistant",
+      parts: [
+        { type: "tool_call", id: "a", name: "read_file_slice", args: { filePath: "gone.go" } },
+        {
+          type: "tool_result",
+          toolCallId: "a",
+          name: "read_file_slice",
+          text: "ENOENT secret detail",
+          isError: true,
+        },
+        { type: "tool_call", id: "b", name: "list_files", args: {} },
+        { type: "text", text: "ok" },
+      ],
+    });
+    const content = rowMessages(r)[0]!.content as string;
+    expect(content).toContain('read_file_slice {"filePath":"gone.go"} (failed)');
+    expect(content).toContain("list_files {} (no result)");
+    expect(content).not.toContain("ENOENT");
+  });
+
+  it("caps each call's arguments and the number of calls listed (#773)", () => {
+    const parts = [
+      { type: "tool_call" as const, id: "big", name: "search", args: { q: "y".repeat(5_000) } },
+      ...Array.from({ length: 40 }, (_, i) => ({
+        type: "tool_call" as const,
+        id: `c${i}`,
+        name: `t${i}`,
+        args: { i },
+      })),
+      { type: "text" as const, text: "done" },
+    ];
+    const content = rowMessages(row({ role: "assistant", parts }))[0]!.content as string;
+    expect(content).not.toContain("y".repeat(MAX_DIGEST_ARG_CHARS));
+    // The serialised args (`{"q":"yyy…`) are cut at the cap, then marked.
+    expect(content).toContain('search {"q":"' + "y".repeat(MAX_DIGEST_ARG_CHARS - 6) + "…");
+    expect(content).toContain(`t${MAX_DIGEST_CALLS - 2} `);
+    expect(content).not.toContain(`t${MAX_DIGEST_CALLS - 1} `);
+    expect(content).toContain(`and ${41 - MAX_DIGEST_CALLS} more`);
+  });
+
+  it("a reply with no tool calls is sent unchanged; a tool-only reply with no text still sends nothing", () => {
+    expect(rowMessages(row({ role: "assistant", parts: text("plain") }))).toEqual([
+      { role: "assistant", content: "plain" },
+    ]);
+    expect(
+      rowMessages(
+        row({
+          role: "assistant",
+          parts: [{ type: "tool_call", id: "x", name: "search", args: { q: "z" } }],
+        }),
+      ),
+    ).toEqual([]);
   });
 
   it("sends a summary in the user role, never system", () => {

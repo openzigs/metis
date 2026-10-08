@@ -362,7 +362,14 @@ export const formatFindingsTable = (
       // so the synthesis model down-weights claims whose code evidence failed the
       // #734 grounding gate (rule 4 in buildSynthesisPrompt). `confirmed`/`null`
       // findings are unmarked, so the marker's presence alone is the signal.
-      const mark = f.verificationStatus === "unverified" ? "[UNVERIFIED] " : "";
+      // #727 — `ungrounded` (an agent with no code access; nothing was checked)
+      // gets its own truthful marker, down-weighted by the same rule.
+      const mark =
+        f.verificationStatus === "unverified"
+          ? "[UNVERIFIED] "
+          : f.verificationStatus === "ungrounded"
+            ? "[UNGROUNDED] "
+            : "";
       // #1110 — the panel marker STACKS with the verification one rather than
       // replacing it: the deterministic gate asks "was this file retrieved?" and
       // the panel asks "does it back the claim?". A finding can fail either.

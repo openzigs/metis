@@ -211,6 +211,15 @@ export type RequirementVerdict = (typeof REQUIREMENT_VERDICTS)[number];
  *                    through this gate unflagged, then flowed into the gap report
  *                    as a CONFIRMED gap. It is now labelled for what it is: an
  *                    unsupported claim about what the code does NOT contain.
+ *   - `ungrounded` — #727. The finding came from an agent that had NO code
+ *                    access (a custom or library agent in the analysis agent
+ *                    phase, writing from the project's name and description
+ *                    alone) and cites nothing. Nothing in it was checked against
+ *                    the source. Distinct from `unverified`, which means the
+ *                    finding DID cite code and every citation was dropped: using
+ *                    `unverified` here told the BA it "cited missing code" when it
+ *                    cited nothing at all. Synthesis down-weights it exactly like
+ *                    `unverified` (an `[UNGROUNDED]` marker under rule 4).
  *
  * `null` (the fourth, un-enumerated state) means "no code-evidence claim to
  * verify" — a doc-only or generic specialist finding that never cited code, plus
@@ -221,6 +230,7 @@ export const FINDING_VERIFICATION_STATUSES = [
   "confirmed",
   "unverified",
   "could-not-verify",
+  "ungrounded",
 ] as const;
 export type FindingVerificationStatus = (typeof FINDING_VERIFICATION_STATUSES)[number];
 
