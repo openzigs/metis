@@ -7,7 +7,7 @@
  * `project-service.ts` because it depends on `createdById` which middleware
  * cannot see.
  */
-import { Router, type Request, type RequestHandler, type Response } from "express";
+import { Router, type Request, type Response } from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import {
   type ApiResponse,
@@ -138,8 +138,7 @@ const assignWorkspaceSchema = z.object({ workspaceId: z.string().min(1).max(64) 
  * 30 per 15 minutes per user is far above any real use. Module scope:
  * express-rate-limit@8 refuses to be created inside a request handler.
  */
-// `as unknown as RequestHandler` bridges the Express 4↔5 type split.
-const assignWorkspaceRateLimiter: RequestHandler = rateLimit({
+const assignWorkspaceRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === "test" ? 10_000 : 30,
   standardHeaders: true,
@@ -151,7 +150,7 @@ const assignWorkspaceRateLimiter: RequestHandler = rateLimit({
     success: false,
     error: { code: "RATE_LIMIT", message: "Too many workspace changes. Try again later." },
   },
-}) as unknown as RequestHandler;
+});
 
 function rethrow(err: unknown): never {
   if (err instanceof ProjectError) {
