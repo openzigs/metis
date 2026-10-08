@@ -187,6 +187,69 @@ export async function updateProject(input: UpdateProjectInput, actor: ProjectAct
   return updated;
 }
 
+const WORKSPACE_ADMIN_ROLES = new Set(["owner", "admin"]);
+
+/**
+ * #731 — put an existing project that has no workspace into one. Until now
+ * `workspaceId` was settable only at create, so a project created outside a
+ * workspace could never get requirement linking, workspace traceability or
+ * shared-database identities.
+ *
+ * The caller must be allowed to mutate the project AND be an owner/admin of the
+ * live target workspace (system admins bypass the workspace role, read from the
+ * membership table rather than the token claim, as in #560). Unknown, deleted
+ * and not-a-member are one 404, so the body cannot probe workspace ids.
+ *
+ * Only an unassigned project can be moved: a project already in a workspace may
+ * carry requirement links and database identities scoped to it, and moving it
+ * would strand them across tenants. The write is conditional on `workspaceId`
+ * still being null, so two concurrent moves cannot both land.
+ */
+export async function assignProjectWorkspace(
+  projectId: string,
+  workspaceId: string,
+  actor: ProjectActor,
+) {
+  const project = await getProjectOrThrow(projectId);
+  assertCanMutate(project, actor);
+  if (project.workspaceId === workspaceId) return project;
+  if (project.workspaceId) {
+    throw new ProjectError(
+      409,
+      "PROJECT_ALREADY_IN_WORKSPACE",
+      "Project already belongs to a workspace",
+    );
+  }
+  await assertWorkspaceAssignable(workspaceId, actor);
+  if (actor.role !== "admin") {
+    const membership = await prisma.workspaceMember.findUnique({
+      where: { workspaceId_userId: { workspaceId, userId: actor.id } },
+      select: { role: true },
+    });
+    if (!membership || !WORKSPACE_ADMIN_ROLES.has(membership.role)) {
+      throw new ProjectError(403, "FORBIDDEN", "Workspace admin role required");
+    }
+  }
+  const { count } = await prisma.project.updateMany({
+    where: { id: projectId, deletedAt: null, workspaceId: null },
+    data: { workspaceId },
+  });
+  if (count === 0) {
+    throw new ProjectError(
+      409,
+      "PROJECT_ALREADY_IN_WORKSPACE",
+      "Project already belongs to a workspace",
+    );
+  }
+  audit({
+    actor: { id: actor.id },
+    action: "project.workspace.assign",
+    target: { type: "project", id: projectId },
+    metadata: { workspaceId },
+  });
+  return getProjectOrThrow(projectId);
+}
+
 export async function archiveProject(projectId: string, actor: ProjectActor) {
   const project = await getProjectOrThrow(projectId);
   assertCanArchive(project, actor);

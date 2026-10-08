@@ -36,6 +36,7 @@ import { seedDefaultTemplates } from "../lib/publishing/template-service.js";
 import { assertPublishSecretBinding } from "../lib/publishing/publish-secret-binding.js";
 import {
   archiveProject,
+  assignProjectWorkspace,
   createProject,
   deleteProject,
   getProject,
@@ -128,6 +129,8 @@ function primaryRepoLinkError(err: unknown, projectId: string): PrimaryRepoLinkE
   });
   return { code: "PRIMARY_REPO_LINK_FAILED", message: PRIMARY_REPO_LINK_FAILED_MESSAGE };
 }
+
+const assignWorkspaceSchema = z.object({ workspaceId: z.string().min(1).max(64) });
 
 function rethrow(err: unknown): never {
   if (err instanceof ProjectError) {
@@ -307,6 +310,28 @@ export function projectsRouter(): Router {
         action: "project.archive",
         target: { type: "project", id: project.id },
       });
+      res.json(ok(project));
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  // ── Move into a workspace (#731) ────────────────────────────────────────
+  // `/:id/workspace` is covered by the `/:id/:sub` project-scope chokepoint
+  // above; the service adds the mutate rule and the target-workspace admin rule.
+  r.put("/:id/workspace", requireAuth, requirePermission("project.update"), async (req, res) => {
+    const parsed = assignWorkspaceSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw new AppError(400, "VALIDATION_ERROR", "Invalid workspace payload", {
+        issues: parsed.error.flatten(),
+      });
+    }
+    try {
+      const project = await assignProjectWorkspace(
+        String(req.params.id),
+        parsed.data.workspaceId,
+        actorFromReq(req),
+      );
       res.json(ok(project));
     } catch (err) {
       rethrow(err);
