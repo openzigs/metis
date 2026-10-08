@@ -27,7 +27,12 @@ const store = {
 };
 
 vi.mock("../prisma.js", () => ({
+  resolveDatabaseProvider: () => "sqlite",
   prisma: {
+    // #909 — metadata merge-writers run in a transaction; this fake runs it on itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn((await import("../prisma.js")).prisma),
+    ),
     requirement: {
       findMany: vi.fn(async () => store.requirements.filter((r) => r.deletedAt === null)),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: { body: string } }) => {
