@@ -444,6 +444,43 @@ describe("/api/projects/:projectId/spec-kit", () => {
     );
   });
 
+  it("hands runChecklist a lazy resolver for the project's provider (#787)", async () => {
+    const { runChecklist } = await import("../src/lib/spec-kit/commands/checklist.js");
+    (runChecklist as any).mockClear();
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/speckit.checklist")
+      .send({ featureSlug: "001-x" });
+    expect(res.status).toBe(200);
+    const arg = (runChecklist as any).mock.calls[0][0];
+    expect(resolveProjectProvider).not.toHaveBeenCalled();
+    expect(await arg.resolveProvider()).toBe(fakeProvider);
+    expect(resolveProjectProvider).toHaveBeenCalledWith("p1");
+  });
+
+  it("an unbuildable provider override does not fail the checklist with 502 (#787)", async () => {
+    const { AIProviderError } = await import("../src/lib/ai/errors.js");
+    resolveProjectProvider.mockRejectedValue(new AIProviderError("creds gone"));
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/speckit.checklist")
+      .send({ featureSlug: "001-x" });
+    expect(res.status).toBe(200);
+  });
+
+  it("a missing feature is 404 even when the provider is broken (#787)", async () => {
+    const { AIProviderError } = await import("../src/lib/ai/errors.js");
+    const { SpecKitArtifactError } = await import("../src/lib/spec-kit/artifacts.js");
+    const { runChecklist } = await import("../src/lib/spec-kit/commands/checklist.js");
+    resolveProjectProvider.mockRejectedValue(new AIProviderError("creds gone"));
+    (runChecklist as any).mockRejectedValueOnce(
+      new SpecKitArtifactError(404, "SPECKIT_FEATURE_NOT_FOUND", "Feature not found: 099-nope"),
+    );
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/speckit.checklist")
+      .send({ featureSlug: "099-nope" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SPECKIT_FEATURE_NOT_FOUND");
+  });
+
   it("Without X-Speckit-Force, force=false is passed to runChecklist (S-5)", async () => {
     const { runChecklist } = await import("../src/lib/spec-kit/commands/checklist.js");
     (runChecklist as any).mockClear();
