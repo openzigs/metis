@@ -479,7 +479,7 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
                 {/* #727 — an authoritative-looking answer must not read as grounded. */}
                 <p
                   role="note"
-                  className="rounded border border-amber-500/50 bg-amber-500/10 p-2 text-xs"
+                  className="rounded border border-warning/40 bg-warning-muted p-2 text-xs"
                   data-testid="wizard-playground-ungrounded"
                 >
                   {playground.data.grounding?.notice ?? PLAYGROUND_UNGROUNDED_NOTICE}
