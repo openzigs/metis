@@ -343,6 +343,7 @@ import { persistAgentResult } from "../src/lib/analysis/analysis-service.js";
 import {
   AnalysisOrchestrator,
   defaultAnalysisDocumentIds,
+  selectWebAgentEvidence,
 } from "../src/lib/analysis/orchestrator.js";
 import { prisma } from "../src/lib/prisma.js";
 import { RETRIEVAL_QUERIES } from "../src/lib/analysis/retrieval.js";
@@ -3859,5 +3860,34 @@ describe("#525 default analysis document set at each call site", () => {
     const queries = defaultSetQueries();
     expect(queries.length).toBeGreaterThan(0);
     for (const where of queries) expect(where).toEqual(expected);
+  });
+});
+
+describe("selectWebAgentEvidence (#864)", () => {
+  const chunk = (
+    filename: string,
+    score: number | undefined,
+    source?: "upload" | "repo" | "db" | "jira" | "code-graph",
+  ) => ({ documentId: `d-${filename}`, chunkIndex: 0, filename, text: filename, score, source });
+
+  it("keeps ranked uploaded and Atlassian chunks", () => {
+    const kept = [chunk("policy.md", 0.7, "upload"), chunk("PROJ-1", 0.4, "jira")];
+    expect(selectWebAgentEvidence(kept)).toEqual(kept);
+  });
+
+  it("drops repository, database and code-graph chunks however well they rank", () => {
+    expect(
+      selectWebAgentEvidence([
+        chunk("finder_test.go", 0.99, "repo"),
+        chunk("orders", 0.9, "db"),
+        chunk("symbol", 0.9, "code-graph"),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("drops unranked chunks: the quarantine fallback's score 0, and a missing score", () => {
+    expect(
+      selectWebAgentEvidence([chunk("a.md", 0, "upload"), chunk("b.md", undefined, "upload")]),
+    ).toEqual([]);
   });
 });

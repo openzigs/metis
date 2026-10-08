@@ -408,7 +408,7 @@ export function createSearchProvider(): WebSearchProvider {
  * summary when it is skipped for the same reason (see the orchestrator).
  */
 export const NO_WEB_SEARCH_PROVIDER_NOTICE =
-  "Web research was skipped: no web search provider is configured. Set WEB_SEARCH_PROVIDER (tavily, brave or google) and that provider's API key to enable it.";
+  "Web research was skipped: no web search provider is configured, so no web sources were searched. To search the web for evidence, set WEB_SEARCH_PROVIDER (tavily, brave or google) and that provider's API key, then turn on web research when you start an analysis; its sources appear under Evidence Review.";
 
 /**
  * #864 — whether a real web search backend is configured. The stub is what

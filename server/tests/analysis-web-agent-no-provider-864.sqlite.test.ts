@@ -61,19 +61,45 @@ const licenceHeaderFinding = JSON.stringify({
   notes: [],
 });
 
-function recordingProvider(failAll = false): AIProvider & { webCalls: number } {
+/**
+ * A model that cites every chunk it was shown, one finding each — the most a
+ * compliant model can do with its context, so whatever reaches the web agent's
+ * prompt reaches its findings.
+ */
+function citeEverythingShown(prompt: string): string {
+  const findings = [...prompt.matchAll(/documentId=(\S+) chunk=(\d+) file=(\S+?)\\n/g)].map(
+    ([, documentId, chunk, file]) => ({
+      category: "compliance",
+      severity: "low",
+      title: `Evidence from ${file}`,
+      body: `Cited ${file}`,
+      tags: [],
+      citations: [{ documentId, chunkIndex: Number(chunk), filename: file }],
+    }),
+  );
+  return JSON.stringify({ summary: "Cited what I was shown", findings, notes: [] });
+}
+
+function recordingProvider(
+  failAll = false,
+  citeContext = false,
+): AIProvider & { webCalls: number; webPrompts: string[] } {
   const p = {
     key: "anthropic",
     model: MODEL,
     offline: false,
     webCalls: 0,
+    webPrompts: [] as string[],
     async chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse> {
-      if (JSON.stringify([opts?.systemMessage, messages]).includes(WEB_AGENT_MARKER)) {
+      const prompt = JSON.stringify([opts?.systemMessage, messages]);
+      const isWeb = prompt.includes(WEB_AGENT_MARKER);
+      if (isWeb) {
         p.webCalls += 1;
+        p.webPrompts.push(prompt);
       }
       if (failAll) throw new Error("provider exploded");
       return {
-        content: licenceHeaderFinding,
+        content: citeContext && isWeb ? citeEverythingShown(prompt) : licenceHeaderFinding,
         usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
         model: MODEL,
         provider: "anthropic",
@@ -92,7 +118,7 @@ function recordingProvider(failAll = false): AIProvider & { webCalls: number } {
       return true;
     },
   };
-  return p as unknown as AIProvider & { webCalls: number };
+  return p as unknown as AIProvider & { webCalls: number; webPrompts: string[] };
 }
 
 const stubKnowledge = { search: async () => ({ hits: [] }) } as unknown as KnowledgeService;
@@ -124,17 +150,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       webSearchConfigured: boolean,
       agentKeys: Array<"web" | "database"> = ["web"],
       failAll = false,
+      opts: { knowledge?: KnowledgeService; documentIds?: string[]; citeContext?: boolean } = {},
     ) {
-      const provider = recordingProvider(failAll);
+      const provider = recordingProvider(failAll, opts.citeContext ?? false);
       const orch = new AnalysisOrchestrator({
         provider,
-        knowledge: stubKnowledge,
+        knowledge: opts.knowledge ?? stubKnowledge,
         webSearchConfigured: () => webSearchConfigured,
       });
       const { id } = await orch.start({
         projectId: PROJECT,
         startedById: USER,
         agentKeys,
+        documentIds: opts.documentIds,
       });
       for (let i = 0; i < 400; i++) {
         const row = await db.analysis.findUnique({ where: { id } });
@@ -143,7 +171,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             where: { analysisId: id, agentKey: "web" },
           });
           const findings = await db.finding.count({ where: { agentResult: { analysisId: id } } });
-          return { row, web, findings, webCalls: provider.webCalls };
+          const webFindings = await db.finding.findMany({
+            where: { agentResult: { analysisId: id, agentKey: "web" } },
+            select: { title: true, evidence: true },
+          });
+          return {
+            row,
+            web,
+            findings,
+            webFindings,
+            webCalls: provider.webCalls,
+            webPrompts: provider.webPrompts,
+          };
         }
         await new Promise((r) => setTimeout(r, 25));
       }
@@ -168,11 +207,111 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(row.errorMessage).toContain("All 1 specialist agent(s) failed");
     });
 
-    it("still runs the web specialist when a provider is configured", async () => {
-      const { web, findings, webCalls } = await runToEnd(true);
-      expect(webCalls).toBeGreaterThan(0);
+    /** A document row of the given connector source, for real foreign keys and ids. */
+    async function seedDocument(filename: string, source: string): Promise<string> {
+      const doc = await db.document.create({
+        data: {
+          projectId: PROJECT,
+          filename,
+          mimeType: "text/plain",
+          sizeBytes: 1,
+          storagePath: `/tmp/${filename}`,
+          checksum: filename,
+          status: "ready",
+          source,
+          uploadedById: USER,
+        },
+      });
+      return doc.id;
+    }
+
+    function knowledgeReturning(
+      hits: Array<{ documentId: string; filename: string; score: number; source: string }>,
+    ): KnowledgeService {
+      return {
+        search: async () => ({
+          hits: hits.map((h, i) => ({
+            chunkId: `chunk-${h.documentId}-${i}`,
+            documentId: h.documentId,
+            filename: h.filename,
+            position: 0,
+            text: `${h.filename} body. SPDX-License-Identifier: Apache-2.0`,
+            score: h.score,
+            source: h.source,
+          })),
+        }),
+      } as unknown as KnowledgeService;
+    }
+
+    function citedFilenames(webFindings: Array<{ evidence: string | null }>): string[] {
+      return webFindings.flatMap(
+        (f) =>
+          (
+            JSON.parse(f.evidence ?? "{}") as { citations?: Array<{ filename?: string }> }
+          ).citations?.map((c) => c.filename ?? "") ?? [],
+      );
+    }
+
+    it("still runs the web specialist on an uploaded document when a provider is configured", async () => {
+      const policy = await seedDocument("security-policy.md", "upload");
+      const { web, webFindings, webCalls } = await runToEnd(true, ["web"], false, {
+        knowledge: knowledgeReturning([
+          { documentId: policy, filename: "security-policy.md", score: 0.8, source: "upload" },
+        ]),
+        citeContext: true,
+      });
+      expect(webCalls).toBe(1);
       expect(web?.status).toBe("completed");
-      expect(findings).toBe(1);
+      expect(citedFilenames(webFindings)).toEqual(["security-policy.md"]);
+    });
+
+    // The #864 case with a provider configured: the selected document is a
+    // repository file whose only chunks are in quarantine, and the score-0
+    // quarantine fallback fed it to the web agent, which cited it.
+    it("with a provider configured, never grounds on the score-0 quarantine fallback", async () => {
+      const finder = await seedDocument("internal/reader/icon/finder_test.go", "repo");
+      await db.quarantineChunk.create({
+        data: {
+          documentId: finder,
+          projectId: PROJECT,
+          ord: 0,
+          text: "// SPDX-License-Identifier: Apache-2.0",
+          embedding: "[]",
+        },
+      });
+      const { row, webFindings, webCalls, webPrompts } = await runToEnd(true, ["web"], false, {
+        documentIds: [finder],
+        citeContext: true,
+      });
+      expect(row.status).toBe("completed");
+      // The agent still ran — the provider is configured — but was shown nothing
+      // it could mistake for evidence.
+      expect(webCalls).toBe(1);
+      const prompt = webPrompts.join("\n");
+      expect(prompt).not.toContain("finder_test.go");
+      expect(prompt).not.toContain("SPDX-License-Identifier");
+      expect(citedFilenames(webFindings)).toEqual([]);
+    });
+
+    it("with a provider configured, cites no repository, database or score-0 chunk", async () => {
+      const finder = await seedDocument("finder_test.go", "repo");
+      const table = await seedDocument("orders.table", "db");
+      const unranked = await seedDocument("unranked.md", "upload");
+      const policy = await seedDocument("gdpr-notes.md", "upload");
+      const { webFindings, webPrompts } = await runToEnd(true, ["web"], false, {
+        knowledge: knowledgeReturning([
+          { documentId: finder, filename: "finder_test.go", score: 0.9, source: "repo" },
+          { documentId: table, filename: "orders.table", score: 0.85, source: "db" },
+          { documentId: unranked, filename: "unranked.md", score: 0, source: "upload" },
+          { documentId: policy, filename: "gdpr-notes.md", score: 0.7, source: "upload" },
+        ]),
+        citeContext: true,
+      });
+      const prompt = webPrompts.join("\n");
+      for (const local of ["finder_test.go", "orders.table", "unranked.md"]) {
+        expect(prompt).not.toContain(local);
+      }
+      expect(citedFilenames(webFindings)).toEqual(["gdpr-notes.md"]);
     });
   },
 );

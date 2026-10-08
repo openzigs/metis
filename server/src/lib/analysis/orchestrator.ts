@@ -354,8 +354,11 @@ export interface OrchestratorDeps {
   /**
    * #864 — whether a web search provider is configured. Defaults to the
    * env-driven {@link isWebSearchConfigured}. When false the `web` specialist
-   * is not run: it has no web access of its own, and run over document-RAG
-   * alone it cited an unrelated test file's licence header as "evidence".
+   * is not run. It never calls the search provider either way: only the opt-in
+   * augmenter does. When it does run, its context is filtered by
+   * {@link selectWebAgentEvidence}, because document-RAG plus the score-0
+   * quarantine fallback once made it cite an unrelated test file's licence
+   * header as "evidence".
    */
   webSearchConfigured?: () => boolean;
 }
@@ -562,6 +565,24 @@ export interface ResumeSkippedReposResult {
   remaining: AnalysisSkippedRepo[];
   /** True when there was nothing to resume — an idempotent no-op. */
   noop: boolean;
+}
+
+/**
+ * #864 — the only chunks the `web` specialist may ground on. It has no web
+ * access of its own (the search provider is used only by the opt-in augmenter),
+ * so what it is served is local document-RAG. That is acceptable for an
+ * uploaded standards or policy document, but never for repository or database
+ * connector rows. A score of 0 or below is the quarantine fallback's marker:
+ * an unranked chunk, not a retrieval match. Run 3 of the #706 walkthrough cited
+ * `finder_test.go`'s licence header exactly that way.
+ */
+export function selectWebAgentEvidence(chunks: RetrievalContextChunk[]): RetrievalContextChunk[] {
+  return chunks.filter(
+    (c) =>
+      (c.score ?? 0) > 0 &&
+      c.source !== "code-graph" &&
+      !(c.source !== undefined && CONNECTOR_CODE_SOURCES.includes(c.source)),
+  );
 }
 
 /**
@@ -2102,7 +2123,7 @@ export class AnalysisOrchestrator {
     }
     return withInvokeAgentSpan(input.agentKey, async () => {
       try {
-        const retrieved = await this.retrieveContext({
+        const context = await this.retrieveContext({
           analysisId: input.analysisId,
           projectId: input.projectId,
           agentKey: input.agentKey,
@@ -2112,6 +2133,10 @@ export class AnalysisOrchestrator {
           extraInstructions: input.extraInstructions,
           actorId: input.actorId,
         });
+        // #864 — the web specialist grounds only on ranked, non-connector
+        // document chunks, so it cannot cite a repository file or an unranked
+        // fallback chunk as evidence.
+        const retrieved = input.agentKey === "web" ? selectWebAgentEvidence(context) : context;
         if (input.replayRunId) {
           await recordReplayStep({
             runId: input.replayRunId,
@@ -3888,8 +3913,16 @@ export class AnalysisOrchestrator {
     // If no approved chunks were found for explicitly-selected documents, fall
     // back to quarantine chunks. This lets the LLM analyze newly-uploaded or
     // pending-approval documents rather than reporting "no context available".
+    // #864 — never for `web`: these chunks are unranked (score 0), and the web
+    // specialist citing one is how a test file's licence header became "web
+    // evidence".
     let baseChunks = chunks;
-    if (chunks.length === 0 && input.documentIds && input.documentIds.length > 0) {
+    if (
+      input.agentKey !== "web" &&
+      chunks.length === 0 &&
+      input.documentIds &&
+      input.documentIds.length > 0
+    ) {
       const fallback = await this.fetchQuarantineFallback(input.projectId, input.documentIds);
       if (fallback.length > 0) baseChunks = fallback;
     }
