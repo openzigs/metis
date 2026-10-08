@@ -2,7 +2,7 @@
 
 You are wave D of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read the
 "Spec Kit (Phase 14, in full)" section of
-[#706](https://github.com/openzigs/metis/issues/706) for steps S1–S24 and their pass bars.
+[`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md) for steps S1–S24, how to drive each one and its pass bars.
 S24 is optional (it needs a public webhook).
 
 ## State you start from
@@ -18,42 +18,16 @@ S24 is optional (it needs a public webhook).
 
 ## Do
 
-S1–S24 in order, **in the UI first**. Since #931 the Spec Kit page
-(`/projects/{{PROJECT_ID}}/spec-kit`) has a **Features** panel, a `speckit.*` command palette
-that runs on the selected feature, **Generate checklists**, issue export after a dry run,
-artifact **Delete** and **Start analysis** after `/speckit.implement`. Chat no longer runs or
-suggests Spec Kit commands. Use in-page `fetch('/api/projects/{{PROJECT_ID}}/spec-kit/…',
-{credentials:'include', …})` **only** for the checks marked *API only* below. Each of those has
-no UI caller in `ui/src`; anything else that needs `fetch` is a finding.
+S1–S24 in order, **in the UI first**, as the plan's table says: its "Drive it with" column
+names the UI control for each step and marks the few checks that are *API only*. Use in-page
+`fetch('/api/projects/{{PROJECT_ID}}/spec-kit/…', {credentials:'include', …})` **only** for
+those; anything else that needs `fetch` is a finding. Chat no longer runs or suggests Spec Kit
+commands (#931).
 
-#706's table predates #928 and #931. Where it disagrees, these run-4 expectations win:
-
-| Step | Drive it with | Expected (run 4) |
-|---|---|---|
-| S1 | UI: the page before enabling. *API only:* `POST …/commands/speckit.specify` | `spec-kit-disabled-banner` shows and the palette is disabled; the API call returns **409 `SPEC_KIT_DISABLED`** |
-| S2 | UI: `spec-kit-toggle` | Persists across a reload; the onboarding card shows |
-| S3 | UI: **Generate constitution.md** | **Grounded (#928):** the success toast, not a warning; principles name their sources (README, `go.mod`, contributing guide) and reflect Go stdlib-first, Postgres only, no JS frameworks. A skeleton with a "nothing relevant ingested" warning is a FAIL here, because Phase 3 ingested the README |
-| S3b | UI: open the page as `developer` in a second context. *API only:* the 403 | **Read-only (#931):** every write control is disabled with the tooltip "Requires project.update"; the API returns **403** for `developer` and 200 for `admin`. `speckit.constitution.write` no longer exists (#928) |
-| S4 | UI: select **Project**, run `/speckit.specify mark all entries as read older than N days` | Creates a feature and its `spec.md`; the toast reads `Generated spec.md (vN) for <slug> in T tokens — grounded on …` with **K > 0**. Must mention `MarkAllAsReadBeforeDate` |
-| S5–S9 | UI: select the new feature, then `/speckit.clarify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.analyze`, `/speckit.implement` | Each artifact appears under `specs/<slug>/` (`spec-kit-feature-tree`). `/speckit.plan` writes 5 plan artifacts and says it is grounded, citing real `path:start-end` spans (#853). `/speckit.implement` shows the **handoff** card listing the artifacts |
-| S9 handoff | UI: **Start analysis with these artifacts**, once | A new analysis run starts (never `{{ANALYSIS_RUN_ID}}`); record its ID and cost. Disable test custom agents first so it stays cheap |
-| S10 | UI: **Edit** / **Save** / **Cancel** on `constitution.md` (project `.specify/` files only). *API only:* a body over 200,000 chars | Version increments; cancel changes nothing; the oversized body gets 400. Feature artifacts have no Edit button: that is by design, so it is not a finding |
-| S11 | UI: **Delete** `clarify.md` in the feature, confirm | It leaves the feature tree; the toast names the file |
-| S12 | UI: **Comments** on `constitution.md`, mention `coordinator`; presence in a second context | Comments and presence exist on project `.specify/` artifacts only. The mention notifies and opens the artifact's comments (#735) |
-| S13 | UI: type `/` in the palette; type `/` in `/chat` | The palette suggests the **nine `speckit.*` commands**, not the six legacy names. `/chat` suggests no Spec Kit command (#931) |
-| S14 | *API only:* `POST …/commands/specify` | `Deprecation: true` and `Link: <…/commands/speckit.specify>; rel="successor-version"`. The palette maps a typed `/specify` to `speckit.specify`, so the header is unreachable from the UI |
-| S15 | UI (S4) | `GET …/features` and the Features selector list the feature |
-| S16 | UI: `/speckit.plan` with **Project** selected. *API only:* the 400 | The page refuses before sending ("Select a feature first"); the API returns **400 `SPECKIT_FEATURE_REQUIRED`** without `featureSlug`, then 200 with it |
-| S17 | UI: list and read in the feature tree. *API only:* `PUT …/features/:slug/artifacts/*key`, and an unknown slug | Round trip OK; the unknown slug returns 404 `SPECKIT_FEATURE_NOT_FOUND` |
-| S18 | UI: the gate list in the Features panel (`spec-kit-feature-gates`) | `spec`, `plan`, `tasks`, `implement` gates match what exists |
-| S19 | UI: **Generate checklists** once right after S4, before `/speckit.plan`, and again after it. *API only:* adding a reviewer line to a checklist (feature artifacts have no Edit) | **412** before `plan.md`, its message shown in `spec-kit-error`. After: five domain checklists **specific to this feature** (#925), for example a bounded `UPDATE` on `entries` or an index on `published_at`. Re-run (merge is the default): the reviewer's line and its tick survive below the regenerated items |
-| S20 | UI (S5–S9 already ran the namespaced commands) | No `Deprecation` header on any of them |
-| S21 | UI: **Preview issue export (dry run)**, then **Publish issues to the saved target** | See the `taskstoissues` rule below. The publish button stays disabled until a dry run of the current `tasks.md` |
-| S22 | UI: **Archive**, tick **Show archived**, **Restore** | Hidden, then shown, then back |
-| S23 | *API only:* `POST …/spec-kit/install` | **501 `SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED`**. Expected; do not file it |
-| S24 | *(Optional; needs a public webhook)* close a sandbox issue from S21 | The matching `tasks.md` item is ticked |
-
-`x-speckit-force: 1` (gate bypass) is a header, so it is *API only* too.
+- **S9 handoff:** **Start analysis with these artifacts** once. It must start a new run, never
+  `{{ANALYSIS_RUN_ID}}`; record its ID and cost, with test custom agents disabled first.
+- **S21:** the real export returns 501 until #936 lands. Record the 501 against #936 and keep
+  the sandbox slot.
 
 ## Standing rules — never
 

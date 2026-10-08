@@ -568,9 +568,19 @@ jobs:
   #
   # No `pnpm install`: the verifier is plain Node using only builtins, so the
   # whole job is a checkout plus a few seconds.
+  #
+  # #948 — the job also hosts the two walkthrough test-plan gates, for the same
+  # reasons (a full fetch, plain Node, report early) and so the PR check set
+  # stays at 20. A separate job would add a check every caller counts.
   changelog:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Job-level permissions replace the workflow's, so `contents: read` is
+    # restated. `pull-requests: read` lets the walkthrough step read the PR's
+    # CURRENT labels (see below).
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -597,6 +607,31 @@ jobs:
         env:
           CHANGELOG_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: node scripts/verify-changelog-fragment.mjs
+
+      # #948 — every API route and UI page that docs/walkthroughs/TEST_PLAN.md
+      # names must still exist, so the plan cannot rot between walkthrough runs.
+      - name: Walkthrough test plan drift check
+        run: node scripts/walkthrough/check-test-plan.mjs
+
+      # #948 — a PR adding or removing a page or a route must change the plan or
+      # carry the `no-walkthrough-impact` label. The labels are read from the API
+      # at run time, NOT from the event payload: adding a label does not trigger
+      # this workflow, and a re-run replays the original payload, so a payload
+      # read would never see a label added after the push. Re-running this job
+      # after labelling is the documented path. Off a PR (push, nightly) there is
+      # no PR number, no labels, and the diff against origin/main is empty.
+      - name: Walkthrough test plan updated for route/page changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          WALKTHROUGH_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PR_NUMBER}" ]; then
+            WALKTHROUGH_PR_LABELS="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.labels[].name')"
+            export WALKTHROUGH_PR_LABELS
+          fi
+          node scripts/verify-walkthrough-plan.mjs
 
   # Dedicated job: lint (ruff) + unit tests (pytest) with an 80% coverage floor
   # (--cov-fail-under=80) on the new Python service. Runs on the same

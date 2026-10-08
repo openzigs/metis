@@ -6,13 +6,20 @@ description: "Runbook to re-run the #706 METIS end-to-end walkthrough from scrat
 # E2E walkthrough runbook (#706)
 
 The **procedure** — phases 1–20, Spec Kit S1–S24, pass bars, BA questions and developer
-issues — lives in [#706](https://github.com/openzigs/metis/issues/706). Do not copy it
-here; read it at the start of every run, because phases are added and removed (#799 drops
-Phase 4's bug scan, #812 replaces Phase 17 with "Tested by" in traceability). This skill is
-the **mechanics**: fixtures, order, waves, guard-rails and measurement.
+issues — lives in [`docs/walkthroughs/TEST_PLAN.md`](../../../docs/walkthroughs/TEST_PLAN.md)
+(moved out of #706's body in #948). Do not copy it here; read it at the start of every run,
+because phases are added and removed (#799 dropped Phase 4's bug scan, #812 replaced Phase 17
+with "Tested by"). Results still go on [#706](https://github.com/openzigs/metis/issues/706).
+This skill is the **mechanics**: fixtures, order, waves, guard-rails and measurement.
+
+**Start every run with `pnpm walkthrough:check-plan`.** It fails when the plan names an API
+route or page that no longer exists. A step the run finds wrong is fixed in the plan, in a PR,
+not only in the results comment.
 
 | File | Use |
 |---|---|
+| `docs/walkthroughs/TEST_PLAN.md` | The procedure and pass bars |
+| `scripts/walkthrough/check-test-plan.mjs` | Drift check: dead routes and pages in the plan |
 | `briefs/wave-{a..e}.md`, `briefs/ba-reask.md` | Dispatch templates, one per wave |
 | `scripts/walkthrough/miniflux-seed.sql` | Idempotent Miniflux seed |
 | `docs/walkthroughs/RESULTS_TEMPLATE.md` | The results comment, with the run-2 baseline |
@@ -23,7 +30,11 @@ the **mechanics**: fixtures, order, waves, guard-rails and measurement.
 Run 1 set things up out of order (lineage after the first ingest, no workspace) and its
 results were not comparable. Do not reorder.
 
-1. **SQL-lineage sidecar first.**
+1. **SQL-lineage sidecar first, rebuilt from the commit under test** — every run, even when
+   an old image is still running. A rebuilt sidecar only reaches *stored* edges when
+   `LINEAGE_EXTRACTOR_VERSION` changes, because ingest skips files whose extractor version
+   matches (#935). When lineage looks wrong, `POST /extract_usage` on the sidecar with the
+   function's SQL tells a wrong sidecar (bad answer) from a stale graph (good answer).
    ```bash
    docker build -f Dockerfile.sql-lineage -t metis-sql-lineage:dev .
    docker run -d --name metis-sql-lineage -p 127.0.0.1:5070:5070 \
@@ -50,7 +61,10 @@ results were not comparable. Do not reorder.
 4. **Server and UI in the operator's own terminal** — `pnpm --filter ./server run dev` and
    `pnpm --filter ./ui run dev`. Agent background shells are killed at 2 h, which is
    shorter than a wave. Sync steps and mock auth: the `run-metis-dev` skill.
-5. **Workspace first, then the project inside it.** #731 (PR #927) now lets an existing
+5. **Workspace first, then the project inside it.** Membership has no invite UI (#941): invite
+   over the API, open `/invites/<token>` as the invitee, then log them in afresh. Reviewers
+   must be workspace members. A project *outside* a workspace can only be created with
+   `POST /api/projects`. #731 (PR #927) now lets an existing
    project join a workspace, but create it inside so runs stay comparable; wave B tests the
    move on a throwaway project. Enable lineage and database-aware analysis. **Save the
    publish target `openzigs/flux-v2` before adding any
@@ -59,7 +73,8 @@ results were not comparable. Do not reorder.
    (#714). Confirm the connector's `lastCommitSha` and the code graph's `commitSha` both
    start `c4d54f87`.
 7. **Ground truth** for citation checks, outside the repo's tracked tree:
-   `git clone --depth 1 --branch v2.3.3 https://github.com/miniflux/v2`.
+   `git clone --depth 1 --branch v2.3.3 https://github.com/miniflux/v2`, or the release
+   source tarball. Check a cited line with `sed -n '163,164p' internal/validator/user.go`.
 
 ## 2. LLM
 
@@ -72,6 +87,10 @@ MODEL_PRICES={"deepseek-flash":{"inputPerMTok":0.30,"outputPerMTok":1.20,"cacheR
 ```
 
 These are peak prices; off-peak is half. Record which window the run used.
+
+**Analysis cap.** `ANALYSIS_MONTHLY_TOKEN_CAP` is deployment-wide, not per project, and other
+work this month counts against it. Check the headroom before waves B–E; run 4 raised it from 5M
+to 20M with 1.53M already used.
 
 ## 3. Waves
 
@@ -118,9 +137,14 @@ Phase 9, and create the Phase 13 scheduler job **after** Phase 9's documents fin
   `DOCS_GEN_MAX_RUN_TOKENS` (default 20M) stop it automatically. For a walkthrough, set a
   tighter cost ceiling in `.env`, for example 500, so one runaway document can't spend the
   run's budget.
-- Sending a write statement to the database connector's query endpoint, to prove it is
-  read-only, is classifier-blocked for agents. The operator runs it, or approves it,
-  using no-op writes (`… WHERE false`).
+- **The harness classifier blocks some checks outright.** It denies
+  `browser_run_code_unsafe` on a second browser context (two-user presence) and in-page
+  `fetch` calls that send `UPDATE` SQL (the read-only query probe). Plan those with the
+  operator — who runs or approves them, using no-op writes (`… WHERE false`) — or verify them
+  from the database tables, and record which.
+- **`speckit.taskstoissues`'s real export returns 501 until #936 lands.** Don't spend
+  sandbox slots on it. **Finding-publish has no dry run**: it publishes at once and counts
+  against the cap. Impact analyses have no draft path.
 - Afterwards, both must return `[]`:
   ```bash
   gh search issues --repo miniflux/v2 --author <user> --json url
@@ -175,13 +199,17 @@ within a cent per summed view, so a larger mismatch is a finding. Run 3, before 
 (default 2500), `DOCS_GEN_MAX_RUN_TOKENS` (20M), `DOCS_GEN_SECTION_MAX_CHARS` (60,000) and
 `DOCS_GEN_DOCUMENT_MAX_CHARS` (250,000) as set for the run. Per document, report its cost
 against the ceiling, whether a ceiling stopped it, and its body and longest-section length.
-Test **Cancel generation** once on purpose (wave C). Run 3's BRD was 2.19 MB and $4.61.
+Test **Cancel generation** once on purpose (wave C). Run 3's BRD was 2.19 MB and $4.61;
+**run 4's was $1.91, 30 min and 171 KB under a 500¢ cap** — the baseline to compare against.
+**Regenerate** works only on a failed, cancelled, or degraded-with-no-version document, so test
+cancel and resume on a **new** document.
 
 **Approved requirements.** Report how many promoted requirements have no acceptance criteria and
 no code link (#909, #926; the query is in wave B's brief).
 
 Results go in a comment built from `docs/walkthroughs/RESULTS_TEMPLATE.md`, including its
-run-to-run comparison table, on #706 or a tracking issue that links back.
+run-to-run comparison table, on #706 or a tracking issue that links back. Fix any step the run
+found wrong in `TEST_PLAN.md`, in a PR.
 
 ## 6. Agent tips (put these in every brief — the templates already do)
 
@@ -194,6 +222,9 @@ run-to-run comparison table, on #706 or a tracking issue that links back.
   Wait, then retry.
 - File **uploads must come from under the repo** root.
 - A second user needs `browser.newContext()`. Mock users exist only after their first login.
+- **After signing out in Playwright, clicks can stop delivering events.** Open a new tab, and
+  sign in or out with in-page `fetch` rather than the account menu, except for the one sign-out
+  check Phase 20 asks for.
 - After a workspace membership change, call `/api/auth/refresh` or the workspace claim is stale.
 - **Each agent keeps its scratch files in its own subdirectory.** A shared scratchpad
   clobbered backups in run 2.
@@ -225,10 +256,17 @@ run-to-run comparison table, on #706 or a tracking issue that links back.
   the 409/400/403/404 error codes the UI pre-empts, legacy-alias `Deprecation` headers,
   `x-speckit-force`, writing a *feature* artifact (no Edit button), and `/install`. Chat no
   longer runs Spec Kit commands.
-- `browser_evaluate` `filename` must be under the repo, for example the wave's evidence
-  folder; the scratchpad is outside the allowed roots.
-- A custom agent enabled for a project **joins every later analysis run** on it. Disable it
-  after Phase 7 if later runs must stay comparable.
+- **Playwright can only write under the repo**: `browser_evaluate` `filename` and any dump go
+  in the wave's evidence folder; the scratchpad is outside the allowed roots.
+- A custom agent enabled for a project **joins every later analysis run** on it, and gets no
+  code there (#938). Disable it after Phase 7.
+- **Clarification starts when the Questions tab opens.** Don't remount the tab while it is
+  starting; that starts and bills it twice (#937).
+- **Spec Kit contracts:** `tasksGate` needs both `spec.md` and `plan.md`; a feature-artifact
+  `PUT` takes `{content}`; feature slugs match `^\d{3}-…`.
+- **Over the chat API, `inspect_schema` and `query_database` are refused** with
+  `no_interactive_approver`, so database-backed BA answers fall back to source.
+  `search_code_graph` does not index string-literal config keys.
 - An enabled custom skill is loaded into later chat sessions. Disable test skills before the
   BA re-ask.
 - Evidence goes under `.playwright-mcp/walkthrough-706-run<N>/<wave>/` (gitignored).

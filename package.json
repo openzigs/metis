@@ -51,6 +51,8 @@
     "agents:verify": "node scripts/verify-agent-frontmatter.mjs",
     "changelog:verify": "node scripts/verify-changelog-fragment.mjs",
     "changelog:assemble": "node scripts/assemble-changelog.mjs",
+    "walkthrough:check-plan": "node scripts/walkthrough/check-test-plan.mjs",
+    "walkthrough:verify-pr": "node scripts/verify-walkthrough-plan.mjs",
     "worktrees:prune": "node scripts/worktrees-prune.mjs",
     "eval:results-guard": "node scripts/eval-results-commit-guard.mjs",
     "bootstrap": "node scripts/bootstrap.mjs",
