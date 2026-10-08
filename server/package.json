@@ -95,7 +95,7 @@
     "ldapts": "^9.2.0",
     "mammoth": "^1.13.0",
     "marked": "^18.0.14",
-    "mermaid": "^11.14.0",
+    "mermaid": "^12.0.0",
     "minisearch": "^7.2.0",
     "multer": "^2.4.0",
     "mysql2": "^3.24.5",
