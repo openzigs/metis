@@ -153,9 +153,28 @@ export function describeRejections(rejected: ReadonlyArray<{ type: string }>): s
   return parts.join(" ");
 }
 
+/**
+ * Issue #909 — approving promotes the REVIEWED list (#730), which is a different
+ * set from the synthesis output. Say so before the reviewer approves, whenever
+ * the two counts differ; otherwise the rows that appear look like a bug.
+ */
+export function describeSetDifference(
+  reviewedCount: number | undefined,
+  synthesisCount: number | undefined,
+): string | null {
+  if (reviewedCount === undefined || synthesisCount === undefined) return null;
+  if (reviewedCount === synthesisCount) return null;
+  return (
+    `Approving promotes the ${reviewedCount} requirement(s) reviewed below, not the ` +
+    `${synthesisCount} the synthesis produced. Synthesized requirements only contribute ` +
+    `acceptance criteria and evidence to a reviewed requirement they match.`
+  );
+}
+
 function PromotionBanner({
   status,
   awaitingRequirementCount,
+  setDifference,
   pendingByType,
   rejectionSummary,
   requirementCount,
@@ -171,6 +190,8 @@ function PromotionBanner({
   promoteAction?: React.ReactNode;
   /** #1104 — how many synthesized requirements the gate is holding back. */
   awaitingRequirementCount?: number;
+  /** #909 — the reviewed list differs from the synthesis set ({@link describeSetDifference}). */
+  setDifference?: string | null;
   /** #1117 (finding E) — breakdown of the pending approvals, e.g. "16 requirement, 11 evidence". */
   pendingByType?: string | null;
   /** #723 — what the rejections did, per approval type ({@link describeRejections}). */
@@ -222,6 +243,11 @@ function PromotionBanner({
         <span className="mt-1 block text-xs text-warning" data-testid="pending-by-type">
           The counts differ because one approval is raised per reviewable item, not per requirement.
           Pending: {pendingByType}.
+        </span>
+      )}
+      {setDifference && (
+        <span className="mt-1 block text-xs text-warning" data-testid="approved-set-difference">
+          {setDifference}
         </span>
       )}
     </div>
@@ -522,6 +548,10 @@ export function ApprovalsPanel({
             awaitingRequirementCount={
               readEnhancementMetadata(metadata).promotionBlocked?.awaitingRequirementCount
             }
+            setDifference={describeSetDifference(
+              readEnhancementMetadata(metadata).promotionBlocked?.awaitingRequirementCount,
+              readEnhancementMetadata(metadata).promotionBlocked?.synthesisRequirementCount,
+            )}
             pendingByType={summarisePendingByType(pending)}
             rejectionSummary={describeRejections(resolved.filter((a) => a.status === "rejected"))}
             requirementCount={requirementCount}

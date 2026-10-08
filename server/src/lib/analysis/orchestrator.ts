@@ -19,6 +19,7 @@
  * Cancellation: `cancel(analysisId)` aborts every in-flight signal and
  * marks the Analysis as `cancelled`. Partial findings are preserved.
  */
+import { randomUUID } from "node:crypto";
 import {
   type AGENT_RESULT_STATUSES,
   type AnalysisAgentEvent,
@@ -143,7 +144,10 @@ import {
   listApprovalRequests,
   type ApprovalPolicy,
 } from "./approval-checkpoint.js";
-import { buildApprovedRequirementSet } from "./approved-requirement-set.js";
+import {
+  buildApprovedRequirementSet,
+  latestRequirementApprovals,
+} from "./approved-requirement-set.js";
 import type { ApprovalType } from "./types/requirements.js";
 import { runSynthesis, type FlatFinding } from "./synthesis.js";
 import { runCrossDocDetection } from "./cross-doc-detection.js";
@@ -2047,7 +2051,12 @@ export class AnalysisOrchestrator {
 
     const extractor = new RequirementsExtractor({ provider, model: input.model });
     const structured = await extractor.extract(rawInput, input.signal);
-    await persistAnalysisEnhancement(input.analysisId, { structuredRequirements: structured });
+    // Issue #909 — a fresh run id with every extraction: the model numbers each
+    // run's list from REQ-001, so the id alone cannot say which run it is from.
+    await persistAnalysisEnhancement(input.analysisId, {
+      structuredRequirements: structured,
+      structuredRunId: randomUUID(),
+    });
 
     // Epic #202 (#215) — HITL approval checkpoints. Create one approval request
     // per extracted requirement so a human must approve before artifacts are
@@ -3496,6 +3505,9 @@ export class AnalysisOrchestrator {
             pendingCount: ticketStatus.pendingCount,
             rejectedCount: ticketStatus.rejectedCount,
             awaitingRequirementCount,
+            // #909 — lets the Approvals tab say, before anyone approves, that the
+            // reviewed list (not this many synthesized rows) is what is promoted.
+            synthesisRequirementCount: result.output.requirements.length,
             reason: blockedReason,
           },
           // #258 — record the coarse outcome in the SAME metadata patch as the
@@ -3556,9 +3568,17 @@ export class AnalysisOrchestrator {
       // Only consulted when structured requirements exist, so runs without the
       // checkpoint (and the pipeline suites) keep the synthesis output as-is.
       const structured = refined?.requirements ?? [];
+      // #909 — one deciding approval per id: an earlier run's verdict on a
+      // requirement that shared the id never decides this run's.
       const requirementApprovals =
         structured.length > 0
-          ? (await listApprovalRequests(input.analysisId)).filter((a) => a.type === "requirement")
+          ? [
+              ...latestRequirementApprovals(
+                (await listApprovalRequests(input.analysisId)).filter(
+                  (a) => a.type === "requirement",
+                ),
+              ).values(),
+            ]
           : [];
       const reviewed = requirementApprovals.length > 0;
       const approvedIds = new Set(
@@ -3643,6 +3663,7 @@ export class AnalysisOrchestrator {
               promotedStructuredIds: structured
                 .filter((r) => approvedIds.has(r.id))
                 .map((r) => r.id),
+              promotedStructuredRunId: refined?.runId ?? null,
             }
           : {}),
       });
