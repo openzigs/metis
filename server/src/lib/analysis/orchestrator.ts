@@ -1293,6 +1293,9 @@ export class AnalysisOrchestrator {
     let firstAgentError: string | null = null;
     const recordAgentOutcome = (r: PromiseSettledResult<unknown>): void => {
       if (r.status === "fulfilled") {
+        // #864 — a skipped agent did no work, so it cannot rescue a run whose
+        // every specialist that DID run failed (#755).
+        if ((r.value as Partial<AgentRunResult> | undefined)?.skipped === true) return;
         specialistSucceeded += 1;
       } else {
         // Aborts are handled by the dedicated cancellation path; don't count
@@ -2224,7 +2227,13 @@ export class AnalysisOrchestrator {
       findingCount: 0,
       ts: Date.now(),
     });
-    return { agentKey: "web", output, usage, durationMs: Date.now() - startedAt.getTime() };
+    return {
+      agentKey: "web",
+      output,
+      usage,
+      durationMs: Date.now() - startedAt.getTime(),
+      skipped: true,
+    };
   }
 
   /**

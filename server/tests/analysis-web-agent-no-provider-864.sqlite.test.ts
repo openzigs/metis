@@ -61,7 +61,7 @@ const licenceHeaderFinding = JSON.stringify({
   notes: [],
 });
 
-function recordingProvider(): AIProvider & { webCalls: number } {
+function recordingProvider(failAll = false): AIProvider & { webCalls: number } {
   const p = {
     key: "anthropic",
     model: MODEL,
@@ -71,6 +71,7 @@ function recordingProvider(): AIProvider & { webCalls: number } {
       if (JSON.stringify([opts?.systemMessage, messages]).includes(WEB_AGENT_MARKER)) {
         p.webCalls += 1;
       }
+      if (failAll) throw new Error("provider exploded");
       return {
         content: licenceHeaderFinding,
         usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
@@ -119,8 +120,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    async function runToEnd(webSearchConfigured: boolean) {
-      const provider = recordingProvider();
+    async function runToEnd(
+      webSearchConfigured: boolean,
+      agentKeys: Array<"web" | "database"> = ["web"],
+      failAll = false,
+    ) {
+      const provider = recordingProvider(failAll);
       const orch = new AnalysisOrchestrator({
         provider,
         knowledge: stubKnowledge,
@@ -129,7 +134,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const { id } = await orch.start({
         projectId: PROJECT,
         startedById: USER,
-        agentKeys: ["web"],
+        agentKeys,
       });
       for (let i = 0; i < 400; i++) {
         const row = await db.analysis.findUnique({ where: { id } });
@@ -154,6 +159,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const output = JSON.parse(web?.output ?? "{}") as { summary?: string; findings?: unknown[] };
       expect(output.summary).toBe(NO_WEB_SEARCH_PROVIDER_NOTICE);
       expect(output.findings).toEqual([]);
+    });
+
+    it("a skipped web specialist does not rescue a run whose other specialists all failed (#755)", async () => {
+      const { row, webCalls } = await runToEnd(false, ["web", "database"], true);
+      expect(webCalls).toBe(0);
+      expect(row.status).toBe("failed");
+      expect(row.errorMessage).toContain("All 1 specialist agent(s) failed");
     });
 
     it("still runs the web specialist when a provider is configured", async () => {
