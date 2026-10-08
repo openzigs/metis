@@ -1116,6 +1116,8 @@ describe("runTasksToIssues", () => {
     expect(create).toHaveBeenCalledTimes(2);
     expect(taskExportRows.size).toBe(2);
     expect(r.message).toBe("Exported 2 task(s) to o/r.");
+    expect(r.publishAvailable).toBe(true);
+    expect(r.created.map((c) => c.title)).toEqual(["[T01] Build A", "[T02] Build B"]);
     expect(auditCalls.some((c) => c.action === "speckit.tasks_exported")).toBe(true);
   });
 
@@ -1252,8 +1254,20 @@ describe("runTasksToIssues", () => {
     expect(client.addSubIssue).not.toHaveBeenCalled();
     expect(r.parentEpicNumber).toBe(7);
     expect(r.created).toEqual([
-      { taskId: "T01", issueNumber: 0, url: "dryrun://%5BT01%5D%20Build%20A", upserted: false },
-      { taskId: "T02", issueNumber: 0, url: "dryrun://%5BT02%5D%20Build%20B", upserted: false },
+      {
+        taskId: "T01",
+        title: "[T01] Build A",
+        issueNumber: 0,
+        url: "dryrun://%5BT01%5D%20Build%20A",
+        upserted: false,
+      },
+      {
+        taskId: "T02",
+        title: "[T02] Build B",
+        issueNumber: 0,
+        url: "dryrun://%5BT02%5D%20Build%20B",
+        upserted: false,
+      },
     ]);
     expect(taskExportRows.size).toBe(0);
   });
