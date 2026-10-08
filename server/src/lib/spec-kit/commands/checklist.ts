@@ -310,11 +310,11 @@ function encodeGeneratedChecks(items: string[]): string {
 function decodeGeneratedChecks(existing: string): Set<string> {
   const line = existing.split(/\r?\n/).find((l) => l.trim().startsWith(GENERATED_CHECKS_PREFIX));
   if (!line) return new Set();
-  const b64 = line
-    .trim()
-    .slice(GENERATED_CHECKS_PREFIX.length)
-    .replace(/-->\s*$/, "")
-    .trim();
+  // Our own marker, not HTML: strip the literal trailing "-->" without a regex
+  // (CodeQL js/bad-tag-filter reads a `-->` regex as an HTML comment filter).
+  let body = line.trim().slice(GENERATED_CHECKS_PREFIX.length).trim();
+  if (body.endsWith("-->")) body = body.slice(0, -3);
+  const b64 = body.trim();
   try {
     const parsed = JSON.parse(Buffer.from(b64, "base64").toString("utf8")) as unknown;
     return Array.isArray(parsed)
