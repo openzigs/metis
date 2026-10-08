@@ -1,7 +1,7 @@
 # Wave C — Phases 9–13 (run {{RUN_NUMBER}})
 
 You are wave C of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read
-[#706](https://github.com/openzigs/metis/issues/706) for the definition and pass bars of
+[`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md) for the definition and pass bars of
 Phases 9–13 (docs generation, chat, discussions, publishing, drift / scheduler / tasks).
 
 ## State you start from
@@ -18,7 +18,7 @@ Phases 9–13 (docs generation, chat, discussions, publishing, drift / scheduler
 
 ## Do
 
-Phases 9–13 as #706 defines them. Docs generation dominated the spend in run 2 (80%) and
+Phases 9–13 as the plan defines them. Docs generation dominated the spend in run 2 (80%) and
 run 3 (89%, $8.73). Snapshot the ledger immediately before and after each document so its
 cost is attributable. Phase 12 is the only phase allowed to publish, and only under the rules
 below.
