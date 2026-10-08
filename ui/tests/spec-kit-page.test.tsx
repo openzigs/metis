@@ -588,6 +588,55 @@ describe("SpecKitPage — #789", () => {
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled());
   });
 
+  it("voids the dry run when tasks.md changes afterwards", async () => {
+    m.runCommand!.mockResolvedValue({ message: "ok", count: 3 });
+    await openFeature();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).not.toBeDisabled());
+    m.listFeatureArtifacts!.mockResolvedValue({
+      feature: FEATURE,
+      artifacts: [fa("spec.md", "FR-1 mark entries read"), fa("tasks.md", "regenerated")],
+    });
+    fireEvent.click(screen.getByTestId("spec-kit-run-checklist"));
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled());
+  });
+
+  it("voids the dry run when the user leaves the feature and returns", async () => {
+    m.runCommand!.mockResolvedValue({ message: "ok", count: 3 });
+    await openFeature();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).not.toBeDisabled());
+    fireEvent.change(screen.getByTestId("spec-kit-feature-select"), { target: { value: "" } });
+    fireEvent.change(screen.getByTestId("spec-kit-feature-select"), {
+      target: { value: "001-a" },
+    });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled());
+  });
+
+  it("offers no Delete while Spec Kit Mode is disabled", async () => {
+    m.getEnabled!.mockResolvedValue({ enabled: false });
+    m.listFiles!.mockResolvedValue({ enabled: false, artifacts: [artifact("spec.md", "S")] });
+    render(<SpecKitPage />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-root")).toBeInTheDocument());
+    await flush();
+    expect(screen.queryByTestId("spec-kit-delete-button")).not.toBeInTheDocument();
+  });
+
+  it("names the deleted file in the toast even if the selection moved meanwhile", async () => {
+    let finish: () => void = () => undefined;
+    m.deleteFeatureArtifact!.mockReturnValue(new Promise<void>((r) => (finish = r)));
+    await openFeature();
+    fireEvent.click(screen.getByTestId("spec-kit-feature-artifact-contracts/api.yaml"));
+    fireEvent.click(screen.getByTestId("spec-kit-delete-button"));
+    await answerDialog("Delete");
+    await waitFor(() => expect(m.deleteFeatureArtifact).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("spec-kit-feature-artifact-plan.md"));
+    finish();
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith("Deleted specs/001-a/contracts/api.yaml."),
+    );
+  });
+
   it("does not publish when the confirmation is declined", async () => {
     m.runCommand!.mockResolvedValue({ message: "Would create 3 issue(s)" });
     await openFeature();

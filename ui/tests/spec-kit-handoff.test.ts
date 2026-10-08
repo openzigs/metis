@@ -20,6 +20,7 @@ describe("buildHandoffInstructions", () => {
     const r = buildHandoffInstructions(["spec.md"], "  ");
     expect(r.text).toMatch(/^Spec Kit handoff \(spec\.md\)\./);
     expect(r.text).not.toContain("\n");
+    expect(r.text).not.toContain("Evaluate the requirements in this spec.md");
   });
 
   it("cuts at the server's cap and says so", () => {
@@ -29,10 +30,20 @@ describe("buildHandoffInstructions", () => {
   });
 
   it("is not truncated at exactly the cap", () => {
-    const header = buildHandoffInstructions(["spec.md"], null).text;
-    const spec = "y".repeat(MAX_EXTRA_INSTRUCTIONS - header.length - 2);
+    const headerLength = buildHandoffInstructions(["spec.md"], "x").text.length - 3;
+    const spec = "y".repeat(MAX_EXTRA_INSTRUCTIONS - headerLength - 2);
     const r = buildHandoffInstructions(["spec.md"], spec);
     expect(r.text).toHaveLength(MAX_EXTRA_INSTRUCTIONS);
     expect(r.truncated).toBe(false);
+  });
+
+  it("does not cut a surrogate pair in half", () => {
+    const header = buildHandoffInstructions(["spec.md"], "x").text.length - 3;
+    // Place an astral character so its high surrogate lands on the last kept unit.
+    const spec = "a".repeat(MAX_EXTRA_INSTRUCTIONS - header - 2 - 1) + "\u{1F600}" + "tail";
+    const r = buildHandoffInstructions(["spec.md"], spec);
+    expect(r.truncated).toBe(true);
+    const last = r.text.charCodeAt(r.text.length - 1);
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
   });
 });

@@ -90,7 +90,11 @@ export default function SpecKitPage() {
   const [selectedFeature, setSelectedFeature] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState("spec.md");
   // #789 — the export may publish only after a dry run of the same feature.
-  const [previewedExport, setPreviewedExport] = useState<string | null>(null);
+  // It records the tasks.md version previewed, so regenerating tasks.md voids it.
+  const [previewedExport, setPreviewedExport] = useState<{
+    feature: string;
+    tasksVersion: number | null;
+  } | null>(null);
   // #789 — what `/speckit.implement` handed off, for "Start analysis".
   const [handoff, setHandoff] = useState<{ context: string[]; feature: string | null } | null>(
     null,
@@ -123,6 +127,7 @@ export default function SpecKitPage() {
     setSelectedKey("spec.md");
     setEditingDraft(null);
     setHandoff(null);
+    setPreviewedExport(null);
   };
   const refreshArtifacts = (): void => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.projects.specKitFiles(projectId) });
@@ -210,7 +215,14 @@ export default function SpecKitPage() {
         setHandoff({ context: result.artifact.context, feature: featureSlug });
       }
       if (input.command === "speckit.taskstoissues") {
-        setPreviewedExport(input.options.dryRun ? (input.options.featureSlug ?? null) : null);
+        setPreviewedExport(
+          input.options.dryRun && input.options.featureSlug
+            ? {
+                feature: input.options.featureSlug,
+                tasksVersion: featureArtifacts.find((a) => a.key === "tasks.md")?.version ?? null,
+              }
+            : null,
+        );
       }
       refreshArtifacts();
     },
@@ -223,12 +235,14 @@ export default function SpecKitPage() {
 
   // #789 — delete the viewed artifact (project file or feature artifact).
   const deleteMutation = useMutation({
-    mutationFn: () =>
-      selectedFeature === null
-        ? specKitApi.deleteFile(projectId, selectedName)
-        : specKitApi.deleteFeatureArtifact(projectId, selectedFeature, selectedKey),
-    onSuccess: () => {
-      toast.success(`Deleted ${viewerTitle}.`);
+    // The target is captured at click time, so the toast names the file that
+    // was deleted even if the selection changes while the request is in flight.
+    mutationFn: (target: { feature: string | null; key: string; title: string }) =>
+      target.feature === null
+        ? specKitApi.deleteFile(projectId, target.key as SpecKitArtifactName)
+        : specKitApi.deleteFeatureArtifact(projectId, target.feature, target.key),
+    onSuccess: (_void, target) => {
+      toast.success(`Deleted ${target.title}.`);
       setEditingDraft(null);
       refreshArtifacts();
     },
@@ -486,12 +500,18 @@ export default function SpecKitPage() {
               </Button>
             ) : null}
             {/* #789 — delete the viewed artifact, after a confirmation. */}
-            {viewedContent !== undefined && editingDraft === null ? (
+            {enabled && viewedContent !== undefined && editingDraft === null ? (
               <ConfirmDialog
                 title={`Delete ${viewerTitle}?`}
                 description="This cannot be undone."
                 confirmLabel="Delete"
-                onConfirm={() => deleteMutation.mutate()}
+                onConfirm={() =>
+                  deleteMutation.mutate({
+                    feature: selectedFeature,
+                    key: selectedFeature === null ? selectedName : selectedKey,
+                    title: viewerTitle,
+                  })
+                }
                 trigger={
                   <Button
                     type="button"
@@ -707,7 +727,13 @@ export default function SpecKitPage() {
                   size="sm"
                   variant="outline"
                   className="w-full"
-                  disabled={!enabled || busy || previewedExport !== selectedFeature}
+                  disabled={
+                    !enabled ||
+                    busy ||
+                    previewedExport?.feature !== selectedFeature ||
+                    previewedExport.tasksVersion !==
+                      (featureArtifacts.find((a) => a.key === "tasks.md")?.version ?? null)
+                  }
                   data-testid="spec-kit-export-publish"
                 >
                   Publish issues to the saved target

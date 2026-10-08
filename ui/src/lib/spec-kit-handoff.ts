@@ -18,11 +18,18 @@ export function buildHandoffInstructions(
   context: string[],
   spec: string | null,
 ): HandoffInstructions {
+  const hasSpec = Boolean(spec && spec.trim().length > 0);
   const header = [
     `Spec Kit handoff (${context.join(", ")}).`,
-    "Evaluate the requirements in this spec.md against the current implementation.",
+    hasSpec
+      ? "Evaluate the requirements in this spec.md against the current implementation."
+      : "No spec.md was available; evaluate the current implementation against the forwarded artifacts.",
   ].join(" ");
-  const full = spec && spec.trim().length > 0 ? `${header}\n\n${spec.trim()}` : header;
+  const full = hasSpec ? `${header}\n\n${spec!.trim()}` : header;
   if (full.length <= MAX_EXTRA_INSTRUCTIONS) return { text: full, truncated: false };
-  return { text: full.slice(0, MAX_EXTRA_INSTRUCTIONS), truncated: true };
+  let cut = MAX_EXTRA_INSTRUCTIONS;
+  // Do not leave half of a surrogate pair at the cut.
+  const last = full.charCodeAt(cut - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  return { text: full.slice(0, cut), truncated: true };
 }

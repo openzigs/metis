@@ -6,12 +6,12 @@
  * top of the global limiter.
  *
  * It sits in front of `requireAuth` (CodeQL js/missing-rate-limiting wants the
- * limiter ahead of every auth check, as in `traceability-gaps-rate-limit.ts`),
- * and the Spec Kit router has no router-level auth, so it keys by IP; by user
- * when a `req.user` is already present. Default 120 deletes per minute per key,
- * generous enough for users sharing one NAT address. Tunable via
- * `SPECKIT_DELETE_LIMIT_MAX` and `SPECKIT_DELETE_LIMIT_WINDOW_MS`, read per
- * request.
+ * limiter ahead of every auth check, as in `traceability-gaps-rate-limit.ts`).
+ * `req.user` is only set inside `requireAuth`, so at this point the only
+ * identity is the client address: it always keys by IP. Default 120 deletes
+ * per minute per IP, generous enough for users sharing one NAT address.
+ * Tunable via `SPECKIT_DELETE_LIMIT_MAX` (read per request) and
+ * `SPECKIT_DELETE_LIMIT_WINDOW_MS` (read once, at module load).
  *
  * Exported as the `rateLimit()` result itself (not wrapped in a function) so
  * CodeQL recognises it as a rate limiter.
@@ -37,11 +37,8 @@ export const specKitDeleteRateLimiter: RequestHandler = rateLimit({
   limit: () => maxPerWindow(),
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req, res) => {
-    const userId = req.user?.userId;
-    if (userId) return `user:${userId}`;
-    return `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`;
-  },
+  keyGenerator: (req, res) =>
+    `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`,
   message: {
     success: false,
     error: { code: "SPECKIT_DELETE_RATE_LIMITED", message: "Too many deletes — slow down" },

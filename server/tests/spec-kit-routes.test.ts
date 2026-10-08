@@ -18,9 +18,28 @@ vi.mock("../src/middleware/auth.js", () => ({
     next();
   },
 }));
-vi.mock("../src/middleware/require-permission.js", () => ({
-  requirePermission: () => (_req: any, _res: any, next: any) => next(),
-}));
+// Denies by permission name so a test can prove WHICH permission a route asks
+// for (a pass-through mock cannot tell project.update from project.read).
+const deniedPermissions = vi.hoisted(() => new Set<string>());
+const projectAccessDenied = vi.hoisted(() => ({ value: false }));
+vi.mock("../src/middleware/require-permission.js", async () => {
+  const { AppError } = await import("../src/middleware/error-handler.js");
+  return {
+    requirePermission: (perm: string) => (_req: any, _res: any, next: any) =>
+      deniedPermissions.has(perm)
+        ? next(new AppError(403, "FORBIDDEN", `Missing ${perm}`))
+        : next(),
+  };
+});
+vi.mock("../src/middleware/require-project-access.js", async () => {
+  const { AppError } = await import("../src/middleware/error-handler.js");
+  return {
+    requireProjectAccess: () => (_req: any, _res: any, next: any) =>
+      projectAccessDenied.value
+        ? next(new AppError(404, "PROJECT_NOT_FOUND", "Project not found"))
+        : next(),
+  };
+});
 
 const authRole = vi.hoisted(() => ({ value: "admin" as string }));
 const projectFlag = vi.hoisted(() => ({ enabled: true, exists: true }));
@@ -231,6 +250,8 @@ beforeEach(() => {
   projectFlag.enabled = true;
   projectFlag.exists = true;
   authRole.value = "admin";
+  deniedPermissions.clear();
+  projectAccessDenied.value = false;
   resolveProjectProvider.mockReset();
   resolveProjectProvider.mockResolvedValue(fakeProvider);
 });
@@ -655,6 +676,46 @@ describe("#789 DELETE /features/:slug/artifacts/*key", () => {
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("SPECKIT_FEATURE_NOT_FOUND");
     expect(deleteFeatureArtifact).not.toHaveBeenCalled();
+  });
+
+  it("403s a caller without project.update and deletes nothing", async () => {
+    deniedPermissions.add("project.update");
+    const res = await request(makeApp()).delete(
+      "/api/projects/p1/spec-kit/features/001-a/artifacts/spec.md",
+    );
+    expect(res.status).toBe(403);
+    expect(deleteFeatureArtifact).not.toHaveBeenCalled();
+  });
+
+  it("404s a project the caller cannot reach (BOLA) and deletes nothing", async () => {
+    projectAccessDenied.value = true;
+    const res = await request(makeApp()).delete(
+      "/api/projects/other-ws/spec-kit/features/001-a/artifacts/spec.md",
+    );
+    expect(res.status).toBe(404);
+    expect(featureLifecycle.resolveFeatureBySlug).not.toHaveBeenCalled();
+    expect(deleteFeatureArtifact).not.toHaveBeenCalled();
+  });
+
+  it("429s past the rate cap before reaching the store", async () => {
+    process.env.SPECKIT_DELETE_LIMIT_MAX = "3";
+    try {
+      featureLifecycle.resolveFeatureBySlug.mockResolvedValue({ id: "f1", slug: "001-a" });
+      const statuses: number[] = [];
+      for (let i = 0; i < 6; i++) {
+        const res = await request(makeApp()).delete(
+          "/api/projects/p1/spec-kit/features/001-a/artifacts/spec.md",
+        );
+        statuses.push(res.status);
+        if (res.status === 429) {
+          expect(res.body.error.code).toBe("SPECKIT_DELETE_RATE_LIMITED");
+        }
+      }
+      expect(statuses).toContain(429);
+      expect(deleteFeatureArtifact).toHaveBeenCalledTimes(statuses.filter((s) => s === 204).length);
+    } finally {
+      delete process.env.SPECKIT_DELETE_LIMIT_MAX;
+    }
   });
 });
 
