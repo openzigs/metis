@@ -16,6 +16,10 @@ comment [5983560251](https://github.com/openzigs/metis/issues/706#issuecomment-5
 Add a "Run 3" column beside the baseline when the change since run 3 matters more than the
 change since run 2.
 
+The slideshow's report deck (skill section 7) takes its spend and new-issue list from the
+evidence folder's `run.json` when there is one (#947). Fill it from the same ledger figures
+and the same issue list as this comment, so the deck and the comment agree.
+
 Legend for Works / Useful: ✅ pass · ⚠️ partial (Works) or weak (Useful) · ❌ fail ·
 🚫 blocked (give the reason) · – n/a.
 

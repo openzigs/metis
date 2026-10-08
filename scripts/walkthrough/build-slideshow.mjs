@@ -8,7 +8,10 @@
  *   node scripts/walkthrough/build-slideshow.mjs --in <evidence-dir> --out <dir> \
  *     --deck tutorial|report|both [--title <text>] [--inline-images]
  *
- * Exit codes: 0 built, 1 invalid manifest or screenshot, 2 bad arguments.
+ * An optional `<evidence-dir>/run.json` adds the issues the run filed and the ledger's spend
+ * total to the report deck (#947).
+ *
+ * Exit codes: 0 built, 1 invalid manifest, run.json or screenshot, 2 bad arguments.
  */
 
 import { runCli } from "../lib/walkthrough-slideshow-core.mjs";

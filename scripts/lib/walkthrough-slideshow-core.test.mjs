@@ -12,10 +12,12 @@ import {
   comparePhase,
   escapeHtml,
   formatCost,
+  formatSignedCost,
   groupChapters,
   orderSteps,
   parseArgs,
   parseManifest,
+  parseRunInfo,
   plural,
   readAssets,
   renderDeck,
@@ -610,6 +612,130 @@ describe("filesystem", () => {
       expect(err.at(-1)).toContain("no steps.jsonl");
     });
 
+    describe("run.json (#947)", () => {
+      const reportOpts = () => ({
+        inDir: evidence,
+        outDir: path.join(tmp, "run"),
+        deck: /** @type {const} */ ("both"),
+        title: undefined,
+        inlineImages: false,
+        now: new Date("2026-10-03T10:00:00Z"),
+      });
+      const read = (/** @type {string} */ kind) =>
+        fs.readFileSync(path.join(tmp, "run", kind, "index.html"), "utf8");
+
+      it("without run.json the summary keeps the step-sum spend and has no new-issues slide", () => {
+        buildSlideshow(reportOpts());
+        const report = read("report");
+        expect(report).toContain('<p class="spend">Spend: <strong>2,400</strong> tokens');
+        expect(report).toContain("Issues checked:");
+        expect(report).not.toContain("New issues filed");
+        expect(report).not.toContain("slide--issues");
+        expect(report).toContain("Tokens and cost per wave: attributed to steps");
+        // Only waves with steps get a row.
+        expect(report).not.toContain('<th scope="row">BA</th>');
+      });
+
+      it("shows the ledger total, the step sum and the remainder, and lists new issues", () => {
+        fs.writeFileSync(path.join(evidence, "run.json"), JSON.stringify(runInfo()));
+        buildSlideshow(reportOpts());
+        const report = read("report");
+        const tutorial = read("tutorial");
+
+        expect(report).toContain(
+          "Spend (ledger, <code>token_usages</code> 2026-10-03T09:00:00Z to 2026-10-03T12:00:00Z): <strong>10,000</strong> tokens · <strong>$4.32</strong>",
+        );
+        expect(report).toContain(
+          "Attributed to steps: 2,400 tokens · $0.0100 · Unattributed: 7,600 tokens · $4.31",
+        );
+        expect(report).toContain("Issues checked:");
+        expect(report).toMatch(/Issues checked: .*issues\/801/);
+        expect(report).toMatch(
+          /New issues filed \(3\): <span class="sev sev--high">High:<\/span> <a href="[^"]+\/935"[^>]*>#935<\/a> <a href="[^"]+\/936"[^>]*>#936<\/a> · <span class="sev sev--low">Low:<\/span> <a href="[^"]+\/946"/,
+        );
+
+        // Per-wave rows come from the ledger, including BA, and a wave missing from it reads "–".
+        expect(report).toContain("Tokens and cost per wave: ledger");
+        expect(report).toMatch(
+          /<th scope="row">A<\/th>(<td>\d+<\/td>){8}<td>6,000<\/td><td>\$2\.50<\/td>/,
+        );
+        expect(report).toMatch(/<th scope="row">D<\/th>(<td>\d+<\/td>){8}<td>–<\/td><td>–<\/td>/);
+        expect(report).toMatch(
+          /<th scope="row">BA<\/th>(<td>0<\/td>){8}<td>500<\/td><td>\$0\.2800<\/td>/,
+        );
+
+        // The closing slide lists every new issue with its title, escaped, high first.
+        const sections = [...report.matchAll(/<section class="slide slide--(\w+)/g)].map(
+          (m) => m[1],
+        );
+        expect(sections.at(-1)).toBe("issues");
+        expect(report).toContain("<h2>New issues filed (3)</h2>");
+        expect(report).toContain("Publish &lt;b&gt;always&lt;/b&gt; 501");
+        expect(report).not.toContain("<b>always</b>");
+        expect(report.indexOf("High (2)")).toBeLessThan(report.indexOf("Low (1)"));
+        expect(report).not.toContain("Medium (");
+
+        // The tutorial is not a run report: none of this appears there.
+        expect(tutorial).not.toContain("New issues filed");
+        expect(tutorial).not.toContain("ledger");
+      });
+
+      it("shows a negative remainder when the steps claim more than the ledger", () => {
+        fs.writeFileSync(
+          path.join(evidence, "run.json"),
+          JSON.stringify({
+            ledger: { ...runInfo().ledger, tokens: 1000, costUsd: 0 },
+            newIssues: [],
+          }),
+        );
+        buildSlideshow(reportOpts());
+        const report = read("report");
+        expect(report).toContain("Unattributed: -1,400 tokens · -$0.0100");
+        expect(report).toContain("New issues filed (0): none");
+        expect(report).not.toContain("slide--issues");
+      });
+
+      it("a ledger exactly equal to the step total leaves a zero remainder, not -$0.0000", () => {
+        // Re-price the fixture's three steps at 10 + 9 + 10 = 29 cents; 0.29 * 100 - 29 < 0.
+        const manifest = path.join(evidence, "steps.jsonl");
+        const rows = fs
+          .readFileSync(manifest, "utf8")
+          .trim()
+          .split("\n")
+          .map((l) => JSON.parse(l));
+        rows.forEach((r, i) => Object.assign(r, { tokens: 800, costCents: [10, 9, 10][i] }));
+        fs.writeFileSync(manifest, jsonl(rows));
+        fs.writeFileSync(
+          path.join(evidence, "run.json"),
+          JSON.stringify({ ledger: { ...runInfo().ledger, tokens: 2400, costUsd: 0.29 } }),
+        );
+        buildSlideshow(reportOpts());
+        const report = read("report");
+        expect(report).toContain(
+          "Attributed to steps: 2,400 tokens · $0.2900 · Unattributed: 0 tokens · $0.0000",
+        );
+        expect(report).not.toContain("-$0.0000");
+      });
+
+      it("fails the build, naming the field, and writes nothing on an invalid run.json", () => {
+        fs.writeFileSync(
+          path.join(evidence, "run.json"),
+          JSON.stringify({
+            ...runInfo(),
+            ledger: { ...runInfo().ledger, source: "ai_token_usages" },
+          }),
+        );
+        expect(() => buildSlideshow(reportOpts())).toThrow(
+          /invalid run\.json:\n {2}run\.json ledger: "source" must be "token_usages"/,
+        );
+        expect(fs.existsSync(path.join(tmp, "run"))).toBe(false);
+
+        fs.writeFileSync(path.join(evidence, "run.json"), "{");
+        expect(() => buildSlideshow(reportOpts())).toThrow("run.json: not valid JSON");
+        expect(fs.existsSync(path.join(tmp, "run"))).toBe(false);
+      });
+    });
+
     it("the real CLI builds both decks (smoke)", () => {
       const out = path.join(tmp, "smoke");
       const res = spawnSync(
@@ -625,6 +751,191 @@ describe("filesystem", () => {
       expect(fs.existsSync(path.join(out, "tutorial", "index.html"))).toBe(true);
       expect(fs.existsSync(path.join(out, "report", "index.html"))).toBe(true);
     });
+  });
+});
+
+/** A valid run.json for the 3-step fixture (waves A and D). */
+function runInfo() {
+  return {
+    newIssues: [
+      { number: 946, title: "Run 4 low-severity bundle", severity: "low" },
+      { number: 936, title: "Spec Kit Publish <b>always</b> 501", severity: "high" },
+      { number: 935, title: "SQL lineage edges", severity: "high" },
+    ],
+    ledger: {
+      tokens: 10000,
+      costUsd: 4.32,
+      source: "token_usages",
+      since: "2026-10-03T09:00:00Z",
+      until: "2026-10-03T12:00:00Z",
+    },
+    waves: {
+      A: {
+        tokens: 6000,
+        costUsd: 2.5,
+        since: "2026-10-03T09:00:00Z",
+        until: "2026-10-03T10:00:00Z",
+      },
+      BA: { tokens: 500, costUsd: 0.28 },
+    },
+  };
+}
+
+describe("run.json parsing (#947)", () => {
+  it("accepts a full run.json and an empty object", () => {
+    const { run, errors } = parseRunInfo(JSON.stringify(runInfo()));
+    expect(errors).toEqual([]);
+    expect(run?.newIssues).toHaveLength(3);
+    expect(run?.ledger?.costUsd).toBe(4.32);
+    expect(run?.waves?.BA).toEqual({ tokens: 500, costUsd: 0.28 });
+    expect(parseRunInfo("{}")).toEqual({
+      run: { newIssues: undefined, ledger: undefined, waves: undefined },
+      errors: [],
+    });
+  });
+
+  it.each([
+    ["not JSON", "{", "run.json: not valid JSON"],
+    ["an array", "[]", "run.json: expected a JSON object"],
+    ["null", "null", "run.json: expected a JSON object"],
+  ])("rejects %s", (_label, text, message) => {
+    expect(parseRunInfo(text)).toEqual({ run: null, errors: [message] });
+  });
+
+  /** @param {(r: any) => void} mutate */
+  const errorsOf = (mutate) => {
+    const r = /** @type {any} */ (runInfo());
+    mutate(r);
+    const { run, errors } = parseRunInfo(JSON.stringify(r));
+    expect(run).toBeNull();
+    return errors.join("\n");
+  };
+
+  it.each(
+    /** @type {Array<[string, (r: any) => void, string]>} */ ([
+      ["an unknown top-level field", (r) => (r.issues = []), 'run.json: unknown field "issues"'],
+      ["newIssues not an array", (r) => (r.newIssues = {}), '"newIssues" must be an array'],
+      ["a non-object issue", (r) => (r.newIssues = [7]), "newIssues[0]: expected a JSON object"],
+      [
+        "an unknown issue field",
+        (r) => (r.newIssues[0].url = "x"),
+        'newIssues[0]: unknown field "url"',
+      ],
+      ["a string issue number", (r) => (r.newIssues[1].number = "936"), 'newIssues[1]: "number"'],
+      ["issue number 0", (r) => (r.newIssues[1].number = 0), 'newIssues[1]: "number"'],
+      [
+        "a duplicate issue",
+        (r) => (r.newIssues[2].number = 936),
+        "newIssues[2]: duplicate issue #936",
+      ],
+      ["a blank title", (r) => (r.newIssues[0].title = "  "), 'newIssues[0]: "title"'],
+      [
+        "an unknown severity",
+        (r) => (r.newIssues[0].severity = "critical"),
+        'newIssues[0]: "severity" must be one of high, medium, low',
+      ],
+      ["ledger not an object", (r) => (r.ledger = 4.32), '"ledger" must be an object'],
+      [
+        "an unknown ledger field",
+        (r) => (r.ledger.costCents = 432),
+        'ledger: unknown field "costCents"',
+      ],
+      ["fractional ledger tokens", (r) => (r.ledger.tokens = 1.5), 'ledger: "tokens"'],
+      ["negative ledger cost", (r) => (r.ledger.costUsd = -1), 'ledger: "costUsd"'],
+      ["a string ledger cost", (r) => (r.ledger.costUsd = "4.32"), 'ledger: "costUsd"'],
+      ["the wrong ledger source", (r) => (r.ledger.source = "ai_token_usages"), 'ledger: "source"'],
+      [
+        "a missing ledger since",
+        (r) => delete r.ledger.since,
+        'ledger: "since" must be an ISO-8601',
+      ],
+      [
+        "a date-only ledger until",
+        (r) => (r.ledger.until = "2026-10-03"),
+        'ledger: "until" must be an ISO-8601',
+      ],
+      [
+        "since after until",
+        (r) => (r.ledger.since = "2026-10-04T00:00:00Z"),
+        'ledger: "since" must be before "until"',
+      ],
+      ["waves not an object", (r) => (r.waves = []), '"waves" must be an object keyed by wave'],
+      [
+        "an unknown wave",
+        (r) => (r.waves.F = { tokens: 1, costUsd: 0 }),
+        "waves.F: wave must be one of A, B, C, D, E, BA",
+      ],
+      ["a non-object wave", (r) => (r.waves.B = 3), "waves.B: expected a JSON object"],
+      ["an unknown wave field", (r) => (r.waves.A.usd = 1), 'waves.A: unknown field "usd"'],
+      ["missing wave tokens", (r) => delete r.waves.BA.tokens, 'waves.BA: "tokens"'],
+      [
+        "a bad wave since",
+        (r) => (r.waves.A.since = "noon"),
+        'waves.A: "since" must be an ISO-8601 timestamp when present',
+      ],
+    ]),
+  )("rejects %s, naming the field", (_label, mutate, message) => {
+    expect(errorsOf(mutate)).toContain(message);
+  });
+
+  it("reports every error at once", () => {
+    const text = errorsOf((r) => {
+      r.newIssues[0].severity = "x";
+      r.ledger.tokens = -1;
+      r.waves.Z = {};
+    });
+    expect(text.split("\n")).toHaveLength(3);
+  });
+
+  it("formats a signed cost", () => {
+    expect(formatSignedCost(73)).toBe("$0.7300");
+    expect(formatSignedCost(-1)).toBe("-$0.0100");
+    expect(formatSignedCost(-250)).toBe("-$2.50");
+  });
+
+  it.each([
+    [0.29, 29],
+    [0.57, 57],
+    [1.13, 113],
+  ])(
+    "a ledger of $%s equal to %s attributed cents leaves $0.0000, never -$0.0000",
+    (usd, cents) => {
+      // The float difference is a hair below zero; it must not decide the sign.
+      expect(usd * 100 - cents).toBeLessThan(0);
+      expect(formatSignedCost(usd * 100 - cents)).toBe("$0.0000");
+    },
+  );
+
+  it.each([
+    ["ledger", (/** @type {any} */ r) => (r.ledger.until = r.ledger.since), 'ledger: "since"'],
+    [
+      "waves.A",
+      (/** @type {any} */ r) => (r.waves.A.until = r.waves.A.since),
+      'waves.A: "since" must be before "until"',
+    ],
+    [
+      "waves.BA",
+      (/** @type {any} */ r) =>
+        Object.assign(r.waves.BA, {
+          since: "2026-10-03T12:00:00Z",
+          until: "2026-10-03T11:00:00Z",
+        }),
+      'waves.BA: "since" must be before "until"',
+    ],
+  ])("rejects an empty or reversed %s window", (_label, mutate, message) => {
+    expect(errorsOf(mutate)).toContain(message);
+  });
+
+  it("rejects ledger and wave tokens above Number.MAX_SAFE_INTEGER", () => {
+    const text = errorsOf((r) => {
+      r.ledger.tokens = Number.MAX_SAFE_INTEGER + 1;
+      r.waves.A.tokens = 2 ** 60;
+    });
+    expect(text).toContain('ledger: "tokens" must be a non-negative integer no larger than');
+    expect(text).toContain('waves.A: "tokens" must be a non-negative integer no larger than');
+    const ok = runInfo();
+    ok.ledger.tokens = Number.MAX_SAFE_INTEGER;
+    expect(parseRunInfo(JSON.stringify(ok)).errors).toEqual([]);
   });
 });
 

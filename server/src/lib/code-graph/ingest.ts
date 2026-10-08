@@ -303,9 +303,19 @@ export function stripNulBytes(s: string): string {
  * (or none — every pre-#807 graph) compares as changed, so the next ingest with
  * lineage on re-parses everything once and rewrites the edges, without a manual
  * re-ingest. History: unversioned = #721; 2 = #760 (bind parameters dropped,
- * WHERE columns read not written, edges from the enclosing function).
+ * WHERE columns read not written, edges from the enclosing function); 3 = #859
+ * (writes attributed to the modified table only, SQL builtins skipped — shipped
+ * by #873 without a bump, applied by #935).
+ *
+ * Two sets of extractors feed it, and only one is guarded:
+ * - The sidecar: `tests/lib/code-graph/lineage-extractor-version.test.ts` pins a
+ *   hash of `metis-sql-lineage/app/**.py` plus its runtime `requirements.txt`
+ *   (the `sqlglot` pin) to this number, so changing either fails until bumped.
+ * - The server-side TS extractors (embedded-sql, gorm, sqlalchemy,
+ *   sql-lineage-resolver, plsql-package-lineage) need the same bump when they
+ *   change the edges an unchanged file produces. That test does NOT guard them.
  */
-export const LINEAGE_EXTRACTOR_VERSION = 2;
+export const LINEAGE_EXTRACTOR_VERSION = 3;
 
 /**
  * #721 — fingerprint of the inputs that decide what the SQL-lineage pass
