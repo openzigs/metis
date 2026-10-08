@@ -274,9 +274,54 @@ h2 {
   text-align: left;
 }
 
+.waves caption {
+  caption-side: bottom;
+  padding: 0.4rem 0.9rem;
+  text-align: left;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
 .spend {
   margin: 0;
   color: var(--muted);
+}
+
+/* New issues filed by the run (#947) */
+.slide--issues {
+  /* `safe` keeps the heading reachable: a long list scrolls instead of overflowing both ends. */
+  justify-content: safe center;
+  overflow-y: auto;
+  padding-inline: clamp(1.5rem, 8vmin, 7rem);
+}
+
+.sev {
+  font-weight: 600;
+}
+
+h3.sev {
+  margin: 0.75rem 0 0.25rem;
+}
+
+.sev--high {
+  color: var(--fail);
+}
+
+.sev--medium {
+  color: var(--weak);
+}
+
+.sev--low {
+  color: var(--info);
+}
+
+.new-issues {
+  margin: 0;
+  padding-left: 1.4rem;
+}
+
+.new-issues li {
+  margin: 0.25rem 0;
 }
 
 /* Step */
