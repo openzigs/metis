@@ -30,6 +30,7 @@ import {
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { specKitDeleteRateLimiter } from "../middleware/spec-kit-delete-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   SpecKitArtifactError,
@@ -575,6 +576,7 @@ export function specKitRouter(): Router {
   r.delete(
     "/features/:slug/artifacts/*key",
     requireAuth,
+    specKitDeleteRateLimiter,
     requirePermission("project.update"),
     async (req, res) => {
       try {
