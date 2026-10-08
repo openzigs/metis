@@ -158,7 +158,7 @@ test.
 
 | Tool | Version |
 |---|---|
-| Node.js | `>= 22.19.0` (`.nvmrc` pins the major to 22; undici 8 needs 22.19) |
+| Node.js | `>= 22.22.2` (`.nvmrc` pins the major to 22; jsdom 30 needs 22.22.2, undici 8 needs 22.19) |
 | pnpm | `>= 10.16.0` — enable with `corepack enable` |
 
 ### Install
