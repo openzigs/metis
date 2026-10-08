@@ -170,45 +170,10 @@ describe("Workbench — Agent Picker (#528)", () => {
   });
 });
 
-describe("Workbench — Slash Commands (#529)", () => {
-  it("shows slash command popover when input starts with /", async () => {
-    const user = userEvent.setup();
-    const Wrapper = makeWrapper({ withAuth: false });
-    render(<WorkbenchPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("workbench-input")).toBeInTheDocument();
-    });
-
-    // Wait for session to be ready
-    await waitFor(() => {
-      expect(screen.getByTestId("workbench-input")).not.toBeDisabled();
-    });
-
-    const input = screen.getByTestId("workbench-input");
-    await user.type(input, "/");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("slash-command-popover")).toBeInTheDocument();
-    });
-  });
-
-  it("does not show popover when input does not start with /", async () => {
-    const user = userEvent.setup();
-    const Wrapper = makeWrapper({ withAuth: false });
-    render(<WorkbenchPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("workbench-input")).not.toBeDisabled();
-    });
-
-    const input = screen.getByTestId("workbench-input");
-    await user.type(input, "hello");
-
-    expect(screen.queryByTestId("slash-command-popover")).not.toBeInTheDocument();
-  });
-
-  it("fills input when a slash suggestion is clicked", async () => {
+describe("Workbench — no Spec Kit slash commands in chat (#789)", () => {
+  // The chat never dispatched them: picking /plan sent the text to the model.
+  // Spec Kit commands run on the project's Spec Kit page.
+  it("suggests no Spec Kit command for a slash buffer", async () => {
     const user = userEvent.setup();
     const Wrapper = makeWrapper({ withAuth: false });
     render(<WorkbenchPage />, { wrapper: Wrapper });
@@ -220,13 +185,13 @@ describe("Workbench — Slash Commands (#529)", () => {
     const input = screen.getByTestId("workbench-input");
     await user.type(input, "/sp");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("slash-suggestion-specify")).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByTestId("slash-suggestion-specify"));
-
-    expect(input).toHaveValue("/specify ");
+    expect(input).toHaveValue("/sp");
+    expect(screen.queryByTestId("slash-command-popover")).not.toBeInTheDocument();
+    expect(screen.queryByText("/specify")).not.toBeInTheDocument();
+    expect(input).not.toHaveAttribute(
+      "placeholder",
+      expect.stringContaining("type / for commands"),
+    );
   });
 });
 

@@ -3612,9 +3612,11 @@ The **constitution** is prepended to every agent system prompt. **Generate const
 ### The UI
 
 The Spec Kit page has three columns:
-1. **Artifact tree** — lists all six `.specify/` files with their version number and last-modified time.
-2. **Viewer/Editor** — displays the selected artifact with syntax highlighting and a manual override toggle.
-3. **Command palette** — slash-command autocomplete, run button, and output panel.
+1. **Features and artifact tree.** The **Features** selector lists the project's features. Tick **Show archived** to include archived ones; **Archive feature** and **Restore feature** act on the selected one. With **Project (.specify/)** selected, the tree lists the six project-level files. With a feature selected, it lists that feature's `specs/<slug>/` artifacts, and the selector shows the feature's phase gates (spec, plan, tasks, ready to implement). To create a feature, select **Project** and run `/speckit.specify <brief>`; the page then opens the new feature.
+2. **Viewer/Editor.** Displays the selected artifact. Project files can be edited and commented on. **Delete** removes the viewed artifact (project file or feature artifact) after a confirmation.
+3. **Command palette.** Autocomplete offers the `speckit.*` commands. A typed short name such as `/plan` runs as `/speckit.plan`, so the page never calls a deprecated alias. Commands run on the selected feature; `/speckit.constitution` always applies to the project. `/speckit.plan`, `/speckit.checklist` and `/speckit.taskstoissues` need a feature selected. With a feature selected, **Feature actions** offers **Generate checklists**, **Preview issue export (dry run)** and **Publish issues to the saved target**. Publishing is enabled only after a dry run of that feature, asks for confirmation, and shows the server's refusal while real export is unavailable (see `/speckit.taskstoissues` below). After `/speckit.implement`, **Start analysis with these artifacts** starts an analysis with the scope's `spec.md` as the requirements and opens it. If `spec.md` is too long to send whole, its end is cut and the toast says so.
+
+Spec Kit commands are not run from the Workbench chat. Its `/` suggestions were removed (#789) because a picked command was sent to the model as plain text.
 
 ### v1.3 additions (Epic #396)
 

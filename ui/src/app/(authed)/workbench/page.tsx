@@ -45,7 +45,6 @@ import {
 import { recentTracker } from "@/lib/recent-tracker";
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
 import { AgentPicker } from "@/components/chat/agent-picker";
-import { SlashCommandPopover } from "@/components/chat/slash-command-popover";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { ToolActivityList } from "@/components/chat/tool-activity";
 import { useToolApprovals } from "@/hooks/use-tool-approvals";
@@ -555,10 +554,9 @@ export default function WorkbenchPage() {
               void handleSend();
             }}
           >
-            <SlashCommandPopover buffer={input} onSelect={(cmd) => setInput(cmd)} />
             <Input
               aria-label="Message"
-              placeholder="Ask anything… (type / for commands)"
+              placeholder="Ask anything…"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               disabled={streaming}

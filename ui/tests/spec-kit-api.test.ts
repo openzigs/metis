@@ -64,12 +64,56 @@ describe("specKitApi", () => {
     );
   });
 
-  it("runCommand sends the command + input", async () => {
+  it("runCommand posts to the speckit.* route with the input and options", async () => {
     mockFetch.mockResolvedValue({});
-    await specKitApi.runCommand("p1", "specify", "build it");
+    await specKitApi.runCommand("p1", "speckit.specify", { input: "build it" });
     expect(mockFetch).toHaveBeenLastCalledWith(
-      "/projects/p1/spec-kit/commands/specify",
+      "/projects/p1/spec-kit/commands/speckit.specify",
       expect.objectContaining({ method: "POST", body: { input: "build it" } }),
+    );
+    await specKitApi.runCommand("p1", "speckit.taskstoissues", {
+      featureSlug: "001-a",
+      dryRun: true,
+    });
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/projects/p1/spec-kit/commands/speckit.taskstoissues",
+      expect.objectContaining({
+        method: "POST",
+        body: { input: "", featureSlug: "001-a", dryRun: true },
+      }),
+    );
+  });
+
+  // #789 — the per-feature surface.
+  it("feature routes build the right paths and encode the slug and key", async () => {
+    mockFetch.mockResolvedValue({});
+    await specKitApi.listFeatures("p1", true);
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/projects/p1/spec-kit/features?includeArchived=true",
+    );
+    await specKitApi.listFeatures("p1", false);
+    expect(mockFetch).toHaveBeenLastCalledWith("/projects/p1/spec-kit/features");
+    await specKitApi.listFeatureArtifacts("p1", "001-a b");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/projects/p1/spec-kit/features/001-a%20b/artifacts",
+    );
+    await specKitApi.featureStatus("p1", "001-a");
+    expect(mockFetch).toHaveBeenLastCalledWith("/projects/p1/spec-kit/features/001-a/status");
+    await specKitApi.archiveFeature("p1", "001-a");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/projects/p1/spec-kit/features/001-a/archive",
+      expect.objectContaining({ method: "POST" }),
+    );
+    await specKitApi.restoreFeature("p1", "001-a");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/projects/p1/spec-kit/features/001-a/restore",
+      expect.objectContaining({ method: "POST" }),
+    );
+    // A nested key keeps its `/` separators, each segment encoded.
+    await specKitApi.deleteFeatureArtifact("p1", "001-a", "contracts/api v1.yaml");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/projects/p1/spec-kit/features/001-a/artifacts/contracts/api%20v1.yaml",
+      expect.objectContaining({ method: "DELETE" }),
     );
   });
 });

@@ -21,6 +21,15 @@ export const queryKeys = {
     /** Epic #193 — Spec Kit Mode artifacts. */
     specKitFiles: (id: string) => [...queryKeys.projects.all, "spec-kit", id, "files"] as const,
     specKitEnabled: (id: string) => [...queryKeys.projects.all, "spec-kit", id, "enabled"] as const,
+    /** #789 — prefix of every per-feature key, so one invalidation refreshes them all. */
+    specKitFeaturesAll: (id: string) =>
+      [...queryKeys.projects.all, "spec-kit", id, "features"] as const,
+    specKitFeatures: (id: string, includeArchived: boolean) =>
+      [...queryKeys.projects.specKitFeaturesAll(id), "list", includeArchived] as const,
+    specKitFeatureArtifacts: (id: string, slug: string) =>
+      [...queryKeys.projects.specKitFeaturesAll(id), slug, "artifacts"] as const,
+    specKitFeatureStatus: (id: string, slug: string) =>
+      [...queryKeys.projects.specKitFeaturesAll(id), slug, "status"] as const,
     /** Epic #394 P2 (#404) — PR-review history per project. */
     prReviews: (id: string, filters?: Record<string, unknown>) =>
       [...queryKeys.projects.all, "pr-reviews", id, filters ?? {}] as const,

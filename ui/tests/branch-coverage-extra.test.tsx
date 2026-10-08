@@ -84,23 +84,6 @@ describe("Sidebar — mobile drawer branch", () => {
   });
 });
 
-// ─── slash-commands — ?? fallback branch ─────────────────────────────────────
-import { suggestSlashCommands } from "@/components/chat/slash-commands";
-
-describe("slash-commands — edge cases", () => {
-  it("handles buffer with trailing space after slash", () => {
-    // '/  ' (spaces after slash) — rest.split gives empty rest
-    const result = suggestSlashCommands("/  ");
-    // All commands match the empty prefix
-    expect(result.length).toBeGreaterThan(0);
-  });
-
-  it("returns suggestions for bare slash with no further input", () => {
-    const result = suggestSlashCommands("/");
-    expect(result.length).toBe(6);
-  });
-});
-
 // ─── user-menu — conditional rendering branches ───────────────────────────────
 vi.mock("@/lib/auth-context", async () => {
   const actual = await vi.importActual<typeof import("@/lib/auth-context")>("@/lib/auth-context");

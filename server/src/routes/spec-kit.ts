@@ -29,6 +29,8 @@ import {
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
+import { specKitDeleteRateLimiter } from "../middleware/spec-kit-delete-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   SpecKitArtifactError,
@@ -59,6 +61,7 @@ import {
   SpecKitFeatureLifecycleError,
 } from "../lib/spec-kit/features.js";
 import {
+  deleteFeatureArtifact,
   getFeatureArtifact,
   listFeatureArtifacts,
   writeFeatureArtifact,
@@ -564,6 +567,31 @@ export function specKitRouter(): Router {
           actorId: actorId(req),
         });
         res.json(ok({ artifact }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
+
+  // #789 — the Spec Kit page deletes a feature artifact as it does a
+  // project-level file (`DELETE /files/:name`).
+  r.delete(
+    "/features/:slug/artifacts/*key",
+    // In front of every auth check (CodeQL js/missing-rate-limiting).
+    specKitDeleteRateLimiter,
+    requireAuth,
+    // Object-level scope (BOLA): role alone would let a `project.update`
+    // holder in workspace A delete artifacts in workspace B's project.
+    requireProjectAccess(),
+    requirePermission("project.update"),
+    async (req, res) => {
+      try {
+        const projectId = projectIdFrom(req);
+        await ensureEnabled(projectId);
+        const feature = await resolveFeatureBySlug(projectId, String(req.params.slug ?? ""));
+        if (!feature) throw new AppError(404, "SPECKIT_FEATURE_NOT_FOUND", "Feature not found");
+        await deleteFeatureArtifact(feature.id, wildcardKey(req.params.key), actorId(req));
+        res.status(204).end();
       } catch (err) {
         rethrow(err);
       }

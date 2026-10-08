@@ -66,8 +66,8 @@ export async function runImplement(input: ImplementInput): Promise<ImplementResu
   return {
     context: present,
     orchestratorRoute: `/api/projects/${project.id}/analyses`,
-    message:
-      `Spec Kit handoff ready. POST to ${`/api/projects/${project.id}/analyses`}` +
-      ` to start the orchestrator with ${present.length} artifact(s) as context.`,
+    // #789 — addressed to the person on the Spec Kit page, which offers the
+    // button; API clients read `orchestratorRoute` and `context`.
+    message: `Spec Kit handoff ready with ${present.length} artifact(s): ${present.join(", ")}. Use Start analysis to run the analysis on them.`,
   };
 }
