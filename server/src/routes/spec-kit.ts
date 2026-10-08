@@ -31,6 +31,10 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { specKitDeleteRateLimiter } from "../middleware/spec-kit-delete-rate-limit.js";
+import {
+  specKitExportLiveRateLimiter,
+  specKitExportPreAuthRateLimiter,
+} from "../middleware/spec-kit-export-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   SpecKitArtifactError,
@@ -52,7 +56,13 @@ import { runConstitution } from "../lib/spec-kit/commands/constitution.js";
 import { runChecklist } from "../lib/spec-kit/commands/checklist.js";
 import { runPlanExpanded } from "../lib/spec-kit/commands/plan-expanded.js";
 import { runSpecifyFeature } from "../lib/spec-kit/commands/specify-feature.js";
-import { runTasksToIssues } from "../lib/spec-kit/commands/taskstoissues.js";
+import {
+  exportTasksToGitHub,
+  previewTasksExport,
+  tasksExportBodySchema,
+} from "../lib/spec-kit/commands/taskstoissues-github.js";
+import { PublishError } from "../lib/publishing/types.js";
+import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import {
   listFeatures,
   resolveFeatureBySlug,
@@ -203,6 +213,11 @@ function wildcardKey(value: unknown): string {
 
 function rethrow(err: unknown): never {
   if (err instanceof SpecKitArtifactError) {
+    throw new AppError(err.status, err.code, err.message);
+  }
+  // #953 — the live issue export's publishing-layer refusals (target guard,
+  // credential, GitHub failure) carry fixed, client-safe messages.
+  if (err instanceof PublishError) {
     throw new AppError(err.status, err.code, err.message);
   }
   if (err instanceof SpecKitFeatureLifecycleError) {
@@ -391,110 +406,120 @@ export function specKitRouter(): Router {
   // event). A single LLM call is not corpus-scale, so awaiting it carries no
   // gateway risk — the corpus-scale op (embeddings reindex) is the one made fully
   // async (202 + jobId) elsewhere.
-  r.post("/commands/:cmd", requireAuth, requirePermission("project.update"), async (req, res) => {
-    const parsed = specKitCommandRequestSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    }
-    const cmdRaw = String(req.params.cmd ?? "");
-    const input = parsed.data.input;
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    // MVP-1: accept both `speckit.*` namespaced form and the v1.2 legacy
-    // short names. Set a `Deprecation` header on legacy invocations.
-    const normalized = normalizeSpecKitCommand(cmdRaw);
-    if (normalized) {
-      if (normalized.legacy) {
-        res.setHeader("Deprecation", "true");
-        res.setHeader(
-          "Link",
-          `</api/projects/${projectIdFrom(req)}/spec-kit/commands/${normalized.canonical}>; rel="successor-version"`,
-        );
-        // Legacy aliases preserve v1.2 behavior — dispatch through the
-        // original handler so the streamed result shape does not change.
+  // #953 — `speckit.taskstoissues` files real GitHub issues, so it is rate
+  // limited ahead of auth (by address) and after it (live runs, by user). Both
+  // limiters skip every other command.
+  r.post(
+    "/commands/:cmd",
+    specKitExportPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("project.update"),
+    specKitExportLiveRateLimiter,
+    async (req, res) => {
+      const parsed = specKitCommandRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      }
+      const cmdRaw = String(req.params.cmd ?? "");
+      const input = parsed.data.input;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      // MVP-1: accept both `speckit.*` namespaced form and the v1.2 legacy
+      // short names. Set a `Deprecation` header on legacy invocations.
+      const normalized = normalizeSpecKitCommand(cmdRaw);
+      if (normalized) {
+        if (normalized.legacy) {
+          res.setHeader("Deprecation", "true");
+          res.setHeader(
+            "Link",
+            `</api/projects/${projectIdFrom(req)}/spec-kit/commands/${normalized.canonical}>; rel="successor-version"`,
+          );
+          // Legacy aliases preserve v1.2 behavior — dispatch through the
+          // original handler so the streamed result shape does not change.
+          try {
+            const projectId = projectIdFrom(req);
+            await ensureEnabled(projectId);
+            const legacyCmd = normalized.canonical.replace(/^speckit\./, "") as SpecKitCommand;
+            if (!isSpecKitCommand(legacyCmd)) {
+              throw new AppError(
+                400,
+                "SPEC_KIT_UNKNOWN_COMMAND",
+                `Legacy alias has no v1.2 dispatcher: ${cmdRaw}`,
+              );
+            }
+            const actor = actorId(req);
+            const jobId = randomUUID();
+            const result = await runSpecKitCommandJob(jobId, projectId, `/${legacyCmd}`, () =>
+              dispatchCommand(
+                legacyCmd,
+                projectId,
+                input,
+                actor,
+                memoizeProviderResolver(() => resolveProjectProvider(projectId)),
+              ),
+            );
+            // Preserve the v1.2 response shape (command, artifactName, message, …)
+            // and add the `jobId` so the client can correlate the live progress it
+            // already received over the `job:lifecycle` bus.
+            res.json(ok({ ...(result as Record<string, unknown>), jobId }));
+          } catch (err) {
+            rethrow(err);
+          }
+          return;
+        }
         try {
           const projectId = projectIdFrom(req);
           await ensureEnabled(projectId);
-          const legacyCmd = normalized.canonical.replace(/^speckit\./, "") as SpecKitCommand;
-          if (!isSpecKitCommand(legacyCmd)) {
-            throw new AppError(
-              400,
-              "SPEC_KIT_UNKNOWN_COMMAND",
-              `Legacy alias has no v1.2 dispatcher: ${cmdRaw}`,
-            );
-          }
           const actor = actorId(req);
           const jobId = randomUUID();
-          const result = await runSpecKitCommandJob(jobId, projectId, `/${legacyCmd}`, () =>
-            dispatchCommand(
-              legacyCmd,
-              projectId,
-              input,
-              actor,
-              memoizeProviderResolver(() => resolveProjectProvider(projectId)),
-            ),
+          const result = await runSpecKitCommandJob(
+            jobId,
+            projectId,
+            `/${normalized.canonical}`,
+            () =>
+              dispatchNamespaced(
+                normalized.canonical,
+                projectId,
+                input,
+                actor,
+                body,
+                req,
+                memoizeProviderResolver(() => resolveProjectProvider(projectId)),
+              ),
           );
-          // Preserve the v1.2 response shape (command, artifactName, message, …)
-          // and add the `jobId` so the client can correlate the live progress it
-          // already received over the `job:lifecycle` bus.
+          // Namespaced results vary in shape; spread them and add the `jobId` so
+          // the client can correlate the streamed progress with this response.
           res.json(ok({ ...(result as Record<string, unknown>), jobId }));
         } catch (err) {
           rethrow(err);
         }
         return;
       }
+      if (!isSpecKitCommand(cmdRaw)) {
+        throw new AppError(400, "SPEC_KIT_UNKNOWN_COMMAND", `Unknown Spec Kit command: ${cmdRaw}`);
+      }
       try {
         const projectId = projectIdFrom(req);
         await ensureEnabled(projectId);
         const actor = actorId(req);
         const jobId = randomUUID();
-        const result = await runSpecKitCommandJob(
-          jobId,
-          projectId,
-          `/${normalized.canonical}`,
-          () =>
-            dispatchNamespaced(
-              normalized.canonical,
-              projectId,
-              input,
-              actor,
-              body,
-              req,
-              memoizeProviderResolver(() => resolveProjectProvider(projectId)),
-            ),
+        const result = await runSpecKitCommandJob(jobId, projectId, `/${cmdRaw}`, () =>
+          dispatchCommand(
+            cmdRaw,
+            projectId,
+            input,
+            actor,
+            memoizeProviderResolver(() => resolveProjectProvider(projectId)),
+          ),
         );
-        // Namespaced results vary in shape; spread them and add the `jobId` so
-        // the client can correlate the streamed progress with this response.
+        // Preserve the v1.2 DispatchedCommandResult shape (command, artifactName,
+        // artifact, message — incl. the grounded-completion line — tokensUsed) and
+        // add the `jobId` so the client can correlate the streamed progress.
         res.json(ok({ ...(result as Record<string, unknown>), jobId }));
       } catch (err) {
         rethrow(err);
       }
-      return;
-    }
-    if (!isSpecKitCommand(cmdRaw)) {
-      throw new AppError(400, "SPEC_KIT_UNKNOWN_COMMAND", `Unknown Spec Kit command: ${cmdRaw}`);
-    }
-    try {
-      const projectId = projectIdFrom(req);
-      await ensureEnabled(projectId);
-      const actor = actorId(req);
-      const jobId = randomUUID();
-      const result = await runSpecKitCommandJob(jobId, projectId, `/${cmdRaw}`, () =>
-        dispatchCommand(
-          cmdRaw,
-          projectId,
-          input,
-          actor,
-          memoizeProviderResolver(() => resolveProjectProvider(projectId)),
-        ),
-      );
-      // Preserve the v1.2 DispatchedCommandResult shape (command, artifactName,
-      // artifact, message — incl. the grounded-completion line — tokensUsed) and
-      // add the `jobId` so the client can correlate the streamed progress.
-      res.json(ok({ ...(result as Record<string, unknown>), jobId }));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+    },
+  );
 
   // ---- MVP-5: per-feature routes ------------------------------------------
   r.get("/features", requireAuth, requirePermission("project.read"), async (req, res) => {
@@ -885,19 +910,32 @@ async function dispatchNamespaced(
           "SPECKIT_FEATURE_REQUIRED",
           "featureSlug required for /speckit.taskstoissues",
         );
-      return runTasksToIssues({
+      // #953 — a dry run plans and checks the credential; anything else is a
+      // live export through the vault-bound, target-guarded GitHub client.
+      const extra = tasksExportBodySchema.safeParse(body);
+      if (!extra.success) throw new AppError(400, "BAD_REQUEST", extra.error.message);
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      // Object-level scope (BOLA): `project.update` alone would let a member of
+      // workspace A publish workspace B's tasks with their own token.
+      await assertProjectAccess(req.user, projectId);
+      const exportInput = {
         projectId,
         featureSlug,
         force,
+        actorId: actor,
+        actorRole: req.user.role,
         ...(typeof body.repo === "object" && body.repo !== null
           ? { repo: body.repo as { owner: string; name: string } }
           : {}),
         ...(typeof body.parentEpicNumber === "number"
           ? { parentEpicNumber: body.parentEpicNumber }
           : {}),
-        ...(typeof body.dryRun === "boolean" ? { dryRun: body.dryRun } : {}),
-        actorId: actor,
-      });
+        ...(extra.data.secretRef !== undefined ? { secretRef: extra.data.secretRef } : {}),
+        ...(extra.data.expectedPlan !== undefined ? { expectedPlan: extra.data.expectedPlan } : {}),
+      };
+      return body.dryRun === true
+        ? previewTasksExport(exportInput)
+        : exportTasksToGitHub(exportInput);
     }
     // #786 — with a `featureSlug` these read and write that feature's
     // `specs/<slug>/` artifacts behind the feature's phase gate; without one

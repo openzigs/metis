@@ -6,9 +6,12 @@
  * command does at the HTTP boundary). Only Prisma, audit and `requireAuth`
  * are replaced; `requirePermission` is real.
  *
- * The route never injects an issue client, so a real export must be refused
- * 501 with nothing persisted — before #784 it "exported" every task to the
- * no-op client and wrote `SpecKitTaskExport` rows pinned to issue #0.
+ * Before #784 a real export "exported" every task to the no-op client and
+ * wrote `SpecKitTaskExport` rows pinned to issue #0; #784/#936 refused it 501.
+ * #953 wires the live, vault-bound client (`taskstoissues-github.ts`, covered
+ * end to end on real SQLite in `spec-kit-taskstoissues-live-953.sqlite.test.ts`);
+ * here: the route reaches it, and each refusal it adds arrives as the right
+ * HTTP error with nothing persisted.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,6 +25,7 @@ const db = vi.hoisted(() => ({
   featureArtifacts: new Map<string, any>(),
   configs: new Map<string, any>(),
   taskExports: new Map<string, any>(),
+  repoConnections: new Map<string, any>(),
 }));
 
 vi.mock("../src/middleware/auth.js", () => ({
@@ -65,6 +69,11 @@ vi.mock("../src/lib/prisma.js", () => ({
     specKitConfig: {
       findUnique: vi.fn(async ({ where }: any) => db.configs.get(where.projectId) ?? null),
     },
+    repoConnection: {
+      findMany: vi.fn(async ({ where }: any) =>
+        [...db.repoConnections.values()].filter((r) => r.projectId === where.projectId),
+      ),
+    },
     specKitTaskExport: {
       findUnique: vi.fn(async () => null),
       create: vi.fn(async ({ data }: any) => {
@@ -98,6 +107,7 @@ import request from "supertest";
 import { specKitRouter } from "../src/routes/spec-kit.js";
 import { errorHandler } from "../src/middleware/error-handler.js";
 import { prisma } from "../src/lib/prisma.js";
+import { audit } from "../src/lib/audit/audit-service.js";
 
 const ROUTE = "/api/projects/p1/spec-kit/commands/speckit.taskstoissues";
 
@@ -168,25 +178,76 @@ afterEach(() => {
 });
 
 describe("POST /commands/speckit.taskstoissues (real runner, #784)", () => {
-  it("a non-dry run is refused 501 SPECKIT_ISSUE_EXPORT_UNAVAILABLE and writes no export row", async () => {
+  it("a live run without a vault secret is refused 400 TOKEN_REQUIRED, audited, nothing written (#953)", async () => {
     Object.assign(db.projects.get("p1"), {
       publishGithubOwner: "openzigs",
       publishGithubRepo: "flux-v2",
     });
     const res = await request(makeApp()).post(ROUTE).send({ featureSlug: "001-foo" });
-    expect(res.status).toBe(501);
-    expect(res.body.error.code).toBe("SPECKIT_ISSUE_EXPORT_UNAVAILABLE");
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("TOKEN_REQUIRED");
+    expect(res.body.error.message).toMatch(/vault/);
     expect(prisma.specKitTaskExport.create).not.toHaveBeenCalled();
     expect(db.taskExports.size).toBe(0);
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "speckit.tasks_export_refused",
+        metadata: expect.objectContaining({ code: "TOKEN_REQUIRED" }),
+      }),
+    );
   });
 
-  it("an explicit dryRun:false is refused the same way", async () => {
+  it("a live run naming its own repository is refused 400 — the target cannot be redirected (#953)", async () => {
     const res = await request(makeApp())
       .post(ROUTE)
       .send({ featureSlug: "001-foo", dryRun: false, repo: { owner: "openzigs", name: "x" } });
-    expect(res.status).toBe(501);
-    expect(res.body.error.code).toBe("SPECKIT_ISSUE_EXPORT_UNAVAILABLE");
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("SPECKIT_TARGET_OVERRIDE_REFUSED");
     expect(db.taskExports.size).toBe(0);
+  });
+
+  it("a live run with no dry run plan is refused 409 SPECKIT_DRY_RUN_REQUIRED (#953)", async () => {
+    const res = await request(makeApp())
+      .post(ROUTE)
+      .send({ featureSlug: "001-foo", dryRun: false, secretRef: "${vault:gh}" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("SPECKIT_DRY_RUN_REQUIRED");
+    expect(db.taskExports.size).toBe(0);
+  });
+
+  it("a malformed plan or secret ref is a 400 before anything runs (#953)", async () => {
+    for (const extra of [
+      { expectedPlan: { tasksVersion: 1, digest: "not-a-digest" } },
+      { expectedPlan: { tasksVersion: 0, digest: "a".repeat(64) } },
+      { secretRef: "x".repeat(257) },
+    ]) {
+      const res = await request(makeApp())
+        .post(ROUTE)
+        .send({ featureSlug: "001-foo", ...extra });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("BAD_REQUEST");
+    }
+    expect(prisma.specKitFeature.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("a dry run refuses a target that is the analysed repository (#953)", async () => {
+    Object.assign(db.projects.get("p1"), {
+      publishGithubOwner: "miniflux",
+      publishGithubRepo: "v2",
+    });
+    db.repoConnections.set("rc1", {
+      projectId: "p1",
+      ownerOrOrg: "miniflux",
+      repoName: "v2",
+      provider: "github",
+      status: "connected",
+      lastIngestAt: null,
+      lastCommitSha: null,
+      deletedAt: null,
+    });
+    const res = await request(makeApp()).post(ROUTE).send({ featureSlug: "001-foo", dryRun: true });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("PUBLISH_TARGET_IS_ANALYSED_REPO");
   });
 
   it("a dry run with no resolvable repo is 400 SPECKIT_NO_REPO_CONFIGURED", async () => {
@@ -208,7 +269,7 @@ describe("POST /commands/speckit.taskstoissues (real runner, #784)", () => {
     expect(db.taskExports.size).toBe(0);
   });
 
-  it("a dry run lists every planned issue title and says a live export is unavailable (#936)", async () => {
+  it("a dry run lists every planned issue title, its plan, and that publishing is available (#936, #953)", async () => {
     Object.assign(db.projects.get("p1"), {
       publishGithubOwner: "openzigs",
       publishGithubRepo: "flux-v2",
@@ -219,15 +280,38 @@ describe("POST /commands/speckit.taskstoissues (real runner, #784)", () => {
       "[T01] Build A",
       "[T02] Build B",
     ]);
-    // The route injects no issue client, so the UI must not offer Publish.
-    expect(res.body.data.publishAvailable).toBe(false);
+    // #953 — the route's live run builds a real client, so the UI may offer Publish.
+    expect(res.body.data.publishAvailable).toBe(true);
+    expect(res.body.data.tasksVersion).toBe(1);
+    expect(res.body.data.planDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.body.data.credentialCheck).toBe("missing");
   });
 
-  it("the 501 speaks to a UI user, not in API field names (#936)", async () => {
-    const res = await request(makeApp()).post(ROUTE).send({ featureSlug: "001-foo" });
-    expect(res.status).toBe(501);
-    expect(res.body.error.message).not.toMatch(/dryRun/);
+  it("a refusal speaks to a UI user, not in API field names (#936)", async () => {
+    const res = await request(makeApp())
+      .post(ROUTE)
+      .send({ featureSlug: "001-foo", secretRef: "${vault:gh}" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).not.toMatch(/dryRun|expectedPlan/);
     expect(res.body.error.message).toMatch(/dry run/);
+  });
+
+  it("a project.update holder outside the project's workspace gets 404, dry run or live (#953 BOLA)", async () => {
+    auth.user = { userId: "u3", role: "coordinator" };
+    Object.assign(db.projects.get("p1"), {
+      publishGithubOwner: "openzigs",
+      publishGithubRepo: "flux-v2",
+      workspaceId: "w-other",
+      workspace: { deletedAt: null, members: [] },
+    });
+    for (const extra of [{ dryRun: true }, { secretRef: "${vault:mine}" }]) {
+      const res = await request(makeApp())
+        .post(ROUTE)
+        .send({ featureSlug: "001-foo", ...extra });
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("NOT_FOUND");
+    }
+    expect(prisma.specKitFeature.findUnique).not.toHaveBeenCalled();
   });
 
   it("a non-admin without project.update is refused 403 before the command runs", async () => {

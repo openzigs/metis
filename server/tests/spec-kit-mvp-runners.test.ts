@@ -185,7 +185,7 @@ import {
 import { runChecklist } from "../src/lib/spec-kit/commands/checklist.js";
 import { runPlanExpanded } from "../src/lib/spec-kit/commands/plan-expanded.js";
 import { runSpecifyFeature } from "../src/lib/spec-kit/commands/specify-feature.js";
-import { runTasksToIssues } from "../src/lib/spec-kit/commands/taskstoissues.js";
+import { computePlanDigest, runTasksToIssues } from "../src/lib/spec-kit/commands/taskstoissues.js";
 import {
   resolveAttached,
   passthroughWorkspaceLookup,
@@ -1344,6 +1344,149 @@ describe("runTasksToIssues", () => {
       if (prev === undefined) delete process.env.SPECKIT_TASKS_DEFAULT_REPO;
       else process.env.SPECKIT_TASKS_DEFAULT_REPO = prev;
     }
+  });
+
+  // #953 — dry-run parity: the live run must reproduce the previewed plan.
+  it("a live run matching the dry run's version and digest creates exactly its titles (#953)", async () => {
+    seedReadyFeature();
+    const repo = { owner: "openzigs", name: "flux-v2" };
+    const plan = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+    });
+    expect(plan.planDigest).toBe(
+      computePlanDigest({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        tasksVersion: plan.tasksVersion,
+        repo,
+        titles: ["[T01] Build A", "[T02] Build B"],
+      }),
+    );
+    const create = vi.fn(async (_o: string, _n: string, req: any) => ({
+      number: 1,
+      url: req.title,
+    }));
+    await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      client: { create },
+      expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+    });
+    expect(create.mock.calls.map((c) => c[2].title)).toEqual(["[T01] Build A", "[T02] Build B"]);
+  });
+
+  it("refuses 409 before creating anything when the version or the digest differs (#953)", async () => {
+    seedReadyFeature();
+    const repo = { owner: "openzigs", name: "flux-v2" };
+    const plan = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+    });
+    const create = vi.fn();
+    for (const expectedPlan of [
+      { tasksVersion: plan.tasksVersion + 1, digest: plan.planDigest },
+      { tasksVersion: plan.tasksVersion, digest: "f".repeat(64) },
+    ]) {
+      await expect(
+        runTasksToIssues({
+          projectId: "p1",
+          featureSlug: "001-foo",
+          repo,
+          client: { create },
+          expectedPlan,
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "SPECKIT_EXPORT_PLAN_CHANGED" });
+    }
+    // A different target is a different plan, too.
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        repo: { owner: "openzigs", name: "other" },
+        client: { create },
+        expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+      }),
+    ).rejects.toMatchObject({ code: "SPECKIT_EXPORT_PLAN_CHANGED" });
+    expect(create).not.toHaveBeenCalled();
+    expect(taskExportRows.size).toBe(0);
+  });
+
+  it("refuses 422 a live run creating more than maxCreates; a dry run still lists them (#953)", async () => {
+    seedReadyFeature();
+    const repo = { owner: "o", name: "r" };
+    const create = vi.fn();
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        repo,
+        client: { create },
+        maxCreates: 1,
+      }),
+    ).rejects.toMatchObject({ status: 422, code: "SPECKIT_EXPORT_TOO_LARGE" });
+    expect(create).not.toHaveBeenCalled();
+    const dry = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+      maxCreates: 1,
+    });
+    expect(dry.count).toBe(2);
+  });
+
+  it("audits a live run that fails part-way with how many issues it created (#953)", async () => {
+    seedReadyFeature();
+    let n = 0;
+    const create = vi.fn(async () => {
+      if (++n === 2) throw new Error("GitHub refused the request to create an issue (HTTP 500).");
+      return { number: 11, url: "https://x/11" };
+    });
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        repo: { owner: "o", name: "r" },
+        client: { create },
+      }),
+    ).rejects.toThrow(/HTTP 500/);
+    expect(taskExportRows.size).toBe(1);
+    const failed = auditCalls.find((c) => c.action === "speckit.tasks_export_failed");
+    expect(failed?.metadata).toMatchObject({ createdBeforeFailure: 1, repo: "o/r" });
+    expect(auditCalls.some((c) => c.action === "speckit.tasks_exported")).toBe(false);
+  });
+
+  it("a dry run marks already-exported tasks as upserted, so its plan matches the live run (#953)", async () => {
+    seedReadyFeature();
+    const repo = { owner: "o", name: "r" };
+    await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      client: { create: vi.fn(async () => ({ number: 3, url: "https://x/3" })) },
+    });
+    const dry = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+    });
+    expect(dry.created.map((c) => c.upserted)).toEqual([true, true]);
+    expect(dry.planDigest).toBe(
+      computePlanDigest({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        tasksVersion: dry.tasksVersion,
+        repo,
+        titles: [],
+      }),
+    );
   });
 
   it("throws SPECKIT_NO_REPO_CONFIGURED when nothing resolves the repo", async () => {

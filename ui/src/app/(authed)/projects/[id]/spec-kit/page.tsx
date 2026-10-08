@@ -48,13 +48,22 @@ import { PresenceAvatars } from "@/components/presence/PresenceAvatars";
 import { CommentPanel } from "@/components/comments/CommentPanel";
 import { MessageSquare } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
+import { VaultPicker } from "@/components/connectors/vault-picker";
+import { vaultRefHint, VAULT_REF_EXAMPLE } from "@/lib/vault-ref";
 
 const FAILED = "The Spec Kit operation failed. Please try again.";
 /** Shown on a write control the viewer cannot use (#789 — the server gates it). */
 const REQUIRES_UPDATE = "Requires project.update";
-/** #936 — the server has no production GitHub issue client yet (#784). */
+/** #936 — shown when the server's dry run reports it cannot publish (`publishAvailable: false`). */
 const PUBLISH_UNAVAILABLE =
   "Publishing issues to GitHub is not available on this server yet. The dry run lists the issues it would create.";
+/** #953 — Publish needs the dry run to have resolved a vault secret. */
+const CREDENTIAL_NEEDED = "Pick a GitHub token from the vault, then run the dry run again.";
+const CREDENTIAL_TEXT: Record<"resolved" | "missing" | "unresolved", string> = {
+  resolved: "The vault secret resolved — Publish will use it.",
+  missing: "No GitHub token picked — choose a vault secret and run the dry run again.",
+  unresolved: "That vault secret ref does not name a vault secret.",
+};
 
 export default function SpecKitPage() {
   const params = useParams<{ id: string }>();
@@ -102,14 +111,21 @@ export default function SpecKitPage() {
   // #789 — the export may publish only after a dry run of the same feature.
   // It records the tasks.md version previewed, so regenerating tasks.md voids it.
   // #936 — and what the dry run planned: the target, the titles, and whether
-  // this server can publish at all (no production issue client yet, #784).
+  // this server can publish at all.
+  // #953 — plus the plan Publish sends back, the vault secret the dry run
+  // checked, and whether it resolved. Titles are the issues it would CREATE.
   const [previewedExport, setPreviewedExport] = useState<{
     feature: string;
     tasksVersion: number | null;
     repo: string | null;
     titles: string[];
     publishAvailable: boolean;
+    plan: { tasksVersion: number; digest: string } | null;
+    secretRef: string;
+    credentialCheck: "resolved" | "missing" | "unresolved";
   } | null>(null);
+  // #953 — the `${vault:label}` the export publishes with (VaultPicker only).
+  const [exportSecretRef, setExportSecretRef] = useState("");
   // #789 — what `/speckit.implement` handed off, for "Start analysis".
   const [handoff, setHandoff] = useState<{ context: string[]; feature: string | null } | null>(
     null,
@@ -243,8 +259,16 @@ export default function SpecKitPage() {
                 feature: input.options.featureSlug,
                 tasksVersion: featureArtifacts.find((a) => a.key === "tasks.md")?.version ?? null,
                 repo: result.repo ? `${result.repo.owner}/${result.repo.name}` : null,
-                titles: (result.created ?? []).map((c) => c.title ?? c.taskId),
+                titles: (result.created ?? [])
+                  .filter((c) => !c.upserted)
+                  .map((c) => c.title ?? c.taskId),
                 publishAvailable: result.publishAvailable === true,
+                plan:
+                  typeof result.tasksVersion === "number" && typeof result.planDigest === "string"
+                    ? { tasksVersion: result.tasksVersion, digest: result.planDigest }
+                    : null,
+                secretRef: input.options.secretRef ?? "",
+                credentialCheck: result.credentialCheck ?? "missing",
               }
             : null,
         );
@@ -317,6 +341,13 @@ export default function SpecKitPage() {
       ? previewedExport
       : null;
   const publishUnavailable = exportPreview !== null && !exportPreview.publishAvailable;
+  // #953 — Publish uses the secret the dry run checked, and only if it resolved.
+  const credentialReady =
+    exportPreview !== null &&
+    exportPreview.plan !== null &&
+    exportPreview.credentialCheck === "resolved" &&
+    exportPreview.secretRef === exportSecretRef.trim();
+  const exportSecretHint = vaultRefHint(exportSecretRef);
 
   const run = (command: SpecKitNamespacedCommand, options: SpecKitRunOptions = {}): void => {
     commandMutation.mutate({ command, options });
@@ -741,6 +772,21 @@ export default function SpecKitPage() {
             >
               Generate checklists
             </Button>
+            {/* #953 — the export's GitHub token: a vault secret, never a pasted token. */}
+            <div className="space-y-1">
+              <Label htmlFor="spec-kit-export-secret" className="text-xs">
+                GitHub token (vault secret)
+              </Label>
+              <VaultPicker
+                id="spec-kit-export-secret"
+                value={exportSecretRef}
+                onChange={setExportSecretRef}
+                placeholder={VAULT_REF_EXAMPLE}
+              />
+              {exportSecretHint ? (
+                <p className="text-xs text-destructive">{exportSecretHint}</p>
+              ) : null}
+            </div>
             <Button
               type="button"
               size="sm"
@@ -749,7 +795,11 @@ export default function SpecKitPage() {
               disabled={!canWrite || !enabled || busy}
               title={writeHint}
               onClick={() =>
-                run("speckit.taskstoissues", { featureSlug: selectedFeature, dryRun: true })
+                run("speckit.taskstoissues", {
+                  featureSlug: selectedFeature,
+                  dryRun: true,
+                  ...(exportSecretRef.trim() ? { secretRef: exportSecretRef.trim() } : {}),
+                })
               }
               data-testid="spec-kit-export-preview"
             >
@@ -766,18 +816,39 @@ export default function SpecKitPage() {
               }
               confirmLabel="Publish"
               confirmVariant="default"
-              onConfirm={() =>
-                run("speckit.taskstoissues", { featureSlug: selectedFeature, dryRun: false })
-              }
+              onConfirm={() => {
+                // #953 — the live run sends back the dry run's plan and the same
+                // vault secret; the server refuses it if either has changed.
+                if (!exportPreview?.plan || !exportPreview.secretRef) return;
+                run("speckit.taskstoissues", {
+                  featureSlug: selectedFeature,
+                  dryRun: false,
+                  secretRef: exportPreview.secretRef,
+                  expectedPlan: exportPreview.plan,
+                });
+              }}
               trigger={
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
                   className="w-full"
-                  title={writeHint ?? (publishUnavailable ? PUBLISH_UNAVAILABLE : undefined)}
+                  title={
+                    writeHint ??
+                    (publishUnavailable
+                      ? PUBLISH_UNAVAILABLE
+                      : exportPreview && !credentialReady
+                        ? CREDENTIAL_NEEDED
+                        : undefined)
+                  }
                   disabled={
-                    !canWrite || !enabled || busy || exportPreview === null || publishUnavailable
+                    !canWrite ||
+                    !enabled ||
+                    busy ||
+                    exportPreview === null ||
+                    publishUnavailable ||
+                    !credentialReady ||
+                    exportPreview.titles.length === 0
                   }
                   data-testid="spec-kit-export-publish"
                 >
@@ -797,6 +868,13 @@ export default function SpecKitPage() {
                 </ul>
               </div>
             ) : null}
+            {exportPreview && !publishUnavailable ? (
+              <p className="text-xs text-muted-foreground" data-testid="spec-kit-export-credential">
+                {exportPreview.secretRef !== exportSecretRef.trim()
+                  ? "The vault secret changed since the dry run — run it again."
+                  : CREDENTIAL_TEXT[exportPreview.credentialCheck]}
+              </p>
+            ) : null}
             {publishUnavailable ? (
               <p
                 className="text-xs text-muted-foreground"
@@ -806,8 +884,9 @@ export default function SpecKitPage() {
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Publishing is enabled after a dry run of this feature, and uses the target saved for
-                the project.
+                Publishing is enabled after a dry run of this feature with a GitHub token picked
+                from the vault, and creates exactly the issues the dry run listed in the target
+                saved for the project.
               </p>
             )}
           </Card>

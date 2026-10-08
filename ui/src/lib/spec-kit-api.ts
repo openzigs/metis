@@ -53,6 +53,10 @@ export interface SpecKitRunOptions {
   featureSlug?: string;
   mode?: "merge" | "overwrite";
   dryRun?: boolean;
+  /** `speckit.taskstoissues` (#953): the `${vault:label}` GitHub token — never a raw token. */
+  secretRef?: string;
+  /** `speckit.taskstoissues` (#953): the dry run a live export must reproduce. */
+  expectedPlan?: { tasksVersion: number; digest: string };
 }
 
 /**
@@ -73,11 +77,24 @@ export interface SpecKitCommandResult {
   featureSlug?: string;
   count?: number;
   /** `speckit.taskstoissues`: one row per task; `title` is the planned or created issue title. */
-  created?: Array<{ taskId: string; title?: string; issueNumber: number; url: string }>;
+  created?: Array<{
+    taskId: string;
+    title?: string;
+    issueNumber: number;
+    url: string;
+    /** True when the task was already exported: a run creates no issue for it. */
+    upserted?: boolean;
+  }>;
   /** `speckit.taskstoissues`: the resolved target repository. */
   repo?: { owner: string; name: string };
   /** `speckit.taskstoissues` (#936): whether a non-dry run would reach a real issue client. */
   publishAvailable?: boolean;
+  /** `speckit.taskstoissues` (#953): the `tasks.md` version the run read. */
+  tasksVersion?: number;
+  /** `speckit.taskstoissues` (#953): the dry run's plan, which Publish sends back. */
+  planDigest?: string;
+  /** `speckit.taskstoissues` dry run (#953): whether the vault secret binds. */
+  credentialCheck?: "resolved" | "missing" | "unresolved";
   tokensUsed?: number;
 }
 

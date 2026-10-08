@@ -7,14 +7,21 @@
  * traceability. Re-exports upsert by `(featureSlug, taskId)`.
  *
  * Issue creation goes through a pluggable `IssueClient` so the command is
- * fully testable without a live GitHub. No production GitHub client is wired
- * yet (#784): without an injected client only a dry run is served, and a real
- * run is refused 501 rather than "exporting" to the no-op client and recording
- * every task as issue #0.
+ * fully testable without a live GitHub. Without an injected client only a dry
+ * run is served, and a real run is refused 501 rather than "exporting" to the
+ * no-op client and recording every task as issue #0 (#784). The production
+ * client — vault-bound, target-guarded — is built per request by
+ * `./taskstoissues-github.ts` (#953), which is the only live caller.
+ *
+ * #953 — a dry run returns the `tasks.md` version it read and a `planDigest`
+ * of exactly what a live run would create there. A live run given
+ * `expectedPlan` recomputes both and refuses 409 before creating anything when
+ * either differs, so it files exactly the issues the user previewed.
  *
  * The destination is never the project's analysed `RepoConnection` (#784) —
  * for an analysed open-source project that is someone else's upstream.
  */
+import { createHash } from "node:crypto";
 import { prisma } from "../../prisma.js";
 import { audit } from "../../audit/audit-service.js";
 import { resolveFeatureBySlug } from "../features.js";
@@ -69,6 +76,22 @@ export interface TasksToIssuesInput {
   dryRun?: boolean;
   /** Bypass the tasksGate (audit-emitted high-severity event). */
   force?: boolean;
+  /**
+   * #953 — the dry run this live run must reproduce: the `tasks.md` version it
+   * read and its `planDigest`. A mismatch is refused 409
+   * SPECKIT_EXPORT_PLAN_CHANGED before any issue is created. Ignored on a dry run.
+   */
+  expectedPlan?: { tasksVersion: number; digest: string };
+  /**
+   * #953 — refuse (422 SPECKIT_EXPORT_TOO_LARGE) a live run that would create
+   * more issues than this. Ignored on a dry run, which only lists them.
+   */
+  maxCreates?: number;
+  /**
+   * #953 — reported as `publishAvailable`. Defaults to whether a client was
+   * injected; the route's dry run says true, since its live run builds one.
+   */
+  publishAvailable?: boolean;
 }
 
 export interface TasksToIssuesResult {
@@ -84,12 +107,44 @@ export interface TasksToIssuesResult {
   repo: { owner: string; name: string };
   parentEpicNumber: number | null;
   /**
-   * #936 — whether a non-dry run of this call would reach a real issue client.
-   * False until a production client is wired (#784), so a UI can say so
-   * instead of offering a Publish that is refused 501.
+   * #936 — whether a non-dry run of this call would reach a real issue client,
+   * so a UI can say so instead of offering a Publish that is refused 501.
    */
   publishAvailable: boolean;
+  /** #953 — the `tasks.md` version this run read. */
+  tasksVersion: number;
+  /**
+   * #953 — SHA-256 over the project, feature, `tasks.md` version, target repo
+   * and the ordered titles a live run would create. A live run must present
+   * the dry run's value as `expectedPlan.digest`.
+   */
+  planDigest: string;
   message: string;
+}
+
+/**
+ * #953 — the digest that binds a live run to its dry run. Not a secret and not
+ * an authenticator: it lets the server prove the live run creates exactly the
+ * titles that were previewed, against the same target, from the same version.
+ */
+export function computePlanDigest(plan: {
+  projectId: string;
+  featureSlug: string;
+  tasksVersion: number;
+  repo: { owner: string; name: string };
+  titles: string[];
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        plan.projectId,
+        plan.featureSlug,
+        plan.tasksVersion,
+        `${plan.repo.owner}/${plan.repo.name}`.toLowerCase(),
+        plan.titles,
+      ]),
+    )
+    .digest("hex");
 }
 
 /** The placeholder a dry run reports for an issue it would create. */
@@ -132,13 +187,24 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     );
   }
   const tasks = parseTasksMarkdown(tasksArt.content);
+  const publishAvailable = input.publishAvailable ?? Boolean(input.client);
+  const tasksVersion = tasksArt.version;
   if (tasks.length === 0) {
+    const repo = input.repo ?? { owner: "", name: "" };
     return {
       count: 0,
       created: [],
-      repo: input.repo ?? { owner: "", name: "" },
+      repo,
       parentEpicNumber: input.parentEpicNumber ?? null,
-      publishAvailable: Boolean(input.client),
+      publishAvailable,
+      tasksVersion,
+      planDigest: computePlanDigest({
+        projectId: input.projectId,
+        featureSlug: feature.slug,
+        tasksVersion,
+        repo,
+        titles: [],
+      }),
       message: "No tasks found in tasks.md.",
     };
   }
@@ -153,7 +219,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
       "Exporting tasks to GitHub issues is not available on this server yet. Preview the export with a dry run instead.",
     );
   }
-  const repo = input.repo ?? (await resolveRepo(input.projectId));
+  const repo = input.repo ?? (await resolveTasksExportRepo(input.projectId));
   const parentEpicNumber = input.parentEpicNumber ?? (await resolveParentEpic(input.projectId));
   // #784 — a dry run must never reach a client: once a real one is injected, a
   // "preview" would otherwise file real issues. Past the guard above, a
@@ -161,26 +227,56 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
   const client: IssueClient | null = input.dryRun ? null : (input.client ?? null);
   const created: TasksToIssuesResult["created"] = [];
 
-  // Topologically iterate so deps are created before children.
-  const ordered = topoSort(tasks);
+  // Topologically iterate so deps are created before children. #953 — the
+  // whole plan (what already exists, what would be created) is read before
+  // any issue is, so a dry run reports the same plan a live run executes and a
+  // live run can be checked against it up front. Reading the export rows is
+  // not a write: a dry run still persists nothing.
+  const plan: Array<{ task: ParsedTask; title: string; existing: ExportRow | null }> = [];
+  for (const task of topoSort(tasks)) {
+    const existing = await prisma.specKitTaskExport.findUnique({
+      where: {
+        projectId_featureSlug_taskId: {
+          projectId: input.projectId,
+          featureSlug: feature.slug,
+          taskId: task.id,
+        },
+      },
+    });
+    plan.push({ task, title: `[${task.id}] ${task.title}`, existing });
+  }
+  const toCreate = plan.filter((p) => !p.existing).map((p) => p.title);
+  const planDigest = computePlanDigest({
+    projectId: input.projectId,
+    featureSlug: feature.slug,
+    tasksVersion,
+    repo,
+    titles: toCreate,
+  });
+  if (client) {
+    assertPlanUnchanged(input.expectedPlan, tasksVersion, planDigest);
+    if (input.maxCreates !== undefined && toCreate.length > input.maxCreates) {
+      throw new SpecKitArtifactError(
+        422,
+        "SPECKIT_EXPORT_TOO_LARGE",
+        `This export would create ${toCreate.length} issues; one export may create at most ${input.maxCreates}. Split the feature's tasks into smaller features to publish them.`,
+      );
+    }
+  }
   const idToIssueNumber = new Map<string, number>();
 
-  for (const task of ordered) {
-    const upsertKey = {
-      projectId_featureSlug_taskId: {
-        projectId: input.projectId,
-        featureSlug: feature.slug,
-        taskId: task.id,
-      },
-    };
-    const existing = input.dryRun
-      ? null
-      : await prisma.specKitTaskExport.findUnique({ where: upsertKey });
-
+  const exportOne = async ({
+    task,
+    title,
+    existing,
+  }: {
+    task: ParsedTask;
+    title: string;
+    existing: ExportRow | null;
+  }): Promise<TasksToIssuesResult["created"][number]> => {
     let issueNumber: number;
     let url: string;
     let wasUpsert = false;
-    const title = `[${task.id}] ${task.title}`;
     if (existing) {
       issueNumber = existing.issueNumber;
       url = `https://github.com/${existing.repoOwner}/${existing.repoName}/issues/${issueNumber}`;
@@ -242,7 +338,31 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
         }
       }
     }
-    created.push({ taskId: task.id, title, issueNumber, url, upserted: wasUpsert });
+    return { taskId: task.id, title, issueNumber, url, upserted: wasUpsert };
+  };
+
+  try {
+    for (const step of plan) created.push(await exportOne(step));
+  } catch (err) {
+    // #953 — a live export that stops part-way has still created issues on
+    // GitHub; record how far it got. The created ones are persisted, so a
+    // retry upserts them rather than filing them twice.
+    if (client) {
+      audit({
+        actor: input.actorId ? { id: input.actorId } : null,
+        action: "speckit.tasks_export_failed",
+        target: { type: "speckit_feature", id: feature.id },
+        metadata: {
+          featureSlug: feature.slug,
+          repo: `${repo.owner}/${repo.name}`,
+          tasksVersion,
+          planDigest,
+          createdBeforeFailure: created.filter((c) => !c.upserted).length,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+    throw err;
   }
 
   audit({
@@ -255,6 +375,9 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
       repo: `${repo.owner}/${repo.name}`,
       parentEpicNumber,
       dryRun: input.dryRun ?? false,
+      tasksVersion,
+      planDigest,
+      created: created.filter((c) => !c.upserted).length,
     },
   });
 
@@ -263,9 +386,44 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     created,
     repo,
     parentEpicNumber,
-    publishAvailable: Boolean(input.client),
+    publishAvailable,
+    tasksVersion,
+    planDigest,
     message: `${input.dryRun ? "Would export" : "Exported"} ${created.length} task(s) to ${repo.owner}/${repo.name}.`,
   };
+}
+
+interface ExportRow {
+  issueNumber: number;
+  repoOwner: string;
+  repoName: string;
+}
+
+/**
+ * #953 — a live run must reproduce the dry run it was approved from. Refused
+ * 409 when tasks.md has a newer version, or when the plan differs (a task was
+ * exported meanwhile, the target moved). No expectation: nothing to compare.
+ */
+function assertPlanUnchanged(
+  expected: TasksToIssuesInput["expectedPlan"],
+  tasksVersion: number,
+  planDigest: string,
+): void {
+  if (!expected) return;
+  if (expected.tasksVersion !== tasksVersion) {
+    throw new SpecKitArtifactError(
+      409,
+      "SPECKIT_EXPORT_PLAN_CHANGED",
+      `tasks.md changed since the dry run (previewed version ${expected.tasksVersion}, now ${tasksVersion}). Run the dry run again and review the issues before publishing.`,
+    );
+  }
+  if (expected.digest !== planDigest) {
+    throw new SpecKitArtifactError(
+      409,
+      "SPECKIT_EXPORT_PLAN_CHANGED",
+      "The issues this export would create differ from the dry run (a task was exported meanwhile, or the target changed). Run the dry run again and review the issues before publishing.",
+    );
+  }
 }
 
 export function renderIssueBody(task: ParsedTask, featureSlug: string): string {
@@ -319,7 +477,10 @@ function topoSort(tasks: ParsedTask[]): ParsedTask[] {
   return out;
 }
 
-async function resolveRepo(projectId: string): Promise<{ owner: string; name: string }> {
+/** The export target: SpecKitConfig, then the saved publish target (#733), then the env default. */
+export async function resolveTasksExportRepo(
+  projectId: string,
+): Promise<{ owner: string; name: string }> {
   const cfg = await prisma.specKitConfig.findUnique({ where: { projectId } });
   if (cfg?.tasksToIssuesRepo) {
     const [owner, name] = cfg.tasksToIssuesRepo.split("/");
