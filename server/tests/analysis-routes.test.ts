@@ -207,6 +207,11 @@ vi.mock("../src/lib/prisma.js", async () => {
     // Issue #733 — capability preview probe reads code graph + repo-source docs.
     codeGraph: { findFirst: vi.fn(async () => null) },
     document: { findFirst: vi.fn(async () => null) },
+    // Issue #938 — the probe also lists the enabled agents the run invokes.
+    projectAgentAllowlist: { findMany: vi.fn(async () => []) },
+    agent: { findMany: vi.fn(async () => []) },
+    customAgentEnablement: { findMany: vi.fn(async () => []) },
+    customAgent: { findMany: vi.fn(async () => []) },
   });
   return { prisma, resolveDatabaseProvider: () => "sqlite" };
 });
@@ -525,7 +530,51 @@ describe("GET /api/projects/:projectId/analyses/capability (#733)", () => {
       // only because no code graph / repo source exists yet.
       fusedCodeRetrievalEnabled: true,
       schemaContextEnabled: true,
+      promptOnlyAgents: [],
     });
+  });
+
+  it("lists the enabled custom agents the run will invoke prompt-only (#938)", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    const p = prisma as unknown as {
+      customAgentEnablement: { findMany: ReturnType<typeof vi.fn> };
+      customAgent: { findMany: ReturnType<typeof vi.fn> };
+    };
+    p.customAgentEnablement.findMany.mockResolvedValueOnce([
+      { projectId: "proj-abcdefghij", customAgentId: "ca_1", enabled: true },
+    ]);
+    p.customAgent.findMany.mockResolvedValueOnce([
+      {
+        id: "ca_1",
+        projectId: null,
+        name: "Go SQL reviewer",
+        description: "",
+        systemPrompt: "Review the SQL.",
+        tools: JSON.stringify(["read_file_slice"]),
+        model: null,
+        reasoningEffort: null,
+        skillKeys: "[]",
+        approvalPolicy: null,
+        isBuiltIn: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    const res = await request(app)
+      .get("/api/projects/proj-abcdefghij/analyses/capability")
+      .set("Authorization", `Bearer ${readerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.promptOnlyAgents).toEqual([
+      {
+        ref: "custom:ca_1",
+        kind: "custom",
+        name: "Go SQL reviewer",
+        toolsNotRun: ["read_file_slice"],
+      },
+    ]);
+    expect(p.customAgentEnablement.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { projectId: "proj-abcdefghij", enabled: true } }),
+    );
   });
 
   it("reflects a present code graph in the probe", async () => {
