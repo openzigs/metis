@@ -24,6 +24,10 @@ If you need a specific version bump, add one of these tags to your PR title or d
 
 Requested version bump: <!-- [PATCH/MINOR/MAJOR] -->
 
+## Walkthrough test plan
+
+- [ ] User-facing feature added or changed → [`docs/walkthroughs/TEST_PLAN.md`](../docs/walkthroughs/TEST_PLAN.md) updated (or N/A, with the reason here). A PR that adds or removes a page or a route needs the plan change or the `no-walkthrough-impact` label; CI's `changelog` job checks it.
+
 ## Testing
 
 <!-- Describe the testing done for this PR -->

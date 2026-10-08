@@ -18,6 +18,10 @@ export class WorkspaceSettingsPage {
   readonly deleteButton: Locator;
   readonly transferButton: Locator;
   readonly confirmDeleteButton: Locator;
+  readonly inviteEmailInput: Locator;
+  readonly inviteRoleSelect: Locator;
+  readonly createInviteButton: Locator;
+  readonly inviteLinkInput: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -35,6 +39,11 @@ export class WorkspaceSettingsPage {
     this.deleteButton = page.getByRole("button", { name: "Delete" }).first();
     this.transferButton = page.getByRole("button", { name: "Transfer" });
     this.confirmDeleteButton = page.getByRole("button", { name: "Delete workspace" });
+    // #941 — the invite card (owners and admins only).
+    this.inviteEmailInput = page.getByLabel("Email", { exact: true });
+    this.inviteRoleSelect = page.getByLabel("Role", { exact: true });
+    this.createInviteButton = page.getByRole("button", { name: "Create invite" });
+    this.inviteLinkInput = page.getByLabel("Invite link", { exact: true });
   }
 
   async goto(workspaceId: string): Promise<void> {
@@ -56,6 +65,21 @@ export class WorkspaceSettingsPage {
         { timeout: 15_000 },
       ),
       this.saveButton.click(),
+    ]);
+  }
+
+  /** Create an invite through the settings card and wait for the POST (#941). */
+  async createInvite(email: string, role: "member" | "admin" = "member"): Promise<void> {
+    await this.inviteEmailInput.fill(email);
+    await this.inviteRoleSelect.selectOption(role);
+    await Promise.all([
+      this.page.waitForResponse(
+        (res) =>
+          /\/api\/workspaces\/[^/]+\/invites$/.test(new URL(res.url()).pathname) &&
+          res.request().method() === "POST",
+        { timeout: 15_000 },
+      ),
+      this.createInviteButton.click(),
     ]);
   }
 

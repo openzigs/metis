@@ -57,11 +57,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let db: PrismaClient;
     let seq = 0;
 
-    const app = () => {
+    const app = (userId = OWNER) => {
       const a = express();
       a.use(express.json());
       a.use((req, _res, next) => {
-        req.user = { userId: OWNER, role: "developer" } as never;
+        req.user = { userId, role: "developer" } as never;
         next();
       });
       a.use("/api/workspaces", workspacesRouter());
@@ -103,7 +103,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     const del = (workspaceId: string) => request(app()).delete(`/api/workspaces/${workspaceId}`);
     const accept = (token: string) =>
-      request(app()).post(`/api/workspaces/invites/${token}/accept`);
+      request(app(INVITEE)).post(`/api/workspaces/invites/${token}/accept`); // #941: as the invitee
     const inviteRow = (token: string) => db.workspaceInvite.findUnique({ where: { token } });
     const membership = (workspaceId: string, userId: string) =>
       db.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId, userId } } });

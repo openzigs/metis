@@ -62,6 +62,12 @@ export default function InviteAcceptPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
+      if (res.status === 401) {
+        // #941 — accepting needs a session as the invited email. Sign in, then
+        // land back here to accept (the login form validates `next`).
+        router.push(`/login?next=${encodeURIComponent(`/invites/${params.token}`)}`);
+        return;
+      }
       if (!res.ok) {
         const json = await res.json().catch(() => null);
         setError(json?.error?.message ?? "Failed to accept invitation");
@@ -187,7 +193,7 @@ export default function InviteAcceptPage() {
             </p>
           </div>
           <p className="text-center text-sm text-muted-foreground">
-            Invitation for <strong>{invite?.email}</strong>
+            Invitation for <strong>{invite?.email}</strong>. Sign in as this account to accept it.
           </p>
           {error && <p className="text-center text-sm text-destructive">{error}</p>}
           <Button className="w-full" size="lg" onClick={handleAccept} disabled={accepting}>

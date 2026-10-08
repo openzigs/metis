@@ -1,7 +1,7 @@
 # BA re-ask — the 8 BA questions over the API (run {{RUN_NUMBER}})
 
 You re-ask the eight Business Analyst questions from the "Persona scenarios" section of
-[#706](https://github.com/openzigs/metis/issues/706) through the chat API, and check every
+[`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md) through the chat API, and check every
 answer's citations against the `v2.3.3` ground truth. No browser is needed.
 
 ## State you start from
@@ -19,7 +19,7 @@ For each question N in 1–8, **one fresh project-scoped session each** (a share
 earlier answers leak into later ones):
 
 1. `POST /api/ai/sessions` with `{"projectId":"{{PROJECT_ID}}","title":"BA Q<N> run {{RUN_NUMBER}}"}`.
-2. `POST /api/ai/chat` with `{"sessionId":"<id>","message":"<question N verbatim from #706>"}`.
+2. `POST /api/ai/chat` with `{"sessionId":"<id>","message":"<question N verbatim from the plan>"}`.
 3. Save the raw response to `{{SCRATCH_DIR}}/ba-reask/q<N>.json`, and the wall time.
 4. Open every cited `file:line` in the ground-truth checkout and mark it correct or not.
 
