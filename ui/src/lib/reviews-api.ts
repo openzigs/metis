@@ -96,6 +96,14 @@ export interface ReviewListFilters {
   pageSize?: number;
 }
 
+/** Body of `POST /api/projects/:projectId/reviews` (`createReviewSchema`, routes/reviews.ts). */
+export interface CreateReviewInput {
+  title: string;
+  description?: string;
+  reviewerIds: string[];
+  items: Array<{ requirementId: string }>;
+}
+
 // ---- API --------------------------------------------------------------------
 
 export const reviewsApi = {
@@ -116,6 +124,22 @@ export const reviewsApi = {
   /** Review detail including scope items, assignments, and audit history. */
   get(reviewId: string): Promise<ReviewDetail> {
     return apiFetch<ReviewDetail>(`/reviews/${reviewId}`);
+  },
+
+  /**
+   * #732 — open a draft review of requirements (`review.create`). The requester
+   * cannot review their own request; the server refuses it.
+   */
+  create(projectId: string, input: CreateReviewInput): Promise<ReviewRequest> {
+    return apiFetch<ReviewRequest>(`/projects/${projectId}/reviews`, {
+      method: "POST",
+      body: input,
+    });
+  },
+
+  /** #732 — draft → in_review: pins each item's current version for the reviewers. */
+  submit(reviewId: string): Promise<ReviewRequest> {
+    return apiFetch<ReviewRequest>(`/reviews/${reviewId}/submit`, { method: "POST" });
   },
 
   /** Record the caller's approve/reject decision (assigned reviewers only). */
