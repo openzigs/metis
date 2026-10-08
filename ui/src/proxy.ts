@@ -4,9 +4,10 @@ import { applyRotatedCookies, isRetryableRefreshStatus, refreshUpstream } from "
 
 const PUBLIC_PATHS = new Set(["/login"]);
 // `/invites/<token>` is the workspace-invitation landing page. Its audience is
-// by definition signed out, and both server routes behind it
-// (`GET /api/workspaces/invites/:token` and `POST …/accept`) are deliberately
-// unauthenticated — gating the page here bounced every invitee to /login.
+// often signed out, and its read (`GET /api/workspaces/invites/:token`) is
+// deliberately unauthenticated — gating the page here bounced every invitee to
+// /login. Accepting (`POST …/accept`) needs a session as the invited email
+// (#941); the page sends a signed-out visitor to /login?next=… itself.
 const PUBLIC_PREFIXES = ["/_next", "/favicon", "/api/auth/", "/invites/"];
 
 /** Served when the session refresh failed transiently; reloads itself shortly. */

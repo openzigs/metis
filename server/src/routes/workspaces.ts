@@ -58,6 +58,11 @@ const updateMemberRoleSchema = z.object({
 
 const INVITE_EXPIRY_DAYS = 7;
 
+/** Email addresses compare case-insensitively: an invite to `Bob@x` is Bob's. */
+function sameEmail(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 function generateInviteToken(): string {
   return crypto.randomBytes(32).toString("base64url");
 }
@@ -397,9 +402,15 @@ export function workspacesRouter(): Router {
     },
   );
 
-  // ── Accept invite (public — no auth required) ─────────────────────────────
-  r.post("/invites/:token/accept", async (req: Req, res: Response) => {
+  // ── Accept invite (signed in as the invited email, #941) ──────────────────
+  // The token is a bearer secret that travels through chat, forwarded mail and
+  // logs. Accepting used to need nothing else, so whoever held a leaked link
+  // could add the invitee's account to the workspace. The caller must now be
+  // signed in, and as the address the invite names; membership goes to that
+  // authenticated account, never to whoever the token's email resolves to.
+  r.post("/invites/:token/accept", requireAuth, async (req: Req, res: Response) => {
     const { token } = req.params;
+    const callerId = actorId(req);
 
     const invite = await prisma.workspaceInvite.findUnique({
       where: { token },
@@ -425,15 +436,18 @@ export function workspacesRouter(): Router {
       throw new AppError(410, "GONE", "Invitation has expired");
     }
 
-    // Find user by email (must be registered)
     const user = await prisma.user.findUnique({
-      where: { email: invite.email },
+      where: { id: callerId },
+      select: { id: true, email: true },
     });
     if (!user) {
+      throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+    }
+    if (!sameEmail(user.email, invite.email)) {
       throw new AppError(
-        400,
-        "BAD_REQUEST",
-        "No account found with this email. Please register first.",
+        403,
+        "FORBIDDEN",
+        "This invitation was sent to a different email address. Sign in as the invited account to accept it.",
       );
     }
 

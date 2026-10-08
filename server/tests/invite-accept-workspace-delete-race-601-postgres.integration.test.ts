@@ -136,11 +136,11 @@ describe.skipIf(!enabled)(
       });
     };
 
-    const app = () => {
+    const app = (userId = OWNER) => {
       const a = express();
       a.use(express.json());
       a.use((req, _res, next) => {
-        req.user = { userId: OWNER, role: "developer" } as never;
+        req.user = { userId, role: "developer" } as never;
         next();
       });
       a.use("/api/workspaces", workspacesRouter());
@@ -150,7 +150,7 @@ describe.skipIf(!enabled)(
     };
     const del = (workspaceId: string) => request(app()).delete(`/api/workspaces/${workspaceId}`);
     const accept = (token: string) =>
-      request(app()).post(`/api/workspaces/invites/${token}/accept`);
+      request(app(INVITEE)).post(`/api/workspaces/invites/${token}/accept`); // #941: as the invitee
 
     async function seedInvite(): Promise<{ workspaceId: string; token: string }> {
       const workspaceId = `ws-601pg-${SUFFIX}-${workspaces.length + 1}`;
