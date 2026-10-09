@@ -77,6 +77,10 @@ cap of 2.
 connector's source-document count still equals `{{REPO_DOC_COUNT}}`: the refresh prunes only files absent from
 the checkout (#756, PR #892).
 
+## Fixes to verify this wave
+
+{{FIXES_TO_VERIFY}}
+
 ## Standing rules — never
 
 - Never start a repo refresh, re-ingest or scheduler job while a document is generating.
@@ -140,7 +144,7 @@ as plain text.
    |---|---|---|---|---|---|---|---|---|
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
-3. **Fix verification** — for each fix in `{{FIXES_TO_VERIFY}}`: fix | PR | holds / regressed | evidence.
+3. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
 4. **Findings** — one line each: severity, phase, symptom, evidence path. Do not file issues.
 5. **`Durable finding:` lines** — anything a future run must know. Prefix each with exactly
    `Durable finding:`.

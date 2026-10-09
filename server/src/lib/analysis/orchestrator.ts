@@ -81,10 +81,12 @@ import {
   recordStep as recordReplayStep,
   finishRun as finishReplayRun,
   computeRunCost as computeReplayRunCost,
+  reopenRun as reopenReplayRun,
 } from "../replay/runs-service.js";
 import {
   createAnalysis,
   finalizeAnalysisDelta,
+  markAnalysisRunning,
   getAnalysisCapability,
   getStructuredRequirements,
   markAnalysisCancelled,
@@ -271,6 +273,40 @@ async function replayRunCostAfterUsage(
 ): ReturnType<typeof computeReplayRunCost> {
   await flushAnalysisUsage(analysisId);
   return computeReplayRunCost(replayRunId);
+}
+
+/** The replay run a follow-up re-opened, and the tokens it had recorded. */
+type ReopenedRun = { id: string; totalTokens: number } | null;
+
+/**
+ * #943 — a regenerate or repo resume on a finished analysis calls the model for
+ * minutes and rewrites its requirements. It used to leave the analysis
+ * `completed` throughout, and its spend landed after the replay run's window
+ * closed, so the run page under-reported the cost. Both read `running` again
+ * until {@link closeFollowUpRun} and the analysis' own finalize.
+ */
+async function reopenForFollowUp(analysisId: string): Promise<ReopenedRun> {
+  await markAnalysisRunning(analysisId);
+  return reopenReplayRun(analysisId, "analysis").catch(() => null);
+}
+
+/** #943 — price the re-opened run over every ledger row of its session, and close it. */
+async function closeFollowUpRun(
+  analysisId: string,
+  run: ReopenedRun,
+  status: "completed" | "failed",
+  delta: TokenUsage,
+): Promise<void> {
+  if (!run) return;
+  const { costCents } = await replayRunCostAfterUsage(analysisId, run.id).catch(() => ({
+    costCents: 0,
+  }));
+  await finishReplayRun({
+    runId: run.id,
+    status,
+    totalTokens: run.totalTokens + delta.totalTokens,
+    costCents,
+  }).catch(() => undefined);
 }
 
 /**
@@ -811,7 +847,9 @@ export class AnalysisOrchestrator {
     };
     let outcome: "completed" | "failed" = "completed";
     let errorMessage: string | null = null;
+    let reopened: ReopenedRun = null;
     try {
+      reopened = await reopenForFollowUp(opts.analysisId);
       const agentInput = {
         analysisId: opts.analysisId,
         projectId: analysis.projectId,
@@ -860,6 +898,7 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
+      await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
       // Atomic write — increments columns server-side so two concurrent
       // regenerates can't lose tokens to a read/modify/write race.
       await finalizeAnalysisDelta({
@@ -1107,7 +1146,9 @@ export class AnalysisOrchestrator {
     let errorMessage: string | null = null;
     const resumed: AnalysisSkippedRepo[] = [];
     let remaining: AnalysisSkippedRepo[] = [];
+    let reopened: ReopenedRun = null;
     try {
+      reopened = await reopenForFollowUp(opts.analysisId);
       // Only resume connectors that STILL exist — a repo deleted since the
       // original run can't be analyzed and simply drops off the skipped list.
       const live = await prisma.repoConnection.findMany({
@@ -1213,6 +1254,7 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
+      await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
       await finalizeAnalysisDelta({
         id: opts.analysisId,
         status: outcome,

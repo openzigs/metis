@@ -44,6 +44,8 @@ export function FeaturePanel({ projectId, enabled, canWrite, selectedSlug, onSel
     queryKey: queryKeys.projects.specKitFeatures(projectId, showArchived),
     queryFn: () => specKitApi.listFeatures(projectId, showArchived),
     enabled: enabled && Boolean(projectId),
+    // #945 — a feature created in another tab appears when this one is focused again.
+    refetchOnWindowFocus: "always",
   });
   const statusQuery = useQuery({
     queryKey: queryKeys.projects.specKitFeatureStatus(projectId, selectedSlug ?? ""),
