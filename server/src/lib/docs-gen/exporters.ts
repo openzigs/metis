@@ -347,7 +347,28 @@ async function exportToPdf(markdown: string, title: string): Promise<ExportResul
  * Build a full HTML document from markdown with Mermaid support and KaTeX.
  */
 async function buildHtmlDocument(markdown: string, title: string): Promise<string> {
-  const { marked } = await import("marked");
+  const { Marked } = await import("marked");
+  // The page runs JS in a --no-sandbox Chrome with no request interception, and
+  // the markdown can carry text from external trackers. So marked may not emit
+  // author HTML, script-scheme links, or images (a fetch of an internal URL
+  // would land in the PDF). Our own placeholder comments are the only raw HTML.
+  const md = new Marked({
+    renderer: {
+      html({ text }) {
+        const t = text.trim();
+        return /^<!--(MATH|MERMAID)_PLACEHOLDER_\d+-->$/.test(t) ? text : escapeHtml(text);
+      },
+      image({ text }) {
+        return escapeHtml(text);
+      },
+      link({ href, title, tokens }) {
+        const inner = this.parser.parseInline(tokens);
+        if (!/^(https?:|mailto:|#)/i.test(href.trim())) return inner;
+        const t = title ? ` title="${escapeHtml(title)}"` : "";
+        return `<a href="${escapeHtml(href)}"${t}>${inner}</a>`;
+      },
+    },
+  });
 
   // Extract display math ($$...$$) and mermaid blocks BEFORE marked processing.
   // marked splits $$\nformula\n$$ into separate <p> tags, breaking KaTeX delimiter matching.
@@ -369,14 +390,15 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
     },
   );
 
-  let htmlContent = await marked(processedMarkdown, {
+  let htmlContent = await md.parse(processedMarkdown, {
     gfm: true,
     breaks: false,
   });
 
   // Inject mermaid blocks back (escaped for DOM textContent recovery, not double-processed by marked)
   for (let i = 0; i < mermaidBlocks.length; i++) {
-    htmlContent = htmlContent.replace(
+    htmlContent = restorePlaceholder(
+      htmlContent,
       `<!--MERMAID_PLACEHOLDER_${i}-->`,
       `<div class="mermaid-container"><pre class="mermaid">${escapeHtml(mermaidBlocks[i])}</pre></div>`,
     );
@@ -384,7 +406,8 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
 
   // Inject math blocks back as <span class="math-display"> — KaTeX renders these in page.evaluate
   for (let i = 0; i < mathBlocks.length; i++) {
-    htmlContent = htmlContent.replace(
+    htmlContent = restorePlaceholder(
+      htmlContent,
       `<!--MATH_PLACEHOLDER_${i}-->`,
       `<div class="math-display" data-formula="${escapeHtml(mathBlocks[i])}"></div>`,
     );
@@ -403,6 +426,23 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
   ${htmlContent}
 </body>
 </html>`;
+}
+
+/**
+ * Swap a placeholder for its rendered block. A placeholder sharing its line with
+ * other text (`$$E = mc^2$$ where …`) makes the whole line one HTML token, which
+ * the renderer escapes — so the placeholder arrives as `&lt;!--…--&gt;`. Only the
+ * placeholder is restored; the rest of that token stays escaped.
+ */
+function restorePlaceholder(html: string, placeholder: string, replacement: string): string {
+  const i = html.indexOf(placeholder);
+  const escaped = escapeHtml(placeholder);
+  const j = html.indexOf(escaped);
+  if (i !== -1 && (j === -1 || i < j)) {
+    return html.slice(0, i) + replacement + html.slice(i + placeholder.length);
+  }
+  if (j === -1) return html;
+  return html.slice(0, j) + replacement + html.slice(j + escaped.length);
 }
 
 function escapeHtml(text: string): string {

@@ -119,6 +119,12 @@ import {
   type GenerationControl,
 } from "../lib/docs-gen/generation-control.js";
 import { withGenerationScope } from "../lib/docs-gen/generation-scope.js";
+import {
+  countScopedRequirements,
+  REQUIREMENTS_SCOPE_EMPTY_CODE,
+  requirementsScopeFilterSchema,
+  synthesizeRequirementsDocument,
+} from "../lib/docs-gen/requirements-scope.js";
 import type {
   GenerationStepHook,
   SectionResumeReport,
@@ -241,7 +247,9 @@ const generateRateLimiter: RequestHandler = rateLimit({
 const generateSchema = z
   .object({
     title: z.string().min(1).max(200),
-    scope: z.enum(["full", "module", "symbol", "repository", "database"]).default("full"),
+    scope: z
+      .enum(["full", "module", "symbol", "repository", "database", "requirements"])
+      .default("full"),
     /** Holistic document type. Only used when scope === "full" or "repository". */
     docType: z
       .enum(["business-requirements", "architecture", "user-guide"])
@@ -298,6 +306,15 @@ const generateSchema = z
         message: "scopeFilter.dbConnectorId is required when scope is 'database'",
         path: ["scopeFilter", "dbConnectorId"],
       });
+    }
+    // #991 — a requirements document names the run, selection or review it covers.
+    if (data.scope === "requirements") {
+      const filter = requirementsScopeFilterSchema.safeParse(data.scopeFilter);
+      if (!filter.success) {
+        for (const issue of filter.error.issues) {
+          ctx.addIssue({ ...issue, path: ["scopeFilter", ...issue.path] });
+        }
+      }
     }
   });
 
@@ -409,6 +426,21 @@ export function generatedDocsRouter(): Router {
           projectId,
           parsed.data.scopeFilter.repoConnectorId as string,
         );
+      }
+      if (parsed.data.scope === "requirements") {
+        // #991 — fail fast with a clear 400 rather than a run that ends empty.
+        // The count is project-scoped, so another project's ids select nothing.
+        const selected = await countScopedRequirements(
+          projectId,
+          requirementsScopeFilterSchema.parse(parsed.data.scopeFilter),
+        );
+        if (selected === 0) {
+          throw new AppError(
+            400,
+            REQUIREMENTS_SCOPE_EMPTY_CODE,
+            "No requirements in this project match the selected analysis run, requirements or review.",
+          );
+        }
       }
       const pathPrefixes = parsed.data.pathPrefixes;
       if (pathPrefixes) {
@@ -1212,7 +1244,11 @@ export async function generateDocumentAsync(
       return;
     }
     let inputSnapshot: GenerationInputSnapshot | null =
-      original.scope === "database" ? null : await captureGenerationInputs(original, policy);
+      // #991 — a requirements document's inputs are its requirements, not the
+      // code graph; its source fingerprint below records them.
+      original.scope === "database" || original.scope === "requirements"
+        ? null
+        : await captureGenerationInputs(original, policy);
     if (automatic && inputSnapshot?.fingerprint !== automatic.fingerprint) {
       const { checkIncrementalRegeneration } = await import("../lib/docs-gen/incremental.js");
       await checkIncrementalRegeneration(projectId, policy.repoConnectorId);
@@ -1325,7 +1361,12 @@ export async function generateDocumentAsync(
     }> = [];
     let synthesizedProvenanceManifest: string | null = null;
     let fallbackGenerationPipeline:
-      "holistic" | "incremental-discovery" | "discovery-agent" | "database-schema" | undefined;
+      | "holistic"
+      | "incremental-discovery"
+      | "discovery-agent"
+      | "database-schema"
+      | "requirements"
+      | undefined;
     let fallbackGenerationModels:
       | {
           phase1: string;
@@ -1337,7 +1378,7 @@ export async function generateDocumentAsync(
     let fallbackPhase1PromptVersion = PHASE1_PROMPT_VERSION;
     let fallbackSourceFingerprints:
       | Array<{
-          kind: "repository-graph" | "project-scope" | "database-schema";
+          kind: "repository-graph" | "project-scope" | "database-schema" | "requirements";
           repoConnectorId: string | null;
           codeGraphId: string | null;
           dbConnectorId?: string | null;
@@ -1417,6 +1458,31 @@ export async function generateDocumentAsync(
       // `ready` with `warnings = NULL`. Feed the synthesizer's warnings into the
       // same `deriveDocStatus` path every other scope already uses.
       docWarnings = result.warnings;
+    } else if (doc?.scope === "requirements") {
+      // #991 — a BRD built from the selected requirements and their code links.
+      fallbackGenerationPipeline = "requirements";
+      const result = await synthesizeRequirementsDocument(
+        projectId,
+        requirementsScopeFilterSchema.parse(filter),
+        doc.title ?? "Business Requirements",
+      );
+      markdown = result.markdown;
+      fallbackGenerationModels = {
+        phase1: "not-applicable",
+        phase2: "not-applicable",
+        claim: "not-applicable",
+        judge: "not-applicable",
+      };
+      fallbackSourceRepositories = [];
+      fallbackSourceFingerprints = [
+        {
+          kind: "requirements",
+          repoConnectorId: null,
+          codeGraphId: null,
+          sourceFingerprint: result.sourceFingerprint,
+        },
+      ];
+      fallbackGraphFingerprint = result.sourceFingerprint;
     } else if (doc?.scope === "full" || doc?.scope === "repository") {
       let docType: DocType = "business-requirements";
       if (
@@ -1652,13 +1718,15 @@ export async function generateDocumentAsync(
         title: doc.title,
         scope: doc.scope,
         docType:
-          doc.scope === "full" || doc.scope === "repository"
-            ? ((filter.docType === "business-requirements" ||
-              filter.docType === "architecture" ||
-              filter.docType === "user-guide"
-                ? filter.docType
-                : null) as "business-requirements" | "architecture" | "user-guide" | null)
-            : null,
+          doc.scope === "requirements"
+            ? "business-requirements"
+            : doc.scope === "full" || doc.scope === "repository"
+              ? ((filter.docType === "business-requirements" ||
+                filter.docType === "architecture" ||
+                filter.docType === "user-guide"
+                  ? filter.docType
+                  : null) as "business-requirements" | "architecture" | "user-guide" | null)
+              : null,
         generatedAt,
         policy,
         phase1Tuning: phase1.tuning,

@@ -3946,7 +3946,9 @@ Click the **Generate** button to open the generation form:
 | **Title** | A name for your document (e.g., "Orders Module Reference") |
 | **Scope** | `Full` — entire codebase · `Module` — specific package/namespace · `Symbol` — single class/method |
 | **Scope Filter** | When scope is Module or Symbol, specify which module/class to document |
-| **Auto Update** | Toggle ON to check for changed inputs after successful repository Deep Ingest or refresh (manual or scheduled); database-scope documents are excluded |
+| **Auto Update** | Toggle ON to check for changed inputs after successful repository Deep Ingest or refresh (manual or scheduled); database-scope and requirements-scope documents are excluded |
+
+**A Business Requirements Document for an analysis run (#991).** Choose the scope **Requirements (analysis run)**, pick a completed analysis run, and leave **Approved requirements only** ticked to cover just the requirements a reviewer approved. The document has a summary table and then one section per requirement, highest priority first: its description, review status, verdict, acceptance criteria, and the code it is linked to (requirement-to-code mappings with their confidence, and the merged pull requests that implemented it). Every line comes from the stored requirements and links, so no AI model is called and nothing in it is ungrounded. A requirement with no code links says so. If the run has no requirements matching the choice, generation is refused up front with a message rather than producing an empty document. Through the API, `scopeFilter` can instead name `requirementIds` (up to 500) or a `reviewRequestId`.
 
 After clicking **Generate**, METIS will:
 1. Analyze the code graph for the selected scope

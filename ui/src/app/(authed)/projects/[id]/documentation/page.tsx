@@ -15,6 +15,7 @@ import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
+import { analysisApi } from "@/lib/analysis-api";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import {
   useProjectJobEvents,
@@ -772,6 +773,8 @@ export default function DocumentationPage(): React.ReactElement {
 
 /** #980 — the Generate form's default title for a database-scope document. */
 const DATABASE_SCHEMA_TITLE = "Database Schema";
+/** #991 — a requirements-scope document is a BRD of the chosen requirements. */
+const REQUIREMENTS_TITLE = "Business Requirements";
 
 function GenerateForm({
   projectId,
@@ -802,6 +805,10 @@ function GenerateForm({
   const [titleEdited, setTitleEdited] = useState(false);
   const [selectedRepoId, setSelectedRepoId] = useState<string>("");
   const [selectedDbId, setSelectedDbId] = useState<string>("");
+  // #991 — the analysis run a requirements-scope document covers, and whether
+  // it is limited to the requirements a reviewer approved.
+  const [selectedAnalysisId, setSelectedAnalysisId] = useState<string>("");
+  const [approvedOnly, setApprovedOnly] = useState(true);
   // #283 — opt-in domain web-research grounding. Default OFF to respect
   // network/cost; only meaningful for narrative business-requirements docs.
   const [groundDomainWithWebResearch, setGroundDomainWithWebResearch] = useState(false);
@@ -849,6 +856,15 @@ function GenerateForm({
 
   const connectedDbs = dbConnectorsQuery.data?.filter((db) => db.status === "connected") ?? [];
 
+  // #991 — completed analysis runs, newest first, when scope is "requirements".
+  const analysesQuery = useQuery({
+    queryKey: ["analyses", projectId],
+    queryFn: () => analysisApi.listForProject(projectId),
+    enabled: scope === "requirements" && Boolean(projectId),
+  });
+  const completedAnalyses =
+    analysesQuery.data?.items.filter((analysis) => analysis.status === "completed") ?? [];
+
   const handleDocTypeChange = (next: string): void => {
     setDocType(next);
     if (!titleEdited) setTitle(defaultTitles[next] ?? "Project Documentation");
@@ -858,13 +874,16 @@ function GenerateForm({
     setScope(next);
     setSelectedRepoId("");
     setSelectedDbId("");
+    setSelectedAnalysisId("");
     if (!titleEdited) {
       // #980 — a database-scope document is a schema reference, whatever the
       // (hidden) document type says; the title used to keep "Business Requirements".
       setTitle(
         next === "database"
           ? DATABASE_SCHEMA_TITLE
-          : (defaultTitles[docType] ?? "Project Documentation"),
+          : next === "requirements"
+            ? REQUIREMENTS_TITLE
+            : (defaultTitles[docType] ?? "Project Documentation"),
       );
     }
   };
@@ -894,6 +913,10 @@ function GenerateForm({
     if (scope === "database" && selectedDbId) {
       scopeFilter.dbConnectorId = selectedDbId;
     }
+    if (scope === "requirements" && selectedAnalysisId) {
+      scopeFilter.analysisId = selectedAnalysisId;
+      scopeFilter.approvedOnly = approvedOnly;
+    }
     // #283 — only forward the opt-in for narrative business-requirements docs
     // where it is meaningful; ignored for other doc types.
     const ground =
@@ -921,7 +944,8 @@ function GenerateForm({
     isLoading ||
     !title.trim() ||
     (scope === "repository" && !selectedRepoId) ||
-    (scope === "database" && !selectedDbId);
+    (scope === "database" && !selectedDbId) ||
+    (scope === "requirements" && !selectedAnalysisId);
 
   return (
     <Card className="p-4 space-y-4" data-testid="generate-form">
@@ -942,6 +966,7 @@ function GenerateForm({
           <option value="full">Full Project</option>
           <option value="repository">By Repository</option>
           <option value="database">Database Schema</option>
+          <option value="requirements">Requirements (analysis run)</option>
           <option value="module">Single Module</option>
           <option value="symbol">Single Symbol</option>
         </select>
@@ -1004,8 +1029,58 @@ function GenerateForm({
         </div>
       )}
 
-      {/* Document type — hidden for database scope */}
-      {scope !== "database" && (
+      {/* #991 — analysis run picker — shown when scope is "requirements" */}
+      {scope === "requirements" && (
+        <div className="space-y-2">
+          <label htmlFor="analysis-run-select" className="text-sm font-medium">
+            Analysis run
+          </label>
+          <select
+            id="analysis-run-select"
+            value={selectedAnalysisId}
+            onChange={(e) => setSelectedAnalysisId(e.target.value)}
+            className="w-full px-3 py-2 border rounded-md bg-background"
+            data-testid="analysis-run-select"
+            disabled={analysesQuery.isLoading}
+          >
+            <option value="">
+              {analysesQuery.isLoading ? "Loading…" : "Select an analysis run…"}
+            </option>
+            {completedAnalyses.map((analysis) => (
+              <option key={analysis.id} value={analysis.id}>
+                {new Date(analysis.completedAt ?? analysis.startedAt).toLocaleString()} (
+                {analysis.id.slice(-6)})
+              </option>
+            ))}
+          </select>
+          {analysesQuery.isError && (
+            <p className="text-xs text-destructive" role="alert" data-testid="analyses-load-error">
+              Could not load analysis runs. Try again.
+            </p>
+          )}
+          {!analysesQuery.isLoading && !analysesQuery.isError && completedAnalyses.length === 0 && (
+            <p className="text-xs text-muted-foreground" data-testid="no-completed-analyses">
+              No completed analysis runs. Run an analysis to produce requirements first.
+            </p>
+          )}
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={approvedOnly}
+              onChange={(e) => setApprovedOnly(e.target.checked)}
+              data-testid="requirements-approved-only"
+            />
+            Approved requirements only
+          </label>
+          <p className="text-xs text-muted-foreground">
+            A business requirements document of the run&rsquo;s requirements, with their acceptance
+            criteria and the code each one is linked to.
+          </p>
+        </div>
+      )}
+
+      {/* Document type — hidden for database and requirements scopes */}
+      {scope !== "database" && scope !== "requirements" && (
         <div className="space-y-2">
           <label htmlFor="doc-type-select" className="text-sm font-medium">
             Document Type
