@@ -42,6 +42,10 @@ run stays comparable with run 3.
   completion names both phases (#862). Record the repo connector's source-document count;
   wave C compares it after a refresh.
 
+## Fixes to verify this wave
+
+{{FIXES_TO_VERIFY}}
+
 ## Standing rules — never
 
 - Never publish, comment or review on `miniflux/v2`. Sandbox is `openzigs/flux-v2` only.
@@ -100,7 +104,7 @@ as plain text.
    |---|---|---|---|---|---|---|---|---|
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
-3. **Fix verification** — for each fix in `{{FIXES_TO_VERIFY}}`: fix | PR | holds / regressed | evidence.
+3. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
 4. **Findings** — one line each: severity, phase, symptom, evidence path. Do not file issues.
 5. **`Durable finding:` lines** — anything a future run must know (an ordering trap, a new
    gotcha). Prefix each with exactly `Durable finding:`.

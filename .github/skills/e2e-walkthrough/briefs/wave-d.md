@@ -30,6 +30,10 @@ commands (#931).
   "not available on this server yet" reason until #953 lands. Keep the sandbox slot. If
   Publish is enabled, #953 has landed: publish within the 2-issue cap, to `openzigs/flux-v2` only.
 
+## Fixes to verify this wave
+
+{{FIXES_TO_VERIFY}}
+
 ## Standing rules — never
 
 - Never publish, comment or review on `miniflux/v2`. Sandbox is `openzigs/flux-v2` only.
@@ -93,7 +97,7 @@ as plain text.
    |---|---|---|---|---|---|---|---|---|
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
-3. **Fix verification** — for each fix in `{{FIXES_TO_VERIFY}}`: fix | PR | holds / regressed | evidence.
+3. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
 4. **Findings** — one line each: severity, step, symptom, evidence path. Do not file issues.
 5. **`Durable finding:` lines** — anything a future run must know. Prefix each with exactly
    `Durable finding:`.

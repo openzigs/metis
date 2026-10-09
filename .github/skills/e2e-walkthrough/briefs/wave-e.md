@@ -49,6 +49,10 @@ issues" table (#4478, #4511, #4336) with what each must surface.
   `/settings/auth` loads with no console error after the ldapts 9 upgrade; test an LDAP
   provider only if one is configured. No page logs a Next.js error after the 16.3.8 upgrade.
 
+## Fixes to verify this wave
+
+{{FIXES_TO_VERIFY}}
+
 ## Standing rules — never
 
 - Never publish, comment or review on `miniflux/v2` — the developer issues are read-only
@@ -109,7 +113,7 @@ as plain text.
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
 3. **Developer-issue impact**: issue | surfaced the must-surface item? | evidence. Score N/3.
-4. **Fix verification** — for each fix in `{{FIXES_TO_VERIFY}}`: fix | PR | holds / regressed | evidence.
+4. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
 5. **Findings** — one line each: severity, phase, symptom, evidence path. Do not file issues.
 6. **`Durable finding:` lines** — anything a future run must know. Prefix each with exactly
    `Durable finding:`.
