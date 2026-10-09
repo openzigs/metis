@@ -3789,7 +3789,7 @@ Recovery is at-least-once.
 | `GET` | `/:docId` | Get a single document: its content once, plus summary metadata, the five latest version summaries (`id`, `version`, `revisionId`, `diffSummary`, `createdAt`) and separate indexing state | — |
 | `GET` | `/:docId/versions/:versionId` | One version's markdown body (#190) | — |
 | `GET` | `/:docId/versions/:versionId/provenance` | One version's full provenance manifest (#190); the UI fetches it only for **Download full manifest** (#196) | — |
-| `GET` | `/:docId/versions/:versionId/provenance/summary` | The Provenance panel's summary of it: `revisionId`, `version`, `generatedAt`, `pipeline`, `models`, `sectionCount`, `selectedEvidenceCount`, `sourceCount`, `historicalCitations`, `legacy` (#196) | — |
+| `GET` | `/:docId/versions/:versionId/provenance/summary` | The Provenance panel's summary of it: `revisionId`, `version`, `generatedAt`, `pipeline`, `models`, `sectionCount`, `selectedEvidenceCount`, `sourceCount`, `historicalCitations`, `legacy` (#196), `omittedTopics` (`[{section, topics}]`: topics the per-section length cap dropped, #995) | — |
 | `GET` | `/:docId/versions/:versionId/changed-symbols?offset=&limit=` | A page (default 500, max 5,000) of one version's changed symbols, with `total` (#190) | — |
 | `GET` | `/:docId/export?format=pdf\|docx` | Download in specified format | — |
 | `PATCH` | `/:docId` | Update document metadata (title, autoUpdate flag) | — |
