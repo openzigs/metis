@@ -212,6 +212,11 @@ export function aggregateDecisions(
  * - `rejected` → `"rejected"`;
  * - `closed` → `null` — an archived review carries no verdict, so the
  *   requirement's existing reviewStatus is left untouched.
+ *
+ * #989 — the service applies two exceptions: on submit, a requirement that is
+ * already `approved` keeps that status (only a rejection moves it), and when a
+ * review leaves `in_review` without a verdict (withdraw, or close) each
+ * requirement gets back the status captured on its review item at submit.
  */
 export function deriveRequirementReviewStatus(
   status: ReviewRequestStatus,

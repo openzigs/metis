@@ -77,6 +77,8 @@ interface ReviewItemRow {
   requirementId: string | null;
   generatedDocumentId: string | null;
   pinnedVersion: number;
+  /** #989 — the requirement's reviewStatus captured at submit (null otherwise). */
+  priorReviewStatus?: string | null;
 }
 
 interface ReviewRow {
@@ -134,6 +136,33 @@ function assertRequesterOrAdmin(review: ReviewRow, actorId: string, isAdmin: boo
 
 function requirementIdsInScope(items: ReviewItemRow[]): string[] {
   return items.map((i) => i.requirementId).filter((id): id is string => id !== null);
+}
+
+type ReviewTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+/**
+ * #989 — put back the reviewStatus each requirement held before the review was
+ * submitted. Used when a review leaves `in_review` without a verdict (withdraw,
+ * or close). An approved requirement was never moved by the submit, so it has
+ * nothing to restore; for the rest the write is guarded on the `draft` the
+ * submit left, so a status someone set since is not overwritten.
+ */
+async function restorePriorReviewStatuses(tx: ReviewTx, items: ReviewItemRow[]): Promise<void> {
+  const byPrior = new Map<string | null, string[]>();
+  for (const item of items) {
+    if (item.requirementId === null) continue;
+    const prior = item.priorReviewStatus ?? null;
+    if (prior === "approved" || prior === "draft") continue;
+    const ids = byPrior.get(prior);
+    if (ids) ids.push(item.requirementId);
+    else byPrior.set(prior, [item.requirementId]);
+  }
+  for (const [prior, ids] of byPrior) {
+    await tx.requirement.updateMany({
+      where: { id: { in: ids }, reviewStatus: "draft" },
+      data: { reviewStatus: prior },
+    });
+  }
 }
 
 /** Compact pinned-scope snapshot embedded in sign-off audit metadata. */
@@ -340,10 +369,26 @@ export async function submitReview(
     });
     if (transitioned.count === 0) throw reviewStateChangedError();
 
+    // #989 — capture each requirement's status before the review touches it,
+    // so a withdraw (or a close before any verdict) can give it back.
+    const priorRows =
+      requirementIds.length > 0
+        ? await tx.requirement.findMany({
+            where: { id: { in: requirementIds } },
+            select: { id: true, reviewStatus: true },
+          })
+        : [];
+    const priorById = new Map(priorRows.map((r) => [r.id, r.reviewStatus]));
+
     for (const item of pinnedItems) {
       await tx.reviewRequestItem.update({
         where: { id: item.id },
-        data: { pinnedVersion: item.pinnedVersion },
+        data: {
+          pinnedVersion: item.pinnedVersion,
+          priorReviewStatus: item.requirementId
+            ? (priorById.get(item.requirementId) ?? null)
+            : null,
+        },
       });
     }
     // A (re-)submission starts a fresh decision round.
@@ -351,9 +396,13 @@ export async function submitReview(
       where: { reviewRequestId: reviewId },
       data: { decision: "pending", note: null, decidedAt: null },
     });
-    if (requirementIds.length > 0) {
+    // #989 — an approved requirement stays approved while it is under review;
+    // only a rejection changes it. The rest move to the derived in-review
+    // status ("draft" — awaiting review).
+    const toAwaitReview = requirementIds.filter((id) => priorById.get(id) !== "approved");
+    if (toAwaitReview.length > 0) {
       await tx.requirement.updateMany({
-        where: { id: { in: requirementIds } },
+        where: { id: { in: toAwaitReview } },
         data: { reviewStatus: deriveRequirementReviewStatus(nextStatus) },
       });
     }
@@ -607,8 +656,9 @@ async function transitionReview(
   assertRequesterOrAdmin(review, actorId, isAdmin);
 
   const nextStatus = transition(review.status as ReviewRequestStatus, event);
-  const derived = deriveRequirementReviewStatus(nextStatus);
-  const requirementIds = requirementIdsInScope(review.items);
+  // #989 — leaving `in_review` with no verdict (withdraw, or close mid-review)
+  // restores what the submit captured. A close after a verdict keeps it.
+  const restorePrior = review.status === "in_review";
 
   const updated = await prisma.$transaction(async (tx) => {
     // Guarded status write (same rationale as recordDecision): a withdraw
@@ -620,12 +670,7 @@ async function transitionReview(
     });
     if (transitioned.count === 0) throw reviewStateChangedError();
 
-    if (derived !== null && requirementIds.length > 0) {
-      await tx.requirement.updateMany({
-        where: { id: { in: requirementIds } },
-        data: { reviewStatus: derived },
-      });
-    }
+    if (restorePrior) await restorePriorReviewStatuses(tx, review.items);
 
     await tx.auditLog.create({
       data: buildAuditLogData({

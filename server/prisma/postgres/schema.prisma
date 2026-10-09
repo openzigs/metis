@@ -5332,6 +5332,11 @@ model ReviewRequestItem {
   generatedDocumentId String?
   /// Artifact version counter captured at submit time — the reviewed pin.
   pinnedVersion       Int
+  /// Issue #989 — the requirement's `reviewStatus` captured at submit time, so
+  /// a withdraw (or a close before any verdict) restores it instead of leaving
+  /// the requirement as draft. Null for documents, for unsubmitted reviews and
+  /// for a requirement that had no status.
+  priorReviewStatus   String?
   createdAt           DateTime @default(now())
 
   reviewRequest     ReviewRequest      @relation(fields: [reviewRequestId], references: [id], onDelete: Cascade)

@@ -125,6 +125,7 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
             projectId={projectId}
             requirementIds={latest.data.requirements.map((r) => r.id)}
             currentUserId={user.id}
+            approvedCount={counts?.approved ?? 0}
           />
         ) : null}
       </Card>

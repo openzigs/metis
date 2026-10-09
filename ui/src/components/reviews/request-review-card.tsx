@@ -35,9 +35,16 @@ interface Props {
   requirementIds: readonly string[];
   /** The signed-in user — never offered as a reviewer. */
   currentUserId: string;
+  /** #989 — how many of `requirementIds` are already approved. */
+  approvedCount?: number;
 }
 
-export function RequestReviewCard({ projectId, requirementIds, currentUserId }: Props) {
+export function RequestReviewCard({
+  projectId,
+  requirementIds,
+  currentUserId,
+  approvedCount = 0,
+}: Props) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("Requirements review");
@@ -84,7 +91,12 @@ export function RequestReviewCard({ projectId, requirementIds, currentUserId }: 
       setError(null);
       setReviewers([]);
       setSearch("");
-      await qc.invalidateQueries({ queryKey: queryKeys.reviews.all });
+      // #989 — the submit moves requirements to awaiting review, so the
+      // hub's counts (read from the analysis) are stale too.
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.reviews.all }),
+        qc.invalidateQueries({ queryKey: queryKeys.analyses.all }),
+      ]);
     },
     onError: (err: unknown) => {
       setError(err instanceof ApiError ? err.message : "Could not request the review");
@@ -134,6 +146,13 @@ export function RequestReviewCard({ projectId, requirementIds, currentUserId }: 
         <p className="text-xs text-muted-foreground">
           Asks the reviewers to approve or reject these {count} {noun} at their current versions.
           Approval creates a baseline.
+        </p>
+        <p className="text-xs text-muted-foreground" data-testid="request-review-status-note">
+          {approvedCount > 0
+            ? `${approvedCount} of them ${approvedCount === 1 ? "is" : "are"} already approved and stay${approvedCount === 1 ? "s" : ""} approved unless the review is rejected. `
+            : ""}
+          The rest show as awaiting review until it is decided. Withdrawing the review puts every
+          status back.
         </p>
         <div className="space-y-1">
           <Label htmlFor="review-title">Title</Label>

@@ -364,7 +364,7 @@ describe("POST /reviews/:reviewId/submit", () => {
     expect(res.status).toBe(200);
     expect(mockPrisma.reviewRequestItem.update).toHaveBeenCalledWith({
       where: { id: "item-1" },
-      data: { pinnedVersion: 5 },
+      data: { pinnedVersion: 5, priorReviewStatus: null },
     });
     expect(mockPrisma.reviewerAssignment.updateMany).toHaveBeenCalledWith({
       where: { reviewRequestId: "rev-1" },
@@ -382,6 +382,45 @@ describe("POST /reviews/:reviewId/submit", () => {
     expect(auditRows()).toContainEqual(
       expect.objectContaining({ action: "review.submit", inTx: true }),
     );
+  });
+
+  it("#989 — keeps approved requirements approved and captures every prior status", async () => {
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(
+      makeReview({
+        status: "draft",
+        items: [
+          makeItem({ id: "item-1", requirementId: "req-1" }),
+          makeItem({ id: "item-2", requirementId: "req-2" }),
+        ],
+      }),
+    );
+    mockPrisma.requirement.findMany
+      .mockResolvedValueOnce([
+        { id: "req-1", version: 5 },
+        { id: "req-2", version: 3 },
+      ])
+      .mockResolvedValueOnce([
+        { id: "req-1", reviewStatus: "approved" },
+        { id: "req-2", reviewStatus: "rejected" },
+      ]);
+
+    const res = await request(app).post("/reviews/rev-1/submit").send({});
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.reviewRequestItem.update).toHaveBeenCalledWith({
+      where: { id: "item-1" },
+      data: { pinnedVersion: 5, priorReviewStatus: "approved" },
+    });
+    expect(mockPrisma.reviewRequestItem.update).toHaveBeenCalledWith({
+      where: { id: "item-2" },
+      data: { pinnedVersion: 3, priorReviewStatus: "rejected" },
+    });
+    // Only the not-yet-approved requirement moves to awaiting review.
+    expect(mockPrisma.requirement.updateMany).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.requirement.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["req-2"] } },
+      data: { reviewStatus: "draft" },
+    });
   });
 
   it("409s when the submit loses to a concurrent status change (guarded write)", async () => {
@@ -814,7 +853,15 @@ describe("POST /reviews/:reviewId/decision", () => {
 
 describe("POST /reviews/:reviewId/withdraw", () => {
   it("lets the requester withdraw an in_review review back to draft", async () => {
-    mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview());
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(
+      makeReview({
+        items: [
+          makeItem({ id: "item-1", requirementId: "req-1", priorReviewStatus: "rejected" }),
+          makeItem({ id: "item-2", requirementId: "req-2", priorReviewStatus: "approved" }),
+          makeItem({ id: "item-3", requirementId: "req-3", priorReviewStatus: null }),
+        ],
+      }),
+    );
 
     const res = await request(app).post("/reviews/rev-1/withdraw").send({});
 
@@ -824,9 +871,16 @@ describe("POST /reviews/:reviewId/withdraw", () => {
       where: { id: "rev-1", status: "in_review" },
       data: expect.objectContaining({ status: "draft", decidedAt: null }),
     });
+    // #989 — the prior status is restored, guarded on the draft the submit
+    // left; the approved requirement was never moved, so is not written.
+    expect(mockPrisma.requirement.updateMany).toHaveBeenCalledTimes(2);
     expect(mockPrisma.requirement.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ["req-1"] } },
-      data: { reviewStatus: "draft" },
+      where: { id: { in: ["req-1"] }, reviewStatus: "draft" },
+      data: { reviewStatus: "rejected" },
+    });
+    expect(mockPrisma.requirement.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["req-3"] }, reviewStatus: "draft" },
+      data: { reviewStatus: null },
     });
     expect(auditRows()).toContainEqual(
       expect.objectContaining({ action: "review.withdraw", inTx: true }),
@@ -878,6 +932,20 @@ describe("POST /reviews/:reviewId/withdraw", () => {
 });
 
 describe("POST /reviews/:reviewId/close", () => {
+  it("#989 — closing a review mid-review restores the prior statuses", async () => {
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(
+      makeReview({ items: [makeItem({ priorReviewStatus: "deferred" })] }),
+    );
+
+    const res = await request(app).post("/reviews/rev-1/close").send({});
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.requirement.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["req-1"] }, reviewStatus: "draft" },
+      data: { reviewStatus: "deferred" },
+    });
+  });
+
   it("closes a review without touching requirement reviewStatus", async () => {
     mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status: "approved" }));
 
