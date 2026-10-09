@@ -51,6 +51,13 @@ interface GithubRestIssue {
   pull_request?: unknown;
 }
 
+/** Prefix match that, for a word-character ending, requires a word boundary after it. */
+function startsWithPrefix(lowerTitle: string, lowerPrefix: string): boolean {
+  if (!lowerTitle.startsWith(lowerPrefix)) return false;
+  if (!/\w$/.test(lowerPrefix)) return true;
+  return !/^\w/.test(lowerTitle.slice(lowerPrefix.length));
+}
+
 /**
  * Issue #1006 — match a title against the filter's `titlePrefixes`
  * (case-insensitive, after trimming) and strip the matched prefix plus any
@@ -67,7 +74,7 @@ export function stripTitlePrefix(
   const lower = trimmed.toLowerCase();
   const match = prefixes
     .map((p) => p.trim())
-    .filter((p) => p.length > 0 && lower.startsWith(p.toLowerCase()))
+    .filter((p) => p.length > 0 && startsWithPrefix(lower, p.toLowerCase()))
     .sort((a, b) => b.length - a.length)[0];
   if (match === undefined) return null;
   const rest = trimmed

@@ -44,7 +44,7 @@ export function ImportedRequirementsPicker({
   if (items.length === 0) return null;
 
   const max = options.data?.maxSelectable ?? 0;
-  const needle = filter.trim().toLowerCase();
+  const needle = filter.trim().replace(/^#/, "").toLowerCase();
   const visible = needle
     ? items.filter(
         (i) => i.title.toLowerCase().includes(needle) || (i.externalId ?? "").includes(needle),

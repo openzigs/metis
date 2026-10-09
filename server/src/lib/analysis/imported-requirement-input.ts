@@ -30,6 +30,15 @@ function oneLine(title: string): string {
   return title.replace(/\s+/g, " ").trim();
 }
 
+/** True when the first blank-line-separated block is 2+ bullet / numbered lines. */
+function startsWithBulletList(text: string): boolean {
+  const lines = (text.split(/\n\s*\n/)[0] ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return lines.length > 1 && lines.every((l) => /^(?:[-*+]|\d+[.)])\s+/.test(l));
+}
+
 /**
  * Compose the run's new-requirements text from the selected imported items
  * (leading, one bullet each) plus any free text the user also typed, and the
@@ -44,7 +53,16 @@ export function composeImportedRequirementInput(
   const typed = extraInstructions?.trim() ?? "";
   // The imported block LEADS: a bullet list that follows a stated requirement is
   // folded into it as detail (#1136), so the user's text must come after.
-  const text = typed.length > 0 ? `${bullets}\n\n${typed}` : bullets;
+  // A lone imported bullet is a ONE-line block, which the splitter reads as a stated
+  // requirement (a list needs 2+ lines), so a typed bullet LIST right after it would be
+  // folded into NR-1 as detail. A bare heading between them resets that state, and a
+  // heading only titles non-list blocks, so the typed list is unaffected.
+  const text =
+    typed.length === 0
+      ? bullets
+      : items.length === 1 && startsWithBulletList(typed)
+        ? `${bullets}\n\n## Requirements\n\n${typed}`
+        : `${bullets}\n\n${typed}`;
   if (text.length >= MAX_EXTRA_INSTRUCTIONS) {
     throw new AppError(
       400,

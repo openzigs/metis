@@ -70,6 +70,21 @@ describe("composeImportedRequirementInput (#1006)", () => {
     });
   });
 
+  it("keeps a typed bullet list as separate requirements after a single imported item", async () => {
+    const typed = "- Export OPML\n- Import OPML";
+    const { extraInstructions, sourceRequirements } = composeImportedRequirementInput(
+      [MINIFLUX[0]],
+      typed,
+    );
+    const { candidates } = await extractNewRequirementCandidatesWithAccount(extraInstructions, 25);
+    expect(candidates.map((c) => c.text)).toEqual([
+      MINIFLUX[0].title,
+      "Export OPML",
+      "Import OPML",
+    ]);
+    expect(sourceRequirements.map((s) => s.candidateId)).toEqual(["NR-1"]);
+  });
+
   it("keeps a multi-line title on one bullet", () => {
     const { extraInstructions } = composeImportedRequirementInput([item(1, "Star\n  an entry")]);
     expect(extraInstructions).toBe("- Star an entry");

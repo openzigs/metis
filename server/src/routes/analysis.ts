@@ -28,6 +28,7 @@ import {
   publishFindingSchema,
   findingIssueDraftSchema,
   type AnalysisSpecialistAgentKey,
+  MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -357,7 +358,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
   // and how many one run analyses individually.
   projectScoped.get(
     "/imported-requirements",
-    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting.
+    // Per-IP (runs after the router-level auth): CodeQL js/missing-rate-limiting.
     importedRequirementsRateLimiter,
     requireAuth,
     requirePermission("analysis.read"),
@@ -367,7 +368,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       res.json(
         ok({
           items: await listImportedRequirements(projectId),
-          maxSelectable: resolveNewRequirementCandidateCap(),
+          maxSelectable: Math.min(
+            resolveNewRequirementCandidateCap(),
+            MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS,
+          ),
         }),
       );
     },

@@ -168,6 +168,17 @@ describe("GET /imported-requirements (#1006)", () => {
     expect(res.body.data.items.map((i: { id: string }) => i.id)).toEqual([ID(1), ID(2)]);
     expect(res.body.data.maxSelectable).toBe(8);
   });
+
+  it("never offers more picks than the per-analysis schema accepts, even if the operator cap is higher", async () => {
+    const { getConfigService } = await import("../lib/config/config-service.js");
+    const spy = vi.spyOn(getConfigService(), "getNumber").mockReturnValue(100);
+    try {
+      const res = await request(app).get("/api/projects/proj-a/analyses/imported-requirements");
+      expect(res.body.data.maxSelectable).toBe(25);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("POST / with importedRequirementIds (#1006)", () => {

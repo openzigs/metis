@@ -313,6 +313,13 @@ describe("stripTitlePrefix (#1006)", () => {
     expect(stripTitlePrefix("[Proposal]: X", ["[Feature]"])).toBeNull();
   });
 
+  it("does not match a word-character prefix in the middle of a word", () => {
+    expect(stripTitlePrefix("Bugfix for login", ["Bug"])).toBeNull();
+    expect(stripTitlePrefix("Feature request: X", ["Feat"])).toBeNull();
+    expect(stripTitlePrefix("Bug: login", ["Bug"])).toEqual({ title: "login" });
+    expect(stripTitlePrefix("Bug", ["Bug"])).toEqual({ title: "Bug" });
+  });
+
   it("keeps a title that is nothing but the prefix", () => {
     expect(stripTitlePrefix("[Feature]:", ["[Feature]"])).toEqual({ title: "[Feature]:" });
   });
