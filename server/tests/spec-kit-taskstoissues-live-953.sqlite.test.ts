@@ -37,6 +37,7 @@ const { writeFeatureArtifact } = await import("../src/lib/spec-kit/feature-artif
 const { __setPublishOctokitFactory, __resetPublishOctokitCache } =
   await import("../src/lib/publishing/octokit-factory.js");
 const { audit } = await import("../src/lib/audit/audit-service.js");
+type ClearOut = Awaited<ReturnType<typeof clearStuckTasksExport>>;
 
 const MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
 const USER = "u953";
@@ -68,6 +69,20 @@ interface Call {
 
 type Err = Error & { status?: number; statusCode?: number; code?: string };
 
+/** The token's GitHub user, who files the export's issues. */
+const BOT = "metis-export-bot";
+
+interface FakeIssue {
+  id: number;
+  number: number;
+  title: string;
+  body: string;
+  html_url: string;
+  user: { login: string };
+  created_at: string;
+  updated_at: string;
+}
+
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#953 — live Spec Kit issue export (real SQLite)",
   () => {
@@ -78,26 +93,45 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let respond: (c: Call) => { status: number; data: unknown } | undefined = () => undefined;
     let nextIssue = 100;
     /** #962 — the issues the fake GitHub holds, for the reconcile list call. */
-    const filed: Array<{
-      id: number;
-      number: number;
-      title: string;
-      body: string;
-      html_url: string;
-    }> = [];
+    const filed: FakeIssue[] = [];
+    /** #962 — the token's GitHub login, served by `GET /user`. */
+    let botLogin = BOT;
+    /** #962 — a fake that ignores `creator=`, to prove the client checks `user.login` too. */
+    let ignoreCreatorFilter = false;
     /** File an issue on the fake GitHub, as a successful POST does. */
-    function fileIssue(c: Call) {
+    function fileIssue(c: Call, opts: { by?: string; at?: Date; updatedAt?: Date } = {}) {
       nextIssue += 1;
       const d = c.data as { title: string; body: string };
-      const issue = {
+      const at = (opts.at ?? new Date()).toISOString();
+      const issue: FakeIssue = {
         id: 9_000 + nextIssue,
         number: nextIssue,
         title: d.title,
         body: d.body,
         html_url: `https://github.com/openzigs/flux-v2/issues/${nextIssue}`,
+        user: { login: opts.by ?? botLogin },
+        created_at: at,
+        updated_at: (opts.updatedAt ?? opts.at ?? new Date()).toISOString(),
       };
       filed.push(issue);
       return issue;
+    }
+    /**
+     * `GET /repos/{o}/{r}/issues` as GitHub serves it: `creator`, `since`
+     * (updated at or after), `sort=created&direction=asc`, `per_page`, `page`.
+     */
+    function listIssues(url: string): FakeIssue[] {
+      const q = new URL(url, "https://api.github.com").searchParams;
+      const since = q.get("since") ? Date.parse(q.get("since")!) : -Infinity;
+      const creator = q.get("creator");
+      const perPage = Number(q.get("per_page") ?? 30);
+      const page = Number(q.get("page") ?? 1);
+      const asc = q.get("direction") === "asc";
+      const rows = filed
+        .filter((i) => Date.parse(i.updated_at) >= since)
+        .filter((i) => ignoreCreatorFilter || !creator || i.user.login === creator)
+        .sort((a, b) => (Date.parse(a.created_at) - Date.parse(b.created_at)) * (asc ? 1 : -1));
+      return rows.slice((page - 1) * perPage, page * perPage);
     }
     const listCalls = () => calls.filter((c) => c.method === "GET" && c.url.includes("/issues?"));
 
@@ -198,7 +232,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           } else if (args.method === "POST" && u.endsWith("/issues")) {
             data = fileIssue(call);
           } else if (args.method === "GET" && u.includes("/issues?")) {
-            data = u.includes("&page=1") ? filed : [];
+            data = listIssues(u);
+          } else if (args.method === "GET" && u === "/user") {
+            data = { login: botLogin };
           }
           return { status: 201, headers: {}, data: data as T };
         },
@@ -209,6 +245,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       calls.length = 0;
       filed.length = 0;
       nextIssue = 100;
+      botLogin = BOT;
+      ignoreCreatorFilter = false;
       respond = () => undefined;
       __resetPublishOctokitCache();
       vi.mocked(audit).mockClear();
@@ -534,7 +572,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     async function plantClaim(
       taskId: string,
-      claim: { claimedAt: Date | null; claimRunId: string | null },
+      claim: { claimedAt: Date | null; claimRunId: string | null; firstClaimedAt?: Date | null },
     ) {
       await db.specKitTaskExport.create({
         data: {
@@ -555,17 +593,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
       });
     /** An issue an earlier, interrupted run filed for `taskId` of `slug`. */
-    function preFiled(taskId: string, title: string, slug = SLUG) {
-      return fileIssue({
-        method: "POST",
-        url: "/repos/openzigs/flux-v2/issues",
-        data: {
-          title,
-          body: `Source: specs/${slug}/tasks.md#${taskId}\n\nParallelizable: no\n`,
+    function preFiled(
+      taskId: string,
+      title: string,
+      slug = SLUG,
+      opts: { by?: string; at?: Date; updatedAt?: Date } = {},
+    ) {
+      return fileIssue(
+        {
+          method: "POST",
+          url: "/repos/openzigs/flux-v2/issues",
+          data: {
+            title,
+            body: `Source: specs/${slug}/tasks.md#${taskId}\n\nParallelizable: no\n`,
+          },
+          token: TOKEN,
+          baseUrl: "https://api.github.com",
         },
-        token: TOKEN,
-        baseUrl: "https://api.github.com",
-      });
+        opts,
+      );
     }
 
     it("a definitive GitHub refusal (4xx) releases the claim, so a retry creates the task", async () => {
@@ -742,7 +788,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const rows = await db.specKitTaskExport.findMany();
       expect(rows.map((r) => [r.taskId, r.issueNumber])).toEqual([["T01", 101]]);
       expect(writes()).toEqual([]);
-      expect(calls.every((c) => c.url.startsWith("/repos/"))).toBe(true);
+      expect(calls.every((c) => c.url.startsWith("/repos/") || c.url === "/user")).toBe(true);
       expect(vi.mocked(audit)).toHaveBeenCalledWith(
         expect.objectContaining({
           action: "speckit.tasks_export_claims_cleared",
@@ -790,6 +836,290 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(calls).toEqual([]);
     });
 
+    // ── #962 cycle 2: takeover keeps the first claim time; creator; races ──────
+
+    const ABANDONED = () => ({
+      claimedAt: minutesAgo(30),
+      firstClaimedAt: minutesAgo(30),
+      claimRunId: "dead-run",
+    });
+    const failLookups = () => {
+      respond = (c) =>
+        c.method === "GET" && c.url.includes("/issues?") ? { status: 503, data: {} } : undefined;
+    };
+    const postedTitles = () => issuePosts().map((c) => (c.data as { title: string }).title);
+
+    for (const [kind, legacy] of [
+      ["", false],
+      [" (a claim written before firstClaimedAt existed)", true],
+    ] as const) {
+      it(`a lookup that fails after a takeover keeps the first claim time; the retry adopts the first run's issue${kind}`, async () => {
+        const first = minutesAgo(60);
+        await plantClaim("T01", {
+          claimedAt: first,
+          firstClaimedAt: legacy ? null : first,
+          claimRunId: "dead-run",
+        });
+        // Filed — and last updated — by the first run, an hour ago.
+        preFiled("T01", "[T01] Build A", SLUG, { at: first });
+        failLookups();
+        await expect(publish(await previewTasksExport(base()))).rejects.toMatchObject({
+          code: "GITHUB_REQUEST_FAILED",
+        });
+        const kept = await db.specKitTaskExport.findFirstOrThrow({
+          where: { taskId: "T01" },
+        });
+        expect(kept.claimRunId).toBeNull();
+        expect(kept.firstClaimedAt?.getTime()).toBe(first.getTime());
+
+        respond = () => undefined;
+        calls.length = 0;
+        const out = await publish(await previewTasksExport(base()));
+        expect(out.created.map((c) => [c.taskId, c.state, c.issueNumber])).toEqual([
+          ["T01", "adopted", 101],
+          ["T02", "new", 102],
+        ]);
+        expect(postedTitles()).toEqual(["[T02] Build B"]);
+        expect(filed).toHaveLength(2);
+      });
+    }
+
+    it("Clear stuck export: a failed lookup after a takeover keeps the first claim time; the retry adopts", async () => {
+      const first = minutesAgo(60);
+      await plantClaim("T01", {
+        claimedAt: first,
+        firstClaimedAt: first,
+        claimRunId: "dead-run",
+      });
+      preFiled("T01", "[T01] Build A", SLUG, { at: first });
+      failLookups();
+      await expect(clearStuckTasksExport(base())).rejects.toMatchObject({
+        code: "GITHUB_REQUEST_FAILED",
+      });
+      respond = () => undefined;
+      const out = await clearStuckTasksExport(base());
+      expect(out).toMatchObject({
+        adopted: [{ taskId: "T01", issueNumber: 101 }],
+        cleared: [],
+      });
+      expect(issuePosts()).toEqual([]);
+    });
+
+    it("a failed lookup on the export path releases ownership: the next run reconciles at once, not after the TTL", async () => {
+      await plantClaim("T01", ABANDONED());
+      preFiled("T01", "[T01] Build A");
+      failLookups();
+      await expect(publish(await previewTasksExport(base()))).rejects.toMatchObject({
+        code: "GITHUB_REQUEST_FAILED",
+      });
+      respond = () => undefined;
+      const plan = await previewTasksExport(base());
+      expect(plan.created.map((c) => c.state)).toEqual(["reconcile", "new"]);
+      const out = await publish(plan);
+      expect(out.created.map((c) => [c.state, c.issueNumber])).toEqual([
+        ["adopted", 101],
+        ["new", 102],
+      ]);
+    });
+
+    it("searches only the token user's issues, and does not adopt a third party's look-alike (#962)", async () => {
+      await plantClaim("T01", ABANDONED());
+      // Older than the claim but recently updated, same title prefix and Source line.
+      preFiled("T01", "[T01] Build A", SLUG, {
+        by: "mallory",
+        at: minutesAgo(120),
+        updatedAt: new Date(),
+      });
+      const out = await publish(await previewTasksExport(base()));
+      expect(out.created.map((c) => [c.taskId, c.state, c.issueNumber])).toEqual([
+        ["T01", "new", 102],
+        ["T02", "new", 103],
+      ]);
+      expect(calls.filter((c) => c.url === "/user")).toHaveLength(1);
+      expect(listCalls()).toHaveLength(1);
+      expect(listCalls()[0]!.url).toContain(`&creator=${BOT}&`);
+    });
+
+    it("checks the issue's author itself, even when GitHub ignores the creator filter (#962)", async () => {
+      ignoreCreatorFilter = true;
+      await plantClaim("T01", ABANDONED());
+      preFiled("T01", "[T01] Build A", SLUG, {
+        by: "mallory",
+        at: minutesAgo(120),
+        updatedAt: new Date(),
+      });
+      const out = await publish(await previewTasksExport(base()));
+      expect(out.created[0]).toMatchObject({
+        taskId: "T01",
+        state: "new",
+        issueNumber: 102,
+      });
+    });
+
+    it("refuses to reconcile, keeping the claim, when the token's user cannot be read (#962)", async () => {
+      await plantClaim("T01", ABANDONED());
+      respond = (c) => (c.url === "/user" ? { status: 401, data: {} } : undefined);
+      await expect(publish(await previewTasksExport(base()))).rejects.toMatchObject({
+        code: "GITHUB_REQUEST_FAILED",
+      });
+      expect(issuePosts()).toEqual([]);
+      expect(listCalls()).toEqual([]);
+      const rows = await db.specKitTaskExport.findMany();
+      expect(rows.map((r) => [r.taskId, r.issueNumber, r.claimRunId])).toEqual([["T01", 0, null]]);
+    });
+
+    it("finds the first run's issue on the second page of the list (#962)", async () => {
+      const first = minutesAgo(30);
+      await plantClaim("T01", {
+        claimedAt: first,
+        firstClaimedAt: first,
+        claimRunId: "dead-run",
+      });
+      for (let i = 0; i < 100; i++) {
+        preFiled(`T${500 + i}`, `[T${500 + i}] filler`, SLUG, { at: first });
+      }
+      preFiled("T01", "[T01] Build A", SLUG, {
+        at: new Date(first.getTime() + 1_000),
+      });
+      const out = await publish(await previewTasksExport(base()));
+      expect(out.created[0]).toMatchObject({
+        taskId: "T01",
+        state: "adopted",
+        issueNumber: 201,
+      });
+      expect(listCalls().map((c) => new URL(c.url, "https://x").searchParams.get("page"))).toEqual([
+        "1",
+        "2",
+      ]);
+      expect(postedTitles()).toEqual(["[T02] Build B"]);
+    });
+
+    it("counts a reconcile task toward SPECKIT_EXPORT_MAX_ISSUES (422 before any GitHub call)", async () => {
+      await plantClaim("T01", ABANDONED());
+      process.env.SPECKIT_EXPORT_MAX_ISSUES = "1";
+      const plan = await previewTasksExport(base());
+      calls.length = 0;
+      await expect(publish(plan)).rejects.toMatchObject({
+        status: 422,
+        code: "SPECKIT_EXPORT_TOO_LARGE",
+      });
+      expect(listCalls()).toEqual([]);
+      expect(issuePosts()).toEqual([]);
+    });
+
+    it("refuses (409) when a reconcile task was resolved between the dry run and the live run", async () => {
+      await plantClaim("T01", ABANDONED());
+      const plan = await previewTasksExport(base());
+      expect(plan.created.map((c) => c.state)).toEqual(["reconcile", "new"]);
+      await db.specKitTaskExport.updateMany({
+        where: { taskId: "T01" },
+        data: { issueNumber: 77, claimRunId: null },
+      });
+      await expect(publish(plan)).rejects.toMatchObject({
+        status: 409,
+        code: "SPECKIT_EXPORT_PLAN_CHANGED",
+      });
+      expect(issuePosts()).toEqual([]);
+    });
+
+    it("refuses (409) when an in-progress task finished between the dry run and the live run", async () => {
+      await plantClaim("T01", { claimedAt: new Date(), claimRunId: "live-run" });
+      const plan = await previewTasksExport(base());
+      expect(plan.created.map((c) => c.state)).toEqual(["in_progress", "new"]);
+      await db.specKitTaskExport.updateMany({
+        where: { taskId: "T01" },
+        data: { issueNumber: 77, claimRunId: null },
+      });
+      await expect(publish(plan)).rejects.toMatchObject({
+        status: 409,
+        code: "SPECKIT_EXPORT_PLAN_CHANGED",
+      });
+      expect(issuePosts()).toEqual([]);
+    });
+
+    /**
+     * Run `runs` concurrently, holding each one's compare-and-swap takeover (an
+     * `updateMany` that sets a run id) until every run has reached it. Keyed on
+     * the write, not the predicate, so removing the predicate still races.
+     */
+    async function raceTakeovers<T>(runs: Array<() => Promise<T>>) {
+      let arrived = 0;
+      let release!: () => void;
+      const barrier = new Promise<void>((r) => (release = r));
+      const rows = db.specKitTaskExport;
+      state.db = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop !== "specKitTaskExport") return Reflect.get(target, prop, receiver);
+          return new Proxy(rows, {
+            get(t, key) {
+              const v = Reflect.get(t, key, t) as unknown;
+              if (typeof v !== "function") return v;
+              if (key !== "updateMany") return v.bind(t);
+              return async (args: { data: { claimRunId?: string | null } }) => {
+                if (typeof args.data.claimRunId === "string") {
+                  arrived += 1;
+                  if (arrived >= runs.length) release();
+                  await barrier;
+                }
+                return (v as (a: unknown) => Promise<unknown>).call(t, args);
+              };
+            },
+          });
+        },
+      });
+      try {
+        const results = await Promise.allSettled(runs.map((r) => r().finally(() => release())));
+        return { results, arrived };
+      } finally {
+        state.db = db;
+      }
+    }
+
+    it("two live runs racing to take over one abandoned claim: one wins, the other gets 409, one create per task", async () => {
+      await plantClaim("T01", ABANDONED());
+      const plan = await previewTasksExport(base());
+      expect(plan.created.map((c) => c.state)).toEqual(["reconcile", "new"]);
+      const { results, arrived } = await raceTakeovers([() => publish(plan), () => publish(plan)]);
+      expect(arrived).toBe(2);
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      const loser = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+      expect(loser.reason).toMatchObject({
+        status: 409,
+        code: "SPECKIT_EXPORT_IN_PROGRESS",
+      });
+      // Only the winner looked the task up, and GitHub saw each task created once.
+      expect(listCalls()).toHaveLength(1);
+      expect(postedTitles()).toEqual(["[T01] Build A", "[T02] Build B"]);
+      const rows = await db.specKitTaskExport.findMany({
+        orderBy: { taskId: "asc" },
+      });
+      expect(rows.map((r) => [r.taskId, r.issueNumber])).toEqual([
+        ["T01", 101],
+        ["T02", 102],
+      ]);
+    });
+
+    it("two Clear-stuck runs racing on one abandoned claim: one resolves it, the other reports it in progress", async () => {
+      await plantClaim("T01", ABANDONED());
+      preFiled("T01", "[T01] Build A");
+      const { results, arrived } = await raceTakeovers([
+        () => clearStuckTasksExport(base()),
+        () => clearStuckTasksExport(base()),
+      ]);
+      expect(arrived).toBe(2);
+      const outs = results.map((r) => (r as PromiseFulfilledResult<ClearOut>).value);
+      expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+      const winners = outs.filter((o) => o.adopted.length === 1);
+      const losers = outs.filter((o) => o.inProgress.includes("T01"));
+      expect(winners).toHaveLength(1);
+      expect(losers).toHaveLength(1);
+      expect(losers[0]!.adopted).toEqual([]);
+      expect(losers[0]!.cleared).toEqual([]);
+      expect(listCalls()).toHaveLength(1);
+      expect(issuePosts()).toEqual([]);
+      const rows = await db.specKitTaskExport.findMany();
+      expect(rows.map((r) => [r.taskId, r.issueNumber])).toEqual([["T01", 101]]);
+    });
     // ── #953: every refusal of a live export is audited, plan stage included ──
 
     const DUMMY_PLAN = { tasksVersion: 1, digest: "0".repeat(64) };

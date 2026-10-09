@@ -567,8 +567,9 @@ async function planTasksExport(
  * after an ambiguous failure); null means the task has no row yet.
  *
  * The claim is taken before GitHub is called — a unique insert for a new task,
- * a compare-and-swap on (`claimedAt`, `claimRunId`) for a reconcilable one —
- * so exactly one run acts on a task. Then, for a reconcilable claim, the
+ * a compare-and-swap on the lease (`claimedAt`, `claimRunId`) for a
+ * reconcilable one — so exactly one run acts on a task. A takeover moves the
+ * lease but never `firstClaimedAt`, which the search starts from. Then, for a reconcilable claim, the
  * target is searched for the issue first. On a GitHub failure the claim is
  * released only when GitHub definitely created nothing (a 4xx); on an
  * ambiguous one (network error, 5xx, malformed 2xx) it is kept, ownerless, so
@@ -605,7 +606,8 @@ async function createOrAdopt(opts: {
         claimRunId: existing.claimRunId,
         claimedAt: existing.claimedAt,
       },
-      data: { claimRunId: runId, claimedAt: new Date() },
+      // The lease moves to this run; the first claim time never does (#962).
+      data: { claimRunId: runId, claimedAt: new Date(), firstClaimedAt: firstClaimOf(existing) },
     });
     if (taken.count !== 1) throw inProgress();
     let found: IssueCreatedResponse | null;
@@ -614,7 +616,7 @@ async function createOrAdopt(opts: {
       found = await client.findTaskIssue!(repo.owner, repo.name, {
         taskId: task.id,
         featureSlug: opts.featureSlug,
-        since: existing.claimedAt ?? existing.createdAt ?? new Date(0),
+        since: firstClaimOf(existing),
       });
     } catch (err) {
       await releaseClaim(mine);
@@ -633,6 +635,7 @@ async function createOrAdopt(opts: {
       return { ...found, adopted: true };
     }
   } else {
+    const claimed = new Date();
     try {
       await prisma.specKitTaskExport.create({
         data: {
@@ -640,7 +643,8 @@ async function createOrAdopt(opts: {
           issueNumber: 0,
           repoOwner: repo.owner,
           repoName: repo.name,
-          claimedAt: new Date(),
+          claimedAt: claimed,
+          firstClaimedAt: claimed,
           claimRunId: runId,
         },
       });
@@ -782,7 +786,7 @@ export async function clearStuckTaskExports(
           claimRunId: claim.claimRunId,
           claimedAt: claim.claimedAt,
         },
-        data: { claimRunId: runId, claimedAt: new Date() },
+        data: { claimRunId: runId, claimedAt: new Date(), firstClaimedAt: firstClaimOf(claim) },
       });
       if (taken.count !== 1) {
         out.inProgress.push(claim.taskId);
@@ -793,7 +797,7 @@ export async function clearStuckTaskExports(
         found = await input.client.findTaskIssue(repo.owner, repo.name, {
           taskId: claim.taskId,
           featureSlug: feature.slug,
-          since: claim.claimedAt ?? claim.createdAt ?? new Date(0),
+          since: firstClaimOf(claim),
         });
       } catch (err) {
         await releaseClaim(mine);
@@ -879,8 +883,18 @@ interface ExportRow {
   repoOwner: string;
   repoName: string;
   claimedAt: Date | null;
+  firstClaimedAt?: Date | null;
   claimRunId: string | null;
   createdAt?: Date;
+}
+
+/**
+ * #962 — when the task was first claimed: the time reconciliation searches
+ * GitHub from. Never the lease (`claimedAt`), which a takeover moves; a claim
+ * from before `firstClaimedAt` existed falls back to its lease, then its row.
+ */
+function firstClaimOf(row: ExportRow): Date {
+  return row.firstClaimedAt ?? row.claimedAt ?? row.createdAt ?? new Date(0);
 }
 
 /**

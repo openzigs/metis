@@ -27,7 +27,9 @@
  *    is kept on an ambiguous failure (network error, 5xx, malformed 2xx) and
  *    expires after `SPECKIT_EXPORT_CLAIM_TTL_MS`; either way the next run, or
  *    "Clear stuck export" ({@link clearStuckTasksExport}), looks for the issue
- *    on the guarded target before creating it, and adopts it when found.
+ *    on the guarded target before creating it, and adopts it when found —
+ *    only an issue the token's own user filed, updated since the task was
+ *    first claimed (a takeover never moves that time).
  * Rate limiting is applied at the route (`spec-kit-export-rate-limit.ts`).
  */
 import { z } from "zod";
@@ -315,6 +317,33 @@ export function createGitHubIssueClient(octokit: PublishOctokitLike): IssueClien
     return data.id;
   }
 
+  /**
+   * #962 — the token's own login, read once per client (one client per run).
+   * Reconciliation adopts only issues this user filed; a token whose user
+   * cannot be read refuses the reconcile rather than search everyone's issues.
+   */
+  let login: Promise<string> | null = null;
+  function tokenLogin(step: string): Promise<string> {
+    const pending = (login ??= (async () => {
+      let data: { login?: unknown };
+      try {
+        data =
+          (await octokit.request<{ login?: unknown }>({ method: "GET", url: "/user" })).data ?? {};
+      } catch (err) {
+        throw githubFailure(step, statusOf(err), err, RECONCILE_HINT);
+      }
+      if (typeof data.login !== "string" || data.login.length === 0) {
+        throw githubFailure(step, 0, undefined, RECONCILE_HINT);
+      }
+      return data.login;
+    })());
+    // A failed lookup is not cached: the next reconcile asks again.
+    pending.catch(() => {
+      if (login === pending) login = null;
+    });
+    return pending;
+  }
+
   return {
     async create(owner, name, req) {
       let data: { id?: unknown; number?: unknown; html_url?: unknown };
@@ -349,6 +378,7 @@ export function createGitHubIssueClient(octokit: PublishOctokitLike): IssueClien
       const prefix = `[${query.taskId}] `;
       const source = `Source: specs/${query.featureSlug}/tasks.md#${query.taskId}`;
       const step = `look for the issue an earlier export of ${query.taskId} may have created`;
+      const me = await tokenLogin(step);
       for (let page = 1; page <= RECONCILE_MAX_PAGES; page++) {
         let data: unknown;
         try {
@@ -357,7 +387,7 @@ export function createGitHubIssueClient(octokit: PublishOctokitLike): IssueClien
               method: "GET",
               url:
                 `${repoPath(owner, name)}/issues?state=all&sort=created&direction=asc` +
-                `&since=${encodeURIComponent(since)}&per_page=${RECONCILE_PAGE_SIZE}&page=${page}`,
+                `&creator=${encodeURIComponent(me)}&since=${encodeURIComponent(since)}&per_page=${RECONCILE_PAGE_SIZE}&page=${page}`,
             })
           ).data;
         } catch (err) {
@@ -366,8 +396,11 @@ export function createGitHubIssueClient(octokit: PublishOctokitLike): IssueClien
         if (!Array.isArray(data)) throw githubFailure(step, 0, undefined, RECONCILE_HINT);
         for (const raw of data as Array<Record<string, unknown> | null>) {
           if (!raw || raw.pull_request) continue;
-          const { number, html_url: url, title, body, id } = raw;
+          const { number, html_url: url, title, body, id, user } = raw;
           if (typeof number !== "number" || typeof url !== "string") continue;
+          // Not the filter alone: an issue someone else filed is never adopted.
+          const author = (user as { login?: unknown } | null | undefined)?.login;
+          if (typeof author !== "string" || author.toLowerCase() !== me.toLowerCase()) continue;
           if (typeof title !== "string" || !title.startsWith(prefix)) continue;
           // The title alone could be another feature's task of the same id.
           if (typeof body !== "string" || !body.split(/\r?\n/).some((l) => l.trim() === source)) {
@@ -397,7 +430,7 @@ export function createGitHubIssueClient(octokit: PublishOctokitLike): IssueClien
   };
 }
 
-/** #962 — reconciliation looks this far before the claim, for clock skew. */
+/** #962 — reconciliation looks this far before the first claim, for clock skew. */
 const RECONCILE_SKEW_MS = 10 * 60_000;
 const RECONCILE_PAGE_SIZE = 100;
 const RECONCILE_MAX_PAGES = 10;
