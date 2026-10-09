@@ -108,6 +108,19 @@ describe("reconcileRequirementCount (#994)", () => {
     expect(reconcileRequirementCount(s, 8)).toBe(s);
   });
 
+  it("leaves subset claims alone (#994 review)", () => {
+    const s = "3 security requirements were identified and 5 functional requirements were derived";
+    expect(reconcileRequirementCount(s, 8)).toBe(s);
+    const one = "3 security requirements were identified.";
+    expect(reconcileRequirementCount(one, 8)).toBe(one);
+  });
+
+  it("leaves a summary with two count claims alone (#994 review)", () => {
+    const s =
+      "Ten requirements were derived; two requirements were identified as already implemented";
+    expect(reconcileRequirementCount(s, 8)).toBe(s);
+  });
+
   it("omits the stored-count line when no count is given", () => {
     render(<AnalysisOutcomeCard status="completed" agentResults={agents(SUMMARY)} />);
     expect(screen.queryByTestId("analysis-outcome-count")).toBeNull();

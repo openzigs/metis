@@ -121,12 +121,21 @@ describe("buildHandoffInstructions", () => {
     expect(r.text.endsWith("stop.")).toBe(true);
   });
 
-  it("is not truncated at exactly the cap", () => {
+  it("is not truncated one under the cap, and never emits text of exactly the cap", () => {
     const headerLength = buildHandoffInstructions(["spec.md"], "x").text.length - 3;
-    const spec = "y".repeat(MAX_EXTRA_INSTRUCTIONS - headerLength - 2);
-    const r = buildHandoffInstructions(["spec.md"], spec);
-    expect(r.text).toHaveLength(MAX_EXTRA_INSTRUCTIONS);
-    expect(r.truncated).toBe(false);
+    const under = buildHandoffInstructions(
+      ["spec.md"],
+      "y".repeat(MAX_EXTRA_INSTRUCTIONS - headerLength - 3),
+    );
+    expect(under.text).toHaveLength(MAX_EXTRA_INSTRUCTIONS - 1);
+    expect(under.truncated).toBe(false);
+    // The server flags length >= cap as truncated, so exactly the cap must be cut.
+    const at = buildHandoffInstructions(
+      ["spec.md"],
+      "y".repeat(MAX_EXTRA_INSTRUCTIONS - headerLength - 2),
+    );
+    expect(at.truncated).toBe(true);
+    expect(at.text.length).toBeLessThan(MAX_EXTRA_INSTRUCTIONS);
   });
 
   it("cuts a spec with no break of its own after the header, never through a surrogate pair", () => {

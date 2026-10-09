@@ -48,12 +48,15 @@ const NUMBER_WORDS = [
 ];
 
 /**
- * `<N> [up to two words] requirement(s) was/were/have been <derived|…>`, where
+ * `<N> [new] requirement(s) was/were/have been <derived|…>`, where
  * N is digits or a number word up to twenty. Only this claim is rewritten; any
- * other number in the summary is the agent's own and left alone.
+ * other number in the summary is the agent's own and left alone. A qualifier
+ * other than "new" ("3 security requirements") marks a subset, not the total,
+ * so it never matches; and a summary with more than one claim is ambiguous, so
+ * it is left as written (the stored-count line below it states the truth).
  */
 const COUNT_CLAIM_RE = new RegExp(
-  `\\b(\\d+|${NUMBER_WORDS.join("|")})(\\s+(?:[\\w-]+\\s+){0,2}?)requirements?(\\s+)(?:was|were|have been|has been)(\\s+(?:derived|identified|synthesi[sz]ed|generated|extracted|produced|created|recorded))\\b`,
+  `\\b(\\d+|${NUMBER_WORDS.join("|")})(\\s+(?:new\\s+)?)requirements?(\\s+)(?:was|were|have been|has been)(\\s+(?:derived|identified|synthesi[sz]ed|generated|extracted|produced|created|recorded))\\b`,
   "gi",
 );
 
@@ -63,6 +66,7 @@ function claimedCount(token: string): number {
 
 /** Correct a summary's derived-requirement count to the number of stored rows. */
 export function reconcileRequirementCount(summary: string, stored: number): string {
+  if ((summary.match(COUNT_CLAIM_RE) ?? []).length !== 1) return summary;
   return summary.replace(
     COUNT_CLAIM_RE,
     (match, n: string, between: string, gap: string, verb: string) => {

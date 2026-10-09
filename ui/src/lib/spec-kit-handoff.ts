@@ -56,7 +56,7 @@ export function buildHandoffInstructions(
   const omitted: string[] = [];
   for (const r of requirements) {
     const block = `\n\n${r.label}: ${r.text}`;
-    if (text.length + block.length <= MAX_EXTRA_INSTRUCTIONS) {
+    if (text.length + block.length < MAX_EXTRA_INSTRUCTIONS) {
       text += block;
       sent.push(r.label);
     } else {
@@ -79,9 +79,10 @@ function unstructured(context: string[], spec: string): HandoffInstructions {
  * header always ends a sentence before the spec, so there is always one.
  */
 function cutAtBoundary(full: string): { text: string; truncated: boolean } {
-  if (full.length <= MAX_EXTRA_INSTRUCTIONS) return { text: full, truncated: false };
-  // One character past the cap, so a sentence end AT the cap is still seen.
-  const room = full.slice(0, MAX_EXTRA_INSTRUCTIONS + 1);
+  if (full.length < MAX_EXTRA_INSTRUCTIONS) return { text: full, truncated: false };
+  // A text of exactly the cap is flagged by the server as truncated
+  // (inputTruncated is `>=`), so the cap itself is not usable.
+  const room = full.slice(0, MAX_EXTRA_INSTRUCTIONS);
   let at = 0;
   for (const m of room.matchAll(/\n|[.!?](?=\s)/g)) at = m.index! + (m[0] === "\n" ? 0 : 1);
   return { text: full.slice(0, at).trimEnd(), truncated: true };
