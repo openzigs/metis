@@ -7,14 +7,21 @@
  * traceability. Re-exports upsert by `(featureSlug, taskId)`.
  *
  * Issue creation goes through a pluggable `IssueClient` so the command is
- * fully testable without a live GitHub. No production GitHub client is wired
- * yet (#784): without an injected client only a dry run is served, and a real
- * run is refused 501 rather than "exporting" to the no-op client and recording
- * every task as issue #0.
+ * fully testable without a live GitHub. Without an injected client only a dry
+ * run is served, and a real run is refused 501 rather than "exporting" to the
+ * no-op client and recording every task as issue #0 (#784). The production
+ * client — vault-bound, target-guarded — is built per request by
+ * `./taskstoissues-github.ts` (#953), which is the only live caller.
+ *
+ * #953 — a dry run returns the `tasks.md` version it read and a `planDigest`
+ * of exactly what a live run would create there. A live run given
+ * `expectedPlan` recomputes both and refuses 409 before creating anything when
+ * either differs, so it files exactly the issues the user previewed.
  *
  * The destination is never the project's analysed `RepoConnection` (#784) —
  * for an analysed open-source project that is someone else's upstream.
  */
+import { createHash, randomUUID } from "node:crypto";
 import { prisma } from "../../prisma.js";
 import { audit } from "../../audit/audit-service.js";
 import { resolveFeatureBySlug } from "../features.js";
@@ -43,6 +50,54 @@ export interface IssueClient {
   ): Promise<IssueCreatedResponse>;
   /** Optional: link `child` as a sub-issue of `parent`. No-op when unsupported. */
   addSubIssue?(repoOwner: string, repoName: string, parent: number, child: number): Promise<void>;
+  /**
+   * #962 — find the issue an earlier run of this task may have created: titled
+   * `[<taskId>] …`, with the task's `Source:` line, updated since `since`. Only
+   * ever called with the run's guarded target. A run with a claim to reconcile
+   * and a client without this is refused rather than risk a duplicate.
+   */
+  findTaskIssue?(
+    repoOwner: string,
+    repoName: string,
+    query: { taskId: string; featureSlug: string; since: Date },
+  ): Promise<IssueCreatedResponse | null>;
+}
+
+/**
+ * #962 — what a run does (dry) or did (live) with a task: `new` creates an
+ * issue; `exported` already has one; `in_progress` is claimed by a live run
+ * still within `SPECKIT_EXPORT_CLAIM_TTL_MS`; `reconcile` is an abandoned or
+ * kept claim a live run will look for on GitHub before creating; `adopted` is
+ * one it found there.
+ */
+export type TaskExportState = "new" | "exported" | "in_progress" | "reconcile" | "adopted";
+
+export const SPECKIT_EXPORT_DEFAULT_CLAIM_TTL_MS = 10 * 60_000;
+
+/** #962 — how long a live run's claim on a task counts as in progress. */
+export function claimTtlMs(): number {
+  const n = Number.parseInt(process.env.SPECKIT_EXPORT_CLAIM_TTL_MS ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : SPECKIT_EXPORT_DEFAULT_CLAIM_TTL_MS;
+}
+
+const NOT_CREATED = Symbol.for("metis.speckit.issueNotCreated");
+
+/**
+ * #962 — mark an issue-client failure as definitive: GitHub answered and
+ * created nothing (a 4xx). Any failure not so marked is ambiguous, and the
+ * task's claim is kept for reconciliation instead of released.
+ */
+export function markIssueNotCreated<E extends object>(err: E): E {
+  Object.defineProperty(err, NOT_CREATED, { value: true });
+  return err;
+}
+
+export function isIssueNotCreated(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as Record<symbol, unknown>)[NOT_CREATED] === true
+  );
 }
 
 export interface TasksToIssuesInput {
@@ -69,6 +124,24 @@ export interface TasksToIssuesInput {
   dryRun?: boolean;
   /** Bypass the tasksGate (audit-emitted high-severity event). */
   force?: boolean;
+  /**
+   * #953 — the dry run this live run must reproduce: the `tasks.md` version it
+   * read and its `planDigest`. A mismatch is refused 409
+   * SPECKIT_EXPORT_PLAN_CHANGED before any issue is created. Ignored on a dry run.
+   */
+  expectedPlan?: { tasksVersion: number; digest: string };
+  /**
+   * #953 — refuse (422 SPECKIT_EXPORT_TOO_LARGE) a live run that would create
+   * more issues than this. Ignored on a dry run, which only lists them.
+   */
+  maxCreates?: number;
+  /** #962 — the id this live run claims tasks under. Generated when omitted. */
+  runId?: string;
+  /**
+   * #953 — reported as `publishAvailable`. Defaults to whether a client was
+   * injected; the route's dry run says true, since its live run builds one.
+   */
+  publishAvailable?: boolean;
 }
 
 export interface TasksToIssuesResult {
@@ -80,16 +153,59 @@ export interface TasksToIssuesResult {
     issueNumber: number;
     url: string;
     upserted: boolean;
+    /** #962 — see {@link TaskExportState}. */
+    state: TaskExportState;
   }>;
   repo: { owner: string; name: string };
   parentEpicNumber: number | null;
   /**
-   * #936 — whether a non-dry run of this call would reach a real issue client.
-   * False until a production client is wired (#784), so a UI can say so
-   * instead of offering a Publish that is refused 501.
+   * #936 — whether a non-dry run of this call would reach a real issue client,
+   * so a UI can say so instead of offering a Publish that is refused 501.
    */
   publishAvailable: boolean;
+  /** #953 — the `tasks.md` version this run read. */
+  tasksVersion: number;
+  /**
+   * #953 — SHA-256 over the project, feature, `tasks.md` version, target repo
+   * and the ordered titles a live run would create. A live run must present
+   * the dry run's value as `expectedPlan.digest`.
+   */
+  planDigest: string;
   message: string;
+}
+
+/**
+ * #953 — the digest that binds a live run to its dry run. Not a secret and not
+ * an authenticator: it lets the server prove the live run creates exactly the
+ * titles that were previewed, against the same target, from the same version.
+ */
+export function computePlanDigest(plan: {
+  projectId: string;
+  featureSlug: string;
+  tasksVersion: number;
+  repo: { owner: string; name: string };
+  titles: string[];
+  /** #962 — titles of claimed tasks a live run reconciles (adopts or creates). */
+  reconcile?: string[];
+  /** #962 — titles of tasks another run is exporting. */
+  inProgress?: string[];
+  /** The epic new issues are linked under; a different one is a different plan. */
+  parentEpicNumber?: number | null;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        plan.projectId,
+        plan.featureSlug,
+        plan.tasksVersion,
+        `${plan.repo.owner}/${plan.repo.name}`.toLowerCase(),
+        plan.titles,
+        plan.parentEpicNumber ?? null,
+        plan.reconcile ?? [],
+        plan.inProgress ?? [],
+      ]),
+    )
+    .digest("hex");
 }
 
 /** The placeholder a dry run reports for an issue it would create. */
@@ -104,112 +220,72 @@ export const noopIssueClient: IssueClient = {
 };
 
 export async function runTasksToIssues(input: TasksToIssuesInput): Promise<TasksToIssuesResult> {
-  const feature = await resolveFeatureBySlug(input.projectId, input.featureSlug);
-  if (!feature) {
-    throw new SpecKitArtifactError(
-      404,
-      "SPECKIT_FEATURE_NOT_FOUND",
-      `Feature not found: ${input.featureSlug}`,
-    );
+  // #953 — every refusal of a live export is audited, the planning stage's
+  // included (404, the tasks gate and tasks.md 412s, a cycle, a claim in
+  // progress, a changed plan, an oversized one). A failure part-way through
+  // creating issues is audited separately, below, as `tasks_export_failed`.
+  const live = !input.dryRun && Boolean(input.client);
+  const seen: { featureId: string | null } = { featureId: null };
+  let planned: Awaited<ReturnType<typeof planTasksExport>>;
+  try {
+    planned = await planTasksExport(input, seen);
+  } catch (err) {
+    if (live) {
+      auditTasksExportRefused({
+        actorId: input.actorId ?? null,
+        projectId: input.projectId,
+        featureSlug: input.featureSlug,
+        featureId: seen.featureId,
+        err,
+      });
+    }
+    throw err;
   }
-  // Gate: tasks.md must exist (412).
-  await requireGate({
-    featureId: feature.id,
-    gate: "tasksGate",
-    force: input.force ?? false,
-    actorId: input.actorId ?? null,
-    command: "speckit.taskstoissues",
-  });
-
-  const tasksArt = await getFeatureArtifact(feature.id, "tasks.md");
-  if (!tasksArt) {
-    // #786 — `x-speckit-force` bypasses the phase gate, but no header can export
-    // tasks that do not exist; name the command that writes them.
-    throw new SpecKitArtifactError(
-      412,
-      "SPECKIT_GATE_UNMET",
-      `tasks.md is required, even with x-speckit-force: there is nothing to export — run /speckit.tasks with featureSlug ${feature.slug} first`,
-    );
-  }
-  const tasks = parseTasksMarkdown(tasksArt.content);
-  if (tasks.length === 0) {
-    return {
-      count: 0,
-      created: [],
-      repo: input.repo ?? { owner: "", name: "" },
-      parentEpicNumber: input.parentEpicNumber ?? null,
-      publishAvailable: Boolean(input.client),
-      message: "No tasks found in tasks.md.",
-    };
-  }
-
-  // #784 — refuse before resolving a target or creating anything: the no-op client creates nothing,
-  // so persisting its synthetic issue #0 would pin every task to a phantom
-  // issue that each later run "upserts" onto.
-  if (!input.dryRun && !input.client) {
-    throw new SpecKitArtifactError(
-      501,
-      "SPECKIT_ISSUE_EXPORT_UNAVAILABLE",
-      "Exporting tasks to GitHub issues is not available on this server yet. Preview the export with a dry run instead.",
-    );
-  }
-  const repo = input.repo ?? (await resolveRepo(input.projectId));
-  const parentEpicNumber = input.parentEpicNumber ?? (await resolveParentEpic(input.projectId));
-  // #784 — a dry run must never reach a client: once a real one is injected, a
-  // "preview" would otherwise file real issues. Past the guard above, a
-  // non-dry run always has one, so `client === null` exactly when dry.
-  const client: IssueClient | null = input.dryRun ? null : (input.client ?? null);
+  if ("empty" in planned) return planned.empty;
+  const { feature, plan, repo, parentEpicNumber, client, tasksVersion, planDigest } = planned;
+  const publishAvailable = input.publishAvailable ?? Boolean(input.client);
+  const runId = input.runId ?? randomUUID();
   const created: TasksToIssuesResult["created"] = [];
-
-  // Topologically iterate so deps are created before children.
-  const ordered = topoSort(tasks);
   const idToIssueNumber = new Map<string, number>();
 
-  for (const task of ordered) {
-    const upsertKey = {
-      projectId_featureSlug_taskId: {
-        projectId: input.projectId,
-        featureSlug: feature.slug,
-        taskId: task.id,
-      },
-    };
-    const existing = input.dryRun
-      ? null
-      : await prisma.specKitTaskExport.findUnique({ where: upsertKey });
-
+  const exportOne = async ({
+    task,
+    title,
+    existing,
+    state,
+  }: PlanStep): Promise<TasksToIssuesResult["created"][number]> => {
     let issueNumber: number;
     let url: string;
     let wasUpsert = false;
-    const title = `[${task.id}] ${task.title}`;
-    if (existing) {
+    let outState: TaskExportState = state;
+    if (state === "exported" && existing) {
       issueNumber = existing.issueNumber;
       url = `https://github.com/${existing.repoOwner}/${existing.repoName}/issues/${issueNumber}`;
       wasUpsert = true;
+    } else if (!client) {
+      // Dry run: report the plan, call nothing, write nothing.
+      const planned = plannedIssue(title);
+      issueNumber = planned.number;
+      url = planned.url;
     } else {
-      const body = renderIssueBody(task, feature.slug);
-      const labels = [`speckit:${feature.slug}`];
-      if (task.userStorySlug) labels.push(`story:${task.userStorySlug}`);
-      const resp = client
-        ? await client.create(repo.owner, repo.name, { title, body, labels })
-        : plannedIssue(title);
-      issueNumber = resp.number;
-      url = resp.url;
-      if (client) {
-        await prisma.specKitTaskExport.create({
-          data: {
-            projectId: input.projectId,
-            featureSlug: feature.slug,
-            taskId: task.id,
-            issueNumber,
-            repoOwner: repo.owner,
-            repoName: repo.name,
-          },
-        });
-      }
+      const resolved = await createOrAdopt({
+        client,
+        repo,
+        runId,
+        projectId: input.projectId,
+        featureSlug: feature.slug,
+        task,
+        title,
+        existing: state === "reconcile" ? existing : null,
+      });
+      issueNumber = resolved.number;
+      url = resolved.url;
+      outState = resolved.adopted ? "adopted" : "new";
     }
     idToIssueNumber.set(task.id, issueNumber);
 
-    // Link sub-issues to parent epic if supported.
+    // Link sub-issues to parent epic if supported. An adopted issue is linked
+    // too: the run that created it stopped before it could link it.
     if (parentEpicNumber !== null && client?.addSubIssue && !wasUpsert) {
       try {
         await client.addSubIssue(repo.owner, repo.name, parentEpicNumber, issueNumber);
@@ -242,7 +318,39 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
         }
       }
     }
-    created.push({ taskId: task.id, title, issueNumber, url, upserted: wasUpsert });
+    return {
+      taskId: task.id,
+      title,
+      issueNumber,
+      url,
+      upserted: wasUpsert,
+      state: outState,
+    };
+  };
+
+  try {
+    for (const step of plan) created.push(await exportOne(step));
+  } catch (err) {
+    // #953 — a live export that stops part-way has still created issues on
+    // GitHub; record how far it got. The created ones are persisted, so a
+    // retry upserts them rather than filing them twice.
+    if (client) {
+      audit({
+        actor: input.actorId ? { id: input.actorId } : null,
+        action: "speckit.tasks_export_failed",
+        target: { type: "speckit_feature", id: feature.id },
+        metadata: {
+          featureSlug: feature.slug,
+          repo: `${repo.owner}/${repo.name}`,
+          tasksVersion,
+          planDigest,
+          runId,
+          createdBeforeFailure: created.filter((c) => !c.upserted).length,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+    throw err;
   }
 
   audit({
@@ -255,6 +363,11 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
       repo: `${repo.owner}/${repo.name}`,
       parentEpicNumber,
       dryRun: input.dryRun ?? false,
+      tasksVersion,
+      planDigest,
+      ...(client ? { runId } : {}),
+      created: created.filter((c) => c.state === "new").length,
+      adopted: created.filter((c) => c.state === "adopted").length,
     },
   });
 
@@ -263,9 +376,563 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     created,
     repo,
     parentEpicNumber,
-    publishAvailable: Boolean(input.client),
+    publishAvailable,
+    tasksVersion,
+    planDigest,
     message: `${input.dryRun ? "Would export" : "Exported"} ${created.length} task(s) to ${repo.owner}/${repo.name}.`,
   };
+}
+
+interface PlanStep {
+  task: ParsedTask;
+  title: string;
+  existing: ExportRow | null;
+  state: Exclude<TaskExportState, "adopted">;
+}
+
+/**
+ * Everything a run decides before it creates anything: the gate, tasks.md,
+ * the target, and each task's state. Throws every planning-stage refusal;
+ * `seen.featureId` is set as soon as the feature resolves, for the audit.
+ */
+async function planTasksExport(
+  input: TasksToIssuesInput,
+  seen: { featureId: string | null },
+): Promise<
+  | { empty: TasksToIssuesResult }
+  | {
+      feature: { id: string; slug: string };
+      plan: PlanStep[];
+      repo: { owner: string; name: string };
+      parentEpicNumber: number | null;
+      client: IssueClient | null;
+      tasksVersion: number;
+      planDigest: string;
+    }
+> {
+  const feature = await resolveFeatureBySlug(input.projectId, input.featureSlug);
+  if (!feature) {
+    throw new SpecKitArtifactError(
+      404,
+      "SPECKIT_FEATURE_NOT_FOUND",
+      `Feature not found: ${input.featureSlug}`,
+    );
+  }
+  seen.featureId = feature.id;
+  // Gate: tasks.md must exist (412).
+  await requireGate({
+    featureId: feature.id,
+    gate: "tasksGate",
+    force: input.force ?? false,
+    actorId: input.actorId ?? null,
+    command: "speckit.taskstoissues",
+  });
+
+  const tasksArt = await getFeatureArtifact(feature.id, "tasks.md");
+  if (!tasksArt) {
+    // #786 — `x-speckit-force` bypasses the phase gate, but no header can export
+    // tasks that do not exist; name the command that writes them.
+    throw new SpecKitArtifactError(
+      412,
+      "SPECKIT_GATE_UNMET",
+      `tasks.md is required, even with x-speckit-force: there is nothing to export — run /speckit.tasks with featureSlug ${feature.slug} first`,
+    );
+  }
+  const tasks = parseTasksMarkdown(tasksArt.content);
+  const publishAvailable = input.publishAvailable ?? Boolean(input.client);
+  const tasksVersion = tasksArt.version;
+  if (tasks.length === 0) {
+    const repo = input.repo ?? { owner: "", name: "" };
+    return {
+      empty: {
+        count: 0,
+        created: [],
+        repo,
+        parentEpicNumber: input.parentEpicNumber ?? null,
+        publishAvailable,
+        tasksVersion,
+        planDigest: computePlanDigest({
+          projectId: input.projectId,
+          featureSlug: feature.slug,
+          tasksVersion,
+          repo,
+          titles: [],
+        }),
+        message: "No tasks found in tasks.md.",
+      },
+    };
+  }
+
+  // #784 — refuse before resolving a target or creating anything: the no-op client creates nothing,
+  // so persisting its synthetic issue #0 would pin every task to a phantom
+  // issue that each later run "upserts" onto.
+  if (!input.dryRun && !input.client) {
+    throw new SpecKitArtifactError(
+      501,
+      "SPECKIT_ISSUE_EXPORT_UNAVAILABLE",
+      "Exporting tasks to GitHub issues is not available on this server yet. Preview the export with a dry run instead.",
+    );
+  }
+  const repo = input.repo ?? (await resolveTasksExportRepo(input.projectId));
+  const parentEpicNumber = input.parentEpicNumber ?? (await resolveParentEpic(input.projectId));
+  // #784 — a dry run must never reach a client: once a real one is injected, a
+  // "preview" would otherwise file real issues. Past the guard above, a
+  // non-dry run always has one, so `client === null` exactly when dry.
+  const client: IssueClient | null = input.dryRun ? null : (input.client ?? null);
+
+  // Topologically iterate so deps are created before children. #953 — the
+  // whole plan (what already exists, what would be created) is read before
+  // any issue is, so a dry run reports the same plan a live run executes and a
+  // live run can be checked against it up front. Reading the export rows is
+  // not a write: a dry run still persists nothing.
+  const plan: PlanStep[] = [];
+  const now = Date.now();
+  const ttl = claimTtlMs();
+  for (const task of topoSort(tasks)) {
+    const existing = (await prisma.specKitTaskExport.findUnique({
+      where: {
+        projectId_featureSlug_taskId: {
+          projectId: input.projectId,
+          featureSlug: feature.slug,
+          taskId: task.id,
+        },
+      },
+    })) as ExportRow | null;
+    const title = `[${task.id}] ${task.title}`;
+    if (!existing) {
+      plan.push({ task, title, existing: null, state: "new" });
+    } else if (existing.issueNumber !== 0) {
+      plan.push({ task, title, existing, state: "exported" });
+    } else {
+      // #953/#962 — issueNumber 0 is a claim. One a live run still holds is in
+      // progress: a live run refuses rather than race it. One no run holds
+      // (kept after an ambiguous GitHub failure) or older than the TTL
+      // (its run died) is reconciled against the target before re-creating.
+      const state = claimStateOf(existing, now, ttl);
+      if (state === "in_progress" && client) {
+        throw new SpecKitArtifactError(
+          409,
+          "SPECKIT_EXPORT_IN_PROGRESS",
+          `Another export of this feature is in progress (task ${task.id}). Wait for it to finish, then preview again.`,
+        );
+      }
+      plan.push({ task, title, existing, state });
+    }
+  }
+  const toCreate = plan.filter((p) => p.state === "new").map((p) => p.title);
+  const toReconcile = plan.filter((p) => p.state === "reconcile").map((p) => p.title);
+  const planDigest = computePlanDigest({
+    projectId: input.projectId,
+    featureSlug: feature.slug,
+    tasksVersion,
+    repo,
+    titles: toCreate,
+    reconcile: toReconcile,
+    inProgress: plan.filter((p) => p.state === "in_progress").map((p) => p.title),
+    parentEpicNumber,
+  });
+  if (client) {
+    assertPlanUnchanged(input.expectedPlan, tasksVersion, planDigest);
+    const mayCreate = toCreate.length + toReconcile.length;
+    if (input.maxCreates !== undefined && mayCreate > input.maxCreates) {
+      throw new SpecKitArtifactError(
+        422,
+        "SPECKIT_EXPORT_TOO_LARGE",
+        `This export would create ${mayCreate} issues; one export may create at most ${input.maxCreates}. Split the feature's tasks into smaller features to publish them.`,
+      );
+    }
+    if (toReconcile.length > 0 && !client.findTaskIssue) {
+      // Fail closed: re-creating without looking first could file a duplicate.
+      throw new SpecKitArtifactError(
+        409,
+        "SPECKIT_EXPORT_RECONCILE_UNAVAILABLE",
+        "An earlier export of this feature stopped before it could record its issues, and this server cannot check GitHub for them. Nothing was created.",
+      );
+    }
+  }
+  return {
+    feature,
+    plan,
+    repo,
+    parentEpicNumber,
+    client,
+    tasksVersion,
+    planDigest,
+  };
+}
+
+/**
+ * #953/#962 — create one task's issue under a claim, or adopt the issue an
+ * earlier run filed. `existing` is a reconcilable claim (abandoned, or kept
+ * after an ambiguous failure); null means the task has no row yet.
+ *
+ * The claim is taken before GitHub is called — a unique insert for a new task,
+ * a compare-and-swap on the lease (`claimedAt`, `claimRunId`) for a
+ * reconcilable one — so exactly one run acts on a task. A takeover moves the
+ * lease but never `firstClaimedAt`, which the search starts from. Then, for a reconcilable claim, the
+ * target is searched for the issue first. On a GitHub failure the claim is
+ * released only when GitHub definitely created nothing (a 4xx); on an
+ * ambiguous one (network error, 5xx, malformed 2xx) it is kept, ownerless, so
+ * the next run reconciles instead of filing a duplicate.
+ */
+async function createOrAdopt(opts: {
+  client: IssueClient;
+  repo: { owner: string; name: string };
+  runId: string;
+  projectId: string;
+  featureSlug: string;
+  task: ParsedTask;
+  title: string;
+  existing: ExportRow | null;
+}): Promise<IssueCreatedResponse & { adopted: boolean }> {
+  const { client, repo, runId, task, title, existing } = opts;
+  const key = {
+    projectId: opts.projectId,
+    featureSlug: opts.featureSlug,
+    taskId: task.id,
+  };
+  const mine = { ...key, issueNumber: 0, claimRunId: runId };
+  const inProgress = () =>
+    new SpecKitArtifactError(
+      409,
+      "SPECKIT_EXPORT_IN_PROGRESS",
+      "Another export of this feature is in progress. Wait for it to finish, then preview again.",
+    );
+  if (existing) {
+    const taken = await prisma.specKitTaskExport.updateMany({
+      where: {
+        ...key,
+        issueNumber: 0,
+        claimRunId: existing.claimRunId,
+        claimedAt: existing.claimedAt,
+      },
+      // The lease moves to this run; the first claim time never does (#962).
+      data: { claimRunId: runId, claimedAt: new Date(), firstClaimedAt: firstClaimOf(existing) },
+    });
+    if (taken.count !== 1) throw inProgress();
+    let found: IssueCreatedResponse | null;
+    try {
+      // Checked by the plan stage: a reconcile never runs without it.
+      found = await client.findTaskIssue!(repo.owner, repo.name, {
+        taskId: task.id,
+        featureSlug: opts.featureSlug,
+        since: firstClaimOf(existing),
+      });
+    } catch (err) {
+      await releaseClaim(mine);
+      throw err;
+    }
+    if (found) {
+      await prisma.specKitTaskExport.update({
+        where: { projectId_featureSlug_taskId: key },
+        data: {
+          issueNumber: found.number,
+          repoOwner: repo.owner,
+          repoName: repo.name,
+          claimRunId: null,
+        },
+      });
+      return { ...found, adopted: true };
+    }
+  } else {
+    const claimed = new Date();
+    try {
+      await prisma.specKitTaskExport.create({
+        data: {
+          ...key,
+          issueNumber: 0,
+          repoOwner: repo.owner,
+          repoName: repo.name,
+          claimedAt: claimed,
+          firstClaimedAt: claimed,
+          claimRunId: runId,
+        },
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code === "P2002") throw inProgress();
+      throw err;
+    }
+  }
+  const labels = [`speckit:${opts.featureSlug}`];
+  if (task.userStorySlug) labels.push(`story:${task.userStorySlug}`);
+  let resp: IssueCreatedResponse;
+  try {
+    resp = await client.create(repo.owner, repo.name, {
+      title,
+      body: renderIssueBody(task, opts.featureSlug),
+      labels,
+    });
+  } catch (err) {
+    if (isIssueNotCreated(err)) {
+      // GitHub answered and created nothing: drop the claim so a retry creates it.
+      await prisma.specKitTaskExport.deleteMany({ where: mine });
+    } else {
+      await releaseClaim(mine);
+    }
+    throw err;
+  }
+  // An upsert, not an update: the issue exists, so it is recorded even if the
+  // claim was cleared meanwhile.
+  await prisma.specKitTaskExport.upsert({
+    where: { projectId_featureSlug_taskId: key },
+    create: {
+      ...key,
+      issueNumber: resp.number,
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      claimRunId: null,
+    },
+    update: {
+      issueNumber: resp.number,
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      claimRunId: null,
+    },
+  });
+  return { ...resp, adopted: false };
+}
+
+/**
+ * Keep a claim this run holds but give up ownership: GitHub may have created
+ * the issue, so the next run must look for it before creating one.
+ */
+async function releaseClaim(mine: Record<string, unknown>): Promise<void> {
+  await prisma.specKitTaskExport.updateMany({
+    where: mine,
+    data: { claimRunId: null },
+  });
+}
+
+export interface ClearStuckExportInput {
+  projectId: string;
+  featureSlug: string;
+  /** The guarded publish target; searched, and nothing else. */
+  repo: { owner: string; name: string };
+  client: IssueClient;
+  actorId?: string | null;
+  runId?: string;
+}
+
+export interface ClearStuckExportResult {
+  /** Claims with no issue on GitHub: deleted, so the next export creates them. */
+  cleared: string[];
+  /** Claims whose issue an earlier run did file: now recorded as exported. */
+  adopted: Array<{ taskId: string; issueNumber: number; url: string }>;
+  /** Claims a live run still holds: left alone. */
+  inProgress: string[];
+  repo: { owner: string; name: string };
+  message: string;
+}
+
+/**
+ * #962 — "Clear stuck export": resolve every abandoned or kept claim of a
+ * feature by the same reconciliation a live run does. An issue found on the
+ * target is recorded; otherwise the claim is deleted. A claim a live run still
+ * holds (younger than the TTL) is left alone, never deleted under it.
+ */
+export async function clearStuckTaskExports(
+  input: ClearStuckExportInput,
+): Promise<ClearStuckExportResult> {
+  const feature = await resolveFeatureBySlug(input.projectId, input.featureSlug);
+  if (!feature) {
+    throw new SpecKitArtifactError(
+      404,
+      "SPECKIT_FEATURE_NOT_FOUND",
+      `Feature not found: ${input.featureSlug}`,
+    );
+  }
+  if (!input.client.findTaskIssue) {
+    throw new SpecKitArtifactError(
+      409,
+      "SPECKIT_EXPORT_RECONCILE_UNAVAILABLE",
+      "This server cannot check GitHub for the issues a stuck export may have created, so it cannot clear it safely.",
+    );
+  }
+  const runId = input.runId ?? randomUUID();
+  const { repo } = input;
+  const claims = (await prisma.specKitTaskExport.findMany({
+    where: {
+      projectId: input.projectId,
+      featureSlug: feature.slug,
+      issueNumber: 0,
+    },
+    orderBy: { taskId: "asc" },
+  })) as Array<ExportRow & { taskId: string }>;
+  const now = Date.now();
+  const ttl = claimTtlMs();
+  const out: ClearStuckExportResult = {
+    cleared: [],
+    adopted: [],
+    inProgress: [],
+    repo,
+    message: "",
+  };
+  try {
+    for (const claim of claims) {
+      if (claimStateOf(claim, now, ttl) === "in_progress") {
+        out.inProgress.push(claim.taskId);
+        continue;
+      }
+      const key = {
+        projectId: input.projectId,
+        featureSlug: feature.slug,
+        taskId: claim.taskId,
+      };
+      const mine = { ...key, issueNumber: 0, claimRunId: runId };
+      const taken = await prisma.specKitTaskExport.updateMany({
+        where: {
+          ...key,
+          issueNumber: 0,
+          claimRunId: claim.claimRunId,
+          claimedAt: claim.claimedAt,
+        },
+        data: { claimRunId: runId, claimedAt: new Date(), firstClaimedAt: firstClaimOf(claim) },
+      });
+      if (taken.count !== 1) {
+        out.inProgress.push(claim.taskId);
+        continue;
+      }
+      let found: IssueCreatedResponse | null;
+      try {
+        found = await input.client.findTaskIssue(repo.owner, repo.name, {
+          taskId: claim.taskId,
+          featureSlug: feature.slug,
+          since: firstClaimOf(claim),
+        });
+      } catch (err) {
+        await releaseClaim(mine);
+        throw err;
+      }
+      if (found) {
+        await prisma.specKitTaskExport.update({
+          where: { projectId_featureSlug_taskId: key },
+          data: {
+            issueNumber: found.number,
+            repoOwner: repo.owner,
+            repoName: repo.name,
+            claimRunId: null,
+          },
+        });
+        out.adopted.push({
+          taskId: claim.taskId,
+          issueNumber: found.number,
+          url: found.url,
+        });
+      } else {
+        await prisma.specKitTaskExport.deleteMany({ where: mine });
+        out.cleared.push(claim.taskId);
+      }
+    }
+  } finally {
+    audit({
+      actor: input.actorId ? { id: input.actorId } : null,
+      action: "speckit.tasks_export_claims_cleared",
+      target: { type: "speckit_feature", id: feature.id },
+      metadata: {
+        projectId: input.projectId,
+        featureSlug: feature.slug,
+        repo: `${repo.owner}/${repo.name}`,
+        runId,
+        cleared: out.cleared,
+        adopted: out.adopted.map((a) => `${a.taskId}#${a.issueNumber}`),
+        inProgress: out.inProgress,
+        claims: claims.length,
+      },
+    });
+  }
+  out.message =
+    claims.length === 0
+      ? "No stuck export: no task of this feature is claimed."
+      : [
+          out.adopted.length ? `Recorded ${out.adopted.length} issue(s) GitHub already had.` : "",
+          out.cleared.length ? `Cleared ${out.cleared.length} claim(s) with no issue.` : "",
+          out.inProgress.length
+            ? `${out.inProgress.length} task(s) are still being exported; try again in a few minutes.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+  return out;
+}
+
+/** Audit one refused live export (or stuck-export clear). Never the token. */
+export function auditTasksExportRefused(opts: {
+  actorId: string | null;
+  projectId: string;
+  featureSlug: string;
+  featureId: string | null;
+  err: unknown;
+  operation?: "export" | "clear";
+}): void {
+  const code = (opts.err as { code?: unknown } | null)?.code;
+  audit({
+    actor: opts.actorId ? { id: opts.actorId } : null,
+    action: "speckit.tasks_export_refused",
+    target: { type: "speckit_feature", id: opts.featureId ?? opts.featureSlug },
+    metadata: {
+      projectId: opts.projectId,
+      featureSlug: opts.featureSlug,
+      operation: opts.operation ?? "export",
+      code: typeof code === "string" ? code : "UNEXPECTED",
+    },
+  });
+}
+
+interface ExportRow {
+  issueNumber: number;
+  repoOwner: string;
+  repoName: string;
+  claimedAt: Date | null;
+  firstClaimedAt?: Date | null;
+  claimRunId: string | null;
+  createdAt?: Date;
+}
+
+/**
+ * #962 — when the task was first claimed: the time reconciliation searches
+ * GitHub from. Never the lease (`claimedAt`), which a takeover moves; a claim
+ * from before `firstClaimedAt` existed falls back to its lease, then its row.
+ */
+function firstClaimOf(row: ExportRow): Date {
+  return row.firstClaimedAt ?? row.claimedAt ?? row.createdAt ?? new Date(0);
+}
+
+/**
+ * #962 — a claim is in progress only while a run holds it and it is younger
+ * than the TTL. Ownerless (kept after an ambiguous failure, or written before
+ * claims carried an owner) or expired (its run died) means reconcile.
+ */
+function claimStateOf(row: ExportRow, now: number, ttl: number): "in_progress" | "reconcile" {
+  if (row.claimRunId && row.claimedAt && now - new Date(row.claimedAt).getTime() < ttl) {
+    return "in_progress";
+  }
+  return "reconcile";
+}
+/**
+ * #953 — a live run must reproduce the dry run it was approved from. Refused
+ * 409 when tasks.md has a newer version, or when the plan differs (a task was
+ * exported meanwhile, the target moved). No expectation: nothing to compare.
+ */
+function assertPlanUnchanged(
+  expected: TasksToIssuesInput["expectedPlan"],
+  tasksVersion: number,
+  planDigest: string,
+): void {
+  if (!expected) return;
+  if (expected.tasksVersion !== tasksVersion) {
+    throw new SpecKitArtifactError(
+      409,
+      "SPECKIT_EXPORT_PLAN_CHANGED",
+      `tasks.md changed since the dry run (previewed version ${expected.tasksVersion}, now ${tasksVersion}). Run the dry run again and review the issues before publishing.`,
+    );
+  }
+  if (expected.digest !== planDigest) {
+    throw new SpecKitArtifactError(
+      409,
+      "SPECKIT_EXPORT_PLAN_CHANGED",
+      "The issues this export would create differ from the dry run (a task was exported meanwhile, or the target changed). Run the dry run again and review the issues before publishing.",
+    );
+  }
 }
 
 export function renderIssueBody(task: ParsedTask, featureSlug: string): string {
@@ -319,7 +986,10 @@ function topoSort(tasks: ParsedTask[]): ParsedTask[] {
   return out;
 }
 
-async function resolveRepo(projectId: string): Promise<{ owner: string; name: string }> {
+/** The export target: SpecKitConfig, then the saved publish target (#733), then the env default. */
+export async function resolveTasksExportRepo(
+  projectId: string,
+): Promise<{ owner: string; name: string }> {
   const cfg = await prisma.specKitConfig.findUnique({ where: { projectId } });
   if (cfg?.tasksToIssuesRepo) {
     const [owner, name] = cfg.tasksToIssuesRepo.split("/");
