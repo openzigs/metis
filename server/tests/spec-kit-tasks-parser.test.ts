@@ -97,3 +97,90 @@ describe("parseTasksMarkdown", () => {
     expect(tasks[0]?.dependsOn).toEqual(["T01", "T02", "T03"]);
   });
 });
+
+/**
+ * #993 — METIS's own `/speckit.tasks` output puts file:line spans in
+ * parentheses and ends each line with `(satisfies: …) depends-on: …`. Only the
+ * trailing metadata is metadata; the title keeps every other parenthesis.
+ */
+describe("parseTasksMarkdown — METIS task lines (#993)", () => {
+  const METIS_LINE =
+    "- [ ] T03 — Change `MarkAllAsReadBeforeDate` in storage/entry.go (storage/entry.go:412-430) with unit tests (satisfies: AC-1, AC-2) depends-on: T01, T02";
+
+  it("keeps a parenthesised file:line span in the title", () => {
+    const [task] = parseTasksMarkdown(METIS_LINE);
+    expect(task?.title).toBe(
+      "Change `MarkAllAsReadBeforeDate` in storage/entry.go (storage/entry.go:412-430) with unit tests",
+    );
+  });
+
+  it("keeps a parenthesised call in the title", () => {
+    const [task] = parseTasksMarkdown(
+      "- [ ] T04 — Count unread entries using `COALESCE(count, 0)` (satisfies: AC-3) depends-on: none",
+    );
+    expect(task?.title).toBe("Count unread entries using `COALESCE(count, 0)`");
+    expect(task?.dependsOn).toEqual([]);
+  });
+
+  it("reads the bare trailing depends-on and the satisfies group", () => {
+    const [task] = parseTasksMarkdown(METIS_LINE);
+    expect(task?.dependsOn).toEqual(["T01", "T02"]);
+    expect(task?.satisfies).toEqual(["AC-1", "AC-2"]);
+    expect(task?.parallelizable).toBe(false);
+  });
+
+  it("does not read depends-on from inside the title", () => {
+    const [task] = parseTasksMarkdown(
+      "- [ ] T05 — Document the depends-on: T09 field (docs/tasks.md:3) (satisfies: AC-4)",
+    );
+    expect(task?.dependsOn).toEqual([]);
+    expect(task?.title).toBe("Document the depends-on: T09 field (docs/tasks.md:3)");
+  });
+
+  it("reads [P] only from the trailing metadata", () => {
+    const [task] = parseTasksMarkdown("- [ ] T07 — Rename the [P] marker docs (satisfies: AC-1)");
+    expect(task?.parallelizable).toBe(false);
+    expect(task?.title).toBe("Rename the [P] marker docs");
+  });
+
+  it("carries the whole line, without its checkbox, as the task text", () => {
+    const [task] = parseTasksMarkdown(METIS_LINE);
+    expect(task?.text).toBe(METIS_LINE.replace("- [ ] ", ""));
+  });
+
+  it("carries indented lines beneath a task into its text, and stops at the next task", () => {
+    const md = [
+      "- [ ] T01 — Add the endpoint (depends-on: none)",
+      "  Description: POST /entries/mark-read",
+      "",
+      "  Acceptance: returns 204",
+      "- [ ] T02 — Wire the button (depends-on: T01)",
+      "Unindented prose ends it.",
+      "  not part of T02",
+    ].join("\n");
+    const tasks = parseTasksMarkdown(md);
+    expect(tasks).toHaveLength(2);
+    expect(tasks[0]?.text).toBe(
+      "T01 — Add the endpoint (depends-on: none)\nDescription: POST /entries/mark-read\nAcceptance: returns 204",
+    );
+    expect(tasks[1]?.text).toBe("T02 — Wire the button (depends-on: T01)");
+  });
+
+  it("keeps a line that is only metadata as its own title", () => {
+    const [task] = parseTasksMarkdown("- [ ] T06 — (depends-on: none)");
+    expect(task?.title).toBe("(depends-on: none)");
+  });
+});
+
+describe("parseTasksMarkdown - upstream spec-kit form and prose (#993 review)", () => {
+  it("reads leading [P] [US1] markers: parallelizable, not part of the title", () => {
+    const [task] = parseTasksMarkdown("- [ ] T001 [P] [US1] Create the model");
+    expect(task?.parallelizable).toBe(true);
+    expect(task?.title).toBe("Create the model");
+  });
+  it("does not cut the title at a singular 'file:' inside prose", () => {
+    const [task] = parseTasksMarkdown("- [ ] T02 \u2014 Document the config file: settings.yaml");
+    expect(task?.title).toBe("Document the config file: settings.yaml");
+    expect(task?.files).toEqual([]);
+  });
+});

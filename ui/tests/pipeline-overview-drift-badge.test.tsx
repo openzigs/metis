@@ -95,6 +95,7 @@ const COMPLETED_ANALYSIS = {
   completedAt: "2026-09-01T10:05:00Z",
   totalTokens: 0,
   errorMessage: null,
+  requirementCounts: { draft: 0, approved: 0, rejected: 0, deferred: 0 },
 };
 
 beforeEach(() => {

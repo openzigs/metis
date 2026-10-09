@@ -135,6 +135,12 @@ export interface TasksToIssuesInput {
    * more issues than this. Ignored on a dry run, which only lists them.
    */
   maxCreates?: number;
+  /**
+   * #993 — export only these task ids (in tasks.md order). Omitted ⇒ every
+   * task. The plan digest covers the selection, so a live run must send the
+   * same subset its dry run previewed.
+   */
+  taskIds?: string[];
   /** #962 — the id this live run claims tasks under. Generated when omitted. */
   runId?: string;
   /**
@@ -156,6 +162,8 @@ export interface TasksToIssuesResult {
     /** #962 — see {@link TaskExportState}. */
     state: TaskExportState;
   }>;
+  /** #993 — every task in tasks.md, selected or not, for choosing a subset. */
+  available: Array<{ taskId: string; title: string }>;
   repo: { owner: string; name: string };
   parentEpicNumber: number | null;
   /**
@@ -191,6 +199,8 @@ export function computePlanDigest(plan: {
   inProgress?: string[];
   /** The epic new issues are linked under; a different one is a different plan. */
   parentEpicNumber?: number | null;
+  /** #993 — the chosen subset of task ids, normalised; null/omitted ⇒ every task. */
+  taskIds?: string[] | null;
 }): string {
   return createHash("sha256")
     .update(
@@ -203,6 +213,7 @@ export function computePlanDigest(plan: {
         plan.parentEpicNumber ?? null,
         plan.reconcile ?? [],
         plan.inProgress ?? [],
+        plan.taskIds ?? null,
       ]),
     )
     .digest("hex");
@@ -242,7 +253,8 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
     throw err;
   }
   if ("empty" in planned) return planned.empty;
-  const { feature, plan, repo, parentEpicNumber, client, tasksVersion, planDigest } = planned;
+  const { feature, plan, repo, parentEpicNumber, client, available, tasksVersion, planDigest } =
+    planned;
   const publishAvailable = input.publishAvailable ?? Boolean(input.client);
   const runId = input.runId ?? randomUUID();
   const created: TasksToIssuesResult["created"] = [];
@@ -374,6 +386,7 @@ export async function runTasksToIssues(input: TasksToIssuesInput): Promise<Tasks
   return {
     count: created.length,
     created,
+    available,
     repo,
     parentEpicNumber,
     publishAvailable,
@@ -406,6 +419,7 @@ async function planTasksExport(
       repo: { owner: string; name: string };
       parentEpicNumber: number | null;
       client: IssueClient | null;
+      available: TasksToIssuesResult["available"];
       tasksVersion: number;
       planDigest: string;
     }
@@ -438,15 +452,18 @@ async function planTasksExport(
       `tasks.md is required, even with x-speckit-force: there is nothing to export — run /speckit.tasks with featureSlug ${feature.slug} first`,
     );
   }
-  const tasks = parseTasksMarkdown(tasksArt.content);
+  const allTasks = parseTasksMarkdown(tasksArt.content);
+  const tasks = selectTasks(allTasks, input.taskIds);
   const publishAvailable = input.publishAvailable ?? Boolean(input.client);
   const tasksVersion = tasksArt.version;
+  const available = allTasks.map((t) => ({ taskId: t.id, title: issueTitle(t) }));
   if (tasks.length === 0) {
     const repo = input.repo ?? { owner: "", name: "" };
     return {
       empty: {
         count: 0,
         created: [],
+        available,
         repo,
         parentEpicNumber: input.parentEpicNumber ?? null,
         publishAvailable,
@@ -498,7 +515,7 @@ async function planTasksExport(
         },
       },
     })) as ExportRow | null;
-    const title = `[${task.id}] ${task.title}`;
+    const title = issueTitle(task);
     if (!existing) {
       plan.push({ task, title, existing: null, state: "new" });
     } else if (existing.issueNumber !== 0) {
@@ -530,6 +547,7 @@ async function planTasksExport(
     reconcile: toReconcile,
     inProgress: plan.filter((p) => p.state === "in_progress").map((p) => p.title),
     parentEpicNumber,
+    taskIds: input.taskIds ? tasks.map((t) => t.id) : null,
   });
   if (client) {
     assertPlanUnchanged(input.expectedPlan, tasksVersion, planDigest);
@@ -538,7 +556,7 @@ async function planTasksExport(
       throw new SpecKitArtifactError(
         422,
         "SPECKIT_EXPORT_TOO_LARGE",
-        `This export would create ${mayCreate} issues; one export may create at most ${input.maxCreates}. Split the feature's tasks into smaller features to publish them.`,
+        `This export would create ${mayCreate} issues; one export may create at most ${input.maxCreates}. Choose fewer tasks for the dry run, then publish the rest in a later export.`,
       );
     }
     if (toReconcile.length > 0 && !client.findTaskIssue) {
@@ -556,9 +574,30 @@ async function planTasksExport(
     repo,
     parentEpicNumber,
     client,
+    available,
     tasksVersion,
     planDigest,
   };
+}
+
+/**
+ * #993 — the tasks an export covers: all of them, or the chosen subset in
+ * tasks.md order. A chosen id tasks.md does not have is refused rather than
+ * silently dropped, so a stale selection never publishes less than it shows.
+ */
+function selectTasks(tasks: ParsedTask[], taskIds: string[] | undefined): ParsedTask[] {
+  if (!taskIds) return tasks;
+  const wanted = new Set(taskIds.map((id) => id.toUpperCase()));
+  const known = new Set(tasks.map((t) => t.id));
+  const unknown = [...wanted].filter((id) => !known.has(id));
+  if (unknown.length > 0) {
+    throw new SpecKitArtifactError(
+      400,
+      "SPECKIT_EXPORT_UNKNOWN_TASK",
+      `tasks.md has no task ${unknown.join(", ")}. Run the dry run again and pick from the tasks it lists.`,
+    );
+  }
+  return tasks.filter((t) => wanted.has(t.id));
 }
 
 /**
@@ -954,6 +993,24 @@ export function githubLabel(prefix: string, value: string): string {
   return `${prefix}${head}-${hash}`;
 }
 
+/** GitHub refuses (422) an issue title longer than this many characters. */
+export const GITHUB_TITLE_MAX_LENGTH = 256;
+
+/**
+ * #993 — `[<id>] <title>`, at most {@link GITHUB_TITLE_MAX_LENGTH} characters.
+ * Titles are no longer cut at the first `(`, so a long task line could exceed
+ * GitHub's limit; the full text is always in the body's `## Task` section.
+ */
+export function issueTitle(task: Pick<ParsedTask, "id" | "title">): string {
+  const full = `[${task.id}] ${task.title}`;
+  const chars = [...full];
+  if (chars.length <= GITHUB_TITLE_MAX_LENGTH) return full;
+  return `${chars
+    .slice(0, GITHUB_TITLE_MAX_LENGTH - 1)
+    .join("")
+    .trimEnd()}…`;
+}
+
 export function renderIssueBody(task: ParsedTask, featureSlug: string): string {
   const lines: string[] = [];
   lines.push(`Source: specs/${featureSlug}/tasks.md#${task.id}`);
@@ -964,6 +1021,14 @@ export function renderIssueBody(task: ParsedTask, featureSlug: string): string {
   }
   if (task.storyPoints !== null) lines.push(`Story Points: ${task.storyPoints}`);
   if (task.userStorySlug) lines.push(`User Story: ${task.userStorySlug}`);
+  if (task.satisfies.length > 0) lines.push(`Satisfies: ${task.satisfies.join(", ")}`);
+  // #993 — the task as written in tasks.md, so the issue carries its whole
+  // description (file:line spans, acceptance) and not only its title.
+  if (task.text) {
+    lines.push("");
+    lines.push("## Task");
+    lines.push(task.text);
+  }
   if (task.notes) {
     lines.push("");
     lines.push("## Notes");
