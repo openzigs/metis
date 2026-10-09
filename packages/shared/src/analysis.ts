@@ -2212,6 +2212,24 @@ export interface AnalysisCapabilityPreview {
   repoSourceIngested: boolean;
   fusedCodeRetrievalEnabled: boolean;
   schemaContextEnabled: boolean;
+  /**
+   * Issue #938 — the custom and library agents enabled for the project, which
+   * every analysis run also invokes. They run PROMPT-ONLY: they get the
+   * project's name and description, no documents or code, and none of their
+   * tools run (tools apply only when a chat delegates to the agent). Set by the
+   * `/analyses/capability` route; absent from the orchestrator's static probe.
+   */
+  promptOnlyAgents?: AnalysisPromptOnlyAgent[];
+}
+
+/** Issue #938 — one enabled agent the analysis run will invoke prompt-only. */
+export interface AnalysisPromptOnlyAgent {
+  /** `library:<id>` or `custom:<id>`. */
+  ref: string;
+  kind: "library" | "custom";
+  name: string;
+  /** The tools the agent declares, none of which run in an analysis run. */
+  toolsNotRun: string[];
 }
 
 /**

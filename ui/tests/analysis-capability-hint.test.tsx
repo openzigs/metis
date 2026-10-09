@@ -101,3 +101,62 @@ describe("AnalysisCapabilityHint — pre-run tense (#364)", () => {
     expect(hint).not.toHaveTextContent(/\bwas not\b|\bwas document-grounded\b/);
   });
 });
+
+// Issue #938 — the form names the enabled custom/library agents the run will
+// invoke, and says they run prompt-only: none of their tools run.
+describe("AnalysisCapabilityHint — prompt-only agents (#938)", () => {
+  const capable = {
+    codeGraphPresent: true,
+    repoSourceIngested: true,
+    fusedCodeRetrievalEnabled: true,
+    schemaContextEnabled: true,
+  };
+
+  it("lists each enabled agent, its unrun tools, and the prompt-only rule even when the run is otherwise capable", async () => {
+    capabilityPreview.mockResolvedValue({
+      ...capable,
+      promptOnlyAgents: [
+        {
+          ref: "custom:ca_1",
+          kind: "custom",
+          name: "Go SQL reviewer",
+          toolsNotRun: ["read_file_slice", "search_code"],
+        },
+        { ref: "library:lib_1", kind: "library", name: "Threat modeler", toolsNotRun: [] },
+      ],
+    });
+    renderHint(["document"]);
+    const notice = await screen.findByTestId("analysis-prompt-only-agents");
+    expect(notice).toHaveTextContent(/run prompt-only/);
+    expect(notice).toHaveTextContent(/no documents or code/);
+    expect(notice).toHaveTextContent(/ungrounded/);
+    expect(screen.getByTestId("prompt-only-agent-custom:ca_1")).toHaveTextContent(
+      "Go SQL reviewer (custom) — its tools (read_file_slice, search_code) will not run",
+    );
+    expect(screen.getByTestId("prompt-only-agent-library:lib_1")).toHaveTextContent(
+      /^Threat modeler \(library\)$/,
+    );
+    // The capability warning list stays absent — only the agent notice shows.
+    expect(screen.queryByTestId("analysis-capability-hint")).not.toBeInTheDocument();
+  });
+
+  it("shows both the capability warnings and the agent notice when both apply", async () => {
+    capabilityPreview.mockResolvedValue({
+      ...capable,
+      codeGraphPresent: false,
+      promptOnlyAgents: [
+        { ref: "custom:ca_1", kind: "custom", name: "Go SQL reviewer", toolsNotRun: [] },
+      ],
+    });
+    renderHint(["document", "code"]);
+    await screen.findByTestId("analysis-prompt-only-agents");
+    expect(screen.getByTestId("capability-hint-no-code-graph")).toBeInTheDocument();
+  });
+
+  it("shows no agent notice when no agents are enabled", async () => {
+    capabilityPreview.mockResolvedValue({ ...capable, promptOnlyAgents: [] });
+    renderHint(["document"]);
+    await waitFor(() => expect(capabilityPreview).toHaveBeenCalled());
+    expect(screen.queryByTestId("analysis-prompt-only-agents")).not.toBeInTheDocument();
+  });
+});

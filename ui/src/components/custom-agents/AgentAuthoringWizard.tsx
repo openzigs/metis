@@ -311,7 +311,8 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
             <Label>Allowed tools</Label>
             <p className="text-xs text-muted-foreground">
               Pick the tools this agent may call when a chat delegates a task to it. Every call
-              still needs the approval its session asks for. The playground itself runs prompt-only.
+              still needs the approval its session asks for. The playground and analysis runs invoke
+              the agent prompt-only: none of its tools run there.
             </p>
             {toolsQuery.isError && (
               <p className="text-xs text-destructive" role="alert">

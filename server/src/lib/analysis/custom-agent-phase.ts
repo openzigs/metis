@@ -31,6 +31,7 @@ import {
   agentOutputSchema,
   type AgentDefinitionDto,
   type AgentFindingPayload,
+  type AnalysisPromptOnlyAgent,
 } from "@metis/shared";
 import { listEnabledAgentsForProject } from "../custom-agents/index.js";
 import { invokeAgentDefinition } from "../custom-agents/invoke.js";
@@ -222,6 +223,39 @@ function frameProject(name: string, description: string): string {
   ].join("\n");
 }
 
+/**
+ * The agents an analysis run of this project invokes: library agents first
+ * (explicit opt-in only), then the enabled custom agents. The ONE list both the
+ * run ({@link runEnabledCustomAgents}) and the start-analysis form's notice
+ * ({@link listPromptOnlyAnalysisAgents}, #938) read, so the form never names an
+ * agent the run skips or misses one it runs.
+ */
+export async function listAnalysisPhaseAgents(projectId: string): Promise<AgentDefinitionDto[]> {
+  return [
+    ...(await listProjectLibraryAgents(projectId)),
+    ...(await listEnabledAgentsForProject(projectId)).map(customDtoDefinition),
+  ];
+}
+
+/**
+ * #938 — the enabled agents an analysis run will invoke, as the start-analysis
+ * form shows them: each runs prompt-only (project name and description, no
+ * documents or code), and none of its declared tools run — tools apply only
+ * when a chat delegates to the agent. Before #938 the form never said these
+ * agents would run at all, and an agent with code tools selected returned
+ * "No source code was provided".
+ */
+export async function listPromptOnlyAnalysisAgents(
+  projectId: string,
+): Promise<AnalysisPromptOnlyAgent[]> {
+  return (await listAnalysisPhaseAgents(projectId)).map((agent) => ({
+    ref: agent.ref,
+    kind: agent.kind,
+    name: agent.name,
+    toolsNotRun: [...(agent.toolAllowlist ?? [])],
+  }));
+}
+
 export async function runEnabledCustomAgents(
   input: CustomAgentPhaseInput,
 ): Promise<CustomAgentPhaseResult> {
@@ -229,11 +263,7 @@ export async function runEnabledCustomAgents(
     return { results: [], usage: { ...ZERO_USAGE } };
   }
 
-  // Library agents first (explicit opt-in only), then the enabled custom agents.
-  const agents: AgentDefinitionDto[] = [
-    ...(await listProjectLibraryAgents(input.projectId)),
-    ...(await listEnabledAgentsForProject(input.projectId)).map(customDtoDefinition),
-  ];
+  const agents = await listAnalysisPhaseAgents(input.projectId);
   if (agents.length === 0) {
     return { results: [], usage: { ...ZERO_USAGE } };
   }
