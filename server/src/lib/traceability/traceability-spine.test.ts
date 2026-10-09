@@ -75,8 +75,9 @@ describe("getRequirementChain", () => {
     const chain = await getRequirementChain("proj-1", "req-1", deps(p));
 
     expect(chain.directCode.map((c) => c.isTest)).toEqual([false, true]);
+    // #905 — the rangeless analysis-grounding row cites the test file as a
+    // document, not a test: it is not a `direct` link.
     expect(chain.testedBy.map((t) => [t.name, t.relation])).toEqual([
-      ["user_test.go", "direct"],
       ["TestValidatePassword", "exercises"],
     ]);
     expect(codeSymbolFindMany.mock.calls[0][0].where.projectId).toBe("proj-1");
