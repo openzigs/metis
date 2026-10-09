@@ -21,6 +21,7 @@ import {
   buildRequirementGroundedPrompt,
   buildSpecialistPrompt,
   buildSynthesisPrompt,
+  SYNTHESIS_EXTRACTED_RULE,
 } from "../src/lib/analysis/prompts.js";
 
 const FENCE = "===METIS-DATA-BOUNDARY===";
@@ -139,15 +140,35 @@ describe("buildSynthesisPrompt — clarified requirements (#201/#212)", () => {
     expect(systemMessage).not.toContain("CLARIFIED REQUIREMENTS section");
   });
 
-  it("injects clarified requirements as an authoritative section", () => {
+  it("injects clarified requirements as an authoritative section once someone has answered", () => {
+    const { systemMessage, userMessage } = buildSynthesisPrompt({
+      projectName: "Acme",
+      findingsTable: "[0] (document) T :: b",
+      refinedRequirements: [{ title: "Audit logging", description: "Retain logs for 30 days" }],
+      refinedHumanAnswered: true,
+    });
+    expect(userMessage).toContain("BEGIN CLARIFIED REQUIREMENTS");
+    expect(userMessage).toContain("END CLARIFIED REQUIREMENTS");
+    expect(userMessage).toContain("Retain logs for 30 days");
+    expect(systemMessage).toContain("CLARIFIED REQUIREMENTS section");
+    expect(systemMessage).toContain("human-confirmed");
+  });
+
+  // Issue #1000 — synthesis runs before anyone answers; the section must not
+  // call extracted requirements human-confirmed, or the summary repeats it.
+  it("labels unanswered requirements as extracted and forbids calling them human-clarified", () => {
     const { systemMessage, userMessage } = buildSynthesisPrompt({
       projectName: "Acme",
       findingsTable: "[0] (document) T :: b",
       refinedRequirements: [{ title: "Audit logging", description: "Retain logs for 30 days" }],
     });
-    expect(userMessage).toContain("BEGIN CLARIFIED REQUIREMENTS");
+    expect(userMessage).toContain("BEGIN EXTRACTED REQUIREMENTS");
+    expect(userMessage).toContain("END EXTRACTED REQUIREMENTS");
     expect(userMessage).toContain("Retain logs for 30 days");
-    expect(systemMessage).toContain("CLARIFIED REQUIREMENTS section");
+    expect(userMessage).not.toContain("CLARIFIED REQUIREMENTS");
+    expect(systemMessage).toContain(`9. ${SYNTHESIS_EXTRACTED_RULE}`);
+    expect(systemMessage).not.toContain("human-confirmed answers");
+    expect(SYNTHESIS_EXTRACTED_RULE).toContain("never describe them");
   });
 
   it("changing a clarified answer changes the synthesis prompt (loop closes)", () => {

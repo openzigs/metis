@@ -273,6 +273,20 @@ vi.mock("../src/lib/prisma.js", () => ({
       // replacement guard proceeds; the guard itself is exercised against a real
       // SQLite database in tests/requirement-set-preservation-769.sqlite.test.ts.
       count: vi.fn(async () => 0),
+      // #999 — the per-run review-status tally on the project's run list.
+      findMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: { projectId: string; analysisId: { in: string[] }; deletedAt: null };
+        }) =>
+          [...requirements.values()].filter(
+            (r) =>
+              r.projectId === where.projectId &&
+              where.analysisId.in.includes(r.analysisId) &&
+              !r.deletedAt,
+          ),
+      ),
       deleteMany: vi.fn(async ({ where }: { where: { analysisId: string } }) => {
         for (const [k, v] of requirements) {
           if (v.analysisId === where.analysisId) requirements.delete(k);

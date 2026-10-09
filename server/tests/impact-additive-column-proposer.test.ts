@@ -20,7 +20,9 @@ import type { AIProvider, ChatMessage } from "../src/lib/ai/types.js";
 import { serializeImpactAnalysisMarkdown } from "../src/lib/analysis/analysis-export.js";
 import type { AffectedTableInput } from "../src/lib/impact-analysis/schema-impact.js";
 import { detectAdditiveColumnIntent } from "../src/lib/impact-analysis/schema-impact.js";
+import { LiveSchemaIndex } from "../src/lib/impact-analysis/live-schema-ingest.js";
 import {
+  ADDITIVE_DDL_SYSTEM_PROMPT,
   ALLOWED_COLUMN_TYPES,
   MAX_PROPOSALS_PER_TABLE,
   MAX_PROPOSALS_TOTAL,
@@ -28,6 +30,7 @@ import {
   PROPOSED_COLUMN_CONFIDENCE_UNTYPED,
   buildAdditiveCandidates,
   buildAdditiveDdlMessages,
+  buildExistingColumnsLookup,
   groundColumnType,
   impactLlmAdditiveDdlEnabled,
   proposeAdditiveColumns,
@@ -843,5 +846,154 @@ describe("what the business analyst ends up reading", () => {
     );
     // Before this issue the same requirement produced no ADD COLUMN text at all.
     expect(detectAdditiveColumnIntent(CANCELLATION_REQUIREMENT)).toBeNull();
+  });
+});
+
+// ── #1003 — every proposal is checked against the live schema and code graph ──
+
+function liveColumn(name: string) {
+  return { name, dataType: "timestamp", nullable: false, isPrimaryKey: false };
+}
+
+describe("existing columns outside the crossing (#1003)", () => {
+  /** The miniflux #4478 crossing: `entries` surfaced with only two of its columns. */
+  function entriesCrossing(): AffectedTableInput[] {
+    return [table("entries"), column("entries", "changed_at"), column("entries", "status")];
+  }
+
+  const MARK_OLDER_AS_READ =
+    "Mark all entries older than N days as read. Users pick N when they run the action.";
+
+  it("drops a proposal for a column the LIVE schema has but the crossing did not surface", async () => {
+    const live = new LiveSchemaIndex([
+      {
+        schema: "public",
+        name: "entries",
+        columns: new Map([["published_at", liveColumn("published_at")]]),
+      },
+    ]);
+    const provider = mockProvider(
+      proposeByName([{ table: "entries", column: "published_at", type: "TIMESTAMP" }]),
+    );
+
+    const result = await proposeAdditiveColumns(MARK_OLDER_AS_READ, entriesCrossing(), provider, {
+      enabled: true,
+      maxRepairAttempts: 0,
+      existingColumns: buildExistingColumnsLookup({ liveIndex: live }),
+    });
+
+    expect(result.rows).toEqual([]);
+  });
+
+  it("drops a proposal for a column the CODE GRAPH has, with no live database", async () => {
+    const provider = mockProvider(
+      proposeByName([{ table: "entries", column: "published_at", type: "TIMESTAMP" }]),
+    );
+
+    const result = await proposeAdditiveColumns(MARK_OLDER_AS_READ, entriesCrossing(), provider, {
+      enabled: true,
+      maxRepairAttempts: 0,
+      existingColumns: buildExistingColumnsLookup({
+        catalog: [{ tableName: "entries", columns: ["id", "published_at", "status"] }],
+      }),
+    });
+
+    expect(result.rows).toEqual([]);
+  });
+
+  it("still emits a genuinely new column on the same table", async () => {
+    const provider = mockProvider(
+      proposeByName([
+        { table: "entries", column: "published_at", type: "TIMESTAMP" },
+        { table: "entries", column: "read_at", type: "TIMESTAMP" },
+      ]),
+    );
+
+    const result = await proposeAdditiveColumns(MARK_OLDER_AS_READ, entriesCrossing(), provider, {
+      enabled: true,
+      maxRepairAttempts: 0,
+      existingColumns: buildExistingColumnsLookup({
+        catalog: [{ tableName: "entries", columns: ["published_at"] }],
+      }),
+    });
+
+    expect(result.rows.map((r) => r.columnName)).toEqual(["read_at"]);
+  });
+
+  it("shows the model the full existing column list, not just the crossed columns", async () => {
+    let userPrompt = "";
+    const provider = {
+      key: "anthropic",
+      model: "mock",
+      offline: false,
+      chat: vi.fn(async (messages: ChatMessage[]) => {
+        userPrompt = String(messages.find((m) => m.role === "user")?.content ?? "");
+        return { content: '{"proposals":[]}', usage: {}, model: "mock", provider: "anthropic" };
+      }),
+    } as unknown as AIProvider;
+
+    await proposeAdditiveColumns(MARK_OLDER_AS_READ, entriesCrossing(), provider, {
+      enabled: true,
+      existingColumns: buildExistingColumnsLookup({
+        catalog: [{ tableName: "entries", columns: ["published_at"] }],
+      }),
+    });
+
+    expect(userPrompt).toContain(
+      '[0] table="entries" existing columns: changed_at, status, published_at',
+    );
+  });
+
+  it("degrades to the crossed columns when the lookup throws", async () => {
+    const provider = mockProvider(
+      proposeByName([{ table: "entries", column: "read_at", type: "TIMESTAMP" }]),
+    );
+
+    const result = await proposeAdditiveColumns(MARK_OLDER_AS_READ, entriesCrossing(), provider, {
+      enabled: true,
+      existingColumns: () => {
+        throw new Error("catalog unavailable");
+      },
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.rows.map((r) => r.columnName)).toEqual(["read_at"]);
+  });
+
+  it("tells the model a one-off action's parameter is not stored data", () => {
+    expect(ADDITIVE_DDL_SYSTEM_PROMPT).toMatch(/parameter/i);
+    expect(ADDITIVE_DDL_SYSTEM_PROMPT).toMatch(/older than N days/);
+  });
+});
+
+describe("buildExistingColumnsLookup (#1003)", () => {
+  const live = new LiveSchemaIndex([
+    {
+      schema: "public",
+      name: "Entries",
+      columns: new Map([["published_at", liveColumn("Published_At")]]),
+    },
+  ]);
+
+  it("unions live and code-graph columns, lowercased and de-duplicated", () => {
+    const lookup = buildExistingColumnsLookup({
+      liveIndex: live,
+      catalog: [{ tableName: "entries", columns: ["PUBLISHED_AT", "hash"] }],
+    });
+    expect([...lookup("entries")].sort()).toEqual(["hash", "published_at"]);
+  });
+
+  it("resolves a schema-qualified or quoted table name", () => {
+    const lookup = buildExistingColumnsLookup({
+      liveIndex: live,
+      catalog: [{ tableName: "entries", columns: ["hash"] }],
+    });
+    expect([...lookup("public.entries")].sort()).toEqual(["hash", "published_at"]);
+    expect([...lookup('"entries"')].sort()).toEqual(["hash", "published_at"]);
+  });
+
+  it("returns nothing for an unknown table or with no sources", () => {
+    expect(buildExistingColumnsLookup({ liveIndex: live })("users")).toEqual([]);
+    expect(buildExistingColumnsLookup({})("entries")).toEqual([]);
   });
 });

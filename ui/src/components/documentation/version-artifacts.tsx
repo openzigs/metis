@@ -33,6 +33,8 @@ interface ProvenanceSummary {
   selectedEvidenceCount: number;
   sourceCount: number;
   historicalCitations: { status: string; mode: string };
+  /** #995 — per section, the topics a length cap left out. */
+  omittedTopics?: Array<{ section: string; topics: string[] }>;
 }
 
 /** Save the full manifest as a JSON file. Fetched only on this explicit request. */
@@ -51,6 +53,37 @@ async function downloadManifest(base: string, filename: string): Promise<void> {
 }
 
 type Panel = "symbols" | "provenance" | null;
+
+/** #995 — the topics the length caps left out of the document, by section. */
+function OmittedTopics({
+  omitted,
+  testId,
+}: {
+  omitted: NonNullable<ProvenanceSummary["omittedTopics"]>;
+  testId: string;
+}): React.ReactElement | null {
+  const count = omitted.reduce((n, entry) => n + entry.topics.length, 0);
+  if (count === 0) return null;
+  return (
+    <div className="mt-1" data-testid={testId}>
+      <p className="font-medium">
+        {count.toLocaleString()} topic{count === 1 ? "" : "s"} left out for length
+      </p>
+      <ul className="max-h-48 overflow-y-auto">
+        {omitted.map((entry, i) => (
+          <li key={`${i}:${entry.section}`}>
+            <span className="text-muted-foreground">{entry.section}</span>
+            <ul className="list-disc pl-4">
+              {entry.topics.map((topic, j) => (
+                <li key={`${j}:${topic}`}>{topic}</li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 export function VersionArtifacts({
   projectId,
@@ -176,6 +209,10 @@ export function VersionArtifacts({
                   {provenance.data.historicalCitations.mode})
                 </dd>
               </dl>
+              <OmittedTopics
+                omitted={provenance.data.omittedTopics ?? []}
+                testId={`version-omitted-topics-${versionId}`}
+              />
               <button
                 type="button"
                 className="mt-1 text-muted-foreground underline hover:text-foreground disabled:opacity-50"

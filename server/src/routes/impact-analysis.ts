@@ -51,6 +51,7 @@ import {
   impactLlmTableFilterEnabled,
 } from "../lib/impact-analysis/table-relevance-filter.js";
 import {
+  buildExistingColumnsLookup,
   impactLlmAdditiveDdlEnabled,
   proposeAdditiveColumns,
 } from "../lib/impact-analysis/additive-column-proposer.js";
@@ -236,9 +237,20 @@ function additiveColumnProposerDep(
   if (!impactLlmAdditiveDdlEnabled()) return undefined;
   const liveProvider = instrumentStage(runtime, "additive-ddl", buildImpactStageProvider());
   if (!liveProvider) return undefined;
-  return async (requirementText, tables) => {
+  // #1003 — a proposal is checked against every column that already exists (live
+  // schema + code graph), not only the crossed ones. Memoized per project.
+  const loadCatalog = buildPrismaTableCatalogLoader(prisma);
+  return async (requirementText, tables, { projectId, liveIndex }) => {
+    const catalog = await loadCatalog(projectId).catch((err: unknown) => {
+      log.warn("table catalog unavailable; checking proposals against the live schema only", {
+        projectId,
+        error: String(err),
+      });
+      return null;
+    });
     const result = await proposeAdditiveColumns(requirementText, tables, liveProvider, {
       enabled: true,
+      existingColumns: buildExistingColumnsLookup({ liveIndex, catalog }),
     });
     return result.rows;
   };

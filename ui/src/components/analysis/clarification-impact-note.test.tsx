@@ -116,8 +116,46 @@ describe("ClarificationImpactNote", () => {
   it("states the enrichment that is deliberately NOT published", () => {
     render(<ClarificationImpactNote application={base} />);
     expect(screen.getByTestId("clarification-impact")).toHaveTextContent(
-      /is not copied into published issues — your answers are, verbatim/,
+      /is not copied into published issues — the answers are, verbatim, each marked/,
     );
+  });
+
+  // Issue #1000 — an unedited METIS suggestion is not the user's own answer.
+  it("says who wrote each applied answer", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          answers: [
+            {
+              questionId: "q1",
+              question: "Which format?",
+              requirementTitle: "Export feeds",
+              provenance: "suggested",
+            },
+            {
+              questionId: "q2",
+              question: "Which locale?",
+              requirementTitle: "Export feeds",
+              provenance: "edited",
+            },
+            {
+              questionId: "q3",
+              question: "Which size?",
+              requirementTitle: "Export feeds",
+              provenance: "typed",
+            },
+            { questionId: "q4", question: "Legacy?", requirementTitle: "Export feeds" },
+          ],
+        }}
+      />,
+    );
+    const tags = screen.getAllByTestId("clarification-answer-provenance");
+    expect(tags.map((t) => t.textContent?.trim())).toEqual([
+      "(METIS suggestion, accepted unchanged)",
+      "(METIS suggestion, edited)",
+      "(typed by you)",
+    ]);
   });
 
   it("uses singular wording for a single answer", () => {

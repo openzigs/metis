@@ -78,7 +78,9 @@ const toastError = vi.fn();
 const toastWarning = vi.fn();
 vi.mock("sonner", () => ({
   toast: {
-    success: (msg: string) => toastSuccess(msg),
+    // #993 — options (the created-issue links) are passed through only when given.
+    success: (msg: string, opts?: unknown) =>
+      opts === undefined ? toastSuccess(msg) : toastSuccess(msg, opts),
     error: (msg: string) => toastError(msg),
     warning: (msg: string) => toastWarning(msg),
   },
@@ -927,6 +929,88 @@ describe("SpecKitPage — #789", () => {
         .getAllByRole("listitem")
         .map((li) => li.textContent),
     ).toEqual(["[T01] Build A", "[T02] Build B"]);
+  });
+
+  // #993 — choose a subset of tasks; Publish sends exactly the subset previewed.
+  const AVAILABLE = [
+    { taskId: "T01", title: "[T01] Build A" },
+    { taskId: "T02", title: "[T02] Build B" },
+    { taskId: "T03", title: "[T03] Build C (c.go:1)" },
+  ];
+
+  it("previews and publishes only the chosen tasks (#993)", async () => {
+    m.runCommand!.mockResolvedValue({ ...DRY_RUN, available: AVAILABLE });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    const picker = await screen.findByTestId("spec-kit-export-tasks");
+    expect(
+      within(picker)
+        .getAllByRole("checkbox")
+        .map((c) => (c as HTMLInputElement).checked),
+    ).toEqual([true, true, true]);
+    expect(picker).toHaveTextContent("[T03] Build C (c.go:1)");
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("spec-kit-export-task-T02"));
+    // The dry run covered every task; Publish waits for one of the new selection.
+    expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled();
+    expect(screen.getByTestId("spec-kit-export-selection-changed")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() =>
+      expect(m.runCommand).toHaveBeenLastCalledWith("p1", "speckit.taskstoissues", {
+        featureSlug: "001-a",
+        dryRun: true,
+        secretRef: SECRET,
+        taskIds: ["T01", "T03"],
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
+    expect(screen.queryByTestId("spec-kit-export-selection-changed")).toBeNull();
+    fireEvent.click(screen.getByTestId("spec-kit-export-publish"));
+    await answerDialog("Publish");
+    await waitFor(() =>
+      expect(m.runCommand).toHaveBeenLastCalledWith("p1", "speckit.taskstoissues", {
+        featureSlug: "001-a",
+        dryRun: false,
+        secretRef: SECRET,
+        expectedPlan: { tasksVersion: 3, digest: "d".repeat(64) },
+        taskIds: ["T01", "T03"],
+      }),
+    );
+  });
+
+  it("links the created issues in the success toast and the result card (#993)", async () => {
+    m.runCommand!.mockResolvedValueOnce(DRY_RUN).mockResolvedValueOnce({
+      ...DRY_RUN,
+      message: "Exported 2 task(s) to me/sandbox.",
+      created: [
+        {
+          taskId: "T01",
+          issueNumber: 41,
+          url: "https://github.com/me/sandbox/issues/41",
+          state: "new",
+        },
+        { taskId: "T02", issueNumber: 42, url: "javascript:alert(1)", state: "new" },
+      ],
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
+    // A dry run's placeholders are never links.
+    expect(toastSuccess).toHaveBeenLastCalledWith(DRY_RUN.message);
+    expect(screen.queryByTestId("spec-kit-result-issue-links")).toBeNull();
+    fireEvent.click(screen.getByTestId("spec-kit-export-publish"));
+    await answerDialog("Publish");
+    const links = await screen.findByTestId("spec-kit-result-issue-links");
+    const anchors = within(links).getAllByRole("link");
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]).toHaveAttribute("href", "https://github.com/me/sandbox/issues/41");
+    expect(anchors[0]).toHaveTextContent("T01 #41");
+    expect(toastSuccess).toHaveBeenLastCalledWith(
+      "Exported 2 task(s) to me/sandbox.",
+      expect.objectContaining({ description: expect.anything() }),
+    );
   });
 
   it("names the repository and the issue count in the publish confirmation (#936)", async () => {

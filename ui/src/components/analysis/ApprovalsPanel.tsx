@@ -17,6 +17,7 @@ import {
   analysisApi,
   readEnhancementMetadata,
   type ApprovalRequestPayload,
+  type ClarificationStatePayload,
   type StructuredRequirement,
   type TicketStatus,
 } from "@/lib/analysis-api";
@@ -268,9 +269,25 @@ export function approvalItemName(
   return `${(TYPE_LABELS[approval.type] ?? approval.type).toLowerCase()} item ${position}`;
 }
 
+/**
+ * #1000 — the `reqId:field` keys of the ambiguities the clarification dialog
+ * has closed: everything the user answered plus everything the resolution model
+ * resolved (the server's `addressedAmbiguities`). Empty with no dialog.
+ */
+export function addressedAmbiguityKeys(
+  state:
+    | Pick<ClarificationStatePayload, "resolvedAmbiguities" | "answeredAmbiguities">
+    | null
+    | undefined,
+): ReadonlySet<string> {
+  if (!state) return new Set();
+  return new Set([...(state.resolvedAmbiguities ?? []), ...(state.answeredAmbiguities ?? [])]);
+}
+
 function ApprovalCard({
   approval,
   requirement,
+  addressed,
   position,
   projectId,
   analysisId,
@@ -279,6 +296,8 @@ function ApprovalCard({
   approval: ApprovalRequestPayload;
   /** #922 — matched structured requirement for `requirement` approvals. */
   requirement?: StructuredRequirement;
+  /** #1000 — ambiguity keys the clarification dialog has closed. */
+  addressed: ReadonlySet<string>;
   /** #364 — 1-based position in its list, for the accessible name. */
   position: number;
   projectId: string;
@@ -289,7 +308,12 @@ function ApprovalCard({
   const [note, setNote] = useState("");
   const isResolved = approval.status !== "pending";
   // #403 — older stored requirements carry no `ambiguities` array.
-  const ambiguities = requirement ? ambiguitiesOf(requirement) : [];
+  const allAmbiguities = requirement ? ambiguitiesOf(requirement) : [];
+  // #1000 — an answered question is closed, not open.
+  const ambiguities = allAmbiguities.filter(
+    (amb) => !addressed.has(`${requirement?.id}:${amb.field}`),
+  );
+  const answeredCount = allAmbiguities.length - ambiguities.length;
 
   const reviewMutation = useMutation({
     mutationFn: (decision: "approved" | "rejected") =>
@@ -377,6 +401,11 @@ function ApprovalCard({
                 ))}
               </ul>
             </div>
+          )}
+          {answeredCount > 0 && (
+            <p className="text-xs text-muted-foreground" data-testid="approval-answered-questions">
+              {answeredCount} question{answeredCount === 1 ? "" : "s"} answered in clarification
+            </p>
           )}
         </div>
       )}
@@ -540,6 +569,14 @@ export function ApprovalsPanel({
     queryKey: ["approvals", analysisId],
     queryFn: () => analysisApi.listApprovals(projectId, analysisId),
   });
+  // #1000 — the questions already answered (or resolved) in the clarification
+  // dialog, so a requirement no longer lists them as open. Keyed under the
+  // analysis detail so the dialog's refresh after a submit refreshes this too.
+  const clarification = useQuery({
+    queryKey: [...queryKeys.analyses.detail(analysisId), "clarification"],
+    queryFn: () => analysisApi.getClarification(projectId, analysisId),
+  });
+  const addressed = addressedAmbiguityKeys(clarification.data?.state);
 
   // #256 — react to the distinct promotion-blocked event directly: refetch the
   // approvals so the banner + counts update immediately when the server gates
@@ -653,6 +690,7 @@ export function ApprovalsPanel({
               key={approval.id}
               approval={approval}
               requirement={lookupRequirement(approval)}
+              addressed={addressed}
               position={i + 1}
               projectId={projectId}
               analysisId={analysisId}
@@ -672,6 +710,7 @@ export function ApprovalsPanel({
               key={approval.id}
               approval={approval}
               requirement={lookupRequirement(approval)}
+              addressed={addressed}
               position={i + 1}
               projectId={projectId}
               analysisId={analysisId}

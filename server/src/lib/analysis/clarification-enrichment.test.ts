@@ -17,6 +17,7 @@ interface ReqRow {
   title: string;
   body: string;
   deletedAt: Date | null;
+  acceptanceCriteria?: string;
 }
 
 const store = {
@@ -64,8 +65,11 @@ const {
   MAX_OUTCOME_QUESTION,
   MAX_PUBLISHED_ANSWER,
   applyClarificationBlock,
+  PROVENANCE_TAGS,
+  answerProvenance,
   applyClarificationsToRequirements,
   attributeAnswers,
+  hasAnsweredClarification,
   collectAnsweredQuestions,
   containmentScore,
   renderClarificationBlock,
@@ -73,6 +77,9 @@ const {
   significantTokens,
   stripClarificationBlock,
 } = await import("./clarification-enrichment.js");
+
+const { CRITERIA_FLAG_LINE, CRITERIA_FLAG_MARKER, clearCriteriaFlag, hasCriteriaFlag } =
+  await import("./clarification-criteria-flag.js");
 
 const structured = (id: string, title: string): StructuredRequirement => ({
   id,
@@ -92,12 +99,14 @@ const answer = (
     requirementId: string;
     question: string;
     answer: string;
+    provenance: "typed" | "edited" | "suggested";
   }> = {},
 ) => ({
   questionId: "q1",
   requirementId: "REQ-1",
   question: "Which rate source?",
   answer: "The ECB daily rate.",
+  provenance: "typed" as const,
   ...over,
 });
 
@@ -153,7 +162,46 @@ describe("collectAnsweredQuestions", () => {
       ]),
     );
     expect(out).toEqual([
-      { questionId: "a", requirementId: "R1", question: "Q?", answer: "legacy answer" },
+      {
+        questionId: "a",
+        requirementId: "R1",
+        question: "Q?",
+        answer: "legacy answer",
+        provenance: "typed",
+      },
+    ]);
+  });
+
+  // Issue #1000 — an unedited METIS suggestion is not the requester's answer.
+  it("records whether each answer is METIS's suggestion, an edit of it, or typed", () => {
+    const q = (id: string, answer: string, groundedAnswer?: string) => ({
+      id,
+      requirementId: "R1",
+      ambiguityField: id,
+      question: `${id}?`,
+      context: "",
+      answer,
+      ...(groundedAnswer !== undefined
+        ? { groundingStatus: "grounded" as const, groundedAnswer }
+        : {}),
+    });
+    const out = collectAnsweredQuestions(
+      state([
+        {
+          round: 1,
+          questions: [
+            q("a", "Retain for 24 hours.", "Retain for 24 hours."),
+            q("b", "Retain for 7 days.", "Retain for 24 hours."),
+            q("c", "Mine."),
+          ],
+          answers: [],
+        },
+      ]),
+    );
+    expect(out.map((a) => [a.questionId, a.provenance])).toEqual([
+      ["a", "suggested"],
+      ["b", "edited"],
+      ["c", "typed"],
     ]);
   });
 
@@ -174,6 +222,55 @@ describe("collectAnsweredQuestions", () => {
     );
     expect(out).toHaveLength(1);
     expect(out[0].answer).toBe("second");
+  });
+});
+
+describe("answerProvenance", () => {
+  it("compares the answer with the suggestion, ignoring whitespace only", () => {
+    expect(answerProvenance("x", undefined)).toBe("typed");
+    expect(answerProvenance("x", "  ")).toBe("typed");
+    expect(answerProvenance("  The  ECB\nrate. ", "The ECB rate.")).toBe("suggested");
+    expect(answerProvenance("The ECB rate!", "The ECB rate.")).toBe("edited");
+    expect(answerProvenance("the ecb rate.", "The ECB rate.")).toBe("edited");
+  });
+});
+
+describe("hasAnsweredClarification", () => {
+  it("is true only once a question has a non-blank answer, and false when the read fails", async () => {
+    store.dialogThrows = false;
+    store.dialogState = null;
+    expect(await hasAnsweredClarification(ANALYSIS_ID)).toBe(false);
+    const round = (answer: string) => ({
+      analysisId: ANALYSIS_ID,
+      currentRound: 1,
+      maxRounds: 3,
+      rounds: [
+        {
+          round: 1,
+          questions: [
+            {
+              id: "a",
+              requirementId: "R",
+              ambiguityField: "f",
+              question: "?",
+              context: "",
+              answer,
+            },
+          ],
+          answers: [],
+        },
+      ],
+      resolvedAmbiguities: [],
+      escalatedToSonnet: false,
+      completed: false,
+    });
+    store.dialogState = JSON.stringify(round(" "));
+    expect(await hasAnsweredClarification(ANALYSIS_ID)).toBe(false);
+    store.dialogState = JSON.stringify(round("yes"));
+    expect(await hasAnsweredClarification(ANALYSIS_ID)).toBe(true);
+    store.dialogThrows = true;
+    expect(await hasAnsweredClarification(ANALYSIS_ID)).toBe(false);
+    store.dialogThrows = false;
   });
 });
 
@@ -267,6 +364,21 @@ describe("block rendering", () => {
     expect(block).toContain("**A:** The ECB daily rate.");
   });
 
+  it("#1000 — tags each answer with who wrote it, and no longer credits every answer to the requester", () => {
+    const block = renderClarificationBlock([
+      answer({ questionId: "a", provenance: "typed", answer: "Typed." }),
+      answer({ questionId: "b", provenance: "edited", answer: "Edited." }),
+      answer({ questionId: "c", provenance: "suggested", answer: "Suggested." }),
+    ]);
+    expect(block).not.toContain("Answered by the requester");
+    expect(block).toContain(`**A:** Typed. ${PROVENANCE_TAGS.typed}`);
+    expect(block).toContain(`**A:** Edited. ${PROVENANCE_TAGS.edited}`);
+    expect(block).toContain(`**A:** Suggested. ${PROVENANCE_TAGS.suggested}`);
+    expect(PROVENANCE_TAGS.suggested).toContain("METIS suggestion, accepted unchanged");
+    expect(block).not.toContain(CRITERIA_FLAG_MARKER);
+    expect(renderClarificationBlock([answer()], true)).toContain(CRITERIA_FLAG_LINE);
+  });
+
   it("says so when a question text is missing rather than rendering an orphan answer", () => {
     expect(renderClarificationBlock([answer({ question: "" })])).toContain(
       "(question text unavailable)",
@@ -319,6 +431,39 @@ describe("applying the block to a body", () => {
 
   it("produces a bare block when the requirement had no body at all", () => {
     expect(applyClarificationBlock("", [answer()]).startsWith(CLARIFICATIONS_START)).toBe(true);
+  });
+});
+
+describe("#1000 — flagging acceptance criteria the answers may have changed", () => {
+  const withCriteria = { hasAcceptanceCriteria: true };
+
+  it("flags the criteria when answers arrive for a requirement that has criteria", () => {
+    expect(applyClarificationBlock("Body.", [answer()], withCriteria)).toContain(
+      CRITERIA_FLAG_LINE,
+    );
+    // No criteria, nothing to check.
+    expect(applyClarificationBlock("Body.", [answer()])).not.toContain(CRITERIA_FLAG_MARKER);
+  });
+
+  it("keeps the flag on a re-run with the same answers", () => {
+    const once = applyClarificationBlock("Body.", [answer()], withCriteria);
+    expect(applyClarificationBlock(once, [answer()], withCriteria)).toBe(once);
+  });
+
+  it("does not bring the flag back once the criteria were edited, until the answers change", () => {
+    const flagged = applyClarificationBlock("Body.", [answer()], withCriteria);
+    const edited = clearCriteriaFlag(flagged);
+    expect(edited).not.toContain(CRITERIA_FLAG_MARKER);
+    expect(edited).toBe(applyClarificationBlock("Body.", [answer()]));
+    expect(applyClarificationBlock(edited, [answer()], withCriteria)).toBe(edited);
+    expect(
+      applyClarificationBlock(edited, [answer({ answer: "A newer answer." })], withCriteria),
+    ).toContain(CRITERIA_FLAG_LINE);
+  });
+
+  it("clearCriteriaFlag leaves a body without the flag untouched", () => {
+    expect(clearCriteriaFlag("Body.\n\n\n\nMore.")).toBe("Body.\n\n\n\nMore.");
+    expect(hasCriteriaFlag("Body.")).toBe(false);
   });
 });
 
@@ -431,6 +576,7 @@ describe("applyClarificationsToRequirements", () => {
         questionId: "q1",
         question: "Which rate source?",
         requirementTitle: "Display product prices in the shopper's currency",
+        provenance: "typed",
       },
     ]);
   });
@@ -439,8 +585,39 @@ describe("applyClarificationsToRequirements", () => {
     store.metadata = JSON.stringify({});
     const out = await applyClarificationsToRequirements(ANALYSIS_ID);
     expect(out?.answers).toEqual([
-      { questionId: "q1", question: "Which rate source?", requirementTitle: null },
+      {
+        questionId: "q1",
+        question: "Which rate source?",
+        requirementTitle: null,
+        provenance: "typed",
+      },
     ]);
+  });
+
+  it("#1000 — records an accepted suggestion as METIS's and flags the row's criteria", async () => {
+    const q = dialog.rounds[0].questions[0];
+    store.dialogState = JSON.stringify({
+      ...dialog,
+      rounds: [
+        {
+          ...dialog.rounds[0],
+          questions: [{ ...q, groundingStatus: "grounded", groundedAnswer: q.answer }],
+        },
+      ],
+    });
+    store.requirements[0].acceptanceCriteria = JSON.stringify(["Rates refresh every 24 h."]);
+    const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+    expect(out?.answers?.[0].provenance).toBe("suggested");
+    const body = store.requirements[0].body;
+    expect(body).toContain(`The ECB daily rate. ${PROVENANCE_TAGS.suggested}`);
+    expect(body).toContain(CRITERIA_FLAG_LINE);
+  });
+
+  it("#1000 — does not flag a row whose criteria were cleared", async () => {
+    store.requirements[0].acceptanceCriteria = "null";
+    await applyClarificationsToRequirements(ANALYSIS_ID);
+    expect(store.requirements[0].body).toContain("The ECB daily rate.");
+    expect(store.requirements[0].body).not.toContain(CRITERIA_FLAG_MARKER);
   });
 
   it("shortens a long question in the per-answer record", async () => {

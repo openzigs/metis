@@ -23,6 +23,7 @@ const baseAnalysis = {
   completedAt: "2025-01-01T01:00:00Z",
   totalTokens: 0,
   errorMessage: null,
+  requirementCounts: { draft: 0, approved: 0, rejected: 0, deferred: 0 },
   agentResults: [],
   scope: null,
 };

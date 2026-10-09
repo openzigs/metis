@@ -291,6 +291,33 @@ describe("POST /commands/speckit.taskstoissues (real runner, #784)", () => {
     expect(res.body.data.credentialCheck).toBe("missing");
   });
 
+  it("a dry run with taskIds plans only those tasks and lists every task as available (#993)", async () => {
+    Object.assign(db.projects.get("p1"), {
+      publishGithubOwner: "openzigs",
+      publishGithubRepo: "flux-v2",
+    });
+    const res = await request(makeApp())
+      .post(ROUTE)
+      .send({ featureSlug: "001-foo", dryRun: true, taskIds: ["T02"] });
+    expect(res.status).toBe(200);
+    expect(res.body.data.created.map((c: any) => c.taskId)).toEqual(["T02"]);
+    expect(res.body.data.available).toEqual([
+      { taskId: "T01", title: "[T01] Build A" },
+      { taskId: "T02", title: "[T02] Build B" },
+    ]);
+  });
+
+  it("malformed taskIds are a 400 before anything runs (#993)", async () => {
+    for (const taskIds of [[], ["T01; rm"], "T01", ["T".repeat(3)]]) {
+      const res = await request(makeApp())
+        .post(ROUTE)
+        .send({ featureSlug: "001-foo", dryRun: true, taskIds });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("BAD_REQUEST");
+    }
+    expect(prisma.specKitFeature.findUnique).not.toHaveBeenCalled();
+  });
+
   it("a refusal speaks to a UI user, not in API field names (#936)", async () => {
     const res = await request(makeApp())
       .post(ROUTE)

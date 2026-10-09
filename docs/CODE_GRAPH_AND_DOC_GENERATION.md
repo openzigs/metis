@@ -904,7 +904,11 @@ budget and to state business rules rather than every implementation check.
 `section-size.ts` then guarantees the cap: it keeps leading content whole (paragraphs,
 fences, `$$` blocks and tables are never split, never mid-sentence) and closes the section
 with a note naming the omitted topics. Over the document cap, the longest sections are
-shortened first. Fitting happens before footnotes are numbered, so `[^src-N]` (#737)
+shortened first; because a section is cut at topic boundaries it usually lands under its
+share, so the unused room is handed back in rounds to the sections still shortened (#995 —
+run 5's BRD used 186k of 250k while dropping 41 topics). Each manifest section records the
+topics either cap left out (`omittedTopics`), and the version's Provenance panel lists them.
+Fitting happens before footnotes are numbered, so `[^src-N]` (#737)
 refer only to kept text. The #778 condensed digests are an input-side budget and are
 unchanged. Both caps are part of a section's reuse hash.
 
