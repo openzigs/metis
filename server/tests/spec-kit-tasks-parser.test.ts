@@ -171,3 +171,16 @@ describe("parseTasksMarkdown — METIS task lines (#993)", () => {
     expect(task?.title).toBe("(depends-on: none)");
   });
 });
+
+describe("parseTasksMarkdown - upstream spec-kit form and prose (#993 review)", () => {
+  it("reads leading [P] [US1] markers: parallelizable, not part of the title", () => {
+    const [task] = parseTasksMarkdown("- [ ] T001 [P] [US1] Create the model");
+    expect(task?.parallelizable).toBe(true);
+    expect(task?.title).toBe("Create the model");
+  });
+  it("does not cut the title at a singular 'file:' inside prose", () => {
+    const [task] = parseTasksMarkdown("- [ ] T02 \u2014 Document the config file: settings.yaml");
+    expect(task?.title).toBe("Document the config file: settings.yaml");
+    expect(task?.files).toEqual([]);
+  });
+});

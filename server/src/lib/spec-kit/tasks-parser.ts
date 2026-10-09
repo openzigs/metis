@@ -131,12 +131,14 @@ function parseBulletRow(line: string, story: string | null, extra: string[]): Pa
   if (!idMatch) return null;
   const id = idMatch[0]!.toUpperCase();
   const afterId = line.slice(line.indexOf(idMatch[0]) + idMatch[0].length);
-  const { title, tail } = splitTaskTitle(afterId);
+  // Upstream spec-kit form: `T001 [P] [US1] Description` — leading markers.
+  const lead = /^\s*((?:\[(?:P|US\d+)\]\s*)+)/i.exec(afterId);
+  const { title, tail } = splitTaskTitle(lead ? afterId.slice(lead[0].length) : afterId);
   const fullLine = line.replace(/^\s*-\s*(\[[ xX]\])?\s*/, "").trim();
   return {
     id,
     title,
-    parallelizable: PARALLEL_RE.test(tail),
+    parallelizable: PARALLEL_RE.test(tail) || (lead !== null && PARALLEL_RE.test(lead[1]!)),
     files: parseFiles(tail),
     dependsOn: parseDeps(tail),
     userStorySlug: story,
@@ -159,7 +161,7 @@ const TRAILING_META_RES = [
   /\s*\(\s*depends?-on:[^()]*\)\s*$/i,
   /\s*\bdepends?-on:[^()[\]]*$/i,
   /\s*\(\s*satisfies:[^()]*\)\s*$/i,
-  /\s*\bfiles?:[^()[\]]*$/i,
+  /\s*\bfiles:[^()[\]]*$/i,
 ];
 
 /** Split the text after a task id into its title and its trailing metadata. */
@@ -173,7 +175,7 @@ export function splitTaskTitle(afterId: string): { title: string; tail: string }
       const m = re.exec(rest);
       // A match at 0 is a line with no title at all: keep it as the title.
       if (m && m.index > 0) {
-        tail = `${m[0]} ${tail}`;
+        tail = `${m[0].trim()} ${tail}`.trim();
         rest = rest.slice(0, m.index).trimEnd();
         changed = true;
       }

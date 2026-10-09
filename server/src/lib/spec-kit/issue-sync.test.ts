@@ -210,3 +210,28 @@ describe("syncIssueEvent (unit)", () => {
     expect(r).toEqual({ handled: false, reason: "FEATURE_MISSING" });
   });
 });
+
+describe("#993 — rename keeps parenthesised titles and trailing metadata", () => {
+  const line = "- [ ] T03 — Change Foo in a.go (a.go:12-30) (satisfies: AC-1) depends-on: T01";
+  it("does not touch the line when the issue title is the exported one", () => {
+    const r = applyIssueEventToTasksMarkdown(
+      line,
+      "T03",
+      "edited",
+      "[T03] Change Foo in a.go (a.go:12-30)",
+    );
+    expect(r.change).toBe("noop");
+    expect(r.content).toBe(line);
+  });
+  it("does not touch the line when the exported title was truncated", () => {
+    const long = "x".repeat(300);
+    const l = `- [ ] T03 — ${long} (satisfies: AC-1)`;
+    const exported = `${`[T03] ${long}`.slice(0, 255)}…`;
+    expect(applyIssueEventToTasksMarkdown(l, "T03", "edited", exported).change).toBe("noop");
+  });
+  it("renames only the title, strips the [Txx] prefix, keeps metadata once", () => {
+    const r = applyIssueEventToTasksMarkdown(line, "T03", "edited", "[T03] Rework Foo (b.go:1-2)");
+    expect(r.change).toBe("title");
+    expect(r.content).toBe("- [ ] T03 — Rework Foo (b.go:1-2) (satisfies: AC-1) depends-on: T01");
+  });
+});
