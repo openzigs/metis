@@ -91,6 +91,12 @@ import { ModelNotServedError } from "../lib/ai/model-router.js";
 import { RequirementVersionError } from "../lib/requirements/requirement-version-service.js";
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 import { listPromptOnlyAnalysisAgents } from "../lib/analysis/custom-agent-phase.js";
+import {
+  composeImportedRequirementInput,
+  listImportedRequirements,
+  loadSelectedImportedRequirements,
+} from "../lib/analysis/imported-requirement-input.js";
+import { resolveNewRequirementCandidateCap } from "../lib/analysis/new-requirements.js";
 // Issue #743 — diff-style current-vs-proposed view for changed requirements.
 import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-service.js";
 import type { StructuredRequirements } from "../lib/analysis/types/requirements.js";
@@ -346,6 +352,24 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     },
   );
 
+  // Issue #1006 — the project's imported requirements a run can start from,
+  // and how many one run analyses individually.
+  projectScoped.get(
+    "/imported-requirements",
+    requireAuth,
+    requirePermission("analysis.read"),
+    async (req: Request, res: Response) => {
+      const projectId = String(req.params.projectId);
+      await ensureProjectVisible(projectId);
+      res.json(
+        ok({
+          items: await listImportedRequirements(projectId),
+          maxSelectable: resolveNewRequirementCandidateCap(),
+        }),
+      );
+    },
+  );
+
   projectScoped.post(
     "/",
     requireAuth,
@@ -359,6 +383,27 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           issues: parsed.error.flatten(),
         });
       }
+      // Issue #1006 — imported requirements lead the new-requirements text, one
+      // `NR-*` each, and the run records which imported item each id was.
+      let extraInstructions = parsed.data.extraInstructions;
+      let sourceRequirements;
+      const importedIds = parsed.data.importedRequirementIds;
+      if (importedIds?.length) {
+        const cap = resolveNewRequirementCandidateCap();
+        if (new Set(importedIds).size > cap) {
+          throw new AppError(
+            400,
+            "IMPORTED_REQUIREMENTS_OVER_CAP",
+            `Select at most ${cap} imported requirements per analysis; each one is analysed individually.`,
+            { cap },
+          );
+        }
+        const selected = await loadSelectedImportedRequirements(projectId, importedIds);
+        ({ extraInstructions, sourceRequirements } = composeImportedRequirementInput(
+          selected,
+          extraInstructions,
+        ));
+      }
       const actor = actorFromReq(req);
       try {
         const result = await ensureOrch().start({
@@ -367,7 +412,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           agentKeys: parsed.data.agentKeys,
           documentIds: parsed.data.documentIds,
           model: parsed.data.model,
-          extraInstructions: parsed.data.extraInstructions,
+          extraInstructions,
+          ...(sourceRequirements ? { sourceRequirements } : {}),
           enableWebResearch: parsed.data.enableWebResearch ?? false,
           enableClarification: parsed.data.enableClarification ?? false,
         });

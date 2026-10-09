@@ -24,6 +24,7 @@ import {
   type AGENT_RESULT_STATUSES,
   type AnalysisAgentEvent,
   type AnalysisCapability,
+  type AnalysisSourceRequirement,
   type AnalysisCapabilityEvent,
   type AnalysisDatabaseAware,
   type AnalysisReposSkippedEvent,
@@ -589,6 +590,12 @@ export interface StartAnalysisOptions {
    * questions for ambiguous items. When false (default) extraction is skipped.
    */
   enableClarification?: boolean;
+  /**
+   * Issue #1006 — the imported requirements the run was started from (their
+   * titles already lead `extraInstructions`, one `NR-*` each). Persisted to the
+   * analysis metadata so the run keeps the link back to each imported item.
+   */
+  sourceRequirements?: AnalysisSourceRequirement[];
 }
 
 interface ActiveRun {
@@ -703,6 +710,7 @@ export class AnalysisOrchestrator {
       documentIds: opts.documentIds,
       model: opts.model,
       extraInstructions: opts.extraInstructions,
+      sourceRequirements: opts.sourceRequirements,
     });
 
     audit({
@@ -719,6 +727,7 @@ export class AnalysisOrchestrator {
         documentCount: opts.documentIds?.length ?? null,
         model: opts.model ?? null,
         hasExtraInstructions: Boolean(opts.extraInstructions),
+        importedRequirementCount: opts.sourceRequirements?.length ?? 0,
       },
     });
 

@@ -51,6 +51,32 @@ interface GithubRestIssue {
   pull_request?: unknown;
 }
 
+/**
+ * Issue #1006 — match a title against the filter's `titlePrefixes`
+ * (case-insensitive, after trimming) and strip the matched prefix plus any
+ * separator after it (`:`, `-`, dashes, whitespace). The longest matching
+ * prefix wins, so `[Feature]:` and `[Feature]` both strip the colon. A title
+ * that is nothing but the prefix keeps its full text rather than going blank.
+ * `null` when no prefix matches.
+ */
+export function stripTitlePrefix(
+  title: string,
+  prefixes: ReadonlyArray<string>,
+): { title: string } | null {
+  const trimmed = title.trim();
+  const lower = trimmed.toLowerCase();
+  const match = prefixes
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0 && lower.startsWith(p.toLowerCase()))
+    .sort((a, b) => b.length - a.length)[0];
+  if (match === undefined) return null;
+  const rest = trimmed
+    .slice(match.length)
+    .replace(/^[\s:\-–—]+/, "")
+    .trim();
+  return { title: rest.length > 0 ? rest : trimmed };
+}
+
 export class GithubImporter implements Importer<GithubFilter> {
   readonly kind = "github" as const;
 
@@ -118,6 +144,17 @@ export class GithubImporter implements Importer<GithubFilter> {
   }
 
   async count(filter: GithubFilter, ctx?: ImporterFetchContext): Promise<number> {
+    // #1006 — no GitHub search qualifier matches a title PREFIX (`in:title` is a
+    // word match anywhere), so a prefix-filtered count must walk the issues the
+    // import would actually take, or the preview would promise the wrong number.
+    if (filter.titlePrefixes?.length) {
+      let n = 0;
+      for await (const issue of this.fetchAll(filter, ctx)) {
+        void issue;
+        n += 1;
+      }
+      return n;
+    }
     if (this.anonymous) return this.countViaRestSearch(filter, ctx);
     await this.guard(this.graphqlUrl);
     const query = `query($q:String!){ search(query:$q, type:ISSUE){ issueCount } }`;
@@ -174,8 +211,17 @@ export class GithubImporter implements Importer<GithubFilter> {
       for (const issue of issues) {
         // The /issues endpoint returns PRs too — skip them.
         if (issue.pull_request) continue;
+        const external = this.toExternal(issue);
+        if (filter.titlePrefixes?.length) {
+          const stripped = stripTitlePrefix(issue.title, filter.titlePrefixes);
+          if (!stripped) continue;
+          // #1006 — the stripped prefix may be the only type signal (`[Bug]:`),
+          // so read the type off the ORIGINAL title before it is gone.
+          external.type = parseTitleTypeTag(issue.title).type;
+          external.title = stripped.title;
+        }
         fetched += 1;
-        yield this.toExternal(issue);
+        yield external;
       }
       ctx?.onProgress?.({ fetched, page });
       url = parseLinkHeader(res.headers.get("link")).next ?? null;
@@ -206,7 +252,7 @@ export class GithubImporter implements Importer<GithubFilter> {
     const mapped = defaultMap(issue);
     const tagged = parseTitleTypeTag(issue.title);
     mapped.title = tagged.title;
-    mapped.type = typeFromLabels(issue.labels) ?? tagged.type ?? "feature";
+    mapped.type = typeFromLabels(issue.labels) ?? tagged.type ?? issue.type ?? "feature";
     return mapped;
   }
 }

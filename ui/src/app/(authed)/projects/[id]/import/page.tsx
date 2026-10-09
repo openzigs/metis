@@ -66,6 +66,15 @@ function buildFilter(source: ImportSourceKind, f: FilterState): Record<string, u
                 .filter(Boolean),
             }
           : {}),
+        // #1006 — for trackers that mark a type with a title tag, not a label.
+        ...(f.titlePrefixes?.trim()
+          ? {
+              titlePrefixes: f.titlePrefixes
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean),
+            }
+          : {}),
       };
     case "jira":
       return { connectionId: f.connectionId ?? "", jql: f.jql ?? "" };
@@ -110,6 +119,11 @@ const SOURCE_FIELDS: Record<
     { key: "owner", label: "Owner / org", placeholder: "octocat" },
     { key: "repo", label: "Repository", placeholder: "hello-world" },
     { key: "labels", label: "Labels (comma-separated, optional)", placeholder: "bug, enhancement" },
+    {
+      key: "titlePrefixes",
+      label: "Title starts with (comma-separated, optional — the prefix is removed)",
+      placeholder: "[Feature]:",
+    },
     { key: "state", label: "State (open / closed / all)", placeholder: "open" },
   ],
   jira: [

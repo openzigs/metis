@@ -938,6 +938,9 @@ export function describeRequirementReplacementWithheld(
  */
 export const MAX_EXTRA_INSTRUCTIONS = 4096;
 
+/** Most imported requirements one analysis can start from (`importedRequirementIds`). */
+export const MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS = 25;
+
 export const startAnalysisSchema = z.object({
   documentIds: z.array(idSchema).max(100).optional(),
   agentKeys: z.array(z.enum(ANALYSIS_SPECIALIST_AGENT_KEYS)).max(4).optional(),
@@ -958,6 +961,16 @@ export const startAnalysisSchema = z.object({
    * requirements so the user can answer and feed the answers back in.
    */
   enableClarification: z.boolean().optional(),
+  /**
+   * Issue #1006 — start from imported requirements (project-scoped ids). Each
+   * becomes one new requirement of the run, in order, and the run records which
+   * imported item it was.
+   */
+  importedRequirementIds: z
+    .array(idSchema)
+    .min(1)
+    .max(MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS)
+    .optional(),
 });
 export type StartAnalysisInput = z.infer<typeof startAnalysisSchema>;
 
@@ -1278,6 +1291,52 @@ export interface AnalysisSnapshot {
    * ran (the resolver was never applicable) or on runs that predate #855.
    */
   databaseAware: AnalysisDatabaseAware | null;
+  /**
+   * Issue #1006 — the imported requirements this run was started from, each with
+   * the `NR-*` id it carried through the run. Absent on runs not started from
+   * imported requirements (and on every run before #1006).
+   */
+  sourceRequirements?: AnalysisSourceRequirement[];
+}
+
+// ---- Analysis from imported requirements (Issue #1006) ----------------------
+
+/**
+ * Issue #1006 — an imported requirement (GitHub / Jira / Azure DevOps / Linear)
+ * a run can be started from, as listed by
+ * `GET /projects/:projectId/analyses/imported-requirements`.
+ */
+export interface ImportedRequirementOption {
+  id: string;
+  title: string;
+  type: string;
+  externalSource: string;
+  externalId: string | null;
+  externalUrl: string | null;
+}
+
+/** Response of `GET /projects/:projectId/analyses/imported-requirements`. */
+export interface ImportedRequirementOptions {
+  items: ImportedRequirementOption[];
+  /**
+   * How many a run analyses individually: the server's new-requirement
+   * candidate cap. A larger selection is refused rather than silently cut.
+   */
+  maxSelectable: number;
+}
+
+/**
+ * Issue #1006 — the link between an imported requirement and the run it was
+ * analysed in. `candidateId` is the `NR-*` id the requirement carried, so the
+ * run's findings and requirement-input account can be read back against it.
+ */
+export interface AnalysisSourceRequirement {
+  candidateId: string;
+  requirementId: string;
+  title: string;
+  externalSource: string;
+  externalId: string | null;
+  externalUrl: string | null;
 }
 
 // ---- Database-aware analysis run decision (Epic #852 Phase 2b, #855) --------
