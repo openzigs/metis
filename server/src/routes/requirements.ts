@@ -32,6 +32,12 @@ import {
 // string[] on the wire; a malformed/legacy value reads as no labels rather than
 // throwing inside the lock's pre-flight read.
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
+import {
+  ACCEPTANCE_CRITERIA_CLEARED,
+  ACCEPTANCE_CRITERIA_MAX_ITEMS,
+  ACCEPTANCE_CRITERION_MAX_LENGTH,
+  parseAcceptanceCriteria,
+} from "@metis/shared";
 
 // ---- Schemas ----------------------------------------------------------------
 
@@ -44,6 +50,12 @@ const updateRequirementSchema = z.object({
   labels: z.array(z.string()).optional(),
   storyPoints: z.number().int().nullable().optional(),
   reviewStatus: z.enum(["draft", "approved", "rejected", "deferred"]).nullable().optional(),
+  /// #990 — the full criteria list from the Edit dialog (replaces the stored
+  /// one). Same bounds as synthesis writes; `[]` clears it.
+  acceptanceCriteria: z
+    .array(z.string().trim().min(1).max(ACCEPTANCE_CRITERION_MAX_LENGTH))
+    .max(ACCEPTANCE_CRITERIA_MAX_ITEMS)
+    .optional(),
   /// Epic #770 — optional free-text reason recorded on the version row.
   reason: z.string().max(500).optional(),
 });
@@ -76,6 +88,7 @@ async function loadLockedRequirement(req: Request) {
       labels: true,
       storyPoints: true,
       reviewStatus: true,
+      acceptanceCriteria: true,
     },
   });
   if (!row) return null;
@@ -87,7 +100,12 @@ async function loadLockedRequirement(req: Request) {
   // with a 400. Present the record in the shape the client speaks — and, like
   // the Edit dialog, without the hidden `finding:*` / `review:*` labels the
   // write keeps on its own (#940).
-  return { ...row, labels: visibleRequirementLabels(row.labels) };
+  // #990 — `acceptanceCriteria` is the same JSON-string-vs-array case.
+  return {
+    ...row,
+    labels: visibleRequirementLabels(row.labels),
+    acceptanceCriteria: parseAcceptanceCriteria(row.acceptanceCriteria),
+  };
 }
 
 export function requirementsCollaborationRouter(): Router {
@@ -225,6 +243,14 @@ export function requirementsCollaborationRouter(): Router {
       if (parsed.data.labels !== undefined) patch.labels = JSON.stringify(parsed.data.labels);
       if (parsed.data.storyPoints !== undefined) patch.storyPoints = parsed.data.storyPoints;
       if (parsed.data.reviewStatus !== undefined) patch.reviewStatus = parsed.data.reviewStatus;
+      if (parsed.data.acceptanceCriteria !== undefined) {
+        // #990 — `[]` is an explicit clear: store the marker so the issue draft
+        // does not refill the list from the body or a Gherkin text.
+        patch.acceptanceCriteria =
+          parsed.data.acceptanceCriteria.length === 0
+            ? ACCEPTANCE_CRITERIA_CLEARED
+            : JSON.stringify(parsed.data.acceptanceCriteria);
+      }
 
       // Epic #770 — the version-history service owns version bumping and appends
       // a compact, changed-fields-only audit row inside the same transaction.

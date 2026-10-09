@@ -42,6 +42,7 @@ const TRACKED_SELECT = {
   labels: true,
   storyPoints: true,
   reviewStatus: true,
+  acceptanceCriteria: true,
 } as const;
 
 const MAX_PAGE_SIZE = 100;

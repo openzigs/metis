@@ -9,6 +9,12 @@
  * with the size of the run.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ACCEPTANCE_CRITERIA_MAX_ITEMS,
+  ACCEPTANCE_CRITERION_MAX_LENGTH,
+  capAcceptanceCriteria,
+  deriveBodyAcceptanceCriteria,
+} from "@metis/shared";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
@@ -502,6 +508,7 @@ export default function AnalysisPage(): React.ReactElement {
                 priority: "Priority",
                 type: "Type",
                 labels: "Labels",
+                acceptanceCriteria: "Acceptance criteria",
               },
             },
           });
@@ -525,6 +532,9 @@ export default function AnalysisPage(): React.ReactElement {
                   ...(input.patch.priority !== undefined ? { priority: input.patch.priority } : {}),
                   ...(input.patch.type !== undefined ? { type: input.patch.type } : {}),
                   ...(input.patch.labels !== undefined ? { labels: input.patch.labels } : {}),
+                  ...(input.patch.acceptanceCriteria !== undefined
+                    ? { acceptanceCriteria: input.patch.acceptanceCriteria }
+                    : {}),
                 }
               : r,
           ),
@@ -1579,6 +1589,26 @@ function RequirementEditModal(props: {
   const [priority, setPriority] = useState<string>("medium");
   const [type, setType] = useState<string>("feature");
   const [labelsText, setLabelsText] = useState("");
+  // #990 — the requirement's own criteria, one input per criterion.
+  const [criteria, setCriteria] = useState<string[]>([]);
+  // Stable row ids, parallel to `criteria`, so Remove does not move focus or
+  // IME state onto the wrong input.
+  const [criteriaKeys, setCriteriaKeys] = useState<number[]>([]);
+  const nextCriterionKey = useRef(0);
+
+  // #990 — what the issue draft renders: the stored list, else the criteria it
+  // derives from the body (imported requirements, #863, or a Gherkin body). The
+  // editor prefills from that so it is the single source the draft renders from.
+  // A deliberate clear is honoured exactly as the draft honours it: no refill.
+  // The prefill is capped to what the PUT accepts, so an over-long body-derived
+  // list cannot make every criterion edit fail validation.
+  const { criteria: initialCriteria, trimmed: prefillTrimmed } = useMemo(() => {
+    if (!requirement) return { criteria: [], trimmed: false };
+    const stored = requirement.acceptanceCriteria ?? [];
+    if (stored.length > 0) return { criteria: stored, trimmed: false };
+    if (requirement.acceptanceCriteriaCleared) return { criteria: [], trimmed: false };
+    return capAcceptanceCriteria(deriveBodyAcceptanceCriteria(requirement.body));
+  }, [requirement]);
 
   // Sync local form state whenever a different requirement opens.
   useEffect(() => {
@@ -1588,7 +1618,9 @@ function RequirementEditModal(props: {
     setPriority(requirement.priority);
     setType(requirement.type);
     setLabelsText(requirement.labels.join(", "));
-  }, [requirement]);
+    setCriteria(initialCriteria);
+    setCriteriaKeys(initialCriteria.map(() => nextCriterionKey.current++));
+  }, [requirement, initialCriteria]);
 
   const open = requirement !== null;
   return (
@@ -1602,8 +1634,8 @@ function RequirementEditModal(props: {
         <DialogHeader>
           <DialogTitle>Edit requirement</DialogTitle>
           <DialogDescription>
-            Update the title, body, priority, type, or notes / labels. Changes are saved through the
-            analysis API and the requirements list will refresh on success.
+            Update the title, body, priority, type, labels or acceptance criteria. Each save is
+            recorded as a new version, and the requirements list refreshes on success.
           </DialogDescription>
         </DialogHeader>
         <form
@@ -1614,12 +1646,18 @@ function RequirementEditModal(props: {
               .split(",")
               .map((s) => s.trim())
               .filter((s) => s.length > 0);
+            const acceptanceCriteria = criteria.map((c) => c.trim()).filter((c) => c.length > 0);
+            // Sent only when the list changed, so an edit of another field does
+            // not rewrite (and version) criteria nobody touched.
+            const criteriaChanged =
+              JSON.stringify(acceptanceCriteria) !== JSON.stringify(initialCriteria);
             onSave({
               title: title.trim(),
               body: body.trim(),
               priority,
               type,
               labels,
+              ...(criteriaChanged ? { acceptanceCriteria } : {}),
             });
           }}
         >
@@ -1684,6 +1722,61 @@ function RequirementEditModal(props: {
               placeholder="security, billing"
             />
           </div>
+          <fieldset className="space-y-2" data-testid="req-edit-criteria">
+            <legend className="text-sm font-medium">Acceptance criteria</legend>
+            <p className="text-xs text-muted-foreground">
+              Issue drafts list these criteria. Empty ones are dropped on save.
+            </p>
+            {prefillTrimmed ? (
+              <p className="text-xs text-warning" role="status">
+                The body lists more criteria than can be saved: only the first{" "}
+                {ACCEPTANCE_CRITERIA_MAX_ITEMS}, each up to {ACCEPTANCE_CRITERION_MAX_LENGTH}{" "}
+                characters, are shown here and kept if you change them.
+              </p>
+            ) : null}
+            {criteria.length > 0 ? (
+              <ol className="space-y-2">
+                {criteria.map((criterion, i) => (
+                  <li key={criteriaKeys[i] ?? i} className="flex items-center gap-2">
+                    <Input
+                      aria-label={`Acceptance criterion ${i + 1}`}
+                      value={criterion}
+                      maxLength={ACCEPTANCE_CRITERION_MAX_LENGTH}
+                      onChange={(e) =>
+                        setCriteria((prev) => prev.map((c, j) => (j === i ? e.target.value : c)))
+                      }
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Remove acceptance criterion ${i + 1}`}
+                      onClick={() => {
+                        setCriteria((prev) => prev.filter((_, j) => j !== i));
+                        setCriteriaKeys((prev) => prev.filter((_, j) => j !== i));
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="text-xs text-muted-foreground">No acceptance criteria yet.</p>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={criteria.length >= ACCEPTANCE_CRITERIA_MAX_ITEMS}
+              onClick={() => {
+                setCriteria((prev) => [...prev, ""]);
+                setCriteriaKeys((prev) => [...prev, nextCriterionKey.current++]);
+              }}
+            >
+              Add criterion
+            </Button>
+          </fieldset>
           {errorMessage ? (
             <p className="text-sm text-destructive" role="alert">
               {errorMessage}

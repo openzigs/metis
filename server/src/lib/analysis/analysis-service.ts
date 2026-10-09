@@ -60,6 +60,7 @@ import {
   REQUIREMENT_COVERAGES,
   REQUIREMENT_REVIEW_STATUSES,
   REQUIREMENT_VERDICTS,
+  isAcceptanceCriteriaCleared,
   parseAcceptanceCriteria,
   type SynthesisDegradation,
   type RequirementReplacementWithheld,
@@ -1729,6 +1730,9 @@ function toSnapshot(
       // the issue-draft generator read the same structured data instead of
       // re-deriving (or faking) them.
       acceptanceCriteria: parseAcceptanceCriteria(r.acceptanceCriteria),
+      // #990 — an explicit clear, so the Edit dialog does not refill the list
+      // from the body when the issue draft renders none.
+      acceptanceCriteriaCleared: isAcceptanceCriteriaCleared(r.acceptanceCriteria),
       // Epic #34 (AC2) — surface the optimistic-lock version so the edit form
       // can submit the version it rendered and reliably 409 on a stale form.
       version: r.version,

@@ -10,6 +10,7 @@ export * from "./common.js";
 export * from "./user.js";
 export * from "./project.js";
 export * from "./analysis.js";
+export * from "./acceptance-criteria-fallback.js";
 export * from "./cross-doc.js";
 export * from "./publishing.js";
 export * from "./vault.js";
