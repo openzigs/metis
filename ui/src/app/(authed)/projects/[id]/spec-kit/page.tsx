@@ -34,7 +34,6 @@ import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError } from "@/lib/api-client";
 import { JobProgress } from "@/components/realtime/job-progress";
 import {
   FEATURE_REQUIRED_COMMANDS,
@@ -43,6 +42,15 @@ import {
 } from "@/lib/spec-kit-palette";
 import { buildHandoffInstructions } from "@/lib/spec-kit-handoff";
 import { FeaturePanel } from "@/components/spec-kit/feature-panel";
+import { ArtifactContent } from "@/components/spec-kit/artifact-content";
+import { HoverHint } from "@/components/spec-kit/hover-hint";
+import {
+  describeSpecKitError,
+  isNoProjectAccess,
+  loadHandoff,
+  saveHandoff,
+  type SpecKitHandoff,
+} from "@/lib/spec-kit-display";
 import { useAuth } from "@/lib/auth-context";
 import { PresenceAvatars } from "@/components/presence/PresenceAvatars";
 import { CommentPanel } from "@/components/comments/CommentPanel";
@@ -113,7 +121,10 @@ export default function SpecKitPage() {
   const [lastErrorMessage, setLastErrorMessage] = useState<string | null>(null);
   const router = useRouter();
   // #789 — null ⇒ the project-level `.specify/` set; otherwise a feature slug.
-  const [selectedFeature, setSelectedFeature] = useState<string | null>(null);
+  // #945 — kept in the URL (`?feature=<slug>`), so leaving the page and coming
+  // back (or reloading) reopens the same feature.
+  const linkedFeature = searchParams?.get("feature") || null;
+  const [selectedFeature, setSelectedFeature] = useState<string | null>(linkedFeature);
   const [selectedKey, setSelectedKey] = useState("spec.md");
   // #789 — the export may publish only after a dry run of the same feature.
   // It records the tasks.md version previewed, so regenerating tasks.md voids it.
@@ -136,9 +147,15 @@ export default function SpecKitPage() {
   // #953 — the `${vault:label}` the export publishes with (VaultPicker only).
   const [exportSecretRef, setExportSecretRef] = useState("");
   // #789 — what `/speckit.implement` handed off, for "Start analysis".
-  const [handoff, setHandoff] = useState<{ context: string[]; feature: string | null } | null>(
-    null,
-  );
+  // #945 — kept in this tab's session storage so navigation does not lose it.
+  const [handoff, setHandoffState] = useState<SpecKitHandoff | null>(null);
+  const setHandoff = (next: SpecKitHandoff | null): void => {
+    setHandoffState(next);
+    saveHandoff(projectId, next);
+  };
+  useEffect(() => {
+    if (projectId) setHandoffState(loadHandoff(projectId));
+  }, [projectId]);
 
   const featureArtifactsQuery = useQuery({
     queryKey: queryKeys.projects.specKitFeatureArtifacts(projectId, selectedFeature ?? ""),
@@ -164,6 +181,10 @@ export default function SpecKitPage() {
 
   const selectFeature = (slug: string | null): void => {
     setSelectedFeature(slug);
+    router.replace(
+      `/projects/${projectId}/spec-kit${slug ? `?feature=${encodeURIComponent(slug)}` : ""}`,
+      { scroll: false },
+    );
     setSelectedKey("spec.md");
     setEditingDraft(null);
     setHandoff(null);
@@ -193,9 +214,15 @@ export default function SpecKitPage() {
       specKitApi.putFile(projectId, input.name, input.content),
     onSuccess: () => {
       setEditingDraft(null);
+      setLastErrorMessage(null);
       queryClient.invalidateQueries({
         queryKey: queryKeys.projects.specKitFiles(projectId),
       });
+    },
+    // #945 — a refused save (e.g. too long) says why, in words, and keeps the draft.
+    onError: (err) => {
+      setLastErrorMessage(describeSpecKitError(err));
+      toast.error(FAILED);
     },
   });
 
@@ -291,7 +318,8 @@ export default function SpecKitPage() {
     },
     onError: (err) => {
       setLastResultMessage(null);
-      setLastErrorMessage(err instanceof ApiError ? err.message : String(err));
+      // #945 — the page's own words, never API field names or a raw issue array.
+      setLastErrorMessage(describeSpecKitError(err));
       toast.error(FAILED);
     },
   });
@@ -368,6 +396,18 @@ export default function SpecKitPage() {
   const reconcileCount = exportPreview?.claims.filter((c) => c.state === "reconcile").length ?? 0;
   const publishCount = (exportPreview?.titles.length ?? 0) + reconcileCount;
 
+  // #945 — the reason Publish is disabled, shown on hover through a wrapper.
+  const publishHint =
+    writeHint ??
+    (publishUnavailable
+      ? PUBLISH_UNAVAILABLE
+      : exportInProgress
+        ? EXPORT_IN_PROGRESS
+        : exportPreview && !credentialReady
+          ? CREDENTIAL_NEEDED
+          : undefined);
+  const clearHint = writeHint ?? (!credentialReady ? CREDENTIAL_NEEDED : undefined);
+
   const run = (command: SpecKitNamespacedCommand, options: SpecKitRunOptions = {}): void => {
     commandMutation.mutate({ command, options });
   };
@@ -395,6 +435,20 @@ export default function SpecKitPage() {
 
   if (!projectId) {
     return <div className="p-6">Invalid project id.</div>;
+  }
+
+  // #945 — a non-member gets 404 from every Spec Kit call. Saying "Spec Kit
+  // Mode is disabled" there sent them looking for a toggle they cannot use.
+  if (isNoProjectAccess(enabledQuery.error)) {
+    return (
+      <div className="space-y-4 p-6" data-testid="spec-kit-root">
+        <PageHeader title="Spec Kit" />
+        <Card className="p-4 text-sm text-muted-foreground" data-testid="spec-kit-no-access">
+          This project does not exist, or you are not a member of its workspace. Ask a workspace
+          admin to add you, then open Spec Kit again.
+        </Card>
+      </div>
+    );
   }
 
   return (
@@ -538,17 +592,19 @@ export default function SpecKitPage() {
           </Card>
         )}
 
-        <Button
-          type="button"
-          variant="outline"
-          className="w-full"
-          onClick={() => constitutionMutation.mutate()}
-          disabled={!canWrite || !enabled || constitutionMutation.isPending}
-          title={writeHint}
-          data-testid="spec-kit-generate-constitution"
-        >
-          {constitutionMutation.isPending ? "Generating…" : "Generate constitution.md"}
-        </Button>
+        <HoverHint hint={writeHint} className="flex w-full">
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={() => constitutionMutation.mutate()}
+            disabled={!canWrite || !enabled || constitutionMutation.isPending}
+            title={writeHint}
+            data-testid="spec-kit-generate-constitution"
+          >
+            {constitutionMutation.isPending ? "Generating…" : "Generate constitution.md"}
+          </Button>
+        </HoverHint>
       </aside>
 
       <section
@@ -586,43 +642,47 @@ export default function SpecKitPage() {
             ) : null}
             {/* #789 — delete the viewed artifact, after a confirmation. */}
             {enabled && viewedContent !== undefined && editingDraft === null ? (
-              <ConfirmDialog
-                title={`Delete ${viewerTitle}?`}
-                description="This cannot be undone."
-                confirmLabel="Delete"
-                onConfirm={() =>
-                  deleteMutation.mutate({
-                    feature: selectedFeature,
-                    key: selectedFeature === null ? selectedName : selectedKey,
-                    title: viewerTitle,
-                  })
-                }
-                trigger={
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={!canWrite || deleteMutation.isPending}
-                    title={writeHint}
-                    data-testid="spec-kit-delete-button"
-                  >
-                    Delete
-                  </Button>
-                }
-              />
+              <HoverHint hint={writeHint}>
+                <ConfirmDialog
+                  title={`Delete ${viewerTitle}?`}
+                  description="This cannot be undone."
+                  confirmLabel="Delete"
+                  onConfirm={() =>
+                    deleteMutation.mutate({
+                      feature: selectedFeature,
+                      key: selectedFeature === null ? selectedName : selectedKey,
+                      title: viewerTitle,
+                    })
+                  }
+                  trigger={
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!canWrite || deleteMutation.isPending}
+                      title={writeHint}
+                      data-testid="spec-kit-delete-button"
+                    >
+                      Delete
+                    </Button>
+                  }
+                />
+              </HoverHint>
             ) : null}
             {selectedFeature === null && selectedArtifact && editingDraft === null ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setEditingDraft(selectedArtifact.content)}
-                disabled={!canWrite}
-                title={writeHint}
-                data-testid="spec-kit-edit-button"
-              >
-                Edit
-              </Button>
+              <HoverHint hint={writeHint}>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setEditingDraft(selectedArtifact.content)}
+                  disabled={!canWrite}
+                  title={writeHint}
+                  data-testid="spec-kit-edit-button"
+                >
+                  Edit
+                </Button>
+              </HoverHint>
             ) : null}
             {editingDraft !== null ? (
               <>
@@ -702,12 +762,10 @@ export default function SpecKitPage() {
             data-testid="spec-kit-editor"
           />
         ) : viewedContent !== undefined ? (
-          <pre
-            className="h-[60vh] w-full overflow-auto rounded border bg-muted/40 p-3 text-sm"
-            data-testid="spec-kit-content"
-          >
-            {viewedContent}
-          </pre>
+          <ArtifactContent
+            name={selectedFeature === null ? selectedName : selectedKey}
+            content={viewedContent}
+          />
         ) : (
           <Card className="p-4 text-sm text-muted-foreground" data-testid="spec-kit-empty-banner">
             {viewerTitle} hasn&apos;t been generated yet — run the matching slash command.
@@ -762,35 +820,39 @@ export default function SpecKitPage() {
               ))}
             </ul>
           ) : null}
-          <Button
-            type="button"
-            size="sm"
-            onClick={submitBuffer}
-            disabled={!canWrite || !enabled || commandMutation.isPending}
-            title={writeHint}
-            data-testid="spec-kit-run-button"
-            className="w-full"
-          >
-            {commandMutation.isPending ? "Running…" : "Run"}
-          </Button>
+          <HoverHint hint={writeHint} className="flex w-full">
+            <Button
+              type="button"
+              size="sm"
+              onClick={submitBuffer}
+              disabled={!canWrite || !enabled || commandMutation.isPending}
+              title={writeHint}
+              data-testid="spec-kit-run-button"
+              className="w-full"
+            >
+              {commandMutation.isPending ? "Running…" : "Run"}
+            </Button>
+          </HoverHint>
         </Card>
 
         {/* #789 — the per-feature commands that need no typed input. */}
         {selectedFeature !== null ? (
           <Card className="space-y-2 p-3" data-testid="spec-kit-feature-actions">
             <h2 className="text-sm font-semibold">Feature actions</h2>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="w-full"
-              disabled={!canWrite || !enabled || busy}
-              title={writeHint}
-              onClick={() => run("speckit.checklist", { featureSlug: selectedFeature })}
-              data-testid="spec-kit-run-checklist"
-            >
-              Generate checklists
-            </Button>
+            <HoverHint hint={writeHint} className="flex w-full">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="w-full"
+                disabled={!canWrite || !enabled || busy}
+                title={writeHint}
+                onClick={() => run("speckit.checklist", { featureSlug: selectedFeature })}
+                data-testid="spec-kit-run-checklist"
+              >
+                Generate checklists
+              </Button>
+            </HoverHint>
             {/* #953 — the export's GitHub token: a vault secret, never a pasted token. */}
             <div className="space-y-1">
               <Label htmlFor="spec-kit-export-secret" className="text-xs">
@@ -806,84 +868,79 @@ export default function SpecKitPage() {
                 <p className="text-xs text-destructive">{exportSecretHint}</p>
               ) : null}
             </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="w-full"
-              disabled={!canWrite || !enabled || busy}
-              title={writeHint}
-              onClick={() =>
-                run("speckit.taskstoissues", {
-                  featureSlug: selectedFeature,
-                  dryRun: true,
-                  ...(exportSecretRef.trim() ? { secretRef: exportSecretRef.trim() } : {}),
-                })
-              }
-              data-testid="spec-kit-export-preview"
-            >
-              Preview issue export (dry run)
-            </Button>
-            <ConfirmDialog
-              title={`Publish the tasks of ${selectedFeature}?`}
-              description={
-                exportPreview
-                  ? `This creates ${exportPreview.titles.length} ${
-                      exportPreview.titles.length === 1 ? "issue" : "issues"
-                    } in ${exportPreview.repo ?? "the project's saved issue target"}.${
-                      reconcileCount > 0
-                        ? ` It first looks there for ${reconcileCount} ${
-                            reconcileCount === 1 ? "issue" : "issues"
-                          } an abandoned export may have created, and records any it finds instead of creating them again.`
-                        : ""
-                    }`
-                  : "This creates an issue for every task in the project's saved issue target."
-              }
-              confirmLabel="Publish"
-              confirmVariant="default"
-              onConfirm={() => {
-                // #953 — the live run sends back the dry run's plan and the same
-                // vault secret; the server refuses it if either has changed.
-                if (!exportPreview?.plan || !exportPreview.secretRef) return;
-                run("speckit.taskstoissues", {
-                  featureSlug: selectedFeature,
-                  dryRun: false,
-                  secretRef: exportPreview.secretRef,
-                  expectedPlan: exportPreview.plan,
-                });
-              }}
-              trigger={
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="w-full"
-                  title={
-                    writeHint ??
-                    (publishUnavailable
-                      ? PUBLISH_UNAVAILABLE
-                      : exportInProgress
-                        ? EXPORT_IN_PROGRESS
-                        : exportPreview && !credentialReady
-                          ? CREDENTIAL_NEEDED
-                          : undefined)
-                  }
-                  disabled={
-                    !canWrite ||
-                    !enabled ||
-                    busy ||
-                    exportPreview === null ||
-                    publishUnavailable ||
-                    !credentialReady ||
-                    exportInProgress ||
-                    publishCount === 0
-                  }
-                  data-testid="spec-kit-export-publish"
-                >
-                  Publish issues to the saved target
-                </Button>
-              }
-            />
+            <HoverHint hint={writeHint} className="flex w-full">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="w-full"
+                disabled={!canWrite || !enabled || busy}
+                title={writeHint}
+                onClick={() =>
+                  run("speckit.taskstoissues", {
+                    featureSlug: selectedFeature,
+                    dryRun: true,
+                    ...(exportSecretRef.trim() ? { secretRef: exportSecretRef.trim() } : {}),
+                  })
+                }
+                data-testid="spec-kit-export-preview"
+              >
+                Preview issue export (dry run)
+              </Button>
+            </HoverHint>
+            <HoverHint hint={publishHint} className="flex w-full">
+              <ConfirmDialog
+                title={`Publish the tasks of ${selectedFeature}?`}
+                description={
+                  exportPreview
+                    ? `This creates ${exportPreview.titles.length} ${
+                        exportPreview.titles.length === 1 ? "issue" : "issues"
+                      } in ${exportPreview.repo ?? "the project's saved issue target"}.${
+                        reconcileCount > 0
+                          ? ` It first looks there for ${reconcileCount} ${
+                              reconcileCount === 1 ? "issue" : "issues"
+                            } an abandoned export may have created, and records any it finds instead of creating them again.`
+                          : ""
+                      }`
+                    : "This creates an issue for every task in the project's saved issue target."
+                }
+                confirmLabel="Publish"
+                confirmVariant="default"
+                onConfirm={() => {
+                  // #953 — the live run sends back the dry run's plan and the same
+                  // vault secret; the server refuses it if either has changed.
+                  if (!exportPreview?.plan || !exportPreview.secretRef) return;
+                  run("speckit.taskstoissues", {
+                    featureSlug: selectedFeature,
+                    dryRun: false,
+                    secretRef: exportPreview.secretRef,
+                    expectedPlan: exportPreview.plan,
+                  });
+                }}
+                trigger={
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="w-full"
+                    title={publishHint}
+                    disabled={
+                      !canWrite ||
+                      !enabled ||
+                      busy ||
+                      exportPreview === null ||
+                      publishUnavailable ||
+                      !credentialReady ||
+                      exportInProgress ||
+                      publishCount === 0
+                    }
+                    data-testid="spec-kit-export-publish"
+                  >
+                    Publish issues to the saved target
+                  </Button>
+                }
+              />
+            </HoverHint>
             {exportPreview && exportPreview.titles.length > 0 ? (
               <div className="space-y-1 text-xs">
                 <p className="text-muted-foreground">
@@ -908,35 +965,37 @@ export default function SpecKitPage() {
                 </ul>
                 {/* #962 — resolve the claims now: each is looked up on GitHub and
                     recorded if found, cleared if not. A live one is left alone. */}
-                <ConfirmDialog
-                  title={`Clear the stuck export of ${selectedFeature}?`}
-                  description={`METIS looks in ${
-                    exportPreview.repo ?? "the saved target"
-                  } for the issues the earlier export may have created, records any it finds, and clears the rest so the next export creates them. Tasks another export is still running are left alone.`}
-                  confirmLabel="Clear stuck export"
-                  confirmVariant="default"
-                  onConfirm={() => {
-                    if (!exportPreview.secretRef) return;
-                    run("speckit.taskstoissues", {
-                      featureSlug: selectedFeature,
-                      clearStuckClaims: true,
-                      secretRef: exportPreview.secretRef,
-                    });
-                  }}
-                  trigger={
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="w-full"
-                      title={writeHint ?? (!credentialReady ? CREDENTIAL_NEEDED : undefined)}
-                      disabled={!canWrite || !enabled || busy || !credentialReady}
-                      data-testid="spec-kit-export-clear"
-                    >
-                      Clear stuck export
-                    </Button>
-                  }
-                />
+                <HoverHint hint={clearHint} className="flex w-full">
+                  <ConfirmDialog
+                    title={`Clear the stuck export of ${selectedFeature}?`}
+                    description={`METIS looks in ${
+                      exportPreview.repo ?? "the saved target"
+                    } for the issues the earlier export may have created, records any it finds, and clears the rest so the next export creates them. Tasks another export is still running are left alone.`}
+                    confirmLabel="Clear stuck export"
+                    confirmVariant="default"
+                    onConfirm={() => {
+                      if (!exportPreview.secretRef) return;
+                      run("speckit.taskstoissues", {
+                        featureSlug: selectedFeature,
+                        clearStuckClaims: true,
+                        secretRef: exportPreview.secretRef,
+                      });
+                    }}
+                    trigger={
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="w-full"
+                        title={clearHint}
+                        disabled={!canWrite || !enabled || busy || !credentialReady}
+                        data-testid="spec-kit-export-clear"
+                      >
+                        Clear stuck export
+                      </Button>
+                    }
+                  />
+                </HoverHint>
               </div>
             ) : null}
             {exportPreview && !publishUnavailable ? (

@@ -112,9 +112,11 @@ class Provider {
   readonly model = "m";
   offline = false;
   systems: string[] = [];
+  users: string[] = [];
   constructor(private readonly reply: string) {}
-  async chat(_m: ChatMessage[], o: any): Promise<ChatResponse> {
+  async chat(m: ChatMessage[], o: any): Promise<ChatResponse> {
     this.systems.push(String(o?.systemMessage ?? ""));
+    this.users.push(String(m[0]?.content ?? ""));
     return {
       content: this.reply,
       provider: this.key,
@@ -350,5 +352,47 @@ describe("#788 draftConstitution", () => {
     expect(r.grounded).toBe(false);
     expect(r.message).toMatch(/no principles/);
     expect(stored()).toContain("BEGIN auto-managed");
+  });
+
+  describe("#945 — the Ratified and Last Amended dates are the server's", () => {
+    const invented = DRAFT.replace("Ratified: 2026-10-08", "Ratified: 2026-02-01").replace(
+      "Last Amended: 2026-10-08",
+      "Last Amended: 2026-02-01",
+    );
+
+    it("overwrites a date the model invented, and tells the model today's date", async () => {
+      const provider = new Provider(invented);
+      await draftConstitution({
+        projectId: "p1",
+        resolveProvider: async () => provider as unknown as AIProvider,
+        knowledgeService: knowledge([README]),
+        fusedCode: noCode,
+        today: TODAY,
+      });
+      expect(stored()).toMatch(/^Ratified: 2026-10-08$/m);
+      expect(stored()).toMatch(/^Last Amended: 2026-10-08$/m);
+      expect(stored()).not.toContain("2026-02-01");
+      expect(provider.users[0]).toContain("Today is 2026-10-08.");
+      expect(provider.systems[0]).not.toContain("<today>");
+    });
+
+    it("keeps the original ratification date on a re-draft", async () => {
+      constitutionRows.set("p1", {
+        id: "c_old",
+        projectId: "p1",
+        version: "1.0.0",
+        ratifiedAt: new Date("2026-01-15T00:00:00Z"),
+        lastAmendedAt: new Date("2026-01-15T00:00:00Z"),
+      });
+      await draftConstitution({
+        projectId: "p1",
+        resolveProvider: async () => new Provider(invented) as unknown as AIProvider,
+        knowledgeService: knowledge([README]),
+        fusedCode: noCode,
+        today: TODAY,
+      });
+      expect(stored()).toMatch(/^Ratified: 2026-01-15$/m);
+      expect(stored()).toMatch(/^Last Amended: 2026-10-08$/m);
+    });
   });
 });
