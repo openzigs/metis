@@ -227,11 +227,19 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
     // #980 — name the session after its first question. Only a session still
     // carrying the default title is renamed, so a title the user chose stays.
     const title = titleFromQuestion(input.userText);
+    // A cosmetic write: failing it must never cost the user their answer.
     if (title) {
-      await prisma.aISession.updateMany({
-        where: { id: sessionId, title: DEFAULT_SESSION_TITLE },
-        data: { title },
-      });
+      try {
+        await prisma.aISession.updateMany({
+          where: { id: sessionId, title: DEFAULT_SESSION_TITLE },
+          data: { title },
+        });
+      } catch (err) {
+        log.warn("Could not title the session from its first question", {
+          sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
