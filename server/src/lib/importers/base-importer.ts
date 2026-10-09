@@ -70,6 +70,59 @@ export function normalizeType(raw: string | undefined, labels: string[]): string
   return "feature";
 }
 
+/**
+ * Issue #979 — a type word as it appears in a label or a title tag, mapped to a
+ * requirement type. GitHub repositories spell these many ways ("bug",
+ * "type: bug", "kind/bug", "enhancement", "Feature Request"), so this matches
+ * the type word itself rather than the whole string.
+ */
+const TYPE_WORDS: ReadonlyArray<[RegExp, string]> = [
+  [/^(?:bug|defect|regression)(?:\s+report)?$/, "bug"],
+  [/^epic$/, "epic"],
+  [/^(?:task|chore|maintenance|refactor|docs?|documentation)$/, "task"],
+  [/^(?:feature|enhancement|feat|story)(?:\s+request)?$/, "feature"],
+];
+
+function typeFromWord(raw: string): string | undefined {
+  // Drop a "type:" / "kind/" style prefix and any decoration around the word.
+  const word = raw
+    .toLowerCase()
+    .replace(/^(?:type|kind|issue[- ]type)\s*[:/-]\s*/, "")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  for (const [pattern, type] of TYPE_WORDS) if (pattern.test(word)) return type;
+  return undefined;
+}
+
+/**
+ * The requirement type a set of labels names, or `undefined` when no label
+ * names one. Unlike {@link normalizeType} this never defaults, so a caller can
+ * fall back to another signal (the title tag) when labels are silent.
+ */
+export function typeFromLabels(labels: ReadonlyArray<string>): string | undefined {
+  const types = new Set(labels.map(typeFromWord).filter((t): t is string => Boolean(t)));
+  // Most specific wins when several labels name a type.
+  for (const t of ["bug", "epic", "task", "feature"]) if (types.has(t)) return t;
+  return undefined;
+}
+
+/**
+ * Issue #979 — split a leading issue-template tag such as `[Bug]:` or
+ * `[Feature Request]` off a title. `type` is set only when the tag names a
+ * known type; an unrecognised tag (`[WIP]`, `[RFC]`) is left in the title.
+ */
+export function parseTitleTypeTag(title: string): { type: string | undefined; title: string } {
+  const trimmed = title.trim();
+  const match = /^\[([^\]]{1,40})\]\s*[:\-–—]?\s*/.exec(trimmed);
+  if (!match) return { type: undefined, title: trimmed };
+  const type = typeFromWord(match[1]);
+  if (!type) return { type: undefined, title: trimmed };
+  const rest = trimmed.slice(match[0].length).trim();
+  // A title that is nothing but the tag keeps the tag rather than going blank.
+  return { type, title: rest.length > 0 ? rest : trimmed };
+}
+
 /** Normalise a raw priority hint + labels into a requirement priority. */
 export function normalizePriority(raw: string | undefined, labels: string[]): string {
   const hint = (raw ?? "").toLowerCase();

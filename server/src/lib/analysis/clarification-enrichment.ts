@@ -308,6 +308,14 @@ export function applyClarificationBlock(
 
 // ── The DB pass ─────────────────────────────────────────────────────────
 
+/** Issue #979 — longest question text kept in the per-answer accounting. */
+export const MAX_OUTCOME_QUESTION = 200;
+
+function shortenQuestion(question: string): string {
+  const q = (question ?? "").replace(/\s+/g, " ").trim();
+  return q.length > MAX_OUTCOME_QUESTION ? `${q.slice(0, MAX_OUTCOME_QUESTION - 1)}…` : q;
+}
+
 /**
  * Write every answered clarifying question into the persisted requirement it
  * was asked about, and record what happened to each answer.
@@ -341,8 +349,10 @@ export async function applyClarificationsToRequirements(
     });
 
     let requirementsUpdated = 0;
+    const appliedTo = new Map<string, string>();
     for (const row of rows) {
       const answers = byRequirementId.get(row.id) ?? [];
+      for (const a of answers) appliedTo.set(a.questionId, row.title);
       const nextBody = applyClarificationBlock(row.body ?? "", answers);
       if (nextBody === (row.body ?? "")) continue;
       await prisma.requirement.update({ where: { id: row.id }, data: { body: nextBody } });
@@ -356,6 +366,11 @@ export async function applyClarificationsToRequirements(
       requirementsUpdated,
       requirementsAvailable: rows.length > 0,
       updatedAt: new Date().toISOString(),
+      answers: answered.map((a) => ({
+        questionId: a.questionId,
+        question: shortenQuestion(a.question),
+        requirementTitle: appliedTo.get(a.questionId) ?? null,
+      })),
     };
     await persistAnalysisEnhancement(analysisId, { clarificationApplication: application });
 

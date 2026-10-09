@@ -59,8 +59,58 @@ describe("ClarificationImpactNote", () => {
       />,
     );
     expect(screen.getByTestId("clarification-impact")).toHaveTextContent(
-      /awaiting approval, and your answers are written into them when they are promoted/,
+      /awaiting approval\. When they are promoted, each answer is written into the requirement it matches/,
     );
+  });
+
+  // Issue #979 — the walkthrough saw "written into them when promoted" next to
+  // "28 answers could not be matched to a saved requirement…": before promotion
+  // there is no saved requirement, so every answer counts as unmatched.
+  it("does not also claim the answers could not be matched while approval withholds the rows", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          answeredCount: 28,
+          appliedCount: 0,
+          unattributedCount: 28,
+          requirementsUpdated: 0,
+          requirementsAvailable: false,
+          answers: [{ questionId: "q1", question: "Which format?", requirementTitle: null }],
+        }}
+      />,
+    );
+    expect(screen.queryByTestId("clarification-unattributed")).toBeNull();
+    expect(screen.queryByTestId("clarification-unmatched-list")).toBeNull();
+    expect(screen.getByTestId("clarification-impact")).not.toHaveTextContent(
+      /could not be matched/,
+    );
+  });
+
+  it("lists which answers were applied, and to which requirement", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          answers: [
+            { questionId: "q1", question: "Which format?", requirementTitle: "Export feeds" },
+            { questionId: "q2", question: "Which locale?", requirementTitle: null },
+          ],
+        }}
+      />,
+    );
+    const applied = screen.getByTestId("clarification-applied-list");
+    expect(applied).toHaveTextContent(/Which format\?\s*→\s*Export feeds/);
+    expect(applied).not.toHaveTextContent(/Which locale/);
+    const unmatched = screen.getByTestId("clarification-unmatched-list");
+    expect(unmatched).toHaveTextContent(/Which locale\?/);
+    expect(unmatched).not.toHaveTextContent(/Which format/);
+  });
+
+  it("shows no per-answer lists for metadata written before #979", () => {
+    render(<ClarificationImpactNote application={base} />);
+    expect(screen.queryByTestId("clarification-applied-list")).toBeNull();
+    expect(screen.queryByTestId("clarification-unmatched-list")).toBeNull();
   });
 
   it("states the enrichment that is deliberately NOT published", () => {

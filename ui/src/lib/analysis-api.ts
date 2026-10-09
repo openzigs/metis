@@ -946,6 +946,11 @@ export interface EnhancementMetadata {
     requirementsUpdated: number;
     requirementsAvailable: boolean;
     updatedAt: string;
+    /**
+     * Issue #979 — per-answer outcome: the requirement each answer was written
+     * into, or null. Absent on analyses clarified before #979.
+     */
+    answers?: Array<{ questionId: string; question: string; requirementTitle: string | null }>;
   };
   /**
    * Issue #1117 (findings B + C) — present only when synthesis fell back to the
