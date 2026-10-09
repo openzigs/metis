@@ -14,6 +14,7 @@ import type { AIProvider, ChatResponse, TokenUsage } from "../lib/ai/types.js";
 import type { AffectedTableInput } from "../lib/impact-analysis/schema-impact.js";
 import type { ImpactItemFacts } from "../lib/impact-analysis/impact-summarizer.js";
 import { runInImpactProjectScope } from "../lib/impact-analysis/impact-llm-scope.js";
+import { LiveSchemaIndex } from "../lib/impact-analysis/live-schema-ingest.js";
 
 // ── Fakes wired before the module graph loads ───────────────────────────────
 
@@ -384,6 +385,50 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
           projectId: "proj-1",
           liveIndex: null,
         },
+      ),
+    );
+
+    expect(rows.map((r) => r.columnName)).toEqual(["read_at"]);
+  });
+
+  it("#1003 — the wired proposer drops a column only the LIVE schema has", async () => {
+    vi.stubEnv("IMPACT_LLM_ADDITIVE_DDL", "1");
+    providerFactory = () =>
+      liveProvider(() =>
+        JSON.stringify({
+          proposals: [
+            { index: 0, column: "published_at", type: "TIMESTAMP" },
+            { index: 0, column: "read_at", type: "TIMESTAMP" },
+          ],
+        }),
+      );
+    // The code graph knows the table but NOT the column, so only the live index
+    // can tell the proposer `published_at` already exists.
+    codeSymbolRows.push({ name: "entries", qualifiedName: "entries", kind: "table" });
+    const liveIndex = new LiveSchemaIndex([
+      {
+        schema: "public",
+        name: "entries",
+        columns: new Map([
+          [
+            "published_at",
+            {
+              name: "published_at",
+              dataType: "timestamp",
+              nullable: true,
+              isPrimaryKey: false,
+            },
+          ],
+        ]),
+      },
+    ]);
+
+    const deps = impactRunDeps("user-1", ["proj-1"]);
+    const rows = await runInImpactProjectScope("proj-1", () =>
+      deps.additiveColumnProposer!(
+        "Mark entries older than N days as read",
+        [tableRow("entries")],
+        { projectId: "proj-1", liveIndex },
       ),
     );
 
