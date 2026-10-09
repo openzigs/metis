@@ -16,6 +16,14 @@
  * count can disagree with them ("Ten requirements were derived" over 8 rows).
  * The card states the count from the stored rows, and a sentence in the summary
  * that counts the derived requirements is corrected to match.
+ *
+ * Only when the stored rows ARE the set the summary describes, though: when the
+ * approval gate withholds promotion (#1104) or a re-synthesis was refused
+ * replacement (#769), the run keeps its summary but stores none (or an older
+ * set) of the requirements it names. Reconciling against those rows would turn
+ * a correct "Ten requirements were derived" into "0 requirements were derived",
+ * the empty-but-successful presentation #1104 removed. `outcomeRequirementCount`
+ * makes that call.
  */
 
 interface OutcomeAgent {
@@ -78,6 +86,27 @@ export function reconcileRequirementCount(summary: string, stored: number): stri
   );
 }
 
+/**
+ * The stored-row count the outcome may be reconciled against, or `undefined`
+ * when the stored rows are not the set this run's summary describes: promotion
+ * is gated, replacement was withheld, or nothing was stored.
+ */
+export function outcomeRequirementCount(
+  metadata: Record<string, unknown> | null | undefined,
+  stored: number,
+): number | undefined {
+  // Read inline rather than via `readEnhancementMetadata`: page tests mock
+  // `@/lib/analysis-api` wholesale, and this is two keys.
+  const meta = (metadata ?? {}) as {
+    promotionBlocked?: { blocked?: unknown } | null;
+    requirementReplacementWithheld?: unknown;
+  };
+  if (meta.promotionBlocked?.blocked === true) return undefined;
+  if (meta.requirementReplacementWithheld) return undefined;
+  if (stored === 0) return undefined;
+  return stored;
+}
+
 export function AnalysisOutcomeCard({
   status,
   agentResults,
@@ -85,7 +114,10 @@ export function AnalysisOutcomeCard({
 }: {
   status: string;
   agentResults: readonly OutcomeAgent[];
-  /** Issue #994 — the requirement rows stored for this run. */
+  /**
+   * Issue #994 — the requirement rows stored for this run, from
+   * `outcomeRequirementCount`; omit when they are not the summary's set.
+   */
   requirementCount?: number;
 }): React.ReactElement | null {
   if (status !== "completed") return null;

@@ -9,4 +9,4 @@ section: Fixed
   analysis. A requirement that does not fit is left out whole, and the analysis page itself names
   the artifacts handed off, the requirements sent and any left out, while the run is going and
   afterwards. The analysis Outcome card now states how many requirements were stored for the run,
-  and corrects a summary that counted them differently.
+  and corrects a summary that counted them differently, except while approval withholds them.

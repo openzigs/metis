@@ -96,7 +96,10 @@ import {
 import { AcceptanceCriteriaList } from "@/components/analysis/AcceptanceCriteriaList";
 import { VerificationBadge } from "@/components/analysis/VerificationBadge";
 // Issue #1232 — the run's outcome first, then a scannable finding body.
-import { AnalysisOutcomeCard } from "@/components/analysis/AnalysisOutcomeCard";
+import {
+  AnalysisOutcomeCard,
+  outcomeRequirementCount,
+} from "@/components/analysis/AnalysisOutcomeCard";
 import { SpecKitHandoffNotice } from "@/components/analysis/spec-kit-handoff-notice";
 import { FindingBody } from "@/components/analysis/FindingBody";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
@@ -950,7 +953,10 @@ export default function AnalysisPage(): React.ReactElement {
                   <AnalysisOutcomeCard
                     status={detail.data.status}
                     agentResults={detail.data.agentResults}
-                    requirementCount={detail.data.requirements.length}
+                    requirementCount={outcomeRequirementCount(
+                      detail.data.metadata,
+                      detail.data.requirements.length,
+                    )}
                   />
 
                   {/* Issue #859 (Epic #852) — whether database-aware schema analysis ran

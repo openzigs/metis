@@ -300,6 +300,43 @@ describe("Analysis results hierarchy (#1232)", () => {
     );
   });
 
+  it("keeps the summary's count when the approval gate withholds the requirements (#994 review)", async () => {
+    nav.search = new URLSearchParams();
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      metadata: {
+        promotionBlocked: {
+          blocked: true,
+          pendingCount: 1,
+          rejectedCount: 0,
+          awaitingRequirementCount: 10,
+        },
+      },
+      agentResults: SNAPSHOT.agentResults.map((a) =>
+        a.agentKey === "synthesis" ? { ...a, summary: "Ten requirements were derived." } : a,
+      ),
+      requirements: [],
+    });
+    renderPage();
+    const card = await screen.findByTestId("analysis-outcome-card");
+    expect(card).toHaveTextContent("Ten requirements were derived.");
+    expect(card).not.toHaveTextContent(/\b0 requirements/);
+    expect(screen.queryByTestId("analysis-outcome-count")).toBeNull();
+  });
+
+  it("still reconciles the summary's count to the stored rows on an ungated run (#994)", async () => {
+    nav.search = new URLSearchParams();
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      agentResults: SNAPSHOT.agentResults.map((a) =>
+        a.agentKey === "synthesis" ? { ...a, summary: "Ten requirements were derived." } : a,
+      ),
+    });
+    renderPage();
+    const card = await screen.findByTestId("analysis-outcome-card");
+    expect(card).toHaveTextContent("1 requirement was derived.");
+  });
+
   it("names what a Spec Kit handoff left out, above the tabs, on any tab (#994)", async () => {
     apiMock.get.mockResolvedValue({
       ...SNAPSHOT,

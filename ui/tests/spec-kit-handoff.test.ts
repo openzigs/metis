@@ -89,6 +89,23 @@ describe("buildHandoffInstructions", () => {
     expect(r.text.endsWith("AC-5: short.")).toBe(true);
   });
 
+  it("sends a requirement that ends one under the cap, and leaves out one that ends at it (#994 review)", () => {
+    // The server flags `length >= MAX_EXTRA_INSTRUCTIONS` as truncated input, so a
+    // structured handoff of exactly the cap must never be emitted.
+    const withBody = (n: number) =>
+      buildHandoffInstructions(
+        ["spec.md"],
+        `## Acceptance criteria\n- **AC-1**: ${"y".repeat(n)}.`,
+      );
+    const fixed = withBody(1).text.length - 1; // header + "\n\nAC-1: " + "."
+    const under = withBody(MAX_EXTRA_INSTRUCTIONS - 1 - fixed);
+    expect(under.text).toHaveLength(MAX_EXTRA_INSTRUCTIONS - 1);
+    expect(under).toMatchObject({ sent: ["AC-1"], omitted: [], truncated: false });
+    const at = withBody(MAX_EXTRA_INSTRUCTIONS - fixed);
+    expect(at).toMatchObject({ sent: [], omitted: ["AC-1"], truncated: true });
+    expect(at.text.length).toBeLessThan(MAX_EXTRA_INSTRUCTIONS);
+  });
+
   it("sends the header alone when there is no spec text", () => {
     const r = buildHandoffInstructions(["spec.md"], "  ");
     expect(r.text).toMatch(/^Spec Kit handoff \(spec\.md\)\./);

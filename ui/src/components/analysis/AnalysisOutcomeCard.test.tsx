@@ -8,7 +8,11 @@
  */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { AnalysisOutcomeCard, reconcileRequirementCount } from "./AnalysisOutcomeCard";
+import {
+  AnalysisOutcomeCard,
+  outcomeRequirementCount,
+  reconcileRequirementCount,
+} from "./AnalysisOutcomeCard";
 
 const SUMMARY =
   "UC101 introduces Cross-Dock Transfer job processing across three areas. " +
@@ -137,5 +141,44 @@ describe("reconcileRequirementCount (#994)", () => {
     expect(screen.getByTestId("analysis-outcome-count")).toHaveTextContent(
       "1 requirement stored for this run.",
     );
+  });
+});
+
+describe("outcomeRequirementCount (#994 review: gated runs)", () => {
+  it("is the stored count when the rows are the summary's set", () => {
+    expect(outcomeRequirementCount(null, 8)).toBe(8);
+    expect(outcomeRequirementCount({ promotionBlocked: { blocked: false } }, 8)).toBe(8);
+  });
+
+  it("is undefined while the approval gate withholds promotion (#1104)", () => {
+    const gated = {
+      promotionBlocked: { blocked: true, pendingCount: 2, rejectedCount: 0 },
+    };
+    expect(outcomeRequirementCount(gated, 0)).toBeUndefined();
+    expect(outcomeRequirementCount(gated, 4)).toBeUndefined();
+  });
+
+  it("is undefined when replacement of an older set was withheld (#769)", () => {
+    const withheld = { requirementReplacementWithheld: { reason: "reviewed" } };
+    expect(outcomeRequirementCount(withheld, 5)).toBeUndefined();
+  });
+
+  it("is undefined when nothing was stored", () => {
+    expect(outcomeRequirementCount(null, 0)).toBeUndefined();
+  });
+
+  it("keeps the summary's count on a gated run", () => {
+    const gated = { promotionBlocked: { blocked: true, pendingCount: 1, rejectedCount: 0 } };
+    render(
+      <AnalysisOutcomeCard
+        status="completed"
+        agentResults={agents("Ten requirements were derived from the spec.")}
+        requirementCount={outcomeRequirementCount(gated, 0)}
+      />,
+    );
+    expect(screen.getByTestId("analysis-outcome-card")).toHaveTextContent(
+      "Ten requirements were derived from the spec.",
+    );
+    expect(screen.queryByTestId("analysis-outcome-count")).toBeNull();
   });
 });
