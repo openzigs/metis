@@ -61,6 +61,39 @@
       "wave": "D",
       "phase": "S21",
       "check": "Spec Kit Publish creates sandbox issues whose titles match the dry run"
+    },
+    "977": {
+      "wave": "B",
+      "phase": "7",
+      "check": "The analysis header shows the project's own budget (deployment cap labelled as such) and a running analysis shows live ledger tokens and cost, not 0 tok"
+    },
+    "978": {
+      "wave": "A",
+      "phase": "1",
+      "check": "The analysis model override and provider preferences offer only Auto and deepseek-flash: no Claude tiers on a DeepSeek-only deployment"
+    },
+    "979": {
+      "wave": "B",
+      "phase": "8",
+      "check": "Requirement bodies render (no raw markdown or metis:clarifications markers), citations show real arrows, and imported [Bug] items are typed as bugs"
+    },
+    "980": {
+      "wave": "C",
+      "phase": "10",
+      "check": "Chat sessions get a title from the first question, /sessions shows project and last activity, compaction is honest, mention notifications name the author and open the thread, publish uses the vault picker, connector Test shows a result"
+    },
+    "942": {
+      "wave": "C",
+      "phase": "9",
+      "check": "A published document with a failed section offers Regenerate, which redrafts only the failed sections and reuses the finished ones"
+    },
+    "945": {
+      "wave": "D",
+      "phase": "S19",
+      "check": "Spec Kit artifacts render as markdown with no generated-checks marker, a non-member sees an access message, disabled-control tooltips show on hover, errors use plain UI wording"
+    },
+    "954": {
+      "skip": "walkthrough tooling (wave F and fixes-since are this run's own machinery)"
     }
   },
   "prs": {}

@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI End-to-End Walkthrough</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a QA run report — narrow reading column, sticky contents rail on wide screens, status-coloured accents for pass/partial/fail */
+:root {
+  --bg:#f7f8f6; --surface:#ffffff; --fg:#1d2420; --muted:#5b6560; --line:#dde2dd;
+  --accent:#1f6f5c; --accent-soft:#e3f0eb; --pass:#2f7d4a; --partial:#a8690f; --fail:#b23a32;
+  --code-bg:#eef1ee;
+  --display:"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body:"Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono:"JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg:#121614; --surface:#1a201d; --fg:#e4e9e5; --muted:#9aa59f; --line:#2c3531;
+  --accent:#6cc4a6; --accent-soft:#1d322b; --pass:#6fcf8d; --partial:#e2a64b; --fail:#ec7a71; --code-bg:#1f2623; color-scheme:dark; } }
+:root[data-theme="dark"] {
+  --bg:#121614; --surface:#1a201d; --fg:#e4e9e5; --muted:#9aa59f; --line:#2c3531;
+  --accent:#6cc4a6; --accent-soft:#1d322b; --pass:#6fcf8d; --partial:#e2a64b; --fail:#ec7a71; --code-bg:#1f2623; color-scheme:dark; }
+* { box-sizing:border-box }
+body { background:var(--bg); color:var(--fg); font:400 17px/1.6 var(--body); padding-inline:16px; padding-block:0 64px }
+.wrap { max-width:1180px; margin:0 auto; display:grid; grid-template-columns:minmax(0,1fr); gap:40px }
+@media (min-width:1000px) { .wrap { grid-template-columns:240px minmax(0,1fr) } }
+header.top { max-width:1180px; margin:0 auto; padding-block:48px 28px; border-bottom:1px solid var(--line); margin-bottom:32px }
+.eyebrow { font:600 12px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--accent) }
+h1 { font:700 clamp(2rem,4.2vw,3rem)/1.08 var(--display); margin:.4em 0 .3em; text-wrap:balance; letter-spacing:-.01em }
+.lede { color:var(--muted); max-width:62ch; font-size:1.1rem; margin:0 }
+.stamp { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px }
+.stamp span { font:600 12px/1 var(--mono); padding:6px 9px; border:1px solid var(--line); border-radius:4px; background:var(--surface); color:var(--muted) }
+.stamp .p { color:var(--pass) } .stamp .w { color:var(--partial) } .stamp .f { color:var(--fail) }
+nav.toc { align-self:start }
+@media (min-width:1000px) { nav.toc { position:sticky; top:calc(env(safe-area-inset-top,0px) + 24px) } }
+nav.toc p { font:600 12px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 10px }
+nav.toc ol { list-style:none; padding:0; margin:0; display:grid; gap:2px; border-left:2px solid var(--line) }
+nav.toc a { display:block; padding:4px 12px; color:var(--fg); text-decoration:none; font-size:.94rem; border-left:2px solid transparent; margin-left:-2px }
+nav.toc a:hover, nav.toc a:focus-visible { border-left-color:var(--accent); color:var(--accent) }
+main { min-width:0; max-width:760px }
+main h2 { font:700 1.6rem/1.2 var(--display); margin:2.2em 0 .6em; padding-top:.4em; border-top:1px solid var(--line); text-wrap:balance; scroll-margin-top:24px }
+main h2:first-child { border-top:0; margin-top:0 }
+main h3 { font:700 1.15rem/1.3 var(--display); margin:1.8em 0 .5em; scroll-margin-top:24px }
+main p, main li { max-width:68ch }
+main a { color:var(--accent); text-underline-offset:2px }
+code { font:400 .86em/1.4 var(--mono); background:var(--code-bg); padding:.1em .35em; border-radius:3px; overflow-wrap:anywhere }
+pre { background:var(--code-bg); padding:14px 16px; border-radius:6px; overflow-x:auto }
+pre code { background:none; padding:0 }
+.table-wrap { overflow-x:auto; margin:1.2em 0; border:1px solid var(--line); border-radius:6px; background:var(--surface) }
+table { border-collapse:collapse; width:100%; font-size:.93rem; font-variant-numeric:tabular-nums }
+th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top }
+th { font:600 12px/1.3 var(--mono); letter-spacing:.04em; text-transform:uppercase; color:var(--muted); background:var(--accent-soft) }
+tr:last-child td { border-bottom:0 }
+aside.note { margin:1.4em 0; padding:12px 16px; border-left:3px solid var(--accent); background:var(--accent-soft); border-radius:0 6px 6px 0 }
+aside.note p { margin:0 }
+.diagram { overflow-x:auto; margin:1.4em 0; padding:16px; border:1px solid var(--line); border-radius:6px; background:var(--surface) }
+.diagram pre { background:none; padding:0; margin:0 }
+footer { max-width:1180px; margin:48px auto 0; padding-top:20px; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior:auto !important } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="eyebrow">METIS · QA &amp; UAT method</div>
+  <h1>AI End-to-End Walkthrough</h1>
+  <p class="lede">How AI agents drive a real browser through every feature of METIS, score each step for whether it works and whether it is useful, track fixes and findings across runs, and what that costs. Written so the method can be reused on other projects.</p>
+  <div class="stamp"><span>5 runs · Oct 2026</span><span class="p">Run 4 works 15/20 phases</span><span class="w">useful 12/20</span><span>~1.9M agent tokens / run</span><span>$4.32 product LLM / run</span></div>
+</header>
+<div class="wrap">
+  <nav class="toc" aria-label="Contents"><p>Contents</p><ol><li><a href="#1-what-it-is">1. What it is</a></li><li><a href="#2-why-it-is-worth-doing-value-for-qa-and-uat">2. Why it is worth doing: value for QA and UAT</a></li><li><a href="#3-how-it-works">3. How it works</a></li><li><a href="#4-the-agent">4. The agent</a></li><li><a href="#5-what-a-person-has-to-write">5. What a person has to write</a></li><li><a href="#6-how-issues-are-tracked">6. How issues are tracked</a></li><li><a href="#7-cost">7. Cost</a></li><li><a href="#8-using-this-on-another-project">8. Using this on another project</a></li><li><a href="#9-limits-and-honest-caveats">9. Limits and honest caveats</a></li></ol></nav>
+  <main><p>How METIS runs a full end-to-end test of itself with AI agents driving a real browser:</p>
+<ul>
+<li>what the agents do;</li>
+<li>what a person has to write;</li>
+<li>how fixes and findings are tracked;</li>
+<li>what it is worth for QA and UAT;</li>
+<li>what it costs.</li>
+</ul>
+<p>The last section explains how to reuse the approach on another project.</p>
+<aside class="note">
+<p><strong>Status:</strong> METIS has run the walkthrough five times (runs 1–5, October 2026). Every figure here comes from those runs unless it says otherwise.</p>
+</aside>
+<hr>
+<h2 id="1-what-it-is">1. What it is</h2>
+<p>The walkthrough takes one realistic sample project through every feature of the product, the way a careful human tester would.</p>
+<ul>
+<li>It clicks through the real UI in a real browser, against a real running server, with a real LLM.</li>
+<li>It checks every answer against ground truth.</li>
+<li>Each step gets two scores: does it <strong>work</strong>, and is it <strong>useful</strong>.</li>
+</ul>
+<p>Its outputs:</p>
+<ul>
+<li>a results comment on a tracking issue;</li>
+<li>two slide decks: a tutorial and a run report;</li>
+<li>new issues for everything it finds;</li>
+<li>verdicts on the fixes it was asked to confirm.</li>
+</ul>
+<p>For METIS the sample project is <a href="https://github.com/miniflux/v2">Miniflux</a> v2.3.3: a real Go + PostgreSQL RSS reader, pinned to one tag so every run sees the same code. The model under test is DeepSeek <code>deepseek-flash</code>.</p>
+<p>It is <strong>not</strong> a unit or e2e test suite. Those stay in CI and run on every PR. The walkthrough sits above them. It answers &quot;does the product do the job for a user, end to end, on real data?&quot;, which no mocked test can answer. Each run takes about <strong>4–5 hours</strong> of agent time and runs on demand, typically after a batch of fixes. It is not a per-PR check.</p>
+<hr>
+<h2 id="2-why-it-is-worth-doing-value-for-qa-and-uat">2. Why it is worth doing: value for QA and UAT</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>What the walkthrough gives you</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>QA, regression</strong></td>
+<td>Every feature is exercised end to end on each run, through the UI, against a live model, at a fixed commit of a fixed sample project. Runs are therefore comparable. Run 4 compared its results with runs 2 and 3, step by step.</td>
+</tr>
+<tr>
+<td><strong>QA, fix verification</strong></td>
+<td>It is given the list of fixes merged since the last run, and records each one as confirmed, partial, regressed or not exercised, with screenshot evidence. Confirmed issues are closed. The rest carry into the next run.</td>
+</tr>
+<tr>
+<td><strong>UAT, &quot;is it useful?&quot;</strong></td>
+<td>A second axis, <strong>Useful</strong>, asks whether the output would help a real analyst or developer, not only whether the button worked. It checks citations against the real source lines, and requirements against the real schema. This is what caught problems that &quot;works&quot; never would: a 2.19 MB BRD, analysis agents inventing modules, Spec Kit plans re-implementing code that already existed.</td>
+</tr>
+<tr>
+<td><strong>UAT, persona journeys</strong></td>
+<td>Wave F follows a business analyst and a developer through whole tasks, UI only, with no internal IDs. These journeys find the <strong>handoff</strong> bugs between features that feature-by-feature tests miss. Run 4&#39;s worst bugs were of this kind: approval that didn&#39;t approve the requirements, and an edit that dropped a traceability label.</td>
+</tr>
+<tr>
+<td><strong>Cost and performance</strong></td>
+<td>It measures what each phase actually spends on the product&#39;s LLM, from the product&#39;s own usage ledger. The BRD went from $8.73 / 2h51m / 2.19 MB in run 3 to $1.91 / 30 min / 171 KB in run 4, once the caps the walkthrough asked for were in place.</td>
+</tr>
+<tr>
+<td><strong>Documentation</strong></td>
+<td>The tutorial deck is a screenshot-by-screenshot guide to the product, generated from passing steps. It can be handed to new users.</td>
+</tr>
+<tr>
+<td><strong>Honest scoring</strong></td>
+<td>Findings are graded high, medium or low and filed as issues with evidence. The run-to-run table shows whether the product is really getting better.</td>
+</tr>
+</tbody></table>
+</div><p>What it found across runs 3–4, all filed and since fixed, includes:</p>
+<ul>
+<li>a stored SQL-lineage graph that never picked up a parser fix;</li>
+<li>a Publish button that always returned 501;</li>
+<li>clarification billed twice;</li>
+<li>workspace invites that worked without signing in;</li>
+<li>analysis marked &quot;completed&quot; while its model calls continued;</li>
+<li>the run page under-reporting cost.</li>
+</ul>
+<p>The fix rounds it triggered also surfaced deeper problems:</p>
+<ul>
+<li>CI retries had been hiding six deterministic test failures;</li>
+<li>the test plan itself had drifted from the code, with 9 dead route references.</li>
+</ul>
+<p><strong>Measured improvement, run 2 → run 4</strong>, scored per phase: Works ✅/⚠️/❌/🚫 and Useful ✅/⚠️/❌/🚫.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>Run 2</th>
+<th>Run 3</th>
+<th>Run 4</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Works</td>
+<td>11/6/1/2</td>
+<td>11/7/1/1</td>
+<td><strong>15/4/0/1</strong></td>
+</tr>
+<tr>
+<td>Useful</td>
+<td>5/4/9/2</td>
+<td>9/8/2/1</td>
+<td><strong>12/7/0/1</strong></td>
+</tr>
+<tr>
+<td>BA questions correct with valid citations</td>
+<td>8/8</td>
+<td>8/8</td>
+<td><strong>8/8</strong></td>
+</tr>
+<tr>
+<td>Requirements with no acceptance criteria</td>
+<td>–</td>
+<td>29/29</td>
+<td><strong>3/37</strong></td>
+</tr>
+<tr>
+<td>Product LLM spend for the whole run</td>
+<td>$5.77</td>
+<td>$9.84</td>
+<td><strong>$4.32</strong></td>
+</tr>
+</tbody></table>
+</div><hr>
+<h2 id="3-how-it-works">3. How it works</h2>
+<div class="diagram"><pre class="mermaid">flowchart LR
+  TP["TEST_PLAN.md<br/>(what to test, pass bars)"] --> FB
+  FS["fixes-since.mjs<br/>(fixes merged since last run)"] --> FX["fixes.json"]
+  FX --> SC["scope comment<br/>on the tracking issue"]
+  FX --> FB["fill-brief.mjs"]
+  BR["briefs/wave-*.md<br/>(templates)"] --> FB
+  FB --> W["ui-vision agent<br/>one wave at a time"]
+  W -->|"drives"| APP["Running product<br/>+ real LLM"]
+  W --> SJ["steps.jsonl<br/>(+ screenshots)"]
+  W --> RPT["wave report<br/>(state, findings, fix verdicts)"]
+  RPT --> ORCH["orchestrating session"]
+  ORCH --> RJ["run.json<br/>(ledger, fix verdicts, new issues)"]
+  ORCH --> ISS["new issues filed"]
+  SJ --> DECK["build-slideshow.mjs<br/>tutorial + report decks"]
+  RJ --> DECK
+  ORCH --> RES["results comment<br/>+ close confirmed issues"]</pre></div><h3 id="3-1-the-pieces">3.1 The pieces</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>Where (METIS)</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Test plan</strong></td>
+<td><code>docs/walkthroughs/TEST_PLAN.md</code></td>
+<td>The <em>what</em>. It lists phases 1–20, Spec Kit S1–S24 and the persona journeys. For each step it gives the action, the Works check and the Useful check. It also holds the test cases with known answers: 8 business-analyst questions and 3 real Miniflux developer issues.</td>
+</tr>
+<tr>
+<td><strong>Runbook skill</strong></td>
+<td><code>.github/skills/e2e-walkthrough/SKILL.md</code></td>
+<td>The <em>how</em>. It covers fixture setup order, the wave list, safety guard-rails, the cost-ledger SQL, tips learned from earlier runs, and how to build the decks.</td>
+</tr>
+<tr>
+<td><strong>Wave briefs</strong></td>
+<td><code>.github/skills/e2e-walkthrough/briefs/wave-{a..f}.md</code>, <code>ba-reask.md</code></td>
+<td>One dispatch template per wave. It has the exact steps, what to screenshot, how to score, and the report format. Placeholders like <code>{{PROJECT_ID}}</code> and <code>{{FIXES_TO_VERIFY}}</code> are filled per run.</td>
+</tr>
+<tr>
+<td><strong>Fix finder</strong></td>
+<td><code>scripts/walkthrough/fixes-since.mjs</code> + <code>docs/walkthroughs/fix-phase-map.json</code></td>
+<td>Lists the PRs merged since the last run&#39;s commit and keeps the user-facing ones. It maps each to the wave and phase that can verify it, and carries forward anything not yet confirmed.</td>
+</tr>
+<tr>
+<td><strong>Brief filler</strong></td>
+<td><code>scripts/walkthrough/fill-brief.mjs</code></td>
+<td>Fills the placeholders. It refuses to write a brief with an unfilled placeholder, an unplaced fix, or a missing required PR.</td>
+</tr>
+<tr>
+<td><strong>Drift check and PR gate</strong></td>
+<td><code>scripts/walkthrough/check-test-plan.mjs</code>, <code>scripts/verify-walkthrough-plan.mjs</code></td>
+<td>Fails if the plan names a route or page that no longer exists. In CI, it also requires a PR that adds or removes a page or route to update the plan, or to be labelled <code>no-walkthrough-impact</code>. Both are fast text checks; neither runs the walkthrough.</td>
+</tr>
+<tr>
+<td><strong>Deck builder</strong></td>
+<td><code>scripts/walkthrough/build-slideshow.mjs</code></td>
+<td>Turns <code>steps.jsonl</code> and <code>run.json</code> into two offline HTML decks.</td>
+</tr>
+<tr>
+<td><strong>Results template</strong></td>
+<td><code>docs/walkthroughs/RESULTS_TEMPLATE.md</code></td>
+<td>The shape of the results comment, including the run-to-run comparison table.</td>
+</tr>
+</tbody></table>
+</div><h3 id="3-2-a-run-step-by-step">3.2 A run, step by step</h3>
+<ol>
+<li><p><strong>Check the plan.</strong> <code>pnpm walkthrough:check-plan</code> confirms every route and page the plan names still exists.</p>
+</li>
+<li><p><strong>Find the fixes.</strong></p>
+<ul>
+<li><code>fixes-since.mjs</code> lists what changed since the last run.</li>
+<li>A person reviews <code>fixes.json</code> and places anything the map can&#39;t.</li>
+<li>The list is posted on the tracking issue as the run&#39;s <strong>scope</strong>, so everyone can see what the run will verify before it starts.</li>
+</ul>
+</li>
+<li><p><strong>Set up fixtures in a fixed order.</strong> For METIS:</p>
+<ul>
+<li>rebuild the SQL-lineage sidecar from the commit under test;</li>
+<li>start Postgres with the sample database and seed it;</li>
+<li>start the product;</li>
+<li>create the workspace, then the project inside it;</li>
+<li>add the repo connector, pinned to <code>v2.3.3</code>;</li>
+<li>check out the ground-truth source.</li>
+</ul>
+<p>Run 1 did this out of order and its results weren&#39;t comparable.</p>
+</li>
+<li><p><strong>Run the waves in sequence.</strong> They share one browser, and long jobs must never overlap. For each wave:</p>
+<ol>
+<li>Fill the brief with the IDs the previous wave returned.</li>
+<li>Dispatch one <code>ui-vision</code> agent with it.</li>
+<li>Read its report.</li>
+<li>Record the IDs it returns for the next wave.</li>
+</ol>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Wave</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td>Setup and phases 1–4</td>
+</tr>
+<tr>
+<td>B</td>
+<td>Phases 5–8</td>
+</tr>
+<tr>
+<td>C</td>
+<td>Phases 9–13</td>
+</tr>
+<tr>
+<td>D</td>
+<td>Spec Kit S1–S24</td>
+</tr>
+<tr>
+<td>E</td>
+<td>Phases 15–20 and developer-issue impact</td>
+</tr>
+<tr>
+<td>F</td>
+<td>Persona journeys</td>
+</tr>
+<tr>
+<td>BA</td>
+<td>8 analyst questions over the API, no browser</td>
+</tr>
+</tbody></table>
+</div></li>
+<li><p><strong>Measure.</strong> Snapshot the product&#39;s usage ledger (<code>token_usages</code>) before and after each phase. Per-phase cost is the difference. Cross-check the ledger total against tokens × price.</p>
+</li>
+<li><p><strong>Record.</strong></p>
+<ul>
+<li>Write <code>run.json</code>: the commit tested, the ledger totals, each fix&#39;s verdict with its evidence step, and every new issue filed with its severity.</li>
+<li>Build the decks.</li>
+<li>Post the results comment.</li>
+<li>Close the issues the run confirmed.</li>
+</ul>
+</li>
+</ol>
+<h3 id="3-3-waves-and-phases-in-metis">3.3 Waves and phases in METIS</h3>
+<p>Every phase in the plan has a <strong>Works</strong> bar and a <strong>Useful</strong> bar. For example, Phase 10 (chat):</p>
+<ul>
+<li><strong>Works:</strong> the answer comes back.</li>
+<li><strong>Useful:</strong> it names the real function and its <code>file:line</code>, and the line is correct at <code>v2.3.3</code>.</li>
+</ul>
+<p>A step that works but would not help a user scores <code>works: pass, useful: weak</code>.</p>
+<hr>
+<h2 id="4-the-agent">4. The agent</h2>
+<p>The browser waves are run by <strong><code>ui-vision</code></strong>, a Claude Code subagent defined in <code>.claude/agents/ui-vision.md</code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Tools</strong></td>
+<td>The Playwright MCP tools (navigate, click, type, snapshot, screenshot, run JS in the page, manage tabs) plus <code>Bash</code>, <code>Read</code> and <code>Skill</code>. It drives a real Chrome.</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>It inherits the session&#39;s model. METIS runs used a frontier Claude model.</td>
+</tr>
+<tr>
+<td><strong>Input</strong></td>
+<td>One filled brief. The brief is everything it knows: its steps, pass bars, guard-rails, the fixes it must verify, the IDs from earlier waves, and the lessons from earlier runs.</td>
+</tr>
+<tr>
+<td><strong>What it does per step</strong></td>
+<td>Performs the action in the UI. Waits for long jobs by polling the API, not by sleeping. Takes a screenshot. Checks the result against the pass bars and against ground truth: it opens the cited source file at the cited line in the pinned checkout. Writes one line to <code>steps.jsonl</code>, scored <code>works</code> (pass/partial/fail/blocked) and <code>useful</code> (pass/weak/fail/n/a), with the tokens and cost attributed from the ledger.</td>
+</tr>
+<tr>
+<td><strong>What it returns</strong></td>
+<td>A fixed-format report with four parts: state for the next wave (IDs, ledger snapshot); a per-phase table of time, tokens, cost, console errors, Works and Useful; a <strong>fix-verification table</strong>, where each fix in its brief is confirmed, partial, regressed or not exercised, with a step id as evidence; and <strong>findings</strong> graded high, medium or low with evidence. It also returns &quot;durable findings&quot;: lessons for the next run.</td>
+</tr>
+<tr>
+<td><strong>What it does not do</strong></td>
+<td>It files no issues, merges nothing and doesn&#39;t change settings beyond what its steps require. Filing and closing is left to the orchestrating session, so a person or the orchestrator sees every finding first.</td>
+</tr>
+<tr>
+<td><strong>Guard-rails it must obey</strong></td>
+<td>It never publishes to the real upstream repository, only to a sandbox. It always does a dry run first, and publishes at most 2 issues per run. Credentials only come through the product&#39;s vault picker, never pasted. It never overlaps long jobs. It never clicks destructive actions on data later steps need.</td>
+</tr>
+</tbody></table>
+</div><p>The <strong>orchestrating session</strong> is the main Claude Code session. It doesn&#39;t drive the browser. It:</p>
+<ul>
+<li>fills briefs and dispatches waves in order;</li>
+<li>reads each report and passes state forward;</li>
+<li>runs the ledger queries;</li>
+<li>writes <code>run.json</code>, builds the decks and posts the results;</li>
+<li>files issues and closes the confirmed ones.</li>
+</ul>
+<p>The <strong>BA re-ask</strong> needs no browser. A smaller agent asks the 8 analyst questions over the chat API, one session each, and checks every citation against the source.</p>
+<h3 id="practical-limits">Practical limits</h3>
+<ul>
+<li><p><strong>Some checks are blocked by the harness&#39;s own safety classifier.</strong></p>
+<ul>
+<li>Driving a second user&#39;s browser context, for presence checks.</li>
+<li>Sending <code>UPDATE</code> SQL to prove a query endpoint is read-only.</li>
+</ul>
+<p>The operator runs these, or they are verified from the database. The run records them as blocked.</p>
+</li>
+<li><p><strong>Real publishing needs an allow rule.</strong> The operator has to add an allow rule for the publish call to the sandbox repository.</p>
+</li>
+<li><p><strong>Agent shells are killed after 2 hours.</strong> The product server must run where the operator controls it, for example in <code>screen</code>, not in an agent&#39;s background shell.</p>
+</li>
+<li><p><strong>Playwright quirks.</strong> After a sign-out, a tab can stop delivering clicks. Downloads crash the page. Dev-mode routes take 20–40 s to compile. The briefs carry workarounds for each.</p>
+</li>
+</ul>
+<hr>
+<h2 id="5-what-a-person-has-to-write">5. What a person has to write</h2>
+<p>The agents do the clicking. People supply the judgement: what to test, what &quot;good&quot; means, and what&#39;s safe.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>You write</th>
+<th>Why it matters</th>
+<th>METIS example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>A test plan</strong> with phases, steps, and Works and Useful pass bars per step</td>
+<td>Without explicit bars, &quot;it worked&quot; is the agent&#39;s opinion. The bars make scoring repeatable across runs.</td>
+<td><code>TEST_PLAN.md</code>, 20 phases plus S1–S24 plus 2 journeys</td>
+</tr>
+<tr>
+<td><strong>Test cases with known answers</strong></td>
+<td>Usefulness can only be checked against something true.</td>
+<td>8 BA questions, with the facts a correct answer must contain; 3 real upstream issues, with the code each must surface</td>
+</tr>
+<tr>
+<td><strong>A pinned sample project and ground truth</strong></td>
+<td>Runs are comparable only if the input is identical.</td>
+<td>Miniflux at tag <code>v2.3.3</code>, commit <code>c4d54f87</code>, plus a seeded database</td>
+</tr>
+<tr>
+<td><strong>Fixture setup, in order</strong></td>
+<td>Order changes results.</td>
+<td>Lineage sidecar, then database, then workspace, then project, then connector</td>
+</tr>
+<tr>
+<td><strong>Safety guard-rails</strong></td>
+<td>The agent acts for real: real repos, real credentials, real spend.</td>
+<td>Sandbox repo only; vault-only credentials; at most 2 issues; never touch upstream</td>
+</tr>
+<tr>
+<td><strong>The cost source</strong></td>
+<td>Cost has to come from the product&#39;s own ledger, not estimates.</td>
+<td>The <code>token_usages</code> SQL, and the per-token prices</td>
+</tr>
+<tr>
+<td><strong>Persona journeys</strong></td>
+<td>Feature checks miss handoff bugs.</td>
+<td>A BA turns feature requests into reviewed, published issues; a developer takes an upstream issue to a change plan</td>
+</tr>
+<tr>
+<td><strong>The fix-to-phase map</strong></td>
+<td>So each merged fix is verified by the right wave.</td>
+<td><code>fix-phase-map.json</code></td>
+</tr>
+<tr>
+<td><strong>Review of each run&#39;s scope and findings</strong></td>
+<td>The agent proposes; a person decides what is a bug and how severe.</td>
+<td>Reviewing <code>fixes.json</code>, then triaging the findings</td>
+</tr>
+</tbody></table>
+</div><p>What you <strong>don&#39;t</strong> write, because it is generated or reusable: the wave briefs (templated, filled per run), the fixes-to-verify list, the decks, and the results comment.</p>
+<hr>
+<h2 id="6-how-issues-are-tracked">6. How issues are tracked</h2>
+<p>There are two lists: fixes the run <strong>verifies</strong>, and findings the run <strong>files</strong>.</p>
+<h3 id="6-1-fixes-to-verify-going-in">6.1 Fixes to verify (going in)</h3>
+<ol>
+<li><p><strong>Generate the candidates.</strong> <code>fixes-since.mjs</code> reads the previous run&#39;s commit from its <code>run.json</code> and lists every PR merged on <code>main</code> since then. It keeps the PRs that:</p>
+<ul>
+<li>are labelled <code>e2e-walkthrough</code>, or close an issue that is;</li>
+<li>touch a UI page or API route;</li>
+<li>touch a core product library.</li>
+</ul>
+<p>Dependabot PRs are listed separately.</p>
+</li>
+<li><p><strong>Place each fix.</strong> <code>fix-phase-map.json</code> assigns each fix a wave, a phase and a one-line &quot;what to check&quot;. A fix the map can&#39;t place is printed for a person to decide. Nothing is dropped silently.</p>
+</li>
+<li><p><strong>Carry forward.</strong> Any fix the previous run did not mark <code>confirmed</code> is added again automatically.</p>
+</li>
+<li><p><strong>Publish the scope.</strong> The full list is posted on the tracking issue <strong>before</strong> the run, so its scope is visible and reviewable.</p>
+</li>
+<li><p><strong>Hand each wave its own list.</strong> <code>fill-brief.mjs</code> puts only that wave&#39;s fixes into each brief, as <code>{{FIXES_TO_VERIFY}}</code>.</p>
+</li>
+</ol>
+<h3 id="6-2-verdicts-coming-out">6.2 Verdicts (coming out)</h3>
+<ul>
+<li><strong>Mark each fix.</strong> Each wave returns a verdict per fix: <code>confirmed</code>, <code>partial</code>, <code>regressed</code> or <code>not-exercised</code>. Every verdict except <code>not-exercised</code> cites a step id in <code>steps.jsonl</code> as evidence.</li>
+<li><strong>Record them.</strong> The orchestrator writes the verdicts into <code>run.json</code>. The deck shows &quot;Fixes confirmed this run (N of M)&quot;.</li>
+<li><strong>Close what passed.</strong> <code>fixes-since.mjs --close-list</code> lists the confirmed issues that are still open. Each is closed with a link to the results.</li>
+</ul>
+<h3 id="6-3-new-findings">6.3 New findings</h3>
+<ul>
+<li><strong>Return them.</strong> Each wave returns findings graded high, medium or low, each with evidence: screenshots and file:line.</li>
+<li><strong>File them.</strong><ul>
+<li>High and medium findings each get their own issue.</li>
+<li>Low findings are bundled into one checklist issue.</li>
+<li>Every issue carries the <code>e2e-walkthrough</code> label.</li>
+</ul>
+</li>
+<li><strong>Record them.</strong> They are listed in <code>run.json</code> under <code>newIssues</code> with their severity. The report deck ends with a slide listing them.</li>
+<li><strong>Feed the next run.</strong> When they are fixed and merged, the next run&#39;s fix finder picks them up automatically. That closes the loop.</li>
+</ul>
+<h3 id="6-4-keeping-the-plan-honest">6.4 Keeping the plan honest</h3>
+<ul>
+<li><strong>Drift check.</strong> CI fails if <code>TEST_PLAN.md</code> names a route or page that no longer exists.</li>
+<li><strong>PR gate.</strong> A PR that adds or removes a page or route must update the plan, or be labelled <code>no-walkthrough-impact</code>.</li>
+<li><strong>Lessons go back.</strong> Each run&#39;s lessons flow into the runbook and briefs as &quot;agent tips&quot;, in a PR. So does any step the run found wrong in the plan.</li>
+</ul>
+<hr>
+<h2 id="7-cost">7. Cost</h2>
+<p>A walkthrough has two separate costs.</p>
+<h3 id="7-1-the-product-39-s-own-llm-spend-the-system-under-test">7.1 The product&#39;s own LLM spend (the system under test)</h3>
+<p>This is what METIS spends calling its model, DeepSeek <code>deepseek-flash</code>, while the agent drives it. It is read from METIS&#39;s own usage ledger.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Run</th>
+<th>Total</th>
+<th>Biggest item</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Run 2</td>
+<td>$5.77</td>
+<td>–</td>
+</tr>
+<tr>
+<td>Run 3</td>
+<td>$9.84</td>
+<td>Docs generation, 89%</td>
+</tr>
+<tr>
+<td>Run 4</td>
+<td><strong>$4.32</strong></td>
+<td>Docs generation ($2.89 for wave C), under a $5 per-document cap</td>
+</tr>
+</tbody></table>
+</div><p>Per wave in run 4:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Wave</th>
+<th>A</th>
+<th>B</th>
+<th>C</th>
+<th>D</th>
+<th>E</th>
+<th>BA</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cost</td>
+<td>$0</td>
+<td>$0.61</td>
+<td>$2.89</td>
+<td>$0.44</td>
+<td>$0.28</td>
+<td>$0.09</td>
+</tr>
+</tbody></table>
+</div><p>Wave A spends nothing: ingest, embeddings and retrieval make no LLM calls. This cost depends entirely on the product and the model it uses.</p>
+<h3 id="7-2-the-testing-agent-39-s-own-tokens-the-ai-doing-the-testing">7.2 The testing agent&#39;s own tokens (the AI doing the testing)</h3>
+<p>This is the cost of the Claude agents driving the browser and checking results. It is separate from the product&#39;s spend, and much larger in tokens.</p>
+<p><strong>Run 4, measured per wave</strong>, as tokens processed by each wave&#39;s agent (input and output, as reported by the agent harness):</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Wave</th>
+<th>Agent</th>
+<th>Tokens</th>
+<th>Tool calls</th>
+<th>Wall time</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A: setup, phases 1–4</td>
+<td>ui-vision</td>
+<td>~238k</td>
+<td>~290</td>
+<td>35 min</td>
+</tr>
+<tr>
+<td>B: phases 5–8</td>
+<td>ui-vision</td>
+<td>~400k</td>
+<td>~495</td>
+<td>40 min</td>
+</tr>
+<tr>
+<td>C: phases 9–13</td>
+<td>ui-vision</td>
+<td>~416k</td>
+<td>~475</td>
+<td>64 min</td>
+</tr>
+<tr>
+<td>D: Spec Kit</td>
+<td>ui-vision</td>
+<td>~304k</td>
+<td>~390</td>
+<td>41 min</td>
+</tr>
+<tr>
+<td>E: phases 15–20</td>
+<td>ui-vision</td>
+<td>~426k</td>
+<td>~450</td>
+<td>49 min</td>
+</tr>
+<tr>
+<td>BA re-ask</td>
+<td>general (API only)</td>
+<td>~115k</td>
+<td>~35</td>
+<td>6 min</td>
+</tr>
+<tr>
+<td><strong>Run total (agents)</strong></td>
+<td></td>
+<td><strong>~1.9M tokens</strong></td>
+<td><strong>~2,100</strong></td>
+<td><strong>~4 h</strong></td>
+</tr>
+</tbody></table>
+</div><p>Run 5&#39;s wave A came in at a similar ~257k.</p>
+<p><strong>What these figures leave out:</strong></p>
+<ul>
+<li><strong>The orchestrating session&#39;s own tokens.</strong> It fills briefs, reads reports, runs queries, writes results and files issues. That is smaller than the waves, but not zero.</li>
+<li><strong>Prompt caching.</strong> Most of each agent&#39;s context is re-read on every turn, and cached reads are billed far below fresh input. This is why per-wave tokens are high but cost stays moderate.</li>
+</ul>
+<p><strong>To turn this into dollars:</strong> total cost ≈ the Claude agent tokens priced at your model&#39;s per-token rates, plus the product&#39;s own LLM spend. Most of each agent&#39;s tokens are input, and a large share of that is cached reads. This document quotes no Claude dollar figure, because it depends on the model and pricing tier you run. Use the token counts above with your provider&#39;s current price list, and check your provider&#39;s usage dashboard after a run for the actual figure.</p>
+<p><strong>What it costs to act on the findings</strong> is separate again, and can be larger than the run. Each fix goes through an implement → review → fix → re-review loop. Security-relevant fixes add a 3-lens adversarial panel. For example, one round that fixed 9 issues from run 4 used about <strong>2.3M agent tokens</strong> across 21 agents. Budget for that if you plan to fix what the walkthrough finds.</p>
+<h3 id="7-3-ways-to-keep-it-down">7.3 Ways to keep it down</h3>
+<ul>
+<li><strong>Run it after a batch of fixes, not per PR.</strong> CI covers each PR.</li>
+<li><strong>Cap the product&#39;s spend.</strong> For example, a per-document cost cap ($5 per document in METIS) stops one runaway job from eating the budget.</li>
+<li><strong>Keep the briefs tight.</strong> Every line in a brief is re-read on every turn of that wave.</li>
+<li><strong>Don&#39;t add zero-LLM checks to the walkthrough.</strong> Steps that need no model belong in the normal e2e suite in CI.</li>
+<li><strong>Run only the waves a change touches</strong>, when you just need to confirm a few fixes. The fixes list shows which waves those are.</li>
+</ul>
+<hr>
+<h2 id="8-using-this-on-another-project">8. Using this on another project</h2>
+<p>The method carries over. Most METIS-specific parts are configuration.</p>
+<p><strong>Reusable as is:</strong></p>
+<ul>
+<li>The <code>ui-vision</code> agent: generic browser QA through Playwright.</li>
+<li>The two-axis Works/Useful scoring and the <code>steps.jsonl</code> manifest format.</li>
+<li>The deck builder. It only needs <code>steps.jsonl</code> and, optionally, <code>run.json</code>. The issue-link base and the title are its only project-specific parts.</li>
+<li>The flow of fix finder → scope comment → per-wave verdicts → <code>run.json</code> → close confirmed. Point the fix finder at your repo, and at your own list of core paths.</li>
+<li>The drift check and PR gate, adjusted to your route and page layout.</li>
+</ul>
+<p><strong>You write for your project:</strong></p>
+<ol>
+<li><strong>A <code>TEST_PLAN.md</code>.</strong> Group your features into phases. Give every step a Works bar and a Useful bar, and add test cases with known answers.</li>
+<li><strong>A pinned sample dataset and its ground truth.</strong> Something realistic that never changes between runs.</li>
+<li><strong>Fixture setup, in a fixed order.</strong></li>
+<li><strong>Guard-rails.</strong> Which external systems the agent may touch; sandbox targets; how credentials are supplied; what it must never click.</li>
+<li><strong>A cost source</strong> for your product&#39;s LLM or API spend, if it has one.</li>
+<li><strong>Wave briefs.</strong> Split the plan into waves of about 30–60 minutes, each self-contained apart from the IDs it is handed.</li>
+<li><strong>One or two persona journeys,</strong> written as user goals, UI only.</li>
+</ol>
+<p><strong>Start small.</strong> One wave covering your core path, two or three known-answer checks, and the deck builder. Add waves once the first run&#39;s findings show where the gaps are. The skill and briefs grow with each run&#39;s lessons; METIS&#39;s &quot;agent tips&quot; section is five runs of those.</p>
+<p><strong>A useful split for a shared plugin:</strong></p>
+<ul>
+<li><strong>A generic <code>product-walkthrough</code> skill:</strong> the method, the manifest, the scoring, the deck builder and the fix tracking.</li>
+<li><strong>A per-project profile:</strong> the plan, fixtures, guard-rails and cost SQL.</li>
+</ul>
+<hr>
+<h2 id="9-limits-and-honest-caveats">9. Limits and honest caveats</h2>
+<ul>
+<li><strong>&quot;Useful&quot; is a judgement by a model,</strong> guided by the pass bars and checked against ground truth where possible. It is not a human UAT sign-off. Treat it as a strong signal, and have a person review the findings.</li>
+<li><strong>It only tests what the plan describes.</strong> New features need new steps, which is why the PR gate exists.</li>
+<li><strong>A run takes hours and costs real tokens.</strong> It complements CI and doesn&#39;t replace it.</li>
+<li><strong>Some checks need a person.</strong> Anything the harness&#39;s safety classifier blocks, or anything that needs a public webhook, the operator must do.</li>
+<li><strong>Results depend on the model under test.</strong> A change of model (for example DeepSeek to Claude) changes Useful scores, so record the model with every run.</li>
+</ul>
+</main>
+</div>
+<footer>Source: <a href="https://github.com/openzigs/metis/blob/main/docs/walkthroughs/AI_E2E_WALKTHROUGH.md">docs/walkthroughs/AI_E2E_WALKTHROUGH.md</a> in openzigs/metis. Figures come from walkthrough runs 1–5 (October 2026).</footer>
+<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs";mermaid.initialize({startOnLoad:true,theme:matchMedia("(prefers-color-scheme: dark)").matches?"dark":"default"});</script>
+</body>
+</html>
