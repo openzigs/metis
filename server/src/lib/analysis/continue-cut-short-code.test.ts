@@ -37,7 +37,9 @@ vi.mock("../socket/job-events.js", () => ({
   genericFailureMessage: (kind: string) => `${kind} failed`,
 }));
 
-const { AnalysisOrchestrator, CONTINUE_BUDGET_MULTIPLIER } = await import("./orchestrator.js");
+const { AnalysisOrchestrator, CONTINUE_BUDGET_MULTIPLIER, resolvePassTurnCaps } =
+  await import("./orchestrator.js");
+const { resolveAgenticMaxTurns } = await import("./agentic-pass-context.js");
 const { createCapabilityTracker, finalizeCapability } = await import("./analysis-capability.js");
 
 const USAGE = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
@@ -194,6 +196,41 @@ describe("#1001 continue with a larger budget", () => {
     );
   });
 
+  it("the turn caps the pass runs with are multiplied by the turn multiplier", () => {
+    // The stubbed pass above only sees the multiplier; this pins the arithmetic.
+    const base = resolvePassTurnCaps({ standardCount: 4, deepCount: 2, totalCount: 6 });
+    expect(base).toEqual({
+      standardTurns: resolveAgenticMaxTurns(4),
+      deepTurns: resolveAgenticMaxTurns(2),
+    });
+    expect(
+      resolvePassTurnCaps({
+        standardCount: 4,
+        deepCount: 2,
+        totalCount: 6,
+        turnMultiplier: CONTINUE_BUDGET_MULTIPLIER,
+      }),
+    ).toEqual({
+      standardTurns: base.standardTurns * CONTINUE_BUDGET_MULTIPLIER,
+      deepTurns: base.deepTurns * CONTINUE_BUDGET_MULTIPLIER,
+    });
+  });
+
+  it("scales an escalation policy's own turn caps too", () => {
+    expect(
+      resolvePassTurnCaps({
+        standardCount: 4,
+        deepCount: 2,
+        totalCount: 6,
+        policy: { standardMaxTurns: 12, deepMaxTurns: 30 },
+        turnMultiplier: CONTINUE_BUDGET_MULTIPLIER,
+      }),
+    ).toEqual({
+      standardTurns: 12 * CONTINUE_BUDGET_MULTIPLIER,
+      deepTurns: 30 * CONTINUE_BUDGET_MULTIPLIER,
+    });
+  });
+
   it("an ordinary regenerate leaves the turn cap alone", async () => {
     const orch = makeOrchestrator();
     await regenerate(orch);
@@ -259,8 +296,27 @@ describe("#1001 the banner describes the regenerated pass", () => {
   });
 
   it("never rewrites the capability on another specialist's regenerate", async () => {
-    const orch = makeOrchestrator(health(false));
+    const orch = makeOrchestrator();
+    // Give the non-code pass retrieval health, so only the code-only guard keeps
+    // the regenerate from rewriting the code agent's capability flags.
+    orch.runOneAgent.mockImplementation(async (input: { analysisId: string }) => {
+      orch.recordRetrievalHealth(input.analysisId, health(false));
+      return { agentKey: "document", output: OUTPUT, usage: USAGE, durationMs: 1 };
+    });
     await regenerate(orch, { agentKey: "document" });
+    expect(orch.runOneAgent).toHaveBeenCalledTimes(1);
     expect(serviceMock.persistAnalysisCapability).not.toHaveBeenCalled();
+    expect(serviceMock.persistAnalysisEnhancement).not.toHaveBeenCalled();
+  });
+
+  it("drops the pass's retrieval health when the regenerate fails", async () => {
+    const orch = makeOrchestrator(health(true));
+    orch.runSynthesisAndPersist.mockRejectedValue(new Error("synthesis failed"));
+    await regenerate(orch, { extendBudget: true });
+    expect(serviceMock.finalizeAnalysisDelta).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+    expect(serviceMock.persistAnalysisCapability).not.toHaveBeenCalled();
+    expect(orch.retrievalHealths.has("an_1")).toBe(false);
   });
 });

@@ -438,6 +438,29 @@ interface SynthesisOutcome {
  */
 export const CONTINUE_BUDGET_MULTIPLIER = 2;
 
+/**
+ * #773 / #739 / #1001 — the turn caps for the agentic code pass's standard and
+ * deep sub-passes. The cap scales with the requirements each pass investigates
+ * (see `resolveAgenticMaxTurns`) unless the #739 escalation policy owns it, and
+ * a continued investigation multiplies both by `turnMultiplier`, so a pass that
+ * hit its turn cap does not rerun with the same cap and stop in the same place.
+ */
+export function resolvePassTurnCaps(opts: {
+  standardCount: number;
+  deepCount: number;
+  totalCount: number;
+  policy?: Pick<EscalationPolicyConfig, "standardMaxTurns" | "deepMaxTurns">;
+  turnMultiplier?: number;
+}): { standardTurns: number; deepTurns: number } {
+  const turnScale = opts.turnMultiplier ?? 1;
+  return {
+    standardTurns:
+      (opts.policy?.standardMaxTurns ??
+        resolveAgenticMaxTurns(opts.standardCount || opts.totalCount)) * turnScale,
+    deepTurns: (opts.policy?.deepMaxTurns ?? resolveAgenticMaxTurns(opts.deepCount)) * turnScale,
+  };
+}
+
 /** Minimum token budget per repo in multi-repo analysis (#663 review). */
 const MIN_PER_REPO_TOKEN_BUDGET = 50_000;
 
@@ -3009,13 +3032,13 @@ export class AnalysisOrchestrator {
         // actually investigate (see `resolveAgenticMaxTurns`), so an honest verdict
         // per requirement is fundable instead of structurally impossible. When the
         // #739 escalation policy is on it still owns the caps.
-        const turnScale = input.turnMultiplier ?? 1;
-        const standardTurns =
-          (input.escalation?.policy.standardMaxTurns ??
-            resolveAgenticMaxTurns(standardReqs.length || input.requirements.length)) * turnScale;
-        const deepTurns =
-          (input.escalation?.policy.deepMaxTurns ?? resolveAgenticMaxTurns(deepReqs.length)) *
-          turnScale;
+        const { standardTurns, deepTurns } = resolvePassTurnCaps({
+          standardCount: standardReqs.length,
+          deepCount: deepReqs.length,
+          totalCount: input.requirements.length,
+          policy: input.escalation?.policy,
+          turnMultiplier: input.turnMultiplier,
+        });
 
         let mergedOutput: AgentOutput;
         let mergedUsage: TokenUsage;
