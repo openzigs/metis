@@ -77,3 +77,47 @@ describe("AnalysisCapabilityBanner resume action (#741)", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe("AnalysisCapabilityBanner continue action (#1001)", () => {
+  const cutShort = capability({ codeInvestigationCutShort: true });
+
+  it("says the code investigation ran out of budget and offers to continue", () => {
+    render(<AnalysisCapabilityBanner capability={cutShort} onContinueInvestigation={() => {}} />);
+    expect(screen.getByTestId("capability-reason-code-investigation-cut-short")).toHaveTextContent(
+      /ran out of its token budget/i,
+    );
+    expect(screen.getByTestId("continue-code-investigation")).toHaveTextContent(
+      "Continue with a larger budget",
+    );
+  });
+
+  it("invokes onContinueInvestigation when clicked", () => {
+    const onContinue = vi.fn();
+    render(<AnalysisCapabilityBanner capability={cutShort} onContinueInvestigation={onContinue} />);
+    fireEvent.click(screen.getByTestId("continue-code-investigation"));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables + relabels the action while continuing", () => {
+    render(
+      <AnalysisCapabilityBanner
+        capability={cutShort}
+        onContinueInvestigation={() => {}}
+        continuing
+      />,
+    );
+    const btn = screen.getByTestId("continue-code-investigation");
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveTextContent(/Continuing code analysis/i);
+  });
+
+  it("does not render the action without a handler, or on another reason", () => {
+    const { unmount } = render(<AnalysisCapabilityBanner capability={cutShort} />);
+    expect(screen.queryByTestId("continue-code-investigation")).not.toBeInTheDocument();
+    unmount();
+    render(
+      <AnalysisCapabilityBanner capability={withSkipped} onContinueInvestigation={() => {}} />,
+    );
+    expect(screen.queryByTestId("continue-code-investigation")).not.toBeInTheDocument();
+  });
+});

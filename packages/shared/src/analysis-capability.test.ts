@@ -124,6 +124,30 @@ describe("deriveCapabilityReasons", () => {
   });
 });
 
+describe("#1001 — code investigation cut short by its budget", () => {
+  it("flags code-investigation-cut-short when the code pass exhausted its budget", () => {
+    expect(deriveCapabilityReasons({ ...fullyCapable, codeInvestigationCutShort: true })).toEqual([
+      "code-investigation-cut-short",
+    ]);
+  });
+
+  it("stays silent on a pass that finished within budget", () => {
+    expect(deriveCapabilityReasons({ ...fullyCapable, codeInvestigationCutShort: false })).toEqual(
+      [],
+    );
+  });
+
+  it("is gated behind codeAnalysisRequested", () => {
+    expect(
+      deriveCapabilityReasons({
+        ...fullyCapable,
+        codeAnalysisRequested: false,
+        codeInvestigationCutShort: true,
+      }),
+    ).toEqual([]);
+  });
+});
+
 describe("isAnalysisDegraded", () => {
   it("is false for null and for empty reasons", () => {
     expect(isAnalysisDegraded(null)).toBe(false);

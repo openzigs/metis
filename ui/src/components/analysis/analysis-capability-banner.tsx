@@ -21,12 +21,21 @@ interface Props {
   onResumeRepos?: () => void;
   /** True while a resume is in flight — disables the action + shows progress. */
   resuming?: boolean;
+  /**
+   * Issue #1001 — invoked when the operator clicks "Continue with a larger
+   * budget" on the `code-investigation-cut-short` reason. Omitted ⇒ not rendered.
+   */
+  onContinueInvestigation?: () => void;
+  /** True while a continued investigation is being started. */
+  continuing?: boolean;
 }
 
 export function AnalysisCapabilityBanner({
   capability,
   onResumeRepos,
   resuming = false,
+  onContinueInvestigation,
+  continuing = false,
 }: Props): React.ReactElement | null {
   if (!isAnalysisDegraded(capability) || !capability) return null;
 
@@ -80,6 +89,20 @@ export function AnalysisCapabilityBanner({
                     {resuming
                       ? "Analyzing remaining repositories…"
                       : "Analyze remaining repositories"}
+                  </button>
+                </div>
+              ) : null}
+              {/* Issue #1001 — continue a code pass that ran out of budget. */}
+              {reason === "code-investigation-cut-short" && onContinueInvestigation ? (
+                <div className="mt-1.5">
+                  <button
+                    type="button"
+                    data-testid="continue-code-investigation"
+                    onClick={onContinueInvestigation}
+                    disabled={continuing}
+                    className="rounded border border-warning/40 bg-warning-muted px-2 py-1 text-xs font-medium text-warning hover:bg-warning-muted disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {continuing ? "Continuing code analysis…" : "Continue with a larger budget"}
                   </button>
                 </div>
               ) : null}

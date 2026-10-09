@@ -111,6 +111,20 @@ describe("getCostCapStatus", () => {
     expect(s.monthBucket).toBe("2026-04");
   });
 
+  it("#1001 — reports the per-agent budget the code loop enforces, not only the informational cap", async () => {
+    const prior = process.env.ANALYSIS_AGENT_TOKEN_BUDGET;
+    process.env.ANALYSIS_AGENT_TOKEN_CAP = "80000";
+    process.env.ANALYSIS_AGENT_TOKEN_BUDGET = "250000";
+    try {
+      const s = await getCostCapStatus(REF_DATE);
+      expect(s.agentCap).toBe(80_000);
+      expect(s.agentBudget).toBe(250_000);
+    } finally {
+      if (prior === undefined) delete process.env.ANALYSIS_AGENT_TOKEN_BUDGET;
+      else process.env.ANALYSIS_AGENT_TOKEN_BUDGET = prior;
+    }
+  });
+
   it("returns Infinity remaining when the cap is disabled", async () => {
     process.env.ANALYSIS_MONTHLY_TOKEN_CAP = "0";
     const s = await getCostCapStatus(REF_DATE);
