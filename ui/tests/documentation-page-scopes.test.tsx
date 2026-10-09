@@ -502,6 +502,20 @@ describe("DocumentationPage — GenerateForm scope selection", () => {
       );
     });
 
+    it("says the runs could not be loaded, not that there are none, when the query errors", async () => {
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (typeof path === "string" && path.endsWith("/analyses")) throw new Error("500");
+        return sampleDocs;
+      });
+      renderPage();
+      fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+      fireEvent.change(await screen.findByTestId("doc-scope-select"), {
+        target: { value: "requirements" },
+      });
+      expect(await screen.findByTestId("analyses-load-error")).toBeInTheDocument();
+      expect(screen.queryByTestId("no-completed-analyses")).not.toBeInTheDocument();
+    });
+
     it("disables submit until a run is chosen, then sends the run and the approved-only flag", async () => {
       await chooseRequirementsScope();
       expect(screen.getByTestId("submit-generate")).toBeDisabled();

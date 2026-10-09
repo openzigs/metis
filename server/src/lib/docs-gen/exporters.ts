@@ -347,7 +347,28 @@ async function exportToPdf(markdown: string, title: string): Promise<ExportResul
  * Build a full HTML document from markdown with Mermaid support and KaTeX.
  */
 async function buildHtmlDocument(markdown: string, title: string): Promise<string> {
-  const { marked } = await import("marked");
+  const { Marked } = await import("marked");
+  // The page runs JS in a --no-sandbox Chrome with no request interception, and
+  // the markdown can carry text from external trackers. So marked may not emit
+  // author HTML, script-scheme links, or images (a fetch of an internal URL
+  // would land in the PDF). Our own placeholder comments are the only raw HTML.
+  const md = new Marked({
+    renderer: {
+      html({ text }) {
+        const t = text.trim();
+        return /^<!--(MATH|MERMAID)_PLACEHOLDER_\d+-->$/.test(t) ? text : escapeHtml(text);
+      },
+      image({ text }) {
+        return escapeHtml(text);
+      },
+      link({ href, title, tokens }) {
+        const inner = this.parser.parseInline(tokens);
+        if (!/^(https?:|mailto:|#)/i.test(href.trim())) return inner;
+        const t = title ? ` title="${escapeHtml(title)}"` : "";
+        return `<a href="${escapeHtml(href)}"${t}>${inner}</a>`;
+      },
+    },
+  });
 
   // Extract display math ($$...$$) and mermaid blocks BEFORE marked processing.
   // marked splits $$\nformula\n$$ into separate <p> tags, breaking KaTeX delimiter matching.
@@ -369,7 +390,7 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
     },
   );
 
-  let htmlContent = await marked(processedMarkdown, {
+  let htmlContent = await md.parse(processedMarkdown, {
     gfm: true,
     breaks: false,
   });

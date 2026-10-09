@@ -1048,12 +1048,17 @@ function GenerateForm({
             </option>
             {completedAnalyses.map((analysis) => (
               <option key={analysis.id} value={analysis.id}>
-                {new Date(analysis.completedAt ?? analysis.startedAt).toLocaleString()} —{" "}
-                {analysis.id}
+                {new Date(analysis.completedAt ?? analysis.startedAt).toLocaleString()} (
+                {analysis.id.slice(-6)})
               </option>
             ))}
           </select>
-          {!analysesQuery.isLoading && completedAnalyses.length === 0 && (
+          {analysesQuery.isError && (
+            <p className="text-xs text-destructive" role="alert" data-testid="analyses-load-error">
+              Could not load analysis runs. Try again.
+            </p>
+          )}
+          {!analysesQuery.isLoading && !analysesQuery.isError && completedAnalyses.length === 0 && (
             <p className="text-xs text-muted-foreground" data-testid="no-completed-analyses">
               No completed analysis runs. Run an analysis to produce requirements first.
             </p>
