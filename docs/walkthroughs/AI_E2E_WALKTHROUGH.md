@@ -9,7 +9,7 @@ How METIS runs a full end-to-end test of itself with AI agents driving a real br
 
 The last section explains how to reuse the approach on another project.
 
-> **Web version:** https://openzigs.github.io/metis/walkthroughs/ai-e2e-walkthrough.html
+> **Web version:** https://openzigs.github.io/metis/walkthroughs/AI_E2E_WALKTHROUGH/ (standalone page: https://openzigs.github.io/metis/walkthroughs/ai-e2e-walkthrough.html)
 >
 > **Status:** METIS has run the walkthrough five times (runs 1–5, October 2026). Every figure here comes from those runs unless it says otherwise.
 

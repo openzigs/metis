@@ -251,3 +251,6 @@ CLAUDE.local.md
 
 # The private-vocabulary gate's term list. Never commit it — see docs/DEVELOPMENT.md.
 .private-terms
+
+# MkDocs build output (docs-site workflow)
+/site/
