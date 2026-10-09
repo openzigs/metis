@@ -42,6 +42,8 @@ interface Fixture {
     filePath: string;
     startLine?: number | null;
     endLine?: number | null;
+    /** `semantic` (the schema default), `manual`, or the seeder's `analysis-grounding`. */
+    source?: string;
   }>;
   specMappings?: Array<{ requirementId: string; projectId: string; specDocumentId: string }>;
   specCode?: Array<{
@@ -102,7 +104,7 @@ function fakePrisma(f: Fixture) {
               (m) =>
                 m.projectId === where.projectId && inList(where.requirementId, m.requirementId),
             )
-            .map((m) => pick({ startLine: null, endLine: null, ...m }, select)),
+            .map((m) => pick({ startLine: null, endLine: null, source: "semantic", ...m }, select)),
       ),
     },
     requirementSpecMapping: {
@@ -547,14 +549,51 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
   it("drops every iframe and YouTube setup caller of NewConfigOptions from OAUTH2_USER_CREATION", async () => {
     const { deps: d } = deps(minifluxFixture(constructorRow, OAUTH_TITLE));
     // The two foreign packages call the constructor to build their fixtures; the
-    // config package's own TestConfigMap tests it and is kept.
-    expect(await names(d)).toEqual(["TestConfigMap"]);
+    // config package's own TestConfigMap shares no title word either (#905).
+    expect(await names(d)).toEqual([]);
   });
 
   it("does the same for the stored run-3 shape: a file-level row ranged over the constructor", async () => {
     const fileRow = { ...fileMap("r1", OPTIONS), startLine: 64, endLine: 621 };
     const { deps: d } = deps(minifluxFixture(fileRow, OAUTH_TITLE));
-    expect(await names(d)).toEqual(["TestConfigMap"]);
+    expect(await names(d)).toEqual([]);
+  });
+
+  it("#905 — none of the six run-3 config requirements is tested by the own-package TestConfigMap", async () => {
+    // #860's symptom 3: each is mapped to the NewConfigOptions constructor, and the
+    // only own-package caller is `TestConfigMap`, which tests the option map, not
+    // OIDC, metrics or user creation.
+    const titles = [
+      "OpenID Connect sign-in",
+      "Prometheus metrics endpoint",
+      "METRICS_ALLOWED_NETWORKS restricts the metrics endpoint",
+      "Metrics endpoint basic authentication",
+      "Metrics refresh interval",
+      OAUTH_TITLE,
+    ];
+    const ids = titles.map((_, i) => `r${i}`);
+    const base = minifluxFixture(constructorRow, OAUTH_TITLE);
+    const { deps: d } = deps({
+      ...base,
+      requirements: titles.map((t, i) => req(ids[i], t)),
+      codeMappings: ids.map((id) => ({ ...constructorRow, requirementId: id })),
+    });
+    const gaps = await listUntestedRequirements(P, undefined, d);
+    expect(gaps).toMatchObject({ total: 6, tested: 0, noCode: 0 });
+    expect(gaps.untested.map((g) => g.requirementId)).toEqual(ids);
+  });
+
+  it("#905 — inside a hub, an own-package test that shares the title's words is kept", async () => {
+    const f = minifluxFixture(constructorRow, OAUTH_TITLE);
+    f.symbols!.push(
+      sym("t-oa", "internal/config/options_parsing_test.go", "TestOAuth2UserCreationOptionParsing"),
+    );
+    f.edges!.push(calls("t-oa", "o-new"));
+    const { deps: d } = deps(f);
+    const out = await resolve(d);
+    expect(out.map((t) => [t.name, t.relation])).toEqual([
+      ["TestOAuth2UserCreationOptionParsing", "exercises"],
+    ]);
   });
 
   it("is a hub at exactly DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS (2) foreign directories", async () => {
@@ -562,7 +601,7 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     const { deps: atDefault } = deps(minifluxFixture(constructorRow, OAUTH_TITLE), {
       hubMinForeignTestDirs: DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS,
     });
-    expect(await names(atDefault)).toEqual(["TestConfigMap"]);
+    expect(await names(atDefault)).toEqual([]);
     // One more required directory than Miniflux has: not a hub, all 14 callers count.
     const { deps: above } = deps(minifluxFixture(constructorRow, OAUTH_TITLE), {
       hubMinForeignTestDirs: 3,
@@ -587,7 +626,6 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     // Two of `invidious`, `video`, `link`; `TestInvidiousIFrame` and
     // `TestAddYoutubeVideoFromId` share one each.
     expect(await names(d)).toEqual([
-      "TestConfigMap",
       "TestRewriteYoutubeShortLinkUsingInvidious",
       "TestRewriteYoutubeVideoLink",
       "TestRewriteYoutubeVideoLinkUsingInvidious",
@@ -601,7 +639,7 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     f.symbols!.push(sym("t-cb", "internal/ui/oauth2_callback_test.go", "TestCallback"));
     f.edges!.push(calls("t-cb", "o-oauth"));
     const { deps: d } = deps(f);
-    expect(await names(d)).toEqual(["TestCallback", "TestConfigMap"]);
+    expect(await names(d)).toEqual(["TestCallback"]);
   });
 
   it("matches hub links against the requirement TITLE, not the common words of its body", async () => {
@@ -618,10 +656,10 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     f.symbols!.push(sym("t-acct", "internal/model/account_test.go", "TestDefaultAccountProvider"));
     f.edges!.push(calls("t-acct", "o-new"));
     const { deps: d } = deps(f);
-    expect(await names(d)).toEqual(["TestConfigMap"]);
+    expect(await names(d)).toEqual([]);
   });
 
-  it("NewConfigParser — 10 foreign directories — keeps the config package's OIDC tests", async () => {
+  it("NewConfigParser — 10 foreign directories — keeps only the config package's OIDC tests", async () => {
     // `internal/config/parser.go:25-29`. `grep -rl NewConfigParser --include=*_test.go`:
     // 13 files in 11 directories, 10 of them foreign; one real caller from each.
     const PARSER = "internal/config/parser.go";
@@ -672,8 +710,10 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
       ],
       edges: [...foreign, ...own].map((t) => calls(t.id, "p-new")),
     });
-    // Every foreign caller is setup; the own package's tests all stay.
-    expect(await names(d)).toEqual(own.map((t) => t.name).sort());
+    // Every foreign caller is setup. Inside a hub the own package's tests are
+    // judged by title words too (#905): the two OIDC tests stay, the metrics one,
+    // which merely builds a parser, does not.
+    expect(await names(d)).toEqual([own[0].name, own[1].name].sort());
   });
 
   it("SanitizeHTML, tested only from its own package, is not a hub", async () => {
@@ -710,12 +750,12 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
         sym("pw", LIB, "hashPassword", { startLine: 1, endLine: 20 }),
         sym("t-own", "src/lib/__tests__/password.test.ts", "hashCase"),
         sym("t-a", "src/routes/login.test.ts", "loginCase"),
-        sym("t-b", "src/jobs/rotate.test.ts", "rotateCase"),
       ],
-      edges: [calls("t-own", "pw"), calls("t-a", "pw"), calls("t-b", "pw")],
+      edges: [calls("t-own", "pw"), calls("t-a", "pw")],
     });
-    // Two foreign directories make it a hub; the `__tests__/` sibling is kept.
-    expect(await names(d)).toEqual(["hashCase"]);
+    // Counted as foreign, `__tests__/` would make two foreign directories and a hub
+    // that keeps neither test. As the target's own it leaves one: no hub, both kept.
+    expect(await names(d)).toEqual(["hashCase", "loginCase"]);
   });
 
   it("a two-word title needs only one shared word through a hub (Password length)", async () => {
@@ -850,6 +890,60 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
       expect((await resolve(fileMap("r1", FINDER_TEST))).map((t) => t.relation)).toEqual([
         "direct",
       ]);
+      const manual = { ...fileMap("r1", FINDER_TEST), source: "manual" };
+      expect((await resolve(manual)).map((t) => t.relation)).toEqual(["direct"]);
+    });
+  });
+
+  describe("#905 — a document citation of a test file with no range is not a direct link", () => {
+    const FINDER_TEST = "internal/reader/icon/finder_test.go";
+    const symbols = [
+      mod("t-fmod", FINDER_TEST, 60),
+      sym("t-find", FINDER_TEST, "TestFindIcon", { startLine: 12, endLine: 30 }),
+    ];
+    const grounding = (extra: Partial<Mapping> = {}) => ({
+      ...fileMap("r1", FINDER_TEST),
+      source: "analysis-grounding",
+      ...extra,
+    });
+    const run = async (mapping: Mapping & { source?: string }, syms: Sym[] = symbols) => {
+      const { deps: d } = deps({
+        requirements: [req("r1", "Find the feed icon")],
+        codeMappings: [mapping],
+        symbols: syms,
+      });
+      return (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    };
+
+    it("drops the stored run-3 row: analysis-grounding, no symbol, no range", async () => {
+      expect(await run(grounding())).toEqual([]);
+    });
+
+    it("drops it even when the file's only symbol is its module (TS describe/it)", async () => {
+      const SPEC = "src/lib/__tests__/icon.test.ts";
+      const row = { ...grounding(), filePath: SPEC };
+      expect(await run(row, [mod("ts-mod", SPEC, 80)])).toEqual([]);
+    });
+
+    it("keeps an analysis-grounding row whose range covers a real test", async () => {
+      const out = await run(grounding({ startLine: 14, endLine: 20 }));
+      expect(out.map((t) => [t.filePath, t.relation])).toEqual([[FINDER_TEST, "direct"]]);
+    });
+
+    it("keeps an analysis-grounding row bound to a test symbol", async () => {
+      const out = await run(grounding({ codeSymbolId: "t-find", startLine: 12, endLine: 30 }));
+      expect(out.map((t) => [t.name, t.relation])).toEqual([["TestFindIcon", "direct"]]);
+    });
+
+    it("leaves the requirement in the untested list", async () => {
+      const { deps: d } = deps({
+        requirements: [req("r1", "Find the feed icon")],
+        codeMappings: [grounding()],
+        symbols,
+      });
+      const gaps = await listUntestedRequirements(P, undefined, d);
+      expect(gaps).toMatchObject({ total: 1, tested: 0 });
+      expect(gaps.untested.map((g) => g.requirementId)).toEqual(["r1"]);
     });
   });
 

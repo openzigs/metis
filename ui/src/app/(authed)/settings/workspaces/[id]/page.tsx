@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/dialog";
 import { apiFetch } from "@/lib/api-client";
 import { PageHeader } from "@/components/ui/page-header";
+import { InviteMemberCard, canInviteMembers } from "@/components/workspaces/invite-member-card";
+import { useAuth } from "@/lib/auth-context";
 
 interface WorkspaceDetails {
   id: string;
@@ -42,6 +44,7 @@ export default function WorkspaceSettingsPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [name, setName] = useState("");
 
   const { data: workspace, isLoading } = useQuery({
@@ -179,6 +182,10 @@ export default function WorkspaceSettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {canInviteMembers(workspace.members, user?.id) && (
+        <InviteMemberCard workspaceId={workspace.id} />
+      )}
 
       {/* Danger Zone */}
       <Card className="border-destructive/50">

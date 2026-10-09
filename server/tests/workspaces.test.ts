@@ -314,8 +314,87 @@ describe("Workspace Routes", () => {
         fn(prisma)) as never);
     });
 
+    // #941 — the caller must be signed in as the invited address.
+    const invitee = { userId: "user-2", role: "developer" };
+    const liveInvite = (email = "user@test.com") =>
+      ({
+        id: "inv-1",
+        workspaceId: "ws-1",
+        email,
+        role: "member",
+        token: "valid-token",
+        consumedAt: null,
+        expiresAt: new Date(Date.now() + 86400000),
+        invitedById: "inviter-1",
+        workspace: { id: "ws-1", name: "Test", slug: "test", deletedAt: null },
+        invitedBy: { displayName: "Inviter" },
+        createdAt: new Date(),
+      }) as never;
+
+    it("refuses a signed-out caller with 401 and grants nothing (#941)", async () => {
+      const app = createApp();
+      vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue(liveInvite());
+
+      const res = await request(app).post("/workspaces/invites/valid-token/accept");
+
+      expect(res.status).toBe(401);
+      expect(prisma.workspaceInvite.updateMany).not.toHaveBeenCalled();
+      expect(prisma.workspaceMember.upsert).not.toHaveBeenCalled();
+    });
+
+    it("refuses a caller signed in as a different email with 403, leaving the invite live (#941)", async () => {
+      const app = createApp({ userId: "user-3", role: "developer" });
+      vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue(liveInvite());
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({
+        id: "user-3",
+        email: "someone-else@test.com",
+      } as never);
+
+      const res = await request(app).post("/workspaces/invites/valid-token/accept");
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("FORBIDDEN");
+      // The caller is looked up by their own id, not by the invite's email.
+      expect(prisma.user.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "user-3" } }),
+      );
+      expect(prisma.workspaceInvite.updateMany).not.toHaveBeenCalled();
+      expect(prisma.workspaceMember.upsert).not.toHaveBeenCalled();
+    });
+
+    it("refuses a token whose caller no longer exists with 401 (#941)", async () => {
+      const app = createApp(invitee);
+      vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue(liveInvite());
+      vi.mocked(prisma.user.findUnique).mockResolvedValue(null);
+
+      const res = await request(app).post("/workspaces/invites/valid-token/accept");
+
+      expect(res.status).toBe(401);
+      expect(prisma.workspaceMember.upsert).not.toHaveBeenCalled();
+    });
+
+    it("matches the invited email case-insensitively (#941)", async () => {
+      const app = createApp(invitee);
+      vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue(liveInvite("User@Test.com"));
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({
+        id: "user-2",
+        email: "user@test.com",
+      } as never);
+      vi.mocked(prisma.workspaceInvite.updateMany).mockResolvedValue({ count: 1 } as never);
+      vi.mocked(prisma.workspaceMember.upsert).mockResolvedValue({} as never);
+
+      const res = await request(app).post("/workspaces/invites/valid-token/accept");
+
+      expect(res.status).toBe(200);
+      expect(prisma.workspaceMember.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: { workspaceId: "ws-1", userId: "user-2", role: "member" },
+        }),
+      );
+    });
+
     it("accepts a valid invite and creates membership", async () => {
-      const app = createApp(); // No auth required for accept
+      const app = createApp(invitee);
       vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
         id: "inv-1",
         workspaceId: "ws-1",
@@ -359,7 +438,7 @@ describe("Workspace Routes", () => {
     });
 
     it("rejects expired invite", async () => {
-      const app = createApp();
+      const app = createApp(invitee);
       vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
         id: "inv-1",
         workspaceId: "ws-1",
@@ -379,7 +458,7 @@ describe("Workspace Routes", () => {
     });
 
     it("rejects already consumed invite", async () => {
-      const app = createApp();
+      const app = createApp(invitee);
       vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
         id: "inv-1",
         workspaceId: "ws-1",
@@ -399,7 +478,7 @@ describe("Workspace Routes", () => {
     });
 
     it("rejects an invite to a soft-deleted workspace without creating membership (#563)", async () => {
-      const app = createApp();
+      const app = createApp(invitee);
       vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
         id: "inv-1",
         workspaceId: "ws-1",
@@ -428,7 +507,7 @@ describe("Workspace Routes", () => {
     });
 
     it("rejects invalid token", async () => {
-      const app = createApp();
+      const app = createApp(invitee);
       vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue(null);
 
       const res = await request(app).post("/workspaces/invites/invalid-token/accept");

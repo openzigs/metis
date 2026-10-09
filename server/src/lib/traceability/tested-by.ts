@@ -17,7 +17,7 @@
  * `imports` edges are deliberately NOT followed: for a file-only target they
  * would link every test that imports the package.
  *
- * Three guards keep a broad mapping from fanning out (#860):
+ * Four guards keep a broad mapping from fanning out (#860, #905):
  *  - A file-only target that records a line range expands only to the symbols
  *    overlapping that range, not the whole file. The range is applied before the
  *    per-file cap, so a cited symbol deep in a large file is not capped away.
@@ -25,18 +25,24 @@
  *    symbol. The whole-file `module` symbol every parser emits does not count:
  *    the seeder (#768) binds a licence-header citation to it, because it is the
  *    only symbol enclosing lines 1-3, and writes the module's 1-EOF span.
+ *  - An `analysis-grounding` test-file mapping with neither a symbol nor a range
+ *    is never `direct` (#905). The seeder writes that shape when a finding cites
+ *    the file as a repository document, with no lines (`resolveTarget` in
+ *    seed-code-links-from-findings.ts), so it names no test at all.
  *  - A **hub** target — any mapping, symbol or file, exercised from FOREIGN
  *    test directories (not the target's own, see {@link ownTestDirs}) in at
  *    least `TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS` (default 2) places, like a
- *    config constructor other packages' tests call to set up — keeps a foreign
+ *    config constructor other packages' tests call to set up — keeps an
  *    `exercises` test only when the test, or the symbol it calls, shares the
- *    requirement TITLE's words (see {@link sharesRequirementWords}). A test in
- *    the target's own directory is never filtered: it tests the target, where a
- *    test elsewhere that calls it is almost always setup. So `Sanitize`, tested
- *    from its own package, is not a hub, and Miniflux's `NewConfigOptions`,
- *    called by `reader/sanitizer` and `reader/rewrite` tests, is. A flat test
- *    layout (one `tests/` directory) is a single foreign directory and never
- *    forms a hub at the default.
+ *    requirement TITLE's words (see {@link sharesRequirementWords}). Only foreign
+ *    callers make a target a hub, so `Sanitize`, tested from its own package, is
+ *    not one, and Miniflux's `NewConfigOptions`, called by `reader/sanitizer` and
+ *    `reader/rewrite` tests, is. Inside a hub the filter applies to the target's
+ *    own-package tests too (#905): a constructor that builds every option is
+ *    mapped by every config requirement, and its own `TestConfigMap` tests the
+ *    option map, not OIDC or metrics. A flat test layout (one `tests/`
+ *    directory) is a single foreign directory and never forms a hub at the
+ *    default.
  *
  * Within a relation, tests are ordered by BM25 relevance of `name + qualifiedName`
  * against `denoiseRequirementQuery(title + body)`, folded into `score`. Results
@@ -60,6 +66,7 @@ import { BM25Index, tokenizeCodeRoots } from "../code-graph/hybrid-search.js";
 import { classifyTestSymbol, siblingTestPaths } from "../code-graph/test-conventions.js";
 import { getConfigService } from "../config/config-service.js";
 import { denoiseRequirementQuery } from "./requirement-code-mapping.js";
+import { ANALYSIS_GROUNDING_SOURCE } from "./seed-code-links-from-findings.js";
 
 export type TestedByPrisma = Pick<
   PrismaClient,
@@ -128,6 +135,8 @@ export interface TestedByTarget {
   startLine: number | null;
   /** End of the mapped range; absent or null means the range is `startLine` alone. */
   endLine?: number | null;
+  /** The mapping's provenance (`semantic`, `manual`, `analysis-grounding`, …), when loaded. */
+  source?: string | null;
 }
 
 /** The requirement fields resolution reads. */
@@ -427,7 +436,10 @@ async function loadGraph(
 
 /**
  * Whether a test-file target cites a test (#860). A target bound to a real
- * symbol does; a file-level target with no range (the whole test file) does.
+ * symbol does; a file-level target with no range (the whole test file) does,
+ * unless the seeder wrote it from a document citation (#905): an
+ * `analysis-grounding` row with no symbol and no range cites no lines, so
+ * nothing in it names a test.
  * Otherwise the target must overlap a non-`module` symbol of the file. A target
  * bound to the `module` symbol and carrying that symbol's own span has no
  * evidence of WHICH lines were cited — the seeder writes the module's span when
@@ -446,6 +458,7 @@ function isDirectTestCitation(
   graph: GraphRows,
 ): boolean {
   if (bound && !isModule(bound)) return true;
+  if (!bound && t.startLine == null && t.source === ANALYSIS_GROUNDING_SOURCE) return false;
   const fileSymbols = (graph.symbolsByFile.get(t.filePath) ?? []).filter((s) => !isModule(s));
   if (fileSymbols.length === 0) return true;
   if (bound && (t.startLine == null || coversSpan(t, bound))) return false;
@@ -512,12 +525,13 @@ function resolveOne(
     for (const ts of targetSymbols) {
       for (const from of graph.edgesInto.get(ts.id) ?? []) exercised.push({ from, ts });
     }
-    // #860 — through a hub, a FOREIGN test calling the target is setup, not
-    // evidence of testing THIS requirement: keep it only when it is about it
-    // (by the test's or the callee's name). Symbol mappings included: the seeder
-    // binds a ranged citation of a config constructor (`options.go:64-621`) to
-    // that symbol, and other packages' tests call it to build their fixtures.
-    // Tests in the target's own directory are never filtered.
+    // #860 — through a hub, a test calling the target is setup, not evidence of
+    // testing THIS requirement: keep it only when it is about it (by the test's
+    // or the callee's name). Symbol mappings included: the seeder binds a ranged
+    // citation of a config constructor (`options.go:64-621`) to that symbol, and
+    // other packages' tests call it to build their fixtures. Only FOREIGN callers
+    // make a hub; once it is one, its own-package tests are judged the same way
+    // (#905), since every config requirement maps to the one constructor.
     const own = ownTestDirs(t.filePath, one?.language);
     const isForeign = (from: SymbolRow): boolean => !own.has(dirname(from.filePath));
     const foreignDirs = new Set(
@@ -527,7 +541,6 @@ function resolveOne(
     for (const { from, ts } of exercised) {
       if (
         hub &&
-        isForeign(from) &&
         !sharesRequirementWords(from.name, requirementWords) &&
         !sharesRequirementWords(ts.name, requirementWords)
       ) {
@@ -598,7 +611,13 @@ export async function loadTestedByTargets(
 ): Promise<Map<string, TestedByTarget[]>> {
   const targets = new Map<string, TestedByTarget[]>();
   if (requirementIds.length === 0) return targets;
-  const select = { codeSymbolId: true, filePath: true, startLine: true, endLine: true } as const;
+  const select = {
+    codeSymbolId: true,
+    filePath: true,
+    startLine: true,
+    endLine: true,
+    source: true,
+  } as const;
   const [direct, specLinks] = await Promise.all([
     prisma.requirementCodeMapping.findMany({
       where: { projectId, requirementId: { in: requirementIds } },
