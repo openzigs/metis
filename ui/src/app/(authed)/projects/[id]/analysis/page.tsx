@@ -1728,7 +1728,7 @@ function RequirementEditModal(props: {
               Issue drafts list these criteria. Empty ones are dropped on save.
             </p>
             {prefillTrimmed ? (
-              <p className="text-xs text-amber-700 dark:text-amber-400" role="status">
+              <p className="text-xs text-warning" role="status">
                 The body lists more criteria than can be saved: only the first{" "}
                 {ACCEPTANCE_CRITERIA_MAX_ITEMS}, each up to {ACCEPTANCE_CRITERION_MAX_LENGTH}{" "}
                 characters, are shown here and kept if you change them.
