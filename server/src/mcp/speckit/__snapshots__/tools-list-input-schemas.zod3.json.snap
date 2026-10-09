@@ -184,7 +184,7 @@
       },
       "dryRun": {
         "type": "boolean",
-        "description": "Set true to preview the export: no GitHub calls, no writes. Currently the only supported mode — false/omitted returns 501 SPECKIT_ISSUE_EXPORT_UNAVAILABLE."
+        "description": "Set true to preview the export: no GitHub calls, no writes. The only mode this tool supports — false/omitted needs a vault secret and is refused 400 TOKEN_REQUIRED here."
       }
     },
     "required": [
