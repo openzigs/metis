@@ -368,6 +368,8 @@ export interface UpdateRequirementInput {
   labels?: string[];
   storyPoints?: number | null;
   reviewStatus?: RequirementReviewStatus;
+  /** #990 — replaces the requirement's whole criteria list (`[]` clears it). */
+  acceptanceCriteria?: string[];
 }
 
 export const analysisApi = {

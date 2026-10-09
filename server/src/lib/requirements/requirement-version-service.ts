@@ -30,6 +30,10 @@ export const TRACKED_FIELDS = [
   "labels",
   "storyPoints",
   "reviewStatus",
+  // #990 — editable in the Edit dialog, so versioned like the body. Stored as
+  // a JSON string (like `labels`); appended last to keep the CSV columns of
+  // existing exports where they were.
+  "acceptanceCriteria",
 ] as const;
 
 export type TrackedField = (typeof TRACKED_FIELDS)[number];
@@ -235,6 +239,7 @@ const TRACKED_SELECT = {
   labels: true,
   storyPoints: true,
   reviewStatus: true,
+  acceptanceCriteria: true,
 } as const;
 
 export interface UpdateWithHistoryParams {

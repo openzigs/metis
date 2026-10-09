@@ -24,10 +24,21 @@ const diffViewerLoads = vi.hoisted(() => ({ count: 0 }));
 vi.mock("react-diff-viewer-continued", () => {
   diffViewerLoads.count += 1;
   return {
-    default: ({ leftTitle, rightTitle }: { leftTitle: string; rightTitle: string }) => (
-      <div data-testid="diff">
-        {leftTitle} vs {rightTitle}
-      </div>
+    default: ({
+      leftTitle,
+      rightTitle,
+      newValue,
+    }: {
+      leftTitle: string;
+      rightTitle: string;
+      newValue?: string;
+    }) => (
+      <>
+        <div data-testid="diff">
+          {leftTitle} vs {rightTitle}
+        </div>
+        <pre data-testid="diff-new">{newValue}</pre>
+      </>
     ),
   };
 });
@@ -122,6 +133,23 @@ describe("RequirementHistoryTab", () => {
 
     await waitFor(() => expect(screen.getByTestId("version-diff")).toBeInTheDocument());
     expect(await screen.findByTestId("diff")).toHaveTextContent("Version 1 vs Version 2");
+  });
+
+  it("#990 — the compared text includes the acceptance criteria", async () => {
+    list.mockResolvedValue(
+      page([
+        entry(2, { snapshot: { title: "T", acceptanceCriteria: '["Edited criterion"]' } }),
+        entry(1, { snapshot: { title: "T", acceptanceCriteria: '["Generated"]' } }),
+      ]),
+    );
+    render(<RequirementHistoryTab requirementId="req-1" />);
+    await waitFor(() => expect(screen.getByText("Version 2")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /Version 2/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Version 1/ }));
+
+    expect(await screen.findByTestId("diff-new")).toHaveTextContent(
+      'acceptanceCriteria: ["Edited criterion"]',
+    );
   });
 
   it("hides restore controls for readers", async () => {

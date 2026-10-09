@@ -48,6 +48,7 @@ const SNAPSHOT_SOURCE_SELECT = {
   labels: true,
   storyPoints: true,
   reviewStatus: true,
+  acceptanceCriteria: true,
   deletedAt: true,
 } as const;
 

@@ -82,6 +82,7 @@ const { SNAPSHOT } = vi.hoisted(() => {
     storyPoints: null,
     reviewStatus: "draft",
     evidenceFindingIds: [] as string[],
+    acceptanceCriteria: ["A user can sign in", "A wrong password is refused"],
     // AC2 — version rendered into the snapshot; the edit/review save submits THIS
     // version (no extra history round-trip) so a stale form reliably 409s.
     version: 4,
@@ -330,6 +331,52 @@ describe("AnalysisPage collaboration (Epic #34)", () => {
         expect.objectContaining({ title: "Login page", version: 4 }),
       ),
     );
+  });
+
+  it("#990 — edits, removes and adds acceptance criteria and saves the whole list", async () => {
+    updateMock.update.mockResolvedValue({ id: "req-1", version: 5, updatedAt: "now" });
+    renderPage();
+    await waitForRequirement();
+    fireEvent.click(screen.getAllByRole("button", { name: /^edit$/i })[0]);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Acceptance criterion 1")).toHaveValue("A user can sign in"),
+    );
+
+    fireEvent.change(screen.getByLabelText("Acceptance criterion 1"), {
+      target: { value: "  A user can sign in with email  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Remove acceptance criterion 2" }));
+    expect(screen.queryByLabelText("Acceptance criterion 2")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add criterion" }));
+    fireEvent.change(screen.getByLabelText("Acceptance criterion 2"), {
+      target: { value: "A locked account cannot sign in" },
+    });
+    // A blank criterion is dropped, not sent.
+    fireEvent.click(screen.getByRole("button", { name: "Add criterion" }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(updateMock.update).toHaveBeenCalledWith(
+        "req-1",
+        expect.objectContaining({
+          acceptanceCriteria: ["A user can sign in with email", "A locked account cannot sign in"],
+          version: 4,
+        }),
+      ),
+    );
+  });
+
+  it("#990 — an edit that leaves the criteria alone does not send them", async () => {
+    updateMock.update.mockResolvedValue({ id: "req-1", version: 5, updatedAt: "now" });
+    renderPage();
+    await waitForRequirement();
+    fireEvent.click(screen.getAllByRole("button", { name: /^edit$/i })[0]);
+    await waitFor(() => expect(screen.getByLabelText(/^title$/i)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Login page" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(updateMock.update).toHaveBeenCalled());
+    expect(updateMock.update.mock.calls[0]![1]).not.toHaveProperty("acceptanceCriteria");
   });
 
   it("routes review-status (approve) through the locked PUT with version (AC2/M1)", async () => {

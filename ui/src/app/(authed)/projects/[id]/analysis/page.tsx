@@ -502,6 +502,7 @@ export default function AnalysisPage(): React.ReactElement {
                 priority: "Priority",
                 type: "Type",
                 labels: "Labels",
+                acceptanceCriteria: "Acceptance criteria",
               },
             },
           });
@@ -525,6 +526,9 @@ export default function AnalysisPage(): React.ReactElement {
                   ...(input.patch.priority !== undefined ? { priority: input.patch.priority } : {}),
                   ...(input.patch.type !== undefined ? { type: input.patch.type } : {}),
                   ...(input.patch.labels !== undefined ? { labels: input.patch.labels } : {}),
+                  ...(input.patch.acceptanceCriteria !== undefined
+                    ? { acceptanceCriteria: input.patch.acceptanceCriteria }
+                    : {}),
                 }
               : r,
           ),
@@ -1579,6 +1583,8 @@ function RequirementEditModal(props: {
   const [priority, setPriority] = useState<string>("medium");
   const [type, setType] = useState<string>("feature");
   const [labelsText, setLabelsText] = useState("");
+  // #990 — the requirement's own criteria, one input per criterion.
+  const [criteria, setCriteria] = useState<string[]>([]);
 
   // Sync local form state whenever a different requirement opens.
   useEffect(() => {
@@ -1588,6 +1594,7 @@ function RequirementEditModal(props: {
     setPriority(requirement.priority);
     setType(requirement.type);
     setLabelsText(requirement.labels.join(", "));
+    setCriteria(requirement.acceptanceCriteria ?? []);
   }, [requirement]);
 
   const open = requirement !== null;
@@ -1602,8 +1609,8 @@ function RequirementEditModal(props: {
         <DialogHeader>
           <DialogTitle>Edit requirement</DialogTitle>
           <DialogDescription>
-            Update the title, body, priority, type, or notes / labels. Changes are saved through the
-            analysis API and the requirements list will refresh on success.
+            Update the title, body, priority, type, labels or acceptance criteria. Each save is
+            recorded as a new version, and the requirements list refreshes on success.
           </DialogDescription>
         </DialogHeader>
         <form
@@ -1614,12 +1621,19 @@ function RequirementEditModal(props: {
               .split(",")
               .map((s) => s.trim())
               .filter((s) => s.length > 0);
+            const acceptanceCriteria = criteria.map((c) => c.trim()).filter((c) => c.length > 0);
+            // Sent only when the list changed, so an edit of another field does
+            // not rewrite (and version) criteria nobody touched.
+            const criteriaChanged =
+              JSON.stringify(acceptanceCriteria) !==
+              JSON.stringify(requirement?.acceptanceCriteria ?? []);
             onSave({
               title: title.trim(),
               body: body.trim(),
               priority,
               type,
               labels,
+              ...(criteriaChanged ? { acceptanceCriteria } : {}),
             });
           }}
         >
@@ -1684,6 +1698,48 @@ function RequirementEditModal(props: {
               placeholder="security, billing"
             />
           </div>
+          <fieldset className="space-y-2" data-testid="req-edit-criteria">
+            <legend className="text-sm font-medium">Acceptance criteria</legend>
+            <p className="text-xs text-muted-foreground">
+              Issue drafts list these criteria. Empty ones are dropped on save.
+            </p>
+            {criteria.length > 0 ? (
+              <ol className="space-y-2">
+                {criteria.map((criterion, i) => (
+                  <li key={i} className="flex items-center gap-2">
+                    <Input
+                      aria-label={`Acceptance criterion ${i + 1}`}
+                      value={criterion}
+                      maxLength={1024}
+                      onChange={(e) =>
+                        setCriteria((prev) => prev.map((c, j) => (j === i ? e.target.value : c)))
+                      }
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Remove acceptance criterion ${i + 1}`}
+                      onClick={() => setCriteria((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      Remove
+                    </Button>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="text-xs text-muted-foreground">No acceptance criteria yet.</p>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={criteria.length >= 30}
+              onClick={() => setCriteria((prev) => [...prev, ""])}
+            >
+              Add criterion
+            </Button>
+          </fieldset>
           {errorMessage ? (
             <p className="text-sm text-destructive" role="alert">
               {errorMessage}

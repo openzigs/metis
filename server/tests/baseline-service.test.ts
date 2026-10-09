@@ -25,6 +25,7 @@ function snap(overrides: Partial<RequirementSnapshot> = {}): RequirementSnapshot
     labels: null,
     storyPoints: 5,
     reviewStatus: "approved",
+    acceptanceCriteria: "[]",
     ...overrides,
   };
 }

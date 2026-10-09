@@ -44,6 +44,8 @@ const FIELD_ORDER = [
   "labels",
   "storyPoints",
   "reviewStatus",
+  // #990 — versioned since the Edit dialog can change it.
+  "acceptanceCriteria",
 ] as const;
 
 export interface RequirementHistoryTabProps {

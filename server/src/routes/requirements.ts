@@ -32,6 +32,7 @@ import {
 // string[] on the wire; a malformed/legacy value reads as no labels rather than
 // throwing inside the lock's pre-flight read.
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
+import { parseAcceptanceCriteria } from "@metis/shared";
 
 // ---- Schemas ----------------------------------------------------------------
 
@@ -44,6 +45,9 @@ const updateRequirementSchema = z.object({
   labels: z.array(z.string()).optional(),
   storyPoints: z.number().int().nullable().optional(),
   reviewStatus: z.enum(["draft", "approved", "rejected", "deferred"]).nullable().optional(),
+  /// #990 — the full criteria list from the Edit dialog (replaces the stored
+  /// one). Same bounds as synthesis writes; `[]` clears it.
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(1024)).max(30).optional(),
   /// Epic #770 — optional free-text reason recorded on the version row.
   reason: z.string().max(500).optional(),
 });
@@ -76,6 +80,7 @@ async function loadLockedRequirement(req: Request) {
       labels: true,
       storyPoints: true,
       reviewStatus: true,
+      acceptanceCriteria: true,
     },
   });
   if (!row) return null;
@@ -87,7 +92,12 @@ async function loadLockedRequirement(req: Request) {
   // with a 400. Present the record in the shape the client speaks — and, like
   // the Edit dialog, without the hidden `finding:*` / `review:*` labels the
   // write keeps on its own (#940).
-  return { ...row, labels: visibleRequirementLabels(row.labels) };
+  // #990 — `acceptanceCriteria` is the same JSON-string-vs-array case.
+  return {
+    ...row,
+    labels: visibleRequirementLabels(row.labels),
+    acceptanceCriteria: parseAcceptanceCriteria(row.acceptanceCriteria),
+  };
 }
 
 export function requirementsCollaborationRouter(): Router {
@@ -225,6 +235,9 @@ export function requirementsCollaborationRouter(): Router {
       if (parsed.data.labels !== undefined) patch.labels = JSON.stringify(parsed.data.labels);
       if (parsed.data.storyPoints !== undefined) patch.storyPoints = parsed.data.storyPoints;
       if (parsed.data.reviewStatus !== undefined) patch.reviewStatus = parsed.data.reviewStatus;
+      if (parsed.data.acceptanceCriteria !== undefined) {
+        patch.acceptanceCriteria = JSON.stringify(parsed.data.acceptanceCriteria);
+      }
 
       // Epic #770 — the version-history service owns version bumping and appends
       // a compact, changed-fields-only audit row inside the same transaction.
