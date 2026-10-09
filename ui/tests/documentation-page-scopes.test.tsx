@@ -443,6 +443,87 @@ describe("DocumentationPage — GenerateForm scope selection", () => {
     expect(screen.queryByTestId("doc-path-scope-input")).not.toBeInTheDocument();
   });
 
+  describe("#991 — Requirements scope", () => {
+    const analyses = {
+      items: [
+        {
+          id: "run_done",
+          projectId: "proj_test",
+          startedById: "u1",
+          status: "completed",
+          startedAt: "2026-10-01T10:00:00Z",
+          completedAt: "2026-10-01T10:05:00Z",
+          totalTokens: 0,
+          errorMessage: null,
+        },
+        {
+          id: "run_failed",
+          projectId: "proj_test",
+          startedById: "u1",
+          status: "failed",
+          startedAt: "2026-10-02T10:00:00Z",
+          completedAt: null,
+          totalTokens: 0,
+          errorMessage: "boom",
+        },
+      ],
+    };
+
+    beforeEach(() => {
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (typeof path === "string" && path.endsWith("/analyses")) return analyses;
+        return sampleDocs;
+      });
+    });
+
+    async function chooseRequirementsScope() {
+      renderPage();
+      fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+      fireEvent.change(await screen.findByTestId("doc-scope-select"), {
+        target: { value: "requirements" },
+      });
+      await waitFor(() => {
+        const select = screen.getByTestId("analysis-run-select") as HTMLSelectElement;
+        expect(Array.from(select.options).map((o) => o.value)).toContain("run_done");
+      });
+    }
+
+    it("lists only completed runs, titles it a BRD and hides the doc-type and path controls", async () => {
+      await chooseRequirementsScope();
+      const select = screen.getByTestId("analysis-run-select") as HTMLSelectElement;
+      expect(Array.from(select.options).map((o) => o.value)).not.toContain("run_failed");
+      expect((screen.getByTestId("doc-title-input") as HTMLInputElement).value).toBe(
+        "Business Requirements",
+      );
+      expect(screen.queryByTestId("doc-type-select")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("doc-path-scope-input")).not.toBeInTheDocument();
+      expect((screen.getByTestId("requirements-approved-only") as HTMLInputElement).checked).toBe(
+        true,
+      );
+    });
+
+    it("disables submit until a run is chosen, then sends the run and the approved-only flag", async () => {
+      await chooseRequirementsScope();
+      expect(screen.getByTestId("submit-generate")).toBeDisabled();
+      fireEvent.change(screen.getByTestId("analysis-run-select"), {
+        target: { value: "run_done" },
+      });
+      fireEvent.click(screen.getByTestId("requirements-approved-only"));
+      fireEvent.click(screen.getByTestId("submit-generate"));
+
+      await waitFor(() => {
+        const call = mockApiFetch.mock.calls.find(
+          (c) => typeof c[0] === "string" && (c[0] as string).includes("/docs/generate"),
+        );
+        expect(call).toBeDefined();
+        const body = (call![1] as { body: Record<string, unknown> }).body;
+        expect(body.scope).toBe("requirements");
+        expect(body.scopeFilter).toEqual({ analysisId: "run_done", approvedOnly: false });
+        expect(body.pathPrefixes).toBeUndefined();
+      });
+    });
+  });
+
   // Issue #58 — screen-reader audit. The GenerateForm controls were labelled by
   // bare <label> elements with no htmlFor/id association — invisible to SR users
   // (announced as unlabelled comboboxes). They are now programmatically named.

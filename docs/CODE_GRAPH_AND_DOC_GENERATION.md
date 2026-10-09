@@ -913,7 +913,13 @@ publication lifecycle described above. Generation `ready`/`degraded`/`failed`
 is distinct from publication/indexing state; revision fences and deletion cleanup
 also apply to delayed publish/approval/reindex work. Repository ingest checks
 full/repository/module/symbol auto-update documents, **not database-scope documents**.
-Database schema generation retains its own path. Evidence/configuration changes
+Database schema generation retains its own path. So does the `requirements` scope
+(#991, [requirements-scope.ts](../server/src/lib/docs-gen/requirements-scope.ts)):
+`scopeFilter` names an `analysisId`, `requirementIds` or a `reviewRequestId`
+(optionally `approvedOnly`), every read is filtered on `projectId`, and the document
+is rendered from the stored requirements and their code mappings and implementations
+without a model call. Its manifest records pipeline `requirements` and a
+`requirements` source fingerprint over the selected rows. Evidence/configuration changes
 are noticed on the next successful ingest, not by a separate watcher.
 
 ### Example: one method, two search representations, one document

@@ -35,7 +35,7 @@ const repositoryIdentitySchema = z
 
 const sourceFingerprintSchema = z
   .object({
-    kind: z.enum(["repository-graph", "project-scope", "database-schema"]),
+    kind: z.enum(["repository-graph", "project-scope", "database-schema", "requirements"]),
     repoConnectorId: z.string().min(1).nullable(),
     codeGraphId: z.string().min(1).nullable(),
     dbConnectorId: z.string().min(1).nullable().optional(),
@@ -115,6 +115,7 @@ const provenanceManifestSchema = z
           "incremental-discovery",
           "discovery-agent",
           "database-schema",
+          "requirements",
         ]),
         model: z
           .object({
@@ -419,7 +420,7 @@ export function buildGeneratedDocVersionManifest(input: {
   graphFingerprintStatus?: "available" | "unknown";
   sourceRepositories: Array<(RepositoryIdentity & { commitSha?: string | null }) | undefined>;
   sourceFingerprints?: Array<{
-    kind: "repository-graph" | "project-scope" | "database-schema";
+    kind: "repository-graph" | "project-scope" | "database-schema" | "requirements";
     repoConnectorId: string | null;
     codeGraphId: string | null;
     dbConnectorId?: string | null;
@@ -439,7 +440,8 @@ export function buildGeneratedDocVersionManifest(input: {
     endLine?: number;
     contentHash: string;
   }>;
-  generationPipeline?: "holistic" | "incremental-discovery" | "discovery-agent" | "database-schema";
+  generationPipeline?:
+    "holistic" | "incremental-discovery" | "discovery-agent" | "database-schema" | "requirements";
   generationModels?: {
     phase1: string;
     phase2: string;
