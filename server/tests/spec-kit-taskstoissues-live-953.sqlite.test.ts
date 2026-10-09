@@ -447,19 +447,50 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
     it("two concurrent live runs of one approved plan create each issue once", async () => {
       const plan = await previewTasksExport(base());
+      // Force the race deterministically: the first write of T01's export row
+      // waits until BOTH runs have reached one (or the other run has settled).
+      // Both runs have then read the plan — and passed `assertPlanUnchanged` —
+      // before either has stored anything: exactly the window a
+      // read, create-on-GitHub, then-record ordering loses in.
+      let arrived = 0;
+      let release!: () => void;
+      const barrier = new Promise<void>((r) => (release = r));
+      const exportRows = db.specKitTaskExport;
+      state.db = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop !== "specKitTaskExport") return Reflect.get(target, prop, receiver);
+          return new Proxy(exportRows, {
+            get(t, key) {
+              const v = Reflect.get(t, key, t) as unknown;
+              if (typeof v !== "function") return v;
+              if (key !== "create") return v.bind(t);
+              return async (args: { data: { taskId: string } }) => {
+                if (args.data.taskId === "T01") {
+                  arrived += 1;
+                  if (arrived >= 2) release();
+                  await barrier;
+                }
+                return (v as (a: unknown) => Promise<unknown>).call(t, args);
+              };
+            },
+          });
+        },
+      });
       const run = () =>
         exportTasksToGitHub({
           ...base(),
           expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
-        });
-      const results = await Promise.allSettled([run(), run()]);
+        }).finally(() => release());
+      let results: PromiseSettledResult<unknown>[];
+      try {
+        results = await Promise.allSettled([run(), run()]);
+      } finally {
+        state.db = db;
+      }
+      expect(arrived).toBe(2);
       expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
       const loser = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
-      // Either refusal is safe: the loser saw the winner's claim, or its finished row.
-      expect(loser.reason).toMatchObject({ status: 409 });
-      expect(["SPECKIT_EXPORT_IN_PROGRESS", "SPECKIT_EXPORT_PLAN_CHANGED"]).toContain(
-        loser.reason.code,
-      );
+      expect(loser.reason).toMatchObject({ status: 409, code: "SPECKIT_EXPORT_IN_PROGRESS" });
       expect(issuePosts().map((c) => (c.data as { title: string }).title)).toEqual([
         "[T01] Build A",
         "[T02] Build B",
