@@ -310,6 +310,15 @@ found wrong in `TEST_PLAN.md`, in a PR.
   code there (#938). Disable it after Phase 7.
 - **Clarification starts when the Questions tab opens.** Don't remount the tab while it is
   starting; that starts and bills it twice (#937).
+- **Run 5 lessons:**
+  - **Spec Kit Publish:** needs a feature slug of 41 characters or fewer until #988 lands, because the `speckit:<slug>` label is capped at 50. Use a very short `/speckit.specify` brief for the feature you publish. A failed Publish is recorded in `audit_logs` (`speckit.tasks_export_failed`, `createdBeforeFailure`); check it before counting a sandbox slot.
+  - **Request review:** it resets approved requirements to draft (#989), so request the review before approving.
+  - **Requirements hub:** it follows only the latest completed analysis (#999).
+  - **Second user:** `browser_run_code_unsafe` with `browser.newContext()` was allowed in run 5. Find the context again with `page.context().browser().contexts()`, because globals don't persist between calls.
+  - **Vault picker:** the publish page's picker needs an operator allow rule, or the classifier blocks it.
+  - **Waits:** `browser_wait_for` with text times out after 5 s. Use timed waits and poll `server/dev.db`.
+  - **Dev-mode reloads:** leftover tabs reload the active tab in dev mode, so close them at the start of each wave.
+  - **Cost cap:** the per-agent analysis cap is 80,000 tokens (`/api/analyses/cost-cap`, `agentCap`). Most "Could not verify" code findings trace to it (#1001).
 - **Spec Kit contracts:** `tasksGate` needs both `spec.md` and `plan.md`; a feature-artifact
   `PUT` takes `{content}`; feature slugs match `^\d{3}-…`.
 - **Over the chat API, `inspect_schema` and `query_database` are refused** with
