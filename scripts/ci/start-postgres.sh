@@ -18,7 +18,21 @@ NAME="${PG_CONTAINER_NAME:-metis-ci-postgres-${GITHUB_JOB:-local}-${GITHUB_RUN_I
 docker rm -f "${NAME}" >/dev/null 2>&1 || true
 
 if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-  echo "${DOCKERHUB_TOKEN}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin
+  # The sign-in hits the same auth endpoint that times out, so it gets its own
+  # retries, and a sign-in that still fails (timeout, expired or revoked token)
+  # falls back to an anonymous pull rather than failing the job here.
+  logged_in=0
+  for attempt in 1 2 3; do
+    if echo "${DOCKERHUB_TOKEN}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin; then
+      logged_in=1
+      break
+    fi
+    echo "::warning::docker login failed (attempt ${attempt}/3)"
+    sleep $((attempt * 10))
+  done
+  if [ "${logged_in}" -ne 1 ]; then
+    echo "::warning::Docker Hub sign-in failed; pulling anonymously instead."
+  fi
 else
   echo "No Docker Hub credentials (fork PR or secrets unset); pulling anonymously."
 fi
@@ -63,5 +77,7 @@ if [ -z "${port}" ]; then
   echo "::error::postgres container exposed no host port for 5432"
   exit 1
 fi
-echo "DATABASE_URL=postgresql://metis:metis@localhost:${port}/metis" >> "${GITHUB_ENV}"
+# 127.0.0.1, not localhost: the port is bound to IPv4 loopback only, and
+# localhost can resolve to ::1 first.
+echo "DATABASE_URL=postgresql://metis:metis@127.0.0.1:${port}/metis" >> "${GITHUB_ENV:-/dev/stdout}"
 echo "Postgres (${IMAGE}) is healthy on host port ${port}"
