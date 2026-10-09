@@ -273,6 +273,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect(res.status).toBe(409);
           expect(res.body.error).toMatchObject({ code: "VERSION_CONFLICT", serverVersion: 2 });
         });
+
+        // Issue #940 — the Edit dialog never shows the `finding:<id>` label, so
+        // the labels it saves never contain it; the save must not drop it.
+        it("#940 — an edit of the visible labels keeps the hidden finding:<id> label", async () => {
+          const id = await makeRequirement();
+          await db.requirement.update({
+            where: { id },
+            data: { labels: JSON.stringify(["auth", "finding:f-940"]) },
+          });
+
+          const res = await route.send(id, { labels: ["auth", "security"], version: 1 });
+
+          expect(res.status).toBe(200);
+          const row = await db.requirement.findUniqueOrThrow({ where: { id } });
+          expect(JSON.parse(row.labels)).toEqual(["auth", "security", "finding:f-940"]);
+          expect(row.version).toBe(2);
+        });
       });
     }
   },

@@ -22,6 +22,18 @@ export function parseRequirementLabels(raw: string | null | undefined): string[]
 }
 
 /**
+ * A caller's new label list merged onto the stored one: the caller's visible
+ * labels, then every hidden label already stored. The caller never sees the
+ * hidden ones, so it can neither keep nor drop them — and any hidden label it
+ * sends is ignored, so a traceability link cannot be forged through a save.
+ */
+export function mergeHiddenRequirementLabels(next: string[], stored: string[]): string[] {
+  const hidden = stored.filter(isHiddenRequirementLabel);
+  const visible = next.filter((l) => !isHiddenRequirementLabel(l));
+  return [...new Set([...visible, ...hidden])];
+}
+
+/**
  * The labels a caller sees: the hidden `finding:*` / legacy `review:*` labels
  * removed, as the snapshot shows them and as the write strips and preserves
  * them.
