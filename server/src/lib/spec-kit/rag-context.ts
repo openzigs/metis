@@ -29,6 +29,7 @@ import { formatHitLocator, formatHitScore } from "../rag/hit-locator.js";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getConfigService } from "../config/config-service.js";
+import { isTestPath } from "../code-graph/test-conventions.js";
 import {
   buildFusedCodeBlock,
   extractRepoRelPath,
@@ -107,7 +108,42 @@ export interface BuildSpecKitRagContextOptions {
    * sets it so a plan sees the existing sibling before proposing a new one.
    */
   siblings?: SpecKitSiblingExpansion;
+  /**
+   * #944 — list the code that already calls a retrieved symbol (or one of its
+   * siblings). Off when absent; `/specify` and `/plan` set it so a spec or plan
+   * sees every existing writer before claiming a symbol has no caller.
+   */
+  callers?: SpecKitCallerExpansion;
 }
+
+/** #944 — one `calls` edge into a retrieved symbol, as the caller lookup returns it. */
+export interface CallerEdgeRow {
+  /** The bound callee, or null when the parser could not bind the call. */
+  toSymbolId: string | null;
+  /** The call's textual target (`MarkAllAsReadBeforeDate`, `h.store.X`) when unbound. */
+  toQualifiedName: string | null;
+  filePath: string;
+  line: number;
+  callerName: string;
+}
+
+/** #944 — reads the `calls` edges into the given symbols, scoped to the project. */
+export interface CallerLookup {
+  findCallers(
+    projectId: string,
+    callees: ReadonlyArray<{ id: string; name: string }>,
+  ): Promise<CallerEdgeRow[]>;
+}
+
+export interface SpecKitCallerExpansion {
+  /** Defaults to a project-scoped `CodeEdge` read. */
+  lookup?: CallerLookup;
+  /** Call sites listed at most. Default {@link DEFAULT_MAX_CALLERS}. */
+  max?: number;
+}
+
+/** Call sites listed per context: one line each. */
+const DEFAULT_MAX_CALLERS = 16;
 
 /** A function or method in a file, as the sibling lookup returns it. */
 export interface SiblingSymbolRow {
@@ -224,13 +260,21 @@ export async function buildSpecKitRagContext(
     // block as a duplicate, leaving only the chunk's `#N`. Keep its real span,
     // and let it anchor siblings like any other retrieved symbol.
     const covered = renderCoveredLocators(fused.covered);
+    const anchors = [...fused.hits, ...fused.covered];
     const siblings = opts.siblings
-      ? await findSiblings(projectId, [...fused.hits, ...fused.covered], opts.siblings)
-      : { block: "", count: 0 };
+      ? await findSiblings(projectId, anchors, opts.siblings)
+      : { block: "", count: 0, symbols: [] };
+    const callers = opts.callers
+      ? await findCallers(
+          projectId,
+          [...anchors.map((a) => ({ id: a.symbolId, name: a.name })), ...siblings.symbols],
+          opts.callers,
+        )
+      : "";
 
     const usedChunks = (hits?.length ?? 0) + pinned.length;
     const usedSymbols = fused.usedSymbols + covered.count + siblings.count;
-    const context = [docContext, fused.block, covered.block, siblings.block]
+    const context = [docContext, fused.block, covered.block, siblings.block, callers]
       .filter(Boolean)
       .join("\n\n");
     return { context, usedChunks, usedSymbols };
@@ -391,8 +435,8 @@ async function findSiblings(
   projectId: string,
   anchors: ReadonlyArray<{ symbolId: string; filePath: string; name: string }>,
   opts: SpecKitSiblingExpansion,
-): Promise<{ block: string; count: number }> {
-  const none = { block: "", count: 0 };
+): Promise<{ block: string; count: number; symbols: Array<{ id: string; name: string }> }> {
+  const none = { block: "", count: 0, symbols: [] };
   if (anchors.length === 0) return none;
   const files = [...new Set(anchors.map((a) => a.filePath))];
   let rows: SiblingSymbolRow[];
@@ -407,6 +451,7 @@ async function findSiblings(
   }
   const taken = new Set(anchors.map((a) => a.symbolId));
   const lines: string[] = [];
+  const symbols: Array<{ id: string; name: string }> = [];
   const max = opts.max ?? DEFAULT_MAX_SIBLINGS;
   for (const anchor of anchors) {
     const found = rows
@@ -416,6 +461,7 @@ async function findSiblings(
     for (const r of found) {
       if (lines.length >= max) break;
       taken.add(r.id);
+      symbols.push({ id: r.id, name: r.name });
       lines.push(
         `- ${r.name} (${r.kind}) — ${r.filePath}:${r.startLine}-${r.endLine} (beside ${anchor.name})`,
       );
@@ -423,5 +469,106 @@ async function findSiblings(
   }
   return lines.length === 0
     ? none
-    : { block: [SIBLING_SYMBOLS_HEADER, "", ...lines].join("\n"), count: lines.length };
+    : {
+        block: [SIBLING_SYMBOLS_HEADER, "", ...lines].join("\n"),
+        count: lines.length,
+        symbols,
+      };
+}
+
+export const CALLERS_HEADER = [
+  "## Callers of Retrieved Symbols",
+  "Existing code that calls a retrieved symbol, as `callee ← caller at path:line`. Every one",
+  "is affected by a change to that symbol: list them, and never claim a symbol has no caller",
+  "when it appears here. `(probable)` marks a call the parser matched by name only.",
+].join("\n");
+
+/** Upper bound on edges read per context, before filtering. */
+const CALLER_FETCH_CAP = 200;
+
+/** Default caller lookup: the project's `calls` edges into the symbols, bound or by name. */
+const prismaCallerLookup: CallerLookup = {
+  async findCallers(projectId, callees) {
+    const names = [...new Set(callees.map((c) => c.name))];
+    const rows = await prisma.codeEdge.findMany({
+      where: {
+        projectId,
+        kind: "calls",
+        OR: [
+          { toSymbolId: { in: callees.map((c) => c.id) } },
+          {
+            toSymbolId: null,
+            OR: names.flatMap((n) => [
+              { toQualifiedName: n },
+              { toQualifiedName: { endsWith: `.${n}` } },
+            ]),
+          },
+        ],
+      },
+      select: {
+        toSymbolId: true,
+        toQualifiedName: true,
+        filePath: true,
+        line: true,
+        fromSymbol: { select: { name: true } },
+      },
+      orderBy: [{ filePath: "asc" }, { line: "asc" }],
+      take: CALLER_FETCH_CAP,
+    });
+    return rows.map((r) => ({
+      toSymbolId: r.toSymbolId,
+      toQualifiedName: r.toQualifiedName,
+      filePath: r.filePath,
+      line: r.line,
+      callerName: r.fromSymbol.name,
+    }));
+  },
+};
+
+/**
+ * #944 — render the non-test call sites of the given symbols. A bound edge
+ * names its callee by id; an unbound one (a Go call through a receiver,
+ * `h.store.MarkAllAsReadBeforeDate`) only by its exact name, so it is marked
+ * probable. Never throws.
+ */
+async function findCallers(
+  projectId: string,
+  callees: ReadonlyArray<{ id: string; name: string }>,
+  opts: SpecKitCallerExpansion,
+): Promise<string> {
+  if (callees.length === 0) return "";
+  let rows: CallerEdgeRow[];
+  try {
+    rows = await (opts.lookup ?? prismaCallerLookup).findCallers(projectId, callees);
+  } catch (err) {
+    log.debug("Spec Kit caller lookup failed, keeping retrieved symbols only", {
+      projectId,
+      error: (err as Error).message,
+    });
+    return "";
+  }
+  const byId = new Map(callees.map((c) => [c.id, c.name]));
+  const names = new Set(callees.map((c) => c.name));
+  const max = opts.max ?? DEFAULT_MAX_CALLERS;
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (lines.length >= max) break;
+    if (isTestPath(r.filePath)) continue;
+    let callee = r.toSymbolId ? byId.get(r.toSymbolId) : undefined;
+    let probable = false;
+    if (!callee && !r.toSymbolId && r.toQualifiedName) {
+      const target = r.toQualifiedName.slice(r.toQualifiedName.lastIndexOf(".") + 1);
+      if (names.has(target)) {
+        callee = target;
+        probable = true;
+      }
+    }
+    if (!callee) continue;
+    const line = `- ${callee} ← ${r.callerName} at ${r.filePath}:${r.line}${probable ? " (probable)" : ""}`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    lines.push(line);
+  }
+  return lines.length === 0 ? "" : [CALLERS_HEADER, "", ...lines].join("\n");
 }

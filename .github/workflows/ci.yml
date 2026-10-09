@@ -481,12 +481,29 @@ jobs:
         run: pnpm lint
 
       - name: Test UI
+        id: ui-tests
         working-directory: ui
+        env:
+          VITEST_RETRY_REPORT_DIR: ${{ runner.temp }}/vitest-retry
         run: pnpm test
 
       - name: Build UI
         working-directory: ui
         run: pnpm build
+
+      # #964 — `retry` (server/vitest.config.ts; ui/vitest.config.ts under CI) clears
+      # timing flakes, but it hid six deterministic failures for over a day (#963):
+      # the default reporter prints only a file-level tick. The retry reporter wired
+      # into the vitest config writes every test that passed only after a retry to
+      # VITEST_RETRY_REPORT_DIR; this names each one in an annotation and the job
+      # summary. A warning on PRs and pushes, a FAILURE on the nightly (the script
+      # reads GITHUB_EVENT_NAME). Last in the job so a nightly failure here cannot
+      # skip the steps above. Guarded by scripts/lib/vitest-retry-runner.test.mjs.
+      - name: Flag tests that passed only after a retry
+        if: ${{ !cancelled() && steps.ui-tests.conclusion != 'skipped' }}
+        env:
+          VITEST_RETRY_REPORT_DIR: ${{ runner.temp }}/vitest-retry
+        run: node scripts/vitest-retried-tests.mjs "$VITEST_RETRY_REPORT_DIR"
 
   # #4 — the server unit suite on the DEFAULT (SQLite) Prisma client, moved out of
   # `api`. It used to run inside `api`'s root `pnpm test`, concurrently with the ui
@@ -530,7 +547,10 @@ jobs:
         run: pnpm --filter @metis/shared run build
 
       - name: Test server (SQLite client)
+        id: server-tests
         working-directory: server
+        env:
+          VITEST_RETRY_REPORT_DIR: ${{ runner.temp }}/vitest-retry
         run: pnpm test
 
       # #456 — the exporter tests that need a REAL headless Chromium to render a
@@ -549,6 +569,20 @@ jobs:
       - name: Test exporters against a real Chromium
         working-directory: server
         run: pnpm test:integration exporters-real-chromium
+
+      # #964 — `retry` (server/vitest.config.ts; ui/vitest.config.ts under CI) clears
+      # timing flakes, but it hid six deterministic failures for over a day (#963):
+      # the default reporter prints only a file-level tick. The retry reporter wired
+      # into the vitest config writes every test that passed only after a retry to
+      # VITEST_RETRY_REPORT_DIR; this names each one in an annotation and the job
+      # summary. A warning on PRs and pushes, a FAILURE on the nightly (the script
+      # reads GITHUB_EVENT_NAME). Last in the job so a nightly failure here cannot
+      # skip the steps above. Guarded by scripts/lib/vitest-retry-runner.test.mjs.
+      - name: Flag tests that passed only after a retry
+        if: ${{ !cancelled() && steps.server-tests.conclusion != 'skipped' }}
+        env:
+          VITEST_RETRY_REPORT_DIR: ${{ runner.temp }}/vitest-retry
+        run: node scripts/vitest-retried-tests.mjs "$VITEST_RETRY_REPORT_DIR"
 
   # Epic #294 (#303) — metis-sql-lineage Python sidecar checks.
   #

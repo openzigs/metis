@@ -23,11 +23,13 @@ import {
 import { resolveFeatureBySlug, updateFeatureStatus } from "../features.js";
 import { requireGate, GateUnmetError } from "../gates.js";
 import { loadAsPreamble } from "../constitution-meta.js";
-import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
+import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
 import { PLAN_SYSTEM_PROMPT as LEGACY_PLAN_SYSTEM_PROMPT } from "./prompts.js";
+import { describeUndeclaredMermaidNodes, findUndeclaredMermaidNodes } from "../mermaid-check.js";
 import {
   buildSpecKitRagContext,
+  type CallerLookup,
   type SiblingSymbolLookup,
   type SpecKitFusedCodeDeps,
   type SpecKitKnowledgeService,
@@ -106,6 +108,8 @@ export interface PlanInput {
   knowledgeService?: SpecKitKnowledgeService;
   fusedCode?: SpecKitFusedCodeDeps;
   siblingLookup?: SiblingSymbolLookup;
+  /** #944 — injectable caller lookup. Defaults to the production wiring. */
+  callerLookup?: CallerLookup;
   pathLookup?: PlanPathLookup;
 }
 
@@ -158,6 +162,9 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     includeCode: true,
     expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
     siblings: { ...(input.siblingLookup ? { lookup: input.siblingLookup } : {}) },
+    // #944 — and the code that already calls them: a plan missed the
+    // protocol-adapter writers of the table it changed.
+    callers: { ...(input.callerLookup ? { lookup: input.callerLookup } : {}) },
   });
 
   const userBase = [
@@ -171,7 +178,10 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
 
   const artifacts: FeatureArtifactDto[] = [];
   let totalTokens = 0;
-  const generate = async (systemPrompt: string, ask: string): Promise<string> => {
+  // #944 — artifacts whose reply the output cap still cut off.
+  const truncated: string[] = [];
+  const generate = async (key: string, systemPrompt: string, ask: string): Promise<string> => {
+    const format = key.endsWith(".yaml") ? ("yaml" as const) : ("markdown" as const);
     const run = await runSpecKitAgent({
       command: "plan",
       project,
@@ -182,8 +192,10 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
       deps: input.deps,
       ragContext: rag.context,
       ragChunksUsed: rag.usedChunks,
+      format,
     });
     totalTokens += run.tokensUsed;
+    if (run.truncated) truncated.push(key);
     return run.content;
   };
   const write = async (key: string, content: string): Promise<void> => {
@@ -199,6 +211,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
 
   // Phase 0 — research.md (always emitted).
   let researchContent = await generate(
+    "research.md",
     RESEARCH_SYSTEM_PROMPT,
     "Produce research.md per the system instructions.",
   );
@@ -211,11 +224,16 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   // Phase 1 — data-model.md
   await write(
     "data-model.md",
-    await generate(DATA_MODEL_SYSTEM_PROMPT, "Produce data-model.md per the system instructions."),
+    await generate(
+      "data-model.md",
+      DATA_MODEL_SYSTEM_PROMPT,
+      "Produce data-model.md per the system instructions.",
+    ),
   );
 
   // Phase 1 — contracts/api.openapi.yaml
   const contract = await generate(
+    "contracts/api.openapi.yaml",
     CONTRACT_SYSTEM_PROMPT,
     "Produce the OpenAPI 3.1 contract per the system instructions.",
   );
@@ -224,11 +242,16 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   // Phase 1 — quickstart.md
   await write(
     "quickstart.md",
-    await generate(QUICKSTART_SYSTEM_PROMPT, "Produce quickstart.md per the system instructions."),
+    await generate(
+      "quickstart.md",
+      QUICKSTART_SYSTEM_PROMPT,
+      "Produce quickstart.md per the system instructions.",
+    ),
   );
 
   // Plan.md (last — references the others).
   let planContent = await generate(
+    "plan.md",
     PLAN_SYSTEM_PROMPT,
     "Produce plan.md per the system instructions.",
   );
@@ -252,9 +275,15 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
       ? ` ${paths.unverified.length} referenced path${paths.unverified.length === 1 ? " is" : "s are"} not in the project's code graph (expected only for new files): ${paths.unverified.map((p) => `\`${p}\``).join(", ")}.`
       : "";
 
+  // #944 — a diagram edge to a node nobody declared is reported, not drawn silently.
+  const mermaidNote = artifacts
+    .filter((a) => a.key.endsWith(".md"))
+    .map((a) => describeUndeclaredMermaidNodes(a.key, findUndeclaredMermaidNodes(a.content)))
+    .join("");
+
   return {
     artifacts,
-    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${pathNote}${noneNote}`,
+    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${pathNote}${noneNote}${mermaidNote}${truncationWarning(truncated)}`,
     tokensUsed: totalTokens,
   };
 }

@@ -220,6 +220,59 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await summarizeUsage(OTHER)).totalTokens).toBe(0);
     });
 
+    it("#943 — a regenerate keeps the analysis and its run `running`, and the run is priced for all of it", async () => {
+      const provider = scriptedProvider();
+      const orch = new AnalysisOrchestrator({
+        provider,
+        knowledge: stubKnowledge,
+        webSearchConfigured: () => true,
+      });
+      const { id } = await orch.start({
+        projectId: PROJECT,
+        startedById: USER,
+        agentKeys: ["web"],
+      });
+      expect(await settled(db, id)).toBe("completed");
+      const runCalls = provider.calls;
+      const firstRun = await db.agentRun.findFirst({ where: { sessionId: id, kind: "analysis" } });
+      expect(firstRun?.status).toBe("completed");
+
+      // What every model call of the regenerate (its agent AND the re-synthesis
+      // that rewrites the requirements) sees on the analysis and on its run.
+      const seen: Array<{ analysis?: string; run?: string; runCompletedAt?: Date | null }> = [];
+      const chat = provider.chat.bind(provider);
+      provider.chat = async (...args: Parameters<AIProvider["chat"]>) => {
+        const analysis = await db.analysis.findUnique({ where: { id } });
+        const run = await db.agentRun.findUnique({ where: { id: firstRun!.id } });
+        seen.push({
+          analysis: analysis?.status,
+          run: run?.status,
+          runCompletedAt: run?.completedAt,
+        });
+        return chat(...args);
+      };
+      await orch.regenerateAgent({ analysisId: id, agentKey: "web", actorId: USER });
+      await drainUsageWrites();
+
+      expect(provider.calls - runCalls).toBeGreaterThan(1);
+      expect(seen.length).toBe(provider.calls - runCalls);
+      for (const s of seen)
+        expect(s).toEqual({ analysis: "running", run: "running", runCompletedAt: null });
+      expect((await db.analysis.findUnique({ where: { id } }))?.status).toBe("completed");
+
+      // The run page reads this row: every ledger row of the session is priced,
+      // the regenerate's included, and its tokens grew by the regenerate's.
+      const run = await db.agentRun.findUnique({ where: { id: firstRun!.id } });
+      expect(run?.status).toBe("completed");
+      expect(run?.completedAt).not.toBeNull();
+      const rows = await db.tokenUsage.findMany({ where: { sessionId: id } });
+      expect(rows).toHaveLength(provider.calls);
+      // 3 cents a call (see CALL).
+      expect(run?.costCents).toBe(provider.calls * 3);
+      expect(run?.costCents).toBeGreaterThan(firstRun!.costCents);
+      expect(run?.totalTokens).toBe(provider.calls * CALL.totalTokens);
+    });
+
     it("a provider call outside any analysis scope records nothing", async () => {
       const provider = scriptedProvider();
       const orch = new AnalysisOrchestrator({ provider });

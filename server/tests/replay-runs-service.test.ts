@@ -105,6 +105,22 @@ vi.mock("../src/lib/prisma.js", () => ({
           }));
         },
       ),
+      // #943 — honours `orderBy: { startedAt }`, so the order `reopenRun` asks for is tested.
+      findFirst: vi.fn(
+        async ({
+          where,
+          orderBy,
+        }: {
+          where: { sessionId: string; kind: string };
+          orderBy?: { startedAt?: "asc" | "desc" };
+        }) => {
+          const sign = orderBy?.startedAt === "desc" ? -1 : 1;
+          const match = runs
+            .filter((r) => r.sessionId === where.sessionId && r.kind === where.kind)
+            .sort((a, b) => sign * (a.startedAt.getTime() - b.startedAt.getTime()));
+          return match[0] ? { id: match[0].id, totalTokens: match[0].totalTokens } : null;
+        },
+      ),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<RunRow> }) => {
         const r = runs.find((x) => x.id === where.id);
         if (!r) throw new Error("not found");
@@ -165,6 +181,7 @@ import {
   listRuns,
   getRun,
   computeRunCost,
+  reopenRun,
 } from "../src/lib/replay/runs-service.js";
 
 beforeEach(() => {
@@ -604,5 +621,75 @@ describe("replay/runs-service computeRunCost — cached input is priced once (#2
     const cost = await computeRunCost(runId);
     // Sonnet: $3 / MTok input (300c) + $0.30 / MTok cache read (30c).
     expect(cost.costCents).toBe(330);
+  });
+});
+
+describe("replay/runs-service reopenRun (#943)", () => {
+  it("re-opens only the session's latest run of that kind", async () => {
+    const older = await startRun({ sessionId: "an-1", kind: "analysis" });
+    const runId = await startRun({ sessionId: "an-1", kind: "analysis" });
+    await startRun({ sessionId: "an-1", kind: "chat" });
+    runs[0].startedAt = new Date("2026-10-08T17:00:00Z");
+    runs[1].startedAt = new Date("2026-10-08T17:35:56Z");
+    runs[2].startedAt = new Date("2026-10-08T17:50:00Z");
+    runs[0].status = "completed";
+    runs[1].status = "completed";
+    runs[1].completedAt = new Date("2026-10-08T17:41:16Z");
+    runs[1].latencyMs = 320_000;
+    runs[1].totalTokens = 900;
+
+    const reopened = await reopenRun("an-1", "analysis");
+
+    expect(reopened).toEqual({ id: runId, totalTokens: 900 });
+    expect(runs[1]).toMatchObject({ status: "running", completedAt: null, latencyMs: null });
+    // An earlier run of the session stays closed.
+    expect(runs.find((r) => r.id === older)?.status).toBe("completed");
+  });
+
+  it("returns null when the session has no run of that kind", async () => {
+    await startRun({ sessionId: "an-2", kind: "chat" });
+    expect(await reopenRun("an-2", "analysis")).toBeNull();
+    expect(await reopenRun("missing", "analysis")).toBeNull();
+  });
+});
+
+describe("replay/runs-service — an analysis run is priced over its whole session (#943)", () => {
+  // 10k in + 2k out on claude-3-5-sonnet = 6 cents a row.
+  const seedRow = (sessionId: string, at: string) =>
+    seedUsage({ sessionId, createdAt: new Date(at), inputTokens: 10_000, outputTokens: 2_000 });
+
+  async function closedRun(sessionId: string, kind: "analysis" | "chat"): Promise<string> {
+    const id = await startRun({ sessionId, kind });
+    const run = runs.find((r) => r.id === id)!;
+    run.startedAt = new Date("2026-10-08T17:35:56Z");
+    run.completedAt = new Date("2026-10-08T17:41:16Z");
+    run.status = "completed";
+    return id;
+  }
+
+  it("counts spend after the run finished for an analysis, but not for a chat", async () => {
+    const analysisRun = await closedRun("an-1", "analysis");
+    const chatRun = await closedRun("chat-1", "chat");
+    for (const session of ["an-1", "chat-1"]) {
+      seedRow(session, "2026-10-08T17:40:00Z");
+      // A regenerate on the finished analysis, 18 minutes later.
+      seedRow(session, "2026-10-08T17:59:50Z");
+    }
+
+    expect((await computeRunCost(analysisRun)).costCents).toBe(12);
+    expect((await computeRunCost(chatRun)).costCents).toBe(6);
+  });
+
+  it("getRun shows an analysis run's live cost, not the stale stored one", async () => {
+    const analysisRun = await closedRun("an-1", "analysis");
+    const chatRun = await closedRun("chat-1", "chat");
+    runs.forEach((r) => (r.costCents = 6));
+    for (const session of ["an-1", "chat-1"]) {
+      seedRow(session, "2026-10-08T17:40:00Z");
+      seedRow(session, "2026-10-08T17:59:50Z");
+    }
+
+    expect((await getRun(analysisRun))?.run.costCents).toBe(12);
+    expect((await getRun(chatRun))?.run.costCents).toBe(6);
   });
 });

@@ -30,6 +30,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { FIX_STATUSES, checkFix, isSha } from "./walkthrough-fixes-core.mjs";
+
 /**
  * The two scales `docs/walkthroughs/RESULTS_TEMPLATE.md` scores every phase on, in the order the
  * report tallies them. Works: did the feature do what it should. Useful: was it worth using.
@@ -43,8 +45,11 @@ export const TUTORIAL_EXCLUDED_WORKS = new Set(["fail", "blocked"]);
 /** Useful values the tutorial deck leaves out: a step that works but is useless is not taught. */
 export const TUTORIAL_EXCLUDED_USEFUL = new Set(["fail"]);
 
-/** Walkthrough waves, in run order (`e2e-walkthrough` skill, section 3). */
-export const WAVES = /** @type {const} */ (["A", "B", "C", "D", "E"]);
+/**
+ * Walkthrough waves, in run order (`e2e-walkthrough` skill, section 3). F is the persona
+ * journeys (#954), run after E.
+ */
+export const WAVES = /** @type {const} */ (["A", "B", "C", "D", "E", "F"]);
 
 /** The base every issue link points at. */
 export const ISSUE_URL_BASE = "https://github.com/openzigs/metis/issues/";
@@ -226,8 +231,11 @@ export function parseManifest(text) {
 /** Severities a run's new issues are filed under, in the order the decks list them. */
 export const SEVERITIES = /** @type {const} */ (["high", "medium", "low"]);
 
-/** Rows the per-wave ledger may carry: the five waves plus the BA re-ask, which has no steps. */
+/** Rows the per-wave ledger may carry: the six waves plus the BA re-ask, which has no steps. */
 export const LEDGER_WAVES = /** @type {const} */ ([...WAVES, "BA"]);
+
+/** Top-level keys `run.json` may carry. */
+const RUN_FIELDS = ["newIssues", "ledger", "waves", "metisSha", "previousRunSha", "fixes"];
 
 /** The only ledger table `run.json` may name (`e2e-walkthrough` skill, section 5). */
 export const LEDGER_SOURCE = "token_usages";
@@ -250,6 +258,21 @@ export const LEDGER_SOURCE = "token_usages";
  * @property {NewIssue[] | undefined} newIssues issues the run filed; undefined when not given
  * @property {(LedgerTotal & { source: string, since: string, until: string }) | undefined} ledger
  * @property {Record<string, LedgerTotal & { since?: string, until?: string }> | undefined} waves
+ * @property {string | undefined} metisSha the METIS commit the run tested (#954)
+ * @property {string | undefined} previousRunSha the previous run's `metisSha` (#954)
+ * @property {RunFix[] | undefined} fixes what the run verified, with a verdict each (#954)
+ */
+
+/**
+ * @typedef {object} RunFix
+ * @property {number} pr
+ * @property {number[]} issues
+ * @property {string} wave
+ * @property {string} phase
+ * @property {string} check
+ * @property {"confirmed" | "partial" | "regressed" | "not-exercised"} status
+ * @property {string | undefined} evidence the step id that shows it
+ * @property {string | undefined} carried the previous run's status, when carried forward
  */
 
 /**
@@ -308,8 +331,10 @@ function checkTotal(obj, at, times, extra, errors) {
 
 /**
  * Parse and validate an evidence folder's optional `run.json` (#947): the issues the run filed
- * after its waves, and the ledger's spend for the run and per wave. Strict like the manifest:
- * an unknown field anywhere is an error, so a typo cannot silently drop data.
+ * after its waves, and the ledger's spend for the run and per wave. Since #954 it also records
+ * the METIS commit the run tested, the previous run's, and a verdict for every fix the run was
+ * asked to verify. Strict like the manifest: an unknown field anywhere is an error, so a typo
+ * cannot silently drop data.
  *
  * @param {string} text
  * @returns {{ run: RunInfo | null, errors: string[] }}
@@ -325,7 +350,7 @@ export function parseRunInfo(text) {
   /** @type {string[]} */
   const errors = [];
   for (const key of Object.keys(raw)) {
-    if (!["newIssues", "ledger", "waves"].includes(key)) {
+    if (!RUN_FIELDS.includes(key)) {
       errors.push(`run.json: unknown field "${key}"`);
     }
   }
@@ -397,12 +422,36 @@ export function parseRunInfo(text) {
     }
   }
 
+  for (const key of ["metisSha", "previousRunSha"]) {
+    if (raw[key] !== undefined && !(typeof raw[key] === "string" && isSha(raw[key]))) {
+      errors.push(`run.json: "${key}" must be a commit SHA (7 to 40 hex characters)`);
+    }
+  }
+
+  if (raw.fixes !== undefined) {
+    if (!Array.isArray(raw.fixes)) {
+      errors.push(`run.json: "fixes" must be an array`);
+    } else {
+      const seen = new Set();
+      raw.fixes.forEach((fix, i) => {
+        const at = `run.json fixes[${i}]`;
+        if (checkFix(fix, at, { withStatus: true }, errors)) {
+          if (seen.has(fix.pr)) errors.push(`${at}: duplicate PR #${fix.pr}`);
+          seen.add(fix.pr);
+        }
+      });
+    }
+  }
+
   if (errors.length > 0) return { run: null, errors };
   return {
     run: {
       newIssues: /** @type {NewIssue[] | undefined} */ (raw.newIssues),
       ledger: /** @type {RunInfo["ledger"]} */ (raw.ledger),
       waves: /** @type {RunInfo["waves"]} */ (raw.waves),
+      metisSha: /** @type {string | undefined} */ (raw.metisSha),
+      previousRunSha: /** @type {string | undefined} */ (raw.previousRunSha),
+      fixes: /** @type {RunFix[] | undefined} */ (raw.fixes),
     },
     errors: [],
   };
@@ -689,6 +738,24 @@ function renderIssueLinks(issues) {
 }
 
 /**
+ * The summary line for the fixes a run verified (#954): how many it confirmed, a count per
+ * status, then the confirmed issues to close if they are still open.
+ *
+ * @param {RunFix[]} fixes
+ * @returns {string}
+ */
+function renderFixesSummary(fixes) {
+  const count = (/** @type {string} */ status) => fixes.filter((f) => f.status === status).length;
+  const confirmedIssues = [
+    ...new Set(fixes.filter((f) => f.status === "confirmed").flatMap((f) => f.issues)),
+  ].sort((a, b) => a - b);
+  const close = confirmedIssues.length
+    ? ` · Close if still open: ${renderIssueLinks(confirmedIssues)}`
+    : "";
+  return `  <p class="spend">Fixes confirmed this run (${count("confirmed")} of ${fixes.length}): ${FIX_STATUSES.map((s) => `${s} ${count(s)}`).join(" · ")}${close}</p>`;
+}
+
+/**
  * @param {string} value a WORKS or USEFUL value
  * @param {string} [axis] "Works" or "Useful"; prefixes the label on a step slide
  * @returns {string}
@@ -876,7 +943,7 @@ ${waveRows
   </table>
 ${spend}
   <p class="spend">Issues checked: ${issues.length ? renderIssueLinks(issues) : "none"}</p>
-${newIssues ? `  <p class="spend">New issues filed (${newIssues.length}): ${renderNewIssuesInline(newIssues)}</p>\n` : ""}</section>`);
+${run?.fixes ? `${renderFixesSummary(run.fixes)}\n` : ""}${newIssues ? `  <p class="spend">New issues filed (${newIssues.length}): ${renderNewIssuesInline(newIssues)}</p>\n` : ""}</section>`);
   }
 
   chapters.forEach((c, ci) => {
@@ -1099,6 +1166,14 @@ export function buildSlideshow(opts) {
       throw new Error(`invalid run.json:\n  ${parsed.errors.join("\n  ")}`);
     }
     run = parsed.run;
+    // A verdict's evidence must be a step the deck shows, or the claim cannot be checked.
+    const ids = new Set(steps.map((s) => s.id));
+    const dangling = (run?.fixes ?? [])
+      .filter((f) => f.evidence !== undefined && !ids.has(f.evidence))
+      .map(
+        (f) => `run.json fixes: PR #${f.pr} cites step "${f.evidence}", which steps.jsonl lacks`,
+      );
+    if (dangling.length > 0) throw new Error(`invalid run.json:\n  ${dangling.join("\n  ")}`);
   }
 
   /** @type {Map<string, string>} step id -> real screenshot path */

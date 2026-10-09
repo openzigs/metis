@@ -57,8 +57,8 @@ const CONSTITUTION_SYSTEM_PROMPT = [
   "# Project Constitution",
   "",
   "Version: 1.0.0",
-  "Ratified: <today>",
-  "Last Amended: <today>",
+  "Ratified: <date given in the request>",
+  "Last Amended: <date given in the request>",
   "",
   "# Core Principles",
   "",
@@ -70,7 +70,7 @@ const CONSTITUTION_SYSTEM_PROMPT = [
   "<how the constitution is amended; versions follow semver>",
   "",
   "# History",
-  "- <today>: Derived from project knowledge.",
+  "- <date given in the request>: Derived from project knowledge.",
 ].join("\n");
 
 export interface DraftConstitutionInput {
@@ -84,7 +84,7 @@ export interface DraftConstitutionInput {
   /** Injectable retrieval seams (default: the production wiring). */
   knowledgeService?: SpecKitKnowledgeService;
   fusedCode?: SpecKitFusedCodeDeps;
-  /** Date stamped into a missing `Ratified` / `Last Amended` line (tests). */
+  /** Today's date, for the `Ratified` / `Last Amended` lines (tests). */
   today?: Date;
 }
 
@@ -150,11 +150,15 @@ export async function draftConstitution(
   }
   if (provider.offline) return skeleton("no AI provider is configured (offline stub)");
 
+  // #945 — the model does not know the date: it wrote one (2026-02-01 on
+  // 2026-10-08) and, the line being present, the server kept it. Tell it, and
+  // overwrite the metadata lines regardless.
+  const today = (input.today ?? new Date()).toISOString().slice(0, 10);
   const run = await runSpecKitAgent({
     command: "constitution",
     project: await loadProjectContext(input.projectId),
     systemPrompt: CONSTITUTION_SYSTEM_PROMPT,
-    userPrompt: "Write constitution.md for this project from the project knowledge provided.",
+    userPrompt: `Write constitution.md for this project from the project knowledge provided. Today is ${today}.`,
     actorId: input.actorId ?? null,
     sessionId: input.sessionId ?? null,
     deps: { provider },
@@ -162,8 +166,9 @@ export async function draftConstitution(
     ragChunksUsed: rag.usedChunks,
   });
 
-  const today = (input.today ?? new Date()).toISOString().slice(0, 10);
-  let body = completeConstitutionDraft(run.content, today);
+  // A re-draft keeps the date the constitution was first ratified.
+  const ratifiedAt = (await getConstitutionMeta(input.projectId))?.ratifiedAt;
+  let body = completeConstitutionDraft(run.content, today, ratifiedAt?.slice(0, 10) ?? today);
   if (extractPrinciples(body).length === 0) {
     return skeleton("the model returned no principles");
   }
@@ -187,8 +192,15 @@ export async function draftConstitution(
  * Strip a Markdown fence and add whatever `validateConstitution` requires that
  * the model left out: the three metadata lines (after the title) and the
  * `# Governance` / `# History` sections. Never invents principles.
+ *
+ * #945 — `Ratified` and `Last Amended` are always the server's dates
+ * (`ratified`, default `today`), never the model's guess.
  */
-export function completeConstitutionDraft(raw: string, today: string): string {
+export function completeConstitutionDraft(
+  raw: string,
+  today: string,
+  ratified: string = today,
+): string {
   let body = raw.trim();
   // Prefer the first fenced block (the model may wrap it in prose); else
   // slice from the title so leading prose is dropped.
@@ -203,8 +215,11 @@ export function completeConstitutionDraft(raw: string, today: string): string {
 
   const meta: string[] = [];
   if (!/^Version:\s*\d+\.\d+\.\d+/m.test(body)) meta.push("Version: 1.0.0");
-  if (!/^Ratified:\s*\d{4}-\d{2}-\d{2}/m.test(body)) meta.push(`Ratified: ${today}`);
-  if (!/^Last Amended:\s*\d{4}-\d{2}-\d{2}/m.test(body)) meta.push(`Last Amended: ${today}`);
+  if (/^Ratified:/m.test(body)) body = body.replace(/^Ratified:.*$/m, `Ratified: ${ratified}`);
+  else meta.push(`Ratified: ${ratified}`);
+  if (/^Last Amended:/m.test(body)) {
+    body = body.replace(/^Last Amended:.*$/m, `Last Amended: ${today}`);
+  } else meta.push(`Last Amended: ${today}`);
   if (meta.length > 0) {
     const title = /^# Project Constitution[^\n]*\n/m.exec(body);
     body = title

@@ -168,6 +168,30 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     expect(finalize?.totalTokens).toEqual({ increment: 30 });
   });
 
+  it("#943 — the analysis reads running until the re-synthesis has written its requirements", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { orch, runAgenticCodeAgent, runSynthesisAndPersist } = makeOrch();
+    const seen: string[] = [];
+    runAgenticCodeAgent.mockImplementation((async () => {
+      seen.push(state.status);
+      return {
+        agentKey: "code",
+        output: { agentKey: "code", summary: "", notes: [], findings: [] },
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        durationMs: 1,
+      };
+    }) as never);
+    runSynthesisAndPersist.mockImplementation((async () => {
+      seen.push(state.status);
+    }) as never);
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    expect(seen).toEqual(["running", "running"]);
+    expect(state.status).toBe("completed");
+  });
+
   // Review of PR #523 (#512) — a resumed forced-tier run sends the model the
   // Model card named: the provider's configured model on a non-Claude provider.
   it("resolves a persisted force-* override through the router with the provider attached", async () => {

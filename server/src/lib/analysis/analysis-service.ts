@@ -449,6 +449,15 @@ export async function getLatestWebResearch(projectId: string): Promise<WebResear
   return null;
 }
 
+/**
+ * #943 — a regenerate or a repo resume works on a finished analysis: it calls
+ * the model and rewrites the findings and requirements, so the analysis is
+ * `running` again until {@link finalizeAnalysisDelta} settles it.
+ */
+export async function markAnalysisRunning(id: string): Promise<void> {
+  await prisma.analysis.update({ where: { id }, data: { status: "running" } });
+}
+
 export async function markAnalysisCompleted(id: string, totals: TokenUsage): Promise<void> {
   await prisma.analysis.update({
     where: { id },

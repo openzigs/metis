@@ -19,6 +19,8 @@ const { prismaMock } = vi.hoisted(() => ({
 vi.mock("../prisma.js", () => ({ prisma: prismaMock }));
 vi.mock("./analysis-service.js", () => ({
   finalizeAnalysisDelta: vi.fn(async () => undefined),
+  // #943 — a regenerate marks the analysis running first.
+  markAnalysisRunning: vi.fn(async () => undefined),
 }));
 vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../socket/job-events.js", () => ({
