@@ -181,6 +181,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   // #944 — artifacts whose reply the output cap still cut off.
   const truncated: string[] = [];
   const generate = async (key: string, systemPrompt: string, ask: string): Promise<string> => {
+    const format = key.endsWith(".yaml") ? ("yaml" as const) : ("markdown" as const);
     const run = await runSpecKitAgent({
       command: "plan",
       project,
@@ -191,6 +192,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
       deps: input.deps,
       ragContext: rag.context,
       ragChunksUsed: rag.usedChunks,
+      format,
     });
     totalTokens += run.tokensUsed;
     if (run.truncated) truncated.push(key);

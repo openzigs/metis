@@ -25,8 +25,13 @@ vi.mock("../constitution-meta.js", () => ({
   loadAsPreamble: vi.fn().mockResolvedValue(null),
 }));
 
-const { runSpecKitAgent, keepWholeLines, joinContinuation, SPEC_KIT_TRUNCATION_NOTE } =
-  await import("./runner.js");
+const {
+  runSpecKitAgent,
+  keepWholeLines,
+  joinContinuation,
+  SPEC_KIT_TRUNCATION_NOTE,
+  SPEC_KIT_TRUNCATION_NOTE_YAML,
+} = await import("./runner.js");
 
 const project = {
   id: "p1",
@@ -173,6 +178,29 @@ describe("runSpecKitAgent output-cap recovery (#944)", () => {
         metadata: expect.objectContaining({ truncated: true, continuations: 2 }),
       }),
     );
+  });
+
+  it("a cut-off YAML artifact gets a # comment note and still parses", async () => {
+    const yaml = await import("js-yaml");
+    const { provider } = scriptedProvider([
+      {
+        content: "- a\n- b\n- par",
+        finishReason: "max_tokens",
+      },
+    ]);
+    const out = await runSpecKitAgent({
+      command: "plan",
+      project,
+      systemPrompt: "Base.",
+      userPrompt: "Produce the contract.",
+      deps: { provider },
+      format: "yaml",
+    });
+    expect(out.truncated).toBe(true);
+    expect(out.content).not.toContain("> **Incomplete");
+    expect(out.content.trimEnd().endsWith(SPEC_KIT_TRUNCATION_NOTE_YAML)).toBe(true);
+    const doc = yaml.load(out.content) as string[];
+    expect(doc[0]).toBe("a");
   });
 
   it("a reply cut before any whole line retries from the original prompt", async () => {

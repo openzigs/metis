@@ -633,6 +633,39 @@ describe("runPlanExpanded", () => {
     );
   });
 
+  it("#944 — a cut-off OpenAPI contract keeps its whole lines instead of the /health stub", async () => {
+    class CapOnContract extends FakeProvider {
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        const system = String((o as { systemMessage?: string }).systemMessage ?? "");
+        if (system.includes("valid OpenAPI 3.1.0 specification")) {
+          return {
+            // Continuations return nothing, so the cut stays and the note is appended.
+            content:
+              m.length > 1
+                ? ""
+                : "openapi: 3.1.0\ninfo:\n  title: T\n  version: 1.0.0\npaths:\n  /widgets:\n    get:\n      summary: list\n      respo",
+            provider: this.key,
+            model: "fake-model",
+            usage: { promptTokens: 5, completionTokens: 16000, totalTokens: 16005 },
+            finishReason: "max_tokens",
+          } as unknown as ChatResponse;
+        }
+        return super.chat(m, o);
+      }
+    }
+    const fid = seedFeature("p1", "005-yaml");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "005-yaml",
+      deps: { provider: new CapOnContract("# Doc\n") },
+    });
+    const contract = r.artifacts.find((a) => a.key === "contracts/api.openapi.yaml")!;
+    expect(contract.content).toContain("/widgets");
+    expect(contract.content).not.toContain("/health");
+    expect(r.message).toContain("contracts/api.openapi.yaml");
+  });
+
   it("#944 — a whole reply carries no warning", async () => {
     const fid = seedFeature("p1", "004-whole");
     seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");

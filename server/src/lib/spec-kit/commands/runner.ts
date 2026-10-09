@@ -95,6 +95,12 @@ export interface RunCommandInput {
    * audit so we can see that RAG was attempted and how much was used.
    */
   ragChunksUsed?: number;
+  /**
+   * Format of the artifact, so the truncation note is valid in it. A Markdown
+   * `>` quote breaks a YAML document, so `"yaml"` gets a `#` comment instead.
+   * Default `"markdown"`.
+   */
+  format?: "markdown" | "yaml";
 }
 
 export interface RunCommandOutput {
@@ -122,6 +128,10 @@ export const MAX_SPEC_KIT_CONTINUATIONS = 2;
  */
 export const SPEC_KIT_TRUNCATION_NOTE =
   "> **Incomplete:** this document was cut off at the model's output-token limit. Re-run the command, or split the request.";
+
+/** The same note as a YAML comment, so a salvaged contract still parses. */
+export const SPEC_KIT_TRUNCATION_NOTE_YAML =
+  "# Incomplete: this document was cut off at the model's output-token limit. Re-run the command, or split the request.";
 
 const CONTINUE_PROMPT = [
   "Your previous reply was cut off at the output-token limit. Continue the SAME",
@@ -285,7 +295,8 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     if (continuations >= MAX_SPEC_KIT_CONTINUATIONS) break;
     continuations++;
   }
-  if (truncated) kept = `${kept.trimEnd()}\n\n${SPEC_KIT_TRUNCATION_NOTE}\n`;
+  if (truncated)
+    kept = `${kept.trimEnd()}\n\n${input.format === "yaml" ? SPEC_KIT_TRUNCATION_NOTE_YAML : SPEC_KIT_TRUNCATION_NOTE}\n`;
 
   // 4. Outbound safety pass.
   let outContent = kept;
