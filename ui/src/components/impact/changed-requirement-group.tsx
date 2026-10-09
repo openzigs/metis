@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { renderInlineCode } from "@/lib/inline-code-text";
 import { AffectedSymbolRow } from "./affected-symbol-row";
 import { AffectedTablesSection } from "./affected-tables-section";
+import { useImpactSymbolRepo } from "./impact-symbol-repo-context";
 
 const SEVERITY_VARIANT: Record<
   ImpactItemView["severity"],
@@ -71,6 +72,8 @@ export function ChangedRequirementGroup({
   onMarkFeedback,
   onDeleteFeedback,
 }: ChangedRequirementGroupProps) {
+  // #992 — the item's project repo (from the page's provider) for symbol links.
+  const repo = useImpactSymbolRepo(item.projectId);
   // Strongest hits first so the card is scannable top-down.
   const direct = item.affectedSymbols
     .filter((s) => s.relation === "direct")
@@ -197,7 +200,7 @@ export function ChangedRequirementGroup({
           <p className="mb-1 text-xs font-medium text-muted-foreground">Directly affected</p>
           <ul className="space-y-1">
             {direct.map((s) => (
-              <AffectedSymbolRow key={s.id} symbol={s} />
+              <AffectedSymbolRow key={s.id} symbol={s} repo={repo} />
             ))}
           </ul>
         </div>
@@ -223,7 +226,7 @@ export function ChangedRequirementGroup({
                 </p>
                 <ul className="space-y-1">
                   {group.symbols.map((s) => (
-                    <AffectedSymbolRow key={s.id} symbol={s} />
+                    <AffectedSymbolRow key={s.id} symbol={s} repo={repo} />
                   ))}
                 </ul>
               </div>
@@ -252,7 +255,7 @@ export function ChangedRequirementGroup({
                 </p>
                 <ul className="space-y-1">
                   {group.symbols.map((s) => (
-                    <AffectedSymbolRow key={s.id} symbol={s} />
+                    <AffectedSymbolRow key={s.id} symbol={s} repo={repo} />
                   ))}
                 </ul>
               </div>

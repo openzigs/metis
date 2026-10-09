@@ -37,6 +37,13 @@ vi.mock("@/lib/projects-api", () => ({
   documentsApi: { list: vi.fn() },
 }));
 
+// #992 — the page fetches each project's repo connectors so impacted symbols
+// link to file:line. Default: none (plain text); one test supplies a repo.
+const listRepoConnectors = vi.fn();
+vi.mock("@/lib/connectors-api", () => ({
+  repoConnectorsApi: { list: (...a: unknown[]) => listRepoConnectors(...a) },
+}));
+
 // #963 — export + Jira-publish actions.
 const exportReport = vi.fn();
 const publishToJira = vi.fn();
@@ -120,7 +127,10 @@ const detail: ImpactAnalysisDetail = {
   ],
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  listRepoConnectors.mockResolvedValue([]);
+});
 
 describe("ImpactAnalysisDetailPage", () => {
   it("shows loading", () => {
@@ -223,6 +233,40 @@ describe("ImpactAnalysisDetailPage", () => {
     expect(screen.getByTestId("impact-detail-rerun-of")).toBeInTheDocument();
     expect(screen.getByTestId("impact-drift-section")).toBeInTheDocument();
     expect(screen.getByTestId("impact-drift-tables-added")).toHaveTextContent("account.status");
+  });
+
+  it("links each impacted symbol to file:line on the project's GitHub repo (#992)", async () => {
+    listRepoConnectors.mockImplementation(async (projectId: string) =>
+      projectId === "project-001"
+        ? [
+            {
+              provider: "github",
+              ownerOrOrg: "acme",
+              repoName: "shop",
+              defaultBranch: "main",
+              apiBaseUrl: null,
+              lastCommitSha: "abc1234",
+              deletedAt: null,
+            },
+          ]
+        : [],
+    );
+    mockUse.mockReturnValue(state({ data: detail }));
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    const link = await screen.findByTestId("affected-symbol-link");
+    expect(link).toHaveAttribute(
+      "href",
+      "https://github.com/acme/shop/blob/abc1234/src/a.ts#L1-L2",
+    );
+    expect(listRepoConnectors).toHaveBeenCalledWith("project-001");
+  });
+
+  it("leaves impacted symbols as plain text when the project has no GitHub repo (#992)", async () => {
+    mockUse.mockReturnValue(state({ data: detail }));
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(listRepoConnectors).toHaveBeenCalledWith("project-001"));
+    expect(screen.getByText("a.fn")).toBeInTheDocument();
+    expect(screen.queryByTestId("affected-symbol-link")).not.toBeInTheDocument();
   });
 
   it("shows empty state when completed with no items", () => {
