@@ -106,7 +106,9 @@ describe("CancelledGenerationBanner", () => {
     const onRegenerate = vi.fn();
     render(<CancelledGenerationBanner regenerating={false} onRegenerate={onRegenerate} />);
     expect(screen.getByRole("status")).toHaveTextContent(/generation was cancelled/i);
-    expect(screen.getByRole("status")).toHaveTextContent(/reuses every finished section/i);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /reuses the finished sections whose inputs have not changed, where it can/i,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(onRegenerate).toHaveBeenCalledOnce();
   });
