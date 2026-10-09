@@ -357,7 +357,7 @@ Run this phase only after Phase 9's documents finish: a repo refresh during docs
 ### Phase 17 — "Tested by" in traceability
 Replaces the Test Coverage page, whose imports and runs were removed in #818 and #819 (epic #812, [ADR 0019](../decisions/0019-replace-test-coverage-with-tested-by.md)).
 - **Steps:**
-  1. Open the completed analysis's **Requirements** tab and expand the requirement "password ≥ 6 chars". Read its **Tested by** section. To check through the API, use `GET /api/projects/:projectId/requirements/:requirementId/traceability`, field `testedBy`.
+  1. Open the completed analysis's **Requirements** tab and expand the requirement "password ≥ 6 chars". Read its **Tested by** section. If the analysis produced no such requirement, use a validator requirement such as "Reading speed validation" instead, which should list `user_test.go:40` `TestValidateReadingSpeed`. To check through the API, use `GET /api/projects/:projectId/requirements/:requirementId/traceability`, field `testedBy`.
   2. Open the analysis's **Traceability** tab. Read the matrix's **Tests** column and the **Untested requirements** list below it (`GET /api/projects/:projectId/traceability/test-gaps?analysisId=:id`).
   3. Open the workspace traceability rollup and read the project's **Tested** column. Hover it to see the strict figure.
 - **Works:** the Tested by section, the untested list and the Tested column render, and no model call is made (the ledger delta for this phase is 0).
@@ -369,7 +369,7 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
   2. Check `GET /api/projects/:id/usage`, `GET /api/projects/:id/usage-summary` and `GET /api/projects/:id/token-breakdown`, and download the CSV (`…/usage/csv`).
   3. Open `/workspaces/:id/finops` → `/api/workspaces/:wid/finops/budget|rules|events|usage-totals`.
   4. Compare the Usage page, its **All projects** view and `GET /api/admin/usage` with the ledger queries in the skill.
-  5. On the analysis page, read the header's **This project, this month** card and, during a run, the run header's tokens and cost. Then open `/runs` and read the Cost column for a chat turn (#977).
+  5. On the analysis page, read the header's **This project, this month** card and, during a run, the run header's tokens and cost. Then open `/runs` and read the Cost column for a chat turn (#977). Until #1007 lands, chat turns are not recorded as runs: record this step as blocked, citing #1007.
 - **Works:**
   - Usage rows exist for every phase.
   - **No Unpriced card** once `MODEL_PRICES` is set.
@@ -393,7 +393,7 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
 - **Steps:**
   1. Visit `/admin`. It must redirect to `/settings` (`ui/src/lib/legacy-routes.ts`).
   2. Visit `/settings/workspaces`, `/settings/workspaces/:id`, `/settings/auth`, `/settings/embeddings` and `/settings/audit`, plus `/eval/leaderboard` and `/products`.
-  3. Check the admin APIs: `/api/admin/usage`, `/api/admin/token-budgets`, `/api/admin/cache-telemetry` and `/api/admin/auth`.
+  3. Check the admin APIs: `/api/admin/usage`, `/api/admin/token-budgets/:userId`, `/api/admin/cache-telemetry` and `/api/admin/auth/providers`.
   4. Sign out from the account menu.
 - **Works:** every legacy `/admin/*` URL redirects (`legacy-routes.ts`), and the admin pages load for an admin while showing 403 for a non-admin. Signing out lands on the plain sign-in page, not `/login?reason=expired` (#720). `/settings/auth` loads with no console error.
 - **Useful:** cache telemetry shows DeepSeek cache reads, if DeepSeek reports them (#796).
