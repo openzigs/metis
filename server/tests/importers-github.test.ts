@@ -121,6 +121,67 @@ describe("GithubImporter", () => {
     expect(mapped.type).toBe("bug");
   });
 
+  // Issue #979 — the walkthrough's import typed 12 issues titled "[Bug]: …" as
+  // `feature`, because GitHub has no type field and no label said "bug".
+  describe("map() type and title (#979)", () => {
+    const imp = new GithubImporter({ token: "t" });
+    const issue = (title: string, labels: string[] = []): ExternalIssue => ({
+      externalId: "1",
+      externalSource: "github",
+      url: "u",
+      title,
+      body: "b",
+      labels,
+    });
+
+    it("derives the type from a leading [Bug]: tag and strips it from the title", () => {
+      const mapped = imp.map(issue("[Bug]: Feed refresh hangs"));
+      expect(mapped.type).toBe("bug");
+      expect(mapped.title).toBe("Feed refresh hangs");
+    });
+
+    it.each([
+      ["[Feature Request] Dark mode", "feature", "Dark mode"],
+      ["[Epic] - Billing", "epic", "Billing"],
+      ["[Chore]: bump deps", "task", "bump deps"],
+      ["[Docs] Fix typo", "task", "Fix typo"],
+    ])("reads %s as %s", (title, type, clean) => {
+      const mapped = imp.map(issue(title));
+      expect(mapped.type).toBe(type);
+      expect(mapped.title).toBe(clean);
+    });
+
+    it("leaves an unrecognised tag in the title and defaults to feature", () => {
+      const mapped = imp.map(issue("[WIP] Something"));
+      expect(mapped.type).toBe("feature");
+      expect(mapped.title).toBe("[WIP] Something");
+    });
+
+    it("keeps a title that is nothing but a tag", () => {
+      expect(imp.map(issue("[Bug]")).title).toBe("[Bug]");
+    });
+
+    it("prefers a label over the title tag", () => {
+      const mapped = imp.map(issue("[Feature] Retry", ["type: bug"]));
+      expect(mapped.type).toBe("bug");
+      expect(mapped.title).toBe("Retry");
+    });
+
+    it.each([
+      [["kind/bug"], "bug"],
+      [["enhancement"], "feature"],
+      [["Type: Epic"], "epic"],
+      [["good first issue", "chore"], "task"],
+      [["enhancement", "bug"], "bug"],
+    ])("reads labels %j as %s", (labels, type) => {
+      expect(imp.map(issue("Plain title", labels)).type).toBe(type);
+    });
+
+    it("defaults to feature when neither labels nor title name a type", () => {
+      expect(imp.map(issue("Plain title", ["good first issue"])).type).toBe("feature");
+    });
+  });
+
   it("validates the host guard on every paginated URL including Link: next", async () => {
     const guard = vi.fn(async () => undefined);
     const page1 = [{ number: 1, title: "A", body: "", html_url: "u1", state: "open", labels: [] }];

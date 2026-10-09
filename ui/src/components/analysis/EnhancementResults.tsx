@@ -111,6 +111,10 @@ export function ClarificationImpactNote({
 }): React.ReactElement | null {
   if (!application || application.answeredCount === 0) return null;
   const { answeredCount, appliedCount, unattributedCount, requirementsAvailable } = application;
+  // Issue #979 — absent on analyses clarified before the per-answer record.
+  const outcomes = application.answers ?? [];
+  const applied = outcomes.filter((a) => a.requirementTitle !== null);
+  const unmatched = outcomes.filter((a) => a.requirementTitle === null);
 
   return (
     <div
@@ -124,18 +128,45 @@ export function ClarificationImpactNote({
           in published issues under “Clarifications”.
         </p>
       ) : (
+        // Issue #979 — with no saved requirement yet, every answer is "unmatched"
+        // by construction, so the unmatched warning below is withheld in this
+        // state: it contradicted this sentence. Matching happens at promotion,
+        // and only then can the note say which answers landed.
         <p className="text-foreground">
           {answeredCount} answer{answeredCount === 1 ? "" : "s"} recorded. The requirements are not
-          saved yet — they are awaiting approval, and your answers are written into them when they
-          are promoted.
+          saved yet — they are awaiting approval. When they are promoted, each answer is written
+          into the requirement it matches, and this note will list which answers were applied.
         </p>
       )}
-      {unattributedCount > 0 && (
+      {requirementsAvailable && applied.length > 0 && (
+        <details data-testid="clarification-applied-list">
+          <summary className="cursor-pointer">Show which answers were applied</summary>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {applied.map((a) => (
+              <li key={a.questionId}>
+                {a.question} <span aria-hidden>→</span>{" "}
+                <span className="text-foreground">{a.requirementTitle}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {requirementsAvailable && unattributedCount > 0 && (
         <p className="text-warning" data-testid="clarification-unattributed">
           {unattributedCount} answer{unattributedCount === 1 ? "" : "s"} could not be matched to a
           saved requirement, so {unattributedCount === 1 ? "it refines" : "they refine"} the
           requirement text shown here but will not appear in a published issue.
         </p>
+      )}
+      {requirementsAvailable && unmatched.length > 0 && (
+        <details data-testid="clarification-unmatched-list">
+          <summary className="cursor-pointer">Show the answers that were not applied</summary>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {unmatched.map((a) => (
+              <li key={a.questionId}>{a.question}</li>
+            ))}
+          </ul>
+        </details>
       )}
       <p>
         The refined requirement wording below is METIS’s own summary and is not copied into

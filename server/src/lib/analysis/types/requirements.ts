@@ -230,6 +230,22 @@ export interface ClarificationApplication {
   requirementsAvailable: boolean;
   /** ISO timestamp of the pass. */
   updatedAt: string;
+  /**
+   * Issue #979 — per-answer outcome, so the UI can show WHICH answers were
+   * applied and to which requirement, not only how many. `requirementTitle` is
+   * `null` for an answer that was not written into any requirement. Absent on
+   * metadata written before #979.
+   */
+  answers?: ClarificationAnswerOutcome[];
+}
+
+/** Issue #979 — what happened to one clarification answer. */
+export interface ClarificationAnswerOutcome {
+  questionId: string;
+  /** The question text, shortened to keep the metadata blob small. */
+  question: string;
+  /** Title of the persisted requirement the answer was written into, or null. */
+  requirementTitle: string | null;
 }
 
 // ── Approval Checkpoint (#626) ─────────────────────────────────────────
