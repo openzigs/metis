@@ -297,7 +297,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "int",
     schema: z.coerce.number().int().min(10_000),
     description:
-      "#741 — the longest a whole generated document's body may be, in markdown characters before its footnote list (default 250000; minimum 10000). When the sections together exceed it, the longest sections are shortened first, at topic boundaries, until it fits. The #706 run-3 BRD was 2.19 MB; the Architecture document of the same run was 212 KB.",
+      "#741 — the longest a whole generated document's body may be, in markdown characters before its footnote list (default 250000; minimum 10000). When the sections together exceed it, the longest sections are shortened first, at topic boundaries, until it fits; room a shortened section cannot use passes to the others (#995). The #706 run-3 BRD was 2.19 MB; the Architecture document of the same run was 212 KB.",
     sensitive: false,
   },
   DOCS_GEN_PHASE1_CHUNK_INPUT_TOKENS: {

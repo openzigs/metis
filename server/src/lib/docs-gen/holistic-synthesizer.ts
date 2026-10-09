@@ -3525,6 +3525,8 @@ async function synthesizeBatchedSection(input: {
   grounding?: GroundingPolicy;
   /** #741 — the merged section is fitted to this many characters. */
   sectionMaxChars?: number;
+  /** #995 — told the topics the fit left out, keyed by the fitted markdown. */
+  onShortened?: (markdown: string, omittedTopics: string[]) => void;
   /** #855 / #856 — awaited before each batch call; a throw ends the run. */
   beforeBatch?: () => Promise<void>;
 }): Promise<BatchedSectionResult> {
@@ -3702,10 +3704,12 @@ async function synthesizeBatchedSection(input: {
         )
       : "";
   // #741 — the batch budgets are requests; this is the guarantee.
-  const markdown =
+  const fit =
     merged && input.sectionMaxChars !== undefined
-      ? fitSectionToBudget(merged, input.sectionMaxChars).markdown
-      : merged;
+      ? fitSectionToBudget(merged, input.sectionMaxChars)
+      : null;
+  if (fit?.trimmed) input.onShortened?.(fit.markdown, fit.omittedTopics);
+  const markdown = fit ? fit.markdown : merged;
 
   const warnings: DocWarning[] = [];
   const names = (d: { batch: SectionBatchModule[] }) => [
@@ -3924,6 +3928,8 @@ export async function synthesizeFinalDocument(
       model: string;
       factsSourceIds: string[];
       groundingSourceIds: string[];
+      /** #995 — topics a length cap left out of the section. */
+      omittedTopics?: string[];
     }>;
     selectedEvidence: GroundingSource[];
     sectionSynthesis?: SectionSynthesis;
@@ -3976,7 +3982,22 @@ export async function synthesizeFinalDocument(
     model: string;
     factsSourceIds: string[];
     groundingSourceIds: string[];
+    omittedTopics?: string[];
   }> = [];
+  // #995 — `sectionMarkdowns[i]` belongs to `manifestSections[sectionOwners[i]]`
+  // (a section that produced nothing has a manifest entry and no markdown).
+  const sectionOwners: number[] = [];
+  // #995 — the topics the section cap left out of each fitted section, keyed by
+  // its (trimmed) markdown, so the kept output's list reaches the manifest.
+  const sectionCapOmissions = new Map<string, string[]>();
+  const recordShortened = (markdown: string, omittedTopics: string[]): void => {
+    sectionCapOmissions.set(markdown.trim(), omittedTopics);
+  };
+  const fitToSectionCap = (markdown: string, maxChars: number): string => {
+    const fit = fitSectionToBudget(markdown, maxChars);
+    if (fit.trimmed) recordShortened(fit.markdown, fit.omittedTopics);
+    return fit.markdown;
+  };
   const selectedEvidenceById = new Map<string, GroundingSource>();
   // #1226 — every group that actually contributed markdown, with the H2 heading
   // it led with. Compared against the ASSEMBLED body below so a section the
@@ -4429,6 +4450,7 @@ export async function synthesizeFinalDocument(
       if (carried.delete(group.id) && !stillValid) await checkpoint();
       if (previous && stillValid) {
         sectionMarkdowns.push(previous.markdown);
+        sectionOwners.push(manifestSections.length);
         manifestSections.push(previous.metadata);
         // Grounding was freshly retrieved and hashed above, so these are the
         // exact sources whose metadata/evidence accompanied the saved output.
@@ -4481,6 +4503,7 @@ export async function synthesizeFinalDocument(
           flowBlob,
           grounding: groundingPolicy,
           sectionMaxChars,
+          onShortened: recordShortened,
           ...(reuse?.beforeStep
             ? {
                 beforeBatch: () => reuse.beforeStep!({ kind: "batch", section: group.label }),
@@ -4515,10 +4538,7 @@ export async function synthesizeFinalDocument(
         keptTruncation = generated;
         // #741 — within the section cap before it is fact-checked: what is left
         // out is neither checked nor paid for.
-        generated.markdown = fitSectionToBudget(
-          generated.markdown.trim(),
-          sectionMaxChars,
-        ).markdown;
+        generated.markdown = fitToSectionCap(generated.markdown.trim(), sectionMaxChars);
         // #273 — post-validate the freshly-synthesized section by ENTAILMENT:
         // decompose it into atomic claims, then judge each claim's support against
         // THIS section's grounding context (the judge sees source TEXT, not ids),
@@ -4603,6 +4623,7 @@ export async function synthesizeFinalDocument(
               flowBlob,
               grounding: groundingPolicy,
               sectionMaxChars,
+              onShortened: recordShortened,
               ...(reuse?.beforeStep
                 ? {
                     beforeBatch: () => reuse.beforeStep!({ kind: "batch", section: group.label }),
@@ -4656,7 +4677,7 @@ export async function synthesizeFinalDocument(
               escBlock,
               flowBlob,
             );
-            escMd.markdown = fitSectionToBudget(escMd.markdown.trim(), sectionMaxChars).markdown;
+            escMd.markdown = fitToSectionCap(escMd.markdown.trim(), sectionMaxChars);
             const escValidated = await validateSectionGrounding(
               group.label,
               escMd.markdown.trim(),
@@ -4744,11 +4765,14 @@ export async function synthesizeFinalDocument(
       }
 
       sectionMarkdowns.push(finalOutcome.markdown);
+      sectionOwners.push(manifestSections.length);
       for (const source of finalGrounding?.sources ?? []) {
         if (!selectedEvidenceById.has(source.sourceId)) {
           selectedEvidenceById.set(source.sourceId, source);
         }
       }
+      // #995 — the topics the section cap left out of the output that was kept.
+      const capOmitted = sectionCapOmissions.get(finalOutcome.markdown.trim());
       manifestSections.push({
         sectionLabel: group.label,
         sectionIndex: gi,
@@ -4756,6 +4780,7 @@ export async function synthesizeFinalDocument(
         model: finalBundle.tuning.phase2Model,
         factsSourceIds,
         groundingSourceIds: finalGrounding?.sources.map((source) => source.sourceId) ?? [],
+        ...(capOmitted?.length ? { omittedTopics: capOmitted } : {}),
       });
       contributed.push({ label: group.label, heading: firstH2Heading(finalOutcome.markdown) });
       if (finalOutcome.warning) warnings.push(finalOutcome.warning);
@@ -4872,7 +4897,13 @@ export async function synthesizeFinalDocument(
   // each H2 heading wins.
   // #741 — the whole document within its cap, the longest sections shortened
   // first at topic boundaries, before footnotes are numbered.
-  const fittedSections = fitSectionsToDocumentBudget(sectionMarkdowns, documentMaxChars);
+  // #995 — what a section already lost to the section cap is listed with what
+  // the document cap takes, and both reach the manifest's provenance.
+  const fittedSections = fitSectionsToDocumentBudget(
+    sectionMarkdowns,
+    documentMaxChars,
+    sectionOwners.map((owner) => manifestSections[owner].omittedTopics ?? []),
+  );
   if (fittedSections.trimmed > 0) {
     log.info("Document over its length cap; longest sections shortened", {
       projectId,
@@ -4881,6 +4912,13 @@ export async function synthesizeFinalDocument(
       sectionsShortened: fittedSections.trimmed,
     });
   }
+  // Copies: the entries themselves are the reuse records' metadata, which hold
+  // only the section cap's omissions (the document cap is re-applied each run).
+  const finalManifestSections = manifestSections.map((section) => ({ ...section }));
+  sectionOwners.forEach((owner, i) => {
+    const omitted = fittedSections.omittedTopics[i];
+    if (omitted.length > 0) finalManifestSections[owner].omittedTopics = omitted;
+  });
   const body = dedupeH2Sections(fittedSections.sections.join("\n\n"));
   // #1226 — a section can survive generation and still not reach the reader:
   // `dedupeH2Sections` keeps only the FIRST block per H2 heading, so two groups
@@ -4908,7 +4946,7 @@ export async function synthesizeFinalDocument(
   return {
     markdown: `${header}\n${readableBody}${footer}`,
     warnings,
-    sections: manifestSections,
+    sections: finalManifestSections,
     selectedEvidence: [...selectedEvidenceById.values()],
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
     ...(resume.reused.length + resume.stale.length > 0 ? { resume } : {}),

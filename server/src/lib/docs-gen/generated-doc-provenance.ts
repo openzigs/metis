@@ -76,6 +76,11 @@ const sectionManifestSchema = z
     model: z.string().min(1),
     factsSourceIds: z.array(z.string().min(1)),
     groundingSourceIds: z.array(z.string().min(1)),
+    /**
+     * #995 — headings of the topics the section or document length cap left
+     * out, in document order. Absent = nothing was left out.
+     */
+    omittedTopics: z.array(z.string()).optional(),
   })
   .strict();
 
@@ -464,6 +469,8 @@ export function buildGeneratedDocVersionManifest(input: {
     model: string;
     factsSourceIds: string[];
     groundingSourceIds: string[];
+    /** #995 — topics a length cap left out of the section. */
+    omittedTopics?: string[];
   }>;
 }): string {
   const primary =
@@ -559,6 +566,7 @@ export function buildGeneratedDocVersionManifest(input: {
       model: section.model,
       factsSourceIds: [...section.factsSourceIds],
       groundingSourceIds: [...section.groundingSourceIds],
+      ...(section.omittedTopics?.length ? { omittedTopics: [...section.omittedTopics] } : {}),
     })),
     historicalCitations: {
       status: input.historicalCitations?.status ?? "unavailable",

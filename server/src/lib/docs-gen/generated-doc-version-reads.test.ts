@@ -106,6 +106,19 @@ describe("cachedProvenanceSummary", () => {
     });
   });
 
+  it("lists the topics a length cap left out, by section (#995)", async () => {
+    const stored = JSON.parse(manifest(3));
+    stored.sections[1].omittedTopics = ["Feed Scheduling & Polling Policies", "Account"];
+    const summary = await cachedProvenanceSummary(row(), async () => JSON.stringify(stored));
+    expect(summary?.omittedTopics).toEqual([
+      { section: "S 1", topics: ["Feed Scheduling & Polling Policies", "Account"] },
+    ]);
+    clearGeneratedDocVersionReadCaches();
+    expect((await cachedProvenanceSummary(row(), async () => manifest(3)))?.omittedTopics).toEqual(
+      [],
+    );
+  });
+
   it("returns null for an unreadable manifest and remembers that", async () => {
     const load = vi.fn(async () => "{not json");
     expect(await cachedProvenanceSummary(row(), load)).toBeNull();

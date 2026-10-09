@@ -79,6 +79,8 @@ const outputSchema = z
         model: z.string().min(1),
         factsSourceIds: z.array(z.string().min(1)),
         groundingSourceIds: z.array(z.string().min(1)),
+        /** #995 — topics the section cap left out, so a reused section still lists them. */
+        omittedTopics: z.array(z.string()).optional(),
       })
       .strict(),
     evidence: z.array(sectionEvidenceSchema),

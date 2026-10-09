@@ -88,17 +88,18 @@ const PROVENANCE_SUMMARY = {
   sourceCount: 3,
   historicalCitations: { status: "unknown", mode: "legacy-unknown" },
   legacy: { historicalCitations: "legacy-unknown" },
+  omittedTopics: [],
 };
 const FULL_MANIFEST = { revision: { revisionId: "gendoc:proj_test:doc_1:v2" }, sections: [] };
 
-function setup(detail: Record<string, unknown>) {
+function setup(detail: Record<string, unknown>, summary: object = PROVENANCE_SUMMARY) {
   mockApiFetch.mockImplementation(async (path: string) => {
     if (typeof path === "string" && path.endsWith(`/docs/${DOC_ID}`)) return detail;
     const version = /\/docs\/doc_1\/versions\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(path);
     if (version) {
       const [, id, sub, query] = version;
       if (!sub) return { id, content: VERSION_BODIES[id] };
-      if (sub === "/provenance/summary") return PROVENANCE_SUMMARY;
+      if (sub === "/provenance/summary") return summary;
       if (sub === "/provenance") return FULL_MANIFEST;
       if (sub === "/changed-symbols") {
         expect(query).toBe("?limit=200");
@@ -312,6 +313,47 @@ describe("DocumentationPage — version history", () => {
     fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
     await screen.findByText("gendoc:proj_test:doc_1:v2");
     expect(artifactCalls()).toHaveLength(2);
+  });
+
+  it("lists the topics a length cap left out, by section (#995)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+      {
+        ...PROVENANCE_SUMMARY,
+        omittedTopics: [
+          { section: "Business Rules & Policies", topics: ["Feed Scheduling & Polling Policies"] },
+          { section: "Data & Domain Model", topics: ["Account", "Feed / Category"] },
+        ],
+      },
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    const omitted = await within(panel).findByTestId("version-omitted-topics-v2");
+    expect(within(omitted).getByText("3 topics left out for length")).toBeInTheDocument();
+    expect(within(omitted).getByText("Business Rules & Policies")).toBeInTheDocument();
+    expect(within(omitted).getByText("Feed Scheduling & Polling Policies")).toBeInTheDocument();
+    expect(within(omitted).getByText("Account")).toBeInTheDocument();
+    expect(within(omitted).getByText("Feed / Category")).toBeInTheDocument();
+  });
+
+  it("shows no omitted-topics list when nothing was left out (#995)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    await within(panel).findByText("gendoc:proj_test:doc_1:v2");
+    expect(within(panel).queryByTestId("version-omitted-topics-v2")).not.toBeInTheDocument();
   });
 
   it("fetches the full manifest only when the user downloads it (#196)", async () => {

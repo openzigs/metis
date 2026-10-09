@@ -201,7 +201,71 @@ describe("fitSectionToBudget", () => {
 describe("fitSectionsToDocumentBudget", () => {
   it("leaves a document within budget alone", () => {
     const sections = ["## A\n\nx", "## B\n\ny"];
-    expect(fitSectionsToDocumentBudget(sections, 1_000)).toEqual({ sections, trimmed: 0 });
+    expect(fitSectionsToDocumentBudget(sections, 1_000)).toEqual({
+      sections,
+      trimmed: 0,
+      omittedTopics: [[], []],
+    });
+  });
+
+  it("carries topics an earlier cap left out through a document within budget", () => {
+    const fit = fitSectionsToDocumentBudget(["## A\n\nx", "## B\n\ny"], 1_000, [["Earlier"], []]);
+    expect(fit.omittedTopics).toEqual([["Earlier"], []]);
+  });
+
+  // #995 — in #706 run 5 every section was held to ~38k (250k / sections) while
+  // the document used only 186k of its 250k: a section whose next topic was too
+  // big for its share left that share unused, and nothing else could take it.
+  it("lets sections use what others leave unused (#995)", () => {
+    // One section whose topics are each far bigger than any fair share, so it
+    // can keep only its intro: its share is the slack the others should use.
+    const coarse = [
+      "## Data Model",
+      "Entities the system stores.",
+      `### Account\n\n${"a ".repeat(15_000)}`,
+      `### Feed\n\n${"f ".repeat(15_000)}`,
+    ].join("\n\n");
+    const fine1 = rulesSection(80);
+    const fine2 = rulesSection(80);
+    const max = 60_000;
+    const fit = fitSectionsToDocumentBudget([coarse, fine1, fine2], max);
+    const total = fit.sections.reduce((n, s) => n + s.length, 0);
+    expect(total).toBeLessThanOrEqual(max);
+    // A static third (20k) each would leave ~19k unused; the fine-grained
+    // sections absorb it, to within a paragraph or two of the cap.
+    expect(total).toBeGreaterThan(max - 2_000);
+    expect(fit.sections[1].length).toBeGreaterThan(max / 3 + 5_000);
+    expect(fit.sections[2].length).toBeGreaterThan(max / 3 + 5_000);
+    // Fair between equals: neither fine section takes all the slack.
+    expect(Math.abs(fit.sections[1].length - fit.sections[2].length)).toBeLessThan(2_000);
+  });
+
+  it("reports the topics each section left out, merged with an earlier cap's (#995)", () => {
+    const small = "## Overview\n\nShort.";
+    const earlier = fitSectionToBudget(rulesSection(60), 40_000);
+    expect(earlier.trimmed).toBe(true);
+    const fit = fitSectionsToDocumentBudget([small, earlier.markdown], 10_000, [
+      ["Kept from before"],
+      earlier.omittedTopics,
+    ]);
+    expect(fit.trimmed).toBe(1);
+    expect(fit.omittedTopics[0]).toEqual(["Kept from before"]);
+    expect(fit.omittedTopics[1][0]).toMatch(/^Topic \d+$/);
+    expect(fit.omittedTopics[1]).toContain("Topic 60");
+    expect(new Set(fit.omittedTopics[1]).size).toBe(fit.omittedTopics[1].length);
+    // The earlier note is replaced, not kept as content beside a second one.
+    expect(fit.sections[1].match(/Shortened for length/g)).toHaveLength(1);
+  });
+
+  it("never lets a closing note push a section past its budget (#995)", () => {
+    // Long topic names make the note longer than the room once reserved for it.
+    const parts = ["## Rules", "Intro paragraph."];
+    for (let t = 0; t < 40; t++) {
+      parts.push(`### ${"Long topic name ".repeat(5)}${t}`, "x ".repeat(100));
+    }
+    const fit = fitSectionToBudget(parts.join("\n\n"), 3_000);
+    expect(fit.trimmed).toBe(true);
+    expect(fit.markdown.length).toBeLessThanOrEqual(3_000);
   });
 
   it("shortens the longest sections first and fits the total", () => {
