@@ -186,6 +186,20 @@ describe("#1001 continue with a larger budget", () => {
     expect(orch.runAgenticCodeAgent.mock.calls[0][0].tokenBudget).toBe(200_000);
   });
 
+  it("also scales the turn cap, so a pass that ran out of turns can get further", async () => {
+    const orch = makeOrchestrator();
+    await regenerate(orch, { extendBudget: true });
+    expect(orch.runAgenticCodeAgent.mock.calls[0][0].turnMultiplier).toBe(
+      CONTINUE_BUDGET_MULTIPLIER,
+    );
+  });
+
+  it("an ordinary regenerate leaves the turn cap alone", async () => {
+    const orch = makeOrchestrator();
+    await regenerate(orch);
+    expect(orch.runAgenticCodeAgent.mock.calls[0][0].turnMultiplier).toBeUndefined();
+  });
+
   it("an ordinary regenerate keeps the configured budget", async () => {
     const orch = makeOrchestrator();
     await regenerate(orch);
@@ -225,6 +239,16 @@ describe("#1001 the banner describes the regenerated pass", () => {
     const next = serviceMock.persistAnalysisCapability.mock.calls[0][1] as AnalysisCapability;
     expect(next.codeInvestigationCutShort).toBe(true);
     expect(next.reasons).toEqual(["code-investigation-cut-short"]);
+  });
+
+  it("a failed capability read does not fail a regenerate that already persisted", async () => {
+    serviceMock.getAnalysisCapability.mockRejectedValue(new Error("db down"));
+    const orch = makeOrchestrator(health(false));
+    await expect(regenerate(orch, { extendBudget: true })).resolves.toBeUndefined();
+    expect(serviceMock.persistAnalysisCapability).not.toHaveBeenCalled();
+    expect(serviceMock.finalizeAnalysisDelta).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "completed" }),
+    );
   });
 
   it("leaves the record alone when the regenerate recorded no retrieval health", async () => {

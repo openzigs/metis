@@ -895,7 +895,12 @@ export class AnalysisOrchestrator {
                 (analysis.project as { databaseAwareAnalysis?: string | null })
                   .databaseAwareAnalysis ?? undefined,
               ...(opts.extendBudget
-                ? { tokenBudget: resolveAgentTokenBudget() * CONTINUE_BUDGET_MULTIPLIER }
+                ? {
+                    tokenBudget: resolveAgentTokenBudget() * CONTINUE_BUDGET_MULTIPLIER,
+                    // A pass that hit its turn cap would otherwise rerun with the
+                    // same cap and stop in the same place.
+                    turnMultiplier: CONTINUE_BUDGET_MULTIPLIER,
+                  }
                 : {}),
             })
           : await this.runOneAgent(agentInput);
@@ -970,7 +975,7 @@ export class AnalysisOrchestrator {
    */
   private async regenerateCodeAgent(
     input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
-    opts: { databaseAwareSetting?: string; tokenBudget?: number } = {},
+    opts: { databaseAwareSetting?: string; tokenBudget?: number; turnMultiplier?: number } = {},
   ): Promise<AgentRunResult> {
     const totalBudget = opts.tokenBudget ?? resolveAgentTokenBudget();
     const requirements = mergeRequirementSets(
@@ -1029,6 +1034,7 @@ export class AnalysisOrchestrator {
           projectName: input.projectName,
           connectorId: connectors[0]?.id,
           tokenBudget: totalBudget,
+          turnMultiplier: opts.turnMultiplier,
         }),
       );
     } else {
@@ -1045,6 +1051,7 @@ export class AnalysisOrchestrator {
             projectName: `${input.projectName} [repo: ${connector.label}]`,
             connectorId: connector.id,
             tokenBudget: effectiveBudget,
+            turnMultiplier: opts.turnMultiplier,
           }),
         );
       }
@@ -1348,7 +1355,13 @@ export class AnalysisOrchestrator {
     } catch (err) {
       log.warn("Retrieval-health persist failed", { analysisId, error: (err as Error).message });
     }
-    const capability = await getAnalysisCapability(analysisId);
+    let capability: AnalysisCapability | null;
+    try {
+      capability = await getAnalysisCapability(analysisId);
+    } catch (err) {
+      log.warn("Capability read failed", { analysisId, error: (err as Error).message });
+      return;
+    }
     if (!capability) return;
     const flags = {
       codeRetrievalDegraded: health.degraded,
@@ -2430,6 +2443,8 @@ export class AnalysisOrchestrator {
     signal: AbortSignal;
     connectorId?: string;
     tokenBudget?: number;
+    /** #1001 — scales the agentic turn cap on a "continue" re-run. Default 1. */
+    turnMultiplier?: number;
     /** #735 (Epic #726) — deterministic requirement→code mapping seeded into the gap prompt. */
     affectedCode?: AffectedCodeContext;
     /** #824 (Epic #820 Phase 1) — deterministic AFFECTED SCHEMA block seeded into the gap prompt. */
@@ -2994,11 +3009,13 @@ export class AnalysisOrchestrator {
         // actually investigate (see `resolveAgenticMaxTurns`), so an honest verdict
         // per requirement is fundable instead of structurally impossible. When the
         // #739 escalation policy is on it still owns the caps.
+        const turnScale = input.turnMultiplier ?? 1;
         const standardTurns =
-          input.escalation?.policy.standardMaxTurns ??
-          resolveAgenticMaxTurns(standardReqs.length || input.requirements.length);
+          (input.escalation?.policy.standardMaxTurns ??
+            resolveAgenticMaxTurns(standardReqs.length || input.requirements.length)) * turnScale;
         const deepTurns =
-          input.escalation?.policy.deepMaxTurns ?? resolveAgenticMaxTurns(deepReqs.length);
+          (input.escalation?.policy.deepMaxTurns ?? resolveAgenticMaxTurns(deepReqs.length)) *
+          turnScale;
 
         let mergedOutput: AgentOutput;
         let mergedUsage: TokenUsage;

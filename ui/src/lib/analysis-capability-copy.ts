@@ -110,9 +110,9 @@ export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, Capability
   // "Could not verify" with no code link, and continuing can reach it.
   "code-investigation-cut-short": {
     title:
-      "Code analysis ran out of its token budget before it reached every requirement — the ones it did not reach are marked “Could not verify” and have no code link.",
+      "Code analysis ran out of its token or turn budget before it reached every requirement — the ones it did not reach are marked “Could not verify” and have no code link.",
     action:
-      "Continue the code investigation with a larger budget, or ask an administrator to raise ANALYSIS_AGENT_TOKEN_BUDGET for future runs.",
+      "Re-run the code investigation with a larger token and turn budget, or ask an administrator to raise ANALYSIS_AGENT_TOKEN_BUDGET for future runs.",
   },
   "repo-clone-unavailable": {
     title:

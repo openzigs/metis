@@ -84,7 +84,7 @@ describe("AnalysisCapabilityBanner continue action (#1001)", () => {
   it("says the code investigation ran out of budget and offers to continue", () => {
     render(<AnalysisCapabilityBanner capability={cutShort} onContinueInvestigation={() => {}} />);
     expect(screen.getByTestId("capability-reason-code-investigation-cut-short")).toHaveTextContent(
-      /ran out of its token budget/i,
+      /ran out of its token or turn budget/i,
     );
     expect(screen.getByTestId("continue-code-investigation")).toHaveTextContent(
       "Continue with a larger budget",
