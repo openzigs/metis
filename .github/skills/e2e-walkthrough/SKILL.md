@@ -1,12 +1,12 @@
 ---
 name: e2e-walkthrough
-description: "Runbook to re-run the #706 METIS end-to-end walkthrough from scratch and compare runs: Miniflux v2.3.3 sample project, SQL-lineage sidecar and seeded Postgres, DeepSeek pricing, the five ui-vision waves (A to E) plus the BA re-ask over the API, safety guard-rails for sandbox publishing, the token/cost ledger queries, and the HTML tutorial and run-report slideshows built from the screenshots. Use when asked to run, repeat or compare the walkthrough (run 3 onward), to set up its fixtures, or to build its slideshow."
+description: "Runbook to re-run the #706 METIS end-to-end walkthrough from scratch and compare runs: Miniflux v2.3.3 sample project, SQL-lineage sidecar and seeded Postgres, DeepSeek pricing, the six ui-vision waves (A to E, plus the F persona journeys) and the BA re-ask over the API, the generated and tracked fixes-to-verify list, safety guard-rails for sandbox publishing, the token/cost ledger queries, and the HTML tutorial and run-report slideshows built from the screenshots. Use when asked to run, repeat or compare the walkthrough (run 3 onward), to set up its fixtures, or to build its slideshow."
 ---
 
 # E2E walkthrough runbook (#706)
 
-The **procedure** — phases 1–20, Spec Kit S1–S24, pass bars, BA questions and developer
-issues — lives in [`docs/walkthroughs/TEST_PLAN.md`](../../../docs/walkthroughs/TEST_PLAN.md)
+The **procedure** — phases 1–20, Spec Kit S1–S24, pass bars, BA questions, developer
+issues and the persona journeys — lives in [`docs/walkthroughs/TEST_PLAN.md`](../../../docs/walkthroughs/TEST_PLAN.md)
 (moved out of #706's body in #948). Do not copy it here; read it at the start of every run,
 because phases are added and removed (#799 dropped Phase 4's bug scan, #812 replaced Phase 17
 with "Tested by"). Results still go on [#706](https://github.com/openzigs/metis/issues/706).
@@ -20,7 +20,10 @@ not only in the results comment.
 |---|---|
 | `docs/walkthroughs/TEST_PLAN.md` | The procedure and pass bars |
 | `scripts/walkthrough/check-test-plan.mjs` | Drift check: dead routes and pages in the plan |
-| `briefs/wave-{a..e}.md`, `briefs/ba-reask.md` | Dispatch templates, one per wave |
+| `briefs/wave-{a..f}.md`, `briefs/ba-reask.md` | Dispatch templates, one per wave |
+| `scripts/walkthrough/fixes-since.mjs` | The fixes a run verifies, as a reviewable `fixes.json` (section 3a) |
+| `docs/walkthroughs/fix-phase-map.json` | Which wave and phase verifies each fix, by issue or PR |
+| `scripts/walkthrough/fill-brief.mjs` | Fills the briefs from a state file and `fixes.json` |
 | `scripts/walkthrough/miniflux-seed.sql` | Idempotent Miniflux seed |
 | `docs/walkthroughs/RESULTS_TEMPLATE.md` | The results comment, with the run-2 baseline |
 | `scripts/walkthrough/build-slideshow.mjs` | Tutorial and run-report slideshows from `steps.jsonl` |
@@ -95,8 +98,9 @@ to 20M with 1.53M already used.
 ## 3. Waves
 
 Each wave is one `ui-vision` dispatch, **in sequence** — the waves share one browser.
-Fill the wave's brief from `briefs/`, substituting `{{…}}` placeholders with the state the
-previous wave returned. Record each wave's returned IDs before dispatching the next.
+Fill the wave's brief with `fill-brief.mjs` (section 3a), putting the state the previous wave
+returned into the state file's `placeholders`. Record each wave's returned IDs before
+dispatching the next.
 
 | Wave | Scope | Brief |
 |---|---|---|
@@ -105,6 +109,7 @@ previous wave returned. Record each wave's returned IDs before dispatching the n
 | C | Phases 9–13 | `briefs/wave-c.md` |
 | D | Spec Kit S1–S24 | `briefs/wave-d.md` |
 | E | Phases 15–20 + developer-issue impact | `briefs/wave-e.md` |
+| F | Journeys 1 (analyst) and 2 (developer), **UI only**, no IDs handed over | `briefs/wave-f.md` |
 | BA | The 8 BA questions over `POST /api/ai/chat`, one project-scoped session each | `briefs/ba-reask.md` |
 
 The BA re-ask needs no browser. Create a session with `POST /api/ai/sessions`
@@ -112,6 +117,47 @@ The BA re-ask needs no browser. Create a session with `POST /api/ai/sessions`
 `POST /api/ai/chat` `{"sessionId":"…","message":"…"}`. Run it over the API even when Phase 10
 runs in the UI: in run 3 the auto-mode classifier blocked selecting the `/chat` project-scope
 radio, so the UI path may be unavailable without an allow rule.
+
+Wave F's personas know names, not IDs: its state carries `WORKSPACE_NAME`, `PROJECT_NAME` and
+`J1_PROJECT_NAME` (the fresh project journey 1 creates), never a project or run ID. Its sandbox
+publishes count toward the run's cap of 2, so leave it a slot or let it dry-run only.
+
+### 3a. The fixes to verify — generated, not hand-written (#954)
+
+1. **Before wave A**, list the candidates since the previous run's METIS SHA:
+   ```bash
+   node scripts/walkthrough/fixes-since.mjs \
+     --previous .playwright-mcp/walkthrough-706-run<N-1>/run.json \
+     --out .playwright-mcp/walkthrough-706-run<N>/fixes.json \
+     --comment .playwright-mcp/walkthrough-706-run<N>/scope.md --run <N>
+   ```
+   It reads `metisSha` from the previous `run.json` (or takes `--since <sha>`), lists the PRs
+   merged on `main`'s first-parent line since, and keeps those labelled `e2e-walkthrough` (or
+   closing such an issue) or touching a UI page, a route, or `server/src/lib/{analysis,
+   spec-kit,publishing,docs-gen,traceability,impact-analysis,code-graph}`. Dependabot PRs are
+   listed apart, flagged only for a runtime dependency. Every fix the previous run did not
+   record as `confirmed` is carried forward.
+2. **Review `fixes.json`.** A relevant PR the map cannot place lands in `unmapped` and is
+   printed: add it to `docs/walkthroughs/fix-phase-map.json` (by issue, or by PR) and re-run.
+   A fix no wave can verify, such as walkthrough tooling, gets `{"skip": "<reason>"}` there and
+   is listed under `excluded`, and in the scope comment. Edit a `check` line that would not tell a wave agent what to look at. This review also screens
+   the check text: when the map gives none it defaults to the issue or PR title, and that text goes
+   verbatim into briefs the wave agents act on.
+3. **Post the scope** on #706 before wave A: `gh issue comment 706 --body-file <run>/scope.md`.
+4. **Fill the briefs.** Write `<run>/state.json`:
+   `{"placeholders": {"RUN_NUMBER": "5", "UI_URL": "…", …}, "requiredPrs": [952]}`, then
+   ```bash
+   node scripts/walkthrough/fill-brief.mjs --state <run>/state.json \
+     --fixes <run>/fixes.json --out <run>/briefs
+   ```
+   Each brief gets its own wave's fixes as `{{FIXES_TO_VERIFY}}`. It writes nothing while any
+   placeholder is unfilled, any PR is `unmapped`, or a `requiredPrs` entry is missing from the
+   fixes. Later waves need IDs earlier waves produce, so fill one wave at a time: add `--wave A`
+   (or `--wave B`, `A,B`) to fill and check only those briefs, then re-run with the next wave's
+   returned IDs added to `state.json`. The unmapped, `requiredPrs` and unknown-brief checks stay
+   run-wide; without `--wave`, every brief must be fully filled.
+5. **Run the waves**, then record each fix's verdict in `run.json` (section 7).
+6. **Build the decks** (section 7), then **close what the run confirmed** (section 8).
 
 **Never overlap long jobs.** Waves run in sequence, and so must the jobs inside them. A repo
 refresh, re-ingest or scheduler run while docs generation is in flight used to fail the
@@ -280,7 +326,8 @@ Each wave appends one line per screenshot to `<evidence-dir>/steps.jsonl`, where
 instruction and good and bad wording.
 
 **Write `<evidence-dir>/run.json` after filing the run's issues and before building (#947).**
-The steps only know the issues they *checked* and the tokens attributed to them. The issues the
+It also carries the run's METIS SHA and every fix verdict (#954). The steps only know the
+issues they *checked* and the tokens attributed to them. The issues the
 run *found* are filed after the waves, and the ledger sees calls no step claims: a wave with no
 attributed tokens, the BA re-ask, a call that finishes in a later wave. Run 4's deck showed
 $3.58 against the ledger's $4.32. `run.json` is optional, and without it the build behaves as
@@ -293,7 +340,12 @@ before:
               "since": "2026-10-08T16:33:46Z", "until": "2026-10-08T20:50:00Z" },
   "waves": { "A": { "tokens": 120000, "costUsd": 0.41,
                     "since": "2026-10-08T16:33:46Z", "until": "2026-10-08T17:06:43Z" },
-             "BA": { "tokens": 90000, "costUsd": 0.12 } }
+             "BA": { "tokens": 90000, "costUsd": 0.12 } },
+  "metisSha": "f117d406083316cc8c204399b7826cf69a7fb7a5",
+  "previousRunSha": "7cc6310df6999f3f627016d41a0f46f4ec4e9011",
+  "fixes": [{ "pr": 950, "issues": [939], "wave": "F", "phase": "J1.4",
+              "check": "Approving the checkpoint approves the requirements",
+              "status": "confirmed", "evidence": "f-j1-4-1" }]
 }
 ```
 
@@ -303,15 +355,21 @@ before:
   `token_usages`. `tokens` is `SUM("inputTokens" + "outputTokens")` and **excludes
   cache-read tokens**, which is how step `tokens` are counted, so the unattributed remainder
   compares like with like. `costUsd` is `SUM(COALESCE("costUsd", "costCents" / 100.0))`.
-- `waves`: optional per-wave totals over each wave's window, keyed `A`–`E` and `BA`;
+- `waves`: optional per-wave totals over each wave's window, keyed `A`–`F` and `BA`;
   `since` / `until` are optional here and record the window.
+- `metisSha` / `previousRunSha`: the METIS commit this run tested and the one the previous run
+  did. The next run's `fixes-since` starts from `metisSha`.
+- `fixes`: every entry of `fixes.json`'s `fixes[]` with a `status` of `confirmed`, `partial`,
+  `regressed` or `not-exercised`, and `evidence`, the step id that shows it (required for all
+  but `not-exercised`; it must exist in `steps.jsonl`). Keep `carried` when an entry has it.
 
-All three keys are optional. Unknown fields are rejected, and an invalid file fails the build,
+Every key is optional. Unknown fields are rejected, and an invalid file fails the build,
 naming the field, before anything is written. With `ledger`, the summary shows the ledger
 total as authoritative, the per-step sum as "attributed to steps", and the unattributed
 remainder. With `waves`, the per-wave table uses the ledger, adds a `BA` row, and shows `–`
-for a wave it does not list. The summary lists "Issues checked" (the steps' `issues`) and
-"New issues filed (N)" by severity, and the report deck ends with a slide listing the new
+for a wave it does not list. The summary lists "Issues checked" (the steps' `issues`),
+"Fixes confirmed this run (N of M)" with a count per status and the confirmed issues to close,
+and "New issues filed (N)" by severity, and the report deck ends with a slide listing the new
 issues with their titles.
 
 After the last wave and `run.json`, build both decks:
@@ -344,8 +402,8 @@ screenshot path check out.
 | Field | Required | Meaning |
 |---|---|---|
 | `id` | yes | Unique step id, e.g. `a-2-1` |
-| `wave` | yes | `A`–`E` |
-| `phase` | yes | `"2"`, `"S4"`; ordered naturally within a wave |
+| `wave` | yes | `A`–`F` |
+| `phase` | yes | `"2"`, `"S4"`, `"J1.4"`; ordered naturally within a wave |
 | `chapter` | yes | Feature area, e.g. "Connect a repository"; becomes a tutorial chapter |
 | `title` | yes | Step title; also the screenshot's `alt` text |
 | `screenshot` | yes | Image path relative to the evidence folder (`.png`, `.jpg`, `.webp`, `.gif`) |
@@ -371,7 +429,13 @@ first: they show the run's data, and the decks are not redacted.
 
 ## 8. Close what the run confirms
 
-Some issues were merged as partial fixes and left open for the walkthrough to confirm:
-**#726, #741, #768, #785, #791** before run 4. When a wave's fix verification says `holds`
-with evidence, close the issue with a comment linking the results comment. Otherwise leave
-it open and say what is missing. Record the closures under "Findings" in the results.
+Some issues are merged as partial fixes and left open for the walkthrough to confirm. List the
+ones `run.json` records as `confirmed` that are still open:
+
+```bash
+node scripts/walkthrough/fixes-since.mjs --close-list .playwright-mcp/walkthrough-706-run<N>/run.json
+```
+
+Close each with a comment linking the results comment. Anything not confirmed stays open and
+is carried into the next run's `fixes.json` automatically. Record the closures under "Findings"
+in the results.

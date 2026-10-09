@@ -19,9 +19,15 @@ import {
   type SpecKitFeatureDto,
 } from "../features.js";
 import { writeFeatureArtifact, type FeatureArtifactDto } from "../feature-artifacts.js";
-import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
+import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
-import { buildSpecKitRagContext, type SpecKitKnowledgeService } from "../rag-context.js";
+import {
+  buildSpecKitRagContext,
+  type CallerLookup,
+  type SiblingSymbolLookup,
+  type SpecKitFusedCodeDeps,
+  type SpecKitKnowledgeService,
+} from "../rag-context.js";
 import { describeGrounding, PINNED_REQUIREMENT_DOCUMENTS } from "../grounding.js";
 import { SPECIFY_SYSTEM_PROMPT } from "./prompts.js";
 
@@ -44,6 +50,12 @@ export interface SpecifyFeatureInput {
   deps?: RunDeps;
   /** #786 — injectable knowledge service for RAG grounding. Defaults to the real one. */
   knowledgeService?: SpecKitKnowledgeService;
+  /** #944 — injectable code-graph retrieval. Defaults to the production wiring. */
+  fusedCode?: SpecKitFusedCodeDeps;
+  /** #944 — injectable same-file sibling lookup. Defaults to the production wiring. */
+  siblingLookup?: SiblingSymbolLookup;
+  /** #944 — injectable caller lookup. Defaults to the production wiring. */
+  callerLookup?: CallerLookup;
 }
 
 export interface SpecifyFeatureResult {
@@ -109,7 +121,14 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
   // failed retrieval ⇒ "" (ungrounded); never throws.
   const rag = await buildSpecKitRagContext(input.projectId, trimmed, {
     knowledgeService: input.knowledgeService,
+    // #944 — a spec must see the capability that already ships, and who calls
+    // it: grounded on documents alone, a walkthrough spec never mentioned the
+    // existing function that did most of the job, or its caller.
+    fusedCode: input.fusedCode,
+    includeCode: true,
     expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
+    siblings: { ...(input.siblingLookup ? { lookup: input.siblingLookup } : {}) },
+    callers: { ...(input.callerLookup ? { lookup: input.callerLookup } : {}) },
   });
 
   const run = await runSpecKitAgent({
@@ -143,7 +162,7 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
   return {
     feature,
     artifact,
-    message: `Generated spec.md (v${artifact.version}) for ${feature.slug} in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.`,
+    message: `Generated spec.md (v${artifact.version}) for ${feature.slug} in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${truncationWarning(run.truncated ? ["spec.md"] : [])}`,
     tokensUsed: run.tokensUsed,
   };
 }

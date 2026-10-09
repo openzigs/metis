@@ -45,6 +45,13 @@ export function withAmbiguityDefaults(
 }
 
 export const MAX_ROUNDS = 3;
+
+/**
+ * Issue #937 — starts currently generating, keyed `analysisId:round`. Process
+ * local: it dedupes a double POST against one server; the persisted-round check
+ * in `runStart` covers any start that arrives after the first was written.
+ */
+const startsInFlight = new Map<string, Promise<ClarificationState>>();
 const ESCALATION_THRESHOLD = 0.6; // >60% unresolved → escalate to Sonnet
 
 // ── Prompts ────────────────────────────────────────────────────────────
@@ -181,8 +188,29 @@ export class ClarificationDialog {
     requirements: StructuredRequirements,
     signal?: AbortSignal,
   ): Promise<ClarificationState> {
+    const existing = await readDialogState(analysisId);
+    // Issue #937 — a remounted Questions tab POSTed a second start while the
+    // first was still generating, and that second round replaced the first
+    // one's questions (and billed question generation twice). A start that
+    // arrives while one for the same analysis + round is in flight joins it.
+    const key = `${analysisId}:${existing?.currentRound ?? 1}`;
+    const inFlight = startsInFlight.get(key);
+    if (inFlight) return inFlight;
+    const started = this.runStart(analysisId, requirements, existing, signal).finally(() => {
+      startsInFlight.delete(key);
+    });
+    startsInFlight.set(key, started);
+    return started;
+  }
+
+  private async runStart(
+    analysisId: string,
+    requirements: StructuredRequirements,
+    existing: ClarificationState | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<ClarificationState> {
     requirements = withAmbiguityDefaults(requirements);
-    let state = await readDialogState(analysisId);
+    let state = existing;
 
     if (!state) {
       state = {
@@ -199,6 +227,13 @@ export class ClarificationDialog {
     if (state.completed || state.currentRound > MAX_ROUNDS) {
       state.completed = true;
       await writeDialogState(analysisId, state);
+      return state;
+    }
+
+    // Issue #937 — the current round has already been generated and is still
+    // waiting for answers: return it as-is. Regenerating it would replace the
+    // questions the user is looking at (and may be answering) with new ids.
+    if (state.rounds.at(-1)?.round === state.currentRound) {
       return state;
     }
 

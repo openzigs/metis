@@ -36,9 +36,22 @@ Phases removed since run 2: {{e.g. Phase 4 bug scan (#799); Phase 17 test covera
 
 ### Fixes since the previous run, re-verified
 
-| Fix | PR | Verdict | Evidence |
-|---|---|---|---|
-| #… | #… | ✅ holds / ⚠️ partly / ❌ regressed | |
+From the run's `fixes.json` (`scripts/walkthrough/fixes-since.mjs`, scope posted on #706 before
+wave A), with each verdict as recorded in `run.json`. **Confirmed {{n}} of {{m}}**; carried
+forward from the previous run: {{n}}.
+
+| Fix | PR | Wave / phase | Verdict | Evidence (step id) |
+|---|---|---|---|---|
+| #… | #… | | ✅ confirmed / ⚠️ partial / ❌ regressed / – not-exercised | |
+
+### Journeys (wave F)
+
+| Journey | Completed in the UI? | Where it broke | Data lost between steps | Time / budget | Cost / budget |
+|---|---|---|---|---|---|
+| 1 Business analyst (Priya) | | | | / 45 min | / $1.50 |
+| 2 Developer (Dev) | | | | / 30 min | / $1.00 |
+
+Steps the UI could not do (each a finding): {{J1.n: missing control · …}}.
 
 ### Per-phase evidence
 
@@ -65,6 +78,7 @@ Phases removed since run 2: {{e.g. Phase 4 bug scan (#799); Phase 17 test covera
 | 19 Settings | | | | | | | | | |
 | 20 Admin | | | | | | | | | |
 | BA re-ask (API) | | | | | | – | | | |
+| F Journeys (UI only) | | | | | | | | | |
 
 Mark a removed phase `removed (#…)` rather than deleting its row, so the comparison stays aligned.
 
@@ -86,6 +100,7 @@ Lineage edges (reads + writes): {{…}}.
 - [ ] Spec Kit S1–S23 each have a verdict; every artifact and every `SPECKIT_COMMANDS` entry invoked
 - [ ] `/specify` and `/plan` grounded with K > 0
 - [ ] 8/8 BA questions; at least 6 correct with valid citations
+- [ ] Journeys 1 and 2 each scored on completed, no data lost, and within budget
 - [ ] 3/3 developer issues with impact, plan and sandbox draft; #4478 surfaces `MarkAllAsReadBeforeDate`
 - [ ] Nothing published, commented or reviewed on `miniflux/v2` (`gh search issues/prs --repo miniflux/v2 --author <user>` → `[]`)
 - [ ] Per-phase token/cost table posted; total within budget
