@@ -32,18 +32,25 @@
  * module persists is what tells the user that (see `ClarificationApplication`
  * and the UI note it feeds).
  */
+import { parseAcceptanceCriteria } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { getStructuredRequirements, persistAnalysisEnhancement } from "./analysis-service.js";
+import {
+  CRITERIA_FLAG_LINE,
+  clearCriteriaFlag,
+  hasCriteriaFlag,
+} from "./clarification-criteria-flag.js";
 import { readDialogState } from "./clarification-dialog-store.js";
 import type {
+  AnswerProvenance,
   ClarificationApplication,
   ClarificationState,
   StructuredRequirement,
   StructuredRequirements,
 } from "./types/requirements.js";
 
-export type { ClarificationApplication } from "./types/requirements.js";
+export type { AnswerProvenance, ClarificationApplication } from "./types/requirements.js";
 
 const log = createChildLogger("clarification-enrichment");
 
@@ -54,6 +61,24 @@ export interface AnsweredQuestion {
   requirementId: string;
   question: string;
   answer: string;
+  /** Issue #1000 — who wrote the answer (see {@link answerProvenance}). */
+  provenance: AnswerProvenance;
+}
+
+/** Whitespace-insensitive form used to compare an answer with a suggestion. */
+function normalised(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Issue #1000 — where an answer came from. The clarify form pre-fills a
+ * grounded question with METIS's suggested answer, so submitting it unchanged
+ * is METIS's answer accepted, not the requester's own. Deterministic: decided by
+ * comparing the submitted text with the suggestion the question carried.
+ */
+export function answerProvenance(answer: string, suggestion: string | undefined): AnswerProvenance {
+  if (!suggestion || normalised(suggestion).length === 0) return "typed";
+  return normalised(answer) === normalised(suggestion) ? "suggested" : "edited";
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────────
@@ -106,10 +131,29 @@ export function collectAnsweredQuestions(
         requirementId: q.requirementId ?? "",
         question: q.question,
         answer,
+        provenance: answerProvenance(answer, q.groundedAnswer),
       });
     }
   }
   return [...byQuestionId.values()];
+}
+
+/**
+ * Issue #1000 — whether a person has answered any clarifying question for the
+ * analysis. Synthesis asks before it calls the extracted requirements
+ * "clarified". A failed read answers `false`: the honest default, and the
+ * label is not worth failing synthesis over.
+ */
+export async function hasAnsweredClarification(analysisId: string): Promise<boolean> {
+  try {
+    return collectAnsweredQuestions(await readDialogState(analysisId)).length > 0;
+  } catch (err) {
+    log.warn("Could not read the clarification dialog; treating it as unanswered", {
+      analysisId,
+      error: (err as Error).message,
+    });
+    return false;
+  }
 }
 
 /**
@@ -261,15 +305,35 @@ export const CLARIFICATIONS_END = "<!-- metis:clarifications:end -->";
 
 export const CLARIFICATIONS_HEADING = "## Clarifications";
 
+/**
+ * Issue #1000 — the preamble no longer says every answer came from the
+ * requester: an unedited METIS suggestion was being attributed to them. Each
+ * answer now carries its own provenance tag instead.
+ */
 const CLARIFICATIONS_PREAMBLE =
-  "_Answered by the requester during METIS clarification and recorded verbatim._";
+  "_Answers recorded during METIS clarification, verbatim. Each says who wrote it._";
 
-/** Render the block for one requirement's answers (empty string for none). */
-export function renderClarificationBlock(answers: ReadonlyArray<AnsweredQuestion>): string {
+/** Issue #1000 — the tag after each answer, saying who wrote it. */
+export const PROVENANCE_TAGS: Record<AnswerProvenance, string> = {
+  typed: "_(typed by the requester)_",
+  edited: "_(METIS suggestion, edited by the requester)_",
+  suggested: "_(METIS suggestion, accepted unchanged)_",
+};
+
+/**
+ * Render the block for one requirement's answers (empty string for none).
+ * `flagCriteria` adds the #1000 line asking for the acceptance criteria to be
+ * checked against the answers.
+ */
+export function renderClarificationBlock(
+  answers: ReadonlyArray<AnsweredQuestion>,
+  flagCriteria = false,
+): string {
   const usable = answers
     .map((a) => ({
       question: sanitizeClarificationText(a.question),
       answer: sanitizeClarificationText(a.answer),
+      tag: PROVENANCE_TAGS[a.provenance],
     }))
     .filter((a) => a.answer.length > 0);
   if (usable.length === 0) return "";
@@ -279,11 +343,21 @@ export function renderClarificationBlock(answers: ReadonlyArray<AnsweredQuestion
     "",
     CLARIFICATIONS_PREAMBLE,
     "",
+    ...(flagCriteria ? [CRITERIA_FLAG_LINE, ""] : []),
     ...usable.map(
-      (a) => `- **Q:** ${a.question || "(question text unavailable)"}\n  **A:** ${a.answer}`,
+      (a) =>
+        `- **Q:** ${a.question || "(question text unavailable)"}\n  **A:** ${a.answer} ${a.tag}`,
     ),
     CLARIFICATIONS_END,
   ].join("\n");
+}
+
+/** The generated block in a body, or null when there is none. */
+function extractClarificationBlock(body: string): string | null {
+  const start = body.indexOf(CLARIFICATIONS_START);
+  if (start === -1) return null;
+  const end = body.indexOf(CLARIFICATIONS_END, start);
+  return body.slice(start, end === -1 ? body.length : end + CLARIFICATIONS_END.length);
 }
 
 /** Remove a previously generated block (and its surrounding blank lines). */
@@ -295,14 +369,30 @@ export function stripClarificationBlock(body: string): string {
   return (body.slice(0, start) + body.slice(after)).replace(/\s+$/, "");
 }
 
-/** Replace (or add, or remove) the clarifications block on a requirement body. */
+/**
+ * Replace (or add, or remove) the clarifications block on a requirement body.
+ *
+ * Issue #1000 — when the requirement has acceptance criteria, the block flags
+ * them for checking whenever the answers in it change. The flag survives a
+ * re-run with the same answers, and goes once someone edits the criteria
+ * (`clearCriteriaFlag`, called from the requirement version service) — a re-run
+ * with unchanged answers does not bring it back.
+ */
 export function applyClarificationBlock(
   body: string,
   answers: ReadonlyArray<AnsweredQuestion>,
+  opts: { hasAcceptanceCriteria?: boolean } = {},
 ): string {
-  const base = stripClarificationBlock(body ?? "");
-  const block = renderClarificationBlock(answers);
-  if (block.length === 0) return base;
+  const source = body ?? "";
+  const base = stripClarificationBlock(source);
+  const unflagged = renderClarificationBlock(answers);
+  if (unflagged.length === 0) return base;
+  const previous = extractClarificationBlock(source);
+  const answersChanged = previous === null || clearCriteriaFlag(previous) !== unflagged;
+  const flag =
+    opts.hasAcceptanceCriteria === true &&
+    (answersChanged || (previous !== null && hasCriteriaFlag(previous)));
+  const block = flag ? renderClarificationBlock(answers, true) : unflagged;
   return base.length > 0 ? `${base}\n\n${block}` : block;
 }
 
@@ -339,7 +429,7 @@ export async function applyClarificationsToRequirements(
     const structured: StructuredRequirements | null = await getStructuredRequirements(analysisId);
     const rows = await prisma.requirement.findMany({
       where: { analysisId, deletedAt: null },
-      select: { id: true, title: true, body: true },
+      select: { id: true, title: true, body: true, acceptanceCriteria: true },
     });
 
     const { byRequirementId, unattributed } = attributeAnswers({
@@ -353,7 +443,10 @@ export async function applyClarificationsToRequirements(
     for (const row of rows) {
       const answers = byRequirementId.get(row.id) ?? [];
       for (const a of answers) appliedTo.set(a.questionId, row.title);
-      const nextBody = applyClarificationBlock(row.body ?? "", answers);
+      // #1000 — the criteria are not regenerated from the answers, so flag them.
+      const nextBody = applyClarificationBlock(row.body ?? "", answers, {
+        hasAcceptanceCriteria: parseAcceptanceCriteria(row.acceptanceCriteria).length > 0,
+      });
       if (nextBody === (row.body ?? "")) continue;
       await prisma.requirement.update({ where: { id: row.id }, data: { body: nextBody } });
       requirementsUpdated++;
@@ -370,6 +463,7 @@ export async function applyClarificationsToRequirements(
         questionId: a.questionId,
         question: shortenQuestion(a.question),
         requirementTitle: appliedTo.get(a.questionId) ?? null,
+        provenance: a.provenance,
       })),
     };
     await persistAnalysisEnhancement(analysisId, { clarificationApplication: application });

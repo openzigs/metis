@@ -135,6 +135,15 @@ vi.mock("../src/lib/analysis/synthesis.js", () => ({
   runSynthesis: (...args: unknown[]) => runSynthesisMock(...args),
 }));
 
+// Issue #1000 — the clarification dialog synthesis reads to decide whether the
+// refined requirements are human-clarified. Unanswered by default.
+const dialogStateMock = vi.fn(async (): Promise<unknown> => undefined);
+vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
+  readDialogState: () => dialogStateMock(),
+  writeDialogState: vi.fn(),
+  deleteDialogState: vi.fn(),
+}));
+
 const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
 const approvalSvc = await import("../src/lib/analysis/approval-checkpoint.js");
 
@@ -790,5 +799,69 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     });
 
     expect(persisted.requirements).toHaveLength(1);
+  });
+
+  // Issue #1000 — the run summary said "16 human-clarified requirements" before
+  // anyone answered, because synthesis was told they were human-confirmed.
+  it("#1000 — tells synthesis the refined requirements are human-clarified only once answered", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    const refined = {
+      requirements: [
+        {
+          id: "r1",
+          title: "Retention",
+          description: "Keep logs.",
+          type: "functional" as const,
+          stakeholders: [],
+          priority: "should-have" as const,
+          ambiguities: [],
+          evidenceNeeds: [],
+          rawSource: "",
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    };
+    const answeredDialog = (answer: string) => ({
+      analysisId: "ana-1000",
+      currentRound: 2,
+      maxRounds: 3,
+      rounds: [
+        {
+          round: 1,
+          questions: [
+            {
+              id: "q",
+              requirementId: "r1",
+              ambiguityField: "f",
+              question: "?",
+              context: "",
+              answer,
+            },
+          ],
+          answers: [],
+        },
+      ],
+      resolvedAmbiguities: [],
+      escalatedToSonnet: false,
+      completed: false,
+    });
+    const { orch } = makeOrchestrator();
+    const run = async () => {
+      vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce(refined);
+      runSynthesisMock.mockClear();
+      await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+        analysisId: "ana-1000",
+        ...synthInput,
+      });
+      return runSynthesisMock.mock.calls[0]![1] as { refinedHumanAnswered?: boolean };
+    };
+
+    dialogStateMock.mockResolvedValueOnce(undefined);
+    expect((await run()).refinedHumanAnswered).toBe(false);
+    dialogStateMock.mockResolvedValueOnce(answeredDialog("  "));
+    expect((await run()).refinedHumanAnswered).toBe(false);
+    dialogStateMock.mockResolvedValueOnce(answeredDialog("Seven years."));
+    expect((await run()).refinedHumanAnswered).toBe(true);
   });
 });
