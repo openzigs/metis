@@ -153,7 +153,9 @@ async function restorePriorReviewStatuses(tx: ReviewTx, items: ReviewItemRow[]):
     if (item.requirementId === null) continue;
     const prior = item.priorReviewStatus ?? null;
     if (prior === "approved" || prior === "draft") continue;
-    byPrior.set(prior, [...(byPrior.get(prior) ?? []), item.requirementId]);
+    const ids = byPrior.get(prior);
+    if (ids) ids.push(item.requirementId);
+    else byPrior.set(prior, [item.requirementId]);
   }
   for (const [prior, ids] of byPrior) {
     await tx.requirement.updateMany({

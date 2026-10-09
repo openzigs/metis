@@ -2,8 +2,8 @@
 -- them to draft, and a withdraw (or close) never gave the approval back. The
 -- requirement's reviewStatus is now captured on the review item at submit, so a
 -- withdraw or a pre-verdict close can restore it. Nullable, no default, no
--- backfill: a review submitted before this migration has no capture and a
--- withdraw leaves its requirements as they are.
+-- backfill: a review submitted before this migration has no capture, so a
+-- withdraw writes null to every requirement still at draft (as the code does).
 --
 -- Rollback (documentation):
 --   ALTER TABLE "review_request_items" DROP COLUMN "priorReviewStatus";
