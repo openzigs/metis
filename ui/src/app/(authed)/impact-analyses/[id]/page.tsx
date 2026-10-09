@@ -30,6 +30,10 @@ import { ProjectImpactSectionWithUsage } from "@/components/impact/project-impac
 import { SharedTableImpactSection } from "@/components/impact/shared-table-impact-section";
 import { RequirementImpactMatrix } from "@/components/impact/requirement-impact-matrix";
 import { ImpactDriftSection } from "@/components/impact/impact-drift-section";
+import {
+  ImpactSymbolRepoContext,
+  useImpactProjectRepos,
+} from "@/components/impact/impact-symbol-repo-context";
 import { PageHeader } from "@/components/ui/page-header";
 
 const STATUS_VARIANT: Record<string, "destructive" | "default" | "secondary" | "outline"> = {
@@ -133,6 +137,9 @@ function ImpactAnalysisDetailView({
     data.id,
     data.status === "completed" && Boolean(data.rerunOfId),
   );
+
+  // #992 — each project's GitHub repo, so impacted symbols link to file:line.
+  const symbolRepos = useImpactProjectRepos(data.projectIds);
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="impact-detail-root">
@@ -287,34 +294,36 @@ function ImpactAnalysisDetailView({
           No code impact detected for the supplied requirement change.
         </Card>
       ) : (
-        <div className="space-y-8" data-testid="impact-detail-projects">
-          {/* #964 — ranked requirement×project impact matrix. Rows are the
+        <ImpactSymbolRepoContext.Provider value={symbolRepos}>
+          <div className="space-y-8" data-testid="impact-detail-projects">
+            {/* #964 — ranked requirement×project impact matrix. Rows are the
               requirements extracted from the source document, ranked by aggregate
               impact; each cell drills down to the existing per-item detail. A
               single-project run degrades to a ranked list. */}
-          <RequirementImpactMatrix
-            items={data.items}
-            projects={data.projectIds.map((pid) => ({ id: pid, name: projectName(pid) }))}
-          />
-          {/* #956 — run-level shared-table rollup (multi-project runs only). */}
-          <SharedTableImpactSection
-            sharedTableImpacts={data.sharedTableImpacts ?? []}
-            projectName={(pid) => projectName(pid)}
-          />
-          {[...grouped.entries()].map(([projectId, items]) => (
-            <ProjectImpactSectionWithUsage
-              key={projectId}
-              projectId={projectId}
-              projectName={projectName(projectId)}
-              items={items}
-              currentUserId={user?.id ?? null}
-              onMarkFeedback={(itemId, input) => markFeedback.mutate({ itemId, ...input })}
-              onDeleteFeedback={(itemId, feedbackId) =>
-                deleteFeedback.mutate({ itemId, feedbackId })
-              }
+            <RequirementImpactMatrix
+              items={data.items}
+              projects={data.projectIds.map((pid) => ({ id: pid, name: projectName(pid) }))}
             />
-          ))}
-        </div>
+            {/* #956 — run-level shared-table rollup (multi-project runs only). */}
+            <SharedTableImpactSection
+              sharedTableImpacts={data.sharedTableImpacts ?? []}
+              projectName={(pid) => projectName(pid)}
+            />
+            {[...grouped.entries()].map(([projectId, items]) => (
+              <ProjectImpactSectionWithUsage
+                key={projectId}
+                projectId={projectId}
+                projectName={projectName(projectId)}
+                items={items}
+                currentUserId={user?.id ?? null}
+                onMarkFeedback={(itemId, input) => markFeedback.mutate({ itemId, ...input })}
+                onDeleteFeedback={(itemId, feedbackId) =>
+                  deleteFeedback.mutate({ itemId, feedbackId })
+                }
+              />
+            ))}
+          </div>
+        </ImpactSymbolRepoContext.Provider>
       )}
     </div>
   );
