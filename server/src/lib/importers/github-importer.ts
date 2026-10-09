@@ -8,7 +8,7 @@
  */
 import type { GithubFilter } from "@metis/shared";
 import { fetchWithBackoff, parseLinkHeader, type BackoffOptions } from "./http.js";
-import { defaultMap } from "./base-importer.js";
+import { defaultMap, parseTitleTypeTag, typeFromLabels } from "./base-importer.js";
 import type {
   AssertHostAllowed,
   ExternalIssue,
@@ -197,7 +197,16 @@ export class GithubImporter implements Importer<GithubFilter> {
     };
   }
 
+  /**
+   * Issue #979 — GitHub has no issue type field, so the type comes from the
+   * labels or, when no label names one, from an issue-template title tag such as
+   * `[Bug]:`. The tag is stripped from the title either way it is recognised.
+   */
   map(issue: ExternalIssue): MappedRequirement {
-    return defaultMap(issue);
+    const mapped = defaultMap(issue);
+    const tagged = parseTitleTypeTag(issue.title);
+    mapped.title = tagged.title;
+    mapped.type = typeFromLabels(issue.labels) ?? tagged.type ?? "feature";
+    return mapped;
   }
 }
