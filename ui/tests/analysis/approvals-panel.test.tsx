@@ -12,6 +12,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 const { analysisApi } = vi.hoisted(() => ({
   analysisApi: {
     listApprovals: vi.fn(),
+    getClarification: vi.fn(),
     reviewApproval: vi.fn(),
     reopenApproval: vi.fn(),
     promoteApprovedRequirements: vi.fn(),
@@ -68,6 +69,7 @@ function renderPanel(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  analysisApi.getClarification.mockResolvedValue({ state: null });
 });
 
 describe("ApprovalsPanel", () => {
@@ -171,6 +173,98 @@ describe("ApprovalsPanel", () => {
 
     expect(await screen.findByText("Audit log retention period")).toBeInTheDocument();
     expect(screen.getByText("How long must audit logs be retained?")).toBeInTheDocument();
+    expect(screen.getByText("Open questions (1)")).toBeInTheDocument();
+    expect(screen.queryByTestId("approval-answered-questions")).not.toBeInTheDocument();
+    expect(analysisApi.getClarification).toHaveBeenCalledWith("proj-1", "ana-1");
+  });
+
+  // Issue #1000 — answered questions used to stay listed as "Open questions".
+  it("#1000 — closes the questions the clarification dialog answered or resolved", async () => {
+    const itemId = "req-1000";
+    const amb = (field: string) => ({
+      field,
+      description: `${field} unclear`,
+      suggestedQuestion: `What ${field}?`,
+    });
+    analysisApi.getClarification.mockResolvedValue({
+      state: {
+        analysisId: "ana-1",
+        currentRound: 2,
+        maxRounds: 3,
+        rounds: [],
+        // `retention` answered by the user; `format` resolved by the model; an
+        // answered key for ANOTHER requirement must not close this one's field.
+        answeredAmbiguities: [`${itemId}:retention`, "req-other:owner"],
+        resolvedAmbiguities: [`${itemId}:format`],
+        escalatedToSonnet: false,
+        completed: false,
+      },
+    });
+    renderPanel(
+      [approval({ type: "requirement", itemId })],
+      { allowed: false, pendingCount: 1, rejectedCount: 0 },
+      {
+        structuredRequirements: {
+          requirements: [
+            {
+              id: itemId,
+              title: "Retention",
+              description: "",
+              ambiguities: [amb("retention"), amb("format"), amb("owner")],
+              evidenceNeeds: [],
+            },
+          ],
+          totalAmbiguities: 3,
+          totalEvidenceNeeds: 0,
+        },
+      },
+    );
+
+    expect(await screen.findByText("Open questions (1)")).toBeInTheDocument();
+    expect(screen.getByText("What owner?")).toBeInTheDocument();
+    expect(screen.queryByText("What retention?")).not.toBeInTheDocument();
+    expect(screen.queryByText("What format?")).not.toBeInTheDocument();
+    expect(screen.getByTestId("approval-answered-questions")).toHaveTextContent(
+      "2 questions answered in clarification",
+    );
+  });
+
+  it("#1000 — drops the open list entirely once every question is answered", async () => {
+    analysisApi.getClarification.mockResolvedValue({
+      state: {
+        analysisId: "ana-1",
+        currentRound: 2,
+        maxRounds: 3,
+        rounds: [],
+        // A dialog persisted before #1117 has no answeredAmbiguities at all.
+        resolvedAmbiguities: ["req-2:retention"],
+        escalatedToSonnet: false,
+        completed: true,
+      },
+    });
+    renderPanel(
+      [approval({ type: "requirement", itemId: "req-2" })],
+      { allowed: false, pendingCount: 1, rejectedCount: 0 },
+      {
+        structuredRequirements: {
+          requirements: [
+            {
+              id: "req-2",
+              title: "Retention two",
+              description: "",
+              ambiguities: [{ field: "retention", description: "d", suggestedQuestion: "Q?" }],
+              evidenceNeeds: [],
+            },
+          ],
+          totalAmbiguities: 1,
+          totalEvidenceNeeds: 0,
+        },
+      },
+    );
+    expect(await screen.findByTestId("approval-answered-questions")).toHaveTextContent(
+      "1 question answered in clarification",
+    );
+    expect(screen.queryByText(/Open questions/)).not.toBeInTheDocument();
   });
 
   // Issue #403 — a structured requirement stored without an `ambiguities` array

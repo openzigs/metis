@@ -171,6 +171,9 @@ describe("generative-e2e clarify fixtures", () => {
       refinedRequirements: [
         { title: AMBIGUOUS_REQUIREMENT.title, description: REFINED_DESCRIPTION },
       ],
+      // #1000 — the e2e loop has answered by the time it regenerates, so the
+      // orchestrator passes this; without it the key is the EXTRACTED prompt's.
+      refinedHumanAnswered: true,
     });
 
     expect(captured, "runSynthesis never called the provider").toBeDefined();

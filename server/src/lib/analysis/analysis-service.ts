@@ -1197,6 +1197,49 @@ export async function readCrossDocFindings(analysisId: string): Promise<CrossDoc
   };
 }
 
+/**
+ * A requirement row's review status as every reader sees it: the typed column
+ * (#M4), else the legacy `review:*` label so rows written before the migration
+ * still parse, else `draft`. An unknown value reads as `draft`.
+ */
+export function resolveRequirementReviewStatus(
+  column: string | null | undefined,
+  labels: readonly string[],
+): RequirementReviewStatus {
+  const reviewLabel = labels.find((l) => l.startsWith("review:"));
+  const fromLabel = reviewLabel ? reviewLabel.slice("review:".length) : null;
+  const candidate = (column ?? fromLabel ?? "draft") as RequirementReviewStatus;
+  return REQUIREMENT_REVIEW_STATUSES.includes(candidate) ? candidate : "draft";
+}
+
+/** How many of a run's requirements sit in each review status (#999). */
+export type RequirementCounts = Record<RequirementReviewStatus, number>;
+
+/**
+ * #999 — per-run review-status counts for a project's analyses, in one query.
+ * Requirements belong to the run that produced them, so the Requirements hub
+ * needs each run's tally to pick (and let the user pick) a run that actually
+ * has requirements, rather than trusting the latest completed run alone.
+ */
+async function requirementCountsByAnalysis(
+  projectId: string,
+  analysisIds: readonly string[],
+): Promise<Map<string, RequirementCounts>> {
+  const counts = new Map<string, RequirementCounts>();
+  for (const id of analysisIds) counts.set(id, { draft: 0, approved: 0, rejected: 0, deferred: 0 });
+  if (analysisIds.length === 0) return counts;
+  const rows = await prisma.requirement.findMany({
+    where: { projectId, analysisId: { in: [...analysisIds] }, deletedAt: null },
+    select: { analysisId: true, reviewStatus: true, labels: true },
+  });
+  for (const r of rows) {
+    const tally = counts.get(r.analysisId);
+    if (!tally) continue;
+    tally[resolveRequirementReviewStatus(r.reviewStatus, parseRequirementLabels(r.labels))] += 1;
+  }
+  return counts;
+}
+
 export async function listAnalysesForProject(projectId: string) {
   const rows = await prisma.analysis.findMany({
     where: { projectId, deletedAt: null },
@@ -1217,7 +1260,7 @@ export async function listAnalysesForProject(projectId: string) {
   // Exclude background rows (code-graph ingest, opt-in doc-gen domain research,
   // etc.) that share this table but are not LLM analysis runs and would appear
   // as "0 tok / No findings". See BACKGROUND_ANALYSIS_SOURCES.
-  return rows.filter((row) => {
+  const runs = rows.filter((row) => {
     if (!row.metadata) return true;
     try {
       const meta = JSON.parse(row.metadata) as { source?: string };
@@ -1226,6 +1269,11 @@ export async function listAnalysesForProject(projectId: string) {
       return true;
     }
   });
+  const counts = await requirementCountsByAnalysis(
+    projectId,
+    runs.map((r) => r.id),
+  );
+  return runs.map((r) => ({ ...r, requirementCounts: counts.get(r.id) as RequirementCounts }));
 }
 
 export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot | null> {
@@ -1694,17 +1742,7 @@ function toSnapshot(
   }
   const requirements = row.requirements.map((r) => {
     const labels = parseRequirementLabels(r.labels);
-    const reviewLabel = labels.find((l) => l.startsWith("review:"));
-    // Prefer the typed column (#M4); fall back to the legacy `review:*`
-    // label so rows written before the migration still parse.
-    const fromColumn = r.reviewStatus as RequirementReviewStatus | null | undefined;
-    const fromLabel = reviewLabel
-      ? (reviewLabel.slice("review:".length) as RequirementReviewStatus)
-      : null;
-    const candidate = fromColumn ?? fromLabel ?? "draft";
-    const reviewStatus: RequirementReviewStatus = REQUIREMENT_REVIEW_STATUSES.includes(candidate)
-      ? candidate
-      : "draft";
+    const reviewStatus = resolveRequirementReviewStatus(r.reviewStatus, labels);
     const evidenceFindingIds = labels
       .filter((l) => l.startsWith("finding:"))
       .map((l) => l.slice("finding:".length));

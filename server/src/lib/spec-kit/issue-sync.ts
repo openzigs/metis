@@ -16,6 +16,8 @@
 import { prisma } from "../prisma.js";
 import { writeFeatureArtifact, getFeatureArtifact } from "./feature-artifacts.js";
 import { audit } from "../audit/audit-service.js";
+import { splitTaskTitle } from "./tasks-parser.js";
+import { issueTitle } from "./commands/taskstoissues.js";
 
 export type IssuesEventAction =
   | "closed"
@@ -179,20 +181,28 @@ function renameTaskInLine(line: string, taskId: string, newTitle: string): strin
     }
     return line;
   }
-  // Bullet form: replace the title segment between the task id and the next
-  // metadata marker `(` `[` `files:` `depends-on:`. Issue #438 — the
-  // replacement is passed via the FUNCTION form of `String.replace` so a
-  // `$1` / `$&` / `$$` sequence inside `cleanTitle` is treated as literal
-  // text instead of a backreference.
+  // Bullet form (#993): split the line with the same parser the export used,
+  // so the title (which may hold parentheses) and the trailing metadata are
+  // told apart exactly as they were exported. Only the title is replaced.
   // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- taskId is regex-escaped (escapeRegExp); surrounding pattern is a static literal, so no ReDoS/injection.
-  const bulletRe = new RegExp(
-    `(\\b${safeTaskId}\\b\\s*[\u2014-]?\\s*)([^()\\[]+?)(?=\\s*[\\(\\[]|\\s+files:|\\s+depends-on:|$)`,
-    "i",
-  );
-  if (bulletRe.test(line)) {
-    return line.replace(bulletRe, (_match, prefix: string) => `${prefix}${cleanTitle} `);
-  }
-  return line;
+  const idRe = new RegExp(`\\b${safeTaskId}\\b`, "i");
+  const idMatch = idRe.exec(line);
+  if (!idMatch) return line;
+  const head = line.slice(0, idMatch.index + idMatch[0].length);
+  const after = line.slice(idMatch.index + idMatch[0].length);
+  const sep = /^\s*(?:[\u2014-]\s*)?/.exec(after)![0];
+  const { title: current, tail } = splitTaskTitle(after);
+  // The webhook sends the issue title (`[T03] ...`, possibly truncated with
+  // `…`); an unchanged export title must not rewrite the line.
+  if (newTitle.trim() === issueTitle({ id: taskId, title: current })) return line;
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- taskId is regex-escaped (escapeRegExp).
+  const prefixRe = new RegExp(`^\\s*\\[${safeTaskId}\\]\\s*`, "i");
+  const stripped = sanitiseTitleForTasksMd(newTitle.replace(prefixRe, ""));
+  if (stripped.length === 0 || stripped === current) return line;
+  // An issue exported before #993 carries a title cut at the first `(`, so it
+  // is a prefix of the task's current title. Never let it shorten tasks.md.
+  if (current.startsWith(stripped)) return line;
+  return `${head}${sep || " "}${stripped}${tail ? ` ${tail}` : ""}`;
 }
 
 export async function syncIssueEvent(
@@ -223,11 +233,15 @@ export async function syncIssueEvent(
   if (!tasksMd) {
     return { handled: false, reason: "TASKS_MD_MISSING" };
   }
+  // #993 — `issues.edited` also fires for body, label and milestone edits.
+  // Only a delivery whose `changes.title.from` is present renamed the issue;
+  // anything else must not rewrite the task line from the current title.
+  const titleChanged = typeof input.changes?.title?.from === "string";
   const result = applyIssueEventToTasksMarkdown(
     tasksMd.content,
     exp.taskId,
     input.action,
-    input.newTitle,
+    input.action === "edited" && !titleChanged ? undefined : input.newTitle,
     input.issueNumber,
   );
   if (result.change === "noop") {

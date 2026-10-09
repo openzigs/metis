@@ -543,6 +543,14 @@ export interface SynthesisPromptInput {
    */
   refinedRequirements?: Array<{ title: string; description: string }>;
   /**
+   * Issue #1000 — whether a person has answered any clarifying question for
+   * this run. Synthesis normally runs before anyone has, and the section used to
+   * call the extracted requirements "human-confirmed" regardless, so the run
+   * summary claimed "16 human-clarified requirements" before a single answer.
+   * Only `true` labels the section as clarified; otherwise it is EXTRACTED.
+   */
+  refinedHumanAnswered?: boolean;
+  /**
    * #824 (Epic #820 Phase 1) — the deterministic AFFECTED SCHEMA block (#823).
    * When present, synthesis reconciles the code and schema findings for each
    * requirement into one requirement (feeds 1f/#826 verdict mapping).
@@ -596,6 +604,14 @@ const SYNTHESIS_CONTINUATION_RULE =
 const SYNTHESIS_PANEL_RULE =
   "A finding prefixed with [LOW-CONFIDENCE] was read by a multi-lens verification panel that did NOT agree it is supported by the evidence the run retrieved (the `panel=` suffix names the dissenting lenses). Treat it as WEAKER evidence than an unmarked finding: it must not be the sole justification for a high/critical requirement, prefer better-supported findings when they conflict, and state the uncertainty in the requirement body. A finding prefixed with [UNJUDGED] is DIFFERENT: the panel produced no usable verdict, so nothing is known either way — treat it exactly as you would an unmarked finding, and never read [UNJUDGED] as doubt. A finding prefixed with [ABSENCE-UNEXAMINED] claims something is MISSING, and nothing the run retrieved covers where that thing would live — so its absence was never actually checked. Still surface the requirement, but never state the gap as established fact: word it as unconfirmed and say the evidence to confirm it was not retrieved. The `absence=` suffix names the verdict. In every case you must still surface the requirement: never drop a finding for carrying any of these markers.";
 
+/**
+ * Issue #1000 — rule 9 when no person has answered a clarifying question yet:
+ * the requirements are extracted from the sources, and the output must not
+ * claim otherwise.
+ */
+export const SYNTHESIS_EXTRACTED_RULE =
+  "The EXTRACTED REQUIREMENTS section lists requirements METIS extracted from the project's sources. No person has answered clarifying questions about them yet. Use them alongside the findings and ensure each is represented in your output, but never describe them, or anything derived from them, as human-clarified, human-confirmed, answered or reviewed — in the summary or anywhere else.";
+
 export function buildSynthesisPrompt(input: SynthesisPromptInput): {
   systemMessage: string;
   userMessage: string;
@@ -610,6 +626,10 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     refined.length > 0
       ? escapeContext(refined.map((r, i) => `[R${i}] ${r.title}: ${r.description}`).join("\n"))
       : "";
+  // #1000 — "clarified" only once a person has answered a question.
+  const refinedLabel = input.refinedHumanAnswered
+    ? "CLARIFIED REQUIREMENTS"
+    : "EXTRACTED REQUIREMENTS";
   // #824 — the deterministic AFFECTED SCHEMA block, escaped as untrusted data.
   // Empty ⇒ the reconciliation rule + section are omitted (byte-identical lead).
   const safeSchema = input.affectedSchema ? escapeContext(input.affectedSchema) : "";
@@ -636,7 +656,9 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     "7. Populate `acceptanceCriteria` with concrete, testable statements derived from THIS requirement's own evidence — name the artifacts (table, column, endpoint, file) the check applies to, and state the observable pass condition. If the evidence does not support any specific criterion, return an EMPTY array: never emit generic filler such as 'the requirement is satisfied' or 'the change ships'.",
     "8. Output JSON only.",
     safeRefined
-      ? "9. The CLARIFIED REQUIREMENTS section contains human-confirmed answers to clarifying questions. Treat it as AUTHORITATIVE: prefer its wording and resolved details over conflicting findings, and ensure every clarified requirement is represented in your output."
+      ? input.refinedHumanAnswered
+        ? "9. The CLARIFIED REQUIREMENTS section contains human-confirmed answers to clarifying questions. Treat it as AUTHORITATIVE: prefer its wording and resolved details over conflicting findings, and ensure every clarified requirement is represented in your output."
+        : `9. ${SYNTHESIS_EXTRACTED_RULE}`
       : "",
     // #824 — reconcile code + schema findings per requirement when a block is present.
     safeSchema ? `10. ${SYNTHESIS_SCHEMA_RULE}` : "",
@@ -671,7 +693,7 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     `${FENCE} END PROJECT ${FENCE}`,
     "",
     safeRefined
-      ? `${FENCE} BEGIN CLARIFIED REQUIREMENTS ${FENCE}\n${safeRefined}\n${FENCE} END CLARIFIED REQUIREMENTS ${FENCE}\n`
+      ? `${FENCE} BEGIN ${refinedLabel} ${FENCE}\n${safeRefined}\n${FENCE} END ${refinedLabel} ${FENCE}\n`
       : "",
     safeAlready
       ? `${FENCE} BEGIN ALREADY SYNTHESISED REQUIREMENTS ${FENCE}\n${safeAlready}\n${FENCE} END ALREADY SYNTHESISED REQUIREMENTS ${FENCE}\n`

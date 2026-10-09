@@ -59,6 +59,8 @@ export interface SpecKitRunOptions {
   expectedPlan?: { tasksVersion: number; digest: string };
   /** `speckit.taskstoissues` (#962): "Clear stuck export" instead of an export. */
   clearStuckClaims?: true;
+  /** `speckit.taskstoissues` (#993): export only these task ids; omitted ⇒ every task. */
+  taskIds?: string[];
 }
 
 /**
@@ -93,6 +95,8 @@ export interface SpecKitCommandResult {
      */
     state?: "new" | "exported" | "in_progress" | "reconcile" | "adopted";
   }>;
+  /** `speckit.taskstoissues` (#993): every task in tasks.md, for choosing a subset. */
+  available?: Array<{ taskId: string; title: string }>;
   /** "Clear stuck export" (#962): claims deleted, issues recorded, claims still live. */
   cleared?: string[];
   adopted?: Array<{ taskId: string; issueNumber: number; url: string }>;

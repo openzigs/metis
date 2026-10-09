@@ -41,6 +41,8 @@ const calls = {
   grounding: 0,
   truncated: false,
   empty: false,
+  /** #995 — write sections long enough for the section cap to shorten. */
+  long: false,
   phase1Requests: [] as { prompt: string; maxTokens?: number }[],
 };
 // Partial double: implements only the methods the synthesizer calls (no embed/models/ping,
@@ -65,7 +67,16 @@ const provider = {
     if (prompt.includes("section group now")) {
       const label = /Section group: \*\*(.+?)\*\*/.exec(prompt)![1];
       calls.sections.push(label);
-      yield { type: "delta", content: calls.empty ? "" : `## ${label}\n\nSource facts.` };
+      const topics = calls.long
+        ? Array.from(
+            { length: 30 },
+            (_, i) => `\n\n### Topic ${i}\n\n${"Source facts. ".repeat(30)}`,
+          ).join("")
+        : "";
+      yield {
+        type: "delta",
+        content: calls.empty ? "" : `## ${label}\n\nSource facts.${topics}`,
+      };
     } else {
       calls.phase1++;
       calls.phase1Requests.push({ prompt, maxTokens: options?.maxTokens });
@@ -167,7 +178,7 @@ beforeEach(() => {
   });
   calls.sections = [];
   calls.phase1 = calls.grounding = 0;
-  calls.truncated = calls.empty = false;
+  calls.truncated = calls.empty = calls.long = false;
   calls.phase1Requests = [];
   vi.stubEnv("DOCS_GEN_JUDGE_ESCALATION", "0");
   vi.stubEnv("DOCS_GEN_HYBRID_ROUTING", "0");
@@ -525,6 +536,33 @@ async function withPhase1Fixture(
     await rm(root, { recursive: true, force: true });
   }
 }
+
+// #995 — the topics the section cap left out reach the stored manifest, and a
+// reused section keeps listing them.
+it("records what the section cap left out in the manifest, through reuse", async () => {
+  await withPhase1Fixture(async () => {
+    calls.long = true;
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "5000");
+    const cold = await synthesizeHolisticDocument("p", "architecture", "Architecture", {
+      grounding: context("Source facts."),
+    });
+    const manifest = parseGeneratedDocVersionManifest(cold.provenanceManifest);
+    expect(manifest.sections).toHaveLength(groups.length);
+    for (const section of manifest.sections) {
+      expect(section.omittedTopics).toContain("Topic 29");
+      expect(section.omittedTopics).not.toContain("Topic 0");
+    }
+    calls.sections = [];
+    const warm = await synthesizeHolisticDocument("p", "architecture", "Architecture", {
+      grounding: context("Source facts."),
+      previousManifest: manifest,
+    });
+    expect(calls.sections).toEqual([]);
+    expect(parseGeneratedDocVersionManifest(warm.provenanceManifest).sections).toEqual(
+      manifest.sections,
+    );
+  });
+});
 
 it("production entry point persists records and reuses them without rebuilding phase-one cached facts", async () => {
   await withPhase1Fixture(async () => {

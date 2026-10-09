@@ -13,6 +13,7 @@
  * unit-tested (round-trip diff, reconstruction) without a database.
  */
 import type { PrismaClient } from "@prisma/client";
+import { clearCriteriaFlag, hasCriteriaFlag } from "../analysis/clarification-criteria-flag.js";
 import {
   mergeHiddenRequirementLabels,
   parseRequirementLabels,
@@ -371,6 +372,15 @@ async function updateOnce(
           parseRequirementLabels(typeof existing.labels === "string" ? existing.labels : null),
         ),
       );
+    }
+    // #1000 — editing the criteria answers the "check the acceptance criteria"
+    // flag clarification answers put in the body, so the flag goes with it.
+    if (
+      patch.acceptanceCriteria !== undefined &&
+      patch.acceptanceCriteria !== before.acceptanceCriteria
+    ) {
+      const body = typeof patch.body === "string" ? patch.body : before.body;
+      if (typeof body === "string" && hasCriteriaFlag(body)) patch.body = clearCriteriaFlag(body);
     }
     const after: Partial<RequirementSnapshot> = { ...before, ...patch };
     const changedFields = computeChangedFields(before, after);

@@ -2,6 +2,7 @@
  * Epic #770 / Issue #771 — Requirement version-history service tests.
  */
 import { describe, expect, it, vi } from "vitest";
+import { CRITERIA_FLAG_LINE } from "../analysis/clarification-criteria-flag.js";
 import {
   TRACKED_FIELDS,
   pickTracked,
@@ -228,6 +229,57 @@ describe("updateRequirementWithHistory", () => {
     expect(createArg.data.reason).toBe("fix typo");
     expect(JSON.parse(createArg.data.changedFields as string)).toEqual({
       title: { from: "Old", to: "New" },
+    });
+  });
+
+  describe("#1000 — editing the criteria clears the clarification criteria flag", () => {
+    const FLAGGED = `Body.\n\n_Preamble._\n\n${CRITERIA_FLAG_LINE}\n\n- **Q:** q\n  **A:** a`;
+    const row = (over: Record<string, unknown> = {}) => ({
+      id: "r1",
+      version: 1,
+      title: "T",
+      body: FLAGGED,
+      priority: "low",
+      type: "feature",
+      labels: "[]",
+      storyPoints: null,
+      reviewStatus: null,
+      acceptanceCriteria: JSON.stringify(["old"]),
+      ...over,
+    });
+    const run = async (patch: Record<string, unknown>, current = row()) => {
+      const { client, requirement } = makeClient();
+      requirement.findUnique.mockResolvedValueOnce(current);
+      requirement.findUnique.mockResolvedValueOnce({ id: "r1", version: 2, updatedAt: new Date() });
+      await updateRequirementWithHistory(client, { requirementId: "r1", patch });
+      return requirement.updateMany.mock.calls[0]?.[0] as
+        { data: Record<string, unknown> } | undefined;
+    };
+
+    it("removes the flag from the stored body when the criteria change", async () => {
+      const call = await run({ acceptanceCriteria: JSON.stringify(["new"]) });
+      expect(call?.data.body).toBe("Body.\n\n_Preamble._\n\n- **Q:** q\n  **A:** a");
+    });
+
+    it("removes it from a body sent in the same edit", async () => {
+      const call = await run({
+        acceptanceCriteria: JSON.stringify(["new"]),
+        body: `${FLAGGED}\nmore`,
+      });
+      expect(call?.data.body).toBe("Body.\n\n_Preamble._\n\n- **Q:** q\n  **A:** a\nmore");
+    });
+
+    it("keeps it when the criteria are unchanged or not edited", async () => {
+      expect(await run({ acceptanceCriteria: JSON.stringify(["old"]), title: "T2" })).toEqual({
+        where: { id: "r1", version: 1, deletedAt: null },
+        data: { acceptanceCriteria: JSON.stringify(["old"]), title: "T2", version: 2 },
+      });
+      expect((await run({ title: "T2" }))?.data.body).toBeUndefined();
+    });
+
+    it("writes no body when there is no flag to clear", async () => {
+      const call = await run({ acceptanceCriteria: "[]" }, row({ body: "Plain." }));
+      expect(call?.data).toEqual({ acceptanceCriteria: "[]", version: 2 });
     });
   });
 

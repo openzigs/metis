@@ -58,6 +58,13 @@ import { MessageSquare } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { VaultPicker } from "@/components/connectors/vault-picker";
 import { vaultRefHint, VAULT_REF_EXAMPLE } from "@/lib/vault-ref";
+import {
+  createdIssueLinks,
+  sameTaskSelection,
+  toggleTaskSelection,
+  type CreatedIssueLink,
+} from "@/lib/spec-kit-export";
+import { IssueLinks } from "@/components/spec-kit/issue-links";
 
 const FAILED = "The Spec Kit operation failed. Please try again.";
 /** Shown on a write control the viewer cannot use (#789 — the server gates it). */
@@ -74,6 +81,8 @@ const CLAIM_TEXT: Record<"in_progress" | "reconcile", string> = {
 };
 /** #953 — Publish needs the dry run to have resolved a vault secret. */
 const CREDENTIAL_NEEDED = "Pick a GitHub token from the vault, then run the dry run again.";
+/** #993 — Publish creates what the dry run listed, so a new selection needs a new dry run. */
+const SELECTION_CHANGED = "The task selection changed since the dry run — run the dry run again.";
 const CREDENTIAL_TEXT: Record<"resolved" | "missing" | "unresolved", string> = {
   resolved: "The vault secret resolved — Publish will use it.",
   missing: "No GitHub token picked — choose a vault secret and run the dry run again.",
@@ -143,7 +152,19 @@ export default function SpecKitPage() {
     credentialCheck: "resolved" | "missing" | "unresolved";
     /** #962 — tasks an earlier export claimed: not new, so listed apart. */
     claims: Array<{ title: string; state: "in_progress" | "reconcile" }>;
+    /** #993 — every task in tasks.md, and the subset this dry run covered (null ⇒ all). */
+    available: Array<{ taskId: string; title: string }>;
+    taskIds: string[] | null;
   } | null>(null);
+  // #993 — the tasks the next dry run covers, per feature and tasks.md version;
+  // null ⇒ every task.
+  const [exportSelection, setExportSelection] = useState<{
+    feature: string;
+    tasksVersion: number | null;
+    taskIds: string[] | null;
+  } | null>(null);
+  // #993 — the issues the last live export created, linked in the result card.
+  const [lastIssueLinks, setLastIssueLinks] = useState<CreatedIssueLink[]>([]);
   // #953 — the `${vault:label}` the export publishes with (VaultPicker only).
   const [exportSecretRef, setExportSecretRef] = useState("");
   // #789 — what `/speckit.implement` handed off, for "Start analysis".
@@ -271,7 +292,20 @@ export default function SpecKitPage() {
     onSuccess: (result, input) => {
       setLastErrorMessage(null);
       setLastResultMessage(result.message);
-      if (result.message) toast.success(result.message);
+      // #993 — a live export links the issues it created, in the toast and the
+      // result card; a dry run's placeholders are never links.
+      const issueLinks =
+        input.command === "speckit.taskstoissues" && input.options.dryRun !== true
+          ? createdIssueLinks(result.created)
+          : [];
+      setLastIssueLinks(issueLinks);
+      if (result.message) {
+        if (issueLinks.length > 0) {
+          toast.success(result.message, {
+            description: <IssueLinks links={issueLinks} testId="spec-kit-toast-issue-links" />,
+          });
+        } else toast.success(result.message);
+      }
       setCommandBuffer("");
       const featureSlug = input.options.featureSlug ?? null;
       if (result.feature) {
@@ -303,6 +337,8 @@ export default function SpecKitPage() {
                     ? [{ title: c.title ?? c.taskId, state: c.state }]
                     : [],
                 ),
+                available: result.available ?? [],
+                taskIds: input.options.taskIds ?? null,
                 publishAvailable: result.publishAvailable === true,
                 plan:
                   typeof result.tasksVersion === "number" && typeof result.planDigest === "string"
@@ -318,6 +354,7 @@ export default function SpecKitPage() {
     },
     onError: (err) => {
       setLastResultMessage(null);
+      setLastIssueLinks([]);
       // #945 — the page's own words, never API field names or a raw issue array.
       setLastErrorMessage(describeSpecKitError(err));
       toast.error(FAILED);
@@ -401,6 +438,13 @@ export default function SpecKitPage() {
   const exportInProgress = exportPreview?.claims.some((c) => c.state === "in_progress") ?? false;
   const reconcileCount = exportPreview?.claims.filter((c) => c.state === "reconcile").length ?? 0;
   const publishCount = (exportPreview?.titles.length ?? 0) + reconcileCount;
+  // #993 — the chosen tasks, for this feature and this tasks.md only.
+  const taskSelection =
+    exportSelection?.feature === selectedFeature && exportSelection.tasksVersion === tasksVersion
+      ? exportSelection.taskIds
+      : null;
+  const selectionChanged =
+    exportPreview !== null && !sameTaskSelection(taskSelection, exportPreview.taskIds);
 
   // #945 — the reason Publish is disabled, shown on hover through a wrapper.
   const publishHint =
@@ -409,9 +453,11 @@ export default function SpecKitPage() {
       ? PUBLISH_UNAVAILABLE
       : exportInProgress
         ? EXPORT_IN_PROGRESS
-        : exportPreview && !credentialReady
-          ? CREDENTIAL_NEEDED
-          : undefined);
+        : selectionChanged
+          ? SELECTION_CHANGED
+          : exportPreview && !credentialReady
+            ? CREDENTIAL_NEEDED
+            : undefined);
   const clearHint = writeHint ?? (!credentialReady ? CREDENTIAL_NEEDED : undefined);
 
   const run = (command: SpecKitNamespacedCommand, options: SpecKitRunOptions = {}): void => {
@@ -887,6 +933,7 @@ export default function SpecKitPage() {
                     featureSlug: selectedFeature,
                     dryRun: true,
                     ...(exportSecretRef.trim() ? { secretRef: exportSecretRef.trim() } : {}),
+                    ...(taskSelection ? { taskIds: taskSelection } : {}),
                   })
                 }
                 data-testid="spec-kit-export-preview"
@@ -921,6 +968,7 @@ export default function SpecKitPage() {
                     dryRun: false,
                     secretRef: exportPreview.secretRef,
                     expectedPlan: exportPreview.plan,
+                    ...(exportPreview.taskIds ? { taskIds: exportPreview.taskIds } : {}),
                   });
                 }}
                 trigger={
@@ -938,6 +986,7 @@ export default function SpecKitPage() {
                       publishUnavailable ||
                       !credentialReady ||
                       exportInProgress ||
+                      selectionChanged ||
                       publishCount === 0
                     }
                     data-testid="spec-kit-export-publish"
@@ -947,6 +996,49 @@ export default function SpecKitPage() {
                 }
               />
             </HoverHint>
+            {/* #993 — choose which tasks to export, so a feature with more tasks
+                than one export may create can still be published in parts. */}
+            {exportPreview && exportPreview.available.length > 1 ? (
+              <fieldset className="space-y-1 text-xs" data-testid="spec-kit-export-tasks">
+                <legend className="text-muted-foreground">
+                  Tasks to export (run the dry run again after changing them):
+                </legend>
+                {exportPreview.available.map((t) => {
+                  const checked = taskSelection === null || taskSelection.includes(t.taskId);
+                  return (
+                    <label key={t.taskId} className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={checked}
+                        disabled={!canWrite || busy}
+                        onChange={() =>
+                          setExportSelection({
+                            feature: exportPreview.feature,
+                            tasksVersion,
+                            taskIds: toggleTaskSelection(
+                              exportPreview.available.map((a) => a.taskId),
+                              taskSelection,
+                              t.taskId,
+                            ),
+                          })
+                        }
+                        data-testid={`spec-kit-export-task-${t.taskId}`}
+                      />
+                      <span>{t.title}</span>
+                    </label>
+                  );
+                })}
+                {selectionChanged ? (
+                  <p
+                    className="text-muted-foreground"
+                    data-testid="spec-kit-export-selection-changed"
+                  >
+                    {SELECTION_CHANGED}
+                  </p>
+                ) : null}
+              </fieldset>
+            ) : null}
             {exportPreview && exportPreview.titles.length > 0 ? (
               <div className="space-y-1 text-xs">
                 <p className="text-muted-foreground">
@@ -1059,6 +1151,9 @@ export default function SpecKitPage() {
         {lastResultMessage ? (
           <Card className="p-3 text-xs" data-testid="spec-kit-result">
             {lastResultMessage}
+            {lastIssueLinks.length > 0 ? (
+              <IssueLinks links={lastIssueLinks} testId="spec-kit-result-issue-links" />
+            ) : null}
           </Card>
         ) : null}
         {lastErrorMessage ? (

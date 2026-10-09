@@ -244,6 +244,8 @@ export interface AnalysisListItem {
   completedAt: string | null;
   totalTokens: number;
   errorMessage: string | null;
+  /** #999 — how many of this run's requirements sit in each review status. */
+  requirementCounts: Record<RequirementReviewStatus, number>;
 }
 
 /**
@@ -960,7 +962,17 @@ export interface EnhancementMetadata {
      * Issue #979 — per-answer outcome: the requirement each answer was written
      * into, or null. Absent on analyses clarified before #979.
      */
-    answers?: Array<{ questionId: string; question: string; requirementTitle: string | null }>;
+    answers?: Array<{
+      questionId: string;
+      question: string;
+      requirementTitle: string | null;
+      /**
+       * Issue #1000 — who wrote the answer: METIS's suggestion accepted
+       * unchanged, METIS's suggestion edited, or typed by the requester.
+       * Absent on analyses clarified before #1000.
+       */
+      provenance?: "suggested" | "edited" | "typed";
+    }>;
   };
   /**
    * Issue #1117 (findings B + C) — present only when synthesis fell back to the

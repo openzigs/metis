@@ -88,6 +88,12 @@ export const tasksExportBodySchema = z.object({
     .optional(),
   /** #962 — "Clear stuck export": reconcile and clear abandoned task claims. */
   clearStuckClaims: z.literal(true).optional(),
+  /** #993 — export only these tasks; omitted ⇒ every task in tasks.md. */
+  taskIds: z
+    .array(z.string().regex(/^T\d{1,4}$/i))
+    .min(1)
+    .max(500)
+    .optional(),
 });
 
 export interface TasksExportInput {
@@ -101,6 +107,8 @@ export interface TasksExportInput {
   repo?: { owner: string; name: string };
   secretRef?: string;
   expectedPlan?: { tasksVersion: number; digest: string };
+  /** #993 — the chosen subset of task ids. */
+  taskIds?: string[];
 }
 
 export type TasksExportPreview = TasksToIssuesResult & {
@@ -122,6 +130,7 @@ export async function previewTasksExport(input: TasksExportInput): Promise<Tasks
     publishAvailable: true,
     ...(input.repo ? { repo: input.repo } : {}),
     ...(input.parentEpicNumber !== undefined ? { parentEpicNumber: input.parentEpicNumber } : {}),
+    ...(input.taskIds ? { taskIds: input.taskIds } : {}),
   });
   if (result.repo.owner && result.repo.name) {
     refuseIfAnalysed(
@@ -157,6 +166,7 @@ export async function exportTasksToGitHub(input: TasksExportInput): Promise<Task
     maxCreates: maxIssuesPerExport(),
     publishAvailable: true,
     ...(input.parentEpicNumber !== undefined ? { parentEpicNumber: input.parentEpicNumber } : {}),
+    ...(input.taskIds ? { taskIds: input.taskIds } : {}),
   });
 }
 

@@ -938,6 +938,7 @@ async function dispatchNamespaced(
           : {}),
         ...(extra.data.secretRef !== undefined ? { secretRef: extra.data.secretRef } : {}),
         ...(extra.data.expectedPlan !== undefined ? { expectedPlan: extra.data.expectedPlan } : {}),
+        ...(extra.data.taskIds !== undefined ? { taskIds: extra.data.taskIds } : {}),
       };
       // #962 — "Clear stuck export" writes (deletes or records claims) after
       // reading GitHub, so it is never a dry run and counts as a live export

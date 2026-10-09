@@ -58,6 +58,11 @@ export interface SynthesisInput {
    */
   refinedRequirements?: RefinedRequirementInput[];
   /**
+   * Issue #1000 — whether a person has answered any clarifying question. Only
+   * then are `refinedRequirements` presented to the model as human-clarified.
+   */
+  refinedHumanAnswered?: boolean;
+  /**
    * #824 (Epic #820 Phase 1) — the deterministic AFFECTED SCHEMA block (#823).
    * When present, synthesis reconciles each requirement's code + schema findings
    * into one requirement (feeds 1f/#826). Empty/undefined ⇒ the section is
@@ -671,6 +676,7 @@ export async function runSynthesis(
         partialTable ? segment.indexes : undefined,
       ),
       refinedRequirements: input.refinedRequirements,
+      refinedHumanAnswered: input.refinedHumanAnswered,
       affectedSchema: input.affectedSchema,
       // #1110 — the panel rule is added only when a panel actually ran on a
       // finding in THIS table, so a flag-off run sends a byte-identical prompt.

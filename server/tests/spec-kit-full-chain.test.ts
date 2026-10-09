@@ -234,6 +234,7 @@ describe("spec-kit full chain (Issue #435)", () => {
       repoOwner: "acme",
       repoName: "metis",
       newTitle: "Build SAML auth API",
+      changes: { title: { from: "[T02] Build auth API" } },
     });
     expect(renamed).toMatchObject({ handled: true, change: "title" });
     updated = await getFeatureArtifact(feature.id, "tasks.md");

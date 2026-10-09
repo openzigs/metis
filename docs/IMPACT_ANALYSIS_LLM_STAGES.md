@@ -40,7 +40,7 @@ rather than a degraded mode.
 | Code-symbol seeder/reranker (#931) | `traceability/requirement-code-mapping.ts` (`LlmCodeSymbolSearcher`) | `IMPACT_LLM_SEEDING` | **off** | the BM25 wide pool (union, never a replacement) | deterministic BM25 top-K |
 | Entity-seed recall union (#1002) | `traceability/requirement-entity-seeds.ts` | `IMPACT_LLM_ENTITY_SEEDS` | **off** | the project's code-graph entity vocabulary (exact name match) | base searcher unchanged |
 | Table-relevance output filter (#936) | `impact-analysis/table-relevance-filter.ts` | `IMPACT_LLM_TABLE_FILTER` | **ON** (#1025) | integer index into the crossing's own candidate rows | unfiltered crossing |
-| Additive column DDL proposal (#1001) | `impact-analysis/additive-column-proposer.ts` | `IMPACT_LLM_ADDITIVE_DDL` | **ON** (#1025) | integer index into the crossing's own tables + a closed type allowlist | no proposals appended |
+| Additive column DDL proposal (#1001) | `impact-analysis/additive-column-proposer.ts` | `IMPACT_LLM_ADDITIVE_DDL` | **ON** (#1025) | integer index into the crossing's own tables + a closed type allowlist; a column already in the live schema or the code graph is dropped (#1003) | no proposals appended |
 | Clause-vs-impact reconciliation (#1005) | `impact-analysis/clause-coverage-reconciler.ts` | `IMPACT_LLM_CLAUSE_RECONCILE` | **ON** (#1025) | integer index into the project's **unsurfaced** tables | no advisories |
 | BA narrative, per item + per run (#932/#949/#984) | `impact-analysis/impact-summarizer.ts` | `IMPACT_LLM_SUMMARY` | **ON** (#1025) | identifier-level allowlist built from engine facts only | `summary = null` |
 

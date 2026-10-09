@@ -188,16 +188,33 @@ function omissionNote(omitted: readonly string[], maxChars: number): string {
       : " Its remaining detail was left out.";
   return `> **Shortened for length.** This section is limited to about ${Math.round(maxChars / 1000)}k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS).${topics} Narrow the document with path prefixes, or raise the limit, for the full detail.`;
 }
+/** `first`, then whichever of `rest` it lacks, in order. */
+function mergeTopics(first: readonly string[], rest: readonly string[]): string[] {
+  return [...new Set([...first, ...rest])];
+}
 
 /**
  * Fit one section into `maxChars`: its units are kept in order while they fit,
  * a trailing heading with nothing under it is dropped, and a note lists the
  * topics left out. A section already within budget is returned unchanged.
+ *
+ * #995 — `alreadyOmitted` are the topics an earlier fit (the section cap) left
+ * out. A refit (the document cap) cuts before that fit's closing note, which
+ * is always last, and its own note lists both sets.
  */
-export function fitSectionToBudget(markdown: string, maxChars: number): FitResult {
+export function fitSectionToBudget(
+  markdown: string,
+  maxChars: number,
+  alreadyOmitted: readonly string[] = [],
+): FitResult {
   const originalChars = markdown.length;
   if (originalChars <= maxChars) {
-    return { markdown, trimmed: false, omittedTopics: [], originalChars };
+    return {
+      markdown,
+      trimmed: false,
+      omittedTopics: [...alreadyOmitted],
+      originalChars,
+    };
   }
   const all = units(markdown);
   const room = Math.max(0, maxChars - NOTE_RESERVE);
@@ -230,36 +247,62 @@ export function fitSectionToBudget(markdown: string, maxChars: number): FitResul
       cut = first + 1;
     }
   }
-  // Never end on a heading with no content under it.
-  while (kept.length > 1 && kept[kept.length - 1].depth > 0) {
+  const assemble = (): { markdown: string; omittedTopics: string[] } => {
+    // Never end on a heading with no content under it.
+    while (kept.length > 1 && kept[kept.length - 1].depth > 0) {
+      kept.pop();
+      cut -= 1;
+    }
+    const dropped = all.slice(Math.max(0, cut));
+    const droppedHeadings = dropped.filter((u) => u.depth > 0);
+    const level = droppedHeadings.reduce((min, u) => Math.min(min, u.depth), 7);
+    const omittedTopics = mergeTopics(
+      droppedHeadings.filter((u) => u.depth === level).map(headingText),
+      alreadyOmitted,
+    );
+    const body = kept.map((u) => u.text).join("\n\n");
+    return {
+      markdown: `${body}\n\n${omissionNote(omittedTopics, maxChars)}`,
+      omittedTopics,
+    };
+  };
+  let fitted = assemble();
+  // #995 — a note naming long topics can outgrow the room reserved for it; give
+  // it the last kept units rather than overrun the budget the caller counts on.
+  while (fitted.markdown.length > maxChars && kept.length > 1) {
     kept.pop();
     cut -= 1;
+    fitted = assemble();
   }
-  const dropped = all.slice(Math.max(0, cut));
-  const droppedHeadings = dropped.filter((u) => u.depth > 0);
-  const level = droppedHeadings.reduce((min, u) => Math.min(min, u.depth), 7);
-  const omittedTopics = droppedHeadings.filter((u) => u.depth === level).map(headingText);
-  const body = kept.map((u) => u.text).join("\n\n");
-  return {
-    markdown: `${body}\n\n${omissionNote(omittedTopics, maxChars)}`,
-    trimmed: true,
-    omittedTopics,
-    originalChars,
-  };
+  return { ...fitted, trimmed: true, originalChars };
 }
+
+/** Rounds of slack redistribution before the document fit settles. */
+const MAX_REDISTRIBUTION_ROUNDS = 100;
 
 /**
  * Fit sections so their total fits `maxChars`. Sections at or below a common
  * allowance keep everything; the allowance is the largest one that makes the
  * total fit (water-filling), so the longest sections are shortened first.
+ *
+ * #995 — a section is cut at topic and paragraph boundaries, so it usually
+ * comes in under its allowance, and one whose next topic is large comes in far
+ * under it. That unused room is handed back, in equal shares, to the sections
+ * still shortened, round after round until none can use more — so the document
+ * is not left at 186k of a 250k cap while its sections drop topics.
+ *
+ * `alreadyOmitted[i]` are the topics section `i` lost to an earlier cap; the
+ * result's `omittedTopics[i]` lists those and any this fit leaves out.
  */
 export function fitSectionsToDocumentBudget(
   sections: readonly string[],
   maxChars: number,
-): { sections: string[]; trimmed: number } {
+  alreadyOmitted: ReadonlyArray<readonly string[]> = [],
+): { sections: string[]; trimmed: number; omittedTopics: string[][] } {
+  const earlier = sections.map((_, i) => [...(alreadyOmitted[i] ?? [])]);
   const lengths = sections.map((s) => s.length);
   const total = lengths.reduce((n, l) => n + l, 0);
-  if (total <= maxChars) return { sections: [...sections], trimmed: 0 };
+  if (total <= maxChars) return { sections: [...sections], trimmed: 0, omittedTopics: earlier };
   const sorted = [...lengths].sort((a, b) => a - b);
   let remaining = maxChars;
   let allowance = 0;
@@ -272,11 +315,39 @@ export function fitSectionsToDocumentBudget(
     allowance = share;
     break;
   }
-  let trimmed = 0;
-  const fitted = sections.map((section) => {
-    if (section.length <= allowance) return section;
-    trimmed += 1;
-    return fitSectionToBudget(section, Math.max(allowance, NOTE_RESERVE * 2)).markdown;
-  });
-  return { sections: fitted, trimmed };
+  const floor = Math.max(allowance, NOTE_RESERVE * 2);
+  const budgets = sections.map(() => floor);
+  const fits = sections.map((section, i) =>
+    section.length <= allowance ? null : fitSectionToBudget(section, floor, earlier[i]),
+  );
+  const lengthOf = (i: number): number => fits[i]?.markdown.length ?? sections[i].length;
+  // Sections that are still shortened and may yet take more room.
+  const open = new Set(fits.flatMap((fit, i) => (fit?.trimmed ? [i] : [])));
+  for (let round = 0; round < MAX_REDISTRIBUTION_ROUNDS && open.size > 0; round++) {
+    let slack = maxChars - sections.reduce((n, _, i) => n + lengthOf(i), 0);
+    if (slack <= 0) break;
+    const share = Math.max(1, Math.floor(slack / open.size));
+    for (const i of [...open]) {
+      const before = lengthOf(i);
+      const budget = budgets[i] + share;
+      const refit = fitSectionToBudget(sections[i], budget, earlier[i]);
+      const grew = refit.markdown.length - before;
+      if (grew > slack) {
+        // Its next topic is bigger than all the room left: no larger budget
+        // keeps anything less, so it is done.
+        open.delete(i);
+        continue;
+      }
+      budgets[i] = budget;
+      fits[i] = refit;
+      slack -= grew;
+      if (!refit.trimmed) open.delete(i);
+    }
+  }
+  const trimmed = fits.filter((fit) => fit?.trimmed).length;
+  return {
+    sections: sections.map((section, i) => fits[i]?.markdown ?? section),
+    trimmed,
+    omittedTopics: fits.map((fit, i) => fit?.omittedTopics ?? earlier[i]),
+  };
 }

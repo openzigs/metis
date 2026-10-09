@@ -152,6 +152,7 @@ import {
 } from "./approved-requirement-set.js";
 import type { ApprovalType } from "./types/requirements.js";
 import { runSynthesis, type FlatFinding } from "./synthesis.js";
+import { hasAnsweredClarification } from "./clarification-enrichment.js";
 import { runCrossDocDetection } from "./cross-doc-detection.js";
 import { persistCrossDocFindings } from "./analysis-service.js";
 import type { DocSegment } from "./cross-doc-validator.js";
@@ -3466,6 +3467,9 @@ export class AnalysisOrchestrator {
       title: r.title,
       description: r.description,
     }));
+    // Issue #1000 — they are "human-clarified" only once someone has answered.
+    const refinedHumanAnswered =
+      refinedRequirements.length > 0 && (await hasAnsweredClarification(input.analysisId));
     const startedAt = new Date();
     this.emit({
       analysisId: input.analysisId,
@@ -3481,6 +3485,7 @@ export class AnalysisOrchestrator {
         signal: input.signal,
         model: input.model,
         refinedRequirements,
+        refinedHumanAnswered,
         // #824 — reconcile code + schema findings per requirement when present.
         affectedSchema: input.affectedSchema,
       });

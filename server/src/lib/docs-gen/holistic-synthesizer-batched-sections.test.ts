@@ -522,6 +522,39 @@ describe("#741 — a batched section is planned and fitted to its length cap", (
     );
   });
 
+  // #995 — what a length cap leaves out reaches the provenance manifest.
+  it("records the topics the section cap left out on the section's manifest entry", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "100000");
+    const result = await run(onyourleftSized(), fakeModel());
+    const entry = result.sections.find((s) => s.sectionLabel === RULES.label)!;
+    expect(entry.omittedTopics?.length).toBeGreaterThan(0);
+    const rules = sectionOf(result.markdown, RULES.label);
+    // Each one listed was really left out of the section.
+    for (const topic of entry.omittedTopics!) expect(rules).not.toContain(`# ${topic}\n`);
+    expect(rules).toContain(entry.omittedTopics![0].slice(0, 40));
+  });
+
+  it("records the topics the document cap left out, and the body uses its budget", async () => {
+    // Only the document cap shortens anything here.
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
+    const result = await run(onyourleftSized(), fakeModel());
+    const shortened = result.sections.filter((s) => s.omittedTopics?.length);
+    expect(shortened.length).toBeGreaterThan(0);
+    // Every section the reader is told was shortened lists what it lost.
+    const noted = result.sections.filter((s) =>
+      sectionOf(result.markdown, s.sectionLabel).includes("**Shortened for length.**"),
+    );
+    expect(shortened.map((s) => s.sectionLabel)).toEqual(noted.map((s) => s.sectionLabel));
+    for (const entry of shortened) {
+      const section = sectionOf(result.markdown, entry.sectionLabel);
+      expect(section).toContain("**Shortened for length.**");
+      expect(section.match(/Shortened for length/g)).toHaveLength(1);
+    }
+    const body = result.markdown.slice(result.markdown.indexOf("\n## "));
+    expect(body.length).toBeGreaterThan(30_000 * 0.9);
+  });
+
   it("plans as before when the section fits its cap", () => {
     const facts = pairs(2);
     const plan = planSectionBatches(facts, RULES, 150_000, 16_384, 1_000_000);
