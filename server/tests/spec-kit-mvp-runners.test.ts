@@ -587,6 +587,63 @@ describe("runPlanExpanded", () => {
     expect(research.content).not.toMatch(/Resolved Unknowns: none/);
     void fid;
   });
+
+  /** #944 — answers by artifact; the quickstart call always hits the output cap. */
+  class CapOnQuickstart extends FakeProvider {
+    async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+      const system = String((o as { systemMessage?: string }).systemMessage ?? "");
+      if (system.includes("quickstart.md")) {
+        return {
+          content: "# Quickstart\n\n## Run locally\n1. see `client/client.go:327",
+          provider: this.key,
+          model: "fake-model",
+          usage: { promptTokens: 5, completionTokens: 16000, totalTokens: 16005 },
+          finishReason: "max_tokens",
+        } as unknown as ChatResponse;
+      }
+      if (system.includes("plan.md")) {
+        return {
+          ...(await super.chat(m, o)),
+          content: '# Plan\n\n```mermaid\ngraph TD\n  A["Route"] --> B\n```\n',
+        };
+      }
+      return super.chat(m, o);
+    }
+  }
+
+  it("#944 — warns when an artifact is still cut off at the output cap, and marks it", async () => {
+    const fid = seedFeature("p1", "003-cap");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "003-cap",
+      deps: { provider: new CapOnQuickstart("# Doc\n") },
+    });
+    expect(r.message).toContain(
+      "Warning: `quickstart.md` was cut off at the model's output-token limit and is incomplete",
+    );
+    const quick = r.artifacts.find((a) => a.key === "quickstart.md")!;
+    expect(quick.content).toContain("## Run locally");
+    expect(quick.content).not.toContain("1. see"); // never the half-written line
+    expect(quick.content).not.toContain("client.go:327");
+    expect(quick.content).toMatch(/\*\*Incomplete:\*\*/);
+    // The diagram's edge to an undeclared node is reported too.
+    expect(r.message).toContain(
+      "`plan.md`'s Mermaid diagram links to 1 node it never declares: `B`.",
+    );
+  });
+
+  it("#944 — a whole reply carries no warning", async () => {
+    const fid = seedFeature("p1", "004-whole");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "004-whole",
+      deps: { provider: new FakeProvider("# Doc\n") },
+    });
+    expect(r.message).not.toContain("Warning:");
+    expect(r.message).not.toContain("Mermaid");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -646,6 +703,37 @@ describe("feature commands are grounded (#786, #785)", () => {
     ]),
   };
 
+  const callerLookup = {
+    findCallers: vi.fn(async () => [
+      {
+        toSymbolId: null,
+        toQualifiedName: "MarkAllAsReadBeforeDate",
+        filePath: "internal/googlereader/handler.go",
+        line: 1225,
+        callerName: "editTagHandler",
+      },
+    ]),
+  };
+  const CALLER_LINE =
+    "- MarkAllAsReadBeforeDate ← editTagHandler at internal/googlereader/handler.go:1225 (probable)";
+
+  it("#944 — speckit.specify is grounded on the existing code and its callers", async () => {
+    const provider = new RecordingProvider("# Spec\n\nbody");
+    await runSpecifyFeature({
+      projectId: "p1",
+      prompt: "Mark all entries as read older than N days.",
+      deps: { provider },
+      knowledgeService,
+      fusedCode,
+      siblingLookup,
+      callerLookup,
+    });
+    expect(provider.systems[0]).toContain("## Retrieved Code Symbols");
+    expect(provider.systems[0]).toContain("MarkAllAsReadBeforeDate (function)");
+    expect(provider.systems[0]).toContain(CALLER_LINE);
+    expect(provider.systems[0]).toContain("EXISTING BEHAVIOUR");
+  });
+
   it("speckit.specify retrieves project knowledge and reports it", async () => {
     const provider = new RecordingProvider("# Spec\n\nbody");
     const r = await runSpecifyFeature({
@@ -671,12 +759,15 @@ describe("feature commands are grounded (#786, #785)", () => {
       knowledgeService,
       fusedCode,
       siblingLookup,
+      callerLookup,
       pathLookup: {
         hasCodeGraph: vi.fn(async () => true),
         findExisting: vi.fn(async (_p: string, paths: string[]) => paths),
       },
     });
     expect(provider.systems).toHaveLength(5);
+    // #944 — every artifact sees who already calls the retrieved code.
+    for (const system of provider.systems) expect(system).toContain(CALLER_LINE);
     for (const system of provider.systems) {
       expect(system).toContain("## Retrieved Code Symbols");
       expect(system).toContain(

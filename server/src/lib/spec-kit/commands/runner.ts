@@ -27,6 +27,7 @@ import { readProjectConstitution } from "../constitution.js";
 import { loadAsPreamble } from "../constitution-meta.js";
 import { OfflineStubProvider } from "../../ai/providers/offline-stub-provider.js";
 import { SpecKitArtifactError } from "../artifacts.js";
+import { detectTruncation } from "../../docs-gen/truncation.js";
 
 export interface SpecKitProjectContext {
   id: string;
@@ -99,6 +100,59 @@ export interface RunCommandInput {
 export interface RunCommandOutput {
   content: string;
   tokensUsed: number;
+  /**
+   * #944 — `true` when the reply still ended at the output-token cap after
+   * {@link MAX_SPEC_KIT_CONTINUATIONS} continuation calls. `content` then ends
+   * with {@link SPEC_KIT_TRUNCATION_NOTE} and the caller must warn.
+   */
+  truncated: boolean;
+  /** #944 — continuation calls made after an output-cap cut (0 when none). */
+  continuations: number;
+}
+
+/**
+ * #944 — continuation calls allowed after a reply is cut at the output cap.
+ * Each one is a full provider call, billed and audited like the first.
+ */
+export const MAX_SPEC_KIT_CONTINUATIONS = 2;
+
+/**
+ * #944 — appended to an artifact the cap still cut off, so the document says
+ * so itself and is never mistaken for a whole one.
+ */
+export const SPEC_KIT_TRUNCATION_NOTE =
+  "> **Incomplete:** this document was cut off at the model's output-token limit. Re-run the command, or split the request.";
+
+const CONTINUE_PROMPT = [
+  "Your previous reply was cut off at the output-token limit. Continue the SAME",
+  "document exactly where it stops: start with the next line, do not repeat any",
+  "line already written, and do not restart or summarise it.",
+].join(" ");
+
+/**
+ * #944 — the reply up to and including its last newline. The line being
+ * written when the cap fired is incomplete by definition (`client/client.go:327`
+ * cut mid-citation), so it is dropped rather than kept as if whole.
+ */
+export function keepWholeLines(text: string): string {
+  const cut = text.lastIndexOf("\n");
+  return cut < 0 ? "" : text.slice(0, cut + 1);
+}
+
+/**
+ * #944 — the warning a step's success message carries for every artifact the
+ * output cap still cut off. `""` when none was.
+ */
+export function truncationWarning(artifacts: readonly string[]): string {
+  if (artifacts.length === 0) return "";
+  const names = artifacts.map((a) => `\`${a}\``).join(", ");
+  const one = artifacts.length === 1;
+  return ` Warning: ${names} ${one ? "was" : "were"} cut off at the model's output-token limit and ${one ? "is" : "are"} incomplete — re-run the command or split the request.`;
+}
+
+/** #944 — append a continuation to the kept prefix (which ends on a newline). */
+export function joinContinuation(kept: string, next: string): string {
+  return kept.length === 0 ? next : kept + next.replace(/^\n+/, "");
 }
 
 /**
@@ -166,8 +220,11 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     throw err;
   }
 
-  const messages: ChatMessage[] = [{ role: "user", content: userText }];
-  const response = await provider.chat(messages, {
+  // 3b. Model call(s). #944 — a reply cut at the output-token cap returns
+  // HTTP 200 like any other, so it is detected (finish reason or gateway
+  // placeholder), its whole lines are kept, and the model is asked to continue.
+  const userTurn: ChatMessage = { role: "user", content: userText };
+  const chatOpts = {
     systemMessage: fullSystem,
     sessionId: sessionId ?? undefined,
     // #700 — attribute cache-hit telemetry to the spec-kit workload and cache
@@ -177,12 +234,61 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     // unchanged. `messages` is omitted (single-shot user turn is unique).
     // Honoured on BedrockDirect/native-Anthropic; inert on the plain
     // OpenAI-compatible path, where transparent gateway caching applies instead.
-    callType: "spec-kit",
+    callType: "spec-kit" as const,
     promptCaching: { system: true },
-  });
+  };
+  let kept = "";
+  let truncated = false;
+  let continuations = 0;
+  let totalTokens = 0;
+  let response: Awaited<ReturnType<AIProvider["chat"]>>;
+  for (;;) {
+    const messages: ChatMessage[] =
+      kept.length === 0
+        ? [userTurn]
+        : [
+            userTurn,
+            { role: "assistant", content: kept },
+            { role: "user", content: CONTINUE_PROMPT },
+          ];
+    response = await provider.chat(messages, chatOpts);
+    totalTokens += response.usage.totalTokens;
+
+    // 5. FinOps ledger — every call, continuation or not, is billed.
+    recordUsage({
+      projectId: input.project.id,
+      sessionId: sessionId ?? "",
+      ...(input.actorId ? { userId: input.actorId } : {}),
+      agentStep: `spec-kit.${input.command}`,
+      provider: response.provider,
+      model: response.model,
+      inputTokens: response.usage.promptTokens,
+      outputTokens: response.usage.completionTokens,
+      cacheReadTokens: response.usage.cacheReadTokens,
+      cacheWriteTokens: response.usage.cacheWriteTokens,
+    });
+
+    const cut = detectTruncation(response.content, response.finishReason);
+    if (!cut.truncated) {
+      kept = joinContinuation(kept, cut.text);
+      truncated = false;
+      break;
+    }
+    // A gateway placeholder replaces the tail, so the text before it ends a line.
+    const whole = cut.signals.placeholder
+      ? cut.text.length > 0
+        ? `${cut.text}\n`
+        : ""
+      : keepWholeLines(cut.text);
+    kept = joinContinuation(kept, whole);
+    truncated = true;
+    if (continuations >= MAX_SPEC_KIT_CONTINUATIONS) break;
+    continuations++;
+  }
+  if (truncated) kept = `${kept.trimEnd()}\n\n${SPEC_KIT_TRUNCATION_NOTE}\n`;
 
   // 4. Outbound safety pass.
-  let outContent = response.content;
+  let outContent = kept;
   try {
     const safeOut = await applySafety(outContent, {
       projectId: input.project.id,
@@ -204,20 +310,6 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     throw err;
   }
 
-  // 5. FinOps ledger.
-  recordUsage({
-    projectId: input.project.id,
-    sessionId: sessionId ?? "",
-    ...(input.actorId ? { userId: input.actorId } : {}),
-    agentStep: `spec-kit.${input.command}`,
-    provider: response.provider,
-    model: response.model,
-    inputTokens: response.usage.promptTokens,
-    outputTokens: response.usage.completionTokens,
-    cacheReadTokens: response.usage.cacheReadTokens,
-    cacheWriteTokens: response.usage.cacheWriteTokens,
-  });
-
   // 6. Success audit.
   audit({
     actor: input.actorId ? { id: input.actorId } : null,
@@ -226,13 +318,16 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     metadata: {
       provider: response.provider,
       model: response.model,
-      tokens: response.usage.totalTokens,
+      tokens: totalTokens,
       // #373 — record that RAG was attempted and how many chunks were used
       // (0 ⇒ ungrounded: empty retrieval or hash-embedder fallback).
       ragAttempted: input.ragContext !== undefined,
       ragChunksUsed: input.ragChunksUsed ?? 0,
+      // #944 — an output-cap cut is recorded, never silent.
+      truncated,
+      continuations,
     },
   });
 
-  return { content: outContent, tokensUsed: response.usage.totalTokens };
+  return { content: outContent, tokensUsed: totalTokens, truncated, continuations };
 }
