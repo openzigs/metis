@@ -301,6 +301,7 @@ describe("Requirements hub", () => {
     completedAt: "2026-09-01T10:05:00Z",
     totalTokens: 0,
     errorMessage: null,
+    requirementCounts: { draft: 1, approved: 1, rejected: 0, deferred: 0 },
   };
 
   beforeEach(() => {

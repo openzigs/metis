@@ -243,6 +243,8 @@ export interface AnalysisListItem {
   completedAt: string | null;
   totalTokens: number;
   errorMessage: string | null;
+  /** #999 — how many of this run's requirements sit in each review status. */
+  requirementCounts: Record<RequirementReviewStatus, number>;
 }
 
 /**
