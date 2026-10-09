@@ -165,6 +165,11 @@ export interface ComputeImpactDeps {
   additiveColumnProposer?: (
     requirementText: string,
     tables: AffectedTableInput[],
+    /**
+     * #1003 — the project and its live schema, so the proposer can check each
+     * column against everything that already exists, not only the crossed rows.
+     */
+    context: { projectId: string; liveIndex: LiveSchemaIndex | null },
   ) => Promise<AffectedTableInput[]>;
   /**
    * #1005 — optional CLAUSE-vs-IMPACT reconciler run LAST, once the surfaced set
@@ -397,6 +402,7 @@ export async function computeProjectImpact(
         const proposed = await deps.additiveColumnProposer(
           `${change.title}\n${change.body}`,
           affectedTables,
+          { projectId, liveIndex: deps.liveIndexFor?.(projectId) ?? null },
         );
         if (proposed.length > 0) {
           // Same ordering the crossing itself emits (table, then column), so the

@@ -323,6 +323,19 @@ describe("computeProjectImpact", () => {
       ]);
     });
 
+    it("hands the proposer the project and its live schema index (#1003)", async () => {
+      const live = new LiveSchemaIndex([]);
+      const contexts: unknown[] = [];
+      await runWith(
+        async (_text, _tables, context) => {
+          contexts.push(context);
+          return [];
+        },
+        { liveIndexFor: () => live },
+      );
+      expect(contexts).toEqual([{ projectId: "proj-1", liveIndex: live }]);
+    });
+
     it("proposes only on tables that SURVIVED the #936 relevance filter", async () => {
       const seen: string[][] = [];
       await runWith(
