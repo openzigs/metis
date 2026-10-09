@@ -441,7 +441,9 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
     const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
 
     expect(res.status).toBe(409);
-    expect(res.body.error?.message ?? res.text).toMatch(/failed, cancelled or partially generated/);
+    expect(res.body.error?.message ?? res.text).toMatch(
+      /failed, cancelled, partially generated or section-failed/,
+    );
     expect(doc().status).toBe("degraded");
     expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
   });
@@ -458,6 +460,28 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
     expect(res.status).toBe(202);
     expect(res.body.data).toMatchObject({ id: "doc-1", status: "pending" });
     await vi.waitFor(() => expect(doc().status).toBe("generating"));
+  });
+
+  it("#942 — 409s, and starts nothing, when an automatic publish lands between the read and the write", async () => {
+    seed({
+      status: "degraded",
+      versionCount: 1,
+      warnings: [{ kind: "section-failed", section: "Overview", message: "m", severity: "error" }],
+    });
+    // The route reads the row, then a publish stamps a newer updatedAt before its write.
+    const find = vi.mocked(prisma.generatedDocument.findFirst);
+    const real = find.getMockImplementation() as unknown as (a: unknown) => Promise<unknown>;
+    find.mockImplementationOnce((async (args: unknown) => {
+      const read = await real(args);
+      doc().updatedAt = new Date(Date.now() + 5000);
+      return read;
+    }) as never);
+
+    const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
+
+    expect(res.status).toBe(409);
+    expect(doc().status).toBe("degraded");
+    expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
   });
 
   it("#942 — still 409s a published degraded document whose only warnings are grounding ones", async () => {

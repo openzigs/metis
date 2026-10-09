@@ -831,7 +831,9 @@ conservative full work records its fallback reason.
 
 **A run that stops early (#782).** Every finished section's record is also written,
 as it finishes, to `generated_documents.generationCheckpoint`. This write is scoped to the
-run's claim and is cleared when a version commits. A later run, including a manual
+run's claim and is cleared when a version commits with every section written. A commit that
+publishes a `degraded` version with a failed section (#942) keeps the checkpoint, so the
+finished sections can be reused. A later run, including a manual
 `POST /docs/:docId/regenerate`, reuses each checkpointed section whose input hashes still
 match, exactly as it reuses a published snapshot's records. A resumed run's checkpoint
 merges with the stored one: a section the run has reached is replaced (or dropped, when its
@@ -842,7 +844,7 @@ error's message) as a `section-failed` warning carrying `stage`/`errorClass`. A 
 with no published version is then kept as `degraded`, holding the assembled document or
 else its checkpointed sections. It has no version and no publication, and the regenerate
 route accepts it. A document with a published version stays `failed` and keeps that
-version. #857 — this now includes a failed commit: in #706 run 3 a run refused at the
+version. #942 — a published `degraded` version with a `section-failed` warning that carries no `stage` (one section failed, the rest finished) is also accepted by the regenerate route: it rewrites that section, reuses the checkpointed ones and publishes the next version. Cancelling that regenerate restores the degraded version and its warnings. #857 — this now includes a failed commit: in #706 run 3 a run refused at the
 commit fence finished all seven sections, saved nothing, and the regenerate rewrote every
 one ($3.69). A run stopped because its inputs changed (`inputs-changed`, at the fence or
 between sections) keeps its checkpoint but is marked `failed` with no content (#867): its

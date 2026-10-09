@@ -197,6 +197,7 @@ export default function DocumentationPage(): React.ReactElement {
   // Lazily fetch the structured schema graph only when the Schema Graph tab is
   // opened for a database-scope document (Epic #895).
   const isDatabaseDoc = docDetail.data?.scope === "database";
+  const failedSectionList = docDetail.data ? failedSections(docDetail.data) : [];
   const schemaGraphQuery = useQuery<SchemaGraph>({
     queryKey: ["schema-graph", projectId, selectedDoc],
     queryFn: () => apiFetch<SchemaGraph>(`/projects/${projectId}/docs/${selectedDoc}/schema-graph`),
@@ -568,9 +569,9 @@ export default function DocumentationPage(): React.ReactElement {
           )}
 
           {/* #942 — a published document with a failed section regenerates it. */}
-          {failedSections(docDetail.data).length > 0 && (
+          {failedSectionList.length > 0 && (
             <FailedSectionsBanner
-              failed={failedSections(docDetail.data)}
+              failed={failedSectionList}
               regenerating={regenerateMutation.isPending}
               onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
             />
@@ -1527,8 +1528,8 @@ export function FailedSectionsBanner({
         ))}
       </ul>
       <p className="mt-1 text-sm text-destructive">
-        Regenerating writes {plural ? "these sections" : "this section"} again and reuses every
-        finished section whose inputs have not changed.
+        Regenerating writes {plural ? "these sections" : "this section"} again and reuses the
+        finished sections whose inputs have not changed, where it can.
       </p>
       <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
         {regenerating ? "Regenerating…" : `Regenerate failed section${plural ? "s" : ""}`}
@@ -1631,7 +1632,7 @@ export function CancelledGenerationBanner({
       <p className="mt-1 text-sm text-muted-foreground">
         Its model calls were stopped. The sections it finished are kept and shown below, and the
         tokens it used are counted in the project&apos;s usage. Regenerating writes the rest and
-        reuses every finished section whose inputs have not changed.
+        reuses the finished sections whose inputs have not changed, where it can.
       </p>
       <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
         {regenerating ? "Regenerating…" : "Regenerate"}

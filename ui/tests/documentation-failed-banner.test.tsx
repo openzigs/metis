@@ -329,7 +329,7 @@ describe("#942 — a published document with a failed section can regenerate it"
     const banner = await screen.findByTestId("failed-sections-banner");
     expect(banner).toHaveTextContent("Overview, Context & Layers");
     expect(banner).toHaveTextContent("(SyntaxError)");
-    expect(banner).toHaveTextContent(/reuses every finished section/i);
+    expect(banner).toHaveTextContent(/reuses the finished sections/i);
     fireEvent.click(screen.getByRole("button", { name: /regenerate failed section/i }));
     await waitFor(() =>
       expect(mockApiFetch).toHaveBeenCalledWith(

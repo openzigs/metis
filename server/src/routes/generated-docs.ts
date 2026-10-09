@@ -940,7 +940,7 @@ export function generatedDocsRouter(): Router {
         throw new AppError(
           409,
           "DOC_NOT_REGENERATABLE",
-          `Only a failed, cancelled or partially generated document can be regenerated (status: ${existing.status})`,
+          `Only a failed, cancelled, partially generated or section-failed document can be regenerated (status: ${existing.status})`,
         );
       }
       void generateDocumentAsync(docId, projectId).catch((err) => {
