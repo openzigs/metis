@@ -16,7 +16,12 @@ vi.mock("../prisma.js", () => ({
 }));
 
 import { prisma } from "../prisma.js";
-import { UsageService, getUsageService, __resetUsageServiceSingleton } from "./usage-service.js";
+import {
+  MIXED,
+  UsageService,
+  getUsageService,
+  __resetUsageServiceSingleton,
+} from "./usage-service.js";
 
 const mockFindMany = prisma.aITokenUsage.findMany as ReturnType<typeof vi.fn>;
 const mockLedgerFindMany = prisma.tokenUsage.findMany as ReturnType<typeof vi.fn>;
@@ -163,8 +168,62 @@ describe("UsageService", () => {
       const result = await svc.projectUsage("proj-1", { groupBy: "day" });
       expect(result.rows[0].projectId).toBe("proj-1");
       expect(svc.toCSV(result.rows).split("\n")[1]).toBe(
-        "2025-01-15,anthropic,claude-sonnet-4-6,user-1,proj-1,100,50,150,0.010000,1,0",
+        "2025-01-15,anthropic,claude-sonnet-4-6,user-1,proj-1,100,50,150,0.010000,1,0,chat",
       );
+    });
+
+    it("labels a day row truthfully: a step its rows disagree on reads (mixed) (#977)", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ agentStep: "analysis", model: "sonnet", userId: "user-1" }),
+        ledgerRow({ agentStep: "chat", model: "sonnet", userId: "user-2" }),
+        ledgerRow({ agentStep: "docs-gen", model: "sonnet", userId: "user-1" }),
+      ]);
+      const result = await svc.projectUsage("proj-1", { groupBy: "day" });
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toMatchObject({
+        agentStep: MIXED,
+        userId: MIXED,
+        // Shared by every row, so still named.
+        model: "sonnet",
+        provider: "anthropic",
+        projectId: "proj-1",
+        totalTokens: 450,
+      });
+      expect(svc.toCSV(result.rows).split("\n")[1]!.endsWith(`,${MIXED}`)).toBe(true);
+    });
+
+    it("a day row whose rows are all one step keeps that step", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ agentStep: "analysis" }),
+        ledgerRow({ agentStep: "analysis" }),
+      ]);
+      const result = await svc.projectUsage("proj-1", { groupBy: "day" });
+      expect(result.rows[0]!.agentStep).toBe("analysis");
+    });
+
+    it("a step present on one row and absent on another is mixed, not either", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ agentStep: null }),
+        ledgerRow({ agentStep: "analysis" }),
+      ]);
+      const result = await svc.projectUsage("proj-1", { groupBy: "day" });
+      expect(result.rows[0]!.agentStep).toBe(MIXED);
+    });
+
+    it("the agentStep CSV names each row's step (#977)", async () => {
+      mockLedgerFindMany.mockResolvedValue([
+        ledgerRow({ agentStep: "analysis" }),
+        ledgerRow({ agentStep: "chat" }),
+      ]);
+      const result = await svc.projectUsage("proj-1", { groupBy: "agentStep" });
+      const lines = svc.toCSV(result.rows).split("\n");
+      expect(lines[0]!.endsWith(",agentStep")).toBe(true);
+      expect(
+        lines
+          .slice(1)
+          .map((l) => l.split(",").at(-1))
+          .sort(),
+      ).toEqual(["analysis", "chat"]);
     });
 
     it("an unpriced ledger row (costCents NULL) is unpriced, never $0 (#22)", async () => {

@@ -338,14 +338,17 @@ export function ProjectUsagePanel({ projectId: id }: { projectId: string }) {
                 );
                 return enhancedUsageQuery.data.rows.slice(0, 30).map((row, i) => {
                   const pct = (row.totalTokens / maxTokens) * 100;
+                  // #977 — "By Agent Step" was labelled with the user id.
                   const label =
                     groupBy === "day"
                       ? row.dayBucket.slice(5)
                       : groupBy === "model"
                         ? (row.model.split(".").pop()?.slice(0, 10) ?? row.model)
-                        : row.userId
-                          ? row.userId.slice(0, 8)
-                          : "unattributed";
+                        : groupBy === "agentStep"
+                          ? (row.agentStep ?? "unknown")
+                          : row.userId
+                            ? row.userId.slice(0, 8)
+                            : "unattributed";
                   return (
                     <div key={i} className="flex flex-1 flex-col items-center gap-1">
                       <div

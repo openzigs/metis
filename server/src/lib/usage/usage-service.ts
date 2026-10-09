@@ -139,6 +139,15 @@ const LEDGER_GROUP_KEYS = ["projectId", "userId", "provider", "model", "agentSte
 /** Rows per page when the `day` grouping streams the ledger. */
 const LEDGER_PAGE_SIZE = 5_000;
 
+/**
+ * #977 — the label a grouped row carries for a dimension its rows disagree
+ * on (a `day` row spanning several agent steps, models or users).
+ */
+export const MIXED = "(mixed)";
+
+/** The descriptive fields of a {@link UsageRow} besides `dayBucket`. */
+const LABEL_DIMENSIONS = ["provider", "model", "userId", "projectId", "agentStep"] as const;
+
 /** Groups slices by one dimension. Memory is O(groups), not O(rows). */
 class UsageAccumulator {
   private readonly map = new Map<string, UsageRow>();
@@ -172,6 +181,15 @@ class UsageAccumulator {
     const key = this.keyOf(r);
     const existing = this.map.get(key);
     if (existing) {
+      // #977 — a field the row is NOT grouped by is the group's value only
+      // while every slice agrees; once two differ it reads MIXED. It used to
+      // keep the first slice's value, so a day of chat, docs and analysis
+      // spend was labelled `agentStep: analysis`.
+      for (const dim of LABEL_DIMENSIONS) {
+        if (existing[dim] !== MIXED && existing[dim] !== (r[dim] ?? undefined)) {
+          existing[dim] = MIXED;
+        }
+      }
       existing.promptTokens += r.promptTokens;
       existing.completionTokens += r.completionTokens;
       existing.totalTokens += r.totalTokens;
@@ -278,11 +296,13 @@ export class UsageService {
    */
   toCSV(rows: UsageRow[]): string {
     // #22 — an unpriced group has an EMPTY cost cell (unknown), never 0.
+    // #977 — `agentStep` is appended last, so an existing column reader is
+    // undisturbed; the "By Agent Step" export used to carry no step at all.
     const header =
-      "dayBucket,provider,model,userId,projectId,promptTokens,completionTokens,totalTokens,estimatedCostUsd,count,unpricedTokens";
+      "dayBucket,provider,model,userId,projectId,promptTokens,completionTokens,totalTokens,estimatedCostUsd,count,unpricedTokens,agentStep";
     const lines = rows.map(
       (r) =>
-        `${r.dayBucket},${r.provider},${r.model},${r.userId ?? ""},${r.projectId ?? ""},${r.promptTokens},${r.completionTokens},${r.totalTokens},${r.estimatedCostUsd === null ? "" : r.estimatedCostUsd.toFixed(6)},${r.count},${r.unpricedTokens}`,
+        `${r.dayBucket},${r.provider},${r.model},${r.userId ?? ""},${r.projectId ?? ""},${r.promptTokens},${r.completionTokens},${r.totalTokens},${r.estimatedCostUsd === null ? "" : r.estimatedCostUsd.toFixed(6)},${r.count},${r.unpricedTokens},${r.agentStep ?? ""}`,
     );
     return [header, ...lines].join("\n");
   }

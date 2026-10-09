@@ -76,6 +76,18 @@ export interface CreateChannelInput {
   enabled?: boolean;
 }
 
+/** #977 — `GET /workspaces/:id/finops/usage-totals`, read live from the ledger. */
+export interface WorkspaceUsageTotals {
+  /** Start of the UTC month (ISO). */
+  from: string;
+  to: string;
+  totalTokens: number;
+  /** Unrounded USD of the priced usage; `null` when none of it was priced. */
+  costUsd: number | null;
+  unpricedTokens: number;
+  calls: number;
+}
+
 const base = (workspaceId: string) => `/workspaces/${workspaceId}/finops`;
 
 export const finopsApi = {
@@ -86,6 +98,10 @@ export const finopsApi = {
 
   getBudget: (workspaceId: string) =>
     apiFetch<{ monthlyBudgetCents: number | null }>(`${base(workspaceId)}/budget`),
+
+  /** #977 — month-to-date tokens and cost across the workspace's projects. */
+  getUsageTotals: (workspaceId: string) =>
+    apiFetch<WorkspaceUsageTotals>(`${base(workspaceId)}/usage-totals`),
 
   setBudget: (workspaceId: string, monthlyBudgetCents: number | null) =>
     apiFetch<{ monthlyBudgetCents: number | null }>(`${base(workspaceId)}/budget`, {

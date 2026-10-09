@@ -1083,6 +1083,14 @@ export function isAgentPhaseResultKey(key: unknown): key is AgentRef {
   return typeof key === "string" && AGENT_PHASE_KEY_RE.test(key);
 }
 
+/** #977 — an analysis's ledger spend so far; see {@link AnalysisSnapshot.ledgerUsage}. */
+export interface AnalysisLedgerUsage {
+  totalTokens: number;
+  /** Unrounded USD of the priced calls; `null` when none was priced. */
+  costUsd: number | null;
+  unpricedTokens: number;
+}
+
 /**
  * Snapshot of an analysis returned by `GET /api/analyses/:id` and pushed over
  * Socket.IO when the run completes.
@@ -1096,6 +1104,15 @@ export interface AnalysisSnapshot {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /**
+   * #977 — the run's spend as the project ledger (`token_usages`) has it so
+   * far: every model call billed to this analysis's session, read when the
+   * snapshot is. `totalTokens` is written only when the run finishes, so a
+   * running analysis read "0 tok" throughout; this moves as calls land.
+   * `costUsd` is unrounded (`null` = none of it was priced). Absent or `null`
+   * when the ledger could not be read.
+   */
+  ledgerUsage?: AnalysisLedgerUsage | null;
   errorMessage: string | null;
   metadata: Record<string, unknown> | null;
   agents: Array<{

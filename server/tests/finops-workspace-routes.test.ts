@@ -115,9 +115,22 @@ vi.mock("../src/lib/prisma.js", async () => {
     },
     project: { findMany: vi.fn(async () => []) },
     aITokenUsage: { findMany: vi.fn(async () => []) },
+    // #977 — the three grouped reads of `sumLedgerUsage`, told apart by `where`.
+    tokenUsage: { aggregate: ledgerAggregate },
   });
   return { prisma };
 });
+
+const ledgerAggregate = vi.hoisted(() =>
+  vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+    const clauses = (where.AND as Array<Record<string, unknown>> | undefined) ?? [];
+    const legacy = clauses.some((c) => "costCents" in c && c.costCents !== null);
+    const unpriced = clauses.some((c) => c.costUsd === null && c.costCents === null);
+    if (legacy) return { _sum: { costCents: 2 } };
+    if (unpriced) return { _sum: { totalTokens: 500 }, _count: { _all: 1 } };
+    return { _sum: { totalTokens: 12_500, costUsd: 0.4567 }, _count: { _all: 4 } };
+  }),
+);
 
 vi.mock("../src/lib/docs-gen/exporters.js", () => ({
   exportDocument: vi.fn(async (_md: string, title: string) => ({
@@ -181,6 +194,35 @@ describe("budget", () => {
       .set(auth())
       .send({ monthlyBudgetCents: -5 });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /usage-totals (#977)", () => {
+  it("returns month-to-date ledger tokens and unrounded cost for the workspace's projects", async () => {
+    ledgerAggregate.mockClear();
+    const res = await request(app).get("/api/workspaces/w1/finops/usage-totals").set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      totalTokens: 12_500,
+      unpricedTokens: 500,
+      calls: 4,
+    });
+    // $0.4567 priced + 2¢ from a legacy costCents-only row, never re-rounded.
+    expect(res.body.data.costUsd).toBeCloseTo(0.4767, 10);
+    const now = new Date();
+    expect(res.body.data.from).toBe(
+      new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+    );
+    // Every read is scoped to THIS workspace's projects and the month.
+    const base = ledgerAggregate.mock.calls[0]![0].where as {
+      project: { workspaceId: string };
+      createdAt: { gte: Date };
+    };
+    expect(base.project).toEqual({ workspaceId: "w1" });
+    expect(base.createdAt.gte.toISOString()).toBe(res.body.data.from);
+    for (const [args] of ledgerAggregate.mock.calls.slice(1)) {
+      expect((args.where.AND as unknown[])[0]).toBe(base);
+    }
   });
 });
 
