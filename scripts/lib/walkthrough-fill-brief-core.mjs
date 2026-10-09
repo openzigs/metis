@@ -39,7 +39,7 @@ const KEY_RE = /^[A-Z][A-Z0-9_]*$/;
 export const BRIEFS_DIR = ".github/skills/e2e-walkthrough/briefs";
 
 export const USAGE =
-  "Usage: fill-brief.mjs --state <state.json> --fixes <fixes.json> --out <dir> [--briefs <dir>]";
+  "Usage: fill-brief.mjs --state <state.json> --fixes <fixes.json> --out <dir> [--briefs <dir>] [--wave A,B,...]";
 
 /**
  * @typedef {object} BriefState
@@ -130,11 +130,15 @@ export function fillTemplate(text, values) {
 /**
  * Fill every brief, or report every reason not to.
  *
- * @param {{ briefs: Record<string, string>, state: BriefState, fixesDoc: import("./walkthrough-fixes-core.mjs").FixesDoc }} input
+ * With `waves`, only those waves' briefs are filled and checked for unfilled placeholders (a
+ * later wave's IDs do not exist yet); the unmapped, required-PR and unknown-brief checks stay
+ * run-wide.
+ *
+ * @param {{ briefs: Record<string, string>, state: BriefState, fixesDoc: import("./walkthrough-fixes-core.mjs").FixesDoc, waves?: string[] }} input
  * @returns {{ outputs: Record<string, string>, errors: string[] }}
  */
 export function fillBriefs(input) {
-  const { briefs, state, fixesDoc } = input;
+  const { briefs, state, fixesDoc, waves } = input;
   /** @type {string[]} */
   const errors = [];
   /** @type {Record<string, string>} */
@@ -154,6 +158,7 @@ export function fillBriefs(input) {
       errors.push(`${name}: no wave for this brief; add it to BRIEF_WAVES`);
       continue;
     }
+    if (waves && !waves.includes(wave)) continue;
     const filled = fillTemplate(text, {
       ...state.placeholders,
       FIXES_TO_VERIFY: renderFixesForWave(fixesDoc.fixes, wave),
@@ -184,11 +189,26 @@ export function runFillBrief(argv, io) {
   const flags = {};
   for (let i = 0; i < argv.length; i += 2) {
     const [flag, value] = [argv[i], argv[i + 1]];
-    if (!["--state", "--fixes", "--out", "--briefs"].includes(flag) || value === undefined) {
+    if (
+      !["--state", "--fixes", "--out", "--briefs", "--wave"].includes(flag) ||
+      value === undefined ||
+      value.startsWith("--")
+    ) {
       io.error(`bad argument "${flag}"\n${USAGE}`);
       return 2;
     }
     flags[flag] = value;
+  }
+  /** @type {string[] | undefined} */
+  let waves;
+  if (flags["--wave"] !== undefined) {
+    waves = flags["--wave"].split(",");
+    const known = new Set(Object.values(BRIEF_WAVES));
+    const bad = waves.filter((w) => !known.has(w));
+    if (bad.length > 0) {
+      io.error(`--wave: unknown wave ${bad.join(", ")}; expected ${[...known].join(", ")}\n${USAGE}`);
+      return 2;
+    }
   }
   for (const flag of ["--state", "--fixes", "--out"]) {
     if (flags[flag] === undefined) {
@@ -214,7 +234,12 @@ export function runFillBrief(argv, io) {
       io.error(`fill-brief refused: no briefs in ${briefsDir}`);
       return 1;
     }
-    const result = fillBriefs({ briefs, state: parsedState.state, fixesDoc: parsedFixes.doc });
+    const result = fillBriefs({
+      briefs,
+      state: parsedState.state,
+      fixesDoc: parsedFixes.doc,
+      waves,
+    });
     if (result.errors.length > 0) {
       io.error(`fill-brief refused; nothing written:\n  ${result.errors.join("\n  ")}`);
       return 1;

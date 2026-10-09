@@ -12,6 +12,7 @@ import {
   confirmedOpenIssues,
   fixLine,
   isRelevantPath,
+  isSha,
   isRuntimeDependencyBump,
   lookupPhase,
   orderFixes,
@@ -668,5 +669,36 @@ describe("runFixesSince (CLI)", () => {
     expect(t.out.at(-1)).toContain("  #939");
     expect(runFixesSince(["--close-list", "empty.json"], t.io)).toBe(0);
     expect(t.out.at(-1)).toBe("No confirmed issue is still open.");
+  });
+});
+
+describe("anchored guards (review of #969)", () => {
+  it("isSha accepts only a bare hex object name, never an option or padded text", () => {
+    expect(isSha("deadbeef")).toBe(true);
+    expect(isSha("--output=/tmp/deadbeef")).toBe(false);
+    expect(isSha("xdeadbeef")).toBe(false);
+    expect(isSha("deadbeefz")).toBe(false);
+  });
+
+  it("attributes a commit to the trailing PR number only", () => {
+    const [revert, inner] = parseFirstParentLog(
+      logText([
+        ["a1", 'Revert "fix: x (#12)" (#34)', ""],
+        ["b2", "fix: y (#12) and more", ""],
+      ]),
+    );
+    expect(revert.pr).toBe(34);
+    expect(inner.pr).toBeNull();
+  });
+
+  it("lookupPhase prefers the closing issue over the PR when both are mapped", () => {
+    const both = {
+      issues: { 5: { wave: "A", phase: "1" } },
+      prs: { 960: { wave: "B", phase: "2" } },
+    };
+    expect(lookupPhase(/** @type {any} */ (both), { pr: 960, issues: [5] })).toEqual({
+      wave: "A",
+      phase: "1",
+    });
   });
 });

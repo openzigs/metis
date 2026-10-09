@@ -130,6 +130,29 @@ describe("fillBriefs", () => {
     ]);
   });
 
+  it("with waves, fills and checks only those briefs but keeps run-wide checks", () => {
+    const briefs = {
+      "wave-a.md": "{{RUN_NUMBER}} {{FIXES_TO_VERIFY}}",
+      "wave-b.md": "{{PROJECT_ID}}",
+    };
+    const only = fillBriefs({ briefs, state, fixesDoc: doc(), waves: ["A"] });
+    expect(only.errors).toEqual([]);
+    expect(Object.keys(only.outputs)).toEqual(["wave-a.md"]);
+    const all = fillBriefs({ briefs, state, fixesDoc: doc() });
+    expect(all.errors).toEqual(["wave-b.md: unfilled placeholder {{PROJECT_ID}}"]);
+    const wide = fillBriefs({
+      briefs: { ...briefs, "wave-z.md": "x" },
+      state: { placeholders: { RUN_NUMBER: "5" }, requiredPrs: [99] },
+      fixesDoc: doc({ unmapped: [{ pr: 7, issues: [], title: "t", reason: "r" }] }),
+      waves: ["A"],
+    });
+    expect(wide.errors).toEqual([
+      "fixes.json: PR #7 is relevant but placed in no wave (r)",
+      "required PR #99 is missing from fixes.json fixes[]",
+      "wave-z.md: no wave for this brief; add it to BRIEF_WAVES",
+    ]);
+  });
+
   it("knows a wave for every committed brief", () => {
     for (const name of fs.readdirSync(BRIEFS)) expect(BRIEF_WAVES[name], name).toBeDefined();
     expect(BRIEF_WAVES["wave-f.md"]).toBe("F");
@@ -195,6 +218,22 @@ describe("runFillBrief", () => {
     ).toBe(1);
     expect(t.written).toEqual({});
     expect(t.err[0]).toContain("wave-b.md: unfilled placeholder {{MISSING}}");
+  });
+
+  it("--wave writes only the named waves and rejects unknown waves or a flag as a value", () => {
+    const t = io({
+      "s.json": state,
+      "f.json": JSON.stringify(doc()),
+      "b/wave-a.md": "{{RUN_NUMBER}}",
+      "b/wave-b.md": "{{PROJECT_ID}}",
+    });
+    const base = ["--state", "s.json", "--fixes", "f.json", "--out", "o", "--briefs", "b"];
+    expect(runFillBrief([...base, "--wave", "A"], t.io)).toBe(0);
+    expect(Object.keys(t.written)).toEqual([path.join("o", "wave-a.md")]);
+    expect(runFillBrief([...base, "--wave", "B"], t.io)).toBe(1);
+    expect(runFillBrief([...base, "--wave", "Z"], t.io)).toBe(2);
+    expect(t.err.at(-1)).toContain("unknown wave Z");
+    expect(runFillBrief(["--state", "--fixes", "f.json", "--out", "o"], t.io)).toBe(2);
   });
 
   it("refuses invalid inputs, an empty briefs dir and bad arguments", () => {

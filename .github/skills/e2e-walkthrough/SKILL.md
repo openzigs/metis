@@ -140,7 +140,9 @@ publishes count toward the run's cap of 2, so leave it a slot or let it dry-run 
 2. **Review `fixes.json`.** A relevant PR the map cannot place lands in `unmapped` and is
    printed: add it to `docs/walkthroughs/fix-phase-map.json` (by issue, or by PR) and re-run.
    A fix no wave can verify, such as walkthrough tooling, gets `{"skip": "<reason>"}` there and
-   is listed under `excluded`, and in the scope comment. Edit a `check` line that would not tell a wave agent what to look at.
+   is listed under `excluded`, and in the scope comment. Edit a `check` line that would not tell a wave agent what to look at. This review also screens
+   the check text: when the map gives none it defaults to the issue or PR title, and that text goes
+   verbatim into briefs the wave agents act on.
 3. **Post the scope** on #706 before wave A: `gh issue comment 706 --body-file <run>/scope.md`.
 4. **Fill the briefs.** Write `<run>/state.json`:
    `{"placeholders": {"RUN_NUMBER": "5", "UI_URL": "…", …}, "requiredPrs": [952]}`, then
@@ -150,7 +152,10 @@ publishes count toward the run's cap of 2, so leave it a slot or let it dry-run 
    ```
    Each brief gets its own wave's fixes as `{{FIXES_TO_VERIFY}}`. It writes nothing while any
    placeholder is unfilled, any PR is `unmapped`, or a `requiredPrs` entry is missing from the
-   fixes. Re-run it before each wave with that wave's returned IDs added.
+   fixes. Later waves need IDs earlier waves produce, so fill one wave at a time: add `--wave A`
+   (or `--wave B`, `A,B`) to fill and check only those briefs, then re-run with the next wave's
+   returned IDs added to `state.json`. The unmapped, `requiredPrs` and unknown-brief checks stay
+   run-wide; without `--wave`, every brief must be fully filled.
 5. **Run the waves**, then record each fix's verdict in `run.json` (section 7).
 6. **Build the decks** (section 7), then **close what the run confirmed** (section 8).
 
