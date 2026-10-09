@@ -225,6 +225,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
 ### Phase 6 — Connectors: import and Jira
 - **Steps:**
   1. In `/projects/:id/import`, add an import source of kind `github`, owner `miniflux`, repo `v2`, state `open` (`POST /api/projects/:id/imports/preview`, then `POST …/sources`). Watch `GET …/runs`.
+     For a feature-only import, put `[Feature]:` in "Title starts with" (`titlePrefixes`, #1006). The preview count drops to the `[Feature]:` issues only, and the imported titles no longer carry the prefix.
   2. Open `/projects/:id/jira` (`/api/jira/connections`). *(The test-management connections page was removed with Test Coverage, #812 / #819.)*
 - **Works:**
   - The preview shows a count roughly equal to Miniflux's open *issues* (fewer than the 287 issues + PRs).
@@ -235,6 +236,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
 ### Phase 7 — Analysis, deep dive and agents
 - **Steps:**
   1. In `/projects/:id/analysis`, start an analysis: `POST /api/projects/:id/analyses`, after `GET …/analyses/capability` and `GET /api/analyses/personas`.
+     To analyse imported items, tick them in "Analyze imported requirements" (`GET …/analyses/imported-requirements`, sent as `importedRequirementIds`, #1006). The run's Summary tab then lists each one as "Imported requirements analyzed in this run", with its `NR-*` id and a link back to the GitHub issue.
   2. Watch the agents (`code`, `database`, `document`, `synthesis`, `web`). An analysis shows "0 tok" until it ends, so poll `GET /api/analyses/:id`.
   3. Open one finding's **deep dive** (`POST …/analyses/:aid/findings/:fid/deep-dive`).
   4. Regenerate one agent (`POST /api/analyses/:id/agents/:agentKey/regenerate`).
@@ -516,8 +518,8 @@ and the reviewer's name (`coordinator`).
 
 | # | Priya does | Must hold |
 |---|---|---|
-| J1.1 | In `/projects/:id/import`, imports open GitHub issues labelled as features from `miniflux/v2` | Titles and bodies kept. Types sensible ("[Bug]" not typed as a feature) |
-| J1.2 | Picks 5 imported items and runs requirements analysis in `/projects/:id/analysis` | The analysis cites real code for each. It is clear which agents ran |
+| J1.1 | In `/projects/:id/import`, imports open GitHub feature requests from `miniflux/v2`. Miniflux marks them with a `[Feature]:` title prefix, not a label, so she uses "Title starts with" (#1006) | Titles and bodies kept, without the `[Feature]:` prefix. Types sensible ("[Bug]" not typed as a feature). `[Feed Issue]` and `[Proposal]` items are not imported |
+| J1.2 | Picks 5 imported items in "Analyze imported requirements" and runs requirements analysis in `/projects/:id/analysis` | Each item is analysed as its own `NR-*` requirement and listed on the Summary tab with a link back to its issue (#1006). The analysis cites real code for each. It is clear which agents ran |
 | J1.3 | Answers the clarifying questions on the run's Questions tab | Her answers land in the requirements she approves |
 | J1.4 | Invites the reviewer from `/settings/workspaces/:id`, requests review on `/projects/:id/requirements`, approves the checkpoint, edits one requirement's acceptance criteria | Approval flows through to the requirements (#939). The edit keeps links, labels and version history (#940). The review appears on `/reviews` |
 | J1.5 | Opens traceability for her 5 requirements | Each links to code. "Tested by" shows real tests or says untested (#905) |
