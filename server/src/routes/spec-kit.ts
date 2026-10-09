@@ -57,6 +57,7 @@ import { runChecklist } from "../lib/spec-kit/commands/checklist.js";
 import { runPlanExpanded } from "../lib/spec-kit/commands/plan-expanded.js";
 import { runSpecifyFeature } from "../lib/spec-kit/commands/specify-feature.js";
 import {
+  clearStuckTasksExport,
   exportTasksToGitHub,
   previewTasksExport,
   tasksExportBodySchema,
@@ -938,6 +939,19 @@ async function dispatchNamespaced(
         ...(extra.data.secretRef !== undefined ? { secretRef: extra.data.secretRef } : {}),
         ...(extra.data.expectedPlan !== undefined ? { expectedPlan: extra.data.expectedPlan } : {}),
       };
+      // #962 — "Clear stuck export" writes (deletes or records claims) after
+      // reading GitHub, so it is never a dry run and counts as a live export
+      // for the rate limit.
+      if (extra.data.clearStuckClaims) {
+        if (body.dryRun === true) {
+          throw new AppError(
+            400,
+            "BAD_REQUEST",
+            "Clearing a stuck export is not a dry run; send it without dryRun.",
+          );
+        }
+        return clearStuckTasksExport(exportInput);
+      }
       return body.dryRun === true
         ? previewTasksExport(exportInput)
         : exportTasksToGitHub(exportInput);

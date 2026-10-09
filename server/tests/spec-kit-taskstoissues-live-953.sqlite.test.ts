@@ -31,7 +31,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { VaultService, __resetVaultSingleton } = await import("../src/lib/vault/vault-service.js");
-const { previewTasksExport, exportTasksToGitHub } =
+const { previewTasksExport, exportTasksToGitHub, clearStuckTasksExport } =
   await import("../src/lib/spec-kit/commands/taskstoissues-github.js");
 const { writeFeatureArtifact } = await import("../src/lib/spec-kit/feature-artifacts.js");
 const { __setPublishOctokitFactory, __resetPublishOctokitCache } =
@@ -77,6 +77,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const calls: Call[] = [];
     let respond: (c: Call) => { status: number; data: unknown } | undefined = () => undefined;
     let nextIssue = 100;
+    /** #962 — the issues the fake GitHub holds, for the reconcile list call. */
+    const filed: Array<{
+      id: number;
+      number: number;
+      title: string;
+      body: string;
+      html_url: string;
+    }> = [];
+    /** File an issue on the fake GitHub, as a successful POST does. */
+    function fileIssue(c: Call) {
+      nextIssue += 1;
+      const d = c.data as { title: string; body: string };
+      const issue = {
+        id: 9_000 + nextIssue,
+        number: nextIssue,
+        title: d.title,
+        body: d.body,
+        html_url: `https://github.com/openzigs/flux-v2/issues/${nextIssue}`,
+      };
+      filed.push(issue);
+      return issue;
+    }
+    const listCalls = () => calls.filter((c) => c.method === "GET" && c.url.includes("/issues?"));
 
     const issuePosts = () => calls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"));
     const writes = () => calls.filter((c) => c.method !== "GET");
@@ -156,6 +179,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           calls.push(call);
           const custom = respond(call);
           if (custom) {
+            // #962 — status 0: the connection dropped, no HTTP status at all.
+            if (custom.status === 0) throw new Error("socket hang up");
             if (custom.status >= 400) {
               throw Object.assign(new Error(`HttpError ${TOKEN} leaked?`), {
                 status: custom.status,
@@ -171,12 +196,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               throw Object.assign(new Error("Not Found"), { status: 404 });
             data = name === "me/v2" ? { parent: { full_name: "miniflux/v2" } } : {};
           } else if (args.method === "POST" && u.endsWith("/issues")) {
-            nextIssue += 1;
-            data = {
-              id: 9_000 + nextIssue,
-              number: nextIssue,
-              html_url: `https://github.com/openzigs/flux-v2/issues/${nextIssue}`,
-            };
+            data = fileIssue(call);
+          } else if (args.method === "GET" && u.includes("/issues?")) {
+            data = u.includes("&page=1") ? filed : [];
           }
           return { status: 201, headers: {}, data: data as T };
         },
@@ -185,6 +207,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     beforeEach(async () => {
       calls.length = 0;
+      filed.length = 0;
       nextIssue = 100;
       respond = () => undefined;
       __resetPublishOctokitCache();
@@ -201,6 +224,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     afterEach(() => {
       delete process.env.SPECKIT_EXPORT_MAX_ISSUES;
+      delete process.env.SPECKIT_EXPORT_CLAIM_TTL_MS;
     });
 
     afterAll(async () => {
@@ -420,8 +444,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(err).toMatchObject({ status: 502, code: "GITHUB_REQUEST_FAILED" });
       expect(err.message).toContain("HTTP 500");
       expect(err.message).not.toContain(TOKEN);
-      const rows = await db.specKitTaskExport.findMany();
-      expect(rows.map((r) => r.taskId)).toEqual(["T01"]);
+      // #962 — a 500 is ambiguous: T02's claim is kept, owned by no run.
+      const rows = await db.specKitTaskExport.findMany({ orderBy: { taskId: "asc" } });
+      expect(rows.map((r) => [r.taskId, r.issueNumber, r.claimRunId])).toEqual([
+        ["T01", 101, null],
+        ["T02", 0, null],
+      ]);
       expect(vi.mocked(audit)).toHaveBeenCalledWith(
         expect.objectContaining({
           action: "speckit.tasks_export_failed",
@@ -502,47 +530,316 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ]);
     });
 
-    it("a GitHub failure releases the task's claim so a retry can create it", async () => {
-      const plan = await previewTasksExport(base());
-      respond = (c) =>
-        c.method === "POST" && c.url.endsWith("/issues") ? { status: 500, data: {} } : undefined;
-      await expect(
-        exportTasksToGitHub({
-          ...base(),
-          expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
-        }),
-      ).rejects.toBeDefined();
-      expect(await db.specKitTaskExport.count()).toBe(0);
-      respond = () => undefined;
-      const out = await exportTasksToGitHub({
-        ...base(),
-        expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
-      });
-      expect(out.created).toHaveLength(2);
-    });
+    // ── #962: claims are reconciled, never stuck and never duplicated ──────────
 
-    it("refuses (409) while another run's claim is still unresolved", async () => {
+    async function plantClaim(
+      taskId: string,
+      claim: { claimedAt: Date | null; claimRunId: string | null },
+    ) {
       await db.specKitTaskExport.create({
         data: {
           projectId: P,
           featureSlug: SLUG,
-          taskId: "T01",
+          taskId,
           issueNumber: 0,
           repoOwner: "openzigs",
           repoName: "flux-v2",
+          ...claim,
         },
       });
-      const plan = await previewTasksExport(base());
-      expect(plan.created.map((c) => c.title)).toEqual(["[T01] Build A", "[T02] Build B"]);
-      await expect(
-        exportTasksToGitHub({
-          ...base(),
-          expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
-        }),
-      ).rejects.toMatchObject({ status: 409, code: "SPECKIT_EXPORT_IN_PROGRESS" });
-      expect(issuePosts()).toEqual([]);
+    }
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
+    const publish = (plan: { tasksVersion: number; planDigest: string }) =>
+      exportTasksToGitHub({
+        ...base(),
+        expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+      });
+    /** An issue an earlier, interrupted run filed for `taskId` of `slug`. */
+    function preFiled(taskId: string, title: string, slug = SLUG) {
+      return fileIssue({
+        method: "POST",
+        url: "/repos/openzigs/flux-v2/issues",
+        data: {
+          title,
+          body: `Source: specs/${slug}/tasks.md#${taskId}\n\nParallelizable: no\n`,
+        },
+        token: TOKEN,
+        baseUrl: "https://api.github.com",
+      });
+    }
+
+    it("a definitive GitHub refusal (4xx) releases the claim, so a retry creates the task", async () => {
+      respond = (c) =>
+        c.method === "POST" && c.url.endsWith("/issues") ? { status: 422, data: {} } : undefined;
+      await expect(publish(await previewTasksExport(base()))).rejects.toMatchObject({
+        code: "GITHUB_REQUEST_FAILED",
+      });
+      expect(await db.specKitTaskExport.count()).toBe(0);
+      respond = () => undefined;
+      calls.length = 0;
+      const out = await publish(await previewTasksExport(base()));
+      expect(out.created.map((c) => c.state)).toEqual(["new", "new"]);
+      // Nothing was claimed, so nothing is looked up before creating.
+      expect(listCalls()).toEqual([]);
     });
 
+    for (const [kind, reply] of [
+      ["a 5xx", { status: 502, data: {} }],
+      ["a network error", { status: 0, data: undefined }],
+      ["a 2xx with no issue in it", { status: 201, data: { message: "ok?" } }],
+    ] as const) {
+      it(`${kind} after GitHub filed the issue keeps the claim, and the retry adopts it — no duplicate (#962)`, async () => {
+        let first = true;
+        respond = (c) => {
+          if (first && c.method === "POST" && c.url.endsWith("/issues")) {
+            first = false;
+            fileIssue(c); // GitHub did create it; the answer is what got lost.
+            return reply;
+          }
+          return undefined;
+        };
+        await expect(publish(await previewTasksExport(base()))).rejects.toMatchObject({
+          code: "GITHUB_REQUEST_FAILED",
+        });
+        const kept = await db.specKitTaskExport.findMany();
+        expect(kept.map((r) => [r.taskId, r.issueNumber, r.claimRunId])).toEqual([
+          ["T01", 0, null],
+        ]);
+
+        const plan = await previewTasksExport(base());
+        expect(plan.created.map((c) => [c.taskId, c.state])).toEqual([
+          ["T01", "reconcile"],
+          ["T02", "new"],
+        ]);
+        const out = await publish(plan);
+        expect(out.created.map((c) => [c.taskId, c.state, c.issueNumber])).toEqual([
+          ["T01", "adopted", 101],
+          ["T02", "new", 102],
+        ]);
+        expect(listCalls().length).toBeGreaterThan(0);
+        expect(listCalls().every((c) => c.url.startsWith("/repos/openzigs/flux-v2/issues?"))).toBe(
+          true,
+        );
+        // One POST per task, ever: the lost one and T02's.
+        expect(issuePosts().map((c) => (c.data as { title: string }).title)).toEqual([
+          "[T01] Build A",
+          "[T02] Build B",
+        ]);
+        expect(filed).toHaveLength(2);
+        const rows = await db.specKitTaskExport.findMany({
+          orderBy: { taskId: "asc" },
+        });
+        expect(rows.map((r) => [r.taskId, r.issueNumber])).toEqual([
+          ["T01", 101],
+          ["T02", 102],
+        ]);
+      });
+    }
+
+    it("a kept claim whose issue GitHub never filed is re-created after the search (#962)", async () => {
+      await plantClaim("T01", { claimedAt: minutesAgo(1), claimRunId: null });
+      const out = await publish(await previewTasksExport(base()));
+      expect(out.created.map((c) => [c.taskId, c.state])).toEqual([
+        ["T01", "new"],
+        ["T02", "new"],
+      ]);
+      expect(listCalls()).toHaveLength(1);
+      expect(issuePosts()).toHaveLength(2);
+    });
+
+    it("does not adopt another feature's issue for the same task id (#962)", async () => {
+      preFiled("T01", "[T01] Build A", "002-other");
+      await plantClaim("T01", { claimedAt: minutesAgo(1), claimRunId: null });
+      const out = await publish(await previewTasksExport(base()));
+      expect(out.created[0]).toMatchObject({
+        taskId: "T01",
+        state: "new",
+        issueNumber: 102,
+      });
+    });
+
+    it("a claim whose run died is abandoned after SPECKIT_EXPORT_CLAIM_TTL_MS and reconciled (#962)", async () => {
+      await plantClaim("T01", {
+        claimedAt: minutesAgo(11),
+        claimRunId: "dead-run",
+      });
+      preFiled("T01", "[T01] Build A");
+      // Within a longer TTL the same claim is still in progress.
+      process.env.SPECKIT_EXPORT_CLAIM_TTL_MS = String(60 * 60_000);
+      expect((await previewTasksExport(base())).created.map((c) => c.state)).toEqual([
+        "in_progress",
+        "new",
+      ]);
+      delete process.env.SPECKIT_EXPORT_CLAIM_TTL_MS;
+      const plan = await previewTasksExport(base());
+      expect(plan.created.map((c) => c.state)).toEqual(["reconcile", "new"]);
+      const out = await publish(plan);
+      expect(out.created.map((c) => [c.state, c.issueNumber])).toEqual([
+        ["adopted", 101],
+        ["new", 102],
+      ]);
+      expect(issuePosts().map((c) => (c.data as { title: string }).title)).toEqual([
+        "[T02] Build B",
+      ]);
+    });
+
+    it("refuses (409) at plan time, audited, while another run holds a claim — before any POST", async () => {
+      // On T02, not T01: T01 is planned first, so only the plan-time guard can
+      // stop T01's POST; the claim-time unique row would fire after it.
+      await plantClaim("T02", { claimedAt: new Date(), claimRunId: "other-run" });
+      const plan = await previewTasksExport(base());
+      expect(plan.created.map((c) => [c.taskId, c.state])).toEqual([
+        ["T01", "new"],
+        ["T02", "in_progress"],
+      ]);
+      await expect(publish(plan)).rejects.toMatchObject({
+        status: 409,
+        code: "SPECKIT_EXPORT_IN_PROGRESS",
+      });
+      expect(issuePosts()).toEqual([]);
+      expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+      const rows = await db.specKitTaskExport.findMany();
+      expect(rows.map((r) => [r.taskId, r.issueNumber, r.claimRunId])).toEqual([
+        ["T02", 0, "other-run"],
+      ]);
+      expect(vi.mocked(audit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "speckit.tasks_export_refused",
+          metadata: expect.objectContaining({ code: "SPECKIT_EXPORT_IN_PROGRESS" }),
+        }),
+      );
+    });
+
+    it("Clear stuck export adopts what GitHub has, deletes what it lacks, and leaves a live claim (#962)", async () => {
+      await plantClaim("T01", {
+        claimedAt: minutesAgo(30),
+        claimRunId: "dead-run",
+      });
+      await plantClaim("T02", { claimedAt: new Date(), claimRunId: "live-run" });
+      preFiled("T01", "[T01] Build A");
+      const first = await clearStuckTasksExport(base());
+      expect(first).toMatchObject({
+        adopted: [{ taskId: "T01", issueNumber: 101 }],
+        cleared: [],
+        inProgress: ["T02"],
+      });
+      await db.specKitTaskExport.update({
+        where: {
+          projectId_featureSlug_taskId: {
+            projectId: P,
+            featureSlug: SLUG,
+            taskId: "T02",
+          },
+        },
+        data: { claimedAt: minutesAgo(30) },
+      });
+      const second = await clearStuckTasksExport(base());
+      expect(second).toMatchObject({
+        adopted: [],
+        cleared: ["T02"],
+        inProgress: [],
+      });
+      const rows = await db.specKitTaskExport.findMany();
+      expect(rows.map((r) => [r.taskId, r.issueNumber])).toEqual([["T01", 101]]);
+      expect(writes()).toEqual([]);
+      expect(calls.every((c) => c.url.startsWith("/repos/"))).toBe(true);
+      expect(vi.mocked(audit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "speckit.tasks_export_claims_cleared",
+          metadata: expect.objectContaining({ cleared: ["T02"], inProgress: [] }),
+        }),
+      );
+      // The next dry run plans T02 as new, and publishing creates only it.
+      const plan = await previewTasksExport(base());
+      expect(plan.created.map((c) => c.state)).toEqual(["exported", "new"]);
+    });
+
+    it("Clear stuck export keeps the claim when GitHub cannot be searched (#962)", async () => {
+      await plantClaim("T01", {
+        claimedAt: minutesAgo(30),
+        claimRunId: "dead-run",
+      });
+      respond = (c) =>
+        c.method === "GET" && c.url.includes("/issues?") ? { status: 503, data: {} } : undefined;
+      await expect(clearStuckTasksExport(base())).rejects.toMatchObject({
+        code: "GITHUB_REQUEST_FAILED",
+      });
+      const rows = await db.specKitTaskExport.findMany();
+      expect(rows.map((r) => [r.taskId, r.issueNumber, r.claimRunId])).toEqual([["T01", 0, null]]);
+    });
+
+    it("Clear stuck export is refused, and audited, without a vault secret or on an analysed target", async () => {
+      await expect(
+        clearStuckTasksExport({ ...base(), secretRef: undefined }),
+      ).rejects.toMatchObject({ code: "TOKEN_REQUIRED" });
+      await db.project.update({
+        where: { id: P },
+        data: { publishGithubOwner: "miniflux", publishGithubRepo: "v2" },
+      });
+      await expect(clearStuckTasksExport(base())).rejects.toMatchObject({
+        code: "PUBLISH_TARGET_IS_ANALYSED_REPO",
+      });
+      const refused = vi
+        .mocked(audit)
+        .mock.calls.map((c) => c[0])
+        .filter((a) => a.action === "speckit.tasks_export_refused");
+      expect(refused.map((a) => [a.metadata?.operation, a.metadata?.code])).toEqual([
+        ["clear", "TOKEN_REQUIRED"],
+        ["clear", "PUBLISH_TARGET_IS_ANALYSED_REPO"],
+      ]);
+      expect(calls).toEqual([]);
+    });
+
+    // ── #953: every refusal of a live export is audited, plan stage included ──
+
+    const DUMMY_PLAN = { tasksVersion: 1, digest: "0".repeat(64) };
+    async function expectRefusedAudited(code: string, run: () => Promise<unknown>) {
+      vi.mocked(audit).mockClear();
+      await expect(run()).rejects.toMatchObject({ code });
+      expect(vi.mocked(audit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "speckit.tasks_export_refused",
+          metadata: expect.objectContaining({ code, featureSlug: SLUG }),
+        }),
+      );
+      expect(issuePosts()).toEqual([]);
+    }
+
+    it("audits the tasks gate's 412 refusal of a live export", async () => {
+      await db.specKitFeatureArtifact.deleteMany({ where: { key: "tasks.md" } });
+      await expectRefusedAudited("SPECKIT_GATE_UNMET", () =>
+        exportTasksToGitHub({ ...base(), expectedPlan: DUMMY_PLAN }),
+      );
+    });
+
+    it("audits the missing-tasks.md 412 refusal of a forced live export", async () => {
+      await db.specKitFeatureArtifact.deleteMany({ where: { key: "tasks.md" } });
+      await expectRefusedAudited("SPECKIT_GATE_UNMET", () =>
+        exportTasksToGitHub({ ...base(), force: true, expectedPlan: DUMMY_PLAN }),
+      );
+    });
+
+    it("audits the dependency-cycle 400 refusal of a live export", async () => {
+      await db.specKitFeatureArtifact.updateMany({
+        where: { key: "tasks.md" },
+        data: {
+          content: [
+            "| ID | Title | SP | Deps | Notes |",
+            "| --- | --- | --- | --- | --- |",
+            "| T01 | Build A | 3 | T02 |  |",
+            "| T02 | Build B | 2 | T01 |  |",
+          ].join("\n"),
+        },
+      });
+      await expectRefusedAudited("SPECKIT_TASKS_CYCLE", () =>
+        exportTasksToGitHub({ ...base(), expectedPlan: DUMMY_PLAN }),
+      );
+    });
+
+    it("audits the 422 refusal of an oversized live export", async () => {
+      process.env.SPECKIT_EXPORT_MAX_ISSUES = "1";
+      await expectRefusedAudited("SPECKIT_EXPORT_TOO_LARGE", () => planThenPublish());
+    });
     it("refuses (409) when the parent epic changed since the dry run", async () => {
       await db.specKitConfig.create({ data: { projectId: P, tasksToIssuesParentEpic: 9 } });
       const plan = await previewTasksExport(base());

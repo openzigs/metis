@@ -57,6 +57,13 @@ const REQUIRES_UPDATE = "Requires project.update";
 /** #936 — shown when the server's dry run reports it cannot publish (`publishAvailable: false`). */
 const PUBLISH_UNAVAILABLE =
   "Publishing issues to GitHub is not available on this server yet. The dry run lists the issues it would create.";
+/** #962 — Publish waits while another export holds a task. */
+const EXPORT_IN_PROGRESS =
+  "Another export of this feature is still running. Wait a few minutes, then run the dry run again.";
+const CLAIM_TEXT: Record<"in_progress" | "reconcile", string> = {
+  in_progress: "in progress",
+  reconcile: "abandoned, will reconcile",
+};
 /** #953 — Publish needs the dry run to have resolved a vault secret. */
 const CREDENTIAL_NEEDED = "Pick a GitHub token from the vault, then run the dry run again.";
 const CREDENTIAL_TEXT: Record<"resolved" | "missing" | "unresolved", string> = {
@@ -123,6 +130,8 @@ export default function SpecKitPage() {
     plan: { tasksVersion: number; digest: string } | null;
     secretRef: string;
     credentialCheck: "resolved" | "missing" | "unresolved";
+    /** #962 — tasks an earlier export claimed: not new, so listed apart. */
+    claims: Array<{ title: string; state: "in_progress" | "reconcile" }>;
   } | null>(null);
   // #953 — the `${vault:label}` the export publishes with (VaultPicker only).
   const [exportSecretRef, setExportSecretRef] = useState("");
@@ -260,8 +269,13 @@ export default function SpecKitPage() {
                 tasksVersion: featureArtifacts.find((a) => a.key === "tasks.md")?.version ?? null,
                 repo: result.repo ? `${result.repo.owner}/${result.repo.name}` : null,
                 titles: (result.created ?? [])
-                  .filter((c) => !c.upserted)
+                  .filter((c) => (c.state ? c.state === "new" : !c.upserted))
                   .map((c) => c.title ?? c.taskId),
+                claims: (result.created ?? []).flatMap((c) =>
+                  c.state === "in_progress" || c.state === "reconcile"
+                    ? [{ title: c.title ?? c.taskId, state: c.state }]
+                    : [],
+                ),
                 publishAvailable: result.publishAvailable === true,
                 plan:
                   typeof result.tasksVersion === "number" && typeof result.planDigest === "string"
@@ -348,6 +362,11 @@ export default function SpecKitPage() {
     exportPreview.credentialCheck === "resolved" &&
     exportPreview.secretRef === exportSecretRef.trim();
   const exportSecretHint = vaultRefHint(exportSecretRef);
+  // #962 — a task another export holds blocks Publish; an abandoned one is
+  // reconciled by it (looked up on GitHub, adopted or created).
+  const exportInProgress = exportPreview?.claims.some((c) => c.state === "in_progress") ?? false;
+  const reconcileCount = exportPreview?.claims.filter((c) => c.state === "reconcile").length ?? 0;
+  const publishCount = (exportPreview?.titles.length ?? 0) + reconcileCount;
 
   const run = (command: SpecKitNamespacedCommand, options: SpecKitRunOptions = {}): void => {
     commandMutation.mutate({ command, options });
@@ -811,7 +830,13 @@ export default function SpecKitPage() {
                 exportPreview
                   ? `This creates ${exportPreview.titles.length} ${
                       exportPreview.titles.length === 1 ? "issue" : "issues"
-                    } in ${exportPreview.repo ?? "the project's saved issue target"}.`
+                    } in ${exportPreview.repo ?? "the project's saved issue target"}.${
+                      reconcileCount > 0
+                        ? ` It first looks there for ${reconcileCount} ${
+                            reconcileCount === 1 ? "issue" : "issues"
+                          } an abandoned export may have created, and records any it finds instead of creating them again.`
+                        : ""
+                    }`
                   : "This creates an issue for every task in the project's saved issue target."
               }
               confirmLabel="Publish"
@@ -837,9 +862,11 @@ export default function SpecKitPage() {
                     writeHint ??
                     (publishUnavailable
                       ? PUBLISH_UNAVAILABLE
-                      : exportPreview && !credentialReady
-                        ? CREDENTIAL_NEEDED
-                        : undefined)
+                      : exportInProgress
+                        ? EXPORT_IN_PROGRESS
+                        : exportPreview && !credentialReady
+                          ? CREDENTIAL_NEEDED
+                          : undefined)
                   }
                   disabled={
                     !canWrite ||
@@ -848,7 +875,8 @@ export default function SpecKitPage() {
                     exportPreview === null ||
                     publishUnavailable ||
                     !credentialReady ||
-                    exportPreview.titles.length === 0
+                    exportInProgress ||
+                    publishCount === 0
                   }
                   data-testid="spec-kit-export-publish"
                 >
@@ -866,6 +894,49 @@ export default function SpecKitPage() {
                     <li key={`${i}-${t}`}>{t}</li>
                   ))}
                 </ul>
+              </div>
+            ) : null}
+            {exportPreview && exportPreview.claims.length > 0 ? (
+              <div className="space-y-1 text-xs" data-testid="spec-kit-export-claims">
+                <p className="text-muted-foreground">Claimed by an earlier export (not new):</p>
+                <ul className="list-disc pl-4">
+                  {exportPreview.claims.map((c, i) => (
+                    <li key={`${i}-${c.title}`}>
+                      {c.title} — {CLAIM_TEXT[c.state]}
+                    </li>
+                  ))}
+                </ul>
+                {/* #962 — resolve the claims now: each is looked up on GitHub and
+                    recorded if found, cleared if not. A live one is left alone. */}
+                <ConfirmDialog
+                  title={`Clear the stuck export of ${selectedFeature}?`}
+                  description={`METIS looks in ${
+                    exportPreview.repo ?? "the saved target"
+                  } for the issues the earlier export may have created, records any it finds, and clears the rest so the next export creates them. Tasks another export is still running are left alone.`}
+                  confirmLabel="Clear stuck export"
+                  confirmVariant="default"
+                  onConfirm={() => {
+                    if (!exportPreview.secretRef) return;
+                    run("speckit.taskstoissues", {
+                      featureSlug: selectedFeature,
+                      clearStuckClaims: true,
+                      secretRef: exportPreview.secretRef,
+                    });
+                  }}
+                  trigger={
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="w-full"
+                      title={writeHint ?? (!credentialReady ? CREDENTIAL_NEEDED : undefined)}
+                      disabled={!canWrite || !enabled || busy || !credentialReady}
+                      data-testid="spec-kit-export-clear"
+                    >
+                      Clear stuck export
+                    </Button>
+                  }
+                />
               </div>
             ) : null}
             {exportPreview && !publishUnavailable ? (

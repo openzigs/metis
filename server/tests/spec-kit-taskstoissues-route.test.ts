@@ -18,6 +18,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const ADMIN = { userId: "u1", role: "admin" };
 const auth = vi.hoisted(() => ({
   user: { userId: "u1", role: "admin" } as { userId: string; role: string },
+  /** How many requests reached `requireAuth` (#953: the pre-auth limiter runs first). */
+  calls: 0,
 }));
 const db = vi.hoisted(() => ({
   projects: new Map<string, any>(),
@@ -30,6 +32,7 @@ const db = vi.hoisted(() => ({
 
 vi.mock("../src/middleware/auth.js", () => ({
   requireAuth: (req: any, _res: any, next: any) => {
+    auth.calls += 1;
     req.user = { ...auth.user, username: "tester" };
     next();
   },
@@ -324,5 +327,99 @@ describe("POST /commands/speckit.taskstoissues (real runner, #784)", () => {
     expect(res.body.error.code).toBe("FORBIDDEN");
     expect(prisma.specKitFeature.findUnique).not.toHaveBeenCalled();
     expect(db.taskExports.size).toBe(0);
+  });
+});
+
+/**
+ * #953 — the export's two limiters are wired into the REAL `specKitRouter`
+ * (the limiter unit test cannot see the route). Each test keys on its own
+ * user / client address so the shared in-process store cannot leak counts.
+ */
+describe("POST /commands/speckit.taskstoissues rate limits (#953)", () => {
+  const prevEnv = {
+    live: process.env.SPECKIT_EXPORT_LIVE_LIMIT_MAX,
+    pre: process.env.SPECKIT_EXPORT_PREAUTH_LIMIT_MAX,
+  };
+  afterEach(() => {
+    for (const [name, prev] of [
+      ["SPECKIT_EXPORT_LIVE_LIMIT_MAX", prevEnv.live],
+      ["SPECKIT_EXPORT_PREAUTH_LIMIT_MAX", prevEnv.pre],
+    ] as const) {
+      if (prev === undefined) delete process.env[name];
+      else process.env[name] = prev;
+    }
+  });
+
+  it("a user past the live-export limit gets 429; their dry runs are not counted", async () => {
+    process.env.SPECKIT_EXPORT_LIVE_LIMIT_MAX = "2";
+    auth.user = { userId: "u-rate-live", role: "admin" };
+    const app = makeApp();
+    const live = () => request(app).post(ROUTE).send({ featureSlug: "001-foo" });
+    expect((await live()).status).toBe(400); // TOKEN_REQUIRED — still counted
+    expect((await live()).status).toBe(400);
+    const limited = await live();
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("SPECKIT_EXPORT_RATE_LIMITED");
+    // #962 — a clear-stuck request writes too, so it is counted as live.
+    const clear = await request(app)
+      .post(ROUTE)
+      .send({ featureSlug: "001-foo", clearStuckClaims: true });
+    expect(clear.status).toBe(429);
+    const dry = await request(app).post(ROUTE).send({ featureSlug: "001-foo", dryRun: true });
+    expect(dry.status).not.toBe(429);
+  });
+
+  it("a client address past the pre-auth limit gets 429 before authentication runs", async () => {
+    process.env.SPECKIT_EXPORT_PREAUTH_LIMIT_MAX = "1";
+    const app = express();
+    // Trust the loopback hop so each test address is its own limiter key.
+    app.set("trust proxy", "loopback");
+    app.use(express.json());
+    app.use("/api/projects/:projectId/spec-kit", specKitRouter());
+    app.use(errorHandler);
+    const send = (ip: string) =>
+      request(app)
+        .post(ROUTE)
+        .set("X-Forwarded-For", ip)
+        .send({ featureSlug: "001-foo", dryRun: true });
+    expect((await send("203.0.113.53")).status).not.toBe(429);
+    const before = auth.calls;
+    const limited = await send("203.0.113.53");
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("SPECKIT_EXPORT_RATE_LIMITED");
+    expect(auth.calls).toBe(before);
+    // Another address is unaffected.
+    expect((await send("203.0.113.54")).status).not.toBe(429);
+  });
+});
+
+describe("POST /commands/speckit.taskstoissues clearStuckClaims (#962)", () => {
+  it("is refused 400 as a dry run, and 400 TOKEN_REQUIRED (audited) without a vault secret", async () => {
+    auth.user = { userId: "u-clear", role: "admin" };
+    const dry = await request(makeApp())
+      .post(ROUTE)
+      .send({ featureSlug: "001-foo", clearStuckClaims: true, dryRun: true });
+    expect(dry.status).toBe(400);
+    expect(dry.body.error.code).toBe("BAD_REQUEST");
+    const res = await request(makeApp())
+      .post(ROUTE)
+      .send({ featureSlug: "001-foo", clearStuckClaims: true });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("TOKEN_REQUIRED");
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "speckit.tasks_export_refused",
+        metadata: expect.objectContaining({ code: "TOKEN_REQUIRED", operation: "clear" }),
+      }),
+    );
+  });
+
+  it("needs project.update", async () => {
+    auth.user = { userId: "u-clear-reader", role: "reader" };
+    const res = await request(makeApp())
+      .post(ROUTE)
+      .send({ featureSlug: "001-foo", clearStuckClaims: true, secretRef: "${vault:gh}" });
+    expect(res.status).toBe(403);
+    expect(prisma.specKitFeature.findUnique).not.toHaveBeenCalled();
   });
 });

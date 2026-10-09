@@ -57,6 +57,8 @@ export interface SpecKitRunOptions {
   secretRef?: string;
   /** `speckit.taskstoissues` (#953): the dry run a live export must reproduce. */
   expectedPlan?: { tasksVersion: number; digest: string };
+  /** `speckit.taskstoissues` (#962): "Clear stuck export" instead of an export. */
+  clearStuckClaims?: true;
 }
 
 /**
@@ -84,7 +86,17 @@ export interface SpecKitCommandResult {
     url: string;
     /** True when the task was already exported: a run creates no issue for it. */
     upserted?: boolean;
+    /**
+     * #962 — `new` (would create), `exported`, `in_progress` (another export
+     * holds it), `reconcile` (an abandoned export's claim: looked up on GitHub
+     * first), or `adopted` (found there by a live run).
+     */
+    state?: "new" | "exported" | "in_progress" | "reconcile" | "adopted";
   }>;
+  /** "Clear stuck export" (#962): claims deleted, issues recorded, claims still live. */
+  cleared?: string[];
+  adopted?: Array<{ taskId: string; issueNumber: number; url: string }>;
+  inProgress?: string[];
   /** `speckit.taskstoissues`: the resolved target repository. */
   repo?: { owner: string; name: string };
   /** `speckit.taskstoissues` (#936): whether a non-dry run would reach a real issue client. */

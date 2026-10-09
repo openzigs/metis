@@ -2530,6 +2530,12 @@ model SpecKitTaskExport {
   issueNumber Int
   repoOwner   String
   repoName    String
+  /// #953/#962 - when a live run claimed this task (issueNumber 0). A claim
+  /// older than SPECKIT_EXPORT_CLAIM_TTL_MS is abandoned and reconciled.
+  claimedAt   DateTime?
+  /// #953/#962 - the live run holding the claim; NULL once no run owns it (a
+  /// run that failed ambiguously keeps the claim but releases ownership).
+  claimRunId  String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

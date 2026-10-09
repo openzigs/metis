@@ -791,6 +791,72 @@ describe("SpecKitPage — #789", () => {
     expect(publish).toHaveAttribute("title", expect.stringMatching(/token from the vault/));
   });
 
+  it("shows a task another export holds as in progress, not new, and blocks Publish (#962)", async () => {
+    m.runCommand!.mockResolvedValue({
+      ...DRY_RUN,
+      created: [
+        { ...DRY_RUN.created[0]!, state: "in_progress" },
+        { ...DRY_RUN.created[1]!, state: "new" },
+      ],
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    const claims = await screen.findByTestId("spec-kit-export-claims");
+    expect(within(claims).getByRole("listitem")).toHaveTextContent("[T01] Build A — in progress");
+    expect(
+      within(screen.getByTestId("spec-kit-export-titles"))
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["[T02] Build B"]);
+    const publish = screen.getByTestId("spec-kit-export-publish");
+    expect(publish).toBeDisabled();
+    expect(publish).toHaveAttribute("title", expect.stringMatching(/still running/));
+    expect(screen.getByTestId("spec-kit-export-clear")).toBeEnabled();
+  });
+
+  it("shows an abandoned claim as 'will reconcile', publishes it, and offers Clear stuck export (#962)", async () => {
+    m.runCommand!.mockResolvedValue({
+      ...DRY_RUN,
+      created: [
+        { ...DRY_RUN.created[0]!, state: "reconcile" },
+        { ...DRY_RUN.created[1]!, upserted: true, state: "exported" },
+      ],
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    const claims = await screen.findByTestId("spec-kit-export-claims");
+    expect(within(claims).getByRole("listitem")).toHaveTextContent(
+      "[T01] Build A — abandoned, will reconcile",
+    );
+    expect(screen.queryByTestId("spec-kit-export-titles")).toBeNull();
+    // Reconciling is still work for Publish to do.
+    expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("spec-kit-export-clear"));
+    await answerDialog("Clear stuck export");
+    await waitFor(() =>
+      expect(m.runCommand).toHaveBeenCalledWith("p1", "speckit.taskstoissues", {
+        featureSlug: "001-a",
+        clearStuckClaims: true,
+        secretRef: SECRET,
+      }),
+    );
+  });
+
+  it("keeps Clear stuck export disabled once the vault secret changes after the dry run (#962)", async () => {
+    m.runCommand!.mockResolvedValue({
+      ...DRY_RUN,
+      created: [{ ...DRY_RUN.created[0]!, state: "reconcile" }],
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await screen.findByTestId("spec-kit-export-claims");
+    pickSecret("${vault:another}");
+    expect(screen.getByTestId("spec-kit-export-clear")).toBeDisabled();
+  });
+
   it("keeps Publish disabled when the vault secret did not resolve (#953)", async () => {
     m.runCommand!.mockResolvedValue({ ...DRY_RUN, credentialCheck: "unresolved" });
     await openFeature();
