@@ -218,6 +218,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             if (custom.status >= 400) {
               throw Object.assign(new Error(`HttpError ${TOKEN} leaked?`), {
                 status: custom.status,
+                response: { data: custom.data },
               });
             }
             return { status: custom.status, headers: {}, data: custom.data as T };
@@ -333,6 +334,73 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(issuePosts()).toEqual([]);
       expect(await db.specKitTaskExport.count()).toBe(2);
+    });
+
+    it("#988 — publishes a feature with an 80-character slug: every label fits GitHub's 50", async () => {
+      // GitHub as it behaves: a label name over 50 characters is a 422.
+      respond = (c) => {
+        if (c.method !== "POST" || !c.url.endsWith("/issues")) return undefined;
+        const labels = (c.data as { labels: string[] }).labels;
+        return labels.some((l) => [...l].length > 50)
+          ? {
+              status: 422,
+              data: {
+                message: "Validation Failed",
+                errors: [{ value: labels[0], resource: "Label", field: "name", code: "invalid" }],
+              },
+            }
+          : undefined;
+      };
+      const longSlug = `002-${"mark-all-entries-as-read-older-than-n-days-".repeat(2)}`.slice(
+        0,
+        84,
+      );
+      expect(longSlug.length).toBe(84);
+      const f = await db.specKitFeature.create({
+        data: { projectId: P, slug: longSlug, title: "Long" },
+      });
+      for (const [key, content] of [
+        ["spec.md", "x"],
+        ["plan.md", "x"],
+        ["tasks.md", TASKS],
+      ] as const) {
+        await db.specKitFeatureArtifact.create({ data: { featureId: f.id, key, content } });
+      }
+      const input = { ...base(), featureSlug: longSlug };
+      const plan = await previewTasksExport(input);
+      const out = await exportTasksToGitHub({
+        ...input,
+        expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+      });
+      expect(out.created.map((c) => c.state)).toEqual(["new", "new"]);
+      const posted = issuePosts().map((c) => c.data as { labels: string[]; body: string });
+      expect(posted).toHaveLength(2);
+      for (const p of posted) {
+        expect(p.labels.every((l) => [...l].length <= 50)).toBe(true);
+        expect(p.labels[0]).toMatch(/^speckit:002-mark-all-entries-as-read-olde-[0-9a-f]{8}$/);
+        expect(p.body).toContain(`Source: specs/${longSlug}/tasks.md#`);
+      }
+      const rows = await db.specKitTaskExport.findMany({ where: { featureSlug: longSlug } });
+      expect(rows.map((r) => r.issueNumber).sort()).toEqual([101, 102]);
+    });
+
+    it("#988 — a 422 names the rejected label field instead of blaming the token", async () => {
+      respond = (c) =>
+        c.method === "POST" && c.url.endsWith("/issues")
+          ? {
+              status: 422,
+              data: {
+                message: "Validation Failed",
+                errors: [{ value: "speckit:x", resource: "Label", field: "name", code: "invalid" }],
+              },
+            }
+          : undefined;
+      const err = (await planThenPublish().catch((e: unknown) => e)) as Err;
+      expect(err).toMatchObject({ status: 502, code: "GITHUB_REQUEST_FAILED" });
+      expect(err.message).toContain("rejected invalid Label name");
+      expect(err.message).toContain("not the vault secret");
+      expect(err.message).not.toContain(TOKEN);
+      expect(await db.specKitTaskExport.count()).toBe(0);
     });
 
     it("refuses (409) when tasks.md changed after the dry run, before any issue is created", async () => {
