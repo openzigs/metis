@@ -43,7 +43,11 @@ import { effectiveModel } from "../model-switch.js";
 import { buildHistory } from "./context-builder.js";
 import { estimateMessagesTokens, resolveTokenRatio } from "./token-estimator.js";
 import { resolveContextWindow } from "../../analysis/context-watermark.js";
-import { compactTranscript, providerSummarizer } from "../../async/compaction.js";
+import {
+  CompactionNoSavingError,
+  compactTranscript,
+  providerSummarizer,
+} from "../../async/compaction.js";
 import { assertWithinBudget } from "../../finops/budget-enforcer.js";
 
 /** Hours after its last activity that a session can still be resumed. */
@@ -210,6 +214,8 @@ export interface ManualCompactionResult {
   after: number;
   /** Transcript rows folded into the summary (kept, marked compacted). */
   summarizedTurns: number;
+  /** #980 — why nothing was compacted, when `compacted` is false. */
+  message?: string;
 }
 
 /**
@@ -242,27 +248,45 @@ export async function compactSessionOnDemand(
     toolResultMaxChars: Math.floor(config.toolResultMaxTokens * ratio.charsPerToken),
   };
   const before = estimateMessagesTokens(buildHistory(rows), ratio);
-  const outcome = await compactTranscript({
-    sessionId: session.id,
-    activeRows: rows,
-    ratio,
-    build,
-    contextWindow: resolveContextWindow(provider.key, model, {
-      fallback: config.contextWindowFallback,
-    }),
-    fixedTokens: 0,
-    estimatedTokensBefore: before,
-    summarizer: providerSummarizer(provider, {
+  let outcome: Awaited<ReturnType<typeof compactTranscript>>;
+  try {
+    outcome = await compactTranscript({
+      sessionId: session.id,
+      activeRows: rows,
+      ratio,
+      build,
+      contextWindow: resolveContextWindow(provider.key, model, {
+        fallback: config.contextWindowFallback,
+      }),
+      fixedTokens: 0,
+      estimatedTokensBefore: before,
+      summarizer: providerSummarizer(provider, {
+        model,
+        signal,
+        maxTokens: config.summaryMaxTokens,
+        meter: { sessionId: session.id, userId: session.userId, projectId: session.projectId },
+      }),
+      force: true,
+      requireSaving: true,
+      provider: provider.key,
       model,
-      signal,
-      maxTokens: config.summaryMaxTokens,
-      meter: { sessionId: session.id, userId: session.userId, projectId: session.projectId },
-    }),
-    force: true,
-    provider: provider.key,
-    model,
-  });
-  if (!outcome) return { compacted: false, before, after: before, summarizedTurns: 0 };
+    });
+  } catch (err) {
+    // #980 — a summary no smaller than what it replaces is not a compaction.
+    if (err instanceof CompactionNoSavingError) {
+      return { compacted: false, before, after: before, summarizedTurns: 0, message: err.message };
+    }
+    throw err;
+  }
+  if (!outcome) {
+    return {
+      compacted: false,
+      before,
+      after: before,
+      summarizedTurns: 0,
+      message: "Nothing to compact: no older turns are left to summarise.",
+    };
+  }
   await writeDerivedSnapshot(session);
   return {
     compacted: true,

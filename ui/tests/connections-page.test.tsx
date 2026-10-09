@@ -242,6 +242,54 @@ describe("ConnectionsPage — repo connector list", () => {
     fireEvent.click(testBtn);
     await waitFor(() => expect(repoTest).toHaveBeenCalledWith("proj-1", "r1"));
   });
+
+  it("#980 — shows 'Test OK · <latency>' under the tested repo's card", async () => {
+    repoTest.mockResolvedValueOnce({ ok: true, latencyMs: 120 });
+    repoList.mockResolvedValue([makeRepo({ id: "r1" }), makeRepo({ id: "r2", label: "Other" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Main Repo")).toBeInTheDocument());
+    expect(screen.queryByTestId("repo-test-result-r1")).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Test$/ })[0]);
+    const line = await screen.findByTestId("repo-test-result-r1");
+    expect(line).toHaveTextContent("Test OK · 120 ms");
+    expect(line).toHaveAttribute("role", "status");
+    // Only the card that was tested shows a result.
+    expect(screen.queryByTestId("repo-test-result-r2")).not.toBeInTheDocument();
+  });
+
+  it("#980 — shows the failure reason under the card when a repo test fails", async () => {
+    repoTest.mockResolvedValueOnce({ ok: false, latencyMs: 40, message: "Bad credentials" });
+    repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Main Repo")).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole("button", { name: /^Test$/ })[0]);
+    const line = await screen.findByTestId("repo-test-result-r1");
+    expect(line).toHaveTextContent("Test failed · 40 ms — Bad credentials");
+    expect(line).toHaveAttribute("role", "alert");
+  });
+
+  it("#980 — a test request that errors shows the error under the card, with no latency", async () => {
+    const { ApiError } = await import("@/lib/api-client");
+    repoTest.mockRejectedValueOnce(new ApiError(502, "GitHub unreachable", "UPSTREAM"));
+    repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Main Repo")).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole("button", { name: /^Test$/ })[0]);
+    const line = await screen.findByTestId("repo-test-result-r1");
+    expect(line).toHaveTextContent("Test failed — GitHub unreachable");
+    expect(line).not.toHaveTextContent("ms");
+  });
+
+  it("#980 — shows the result under the tested database connector's card", async () => {
+    const dbTest = dbConnectorsApi.test as unknown as ReturnType<typeof vi.fn>;
+    dbTest.mockResolvedValueOnce({ ok: true, latencyMs: 55 });
+    dbList.mockResolvedValue([makeDb({ id: "d1" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Main DB")).toBeInTheDocument());
+    const buttons = screen.getAllByRole("button", { name: /^Test$/ });
+    fireEvent.click(buttons[buttons.length - 1]);
+    expect(await screen.findByTestId("db-test-result-d1")).toHaveTextContent("Test OK · 55 ms");
+  });
 });
 
 describe("ConnectionsPage — create repo form", () => {

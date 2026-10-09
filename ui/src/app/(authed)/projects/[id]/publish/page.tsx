@@ -43,6 +43,7 @@ import {
 } from "@/components/publishing/approval-gate-card";
 import { extractApprovalGateBlock } from "@/lib/approval-gate";
 import { vaultRefHint } from "@/lib/vault-ref";
+import { VaultPicker } from "@/components/connectors/vault-picker";
 import { DryRunPlanPanel, parseDryRunPlan } from "@/components/publishing/dry-run-plan-panel";
 import { PublishConfirmDialog } from "@/components/publishing/publish-confirm-dialog";
 import { BatchRowActions } from "@/components/publishing/batch-row-actions";
@@ -810,16 +811,13 @@ export default function PublishingPage() {
           </div>
           <div>
             <Label htmlFor="batchSecret">Vault secret ref</Label>
-            <Input
+            {/* #980 — the vault picker the import and connector forms use, not
+                free text; "Enter custom ref…" still allows a typed ref. */}
+            <VaultPicker
               id="batchSecret"
-              // #1094 — the placeholder used to read `vault:gh-publish-token`,
-              // a shape the server rejects with 400 VAULT_REF_INVALID. It now
-              // matches the actual contract and the Connections page.
               placeholder="${vault:my-token-label}"
-              aria-describedby="batchSecretHelp"
-              aria-invalid={Boolean(vaultRefHintText) || undefined}
               value={batchSecret}
-              onChange={(e) => setBatchSecret(e.target.value)}
+              onChange={setBatchSecret}
             />
             <p
               id="batchSecretHelp"

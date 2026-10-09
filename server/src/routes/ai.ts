@@ -102,6 +102,7 @@ import {
 import {
   calibrationPromptChars,
   ContextOverflowError,
+  DEFAULT_SESSION_TITLE,
   loadChatTurnConfig,
   prepareTurn,
   recordReply,
@@ -1123,7 +1124,7 @@ export function aiRouter(): Router {
       data: {
         userId,
         projectId: effectiveProjectId,
-        title: parsed.data.title ?? "New Chat",
+        title: parsed.data.title ?? DEFAULT_SESSION_TITLE,
         provider: resolvedProvider,
         model: resolvedModel,
         policy: policyToJson(policy),

@@ -251,6 +251,32 @@ describe("DocumentationPage — GenerateForm scope selection", () => {
     });
   });
 
+  it("#980 — switching scope to Database Schema replaces the doc-type title, and back restores it", async () => {
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (typeof path === "string" && path.includes("/connectors/dbs")) return sampleDbs;
+      return sampleDocs;
+    });
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+    const title = (await screen.findByTestId("doc-title-input")) as HTMLInputElement;
+    expect(title.value).toBe("Business Requirements");
+    fireEvent.change(screen.getByTestId("doc-scope-select"), { target: { value: "database" } });
+    expect(title.value).toBe("Database Schema");
+    fireEvent.change(screen.getByTestId("doc-scope-select"), { target: { value: "full" } });
+    expect(title.value).toBe("Business Requirements");
+  });
+
+  it("#980 — a title the user typed survives a scope change", async () => {
+    mockApiFetch.mockImplementation(async () => sampleDocs);
+    renderPage();
+    fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+    const title = (await screen.findByTestId("doc-title-input")) as HTMLInputElement;
+    fireEvent.change(title, { target: { value: "My schema notes" } });
+    fireEvent.change(screen.getByTestId("doc-scope-select"), { target: { value: "database" } });
+    expect(title.value).toBe("My schema notes");
+  });
+
   it("auto-suggests title as '{label} Schema' when a db is selected", async () => {
     mockApiFetch.mockImplementation(async (path: string) => {
       if (typeof path === "string" && path.includes("/connectors/dbs")) return sampleDbs;

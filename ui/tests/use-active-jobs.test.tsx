@@ -19,6 +19,7 @@ import {
   applyJobLifecycleEvent,
   REPLAY_WAIT_MS,
   jobKindLabel,
+  dismissActiveJob,
   __resetActiveJobsForTests,
 } from "@/hooks/use-active-jobs";
 
@@ -150,6 +151,37 @@ describe("useActiveJobs", () => {
     const { result } = renderHook(() => useActiveJobs());
     act(() => fake.fire("job:lifecycle", lifecycle({ jobId: "never-seen", status: "completed" })));
     expect(result.current).toHaveLength(0);
+  });
+});
+
+describe("dismissActiveJob (#980)", () => {
+  it("stops counting a cancelled job at once and ignores its late progress", () => {
+    const { result } = renderHook(() => useActiveJobs());
+    act(() => fake.fire("job:lifecycle", lifecycle({ status: "started" })));
+    act(() => fake.fire("job:lifecycle", lifecycle({ jobId: "job-2", status: "started" })));
+    act(() => dismissActiveJob("job-1"));
+    expect(result.current.map((j) => j.jobId)).toEqual(["job-2"]);
+    // The winding-down run still reports progress: no "1 job running" again.
+    act(() => fake.fire("job:lifecycle", lifecycle({ status: "progress", progress: 60 })));
+    expect(result.current.map((j) => j.jobId)).toEqual(["job-2"]);
+  });
+
+  it("counts the job again when a new run of it starts", () => {
+    const { result } = renderHook(() => useActiveJobs());
+    act(() => fake.fire("job:lifecycle", lifecycle({ status: "started" })));
+    act(() => dismissActiveJob("job-1"));
+    act(() => fake.fire("job:lifecycle", lifecycle({ status: "started", ts: 2 })));
+    expect(result.current.map((j) => j.jobId)).toEqual(["job-1"]);
+    act(() => fake.fire("job:lifecycle", lifecycle({ status: "progress", progress: 10 })));
+    expect(result.current[0].progress).toBe(10);
+  });
+
+  it("a terminal event forgets the dismissal, so a later run's progress is counted", () => {
+    const { result } = renderHook(() => useActiveJobs());
+    act(() => dismissActiveJob("job-1"));
+    act(() => fake.fire("job:lifecycle", lifecycle({ status: "completed" })));
+    act(() => fake.fire("job:lifecycle", lifecycle({ status: "progress", progress: 5 })));
+    expect(result.current.map((j) => j.jobId)).toEqual(["job-1"]);
   });
 });
 

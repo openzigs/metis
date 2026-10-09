@@ -14,8 +14,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const notificationCreate = vi.fn();
 const userRoleFindFirst = vi.fn();
 const prefFindMany = vi.fn();
+const userFindUnique = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
+    user: { findUnique: (...a: unknown[]) => userFindUnique(...a) },
     notification: { create: (...a: unknown[]) => notificationCreate(...a) },
     userRole: { findFirst: (...a: unknown[]) => userRoleFindFirst(...a) },
     notificationPreference: { findMany: (...a: unknown[]) => prefFindMany(...a) },
@@ -85,6 +87,7 @@ describe("discussion mention notifications", () => {
     notificationCreate.mockResolvedValue({ id: "n1" });
     // #614 — default: no stored preference rows (inApp × mention defaults ON).
     prefFindMany.mockResolvedValue([]);
+    userFindUnique.mockResolvedValue({ displayName: "Alice Author", username: "alice" });
   });
 
   it("creates a Notification and emits to the mentioned member's user room", async () => {
@@ -95,12 +98,32 @@ describe("discussion mention notifications", () => {
     expect(notificationCreate).toHaveBeenCalledTimes(1);
     const data = notificationCreate.mock.calls[0][0].data;
     expect(data).toMatchObject({ userId: "bob", type: "discussion_mention" });
-    expect(data.href).toContain("/projects/p1/discussions");
-    expect(data.href).toContain("thread=t1");
+    // #980 — the link opens the thread itself, and the text names the author.
+    expect(data.href).toBe("/projects/p1/discussions/t1");
+    expect(data.title).toBe("Alice Author mentioned you in a discussion");
+    expect(data.message).toContain("Alice Author");
+    expect(userFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "author" } }),
+    );
     expect(to).toHaveBeenCalledWith("user:bob");
     expect(emit).toHaveBeenCalledWith(
       "discussion:mention",
       expect.objectContaining({ threadId: "t1", messageId: "m1", mentionedUserId: "bob" }),
+    );
+  });
+
+  it("#980 — falls back to the username, then to 'Someone', when the author has no display name", async () => {
+    resolveUsernames.mockResolvedValue([{ id: "bob", username: "bob" }]);
+    userFindUnique.mockResolvedValueOnce({ displayName: "", username: "alice" });
+    await notifyDiscussionMentions(baseInput());
+    expect(notificationCreate.mock.calls[0][0].data.title).toBe(
+      "alice mentioned you in a discussion",
+    );
+    __resetMentionNotifyLimiter();
+    userFindUnique.mockRejectedValueOnce(new Error("db down"));
+    await notifyDiscussionMentions(baseInput());
+    expect(notificationCreate.mock.calls[1][0].data.title).toBe(
+      "Someone mentioned you in a discussion",
     );
   });
 

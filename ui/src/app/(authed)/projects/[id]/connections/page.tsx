@@ -9,7 +9,7 @@
  * components.
  */
 import { useParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -112,6 +112,41 @@ function isVaultRefOrEmpty(value: string): boolean {
  * Split a comma/newline-separated identifier list into a trimmed, de-duplicated
  * array. Used by the DB connector allow-list editor (#882).
  */
+/**
+ * #980 — the outcome of a connector's **Test**, shown under its card, as the
+ * MCP rows do (#893). A request that failed outright carries no latency.
+ */
+function ConnectorTestResultLine({
+  testId,
+  result,
+}: {
+  testId: string;
+  result: ConnectorTestResult & { requestFailed?: boolean };
+}) {
+  return (
+    <p
+      className={`mt-2 w-full text-xs ${result.ok ? "text-success" : "text-destructive"}`}
+      role={result.ok ? "status" : "alert"}
+      data-testid={testId}
+    >
+      {result.ok ? "Test OK" : "Test failed"}
+      {result.requestFailed ? null : <> · {result.latencyMs} ms</>}
+      {!result.ok && result.message ? <> — {result.message}</> : null}
+    </p>
+  );
+}
+
+type CardTestResult = ConnectorTestResult & { requestFailed?: boolean };
+
+function failedTestResult(err: unknown): CardTestResult {
+  return {
+    ok: false,
+    latencyMs: 0,
+    requestFailed: true,
+    message: err instanceof ApiError ? err.message : "The test request failed",
+  };
+}
+
 function splitIdentifiers(raw: string): string[] {
   const seen = new Set<string>();
   for (const part of raw.split(/[\n,]/)) {
@@ -356,13 +391,19 @@ export default function ConnectionsPage() {
       toast.success("Repository connector removed");
     },
   });
+  // #980 — each connector's last Test outcome, keyed `repo:<id>` / `db:<id>`.
+  const [testResults, setTestResults] = useState<Record<string, CardTestResult>>({});
+  const recordTest = (key: string, result: CardTestResult) =>
+    setTestResults((prev) => ({ ...prev, [key]: result }));
   const testRepo = useMutation({
     mutationFn: (id: string) => repoConnectorsApi.test(projectId, id),
-    onSuccess: (data) => {
+    onSuccess: (data, id) => {
+      recordTest(`repo:${id}`, data);
       qc.invalidateQueries({ queryKey: repoKeys.list(projectId) });
       if (data.ok) toast.success(`Test passed (${data.latencyMs}ms)`);
       else toast.error(data.message ?? "Test failed");
     },
+    onError: (err, id) => recordTest(`repo:${id}`, failedTestResult(err)),
   });
   // #373 — Deep Ingest runs in the background: the request answers 202 with a
   // job id and the outcome arrives on the job bus, never as a proxy timeout.
@@ -472,11 +513,13 @@ export default function ConnectionsPage() {
   });
   const testDb = useMutation({
     mutationFn: (id: string) => dbConnectorsApi.test(projectId, id),
-    onSuccess: (data) => {
+    onSuccess: (data, id) => {
+      recordTest(`db:${id}`, data);
       qc.invalidateQueries({ queryKey: dbKeys.list(projectId) });
       if (data.ok) toast.success(`Test passed (${data.latencyMs}ms)`);
       else toast.error(data.message ?? "Test failed");
     },
+    onError: (err, id) => recordTest(`db:${id}`, failedTestResult(err)),
   });
   const ingestDb = useMutation({
     mutationFn: (id: string) => dbConnectorsApi.ingest(projectId, id),
@@ -503,11 +546,6 @@ export default function ConnectionsPage() {
     },
   });
 
-  const testResultMessage = useMemo(() => {
-    const r = (testRepo.data ?? testDb.data) as ConnectorTestResult | undefined;
-    if (!r) return null;
-    return r.ok ? `OK in ${r.latencyMs}ms` : (r.message ?? "Failed");
-  }, [testRepo.data, testDb.data]);
   const repoFormValid =
     repoLabel.trim().length > 0 &&
     repoOwner.trim().length > 0 &&
@@ -530,11 +568,6 @@ export default function ConnectionsPage() {
         }
         description="Repo and database connectors for this project. Secrets are stored as vault references — never as plaintext."
       >
-        {testResultMessage ? (
-          <p className="mt-2 text-sm text-muted-foreground">
-            Last test: <span className="font-mono">{testResultMessage}</span>
-          </p>
-        ) : null}
         <div className="mt-3 flex items-center gap-2">
           <input
             id="allow-credential-scan"
@@ -1035,6 +1068,12 @@ export default function ConnectionsPage() {
                     />
                   </div>
                 )}
+                {testResults[`repo:${r.id}`] ? (
+                  <ConnectorTestResultLine
+                    testId={`repo-test-result-${r.id}`}
+                    result={testResults[`repo:${r.id}`]!}
+                  />
+                ) : null}
               </Card>
             </li>
           ))}
@@ -1211,7 +1250,7 @@ export default function ConnectionsPage() {
         <ul className="space-y-2">
           {(dbs.data ?? []).map((d) => (
             <li key={d.id}>
-              <Card className="flex items-center justify-between p-3">
+              <Card className="flex flex-wrap items-center justify-between p-3">
                 <div>
                   <div className="font-medium">{d.label}</div>
                   <div className="font-mono text-xs text-muted-foreground">
@@ -1262,6 +1301,12 @@ export default function ConnectionsPage() {
                     Delete
                   </Button>
                 </div>
+                {testResults[`db:${d.id}`] ? (
+                  <ConnectorTestResultLine
+                    testId={`db-test-result-${d.id}`}
+                    result={testResults[`db:${d.id}`]!}
+                  />
+                ) : null}
               </Card>
             </li>
           ))}

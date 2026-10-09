@@ -229,6 +229,25 @@ describe("useDocSectionProgress", () => {
     act(() => fake.fire("job:doc-section", section({ jobId: "other", section: "X" })));
     expect(Object.keys(result.current)).toHaveLength(0);
   });
+
+  it("#980 — a new run of the same job clears the last run's section states", () => {
+    const qc = new QueryClient();
+    const { result, unmount } = renderHook(() => useDocSectionProgress("doc-1"), {
+      wrapper: wrapper(qc),
+    });
+    act(() => fake.fire("job:doc-section", section({ section: "Risks", status: "degraded" })));
+    // Progress and another job's start leave the sections alone.
+    act(() => fake.fire("job:lifecycle", lifecycle({ jobId: "doc-1", status: "progress" })));
+    act(() => fake.fire("job:lifecycle", lifecycle({ jobId: "other", status: "started" })));
+    expect(result.current.Risks.status).toBe("degraded");
+    // The regenerate starts: "Needs review" must not linger on an undrafted section.
+    act(() => fake.fire("job:lifecycle", lifecycle({ jobId: "doc-1", status: "started" })));
+    expect(result.current).toEqual({});
+    act(() => fake.fire("job:doc-section", section({ section: "Overview", status: "generating" })));
+    expect(Object.keys(result.current)).toEqual(["Overview"]);
+    unmount();
+    expect(fake.socket.off).toHaveBeenCalledWith("job:lifecycle", expect.any(Function));
+  });
 });
 
 describe("useProjectJobEvents", () => {

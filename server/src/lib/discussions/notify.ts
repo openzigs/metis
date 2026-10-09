@@ -174,6 +174,23 @@ export function __setMentionNotifyStore(next: RateLimitStore): RateLimitStore {
 // ---- Fan-out ----------------------------------------------------------------
 
 /**
+ * #980 — the author's display name for the notification text. Falls back to
+ * "Someone" (never throws) so a lookup failure cannot cost the notification.
+ */
+async function authorName(authorId: string): Promise<string> {
+  try {
+    const author = await prisma.user.findUnique({
+      where: { id: authorId },
+      select: { displayName: true, username: true },
+    });
+    return author?.displayName || author?.username || "Someone";
+  } catch (err) {
+    log.warn("Failed to read the mention author's name", { authorId, err });
+    return "Someone";
+  }
+}
+
+/**
  * Resolve @mentions in a discussion message and deliver in-app notifications to
  * the mentioned project members. Never throws.
  */
@@ -186,6 +203,7 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
     const users = await resolveUsernames(usernames);
     const io = getSocketServer();
     const cfg = loadMentionNotifyConfig();
+    const who = await authorName(authorId);
 
     await Promise.allSettled(
       users
@@ -219,9 +237,10 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
                 data: {
                   userId: u.id,
                   type: "discussion_mention",
-                  title: "You were mentioned in a discussion",
-                  message: `You were mentioned in a discussion thread`,
-                  href: `/projects/${encodeURIComponent(projectId)}/discussions?thread=${encodeURIComponent(threadId)}`,
+                  title: `${who} mentioned you in a discussion`,
+                  message: `${who} mentioned you in a discussion thread`,
+                  // #980 — the thread's own page; `?thread=` landed on the list.
+                  href: `/projects/${encodeURIComponent(projectId)}/discussions/${encodeURIComponent(threadId)}`,
                   payload: JSON.stringify(payload),
                 },
               });

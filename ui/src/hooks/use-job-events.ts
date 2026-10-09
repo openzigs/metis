@@ -70,10 +70,18 @@ export function useDocSectionProgress(
       if (data.jobId !== jobId) return;
       setSections((prev) => ({ ...prev, [data.section]: data }));
     };
+    // #980 — a regenerate reuses the document id as its job id, so the last
+    // run's section states ("Needs review", "Failed") would otherwise linger on
+    // sections this run has not drafted yet. A new run starts from a clean slate.
+    const onLifecycle = (data: JobLifecycleEvent) => {
+      if (data.jobId === jobId && data.status === "started") setSections({});
+    };
     socket.on("job:doc-section" as never, onSection as never);
+    socket.on("job:lifecycle" as never, onLifecycle as never);
     return () => {
       leave();
       socket.off("job:doc-section" as never, onSection as never);
+      socket.off("job:lifecycle" as never, onLifecycle as never);
     };
   }, [socket, jobId]);
 

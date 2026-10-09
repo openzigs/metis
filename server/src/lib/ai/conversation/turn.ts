@@ -183,6 +183,24 @@ export function calibrationPromptChars(
   return toolCalls.length > 0 ? null : turn.promptChars;
 }
 
+/** The title a chat session carries until its first question names it (#980). */
+export const DEFAULT_SESSION_TITLE = "New Chat";
+const AUTO_TITLE_MAX_CHARS = 80;
+
+/**
+ * #980 — a session title from its first question: whitespace collapsed, cut at
+ * a word boundary to {@link AUTO_TITLE_MAX_CHARS} with an ellipsis. `null` for a
+ * question with no visible text.
+ */
+export function titleFromQuestion(text: string): string | null {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!flat) return null;
+  if (flat.length <= AUTO_TITLE_MAX_CHARS) return flat;
+  const cut = flat.slice(0, AUTO_TITLE_MAX_CHARS - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > AUTO_TITLE_MAX_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
 export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn> {
   const sessionId = input.session.id;
   let history = await listActiveMessages(sessionId);
@@ -205,6 +223,17 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
     parts: [{ type: "text", text: input.userText }],
     estimatedTokens: estimateTextTokens(input.userText, ratio),
   });
+  if (!history.some((r) => r.role === "user")) {
+    // #980 — name the session after its first question. Only a session still
+    // carrying the default title is renamed, so a title the user chose stays.
+    const title = titleFromQuestion(input.userText);
+    if (title) {
+      await prisma.aISession.updateMany({
+        where: { id: sessionId, title: DEFAULT_SESSION_TITLE },
+        data: { title },
+      });
+    }
+  }
 
   const build: ContextBuildOptions = {
     toolResultMaxChars: Math.floor(input.config.toolResultMaxTokens * ratio.charsPerToken),
