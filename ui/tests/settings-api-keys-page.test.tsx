@@ -160,6 +160,33 @@ describe("<SettingsApiKeysPage />", () => {
     );
   });
 
+  it("keeps an in-progress edit when the model catalog loads after it (#978)", async () => {
+    let resolveCatalog!: (v: Awaited<ReturnType<typeof modelCatalogApi.list>>) => void;
+    catalogMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCatalog = resolve;
+        }),
+    );
+    renderPage();
+    await waitFor(() => expect(catalogMock).toHaveBeenCalled());
+
+    // The user starts typing before the catalog answers.
+    fireEvent.change(screen.getByTestId("settings-provider-model"), {
+      target: { value: "my-own-model" },
+    });
+
+    await act(async () => {
+      resolveCatalog({ provider: "anthropic", defaultModel: "deepseek-flash", models: [] });
+    });
+    await act(async () => {});
+
+    // The server default became the baseline, but did not overwrite the edit.
+    const model = screen.getByTestId("settings-provider-model") as HTMLInputElement;
+    expect(model.value).toBe("my-own-model");
+    expect(screen.getByTestId("settings-provider-save")).toBeEnabled();
+  });
+
   it("Reset returns to the active provider's model (#978)", async () => {
     window.localStorage.setItem(
       "metis.settings.providerPrefs",
