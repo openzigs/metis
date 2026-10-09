@@ -380,7 +380,7 @@ describe("AnalysisPage collaboration (Epic #34)", () => {
   });
 
   describe("#990 — an empty stored list prefills from the body the draft reads", () => {
-    type Req = { body: string; acceptanceCriteria: string[] };
+    type Req = { body: string; acceptanceCriteria: string[]; acceptanceCriteriaCleared?: boolean };
     const req = () => SNAPSHOT.requirements[0] as unknown as Req;
     let saved: Req;
     beforeEach(() => {
@@ -388,7 +388,10 @@ describe("AnalysisPage collaboration (Epic #34)", () => {
       req().acceptanceCriteria = [];
       req().body = "Build it\n\n## Acceptance criteria\n- Imported one\n- Imported two";
     });
-    afterEach(() => Object.assign(req(), saved));
+    afterEach(() => {
+      delete req().acceptanceCriteriaCleared;
+      Object.assign(req(), saved);
+    });
 
     it("shows the body-derived criteria in the editor and does not resend them untouched", async () => {
       updateMock.update.mockResolvedValue({ id: "req-1", version: 5, updatedAt: "now" });
@@ -422,6 +425,58 @@ describe("AnalysisPage collaboration (Epic #34)", () => {
           expect.objectContaining({ acceptanceCriteria: [] }),
         ),
       );
+    });
+    it("reopening after a clear shows no criteria, as the draft renders none", async () => {
+      // What the list API returns once the user has saved an emptied list: the
+      // stored list is empty AND flagged cleared, while the body still has a
+      // criteria section the draft deliberately no longer reads.
+      req().acceptanceCriteriaCleared = true;
+      updateMock.update.mockResolvedValue({ id: "req-1", version: 5, updatedAt: "now" });
+      renderPage();
+      await waitForRequirement();
+      fireEvent.click(screen.getAllByRole("button", { name: /^edit$/i })[0]);
+      await waitFor(() =>
+        expect(screen.getByText("No acceptance criteria yet.")).toBeInTheDocument(),
+      );
+      expect(screen.queryByLabelText("Acceptance criterion 1")).not.toBeInTheDocument();
+      // Saving another field leaves the cleared list alone.
+      fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Renamed" } });
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      await waitFor(() => expect(updateMock.update).toHaveBeenCalled());
+      expect(updateMock.update.mock.calls[0]![1]).not.toHaveProperty("acceptanceCriteria");
+    });
+
+    it("caps an over-long body-derived prefill to what the PUT accepts, and says so", async () => {
+      // 35 Gherkin lines and one over-long line: more than the 30 x 1,024 the PUT takes.
+      const long = `Then ${"x".repeat(1100)}`;
+      req().body = [
+        "Given a feed",
+        "When it is stale",
+        long,
+        ...Array.from({ length: 32 }, (_, i) => `And step ${i}`),
+      ].join("\n");
+      updateMock.update.mockResolvedValue({ id: "req-1", version: 5, updatedAt: "now" });
+      renderPage();
+      await waitForRequirement();
+      fireEvent.click(screen.getAllByRole("button", { name: /^edit$/i })[0]);
+      await waitFor(() =>
+        expect(screen.getByLabelText("Acceptance criterion 30")).toBeInTheDocument(),
+      );
+      expect(screen.queryByLabelText("Acceptance criterion 31")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(/only the first 30/);
+      expect(screen.getByRole("button", { name: "Add criterion" })).toBeDisabled();
+
+      fireEvent.change(screen.getByLabelText("Acceptance criterion 1"), {
+        target: { value: "Given a stale feed" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      await waitFor(() => expect(updateMock.update).toHaveBeenCalled());
+      const sent = (updateMock.update.mock.calls[0]![1] as { acceptanceCriteria: string[] })
+        .acceptanceCriteria;
+      expect(sent).toHaveLength(30);
+      expect(sent[0]).toBe("Given a stale feed");
+      expect(sent[2]).toHaveLength(1024);
+      expect(sent.every((c) => c.length <= 1024)).toBe(true);
     });
   });
 

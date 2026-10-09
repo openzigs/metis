@@ -9,7 +9,12 @@
  * with the size of the run.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { deriveBodyAcceptanceCriteria } from "@metis/shared";
+import {
+  ACCEPTANCE_CRITERIA_MAX_ITEMS,
+  ACCEPTANCE_CRITERION_MAX_LENGTH,
+  capAcceptanceCriteria,
+  deriveBodyAcceptanceCriteria,
+} from "@metis/shared";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
@@ -1594,10 +1599,15 @@ function RequirementEditModal(props: {
   // #990 — what the issue draft renders: the stored list, else the criteria it
   // derives from the body (imported requirements, #863, or a Gherkin body). The
   // editor prefills from that so it is the single source the draft renders from.
-  const initialCriteria = useMemo(() => {
-    if (!requirement) return [];
+  // A deliberate clear is honoured exactly as the draft honours it: no refill.
+  // The prefill is capped to what the PUT accepts, so an over-long body-derived
+  // list cannot make every criterion edit fail validation.
+  const { criteria: initialCriteria, trimmed: prefillTrimmed } = useMemo(() => {
+    if (!requirement) return { criteria: [], trimmed: false };
     const stored = requirement.acceptanceCriteria ?? [];
-    return stored.length > 0 ? stored : deriveBodyAcceptanceCriteria(requirement.body);
+    if (stored.length > 0) return { criteria: stored, trimmed: false };
+    if (requirement.acceptanceCriteriaCleared) return { criteria: [], trimmed: false };
+    return capAcceptanceCriteria(deriveBodyAcceptanceCriteria(requirement.body));
   }, [requirement]);
 
   // Sync local form state whenever a different requirement opens.
@@ -1717,6 +1727,13 @@ function RequirementEditModal(props: {
             <p className="text-xs text-muted-foreground">
               Issue drafts list these criteria. Empty ones are dropped on save.
             </p>
+            {prefillTrimmed ? (
+              <p className="text-xs text-amber-700 dark:text-amber-400" role="status">
+                The body lists more criteria than can be saved: only the first{" "}
+                {ACCEPTANCE_CRITERIA_MAX_ITEMS}, each up to {ACCEPTANCE_CRITERION_MAX_LENGTH}{" "}
+                characters, are shown here and kept if you change them.
+              </p>
+            ) : null}
             {criteria.length > 0 ? (
               <ol className="space-y-2">
                 {criteria.map((criterion, i) => (
@@ -1724,7 +1741,7 @@ function RequirementEditModal(props: {
                     <Input
                       aria-label={`Acceptance criterion ${i + 1}`}
                       value={criterion}
-                      maxLength={1024}
+                      maxLength={ACCEPTANCE_CRITERION_MAX_LENGTH}
                       onChange={(e) =>
                         setCriteria((prev) => prev.map((c, j) => (j === i ? e.target.value : c)))
                       }
@@ -1751,7 +1768,7 @@ function RequirementEditModal(props: {
               type="button"
               variant="outline"
               size="sm"
-              disabled={criteria.length >= 30}
+              disabled={criteria.length >= ACCEPTANCE_CRITERIA_MAX_ITEMS}
               onClick={() => {
                 setCriteria((prev) => [...prev, ""]);
                 setCriteriaKeys((prev) => [...prev, nextCriterionKey.current++]);

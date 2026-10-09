@@ -45,6 +45,7 @@ const { errorHandler, notFoundHandler } = await import("../src/middleware/error-
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { parseAcceptanceCriteria } = await import("@metis/shared");
 const { generateDrafts } = await import("../src/lib/publishing/draft-generator.js");
+const { getAnalysisSnapshot } = await import("../src/lib/analysis/analysis-service.js");
 const { createManualBaseline, compareBaselines } =
   await import("../src/lib/reviews/baseline-service.js");
 
@@ -186,6 +187,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }>;
       const v2 = entries.find((e) => e.version === 2);
       expect(JSON.parse(String(v2?.snapshot.acceptanceCriteria))).toEqual(["Edited criterion"]);
+      // The current version's snapshot is read from the row itself, so it
+      // carries the criteria only if the history route selects the column.
+      const current = entries.find((e) => e.version === 3);
+      expect(current).toBeDefined();
+      expect(JSON.parse(String(current?.snapshot.acceptanceCriteria))).toEqual(["Edited again"]);
 
       const res = await request(app())
         .post(`/api/requirements/${id}/restore/2`)
@@ -304,6 +310,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const body = await draftBody(id, analysisId);
       expect(body).not.toContain("- [ ] Imported criterion");
       expect(body).toContain("No acceptance criteria were derived");
+    });
+
+    it("the list API flags an emptied list as cleared, so the editor does not refill it (#990)", async () => {
+      const { id, analysisId } = await makeRequirement({ body: IMPORTED_BODY, criteria: [] });
+      const before = (await getAnalysisSnapshot(analysisId))?.requirements.find((r) => r.id === id);
+      // Never cleared: the editor may prefill from the body, as the draft does.
+      expect(before).toMatchObject({ acceptanceCriteria: [], acceptanceCriteriaCleared: false });
+
+      await put(id, { version: 1, acceptanceCriteria: [] });
+
+      const after = (await getAnalysisSnapshot(analysisId))?.requirements.find((r) => r.id === id);
+      expect(after).toMatchObject({ acceptanceCriteria: [], acceptanceCriteriaCleared: true });
+      expect(await draftBody(id, analysisId)).toContain("No acceptance criteria were derived");
     });
 
     it("an emptied Gherkin body does not refill from the Gherkin either (#990)", async () => {

@@ -32,7 +32,12 @@ import {
 // string[] on the wire; a malformed/legacy value reads as no labels rather than
 // throwing inside the lock's pre-flight read.
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
-import { ACCEPTANCE_CRITERIA_CLEARED, parseAcceptanceCriteria } from "@metis/shared";
+import {
+  ACCEPTANCE_CRITERIA_CLEARED,
+  ACCEPTANCE_CRITERIA_MAX_ITEMS,
+  ACCEPTANCE_CRITERION_MAX_LENGTH,
+  parseAcceptanceCriteria,
+} from "@metis/shared";
 
 // ---- Schemas ----------------------------------------------------------------
 
@@ -47,7 +52,10 @@ const updateRequirementSchema = z.object({
   reviewStatus: z.enum(["draft", "approved", "rejected", "deferred"]).nullable().optional(),
   /// #990 — the full criteria list from the Edit dialog (replaces the stored
   /// one). Same bounds as synthesis writes; `[]` clears it.
-  acceptanceCriteria: z.array(z.string().trim().min(1).max(1024)).max(30).optional(),
+  acceptanceCriteria: z
+    .array(z.string().trim().min(1).max(ACCEPTANCE_CRITERION_MAX_LENGTH))
+    .max(ACCEPTANCE_CRITERIA_MAX_ITEMS)
+    .optional(),
   /// Epic #770 — optional free-text reason recorded on the version row.
   reason: z.string().max(500).optional(),
 });

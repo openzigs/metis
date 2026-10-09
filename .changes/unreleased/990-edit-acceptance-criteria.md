@@ -10,3 +10,6 @@ section: Fixed
   generated criteria. When a requirement has no stored list, the dialog starts from the criteria the
   draft would take from its body (an imported "Acceptance criteria" section or a Gherkin body), and
   removing them all keeps the published issue free of them.
+- Reopening the dialog after removing every criterion now shows none, matching the issue draft.
+  A body that lists more than 30 criteria (or one over 1,024 characters) is trimmed to what can be
+  saved, with a note saying so, instead of making every criterion edit fail.

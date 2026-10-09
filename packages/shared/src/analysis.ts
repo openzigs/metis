@@ -1208,6 +1208,12 @@ export interface AnalysisSnapshot {
      */
     acceptanceCriteria: string[];
     /**
+     * #990 — true when a user deliberately emptied the list in the Edit dialog.
+     * The issue draft then renders no criteria, so the editor must not refill
+     * them from the body either. Absent on snapshots that predate the flag.
+     */
+    acceptanceCriteriaCleared?: boolean;
+    /**
      * Epic #34 (AC2) — current optimistic-lock version of the requirement row.
      * Carried on the snapshot so the edit form can submit the version it was
      * rendered with, letting a stale form reliably 409 against concurrent edits.

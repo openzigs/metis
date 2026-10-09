@@ -214,6 +214,11 @@ export interface RequirementSummary {
    */
   acceptanceCriteria?: string[];
   /**
+   * #990 — a user deliberately emptied the list: the issue draft renders no
+   * criteria, so the Edit dialog must not refill them from the body.
+   */
+  acceptanceCriteriaCleared?: boolean;
+  /**
    * Epic #34 (AC2) — optimistic-lock version of the requirement as rendered.
    * Submitted on edit/review-status saves so a stale form 409s against
    * concurrent writers (drives the MergeConflictModal).

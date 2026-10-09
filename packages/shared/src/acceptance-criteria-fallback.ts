@@ -13,6 +13,29 @@ export function isAcceptanceCriteriaCleared(raw: string | null | undefined): boo
   return raw === ACCEPTANCE_CRITERIA_CLEARED;
 }
 
+/** #990 — the bounds `PUT /api/requirements/:id` accepts for a criteria list. */
+export const ACCEPTANCE_CRITERIA_MAX_ITEMS = 30;
+export const ACCEPTANCE_CRITERION_MAX_LENGTH = 1024;
+
+/**
+ * #990 — fit a criteria list to the PUT bounds, so a body that derives more (or
+ * longer) criteria than the endpoint accepts cannot turn every criterion edit
+ * into a 400. `trimmed` says whether anything was dropped or shortened, so the
+ * editor can say so instead of losing criteria silently.
+ */
+export function capAcceptanceCriteria(criteria: readonly string[]): {
+  criteria: string[];
+  trimmed: boolean;
+} {
+  const capped = criteria
+    .slice(0, ACCEPTANCE_CRITERIA_MAX_ITEMS)
+    .map((c) => c.slice(0, ACCEPTANCE_CRITERION_MAX_LENGTH));
+  const trimmed =
+    criteria.length > ACCEPTANCE_CRITERIA_MAX_ITEMS ||
+    capped.some((c, i) => c.length !== criteria[i]!.length);
+  return { criteria: capped, trimmed };
+}
+
 const MARKDOWN_HEADING = /^\s*#{1,6}\s/;
 /** A bullet or numbered list marker. Linear: no overlapping quantifiers. */
 const LIST_MARKER = /^\s*(?:[-*+]|\d{1,9}[.)])\s+/;
