@@ -199,6 +199,9 @@ function renameTaskInLine(line: string, taskId: string, newTitle: string): strin
   const prefixRe = new RegExp(`^\\s*\\[${safeTaskId}\\]\\s*`, "i");
   const stripped = sanitiseTitleForTasksMd(newTitle.replace(prefixRe, ""));
   if (stripped.length === 0 || stripped === current) return line;
+  // An issue exported before #993 carries a title cut at the first `(`, so it
+  // is a prefix of the task's current title. Never let it shorten tasks.md.
+  if (current.startsWith(stripped)) return line;
   return `${head}${sep || " "}${stripped}${tail ? ` ${tail}` : ""}`;
 }
 
@@ -230,11 +233,15 @@ export async function syncIssueEvent(
   if (!tasksMd) {
     return { handled: false, reason: "TASKS_MD_MISSING" };
   }
+  // #993 — `issues.edited` also fires for body, label and milestone edits.
+  // Only a delivery whose `changes.title.from` is present renamed the issue;
+  // anything else must not rewrite the task line from the current title.
+  const titleChanged = typeof input.changes?.title?.from === "string";
   const result = applyIssueEventToTasksMarkdown(
     tasksMd.content,
     exp.taskId,
     input.action,
-    input.newTitle,
+    input.action === "edited" && !titleChanged ? undefined : input.newTitle,
     input.issueNumber,
   );
   if (result.change === "noop") {

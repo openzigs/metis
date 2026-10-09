@@ -1823,13 +1823,23 @@ describe("runTasksToIssues", () => {
   it("refuses a live run whose subset differs from the dry run's (#993)", async () => {
     seedMetisTasks();
     const repo = { owner: "o", name: "r" };
+    // The dry run chooses every task explicitly; the live run chooses none
+    // (every task). Both plan the same titles, so only the digest's taskIds
+    // term can tell the two plans apart.
     const dry = await runTasksToIssues({
       projectId: "p1",
       featureSlug: "001-foo",
       repo,
       dryRun: true,
-      taskIds: ["T01"],
+      taskIds: ["T01", "T02", "T03"],
     });
+    const all = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+    });
+    expect(dry.created.map((c) => c.title)).toEqual(all.created.map((c) => c.title));
     const create = vi.fn();
     await expect(
       runTasksToIssues({

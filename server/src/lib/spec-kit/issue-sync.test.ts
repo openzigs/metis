@@ -4,6 +4,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { applyIssueEventToTasksMarkdown, syncIssueEvent } from "./issue-sync.js";
 
+const artifactMocks = vi.hoisted(() => ({
+  getFeatureArtifact: vi.fn(),
+  writeFeatureArtifact: vi.fn(),
+}));
+vi.mock("./feature-artifacts.js", () => artifactMocks);
+vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+
 describe("applyIssueEventToTasksMarkdown", () => {
   const bullet = "- [ ] T01 — Build login form (depends-on: none)\n- [ ] T02 — Wire auth API\n";
   const table = [
@@ -233,5 +240,69 @@ describe("#993 — rename keeps parenthesised titles and trailing metadata", () 
     const r = applyIssueEventToTasksMarkdown(line, "T03", "edited", "[T03] Rework Foo (b.go:1-2)");
     expect(r.change).toBe("title");
     expect(r.content).toBe("- [ ] T03 — Rework Foo (b.go:1-2) (satisfies: AC-1) depends-on: T01");
+  });
+});
+
+describe("#993 — an `edited` delivery only renames when the title changed", () => {
+  const line = "- [ ] T03 — Change `Foo` in a.go (a.go:12-30) (satisfies: AC-1) depends-on: T01";
+  const legacyTitle = "[T03] Change `Foo` in a.go";
+  const deps = {
+    findExport: vi.fn(async () => ({ projectId: "p1", featureSlug: "001-x", taskId: "T03" })),
+    findFeature: vi.fn(async () => ({ id: "f1" })),
+  };
+  function arm() {
+    artifactMocks.getFeatureArtifact.mockReset().mockResolvedValue({ content: line, version: 4 });
+    artifactMocks.writeFeatureArtifact
+      .mockReset()
+      .mockImplementation(async (i: { content: string }) => ({ ...i, version: 5 }));
+  }
+  const base = { repoOwner: "acme", repoName: "proj", issueNumber: 7, action: "edited" };
+
+  it("leaves tasks.md alone on a body-only edit (no `changes.title`)", async () => {
+    arm();
+    // A title that differs from tasks.md (say, renamed while the webhook was
+    // down): a body-only edit must still not sync it.
+    const r = await syncIssueEvent(
+      { ...base, newTitle: "[T03] Renamed earlier", changes: {} as { title?: { from: string } } },
+      deps,
+    );
+    expect(r).toMatchObject({ handled: true, change: "noop", tasksMdVersion: 4 });
+    expect(artifactMocks.writeFeatureArtifact).not.toHaveBeenCalled();
+  });
+
+  it("leaves tasks.md alone when `changes` is absent altogether", async () => {
+    arm();
+    const r = await syncIssueEvent({ ...base, newTitle: "[T03] Something else" }, deps);
+    expect(r).toMatchObject({ handled: true, change: "noop" });
+    expect(artifactMocks.writeFeatureArtifact).not.toHaveBeenCalled();
+  });
+
+  it("does not shorten the task to a legacy title cut at the first `(`", async () => {
+    arm();
+    const r = await syncIssueEvent(
+      { ...base, newTitle: legacyTitle, changes: { title: { from: "[T03] Old" } } },
+      deps,
+    );
+    expect(r).toMatchObject({ handled: true, change: "noop" });
+    expect(artifactMocks.writeFeatureArtifact).not.toHaveBeenCalled();
+  });
+
+  it("still renames when the title genuinely changed", async () => {
+    arm();
+    const r = await syncIssueEvent(
+      { ...base, newTitle: "[T03] Rework `Bar`", changes: { title: { from: legacyTitle } } },
+      deps,
+    );
+    expect(r).toMatchObject({ handled: true, change: "title", tasksMdVersion: 5 });
+    expect(artifactMocks.writeFeatureArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "- [ ] T03 — Rework `Bar` (satisfies: AC-1) depends-on: T01",
+      }),
+    );
+  });
+
+  it("the pure helper treats a legacy truncated title as a no-op too", () => {
+    const r = applyIssueEventToTasksMarkdown(line, "T03", "edited", legacyTitle);
+    expect(r).toEqual({ content: line, change: "noop" });
   });
 });
