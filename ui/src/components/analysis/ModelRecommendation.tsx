@@ -24,7 +24,18 @@ import {
 
 type ReasoningDepth = "simple" | "moderate" | "complex";
 type LatencySLA = "interactive" | "standard" | "background";
-type ModelOverride = "auto" | "force-haiku" | "force-sonnet" | "force-fable" | "force-opus";
+/**
+ * `auto`, a forced Claude tier, or (#978) the provider's configured model id on
+ * a provider that serves no Claude tiers.
+ */
+type ModelOverride = string;
+
+const FORCED_TIERS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "force-haiku", label: "Force Haiku" },
+  { value: "force-sonnet", label: "Force Sonnet" },
+  { value: "force-fable", label: "Force Fable" },
+  { value: "force-opus", label: "Force Opus" },
+];
 
 interface TaskProfile {
   /** Null when the project has no completed run to estimate from (#1095). */
@@ -54,6 +65,14 @@ interface ModelRecommendationData {
   profile: TaskProfile;
   selection: ModelSelection;
   estimate: RunEstimate;
+  /**
+   * #978 — false when the active provider does not run the Claude tier ids
+   * (the model preferences' rule, #713). Absent from an older server: the
+   * tiers are offered, as before.
+   */
+  servesTierModels?: boolean;
+  /** #978 — the provider's configured model, offered in place of the tiers. */
+  configuredModel?: string | null;
 }
 
 const DEPTH_COLORS: Record<ReasoningDepth, string> = {
@@ -144,6 +163,14 @@ export function ModelRecommendation({
   }
 
   const { profile, selection } = data;
+  // #978 — only the models this deployment can run: never a Claude tier on a
+  // provider that would refuse (or silently remap) it.
+  const overrideOptions =
+    data.servesTierModels === false
+      ? data.configuredModel
+        ? [{ value: data.configuredModel, label: data.configuredModel }]
+        : []
+      : FORCED_TIERS;
 
   return (
     <div
@@ -152,7 +179,7 @@ export function ModelRecommendation({
     >
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-foreground">Model Selection</span>
-        <Select value={override} onValueChange={(v) => onOverrideChange(v as ModelOverride)}>
+        <Select value={override} onValueChange={onOverrideChange}>
           <SelectTrigger
             className="h-7 w-auto gap-1 border-border bg-muted px-2 py-1 text-xs text-foreground"
             aria-label="Model override"
@@ -161,10 +188,11 @@ export function ModelRecommendation({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="auto">Auto</SelectItem>
-            <SelectItem value="force-haiku">Force Haiku</SelectItem>
-            <SelectItem value="force-sonnet">Force Sonnet</SelectItem>
-            <SelectItem value="force-fable">Force Fable</SelectItem>
-            <SelectItem value="force-opus">Force Opus</SelectItem>
+            {overrideOptions.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>

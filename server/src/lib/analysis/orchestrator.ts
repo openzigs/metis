@@ -691,6 +691,10 @@ export class AnalysisOrchestrator {
       opts.agentKeys && opts.agentKeys.length > 0
         ? opts.agentKeys
         : [...ANALYSIS_SPECIALIST_AGENT_KEYS];
+    // #978 — a forced Claude tier the provider cannot run is refused before
+    // any row exists, not remapped onto the configured model behind the
+    // caller's back.
+    new ModelRouter({ provider: this.deps.provider }).assertServable(opts.model);
 
     const row = await createAnalysis({
       projectId: opts.projectId,
@@ -718,8 +722,8 @@ export class AnalysisOrchestrator {
       },
     });
 
-    // Resolve a `force-*` override to the model the provider will run — the
-    // same resolution the Model card reports (#512).
+    // Resolve a `force-*` override to the tier id it names — the same
+    // resolution the Model card reports (#512); servability was checked above.
     const resolvedOpts = { ...opts, model: this.resolveRunModel(opts.model) };
 
     // Run pipeline in the background. Errors are recorded against the

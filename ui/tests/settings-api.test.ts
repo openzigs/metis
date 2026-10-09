@@ -58,4 +58,35 @@ describe("settings-api provider prefs", () => {
     resetProviderPrefs();
     expect(loadProviderPrefs()).toEqual(DEFAULT_PROVIDER_PREFS);
   });
+
+  // #978 — no invented Claude default: with nothing stored, the active
+  // provider's own model (from the server) is what shows.
+  it("carries no hard-coded Claude model in its defaults", () => {
+    expect(DEFAULT_PROVIDER_PREFS.defaultModel).not.toMatch(/claude/i);
+  });
+
+  it("falls back to the server's provider and model when nothing is stored", () => {
+    expect(
+      loadProviderPrefs({ defaultProvider: "anthropic", defaultModel: "deepseek-flash" }),
+    ).toEqual({
+      ...DEFAULT_PROVIDER_PREFS,
+      defaultProvider: "anthropic",
+      defaultModel: "deepseek-flash",
+    });
+  });
+
+  it("prefers a stored choice over the server's defaults", () => {
+    saveProviderPrefs({
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+      reasoningEffort: "high",
+    });
+    expect(
+      loadProviderPrefs({ defaultProvider: "anthropic", defaultModel: "deepseek-flash" }),
+    ).toEqual({
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+      reasoningEffort: "high",
+    });
+  });
 });

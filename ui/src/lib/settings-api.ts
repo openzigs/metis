@@ -92,38 +92,45 @@ export interface ProviderPrefs {
 
 const STORAGE_KEY = "metis.settings.providerPrefs";
 
+// #978 — no invented provider or model: a hard-coded `claude-sonnet-4.5` showed
+// on a DeepSeek-only deployment. The page passes the active provider and its
+// configured model (`GET /api/ai/models`) as `serverDefaults`.
 const DEFAULT_PREFS: ProviderPrefs = {
-  defaultProvider: "anthropic",
-  defaultModel: "claude-sonnet-4.5",
+  defaultProvider: "",
+  defaultModel: "",
   reasoningEffort: "medium",
 };
 
-export function loadProviderPrefs(): ProviderPrefs {
-  if (typeof window === "undefined") return { ...DEFAULT_PREFS };
+/** The stored prefs, or else `serverDefaults` over the built-in defaults. */
+export function loadProviderPrefs(
+  serverDefaults: Partial<Pick<ProviderPrefs, "defaultProvider" | "defaultModel">> = {},
+): ProviderPrefs {
+  const defaults = { ...DEFAULT_PREFS, ...serverDefaults };
+  if (typeof window === "undefined") return { ...defaults };
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_PREFS };
+    if (!raw) return { ...defaults };
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return { ...DEFAULT_PREFS };
+    if (typeof parsed !== "object" || parsed === null) return { ...defaults };
     const obj = parsed as Partial<ProviderPrefs>;
     return {
       defaultProvider:
         typeof obj.defaultProvider === "string" && obj.defaultProvider.trim().length > 0
           ? obj.defaultProvider
-          : DEFAULT_PREFS.defaultProvider,
+          : defaults.defaultProvider,
       defaultModel:
         typeof obj.defaultModel === "string" && obj.defaultModel.trim().length > 0
           ? obj.defaultModel
-          : DEFAULT_PREFS.defaultModel,
+          : defaults.defaultModel,
       reasoningEffort:
         obj.reasoningEffort === "minimal" ||
         obj.reasoningEffort === "medium" ||
         obj.reasoningEffort === "high"
           ? obj.reasoningEffort
-          : DEFAULT_PREFS.reasoningEffort,
+          : defaults.reasoningEffort,
     };
   } catch {
-    return { ...DEFAULT_PREFS };
+    return { ...defaults };
   }
 }
 

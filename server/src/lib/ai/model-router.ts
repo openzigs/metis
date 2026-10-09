@@ -92,7 +92,21 @@ export interface ModelPreferences {
  * (`AIProvider.servesRouterModel`); an adapter that cannot answer is treated as
  * unable.
  */
-export type RouterProvider = Pick<AIProvider, "key" | "model" | "servesRouterModel">;
+export type RouterProvider = Pick<AIProvider, "key" | "model" | "servesRouterModel"> &
+  Partial<Pick<AIProvider, "offline">>;
+
+/**
+ * #713 — the offline stub, which answers any model id and runs no real model.
+ * Two shapes: the stub itself (`offline: true`), and the e2e `AI_REPLAY=1`
+ * wrapper around it — a `ReplayProvider` that reports `offline: false` (it is
+ * not the stub when a fixture hits) but keeps the stub's `key`
+ * (`fixtures/install.ts`). Testing `offline` alone listed only "Offline stub"
+ * under replay. #978 — shared with {@link ModelRouter.assertServable}, so the
+ * model preferences' `servesTierModels` and the forced-tier check agree.
+ */
+export function isOfflineStub(provider: RouterProvider): boolean {
+  return provider.offline === true || provider.key === "offline-stub";
+}
 
 /**
  * #532 — the model to send for a call site that wants Claude tier `tierId`:
@@ -102,6 +116,30 @@ export type RouterProvider = Pick<AIProvider, "key" | "model" | "servesRouterMod
  */
 export function tierModelFor(provider: RouterProvider, tierId: string): string {
   return provider.servesRouterModel?.(tierId) === true ? tierId : provider.model;
+}
+
+/**
+ * #978 — a run or recommendation forced a Claude tier (a `force-*` override or
+ * a raw tier id) onto a provider that cannot serve it. Refused rather than
+ * silently remapped onto the provider's configured model: the caller asked for
+ * a model this deployment does not run, and the run would not have used it.
+ */
+export class ModelNotServedError extends Error {
+  readonly code = "MODEL_NOT_SERVED";
+  constructor(
+    readonly requested: string,
+    readonly providerKey: string,
+    readonly configuredModel: string,
+  ) {
+    const label = Object.hasOwn(OVERRIDE_LABELS, requested)
+      ? OVERRIDE_LABELS[requested as keyof typeof OVERRIDE_LABELS]
+      : requested;
+    super(
+      `The ${providerKey} provider does not serve ${label}; it runs ${configuredModel}. ` +
+        `Choose Auto or ${configuredModel}.`,
+    );
+    this.name = "ModelNotServedError";
+  }
 }
 
 export interface ModelRouterOptions {
@@ -215,6 +253,23 @@ export class ModelRouter {
     return this.cannotServe(tierId) ? this.provider!.model : tierId;
   }
 
+  /**
+   * #978 — throws {@link ModelNotServedError} when `model` forces a Claude tier
+   * (a `force-*` override, or a router tier id sent as-is) that the attached
+   * provider cannot serve. Auto, no model, and any other id pass.
+   */
+  assertServable(model: string | undefined): void {
+    if (model === undefined || (this.provider && isOfflineStub(this.provider))) return;
+    const tierId = Object.hasOwn(OVERRIDE_MODEL_MAP, model)
+      ? OVERRIDE_MODEL_MAP[model as keyof typeof OVERRIDE_MODEL_MAP]
+      : KNOWN_MODEL_IDS.has(model)
+        ? model
+        : undefined;
+    if (tierId !== undefined && this.cannotServe(tierId)) {
+      throw new ModelNotServedError(model, this.provider!.key, this.provider!.model);
+    }
+  }
+
   /** #512 — true when a provider is attached and it cannot run `modelId` as sent. */
   private cannotServe(modelId: string): boolean {
     return this.provider !== undefined && this.provider.servesRouterModel?.(modelId) !== true;
@@ -235,7 +290,9 @@ export class ModelRouter {
       return {
         modelId: provider.model,
         modelName: provider.model,
-        rationale: `The ${provider.key} provider does not serve Claude tier models: using its configured model (${provider.model})`,
+        // #978 — the panel offers only Auto and this model on such a provider,
+        // so the rationale names what runs rather than tiers it cannot offer.
+        rationale: `Using the ${provider.key} provider's configured model (${provider.model}): tier routing does not apply to it`,
         estimatedCost: null,
         wasDowngraded: false,
       };

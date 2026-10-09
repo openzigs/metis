@@ -28,6 +28,8 @@ import {
   FABLE_MODEL_ID,
   OPUS_MODEL_ID,
   LEGACY_SONNET_MODEL_ID,
+  ModelNotServedError,
+  isOfflineStub,
   type RouterProvider,
 } from "../lib/ai/model-router.js";
 import { getModelCatalog, routerCatalog } from "../lib/ai/model-catalog.js";
@@ -241,6 +243,21 @@ export function initModelRecommendationRouter(): Router {
     // this project, so the two numbers can no longer disagree.
     const currentMonthTokens = await getProjectMonthlyAnalysisTokens(projectId);
 
+    // #978 — a forced tier this provider cannot run is a 400, not a card that
+    // quietly names a different model.
+    const provider = activeRouterProvider();
+    try {
+      new ModelRouter({ provider }).assertServable(override);
+    } catch (err) {
+      if (err instanceof ModelNotServedError) {
+        throw new AppError(400, err.code, err.message, {
+          requested: err.requested,
+          configuredModel: err.configuredModel,
+        });
+      }
+      throw err;
+    }
+
     const modelRouter = new ModelRouter({
       preferences: pref
         ? {
@@ -250,12 +267,23 @@ export function initModelRecommendationRouter(): Router {
           }
         : undefined,
       currentMonthTokens,
-      provider: activeRouterProvider(),
+      provider,
     });
 
     const selection = modelRouter.select(profile, override);
 
-    res.json(ok({ profile, selection, estimate }));
+    res.json(
+      ok({
+        profile,
+        selection,
+        estimate,
+        // #978 — the panel offers the forced tiers only where the provider
+        // serves them (the model preferences' rule, #713); otherwise Auto and
+        // this configured model.
+        servesTierModels: servesTierModels(provider),
+        configuredModel: provider?.model ?? null,
+      }),
+    );
   };
 
   // Object-level scope (#674) is applied HERE rather than being inherited from
@@ -282,18 +310,6 @@ interface AvailableModel {
 
 /** The provider the preferences describe; `offline` marks the stub. */
 type PreferenceProvider = RouterProvider & Partial<Pick<AIProvider, "offline">>;
-
-/**
- * #713 — the offline stub, which answers any model id and runs no real model.
- * Two shapes: the stub itself (`offline: true`), and the e2e `AI_REPLAY=1`
- * wrapper around it — a `ReplayProvider` that reports `offline: false` (it is
- * not the stub when a fixture hits) but keeps the stub's `key`
- * (`fixtures/install.ts`). Testing `offline` alone listed only "Offline stub"
- * under replay.
- */
-function isOfflineStub(provider: PreferenceProvider): boolean {
-  return provider.offline === true || provider.key === "offline-stub";
-}
 
 /**
  * #713 — true when the router's Claude tier ids run as sent. With no resolvable

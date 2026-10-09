@@ -331,9 +331,47 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
       expect(body.data.selection.estimatedCost).toBeNull();
     });
 
-    it("names the configured model even when a Claude tier is forced", async () => {
+    // #978 — the panel's options follow the model preferences' rule.
+    it("tells the panel the provider serves no tiers, and which model it runs", async () => {
       activeProvider = deepSeek;
-      const body = await post({ agentKeys: ["document"], override: "force-opus" });
+      const body = (await post({ agentKeys: ["document"] })) as RecommendationBody & {
+        data: { servesTierModels: boolean; configuredModel: string | null };
+      };
+      expect(body.data.servesTierModels).toBe(false);
+      expect(body.data.configuredModel).toBe("deepseek-v4-pro");
+    });
+
+    it("tells the panel a Claude-serving provider serves the tiers", async () => {
+      const body = (await post({ agentKeys: ["document"] })) as RecommendationBody & {
+        data: { servesTierModels: boolean };
+      };
+      expect(body.data.servesTierModels).toBe(true);
+    });
+
+    it("names the configured model, and no Claude tier, in the rationale (#978)", async () => {
+      activeProvider = deepSeek;
+      const body = await post({ agentKeys: ["document"] });
+      expect(body.data.selection.rationale).toContain("deepseek-v4-pro");
+      expect(body.data.selection.rationale).not.toMatch(/Claude/);
+    });
+
+    // #978 — refused with a clear 400, never answered with a different model.
+    it.each(["force-haiku", "force-sonnet", "force-fable", "force-opus"])(
+      "rejects %s with a 400 on a provider that cannot serve it",
+      async (override) => {
+        activeProvider = deepSeek;
+        const res = await request(buildApp())
+          .post("/projects/proj-1/analyses/model-recommendation")
+          .send({ agentKeys: ["document"], override });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe("MODEL_NOT_SERVED");
+        expect(res.body.error.message).toContain("deepseek-v4-pro");
+      },
+    );
+
+    it("answers the provider's configured model chosen as the override, as Auto", async () => {
+      activeProvider = deepSeek;
+      const body = await post({ agentKeys: ["document"], override: "deepseek-v4-pro" });
       expect(body.data.selection.modelId).toBe("deepseek-v4-pro");
     });
 
@@ -344,7 +382,7 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
       const { setOrchestratorForTests } = await import("../lib/analysis/orchestrator.js");
       setOrchestratorForTests({ provider: deepSeek } as never);
       try {
-        const body = await post({ agentKeys: ["document"], override: "force-sonnet" });
+        const body = await post({ agentKeys: ["document"] });
         expect(body.data.selection.modelId).toBe("deepseek-v4-pro");
         expect(buildProviderMock).not.toHaveBeenCalled();
         expect(loadAIConfigMock).not.toHaveBeenCalled();

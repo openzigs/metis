@@ -29,7 +29,14 @@ vi.mock("@/lib/settings-api", async () => {
   };
 });
 
+// #978 — the provider preferences fall back to the active provider's model.
+vi.mock("@/lib/model-catalog-api", () => ({
+  modelCatalogApi: { list: vi.fn() },
+}));
+
 import { configApi } from "@/lib/settings-api";
+import { modelCatalogApi } from "@/lib/model-catalog-api";
+const catalogMock = vi.mocked(modelCatalogApi.list);
 const envVarsMock = vi.mocked(settingsApi.envVars);
 const configListMock = vi.mocked(configApi.list);
 const configAuditMock = vi.mocked(configApi.audit);
@@ -55,6 +62,11 @@ beforeEach(() => {
   });
   configListMock.mockResolvedValue({ items: [] });
   configAuditMock.mockResolvedValue({ items: [], nextCursor: null });
+  catalogMock.mockResolvedValue({
+    provider: "anthropic",
+    defaultModel: "deepseek-flash",
+    models: [],
+  });
 });
 
 afterEach(() => {
@@ -119,6 +131,78 @@ describe("<SettingsApiKeysPage />", () => {
     fireEvent.click(screen.getByTestId("settings-provider-reset"));
     const provider = screen.getByTestId("settings-provider-key") as HTMLInputElement;
     expect(provider.value).not.toBe("openai");
+  });
+
+  it("shows the active provider's real model, not a Claude default, when nothing is saved (#978)", async () => {
+    renderPage();
+    const model = screen.getByTestId("settings-provider-model") as HTMLInputElement;
+    await waitFor(() => expect(model.value).toBe("deepseek-flash"));
+    expect((screen.getByTestId("settings-provider-key") as HTMLInputElement).value).toBe(
+      "anthropic",
+    );
+    expect(screen.getByTestId("settings-provider-save")).toBeDisabled();
+  });
+
+  it("keeps a saved choice over the active provider's model (#978)", async () => {
+    window.localStorage.setItem(
+      "metis.settings.providerPrefs",
+      JSON.stringify({
+        defaultProvider: "openai",
+        defaultModel: "gpt-4o",
+        reasoningEffort: "high",
+      }),
+    );
+    renderPage();
+    await waitFor(() => expect(catalogMock).toHaveBeenCalled());
+    await act(async () => {});
+    expect((screen.getByTestId("settings-provider-model") as HTMLInputElement).value).toBe(
+      "gpt-4o",
+    );
+  });
+
+  it("keeps an in-progress edit when the model catalog loads after it (#978)", async () => {
+    let resolveCatalog!: (v: Awaited<ReturnType<typeof modelCatalogApi.list>>) => void;
+    catalogMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCatalog = resolve;
+        }),
+    );
+    renderPage();
+    await waitFor(() => expect(catalogMock).toHaveBeenCalled());
+
+    // The user starts typing before the catalog answers.
+    fireEvent.change(screen.getByTestId("settings-provider-model"), {
+      target: { value: "my-own-model" },
+    });
+
+    await act(async () => {
+      resolveCatalog({ provider: "anthropic", defaultModel: "deepseek-flash", models: [] });
+    });
+    await act(async () => {});
+
+    // The server default became the baseline, but did not overwrite the edit.
+    const model = screen.getByTestId("settings-provider-model") as HTMLInputElement;
+    expect(model.value).toBe("my-own-model");
+    expect(screen.getByTestId("settings-provider-save")).toBeEnabled();
+  });
+
+  it("Reset returns to the active provider's model (#978)", async () => {
+    window.localStorage.setItem(
+      "metis.settings.providerPrefs",
+      JSON.stringify({
+        defaultProvider: "openai",
+        defaultModel: "gpt-4o",
+        reasoningEffort: "high",
+      }),
+    );
+    renderPage();
+    await waitFor(() => expect(catalogMock).toHaveBeenCalled());
+    await act(async () => {});
+    fireEvent.click(screen.getByTestId("settings-provider-reset"));
+    expect((screen.getByTestId("settings-provider-model") as HTMLInputElement).value).toBe(
+      "deepseek-flash",
+    );
   });
 
   it("renders the env-vars table when the call succeeds", async () => {

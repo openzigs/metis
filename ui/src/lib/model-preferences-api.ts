@@ -64,6 +64,9 @@ export interface ModelRecommendationData {
     sampleSize: number;
     perAgentTokens: number | null;
   };
+  /** #978 — false when the provider runs no Claude tier; the panel then offers Auto + `configuredModel`. */
+  servesTierModels?: boolean;
+  configuredModel?: string | null;
 }
 
 /** The planned run, POSTed so a long requirement paste is never URL-truncated. */
