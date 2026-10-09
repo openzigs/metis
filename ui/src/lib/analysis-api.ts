@@ -26,6 +26,7 @@ import type {
   TraceabilityMatrix,
   GapReport,
   RequirementDiff,
+  SpecKitHandoffRecord,
 } from "@metis/shared";
 
 export type {
@@ -373,6 +374,8 @@ export interface StartAnalysisInput {
   enableWebResearch?: boolean;
   /** Epic #922 — opt-in clarifying questions for ambiguous requirements. */
   enableClarification?: boolean;
+  /** Issue #994 — a Spec Kit handoff's record of what it sent and left out. */
+  specKitHandoff?: SpecKitHandoffRecord;
 }
 
 export interface UpdateRequirementInput {
@@ -451,6 +454,16 @@ export const analysisApi = {
   regenerateAgent: (id: string, agentKey: AnalysisAgentKey) =>
     apiFetch<{ accepted: boolean }>(`/analyses/${id}/agents/${agentKey}/regenerate`, {
       method: "POST",
+    }),
+
+  /**
+   * Issue #1001 — continue a code investigation that ran out of its budget: the
+   * code agent re-runs with a larger token budget, then synthesis re-runs.
+   */
+  continueCodeInvestigation: (id: string) =>
+    apiFetch<{ accepted: boolean }>(`/analyses/${id}/agents/code/regenerate`, {
+      method: "POST",
+      body: { extendBudget: true },
     }),
 
   /**

@@ -940,6 +940,30 @@ export const MAX_EXTRA_INSTRUCTIONS = 4096;
 
 /** Most imported requirements one analysis can start from (`importedRequirementIds`). */
 export const MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS = 25;
+/**
+ * Issue #994 — what a Spec Kit "Start analysis" handoff sent. `artifacts` are
+ * the files `/speckit.implement` forwarded; `sent` names the requirements
+ * carried in `extraInstructions` (`AC-1`, `NFR-1`, …); `omitted` names those
+ * that did not fit {@link MAX_EXTRA_INSTRUCTIONS} (or `the end of spec.md` when
+ * the spec had no acceptance criteria to send one by one). Persisted as
+ * `metadata.specKitHandoff`, so the analysis page itself says what was left
+ * out — a toast before the redirect was never seen.
+ */
+/**
+ * Most entries `specKitHandoff.sent` / `omitted` may hold. A client with more
+ * omitted requirements than this keeps the first `max - 1` and ends the list
+ * with a `+N more` entry, rather than having the whole run rejected.
+ */
+export const SPEC_KIT_HANDOFF_MAX_LABELS = 500;
+
+export const specKitHandoffSchema = z
+  .object({
+    artifacts: z.array(z.string().min(1).max(200)).max(10),
+    sent: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    omitted: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+  })
+  .strict();
+export type SpecKitHandoffRecord = z.infer<typeof specKitHandoffSchema>;
 
 export const startAnalysisSchema = z.object({
   documentIds: z.array(idSchema).max(100).optional(),
@@ -971,8 +995,23 @@ export const startAnalysisSchema = z.object({
     .min(1)
     .max(MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS)
     .optional(),
+  /** Issue #994 — set by the Spec Kit handoff: what it sent and what it left out. */
+  specKitHandoff: specKitHandoffSchema.optional(),
 });
 export type StartAnalysisInput = z.infer<typeof startAnalysisSchema>;
+
+/**
+ * Issue #1001 — optional POST body for `/analyses/:id/agents/:agentKey/regenerate`.
+ * `extendBudget` continues a code investigation that ran out of budget by
+ * re-running the code agent with a larger token budget; only the `code` agent
+ * accepts it.
+ */
+export const regenerateAgentSchema = z
+  .object({
+    extendBudget: z.boolean().optional(),
+  })
+  .strict();
+export type RegenerateAgentInput = z.infer<typeof regenerateAgentSchema>;
 
 /** PATCH body for an individual requirement (approve / edit / reject). */
 export const updateRequirementSchema = z.object({
@@ -2120,6 +2159,14 @@ export const ANALYSIS_CAPABILITY_REASONS = [
    * it would train users to ignore the banner.
    */
   "requirement-inputs-dropped",
+  /**
+   * Issue #1001 — the agentic code pass ran out of its turn/token budget before it
+   * reached every requirement, so the requirements it never searched for came back
+   * `could-not-verify` and carry no code link. Distinct from
+   * `code-retrieval-degraded` (search misbehaved): here search worked and simply
+   * ran out of room. The UI offers to continue the code agent with a larger budget.
+   */
+  "code-investigation-cut-short",
 ] as const;
 export type AnalysisCapabilityReason = (typeof ANALYSIS_CAPABILITY_REASONS)[number];
 
@@ -2284,6 +2331,12 @@ export interface AnalysisCapability {
    * on every run persisted before #1112).
    */
   requirementInputAccount?: RequirementInputAccount;
+  /**
+   * Issue #1001 — the agentic code pass exhausted its turn/token budget (the run's
+   * merged retrieval health is `exhausted`). Optional so records persisted before
+   * #1001 still parse.
+   */
+  codeInvestigationCutShort?: boolean;
   /** Derived, enumerated degradation reasons. Empty ⇒ fully capable run. */
   reasons: AnalysisCapabilityReason[];
 }
@@ -2347,6 +2400,8 @@ export interface CapabilityReasonInput {
   repoCloneUnavailable?: boolean;
   /** #1112 — input-side coverage for the operator's free-text requirements. */
   requirementInputAccount?: RequirementInputAccount | null;
+  /** #1001 — the agentic code pass ran out of turn/token budget before covering every requirement. */
+  codeInvestigationCutShort?: boolean;
 }
 
 /**
@@ -2394,6 +2449,10 @@ export function deriveCapabilityReasons(input: CapabilityReasonInput): AnalysisC
     // worked), they are simply shallower. Conflating the two taught the user to
     // discard perfectly good findings.
     if (input.repoCloneUnavailable) reasons.push("repo-clone-unavailable");
+    // #1001 — the budget ran out before every requirement was searched for. Those
+    // requirements are `could-not-verify` with no code link; the banner offers to
+    // continue the code agent with a larger budget.
+    if (input.codeInvestigationCutShort) reasons.push("code-investigation-cut-short");
   }
   if (input.databaseAnalysisRequested && !input.schemaContextEnabled) {
     reasons.push("schema-context-disabled");

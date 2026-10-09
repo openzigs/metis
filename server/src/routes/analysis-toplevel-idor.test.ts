@@ -324,6 +324,49 @@ describe("/api/analyses top-level router — cross-tenant scope (#1099)", () => 
     expect(res.body.error.code).toBe("INVALID_AGENT_KEY");
   });
 
+  describe("#1001 — continue a code investigation with a larger budget", () => {
+    it("passes extendBudget through to the orchestrator for the code agent", async () => {
+      currentUser = DEV_WS_A;
+      const res = await request(app)
+        .post("/api/analyses/an-1/agents/code/regenerate")
+        .send({ extendBudget: true });
+      expect(res.status).toBe(202);
+      expect(regenerateAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ analysisId: "an-1", agentKey: "code", extendBudget: true }),
+      );
+    });
+
+    it("an ordinary regenerate carries no extendBudget", async () => {
+      currentUser = DEV_WS_A;
+      const res = await request(app).post("/api/analyses/an-1/agents/code/regenerate");
+      expect(res.status).toBe(202);
+      expect(regenerateAgent).toHaveBeenCalledWith(
+        expect.not.objectContaining({ extendBudget: expect.anything() }),
+      );
+    });
+
+    it("rejects extendBudget on any agent but code, before touching the analysis", async () => {
+      currentUser = DEV_WS_A;
+      const res = await request(app)
+        .post("/api/analyses/an-1/agents/document/regenerate")
+        .send({ extendBudget: true });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("EXTEND_BUDGET_CODE_ONLY");
+      expect(assertCanRegenerate).not.toHaveBeenCalled();
+      expect(regenerateAgent).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unknown body field (no caller-chosen budget)", async () => {
+      currentUser = DEV_WS_A;
+      const res = await request(app)
+        .post("/api/analyses/an-1/agents/code/regenerate")
+        .send({ tokenBudget: 10_000_000 });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("VALIDATION_ERROR");
+      expect(regenerateAgent).not.toHaveBeenCalled();
+    });
+  });
+
   it("PATCH requirements 404s for a requirement outside the analysis, for an in-tenant caller", async () => {
     currentUser = DEV_WS_A;
     updateRequirementRow.mockResolvedValue(null as never);

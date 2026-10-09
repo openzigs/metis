@@ -257,7 +257,7 @@ import {
 } from "./new-requirements.js";
 import { computeRequirementEscalations } from "./escalation-context.js";
 import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation-policy.js";
-import type { RequirementEscalation } from "@metis/shared";
+import type { RequirementEscalation, SpecKitHandoffRecord } from "@metis/shared";
 import { TaskProfiler } from "../ai/task-profiler.js";
 import { ModelRouter, type ModelPreferences } from "../ai/model-router.js";
 import { displayFilename } from "../rag/hit-locator.js";
@@ -433,6 +433,36 @@ interface SynthesisOutcome {
   };
 }
 
+/**
+ * #1001 — how much larger than `ANALYSIS_AGENT_TOKEN_BUDGET` the budget is when
+ * an operator continues a code investigation that ran out of budget. Bounded,
+ * and the monthly cap pre-flight still applies to the continued run.
+ */
+export const CONTINUE_BUDGET_MULTIPLIER = 2;
+
+/**
+ * #773 / #739 / #1001 — the turn caps for the agentic code pass's standard and
+ * deep sub-passes. The cap scales with the requirements each pass investigates
+ * (see `resolveAgenticMaxTurns`) unless the #739 escalation policy owns it, and
+ * a continued investigation multiplies both by `turnMultiplier`, so a pass that
+ * hit its turn cap does not rerun with the same cap and stop in the same place.
+ */
+export function resolvePassTurnCaps(opts: {
+  standardCount: number;
+  deepCount: number;
+  totalCount: number;
+  policy?: Pick<EscalationPolicyConfig, "standardMaxTurns" | "deepMaxTurns">;
+  turnMultiplier?: number;
+}): { standardTurns: number; deepTurns: number } {
+  const turnScale = opts.turnMultiplier ?? 1;
+  return {
+    standardTurns:
+      (opts.policy?.standardMaxTurns ??
+        resolveAgenticMaxTurns(opts.standardCount || opts.totalCount)) * turnScale,
+    deepTurns: (opts.policy?.deepMaxTurns ?? resolveAgenticMaxTurns(opts.deepCount)) * turnScale,
+  };
+}
+
 /** Minimum token budget per repo in multi-repo analysis (#663 review). */
 const MIN_PER_REPO_TOKEN_BUDGET = 50_000;
 
@@ -597,6 +627,8 @@ export interface StartAnalysisOptions {
    * analysis metadata so the run keeps the link back to each imported item.
    */
   sourceRequirements?: AnalysisSourceRequirement[];
+  /** Issue #994 — a Spec Kit handoff's record of what it sent; persisted to metadata. */
+  specKitHandoff?: SpecKitHandoffRecord;
 }
 
 interface ActiveRun {
@@ -712,6 +744,7 @@ export class AnalysisOrchestrator {
       model: opts.model,
       extraInstructions: opts.extraInstructions,
       sourceRequirements: opts.sourceRequirements,
+      ...(opts.specKitHandoff ? { specKitHandoff: opts.specKitHandoff } : {}),
     });
 
     audit({
@@ -802,6 +835,12 @@ export class AnalysisOrchestrator {
     analysisId: string;
     agentKey: AnalysisSpecialistAgentKey;
     actorId: string;
+    /**
+     * #1001 — continue a code investigation that ran out of budget: the code
+     * agent re-runs with {@link CONTINUE_BUDGET_MULTIPLIER}× the configured
+     * `ANALYSIS_AGENT_TOKEN_BUDGET`. Only meaningful for the `code` agent.
+     */
+    extendBudget?: boolean;
   }): Promise<void> {
     const { analysis } = await this.assertCanRegenerate(opts.analysisId);
     // #724 — bill the regenerated agent and the re-synthesis to the project.
@@ -813,7 +852,12 @@ export class AnalysisOrchestrator {
   }
 
   private async regenerateLoadedAgent(
-    opts: { analysisId: string; agentKey: AnalysisSpecialistAgentKey; actorId: string },
+    opts: {
+      analysisId: string;
+      agentKey: AnalysisSpecialistAgentKey;
+      actorId: string;
+      extendBudget?: boolean;
+    },
     maybeAnalysis: Awaited<ReturnType<AnalysisOrchestrator["assertCanRegenerate"]>>["analysis"],
   ): Promise<void> {
     const analysis = maybeAnalysis as NonNullable<typeof maybeAnalysis> & {
@@ -845,6 +889,7 @@ export class AnalysisOrchestrator {
       metadata: {
         agentKey: opts.agentKey,
         projectId: analysis.projectId,
+        extendBudget: opts.extendBudget === true,
         persona: (() => {
           const p = getPersona(opts.agentKey);
           return { agentKey: opts.agentKey, name: p.name, role: p.role };
@@ -885,6 +930,14 @@ export class AnalysisOrchestrator {
               databaseAwareSetting:
                 (analysis.project as { databaseAwareAnalysis?: string | null })
                   .databaseAwareAnalysis ?? undefined,
+              ...(opts.extendBudget
+                ? {
+                    tokenBudget: resolveAgentTokenBudget() * CONTINUE_BUDGET_MULTIPLIER,
+                    // A pass that hit its turn cap would otherwise rerun with the
+                    // same cap and stop in the same place.
+                    turnMultiplier: CONTINUE_BUDGET_MULTIPLIER,
+                  }
+                : {}),
             })
           : await this.runOneAgent(agentInput);
       delta.promptTokens += result.usage.promptTokens;
@@ -899,6 +952,10 @@ export class AnalysisOrchestrator {
         signal: controller.signal,
         accumulator: delta,
       });
+      // #1001 — the regenerated code pass replaced the code findings, so the
+      // run's retrieval health and "cut short" reason must describe IT, not the
+      // pass it replaced — otherwise a continued run keeps offering to continue.
+      if (opts.agentKey === "code") await this.refreshCodeInvestigation(opts.analysisId);
       this.emitCompleted(opts.analysisId);
     } catch (err) {
       outcome = "failed";
@@ -912,6 +969,8 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
+      // A failed regenerate leaves no tracker to finalize its pass health.
+      this.retrievalHealths.delete(opts.analysisId);
       await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
       // Atomic write — increments columns server-side so two concurrent
       // regenerates can't lose tokens to a read/modify/write race.
@@ -928,6 +987,7 @@ export class AnalysisOrchestrator {
         metadata: {
           projectId: analysis.projectId,
           agentKey: opts.agentKey,
+          extendBudget: opts.extendBudget === true,
           tokensConsumed: delta.totalTokens,
           decision: outcome,
           errorMessage,
@@ -951,8 +1011,9 @@ export class AnalysisOrchestrator {
    */
   private async regenerateCodeAgent(
     input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
-    opts: { databaseAwareSetting?: string } = {},
+    opts: { databaseAwareSetting?: string; tokenBudget?: number; turnMultiplier?: number } = {},
   ): Promise<AgentRunResult> {
+    const totalBudget = opts.tokenBudget ?? resolveAgentTokenBudget();
     const requirements = mergeRequirementSets(
       await this.extractRequirementsFromDocAgent(input.analysisId),
       await extractNewRequirementCandidates(input.extraInstructions),
@@ -1008,13 +1069,15 @@ export class AnalysisOrchestrator {
           ...shared,
           projectName: input.projectName,
           connectorId: connectors[0]?.id,
+          tokenBudget: totalBudget,
+          turnMultiplier: opts.turnMultiplier,
         }),
       );
     } else {
       // Repos the budget cannot fit keep whatever rows they already have.
       const { effectiveConnectors, effectiveBudget } = capConnectorsForBudget(
         connectors,
-        resolveAgentTokenBudget(),
+        totalBudget,
       );
       for (const connector of effectiveConnectors) {
         if (input.signal.aborted) break;
@@ -1024,6 +1087,7 @@ export class AnalysisOrchestrator {
             projectName: `${input.projectName} [repo: ${connector.label}]`,
             connectorId: connector.id,
             tokenBudget: effectiveBudget,
+            turnMultiplier: opts.turnMultiplier,
           }),
         );
       }
@@ -1304,11 +1368,53 @@ export class AnalysisOrchestrator {
   ): Promise<void> {
     const capability = await getAnalysisCapability(analysisId);
     if (!capability) return;
-    const next: AnalysisCapability = {
+    await this.persistAndEmitCapability(analysisId, {
       ...capability,
       skippedRepos: remaining,
       reasons: deriveCapabilityReasons({ ...capability, skippedRepos: remaining }),
+    });
+  }
+
+  /**
+   * #1001 — after a code-agent regenerate, persist the regenerated pass's
+   * retrieval health (the gap report reads it) and re-derive the capability's
+   * code-retrieval flags from it, so the banner describes the pass that now
+   * owns the code findings. Best-effort, like every capability write.
+   */
+  private async refreshCodeInvestigation(analysisId: string): Promise<void> {
+    const health = mergeRetrievalHealth(this.retrievalHealths.get(analysisId) ?? []);
+    this.retrievalHealths.delete(analysisId);
+    // Single-shot regenerates record no retrieval health; leave the record alone.
+    if (!health) return;
+    try {
+      await persistAnalysisEnhancement(analysisId, { retrieval: health });
+    } catch (err) {
+      log.warn("Retrieval-health persist failed", { analysisId, error: (err as Error).message });
+    }
+    let capability: AnalysisCapability | null;
+    try {
+      capability = await getAnalysisCapability(analysisId);
+    } catch (err) {
+      log.warn("Capability read failed", { analysisId, error: (err as Error).message });
+      return;
+    }
+    if (!capability) return;
+    const flags = {
+      codeRetrievalDegraded: health.degraded,
+      codeInvestigationCutShort: health.exhausted === true,
     };
+    await this.persistAndEmitCapability(analysisId, {
+      ...capability,
+      ...flags,
+      reasons: deriveCapabilityReasons({ ...capability, ...flags }),
+    });
+  }
+
+  /** Persist a rewritten capability record and broadcast it. Best-effort. */
+  private async persistAndEmitCapability(
+    analysisId: string,
+    next: AnalysisCapability,
+  ): Promise<void> {
     try {
       await persistAnalysisCapability(analysisId, next);
     } catch (err) {
@@ -2373,6 +2479,8 @@ export class AnalysisOrchestrator {
     signal: AbortSignal;
     connectorId?: string;
     tokenBudget?: number;
+    /** #1001 — scales the agentic turn cap on a "continue" re-run. Default 1. */
+    turnMultiplier?: number;
     /** #735 (Epic #726) — deterministic requirement→code mapping seeded into the gap prompt. */
     affectedCode?: AffectedCodeContext;
     /** #824 (Epic #820 Phase 1) — deterministic AFFECTED SCHEMA block seeded into the gap prompt. */
@@ -2937,11 +3045,13 @@ export class AnalysisOrchestrator {
         // actually investigate (see `resolveAgenticMaxTurns`), so an honest verdict
         // per requirement is fundable instead of structurally impossible. When the
         // #739 escalation policy is on it still owns the caps.
-        const standardTurns =
-          input.escalation?.policy.standardMaxTurns ??
-          resolveAgenticMaxTurns(standardReqs.length || input.requirements.length);
-        const deepTurns =
-          input.escalation?.policy.deepMaxTurns ?? resolveAgenticMaxTurns(deepReqs.length);
+        const { standardTurns, deepTurns } = resolvePassTurnCaps({
+          standardCount: standardReqs.length,
+          deepCount: deepReqs.length,
+          totalCount: input.requirements.length,
+          policy: input.escalation?.policy,
+          turnMultiplier: input.turnMultiplier,
+        });
 
         let mergedOutput: AgentOutput;
         let mergedUsage: TokenUsage;
@@ -4132,10 +4242,11 @@ export class AnalysisOrchestrator {
     const existing = this.retrievalHealths.get(analysisId) ?? [];
     existing.push(health);
     this.retrievalHealths.set(analysisId, existing);
-    if (health.degraded) {
-      const tracker = this.capabilities.get(analysisId);
-      if (tracker) tracker.codeRetrievalDegraded = true;
-    }
+    const tracker = this.capabilities.get(analysisId);
+    if (!tracker) return;
+    if (health.degraded) tracker.codeRetrievalDegraded = true;
+    // #1001 — the pass ran out of turns/tokens before reaching every requirement.
+    if (health.exhausted) tracker.codeInvestigationCutShort = true;
   }
 
   /**

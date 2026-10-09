@@ -98,7 +98,11 @@ import {
 import { AcceptanceCriteriaList } from "@/components/analysis/AcceptanceCriteriaList";
 import { VerificationBadge } from "@/components/analysis/VerificationBadge";
 // Issue #1232 — the run's outcome first, then a scannable finding body.
-import { AnalysisOutcomeCard } from "@/components/analysis/AnalysisOutcomeCard";
+import {
+  AnalysisOutcomeCard,
+  outcomeRequirementCount,
+} from "@/components/analysis/AnalysisOutcomeCard";
+import { SpecKitHandoffNotice } from "@/components/analysis/spec-kit-handoff-notice";
 import { FindingBody } from "@/components/analysis/FindingBody";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { TraceabilityMatrix } from "@/components/analysis/traceability-matrix";
@@ -406,6 +410,16 @@ export default function AnalysisPage(): React.ReactElement {
     successMessage: (res) =>
       res.accepted ? "Analyzing remaining repositories" : "No repositories to re-run",
     invalidateKeys: selectedAnalysisId ? [queryKeys.analyses.detail(selectedAnalysisId)] : [],
+  });
+  // Issue #1001 — continue a code investigation cut short by its budget. The
+  // regenerated pass rewrites the capability record, so the banner clears once
+  // the continued pass finishes within budget.
+  const continueInvestigation = useAppMutation({
+    mutationFn: () => analysisApi.continueCodeInvestigation(selectedAnalysisId!),
+    successMessage: "Continuing code analysis with a larger budget",
+    invalidateKeys: selectedAnalysisId
+      ? [queryKeys.analyses.detail(selectedAnalysisId), ["analyses", "cost-cap"]]
+      : [],
   });
   // AC2 — review-status changes (approve/reject) go through the same
   // optimistic-locked PUT as field edits. `PUT /api/requirements/:id` accepts
@@ -947,6 +961,10 @@ export default function AnalysisPage(): React.ReactElement {
                 ) : null}
               </div>
 
+              {/* Issue #994 — what a Spec Kit handoff sent and left out, on every
+              tab and while the run is still going. Nothing for other runs. */}
+              <SpecKitHandoffNotice metadata={detail.data.metadata} />
+
               <AnalysisResultTabs
                 value={tab}
                 onValueChange={selectTab}
@@ -960,6 +978,10 @@ export default function AnalysisPage(): React.ReactElement {
                   <AnalysisOutcomeCard
                     status={detail.data.status}
                     agentResults={detail.data.agentResults}
+                    requirementCount={outcomeRequirementCount(
+                      detail.data.metadata,
+                      detail.data.requirements.length,
+                    )}
                   />
 
                   {/* Issue #859 (Epic #852) — whether database-aware schema analysis ran
@@ -975,6 +997,12 @@ export default function AnalysisPage(): React.ReactElement {
                     capability={detail.data.capability}
                     onResumeRepos={() => resumeRepos.mutate(undefined)}
                     resuming={resumeRepos.isPending}
+                    onContinueInvestigation={
+                      detail.data.status === "completed"
+                        ? () => continueInvestigation.mutate(undefined)
+                        : undefined
+                    }
+                    continuing={continueInvestigation.isPending}
                   />
 
                   {/* Issue #1006 — the imported requirements this run started from. */}

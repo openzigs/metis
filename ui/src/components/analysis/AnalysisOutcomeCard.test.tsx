@@ -8,7 +8,11 @@
  */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { AnalysisOutcomeCard } from "./AnalysisOutcomeCard";
+import {
+  AnalysisOutcomeCard,
+  outcomeRequirementCount,
+  reconcileRequirementCount,
+} from "./AnalysisOutcomeCard";
 
 const SUMMARY =
   "UC101 introduces Cross-Dock Transfer job processing across three areas. " +
@@ -63,6 +67,22 @@ describe("AnalysisOutcomeCard (#1232)", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("states the stored count and corrects a summary that counts differently (#994)", () => {
+    render(
+      <AnalysisOutcomeCard
+        status="completed"
+        agentResults={agents("Ten requirements were derived from the spec. Two areas changed.")}
+        requirementCount={8}
+      />,
+    );
+    const card = screen.getByTestId("analysis-outcome-card");
+    expect(card).toHaveTextContent("8 requirements were derived from the spec. Two areas changed.");
+    expect(card).not.toHaveTextContent(/ten requirements/i);
+    expect(screen.getByTestId("analysis-outcome-count")).toHaveTextContent(
+      "8 requirements stored for this run.",
+    );
+  });
+
   it("renders nothing while the run is still incomplete", () => {
     for (const status of ["running", "pending", "failed", "cancelled"]) {
       const { container } = render(
@@ -70,5 +90,95 @@ describe("AnalysisOutcomeCard (#1232)", () => {
       );
       expect(container).toBeEmptyDOMElement();
     }
+  });
+});
+
+describe("reconcileRequirementCount (#994)", () => {
+  it("rewrites only the derived-requirement count, with matching grammar", () => {
+    expect(reconcileRequirementCount("12 new requirements have been identified.", 1)).toBe(
+      "1 new requirement was identified.",
+    );
+    expect(reconcileRequirementCount("One requirement was derived.", 3)).toBe(
+      "3 requirements were derived.",
+    );
+    expect(reconcileRequirementCount("Ten requirements were synthesised.", 10)).toBe(
+      "Ten requirements were synthesised.",
+    );
+  });
+
+  it("leaves other numbers and unrelated phrasing alone", () => {
+    const s =
+      "Three areas changed; 4 findings were derived; requirements were derived from 2 docs.";
+    expect(reconcileRequirementCount(s, 8)).toBe(s);
+  });
+
+  it("leaves subset claims alone (#994 review)", () => {
+    const s = "3 security requirements were identified and 5 functional requirements were derived";
+    expect(reconcileRequirementCount(s, 8)).toBe(s);
+    const one = "3 security requirements were identified.";
+    expect(reconcileRequirementCount(one, 8)).toBe(one);
+  });
+
+  it("leaves a summary with two count claims alone (#994 review)", () => {
+    const s =
+      "Ten requirements were derived; two requirements were identified as already implemented";
+    expect(reconcileRequirementCount(s, 8)).toBe(s);
+  });
+
+  it("omits the stored-count line when no count is given", () => {
+    render(<AnalysisOutcomeCard status="completed" agentResults={agents(SUMMARY)} />);
+    expect(screen.queryByTestId("analysis-outcome-count")).toBeNull();
+  });
+
+  it("says requirement in the singular for one stored row", () => {
+    render(
+      <AnalysisOutcomeCard
+        status="completed"
+        agentResults={agents(SUMMARY)}
+        requirementCount={1}
+      />,
+    );
+    expect(screen.getByTestId("analysis-outcome-count")).toHaveTextContent(
+      "1 requirement stored for this run.",
+    );
+  });
+});
+
+describe("outcomeRequirementCount (#994 review: gated runs)", () => {
+  it("is the stored count when the rows are the summary's set", () => {
+    expect(outcomeRequirementCount(null, 8)).toBe(8);
+    expect(outcomeRequirementCount({ promotionBlocked: { blocked: false } }, 8)).toBe(8);
+  });
+
+  it("is undefined while the approval gate withholds promotion (#1104)", () => {
+    const gated = {
+      promotionBlocked: { blocked: true, pendingCount: 2, rejectedCount: 0 },
+    };
+    expect(outcomeRequirementCount(gated, 0)).toBeUndefined();
+    expect(outcomeRequirementCount(gated, 4)).toBeUndefined();
+  });
+
+  it("is undefined when replacement of an older set was withheld (#769)", () => {
+    const withheld = { requirementReplacementWithheld: { reason: "reviewed" } };
+    expect(outcomeRequirementCount(withheld, 5)).toBeUndefined();
+  });
+
+  it("is undefined when nothing was stored", () => {
+    expect(outcomeRequirementCount(null, 0)).toBeUndefined();
+  });
+
+  it("keeps the summary's count on a gated run", () => {
+    const gated = { promotionBlocked: { blocked: true, pendingCount: 1, rejectedCount: 0 } };
+    render(
+      <AnalysisOutcomeCard
+        status="completed"
+        agentResults={agents("Ten requirements were derived from the spec.")}
+        requirementCount={outcomeRequirementCount(gated, 0)}
+      />,
+    );
+    expect(screen.getByTestId("analysis-outcome-card")).toHaveTextContent(
+      "Ten requirements were derived from the spec.",
+    );
+    expect(screen.queryByTestId("analysis-outcome-count")).toBeNull();
   });
 });

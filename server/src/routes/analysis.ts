@@ -23,6 +23,7 @@ import {
   ANALYSIS_SPECIALIST_AGENT_KEYS,
   MAX_DOCUMENT_BYTES,
   startAnalysisSchema,
+  regenerateAgentSchema,
   updateRequirementSchema,
   deepDiveFindingSchema,
   publishFindingSchema,
@@ -425,6 +426,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           ...(sourceRequirements ? { sourceRequirements } : {}),
           enableWebResearch: parsed.data.enableWebResearch ?? false,
           enableClarification: parsed.data.enableClarification ?? false,
+          ...(parsed.data.specKitHandoff ? { specKitHandoff: parsed.data.specKitHandoff } : {}),
         });
         res.status(202).json(ok({ id: result.id }));
       } catch (err) {
@@ -499,6 +501,21 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       if (!(ANALYSIS_SPECIALIST_AGENT_KEYS as readonly string[]).includes(rawAgent)) {
         throw new AppError(400, "INVALID_AGENT_KEY", "Unknown specialist agent");
       }
+      // #1001 — `extendBudget` continues a code investigation cut short by its budget.
+      const parsed = regenerateAgentSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid regenerate payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const extendBudget = parsed.data.extendBudget === true;
+      if (extendBudget && rawAgent !== "code") {
+        throw new AppError(
+          400,
+          "EXTEND_BUDGET_CODE_ONLY",
+          "Only the code agent can continue with a larger budget",
+        );
+      }
       // #1099 — no path project here; authorize against the analysis's own.
       await ensureAnalysisAccessible(req, id);
       const orch = ensureOrch();
@@ -528,6 +545,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           analysisId: id,
           agentKey: rawAgent as AnalysisSpecialistAgentKey,
           actorId: actor.id,
+          ...(extendBudget ? { extendBudget } : {}),
         })
         .catch(() => {
           /* errors are persisted on the analysis row + audited */

@@ -65,6 +65,7 @@ import {
   parseAcceptanceCriteria,
   type SynthesisDegradation,
   type RequirementReplacementWithheld,
+  type SpecKitHandoffRecord,
 } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma, resolveDatabaseProvider } from "../prisma.js";
@@ -112,6 +113,11 @@ export interface CreateAnalysisInput {
   extraInstructions?: string;
   /** Issue #1006 — the imported requirements the run was started from. */
   sourceRequirements?: AnalysisSourceRequirement[];
+  /**
+   * Issue #994 — a Spec Kit handoff's record of what it sent and left out,
+   * persisted as `metadata.specKitHandoff` for the analysis page to state.
+   */
+  specKitHandoff?: SpecKitHandoffRecord;
 }
 
 /**
@@ -190,6 +196,7 @@ export async function createAnalysis(input: CreateAnalysisInput) {
         ...(input.sourceRequirements?.length
           ? { sourceRequirements: input.sourceRequirements }
           : {}),
+        ...(input.specKitHandoff ? { specKitHandoff: input.specKitHandoff } : {}),
       }),
     },
   });

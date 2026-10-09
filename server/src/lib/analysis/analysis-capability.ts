@@ -120,6 +120,12 @@ export interface CapabilityTracker {
    * the question #1101 showed nothing was asking.
    */
   requirementInputAccount: RequirementInputAccount | null;
+  /**
+   * #1001 — an agentic code pass ran out of its turn/token budget before it
+   * reached every requirement. Set by the orchestrator from the pass's
+   * retrieval health (`exhausted`).
+   */
+  codeInvestigationCutShort: boolean;
 }
 
 /**
@@ -149,6 +155,7 @@ export function createCapabilityTracker(input: {
     newRequirementsProvided: false,
     newRequirementsAnalyzed: false,
     requirementInputAccount: null,
+    codeInvestigationCutShort: false,
   };
 }
 
@@ -194,6 +201,7 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
     ...(tracker.requirementInputAccount
       ? { requirementInputAccount: tracker.requirementInputAccount }
       : {}),
+    codeInvestigationCutShort: tracker.codeInvestigationCutShort,
     reasons: deriveCapabilityReasons({
       codeAnalysisRequested: tracker.codeAnalysisRequested,
       databaseAnalysisRequested: tracker.databaseAnalysisRequested,
@@ -210,6 +218,7 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       repoCloneUnavailable: tracker.repoCloneUnavailable,
       newRequirementsProvided: tracker.newRequirementsProvided,
       requirementInputAccount: tracker.requirementInputAccount,
+      codeInvestigationCutShort: tracker.codeInvestigationCutShort,
     }),
   };
 }

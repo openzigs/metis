@@ -167,3 +167,25 @@ describe("mergeRequirementSets", () => {
     expect(merged).toHaveLength(2);
   });
 });
+
+/**
+ * #994 — the Spec Kit handoff (`ui/src/lib/spec-kit-handoff.ts`) sends a heading
+ * then one paragraph per acceptance criterion. Each must become exactly ONE
+ * candidate: the old raw spec split every Given/When/Then line into its own.
+ */
+describe("extractNewRequirementCandidates — the Spec Kit handoff shape (#994)", () => {
+  it("yields one candidate per criterion and none for the heading", async () => {
+    const text = [
+      "# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent. Not sent: specs/001-a/plan.md (context; see #1027).",
+      "",
+      "AC-1: Mark all as read. Given a feed with unread entries. When the user marks all as read. Then every entry is read.",
+      "",
+      "AC-2: Older than N days. Given entries of mixed age. When the user picks 7 days. Then only older entries are read.",
+      "",
+      "NFR-1: Bulk update finishes in under 2 seconds for 10,000 entries.",
+    ].join("\n");
+    const candidates = await extractNewRequirementCandidates(text);
+    expect(candidates.map((c) => c.text.split(":")[0])).toEqual(["AC-1", "AC-2", "NFR-1"]);
+    expect(candidates[0]!.text).toContain("Then every entry is read.");
+  });
+});
