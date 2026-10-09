@@ -191,6 +191,52 @@ describe("RequestReviewCard", () => {
     expect(done.querySelector("a")).toHaveAttribute("href", "/reviews/rev-1");
   });
 
+  it("#989 — refreshes the hub's counts after the request", async () => {
+    apiFetch.mockResolvedValue(PEOPLE);
+    createReview.mockResolvedValue({ id: "rev-1" } as never);
+    submitReview.mockResolvedValue({ id: "rev-1" } as never);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    renderWith(<RequestReviewCard projectId="p1" requirementIds={["r1"]} currentUserId="me" />, {
+      queryClient,
+    });
+
+    fireEvent.click(screen.getByTestId("request-review"));
+    await pick("Ann");
+    fireEvent.click(screen.getByRole("button", { name: "Request review of 1 requirement" }));
+    await screen.findByTestId("request-review-done");
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["analyses"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["reviews"] });
+  });
+
+  it("#989 — says approved requirements stay approved, and that a withdraw restores", () => {
+    renderWith(
+      <RequestReviewCard
+        projectId="p1"
+        requirementIds={["r1", "r2", "r3"]}
+        currentUserId="me"
+        approvedCount={2}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("request-review"));
+
+    const note = screen.getByTestId("request-review-status-note");
+    expect(note).toHaveTextContent(
+      "2 of them are already approved and stay approved unless the review is rejected.",
+    );
+    expect(note).toHaveTextContent("Withdrawing the review puts every status back.");
+  });
+
+  it("#989 — says nothing about approvals when none are approved", () => {
+    renderWith(<RequestReviewCard projectId="p1" requirementIds={["r1"]} currentUserId="me" />);
+    fireEvent.click(screen.getByTestId("request-review"));
+
+    expect(screen.getByTestId("request-review-status-note")).not.toHaveTextContent(
+      "already approved",
+    );
+  });
+
   it("cannot be sent without a reviewer, and a removed reviewer is not sent", async () => {
     apiFetch.mockResolvedValue(PEOPLE);
     renderWith(<RequestReviewCard projectId="p1" requirementIds={["r1"]} currentUserId="me" />);
@@ -271,6 +317,14 @@ describe("Requirements hub", () => {
   it("offers Request review to a user with review.create", async () => {
     renderWith(<RequirementsHub projectId="p1" />, { user: userWith("developer") });
     expect(await screen.findByTestId("request-review")).toBeInTheDocument();
+  });
+
+  it("#989 — tells the requester how many of the requirements are already approved", async () => {
+    renderWith(<RequirementsHub projectId="p1" />, { user: userWith("developer") });
+    fireEvent.click(await screen.findByTestId("request-review"));
+    expect(screen.getByTestId("request-review-status-note")).toHaveTextContent(
+      "1 of them is already approved and stays approved unless the review is rejected.",
+    );
   });
 
   it("does not offer it to a reader", async () => {
