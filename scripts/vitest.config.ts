@@ -31,6 +31,9 @@ export default defineConfig({
         // category error the NOTE above warns about, just from the other side: a
         // percentage that is not evidence about runner code (#1207, #1215).
         "lib/check-no-nul.mjs",
+        // #964 — a vitest project that `vitest-retry-runner.test.mjs` spawns in a child
+        // process; never loaded here, so it would read 0% for the same reason as above.
+        "lib/fixtures/**",
       ],
       thresholds: {
         statements: 80,

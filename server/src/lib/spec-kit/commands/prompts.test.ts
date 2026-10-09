@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { PLAN_SYSTEM_PROMPT, SPECIFY_SYSTEM_PROMPT } from "./prompts.js";
 import { TASKS_SYSTEM_PROMPT } from "./tasks.js";
 import {
+  CALLERS_HEADER,
   COVERED_LOCATORS_HEADER,
   RAG_KNOWLEDGE_HEADER,
   SIBLING_SYMBOLS_HEADER,
@@ -61,6 +62,7 @@ describe("Spec Kit prompts name no walkthrough ground-truth symbol (#853)", () =
     ["RAG_KNOWLEDGE_HEADER", RAG_KNOWLEDGE_HEADER],
     ["COVERED_LOCATORS_HEADER", COVERED_LOCATORS_HEADER],
     ["SIBLING_SYMBOLS_HEADER", SIBLING_SYMBOLS_HEADER],
+    ["CALLERS_HEADER", CALLERS_HEADER],
   ])("rag-context %s", (_label, header) => {
     expect(header.length).toBeGreaterThan(0);
     expect(named(header)).toEqual([]);
@@ -87,5 +89,15 @@ describe("Spec Kit prompts name no walkthrough ground-truth symbol (#853)", () =
   it("asks for the symbol's real line span and forbids a chunk number", () => {
     expect(PLAN_SYSTEM_PROMPT).toContain("Existing capability: <name> at <path:startLine-endLine>");
     expect(PLAN_SYSTEM_PROMPT).toMatch(/chunk number, never a line/);
+  });
+
+  it("#944 — the spec states existing capability; the plan accounts for listed callers", () => {
+    expect(SPECIFY_SYSTEM_PROMPT).toContain(
+      "`Existing capability: <name> at <path:startLine-endLine>`",
+    );
+    expect(SPECIFY_SYSTEM_PROMPT).toContain("Callers of");
+    expect(PLAN_SYSTEM_PROMPT).toContain("Callers of Retrieved Symbols");
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/never call a symbol unused/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/Every node an edge links to MUST be/);
   });
 });

@@ -36,6 +36,10 @@ export default defineConfig({
     testTimeout: 15000,
     hookTimeout: 15000,
     retry: process.env.CI ? 2 : 0,
+    // #964 — a retry hides a deterministic bug as well as a flake (#963). This
+    // reporter names every test that passed only after a retry; CI turns that into
+    // an annotation (a failure on the nightly) via scripts/vitest-retried-tests.mjs.
+    reporters: ["default", path.resolve(dirname, "../scripts/lib/vitest-retry-reporter.mjs")],
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary", "html"],

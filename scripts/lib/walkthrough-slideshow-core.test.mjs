@@ -86,6 +86,12 @@ describe("manifest validation", () => {
     expect(s).toMatchObject({ tutorial: "", result: "", issues: [], tokens: undefined });
   });
 
+  it("accepts wave F, the persona journeys (#954)", () => {
+    expect(valid({ wave: "F", phase: "J1.4", chapter: "Journey: Business analyst" }).wave).toBe(
+      "F",
+    );
+  });
+
   it("rejects a non-object line", () => {
     expect(validateStep([1], 3).errors).toEqual(["steps.jsonl line 3: expected a JSON object"]);
     expect(validateStep(null, 3).errors).toHaveLength(1);
@@ -99,7 +105,8 @@ describe("manifest validation", () => {
     ["ts", "yesterday"],
     ["ts", "March 5, 2026"],
     ["ts", "2026-10-03"],
-    ["wave", "F"],
+    ["wave", "G"],
+    ["wave", "BA"],
     ["works", "ok"],
     ["works", "weak"],
     ["works", undefined],
@@ -717,6 +724,42 @@ describe("filesystem", () => {
         expect(report).not.toContain("-$0.0000");
       });
 
+      it("summarises fix verdicts beside the issues checked (#954)", () => {
+        fs.writeFileSync(
+          path.join(evidence, "run.json"),
+          JSON.stringify({ ...runInfo(), fixes: fixesFixture() }),
+        );
+        buildSlideshow(reportOpts());
+        const report = read("report");
+        expect(report).toMatch(
+          /Fixes confirmed this run \(1 of 4\): confirmed 1 · partial 1 · regressed 1 · not-exercised 1 · Close if still open: <a href="[^"]+\/939"[^>]*>#939<\/a> <a href="[^"]+\/940"/,
+        );
+        expect(report.indexOf("Issues checked:")).toBeLessThan(report.indexOf("Fixes confirmed"));
+        expect(read("tutorial")).not.toContain("Fixes confirmed");
+      });
+
+      it("omits the close list when nothing was confirmed, and the line without fixes", () => {
+        const fixes = fixesFixture().slice(1);
+        fs.writeFileSync(path.join(evidence, "run.json"), JSON.stringify({ fixes }));
+        buildSlideshow(reportOpts());
+        expect(read("report")).toContain(
+          "Fixes confirmed this run (0 of 3): confirmed 0 · partial 1 · regressed 1 · not-exercised 1</p>",
+        );
+        fs.writeFileSync(path.join(evidence, "run.json"), "{}");
+        buildSlideshow(reportOpts());
+        expect(read("report")).not.toContain("Fixes confirmed");
+      });
+
+      it("fails, writing nothing, when a verdict cites a step the manifest lacks", () => {
+        const fixes = fixesFixture();
+        fixes[0].evidence = "b-9-9";
+        fs.writeFileSync(path.join(evidence, "run.json"), JSON.stringify({ fixes }));
+        expect(() => buildSlideshow(reportOpts())).toThrow(
+          'run.json fixes: PR #950 cites step "b-9-9", which steps.jsonl lacks',
+        );
+        expect(fs.existsSync(path.join(tmp, "run"))).toBe(false);
+      });
+
       it("fails the build, naming the field, and writes nothing on an invalid run.json", () => {
         fs.writeFileSync(
           path.join(evidence, "run.json"),
@@ -754,6 +797,41 @@ describe("filesystem", () => {
   });
 });
 
+/** Fix verdicts for the 3-step fixture: one per status, evidence pointing at its steps. */
+function fixesFixture() {
+  return [
+    {
+      pr: 950,
+      issues: [939, 940],
+      wave: "B",
+      phase: "8",
+      check: "Approval flows",
+      status: "confirmed",
+      evidence: "a-1",
+    },
+    {
+      pr: 951,
+      issues: [941],
+      wave: "F",
+      phase: "J1.4",
+      check: "Invite UI",
+      status: "partial",
+      evidence: "a-2",
+      carried: "regressed",
+    },
+    {
+      pr: 952,
+      issues: [943],
+      wave: "B",
+      phase: "7",
+      check: "Run cost",
+      status: "regressed",
+      evidence: "d-s4",
+    },
+    { pr: 953, issues: [], wave: "D", phase: "S21", check: "Publish", status: "not-exercised" },
+  ];
+}
+
 /** A valid run.json for the 3-step fixture (waves A and D). */
 function runInfo() {
   return {
@@ -789,9 +867,58 @@ describe("run.json parsing (#947)", () => {
     expect(run?.ledger?.costUsd).toBe(4.32);
     expect(run?.waves?.BA).toEqual({ tokens: 500, costUsd: 0.28 });
     expect(parseRunInfo("{}")).toEqual({
-      run: { newIssues: undefined, ledger: undefined, waves: undefined },
+      run: {
+        newIssues: undefined,
+        ledger: undefined,
+        waves: undefined,
+        metisSha: undefined,
+        previousRunSha: undefined,
+        fixes: undefined,
+      },
       errors: [],
     });
+  });
+
+  it("accepts the #954 fields: METIS SHAs and fix verdicts, and wave F", () => {
+    const r = /** @type {any} */ (runInfo());
+    r.metisSha = "f117d406083316cc8c204399b7826cf69a7fb7a5";
+    r.previousRunSha = "7cc6310d";
+    r.waves.F = { tokens: 10, costUsd: 0.01 };
+    r.fixes = fixesFixture();
+    const { run, errors } = parseRunInfo(JSON.stringify(r));
+    expect(errors).toEqual([]);
+    expect(run?.metisSha).toBe(r.metisSha);
+    expect(run?.previousRunSha).toBe("7cc6310d");
+    expect(run?.fixes).toHaveLength(4);
+  });
+
+  it.each(
+    /** @type {Array<[string, (r: any) => void, string]>} */ ([
+      ["a non-hex metisSha", (r) => (r.metisSha = "main"), '"metisSha" must be a commit SHA'],
+      [
+        "a short previousRunSha",
+        (r) => (r.previousRunSha = "abc"),
+        '"previousRunSha" must be a commit SHA',
+      ],
+      ["fixes not an array", (r) => (r.fixes = {}), 'run.json: "fixes" must be an array'],
+      [
+        "a bad status",
+        (r) => (r.fixes[0].status = "holds"),
+        'fixes[0]: "status" must be one of confirmed, partial, regressed, not-exercised',
+      ],
+      [
+        "a confirmed fix without evidence",
+        (r) => delete r.fixes[0].evidence,
+        'fixes[0]: "evidence" (a step id) is required when "status" is "confirmed"',
+      ],
+      ["an unknown fix field", (r) => (r.fixes[1].note = "x"), 'fixes[1]: unknown field "note"'],
+      ["a duplicate PR", (r) => (r.fixes[1].pr = r.fixes[0].pr), "fixes[1]: duplicate PR #950"],
+    ]),
+  )("rejects %s", (_label, mutate, message) => {
+    const r = /** @type {any} */ (runInfo());
+    r.fixes = fixesFixture();
+    mutate(r);
+    expect(parseRunInfo(JSON.stringify(r)).errors.join("\n")).toContain(message);
   });
 
   it.each([
@@ -862,8 +989,8 @@ describe("run.json parsing (#947)", () => {
       ["waves not an object", (r) => (r.waves = []), '"waves" must be an object keyed by wave'],
       [
         "an unknown wave",
-        (r) => (r.waves.F = { tokens: 1, costUsd: 0 }),
-        "waves.F: wave must be one of A, B, C, D, E, BA",
+        (r) => (r.waves.G = { tokens: 1, costUsd: 0 }),
+        "waves.G: wave must be one of A, B, C, D, E, F, BA",
       ],
       ["a non-object wave", (r) => (r.waves.B = 3), "waves.B: expected a JSON object"],
       ["an unknown wave field", (r) => (r.waves.A.usd = 1), 'waves.A: unknown field "usd"'],

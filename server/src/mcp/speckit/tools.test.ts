@@ -80,12 +80,12 @@ describe("SPEC_KIT_TOOLS", () => {
     });
   });
 
-  // #784 — the advertised contract must match what the route does today.
-  it("speckit_taskstoissues describes dryRun as the supported mode, the 501, and the repo order", () => {
+  // #784 / #953 — the advertised contract must match what the route does today.
+  it("speckit_taskstoissues describes dryRun as the supported mode, the live refusal, and the repo order", () => {
     const tool = findTool("speckit_taskstoissues")!;
     expect(tool.description).not.toMatch(/^Materialize/);
-    expect(tool.description).toContain("SPECKIT_ISSUE_EXPORT_UNAVAILABLE");
-    expect(tool.description).toContain("501");
+    expect(tool.description).toContain("TOKEN_REQUIRED");
+    expect(tool.description).not.toContain("501");
     expect(tool.description).toContain("`dryRun: true`");
     expect(tool.description).toContain("SPECKIT_NO_REPO_CONFIGURED");
     const order = [

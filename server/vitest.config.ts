@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -30,7 +32,16 @@ export default defineConfig({
     // run (socket.test, mcp-routes, spec-kit-routes — all I/O-timing bound).
     // 2 retries clears the transient failures without masking real regressions
     // (a genuinely broken test fails all 3 attempts).
+    // #964 — but a retry hides a DETERMINISTIC bug just as well: #963's leaked mock
+    // once-value failed six tests on every first attempt and stayed green for over
+    // a day. New tests must pass with `--retry=0`.
     retry: 2,
+    // #964 — names every test that passed only after a retry; CI turns that into an
+    // annotation (a failure on the nightly) via scripts/vitest-retried-tests.mjs.
+    reporters: [
+      "default",
+      fileURLToPath(new URL("../scripts/lib/vitest-retry-reporter.mjs", import.meta.url)),
+    ],
     pool: "forks",
     coverage: {
       provider: "v8",

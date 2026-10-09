@@ -29,6 +29,10 @@ Since #861 (PR #869), a tool call that needs approval is refused at once when no
 and the response lists it under `toolApprovals`; the answer comes without it. Record any
 `toolApprovals` per question. A call that stalls for about 120 s is a regression.
 
+## Fixes to verify this wave
+
+{{FIXES_TO_VERIFY}}
+
 ## Standing rules — never
 
 - Never publish, comment or review on `miniflux/v2`; the questions are about it, not to it.
@@ -50,7 +54,7 @@ and the response lists it under `toolApprovals`; the answer comes without it. Re
    |---|---|---|---|---|---|---|---|---|
 
    Console errors is `–` here (no browser).
-4. **Fix verification** — for each fix in `{{FIXES_TO_VERIFY}}`: fix | PR | holds / regressed | evidence.
+4. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
 5. **Findings** — one line each: severity, question, symptom, evidence path. Do not file issues.
 6. **`Durable finding:` lines** — anything a future run must know. Prefix each with exactly
    `Durable finding:`.

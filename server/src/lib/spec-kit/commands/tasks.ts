@@ -10,7 +10,7 @@ import {
   type ArtifactScope,
   type ScopedArtifact,
 } from "../artifact-scope.js";
-import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
+import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
 import { findTestsAfterImplementation } from "../grounding.js";
 
 /**
@@ -130,6 +130,6 @@ export async function runTasks(input: TasksInput): Promise<TasksResult> {
   return {
     artifact,
     tokensUsed: run.tokensUsed,
-    message: `Generated tasks.md (v${artifact.version})${forFeature(scope)} in ${run.tokensUsed} tokens.${orderNote}`,
+    message: `Generated tasks.md (v${artifact.version})${forFeature(scope)} in ${run.tokensUsed} tokens.${orderNote}${truncationWarning(run.truncated ? ["tasks.md"] : [])}`,
   };
 }
