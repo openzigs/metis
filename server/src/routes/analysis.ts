@@ -37,6 +37,7 @@ import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lo
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
+import { importedRequirementsRateLimiter } from "../middleware/imported-requirements-rate-limit.js";
 import {
   analysisApprovalPreAuthRateLimiter,
   analysisApprovalPromoteRateLimiter,
@@ -356,6 +357,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
   // and how many one run analyses individually.
   projectScoped.get(
     "/imported-requirements",
+    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting.
+    importedRequirementsRateLimiter,
     requireAuth,
     requirePermission("analysis.read"),
     async (req: Request, res: Response) => {
