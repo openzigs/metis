@@ -323,6 +323,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
     });
 
+    it("#993 — publishes only the chosen subset of tasks, and records only those", async () => {
+      const plan = await previewTasksExport({ ...base(), taskIds: ["t02"] });
+      expect(plan.created.map((c) => c.title)).toEqual(["[T02] Build B"]);
+      const out = await exportTasksToGitHub({
+        ...base(),
+        taskIds: ["t02"],
+        expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+      });
+      expect(issuePosts().map((c) => (c.data as { title: string }).title)).toEqual([
+        "[T02] Build B",
+      ]);
+      expect(out.created.map((c) => c.taskId)).toEqual(["T02"]);
+      const rows = await db.specKitTaskExport.findMany();
+      expect(rows.map((r) => [r.taskId, r.issueNumber])).toEqual([["T02", 101]]);
+    });
+
     it("a second publish creates nothing: the next dry run plans no new issues", async () => {
       await planThenPublish();
       calls.length = 0;
