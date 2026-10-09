@@ -195,6 +195,7 @@ import {
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
 import { generationFailureMessage, isConnectionDropped } from "./generation-failure-message.js";
+import { sectionFailureWarning } from "./generation-checkpoint.js";
 import {
   SQL_SCAN_DIR_CAP,
   excludeTestFiles,
@@ -4840,7 +4841,8 @@ export async function synthesizeFinalDocument(
       // server paths and SQL text in front of the user — the same exposure #52
       // closed for a failed document's `errorMessage`. The raw error is in the
       // `log.warn` immediately above, which is where it belongs.
-      const failWarning = sectionFailedWarning(group.label, generationFailureMessage(err));
+      // #942 — with the error class when the failure is not a recognised one.
+      const failWarning = sectionFailureWarning(group.label, err);
       warnings.push(failWarning);
       // #243 — surface the failed section live, with its warning.
       reportSection({

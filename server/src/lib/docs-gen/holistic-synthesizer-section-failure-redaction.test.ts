@@ -170,8 +170,9 @@ describe("synthesizeFinalDocument — section-failed warnings carry no raw excep
       expect(w.message).not.toContain("relation");
       expect(w.message).not.toContain("/srv/metis");
       expect(w.message).not.toContain("holistic-synthesizer.ts");
-      // The fixed vocabulary, not a truncated exception.
-      expect(w.message).toContain(GENERATION_FAILED_MESSAGE);
+      // Fixed text naming only the error class (#942), not a truncated exception.
+      expect(w.message).toContain("failed with an unrecognised error (Error)");
+      expect(w.message).not.toContain(GENERATION_FAILED_MESSAGE);
       expect(w.message).toContain(`Section "${w.section}" could not be generated`);
     }
     // Still a real, surfaceable degradation — not swallowed.

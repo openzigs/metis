@@ -15,7 +15,10 @@
  *   assembled document behind.
  */
 import { sectionFailedWarning, type DocWarning } from "./grounding/degraded-warnings.js";
-import { generationFailureMessage } from "./generation-failure-message.js";
+import {
+  GENERATION_FAILED_MESSAGE,
+  generationFailureMessage,
+} from "./generation-failure-message.js";
 import type { SectionSynthesisRecord } from "./section-reuse.js";
 
 /** Where in a generation a failure happened. */
@@ -104,6 +107,42 @@ export function generationFailureWarning(input: {
     stage,
     errorClass,
   };
+}
+
+/**
+ * #942 — the warning for one section whose generation failed while the rest of
+ * the run went on. A recognised failure (a provider 402, 429, an unreachable
+ * host…) keeps its fixed message; an unrecognised one used to say only "the
+ * details are in the server log", so it now names the error class too — never
+ * the exception's own text (#67).
+ */
+export function sectionFailureWarning(section: string, err: unknown): DocWarning {
+  const message = generationFailureMessage(err);
+  const detail =
+    message === GENERATION_FAILED_MESSAGE
+      ? `it failed with an unrecognised error (${errorClassOf(err)}); the full error is in the server log. Regenerate the document to retry it; the finished sections are reused.`
+      : message;
+  return sectionFailedWarning(section, detail);
+}
+
+/**
+ * #942 — true when a document's warnings name a section that failed while the
+ * rest of its run finished: a `section-failed` warning that is not a whole-run
+ * stop cause (those carry a `stage`). Such a document is regeneratable even
+ * with a published version — the regenerate writes those sections and reuses
+ * the finished ones.
+ */
+export function hasFailedSections(warnings: unknown): boolean {
+  return (
+    Array.isArray(warnings) &&
+    warnings.some(
+      (w) =>
+        w != null &&
+        typeof w === "object" &&
+        (w as { kind?: unknown }).kind === "section-failed" &&
+        !("stage" in w),
+    )
+  );
 }
 
 /**
