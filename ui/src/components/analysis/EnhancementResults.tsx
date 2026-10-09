@@ -15,7 +15,7 @@
  * the component is a no-op offline (where the pipeline yields nothing).
  */
 import { useEffect, useRef } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query-keys";
 import {
   ambiguitiesOf,
@@ -297,17 +297,26 @@ function ClarificationSection({
     refetchOnWindowFocus: false,
   });
 
+  // Issue #937 — the start is keyed in the shared mutation cache, which outlives
+  // this component. Leaving the Questions tab unmounts the panel; the ref below
+  // dies with it, and the remount used to POST a second (billed) start that
+  // replaced the first one's questions. `useIsMutating` sees the first mount's
+  // start still pending, and its `onSuccess` (an option on the mutation itself,
+  // not on this observer) still writes the dialog into the query cache.
+  const startKey = ["analyses", analysisId, "clarify", "start"];
   const startDialog = useMutation({
+    mutationKey: startKey,
     mutationFn: () => analysisApi.clarify(projectId, analysisId, {}),
     retry: false,
     onSuccess: (state) => {
       queryClient.setQueryData(["analyses", analysisId, "clarify"], state);
     },
   });
+  const startInFlight = useIsMutating({ mutationKey: startKey }) > 0;
 
-  // One start per analysis, ever. Tracked by id rather than a bare boolean so a
-  // run switch in the same mount is not silently skipped — and so a re-render
-  // storm from the detail poll cannot fire a second (billable) round.
+  // One start per analysis per mount. Tracked by id rather than a bare boolean
+  // so a run switch in the same mount is not silently skipped — and so a
+  // re-render storm from the detail poll cannot fire a second (billable) round.
   const startedFor = useRef<string | null>(null);
   const startMutate = startDialog.mutate;
   useEffect(() => {
@@ -315,16 +324,18 @@ function ClarificationSection({
     // Wait for the read: only start when the server confirms there is no dialog.
     if (!dialog.isSuccess || dialog.data) return;
     if (startedFor.current === analysisId) return;
+    // Issue #937 — a start from an earlier mount is still generating.
+    if (startInFlight) return;
     startedFor.current = analysisId;
     startMutate();
-  }, [hasAmbiguities, dialog.isSuccess, dialog.data, analysisId, startMutate]);
+  }, [hasAmbiguities, dialog.isSuccess, dialog.data, analysisId, startInFlight, startMutate]);
 
   if (!hasAmbiguities && !dialog.data) return null;
 
   // Prefer the live interactive dialog whenever one is available. This is the
   // SINGLE path that submits answers — it posts the server-issued `q.id`s, so
   // answers always match server-side.
-  const preparing = dialog.isLoading || startDialog.isPending;
+  const preparing = dialog.isLoading || startDialog.isPending || startInFlight;
 
   if (dialog.data) {
     return (
