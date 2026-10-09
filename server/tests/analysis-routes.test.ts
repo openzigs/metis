@@ -143,6 +143,20 @@ vi.mock("../src/lib/prisma.js", async () => {
     ),
     requirementVersion: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
     requirement: {
+      // #999 — the per-run review-status tally on the project's run list.
+      findMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: { projectId: string; analysisId: { in: string[] }; deletedAt: null };
+        }) =>
+          [...requirements.values()].filter(
+            (r) =>
+              r.projectId === where.projectId &&
+              where.analysisId.in.includes(r.analysisId) &&
+              !r.deletedAt,
+          ),
+      ),
       findFirst: vi.fn(
         async ({ where }: { where: { id: string; analysisId?: string; deletedAt: null } }) => {
           const r = requirements.get(where.id);
@@ -530,6 +544,13 @@ describe("GET /api/projects/:projectId/analyses", () => {
       .set("Authorization", `Bearer ${readerToken}`);
     expect(res.status).toBe(200);
     expect(res.body.data.items).toHaveLength(1);
+    // #999 — each run carries its requirement tally (none for this run).
+    expect(res.body.data.items[0].requirementCounts).toEqual({
+      draft: 0,
+      approved: 0,
+      rejected: 0,
+      deferred: 0,
+    });
   });
 });
 

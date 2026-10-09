@@ -7,14 +7,25 @@
  * per analysis run on the analysis page; this page is the one entry point that
  * says how many are waiting and opens the right run. Baselines and Discussions
  * sit beside it in the Requirements sub-nav.
+ *
+ * #999 — requirements belong to the run that produced them, so the hub no
+ * longer trusts the latest completed run alone: a newer run with nothing in it
+ * yet read 0/0/0/0 and hid Request review over an earlier run's approved set.
+ * It opens on the newest completed run that HAS requirements, says when it
+ * skipped a newer one, and lets the user choose any completed run.
  */
+import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { analysisApi, type RequirementReviewStatus } from "@/lib/analysis-api";
-import { latestCompletedAnalysisId } from "@/lib/project-pipeline";
+import {
+  analysisApi,
+  type AnalysisListItem,
+  type RequirementReviewStatus,
+} from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import { RequestReviewCard } from "@/components/reviews/request-review-card";
 import { useAuth } from "@/lib/auth-context";
 
@@ -25,18 +36,27 @@ const REVIEW_ORDER: ReadonlyArray<[RequirementReviewStatus, string]> = [
   ["deferred", "Deferred"],
 ];
 
-/** How many requirements sit in each review status. */
-export function countByReviewStatus(
-  requirements: ReadonlyArray<{ reviewStatus: RequirementReviewStatus }>,
-): Record<RequirementReviewStatus, number> {
-  const counts: Record<RequirementReviewStatus, number> = {
-    draft: 0,
-    approved: 0,
-    rejected: 0,
-    deferred: 0,
-  };
-  for (const r of requirements) counts[r.reviewStatus] = (counts[r.reviewStatus] ?? 0) + 1;
-  return counts;
+/** All of a run's requirements, whatever their review status. */
+function totalRequirements(run: Pick<AnalysisListItem, "requirementCounts">): number {
+  const c = run.requirementCounts;
+  return c.draft + c.approved + c.rejected + c.deferred;
+}
+
+/**
+ * #999 — the run the hub opens on: the newest completed run that has any
+ * requirements, else the newest completed run. `analyses` is newest first.
+ */
+export function defaultHubRunId(analyses: readonly AnalysisListItem[]): string | null {
+  const completed = analyses.filter((a) => a.status === "completed");
+  return (completed.find((a) => totalRequirements(a) > 0) ?? completed[0])?.id ?? null;
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function runLabel(run: AnalysisListItem): string {
+  return `${new Date(run.startedAt).toLocaleString()} · ${plural(totalRequirements(run), "requirement")} (${run.requirementCounts.approved} approved)`;
 }
 
 function runHref(projectId: string, analysisId: string): string {
@@ -53,11 +73,17 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
     enabled: Boolean(projectId),
   });
   const analyses = list.data?.items ?? [];
-  const latestId = latestCompletedAnalysisId({ analyses });
-  const latest = useQuery({
-    queryKey: queryKeys.analyses.detail(latestId ?? ""),
-    queryFn: () => analysisApi.get(latestId as string),
-    enabled: Boolean(latestId),
+  const completed = analyses.filter((a) => a.status === "completed");
+  const [chosenId, setChosenId] = useState<string | null>(null);
+  const selected =
+    completed.find((a) => a.id === chosenId) ??
+    completed.find((a) => a.id === defaultHubRunId(analyses));
+  const selectedId = selected?.id ?? null;
+  // The run's requirement ids are what a review covers.
+  const detail = useQuery({
+    queryKey: queryKeys.analyses.detail(selectedId ?? ""),
+    queryFn: () => analysisApi.get(selectedId as string),
+    enabled: Boolean(selectedId),
   });
 
   if (list.isLoading) {
@@ -75,7 +101,7 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
     );
   }
 
-  if (!latestId) {
+  if (!selected) {
     return (
       <Card className="space-y-3 p-4" data-testid="requirements-empty">
         <h2 className="text-lg font-semibold">No requirements yet</h2>
@@ -89,43 +115,69 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
     );
   }
 
-  const counts = latest.data ? countByReviewStatus(latest.data.requirements) : null;
+  const counts = selected.requirementCounts;
+  const isLatest = selected.id === completed[0].id;
+  // Newer completed runs the default skipped because they hold no requirements.
+  const skippedEmpty = chosenId === null && !isLatest;
   return (
     <div className="space-y-4">
       <Card className="space-y-3 p-4" data-testid="requirements-latest">
-        <h2 className="text-lg font-semibold">Latest analysis</h2>
-        {counts ? (
-          <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {REVIEW_ORDER.map(([status, label]) => (
-              <div key={status} className="rounded-md border p-3">
-                <dt className="text-xs text-muted-foreground">{label}</dt>
-                <dd className="text-xl font-semibold" data-testid={`requirements-count-${status}`}>
-                  {counts[status]}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        ) : (
-          <p role="status" className="text-sm text-muted-foreground">
-            Counting requirements…
+        <h2 className="text-lg font-semibold">
+          {isLatest ? "Latest analysis" : "Analysis with requirements"}
+        </h2>
+        {completed.length > 1 ? (
+          <div>
+            <Label htmlFor="requirements-run">Analysis run</Label>
+            <select
+              id="requirements-run"
+              data-testid="requirements-run-select"
+              value={selected.id}
+              onChange={(e) => setChosenId(e.target.value)}
+              className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              {completed.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {runLabel(a)}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+        {skippedEmpty ? (
+          <p className="text-sm text-muted-foreground" data-testid="requirements-skipped-empty">
+            The newest completed analysis has no requirements yet, so this shows the most recent one
+            that does.
           </p>
-        )}
+        ) : null}
+        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {REVIEW_ORDER.map(([status, label]) => (
+            <div key={status} className="rounded-md border p-3">
+              <dt className="text-xs text-muted-foreground">{label}</dt>
+              <dd className="text-xl font-semibold" data-testid={`requirements-count-${status}`}>
+                {counts[status]}
+              </dd>
+            </div>
+          ))}
+        </dl>
         <p className="text-sm text-muted-foreground">
           Findings, clarifying questions and approvals for a run are reviewed on its analysis page.
         </p>
         <Button asChild size="sm">
-          <Link href={runHref(projectId, latestId)} data-testid="requirements-review-latest">
-            {counts && counts.draft > 0
-              ? `Review ${counts.draft} requirement${counts.draft === 1 ? "" : "s"}`
-              : "Open latest analysis"}
+          <Link href={runHref(projectId, selected.id)} data-testid="requirements-review-latest">
+            {counts.draft > 0
+              ? `Review ${plural(counts.draft, "requirement")}`
+              : isLatest
+                ? "Open latest analysis"
+                : "Open this analysis"}
           </Link>
         </Button>
-        {canRequestReview && user && latest.data && latest.data.requirements.length > 0 ? (
+        {canRequestReview && user && detail.data && detail.data.requirements.length > 0 ? (
           <RequestReviewCard
+            key={selected.id}
             projectId={projectId}
-            requirementIds={latest.data.requirements.map((r) => r.id)}
+            requirementIds={detail.data.requirements.map((r) => r.id)}
             currentUserId={user.id}
-            approvedCount={counts?.approved ?? 0}
+            approvedCount={counts.approved}
           />
         ) : null}
       </Card>
@@ -136,7 +188,8 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
           {analyses.map((a) => (
             <li key={a.id} className="flex items-center justify-between gap-3 py-2 text-sm">
               <span>
-                {new Date(a.startedAt).toLocaleString()} · {a.status}
+                {new Date(a.startedAt).toLocaleString()} · {a.status} ·{" "}
+                {plural(totalRequirements(a), "requirement")}
               </span>
               <Link href={runHref(projectId, a.id)} className="underline">
                 Open
