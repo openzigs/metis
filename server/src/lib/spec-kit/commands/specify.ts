@@ -4,8 +4,14 @@
  */
 import type { SpecKitArtifactDto } from "@metis/shared";
 import { writeArtifact, SpecKitArtifactError } from "../artifacts.js";
-import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
-import { buildSpecKitRagContext, type SpecKitKnowledgeService } from "../rag-context.js";
+import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
+import {
+  buildSpecKitRagContext,
+  type CallerLookup,
+  type SiblingSymbolLookup,
+  type SpecKitFusedCodeDeps,
+  type SpecKitKnowledgeService,
+} from "../rag-context.js";
 import { describeGrounding, PINNED_REQUIREMENT_DOCUMENTS } from "../grounding.js";
 import { SPECIFY_SYSTEM_PROMPT } from "./prompts.js";
 export { SPECIFY_SYSTEM_PROMPT } from "./prompts.js";
@@ -24,6 +30,12 @@ export interface SpecifyInput {
    * Tests pass a fake to exercise grounded vs. ungrounded paths.
    */
   knowledgeService?: SpecKitKnowledgeService;
+  /** #944 — injectable code-graph retrieval. Defaults to the production wiring. */
+  fusedCode?: SpecKitFusedCodeDeps;
+  /** #944 — injectable same-file sibling lookup. Defaults to the production wiring. */
+  siblingLookup?: SiblingSymbolLookup;
+  /** #944 — injectable caller lookup. Defaults to the production wiring. */
+  callerLookup?: CallerLookup;
 }
 
 export interface SpecifyResult {
@@ -50,7 +62,14 @@ export async function runSpecify(input: SpecifyInput): Promise<SpecifyResult> {
   // return. Empty/failed retrieval ⇒ "" (ungrounded); never throws.
   const rag = await buildSpecKitRagContext(input.projectId, trimmed, {
     knowledgeService: input.knowledgeService,
+    // #944 — a spec must see the capability that already ships, and who calls
+    // it: grounded on documents alone, a walkthrough spec never mentioned the
+    // existing function that did most of the job, or its caller.
+    fusedCode: input.fusedCode,
+    includeCode: true,
     expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
+    siblings: { ...(input.siblingLookup ? { lookup: input.siblingLookup } : {}) },
+    callers: { ...(input.callerLookup ? { lookup: input.callerLookup } : {}) },
   });
 
   const userPrompt = [
@@ -85,6 +104,6 @@ export async function runSpecify(input: SpecifyInput): Promise<SpecifyResult> {
   return {
     artifact,
     tokensUsed: run.tokensUsed,
-    message: `Generated spec.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.`,
+    message: `Generated spec.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${truncationWarning(run.truncated ? ["spec.md"] : [])}`,
   };
 }

@@ -47,6 +47,19 @@ vi.mock("@/lib/spec-kit-api", () => ({
   },
 }));
 
+// #953 — the vault picker has its own suite (vault-picker.test.tsx); here it is a
+// plain input so a test can pick a `${vault:label}` without driving the Select.
+vi.mock("@/components/connectors/vault-picker", () => ({
+  VaultPicker: (props: { id?: string; value: string; onChange: (v: string) => void }) => (
+    <input
+      id={props.id}
+      data-testid="spec-kit-export-secret"
+      value={props.value}
+      onChange={(e) => props.onChange(e.target.value)}
+    />
+  ),
+}));
+
 // #789 — "Start analysis with these artifacts".
 const startAnalysis = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/analysis-api", () => ({ analysisApi: { start: startAnalysis } }));
@@ -470,7 +483,16 @@ describe("SpecKitPage — #789", () => {
       { taskId: "T01", title: "[T01] Build A", issueNumber: 0, url: "dryrun://a", upserted: false },
       { taskId: "T02", title: "[T02] Build B", issueNumber: 0, url: "dryrun://b", upserted: false },
     ],
+    tasksVersion: 3,
+    planDigest: "d".repeat(64),
+    credentialCheck: "resolved",
   };
+  const SECRET = "${vault:gh-sandbox}";
+
+  /** #953 — pick the export's GitHub token (a vault reference). */
+  function pickSecret(ref = SECRET): void {
+    fireEvent.change(screen.getByTestId("spec-kit-export-secret"), { target: { value: ref } });
+  }
 
   /** Let a mutation that WOULD have been fired run, so a not-called assertion means something. */
   const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
@@ -568,6 +590,7 @@ describe("SpecKitPage — #789", () => {
       expect(screen.getByTestId(id), id).toBeEnabled();
     }
     m.runCommand!.mockResolvedValue(DRY_RUN);
+    pickSecret();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
   });
@@ -707,21 +730,26 @@ describe("SpecKitPage — #789", () => {
     m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
     expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled();
+    pickSecret();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() =>
       expect(m.runCommand).toHaveBeenCalledWith("p1", "speckit.taskstoissues", {
         featureSlug: "001-a",
         dryRun: true,
+        secretRef: SECRET,
       }),
     );
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).not.toBeDisabled());
     fireEvent.click(screen.getByTestId("spec-kit-export-publish"));
     expect(m.runCommand).toHaveBeenCalledTimes(1);
     await answerDialog("Publish");
+    // #953 — the live run carries the dry run's plan and the same vault secret.
     await waitFor(() =>
       expect(m.runCommand).toHaveBeenCalledWith("p1", "speckit.taskstoissues", {
         featureSlug: "001-a",
         dryRun: false,
+        secretRef: SECRET,
+        expectedPlan: { tasksVersion: 3, digest: "d".repeat(64) },
       }),
     );
     // A publish is not a preview: publishing again needs a new dry run.
@@ -749,6 +777,138 @@ describe("SpecKitPage — #789", () => {
     expect(m.runCommand).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps Publish disabled, saying why, when the dry run had no vault secret (#953)", async () => {
+    m.runCommand!.mockResolvedValue({ ...DRY_RUN, credentialCheck: "missing" });
+    await openFeature();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() =>
+      expect(screen.getByTestId("spec-kit-export-credential")).toHaveTextContent(
+        /No GitHub token picked/,
+      ),
+    );
+    const publish = screen.getByTestId("spec-kit-export-publish");
+    expect(publish).toBeDisabled();
+    expect(publish).toHaveAttribute("title", expect.stringMatching(/token from the vault/));
+  });
+
+  it("shows a task another export holds as in progress, not new, and blocks Publish (#962)", async () => {
+    m.runCommand!.mockResolvedValue({
+      ...DRY_RUN,
+      created: [
+        { ...DRY_RUN.created[0]!, state: "in_progress" },
+        { ...DRY_RUN.created[1]!, state: "new" },
+      ],
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    const claims = await screen.findByTestId("spec-kit-export-claims");
+    expect(within(claims).getByRole("listitem")).toHaveTextContent("[T01] Build A — in progress");
+    expect(
+      within(screen.getByTestId("spec-kit-export-titles"))
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["[T02] Build B"]);
+    const publish = screen.getByTestId("spec-kit-export-publish");
+    expect(publish).toBeDisabled();
+    expect(publish).toHaveAttribute("title", expect.stringMatching(/still running/));
+    expect(screen.getByTestId("spec-kit-export-clear")).toBeEnabled();
+  });
+
+  it("shows an abandoned claim as 'will reconcile', publishes it, and offers Clear stuck export (#962)", async () => {
+    m.runCommand!.mockResolvedValue({
+      ...DRY_RUN,
+      created: [
+        { ...DRY_RUN.created[0]!, state: "reconcile" },
+        { ...DRY_RUN.created[1]!, upserted: true, state: "exported" },
+      ],
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    const claims = await screen.findByTestId("spec-kit-export-claims");
+    expect(within(claims).getByRole("listitem")).toHaveTextContent(
+      "[T01] Build A — abandoned, will reconcile",
+    );
+    expect(screen.queryByTestId("spec-kit-export-titles")).toBeNull();
+    // Reconciling is still work for Publish to do.
+    expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("spec-kit-export-clear"));
+    await answerDialog("Clear stuck export");
+    await waitFor(() =>
+      expect(m.runCommand).toHaveBeenCalledWith("p1", "speckit.taskstoissues", {
+        featureSlug: "001-a",
+        clearStuckClaims: true,
+        secretRef: SECRET,
+      }),
+    );
+  });
+
+  it("keeps Clear stuck export disabled once the vault secret changes after the dry run (#962)", async () => {
+    m.runCommand!.mockResolvedValue({
+      ...DRY_RUN,
+      created: [{ ...DRY_RUN.created[0]!, state: "reconcile" }],
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await screen.findByTestId("spec-kit-export-claims");
+    pickSecret("${vault:another}");
+    expect(screen.getByTestId("spec-kit-export-clear")).toBeDisabled();
+  });
+
+  it("keeps Publish disabled when the vault secret did not resolve (#953)", async () => {
+    m.runCommand!.mockResolvedValue({ ...DRY_RUN, credentialCheck: "unresolved" });
+    await openFeature();
+    pickSecret("${vault:typo}");
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() =>
+      expect(screen.getByTestId("spec-kit-export-credential")).toHaveTextContent(
+        /does not name a vault secret/,
+      ),
+    );
+    expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled();
+  });
+
+  it("voids Publish when the vault secret changes after the dry run (#953)", async () => {
+    m.runCommand!.mockResolvedValue(DRY_RUN);
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
+    pickSecret("${vault:another}");
+    expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled();
+    expect(screen.getByTestId("spec-kit-export-credential")).toHaveTextContent(/changed since/);
+  });
+
+  it("lists only the issues a run would create, and offers no Publish when there are none (#953)", async () => {
+    m.runCommand!.mockResolvedValue({
+      ...DRY_RUN,
+      created: DRY_RUN.created.map((c, i) => ({ ...c, upserted: i === 0 })),
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    const list = await screen.findByTestId("spec-kit-export-titles");
+    expect(
+      within(list)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["[T02] Build B"]);
+    cleanup();
+    m.runCommand!.mockResolvedValue({
+      ...DRY_RUN,
+      created: DRY_RUN.created.map((c) => ({ ...c, upserted: true })),
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    await waitFor(() =>
+      expect(screen.getByTestId("spec-kit-export-credential")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled();
+  });
+
   it("lists every issue title the dry run would create (#936)", async () => {
     m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
@@ -764,6 +924,7 @@ describe("SpecKitPage — #789", () => {
   it("names the repository and the issue count in the publish confirmation (#936)", async () => {
     m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
+    pickSecret();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
     fireEvent.click(screen.getByTestId("spec-kit-export-publish"));
@@ -796,6 +957,7 @@ describe("SpecKitPage — #789", () => {
   it("voids the dry run when tasks.md changes afterwards", async () => {
     m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
+    pickSecret();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).not.toBeDisabled());
     m.listFeatureArtifacts!.mockResolvedValue({
@@ -809,6 +971,7 @@ describe("SpecKitPage — #789", () => {
   it("voids the dry run when the user leaves the feature and returns", async () => {
     m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
+    pickSecret();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).not.toBeDisabled());
     fireEvent.change(screen.getByTestId("spec-kit-feature-select"), { target: { value: "" } });
@@ -845,6 +1008,7 @@ describe("SpecKitPage — #789", () => {
   it("does not publish when the confirmation is declined", async () => {
     m.runCommand!.mockResolvedValue(DRY_RUN);
     await openFeature();
+    pickSecret();
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).not.toBeDisabled());
     fireEvent.click(screen.getByTestId("spec-kit-export-publish"));

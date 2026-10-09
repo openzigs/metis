@@ -80,6 +80,10 @@ in once in a second context so the user exists.
   them; the compare shows the edit. Use `POST …/baselines {name, requirementIds}` only for a
   subset, which the UI does not offer.
 
+## Fixes to verify this wave
+
+{{FIXES_TO_VERIFY}}
+
 ## Standing rules — never
 
 - Never publish, comment or review on `miniflux/v2`. Sandbox is `openzigs/flux-v2` only.
@@ -137,7 +141,7 @@ as plain text.
    |---|---|---|---|---|---|---|---|---|
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
-3. **Fix verification** — for each fix in `{{FIXES_TO_VERIFY}}`: fix | PR | holds / regressed | evidence.
+3. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
 4. **Findings** — one line each: severity, phase, symptom, evidence path. Do not file issues.
 5. **`Durable finding:` lines** — anything a future run must know. Prefix each with exactly
    `Durable finding:`.

@@ -33,6 +33,15 @@ class P2002 extends Error {
   code = "P2002";
 }
 
+/** Prisma-style equality over plain fields (`null` matches null/undefined, Dates by time). */
+function exportRowMatches(row: any, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([k, v]) => {
+    const actual = row[k] ?? null;
+    if (v instanceof Date) return actual instanceof Date && actual.getTime() === v.getTime();
+    return actual === (v ?? null);
+  });
+}
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     auditLog: { create: vi.fn(async () => ({})) },
@@ -143,10 +152,55 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
       create: vi.fn(async ({ data }: any) => {
         const id = `${data.projectId}|${data.featureSlug}|${data.taskId}`;
+        if (taskExportRows.has(id)) throw new P2002("unique violation");
         const row = { id, createdAt: new Date(), ...data };
         taskExportRows.set(id, row);
         return row;
       }),
+      update: vi.fn(async ({ where, data }: any) => {
+        const k = where.projectId_featureSlug_taskId;
+        const id = `${k.projectId}|${k.featureSlug}|${k.taskId}`;
+        const row = { ...taskExportRows.get(id), ...data };
+        taskExportRows.set(id, row);
+        return row;
+      }),
+      delete: vi.fn(async ({ where }: any) => {
+        const k = where.projectId_featureSlug_taskId;
+        taskExportRows.delete(`${k.projectId}|${k.featureSlug}|${k.taskId}`);
+        return {};
+      }),
+      // #962 — claim CAS / release / clear: a plain-field equality `where`.
+      upsert: vi.fn(async ({ where, create, update }: any) => {
+        const k = where.projectId_featureSlug_taskId;
+        const id = `${k.projectId}|${k.featureSlug}|${k.taskId}`;
+        const prev = taskExportRows.get(id);
+        const row = prev ? { ...prev, ...update } : { id, createdAt: new Date(), ...create };
+        taskExportRows.set(id, row);
+        return row;
+      }),
+      updateMany: vi.fn(async ({ where, data }: any) => {
+        let count = 0;
+        for (const [id, row] of taskExportRows) {
+          if (exportRowMatches(row, where)) {
+            taskExportRows.set(id, { ...row, ...data });
+            count += 1;
+          }
+        }
+        return { count };
+      }),
+      deleteMany: vi.fn(async ({ where }: any) => {
+        let count = 0;
+        for (const [id, row] of taskExportRows) {
+          if (exportRowMatches(row, where)) {
+            taskExportRows.delete(id);
+            count += 1;
+          }
+        }
+        return { count };
+      }),
+      findMany: vi.fn(async ({ where }: any) =>
+        [...taskExportRows.values()].filter((r) => exportRowMatches(r, where)),
+      ),
     },
     repoConnection: {
       findFirst: vi.fn(async ({ where }: any) => {
@@ -185,7 +239,7 @@ import {
 import { runChecklist } from "../src/lib/spec-kit/commands/checklist.js";
 import { runPlanExpanded } from "../src/lib/spec-kit/commands/plan-expanded.js";
 import { runSpecifyFeature } from "../src/lib/spec-kit/commands/specify-feature.js";
-import { runTasksToIssues } from "../src/lib/spec-kit/commands/taskstoissues.js";
+import { computePlanDigest, runTasksToIssues } from "../src/lib/spec-kit/commands/taskstoissues.js";
 import {
   resolveAttached,
   passthroughWorkspaceLookup,
@@ -587,6 +641,96 @@ describe("runPlanExpanded", () => {
     expect(research.content).not.toMatch(/Resolved Unknowns: none/);
     void fid;
   });
+
+  /** #944 — answers by artifact; the quickstart call always hits the output cap. */
+  class CapOnQuickstart extends FakeProvider {
+    async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+      const system = String((o as { systemMessage?: string }).systemMessage ?? "");
+      if (system.includes("quickstart.md")) {
+        return {
+          content: "# Quickstart\n\n## Run locally\n1. see `client/client.go:327",
+          provider: this.key,
+          model: "fake-model",
+          usage: { promptTokens: 5, completionTokens: 16000, totalTokens: 16005 },
+          finishReason: "max_tokens",
+        } as unknown as ChatResponse;
+      }
+      if (system.includes("plan.md")) {
+        return {
+          ...(await super.chat(m, o)),
+          content: '# Plan\n\n```mermaid\ngraph TD\n  A["Route"] --> B\n```\n',
+        };
+      }
+      return super.chat(m, o);
+    }
+  }
+
+  it("#944 — warns when an artifact is still cut off at the output cap, and marks it", async () => {
+    const fid = seedFeature("p1", "003-cap");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "003-cap",
+      deps: { provider: new CapOnQuickstart("# Doc\n") },
+    });
+    expect(r.message).toContain(
+      "Warning: `quickstart.md` was cut off at the model's output-token limit and is incomplete",
+    );
+    const quick = r.artifacts.find((a) => a.key === "quickstart.md")!;
+    expect(quick.content).toContain("## Run locally");
+    expect(quick.content).not.toContain("1. see"); // never the half-written line
+    expect(quick.content).not.toContain("client.go:327");
+    expect(quick.content).toMatch(/\*\*Incomplete:\*\*/);
+    // The diagram's edge to an undeclared node is reported too.
+    expect(r.message).toContain(
+      "`plan.md`'s Mermaid diagram links to 1 node it never declares: `B`.",
+    );
+  });
+
+  it("#944 — a cut-off OpenAPI contract keeps its whole lines instead of the /health stub", async () => {
+    class CapOnContract extends FakeProvider {
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        const system = String((o as { systemMessage?: string }).systemMessage ?? "");
+        if (system.includes("valid OpenAPI 3.1.0 specification")) {
+          return {
+            // Continuations return nothing, so the cut stays and the note is appended.
+            content:
+              m.length > 1
+                ? ""
+                : "openapi: 3.1.0\ninfo:\n  title: T\n  version: 1.0.0\npaths:\n  /widgets:\n    get:\n      summary: list\n      respo",
+            provider: this.key,
+            model: "fake-model",
+            usage: { promptTokens: 5, completionTokens: 16000, totalTokens: 16005 },
+            finishReason: "max_tokens",
+          } as unknown as ChatResponse;
+        }
+        return super.chat(m, o);
+      }
+    }
+    const fid = seedFeature("p1", "005-yaml");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "005-yaml",
+      deps: { provider: new CapOnContract("# Doc\n") },
+    });
+    const contract = r.artifacts.find((a) => a.key === "contracts/api.openapi.yaml")!;
+    expect(contract.content).toContain("/widgets");
+    expect(contract.content).not.toContain("/health");
+    expect(r.message).toContain("contracts/api.openapi.yaml");
+  });
+
+  it("#944 — a whole reply carries no warning", async () => {
+    const fid = seedFeature("p1", "004-whole");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "004-whole",
+      deps: { provider: new FakeProvider("# Doc\n") },
+    });
+    expect(r.message).not.toContain("Warning:");
+    expect(r.message).not.toContain("Mermaid");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -646,6 +790,37 @@ describe("feature commands are grounded (#786, #785)", () => {
     ]),
   };
 
+  const callerLookup = {
+    findCallers: vi.fn(async () => [
+      {
+        toSymbolId: null,
+        toQualifiedName: "MarkAllAsReadBeforeDate",
+        filePath: "internal/googlereader/handler.go",
+        line: 1225,
+        callerName: "editTagHandler",
+      },
+    ]),
+  };
+  const CALLER_LINE =
+    "- MarkAllAsReadBeforeDate ← editTagHandler at internal/googlereader/handler.go:1225 (probable)";
+
+  it("#944 — speckit.specify is grounded on the existing code and its callers", async () => {
+    const provider = new RecordingProvider("# Spec\n\nbody");
+    await runSpecifyFeature({
+      projectId: "p1",
+      prompt: "Mark all entries as read older than N days.",
+      deps: { provider },
+      knowledgeService,
+      fusedCode,
+      siblingLookup,
+      callerLookup,
+    });
+    expect(provider.systems[0]).toContain("## Retrieved Code Symbols");
+    expect(provider.systems[0]).toContain("MarkAllAsReadBeforeDate (function)");
+    expect(provider.systems[0]).toContain(CALLER_LINE);
+    expect(provider.systems[0]).toContain("EXISTING BEHAVIOUR");
+  });
+
   it("speckit.specify retrieves project knowledge and reports it", async () => {
     const provider = new RecordingProvider("# Spec\n\nbody");
     const r = await runSpecifyFeature({
@@ -671,12 +846,15 @@ describe("feature commands are grounded (#786, #785)", () => {
       knowledgeService,
       fusedCode,
       siblingLookup,
+      callerLookup,
       pathLookup: {
         hasCodeGraph: vi.fn(async () => true),
         findExisting: vi.fn(async (_p: string, paths: string[]) => paths),
       },
     });
     expect(provider.systems).toHaveLength(5);
+    // #944 — every artifact sees who already calls the retrieved code.
+    for (const system of provider.systems) expect(system).toContain(CALLER_LINE);
     for (const system of provider.systems) {
       expect(system).toContain("## Retrieved Code Symbols");
       expect(system).toContain(
@@ -1260,6 +1438,7 @@ describe("runTasksToIssues", () => {
         issueNumber: 0,
         url: "dryrun://%5BT01%5D%20Build%20A",
         upserted: false,
+        state: "new",
       },
       {
         taskId: "T02",
@@ -1267,6 +1446,7 @@ describe("runTasksToIssues", () => {
         issueNumber: 0,
         url: "dryrun://%5BT02%5D%20Build%20B",
         upserted: false,
+        state: "new",
       },
     ]);
     expect(taskExportRows.size).toBe(0);
@@ -1344,6 +1524,201 @@ describe("runTasksToIssues", () => {
       if (prev === undefined) delete process.env.SPECKIT_TASKS_DEFAULT_REPO;
       else process.env.SPECKIT_TASKS_DEFAULT_REPO = prev;
     }
+  });
+
+  // #953 — dry-run parity: the live run must reproduce the previewed plan.
+  it("a live run matching the dry run's version and digest creates exactly its titles (#953)", async () => {
+    seedReadyFeature();
+    const repo = { owner: "openzigs", name: "flux-v2" };
+    const plan = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+    });
+    expect(plan.planDigest).toBe(
+      computePlanDigest({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        tasksVersion: plan.tasksVersion,
+        repo,
+        titles: ["[T01] Build A", "[T02] Build B"],
+      }),
+    );
+    const create = vi.fn(async (_o: string, _n: string, req: any) => ({
+      number: 1,
+      url: req.title,
+    }));
+    await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      client: { create },
+      expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+    });
+    expect(create.mock.calls.map((c) => c[2].title)).toEqual(["[T01] Build A", "[T02] Build B"]);
+  });
+
+  it("refuses 409 before creating anything when the version or the digest differs (#953)", async () => {
+    seedReadyFeature();
+    const repo = { owner: "openzigs", name: "flux-v2" };
+    const plan = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+    });
+    const create = vi.fn();
+    for (const expectedPlan of [
+      { tasksVersion: plan.tasksVersion + 1, digest: plan.planDigest },
+      { tasksVersion: plan.tasksVersion, digest: "f".repeat(64) },
+    ]) {
+      await expect(
+        runTasksToIssues({
+          projectId: "p1",
+          featureSlug: "001-foo",
+          repo,
+          client: { create },
+          expectedPlan,
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "SPECKIT_EXPORT_PLAN_CHANGED" });
+    }
+    // A different target is a different plan, too.
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        repo: { owner: "openzigs", name: "other" },
+        client: { create },
+        expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+      }),
+    ).rejects.toMatchObject({ code: "SPECKIT_EXPORT_PLAN_CHANGED" });
+    expect(create).not.toHaveBeenCalled();
+    expect(taskExportRows.size).toBe(0);
+  });
+
+  it("refuses 422 a live run creating more than maxCreates; a dry run still lists them (#953)", async () => {
+    seedReadyFeature();
+    const repo = { owner: "o", name: "r" };
+    const create = vi.fn();
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        repo,
+        client: { create },
+        maxCreates: 1,
+      }),
+    ).rejects.toMatchObject({ status: 422, code: "SPECKIT_EXPORT_TOO_LARGE" });
+    expect(create).not.toHaveBeenCalled();
+    const dry = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+      maxCreates: 1,
+    });
+    expect(dry.count).toBe(2);
+  });
+
+  it("audits a live run that fails part-way with how many issues it created (#953)", async () => {
+    seedReadyFeature();
+    let n = 0;
+    const create = vi.fn(async () => {
+      if (++n === 2) throw new Error("GitHub refused the request to create an issue (HTTP 500).");
+      return { number: 11, url: "https://x/11" };
+    });
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        repo: { owner: "o", name: "r" },
+        client: { create },
+      }),
+    ).rejects.toThrow(/HTTP 500/);
+    // #962 — a 500 is ambiguous: T02's claim is kept, ownerless, for reconciliation.
+    expect(
+      [...taskExportRows.values()].map((r) => [r.taskId, r.issueNumber, r.claimRunId]),
+    ).toEqual([
+      ["T01", 11, null],
+      ["T02", 0, null],
+    ]);
+    const failed = auditCalls.find((c) => c.action === "speckit.tasks_export_failed");
+    expect(failed?.metadata).toMatchObject({ createdBeforeFailure: 1, repo: "o/r" });
+    expect(auditCalls.some((c) => c.action === "speckit.tasks_exported")).toBe(false);
+  });
+
+  it("audits a live run refused at the planning stage; a dry run's refusal is not an export (#953)", async () => {
+    const create = vi.fn();
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "404-nope",
+        repo: { owner: "o", name: "r" },
+        client: { create },
+        actorId: "u1",
+      }),
+    ).rejects.toMatchObject({ status: 404, code: "SPECKIT_FEATURE_NOT_FOUND" });
+    const refused = auditCalls.filter((c) => c.action === "speckit.tasks_export_refused");
+    expect(refused.map((c) => [c.metadata.code, c.target.id])).toEqual([
+      ["SPECKIT_FEATURE_NOT_FOUND", "404-nope"],
+    ]);
+    auditCalls.length = 0;
+    await expect(
+      runTasksToIssues({ projectId: "p1", featureSlug: "404-nope", dryRun: true }),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(auditCalls.some((c) => c.action === "speckit.tasks_export_refused")).toBe(false);
+  });
+
+  it("refuses (409) to re-create a claimed task with a client that cannot search GitHub (#962)", async () => {
+    seedReadyFeature();
+    taskExportRows.set("p1|001-foo|T01", {
+      projectId: "p1",
+      featureSlug: "001-foo",
+      taskId: "T01",
+      issueNumber: 0,
+      repoOwner: "o",
+      repoName: "r",
+      claimedAt: null,
+      claimRunId: null,
+    });
+    const create = vi.fn();
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        repo: { owner: "o", name: "r" },
+        client: { create },
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "SPECKIT_EXPORT_RECONCILE_UNAVAILABLE" });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("a dry run marks already-exported tasks as upserted, so its plan matches the live run (#953)", async () => {
+    seedReadyFeature();
+    const repo = { owner: "o", name: "r" };
+    await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      client: { create: vi.fn(async () => ({ number: 3, url: "https://x/3" })) },
+    });
+    const dry = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+    });
+    expect(dry.created.map((c) => c.upserted)).toEqual([true, true]);
+    expect(dry.planDigest).toBe(
+      computePlanDigest({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        tasksVersion: dry.tasksVersion,
+        repo,
+        titles: [],
+      }),
+    );
   });
 
   it("throws SPECKIT_NO_REPO_CONFIGURED when nothing resolves the repo", async () => {

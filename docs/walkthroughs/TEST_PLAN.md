@@ -2,7 +2,7 @@
 
 This is the test plan for the end-to-end walkthrough tracked in
 [#706](https://github.com/openzigs/metis/issues/706): phases 1–20, Spec Kit S1–S24, pass bars, the
-Business Analyst questions and the developer issues. It moved here from #706's body in #948 so that
+Business Analyst questions, the developer issues and the persona journeys. It moved here from #706's body in #948 so that
 changes to it are reviewed, show up in PRs and are checked by CI. **Results still go on #706**, as
 one comment per run built from [`RESULTS_TEMPLATE.md`](RESULTS_TEMPLATE.md).
 
@@ -475,6 +475,84 @@ These three issues were open on 2026-10-02. For each one:
 | [#4511 "Last successful refresh in feed API"](https://github.com/miniflux/v2/issues/4511) | Needs a **new migration** appended in `internal/database/migrations.go`, a field on `model.Feed` (`internal/model/feed.go`), a write in `UpdateFeed` (`internal/storage/feed.go:331`, beside `checked_at` and `parsing_error_count` at :342-344) and in the error path (`:437-438`), plus the API JSON. Impact must name table `feeds`, the new column, and the API and Google Reader/Fever consumers. |
 | [#4336 "Add read_at timestamp to entries"](https://github.com/miniflux/v2/issues/4336) | A migration on `entries`, and **every status-change path**: `SetEntriesStatus` (`entry.go:412`), `SetEntriesStatusAndCountVisible` (`:431`), `MarkAllAsRead` (`:506`), `MarkAllAsReadBeforeDate` (`:523`), and the Fever and Google Reader handlers. Impact must list all of them; **missing two or more counts as weak**. |
 
+## Journeys (wave F)
+
+The phases above test METIS **feature by feature**, often through API shortcuts and IDs handed
+from one wave to the next. Nothing there checks that a real person can take their own work from a
+starting point to an outcome in the UI, and that is where run 4's worst bugs were: at the handoffs
+between features (#939 approval, #940 a dropped label, #943 cost lost between run and run page,
+#941 no invite UI). The journeys run as **wave F**, after wave E (`briefs/wave-f.md` in the skill).
+
+### Rules for a journey
+
+- **Persona and goal**, stated as the outcome the person wants.
+- **Starting state**: what exists, and what the persona knows. The persona knows names, URLs of
+  pages a user would bookmark and the sandbox repo; **not** internal IDs or the API.
+- **UI only.** No `fetch()`, no SQL, no IDs from earlier waves. A step that cannot be done in the
+  UI is a finding, recorded `works: "blocked"` with the missing control named. The one exception
+  is measurement: the ledger snapshots before and after each journey (the skill, section 5) are
+  the operator's, not the persona's.
+- **Handoff checks** after every step: what the persona created must survive into the next step
+  (same title, same edited text, same links, same labels). A handoff that loses data fails the
+  step, even if each feature works on its own.
+- **Journey-level pass bars**: completed in the UI; no data lost between steps; within the time
+  and cost budget. A journey that finishes over budget passes "completed" and fails "budget".
+- **Step logging**: every screenshot goes into `steps.jsonl` with `wave: "F"`, `phase: "J1.4"`
+  (journey 1, step 4) and `chapter: "Journey: Business analyst"` or `"Journey: Developer"`, so
+  both decks show each journey as one chapter.
+
+### Journey 1: Business analyst ("Priya")
+
+**Goal:** turn open Miniflux feature requests into reviewed, traceable sandbox issues for a sprint.
+**Budget:** ≤ 45 min, ≤ $1.50.
+
+**Starting state.** Priya is a member of the run's workspace and knows its name. She creates a
+fresh project inside it from `/projects`, connects `https://github.com/miniflux/v2` at `v2.3.3`
+in `/projects/:id/connections` (vault picker for the token) and waits for the ingest. That setup
+is outside the budget; the clock starts at step 1. She knows the sandbox repo `openzigs/flux-v2`
+and the reviewer's name (`coordinator`).
+
+| # | Priya does | Must hold |
+|---|---|---|
+| J1.1 | In `/projects/:id/import`, imports open GitHub issues labelled as features from `miniflux/v2` | Titles and bodies kept. Types sensible ("[Bug]" not typed as a feature) |
+| J1.2 | Picks 5 imported items and runs requirements analysis in `/projects/:id/analysis` | The analysis cites real code for each. It is clear which agents ran |
+| J1.3 | Answers the clarifying questions on the run's Questions tab | Her answers land in the requirements she approves |
+| J1.4 | Invites the reviewer from `/settings/workspaces/:id`, requests review on `/projects/:id/requirements`, approves the checkpoint, edits one requirement's acceptance criteria | Approval flows through to the requirements (#939). The edit keeps links, labels and version history (#940). The review appears on `/reviews` |
+| J1.5 | Opens traceability for her 5 requirements | Each links to code. "Tested by" shows real tests or says untested (#905) |
+| J1.6 | Asks `/chat`, scoped to her project, "which of these touch the database?" | The answer cites her requirements and the schema, with valid `file:line` |
+| J1.7 | Generates a BRD scoped to her requirements in `/projects/:id/documentation` | It covers only those 5, with citations, inside the cap |
+| J1.8 | Dry-runs, then publishes 2 issues to `openzigs/flux-v2` from `/projects/:id/publish` | Bodies carry her edited criteria and code links. No internal IDs appear as labels (#744). Counts against the run's cap of 2 |
+| J1.9 | Checks what it cost on `/projects/:id/usage` | The usage page shows the journey's spend, and it matches the ledger delta |
+
+**Handoffs to check:** J1.1's titles are the requirement titles in J1.4; J1.3's answers are in
+the text J1.4 approves; J1.4's edited criteria are in J1.8's issue bodies; J1.5's code links are in
+J1.8's bodies; J1.7's BRD names exactly J1.2's five items.
+
+### Journey 2: Developer ("Dev")
+
+**Goal:** pick up a real Miniflux issue ([#4336](https://github.com/miniflux/v2/issues/4336),
+"track `read_at`") and come away with a correct change plan.
+**Budget:** ≤ 30 min, ≤ $1.00.
+
+**Starting state.** Dev is a workspace member and knows the run's project by name (the wave A
+project, already ingested at `v2.3.3`) and the issue's URL. He knows nothing else.
+
+| # | Dev does | Must hold |
+|---|---|---|
+| J2.1 | Pastes the issue into `/impact-analyses/new` | Names every writer of `entries.read_at`, including `SetEntriesStatusAndCountVisible` (#935) |
+| J2.2 | Opens the code graph or a symbol from the result on `/impact-analyses/:id` | Navigates to the real definition at the pinned commit |
+| J2.3 | Asks `/chat` a follow-up ("what about Fever and Google Reader?") | Earlier citations are kept (#773). New handlers are named with valid lines |
+| J2.4 | Runs Spec Kit specify, plan and tasks for the change on `/projects/:id/spec-kit` | The plan reuses existing functions and proposes no duplicates (#944, #785) |
+| J2.5 | Exports tasks to the sandbox if #953 has landed, otherwise dry-runs | Dry-run titles equal created titles. Sandbox only, within the cap of 2 |
+
+**Handoffs to check:** every writer J2.1 names is in J2.4's plan; J2.3's answer keeps J2.1's
+citations; J2.5's titles are J2.4's tasks.
+
+### Later journeys (not yet in the plan)
+
+- Admin onboarding a team: workspace, members, budgets, model preferences.
+- Reviewer: receives a review request, comments with @mentions, approves.
+
 ## Evidence to capture (per phase)
 
 - A screenshot at each step's end state, with one line per screenshot in the run's `steps.jsonl` (the skill, section 7).
@@ -511,6 +589,7 @@ These three issues were open on 2026-10-02. For each one:
 - [ ] `speckit.specify` and `speckit.plan` report **grounded on K > 0 retrieved chunks**.
 - [ ] 8/8 BA questions answered. Pass bar: **at least 6 correct with valid citations**.
 - [ ] 3/3 developer issues have an impact analysis, a plan, and a sandbox draft. For #4478, METIS surfaces `MarkAllAsReadBeforeDate`.
+- [ ] Journeys 1 and 2 each have a verdict on the three journey pass bars (completed in the UI, no data lost between steps, within budget), with the step where any of them broke.
 - [ ] Nothing was published, commented or reviewed on `miniflux/v2`; verify with `gh` and attach the output.
 - [ ] Per-phase token/cost table posted; total spend within the project budget.
 - [ ] Every failure or weak result filed as its own issue and linked to #706.

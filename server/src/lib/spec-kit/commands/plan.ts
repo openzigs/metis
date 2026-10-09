@@ -4,9 +4,10 @@
  */
 import type { SpecKitArtifactDto } from "@metis/shared";
 import { getArtifact, writeArtifact, SpecKitArtifactError } from "../artifacts.js";
-import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
+import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
 import {
   buildSpecKitRagContext,
+  type CallerLookup,
   type SiblingSymbolLookup,
   type SpecKitFusedCodeDeps,
   type SpecKitKnowledgeService,
@@ -19,6 +20,7 @@ import {
   type PlanPathLookup,
 } from "../grounding.js";
 import { PLAN_SYSTEM_PROMPT } from "./prompts.js";
+import { describeUndeclaredMermaidNodes, findUndeclaredMermaidNodes } from "../mermaid-check.js";
 export { PLAN_SYSTEM_PROMPT } from "./prompts.js";
 
 const SYSTEM_PROMPT = PLAN_SYSTEM_PROMPT;
@@ -40,6 +42,8 @@ export interface PlanInput {
   pathLookup?: PlanPathLookup;
   /** #785 — injectable same-file sibling lookup. Defaults to the production wiring. */
   siblingLookup?: SiblingSymbolLookup;
+  /** #944 — injectable caller lookup. Defaults to the production wiring. */
+  callerLookup?: CallerLookup;
 }
 
 export interface PlanResult {
@@ -73,6 +77,9 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
     // #785 — list the existing same-file siblings of every retrieved symbol.
     siblings: { ...(input.siblingLookup ? { lookup: input.siblingLookup } : {}) },
+    // #944 — and the code that already calls them: a plan missed the
+    // protocol-adapter writers of the table it changed.
+    callers: { ...(input.callerLookup ? { lookup: input.callerLookup } : {}) },
   });
 
   const userPrompt = [
@@ -119,9 +126,15 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
       ? ` ${paths.unverified.length} referenced path${paths.unverified.length === 1 ? " is" : "s are"} not in the project's code graph (expected only for new files): ${paths.unverified.map((p) => `\`${p}\``).join(", ")}.`
       : "";
 
+  // #944 — a diagram edge to a node nobody declared is reported, not drawn silently.
+  const mermaidNote = describeUndeclaredMermaidNodes(
+    "plan.md",
+    findUndeclaredMermaidNodes(run.content),
+  );
+
   return {
     artifact,
     tokensUsed: run.tokensUsed,
-    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${pathNote}${noneNote}`,
+    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${pathNote}${noneNote}${mermaidNote}${truncationWarning(run.truncated ? ["plan.md"] : [])}`,
   };
 }

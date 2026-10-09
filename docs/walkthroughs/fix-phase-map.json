@@ -1,0 +1,67 @@
+{
+  "$comment": "#954: where the walkthrough verifies each fix. Keyed by issue number (preferred) or PR number. wave: A-F or BA; phase: a TEST_PLAN.md phase (\"8\", \"S21\") or journey step (\"J1.4\"); or {\"skip\": \"reason\"} for a fix no wave verifies, listed under excluded. check: optional one-line 'what to check', defaulting to the closing issue's title. scripts/walkthrough/fixes-since.mjs reads it and lists every relevant PR it cannot place.",
+  "issues": {
+    "905": {
+      "wave": "E",
+      "phase": "17",
+      "check": "\"Tested by\" lists no document-sourced test citation and no own-package config-hub test"
+    },
+    "935": {
+      "wave": "B",
+      "phase": "5",
+      "check": "After a re-ingest, lineage names SetEntriesStatusAndCountVisible as a writer of entries.read_at"
+    },
+    "936": {
+      "wave": "D",
+      "phase": "S21",
+      "check": "The Spec Kit export dry run lists the titles and target repo; Publish stays disabled with a truthful reason"
+    },
+    "937": {
+      "wave": "B",
+      "phase": "7",
+      "check": "Opening the Questions tab starts clarification once and bills it once"
+    },
+    "938": {
+      "wave": "B",
+      "phase": "7",
+      "check": "The analysis form lists enabled agents and says they run prompt-only"
+    },
+    "939": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "Approving the analysis checkpoint approves the promoted requirements"
+    },
+    "940": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "Editing a requirement keeps its finding: label, links and version history"
+    },
+    "941": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "A reviewer is invited from workspace settings, and the invite asks the invitee to sign in"
+    },
+    "943": {
+      "wave": "B",
+      "phase": "7",
+      "check": "The run page cost matches the ledger after the analysis completes"
+    },
+    "944": {
+      "wave": "F",
+      "phase": "J2.4",
+      "check": "The Spec Kit plan is not truncated and reuses existing functions"
+    },
+    "947": {
+      "skip": "Walkthrough tooling (run.json and the report deck); exercised when the operator builds the decks"
+    },
+    "948": {
+      "skip": "Walkthrough tooling (test plan, drift check, PR gate); CI runs it and every run starts with it"
+    },
+    "953": {
+      "wave": "D",
+      "phase": "S21",
+      "check": "Spec Kit Publish creates sandbox issues whose titles match the dry run"
+    }
+  },
+  "prs": {}
+}
