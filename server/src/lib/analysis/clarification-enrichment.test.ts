@@ -61,6 +61,7 @@ const {
   ATTRIBUTION_THRESHOLD,
   CLARIFICATIONS_END,
   CLARIFICATIONS_START,
+  MAX_OUTCOME_QUESTION,
   MAX_PUBLISHED_ANSWER,
   applyClarificationBlock,
   applyClarificationsToRequirements,
@@ -420,5 +421,39 @@ describe("applyClarificationsToRequirements", () => {
     store.metadata = JSON.stringify({});
     const out = await applyClarificationsToRequirements(ANALYSIS_ID);
     expect(out).toMatchObject({ appliedCount: 0, unattributedCount: 1, requirementsUpdated: 0 });
+  });
+
+  // Issue #979 — the panel must show WHICH answers were applied, not only a count.
+  it("records which requirement each answer was written into", async () => {
+    await applyClarificationsToRequirements(ANALYSIS_ID);
+    expect(JSON.parse(store.metadata!).clarificationApplication.answers).toEqual([
+      {
+        questionId: "q1",
+        question: "Which rate source?",
+        requirementTitle: "Display product prices in the shopper's currency",
+      },
+    ]);
+  });
+
+  it("records a null requirement for an answer that was not applied", async () => {
+    store.metadata = JSON.stringify({});
+    const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+    expect(out?.answers).toEqual([
+      { questionId: "q1", question: "Which rate source?", requirementTitle: null },
+    ]);
+  });
+
+  it("shortens a long question in the per-answer record", async () => {
+    const long = "word ".repeat(100);
+    store.dialogState = JSON.stringify({
+      ...dialog,
+      rounds: [
+        { ...dialog.rounds[0], questions: [{ ...dialog.rounds[0].questions[0], question: long }] },
+      ],
+    });
+    const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+    const q = out!.answers![0].question;
+    expect(q.length).toBe(MAX_OUTCOME_QUESTION);
+    expect(q.endsWith("…")).toBe(true);
   });
 });

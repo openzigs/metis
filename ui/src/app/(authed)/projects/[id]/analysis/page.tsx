@@ -41,6 +41,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CodeCitation } from "@/components/findings/code-citation";
+import { DocumentCitation } from "@/components/findings/document-citation";
 import {
   CodeCitationRepoContext,
   useCodeCitationRepo,
@@ -61,7 +62,6 @@ import { RequirementsEmptyState } from "@/components/analysis/RequirementsEmptyS
 import { SynthesisDegradedNotice } from "@/components/analysis/SynthesisDegradedNotice";
 import { RequirementReplacementWithheldNotice } from "@/components/analysis/RequirementReplacementWithheldNotice";
 import { AddDocumentsPanel } from "@/components/analysis/add-documents-panel";
-import { formatSourceLabel } from "@/lib/format-source-label";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import { useScrollToAnchor } from "@/hooks/use-scroll-to-anchor";
 import { EvaluateRequirementsPanel } from "@/components/analysis/evaluate-requirements-panel";
@@ -92,6 +92,7 @@ import { VerificationBadge } from "@/components/analysis/VerificationBadge";
 // Issue #1232 — the run's outcome first, then a scannable finding body.
 import { AnalysisOutcomeCard } from "@/components/analysis/AnalysisOutcomeCard";
 import { FindingBody } from "@/components/analysis/FindingBody";
+import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { TraceabilityMatrix } from "@/components/analysis/traceability-matrix";
 import { GapReport } from "@/components/analysis/gap-report";
 import { RequirementDiff } from "@/components/analysis/requirement-diff";
@@ -1106,9 +1107,8 @@ export default function AnalysisPage(): React.ReactElement {
                           </div>
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
                           <RequirementCollabRow requirementId={req.id} projectId={projectId} />
-                          <p className="mt-1 max-w-prose text-sm leading-relaxed text-foreground">
-                            {req.body}
-                          </p>
+                          {/* #979 — Markdown, sanitized, internal markers hidden. */}
+                          <RequirementBody body={req.body} />
                           {/* Epic #1107 (#1110) — the panel's rolled-up confidence
                             for this requirement's evidence, with each dissenting
                             lens's reason. Rendered ABOVE the acceptance criteria
@@ -1283,23 +1283,13 @@ export default function AnalysisPage(): React.ReactElement {
                                       />
                                     );
                                   }
-                                  // Issue #427 \u2014 render connector ids as a friendly
-                                  // `basename \u2014 repo` label with the full raw id in
-                                  // the title tooltip. The chunk index (#{chunkIndex})
-                                  // is the file:line provenance and is preserved.
-                                  // #573 — classified on the cited row's
-                                  // stored source, not the filename prefix.
-                                  const source = formatSourceLabel(
-                                    c.filename ?? c.documentId,
-                                    repoNames,
-                                    c.source,
-                                  );
+                                  // #427 / #573 / #979 — see DocumentCitation.
                                   return (
-                                    <li key={`${c.documentId}-${c.chunkIndex}-${idx}`}>
-                                      \u2192 <span title={source.rawId}>{source.label}</span> #
-                                      {c.chunkIndex}
-                                      {c.snippet ? <em className="ml-2">"{c.snippet}"</em> : null}
-                                    </li>
+                                    <DocumentCitation
+                                      key={`${c.documentId}-${c.chunkIndex}-${idx}`}
+                                      citation={c}
+                                      repoNames={repoNames}
+                                    />
                                   );
                                 })}
                               </ul>
