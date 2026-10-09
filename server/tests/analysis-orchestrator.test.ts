@@ -2245,6 +2245,20 @@ describe("AnalysisOrchestrator extraInstructions plumbing (#905)", () => {
     expect(meta.extraInstructions).toBe("Add SSO support for enterprise tenants");
   });
 
+  it("keeps a Spec Kit handoff record in metadata through the run (#994)", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const specKitHandoff = { artifacts: ["spec.md"], sent: ["AC-1"], omitted: ["AC-2"] };
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      extraInstructions: "AC-1: Add SSO support for enterprise tenants.",
+      specKitHandoff,
+    });
+    await drain(analysisId);
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}");
+    expect(meta.specKitHandoff).toEqual(specKitHandoff);
+  });
+
   it("forwards extraInstructions into the specialist prompt via the OPERATOR NOTES boundary", async () => {
     const { provider, userPrompts } = makeCapturingProvider();
     const orch = new AnalysisOrchestrator({ provider, retrieve: async () => [] });

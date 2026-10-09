@@ -292,6 +292,26 @@ describe("Analysis results hierarchy (#1232)", () => {
     expect(screen.getByRole("tab", { name: /^Summary/ })).toHaveAttribute("aria-selected", "true");
   });
 
+  it("states the stored requirement count on the outcome (#994)", async () => {
+    nav.search = new URLSearchParams();
+    renderPage();
+    expect(await screen.findByTestId("analysis-outcome-count")).toHaveTextContent(
+      "1 requirement stored for this run.",
+    );
+  });
+
+  it("names what a Spec Kit handoff left out, above the tabs, on any tab (#994)", async () => {
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      metadata: {
+        specKitHandoff: { artifacts: ["spec.md"], sent: ["AC-1"], omitted: ["AC-2"] },
+      },
+    });
+    renderPage();
+    await waitForResults();
+    expect(screen.getByTestId("spec-kit-handoff-omitted")).toHaveTextContent("AC-2");
+  });
+
   it("orders the tabs outcome → requirements → findings", async () => {
     nav.search = new URLSearchParams();
     renderPage();

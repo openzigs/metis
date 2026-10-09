@@ -370,6 +370,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           extraInstructions: parsed.data.extraInstructions,
           enableWebResearch: parsed.data.enableWebResearch ?? false,
           enableClarification: parsed.data.enableClarification ?? false,
+          ...(parsed.data.specKitHandoff ? { specKitHandoff: parsed.data.specKitHandoff } : {}),
         });
         res.status(202).json(ok({ id: result.id }));
       } catch (err) {

@@ -255,7 +255,7 @@ import {
 } from "./new-requirements.js";
 import { computeRequirementEscalations } from "./escalation-context.js";
 import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation-policy.js";
-import type { RequirementEscalation } from "@metis/shared";
+import type { RequirementEscalation, SpecKitHandoffRecord } from "@metis/shared";
 import { TaskProfiler } from "../ai/task-profiler.js";
 import { ModelRouter, type ModelPreferences } from "../ai/model-router.js";
 import { displayFilename } from "../rag/hit-locator.js";
@@ -589,6 +589,8 @@ export interface StartAnalysisOptions {
    * questions for ambiguous items. When false (default) extraction is skipped.
    */
   enableClarification?: boolean;
+  /** Issue #994 — a Spec Kit handoff's record of what it sent; persisted to metadata. */
+  specKitHandoff?: SpecKitHandoffRecord;
 }
 
 interface ActiveRun {
@@ -703,6 +705,7 @@ export class AnalysisOrchestrator {
       documentIds: opts.documentIds,
       model: opts.model,
       extraInstructions: opts.extraInstructions,
+      ...(opts.specKitHandoff ? { specKitHandoff: opts.specKitHandoff } : {}),
     });
 
     audit({

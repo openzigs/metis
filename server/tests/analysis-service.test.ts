@@ -420,6 +420,18 @@ describe("createAnalysis", () => {
     expect(meta.agentKeys).toEqual(["document", "code"]);
     expect(meta.documentIds).toEqual(["doc-1234567890"]);
     expect(meta.model).toBe("stub");
+    expect(meta).not.toHaveProperty("specKitHandoff");
+  });
+
+  it("persists a Spec Kit handoff record in metadata (#994)", async () => {
+    const specKitHandoff = { artifacts: ["spec.md"], sent: ["AC-1"], omitted: ["AC-2"] };
+    const a = await createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["code"],
+      specKitHandoff,
+    });
+    expect(JSON.parse(a.metadata!).specKitHandoff).toEqual(specKitHandoff);
   });
 });
 

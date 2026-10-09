@@ -938,6 +938,24 @@ export function describeRequirementReplacementWithheld(
  */
 export const MAX_EXTRA_INSTRUCTIONS = 4096;
 
+/**
+ * Issue #994 — what a Spec Kit "Start analysis" handoff sent. `artifacts` are
+ * the files `/speckit.implement` forwarded; `sent` names the requirements
+ * carried in `extraInstructions` (`AC-1`, `NFR-1`, …); `omitted` names those
+ * that did not fit {@link MAX_EXTRA_INSTRUCTIONS} (or `the end of spec.md` when
+ * the spec had no acceptance criteria to send one by one). Persisted as
+ * `metadata.specKitHandoff`, so the analysis page itself says what was left
+ * out — a toast before the redirect was never seen.
+ */
+export const specKitHandoffSchema = z
+  .object({
+    artifacts: z.array(z.string().min(1).max(200)).max(10),
+    sent: z.array(z.string().min(1).max(64)).max(500),
+    omitted: z.array(z.string().min(1).max(64)).max(500),
+  })
+  .strict();
+export type SpecKitHandoffRecord = z.infer<typeof specKitHandoffSchema>;
+
 export const startAnalysisSchema = z.object({
   documentIds: z.array(idSchema).max(100).optional(),
   agentKeys: z.array(z.enum(ANALYSIS_SPECIALIST_AGENT_KEYS)).max(4).optional(),
@@ -958,6 +976,8 @@ export const startAnalysisSchema = z.object({
    * requirements so the user can answer and feed the answers back in.
    */
   enableClarification: z.boolean().optional(),
+  /** Issue #994 — set by the Spec Kit handoff: what it sent and what it left out. */
+  specKitHandoff: specKitHandoffSchema.optional(),
 });
 export type StartAnalysisInput = z.infer<typeof startAnalysisSchema>;
 
