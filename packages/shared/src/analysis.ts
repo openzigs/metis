@@ -947,11 +947,18 @@ export const MAX_EXTRA_INSTRUCTIONS = 4096;
  * `metadata.specKitHandoff`, so the analysis page itself says what was left
  * out — a toast before the redirect was never seen.
  */
+/**
+ * Most entries `specKitHandoff.sent` / `omitted` may hold. A client with more
+ * omitted requirements than this keeps the first `max - 1` and ends the list
+ * with a `+N more` entry, rather than having the whole run rejected.
+ */
+export const SPEC_KIT_HANDOFF_MAX_LABELS = 500;
+
 export const specKitHandoffSchema = z
   .object({
     artifacts: z.array(z.string().min(1).max(200)).max(10),
-    sent: z.array(z.string().min(1).max(64)).max(500),
-    omitted: z.array(z.string().min(1).max(64)).max(500),
+    sent: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    omitted: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
   })
   .strict();
 export type SpecKitHandoffRecord = z.infer<typeof specKitHandoffSchema>;

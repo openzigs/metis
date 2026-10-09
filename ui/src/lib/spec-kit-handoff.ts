@@ -17,7 +17,7 @@
  * silence). A spec with no acceptance criteria is sent as before, cut at a
  * paragraph boundary.
  */
-import { MAX_EXTRA_INSTRUCTIONS } from "@metis/shared";
+import { MAX_EXTRA_INSTRUCTIONS, SPEC_KIT_HANDOFF_MAX_LABELS } from "@metis/shared";
 
 export interface HandoffInstructions {
   text: string;
@@ -25,12 +25,43 @@ export interface HandoffInstructions {
   truncated: boolean;
   /** The requirements sent, by label (`AC-1`, `NFR-1`, …). */
   sent: string[];
-  /** What was left out: requirement labels, or `the end of spec.md`. */
+  /**
+   * What was left out: requirement labels, or `the end of spec.md`. Capped at
+   * {@link SPEC_KIT_HANDOFF_MAX_LABELS} entries, the last a `+N more` when the
+   * list was longer, so the run's record always passes the server's schema.
+   */
   omitted: string[];
+  /** How many parts were left out, uncapped. */
+  omittedCount: number;
 }
 
 /** Named in `omitted` when an unstructured spec is cut. */
 export const SPEC_TAIL_OMITTED = "the end of spec.md";
+
+/**
+ * Why a handoff's other artifacts (plan.md, tasks.md, constitution.md) are not
+ * sent: only spec.md's requirements are. Stated wherever those files are named,
+ * so naming them never implies they were sent (#994).
+ */
+export const CONTEXT_NOT_SENT_REASON = "context; see #1027";
+
+/** The handoff artifacts that are not spec.md, and so were not sent. */
+export function contextNotSent(artifacts: string[]): string[] {
+  return artifacts.filter((a) => a.split("/").pop() !== "spec.md");
+}
+
+/** ` Not sent: plan.md, tasks.md (context; see #1027).`, or "" when there are none. */
+function notSentNote(context: string[]): string {
+  const rest = contextNotSent(context);
+  return rest.length > 0 ? ` Not sent: ${rest.join(", ")} (${CONTEXT_NOT_SENT_REASON}).` : "";
+}
+
+/** At most the schema's limit, the last entry `+N more` when there were more. */
+function capOmitted(omitted: string[]): string[] {
+  if (omitted.length <= SPEC_KIT_HANDOFF_MAX_LABELS) return omitted;
+  const kept = omitted.slice(0, SPEC_KIT_HANDOFF_MAX_LABELS - 1);
+  return [...kept, `+${omitted.length - kept.length} more`];
+}
 
 interface SpecRequirement {
   label: string;
@@ -43,14 +74,14 @@ export function buildHandoffInstructions(
 ): HandoffInstructions {
   const body = spec?.trim() ?? "";
   if (body.length === 0) {
-    const text = `Spec Kit handoff (${context.join(", ")}). No spec.md was available; evaluate the current implementation against the forwarded artifacts.`;
-    return { ...cutAtBoundary(text), sent: [], omitted: [] };
+    const text = `Spec Kit handoff: no spec.md was available, so no requirements were sent.${notSentNote(context)}`;
+    return { ...cutAtBoundary(text), sent: [], omitted: [], omittedCount: 0 };
   }
   const requirements = specRequirements(body);
   if (!requirements.some((r) => r.label.startsWith("AC-"))) return unstructured(context, body);
 
   // A bare heading names the next block rather than becoming a requirement.
-  const header = `# Spec Kit handoff (${context.join(", ")}): evaluate these requirements from spec.md against the current implementation`;
+  const header = `# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent.${notSentNote(context)}`;
   let text = header;
   const sent: string[] = [];
   const omitted: string[] = [];
@@ -63,14 +94,21 @@ export function buildHandoffInstructions(
       omitted.push(r.label);
     }
   }
-  return { text, truncated: omitted.length > 0, sent, omitted };
+  return {
+    text,
+    truncated: omitted.length > 0,
+    sent,
+    omitted: capOmitted(omitted),
+    omittedCount: omitted.length,
+  };
 }
 
 /** The pre-#994 shape for a spec without acceptance criteria, cut between paragraphs. */
 function unstructured(context: string[], spec: string): HandoffInstructions {
-  const header = `Spec Kit handoff (${context.join(", ")}). Evaluate the requirements in this spec.md against the current implementation.`;
+  const header = `Spec Kit handoff. Evaluate the requirements in this spec.md against the current implementation; only spec.md is sent.${notSentNote(context)}`;
   const cut = cutAtBoundary(`${header}\n\n${spec}`);
-  return { ...cut, sent: [], omitted: cut.truncated ? [SPEC_TAIL_OMITTED] : [] };
+  const omitted = cut.truncated ? [SPEC_TAIL_OMITTED] : [];
+  return { ...cut, sent: [], omitted, omittedCount: omitted.length };
 }
 
 /**

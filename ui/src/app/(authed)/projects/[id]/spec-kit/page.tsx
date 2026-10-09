@@ -361,12 +361,12 @@ export default function SpecKitPage() {
           omitted: instructions.omitted,
         },
       });
-      return { id: started.id, omitted: instructions.omitted };
+      return { id: started.id, omittedCount: instructions.omittedCount };
     },
-    onSuccess: ({ id, omitted }) => {
+    onSuccess: ({ id, omittedCount }) => {
       toast.success(
-        omitted.length > 0
-          ? `Analysis started. ${omitted.length} part(s) of spec.md did not fit and were not sent; the analysis page lists them.`
+        omittedCount > 0
+          ? `Analysis started. ${omittedCount} part(s) of spec.md did not fit and were not sent; the analysis page lists them.`
           : "Analysis started.",
       );
       setHandoff(null);

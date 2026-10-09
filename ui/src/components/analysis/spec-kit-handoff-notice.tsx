@@ -11,6 +11,7 @@
  * run that was not started from a Spec Kit handoff.
  */
 import { specKitHandoffSchema, type SpecKitHandoffRecord } from "@metis/shared";
+import { CONTEXT_NOT_SENT_REASON, contextNotSent } from "@/lib/spec-kit-handoff";
 
 /** The persisted record, or null when absent or malformed. */
 export function specKitHandoffOf(
@@ -28,14 +29,22 @@ export function SpecKitHandoffNotice({
   const handoff = specKitHandoffOf(metadata);
   if (!handoff) return null;
   const { sent, omitted } = handoff;
+  // Only spec.md's requirements are sent; naming the other artifacts without
+  // saying so would imply they were (#994).
+  const notSent = contextNotSent(handoff.artifacts);
   return (
     <div data-testid="spec-kit-handoff-notice" className="space-y-1 text-xs">
       <p className="text-muted-foreground">
-        Started from a Spec Kit handoff ({handoff.artifacts.join(", ")}).
+        Started from a Spec Kit handoff. Only spec.md&apos;s requirements were sent.
         {sent.length > 0
           ? ` Sent ${sent.length} requirement${sent.length === 1 ? "" : "s"} from spec.md: ${sent.join(", ")}.`
           : null}
       </p>
+      {notSent.length > 0 ? (
+        <p className="text-muted-foreground" data-testid="spec-kit-handoff-context-not-sent">
+          Not sent: {notSent.join(", ")} ({CONTEXT_NOT_SENT_REASON}).
+        </p>
+      ) : null}
       {omitted.length > 0 ? (
         <p className="text-warning" role="status" data-testid="spec-kit-handoff-omitted">
           Not sent — {omitted.length === 1 ? "it" : "they"} did not fit the analysis input limit:{" "}

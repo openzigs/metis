@@ -3,7 +3,12 @@
  * #994 — a METIS spec is sent as a structured summary of its requirements.
  */
 import { describe, expect, it } from "vitest";
-import { MAX_EXTRA_INSTRUCTIONS } from "@metis/shared";
+import {
+  MAX_EXTRA_INSTRUCTIONS,
+  SPEC_KIT_HANDOFF_MAX_LABELS,
+  specKitHandoffSchema,
+  startAnalysisSchema,
+} from "@metis/shared";
 import {
   buildHandoffInstructions,
   specRequirements,
@@ -70,7 +75,7 @@ describe("buildHandoffInstructions", () => {
     expect(r.omitted).toEqual([]);
     expect(r.sent).toEqual(["AC-1", "AC-2", "NFR-1", "NFR-2"]);
     const blocks = r.text.split("\n\n");
-    expect(blocks[0]).toMatch(/^# Spec Kit handoff \(specs\/001-a\/spec\.md, constitution\.md\)/);
+    expect(blocks[0]).toMatch(/^# Spec Kit handoff: evaluate these requirements from spec\.md/);
     expect(blocks.slice(1).map((b) => b.split(":")[0])).toEqual(["AC-1", "AC-2", "NFR-1", "NFR-2"]);
     // One line per requirement: never split into one requirement per sub-bullet.
     expect(blocks.every((b) => !b.includes("\n"))).toBe(true);
@@ -106,9 +111,68 @@ describe("buildHandoffInstructions", () => {
     expect(at.text.length).toBeLessThan(MAX_EXTRA_INSTRUCTIONS);
   });
 
+  it("names the context artifacts in the header only as not sent (#994)", () => {
+    const context = [
+      "specs/001-a/spec.md",
+      "specs/001-a/plan.md",
+      "specs/001-a/tasks.md",
+      "constitution.md",
+    ];
+    const notSent =
+      "Not sent: specs/001-a/plan.md, specs/001-a/tasks.md, constitution.md (context; see #1027).";
+    const structured = buildHandoffInstructions(context, METIS_SPEC).text.split("\n\n")[0]!;
+    expect(structured).toBe(
+      `# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent. ${notSent}`,
+    );
+    const unstructuredText = buildHandoffInstructions(context, "# Spec\n- FR-1").text;
+    expect(unstructuredText.split("\n\n")[0]).toContain("only spec.md is sent.");
+    expect(unstructuredText.split("\n\n")[0]).toContain(notSent);
+    expect(buildHandoffInstructions(context, null).text).toBe(
+      `Spec Kit handoff: no spec.md was available, so no requirements were sent. ${notSent}`,
+    );
+    // spec.md alone: nothing to name as not sent.
+    expect(buildHandoffInstructions(["specs/001-a/spec.md"], METIS_SPEC).text).not.toContain(
+      "Not sent",
+    );
+  });
+
+  it("caps omitted at the schema limit with a `+N more` entry the server accepts (#994)", () => {
+    // Each criterion is large enough that only a few fit; the rest are omitted.
+    const n = SPEC_KIT_HANDOFF_MAX_LABELS + 40;
+    const spec = `## Acceptance criteria\n${Array.from(
+      { length: n },
+      (_, i) => `- **AC-${i + 1}**: ${"z".repeat(1000)}`,
+    ).join("\n")}\n`;
+    const r = buildHandoffInstructions(["spec.md", "plan.md"], spec);
+    expect(r.omittedCount).toBe(n - r.sent.length);
+    expect(r.omittedCount).toBeGreaterThan(SPEC_KIT_HANDOFF_MAX_LABELS);
+    expect(r.omitted).toHaveLength(SPEC_KIT_HANDOFF_MAX_LABELS);
+    const firstOmitted = r.sent.length + 1;
+    expect(r.omitted[0]).toBe(`AC-${firstOmitted}`);
+    expect(r.omitted.at(-1)).toBe(`+${r.omittedCount - (SPEC_KIT_HANDOFF_MAX_LABELS - 1)} more`);
+    const payload = { artifacts: ["spec.md", "plan.md"], sent: r.sent, omitted: r.omitted };
+    expect(specKitHandoffSchema.safeParse(payload).success).toBe(true);
+    expect(
+      startAnalysisSchema.safeParse({ extraInstructions: r.text, specKitHandoff: payload }).success,
+    ).toBe(true);
+  });
+
+  it("leaves omitted uncapped at exactly the schema limit", () => {
+    const perAc = (count: number) =>
+      `## Acceptance criteria\n${Array.from(
+        { length: count },
+        (_, i) => `- **AC-${i + 1}**: ${"z".repeat(1000)}`,
+      ).join("\n")}\n`;
+    const fits = buildHandoffInstructions(["spec.md"], perAc(3)).sent.length;
+    const r = buildHandoffInstructions(["spec.md"], perAc(fits + SPEC_KIT_HANDOFF_MAX_LABELS));
+    expect(r.omittedCount).toBe(SPEC_KIT_HANDOFF_MAX_LABELS);
+    expect(r.omitted).toHaveLength(SPEC_KIT_HANDOFF_MAX_LABELS);
+    expect(r.omitted.at(-1)).toBe(`AC-${fits + SPEC_KIT_HANDOFF_MAX_LABELS}`);
+  });
+
   it("sends the header alone when there is no spec text", () => {
     const r = buildHandoffInstructions(["spec.md"], "  ");
-    expect(r.text).toMatch(/^Spec Kit handoff \(spec\.md\)\./);
+    expect(r.text).toMatch(/^Spec Kit handoff: no spec\.md was available/);
     expect(r.text).not.toContain("\n");
     expect(r).toMatchObject({ truncated: false, sent: [], omitted: [] });
   });
@@ -162,7 +226,7 @@ describe("buildHandoffInstructions", () => {
     expect(r.truncated).toBe(true);
     expect(r.omitted).toEqual([SPEC_TAIL_OMITTED]);
     expect(r.text).toBe(
-      "Spec Kit handoff (spec.md). Evaluate the requirements in this spec.md against the current implementation.",
+      "Spec Kit handoff. Evaluate the requirements in this spec.md against the current implementation; only spec.md is sent.",
     );
   });
 });

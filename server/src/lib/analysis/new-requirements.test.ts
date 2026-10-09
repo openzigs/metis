@@ -176,7 +176,7 @@ describe("mergeRequirementSets", () => {
 describe("extractNewRequirementCandidates — the Spec Kit handoff shape (#994)", () => {
   it("yields one candidate per criterion and none for the heading", async () => {
     const text = [
-      "# Spec Kit handoff (specs/001-a/spec.md, specs/001-a/plan.md): evaluate these requirements from spec.md against the current implementation",
+      "# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent. Not sent: specs/001-a/plan.md (context; see #1027).",
       "",
       "AC-1: Mark all as read. Given a feed with unread entries. When the user marks all as read. Then every entry is read.",
       "",

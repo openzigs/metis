@@ -1087,7 +1087,7 @@ describe("SpecKitPage — #789", () => {
     await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
     const body = startAnalysis.mock.calls[0]![1] as { extraInstructions: string };
     expect(startAnalysis.mock.calls[0]![0]).toBe("p1");
-    expect(body.extraInstructions).toContain("spec.md, plan.md, tasks.md");
+    expect(body.extraInstructions).toContain("Not sent: plan.md, tasks.md (context; see #1027).");
     expect(body.extraInstructions).toContain("FR-1 project requirement");
     await waitFor(() =>
       expect(routerPush).toHaveBeenCalledWith("/projects/p1/analysis?analysisId=an_1"),
