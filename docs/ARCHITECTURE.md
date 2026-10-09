@@ -5623,6 +5623,7 @@ server/src/lib/spec-kit/
     ├── plan-expanded.ts          # /speckit.plan (5-artifact bundle)
     ├── specify-feature.ts        # /speckit.specify (per-feature)
     ├── taskstoissues.ts          # /speckit.taskstoissues
+    ├── taskstoissues-github.ts   # its live, vault-bound, target-guarded GitHub client (#953); claim reconcile + Clear stuck export (#962)
     └── {specify,plan,tasks,clarify,analyze,implement}.ts  # v1.2 legacy runners
 ```
 

@@ -34,21 +34,26 @@
  *  - Only the public GitHub API is used (no caller-chosen host), so the token
  *    goes only to the service that issued it — the batch-publish rule (#358).
  */
-import type { AuthPayload, DraftPullRequestResult, CredentialCheckResult } from "@metis/shared";
+import type { AuthPayload, DraftPullRequestResult } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
-import { AppError } from "../../middleware/error-handler.js";
 import { getVaultService } from "../vault/vault-service.js";
-import { authorizeAndBindSecretRefs, bindSecretRef } from "../vault/bound-secret.js";
 import { assertBindingWriteWindowOpen } from "../vault/binding-write-mark.js";
-import { refBodyOf } from "../vault/secret-binding.js";
 import { readBoundSecret } from "../connectors/vault-resolver.js";
 import { assertDraftsPublishable } from "../reviews/approval-gate.js";
 import { findSavedGitHubTarget } from "./saved-target.js";
 import { resolvePublishTarget } from "./host-allowlist.js";
 import { acquirePublishOctokit } from "./octokit-factory.js";
-import { assertPromotionAllowed, VAULT_REF_FORMAT_MESSAGE } from "./publishing-service.js";
+import { assertPromotionAllowed } from "./publishing-service.js";
+import {
+  analysedRepos,
+  bindPublishCredential,
+  checkCredential,
+  refuseIfAnalysed as refuseIfAnalysedTarget,
+  statusOf,
+  upstreamsOfAnalysed,
+} from "./analysed-repo-guard.js";
 import { PublishError, type PublishOctokitLike } from "./types.js";
 
 const log = createChildLogger("draft-pull-request");
@@ -146,10 +151,13 @@ export async function openDraftPullRequest(
       "a live draft pull request needs a vault secret ref",
     );
   }
-  const { secretId, until } = await bindCredential(
-    { ...input, secretRef: input.secretRef },
-    draft.id,
-  );
+  const { secretId, until } = await bindPublishCredential({
+    actorId: input.actorId,
+    actorRole: input.actorRole,
+    secretRef: input.secretRef,
+    projectId: input.projectId,
+    target: { type: "issue_draft", id: draft.id },
+  });
   await assertPromotionAllowed(draft.requirement?.analysisId ? [draft.requirement.analysisId] : []);
   await assertDraftsPublishable({
     projectId: input.projectId,
@@ -170,7 +178,7 @@ export async function openDraftPullRequest(
   const gh = new GitHubSteps(client, target);
   // Before any write: an analysed fork's upstream is the analysed repository
   // by another name. Fails closed — a lookup that fails refuses the run.
-  refuseIfAnalysed(await upstreamsOfAnalysed(gh, analysed.github), [
+  refuseIfAnalysed(await upstreamsOfAnalysed(client, analysed.github, upstreamLookupFailure), [
     `${target.owner}/${target.repo}`,
   ]);
   const base = await gh.defaultBranch();
@@ -215,146 +223,24 @@ export async function openDraftPullRequest(
   return plan;
 }
 
-interface AnalysedRepos {
-  /** Every analysed repository, as lower-cased `owner/repo`. */
-  names: Set<string>;
-  /** The public-GitHub ones, whose upstream a live run looks up. */
-  github: Array<{ owner: string; repo: string }>;
-}
-
-/**
- * The repositories this project analyses.
- *
- * Soft-deleted connections are included on purpose: deleting a connector does
- * not delete the analysis, code graph and findings built from that repository,
- * so it is still the analysed repo.
- *
- * `local` and `upload` connections have no owner or repo (only git providers
- * require them, `packages/shared/src/connectors.ts`), so they contribute
- * nothing here: the code they analyse is not identified as any GitHub
- * repository, and METIS cannot tell which one (if any) it was cloned from, so
- * it cannot equal the target. That is a known limit, stated in the user guide:
- * a project analysing an uploaded clone must not save that clone's origin as
- * its publish target.
- *
- * Only `github` connections have their upstream looked up: the target is on
- * the public API, and a GitHub Enterprise or GitLab repository's fork network
- * lives on its own host, so its parent cannot be a github.com repository.
- *
- * And only connections that were actually analysed ({@link wasAnalysed}): a
- * connection row is inserted before any connectivity test, so a typo'd
- * owner/repo that never connected would 404 and — since the lookup fails
- * closed — block every live run, with no way to clear it once soft-deleted.
- * The name-equality check needs no network call and keeps every row.
- */
-async function analysedRepos(projectId: string): Promise<AnalysedRepos> {
-  const rows = await prisma.repoConnection.findMany({
-    where: { projectId },
-    select: {
-      ownerOrOrg: true,
-      repoName: true,
-      provider: true,
-      status: true,
-      lastIngestAt: true,
-      lastCommitSha: true,
-      deletedAt: true,
-    },
-  });
-  const names = new Set<string>();
-  const github = new Map<string, { owner: string; repo: string }>();
-  for (const r of rows) {
-    if (!r.ownerOrOrg || !r.repoName) continue;
-    const key = `${r.ownerOrOrg}/${r.repoName}`.toLowerCase();
-    names.add(key);
-    const lookUp = r.provider === "github" && wasAnalysed(r);
-    if (lookUp) github.set(key, { owner: r.ownerOrOrg, repo: r.repoName });
-  }
-  return { names, github: [...github.values()] };
-}
-
-/**
- * A connection that reached GitHub: it connected, was ingested, or recorded a
- * commit. A row still `pending` with none of those never resolved to a real
- * repository. Soft-deleted rows qualify on the same terms.
- */
-function wasAnalysed(r: {
-  status: string;
-  lastIngestAt: Date | null;
-  lastCommitSha: string | null;
-}): boolean {
-  return r.status === "connected" || r.lastIngestAt !== null || r.lastCommitSha !== null;
-}
-
-/** Lower-cased fork `parent`/`source` of every analysed GitHub repository. */
-async function upstreamsOfAnalysed(
-  gh: GitHubSteps,
-  repos: Array<{ owner: string; repo: string }>,
-): Promise<Set<string>> {
-  const upstreams = new Set<string>();
-  for (const r of repos) {
-    for (const name of await gh.forkUpstreamsOf(r)) upstreams.add(name.toLowerCase());
-  }
-  return upstreams;
-}
-
-/** Refuse when any candidate `owner/repo` is in `refused` (lower-cased `owner/repo`). */
+/** The draft-PR wording of the shared analysed-repository refusal. */
 function refuseIfAnalysed(refused: Set<string>, candidates: string[]): void {
-  if (candidates.some((c) => refused.has(c.toLowerCase()))) {
-    throw new PublishError(
-      409,
-      "PUBLISH_TARGET_IS_ANALYSED_REPO",
-      "the saved publish target is the repository this project analyses, or that repository's upstream; save a separate target (for example a sandbox fork) for draft pull requests",
-    );
-  }
+  refuseIfAnalysedTarget(refused, candidates, "draft pull requests");
 }
 
-/** Dry run: does the reference bind to a live secret? Never reads the plaintext. */
-async function checkCredential(secretRef: string | undefined): Promise<CredentialCheckResult> {
-  if (!secretRef) return "missing";
-  const body = refBodyOf(secretRef);
-  if (!body) return "unresolved";
-  try {
-    await bindSecretRef(body);
-    return "resolved";
-  } catch (err) {
-    if (err instanceof AppError) return "unresolved";
-    throw err;
-  }
+/** An analysed repository's fork network could not be read: refuse, naming it. */
+function upstreamLookupFailure(
+  repo: { owner: string; repo: string },
+  status: number,
+  cause: unknown,
+): PublishError {
+  return githubFailure(
+    `read the analysed repository ${repo.owner}/${repo.repo} to check its upstream`,
+    status,
+    cause,
+    LOOKUP_HINT,
+  );
 }
-
-/**
- * Live run: authorize and bind the reference to ONE secret id (#577), with
- * fixed (never echoing) errors. The caller must own the secret unless they
- * hold `vault.reveal`; a refusal is the vault layer's audited 403
- * SECRET_BINDING_FORBIDDEN, whose text quotes nothing from the request.
- */
-async function bindCredential(
-  input: OpenDraftPullRequestInput & { secretRef: string },
-  draftId: string,
-): Promise<{ secretId: string; until: Date | null }> {
-  const body = refBodyOf(input.secretRef);
-  if (!body) throw new PublishError(400, "VAULT_REF_INVALID", VAULT_REF_FORMAT_MESSAGE);
-  try {
-    const { bindings, until } = await authorizeAndBindSecretRefs(
-      { userId: input.actorId, role: input.actorRole },
-      { before: [], after: [body], destinationChanged: true },
-      { target: { type: "issue_draft", id: draftId }, metadata: { projectId: input.projectId } },
-    );
-    return { secretId: bindings[body], until };
-  } catch (err) {
-    if (err instanceof AppError && UNBOUND_CODES.has(err.code)) {
-      throw new PublishError(
-        err.statusCode,
-        err.code,
-        "That vault secret ref does not name exactly one vault secret. Check the label.",
-      );
-    }
-    throw err;
-  }
-}
-
-/** Bind failures whose vault-layer text quotes the reference back. */
-const UNBOUND_CODES = new Set(["VAULT_REF_UNRESOLVED", "VAULT_REF_AMBIGUOUS"]);
 
 function specFile(title: string, body: string): string {
   return `# ${title}\n\n${body.trim()}\n`;
@@ -400,28 +286,6 @@ class GitHubSteps {
       url: this.repoPath,
     });
     return res.default_branch ?? "main";
-  }
-
-  /**
-   * An analysed repository's fork `parent` and `source` full names (none when
-   * it is not a fork). Any failure — 404, private, rate limit — throws: the
-   * caller must refuse rather than treat an unknown upstream as none.
-   */
-  async forkUpstreamsOf(repo: { owner: string; repo: string }): Promise<string[]> {
-    const step = `read the analysed repository ${repo.owner}/${repo.repo} to check its upstream`;
-    let res: { parent?: { full_name?: unknown }; source?: { full_name?: unknown } };
-    try {
-      const out = await this.client.request<typeof res>({
-        method: "GET",
-        url: `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.repo)}`,
-      });
-      res = out.data ?? {};
-    } catch (err) {
-      throw githubFailure(step, statusOf(err), err, LOOKUP_HINT);
-    }
-    return [res.parent?.full_name, res.source?.full_name].filter(
-      (v): v is string => typeof v === "string" && v.length > 0,
-    );
   }
 
   async headSha(branch: string): Promise<string> {
@@ -514,11 +378,6 @@ class GitHubSteps {
       throw githubFailure(step, statusOf(err), err);
     }
   }
-}
-
-function statusOf(err: unknown): number {
-  const s = (err as { status?: unknown } | null)?.status;
-  return typeof s === "number" ? s : 0;
 }
 
 const WRITE_HINT = "Check that the vault secret can write to the publish target.";
