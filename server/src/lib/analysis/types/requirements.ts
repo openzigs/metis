@@ -246,7 +246,17 @@ export interface ClarificationAnswerOutcome {
   question: string;
   /** Title of the persisted requirement the answer was written into, or null. */
   requirementTitle: string | null;
+  /** Issue #1000 — who wrote the answer. Absent on metadata written before #1000. */
+  provenance?: AnswerProvenance;
 }
+
+/**
+ * Issue #1000 — where a clarification answer came from:
+ *   - `suggested`: METIS's grounded suggestion, submitted unchanged;
+ *   - `edited`:    METIS's suggestion, changed by the requester before submitting;
+ *   - `typed`:     no suggestion was offered; the requester wrote it.
+ */
+export type AnswerProvenance = "suggested" | "edited" | "typed";
 
 // ── Approval Checkpoint (#626) ─────────────────────────────────────────
 

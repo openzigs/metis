@@ -177,10 +177,28 @@ describe("runSynthesis", () => {
       projectName: "Acme",
       findings,
       refinedRequirements: [{ title: "Audit logging", description: "Retain logs for 30 days" }],
+      refinedHumanAnswered: true,
     });
     const userContent = seen[0]!.map((m) => m.content).join("\n");
     expect(userContent).toContain("CLARIFIED REQUIREMENTS");
     expect(userContent).toContain("Retain logs for 30 days");
+  });
+
+  // Issue #1000 — without an answer the requirements reach synthesis as extracted.
+  it("passes unanswered refined requirements as EXTRACTED, not clarified", async () => {
+    const seen: ChatMessage[][] = [];
+    const provider = makeProvider(async (msgs) => {
+      seen.push(msgs);
+      return stubResponse(JSON.stringify({ summary: "x", requirements: [] }));
+    });
+    await runSynthesis(provider, {
+      projectName: "Acme",
+      findings,
+      refinedRequirements: [{ title: "Audit logging", description: "Retain logs for 30 days" }],
+    });
+    const userContent = seen[0]!.map((m) => m.content).join("\n");
+    expect(userContent).toContain("EXTRACTED REQUIREMENTS");
+    expect(userContent).not.toContain("CLARIFIED REQUIREMENTS");
   });
 
   it("changing a refined answer changes the synthesized requirement output", async () => {

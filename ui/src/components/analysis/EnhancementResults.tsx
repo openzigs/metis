@@ -104,6 +104,13 @@ export function EnhancementResults({
  * deliberately excluded: METIS's own rewritten requirement text is NOT copied
  * into published issues — only the answers are, verbatim.
  */
+/** Issue #1000 — who wrote an applied answer, as the note words it. */
+const PROVENANCE_LABELS: Record<"suggested" | "edited" | "typed", string> = {
+  suggested: "METIS suggestion, accepted unchanged",
+  edited: "METIS suggestion, edited",
+  typed: "typed by you",
+};
+
 export function ClarificationImpactNote({
   application,
 }: {
@@ -146,6 +153,12 @@ export function ClarificationImpactNote({
               <li key={a.questionId}>
                 {a.question} <span aria-hidden>→</span>{" "}
                 <span className="text-foreground">{a.requirementTitle}</span>
+                {a.provenance ? (
+                  <span data-testid="clarification-answer-provenance">
+                    {" "}
+                    ({PROVENANCE_LABELS[a.provenance]})
+                  </span>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -170,7 +183,8 @@ export function ClarificationImpactNote({
       )}
       <p>
         The refined requirement wording below is METIS’s own summary and is not copied into
-        published issues — your answers are, verbatim.
+        published issues — the answers are, verbatim, each marked as typed by you, a METIS
+        suggestion you edited, or a METIS suggestion you accepted unchanged.
       </p>
     </div>
   );
