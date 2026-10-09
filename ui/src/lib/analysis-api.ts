@@ -11,6 +11,7 @@ import type {
   AnalysisAffectedCode,
   AnalysisDatabaseAware,
   AnalysisEscalation,
+  AnalysisLedgerUsage,
   AnalysisSkippedRepo,
   DocumentSource,
   FindingSupportPanel,
@@ -291,6 +292,11 @@ export interface CrossDocFindingsSummary {
 export interface AnalysisSnapshot extends AnalysisListItem {
   inputTokens: number;
   outputTokens: number;
+  /**
+   * #977 — the run's ledger spend so far, which moves while it runs
+   * (`totalTokens` is written only at the end). Absent/null when unreadable.
+   */
+  ledgerUsage?: AnalysisLedgerUsage | null;
   metadata: Record<string, unknown> | null;
   agentResults: AgentResultSummary[];
   requirements: RequirementSummary[];

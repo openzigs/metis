@@ -192,4 +192,33 @@ describe("RunsPage — additional branch coverage", () => {
     // Null latency renders as "—"
     expect(screen.queryAllByText("—").length).toBeGreaterThan(0);
   });
+
+  it("#977 — shows a sub-cent run's unrounded costUsd, not its whole-cent costCents", async () => {
+    listMock.mockResolvedValueOnce({
+      items: [
+        makeRun({ id: "r1", costCents: 0, costUsd: 0.003 }),
+        makeRun({ id: "r2", costCents: 1, costUsd: 0.0051 }),
+      ],
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <RunsPage />
+      </Wrapper>,
+    );
+    await waitFor(() => expect(screen.getByText("$0.0030")).toBeInTheDocument());
+    expect(screen.getByText("$0.0051")).toBeInTheDocument();
+    expect(screen.queryByText("$0.0100")).not.toBeInTheDocument();
+  });
+});
+
+describe("formatRunCost (#977)", () => {
+  it("prefers costUsd, falls back to costCents, and reads — for no cost", async () => {
+    const { formatRunCost } = await import("@/lib/run-cost");
+    expect(formatRunCost({ costCents: 1, costUsd: 0.0051 })).toBe("$0.0051");
+    expect(formatRunCost({ costCents: 12, costUsd: null })).toBe("$0.1200");
+    expect(formatRunCost({ costCents: 12 })).toBe("$0.1200");
+    expect(formatRunCost({ costCents: 0, costUsd: 0 })).toBe("—");
+    expect(formatRunCost({ costCents: null, costUsd: null })).toBe("—");
+  });
 });

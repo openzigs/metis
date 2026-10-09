@@ -360,6 +360,11 @@ export interface EnhancedUsageRow {
   model: string;
   userId?: string;
   projectId?: string;
+  /**
+   * The ledger's agent step. #977 — on a row grouped by another dimension it
+   * reads "(mixed)" when the row spans several steps (as do the other labels).
+   */
+  agentStep?: string;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;

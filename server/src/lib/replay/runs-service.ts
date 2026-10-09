@@ -10,7 +10,9 @@
  */
 import { prisma } from "../prisma.js";
 import { currentSpanIds } from "../otel/genai-spans.js";
-import { getRate, computeCostCents, canonicalTokenCounts } from "../finops/index.js";
+import { getRate, canonicalTokenCounts } from "../finops/index.js";
+import { computeCostCentsExact } from "../finops/provider-rates.js";
+import { normalizeCents } from "../finops/ledger-cost.js";
 
 export type AgentRunKind = "analysis" | "chat" | "tool";
 export type AgentRunStatus = "running" | "completed" | "failed" | "cancelled";
@@ -82,7 +84,14 @@ export async function recordStep(opts: RecordStepOptions): Promise<string> {
 }
 
 export interface RunCost {
+  /** Whole cents, for the integer `AgentRun.costCents` column. */
   costCents: number;
+  /**
+   * #977 — the same cost unrounded, in USD. A chat turn costs a fraction of a
+   * cent, so its whole-cent figure is 0 or 1 and a page of them misstates
+   * spend; a view shows this and rounds only to its display precision.
+   */
+  costUsd: number;
   totalTokens: number;
 }
 
@@ -105,7 +114,7 @@ export interface RunCost {
  * run only (its inclusive upper bound), never to both — provably no double-count.
  *
  * Matched rows are grouped by (provider, model); per group we look up the rate
- * and call `computeCostCents`, then sum integer cents across groups. We
+ * and price it unrounded, then round the run's total once (#977). We
  * re-derive cost from tokens (rather than summing the per-row `costCents`
  * stored at insert) because the brief requires grouping by provider/model and
  * applying current rates — rates may have shifted since insert. The tradeoff:
@@ -126,24 +135,53 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
     where: { id: runId },
     select: { sessionId: true, kind: true, startedAt: true, completedAt: true },
   });
-  if (!run) return { costCents: 0, totalTokens: 0 };
+  if (!run) return { costCents: 0, costUsd: 0, totalTokens: 0 };
   const upperBound = run.completedAt ?? new Date();
   const rows = await prisma.tokenUsage.findMany({
     where: {
       sessionId: run.sessionId,
       ...(run.kind === "analysis" ? {} : { createdAt: { gt: run.startedAt, lte: upperBound } }),
     },
-    select: {
-      provider: true,
-      model: true,
-      inputTokens: true,
-      outputTokens: true,
-      cacheReadTokens: true,
-      cacheWriteTokens: true,
-    },
+    select: RUN_USAGE_SELECT,
   });
-  if (rows.length === 0) return { costCents: 0, totalTokens: 0 };
+  const { exactCents, totalTokens } = priceRunUsage(rows);
+  return { costCents: Math.round(exactCents), costUsd: exactCents / 100, totalTokens };
+}
 
+/** The ledger columns {@link priceRunUsage} reads. */
+const RUN_USAGE_SELECT = {
+  provider: true,
+  model: true,
+  inputTokens: true,
+  outputTokens: true,
+  cacheReadTokens: true,
+  cacheWriteTokens: true,
+} as const;
+
+interface RunUsageRow {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+/** Whether a ledger row written at `at` belongs to `run` — {@link computeRunCost}'s window. */
+function inRunWindow(
+  run: { kind: string; startedAt: Date; completedAt: Date | null },
+  at: Date,
+  now: Date,
+): boolean {
+  if (run.kind === "analysis") return true;
+  return at > run.startedAt && at <= (run.completedAt ?? now);
+}
+
+/**
+ * Price a run's ledger rows, grouped by (provider, model) at the current rate
+ * card and left UNROUNDED (#977). Unpriced models add tokens, no cost (#22).
+ */
+function priceRunUsage(rows: readonly RunUsageRow[]): { exactCents: number; totalTokens: number } {
   interface Group {
     provider: string;
     model: string;
@@ -178,19 +216,63 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
     groups.set(key, g);
   }
 
-  let costCents = 0;
+  let exactCents = 0;
   for (const g of groups.values()) {
     const rate = getRate(g.provider, g.model);
     // #22 — an unpriced model has no cost to attribute; its tokens still count.
     if (!rate) continue;
-    costCents += computeCostCents(rate, {
+    exactCents += computeCostCentsExact(rate, {
       inputTokens: g.freshInputTokens,
       outputTokens: g.outputTokens,
       cacheReadTokens: g.cacheReadTokens,
       cacheWriteTokens: g.cacheWriteTokens,
     });
   }
-  return { costCents, totalTokens };
+  return { exactCents: normalizeCents(exactCents), totalTokens };
+}
+
+/**
+ * #977 — the unrounded cost, in USD, of each run on a `/runs` page, priced
+ * exactly as {@link computeRunCost} prices one run, from ONE ledger read for
+ * every session on the page. A failed read yields an empty map: the caller
+ * shows the stored whole-cent figure instead, and the list still loads.
+ */
+async function exactRunCostsUsd(
+  runs: ReadonlyArray<{
+    id: string;
+    sessionId: string;
+    kind: string;
+    startedAt: Date;
+    completedAt: Date | null;
+  }>,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (runs.length === 0) return out;
+  const sessionIds = [...new Set(runs.map((r) => r.sessionId))];
+  let rows: Array<RunUsageRow & { sessionId: string | null; createdAt: Date }>;
+  try {
+    rows = await prisma.tokenUsage.findMany({
+      where: { sessionId: { in: sessionIds } },
+      select: { ...RUN_USAGE_SELECT, sessionId: true, createdAt: true },
+    });
+  } catch {
+    return out;
+  }
+  const bySession = new Map<string, typeof rows>();
+  for (const row of rows) {
+    if (row.sessionId === null) continue;
+    const list = bySession.get(row.sessionId) ?? [];
+    list.push(row);
+    bySession.set(row.sessionId, list);
+  }
+  const now = new Date();
+  for (const run of runs) {
+    const mine = (bySession.get(run.sessionId) ?? []).filter((r) =>
+      inRunWindow(run, r.createdAt, now),
+    );
+    out.set(run.id, priceRunUsage(mine).exactCents / 100);
+  }
+  return out;
 }
 
 /**
@@ -260,6 +342,8 @@ export async function listRuns(filter: ListRunsFilter): Promise<
     latencyMs: number | null;
     totalTokens: number;
     costCents: number;
+    /** #977 — unrounded USD from the ledger; `null` when the ledger could not be read. */
+    costUsd: number | null;
     stepCount: number;
   }>
 > {
@@ -285,6 +369,7 @@ export async function listRuns(filter: ListRunsFilter): Promise<
     take: Math.min(filter.limit ?? 50, 200),
     include: { _count: { select: { steps: true } } },
   });
+  const costUsd = await exactRunCostsUsd(rows);
   return rows.map((r) => ({
     id: r.id,
     sessionId: r.sessionId,
@@ -296,6 +381,7 @@ export async function listRuns(filter: ListRunsFilter): Promise<
     latencyMs: r.latencyMs,
     totalTokens: r.totalTokens,
     costCents: r.costCents,
+    costUsd: costUsd.get(r.id) ?? null,
     stepCount: r._count.steps,
   }));
 }

@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 import { WorkspaceFinopsPanel } from "@/components/finops/workspace-finops-panel";
-import { finopsApi } from "@/lib/finops-api";
+import { finopsApi, type WorkspaceUsageTotals } from "@/lib/finops-api";
 
 vi.mock("@/components/finops/ForecastChart", () => ({
   ForecastChart: ({ budgetCents }: { budgetCents: number | null }) => (
@@ -32,6 +32,7 @@ vi.mock("@/lib/finops-api", async () => {
       getBudget: vi.fn(),
       getForecast: vi.fn(),
       getEvents: vi.fn(),
+      getUsageTotals: vi.fn(),
     },
   };
 });
@@ -47,6 +48,43 @@ beforeEach(() => {
   api.getBudget.mockResolvedValue({ monthlyBudgetCents: 5000 });
   api.getForecast.mockResolvedValue({ forecast: null });
   api.getEvents.mockResolvedValue({ events: [] });
+  api.getUsageTotals.mockResolvedValue(totals());
+});
+
+function totals(over: Partial<WorkspaceUsageTotals> = {}): WorkspaceUsageTotals {
+  return {
+    from: "2026-10-01T00:00:00.000Z",
+    to: "2026-10-09T00:00:00.000Z",
+    totalTokens: 1_234_567,
+    costUsd: 12.3456,
+    unpricedTokens: 0,
+    calls: 321,
+    ...over,
+  };
+}
+
+describe("<WorkspaceFinopsPanel /> usage totals (#977)", () => {
+  it("shows the workspace's month-to-date tokens, cost and calls", async () => {
+    renderPanel("ws-9");
+    expect(await screen.findByTestId("workspace-usage-tokens")).toHaveTextContent(
+      (1_234_567).toLocaleString(),
+    );
+    expect(api.getUsageTotals).toHaveBeenCalledWith("ws-9");
+    expect(screen.getByTestId("workspace-usage-cost")).toHaveTextContent("$12.35");
+    expect(screen.getByTestId("workspace-usage-calls")).toHaveTextContent("321");
+  });
+
+  it("names unpriced usage beside the cost, and reads Unpriced when nothing was priced", async () => {
+    api.getUsageTotals.mockResolvedValue(totals({ unpricedTokens: 900 }));
+    const { unmount } = renderPanel();
+    expect(await screen.findByTestId("workspace-usage-cost")).toHaveTextContent(
+      "$12.35 + 900 unpriced tokens",
+    );
+    unmount();
+    api.getUsageTotals.mockResolvedValue(totals({ costUsd: null, unpricedTokens: 900 }));
+    renderPanel();
+    expect(await screen.findByTestId("workspace-usage-cost")).toHaveTextContent(/^Unpriced$/);
+  });
 });
 
 describe("<WorkspaceFinopsPanel /> (#31)", () => {
