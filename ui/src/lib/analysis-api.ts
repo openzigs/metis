@@ -24,6 +24,7 @@ import type {
   TraceabilityMatrix,
   GapReport,
   RequirementDiff,
+  SpecKitHandoffRecord,
 } from "@metis/shared";
 
 export type {
@@ -365,6 +366,8 @@ export interface StartAnalysisInput {
   enableWebResearch?: boolean;
   /** Epic #922 — opt-in clarifying questions for ambiguous requirements. */
   enableClarification?: boolean;
+  /** Issue #994 — a Spec Kit handoff's record of what it sent and left out. */
+  specKitHandoff?: SpecKitHandoffRecord;
 }
 
 export interface UpdateRequirementInput {

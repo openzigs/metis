@@ -11,6 +11,19 @@
  * Renders nothing at all when there is no synthesis summary or the run has not
  * completed: an empty "Outcome" shell reads as "no outcome", which is a
  * different and wrong claim.
+ *
+ * Issue #994 — the summary is written before the requirements are stored, so its
+ * count can disagree with them ("Ten requirements were derived" over 8 rows).
+ * The card states the count from the stored rows, and a sentence in the summary
+ * that counts the derived requirements is corrected to match.
+ *
+ * Only when the stored rows ARE the set the summary describes, though: when the
+ * approval gate withholds promotion (#1104) or a re-synthesis was refused
+ * replacement (#769), the run keeps its summary but stores none (or an older
+ * set) of the requirements it names. Reconciling against those rows would turn
+ * a correct "Ten requirements were derived" into "0 requirements were derived",
+ * the empty-but-successful presentation #1104 removed. `outcomeRequirementCount`
+ * makes that call.
  */
 
 interface OutcomeAgent {
@@ -18,16 +31,100 @@ interface OutcomeAgent {
   summary: string | null;
 }
 
+const NUMBER_WORDS = [
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten",
+  "eleven",
+  "twelve",
+  "thirteen",
+  "fourteen",
+  "fifteen",
+  "sixteen",
+  "seventeen",
+  "eighteen",
+  "nineteen",
+  "twenty",
+];
+
+/**
+ * `<N> [new] requirement(s) was/were/have been <derived|…>`, where
+ * N is digits or a number word up to twenty. Only this claim is rewritten; any
+ * other number in the summary is the agent's own and left alone. A qualifier
+ * other than "new" ("3 security requirements") marks a subset, not the total,
+ * so it never matches; and a summary with more than one claim is ambiguous, so
+ * it is left as written (the stored-count line below it states the truth).
+ */
+const COUNT_CLAIM_RE = new RegExp(
+  `\\b(\\d+|${NUMBER_WORDS.join("|")})(\\s+(?:new\\s+)?)requirements?(\\s+)(?:was|were|have been|has been)(\\s+(?:derived|identified|synthesi[sz]ed|generated|extracted|produced|created|recorded))\\b`,
+  "gi",
+);
+
+function claimedCount(token: string): number {
+  return /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS.indexOf(token.toLowerCase());
+}
+
+/** Correct a summary's derived-requirement count to the number of stored rows. */
+export function reconcileRequirementCount(summary: string, stored: number): string {
+  if ((summary.match(COUNT_CLAIM_RE) ?? []).length !== 1) return summary;
+  return summary.replace(
+    COUNT_CLAIM_RE,
+    (match, n: string, between: string, gap: string, verb: string) => {
+      if (claimedCount(n) === stored) return match;
+      const noun = stored === 1 ? "requirement" : "requirements";
+      const aux = stored === 1 ? "was" : "were";
+      return `${stored}${between}${noun}${gap}${aux}${verb}`;
+    },
+  );
+}
+
+/**
+ * The stored-row count the outcome may be reconciled against, or `undefined`
+ * when the stored rows are not the set this run's summary describes: promotion
+ * is gated, replacement was withheld, or nothing was stored.
+ */
+export function outcomeRequirementCount(
+  metadata: Record<string, unknown> | null | undefined,
+  stored: number,
+): number | undefined {
+  // Read inline rather than via `readEnhancementMetadata`: page tests mock
+  // `@/lib/analysis-api` wholesale, and this is two keys.
+  const meta = (metadata ?? {}) as {
+    promotionBlocked?: { blocked?: unknown } | null;
+    requirementReplacementWithheld?: unknown;
+  };
+  if (meta.promotionBlocked?.blocked === true) return undefined;
+  if (meta.requirementReplacementWithheld) return undefined;
+  if (stored === 0) return undefined;
+  return stored;
+}
+
 export function AnalysisOutcomeCard({
   status,
   agentResults,
+  requirementCount,
 }: {
   status: string;
   agentResults: readonly OutcomeAgent[];
+  /**
+   * Issue #994 — the requirement rows stored for this run, from
+   * `outcomeRequirementCount`; omit when they are not the summary's set.
+   */
+  requirementCount?: number;
 }): React.ReactElement | null {
   if (status !== "completed") return null;
-  const summary = agentResults.find((a) => a.agentKey === "synthesis")?.summary?.trim();
-  if (!summary) return null;
+  const raw = agentResults.find((a) => a.agentKey === "synthesis")?.summary?.trim();
+  if (!raw) return null;
+  const summary =
+    requirementCount === undefined ? raw : reconcileRequirementCount(raw, requirementCount);
 
   return (
     <section
@@ -44,6 +141,11 @@ export function AnalysisOutcomeCard({
       <p className="max-w-prose whitespace-pre-line text-sm leading-relaxed text-foreground">
         {summary}
       </p>
+      {requirementCount !== undefined ? (
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="analysis-outcome-count">
+          {requirementCount} requirement{requirementCount === 1 ? "" : "s"} stored for this run.
+        </p>
+      ) : null}
     </section>
   );
 }

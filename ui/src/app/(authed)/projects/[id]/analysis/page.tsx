@@ -96,7 +96,11 @@ import {
 import { AcceptanceCriteriaList } from "@/components/analysis/AcceptanceCriteriaList";
 import { VerificationBadge } from "@/components/analysis/VerificationBadge";
 // Issue #1232 — the run's outcome first, then a scannable finding body.
-import { AnalysisOutcomeCard } from "@/components/analysis/AnalysisOutcomeCard";
+import {
+  AnalysisOutcomeCard,
+  outcomeRequirementCount,
+} from "@/components/analysis/AnalysisOutcomeCard";
+import { SpecKitHandoffNotice } from "@/components/analysis/spec-kit-handoff-notice";
 import { FindingBody } from "@/components/analysis/FindingBody";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { TraceabilityMatrix } from "@/components/analysis/traceability-matrix";
@@ -942,6 +946,10 @@ export default function AnalysisPage(): React.ReactElement {
                 ) : null}
               </div>
 
+              {/* Issue #994 — what a Spec Kit handoff sent and left out, on every
+              tab and while the run is still going. Nothing for other runs. */}
+              <SpecKitHandoffNotice metadata={detail.data.metadata} />
+
               <AnalysisResultTabs
                 value={tab}
                 onValueChange={selectTab}
@@ -955,6 +963,10 @@ export default function AnalysisPage(): React.ReactElement {
                   <AnalysisOutcomeCard
                     status={detail.data.status}
                     agentResults={detail.data.agentResults}
+                    requirementCount={outcomeRequirementCount(
+                      detail.data.metadata,
+                      detail.data.requirements.length,
+                    )}
                   />
 
                   {/* Issue #859 (Epic #852) — whether database-aware schema analysis ran

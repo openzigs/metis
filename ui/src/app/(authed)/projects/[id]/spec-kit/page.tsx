@@ -391,13 +391,19 @@ export default function SpecKitPage() {
       const instructions = buildHandoffInstructions(h.context, spec);
       const started = await analysisApi.start(projectId, {
         extraInstructions: instructions.text,
+        // #994 — recorded on the run, so the analysis page names what was left out.
+        specKitHandoff: {
+          artifacts: h.context,
+          sent: instructions.sent,
+          omitted: instructions.omitted,
+        },
       });
-      return { id: started.id, truncated: instructions.truncated };
+      return { id: started.id, omittedCount: instructions.omittedCount };
     },
-    onSuccess: ({ id, truncated }) => {
+    onSuccess: ({ id, omittedCount }) => {
       toast.success(
-        truncated
-          ? "Analysis started. spec.md was too long to send whole, so its end was cut."
+        omittedCount > 0
+          ? `Analysis started. ${omittedCount} part(s) of spec.md did not fit and were not sent; the analysis page lists them.`
           : "Analysis started.",
       );
       setHandoff(null);

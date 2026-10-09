@@ -461,6 +461,28 @@ describe("POST /api/projects/:projectId/analyses", () => {
     expect(orch.startCalls[0].enableClarification).toBe(true);
   });
 
+  it("forwards a Spec Kit handoff record, and refuses a malformed one (#994)", async () => {
+    const specKitHandoff = { artifacts: ["spec.md"], sent: ["AC-1"], omitted: ["AC-2"] };
+    const res = await request(app)
+      .post("/api/projects/proj-abcdefghij/analyses")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ agentKeys: ["code"], extraInstructions: "AC-1: x", specKitHandoff });
+    expect(res.status).toBe(202);
+    expect(orch.startCalls[0].specKitHandoff).toEqual(specKitHandoff);
+    for (const bad of [
+      { ...specKitHandoff, extra: true },
+      { ...specKitHandoff, omitted: ["x".repeat(65)] },
+      { artifacts: ["spec.md"], sent: [] },
+    ]) {
+      const refused = await request(app)
+        .post("/api/projects/proj-abcdefghij/analyses")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ agentKeys: ["code"], specKitHandoff: bad });
+      expect(refused.status).toBe(400);
+    }
+    expect(orch.startCalls).toHaveLength(1);
+  });
+
   it("defaults the enhancement flags to false when omitted (Epic #922)", async () => {
     const res = await request(app)
       .post("/api/projects/proj-abcdefghij/analyses")

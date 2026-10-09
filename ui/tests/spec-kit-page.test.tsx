@@ -1171,7 +1171,7 @@ describe("SpecKitPage — #789", () => {
     await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
     const body = startAnalysis.mock.calls[0]![1] as { extraInstructions: string };
     expect(startAnalysis.mock.calls[0]![0]).toBe("p1");
-    expect(body.extraInstructions).toContain("spec.md, plan.md, tasks.md");
+    expect(body.extraInstructions).toContain("Not sent: plan.md, tasks.md (context; see #1027).");
     expect(body.extraInstructions).toContain("FR-1 project requirement");
     await waitFor(() =>
       expect(routerPush).toHaveBeenCalledWith("/projects/p1/analysis?analysisId=an_1"),
@@ -1195,6 +1195,44 @@ describe("SpecKitPage — #789", () => {
     expect(
       (startAnalysis.mock.calls[0]![1] as { extraInstructions: string }).extraInstructions,
     ).toContain("FR-1 mark entries read");
+  });
+
+  it("records what the handoff sent and left out on the run, and says so (#994)", async () => {
+    const ac = (n: number) =>
+      `- **AC-${n}**: Criterion ${n}\n  - **Given** ${"g".repeat(600)}\n  - **Then** done`;
+    m.listFiles!.mockResolvedValue({
+      enabled: true,
+      artifacts: [
+        artifact(
+          "spec.md",
+          `# Spec\nGoal.\n\n## Acceptance criteria\n\n${[1, 2, 3, 4, 5, 6, 7, 8].map(ac).join("\n")}\n`,
+        ),
+      ],
+    });
+    m.runCommand!.mockResolvedValue({
+      message: "handoff",
+      artifactName: null,
+      artifact: { context: ["spec.md", "plan.md"], orchestratorRoute: "/api/projects/p1/analyses" },
+    });
+    startAnalysis.mockResolvedValue({ id: "an_3" });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-content")).toBeInTheDocument());
+    typeAndRun("/speckit.implement");
+    fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));
+    await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
+    const body = startAnalysis.mock.calls[0]![1] as {
+      extraInstructions: string;
+      specKitHandoff: { artifacts: string[]; sent: string[]; omitted: string[] };
+    };
+    expect(body.specKitHandoff.artifacts).toEqual(["spec.md", "plan.md"]);
+    expect(body.specKitHandoff.sent).toEqual(["AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6"]);
+    expect(body.specKitHandoff.omitted).toEqual(["AC-7", "AC-8"]);
+    expect(body.extraInstructions).not.toContain("AC-7");
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        "Analysis started. 2 part(s) of spec.md did not fit and were not sent; the analysis page lists them.",
+      ),
+    );
   });
 
   it("reports a failed analysis start with the user-safe toast", async () => {
