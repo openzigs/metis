@@ -167,7 +167,12 @@ const approve = () =>
     .send({ status: "approved" });
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // resetAllMocks, NOT clearAllMocks: clear keeps queued `mockResolvedValueOnce`
+  // values, so a once a test never consumed (the reopen case of the `it.each` that
+  // queues a promotion) leaked into the next test and shifted every later
+  // promotion result by one. Six tests failed first try and passed only on the
+  // config's `retry: 2`. Reset drops the queue and restores each `vi.fn(impl)`.
+  vi.resetAllMocks();
   reopenLimiter.limited = false;
   reopenLimiter.calls = 0;
   promoteLimiter.limited = false;
@@ -231,10 +236,13 @@ describe("approval promote/reopen — per-IP limiter ahead of the route's auth (
   it.each(routes)(
     "lets the request through to the per-user limiter on $path",
     async ({ url, perUser }) => {
-      promoteApprovedRequirements.mockResolvedValueOnce({
-        status: "promoted",
-        requirementCount: 1,
-      });
+      // Queue the promotion only for the route that consumes it.
+      if (perUser === promoteLimiter) {
+        promoteApprovedRequirements.mockResolvedValueOnce({
+          status: "promoted",
+          requirementCount: 1,
+        });
+      }
 
       const res = await request(createApp()).post(url);
 
