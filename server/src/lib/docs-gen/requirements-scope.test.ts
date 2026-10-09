@@ -190,6 +190,12 @@ describe("renderRequirementsDocument", () => {
     expect(md).toContain("implemented in PR #3");
     expect(md).not.toContain("javascript:");
   });
+
+  it("escapes a stored backslash so it cannot unescape a column separator", () => {
+    const md = renderRequirementsDocument("T", { analysisId: "a" }, [req({ title: "A\\|B" })]);
+    // `A\|B` → `A\\\|B`: an escaped backslash, then an escaped pipe.
+    expect(md).toContain("| R1 | A\\\\\\|B |");
+  });
 });
 
 describe("neutralizeHtml", () => {

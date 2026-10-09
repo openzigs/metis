@@ -170,9 +170,20 @@ export function neutralizeHtml(markdown: string): string {
     .join("");
 }
 
-/** One line of text safe inside a Markdown table cell or heading. */
+/**
+ * One line of text safe inside a Markdown table cell or heading. Backslashes
+ * are escaped first, so a stored `\|` cannot turn the added escape into a
+ * literal backslash followed by a live column separator.
+ */
 function cell(value: string): string {
-  return value.replace(/\s+/g, " ").replace(/\|/g, "\\|").replace(/</g, "&lt;").trim() || "—";
+  return (
+    value
+      .replace(/\s+/g, " ")
+      .replace(/\\/g, "\\\\")
+      .replace(/\|/g, "\\|")
+      .replace(/</g, "&lt;")
+      .trim() || "—"
+  );
 }
 
 /** A repository path shown as inline code; backticks would break out of it. */
