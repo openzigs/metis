@@ -17,6 +17,7 @@ import { prisma } from "../lib/prisma.js";
 import { getLatestForecast } from "../lib/finops/forecast-service.js";
 import { buildChargebackReport } from "../lib/finops/chargeback-report.js";
 import { sumLedgerUsage } from "../lib/finops/ledger-totals.js";
+import { finopsUsagePreAuthRateLimiter } from "../middleware/finops-usage-rate-limit.js";
 
 type Req = Request & { params: Record<string, string> };
 
@@ -150,6 +151,7 @@ export function finopsWorkspaceRouter(): Router {
   // showed a forecast, budget and alerts but never what had been spent.
   r.get(
     "/usage-totals",
+    finopsUsagePreAuthRateLimiter,
     requireAuth,
     requireWorkspaceRole("member"),
     async (req: Req, res: Response) => {
