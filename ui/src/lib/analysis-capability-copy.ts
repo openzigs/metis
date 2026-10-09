@@ -105,6 +105,15 @@ export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, Capability
     action:
       "See “Requirements you supplied” below for exactly which ones and why. Re-run with the dropped requirements in a separate, shorter submission so each one is analyzed.",
   },
+  // Issue #1001 — search WORKED and simply ran out of room. Not
+  // `code-retrieval-degraded`: what was checked stands; what was not reached is
+  // "Could not verify" with no code link, and continuing can reach it.
+  "code-investigation-cut-short": {
+    title:
+      "Code analysis ran out of its token or turn budget before it reached every requirement — the ones it did not reach are marked “Could not verify” and have no code link.",
+    action:
+      "Re-run the code investigation with a larger token and turn budget, or ask an administrator to raise ANALYSIS_AGENT_TOKEN_BUDGET for future runs.",
+  },
   "repo-clone-unavailable": {
     title:
       "The repository is indexed but not checked out on the server, so code was analyzed from the code graph alone — without reading the source files.",

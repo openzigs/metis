@@ -434,6 +434,16 @@ export const analysisApi = {
     }),
 
   /**
+   * Issue #1001 — continue a code investigation that ran out of its budget: the
+   * code agent re-runs with a larger token budget, then synthesis re-runs.
+   */
+  continueCodeInvestigation: (id: string) =>
+    apiFetch<{ accepted: boolean }>(`/analyses/${id}/agents/code/regenerate`, {
+      method: "POST",
+      body: { extendBudget: true },
+    }),
+
+  /**
    * Issue #741 (Epic #727) — re-run the agentic code agent for only the repos a
    * prior multi-repo run dropped for token budget. Returns `accepted: false`
    * when nothing was skipped (idempotent no-op). Progress streams over the

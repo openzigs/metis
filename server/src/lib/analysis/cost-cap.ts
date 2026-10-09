@@ -19,6 +19,7 @@ import {
 } from "@metis/shared";
 import { getConfigService } from "../config/index.js";
 import { prisma } from "../prisma.js";
+import { resolveAgentTokenBudget } from "./agentic-pass-context.js";
 
 const intCfg = (raw: string | undefined, fallback: number): number => {
   if (raw == null) return fallback;
@@ -28,7 +29,17 @@ const intCfg = (raw: string | undefined, fallback: number): number => {
 
 export interface CostCapStatus {
   monthlyCap: number;
+  /**
+   * `ANALYSIS_AGENT_TOKEN_CAP` — INFORMATIONAL only: nothing enforces it
+   * (`.env.example` says so). Kept for compatibility; read `agentBudget`.
+   */
   agentCap: number;
+  /**
+   * #1001 — `ANALYSIS_AGENT_TOKEN_BUDGET`, the budget that actually bounds one
+   * agentic code-agent run. Reporting only `agentCap` (80k) sent the #706 run-5
+   * diagnosis after a cap the loop never consults.
+   */
+  agentBudget: number;
   monthBucket: string;
   monthlyUsed: number;
   monthlyRemaining: number;
@@ -117,6 +128,7 @@ export async function getCostCapStatus(now = new Date()): Promise<CostCapStatus>
   return {
     monthlyCap: cap,
     agentCap: getAgentTokenCap(),
+    agentBudget: resolveAgentTokenBudget(),
     monthBucket: monthBucketUTC(now),
     monthlyUsed: used,
     monthlyRemaining: cap === 0 ? Number.POSITIVE_INFINITY : Math.max(cap - used, 0),

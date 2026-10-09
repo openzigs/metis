@@ -404,6 +404,16 @@ export default function AnalysisPage(): React.ReactElement {
       res.accepted ? "Analyzing remaining repositories" : "No repositories to re-run",
     invalidateKeys: selectedAnalysisId ? [queryKeys.analyses.detail(selectedAnalysisId)] : [],
   });
+  // Issue #1001 — continue a code investigation cut short by its budget. The
+  // regenerated pass rewrites the capability record, so the banner clears once
+  // the continued pass finishes within budget.
+  const continueInvestigation = useAppMutation({
+    mutationFn: () => analysisApi.continueCodeInvestigation(selectedAnalysisId!),
+    successMessage: "Continuing code analysis with a larger budget",
+    invalidateKeys: selectedAnalysisId
+      ? [queryKeys.analyses.detail(selectedAnalysisId), ["analyses", "cost-cap"]]
+      : [],
+  });
   // AC2 — review-status changes (approve/reject) go through the same
   // optimistic-locked PUT as field edits. `PUT /api/requirements/:id` accepts
   // `reviewStatus` (see server/src/routes/requirements.ts) and runs the
@@ -960,6 +970,12 @@ export default function AnalysisPage(): React.ReactElement {
                     capability={detail.data.capability}
                     onResumeRepos={() => resumeRepos.mutate(undefined)}
                     resuming={resumeRepos.isPending}
+                    onContinueInvestigation={
+                      detail.data.status === "completed"
+                        ? () => continueInvestigation.mutate(undefined)
+                        : undefined
+                    }
+                    continuing={continueInvestigation.isPending}
                   />
 
                   {/* Issue #1112 (Epic #1107) — account for every requirement the user
