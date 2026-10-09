@@ -209,3 +209,82 @@ describe("ClarificationDialog self-resolution wiring", () => {
     }
   });
 });
+
+// Issue #937 — a remounted Questions tab fired a second start while the first
+// was still in flight, and the second round replaced the first one's
+// questions (and billed the whole question generation again).
+describe("ClarificationDialog start is idempotent per analysis + round (#937)", () => {
+  it("returns the already-generated round on a repeat start instead of regenerating", async () => {
+    const { provider, chat } = makeProvider({});
+    const dialog = new ClarificationDialog({ provider });
+
+    const first = await dialog.startOrContinue("ana-937-seq", REQUIREMENTS);
+    const callsAfterFirst = chat.mock.calls.length;
+    const second = await new ClarificationDialog({ provider }).startOrContinue(
+      "ana-937-seq",
+      REQUIREMENTS,
+    );
+
+    expect(chat.mock.calls.length).toBe(callsAfterFirst);
+    expect(second.rounds).toHaveLength(1);
+    expect(second.rounds[0]?.questions.map((q) => q.id)).toEqual(
+      first.rounds[0]?.questions.map((q) => q.id),
+    );
+    const persisted = store.get("ana-937-seq") as ClarificationState;
+    expect(persisted.rounds).toHaveLength(1);
+  });
+
+  it("joins a concurrent start for the same analysis rather than generating twice", async () => {
+    const { provider, chat } = makeProvider({});
+
+    const [a, b] = await Promise.all([
+      new ClarificationDialog({ provider }).startOrContinue("ana-937-par", REQUIREMENTS),
+      new ClarificationDialog({ provider }).startOrContinue("ana-937-par", REQUIREMENTS),
+    ]);
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(a.rounds).toHaveLength(1);
+    expect(b.rounds[0]?.questions.map((q) => q.id)).toEqual(
+      a.rounds[0]?.questions.map((q) => q.id),
+    );
+    expect((store.get("ana-937-par") as ClarificationState).rounds).toHaveLength(1);
+  });
+
+  it("does not join starts for different analyses", async () => {
+    const { provider, chat } = makeProvider({});
+    // makeProvider answers only its FIRST call with questions; give each its own.
+    const other = makeProvider({});
+
+    await Promise.all([
+      new ClarificationDialog({ provider }).startOrContinue("ana-937-x", REQUIREMENTS),
+      new ClarificationDialog({ provider: other.provider }).startOrContinue(
+        "ana-937-y",
+        REQUIREMENTS,
+      ),
+    ]);
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(other.chat).toHaveBeenCalledTimes(1);
+    expect((store.get("ana-937-y") as ClarificationState).rounds).toHaveLength(1);
+  });
+
+  it("releases the in-flight slot when a start fails, so a retry can run", async () => {
+    const failing = {
+      ...makeProvider({}).provider,
+      chat: vi.fn(async () => {
+        throw new Error("provider down");
+      }),
+    } as unknown as AIProvider;
+    await expect(
+      new ClarificationDialog({ provider: failing }).startOrContinue("ana-937-err", REQUIREMENTS),
+    ).rejects.toThrow();
+
+    const { provider, chat } = makeProvider({});
+    const state = await new ClarificationDialog({ provider }).startOrContinue(
+      "ana-937-err",
+      REQUIREMENTS,
+    );
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(state.rounds).toHaveLength(1);
+  });
+});

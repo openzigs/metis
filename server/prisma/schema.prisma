@@ -2521,15 +2521,24 @@ model SpecKitConfig {
 /// Epic #396 (MVP-4) — idempotency map for `/speckit.taskstoissues`. Keyed
 /// by `(featureSlug, taskId)` so re-exports upsert instead of duplicating.
 model SpecKitTaskExport {
-  id          String   @id @default(cuid())
-  projectId   String
-  featureSlug String
-  taskId      String
-  issueNumber Int
-  repoOwner   String
-  repoName    String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  projectId      String
+  featureSlug    String
+  taskId         String
+  issueNumber    Int
+  repoOwner      String
+  repoName       String
+  /// #953/#962 - the owning run's lease: when it claimed or took over this
+  /// task (issueNumber 0). Older than SPECKIT_EXPORT_CLAIM_TTL_MS = abandoned.
+  claimedAt      DateTime?
+  /// #962 - when the task was FIRST claimed; never moved by a takeover, so a
+  /// reconcile searches GitHub from the first run's time, not the last one's.
+  firstClaimedAt DateTime?
+  /// #953/#962 - the live run holding the claim; NULL once no run owns it (a
+  /// run that failed ambiguously keeps the claim but releases ownership).
+  claimRunId     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   @@unique([projectId, featureSlug, taskId])
   @@index([projectId, featureSlug])

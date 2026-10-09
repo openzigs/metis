@@ -198,7 +198,8 @@ export const SPEC_KIT_TOOLS = [
     description:
       "Plan exporting `tasks.md` rows as GitHub issues (one per task, idempotent on (featureSlug, taskId)). Requires tasks gate. " +
       "Use `dryRun: true` — the supported mode: it returns the planned issues and target repo without calling GitHub or writing anything. " +
-      "A real export (dryRun false or omitted) is not available on this server yet and returns HTTP 501 `SPECKIT_ISSUE_EXPORT_UNAVAILABLE`. " +
+      "A real export (dryRun false or omitted) needs a vault secret and the dry run's plan, which this tool does not take: publish from the Spec Kit page instead. " +
+      "Called here it is refused HTTP 400 `TOKEN_REQUIRED` (or `SPECKIT_TARGET_OVERRIDE_REFUSED` first when `repo` is supplied). " +
       "Target repo resolution order: explicit `repo`, then Spec Kit config (`tasksToIssuesRepo`), then the project's saved publish target, " +
       "then the `SPECKIT_TASKS_DEFAULT_REPO` env var; otherwise HTTP 400 `SPECKIT_NO_REPO_CONFIGURED`. Never the analysed repository.",
     inputSchema: {
@@ -214,7 +215,7 @@ export const SPEC_KIT_TOOLS = [
         .boolean()
         .optional()
         .describe(
-          "Set true to preview the export: no GitHub calls, no writes. Currently the only supported mode — false/omitted returns 501 SPECKIT_ISSUE_EXPORT_UNAVAILABLE.",
+          "Set true to preview the export: no GitHub calls, no writes. The only mode this tool supports — false/omitted needs a vault secret and is refused 400 TOKEN_REQUIRED here.",
         ),
     },
     toDispatchInput: (args) => ({

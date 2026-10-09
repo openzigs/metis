@@ -476,3 +476,40 @@ describe("EnhancementResults — surrounding render branches", () => {
     expect(await screen.findByTestId("gaps-preview")).toHaveTextContent("Shown on first visit.");
   });
 });
+
+describe("#937 — a remount while the start is in flight does not start a second dialog", () => {
+  function mountWith(qc: QueryClient) {
+    return render(
+      <QueryClientProvider client={qc}>
+        <EnhancementResults projectId="p1" analysisId={ANALYSIS_ID} metadata={metadata(1)} />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("joins the first mount's start instead of POSTing again", async () => {
+    let resolveStart: (s: ClarificationStatePayload) => void = () => {};
+    clarify.mockImplementation(
+      () =>
+        new Promise<ClarificationStatePayload>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    // The user opens the Questions tab: the first mount starts the dialog...
+    const first = mountWith(qc);
+    await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
+    // ...leaves the tab while the start is still generating, and comes back.
+    first.unmount();
+    mountWith(qc);
+    await waitFor(() => expect(getClarification).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByTestId("gaps-preview")).toHaveTextContent(/Preparing an interactive/);
+    expect(clarify).toHaveBeenCalledTimes(1);
+
+    // The first mount's start lands and the remounted panel picks it up.
+    resolveStart(dialogState());
+    expect(await screen.findByTestId("clarification-progress")).toBeInTheDocument();
+    expect(clarify).toHaveBeenCalledTimes(1);
+  });
+});
