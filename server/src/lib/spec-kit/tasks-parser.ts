@@ -14,9 +14,12 @@
  *   - Bullet list (upstream form):
  *       - [ ] T01 — Build login form (depends-on: none) [P]  files: src/login.tsx
  *
+ *   - Bullet list (METIS `/speckit.tasks` form, #993):
+ *       - [ ] T03 — Change `Foo` in a.go (a.go:12-30) (satisfies: AC-1) depends-on: T01
+ *
  * Returned `Task` rows carry `{id, title, parallelizable, files[],
- * dependsOn[], userStorySlug?}`. The handler upserts GitHub issues by
- * `(featureSlug, taskId)`.
+ * dependsOn[], userStorySlug?, satisfies[], text}`. The handler upserts GitHub
+ * issues by `(featureSlug, taskId)`.
  */
 
 export interface ParsedTask {
@@ -28,6 +31,13 @@ export interface ParsedTask {
   userStorySlug: string | null;
   storyPoints: number | null;
   notes: string;
+  /** #993 — the spec AC ids the task names in a trailing `(satisfies: …)` group. */
+  satisfies: string[];
+  /**
+   * #993 — the task's full text as written (the line without its checkbox, plus
+   * any indented lines beneath it), carried into the issue body.
+   */
+  text: string;
 }
 
 const ID_RE = /\bT\d{1,4}\b/i;
@@ -36,6 +46,7 @@ const FILE_RE = /(?:files?:\s*)([^|]+?)(?=$|\(|\[|\bdepends-on:|\bowner:)/i;
 const DEPENDS_RE = /depends?-on:\s*([^)|]+)/i;
 const STORY_PTS_RE = /^\s*(\d+)\s*$/;
 const STORY_HEADER_RE = /^##+\s+(?:Story\s+)?(US\d+|user\s+story\s+\S+)\b/i;
+const TASK_BULLET_RE = /^\s*-\s*(\[[ xX]\])?\s*T\d/;
 
 export function parseTasksMarkdown(markdown: string): ParsedTask[] {
   const tasks: ParsedTask[] = [];
@@ -56,8 +67,18 @@ export function parseTasksMarkdown(markdown: string): ParsedTask[] {
       if (row) tasks.push(row);
       continue;
     }
-    if (/^\s*-\s*(\[[ xX]\])?\s*T\d/.test(line)) {
-      const row = parseBulletRow(line, currentStory);
+    if (TASK_BULLET_RE.test(line)) {
+      // #993 — indented lines beneath a task (its description, files,
+      // acceptance) belong to it; blank lines between them do not end it.
+      const extra: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = lines[j]!;
+        if (next.trim() === "") continue;
+        if (!/^\s+\S/.test(next) || TASK_BULLET_RE.test(next)) break;
+        extra.push(next.trim());
+        i = j;
+      }
+      const row = parseBulletRow(line, currentStory, extra);
       if (row) tasks.push(row);
     }
   }
@@ -99,40 +120,75 @@ function parseTableRow(line: string, story: string | null): ParsedTask | null {
     userStorySlug: story,
     storyPoints,
     notes: notesCell.trim(),
+    satisfies: [],
+    // The table's Notes cell is already rendered as its own section.
+    text: title,
   };
 }
 
-function parseBulletRow(line: string, story: string | null): ParsedTask | null {
+function parseBulletRow(line: string, story: string | null, extra: string[]): ParsedTask | null {
   const idMatch = ID_RE.exec(line);
   if (!idMatch) return null;
   const id = idMatch[0]!.toUpperCase();
-  // Title: text after the id and before the first `(` / `[` / `files:` / `depends-on:`.
   const afterId = line.slice(line.indexOf(idMatch[0]) + idMatch[0].length);
-  const titleEnd = earliestIndex(afterId, ["(", "[", "files:", "depends-on:"]);
-  let titleRaw = (titleEnd === -1 ? afterId : afterId.slice(0, titleEnd))
-    .replace(/^\s*[—-]\s*/, "")
-    .trim();
-  const parallelizable = PARALLEL_RE.test(line);
-  titleRaw = titleRaw.replace(PARALLEL_RE, "").trim();
+  const { title, tail } = splitTaskTitle(afterId);
+  const fullLine = line.replace(/^\s*-\s*(\[[ xX]\])?\s*/, "").trim();
   return {
     id,
-    title: titleRaw,
-    parallelizable,
-    files: parseFiles(line),
-    dependsOn: parseDeps(line),
+    title,
+    parallelizable: PARALLEL_RE.test(tail),
+    files: parseFiles(tail),
+    dependsOn: parseDeps(tail),
     userStorySlug: story,
     storyPoints: null,
     notes: "",
+    satisfies: parseSatisfies(tail),
+    text: [fullLine, ...extra].join("\n"),
   };
 }
 
-function earliestIndex(haystack: string, needles: string[]): number {
-  let earliest = -1;
-  for (const n of needles) {
-    const i = haystack.toLowerCase().indexOf(n.toLowerCase());
-    if (i !== -1 && (earliest === -1 || i < earliest)) earliest = i;
+/**
+ * #993 — the metadata a task line may end with, in any order: `[P]`, a
+ * `(depends-on: …)` group or a bare `depends-on: …`, `(satisfies: …)`, and
+ * `files: …`. Only these, and only at the end of the line, are metadata: the
+ * title keeps every other parenthesis (METIS's `/speckit.tasks` puts file:line
+ * spans in them), where it used to be cut at the first `(`.
+ */
+const TRAILING_META_RES = [
+  /\s*\[P\]\s*$/i,
+  /\s*\(\s*depends?-on:[^()]*\)\s*$/i,
+  /\s*\bdepends?-on:[^()[\]]*$/i,
+  /\s*\(\s*satisfies:[^()]*\)\s*$/i,
+  /\s*\bfiles?:[^()[\]]*$/i,
+];
+
+/** Split the text after a task id into its title and its trailing metadata. */
+export function splitTaskTitle(afterId: string): { title: string; tail: string } {
+  let rest = afterId.replace(/^\s*[—-]\s*/, "").trimEnd();
+  let tail = "";
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const re of TRAILING_META_RES) {
+      const m = re.exec(rest);
+      // A match at 0 is a line with no title at all: keep it as the title.
+      if (m && m.index > 0) {
+        tail = `${m[0]} ${tail}`;
+        rest = rest.slice(0, m.index).trimEnd();
+        changed = true;
+      }
+    }
   }
-  return earliest;
+  return { title: rest.trim(), tail: tail.trim() };
+}
+
+function parseSatisfies(input: string): string[] {
+  const m = /\(\s*satisfies:([^()]*)\)/i.exec(input);
+  if (!m) return [];
+  return m[1]!
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 function parseDeps(input: string): string[] {

@@ -8,8 +8,13 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../src/lib/prisma.js", () => ({ prisma: {} }));
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
-const { githubLabel, GITHUB_LABEL_MAX_LENGTH, renderIssueBody } =
-  await import("../src/lib/spec-kit/commands/taskstoissues.js");
+const {
+  githubLabel,
+  GITHUB_LABEL_MAX_LENGTH,
+  GITHUB_TITLE_MAX_LENGTH,
+  issueTitle,
+  renderIssueBody,
+} = await import("../src/lib/spec-kit/commands/taskstoissues.js");
 const { createGitHubIssueClient, invalidFieldsOf } =
   await import("../src/lib/spec-kit/commands/taskstoissues-github.js");
 
@@ -76,10 +81,30 @@ describe("githubLabel", () => {
         userStorySlug: null,
         storyPoints: null,
         notes: "",
+        satisfies: [],
+        text: "",
       },
       SLUG_80,
     );
     expect(body).toContain(`Source: specs/${SLUG_80}/tasks.md#T01`);
+  });
+});
+
+describe("issueTitle (#993)", () => {
+  it("is `[id] title` when it fits GitHub's 256 characters", () => {
+    expect(GITHUB_TITLE_MAX_LENGTH).toBe(256);
+    expect(issueTitle({ id: "T01", title: "Change `f(x)` (a.go:1)" })).toBe(
+      "[T01] Change `f(x)` (a.go:1)",
+    );
+    const exactly = "a".repeat(256 - "[T01] ".length);
+    expect(issueTitle({ id: "T01", title: exactly })).toBe(`[T01] ${exactly}`);
+  });
+
+  it("bounds a longer title to 256 characters ending in an ellipsis", () => {
+    const title = issueTitle({ id: "T01", title: "🙂".repeat(300) });
+    expect(chars(title)).toBe(256);
+    expect(title.startsWith("[T01] 🙂")).toBe(true);
+    expect(title.endsWith("…")).toBe(true);
   });
 });
 

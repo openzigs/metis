@@ -312,6 +312,8 @@ describe("renderIssueBody", () => {
         userStorySlug: null,
         storyPoints: 3,
         notes: "",
+        satisfies: ["AC-1"],
+        text: "T01 — Do work (satisfies: AC-1)",
       },
       "001-foo",
     );
@@ -321,6 +323,8 @@ describe("renderIssueBody", () => {
     expect(body).toContain("Story Points: 3");
     expect(body).toContain("## Files");
     expect(body).toContain("src/x.ts");
+    expect(body).toContain("Satisfies: AC-1");
+    expect(body).toContain("## Task\nT01 — Do work (satisfies: AC-1)");
   });
 
   it("omits optional sections when not present", () => {
@@ -334,10 +338,14 @@ describe("renderIssueBody", () => {
         userStorySlug: null,
         storyPoints: null,
         notes: "",
+        satisfies: [],
+        text: "",
       },
       "001-foo",
     );
     expect(body).toContain("Parallelizable: no");
+    expect(body).not.toContain("## Task");
+    expect(body).not.toContain("Satisfies:");
     expect(body).not.toContain("Depends on:");
     expect(body).not.toContain("Story Points:");
     expect(body).not.toContain("## Files");
@@ -354,6 +362,8 @@ describe("renderIssueBody", () => {
         userStorySlug: "us42",
         storyPoints: null,
         notes: "important",
+        satisfies: [],
+        text: "Story task",
       },
       "001-foo",
     );

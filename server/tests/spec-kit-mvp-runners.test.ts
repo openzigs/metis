@@ -1737,6 +1737,124 @@ describe("runTasksToIssues", () => {
       if (prev !== undefined) process.env.SPECKIT_TASKS_DEFAULT_REPO = prev;
     }
   });
+
+  // #993 — titles keep their parentheses, bodies carry the task text, and an
+  // export can cover a chosen subset of the tasks.
+  function seedMetisTasks(slug = "001-foo"): void {
+    const fid = seedFeature("p1", slug);
+    seedFeatureArtifact(fid, "spec.md", "x");
+    seedFeatureArtifact(fid, "plan.md", "x");
+    seedFeatureArtifact(
+      fid,
+      "tasks.md",
+      [
+        "## Tasks",
+        "",
+        "- [ ] T01 — Add a test for `Mark` (storage/entry_test.go:10-40) (satisfies: AC-1) depends-on: none",
+        "- [ ] T02 — Change `Mark` using `COALESCE(n, 0)` (storage/entry.go:412) (satisfies: AC-1, AC-2) depends-on: T01",
+        "- [ ] T03 — Wire the button (ui/button.tsx:5) (satisfies: AC-3) depends-on: T02",
+      ].join("\n"),
+    );
+  }
+
+  it("files the full title and the task text in the body (#993)", async () => {
+    seedMetisTasks();
+    const create = vi.fn(async (_o: string, _n: string, req: any) => ({
+      number: Number(req.title.slice(2, 4)),
+      url: `https://github.com/o/r/issues/${req.title.slice(2, 4)}`,
+    }));
+    const repo = { owner: "o", name: "r" };
+    const dry = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+    });
+    await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      client: { create },
+      expectedPlan: { tasksVersion: dry.tasksVersion, digest: dry.planDigest },
+    });
+    const req = create.mock.calls[1]![2];
+    expect(req.title).toBe("[T02] Change `Mark` using `COALESCE(n, 0)` (storage/entry.go:412)");
+    expect(req.body).toContain("Source: specs/001-foo/tasks.md#T02");
+    expect(req.body).toContain("Depends on: T01");
+    expect(req.body).toContain("Satisfies: AC-1, AC-2");
+    expect(req.body).toContain(
+      "## Task\nT02 — Change `Mark` using `COALESCE(n, 0)` (storage/entry.go:412) (satisfies: AC-1, AC-2) depends-on: T01",
+    );
+  });
+
+  it("lists every task as available and exports only the chosen subset (#993)", async () => {
+    seedMetisTasks();
+    const repo = { owner: "o", name: "r" };
+    const dry = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+      taskIds: ["t03", "T01"],
+    });
+    expect(dry.available.map((a) => a.taskId)).toEqual(["T01", "T02", "T03"]);
+    expect(dry.available[1]!.title).toBe(
+      "[T02] Change `Mark` using `COALESCE(n, 0)` (storage/entry.go:412)",
+    );
+    expect(dry.created.map((c) => c.taskId)).toEqual(["T01", "T03"]);
+    const create = vi.fn(async (_o: string, _n: string, req: any) => ({
+      number: 7,
+      url: `https://github.com/o/r/issues/7#${req.title}`,
+    }));
+    const live = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      client: { create },
+      taskIds: ["T01", "T03"],
+      maxCreates: 2,
+      expectedPlan: { tasksVersion: dry.tasksVersion, digest: dry.planDigest },
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(live.created.map((c) => c.taskId)).toEqual(["T01", "T03"]);
+    expect(taskExportRows.size).toBe(2);
+  });
+
+  it("refuses a live run whose subset differs from the dry run's (#993)", async () => {
+    seedMetisTasks();
+    const repo = { owner: "o", name: "r" };
+    const dry = await runTasksToIssues({
+      projectId: "p1",
+      featureSlug: "001-foo",
+      repo,
+      dryRun: true,
+      taskIds: ["T01"],
+    });
+    const create = vi.fn();
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        repo,
+        client: { create },
+        expectedPlan: { tasksVersion: dry.tasksVersion, digest: dry.planDigest },
+      }),
+    ).rejects.toMatchObject({ code: "SPECKIT_EXPORT_PLAN_CHANGED" });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a chosen task id tasks.md does not have (#993)", async () => {
+    seedMetisTasks();
+    await expect(
+      runTasksToIssues({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        repo: { owner: "o", name: "r" },
+        dryRun: true,
+        taskIds: ["T01", "T09"],
+      }),
+    ).rejects.toMatchObject({ status: 400, code: "SPECKIT_EXPORT_UNKNOWN_TASK" });
+  });
 });
 
 // keep `path` import referenced — used by guard helpers in higher-level suites.
