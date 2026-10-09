@@ -178,6 +178,9 @@ export async function main(): Promise<void> {
     projectName: PROJECT_NAME,
     findingsTable,
     refinedRequirements: [{ title: AMBIGUOUS_REQUIREMENT.title, description: REFINED_DESCRIPTION }],
+    // #1000 — the loop answers its question before regenerating, so the
+    // orchestrator labels the section CLARIFIED (`hasAnsweredClarification`).
+    refinedHumanAnswered: true,
   });
   const synthesisMessages: ChatMessage[] = [{ role: "user", content: userMessage }];
   // #1223 — `maxTokens` is part of `keyedOptions`, so synthesis's new explicit
