@@ -112,20 +112,26 @@ export interface RunCost {
  * if a rate has changed, the attributed cost can differ from the historical
  * stored cost; for `/runs` reporting we prefer the current rate card.
  *
+ * #943 — an `analysis` run is the exception: its session is the analysis id,
+ * which has exactly one run, and work on the analysis after the run finished
+ * (a regenerate, a clarification round, a deep dive) bills the same session.
+ * Windowing it dropped that spend — $0.14 shown for a $0.46 analysis — so an
+ * analysis run sums every ledger row of its session.
+ *
  * Returns `{ costCents: 0, totalTokens: 0 }` when the run is missing or no
  * usage falls in-window. Never throws.
  */
 export async function computeRunCost(runId: string): Promise<RunCost> {
   const run = await prisma.agentRun.findUnique({
     where: { id: runId },
-    select: { sessionId: true, startedAt: true, completedAt: true },
+    select: { sessionId: true, kind: true, startedAt: true, completedAt: true },
   });
   if (!run) return { costCents: 0, totalTokens: 0 };
   const upperBound = run.completedAt ?? new Date();
   const rows = await prisma.tokenUsage.findMany({
     where: {
       sessionId: run.sessionId,
-      createdAt: { gt: run.startedAt, lte: upperBound },
+      ...(run.kind === "analysis" ? {} : { createdAt: { gt: run.startedAt, lte: upperBound } }),
     },
     select: {
       provider: true,
@@ -185,6 +191,30 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
     });
   }
   return { costCents, totalTokens };
+}
+
+/**
+ * #943 — re-open a session's latest run of `kind` for follow-up work on the
+ * same session (an analysis regenerate or repo resume). It reads `running`
+ * with no `completedAt` until {@link finishRun} closes it again, with a cost
+ * that includes the follow-up's spend. Returns the run's id and the tokens it
+ * had recorded, or null when the session has no such run.
+ */
+export async function reopenRun(
+  sessionId: string,
+  kind: AgentRunKind,
+): Promise<{ id: string; totalTokens: number } | null> {
+  const run = await prisma.agentRun.findFirst({
+    where: { sessionId, kind },
+    orderBy: { startedAt: "desc" },
+    select: { id: true, totalTokens: true },
+  });
+  if (!run) return null;
+  await prisma.agentRun.update({
+    where: { id: run.id },
+    data: { status: "running", completedAt: null, latencyMs: null },
+  });
+  return run;
 }
 
 export async function finishRun(opts: FinishRunOptions): Promise<void> {
@@ -299,6 +329,16 @@ export async function getRun(runId: string): Promise<{
     include: { steps: { orderBy: { ord: "asc" } } },
   });
   if (!row) return null;
+  // #943 — an analysis run is priced live over its whole session, so spend
+  // after the run was closed (a clarification round, a deep dive) is shown.
+  // A failed ledger read falls back to the stored cost; it never fails the read.
+  const costCents =
+    row.kind === "analysis"
+      ? await computeRunCost(row.id).then(
+          (cost) => cost.costCents,
+          () => row.costCents,
+        )
+      : row.costCents;
   return {
     run: {
       id: row.id,
@@ -310,7 +350,7 @@ export async function getRun(runId: string): Promise<{
       completedAt: row.completedAt,
       latencyMs: row.latencyMs,
       totalTokens: row.totalTokens,
-      costCents: row.costCents,
+      costCents,
     },
     steps: row.steps.map((s) => ({
       id: s.id,
