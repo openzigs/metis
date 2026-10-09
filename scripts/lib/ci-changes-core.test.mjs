@@ -68,6 +68,7 @@ describe("pinned path lists", () => {
   const img = (/** @type {string} */ f) => matchesAny([f], IMAGE_PATTERNS).length > 0;
 
   it.each([
+    "scripts/ci/start-postgres.sh",
     "server/prisma/postgres/schema.prisma",
     "server/prisma/postgres/migrations/20260101000000_x/migration.sql",
     "server/prisma/schema.prisma",

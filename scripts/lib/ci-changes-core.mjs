@@ -43,6 +43,8 @@ const GATE_AND_DEPENDENCIES = Object.freeze([
  */
 export const POSTGRES_PATTERNS = Object.freeze([
   ...GATE_AND_DEPENDENCIES,
+  // The script that starts the Postgres container both postgres jobs test against.
+  "scripts/ci/start-postgres.sh",
   "server/package.json",
   "server/prisma/**",
   "server/prisma.config.ts",
