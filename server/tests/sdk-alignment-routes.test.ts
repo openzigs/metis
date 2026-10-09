@@ -763,11 +763,13 @@ describe("ai-sdk routes (#120-122)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("status query other than resumable returns empty", async () => {
+  // #738 — an unknown filter used to answer an empty list, indistinguishable
+  // from "no sessions". It is refused instead; no filter lists every session
+  // (session-list-738.sqlite.test.ts).
+  it("a status filter other than resumable is refused with 400", async () => {
     const res = await request(makeApp())
       .get("/api/ai/sessions?status=other")
       .set("Authorization", `Bearer ${adminToken}`);
-    expect(res.status).toBe(200);
-    expect(res.body.data).toEqual([]);
+    expect(res.status).toBe(400);
   });
 });

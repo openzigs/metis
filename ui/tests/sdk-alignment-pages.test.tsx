@@ -51,6 +51,7 @@ describe("Sessions page (#122)", () => {
       {
         id: "s1",
         projectId: "p1",
+        projectName: "P1",
         title: "T",
         model: "claude",
         currentModel: null,

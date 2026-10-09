@@ -750,6 +750,46 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
     });
 
+    it("#980 — a failed session-title write does not fail the chat turn", async () => {
+      const sid = await newSession(alice);
+      // Every title write rejects; every other session write goes through.
+      const titleWrites: unknown[] = [];
+      const realSessions = db.aISession;
+      const failingSessions = new Proxy(realSessions, {
+        get(target, prop, receiver) {
+          if (prop === "updateMany") {
+            return (args: { data?: { title?: unknown } }) => {
+              if (args?.data?.title !== undefined) {
+                titleWrites.push(args);
+                return Promise.reject(new Error("database is locked"));
+              }
+              return target.updateMany(args as never);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      state.db = new Proxy(db, {
+        get(target, prop, receiver) {
+          return prop === "aISession" ? failingSessions : Reflect.get(target, prop, receiver);
+        },
+      });
+      let res: Awaited<ReturnType<typeof send>>;
+      try {
+        res = await send(alice, sid, "Why did the nightly import fail?");
+      } finally {
+        state.db = db;
+      }
+      // The title write really was attempted, and really failed.
+      expect(titleWrites).toHaveLength(1);
+      expect(res.status).toBe(200);
+      expect(res.text).not.toMatch(/database is locked/);
+      // The turn completed: the question AND its answer are in the transcript.
+      const rows = (await transcript(alice, sid)).body.data.messages as Array<{ role: string }>;
+      expect(rows.map((r) => r.role)).toEqual(["user", "assistant"]);
+      expect((await db.aISession.findUnique({ where: { id: sid } }))!.title).toBe("New Chat");
+    });
+
     // PR #205 review — a compaction summary is a model call: it is metered in
     // both usage stores and gated by the project budget like any chat call.
     it("manual /compact records the summariser's usage for the user and the project", async () => {

@@ -12,6 +12,7 @@ import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi } from "@/lib/sdk-alignment-api";
 import { PageHeader } from "@/components/ui/page-header";
 import { EmptyState } from "@/components/ui/empty-state";
+import { timeAgo } from "@/lib/time-ago";
 
 const QK = ["resumable-sessions"];
 
@@ -65,6 +66,24 @@ export default function SessionsPage() {
               >
                 <div>
                   <div className="font-medium">{s.title || s.id}</div>
+                  {/* #738 — which project, and how recent: without them every row read the same. */}
+                  <div className="text-xs text-muted-foreground" data-testid={`sess-meta-${s.id}`}>
+                    {s.projectId ? (
+                      <Link
+                        href={`/projects/${encodeURIComponent(s.projectId)}`}
+                        className="underline-offset-2 hover:underline"
+                        data-testid={`sess-project-${s.id}`}
+                      >
+                        {s.projectName || s.projectId}
+                      </Link>
+                    ) : (
+                      <span>No project</span>
+                    )}
+                    <span aria-hidden="true"> · </span>
+                    <time dateTime={s.updatedAt} title={new Date(s.updatedAt).toLocaleString()}>
+                      {timeAgo(s.updatedAt)}
+                    </time>
+                  </div>
                   <div className="text-xs text-muted-foreground">
                     {s.currentModel || s.model}
                     {s.planModeActive && (

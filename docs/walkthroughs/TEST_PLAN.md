@@ -294,7 +294,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
 - **Steps:**
   1. In `/chat`, pick the project scope (`components/chat/project-scope-selector`) and ask the BA questions below (`POST /api/ai/stream`, sessions via `/api/ai/sessions`).
   2. Also try `/workbench`.
-  3. Resume, fork and compact a session (`/api/ai/sessions/:id/resume|fork|compact`), and check `/sessions`.
+  3. Resume, fork and compact a session (`/api/ai/sessions/:id/resume|fork|compact`), and check `/sessions`: each row names its session after the first question and shows its project (linked) and last activity (#738). `GET /api/ai/sessions` with no filter lists your own sessions, newest first, with `page.hasMore` (`?limit=&offset=`); another user's sessions never appear.
   4. In one project-scoped session, ask BA question 1, then follow up with `Show me the exact lines for the first citation`.
 - **Works:** answers stream, tool activity renders, there is no scope-degradation notice (unless retrieval is genuinely empty), and fork and compact keep the history.
 - **Useful:** each BA answer carries **at least one correct `file:line` citation** into `v2.3.3`. Example: "What's the minimum password length?" → `internal/validator/user.go:163-164` (`len(password) < 6`). The follow-up keeps the earlier verified `file:line` and does not say it "had not actually read" the file (#773).
