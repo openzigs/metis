@@ -69,4 +69,17 @@ describe("PDF html is sanitised after marked", () => {
     expect(html).toContain('class="math-display"');
     expect(html).toContain('class="mermaid"');
   });
+
+  it("renders display math that shares its line with prose", async () => {
+    const html = await render("$$E = mc^2$$ where E is energy");
+    expect(html).toContain('<div class="math-display" data-formula="E = mc^2"></div>');
+    expect(html).toContain("where E is energy");
+    expect(html).not.toContain("MATH_PLACEHOLDER");
+  });
+
+  it("keeps author html neutralised on a line it shares with display math", async () => {
+    const html = await render("$$x$$ <img src=x onerror=alert(1)>");
+    expect(html).toContain('data-formula="x"');
+    expect(html).not.toMatch(/<img\s/i);
+  });
 });

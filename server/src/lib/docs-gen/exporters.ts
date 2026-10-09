@@ -397,7 +397,8 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
 
   // Inject mermaid blocks back (escaped for DOM textContent recovery, not double-processed by marked)
   for (let i = 0; i < mermaidBlocks.length; i++) {
-    htmlContent = htmlContent.replace(
+    htmlContent = restorePlaceholder(
+      htmlContent,
       `<!--MERMAID_PLACEHOLDER_${i}-->`,
       `<div class="mermaid-container"><pre class="mermaid">${escapeHtml(mermaidBlocks[i])}</pre></div>`,
     );
@@ -405,7 +406,8 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
 
   // Inject math blocks back as <span class="math-display"> — KaTeX renders these in page.evaluate
   for (let i = 0; i < mathBlocks.length; i++) {
-    htmlContent = htmlContent.replace(
+    htmlContent = restorePlaceholder(
+      htmlContent,
       `<!--MATH_PLACEHOLDER_${i}-->`,
       `<div class="math-display" data-formula="${escapeHtml(mathBlocks[i])}"></div>`,
     );
@@ -424,6 +426,23 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
   ${htmlContent}
 </body>
 </html>`;
+}
+
+/**
+ * Swap a placeholder for its rendered block. A placeholder sharing its line with
+ * other text (`$$E = mc^2$$ where …`) makes the whole line one HTML token, which
+ * the renderer escapes — so the placeholder arrives as `&lt;!--…--&gt;`. Only the
+ * placeholder is restored; the rest of that token stays escaped.
+ */
+function restorePlaceholder(html: string, placeholder: string, replacement: string): string {
+  const i = html.indexOf(placeholder);
+  const escaped = escapeHtml(placeholder);
+  const j = html.indexOf(escaped);
+  if (i !== -1 && (j === -1 || i < j)) {
+    return html.slice(0, i) + replacement + html.slice(i + placeholder.length);
+  }
+  if (j === -1) return html;
+  return html.slice(0, j) + replacement + html.slice(j + escaped.length);
 }
 
 function escapeHtml(text: string): string {
