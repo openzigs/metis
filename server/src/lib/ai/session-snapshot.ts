@@ -25,12 +25,17 @@ interface SessionListRow {
   status: string;
   snapshotUpdatedAt: Date | null;
   updatedAt: Date;
+  project?: { name: string } | null;
 }
+
+/** #738 — every list carries the project's name, so a row can say which project it is in. */
+const LIST_INCLUDE = { project: { select: { name: true } } } as const;
 
 function toListDto(r: SessionListRow): ResumableSessionDto {
   return {
     id: r.id,
     projectId: r.projectId,
+    projectName: r.project?.name ?? null,
     title: r.title,
     model: r.model,
     currentModel: r.currentModel,
@@ -65,6 +70,7 @@ export async function listResumable(user: AuthPayload): Promise<ResumableSession
     },
     orderBy: { updatedAt: "desc" },
     take: 50,
+    include: LIST_INCLUDE,
   });
   return rows.map((r) => toListDto(r as unknown as SessionListRow));
 }
@@ -79,6 +85,44 @@ export async function listExpired(userId: string): Promise<ResumableSessionDto[]
     },
     orderBy: { updatedAt: "desc" },
     take: 25,
+    include: LIST_INCLUDE,
   });
   return rows.map((r) => toListDto(r as unknown as SessionListRow));
+}
+
+/** #738 — the default and the ceiling for one page of `GET /api/ai/sessions`. */
+export const SESSION_LIST_DEFAULT_LIMIT = 20;
+export const SESSION_LIST_MAX_LIMIT = 100;
+
+export interface SessionListPage {
+  sessions: ResumableSessionDto[];
+  hasMore: boolean;
+}
+
+/**
+ * #738 — every session the caller may still open, newest activity first, one
+ * page at a time. The same scope as `listResumable` (the caller's own sessions,
+ * narrowed to project-less chats and projects they can still reach), without
+ * the resume window. `hasMore` is read from one extra row, so the reader knows
+ * another page exists without a second count query.
+ */
+export async function listSessions(
+  user: AuthPayload,
+  page: { limit: number; offset: number },
+): Promise<SessionListPage> {
+  const rows = await prisma.aISession.findMany({
+    where: {
+      userId: user.userId,
+      ...reachableSessionWhere(user),
+      deletedAt: null,
+    },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    skip: page.offset,
+    take: page.limit + 1,
+    include: LIST_INCLUDE,
+  });
+  return {
+    sessions: rows.slice(0, page.limit).map((r) => toListDto(r as unknown as SessionListRow)),
+    hasMore: rows.length > page.limit,
+  };
 }

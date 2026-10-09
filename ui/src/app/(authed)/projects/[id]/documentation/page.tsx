@@ -21,7 +21,7 @@ import {
   useDocSectionProgress,
   useJobLifecycle,
 } from "@/hooks/use-job-events";
-import { applyJobLifecycleEvent } from "@/hooks/use-active-jobs";
+import { applyJobLifecycleEvent, dismissActiveJob } from "@/hooks/use-active-jobs";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PausableLiveRegion } from "@/components/a11y/pausable-live-region";
@@ -312,6 +312,8 @@ export default function DocumentationPage(): React.ReactElement {
       }),
     successMessage: "Cancelling generation…",
     invalidateKeys: [["generated-docs", projectId]],
+    // #980 — the header said "1 job running" until the run finished winding down.
+    onSuccess: (_data, docId) => dismissActiveJob(docId),
   });
 
   // Delete mutation
@@ -768,6 +770,9 @@ export default function DocumentationPage(): React.ReactElement {
 // Sub-components
 // ============================================================================
 
+/** #980 — the Generate form's default title for a database-scope document. */
+const DATABASE_SCHEMA_TITLE = "Database Schema";
+
 function GenerateForm({
   projectId,
   onSubmit,
@@ -854,9 +859,13 @@ function GenerateForm({
     setSelectedRepoId("");
     setSelectedDbId("");
     if (!titleEdited) {
-      if (next === "full" || next === "module" || next === "symbol") {
-        setTitle(defaultTitles[docType] ?? "Project Documentation");
-      }
+      // #980 — a database-scope document is a schema reference, whatever the
+      // (hidden) document type says; the title used to keep "Business Requirements".
+      setTitle(
+        next === "database"
+          ? DATABASE_SCHEMA_TITLE
+          : (defaultTitles[docType] ?? "Project Documentation"),
+      );
     }
   };
 
@@ -873,6 +882,7 @@ function GenerateForm({
     if (!titleEdited) {
       const db = connectedDbs.find((d) => d.id === dbId);
       if (db) setTitle(`${db.label} Schema`);
+      else setTitle(DATABASE_SCHEMA_TITLE);
     }
   };
 

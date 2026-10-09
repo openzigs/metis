@@ -45,6 +45,12 @@ export interface ActiveJob {
 // ---- Module-level store (useSyncExternalStore-compatible) ------------------
 
 const activeJobs = new Map<string, ActiveJob>();
+/**
+ * #980 — jobs the user stopped. A cancelled run winds down for a moment and may
+ * still send `progress`; that must not bring "1 job running" back. Cleared by
+ * the job's next `started` (a new run) or its terminal event.
+ */
+const dismissedJobs = new Set<string>();
 const listeners = new Set<() => void>();
 // A referentially-stable snapshot, only rebuilt when the map actually changes,
 // so useSyncExternalStore does not loop on a fresh array every render.
@@ -91,9 +97,12 @@ function isTerminal(status: JobLifecycleEvent["status"]): boolean {
 export function applyJobLifecycleEvent(event: JobLifecycleEvent): void {
   if (!event || typeof event.jobId !== "string") return;
   if (isTerminal(event.status)) {
+    dismissedJobs.delete(event.jobId);
     if (activeJobs.delete(event.jobId)) emitChange();
     return;
   }
+  if (event.status === "started") dismissedJobs.delete(event.jobId);
+  else if (dismissedJobs.has(event.jobId)) return;
   // started / progress → upsert, preserving the most recent progress/message.
   const prev = activeJobs.get(event.jobId);
   activeJobs.set(event.jobId, {
@@ -107,9 +116,19 @@ export function applyJobLifecycleEvent(event: JobLifecycleEvent): void {
   emitChange();
 }
 
+/**
+ * #980 — the user cancelled this job: stop counting it now rather than when
+ * its run finishes winding down, and ignore its late `progress` events.
+ */
+export function dismissActiveJob(jobId: string): void {
+  dismissedJobs.add(jobId);
+  if (activeJobs.delete(jobId)) emitChange();
+}
+
 /** Test-only reset so specs start from an empty store. Not used in production. */
 export function __resetActiveJobsForTests(): void {
   activeJobs.clear();
+  dismissedJobs.clear();
   rebuildSnapshot();
   emitChange();
 }

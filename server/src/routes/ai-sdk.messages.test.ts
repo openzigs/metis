@@ -44,6 +44,9 @@ vi.mock("../lib/ai/plan-mode.js", () => ({
 }));
 vi.mock("../lib/ai/session-snapshot.js", () => ({
   listResumable: vi.fn(),
+  listSessions: vi.fn(),
+  SESSION_LIST_DEFAULT_LIMIT: 20,
+  SESSION_LIST_MAX_LIMIT: 100,
 }));
 vi.mock("../lib/async/compaction.js", () => ({ compactSession: vi.fn() }));
 

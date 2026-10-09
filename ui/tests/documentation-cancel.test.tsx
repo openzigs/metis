@@ -29,6 +29,12 @@ vi.mock("@/hooks/use-job-events", () => ({
   useJobLifecycle: vi.fn(() => undefined),
 }));
 
+// #980 — observe the header indicator's store being told about the cancel.
+vi.mock("@/hooks/use-active-jobs", async (orig) => ({
+  ...(await orig<typeof import("@/hooks/use-active-jobs")>()),
+  dismissActiveJob: vi.fn(),
+}));
+
 vi.mock("@/components/markdown-previewer", () => ({
   MarkdownPreviewer: ({ content }: { content: string }) => (
     <div data-testid="markdown-previewer">{content}</div>
@@ -36,6 +42,7 @@ vi.mock("@/components/markdown-previewer", () => ({
 }));
 
 import { apiFetch } from "@/lib/api-client";
+import { dismissActiveJob } from "@/hooks/use-active-jobs";
 import DocumentationPage, {
   CancelGenerationButton,
   CancelledGenerationBanner,
@@ -121,6 +128,8 @@ describe("DocumentationPage — cancel (#855)", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Cancel generation" }));
     await waitFor(() => expect(cancelCalls()).toHaveLength(1));
     expect(cancelCalls()[0][1]).toMatchObject({ method: "POST" });
+    // #980 — the header stops counting the job as soon as the server accepts.
+    await waitFor(() => expect(dismissActiveJob).toHaveBeenCalledWith(DOC_ID));
     // Still on the list: the card's own click did not fire.
     expect(card).toBeInTheDocument();
     expect(screen.queryByText("Export PDF")).toBeNull();

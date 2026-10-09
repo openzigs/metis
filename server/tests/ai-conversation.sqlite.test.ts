@@ -706,6 +706,90 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(again.body.data.compacted).toBe(false);
     });
 
+    it("#980 — manual /compact reports no saving, and persists nothing, when the summary is not smaller", async () => {
+      const sid = await newSession(alice);
+      for (let i = 0; i < 3; i++) await send(alice, sid, `m${i}`);
+      const summaryBefore = model.summaries;
+      // A summary far longer than the short turns it would replace.
+      const realChat = model.chat.bind(model);
+      model.chat = async (messages, opts) => {
+        const res = await realChat(messages, opts);
+        return messages[0]?.content === COMPACTION_SYSTEM_PROMPT
+          ? { ...res, content: "a much longer summary ".repeat(200) }
+          : res;
+      };
+      const res = await as(alice).post(`/api/ai/sessions/${sid}/compact`);
+      expect(res.status).toBe(200);
+      expect(model.summaries).toBe(summaryBefore + 1);
+      expect(res.body.data).toMatchObject({ compacted: false, summarizedTurns: 0 });
+      expect(res.body.data.after).toBe(res.body.data.before);
+      expect(res.body.data.message).toMatch(/no saving/);
+      // Read back: nothing folded, no summary row, the session not bumped.
+      const rows = (await transcript(alice, sid)).body.data.messages as Array<{
+        compactedAt: string | null;
+        kind?: string;
+      }>;
+      expect(rows.every((r) => r.compactedAt === null && r.kind !== "summary")).toBe(true);
+      expect((await db.aISession.findUnique({ where: { id: sid } }))!.compactionCount).toBe(0);
+    });
+
+    it("#980 — a session is titled from its first question, and keeps a title the user chose", async () => {
+      const sid = await newSession(alice);
+      expect((await db.aISession.findUnique({ where: { id: sid } }))!.title).toBe("New Chat");
+      await send(alice, sid, "  How does   the billing\nservice retry failed charges?  ");
+      await send(alice, sid, "a second question must not rename it");
+      expect((await db.aISession.findUnique({ where: { id: sid } }))!.title).toBe(
+        "How does the billing service retry failed charges?",
+      );
+
+      const named = await as(alice).post("/api/ai/sessions", { title: "My own title" });
+      const namedId = named.body.data.session.id as string;
+      await send(alice, namedId, "what is this?");
+      expect((await db.aISession.findUnique({ where: { id: namedId } }))!.title).toBe(
+        "My own title",
+      );
+    });
+
+    it("#980 — a failed session-title write does not fail the chat turn", async () => {
+      const sid = await newSession(alice);
+      // Every title write rejects; every other session write goes through.
+      const titleWrites: unknown[] = [];
+      const realSessions = db.aISession;
+      const failingSessions = new Proxy(realSessions, {
+        get(target, prop, receiver) {
+          if (prop === "updateMany") {
+            return (args: { data?: { title?: unknown } }) => {
+              if (args?.data?.title !== undefined) {
+                titleWrites.push(args);
+                return Promise.reject(new Error("database is locked"));
+              }
+              return target.updateMany(args as never);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      state.db = new Proxy(db, {
+        get(target, prop, receiver) {
+          return prop === "aISession" ? failingSessions : Reflect.get(target, prop, receiver);
+        },
+      });
+      let res: Awaited<ReturnType<typeof send>>;
+      try {
+        res = await send(alice, sid, "Why did the nightly import fail?");
+      } finally {
+        state.db = db;
+      }
+      // The title write really was attempted, and really failed.
+      expect(titleWrites).toHaveLength(1);
+      expect(res.status).toBe(200);
+      expect(res.text).not.toMatch(/database is locked/);
+      // The turn completed: the question AND its answer are in the transcript.
+      const rows = (await transcript(alice, sid)).body.data.messages as Array<{ role: string }>;
+      expect(rows.map((r) => r.role)).toEqual(["user", "assistant"]);
+      expect((await db.aISession.findUnique({ where: { id: sid } }))!.title).toBe("New Chat");
+    });
+
     // PR #205 review — a compaction summary is a model call: it is metered in
     // both usage stores and gated by the project budget like any chat call.
     it("manual /compact records the summariser's usage for the user and the project", async () => {

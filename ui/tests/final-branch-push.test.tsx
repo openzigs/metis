@@ -337,10 +337,9 @@ describe("ConnectionsPage — GitHub Enterprise repo", () => {
     const testBtns = screen.getAllByRole("button", { name: /^Test$/ });
     fireEvent.click(testBtns[0]);
     await waitFor(() => expect(repoTest).toHaveBeenCalled());
-    // "Last test:" message should appear after test result
-    await waitFor(() => {
-      expect(screen.queryByText(/Last test/i)).toBeInTheDocument();
-      expect(screen.getByText("Bad Repo")).toBeInTheDocument();
-    });
+    // #980 — the result shows under the repo's own card, not in the page header.
+    expect(await screen.findByTestId("repo-test-result-r1")).toHaveTextContent(
+      "Test failed · 50 ms — Auth failed",
+    );
   });
 });

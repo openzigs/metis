@@ -80,6 +80,8 @@ export interface SessionPlanDto {
 export interface ResumableSessionDto {
   id: string;
   projectId: string | null;
+  /** #738 — the bound project's name, so a list row can say which project it is in. */
+  projectName: string | null;
   title: string;
   model: string;
   currentModel: string | null;

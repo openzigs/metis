@@ -161,6 +161,24 @@ export class CompactionError extends Error {
   }
 }
 
+/**
+ * #980 — the summary would not have made the context smaller than the rows it
+ * replaces. Thrown only when the caller asked for `requireSaving`; nothing is
+ * persisted, so the conversation is left exactly as it was.
+ */
+export class CompactionNoSavingError extends Error {
+  constructor(
+    readonly estimatedTokensBefore: number,
+    readonly estimatedTokensAfter: number,
+  ) {
+    super(
+      `Compaction made no saving (about ${estimatedTokensBefore} tokens before, ` +
+        `${estimatedTokensAfter} after summarising), so the conversation was left as it was.`,
+    );
+    this.name = "CompactionNoSavingError";
+  }
+}
+
 /** Group message rows into turns: a user row plus the replies that follow it. */
 export function groupTurns(rows: readonly StoredMessage[]): StoredMessage[][] {
   const groups: StoredMessage[][] = [];
@@ -277,6 +295,11 @@ export interface CompactTranscriptInput {
   summarizer: Summarizer;
   /** Manual `/compact`: fold everything but the newest turn, whatever the size. */
   force?: boolean;
+  /**
+   * #980 — persist the summary only when it shrinks the context below
+   * `estimatedTokensBefore`; otherwise throw {@link CompactionNoSavingError}.
+   */
+  requireSaving?: boolean;
   provider?: string | null;
   model?: string | null;
 }
@@ -381,6 +404,14 @@ export async function compactTranscript(
     0,
   );
   const estimatedTokensAfter = input.fixedTokens + summaryEstimate + keptTokens;
+  if (input.requireSaving && estimatedTokensAfter >= input.estimatedTokensBefore) {
+    log.info("Compaction made no saving; nothing persisted", {
+      sessionId: input.sessionId,
+      estimatedTokensBefore: input.estimatedTokensBefore,
+      estimatedTokensAfter,
+    });
+    throw new CompactionNoSavingError(input.estimatedTokensBefore, estimatedTokensAfter);
+  }
   const now = new Date();
   const meta = {
     fromOrdinal,

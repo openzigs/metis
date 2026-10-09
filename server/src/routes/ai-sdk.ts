@@ -5,6 +5,7 @@
  *   PATCH /api/ai/sessions/:id/model            — switch current model
  *   POST  /api/ai/sessions/:id/approve-plan     — approve|reject pending plan
  *   GET   /api/ai/sessions/:id/plan             — fetch latest plan
+ *   GET   /api/ai/sessions                      — the caller's sessions, paged (#738)
  *   GET   /api/ai/sessions?status=resumable     — resumable sessions
  *
  * Resume and manual compaction moved to `ai-conversation.ts` with the
@@ -24,7 +25,12 @@ import {
   getCurrentPlan,
   recordPendingPlan,
 } from "../lib/ai/plan-mode.js";
-import { listResumable } from "../lib/ai/session-snapshot.js";
+import {
+  listResumable,
+  listSessions,
+  SESSION_LIST_DEFAULT_LIMIT,
+  SESSION_LIST_MAX_LIMIT,
+} from "../lib/ai/session-snapshot.js";
 import { SDK_REASONING_EFFORTS } from "@metis/shared";
 import type { AISession } from "@prisma/client";
 import { getAsyncRunner } from "../lib/async/runner.js";
@@ -71,6 +77,18 @@ const planCreateSchema = z.object({
   planText: z.string().min(1).max(20_000),
 });
 
+// #738 — a page past the ceiling is clamped to it rather than refused.
+const listQuerySchema = z.object({
+  status: z.enum(["resumable"]).optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(SESSION_LIST_DEFAULT_LIMIT)
+    .transform((n) => Math.min(n, SESSION_LIST_MAX_LIMIT)),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 const messageSchema = z.object({
   role: z.enum(["user", "system", "agent"]).default("user"),
   content: z.string().min(1).max(50_000),
@@ -79,16 +97,22 @@ const messageSchema = z.object({
 export function aiSdkRouter(): Router {
   const r = Router();
 
-  // GET /api/ai/sessions?status=resumable
+  // GET /api/ai/sessions                    — the caller's sessions, newest first, paged
+  // GET /api/ai/sessions?status=resumable   — those still inside the resume window
   r.get("/sessions", requireAuth, async (req: Request, res: Response) => {
-    if (req.query.status !== "resumable") {
-      // The other listings live on the existing router; only handle the
-      // resumable filter here so we don't conflict.
-      res.json(ok([]));
+    const parsed = listQuerySchema.safeParse(req.query);
+    if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+    if (parsed.data.status === "resumable") {
+      res.json(ok(await listResumable(req.user!)));
       return;
     }
-    const sessions = await listResumable(req.user!);
-    res.json(ok(sessions));
+    // #738 — this used to answer `[]` to anything but `?status=resumable`,
+    // which read as "you have no sessions" to every caller that did not know
+    // the filter. Scoped exactly like the resumable list: the caller's own
+    // sessions, in projects they can still reach.
+    const { limit, offset } = parsed.data;
+    const page = await listSessions(req.user!, { limit, offset });
+    res.json({ ...ok(page.sessions), page: { limit, offset, hasMore: page.hasMore } });
   });
 
   r.patch("/sessions/:id/model", requireAuth, async (req: Request, res: Response) => {

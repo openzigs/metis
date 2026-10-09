@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { makeWrapper } from "./test-utils";
 import { followedRooms } from "@/lib/socket-subscription";
@@ -58,6 +59,13 @@ vi.mock("@/lib/publishing-api", () => ({
 
 vi.mock("@/lib/connectors-api", () => ({
   repoConnectorsApi: { getPrimary: vi.fn().mockResolvedValue(null) },
+}));
+
+// #980 — the batch secret is chosen from the vault, as on the import form.
+vi.mock("@/lib/vault-api", () => ({
+  vaultApi: {
+    list: vi.fn().mockResolvedValue({ items: [{ id: "v1", label: "gh", description: "" }] }),
+  },
 }));
 
 import { publishingApi } from "@/lib/publishing-api";
@@ -143,10 +151,15 @@ async function armLivePublish(): Promise<void> {
   fireEvent.change(screen.getByLabelText("Repo"), {
     target: { value: "example-requirements" },
   });
-  fireEvent.change(screen.getByLabelText("Vault secret ref"), {
-    target: { value: "${vault:gh}" },
-  });
+  await pickVaultSecret("gh");
   fireEvent.click(screen.getByLabelText("Dry run (no GitHub writes)"));
+}
+
+/** #980 — choose a vault entry in the batch form's secret picker. */
+async function pickVaultSecret(label: string): Promise<void> {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("combobox", { name: "Vault secret ref" }));
+  await user.click(await screen.findByRole("option", { name: new RegExp(label) }));
 }
 
 function renderPage() {
@@ -220,6 +233,7 @@ describe("D — a live publish requires an explicit confirmation", () => {
       targetOwner: "openzigs",
       targetRepo: "example-requirements",
       dryRun: false,
+      secretRef: "${vault:gh}", // #980 — picked from the vault
       draftIds: [DRAFT.id],
     });
     // Same destination and draft set as the plan that was previewed.
