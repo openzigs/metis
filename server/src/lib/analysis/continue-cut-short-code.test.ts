@@ -24,7 +24,7 @@ const { prismaMock, serviceMock } = vi.hoisted(() => ({
     finalizeAnalysisDelta: vi.fn(async () => undefined),
     markAnalysisRunning: vi.fn(async () => undefined),
     getAnalysisCapability: vi.fn(),
-    persistAnalysisCapability: vi.fn(async () => undefined),
+    persistAnalysisCapability: vi.fn(async (_id: string, _capability: unknown) => undefined),
     persistAnalysisEnhancement: vi.fn(async () => undefined),
   },
 }));
@@ -66,6 +66,8 @@ type Stubbed = {
 const health = (exhausted: boolean): AnalysisRetrievalHealth => ({
   successfulSearches: 6,
   totalCalls: 6,
+  failedSearches: 0,
+  erroredCalls: 0,
   requirementCount: 16,
   starved: false,
   degraded: false,
