@@ -192,6 +192,16 @@ jobs:
           docker image prune --all --force > /dev/null
           df -h /
 
+      # #1028 — sign in to Docker Hub before the image builds pull their base
+      # images (node, python …), so they are not subject to the anonymous pull
+      # limit. Never fails the job; fork PRs stay anonymous.
+      - name: Sign in to Docker Hub
+        if: ${{ needs.changes.outputs.images != 'false' }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: bash scripts/ci/dockerhub-login.sh
+
       - name: Set up Buildx
         if: ${{ needs.changes.outputs.images != 'false' }}
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
@@ -745,55 +755,26 @@ jobs:
     env:
       NODE_ENV: development
       NPM_CONFIG_PRODUCTION: "false"
-      # DATABASE_URL is NOT set here (#754): the postgres service now binds an
-      # EPHEMERAL host port, and the `job` context that exposes it is not
-      # available in job-level `env`. The "Resolve Postgres URL" step below
-      # exports it to $GITHUB_ENV before any step needs it.
+      # DATABASE_URL is NOT set here (#754): Postgres binds an EPHEMERAL host
+      # port, so the "Start Postgres" step exports it to $GITHUB_ENV before any
+      # step needs it.
       RUN_INTEGRATION_TESTS: "1"
-    services:
-      postgres: # postgres-adapter
-        # Issue #543 (Epic #518) — pgvector image (a drop-in superset of the
-        # stock postgres image) so the gated pgvector integration test can
-        # `CREATE EXTENSION vector`. Same user/pass/db as docker-compose.
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: metis
-          POSTGRES_PASSWORD: metis
-          POSTGRES_DB: metis
-        # #754 — bind an EPHEMERAL host port, not a fixed 5432. Both postgres
-        # jobs run on the SAME runner and share one Docker daemon
-        # and one host port space, so a fixed `5432:5432` made them race:
-        # whichever container started second died with
-        #   "Bind for 0.0.0.0:5432 failed: port is already allocated".
-        # The mapping cannot simply be dropped — these jobs run on the runner
-        # host (no job-level `container:`), so the `postgres` network alias is
-        # not resolvable; they must reach it over localhost.
-        ports:
-          - 5432
-        options: >-
-          --health-cmd "pg_isready -U metis"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
-      # #754 — the postgres service binds an EPHEMERAL host port (see `ports:`
-      # above). The `job` context that exposes the mapped port is NOT available
-      # in job-level `env:`, so resolve DATABASE_URL here and export it for
-      # every subsequent step. Must stay ahead of any step that touches the DB.
-      - name: Resolve Postgres URL (ephemeral host port)
-        run: |
-          port='${{ job.services.postgres.ports['5432'] }}'
-          if [ -z "$port" ]; then
-            echo "::error::postgres service exposed no host port for 5432"
-            exit 1
-          fi
-          echo "DATABASE_URL=postgresql://metis:metis@localhost:${port}/metis" >> "$GITHUB_ENV"
-          echo "Postgres mapped to host port ${port}"
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           clean: true
+
+      # Postgres runs from a step, not `services:` (see scripts/ci/start-postgres.sh):
+      # a service image is pulled anonymously before any step, and Docker Hub's
+      # anonymous limit failed this job before a test ran. The script signs in
+      # when the Docker Hub secrets exist (fork PRs see them empty), retries the
+      # pull, binds an ephemeral host port (#754) and exports DATABASE_URL.
+      - name: Start Postgres (pgvector, ephemeral host port)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: bash scripts/ci/start-postgres.sh
 
       - name: Clean stale artifacts
         run: rm -rf node_modules dist
@@ -1003,6 +984,10 @@ jobs:
         working-directory: server
         run: pnpm test:integration requirement-set-replace-toctou-779-postgres
 
+      - name: Remove the Postgres container
+        if: always()
+        run: docker rm -f "metis-ci-postgres-${GITHUB_JOB}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
+
   # Issue #556 (Epic #518) — prove the Postgres migration HISTORY applies from
   # an EMPTY database via the real `prisma migrate deploy`.
   #
@@ -1022,53 +1007,24 @@ jobs:
     env:
       NODE_ENV: development
       NPM_CONFIG_PRODUCTION: "false"
-      # DATABASE_URL is resolved in the "Resolve Postgres URL" step (#754) —
-      # the postgres service binds an ephemeral host port and the `job` context
-      # exposing it is unavailable in job-level `env:`.
-    services:
-      postgres:
-        # Issue #543 (Epic #518) — pgvector image (a drop-in superset of the
-        # stock postgres image) so the gated pgvector integration test can
-        # `CREATE EXTENSION vector`. Same user/pass/db as docker-compose.
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: metis
-          POSTGRES_PASSWORD: metis
-          POSTGRES_DB: metis
-        # #754 — bind an EPHEMERAL host port, not a fixed 5432. Both postgres
-        # jobs run on the SAME runner and share one Docker daemon
-        # and one host port space, so a fixed `5432:5432` made them race:
-        # whichever container started second died with
-        #   "Bind for 0.0.0.0:5432 failed: port is already allocated".
-        # The mapping cannot simply be dropped — these jobs run on the runner
-        # host (no job-level `container:`), so the `postgres` network alias is
-        # not resolvable; they must reach it over localhost.
-        ports:
-          - 5432
-        options: >-
-          --health-cmd "pg_isready -U metis"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+      # DATABASE_URL is exported by the "Start Postgres" step (#754): Postgres
+      # binds an ephemeral host port.
     steps:
-      # #754 — the postgres service binds an EPHEMERAL host port (see `ports:`
-      # above). The `job` context that exposes the mapped port is NOT available
-      # in job-level `env:`, so resolve DATABASE_URL here and export it for
-      # every subsequent step. Must stay ahead of any step that touches the DB.
-      - name: Resolve Postgres URL (ephemeral host port)
-        run: |
-          port='${{ job.services.postgres.ports['5432'] }}'
-          if [ -z "$port" ]; then
-            echo "::error::postgres service exposed no host port for 5432"
-            exit 1
-          fi
-          echo "DATABASE_URL=postgresql://metis:metis@localhost:${port}/metis" >> "$GITHUB_ENV"
-          echo "Postgres mapped to host port ${port}"
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           clean: true
+
+      # Postgres runs from a step, not `services:` (see scripts/ci/start-postgres.sh):
+      # a service image is pulled anonymously before any step, and Docker Hub's
+      # anonymous limit failed this job before a test ran. The script signs in
+      # when the Docker Hub secrets exist (fork PRs see them empty), retries the
+      # pull, binds an ephemeral host port (#754) and exports DATABASE_URL.
+      - name: Start Postgres (pgvector, ephemeral host port)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: bash scripts/ci/start-postgres.sh
 
       - name: Clean stale artifacts
         run: rm -rf node_modules dist
@@ -1108,6 +1064,10 @@ jobs:
       - name: Assert deployed schema matches schema.prisma (no drift)
         working-directory: server
         run: pnpm prisma migrate status
+
+      - name: Remove the Postgres container
+        if: always()
+        run: docker rm -f "metis-ci-postgres-${GITHUB_JOB}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
 
   # Epic #209 (#236) — generative-path e2e + coverage gate.
   #
