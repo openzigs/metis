@@ -602,9 +602,8 @@ export default function AnalysisPage(): React.ReactElement {
 
   const [selectedAgents, setSelectedAgents] = useState<AnalysisAgentKey[]>([...SPECIALIST_AGENTS]);
   const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
-  const [modelOverride, setModelOverride] = useState<
-    "auto" | "force-haiku" | "force-sonnet" | "force-fable" | "force-opus"
-  >("auto");
+  // #978 — `auto`, a forced tier, or the provider's configured model id.
+  const [modelOverride, setModelOverride] = useState<string>("auto");
   // Epic #597 — enhancement toggles
   const [enableWebResearch, setEnableWebResearch] = useState(false);
   // Default ON so doc-grounded clarifying questions surface by default; the

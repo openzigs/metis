@@ -280,6 +280,7 @@ import {
   CostCapExceededError,
   setOrchestratorForTests,
 } from "../src/lib/analysis/index.js";
+import { ModelNotServedError } from "../src/lib/ai/model-router.js";
 
 let app: ReturnType<typeof createApp>;
 let adminToken: string;
@@ -298,7 +299,7 @@ class StubOrchestrator extends AnalysisOrchestrator {
   assertRegenCalls: string[] = [];
   shouldThrowCap = false;
   /** When set, `start()` throws the matching error to exercise the route catch arms. */
-  startBehavior: "ok" | "not-found" | "archived" = "ok";
+  startBehavior: "ok" | "not-found" | "archived" | "model-not-served" = "ok";
   /** When set, `assertCanRegenerate` throws the supplied error instead of resolving. */
   regenPreflightError: Error | null = null;
 
@@ -326,6 +327,9 @@ class StubOrchestrator extends AnalysisOrchestrator {
     }
     if (this.startBehavior === "archived") {
       throw new Error("Project archived");
+    }
+    if (this.startBehavior === "model-not-served") {
+      throw new ModelNotServedError(opts.model ?? "", "anthropic", "deepseek-flash");
     }
     const aId = nid("ana");
     analyses.set(aId, {
@@ -491,6 +495,18 @@ describe("POST /api/projects/:projectId/analyses", () => {
       .send({});
     expect(res.status).toBe(429);
     expect(res.body.error.code).toBe("ANALYSIS_MONTHLY_CAP_EXCEEDED");
+  });
+
+  it("returns a clear 400 when the forced model is one the provider cannot serve (#978)", async () => {
+    orch.startBehavior = "model-not-served";
+    const res = await request(app)
+      .post("/api/projects/proj-abcdefghij/analyses")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ model: "force-opus" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("MODEL_NOT_SERVED");
+    expect(res.body.error.message).toContain("does not serve Opus");
+    expect(res.body.error.message).toContain("deepseek-flash");
   });
 
   it("rejects invalid agent keys (400)", async () => {

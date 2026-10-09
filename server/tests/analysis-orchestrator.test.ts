@@ -2038,7 +2038,7 @@ describe("AnalysisOrchestrator misc branches", () => {
 describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
   async function modelsSentBy(
     overrides: Partial<AIProvider>,
-    run: { model?: string; regenerate?: boolean } = {},
+    run: { model?: string; regenerate?: boolean; persistedModel?: string } = {},
   ): Promise<Array<string | undefined>> {
     const base = makeProvider({});
     const sent: Array<string | undefined> = [];
@@ -2074,6 +2074,12 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
     if (run.regenerate) {
       // Only what the regenerate sends: the model is reloaded from metadata.
       sent.length = 0;
+      if (run.persistedModel) {
+        // A run recorded before #978 refused unservable tiers at start.
+        const row = analyses.get(analysisId)!;
+        const meta = JSON.parse(row.metadata ?? "{}") as Record<string, unknown>;
+        row.metadata = JSON.stringify({ ...meta, model: run.persistedModel });
+      }
       await orch.regenerateAgent({
         analysisId,
         agentKey: "document",
@@ -2084,27 +2090,48 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
     return sent;
   }
 
+  // `offline: false` — these stand in for real providers; the stub base is
+  // offline, and the forced-tier check (#978) waves the offline stub through.
   const deepSeek: Partial<AIProvider> = {
     key: "anthropic",
     model: "deepseek-chat",
+    offline: false,
     servesRouterModel: () => false,
   };
   const gateway: Partial<AIProvider> = {
     key: "bedrock-gateway",
     model: "us.anthropic.claude-sonnet-5",
+    offline: false,
     servesRouterModel: () => true,
   };
 
   // Review of PR #523 — the card resolves a forced tier through the router with
   // the provider attached; the run must too, or the two disagree.
+  // #978 — refused, not silently remapped onto the configured model.
   it.each(["force-sonnet", "force-haiku", "force-opus", "force-fable"])(
-    "a %s run on a non-Claude provider runs on the provider's configured model",
+    "a %s run on a non-Claude provider is refused before any analysis row exists",
     async (override) => {
-      const sent = await modelsSentBy(deepSeek, { model: override });
-      expect(sent.length).toBeGreaterThan(0);
-      expect(new Set(sent)).toEqual(new Set(["deepseek-chat"]));
+      const { ModelNotServedError } = await import("../src/lib/ai/model-router.js");
+      const orch = new AnalysisOrchestrator({
+        provider: { ...makeProvider({}), ...deepSeek } as unknown as AIProvider,
+        retrieve: async () => [],
+      });
+      const before = analyses.size;
+      await expect(
+        orch.start({
+          projectId: "proj-abcdefghij",
+          startedById: "user-1234567890",
+          model: override,
+        }),
+      ).rejects.toBeInstanceOf(ModelNotServedError);
+      expect(analyses.size).toBe(before);
     },
   );
+
+  it("a run naming the provider's configured model runs on it", async () => {
+    const sent = await modelsSentBy(deepSeek, { model: "deepseek-chat" });
+    expect(new Set(sent)).toEqual(new Set(["deepseek-chat"]));
+  });
 
   it("a forced tier on a Claude-serving provider runs that tier's id, never the override string", async () => {
     const { OPUS_MODEL_ID } = await import("../src/lib/ai/model-router.js");
@@ -2114,7 +2141,7 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
   });
 
   it("a regenerate of a forced-tier run resolves the persisted override the same way", async () => {
-    const sent = await modelsSentBy(deepSeek, { model: "force-sonnet", regenerate: true });
+    const sent = await modelsSentBy(deepSeek, { regenerate: true, persistedModel: "force-sonnet" });
     expect(new Set(sent)).toEqual(new Set(["deepseek-chat"]));
   });
 

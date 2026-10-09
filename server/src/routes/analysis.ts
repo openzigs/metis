@@ -87,6 +87,7 @@ import {
   serializeFindingIssueDraftMarkdown,
   serializeAnalysisReportMarkdown,
 } from "../lib/analysis/index.js";
+import { ModelNotServedError } from "../lib/ai/model-router.js";
 import { RequirementVersionError } from "../lib/requirements/requirement-version-service.js";
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 import { listPromptOnlyAnalysisAgents } from "../lib/analysis/custom-agent-phase.js";
@@ -374,6 +375,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       } catch (err) {
         if (err instanceof CostCapExceededError) {
           throw new AppError(429, err.code, err.message, { cap: err.cap, used: err.used });
+        }
+        // #978 — a forced Claude tier the provider cannot run: refused, not remapped.
+        if (err instanceof ModelNotServedError) {
+          throw new AppError(400, err.code, err.message, {
+            requested: err.requested,
+            configuredModel: err.configuredModel,
+          });
         }
         if (err instanceof Error && /not found/i.test(err.message)) {
           throw new AppError(404, "PROJECT_NOT_FOUND", err.message);

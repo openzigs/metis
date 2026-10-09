@@ -8,6 +8,8 @@ import {
   HAIKU_MODEL_ID,
   OPUS_MODEL_ID,
   SONNET_MODEL_ID,
+  LEGACY_SONNET_MODEL_ID,
+  ModelNotServedError,
   tierModelFor,
   type RouterProvider,
 } from "../src/lib/ai/model-router.js";
@@ -356,5 +358,74 @@ describe("tierModelFor (#532)", () => {
 
   it("treats a provider that cannot answer (no servesRouterModel) as non-Claude", () => {
     expect(tierModelFor({ key: "openai", model: "gpt-4.1" }, HAIKU_MODEL_ID)).toBe("gpt-4.1");
+  });
+});
+
+// #978 — a forced tier the provider cannot serve is refused, never remapped.
+describe("ModelRouter.assertServable (#978)", () => {
+  const deepSeek: RouterProvider = {
+    key: "anthropic",
+    model: "deepseek-flash",
+    servesRouterModel: () => false,
+  };
+  const claude: RouterProvider = {
+    key: "bedrock-gateway",
+    model: SONNET_MODEL_ID,
+    servesRouterModel: () => true,
+  };
+
+  it.each(["force-haiku", "force-sonnet", "force-fable", "force-opus"])(
+    "rejects %s on a provider that does not serve Claude tiers",
+    (override) => {
+      const router = new ModelRouter({ provider: deepSeek });
+      expect(() => router.assertServable(override)).toThrow(ModelNotServedError);
+    },
+  );
+
+  it.each([SONNET_MODEL_ID, OPUS_MODEL_ID, LEGACY_SONNET_MODEL_ID])(
+    "rejects the raw tier id %s on that provider too",
+    (id) => {
+      expect(() => new ModelRouter({ provider: deepSeek }).assertServable(id)).toThrow(
+        ModelNotServedError,
+      );
+    },
+  );
+
+  it("names the provider, the refused model and the model it does run", () => {
+    try {
+      new ModelRouter({ provider: deepSeek }).assertServable("force-opus");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      const e = err as InstanceType<typeof ModelNotServedError>;
+      expect(e.requested).toBe("force-opus");
+      expect(e.configuredModel).toBe("deepseek-flash");
+      expect(e.message).toContain("Opus");
+      expect(e.message).toContain("deepseek-flash");
+    }
+  });
+
+  it("accepts auto, no model, and the provider's own configured model", () => {
+    const router = new ModelRouter({ provider: deepSeek });
+    expect(() => router.assertServable(undefined)).not.toThrow();
+    expect(() => router.assertServable("auto")).not.toThrow();
+    expect(() => router.assertServable("deepseek-flash")).not.toThrow();
+  });
+
+  it("accepts a forced tier on a provider that serves it", () => {
+    expect(() => new ModelRouter({ provider: claude }).assertServable("force-opus")).not.toThrow();
+  });
+
+  // The model preferences list the tiers on the offline stub (and its e2e
+  // replay wrapper), so the panel offers them there: the check must agree.
+  it.each<RouterProvider>([
+    { key: "offline-stub", model: "offline-stub", offline: false },
+    { key: "openai", model: "stub", offline: true },
+  ])("accepts a forced tier on the offline stub (%o)", (stub) => {
+    const router = new ModelRouter({ provider: { ...stub, servesRouterModel: () => false } });
+    expect(() => router.assertServable("force-opus")).not.toThrow();
+  });
+
+  it("accepts anything when no provider is attached", () => {
+    expect(() => new ModelRouter().assertServable("force-opus")).not.toThrow();
   });
 });

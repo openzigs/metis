@@ -12,7 +12,7 @@
  */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -30,6 +30,7 @@ import {
   type ProviderPrefs,
 } from "@/lib/settings-api";
 import { phase12QueryKeys } from "@/lib/phase12-query-keys";
+import { modelCatalogApi } from "@/lib/model-catalog-api";
 import { ApiError } from "@/lib/api-client";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 import { SecretRow, type SecretSource } from "./SecretRow";
@@ -232,7 +233,27 @@ function mapSource(source: ConfigKeyView["source"]): SecretSource {
   return "unset";
 }
 
+/** #978 — the active provider and its configured model, where the server said. */
+function serverDefaultsOf(
+  provider: string | undefined,
+  model: string | undefined,
+): Partial<Pick<ProviderPrefs, "defaultProvider" | "defaultModel">> {
+  return {
+    ...(provider ? { defaultProvider: provider } : {}),
+    ...(model ? { defaultModel: model } : {}),
+  };
+}
+
 function ProviderPrefsSection() {
+  // #978 — with nothing saved, show the active provider and the model it is
+  // configured to run, never a hard-coded Claude default.
+  const catalog = useQuery({
+    queryKey: ["ai-model-catalog", "provider"],
+    queryFn: () => modelCatalogApi.list(),
+    staleTime: 60_000,
+  });
+  const serverProvider = catalog.data?.provider;
+  const serverModel = catalog.data?.defaultModel;
   const [saved, setSaved] = useState<ProviderPrefs>(() => loadProviderPrefs());
   const [draft, setDraft] = useState<ProviderPrefs>(saved);
   // #1284 — the hook owns the 2s dismissal timer AND cancels it on unmount.
@@ -241,6 +262,16 @@ function ProviderPrefsSection() {
     draft.defaultProvider !== saved.defaultProvider ||
     draft.defaultModel !== saved.defaultModel ||
     draft.reasoningEffort !== saved.reasoningEffort;
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+
+  useEffect(() => {
+    if (!serverProvider && !serverModel) return;
+    const fresh = loadProviderPrefs(serverDefaultsOf(serverProvider, serverModel));
+    setSaved(fresh);
+    // Keep an in-progress edit; only an untouched form follows the server.
+    if (!dirtyRef.current) setDraft(fresh);
+  }, [serverProvider, serverModel]);
 
   function handleSave() {
     saveProviderPrefs(draft);
@@ -250,7 +281,7 @@ function ProviderPrefsSection() {
 
   function handleReset() {
     resetProviderPrefs();
-    const fresh = loadProviderPrefs();
+    const fresh = loadProviderPrefs(serverDefaultsOf(serverProvider, serverModel));
     setSaved(fresh);
     setDraft(fresh);
   }
