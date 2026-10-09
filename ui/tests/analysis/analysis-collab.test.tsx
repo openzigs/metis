@@ -9,7 +9,7 @@
  *   - AC2: a 409 from the optimistic-lock save opens the MergeConflictModal
  *     seeded with the server diff (instead of a generic error toast).
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { makeWrapper, TEST_USER } from "../test-utils";
 
@@ -377,6 +377,52 @@ describe("AnalysisPage collaboration (Epic #34)", () => {
 
     await waitFor(() => expect(updateMock.update).toHaveBeenCalled());
     expect(updateMock.update.mock.calls[0]![1]).not.toHaveProperty("acceptanceCriteria");
+  });
+
+  describe("#990 — an empty stored list prefills from the body the draft reads", () => {
+    type Req = { body: string; acceptanceCriteria: string[] };
+    const req = () => SNAPSHOT.requirements[0] as unknown as Req;
+    let saved: Req;
+    beforeEach(() => {
+      saved = { ...req() };
+      req().acceptanceCriteria = [];
+      req().body = "Build it\n\n## Acceptance criteria\n- Imported one\n- Imported two";
+    });
+    afterEach(() => Object.assign(req(), saved));
+
+    it("shows the body-derived criteria in the editor and does not resend them untouched", async () => {
+      updateMock.update.mockResolvedValue({ id: "req-1", version: 5, updatedAt: "now" });
+      renderPage();
+      await waitForRequirement();
+      fireEvent.click(screen.getAllByRole("button", { name: /^edit$/i })[0]);
+      await waitFor(() =>
+        expect(screen.getByLabelText("Acceptance criterion 1")).toHaveValue("Imported one"),
+      );
+      expect(screen.getByLabelText("Acceptance criterion 2")).toHaveValue("Imported two");
+      fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Renamed" } });
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      await waitFor(() => expect(updateMock.update).toHaveBeenCalled());
+      expect(updateMock.update.mock.calls[0]![1]).not.toHaveProperty("acceptanceCriteria");
+    });
+
+    it("removing every prefilled criterion sends an explicit empty list", async () => {
+      updateMock.update.mockResolvedValue({ id: "req-1", version: 5, updatedAt: "now" });
+      renderPage();
+      await waitForRequirement();
+      fireEvent.click(screen.getAllByRole("button", { name: /^edit$/i })[0]);
+      await waitFor(() =>
+        expect(screen.getByLabelText("Acceptance criterion 1")).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Remove acceptance criterion 2" }));
+      fireEvent.click(screen.getByRole("button", { name: "Remove acceptance criterion 1" }));
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      await waitFor(() =>
+        expect(updateMock.update).toHaveBeenCalledWith(
+          "req-1",
+          expect.objectContaining({ acceptanceCriteria: [] }),
+        ),
+      );
+    });
   });
 
   it("routes review-status (approve) through the locked PUT with version (AC2/M1)", async () => {

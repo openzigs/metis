@@ -32,7 +32,7 @@ import {
 // string[] on the wire; a malformed/legacy value reads as no labels rather than
 // throwing inside the lock's pre-flight read.
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
-import { parseAcceptanceCriteria } from "@metis/shared";
+import { ACCEPTANCE_CRITERIA_CLEARED, parseAcceptanceCriteria } from "@metis/shared";
 
 // ---- Schemas ----------------------------------------------------------------
 
@@ -236,7 +236,12 @@ export function requirementsCollaborationRouter(): Router {
       if (parsed.data.storyPoints !== undefined) patch.storyPoints = parsed.data.storyPoints;
       if (parsed.data.reviewStatus !== undefined) patch.reviewStatus = parsed.data.reviewStatus;
       if (parsed.data.acceptanceCriteria !== undefined) {
-        patch.acceptanceCriteria = JSON.stringify(parsed.data.acceptanceCriteria);
+        // #990 — `[]` is an explicit clear: store the marker so the issue draft
+        // does not refill the list from the body or a Gherkin text.
+        patch.acceptanceCriteria =
+          parsed.data.acceptanceCriteria.length === 0
+            ? ACCEPTANCE_CRITERIA_CLEARED
+            : JSON.stringify(parsed.data.acceptanceCriteria);
       }
 
       // Epic #770 — the version-history service owns version bumping and appends

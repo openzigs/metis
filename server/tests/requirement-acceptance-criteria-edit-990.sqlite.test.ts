@@ -43,6 +43,7 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
 const { requirementsCollaborationRouter } = await import("../src/routes/requirements.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
+const { parseAcceptanceCriteria } = await import("@metis/shared");
 const { generateDrafts } = await import("../src/lib/publishing/draft-generator.js");
 const { createManualBaseline, compareBaselines } =
   await import("../src/lib/reviews/baseline-service.js");
@@ -73,7 +74,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .set("Authorization", `Bearer ${TOKEN}`)
         .send(body);
 
-    const makeRequirement = async () => {
+    const makeRequirement = async (opts: { body?: string; criteria?: string[] } = {}) => {
       seq += 1;
       const analysis = await db.analysis.create({
         data: { projectId: PROJECT, startedById: USER, status: "completed" },
@@ -84,9 +85,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectId: PROJECT,
           analysisId: analysis.id,
           title: `Feeds refresh on a schedule ${seq}`,
-          body: "Feeds are refreshed periodically.",
+          body: opts.body ?? "Feeds are refreshed periodically.",
           version: 1,
-          acceptanceCriteria: JSON.stringify(GENERATED),
+          acceptanceCriteria: JSON.stringify(opts.criteria ?? GENERATED),
         },
       });
       return { id: row.id, analysisId: analysis.id };
@@ -201,7 +202,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await put(id, { version: 1, acceptanceCriteria: [] });
 
       expect(res.status).toBe(200);
-      expect(JSON.parse((await stored(id)).acceptanceCriteria)).toEqual([]);
+      expect(parseAcceptanceCriteria((await stored(id)).acceptanceCriteria)).toEqual([]);
     });
 
     it("refuses a blank criterion and an over-long list without writing", async () => {
@@ -273,6 +274,43 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const draft = await db.issueDraft.findFirstOrThrow({ where: { requirementId: id } });
       expect(draft.body).toContain("- [ ] A feed refreshes every 60 minutes");
       for (const generated of GENERATED) expect(draft.body).not.toContain(generated);
+    });
+    const IMPORTED_BODY = [
+      "Feeds are refreshed periodically.",
+      "",
+      "## Acceptance criteria",
+      "- Imported criterion one",
+      "- Imported criterion two",
+    ].join("\n");
+    const draftBody = async (id: string, analysisId: string) => {
+      await generateDrafts({
+        projectId: PROJECT,
+        analysisId,
+        targetOwner: "openzigs",
+        targetRepo: "flux-v2",
+      });
+      return (await db.issueDraft.findFirstOrThrow({ where: { requirementId: id } })).body;
+    };
+
+    it("an emptied list is honoured: the draft does not refill it from the body (#990)", async () => {
+      const { id, analysisId } = await makeRequirement({ body: IMPORTED_BODY, criteria: [] });
+      // Before the clear the body-derived criteria are what the draft (and the editor) show.
+      expect(await draftBody(id, analysisId)).toContain("- [ ] Imported criterion one");
+      await db.issueDraft.deleteMany({ where: { requirementId: id } });
+
+      const res = await put(id, { version: 1, acceptanceCriteria: [] });
+      expect(res.status).toBe(200);
+
+      const body = await draftBody(id, analysisId);
+      expect(body).not.toContain("- [ ] Imported criterion");
+      expect(body).toContain("No acceptance criteria were derived");
+    });
+
+    it("an emptied Gherkin body does not refill from the Gherkin either (#990)", async () => {
+      const gherkin = "Given a feed\nWhen it is stale\nThen it is refreshed";
+      const { id, analysisId } = await makeRequirement({ body: gherkin, criteria: [] });
+      await put(id, { version: 1, acceptanceCriteria: [] });
+      expect(await draftBody(id, analysisId)).toContain("No acceptance criteria were derived");
     });
   },
 );

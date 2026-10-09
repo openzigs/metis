@@ -9,6 +9,7 @@
  * with the size of the run.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { deriveBodyAcceptanceCriteria } from "@metis/shared";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
@@ -1585,6 +1586,19 @@ function RequirementEditModal(props: {
   const [labelsText, setLabelsText] = useState("");
   // #990 — the requirement's own criteria, one input per criterion.
   const [criteria, setCriteria] = useState<string[]>([]);
+  // Stable row ids, parallel to `criteria`, so Remove does not move focus or
+  // IME state onto the wrong input.
+  const [criteriaKeys, setCriteriaKeys] = useState<number[]>([]);
+  const nextCriterionKey = useRef(0);
+
+  // #990 — what the issue draft renders: the stored list, else the criteria it
+  // derives from the body (imported requirements, #863, or a Gherkin body). The
+  // editor prefills from that so it is the single source the draft renders from.
+  const initialCriteria = useMemo(() => {
+    if (!requirement) return [];
+    const stored = requirement.acceptanceCriteria ?? [];
+    return stored.length > 0 ? stored : deriveBodyAcceptanceCriteria(requirement.body);
+  }, [requirement]);
 
   // Sync local form state whenever a different requirement opens.
   useEffect(() => {
@@ -1594,8 +1608,9 @@ function RequirementEditModal(props: {
     setPriority(requirement.priority);
     setType(requirement.type);
     setLabelsText(requirement.labels.join(", "));
-    setCriteria(requirement.acceptanceCriteria ?? []);
-  }, [requirement]);
+    setCriteria(initialCriteria);
+    setCriteriaKeys(initialCriteria.map(() => nextCriterionKey.current++));
+  }, [requirement, initialCriteria]);
 
   const open = requirement !== null;
   return (
@@ -1625,8 +1640,7 @@ function RequirementEditModal(props: {
             // Sent only when the list changed, so an edit of another field does
             // not rewrite (and version) criteria nobody touched.
             const criteriaChanged =
-              JSON.stringify(acceptanceCriteria) !==
-              JSON.stringify(requirement?.acceptanceCriteria ?? []);
+              JSON.stringify(acceptanceCriteria) !== JSON.stringify(initialCriteria);
             onSave({
               title: title.trim(),
               body: body.trim(),
@@ -1706,7 +1720,7 @@ function RequirementEditModal(props: {
             {criteria.length > 0 ? (
               <ol className="space-y-2">
                 {criteria.map((criterion, i) => (
-                  <li key={i} className="flex items-center gap-2">
+                  <li key={criteriaKeys[i] ?? i} className="flex items-center gap-2">
                     <Input
                       aria-label={`Acceptance criterion ${i + 1}`}
                       value={criterion}
@@ -1720,7 +1734,10 @@ function RequirementEditModal(props: {
                       variant="ghost"
                       size="sm"
                       aria-label={`Remove acceptance criterion ${i + 1}`}
-                      onClick={() => setCriteria((prev) => prev.filter((_, j) => j !== i))}
+                      onClick={() => {
+                        setCriteria((prev) => prev.filter((_, j) => j !== i));
+                        setCriteriaKeys((prev) => prev.filter((_, j) => j !== i));
+                      }}
                     >
                       Remove
                     </Button>
@@ -1735,7 +1752,10 @@ function RequirementEditModal(props: {
               variant="outline"
               size="sm"
               disabled={criteria.length >= 30}
-              onClick={() => setCriteria((prev) => [...prev, ""])}
+              onClick={() => {
+                setCriteria((prev) => [...prev, ""]);
+                setCriteriaKeys((prev) => [...prev, nextCriterionKey.current++]);
+              }}
             >
               Add criterion
             </Button>

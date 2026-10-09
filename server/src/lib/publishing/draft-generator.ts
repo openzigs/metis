@@ -21,6 +21,9 @@ import {
   findingSupportPanelSchema,
   type DraftCandidates,
   parseAcceptanceCriteria,
+  isAcceptanceCriteriaCleared,
+  deriveBodyAcceptanceCriteria,
+  extractBodyAcceptanceCriteria as extractCriteriaFromBody,
   renderPublishedConfidenceNote,
   summarizeSupportPanels,
   type FindingSupportPanel,
@@ -755,6 +758,7 @@ function renderFeatureBody(input: {
   const acceptance = renderAcceptanceCriteria({
     body: requirement.body,
     acceptanceCriteria: parseAcceptanceCriteria(requirement.acceptanceCriteria),
+    cleared: isAcceptanceCriteriaCleared(requirement.acceptanceCriteria),
   });
   // #1110 — placed directly under the description and ABOVE the acceptance
   // criteria: a caution a developer reads after the criteria they already
@@ -801,88 +805,24 @@ function renderFeatureBody(input: {
 export const NO_ACCEPTANCE_CRITERIA_NOTE =
   "_No acceptance criteria were derived from the analysis evidence — add them before implementation._";
 
-const MARKDOWN_HEADING = /^\s*#{1,6}\s/;
-/** A bullet or numbered list marker. Linear: no overlapping quantifiers. */
-const LIST_MARKER = /^\s*(?:[-*+]|\d{1,9}[.)])\s+/;
-const CHECKBOX = /^\[[ xX]\]\s+/;
+/** #863 — re-exported; the implementation lives in @metis/shared so the Edit dialog prefills from the same extraction. */
+export const extractBodyAcceptanceCriteria = extractCriteriaFromBody;
 
-/**
- * A heading or bold label introducing an acceptance-criteria section
- * (`## Acceptance criteria`, `**Acceptance Criteria:**`). String operations
- * rather than one regex, so a long line of an untrusted body cannot backtrack.
- */
-function isAcceptanceCriteriaHeading(line: string): boolean {
-  let text = line
-    .trim()
-    .replace(/^#{1,6}/, "")
-    .trim();
-  for (const mark of ["**", "__"]) {
-    if (text.startsWith(mark)) text = text.slice(mark.length);
-    if (text.endsWith(mark)) text = text.slice(0, -mark.length);
-  }
-  text = text.trim();
-  if (text.endsWith(":")) text = text.slice(0, -1);
-  for (const mark of ["**", "__"]) {
-    if (text.endsWith(mark)) text = text.slice(0, -mark.length);
-  }
-  return text.trim().toLowerCase() === "acceptance criteria";
-}
-
-/** The text of a list item (bullet, numbered or checklist), or null. */
-function listItemText(line: string): string | null {
-  const marker = LIST_MARKER.exec(line);
-  if (!marker) return null;
-  const rest = line.slice(marker[0].length);
-  const box = CHECKBOX.exec(rest);
-  const text = (box ? rest.slice(box[0].length) : rest).trim();
-  return text.length > 0 ? text : null;
-}
-
-/**
- * #863 — the criteria an upstream issue body states itself, under an
- * "Acceptance criteria" heading. Imported requirements carry the upstream text
- * only, so without this every imported draft read "no acceptance criteria"
- * even when the issue listed them. Only that section is read: a stray checklist
- * elsewhere ("- [x] I searched existing issues") is a template, not a criterion,
- * and inventing criteria is what #1096 removed.
- */
-export function extractBodyAcceptanceCriteria(body: string): string[] {
-  const lines = body.split(/\r?\n/);
-  const start = lines.findIndex(isAcceptanceCriteriaHeading);
-  if (start < 0) return [];
-  const items: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    if (MARKDOWN_HEADING.test(line) || isAcceptanceCriteriaHeading(line)) break;
-    const item = listItemText(line);
-    if (item) items.push(item);
-    else if (line.trim().length > 0) {
-      // An indented line continues the item above; any other prose ends the
-      // section, even before the first item ("None yet." then a template box).
-      if (items.length > 0 && /^\s+\S/.test(line)) items[items.length - 1] += ` ${line.trim()}`;
-      else break;
-    }
-  }
-  return items;
-}
-
-function renderAcceptanceCriteria(req: { body: string; acceptanceCriteria?: string[] }): string {
+function renderAcceptanceCriteria(req: {
+  body: string;
+  acceptanceCriteria?: string[];
+  /** #990 — the user deliberately emptied the list in the editor. */
+  cleared?: boolean;
+}): string {
   const persisted = (req.acceptanceCriteria ?? []).map((c) => c.trim()).filter((c) => c.length > 0);
-  const criteria = persisted.length > 0 ? persisted : extractBodyAcceptanceCriteria(req.body);
+  // #990 — the editor is the single source: an explicit clear is honoured and
+  // never refilled from the body. Otherwise the body-derived criteria (the
+  // section, or a Gherkin body) are exactly what the editor prefills.
+  const criteria =
+    persisted.length > 0 ? persisted : req.cleared ? [] : deriveBodyAcceptanceCriteria(req.body);
   if (criteria.length > 0) {
     return criteria.map((c) => `- [ ] ${c}`).join("\n");
   }
-
-  // Legacy fallback: a body the analysis already wrote as Gherkin is itself the
-  // requirement's text, so bulleting it invents nothing.
-  const trimmed = req.body.trim();
-  if (/given\b.*when\b.*then\b/is.test(trimmed)) {
-    return trimmed
-      .split(/\n+/)
-      .filter((line) => line.trim().length > 0)
-      .map((line) => `- [ ] ${line.trim()}`)
-      .join("\n");
-  }
-
   return NO_ACCEPTANCE_CRITERIA_NOTE;
 }
 
