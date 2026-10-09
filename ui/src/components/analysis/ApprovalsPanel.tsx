@@ -447,6 +447,76 @@ function ApprovalCard({
   );
 }
 
+/**
+ * Issue #939 — approve every pending approval at once. Reviewing 37 requirements
+ * one card at a time needed a scripted loop. Asks first: an approval cannot be
+ * reopened (only a rejection can), so one stray click must not approve them all.
+ */
+function ApproveAllPending({
+  projectId,
+  analysisId,
+  pendingCount,
+  onChange,
+}: {
+  projectId: string;
+  analysisId: string;
+  pendingCount: number;
+  onChange: () => void;
+}): React.ReactElement {
+  const qc = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const approveAll = useMutation({
+    mutationFn: () => analysisApi.approveAllApprovals(projectId, analysisId),
+    onSuccess: () => {
+      setConfirming(false);
+      onChange();
+      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      // Approving promotes the requirements (as the per-card approve does, #1135).
+      qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(analysisId) });
+    },
+  });
+
+  if (!confirming) {
+    return (
+      <Button size="sm" onClick={() => setConfirming(true)}>
+        Approve all {pendingCount} pending
+      </Button>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded border px-3 py-2 text-sm" data-testid="approve-all-confirm">
+      <p>
+        Approve all {pendingCount} pending approvals? An approval cannot be reopened; approved
+        requirements are promoted as approved.
+      </p>
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          aria-label="Confirm approve all"
+          onClick={() => approveAll.mutate()}
+          disabled={approveAll.isPending}
+        >
+          Approve all
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setConfirming(false)}
+          disabled={approveAll.isPending}
+        >
+          Cancel
+        </Button>
+      </div>
+      {approveAll.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          Could not approve all pending approvals.{" "}
+          {approveAll.error instanceof ApiError ? approveAll.error.message : "Try again."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function ApprovalsPanel({
   projectId,
   analysisId,
@@ -567,9 +637,17 @@ export function ApprovalsPanel({
 
       {pending.length > 0 && (
         <div className="space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Pending ({pending.length})
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Pending ({pending.length})
+            </p>
+            <ApproveAllPending
+              projectId={projectId}
+              analysisId={analysisId}
+              pendingCount={pending.length}
+              onChange={() => query.refetch()}
+            />
+          </div>
           {pending.map((approval, i) => (
             <ApprovalCard
               key={approval.id}

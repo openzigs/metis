@@ -101,6 +101,7 @@ const reviewApprovalRequest = vi.fn(async () => ({
   status: "approved",
 }));
 const promoteApprovedRequirements = vi.fn();
+const approveAllPendingApprovalRequests = vi.fn();
 const reopenApprovalRequest = vi.fn(async () => ({
   id: "ap_1",
   analysisId: "analysis-1",
@@ -129,6 +130,7 @@ vi.mock("../lib/analysis/index.js", () => ({
   listApprovalRequests: vi.fn(),
   reviewApprovalRequest,
   reopenApprovalRequest,
+  approveAllPendingApprovalRequests,
   canCreateTickets: vi.fn(),
   promoteApprovedRequirements,
   deepDiveFinding: vi.fn(),
@@ -195,6 +197,11 @@ describe("approval promote/reopen — per-IP limiter ahead of the route's auth (
       url: "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
       perUser: reopenLimiter,
     },
+    {
+      path: "/:id/approvals/approve-all",
+      url: "/api/projects/proj-1/analyses/analysis-1/approvals/approve-all",
+      perUser: promoteLimiter,
+    },
   ];
 
   it.each(routes)(
@@ -236,6 +243,7 @@ describe("approval promote/reopen — per-IP limiter ahead of the route's auth (
   it.each(routes)(
     "lets the request through to the per-user limiter on $path",
     async ({ url, perUser }) => {
+      approveAllPendingApprovalRequests.mockResolvedValue({ approvedCount: 0 });
       // Queue the promotion only for the route that consumes it.
       if (perUser === promoteLimiter) {
         promoteApprovedRequirements.mockResolvedValueOnce({
@@ -396,6 +404,73 @@ describe("POST .../approvals/promote — #723", () => {
 
     expect(res.status).toBe(429);
     expect(promoteLimiter.calls).toBe(1);
+    expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+  });
+});
+
+// Issue #939 — approving 37 items one card at a time needed a scripted loop.
+describe("POST .../approvals/approve-all — #939", () => {
+  const approveAll = (body: Record<string, unknown> = {}) =>
+    request(createApp())
+      .post("/api/projects/proj-1/analyses/analysis-1/approvals/approve-all")
+      .send(body);
+
+  it("approves every pending approval as the caller, then promotes once", async () => {
+    approveAllPendingApprovalRequests.mockResolvedValueOnce({ approvedCount: 37 });
+    promoteApprovedRequirements.mockResolvedValueOnce({ status: "promoted", requirementCount: 37 });
+
+    const res = await approveAll({ reviewNote: "  looks right  " });
+
+    expect(res.status).toBe(200);
+    expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith("analysis-1", {
+      reviewerId: "user-1",
+      reviewNote: "looks right",
+    });
+    expect(promoteApprovedRequirements).toHaveBeenCalledTimes(1);
+    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1");
+    expect(res.body.data).toEqual({
+      approvedCount: 37,
+      promotion: { status: "promoted", requirementCount: 37 },
+    });
+  });
+
+  it("records no note when none is given", async () => {
+    approveAllPendingApprovalRequests.mockResolvedValueOnce({ approvedCount: 1 });
+    promoteApprovedRequirements.mockResolvedValueOnce({ status: "promoted", requirementCount: 1 });
+
+    await approveAll();
+
+    expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith("analysis-1", {
+      reviewerId: "user-1",
+      reviewNote: undefined,
+    });
+  });
+
+  it("rejects a non-string note", async () => {
+    const res = await approveAll({ reviewNote: 42 });
+
+    expect(res.status).toBe(400);
+    expect(approveAllPendingApprovalRequests).not.toHaveBeenCalled();
+  });
+
+  it("still answers 200 for the approvals when promotion itself fails", async () => {
+    approveAllPendingApprovalRequests.mockResolvedValueOnce({ approvedCount: 3 });
+    promoteApprovedRequirements.mockRejectedValueOnce(new Error("db down"));
+
+    const res = await approveAll();
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.approvedCount).toBe(3);
+    expect(res.body.data.promotion.status).toBe("unavailable");
+  });
+
+  it("is rate limited before anything is approved", async () => {
+    promoteLimiter.limited = true;
+
+    const res = await approveAll();
+
+    expect(res.status).toBe(429);
+    expect(approveAllPendingApprovalRequests).not.toHaveBeenCalled();
     expect(promoteApprovedRequirements).not.toHaveBeenCalled();
   });
 });

@@ -711,6 +711,26 @@ export interface PersistRequirementsInput {
    * that must tell "withheld" from "replaced with nothing" listens here.
    */
   onWithheld?: (withheld: RequirementReplacementWithheld) => void;
+  /**
+   * Issue #939 — the review status every inserted row starts in. The approval
+   * checkpoint passes `"approved"`: a requirement the user approved there is
+   * approved, not a draft waiting for a second Approve. The row ids are recorded
+   * in `metadata.checkpointApprovedRequirementIds` in the same transaction.
+   * Omitted: rows start with no status (read as `draft`).
+   */
+  reviewStatus?: "approved";
+}
+
+/**
+ * Issue #939 — metadata key naming the rows the approval checkpoint created
+ * already approved. Their `approved` status is the checkpoint's decision, which
+ * a newer run's checkpoint supersedes, so it alone is not review work (#769).
+ */
+export const CHECKPOINT_APPROVED_IDS_KEY = "checkpointApprovedRequirementIds";
+
+function readCheckpointApprovedIds(metadata: Record<string, unknown>): string[] {
+  const raw = metadata[CHECKPOINT_APPROVED_IDS_KEY];
+  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
 }
 
 /**
@@ -719,12 +739,25 @@ export interface PersistRequirementsInput {
  * of an "immutable" baseline). Scoped by `analysisId` so another analysis's
  * reviewed rows can never protect, or fail to protect, this one.
  */
-function reviewedRequirementWhere(analysisId: string): Prisma.RequirementWhereInput {
+function reviewedRequirementWhere(
+  analysisId: string,
+  checkpointApprovedIds: string[] = [],
+): Prisma.RequirementWhereInput {
   return {
     analysisId,
     OR: [
-      // `draft` is the initial state, not a review decision.
-      { AND: [{ reviewStatus: { not: null } }, { reviewStatus: { not: "draft" } }] },
+      // `draft` is the initial state, not a review decision; nor is the
+      // `approved` the checkpoint wrote at promotion (#939) — any later edit,
+      // link or status change still counts through its own clause.
+      {
+        AND: [
+          { reviewStatus: { not: null } },
+          { reviewStatus: { not: "draft" } },
+          ...(checkpointApprovedIds.length > 0
+            ? [{ NOT: { id: { in: checkpointApprovedIds }, reviewStatus: "approved" } }]
+            : []),
+        ],
+      },
       // An edit bumps `version` and appends a `RequirementVersion` row (#770).
       { version: { gt: 0 } },
       { versions: { some: {} } },
@@ -769,7 +802,7 @@ async function assessRequirementReplacement(
   });
   if (existingCount === 0) return null;
   const reviewedCount = await tx.requirement.count({
-    where: reviewedRequirementWhere(input.analysisId),
+    where: reviewedRequirementWhere(input.analysisId, readCheckpointApprovedIds(metadata)),
   });
   const base = {
     existingCount,
@@ -872,6 +905,9 @@ async function replaceRequirementSet(
   // rewritten to match it (the orchestrator no longer writes it beforehand).
   const next: Record<string, unknown> = { ...metadata };
   delete next.requirementReplacementWithheld;
+  // #939 — the rows it named are deleted below; rewritten after the inserts
+  // when this set is itself checkpoint-approved.
+  delete next[CHECKPOINT_APPROVED_IDS_KEY];
   if (input.degraded !== undefined) {
     if (input.degraded) next.synthesisDegraded = input.degraded;
     else delete next.synthesisDegraded;
@@ -914,9 +950,16 @@ async function replaceRequirementSet(
         // Issue #773 — persist the verdict alongside coverage. Coverage says what
         // evidence exists; the verdict says whether we may tell the user to build it.
         verdict: input.verdicts?.[idx] ?? null,
+        ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
       },
     });
     ids.push(row.id);
+  }
+  if (input.reviewStatus && analysisRow) {
+    await tx.analysis.update({
+      where: { id: input.analysisId },
+      data: { metadata: JSON.stringify({ ...next, [CHECKPOINT_APPROVED_IDS_KEY]: ids }) },
+    });
   }
   return ids;
 }

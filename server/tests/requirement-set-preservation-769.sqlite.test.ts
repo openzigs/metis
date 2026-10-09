@@ -525,6 +525,59 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await titles()).toEqual(["C"]);
     });
 
+    // Issue #939 — the approval checkpoint IS the review: the rows it promotes
+    // are created approved, so the hub does not ask for a second Approve.
+    async function promoteCheckpointApproved(titles: string[]): Promise<string[]> {
+      return persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis(titles),
+        findingIdsByIndex: [],
+        reviewStatus: "approved",
+      });
+    }
+
+    it("#939 — writes the checkpoint's approval onto the rows it promotes, and records them", async () => {
+      const ids = await promoteCheckpointApproved(["A", "B"]);
+      const rows = await db.requirement.findMany({
+        where: { analysisId: ANALYSIS },
+        orderBy: { title: "asc" },
+        select: { id: true, reviewStatus: true, version: true },
+      });
+      expect(rows.map((r) => r.reviewStatus)).toEqual(["approved", "approved"]);
+      expect(rows.map((r) => r.version)).toEqual([0, 0]);
+      expect((await metadata()).checkpointApprovedRequirementIds).toEqual(ids);
+    });
+
+    it("#939 — the checkpoint's own approval is not review work: a newer run's set replaces it", async () => {
+      await promoteCheckpointApproved(["A", "B"]);
+      await promoteCheckpointApproved(["C"]);
+      expect(await titles()).toEqual(["C"]);
+      expect((await metadata()).requirementReplacementWithheld).toBeUndefined();
+    });
+
+    it("#939 — a checkpoint-approved row someone then reviewed by hand is protected", async () => {
+      const [a] = await promoteCheckpointApproved(["A"]);
+      await db.requirement.update({ where: { id: a }, data: { reviewStatus: "rejected" } });
+      await seedSet(["C"]);
+      expect(await titles()).toEqual(["A"]);
+    });
+
+    it("#939 — an approval the checkpoint did not write still protects the set", async () => {
+      const [a] = await seedSet(["A"]);
+      await db.requirement.update({ where: { id: a }, data: { reviewStatus: "approved" } });
+      await seedSet(["C"]);
+      expect(await titles()).toEqual(["A"]);
+    });
+
+    it("#939 — a replacement without the checkpoint's approval drops the stale record", async () => {
+      await promoteCheckpointApproved(["A"]);
+      await seedSet(["C"]);
+      expect((await metadata()).checkpointApprovedRequirementIds).toBeUndefined();
+      const [row] = await db.requirement.findMany({ where: { analysisId: ANALYSIS } });
+      expect(row?.reviewStatus).toBeNull();
+    });
+
     it("a soft-deleted data mapping is not review work — the set is replaced", async () => {
       const [a] = await seedSet(["A"]);
       const conn = await db.databaseConnection.create({
