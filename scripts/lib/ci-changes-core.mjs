@@ -45,6 +45,7 @@ export const POSTGRES_PATTERNS = Object.freeze([
   ...GATE_AND_DEPENDENCIES,
   // The script that starts the Postgres container both postgres jobs test against.
   "scripts/ci/start-postgres.sh",
+  "scripts/ci/dockerhub-login.sh",
   "server/package.json",
   "server/prisma/**",
   "server/prisma.config.ts",
@@ -115,6 +116,8 @@ export const IMAGE_PATTERNS = Object.freeze([
   ...GATE_AND_DEPENDENCIES,
   "Dockerfile.*",
   ".dockerignore",
+  // Signs the image builds in to Docker Hub before they pull base images (#1028).
+  "scripts/ci/dockerhub-login.sh",
   "**/package.json",
   "tsconfig.base.json",
   "server/prisma/**",

@@ -69,6 +69,7 @@ describe("pinned path lists", () => {
 
   it.each([
     "scripts/ci/start-postgres.sh",
+    "scripts/ci/dockerhub-login.sh",
     "server/prisma/postgres/schema.prisma",
     "server/prisma/postgres/migrations/20260101000000_x/migration.sql",
     "server/prisma/schema.prisma",
@@ -106,6 +107,7 @@ describe("pinned path lists", () => {
     "Dockerfile.ui",
     "Dockerfile.embeddings",
     "Dockerfile.sql-lineage",
+    "scripts/ci/dockerhub-login.sh",
     ".dockerignore",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",

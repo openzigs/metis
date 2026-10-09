@@ -192,6 +192,16 @@ jobs:
           docker image prune --all --force > /dev/null
           df -h /
 
+      # #1028 — sign in to Docker Hub before the image builds pull their base
+      # images (node, python …), so they are not subject to the anonymous pull
+      # limit. Never fails the job; fork PRs stay anonymous.
+      - name: Sign in to Docker Hub
+        if: ${{ needs.changes.outputs.images != 'false' }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: bash scripts/ci/dockerhub-login.sh
+
       - name: Set up Buildx
         if: ${{ needs.changes.outputs.images != 'false' }}
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0

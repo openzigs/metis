@@ -17,25 +17,7 @@ NAME="${PG_CONTAINER_NAME:-metis-ci-postgres-${GITHUB_JOB:-local}-${GITHUB_RUN_I
 # name is per job and run; the job's final step removes the container.
 docker rm -f "${NAME}" >/dev/null 2>&1 || true
 
-if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-  # The sign-in hits the same auth endpoint that times out, so it gets its own
-  # retries, and a sign-in that still fails (timeout, expired or revoked token)
-  # falls back to an anonymous pull rather than failing the job here.
-  logged_in=0
-  for attempt in 1 2 3; do
-    if echo "${DOCKERHUB_TOKEN}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin; then
-      logged_in=1
-      break
-    fi
-    echo "::warning::docker login failed (attempt ${attempt}/3)"
-    sleep $((attempt * 10))
-  done
-  if [ "${logged_in}" -ne 1 ]; then
-    echo "::warning::Docker Hub sign-in failed; pulling anonymously instead."
-  fi
-else
-  echo "No Docker Hub credentials (fork PR or secrets unset); pulling anonymously."
-fi
+bash "$(dirname "$0")/dockerhub-login.sh"
 
 pulled=0
 for attempt in 1 2 3 4 5; do
