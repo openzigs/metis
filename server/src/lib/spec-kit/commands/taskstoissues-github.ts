@@ -54,6 +54,7 @@ import { SpecKitArtifactError } from "../artifacts.js";
 import {
   auditTasksExportRefused,
   clearStuckTaskExports,
+  GITHUB_LABEL_MAX_LENGTH,
   markIssueNotCreated,
   resolveTasksExportRepo,
   runTasksToIssues,
@@ -358,7 +359,15 @@ export function createGitHubIssueClient(octokit: PublishOctokitLike): IssueClien
           ).data ?? {};
       } catch (err) {
         const status = statusOf(err);
-        const failure = githubFailure("create an issue", status, err);
+        const invalid = status === 422 ? invalidFieldsOf(err) : null;
+        const failure = invalid
+          ? githubFailure(
+              `create an issue: it rejected ${invalid.join(", ")}`,
+              status,
+              err,
+              invalidHint(invalid),
+            )
+          : githubFailure("create an issue", status, err);
         // #962 — a 4xx is GitHub refusing: nothing was created, so the claim
         // may go. A network error or a 5xx is ambiguous and keeps it.
         throw status >= 400 && status < 500 ? markIssueNotCreated(failure) : failure;
@@ -442,6 +451,37 @@ const LOOKUP_HINT =
   "No issues were created: METIS could not confirm the publish target is not the upstream " +
   "of that analysed repository. Use a vault secret that can read it, retry if GitHub was " +
   "rate-limiting, or change the project's publish target.";
+
+/** A GitHub enum word (`Label`, `name`, `invalid`): nothing of the request's content. */
+const GITHUB_WORD_RE = /^[A-Za-z_]{1,40}$/;
+
+/**
+ * #988 — a 422 `Validation Failed` names what GitHub refused in
+ * `errors[].{resource, field, code}`, e.g. `invalid Label name`. Only those
+ * enum words are read — never `message` or `value`, which can quote the
+ * request. Null when the response carries none.
+ */
+export function invalidFieldsOf(err: unknown): string[] | null {
+  const data = (err as { response?: { data?: unknown } } | null)?.response?.data;
+  const errors = (data as { errors?: unknown } | null | undefined)?.errors;
+  if (!Array.isArray(errors)) return null;
+  const word = (v: unknown) => (typeof v === "string" && GITHUB_WORD_RE.test(v) ? v : null);
+  const out = new Set<string>();
+  for (const e of errors as Array<Record<string, unknown> | null>) {
+    const resource = word(e?.resource);
+    const field = word(e?.field);
+    if (!resource && !field) continue;
+    out.add([word(e?.code), resource, field].filter(Boolean).join(" "));
+  }
+  return out.size > 0 ? [...out] : null;
+}
+
+function invalidHint(invalid: string[]): string {
+  const label = invalid.some((f) => /\bLabel\b/.test(f))
+    ? ` GitHub caps a label name at ${GITHUB_LABEL_MAX_LENGTH} characters.`
+    : "";
+  return `No issue was created: the issue's content failed GitHub's validation, not the vault secret.${label}`;
+}
 
 function githubFailure(
   step: string,

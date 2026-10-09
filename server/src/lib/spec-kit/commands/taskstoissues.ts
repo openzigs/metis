@@ -653,8 +653,8 @@ async function createOrAdopt(opts: {
       throw err;
     }
   }
-  const labels = [`speckit:${opts.featureSlug}`];
-  if (task.userStorySlug) labels.push(`story:${task.userStorySlug}`);
+  const labels = [githubLabel("speckit:", opts.featureSlug)];
+  if (task.userStorySlug) labels.push(githubLabel("story:", task.userStorySlug));
   let resp: IssueCreatedResponse;
   try {
     resp = await client.create(repo.owner, repo.name, {
@@ -933,6 +933,25 @@ function assertPlanUnchanged(
       "The issues this export would create differ from the dry run (a task was exported meanwhile, or the target changed). Run the dry run again and review the issues before publishing.",
     );
   }
+}
+
+/** GitHub refuses (422) a label name longer than this many characters. */
+export const GITHUB_LABEL_MAX_LENGTH = 50;
+
+/**
+ * #988 — `prefix + value` as a GitHub label name, at most
+ * {@link GITHUB_LABEL_MAX_LENGTH} characters. A name that fits is unchanged; a
+ * longer one keeps the head of `value` and ends in a hash of the whole value,
+ * so two long slugs sharing a head still get distinct labels. The full slug
+ * stays in the issue body's `Source:` line.
+ */
+export function githubLabel(prefix: string, value: string): string {
+  const full = `${prefix}${value}`;
+  if ([...full].length <= GITHUB_LABEL_MAX_LENGTH) return full;
+  const hash = createHash("sha256").update(value).digest("hex").slice(0, 8);
+  const room = GITHUB_LABEL_MAX_LENGTH - [...prefix].length - 1 - hash.length;
+  const head = [...value].slice(0, room).join("").replace(/-+$/, "");
+  return `${prefix}${head}-${hash}`;
 }
 
 export function renderIssueBody(task: ParsedTask, featureSlug: string): string {
