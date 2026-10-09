@@ -110,6 +110,7 @@ const getDialogState = vi.fn();
 const listApprovalRequests = vi.fn();
 const reviewApprovalRequest = vi.fn();
 const reopenApprovalRequest = vi.fn();
+const approveAllPendingApprovalRequests = vi.fn(async () => ({ approvedCount: 1 }));
 const promoteApprovedRequirements = vi.fn(async () => ({
   status: "already-promoted" as const,
   requirementCount: 0,
@@ -139,6 +140,7 @@ vi.mock("../lib/analysis/index.js", () => ({
   listApprovalRequests,
   reviewApprovalRequest,
   reopenApprovalRequest,
+  approveAllPendingApprovalRequests,
   canCreateTickets,
   // #1104 — reviewing an approval now retries promotion of the withheld
   // requirements; scoping is asserted on `reviewApprovalRequest` as before.
@@ -361,6 +363,32 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
 
       expect(res.status).toBe(200);
       expect(promoteApprovedRequirements).toHaveBeenCalledWith("ana-b");
+    });
+  });
+
+  // Issue #939 — bulk approve writes every pending approval of the analysis.
+  describe("POST /:id/approvals/approve-all", () => {
+    it("404s before approving another project's approvals", async () => {
+      const res = await request(app).post(
+        "/api/projects/proj-b/analyses/ana-a/approvals/approve-all",
+      );
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("ANALYSIS_NOT_FOUND");
+      expect(approveAllPendingApprovalRequests).not.toHaveBeenCalled();
+      expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+    });
+
+    it("still approves the caller's own analysis (no over-blocking)", async () => {
+      const res = await request(app).post(
+        "/api/projects/proj-b/analyses/ana-b/approvals/approve-all",
+      );
+
+      expect(res.status).toBe(200);
+      expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith(
+        "ana-b",
+        expect.objectContaining({ reviewerId: expect.any(String) }),
+      );
     });
   });
 

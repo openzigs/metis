@@ -2113,7 +2113,7 @@ Indexes: `@@unique([requirementId, version])`, `@@index([requirementId])`, `@@in
 - `updateRequirementWithHistory` — runs inside a `$transaction`: bumps `version` and appends one changed-fields-only row **only if** the patch actually changes a tracked field (a no-op update appends nothing).
 - `restoreRequirementVersion` — reconstructs the target snapshot, writes it as a **new** version N+1 (never mutates older rows), and defaults `reason` to `"Restored to version N"`.
 
-The `PUT /api/requirements/:id` route delegates version bumping to this service; the optimistic-lock middleware still guards concurrent writes (`409`) but its `nextVersion` is ignored to avoid double-incrementing.
+The `PUT /api/requirements/:id` route delegates version bumping to this service; the optimistic-lock middleware still guards concurrent writes (`409`) but its `nextVersion` is ignored to avoid double-incrementing. Its `labels` are the caller's *visible* labels: the service merges them onto the hidden `finding:*` / `review:*` labels of the row it reads in the transaction (`keepHiddenLabels`), so an edit never drops a requirement's link to its finding, and the 409 diff shows labels without them (#940).
 
 **REST surface** — `server/src/routes/requirement-history.ts`, mounted under `/api/requirements`:
 
@@ -6471,6 +6471,7 @@ Raw Documents
 - `PUT /api/analysis/:id/approvals/:approvalId` — Approve or reject an approval request
 - `POST /api/projects/:projectId/analyses/:id/approvals/:approvalId/reopen` — Return a rejected approval to pending (#723)
 - `POST /api/projects/:projectId/analyses/:id/approvals/promote` — Promote the approved requirements of a completed run whose gate is open but which has no requirement rows; `analysis.run`, project-scoped, rate-limited, idempotent (#723)
+- `POST /api/projects/:projectId/analyses/:id/approvals/approve-all` — Approve every pending approval of the analysis in one write (optional `reviewNote`), then promote once; resolved approvals are left alone. `analysis.run`, project-scoped, rate-limited under the promote key. Requirements promoted from the checkpoint are created `approved` and listed in `metadata.checkpointApprovedRequirementIds`; that status alone is not review work, so a newer run's checkpoint may replace them (#939)
 
 ---
 

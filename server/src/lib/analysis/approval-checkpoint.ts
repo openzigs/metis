@@ -142,6 +142,32 @@ export async function reviewApprovalRequest(
 }
 
 /**
+ * Issue #939 — approve every PENDING approval of an analysis in one write.
+ * Approving 37 items one card at a time needed a scripted loop. Resolved
+ * approvals are left alone: a rejection stays rejected (reopen it to change
+ * it), and an earlier reviewer's approval keeps its reviewer and note. The
+ * status predicate rides the write (#909), so an approval resolved concurrently
+ * is never overwritten. Scoped by `analysisId` — the caller has already tied
+ * the analysis to its project (#1097).
+ */
+export async function approveAllPendingApprovalRequests(
+  analysisId: string,
+  review: { reviewerId: string; reviewNote?: string },
+): Promise<{ approvedCount: number }> {
+  const { count } = await prisma.approvalRequest.updateMany({
+    where: { analysisId, status: "pending" },
+    data: {
+      status: "approved",
+      reviewerId: review.reviewerId,
+      reviewNote: review.reviewNote ?? null,
+      reviewedAt: new Date(),
+    },
+  });
+  log.info("Approved all pending approval requests", { analysisId, count });
+  return { approvedCount: count };
+}
+
+/**
  * Check if all approvals for an analysis are resolved (approved/rejected).
  */
 export async function areAllApprovalsResolved(analysisId: string): Promise<boolean> {

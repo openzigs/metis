@@ -54,12 +54,12 @@ vi.mock("../src/lib/prisma.js", () => ({
           where,
           data,
         }: {
-          where: { id: string; analysisId: string; status?: string };
+          where: { id?: string; analysisId: string; status?: string };
           data: Record<string, unknown>;
         }) => {
           const matched = rows.filter(
             (r) =>
-              r.id === where.id &&
+              (where.id === undefined || r.id === where.id) &&
               r.analysisId === where.analysisId &&
               (where.status === undefined || r.status === where.status),
           );
@@ -93,6 +93,7 @@ const {
   areAllApprovalsResolved,
   canCreateTickets,
   reopenApprovalRequest,
+  approveAllPendingApprovalRequests,
   DEFAULT_APPROVAL_POLICY,
 } = await import("../src/lib/analysis/approval-checkpoint.js");
 
@@ -433,5 +434,57 @@ describe("reopenApprovalRequest (#723)", () => {
     await expect(reopenApprovalRequest("analysis-2", "approval-1")).rejects.toMatchObject({
       code: "APPROVAL_NOT_FOUND",
     });
+  });
+});
+
+describe("approveAllPendingApprovalRequests (#939)", () => {
+  beforeEach(() => {
+    rows = [];
+    idCounter = 0;
+  });
+
+  it("approves every pending approval of the analysis, and nothing already resolved", async () => {
+    await createApprovalRequests("analysis-1", [
+      { type: "requirement" as const, itemId: "r-1" },
+      { type: "requirement" as const, itemId: "r-2" },
+      { type: "evidence" as const, itemId: "e-1" },
+    ]);
+    await reviewApprovalRequest("analysis-1", "approval-2", {
+      status: "rejected",
+      reviewerId: "user-0",
+    });
+
+    const result = await approveAllPendingApprovalRequests("analysis-1", {
+      reviewerId: "user-1",
+      reviewNote: "bulk",
+    });
+
+    expect(result).toEqual({ approvedCount: 2 });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.get("approval-1")).toMatchObject({
+      status: "approved",
+      reviewerId: "user-1",
+      reviewNote: "bulk",
+    });
+    expect(byId.get("approval-1")!.reviewedAt).toBeInstanceOf(Date);
+    expect(byId.get("approval-3")).toMatchObject({ status: "approved", reviewerId: "user-1" });
+    // A rejection stays a rejection: bulk approve only resolves what is pending.
+    expect(byId.get("approval-2")).toMatchObject({ status: "rejected", reviewerId: "user-0" });
+    expect((await canCreateTickets("analysis-1")).allowed).toBe(true);
+  });
+
+  it("never touches another analysis's approvals", async () => {
+    await createApprovalRequests("analysis-1", [{ type: "requirement" as const, itemId: "r-1" }]);
+    await createApprovalRequests("analysis-2", [{ type: "requirement" as const, itemId: "r-1" }]);
+
+    const result = await approveAllPendingApprovalRequests("analysis-1", { reviewerId: "user-1" });
+
+    expect(result).toEqual({ approvedCount: 1 });
+    expect(rows.find((r) => r.analysisId === "analysis-2")!.status).toBe("pending");
+  });
+
+  it("reports zero when nothing is pending", async () => {
+    const result = await approveAllPendingApprovalRequests("analysis-1", { reviewerId: "user-1" });
+    expect(result).toEqual({ approvedCount: 0 });
   });
 });
