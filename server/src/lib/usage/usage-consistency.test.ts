@@ -219,7 +219,7 @@ describe("usage aggregate-vs-detail consistency (#428, #792)", () => {
     // Unknown cost is an EMPTY cell, never 0.000000; the project is named.
     const dsLine = csv.split("\n").find((l) => l.includes("deepseek-v4-pro"));
     expect(dsLine).toBe(
-      `2026-06-25,anthropic,deepseek-v4-pro,user-1,${PROJECT_ID},1334017,1297372,2631389,,1,2631389`,
+      `2026-06-25,anthropic,deepseek-v4-pro,user-1,${PROJECT_ID},1334017,1297372,2631389,,1,2631389,docs`,
     );
   });
 

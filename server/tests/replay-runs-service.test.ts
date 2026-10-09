@@ -45,6 +45,7 @@ interface UsageRow {
 const runs: RunRow[] = [];
 const steps: StepRow[] = [];
 const usage: UsageRow[] = [];
+let usageReadFails = false;
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -134,12 +135,16 @@ vi.mock("../src/lib/prisma.js", () => ({
           where,
         }: {
           where: {
-            sessionId?: string | null;
+            sessionId?: string | null | { in: string[] };
             createdAt?: { gt?: Date; gte?: Date; lte?: Date };
           };
         }) => {
+          if (usageReadFails) throw new Error("ledger unavailable");
           return usage.filter((u) => {
-            if (where.sessionId !== undefined && u.sessionId !== where.sessionId) return false;
+            const sid = where.sessionId;
+            if (sid && typeof sid === "object") {
+              if (u.sessionId === null || !sid.in.includes(u.sessionId)) return false;
+            } else if (sid !== undefined && u.sessionId !== sid) return false;
             if (where.createdAt) {
               if (where.createdAt.gt && u.createdAt <= where.createdAt.gt) return false;
               if (where.createdAt.gte && u.createdAt < where.createdAt.gte) return false;
@@ -188,6 +193,7 @@ beforeEach(() => {
   runs.length = 0;
   steps.length = 0;
   usage.length = 0;
+  usageReadFails = false;
 });
 
 function seedUsage(row: Partial<UsageRow> & { sessionId: string | null; createdAt: Date }): void {
@@ -326,7 +332,7 @@ describe("replay/runs-service", () => {
 describe("replay/runs-service computeRunCost", () => {
   it("returns zero (no throw) when the run does not exist", async () => {
     const cost = await computeRunCost("missing");
-    expect(cost).toEqual({ costCents: 0, totalTokens: 0 });
+    expect(cost).toEqual({ costCents: 0, costUsd: 0, totalTokens: 0 });
   });
 
   it("returns zero when no usage rows fall in the run window", async () => {
@@ -341,7 +347,7 @@ describe("replay/runs-service computeRunCost", () => {
       outputTokens: 1000,
     });
     const cost = await computeRunCost(runId);
-    expect(cost).toEqual({ costCents: 0, totalTokens: 0 });
+    expect(cost).toEqual({ costCents: 0, costUsd: 0, totalTokens: 0 });
   });
 
   it("attributes no cost to an unpriced model but still counts its tokens (#22)", async () => {
@@ -364,7 +370,7 @@ describe("replay/runs-service computeRunCost", () => {
       outputTokens: 1_000_000,
     });
     const cost = await computeRunCost(runId);
-    expect(cost).toEqual({ costCents: 6, totalTokens: 2_012_000 });
+    expect(cost).toEqual({ costCents: 6, costUsd: 0.06, totalTokens: 2_012_000 });
   });
 
   it("aggregates in-window usage grouped by provider+model into integer cents", async () => {
@@ -691,5 +697,84 @@ describe("replay/runs-service — an analysis run is priced over its whole sessi
 
     expect((await getRun(analysisRun))?.run.costCents).toBe(12);
     expect((await getRun(chatRun))?.run.costCents).toBe(6);
+  });
+});
+
+describe("replay/runs-service — exact, unrounded run cost (#977)", () => {
+  // claude-3-5-sonnet input is 0.3¢ per 1k tokens: a 1k-token chat turn costs
+  // 0.3¢, which whole cents round to 0 — and a 1.7k one (0.51¢) to a full 1¢.
+  async function windowRun(sessionId: string): Promise<string> {
+    const id = await startRun({ sessionId });
+    const run = runs.find((r) => r.id === id)!;
+    run.startedAt = new Date("2026-01-01T00:00:00Z");
+    run.completedAt = new Date("2026-01-01T01:00:00Z");
+    return id;
+  }
+
+  it("computeRunCost reports the sub-cent cost in costUsd, rounding only costCents", async () => {
+    const runId = await windowRun("turn-1");
+    seedUsage({
+      sessionId: "turn-1",
+      createdAt: new Date("2026-01-01T00:10:00Z"),
+      inputTokens: 1_700,
+    });
+    const cost = await computeRunCost(runId);
+    expect(cost.costCents).toBe(1);
+    expect(cost.costUsd).toBeCloseTo(0.0051, 10);
+  });
+
+  it("rounds a multi-model run once, not once per model", async () => {
+    // 0.45¢ on each of two models: per-model rounding gave 0 + 0 = 0¢.
+    const runId = await windowRun("turn-2");
+    seedUsage({
+      sessionId: "turn-2",
+      createdAt: new Date("2026-01-01T00:10:00Z"),
+      inputTokens: 1_500,
+    });
+    seedUsage({
+      sessionId: "turn-2",
+      provider: "openai",
+      model: "gpt-4o",
+      createdAt: new Date("2026-01-01T00:11:00Z"),
+      inputTokens: 1_800,
+    });
+    const cost = await computeRunCost(runId);
+    expect(cost.costUsd).toBeCloseTo(0.009, 10);
+    expect(cost.costCents).toBe(1);
+  });
+
+  it("listRuns carries each run's unrounded costUsd over its own window and session", async () => {
+    const a = await windowRun("list-a");
+    const b = await windowRun("list-b");
+    seedUsage({
+      sessionId: "list-a",
+      createdAt: new Date("2026-01-01T00:10:00Z"),
+      inputTokens: 1_000,
+    });
+    // Outside run A's window — never billed to it.
+    seedUsage({
+      sessionId: "list-a",
+      createdAt: new Date("2026-01-01T02:00:00Z"),
+      inputTokens: 9_000,
+    });
+    seedUsage({
+      sessionId: "list-b",
+      createdAt: new Date("2026-01-01T00:20:00Z"),
+      inputTokens: 2_000,
+    });
+
+    const items = await listRuns({});
+    const byId = new Map(items.map((r) => [r.id, r]));
+    expect(byId.get(a)!.costUsd).toBeCloseTo(0.003, 10);
+    expect(byId.get(b)!.costUsd).toBeCloseTo(0.006, 10);
+  });
+
+  it("listRuns still lists runs, with costUsd null, when the ledger cannot be read", async () => {
+    const a = await windowRun("list-c");
+    runs[0].costCents = 4;
+    usageReadFails = true;
+    const items = await listRuns({});
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: a, costCents: 4, costUsd: null });
   });
 });

@@ -2,8 +2,9 @@
  * /api/workspaces/:workspaceId/finops — FinOps surface for the workspace
  * finops page (Epic #47 / Issue #54).
  *
- * Exposes the latest forecast, budget config, alert-rule CRUD, alert-channel
- * CRUD, alert-event history, and the on-demand chargeback PDF download. All
+ * Exposes the latest forecast, budget config, month-to-date usage totals
+ * (#977), alert-rule CRUD, alert-channel CRUD, alert-event history, and the
+ * on-demand chargeback PDF download. All
  * routes require at least workspace `member`; mutations require `admin`.
  */
 import { Router, type Request, type Response } from "express";
@@ -15,6 +16,8 @@ import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { getLatestForecast } from "../lib/finops/forecast-service.js";
 import { buildChargebackReport } from "../lib/finops/chargeback-report.js";
+import { sumLedgerUsage } from "../lib/finops/ledger-totals.js";
+import { finopsUsagePreAuthRateLimiter } from "../middleware/finops-usage-rate-limit.js";
 
 type Req = Request & { params: Record<string, string> };
 
@@ -141,6 +144,27 @@ export function finopsWorkspaceRouter(): Router {
     if (!ws) throw new AppError(404, "NOT_FOUND", "Workspace not found");
     res.json(ok({ monthlyBudgetCents: ws.monthlyBudgetCents }));
   });
+
+  // ── Usage totals (#977) ───────────────────────────────────────────────────
+  // Month-to-date tokens and cost across the workspace's projects, read live
+  // from the `token_usages` ledger. The Workspace scope of Settings → Usage
+  // showed a forecast, budget and alerts but never what had been spent.
+  r.get(
+    "/usage-totals",
+    finopsUsagePreAuthRateLimiter,
+    requireAuth,
+    requireWorkspaceRole("member"),
+    async (req: Req, res: Response) => {
+      const { workspaceId } = req.params;
+      const now = new Date();
+      const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      const totals = await sumLedgerUsage({
+        project: { workspaceId },
+        createdAt: { gte: from, lte: now },
+      });
+      res.json(ok({ from: from.toISOString(), to: now.toISOString(), ...totals }));
+    },
+  );
 
   r.put("/budget", requireAuth, requireWorkspaceRole("admin"), async (req: Req, res: Response) => {
     const { workspaceId } = req.params;

@@ -75,6 +75,7 @@ import {
 import { asDocumentSource, type DocumentSource } from "../documents/document-source.js";
 import type { TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
+import { sumLedgerUsage } from "../finops/ledger-totals.js";
 import { isServerAuthored } from "./server-authored.js";
 import { CODE_GRAPH_DOCUMENT_PREFIX } from "./fused-code-chunks.js";
 import type { ToolCallTelemetry } from "./tool-telemetry.js";
@@ -1241,7 +1242,33 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
     { projectId: row.projectId },
   );
   const sourceById = new Map([...cited].map(([docId, d]) => [docId, d.source]));
-  return toSnapshot(row, crossDocFindings, sourceById);
+  return {
+    ...toSnapshot(row, crossDocFindings, sourceById),
+    ledgerUsage: await readAnalysisLedgerUsage(row.projectId, id),
+  };
+}
+
+/**
+ * #977 — the analysis's spend so far from the project ledger: every call
+ * `analysis-usage` billed to its session (the analysis id), scoped to its
+ * project. `Analysis.totalTokens` is written only at the end of the run, so
+ * this is what lets a running analysis show live tokens and cost. A failed
+ * read is `null` — accounting never fails the snapshot.
+ */
+async function readAnalysisLedgerUsage(
+  projectId: string,
+  analysisId: string,
+): Promise<AnalysisSnapshot["ledgerUsage"]> {
+  try {
+    const t = await sumLedgerUsage({ projectId, sessionId: analysisId });
+    return { totalTokens: t.totalTokens, costUsd: t.costUsd, unpricedTokens: t.unpricedTokens };
+  } catch (err) {
+    log.warn("analysis ledger usage could not be read", {
+      analysisId,
+      error: (err as Error).message,
+    });
+    return null;
+  }
 }
 
 export async function updateRequirementRow(input: {

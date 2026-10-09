@@ -15,7 +15,7 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { finopsApi, formatCents } from "@/lib/finops-api";
+import { finopsApi, formatCents, type WorkspaceUsageTotals } from "@/lib/finops-api";
 import { ForecastChart } from "@/components/finops/ForecastChart";
 import { BudgetForm } from "@/components/finops/BudgetForm";
 import { AlertRuleEditor } from "@/components/finops/AlertRuleEditor";
@@ -39,6 +39,12 @@ export function WorkspaceFinopsPanel({ workspaceId }: { workspaceId: string }) {
     queryFn: () => finopsApi.getEvents(workspaceId),
   });
 
+  // #977 — what the workspace has actually spent this month.
+  const totalsQuery = useQuery({
+    queryKey: ["finops", workspaceId, "usage-totals"],
+    queryFn: () => finopsApi.getUsageTotals(workspaceId),
+  });
+
   const budgetCents = budgetQuery.data?.monthlyBudgetCents ?? null;
   const forecast = forecastQuery.data?.forecast ?? null;
   const events = eventsQuery.data?.events ?? [];
@@ -57,6 +63,8 @@ export function WorkspaceFinopsPanel({ workspaceId }: { workspaceId: string }) {
           </a>
         }
       />
+
+      {totalsQuery.data ? <WorkspaceUsageTiles totals={totalsQuery.data} /> : null}
 
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
@@ -98,6 +106,47 @@ export function WorkspaceFinopsPanel({ workspaceId }: { workspaceId: string }) {
             ))}
           </ul>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * #977 — month-to-date token and cost totals for the workspace. Cost is the
+ * ledger's unrounded USD, rounded here for display; unpriced usage is named
+ * beside it, never counted as $0 (#22).
+ */
+export function WorkspaceUsageTiles({
+  totals,
+}: {
+  totals: WorkspaceUsageTotals;
+}): React.ReactElement {
+  const cost =
+    totals.costUsd === null
+      ? "Unpriced"
+      : `$${totals.costUsd.toFixed(2)}` +
+        (totals.unpricedTokens > 0
+          ? ` + ${totals.unpricedTokens.toLocaleString()} unpriced tokens`
+          : "");
+  return (
+    <div className="grid gap-3 sm:grid-cols-3" data-testid="workspace-usage-totals">
+      <div className="rounded-lg border bg-card p-3">
+        <p className="text-xs text-muted-foreground">Tokens this month</p>
+        <p className="text-lg font-semibold" data-testid="workspace-usage-tokens">
+          {totals.totalTokens.toLocaleString()}
+        </p>
+      </div>
+      <div className="rounded-lg border bg-card p-3">
+        <p className="text-xs text-muted-foreground">Cost this month</p>
+        <p className="text-lg font-semibold" data-testid="workspace-usage-cost">
+          {cost}
+        </p>
+      </div>
+      <div className="rounded-lg border bg-card p-3">
+        <p className="text-xs text-muted-foreground">Model calls</p>
+        <p className="text-lg font-semibold" data-testid="workspace-usage-calls">
+          {totals.calls.toLocaleString()}
+        </p>
       </div>
     </div>
   );

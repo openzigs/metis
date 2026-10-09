@@ -17,6 +17,11 @@ export interface AgentRunSummary {
   latencyMs: number | null;
   totalTokens: number | null;
   costCents: number | null;
+  /**
+   * #977 — the run's unrounded cost in USD from the ledger (list only). `null`
+   * or absent when it could not be read; the view falls back to `costCents`.
+   */
+  costUsd?: number | null;
   stepCount: number;
 }
 

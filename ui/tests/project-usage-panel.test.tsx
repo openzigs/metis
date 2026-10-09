@@ -2,7 +2,7 @@
  * Epic #164 — Project usage page rendering tests.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 
 vi.mock("next/navigation", async () => {
@@ -557,5 +557,41 @@ describe("Project usage panel — Usage & cost, Project scope (#31)", () => {
     fireEvent.change(screen.getByTestId("usage-range-select"), { target: { value: "30d" } });
     fireEvent.click(screen.getByTestId("usage-csv-export"));
     expect(exportUsageCsv).toHaveBeenCalledWith("p1", { range: "30d", groupBy: "user" });
+  });
+
+  it("#977 — labels the By Agent Step bars with the step, not the user id", async () => {
+    ready();
+    getEnhancedUsage.mockResolvedValue({
+      totalTokens: 1000,
+      totalCostUsd: 0.25,
+      unpriced: { promptTokens: 0, completionTokens: 0, totalTokens: 0, count: 0 },
+      rows: [
+        {
+          dayBucket: "2026-04-22",
+          provider: "bedrock",
+          model: "us.anthropic.claude",
+          userId: "user-123456789",
+          agentStep: "docs-gen",
+          promptTokens: 800,
+          completionTokens: 200,
+          totalTokens: 1000,
+          estimatedCostUsd: 0.25,
+          unpricedTokens: 0,
+          count: 1,
+        },
+      ],
+    });
+    renderPage();
+    await screen.findByTestId("enhanced-bar-chart");
+    fireEvent.change(screen.getByTestId("usage-groupby-select"), {
+      target: { value: "agentStep" },
+    });
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("enhanced-bar-chart")).getByText("docs-gen"),
+      ).toBeInTheDocument(),
+    );
+    const chart = screen.getByTestId("enhanced-bar-chart");
+    expect(within(chart).queryByText("user-123")).not.toBeInTheDocument();
   });
 });

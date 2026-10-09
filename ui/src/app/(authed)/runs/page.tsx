@@ -19,6 +19,7 @@ import {
   type ResponsiveColumn,
 } from "@/components/tables/responsive-table";
 import { runsApi, type AgentRunListFilters, type AgentRunSummary } from "@/lib/runs-api";
+import { formatRunCost } from "@/lib/run-cost";
 import { PageHeader } from "@/components/ui/page-header";
 
 function formatTimestamp(iso: string | null): string {
@@ -72,8 +73,7 @@ const runColumns: ResponsiveColumn<AgentRunSummary>[] = [
     // (costCents > 0). A run that consumed tokens but has costCents === 0 is
     // unattributed (run-finish never aggregates TokenUsage cost into
     // AgentRun.costCents), so show "—" rather than a misleading "$0.0000".
-    cell: (r) =>
-      r.costCents != null && r.costCents > 0 ? `$${(r.costCents / 100).toFixed(4)}` : "—",
+    cell: (r) => formatRunCost(r),
   },
 ];
 

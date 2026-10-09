@@ -367,13 +367,15 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
 - **Steps:**
   1. Open `/settings/usage?project=:id`. `/projects/:id/usage` redirects there (`ui/src/lib/legacy-routes.ts`).
   2. Check `GET /api/projects/:id/usage`, `GET /api/projects/:id/usage-summary` and `GET /api/projects/:id/token-breakdown`, and download the CSV (`…/usage/csv`).
-  3. Open `/workspaces/:id/finops` → `/api/workspaces/:wid/finops/budget|rules|events`.
+  3. Open `/workspaces/:id/finops` → `/api/workspaces/:wid/finops/budget|rules|events|usage-totals`.
   4. Compare the Usage page, its **All projects** view and `GET /api/admin/usage` with the ledger queries in the skill.
+  5. On the analysis page, read the header's **This project, this month** card and, during a run, the run header's tokens and cost. Then open `/runs` and read the Cost column for a chat turn (#977).
 - **Works:**
   - Usage rows exist for every phase.
   - **No Unpriced card** once `MODEL_PRICES` is set.
-  - The CSV has a cost for each row.
+  - The CSV has a cost for each row, and an `agentStep` column. A day row that spans several steps reads `(mixed)`, not `analysis` (#977).
   - All three views agree with `token_usages` (#854), and the ledger cost with the token-computed cost (#761).
+  - The Workspace scope shows month-to-date tokens and cost (`usage-totals`). The analysis header shows the project's own budget, with the deployment-wide cap labelled as such. A running analysis's token count moves, and a sub-cent chat turn on `/runs` shows its exact cost rather than "—" or $0.0100 (#977).
 - **Useful:** token totals per phase reconcile within ±10% with the per-phase numbers recorded in the evidence table.
 
 ### Phase 19 — Settings: AI config, vault, skills, agents, MCP

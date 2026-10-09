@@ -142,14 +142,14 @@ import {
   type AnalysisTab,
   type FindingFilters,
 } from "@/components/analysis/analysis-views";
+import {
+  DeploymentCapCard,
+  ProjectBudgetCard,
+  formatTokens,
+  runSpendLabel,
+} from "@/components/analysis/analysis-usage-header";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
 
 function StatusBadge({ status }: { status: string }): React.ReactElement {
   const colour =
@@ -194,6 +194,14 @@ export default function AnalysisPage(): React.ReactElement {
   const costCap = useQuery({
     queryKey: ["analyses", "cost-cap"],
     queryFn: () => analysisApi.costCap(),
+    refetchInterval: 30_000,
+  });
+  // #977 — the project's own month-to-date usage and budget (the same read
+  // as Settings → Usage), so the header is not the deployment-wide cap alone.
+  const projectUsage = useQuery({
+    queryKey: queryKeys.projects.usage(projectId),
+    queryFn: () => projectsApi.getUsage(projectId),
+    enabled: Boolean(projectId),
     refetchInterval: 30_000,
   });
   const list = useQuery({
@@ -702,18 +710,10 @@ export default function AnalysisPage(): React.ReactElement {
                 {showStartForm ? "Hide new analysis" : "New analysis"}
               </Button>
             ) : null}
-            {costCap.data ? (
-              <div className="rounded border border-border bg-muted/40 px-3 py-2 text-xs">
-                <div className="text-muted-foreground">Monthly token usage</div>
-                <div className="font-mono">
-                  {formatTokens(costCap.data.monthlyUsed)} /{" "}
-                  {costCap.data.monthlyCap === 0 ? "\u221E" : formatTokens(costCap.data.monthlyCap)}
-                </div>
-                {costCap.data.exceeded ? (
-                  <div className="text-destructive">cap exceeded</div>
-                ) : null}
-              </div>
-            ) : null}
+            {/* #977 \u2014 this project's own budget first; the deployment-wide
+                cap is shown, but labelled as such. */}
+            {projectUsage.data ? <ProjectBudgetCard usage={projectUsage.data} /> : null}
+            {costCap.data ? <DeploymentCapCard cap={costCap.data} /> : null}
           </>
         }
       />
@@ -909,7 +909,7 @@ export default function AnalysisPage(): React.ReactElement {
                   </h3>
                   <p className="text-xs text-muted-foreground">
                     Started {new Date(detail.data.startedAt).toLocaleString()} ·{" "}
-                    {formatTokens(detail.data.totalTokens)} tok
+                    <span data-testid="analysis-run-spend">{runSpendLabel(detail.data)}</span>
                   </p>
                 </div>
                 {detail.data.status === "running" || detail.data.status === "pending" ? (
