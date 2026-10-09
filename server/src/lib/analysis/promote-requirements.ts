@@ -17,6 +17,7 @@ import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import {
+  CHECKPOINT_APPROVED_IDS_KEY,
   getStructuredRequirements,
   lockRequirementSet,
   persistAnalysisEnhancement,
@@ -202,6 +203,9 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     onWithheld: () => {
       withheld = true;
     },
+    // Issue #939 — the user approved each of these in the checkpoint; asking
+    // for a second Approve per requirement on the hub was the bug.
+    ...(reviewed ? { reviewStatus: "approved" as const } : {}),
   });
   // #769 — the replacement was refused to protect review work on the existing
   // set; nothing was written, so nothing is recorded as promoted.
@@ -373,6 +377,8 @@ async function appendNewlyApproved(input: {
           storyPoints: r.storyPoints ?? null,
           coverage: coverages[k] ?? null,
           verdict: verdicts[k] ?? null,
+          // Issue #939 — approved in the checkpoint, as on the first promotion.
+          reviewStatus: "approved",
         },
         select: { id: true },
       });
@@ -382,11 +388,18 @@ async function appendNewlyApproved(input: {
     // Recorded in the SAME transaction as the rows, onto the metadata read
     // under the lock — never onto a copy taken before it.
     const appendedIds = newIdx.map((i) => input.promotedStructuredIds[i] ?? "").filter(Boolean);
+    const lockedMetadata = parseMetadataObject(locked.metadata);
+    const checkpointApproved = Array.isArray(lockedMetadata[CHECKPOINT_APPROVED_IDS_KEY])
+      ? (lockedMetadata[CHECKPOINT_APPROVED_IDS_KEY] as unknown[]).filter(
+          (x): x is string => typeof x === "string",
+        )
+      : [];
     await tx.analysis.update({
       where: { id: input.analysisId },
       data: {
         metadata: JSON.stringify({
-          ...parseMetadataObject(locked.metadata),
+          ...lockedMetadata,
+          [CHECKPOINT_APPROVED_IDS_KEY]: [...checkpointApproved, ...ids],
           promotedStructuredIds: [
             ...new Set([...(recorded ?? input.promotedStructuredIds), ...appendedIds]),
           ],

@@ -6471,6 +6471,7 @@ Raw Documents
 - `PUT /api/analysis/:id/approvals/:approvalId` — Approve or reject an approval request
 - `POST /api/projects/:projectId/analyses/:id/approvals/:approvalId/reopen` — Return a rejected approval to pending (#723)
 - `POST /api/projects/:projectId/analyses/:id/approvals/promote` — Promote the approved requirements of a completed run whose gate is open but which has no requirement rows; `analysis.run`, project-scoped, rate-limited, idempotent (#723)
+- `POST /api/projects/:projectId/analyses/:id/approvals/approve-all` — Approve every pending approval of the analysis in one write (optional `reviewNote`), then promote once; resolved approvals are left alone. `analysis.run`, project-scoped, rate-limited under the promote key. Requirements promoted from the checkpoint are created `approved` and listed in `metadata.checkpointApprovedRequirementIds`; that status alone is not review work, so a newer run's checkpoint may replace them (#939)
 
 ---
 

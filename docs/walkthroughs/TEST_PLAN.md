@@ -258,12 +258,12 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
 
 ### Phase 8 — Requirements and traceability
 - **Steps:**
-  1. In `/projects/:id/requirements` (`components/requirements/requirements-hub`), review the requirements extracted from the analysis. Approve them in the Approvals checkpoint, editing one first.
+  1. In `/projects/:id/requirements` (`components/requirements/requirements-hub`), review the requirements extracted from the analysis. Approve them in the Approvals checkpoint, editing one first. **Approve all N pending** on the Approvals tab (`POST …/approvals/approve-all`, asks for confirmation) resolves the rest in one go (#939).
   2. Approve, reject or edit one (`PATCH /api/analyses/:id/requirements/:reqId`, versioned: a stale `version` gets 409 `VERSION_CONFLICT`).
   3. Open the per-requirement traceability (`GET /api/projects/:id/requirements/:reqId/traceability`) and link a requirement (`POST /api/requirements/:reqId/links`).
   4. Open `/workspaces/:id/traceability` (`GET /api/workspaces/:wid/traceability/summary`) and `/projects/:id/baselines`. As an admin, **New baseline** pins every requirement; make a second after an edit and **compare** them. A subset still needs `POST /api/projects/:id/baselines` `{name, requirementIds}`.
   5. **Request review** on the Requirements page for `coordinator` (a workspace member; see Setup order 3). It is listed on `/reviews`.
-- **Works:** links persist, the workspace roll-up counts match (the moved project from Phase 5 appears in it), the baseline compare shows the edit, and `request-review-done` confirms the review.
+- **Works:** requirements approved in the checkpoint arrive on the hub already **Approved**, not "Awaiting review", so they need no second Approve (#939); links persist, the workspace roll-up counts match (the moved project from Phase 5 appears in it), the baseline compare shows the edit, and `request-review-done` confirms the review.
 - **Useful:**
   - The requirement "a user cannot subscribe to the same feed URL twice" traces to `unique (user_id, feed_url)` (`internal/database/migrations.go:69`) and to the feed validator in `internal/validator/feed.go` or `subscription.go`.
   - Approved requirements keep their acceptance criteria and code links (#730, #909). Report how many promoted requirements have none of each (run 3: 29/29 without criteria; run 4: 3/37).

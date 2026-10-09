@@ -64,6 +64,7 @@ import {
   getDialogState,
   listApprovalRequests,
   reopenApprovalRequest,
+  approveAllPendingApprovalRequests,
   reviewApprovalRequest,
   canCreateTickets,
   // Issue #1104 (finding B) — release the requirements the gate withheld.
@@ -1186,6 +1187,61 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       });
 
       res.json(ok({ promotion }));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/approvals/approve-all
+   * Issue #939 — approve every pending approval of the analysis in one request,
+   * then promote once. Approving 37 items needed 37 clicks (or a scripted loop).
+   * Same permission and scope as the per-item review PUT (#1097); resolved
+   * approvals are left as they are. Rate limited like promote, whose work it
+   * ends in, and under the same per-user key.
+   */
+  projectScoped.post(
+    "/:id/approvals/approve-all",
+    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting (PR #902).
+    analysisApprovalPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("analysis.run"),
+    analysisApprovalPromoteRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      await ensureAnalysisVisible(analysisId, projectId);
+
+      const rawNote = (req.body as { reviewNote?: unknown } | undefined)?.reviewNote;
+      if (rawNote !== undefined && typeof rawNote !== "string") {
+        throw new AppError(400, "VALIDATION_ERROR", "reviewNote must be a string");
+      }
+      const reviewNote = rawNote?.trim() ? rawNote.trim() : undefined;
+
+      const actor = actorFromReq(req);
+      const { approvedCount } = await approveAllPendingApprovalRequests(analysisId, {
+        reviewerId: actor.id,
+        reviewNote,
+      });
+
+      audit({
+        actor: { id: actor.id },
+        action: "analysis.approval.approve_all",
+        target: { type: "analysis", id: analysisId },
+        metadata: { approvedCount },
+      });
+
+      // Same best-effort promotion as the per-item review: the approvals stand
+      // even when promotion fails, and the outcome is reported, not thrown.
+      let promotion: PromotionOutcome;
+      try {
+        promotion = await promoteApprovedRequirements(analysisId);
+      } catch {
+        promotion = {
+          status: "unavailable",
+          reason: "Approvals recorded, but promoting the requirements failed. Try again.",
+        };
+      }
+
+      res.json(ok({ approvedCount, promotion }));
     },
   );
 

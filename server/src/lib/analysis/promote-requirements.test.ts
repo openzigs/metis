@@ -77,7 +77,10 @@ const createRow = async (_args: { data: { title: string } }) => {
 };
 let txChain: Promise<unknown> = Promise.resolve();
 /** The tx client handed to the most recent `$transaction` callback. */
-let lastTx: { analysis: { update: ReturnType<typeof vi.fn> } } | null = null;
+let lastTx: {
+  analysis: { update: ReturnType<typeof vi.fn> };
+  requirement: { create: ReturnType<typeof vi.fn> };
+} | null = null;
 
 vi.mock("../prisma.js", () => {
   const requirementFindFirst = vi.fn(async () => ({ createdAt: db.firstPromotedAt }));
@@ -149,6 +152,7 @@ vi.mock("./analysis-service.js", () => ({
   readFlattenedFindings: vi.fn(async () => findings),
   getStructuredRequirements: vi.fn(async () => db.structured),
   lockRequirementSet: (...a: unknown[]) => lockRequirementSet(...(a as [unknown, string])),
+  CHECKPOINT_APPROVED_IDS_KEY: "checkpointApprovedRequirementIds",
 }));
 
 /**
@@ -478,6 +482,20 @@ describe("#730 — promote the requirements the user approved, not a different s
     expect(persistedRequirements()).toHaveLength(3);
   });
 
+  it("#939 — promotes the reviewed requirements already approved: the checkpoint was the review", async () => {
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(persistRequirements.mock.calls[0]?.[0]).toMatchObject({ reviewStatus: "approved" });
+  });
+
+  it("#939 — leaves synthesis-only rows as drafts: nobody has reviewed them", async () => {
+    db.approvals = [];
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(persistRequirements.mock.calls[0]?.[0]).not.toHaveProperty("reviewStatus");
+  });
+
   it("keeps promoting the synthesis output when no requirement went through the checkpoint", async () => {
     db.approvals = [];
 
@@ -560,6 +578,27 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     expect(recordedIds()).toEqual(["REQ-1", "REQ-3", "REQ-2"]);
     // The record rides the rows' transaction, not a separate metadata write.
     expect(persistAnalysisEnhancement).not.toHaveBeenCalled();
+  });
+
+  it("#939 — creates an appended requirement approved and records it as the checkpoint's", async () => {
+    db.requirementCount = 2;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({
+        promotedStructuredIds: ["REQ-1", "REQ-3"],
+        checkpointApprovedRequirementIds: ["rq_1", "rq_3"],
+      }),
+    };
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    const data = (
+      lastTx!.requirement.create.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    ).data;
+    expect(data.reviewStatus).toBe("approved");
+    const meta = JSON.parse(db.analysis.metadata ?? "{}") as Record<string, unknown>;
+    expect(meta.checkpointApprovedRequirementIds).toEqual(["rq_1", "rq_3", "rq_new_1"]);
   });
 
   it("takes #882's requirement-set lock on its own transaction before reading the record", async () => {
@@ -739,6 +778,8 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
     expect(recorded()).toEqual({
       promotedStructuredIds: ["REQ-1", "REQ-2", "REQ-3"],
       promotedStructuredRunId: "run-1",
+      // #939 — the appended row is the checkpoint's approval, recorded with it.
+      checkpointApprovedRequirementIds: ["rq_new_1"],
     });
   });
 

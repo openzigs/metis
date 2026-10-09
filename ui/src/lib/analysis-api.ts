@@ -663,6 +663,16 @@ export const analysisApi = {
     ),
 
   /**
+   * Issue #939 — approve every pending approval of the analysis in one request;
+   * the server then promotes once and reports the outcome.
+   */
+  approveAllApprovals: (projectId: string, analysisId: string, reviewNote?: string) =>
+    apiFetch<{ approvedCount: number; promotion: PromotionOutcome }>(
+      `/projects/${projectId}/analyses/${analysisId}/approvals/approve-all`,
+      { method: "POST", body: reviewNote ? { reviewNote } : {} },
+    ),
+
+  /**
    * Issue #723 — promote the approved requirements of a run whose gate is open
    * but which has no requirement rows. Idempotent on the server.
    */
