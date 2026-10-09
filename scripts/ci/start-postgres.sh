@@ -13,8 +13,10 @@ set -euo pipefail
 
 IMAGE="${PG_IMAGE:-pgvector/pgvector:pg16}"
 NAME="${PG_CONTAINER_NAME:-metis-ci-postgres-${GITHUB_JOB:-local}-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-1}}"
-# Both postgres jobs can share one runner and Docker daemon (#754), so the
-# name is per job and run; the job's final step removes the container.
+# GitHub-hosted jobs each get their own VM, so nothing collides today. The
+# per-run name, the ephemeral port and the job's final removal step date from
+# #754, when self-hosted runners shared one Docker daemon; they keep the
+# script safe if it ever runs on a shared runner again.
 docker rm -f "${NAME}" >/dev/null 2>&1 || true
 
 bash "$(dirname "$0")/dockerhub-login.sh"
@@ -34,8 +36,7 @@ if [ "${pulled}" -ne 1 ]; then
   exit 1
 fi
 
-# #754: an EPHEMERAL host port. Both postgres jobs can share one runner and
-# its port space, and a fixed 5432 made the second container fail to bind.
+# #754: an EPHEMERAL host port (see the note on NAME above).
 docker run -d --name "${NAME}" \
   -e POSTGRES_USER=metis -e POSTGRES_PASSWORD=metis -e POSTGRES_DB=metis \
   -p 127.0.0.1::5432 \
