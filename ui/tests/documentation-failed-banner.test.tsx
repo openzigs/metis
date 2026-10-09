@@ -41,6 +41,7 @@ import DocumentationPage, {
   FailedGenerationBanner,
   generationStopCause,
   generationStopStage,
+  failedSections,
   isPartialGeneration,
 } from "@/app/(authed)/projects/[id]/documentation/page";
 
@@ -270,5 +271,71 @@ describe("#782 — why a generation stopped is shown, not left in the server log
       await screen.findByTestId("markdown-previewer");
       expect(screen.queryByText(/generation stopped before it finished/i)).toBeNull();
     });
+  });
+});
+
+describe("#942 — a published document with a failed section can regenerate it", () => {
+  const FAILED = {
+    kind: "section-failed",
+    section: "Overview, Context & Layers",
+    severity: "error",
+    detailSafe: true,
+    message:
+      'Section "Overview, Context & Layers" could not be generated: it failed with an unrecognised error (SyntaxError); the full error is in the server log.',
+  };
+  const V1 = [{ id: "v1", version: 1, diffSummary: null, createdAt: "2026-10-08T00:00:00.000Z" }];
+
+  it("names the failed sections of a published degraded document, never a stop cause", () => {
+    expect(failedSections({ status: "degraded", versions: V1, warnings: [FAILED] })).toEqual([
+      FAILED,
+    ]);
+    // A whole-run stop cause carries a stage; that is the partial banner's job.
+    expect(failedSections({ status: "degraded", versions: V1, warnings: [STOP] })).toEqual([]);
+    // Unpublished: the partial-generation banner already offers the regenerate.
+    expect(failedSections({ status: "degraded", versions: [], warnings: [FAILED] })).toEqual([]);
+    expect(failedSections({ status: "ready", versions: V1, warnings: [FAILED] })).toEqual([]);
+    expect(failedSections({ status: "degraded", versions: V1, warnings: null })).toEqual([]);
+  });
+
+  it("shows the reason and POSTs /regenerate from the page", async () => {
+    const DOC_ID = "doc_942";
+    const doc = {
+      id: DOC_ID,
+      title: "Architecture",
+      scope: "full",
+      autoUpdate: false,
+      generatedAt: null,
+      createdAt: "2026-10-08T00:00:00.000Z",
+      status: "degraded",
+      content: "# Architecture",
+      warnings: [FAILED],
+      versions: V1,
+    };
+    mockApiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (path.endsWith(`/docs/${DOC_ID}/regenerate`) && init?.method === "POST")
+        return { id: DOC_ID, status: "pending" };
+      if (path.endsWith(`/docs/${DOC_ID}`)) return doc;
+      if (path.endsWith("/docs")) return [{ ...doc, content: undefined }];
+      return [];
+    });
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(
+      <Wrapper>
+        <DocumentationPage />
+      </Wrapper>,
+    );
+    fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));
+
+    const banner = await screen.findByTestId("failed-sections-banner");
+    expect(banner).toHaveTextContent("Overview, Context & Layers");
+    expect(banner).toHaveTextContent("(SyntaxError)");
+    expect(banner).toHaveTextContent(/reuses every finished section/i);
+    fireEvent.click(screen.getByRole("button", { name: /regenerate failed section/i }));
+    await waitFor(() =>
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        `/projects/proj_test/docs/${DOC_ID}/regenerate`,
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
   });
 });

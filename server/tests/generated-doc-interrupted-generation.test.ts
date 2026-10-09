@@ -446,6 +446,38 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
     expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
   });
 
+  it("#942 — regenerates a published degraded document whose section failed", async () => {
+    seed({
+      status: "degraded",
+      versionCount: 1,
+      warnings: [{ kind: "section-failed", section: "Overview", message: "m", severity: "error" }],
+    });
+
+    const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
+
+    expect(res.status).toBe(202);
+    expect(res.body.data).toMatchObject({ id: "doc-1", status: "pending" });
+    await vi.waitFor(() => expect(doc().status).toBe("generating"));
+  });
+
+  it("#942 — still 409s a published degraded document whose only warnings are grounding ones", async () => {
+    seed({
+      status: "degraded",
+      versionCount: 1,
+      warnings: [
+        { kind: "section-ungrounded", section: "Overview", message: "m", severity: "warning" },
+        // A stop cause (it carries a stage) is not a failed section of the version.
+        { kind: "section-failed", section: "Document", stage: "commit", message: "m" },
+      ],
+    });
+
+    const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
+
+    expect(res.status).toBe(409);
+    expect(doc().status).toBe("degraded");
+    expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
+  });
+
   it("404s for a document in another project or deleted", async () => {
     seed({ status: "failed", projectId: "other" });
     expect((await request(app).post("/projects/proj-1/docs/doc-1/regenerate")).status).toBe(404);

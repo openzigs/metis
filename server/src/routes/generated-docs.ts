@@ -75,6 +75,7 @@ import { TaskAbortError } from "../lib/scheduler/task-abort.js";
 import type { DocWarning as DocWarningShape } from "../lib/docs-gen/grounding/degraded-warnings.js";
 import {
   generationFailureWarning,
+  hasFailedSections,
   partialDocumentMarkdown,
   UnpublishableGenerationError,
   type GenerationStage,
@@ -906,9 +907,36 @@ export function generatedDocsRouter(): Router {
       if (!reset.count) {
         const existing = await prisma.generatedDocument.findFirst({
           where: { id: docId, projectId, deletedAt: null },
-          select: { status: true },
+          select: { status: true, warnings: true, updatedAt: true },
         });
         if (!existing) throw new AppError(404, "DOC_NOT_FOUND", "Generated document not found");
+        // #942 — a published `degraded` document with a section that failed
+        // while the rest finished: the regenerate writes that section and
+        // reuses the finished ones (kept in the checkpoint at publish). The
+        // warnings are left as they are, so a cancel can restore them.
+        // Compare-and-set on the row read, as the reset above does on status.
+        const resumable =
+          existing.status === "degraded" &&
+          hasFailedSections(existing.warnings) &&
+          (
+            await prisma.generatedDocument.updateMany({
+              where: {
+                id: docId,
+                projectId,
+                deletedAt: null,
+                status: "degraded",
+                updatedAt: existing.updatedAt,
+              },
+              data: { status: "pending", errorMessage: null },
+            })
+          ).count > 0;
+        if (resumable) {
+          void generateDocumentAsync(docId, projectId).catch((err) => {
+            log.error("Background doc regeneration failed", { err, docId });
+          });
+          res.status(202).json({ data: { id: docId, status: "pending" } });
+          return;
+        }
         throw new AppError(
           409,
           "DOC_NOT_REGENERATABLE",
@@ -1137,6 +1165,14 @@ export async function generateDocumentAsync(
         status: original.status,
         errorMessage: original.errorMessage,
         warnings: (original.warnings ?? Prisma.DbNull) as Prisma.InputJsonValue,
+      };
+    // #942 — a published degraded document reset by POST /regenerate to retry
+    // its failed sections: a cancel restores it as it was, warnings and all.
+    else if (original.status === "pending" && hasFailedSections(original.warnings))
+      restoreOnCancel = {
+        status: "degraded",
+        errorMessage: null,
+        warnings: original.warnings as Prisma.InputJsonValue,
       };
     if (!automatic && original.status === "pending") pendingUpdatedAt = original.updatedAt;
     const policy = await resolveEvidencePolicy(original);
@@ -1720,8 +1756,13 @@ export async function generateDocumentAsync(
               : Prisma.DbNull,
           errorMessage: null,
           generatedAt,
-          // #782 — published: nothing left to resume.
-          generationCheckpoint: Prisma.DbNull,
+          // #782 — published: nothing left to resume. #942 — unless a section
+          // failed: the finished ones stay stored, so a regenerate writes only
+          // what failed.
+          generationCheckpoint:
+            hasFailedSections(docWarnings) && finishedSections.length > 0
+              ? (buildGenerationCheckpoint(finishedSections) as unknown as Prisma.InputJsonValue)
+              : Prisma.DbNull,
         },
       });
       if (!committed.count)

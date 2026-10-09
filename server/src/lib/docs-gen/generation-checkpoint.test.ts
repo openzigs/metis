@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   errorClassOf,
   generationFailureWarning,
+  hasFailedSections,
   partialDocumentMarkdown,
+  sectionFailureWarning,
   UnpublishableGenerationError,
 } from "./generation-checkpoint.js";
 import {
@@ -148,5 +150,34 @@ describe("#782 — partialDocumentMarkdown", () => {
     expect(partialDocumentMarkdown("BRD", [rec("Overview", 0)])).toContain(
       "1 finished section is shown below",
     );
+  });
+});
+
+describe("#942 — sectionFailureWarning", () => {
+  it("names the error class of an unrecognised failure, never its text", () => {
+    const w = sectionFailureWarning("Overview", new SyntaxError(SECRET));
+    expect(w).toMatchObject({ kind: "section-failed", section: "Overview", detailSafe: true });
+    expect(w.message).toContain("(SyntaxError)");
+    expect(w.message).not.toContain("customer data");
+    expect(w.message).not.toContain(GENERATION_FAILED_MESSAGE);
+  });
+
+  it("keeps a recognised failure's fixed message as it is", () => {
+    const w = sectionFailureWarning("Overview", new Error("402 Insufficient Balance"));
+    expect(w.message).toContain(GENERATION_PROVIDER_BALANCE_MESSAGE);
+    expect(w.message).not.toContain("(Error)");
+  });
+});
+
+describe("#942 — hasFailedSections", () => {
+  it("is true only for a section-failed warning that is not a stop cause", () => {
+    expect(hasFailedSections([{ kind: "section-failed", section: "A" }])).toBe(true);
+    expect(hasFailedSections([{ kind: "section-failed", section: "D", stage: "commit" }])).toBe(
+      false,
+    );
+    expect(hasFailedSections([{ kind: "section-ungrounded", section: "A" }])).toBe(false);
+    expect(hasFailedSections([null, "x"])).toBe(false);
+    expect(hasFailedSections(null)).toBe(false);
+    expect(hasFailedSections("[]")).toBe(false);
   });
 });

@@ -22,6 +22,9 @@ const state = vi.hoisted(() => ({
   // The run dies while writing this section: its failure escapes the
   // section's own handler, as a lost process or a fatal error would.
   crashIn: null as string | null,
+  // #942 — this section's model call fails; the section's own handler catches
+  // it, so the run publishes a `degraded` version without the section.
+  failSection: null as string | null,
   // #855 / #856 — runs inside a section's model call, before it answers.
   duringSection: null as null | ((label: string, signal?: AbortSignal) => Promise<void> | void),
   // #855 — usage every model call reports.
@@ -273,6 +276,7 @@ beforeEach(() => {
   state.failCommit = false;
   state.changeInputs = false;
   state.crashIn = null;
+  state.failSection = null;
   state.doc = {
     id: "d",
     projectId: "p",
@@ -314,6 +318,7 @@ beforeEach(() => {
     const user = messages.at(-1).content as string;
     const label = user.match(/Section group: \*\*(.+?)\*\*/)?.[1];
     if (label && label === state.crashIn) throw new Error("provider connection reset");
+    if (label && label === state.failSection) throw new SyntaxError("Unexpected token < in JSON");
     if (label && state.duringSection) await state.duringSection(label, opts?.signal);
     if (state.usage) yield { type: "usage", usage: state.usage };
     yield {
@@ -627,6 +632,71 @@ describe("#782 — a resumed run that fails again keeps every finished section",
     state.stream.mockClear();
     await generateDocumentAsync("d", "p");
     expect(sectionCalls()).toBe(3);
+    expect(state.versions).toHaveLength(1);
+  });
+});
+
+describe("#942 — a published document with a failed section regenerates just that section", () => {
+  const failed = () => GROUPS[1];
+
+  it("publishes a degraded version that keeps the finished sections' checkpoint", async () => {
+    state.failSection = failed().label;
+    await generateDocumentAsync("d", "p");
+
+    expect(state.versions).toHaveLength(1);
+    expect(state.doc.status).toBe("degraded");
+    expect(String(state.doc.content)).not.toContain(`## ${failed().label}`);
+    // Every section but the failed one stays stored for a regenerate to reuse.
+    expect(checkpointIds()).toEqual(GROUPS.filter((g) => g !== failed()).map((g) => g.id));
+  });
+
+  it("says why the section failed: the error class, never the exception's text", async () => {
+    state.failSection = failed().label;
+    await generateDocumentAsync("d", "p");
+
+    const w = warnings().find((x) => x.kind === "section-failed")!;
+    expect(w).toMatchObject({ section: failed().label, severity: "error", detailSafe: true });
+    expect(w.stage).toBeUndefined();
+    expect(String(w.message)).toContain("(SyntaxError)");
+    expect(String(w.message)).not.toContain("Unexpected token");
+  });
+
+  it("a regenerate writes only the failed section, reusing the rest, and publishes v2", async () => {
+    state.failSection = failed().label;
+    await generateDocumentAsync("d", "p");
+
+    state.failSection = null;
+    state.doc.status = "pending";
+    state.stream.mockClear();
+    await generateDocumentAsync("d", "p");
+
+    expect(sectionCalls()).toBe(1);
+    expect(state.versions).toHaveLength(2);
+    for (const group of GROUPS) expect(state.doc.content).toContain(`## ${group.label}`);
+    expect(warnings()?.some((w) => w.kind === "section-failed") ?? false).toBe(false);
+    // Nothing left to finish: the checkpoint is cleared once every section is written.
+    expect(state.doc.generationCheckpoint).toBeNull();
+  });
+
+  it("cancelling that regenerate restores the degraded version, failed-section warning and all", async () => {
+    state.failSection = failed().label;
+    await generateDocumentAsync("d", "p");
+    const published = state.doc.content;
+    const publishedWarnings = state.doc.warnings;
+
+    state.failSection = null;
+    // What POST /regenerate leaves: `pending`, with the warnings column untouched.
+    state.doc.status = "pending";
+    state.duringSection = (label) => {
+      if (label !== failed().label) return;
+      state.doc.status = "cancelling";
+      stopGeneration("d", "aborted");
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(state.doc.status).toBe("degraded");
+    expect(state.doc.content).toBe(published);
+    expect(state.doc.warnings).toEqual(publishedWarnings);
     expect(state.versions).toHaveLength(1);
   });
 });

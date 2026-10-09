@@ -567,6 +567,15 @@ export default function DocumentationPage(): React.ReactElement {
             />
           )}
 
+          {/* #942 — a published document with a failed section regenerates it. */}
+          {failedSections(docDetail.data).length > 0 && (
+            <FailedSectionsBanner
+              failed={failedSections(docDetail.data)}
+              regenerating={regenerateMutation.isPending}
+              onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
+            />
+          )}
+
           {/* Epic #204 (#225) — surface degraded-output warnings instead of
               silently presenting an incomplete doc as ready. */}
           {docDetail.data.status === "degraded" && (
@@ -1476,6 +1485,55 @@ export function isPartialGeneration(
     doc.status === "degraded" &&
     (doc.versions?.length ?? 0) === 0 &&
     generationStopCause(doc.warnings) !== null
+  );
+}
+
+/**
+ * #942 — the sections of a published `degraded` document that failed while the
+ * rest of its run finished (a whole-run stop cause carries a `stage`, and an
+ * unpublished one is the partial banner's job). The server regenerates exactly
+ * these, reusing the finished sections.
+ */
+export function failedSections(
+  doc: Pick<GeneratedDoc, "status" | "versions" | "warnings">,
+): DocWarning[] {
+  if (doc.status !== "degraded" || (doc.versions?.length ?? 0) === 0) return [];
+  return (doc.warnings ?? []).filter((w) => w.kind === "section-failed" && w.stage === undefined);
+}
+
+/** #942 — names the failed sections, says why, and regenerates just those. */
+export function FailedSectionsBanner({
+  failed,
+  regenerating,
+  onRegenerate,
+}: {
+  failed: DocWarning[];
+  regenerating: boolean;
+  onRegenerate: () => void;
+}): React.ReactElement {
+  const plural = failed.length !== 1;
+  return (
+    <Card
+      className="border-destructive/40 bg-destructive/10 p-4"
+      role="alert"
+      data-testid="failed-sections-banner"
+    >
+      <p className="font-medium text-destructive">
+        {failed.length} section{plural ? "s" : ""} could not be generated
+      </p>
+      <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-destructive">
+        {failed.map((w, i) => (
+          <li key={i}>{w.message}</li>
+        ))}
+      </ul>
+      <p className="mt-1 text-sm text-destructive">
+        Regenerating writes {plural ? "these sections" : "this section"} again and reuses every
+        finished section whose inputs have not changed.
+      </p>
+      <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
+        {regenerating ? "Regenerating…" : `Regenerate failed section${plural ? "s" : ""}`}
+      </Button>
+    </Card>
   );
 }
 
