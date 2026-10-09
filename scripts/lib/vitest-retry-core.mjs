@@ -151,7 +151,8 @@ export function summaryMarkdown(records, level, repoRoot) {
   const verdict = level === "error" ? "**fails this run**" : "a warning on this run";
   const rows = records.map((r) => {
     const where = relativePath(r.file, repoRoot) + (r.line !== null ? `:${r.line}` : "");
-    const name = r.name.replace(/\|/g, "\\|").replace(/\n/g, " ");
+    // Backslashes first, so a name ending in `\` cannot un-escape the pipe after it.
+    const name = r.name.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, " ");
     return `| \`${where}\` | ${name} | ${r.retries} |`;
   });
   return [

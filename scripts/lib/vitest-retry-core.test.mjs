@@ -158,6 +158,10 @@ describe("summaryMarkdown", () => {
     expect(md).toContain("| `server/src/a.test.ts:7` | a \\| b | 1 |");
     expect(md).toContain("| `server/src/a.test.ts` | suite > leaks | 1 |");
     expect(summaryMarkdown([rec()], "warning", "/repo")).toContain("a warning on this run");
+    // A trailing backslash must not swallow the escape and reopen the table cell.
+    expect(summaryMarkdown([rec({ name: "a\\| b\nc" })], "error", "/repo")).toContain(
+      "| a\\\\\\| b c | 1 |",
+    );
   });
 });
 

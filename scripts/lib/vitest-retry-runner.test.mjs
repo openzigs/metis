@@ -120,26 +120,27 @@ describe("wiring (#964)", () => {
   const jobs = splitJobs(workflow);
 
   it.each([
-    ["server", "server-tests", "Test server (SQLite client)"],
-    ["ui", "ui-tests", "Test UI"],
+    ["server", "server-tests", "Test server (SQLite client)", "server"],
+    ["ui", "ui-tests", "Test UI", "ui"],
   ])(
     "the %s job reports retries from its unit-test step and then runs the runner",
-    (job, id, name) => {
+    (job, id, name, dir) => {
       const body = (jobs.get(job) ?? []).join("\n");
-      const testStep = body.slice(body.indexOf(`- name: ${name}`));
-      expect(testStep).toMatch(
-        new RegExp(
-          `^- name: ${name.replace(/[()]/g, "\\$&")}\\n {8}id: ${id}\\n {8}working-directory: \\w+\\n {8}env:\\n {10}VITEST_RETRY_REPORT_DIR: \\$\\{\\{ runner\\.temp \\}\\}/vitest-retry\\n {8}run: pnpm test\\n`,
-        ),
+      const reportDir =
+        "        env:\n          VITEST_RETRY_REPORT_DIR: ${{ runner.temp }}/vitest-retry\n";
+      expect(body).toContain(
+        `      - name: ${name}\n        id: ${id}\n        working-directory: ${dir}\n` +
+          `${reportDir}        run: pnpm test\n`,
       );
-      const check = body.slice(body.indexOf("- name: Flag tests that passed only after a retry"));
-      expect(check).toMatch(
-        new RegExp(
-          `^- name: Flag tests that passed only after a retry\\n {8}if: \\$\\{\\{ !cancelled\\(\\) && steps\\.${id}\\.conclusion != 'skipped' \\}\\}\\n {8}env:\\n {10}VITEST_RETRY_REPORT_DIR: \\$\\{\\{ runner\\.temp \\}\\}/vitest-retry\\n {8}run: node scripts/vitest-retried-tests\\.mjs "\\$VITEST_RETRY_REPORT_DIR"\\n?`,
-        ),
+      const checkName = "      - name: Flag tests that passed only after a retry\n";
+      expect(body).toContain(
+        checkName +
+          `        if: \${{ !cancelled() && steps.${id}.conclusion != 'skipped' }}\n` +
+          reportDir +
+          '        run: node scripts/vitest-retried-tests.mjs "$VITEST_RETRY_REPORT_DIR"',
       );
       // Last in the job: a nightly failure here must not skip any other step.
-      expect(check.match(/- name:/g)).toHaveLength(1);
+      expect(body.slice(body.indexOf(checkName)).match(/- name:/g)).toHaveLength(1);
     },
   );
 
