@@ -72,3 +72,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [dependabot tilde + stale audit](project_dependabot-tilde-and-stale-audit.md) — group PRs cross ~0.x minors; old green audit may be stale (#907)
 - [vitest 5 jest-dom second copy](project_vitest5-jest-dom-second-copy.md) — jest-dom/vitest loads another vitest copy; extend expect locally (#668)
 - [float USD to cents](project_float-usd-to-cents.md) — costUsd*100 float error; round to cents before sign/zero checks (#950)
+- [vitest retry masks failures](project_vitest-retry-masks-deterministic.md) — retry:2 hid 6 real failures; clearAllMocks keeps once-values (#963)
