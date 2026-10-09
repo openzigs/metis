@@ -1,0 +1,53 @@
+# Docs site: every Markdown file under docs/ rendered to HTML and published to
+# GitHub Pages by .github/workflows/docs-site.yml. Navigation follows the folder
+# layout; a page's title is its first heading.
+site_name: METIS documentation
+site_url: https://openzigs.github.io/metis/
+repo_url: https://github.com/openzigs/metis
+repo_name: openzigs/metis
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      toggle: { icon: material/weather-sunny, name: Light mode }
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc: { permalink: true }
+  - pymdownx.details
+  - pymdownx.tasklist: { custom_checkbox: true }
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+# Many docs link to source files outside docs/ (../server/src/...). Those links
+# point at the repo, not the site, so report them without failing the build.
+validation:
+  links:
+    not_found: info
+    anchors: info
+    absolute_links: info
+    unrecognized_links: info
