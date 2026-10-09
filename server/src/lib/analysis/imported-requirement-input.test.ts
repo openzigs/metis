@@ -102,3 +102,17 @@ describe("composeImportedRequirementInput (#1006)", () => {
     );
   });
 });
+
+describe("normaliseImportedRequirementQuery (#1006)", () => {
+  it("trims, drops a leading #, and bounds the term", async () => {
+    const { normaliseImportedRequirementQuery, IMPORTED_REQUIREMENT_QUERY_MAX } =
+      await import("./imported-requirement-input.js");
+    expect(normaliseImportedRequirementQuery("  #3401 ")).toBe("3401");
+    expect(normaliseImportedRequirementQuery("Star")).toBe("Star");
+    expect(normaliseImportedRequirementQuery(["a", "b"])).toBe("");
+    expect(normaliseImportedRequirementQuery(undefined)).toBe("");
+    expect(normaliseImportedRequirementQuery("x".repeat(500))).toHaveLength(
+      IMPORTED_REQUIREMENT_QUERY_MAX,
+    );
+  });
+});

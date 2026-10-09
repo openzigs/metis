@@ -44,19 +44,39 @@ interface ReqRow {
   deletedAt: Date | null;
 }
 const rows: ReqRow[] = [];
-const requirementFindMany = vi.fn(
-  async (args: {
-    where: { id?: { in: string[] }; projectId: string; externalSource: { not: null } };
-  }) =>
-    rows
-      .filter(
-        (r) =>
-          r.projectId === args.where.projectId &&
-          r.deletedAt === null &&
-          r.externalSource !== null &&
-          (!args.where.id || args.where.id.in.includes(r.id)),
-      )
-      .map(({ projectId: _p, deletedAt: _d, ...rest }) => rest),
+
+/**
+ * Evaluate the subset of a Prisma `where` this route uses AGAINST the rows — no
+ * predicate is hard-coded here, so deleting one from production (say
+ * `externalSource: { not: null }`) lets the excluded row through and the tests
+ * that pin it go red. An operator this does not know throws rather than passes.
+ */
+type Where = Record<string, unknown>;
+function matchField(value: unknown, cond: unknown): boolean {
+  if (cond === null || typeof cond !== "object") return value === cond;
+  return Object.entries(cond as Record<string, unknown>).every(([op, arg]) => {
+    if (op === "not") return value !== arg;
+    if (op === "in") return (arg as unknown[]).includes(value);
+    if (op === "contains") return typeof value === "string" && value.includes(String(arg));
+    throw new Error(`mock where: unsupported operator ${op}`);
+  });
+}
+function matches(row: ReqRow, where: Where): boolean {
+  return Object.entries(where).every(([key, cond]) => {
+    if (key === "OR") return (cond as Where[]).some((w) => matches(row, w));
+    if (key === "AND") return (cond as Where[]).every((w) => matches(row, w));
+    if (!(key in row)) throw new Error(`mock where: unknown field ${key}`);
+    return matchField(row[key as keyof ReqRow], cond);
+  });
+}
+const requirementFindMany = vi.fn(async (args: { where: Where; take?: number }) =>
+  rows
+    .filter((r) => matches(r, args.where))
+    .slice(0, args.take)
+    .map(({ projectId: _p, deletedAt: _d, ...rest }) => rest),
+);
+const requirementCount = vi.fn(
+  async (args: { where: Where }) => rows.filter((r) => matches(r, args.where)).length,
 );
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -65,8 +85,9 @@ vi.mock("../lib/prisma.js", () => ({
       // requireProjectAccess (#674): a legacy project with no workspace is open.
       findUnique: vi.fn(async () => ({ workspaceId: null })),
     },
-    requirement: { findMany: requirementFindMany },
+    requirement: { findMany: requirementFindMany, count: requirementCount },
   },
+  resolveDatabaseProvider: () => "sqlite",
 }));
 
 const start = vi.fn(async (_opts: Record<string, unknown>) => ({ id: "an-new" }));
@@ -166,7 +187,40 @@ describe("GET /imported-requirements (#1006)", () => {
     const res = await request(app).get("/api/projects/proj-a/analyses/imported-requirements");
     expect(res.status).toBe(200);
     expect(res.body.data.items.map((i: { id: string }) => i.id)).toEqual([ID(1), ID(2)]);
-    expect(res.body.data.maxSelectable).toBe(8);
+    expect(res.body.data).toMatchObject({ total: 2, truncated: false, maxSelectable: 8 });
+  });
+
+  it("narrows by ?q= on the title, and by issue number with or without a leading #", async () => {
+    const byTitle = await request(app).get(
+      "/api/projects/proj-a/analyses/imported-requirements?q=star",
+    );
+    expect(byTitle.body.data.items.map((i: { id: string }) => i.id)).toEqual([ID(2)]);
+    expect(byTitle.body.data).toMatchObject({ total: 1, truncated: false });
+
+    const byNumber = await request(app).get(
+      "/api/projects/proj-a/analyses/imported-requirements?q=%231",
+    );
+    expect(byNumber.body.data.items.map((i: { id: string }) => i.id)).toEqual([ID(1)]);
+  });
+
+  it("says when the listing is cut at its cap, so an older row is found by searching", async () => {
+    const { IMPORTED_REQUIREMENT_LIST_LIMIT } =
+      await import("../lib/analysis/imported-requirement-input.js");
+    for (let n = 10; n < 10 + IMPORTED_REQUIREMENT_LIST_LIMIT; n += 1) {
+      rows.push(imported(n, `Bulk item ${n}`));
+    }
+    const all = await request(app).get("/api/projects/proj-a/analyses/imported-requirements");
+    expect(all.body.data.items).toHaveLength(IMPORTED_REQUIREMENT_LIST_LIMIT);
+    expect(all.body.data).toMatchObject({
+      total: IMPORTED_REQUIREMENT_LIST_LIMIT + 2,
+      truncated: true,
+    });
+
+    const found = await request(app).get(
+      "/api/projects/proj-a/analyses/imported-requirements?q=Keyboard",
+    );
+    expect(found.body.data.items.map((i: { id: string }) => i.id)).toEqual([ID(2)]);
+    expect(found.body.data.truncated).toBe(false);
   });
 
   it("never offers more picks than the per-analysis schema accepts, even if the operator cap is higher", async () => {

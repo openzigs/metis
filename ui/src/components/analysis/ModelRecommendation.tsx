@@ -10,7 +10,7 @@
  * number: the previous build displayed a constant "~16 tokens · ~$0.0000" that
  * was off by ~11,500× on a real run.
  */
-import { useEffect, useState } from "react";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
@@ -101,15 +101,7 @@ function fetchRecommendation(
   });
 }
 
-/** Delay a fast-changing value so typing does not fire a request per keystroke. */
-export function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), delayMs);
-    return () => clearTimeout(timer);
-  }, [value, delayMs]);
-  return debounced;
-}
+export { useDebouncedValue };
 
 /** Human-readable provenance for the estimate, so the number is never bare. */
 function estimateCaption(estimate: RunEstimate): string {

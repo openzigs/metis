@@ -9,4 +9,6 @@ section: Added
 - A new analysis can start from imported requirements. Pick them in the new
   "Analyze imported requirements" list. Each one you pick is analyzed as its own
   requirement, and the run's summary lists each one with a link back to the
-  original GitHub, Jira, Azure DevOps or Linear item.
+  original GitHub, Jira, Azure DevOps or Linear item. The list's filter searches
+  every imported requirement by title or issue number, and says when only the
+  newest are shown.

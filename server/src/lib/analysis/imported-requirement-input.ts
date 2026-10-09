@@ -19,11 +19,14 @@ import {
   type ImportedRequirementOption,
 } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
-import { prisma } from "../prisma.js";
+import { type Prisma, prisma, resolveDatabaseProvider } from "../prisma.js";
 import { newRequirementId } from "./new-requirements.js";
 
 /** The most imported requirements the listing returns (newest first). */
 export const IMPORTED_REQUIREMENT_LIST_LIMIT = 500;
+
+/** The longest search term the listing uses; longer input is cut, not refused. */
+export const IMPORTED_REQUIREMENT_QUERY_MAX = 200;
 
 /** Collapse a title onto one line so it stays one bullet (one candidate). */
 function oneLine(title: string): string {
@@ -104,17 +107,50 @@ function toOption(row: {
   return { ...row, externalSource: row.externalSource ?? "unknown" };
 }
 
-/** The project's imported requirements, newest first, for the start form. */
+/**
+ * Normalise the start form's search term: trimmed, a leading `#` dropped (so
+ * `#3401` finds issue 3401), bounded. Empty means "no filter".
+ */
+export function normaliseImportedRequirementQuery(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw.trim().replace(/^#+/, "").trim().slice(0, IMPORTED_REQUIREMENT_QUERY_MAX);
+}
+
+/** A case-insensitive substring filter on both backends; the term is a bound value. */
+function containsFilter(q: string): Prisma.StringFilter {
+  // SQLite `LIKE` already folds ASCII case. Postgres needs `mode: "insensitive"`,
+  // which the SQLite-generated client's types do not declare.
+  return resolveDatabaseProvider() === "postgresql"
+    ? ({ contains: q, mode: "insensitive" } as Prisma.StringFilter)
+    : { contains: q };
+}
+
+/**
+ * The project's imported requirements, newest first, for the start form: at
+ * most {@link IMPORTED_REQUIREMENT_LIST_LIMIT}, narrowed by `q` (title or
+ * external number) so a row older than the cap is still reachable. `total` is
+ * the full match count, so the picker can say when the list is cut.
+ */
 export async function listImportedRequirements(
   projectId: string,
-): Promise<ImportedRequirementOption[]> {
-  const rows = await prisma.requirement.findMany({
-    where: { projectId, deletedAt: null, externalSource: { not: null } },
-    select: IMPORTED_SELECT,
-    orderBy: { createdAt: "desc" },
-    take: IMPORTED_REQUIREMENT_LIST_LIMIT,
-  });
-  return rows.map(toOption);
+  q = "",
+): Promise<{ items: ImportedRequirementOption[]; total: number; truncated: boolean }> {
+  const where: Prisma.RequirementWhereInput = {
+    projectId,
+    deletedAt: null,
+    externalSource: { not: null },
+    ...(q ? { OR: [{ title: containsFilter(q) }, { externalId: containsFilter(q) }] } : {}),
+  };
+  const [rows, total] = await Promise.all([
+    prisma.requirement.findMany({
+      where,
+      select: IMPORTED_SELECT,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: IMPORTED_REQUIREMENT_LIST_LIMIT,
+    }),
+    prisma.requirement.count({ where }),
+  ]);
+  return { items: rows.map(toOption), total, truncated: total > rows.length };
 }
 
 /**

@@ -432,9 +432,16 @@ export const analysisApi = {
   capabilityPreview: (projectId: string) =>
     apiFetch<AnalysisCapabilityPreview>(`/projects/${projectId}/analyses/capability`),
 
-  /** Issue #1006 — the project's imported requirements a run can start from. */
-  importedRequirements: (projectId: string) =>
-    apiFetch<ImportedRequirementOptions>(`/projects/${projectId}/analyses/imported-requirements`),
+  /**
+   * Issue #1006 — the project's imported requirements a run can start from,
+   * newest first and capped server-side; `q` narrows by title or issue number.
+   */
+  importedRequirements: (projectId: string, q = "") =>
+    apiFetch<ImportedRequirementOptions>(
+      `/projects/${projectId}/analyses/imported-requirements${
+        q ? `?q=${encodeURIComponent(q)}` : ""
+      }`,
+    ),
 
   cancel: (id: string) =>
     apiFetch<{ cancelled: boolean }>(`/analyses/${id}/cancel`, { method: "POST" }),

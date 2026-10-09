@@ -10,8 +10,9 @@
  * imported item it was. Renders nothing when the project has imported nothing.
  */
 import { useId, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { analysisApi } from "@/lib/analysis-api";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -36,21 +37,31 @@ export function ImportedRequirementsPicker({
 }: Props): React.ReactElement | null {
   const [filter, setFilter] = useState("");
   const filterId = useId();
+  const term = filter.trim().replace(/^#+/, "").trim();
+  const needle = term.toLowerCase();
+  // The server lists at most its cap (newest first), so the filter is also sent
+  // as `q`: a row older than the cap is reachable by searching for it.
+  const q = useDebouncedValue(term, 300);
   const options = useQuery({
-    queryKey: ["analyses", "imported-requirements", projectId],
-    queryFn: () => analysisApi.importedRequirements(projectId),
+    queryKey: ["analyses", "imported-requirements", projectId, q],
+    queryFn: () => analysisApi.importedRequirements(projectId, q),
+    placeholderData: keepPreviousData,
   });
-  const items = options.data?.items ?? [];
-  if (items.length === 0) return null;
+  const data = options.data;
+  // Hidden only when the project has imported nothing — never because a search
+  // matched nothing, which would take the search box away with it.
+  if (!data || (data.items.length === 0 && !q && !term)) return null;
 
-  const max = options.data?.maxSelectable ?? 0;
-  const needle = filter.trim().replace(/^#/, "").toLowerCase();
+  const max = data.maxSelectable;
+  // Narrow what is on screen at once, before the debounced server search lands.
   const visible = needle
-    ? items.filter(
+    ? data.items.filter(
         (i) => i.title.toLowerCase().includes(needle) || (i.externalId ?? "").includes(needle),
       )
-    : items;
+    : data.items;
   const atMax = selected.length >= max;
+  // The server answer for what is typed now, not a previous search still on screen.
+  const settled = q === term && !options.isPlaceholderData;
 
   const toggle = (id: string) =>
     onChange(selected.includes(id) ? selected.filter((s) => s !== id) : [...selected, id]);
@@ -73,6 +84,17 @@ export function ImportedRequirementsPicker({
           onChange={(e) => setFilter(e.target.value)}
         />
       </div>
+      {data.truncated && settled ? (
+        <p className="mt-1 text-xs text-warning" data-testid="imported-requirements-truncated">
+          Showing the newest {data.items.length} of {data.total}; refine the filter to find older
+          ones.
+        </p>
+      ) : null}
+      {visible.length === 0 && settled ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          No imported requirements match &ldquo;{filter.trim()}&rdquo;.
+        </p>
+      ) : null}
       <ul className="mt-2 max-h-56 space-y-1 overflow-y-auto">
         {visible.map((item) => {
           const checked = selected.includes(item.id);

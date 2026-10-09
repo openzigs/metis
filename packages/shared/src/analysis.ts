@@ -1317,7 +1317,12 @@ export interface ImportedRequirementOption {
 
 /** Response of `GET /projects/:projectId/analyses/imported-requirements`. */
 export interface ImportedRequirementOptions {
+  /** Newest first, at most the server's listing cap, narrowed by `?q=`. */
   items: ImportedRequirementOption[];
+  /** How many imported requirements match `?q=` (all of them, without one). */
+  total: number;
+  /** True when `total` exceeds `items.length`: refine `q` to reach the rest. */
+  truncated: boolean;
   /**
    * How many a run analyses individually: the server's new-requirement
    * candidate cap. A larger selection is refused rather than silently cut.

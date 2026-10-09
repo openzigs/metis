@@ -97,6 +97,7 @@ import {
   composeImportedRequirementInput,
   listImportedRequirements,
   loadSelectedImportedRequirements,
+  normaliseImportedRequirementQuery,
 } from "../lib/analysis/imported-requirement-input.js";
 import { resolveNewRequirementCandidateCap } from "../lib/analysis/new-requirements.js";
 // Issue #743 — diff-style current-vs-proposed view for changed requirements.
@@ -365,9 +366,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     async (req: Request, res: Response) => {
       const projectId = String(req.params.projectId);
       await ensureProjectVisible(projectId);
+      const q = normaliseImportedRequirementQuery(req.query.q);
       res.json(
         ok({
-          items: await listImportedRequirements(projectId),
+          ...(await listImportedRequirements(projectId, q)),
           maxSelectable: Math.min(
             resolveNewRequirementCandidateCap(),
             MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS,
