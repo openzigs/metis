@@ -13,6 +13,10 @@
  * unit-tested (round-trip diff, reconstruction) without a database.
  */
 import type { PrismaClient } from "@prisma/client";
+import {
+  mergeHiddenRequirementLabels,
+  parseRequirementLabels,
+} from "../analysis/requirement-labels.js";
 
 /**
  * Tracked requirement fields that participate in version history. Order is
@@ -260,6 +264,13 @@ export interface UpdateWithHistoryParams {
    * wins), matching the route's "no `version` skips the check" contract.
    */
   expectedVersion?: number;
+  /**
+   * Issue #940 — treat `patch.labels` as the caller's VISIBLE labels: merge
+   * them onto the hidden `finding:*` / `review:*` labels of the row read in
+   * this transaction instead of replacing the list. For callers that, like the
+   * requirement Edit dialog, never see the hidden labels.
+   */
+  keepHiddenLabels?: boolean;
 }
 
 /**
@@ -347,7 +358,16 @@ async function updateOnce(
     }
 
     const before = pickTracked(existing);
-    const after: Partial<RequirementSnapshot> = { ...before, ...params.patch };
+    const patch: Partial<RequirementSnapshot> = { ...params.patch };
+    if (params.keepHiddenLabels && typeof patch.labels === "string") {
+      patch.labels = JSON.stringify(
+        mergeHiddenRequirementLabels(
+          parseRequirementLabels(patch.labels),
+          parseRequirementLabels(typeof existing.labels === "string" ? existing.labels : null),
+        ),
+      );
+    }
+    const after: Partial<RequirementSnapshot> = { ...before, ...patch };
     const changedFields = computeChangedFields(before, after);
     const changed = Object.keys(changedFields).length > 0;
     const nextVersion = existing.version + 1;
@@ -360,7 +380,7 @@ async function updateOnce(
     if (changed) {
       const { count } = await txc.requirement.updateMany({
         where: { id: params.requirementId, version: existing.version, deletedAt: null },
-        data: { ...params.patch, version: nextVersion },
+        data: { ...patch, version: nextVersion },
       });
       if (count !== 1) throw versionConflict();
 

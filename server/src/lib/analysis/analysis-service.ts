@@ -9,7 +9,7 @@
  * row is created so history is preserved (#57 AC1). Cascade-on-archive is
  * already wired via Prisma `onDelete: Cascade` on the project relation.
  */
-import { isHiddenRequirementLabel, parseRequirementLabels } from "./requirement-labels.js";
+import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirement-labels.js";
 import {
   isAgentPhaseResultKey,
   type AnalysisAgentSource,
@@ -1240,7 +1240,7 @@ export async function updateRequirementRow(input: {
   const storedLabels = parseRequirementLabels(existing.labels);
   let labels = storedLabels;
   if (input.patch.labels) {
-    labels = mergeLabelsPreservingMeta(input.patch.labels, labels);
+    labels = mergeHiddenRequirementLabels(input.patch.labels, labels);
   }
   labels = labels.filter((l) => !l.startsWith("review:"));
   if (JSON.stringify(labels) !== JSON.stringify(storedLabels)) {
@@ -1357,12 +1357,6 @@ export async function loadFindingForDeepDive(input: {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 const SAFE_AGENT_KEYS = new Set<string>(ANALYSIS_AGENT_KEYS);
-
-function mergeLabelsPreservingMeta(next: string[], prev: string[]): string[] {
-  const meta = prev.filter(isHiddenRequirementLabel);
-  const cleaned = next.filter((l) => !isHiddenRequirementLabel(l));
-  return [...new Set([...cleaned, ...meta])];
-}
 
 const EMPTY_EVIDENCE = {
   citations: [] as Citation[],

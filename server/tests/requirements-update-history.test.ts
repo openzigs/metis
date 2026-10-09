@@ -148,6 +148,70 @@ describe("PUT /requirements/:id with version history", () => {
     expect(res.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
   });
 
+  // Issue #940 — the Edit dialog never shows the hidden `finding:<id>`
+  // traceability label, so the labels it saves never contain it. Replacing the
+  // stored list with them silently cut the requirement off from its finding.
+  it("#940 — keeps the hidden finding:<id> label when the dialog saves its visible labels", async () => {
+    mockPrisma.requirement.findUnique
+      .mockResolvedValueOnce({ ...EXISTING, labels: JSON.stringify(["api", "finding:f-1"]) })
+      .mockResolvedValueOnce({ id: "req-1", version: 3, updatedAt: new Date() });
+    mockPrisma.requirement.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.requirementVersion.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .put("/requirements/req-1")
+      .send({ labels: ["api", "security"], version: 2 });
+
+    expect(res.status).toBe(200);
+    const written = mockPrisma.requirement.updateMany.mock.calls[0][0] as {
+      data: { labels: string };
+    };
+    expect(JSON.parse(written.data.labels)).toEqual(["api", "security", "finding:f-1"]);
+  });
+
+  it("#940 — a save that changes nothing visible writes nothing", async () => {
+    mockPrisma.requirement.findUnique
+      .mockResolvedValueOnce({ ...EXISTING, labels: JSON.stringify(["api", "finding:f-1"]) })
+      .mockResolvedValueOnce({ id: "req-1", version: 2, updatedAt: new Date() });
+
+    const res = await request(app)
+      .put("/requirements/req-1")
+      .send({ labels: ["api"], version: 2 });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.requirement.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.requirementVersion.create).not.toHaveBeenCalled();
+  });
+
+  it("#940 — a client cannot forge or drop a finding:<id> link through the labels", async () => {
+    mockPrisma.requirement.findUnique
+      .mockResolvedValueOnce({ ...EXISTING, labels: JSON.stringify(["finding:f-1"]) })
+      .mockResolvedValueOnce({ id: "req-1", version: 3, updatedAt: new Date() });
+    mockPrisma.requirement.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.requirementVersion.create.mockResolvedValue({});
+
+    await request(app)
+      .put("/requirements/req-1")
+      .send({ labels: ["ui", "finding:forged"], version: 2 });
+
+    const written = mockPrisma.requirement.updateMany.mock.calls[0][0] as {
+      data: { labels: string };
+    };
+    expect(JSON.parse(written.data.labels)).toEqual(["ui", "finding:f-1"]);
+  });
+
+  it("#940 — the 409 diff shows the labels as the dialog does, without the hidden ones", async () => {
+    const stored = { ...EXISTING, version: 3, labels: JSON.stringify(["api", "finding:f-1"]) };
+    mockPrisma.requirement.findUnique.mockResolvedValueOnce(stored).mockResolvedValueOnce(stored);
+
+    const res = await request(app)
+      .put("/requirements/req-1")
+      .send({ labels: ["ui"], version: 2 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.diff).toEqual([{ field: "labels", server: ["api"], client: ["ui"] }]);
+  });
+
   it("rejects an invalid patch with 400", async () => {
     const res = await request(app).put("/requirements/req-1").send({ priority: "nonsense" });
     expect(res.status).toBe(400);

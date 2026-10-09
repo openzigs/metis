@@ -28,21 +28,10 @@ import {
   updateRequirementWithHistory,
   RequirementVersionError,
 } from "../lib/requirements/requirement-version-service.js";
-
-/**
- * `Requirement.labels` is a JSON-encoded string[] in the database and a plain
- * string[] on the wire. Tolerates a malformed/legacy value by reporting no
- * labels rather than throwing inside the lock's pre-flight read.
- */
-function parseLabels(raw: string | null | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.map((l) => String(l)) : [];
-  } catch {
-    return [];
-  }
-}
+// `Requirement.labels` is a JSON-encoded string[] in the database and a plain
+// string[] on the wire; a malformed/legacy value reads as no labels rather than
+// throwing inside the lock's pre-flight read.
+import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 
 // ---- Schemas ----------------------------------------------------------------
 
@@ -95,8 +84,10 @@ async function loadLockedRequirement(req: Request) {
   // against the REQUEST BODY field by field, so handing it the raw column
   // reported `labels` as conflicting on every 409 — and the merge modal
   // then offered to "keep" a JSON string, which the same endpoint rejects
-  // with a 400. Present the record in the shape the client speaks.
-  return { ...row, labels: parseLabels(row.labels) };
+  // with a 400. Present the record in the shape the client speaks — and, like
+  // the Edit dialog, without the hidden `finding:*` / `review:*` labels the
+  // write keeps on its own (#940).
+  return { ...row, labels: visibleRequirementLabels(row.labels) };
 }
 
 export function requirementsCollaborationRouter(): Router {
@@ -253,6 +244,9 @@ export function requirementsCollaborationRouter(): Router {
           // only in the router guard (undefined for system admins).
           projectId: requirementScopeWhere(req).projectId,
           expectedVersion,
+          // Issue #940 — the Edit dialog only ever sees the visible labels;
+          // keep the hidden `finding:<id>` traceability labels it cannot show.
+          keepHiddenLabels: true,
         });
         res.json({
           success: true,
