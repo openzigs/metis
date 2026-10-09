@@ -29,6 +29,8 @@ export interface GeneratedDocProvenanceSummary {
   sourceCount: number;
   historicalCitations: GeneratedDocVersionManifest["historicalCitations"];
   legacy: GeneratedDocVersionManifest["legacy"];
+  /** #995 — per section, the topics a length cap left out; only sections that lost any. */
+  omittedTopics: Array<{ section: string; topics: string[] }>;
 }
 
 export function summarizeGeneratedDocVersionManifest(
@@ -48,6 +50,11 @@ export function summarizeGeneratedDocVersionManifest(
     sourceCount: manifest.sourceFingerprints.length,
     historicalCitations: manifest.historicalCitations,
     legacy: manifest.legacy,
+    omittedTopics: manifest.sections.flatMap((section) =>
+      section.omittedTopics?.length
+        ? [{ section: section.sectionLabel, topics: [...section.omittedTopics] }]
+        : [],
+    ),
   };
 }
 

@@ -3789,7 +3789,7 @@ Recovery is at-least-once.
 | `GET` | `/:docId` | Get a single document: its content once, plus summary metadata, the five latest version summaries (`id`, `version`, `revisionId`, `diffSummary`, `createdAt`) and separate indexing state | — |
 | `GET` | `/:docId/versions/:versionId` | One version's markdown body (#190) | — |
 | `GET` | `/:docId/versions/:versionId/provenance` | One version's full provenance manifest (#190); the UI fetches it only for **Download full manifest** (#196) | — |
-| `GET` | `/:docId/versions/:versionId/provenance/summary` | The Provenance panel's summary of it: `revisionId`, `version`, `generatedAt`, `pipeline`, `models`, `sectionCount`, `selectedEvidenceCount`, `sourceCount`, `historicalCitations`, `legacy` (#196) | — |
+| `GET` | `/:docId/versions/:versionId/provenance/summary` | The Provenance panel's summary of it: `revisionId`, `version`, `generatedAt`, `pipeline`, `models`, `sectionCount`, `selectedEvidenceCount`, `sourceCount`, `historicalCitations`, `legacy` (#196), `omittedTopics` (`[{section, topics}]`: topics the per-section length cap dropped, #995) | — |
 | `GET` | `/:docId/versions/:versionId/changed-symbols?offset=&limit=` | A page (default 500, max 5,000) of one version's changed symbols, with `total` (#190) | — |
 | `GET` | `/:docId/export?format=pdf\|docx` | Download in specified format | — |
 | `PATCH` | `/:docId` | Update document metadata (title, autoUpdate flag) | — |
@@ -4241,7 +4241,7 @@ Design points:
 | `DOCS_GEN_MAX_RUN_COST_CENTS` | `2500` | #855 — the most one generation may spend (estimated from configured prices), in US cents; `0` = no ceiling. Reaching it stops the run (in-flight calls aborted) and keeps its finished sections as a degraded draft. Registry tunable. |
 | `DOCS_GEN_MAX_RUN_TOKENS` | `20000000` | #855 — the most input + output tokens one generation may use; `0` = no ceiling. Bounds unpriced and self-hosted models. Registry tunable. |
 | `DOCS_GEN_SECTION_MAX_CHARS` | `60000` | #741 — longest section, in markdown characters (min 5000). Batched sections get per-batch word budgets from it; any section over it is shortened at topic boundaries with a note listing what was left out. Registry tunable. |
-| `DOCS_GEN_DOCUMENT_MAX_CHARS` | `250000` | #741 — longest document body before footnotes (min 10000); the longest sections are shortened first. Registry tunable. |
+| `DOCS_GEN_DOCUMENT_MAX_CHARS` | `250000` | #741 — longest document body before footnotes (min 10000); the longest sections are shortened first, and room a shortened section cannot use passes to the others (#995). Registry tunable. |
 | `DOCS_GEN_HYBRID_ROUTING` | `0` (off) | Route each Phase-2 section to a provider by faithfulness tier (local for literal/reconstruction, Sonnet for narrative). No-op unless BOTH a local and an escalation provider are configured (#333). |
 | `DOCS_GEN_JUDGE_ESCALATION` | `0` (off) | Re-run a below-threshold LOCAL section once on the escalation (Sonnet) provider and keep the better result — the quality floor (#334). Independent of hybrid routing but inert without it. |
 | `DOCS_GEN_MAX_ESCALATIONS` | `3` | Per-document cap on escalation re-runs (bounds cost). The per-section cap is always exactly one. `0` disables escalation via budget while leaving the flag on. |
