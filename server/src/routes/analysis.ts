@@ -88,6 +88,7 @@ import {
 } from "../lib/analysis/index.js";
 import { RequirementVersionError } from "../lib/requirements/requirement-version-service.js";
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
+import { listPromptOnlyAnalysisAgents } from "../lib/analysis/custom-agent-phase.js";
 // Issue #743 — diff-style current-vs-proposed view for changed requirements.
 import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-service.js";
 import type { StructuredRequirements } from "../lib/analysis/types/requirements.js";
@@ -334,7 +335,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     async (req: Request, res: Response) => {
       const projectId = String(req.params.projectId);
       await ensureProjectVisible(projectId);
-      res.json(ok(await detectStaticCapability(projectId)));
+      // #938 — and the enabled agents the run will invoke prompt-only.
+      const [preview, promptOnlyAgents] = await Promise.all([
+        detectStaticCapability(projectId),
+        listPromptOnlyAnalysisAgents(projectId),
+      ]);
+      res.json(ok({ ...preview, promptOnlyAgents }));
     },
   );
 
