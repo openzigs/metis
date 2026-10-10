@@ -32,11 +32,14 @@
  */
 import { AppError } from "../../middleware/error-handler.js";
 import { audit } from "../audit/audit-service.js";
+import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import type { ApprovalGateCheckResult } from "@metis/shared";
 
 export const APPROVAL_REQUIRED = "APPROVAL_REQUIRED";
 export const APPROVAL_GATE_UNAVAILABLE = "APPROVAL_GATE_UNAVAILABLE";
+
+const log = createChildLogger("reviews:approval-gate");
 
 /** Minimal draft shape the gate needs (subset of IssueDraft). */
 export interface GateDraft {
@@ -286,7 +289,11 @@ export async function previewDraftsGate(
     if (!(await isGateEnforced(projectId))) return { check: "off", blockedDraftIds: [] };
     const { blockedDraftIds } = await evaluateDrafts(projectId, drafts);
     return { check: blockedDraftIds.length > 0 ? "blocked" : "passed", blockedDraftIds };
-  } catch {
+  } catch (err) {
+    log.warn("review.gate.preview_unavailable", {
+      projectId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return { check: "unavailable", blockedDraftIds: [] };
   }
 }

@@ -157,6 +157,9 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     drafts.map((d) => d.id),
   );
   const credential = await preflightCredential(input.secretRef);
+  // Predicts the GitHub path (publishable-status drafts). A retried, partly
+  // published Jira batch is gated on its raw draftIds at run time, so it can
+  // preview `passed` and still be refused.
   const approvalGate = await previewDraftsGate(input.projectId, drafts);
   return buildDryRunPlan({
     batchId: PREVIEW_PLAN_BATCH_ID,

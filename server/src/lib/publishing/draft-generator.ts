@@ -177,18 +177,23 @@ const UNPUBLISHED_DRAFT_STATUSES = ["draft", "approved", "failed"];
 async function withdrawRejectedDrafts(
   projectId: string,
   rejectedRequirementIds: string[],
-): Promise<number> {
-  if (rejectedRequirementIds.length === 0) return 0;
-  const { count } = await prisma.issueDraft.updateMany({
-    where: {
-      projectId,
-      requirementId: { in: rejectedRequirementIds },
-      status: { in: UNPUBLISHED_DRAFT_STATUSES },
-      deletedAt: null,
-    },
+): Promise<string[]> {
+  if (rejectedRequirementIds.length === 0) return [];
+  const where = {
+    projectId,
+    requirementId: { in: rejectedRequirementIds },
+    status: { in: UNPUBLISHED_DRAFT_STATUSES },
+    deletedAt: null,
+  };
+  // Ids are returned (and logged by the caller) so a withdrawn draft carrying
+  // a reviewer edit can be recovered if the requirement is reopened.
+  const rows = await prisma.issueDraft.findMany({ where, select: { id: true } });
+  if (rows.length === 0) return [];
+  await prisma.issueDraft.updateMany({
+    where: { ...where, id: { in: rows.map((r) => r.id) } },
     data: { deletedAt: new Date() },
   });
-  return count;
+  return rows.map((r) => r.id);
 }
 
 /**
@@ -343,14 +348,6 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   // for one before it was rejected is withdrawn rather than left publishable.
   const live = await loadOrPromoteRequirements(opts.analysisId, analysis.status);
   const rejectedIds = live.filter(isRejectedRequirement).map((r) => r.id);
-  const withdrawn = await withdrawRejectedDrafts(opts.projectId, rejectedIds);
-  if (withdrawn > 0) {
-    log.info("withdrew drafts of rejected requirements", {
-      projectId: opts.projectId,
-      analysisId: opts.analysisId,
-      withdrawn,
-    });
-  }
   const rejected = new Set(rejectedIds);
   const reviewed = live.filter((r) => !rejected.has(r.id));
   if (reviewed.length === 0) {
@@ -363,6 +360,16 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
     );
   }
   const requirements = selectRequirements(reviewed, analysis, opts.requirementIds);
+  // Withdraw only after selection validated: a 400 above must leave rows untouched.
+  const withdrawnIds = await withdrawRejectedDrafts(opts.projectId, rejectedIds);
+  if (withdrawnIds.length > 0) {
+    log.info("withdrew drafts of rejected requirements", {
+      projectId: opts.projectId,
+      analysisId: opts.analysisId,
+      withdrawn: withdrawnIds.length,
+      withdrawnDraftIds: withdrawnIds,
+    });
+  }
 
   const summary: GeneratedDraftSummary = {
     total: 0,

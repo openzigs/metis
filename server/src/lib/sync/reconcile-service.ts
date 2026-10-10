@@ -84,7 +84,11 @@ export async function reconcileIssueChange(
   };
 
   // 3. Compute field-level diffs
-  const fieldDiffs = computeFieldDiffs(localSnapshot, event.current);
+  const fieldDiffs = computeFieldDiffs(localSnapshot, {
+    ...event.current,
+    // Issues published before #744 still carry `finding:<id>` on GitHub.
+    labels: event.current.labels.filter((l) => !isHiddenRequirementLabel(l)),
+  });
 
   if (fieldDiffs.length === 0) {
     log.debug("sync.reconcile.no_diff", { deliveryId: event.deliveryId });
