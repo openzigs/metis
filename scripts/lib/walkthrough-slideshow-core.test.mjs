@@ -92,6 +92,10 @@ describe("manifest validation", () => {
     );
   });
 
+  it("accepts wave G, the optional implement-the-plan wave (#1043)", () => {
+    expect(valid({ wave: "G", phase: "G", chapter: "Implement the plan" }).wave).toBe("G");
+  });
+
   it("rejects a non-object line", () => {
     expect(validateStep([1], 3).errors).toEqual(["steps.jsonl line 3: expected a JSON object"]);
     expect(validateStep(null, 3).errors).toHaveLength(1);
@@ -105,7 +109,7 @@ describe("manifest validation", () => {
     ["ts", "yesterday"],
     ["ts", "March 5, 2026"],
     ["ts", "2026-10-03"],
-    ["wave", "G"],
+    ["wave", "H"],
     ["wave", "BA"],
     ["works", "ok"],
     ["works", "weak"],
@@ -168,6 +172,15 @@ describe("ordering and chapter grouping", () => {
       valid({ id: "a2", wave: "A", phase: "2" }),
     ];
     expect(orderSteps(steps).map((s) => s.id)).toEqual(["a1", "a2", "b1", "b2", "d"]);
+  });
+
+  it("orders wave G after wave F (#1043)", () => {
+    const steps = [
+      valid({ id: "g", wave: "G", phase: "G" }),
+      valid({ id: "f", wave: "F", phase: "J2.4" }),
+      valid({ id: "a", wave: "A", phase: "1" }),
+    ];
+    expect(orderSteps(steps).map((s) => s.id)).toEqual(["a", "f", "g"]);
   });
 
   it("groups chapters in order of their first step", () => {
@@ -949,6 +962,7 @@ describe("run.json parsing (#947)", () => {
         fixes: undefined,
         changePlanAccuracy: undefined,
         docQuality: undefined,
+        buildProof: undefined,
       },
       errors: [],
     });
@@ -959,6 +973,7 @@ describe("run.json parsing (#947)", () => {
     r.metisSha = "f117d406083316cc8c204399b7826cf69a7fb7a5";
     r.previousRunSha = "7cc6310d";
     r.waves.F = { tokens: 10, costUsd: 0.01 };
+    r.waves.G = { tokens: 0, costUsd: 0 };
     r.fixes = fixesFixture();
     const { run, errors } = parseRunInfo(JSON.stringify(r));
     expect(errors).toEqual([]);
@@ -1064,8 +1079,8 @@ describe("run.json parsing (#947)", () => {
       ["waves not an object", (r) => (r.waves = []), '"waves" must be an object keyed by wave'],
       [
         "an unknown wave",
-        (r) => (r.waves.G = { tokens: 1, costUsd: 0 }),
-        "waves.G: wave must be one of A, B, C, D, E, F, BA",
+        (r) => (r.waves.H = { tokens: 1, costUsd: 0 }),
+        "waves.H: wave must be one of A, B, C, D, E, F, G, BA",
       ],
       ["a non-object wave", (r) => (r.waves.B = 3), "waves.B: expected a JSON object"],
       ["an unknown wave field", (r) => (r.waves.A.usd = 1), 'waves.A: unknown field "usd"'],
@@ -1496,5 +1511,221 @@ describe("run.json docQuality (#1041)", () => {
     const r = /** @type {any} */ (runInfo());
     r.docQuality = docQualityFixture();
     expect(deckOf(parseRunInfo(JSON.stringify(r)).run, "tutorial")).not.toContain("doc-quality");
+  });
+});
+
+/** Wave G's build proof (#1043) for Miniflux #4478, whose change set is 3 files and 2 functions. */
+function buildProofFixture() {
+  return {
+    issue: 4478,
+    branch: "walkthrough/run-7-4478",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    builds: true,
+    testsPass: false,
+    tasksTotal: 8,
+    tasksCorrected: 2,
+    files: { tp: 2, fp: 1, fn: 1 },
+    functions: { tp: 2, fp: 0, fn: 0 },
+    agentCostUsd: 2.15,
+    wallMinutes: 38,
+  };
+}
+
+describe("run.json buildProof (#1043)", () => {
+  it("accepts a valid build proof and returns it", () => {
+    const r = /** @type {any} */ (runInfo());
+    r.buildProof = buildProofFixture();
+    const { run, errors } = parseRunInfo(JSON.stringify(r));
+    expect(errors).toEqual([]);
+    expect(run?.buildProof).toEqual(buildProofFixture());
+  });
+
+  it("accepts a stop before the build: builds and testsPass not reached", () => {
+    const proof = { ...buildProofFixture(), builds: null, testsPass: null };
+    expect(parseRunInfo(JSON.stringify({ buildProof: proof })).errors).toEqual([]);
+  });
+
+  it("accepts a proof that agrees with the issue's changePlanAccuracy change set", () => {
+    const { errors } = parseRunInfo(
+      JSON.stringify({ changePlanAccuracy: accuracyFixture(), buildProof: buildProofFixture() }),
+    );
+    expect(errors).toEqual([]);
+  });
+
+  /** @param {(p: any) => void} mutate @param {object} [extra] */
+  const errorsOf = (mutate, extra = {}) => {
+    const proof = /** @type {any} */ (buildProofFixture());
+    mutate(proof);
+    const { run, errors } = parseRunInfo(JSON.stringify({ ...extra, buildProof: proof }));
+    expect(run).toBeNull();
+    return errors;
+  };
+
+  it.each([[[]], [3], ["x"], [null]])("rejects a buildProof of %j", (value) => {
+    expect(parseRunInfo(JSON.stringify({ buildProof: value })).errors).toEqual([
+      'run.json: "buildProof" must be an object',
+    ]);
+  });
+
+  it.each(
+    /** @type {Array<[string, (p: any) => void, string]>} */ ([
+      ["an unknown field", (p) => (p.pr = 12), 'run.json buildProof: unknown field "pr"'],
+      [
+        "a string issue",
+        (p) => (p.issue = "4478"),
+        'run.json buildProof: "issue" must be a positive issue number',
+      ],
+      [
+        "a branch outside the walkthrough naming",
+        (p) => (p.branch = "main"),
+        'run.json buildProof: "branch" must be walkthrough/run-<N>-<issue>',
+      ],
+      [
+        "a branch for another issue",
+        (p) => (p.branch = "walkthrough/run-7-4336"),
+        'run.json buildProof: "branch" names issue 4336, but "issue" is 4478',
+      ],
+      [
+        "a non-SHA commit",
+        (p) => (p.commit = "HEAD"),
+        'run.json buildProof: "commit" must be a commit SHA (7 to 40 hex characters)',
+      ],
+      [
+        "a string builds",
+        (p) => (p.builds = "yes"),
+        'run.json buildProof: "builds" must be true, false or null (not reached)',
+      ],
+      [
+        "a missing testsPass",
+        (p) => delete p.testsPass,
+        'run.json buildProof: "testsPass" must be true, false or null (not reached)',
+      ],
+      [
+        "tests passing on a failed build",
+        (p) => {
+          p.builds = false;
+          p.testsPass = true;
+        },
+        'run.json buildProof: "testsPass" cannot be true when "builds" is not',
+      ],
+      [
+        "a test result without a build",
+        (p) => {
+          p.builds = null;
+          p.testsPass = false;
+        },
+        'run.json buildProof: "testsPass" must be null (not reached) when "builds" is',
+      ],
+      [
+        "zero tasks",
+        (p) => (p.tasksTotal = 0),
+        'run.json buildProof: "tasksTotal" must be a positive integer',
+      ],
+      [
+        "a fractional tasksCorrected",
+        (p) => (p.tasksCorrected = 1.5),
+        'run.json buildProof: "tasksCorrected" must be a non-negative integer',
+      ],
+      [
+        "more corrected tasks than tasks",
+        (p) => (p.tasksCorrected = 9),
+        'run.json buildProof: "tasksCorrected" (9) must not exceed "tasksTotal" (8)',
+      ],
+      [
+        "ratios instead of counts",
+        (p) => (p.files = { precision: 1 }),
+        'run.json buildProof files: unknown field "precision"',
+      ],
+      [
+        "a negative function count",
+        (p) => (p.functions.fp = -1),
+        'run.json buildProof functions: "fp" must be a non-negative integer',
+      ],
+      [
+        "a negative agent cost",
+        (p) => (p.agentCostUsd = -0.5),
+        'run.json buildProof: "agentCostUsd" must be a non-negative number',
+      ],
+      [
+        "a string wall time",
+        (p) => (p.wallMinutes = "38"),
+        'run.json buildProof: "wallMinutes" must be a non-negative number',
+      ],
+    ]),
+  )("rejects %s, naming the field", (_label, mutate, message) => {
+    expect(errorsOf(mutate)).toContain(message);
+  });
+
+  it("rejects a change set that disagrees with changePlanAccuracy for the same issue", () => {
+    expect(errorsOf((p) => (p.files.fn = 4), { changePlanAccuracy: accuracyFixture() })).toContain(
+      "run.json buildProof: #4478 files tp + fn is 6, but changePlanAccuracy has 3; the change set is the same for every output",
+    );
+    expect(
+      errorsOf((p) => (p.functions.tp = 0), { changePlanAccuracy: accuracyFixture() }),
+    ).toContain(
+      "run.json buildProof: #4478 functions tp + fn is 0, but changePlanAccuracy has 2; the change set is the same for every output",
+    );
+  });
+
+  /** @param {any} run @param {"report" | "tutorial"} [kind] */
+  const deckOf = (run, kind = "report") =>
+    renderDeck({
+      kind,
+      title: "T",
+      steps: [valid()],
+      imageSrc: () => "x.png",
+      inlineAssets: null,
+      run,
+    });
+
+  it("renders a build-proof slide on the report, with the agent's cost kept apart", () => {
+    const r = /** @type {any} */ (runInfo());
+    r.changePlanAccuracy = accuracyFixture();
+    r.buildProof = buildProofFixture();
+    const report = deckOf(parseRunInfo(JSON.stringify(r)).run);
+    const sections = [...report.matchAll(/<section class="slide slide--(\w+)/g)].map((m) => m[1]);
+    // After the change-plan accuracy slide and before the closing new-issues slide.
+    expect(sections.slice(-3)).toEqual(["accuracy", "build", "issues"]);
+    const start = report.indexOf('aria-label="Build proof"');
+    const slide = report.slice(start, report.indexOf("</section>", start));
+    expect(slide).toContain("<h2>Build proof (wave G)</h2>");
+    expect(slide).toContain(
+      '<a href="https://github.com/miniflux/v2/issues/4478" rel="noopener noreferrer" target="_blank">#4478</a>',
+    );
+    expect(slide).toContain(
+      '<a href="https://github.com/openzigs/flux-v2/tree/walkthrough/run-7-4478" rel="noopener noreferrer" target="_blank"><code>walkthrough/run-7-4478</code></a>',
+    );
+    expect(slide).toContain(
+      '<a href="https://github.com/openzigs/flux-v2/commit/0123456789abcdef0123456789abcdef01234567" rel="noopener noreferrer" target="_blank"><code>01234567</code></a>',
+    );
+    expect(slide).toContain('<th scope="row">Builds</th><td>yes</td>');
+    expect(slide).toContain('<th scope="row">Tests pass</th><td>no</td>');
+    expect(slide).toContain('<th scope="row">Tasks needing correction</th><td>2 of 8</td>');
+    // files 2 tp 1 fp 1 fn -> P 67% (2/3), R 67% (2/3); functions 2/2 both ways.
+    expect(slide).toContain(
+      '<th scope="row">Files vs reference change set</th><td>precision 67% (2/3) · recall 67% (2/3)</td>',
+    );
+    expect(slide).toContain(
+      '<th scope="row">Functions vs reference change set</th><td>precision 100% (2/2) · recall 100% (2/2)</td>',
+    );
+    expect(slide).toContain('<th scope="row">Agent cost (not METIS spend)</th><td>$2.15</td>');
+    expect(slide).toContain('<th scope="row">Wall time</th><td>38 min</td>');
+  });
+
+  it("shows a stop before the build as not reached", () => {
+    const run = parseRunInfo(
+      JSON.stringify({ buildProof: { ...buildProofFixture(), builds: null, testsPass: null } }),
+    ).run;
+    const report = deckOf(run);
+    expect(report).toContain('<th scope="row">Builds</th><td>not reached</td>');
+    expect(report).toContain('<th scope="row">Tests pass</th><td>not reached</td>');
+  });
+
+  it("omits the slide without buildProof, and from the tutorial", () => {
+    expect(deckOf(parseRunInfo(JSON.stringify(runInfo())).run)).not.toContain("slide--build");
+    expect(deckOf(null)).not.toContain("slide--build");
+    const r = /** @type {any} */ (runInfo());
+    r.buildProof = buildProofFixture();
+    expect(deckOf(parseRunInfo(JSON.stringify(r)).run, "tutorial")).not.toContain("Build proof");
   });
 });

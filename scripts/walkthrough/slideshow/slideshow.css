@@ -287,9 +287,10 @@ h2 {
   color: var(--muted);
 }
 
-/* New issues filed by the run (#947), and change-plan accuracy (#1042) */
+/* New issues filed by the run (#947), change-plan accuracy (#1042) and build proof (#1043) */
 .slide--issues,
-.slide--accuracy {
+.slide--accuracy,
+.slide--build {
   /* `safe` keeps the heading reachable: a long list scrolls instead of overflowing both ends. */
   justify-content: safe center;
   overflow-y: auto;

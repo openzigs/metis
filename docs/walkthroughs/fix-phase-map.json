@@ -1,5 +1,5 @@
 {
-  "$comment": "#954: where the walkthrough verifies each fix. Keyed by issue number (preferred) or PR number. wave: A-F or BA; phase: a TEST_PLAN.md phase (\"8\", \"S21\") or journey step (\"J1.4\"); or {\"skip\": \"reason\"} for a fix no wave verifies, listed under excluded. check: optional one-line 'what to check', defaulting to the closing issue's title. scripts/walkthrough/fixes-since.mjs reads it and lists every relevant PR it cannot place.",
+  "$comment": "#954: where the walkthrough verifies each fix. Keyed by issue number (preferred) or PR number. wave: A-G or BA; phase: a TEST_PLAN.md phase (\"8\", \"S21\") or journey step (\"J1.4\"); or {\"skip\": \"reason\"} for a fix no wave verifies, listed under excluded. check: optional one-line 'what to check', defaulting to the closing issue's title. scripts/walkthrough/fixes-since.mjs reads it and lists every relevant PR it cannot place.",
   "issues": {
     "905": {
       "wave": "E",

@@ -47,9 +47,10 @@ export const TUTORIAL_EXCLUDED_USEFUL = new Set(["fail"]);
 
 /**
  * Walkthrough waves, in run order (`e2e-walkthrough` skill, section 3). F is the persona
- * journeys (#954), run after E.
+ * journeys (#954), run after E; G, optional, implements a Spec Kit plan on the sandbox fork and
+ * proves it builds (#1043).
  */
-export const WAVES = /** @type {const} */ (["A", "B", "C", "D", "E", "F"]);
+export const WAVES = /** @type {const} */ (["A", "B", "C", "D", "E", "F", "G"]);
 
 /** The base every issue link points at. */
 export const ISSUE_URL_BASE = "https://github.com/openzigs/metis/issues/";
@@ -231,7 +232,7 @@ export function parseManifest(text) {
 /** Severities a run's new issues are filed under, in the order the decks list them. */
 export const SEVERITIES = /** @type {const} */ (["high", "medium", "low"]);
 
-/** Rows the per-wave ledger may carry: the six waves plus the BA re-ask, which has no steps. */
+/** Rows the per-wave ledger may carry: the waves plus the BA re-ask, which has no steps. */
 export const LEDGER_WAVES = /** @type {const} */ ([...WAVES, "BA"]);
 
 /** Top-level keys `run.json` may carry. */
@@ -244,6 +245,7 @@ const RUN_FIELDS = [
   "fixes",
   "changePlanAccuracy",
   "docQuality",
+  "buildProof",
 ];
 
 /**
@@ -264,6 +266,12 @@ export const CHANGE_SET_SOURCES = /** @type {const} */ (["upstream", "candidate"
 
 /** Where the sample project's issues live; the change-plan rows link there, not to METIS. */
 export const SAMPLE_ISSUE_URL_BASE = "https://github.com/miniflux/v2/issues/";
+
+/** The sandbox fork wave G pushes its branch to (#1043); the build-proof slide links there. */
+export const SANDBOX_REPO_URL = "https://github.com/openzigs/flux-v2/";
+
+/** Wave G's branch name, `walkthrough/run-<N>-<issue>` (TEST_PLAN.md, "Wave G"). */
+const BUILD_BRANCH = /^walkthrough\/run-(\d+)-(\d+)$/;
 
 /**
  * Documents `docQuality` may score (#1041), in deck order, with their row labels. The answer
@@ -304,6 +312,7 @@ export const LEDGER_SOURCE = "token_usages";
  * @property {ChangePlanScore[] | undefined} changePlanAccuracy change plans scored (#1042)
  * @property {Partial<Record<keyof typeof DOC_QUALITY_DOCS, DocQuality>> | undefined} docQuality
  *   the Phase 9 doc-quality scores, per document (#1041)
+ * @property {BuildProof | undefined} buildProof wave G's implement-the-plan score (#1043)
  */
 
 /**
@@ -332,6 +341,26 @@ export const LEDGER_SOURCE = "token_usages";
  * @property {MatchCounts} files
  * @property {MatchCounts} functions
  * @property {boolean} migrationCorrect
+ */
+
+/**
+ * Wave G's score (#1043): one feature request's Spec Kit tasks implemented on a branch of the
+ * sandbox fork. `builds` and `testsPass` are null when the budget stopped the agent before it got
+ * there ("not reached"), which is not a fail of METIS. `agentCostUsd` is the implementing agent's
+ * own spend, never METIS's `token_usages`, so the deck shows it apart from the ledger.
+ *
+ * @typedef {object} BuildProof
+ * @property {number} issue the sample project's issue number, e.g. 4478
+ * @property {string} branch `walkthrough/run-<N>-<issue>` on `openzigs/flux-v2`
+ * @property {string} commit the branch's head commit
+ * @property {boolean | null} builds `go build ./...` succeeded; null when not reached
+ * @property {boolean | null} testsPass `go test ./...` succeeded; null when not reached
+ * @property {number} tasksTotal tasks in `tasks.md`
+ * @property {number} tasksCorrected tasks the agent recorded as needing correction
+ * @property {MatchCounts} files the diff's files against the reference change set
+ * @property {MatchCounts} functions the diff's functions against the reference change set
+ * @property {number} agentCostUsd the implementing agent's spend, separate from METIS's
+ * @property {number} wallMinutes wall time
  */
 
 /**
@@ -468,6 +497,98 @@ function checkChangePlanAccuracy(rows, errors) {
       }
     }
   });
+}
+
+const BUILD_PROOF_FIELDS = [
+  "issue",
+  "branch",
+  "commit",
+  "builds",
+  "testsPass",
+  "tasksTotal",
+  "tasksCorrected",
+  "files",
+  "functions",
+  "agentCostUsd",
+  "wallMinutes",
+];
+
+/**
+ * Check `run.json`'s `buildProof` (#1043); push errors naming the field. When
+ * `changePlanAccuracy` scored the same issue, the proof's change-set sizes (`tp + fn`) must
+ * agree with it: the reference change set is the same whichever output is scored.
+ *
+ * @param {unknown} proof
+ * @param {unknown} accuracy the raw `changePlanAccuracy`, for the cross-check
+ * @param {string[]} errors
+ */
+function checkBuildProof(proof, accuracy, errors) {
+  const at = "run.json buildProof";
+  if (!isPlainObject(proof)) {
+    errors.push(`run.json: "buildProof" must be an object`);
+    return;
+  }
+  for (const key of Object.keys(proof)) {
+    if (!BUILD_PROOF_FIELDS.includes(key)) errors.push(`${at}: unknown field "${key}"`);
+  }
+  const issueOk = Number.isInteger(proof.issue) && Number(proof.issue) > 0;
+  if (!issueOk) errors.push(`${at}: "issue" must be a positive issue number`);
+  const branch = typeof proof.branch === "string" ? BUILD_BRANCH.exec(proof.branch) : null;
+  if (!branch) {
+    errors.push(`${at}: "branch" must be walkthrough/run-<N>-<issue>`);
+  } else if (issueOk && Number(branch[2]) !== proof.issue) {
+    errors.push(`${at}: "branch" names issue ${branch[2]}, but "issue" is ${proof.issue}`);
+  }
+  if (!(typeof proof.commit === "string" && isSha(proof.commit))) {
+    errors.push(`${at}: "commit" must be a commit SHA (7 to 40 hex characters)`);
+  }
+  /** @param {unknown} v */
+  const outcome = (v) => v === true || v === false || v === null;
+  for (const key of ["builds", "testsPass"]) {
+    if (!outcome(proof[key])) {
+      errors.push(`${at}: "${key}" must be true, false or null (not reached)`);
+    }
+  }
+  if (outcome(proof.builds) && outcome(proof.testsPass)) {
+    // `go test` compiles what `go build` does, so tests cannot pass on a build that did not.
+    if (proof.testsPass === true && proof.builds !== true) {
+      errors.push(`${at}: "testsPass" cannot be true when "builds" is not`);
+    } else if (proof.builds === null && proof.testsPass !== null) {
+      errors.push(`${at}: "testsPass" must be null (not reached) when "builds" is`);
+    }
+  }
+  const totalOk = Number.isSafeInteger(proof.tasksTotal) && Number(proof.tasksTotal) > 0;
+  if (!totalOk) errors.push(`${at}: "tasksTotal" must be a positive integer`);
+  if (!isCount(proof.tasksCorrected)) {
+    errors.push(`${at}: "tasksCorrected" must be a non-negative integer`);
+  } else if (totalOk && Number(proof.tasksCorrected) > Number(proof.tasksTotal)) {
+    errors.push(
+      `${at}: "tasksCorrected" (${proof.tasksCorrected}) must not exceed "tasksTotal" (${proof.tasksTotal})`,
+    );
+  }
+  const sizes = {
+    files: checkMatchCounts(proof.files, at, "files", errors),
+    functions: checkMatchCounts(proof.functions, at, "functions", errors),
+  };
+  for (const key of ["agentCostUsd", "wallMinutes"]) {
+    const v = proof[key];
+    if (!(typeof v === "number" && Number.isFinite(v) && v >= 0)) {
+      errors.push(`${at}: "${key}" must be a non-negative number`);
+    }
+  }
+  if (!issueOk || !Array.isArray(accuracy)) return;
+  const row = accuracy.find((r) => isPlainObject(r) && r.issue === proof.issue);
+  if (!row) return;
+  for (const kind of /** @type {const} */ (["files", "functions"])) {
+    const c = row[kind];
+    const expected = isPlainObject(c) ? Number(c.tp) + Number(c.fn) : NaN;
+    const size = sizes[kind];
+    if (size !== null && Number.isSafeInteger(expected) && size !== expected) {
+      errors.push(
+        `${at}: #${proof.issue} ${kind} tp + fn is ${size}, but changePlanAccuracy has ${expected}; the change set is the same for every output`,
+      );
+    }
+  }
 }
 
 /**
@@ -735,6 +856,10 @@ export function parseRunInfo(text) {
     }
   }
 
+  if (raw.buildProof !== undefined) {
+    checkBuildProof(raw.buildProof, raw.changePlanAccuracy, errors);
+  }
+
   if (errors.length > 0) return { run: null, errors };
   return {
     run: {
@@ -746,6 +871,7 @@ export function parseRunInfo(text) {
       fixes: /** @type {RunFix[] | undefined} */ (raw.fixes),
       changePlanAccuracy: /** @type {ChangePlanScore[] | undefined} */ (raw.changePlanAccuracy),
       docQuality: /** @type {RunInfo["docQuality"]} */ (raw.docQuality),
+      buildProof: /** @type {BuildProof | undefined} */ (raw.buildProof),
     },
     errors: [],
   };
@@ -1095,6 +1221,53 @@ ${sorted
 }
 
 /**
+ * The report's wave G slide (#1043): did the Spec Kit plan produce code that builds and passes
+ * its tests, and how close is its diff to the reference change set. The agent's cost is
+ * labelled as its own, so nobody adds it to METIS's ledger spend. Every value is validated
+ * (the branch by `BUILD_BRANCH`, the commit as hex), and the branch is escaped regardless.
+ *
+ * @param {BuildProof} p
+ * @returns {string}
+ */
+function buildProofSlide(p) {
+  /** @param {boolean | null} v */
+  const outcome = (v) => (v === null ? "not reached" : v ? "yes" : "no");
+  /** @param {MatchCounts} c */
+  const pr = (c) => `precision ${ratio(c.tp, c.tp + c.fp)} · recall ${ratio(c.tp, c.tp + c.fn)}`;
+  /** @param {string} href @param {string} text */
+  const link = (href, text) =>
+    `<a href="${escapeHtml(href)}" rel="noopener noreferrer" target="_blank">${text}</a>`;
+  /** @type {Array<[string, string]>} */
+  const rows = [
+    ["Issue", link(`${SAMPLE_ISSUE_URL_BASE}${p.issue}`, `#${p.issue}`)],
+    ["Branch", link(`${SANDBOX_REPO_URL}tree/${p.branch}`, `<code>${escapeHtml(p.branch)}</code>`)],
+    [
+      "Commit",
+      link(
+        `${SANDBOX_REPO_URL}commit/${p.commit}`,
+        `<code>${escapeHtml(p.commit.slice(0, 8))}</code>`,
+      ),
+    ],
+    ["Builds", outcome(p.builds)],
+    ["Tests pass", outcome(p.testsPass)],
+    ["Tasks needing correction", `${p.tasksCorrected} of ${p.tasksTotal}`],
+    ["Files vs reference change set", pr(p.files)],
+    ["Functions vs reference change set", pr(p.functions)],
+    ["Agent cost (not METIS spend)", formatCost(p.agentCostUsd * 100)],
+    ["Wall time", `${p.wallMinutes} min`],
+  ];
+  return `<section class="slide slide--build" aria-label="Build proof">
+  <h2>Build proof (wave G)</h2>
+  <table class="waves">
+    <caption>The Spec Kit plan implemented on the sandbox fork; the agent's cost is its own, outside the METIS ledger</caption>
+    <tbody>
+${rows.map(([k, v]) => `      <tr><th scope="row">${k}</th><td>${v}</td></tr>`).join("\n")}
+    </tbody>
+  </table>
+</section>`;
+}
+
+/**
  * The Phase 9 doc-quality table (#1041): one row per scored document, BRD first. Every cell is
  * a validated integer, so nothing here needs escaping.
  *
@@ -1334,6 +1507,10 @@ ${c.steps.map((s) => `    <li>${escapeHtml(s.title)}</li>`).join("\n")}
   // Report only: the change-plan scores (#1042), when the run recorded any.
   const accuracy = input.run?.changePlanAccuracy ?? [];
   if (!tutorial && accuracy.length > 0) slides.push(accuracySlide(accuracy));
+
+  // Report only: wave G's build proof (#1043), when the run executed it.
+  const proof = input.run?.buildProof;
+  if (!tutorial && proof) slides.push(buildProofSlide(proof));
 
   // Report only: one closing slide listing what the run filed, with titles.
   const filed = input.run?.newIssues ?? [];
