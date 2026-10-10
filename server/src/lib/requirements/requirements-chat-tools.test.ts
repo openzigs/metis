@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type { RequirementTraceabilityChain } from "@metis/shared";
+import { AppError } from "../../middleware/error-handler.js";
 import { ToolRegistry } from "../ai/tool-registry.js";
 import type { ToolContext } from "../ai/types.js";
 import {
@@ -34,8 +35,9 @@ interface Row {
   implementedByPr: number | null;
   deletedAt: Date | null;
   updatedAt: Date;
-  _count: { codeMappings: number; dataMappings: number };
+  _count: { codeMappings: number };
   dataMappings: Array<{
+    deletedAt?: Date | null;
     schemaName: string | null;
     tableName: string;
     columnName: string | null;
@@ -59,7 +61,7 @@ function row(over: Partial<Row> & { id: string }): Row {
     implementedByPr: null,
     deletedAt: null,
     updatedAt: new Date("2026-10-01T00:00:00Z"),
-    _count: { codeMappings: 0, dataMappings: 0 },
+    _count: { codeMappings: 0 },
     dataMappings: [],
     ...over,
   };
@@ -74,13 +76,40 @@ function matches(r: Row, where: Where): boolean {
   return true;
 }
 
+type DmWhere = { deletedAt?: null };
+
+function liveMappings(r: Row, where: DmWhere | undefined) {
+  return r.dataMappings.filter((m) => !(where?.deletedAt === null && m.deletedAt));
+}
+
+interface Select {
+  body?: boolean;
+  _count?: { select: { dataMappings: { where?: DmWhere } } };
+  dataMappings?: { where?: DmWhere };
+}
+
+/** Applies the top-level where, `take`, and the nested dataMappings where and `body` select. */
 function stubPrisma(rows: Row[]) {
-  const findMany = vi.fn(async (args: { where: Where }) =>
-    rows.filter((r) => matches(r, args.where)),
+  const findMany = vi.fn(async (args: { where: Where; select: Select; take?: number }) =>
+    rows
+      .filter((r) => matches(r, args.where))
+      .slice(0, args.take)
+      .map((r) => {
+        const out: Record<string, unknown> = {
+          ...r,
+          _count: {
+            ...r._count,
+            dataMappings: liveMappings(r, args.select._count?.select.dataMappings.where).length,
+          },
+        };
+        if (!args.select.body) delete out.body;
+        return out;
+      }),
   );
-  const findFirst = vi.fn(
-    async (args: { where: Where }) => rows.find((r) => matches(r, args.where)) ?? null,
-  );
+  const findFirst = vi.fn(async (args: { where: Where; select: Select }) => {
+    const r = rows.find((x) => matches(x, args.where));
+    return r ? { ...r, dataMappings: liveMappings(r, args.select.dataMappings?.where) } : null;
+  });
   return {
     prisma: { requirement: { findMany, findFirst } } as unknown as RequirementToolsDeps["prisma"],
     findMany,
@@ -108,7 +137,18 @@ const ROWS: Row[] = [
     body: "Orders persist to the orders table.",
     reviewStatus: "approved",
     labels: JSON.stringify(["persistence", "finding:abc"]),
-    _count: { codeMappings: 2, dataMappings: 1 },
+    _count: { codeMappings: 2 },
+    dataMappings: [
+      { tableName: "orders", schemaName: null, columnName: null, dbConnector: { label: "main" } },
+      // Soft-deleted: must be neither counted nor listed.
+      {
+        tableName: "gone",
+        schemaName: null,
+        columnName: null,
+        dbConnector: { label: "main" },
+        deletedAt: new Date(),
+      },
+    ],
   }),
   row({
     id: "r-ui",
@@ -203,6 +243,35 @@ describe("list_requirements (#1030)", () => {
     expect(res.text).toContain("No requirement matched");
     expect(res.text).toContain("4 requirements");
     expect(res.text).toContain("approved: 3");
+  });
+
+  it("does not count a soft-deleted data mapping", async () => {
+    const { prisma } = stubPrisma(ROWS);
+    const res = await createListRequirementsTool({ prisma }).exec({ query: "orders" }, ctx);
+    expect(res.text).toContain("data mappings: 1");
+  });
+
+  it("reads the body only when there is a query to match it against", async () => {
+    const { prisma, findMany } = stubPrisma(ROWS);
+    const tool = createListRequirementsTool({ prisma });
+    await tool.exec({}, ctx);
+    expect(findMany.mock.calls[0]![0].select.body).toBe(false);
+    await tool.exec({ query: "orders" }, ctx);
+    expect(findMany.mock.calls[1]![0].select.body).toBe(true);
+  });
+
+  it("says when the scan hit its ceiling so totals are not read as complete", async () => {
+    const many = Array.from({ length: 5001 }, (_, i) => row({ id: `r${i}` }));
+    const { prisma } = stubPrisma(many);
+    const tool = createListRequirementsTool({ prisma });
+    const res = await tool.exec({ status: "rejected" }, ctx);
+    expect(res.text).toContain("5000 requirements in total");
+    expect(res.text).toContain("partial");
+    const full = await tool.exec({ limit: 1 }, ctx);
+    expect(full.text).toContain("partial");
+    const { prisma: small } = stubPrisma(ROWS);
+    const ok = await createListRequirementsTool({ prisma: small }).exec({ limit: 1 }, ctx);
+    expect(ok.text).not.toContain("partial");
   });
 
   it("refuses an unscoped session without touching the database", async () => {
@@ -310,6 +379,37 @@ describe("get_requirement (#1030)", () => {
     expect(res.text).toContain("No requirement");
     expect(findFirst.mock.calls[0]![0].where).toMatchObject({ projectId: "p1", deletedAt: null });
     expect(chain).not.toHaveBeenCalled();
+  });
+
+  it("does not list a soft-deleted data mapping", async () => {
+    const { prisma } = stubPrisma(ROWS);
+    const tool = createGetRequirementTool({ prisma, chain: async (_p, id) => emptyChain(id) });
+    const res = await tool.exec({ requirementId: "r-db" }, ctx);
+    expect(res.text).toContain("main: orders");
+    expect(res.text).not.toContain("gone");
+  });
+
+  it("answers 'not found' when the requirement is deleted between the read and the trace", async () => {
+    const { prisma } = stubPrisma(ROWS);
+    const chain = async () => {
+      throw new AppError(404, "REQUIREMENT_NOT_FOUND", "gone");
+    };
+    const res = await createGetRequirementTool({ prisma, chain }).exec(
+      { requirementId: "r-db" },
+      ctx,
+    );
+    expect(res.isError).toBe(true);
+    expect(res.text).toContain("No requirement with id r-db");
+  });
+
+  it("rethrows any other trace failure", async () => {
+    const { prisma } = stubPrisma(ROWS);
+    const chain = async () => {
+      throw new Error("db down");
+    };
+    await expect(
+      createGetRequirementTool({ prisma, chain }).exec({ requirementId: "r-db" }, ctx),
+    ).rejects.toThrow("db down");
   });
 
   it("refuses an unscoped session", async () => {

@@ -111,12 +111,14 @@ export function createListRequirementsTool(
     risk: "low",
     async exec(args, ctx): Promise<ToolResult> {
       if (!ctx.projectId) return UNSCOPED;
-      const rows = await pickPrisma(deps).requirement.findMany({
+      const terms = queryTerms(args.query);
+      const scanned = await pickPrisma(deps).requirement.findMany({
         where: { projectId: ctx.projectId, deletedAt: null },
         select: {
           id: true,
           title: true,
-          body: true,
+          // The body is only read to match query words; skip it otherwise.
+          body: terms.length > 0,
           type: true,
           priority: true,
           labels: true,
@@ -124,8 +126,13 @@ export function createListRequirementsTool(
           _count: { select: { codeMappings: true, dataMappings: { where: { deletedAt: null } } } },
         },
         orderBy: [{ updatedAt: "desc" }],
-        take: MAX_SCAN,
+        take: MAX_SCAN + 1,
       });
+      const truncated = scanned.length > MAX_SCAN;
+      const rows = truncated ? scanned.slice(0, MAX_SCAN) : scanned;
+      const partial = truncated
+        ? ` Only the ${MAX_SCAN} most recently updated requirements were scanned, so totals and matches are partial.`
+        : "";
 
       const totals: Record<RequirementReviewStatus, number> = {
         draft: 0,
@@ -134,7 +141,6 @@ export function createListRequirementsTool(
         deferred: 0,
       };
       const label = args.label?.toLowerCase();
-      const terms = queryTerms(args.query);
       const matched: ListedRequirement[] = [];
       for (const r of rows) {
         const status = resolveRequirementReviewStatus(
@@ -146,7 +152,7 @@ export function createListRequirementsTool(
         if (args.status && status !== args.status) continue;
         if (label && !labels.some((l) => l.toLowerCase() === label)) continue;
         if (terms.length > 0) {
-          const haystack = `${r.title}\n${r.body}`.toLowerCase();
+          const haystack = `${r.title}\n${r.body ?? ""}`.toLowerCase();
           if (!terms.some((t) => haystack.includes(t))) continue;
         }
         matched.push({
@@ -168,7 +174,7 @@ export function createListRequirementsTool(
         return {
           text:
             `No requirement matched those filters. This project has ${rows.length} ` +
-            `requirements in total (${breakdown}).`,
+            `requirements in total (${breakdown}).${partial}`,
           data: { requirements: [], total: 0, projectTotals: totals },
           resultCount: 0,
         };
@@ -184,12 +190,16 @@ export function createListRequirementsTool(
           ? `Showing ${shown.length} of ${matched.length} matching requirements.`
           : `${matched.length} matching requirement${matched.length === 1 ? "" : "s"}.`;
       return {
-        text: `${header}\n${lines.join("\n")}`,
+        text: `${header}${partial}\n${lines.join("\n")}`,
         data: { requirements: shown, total: matched.length, projectTotals: totals },
         resultCount: shown.length,
       };
     },
   };
+}
+
+function notFoundText(id: string): string {
+  return `ERROR: No requirement with id ${id} in this project. Use list_requirements to find ids.`;
 }
 
 function lineRange(start: number | null, end: number | null): string {
@@ -239,11 +249,20 @@ export function createGetRequirementTool(
       });
       if (!r) {
         return {
-          text: `ERROR: No requirement with id ${args.requirementId} in this project. Use list_requirements to find ids.`,
+          text: notFoundText(args.requirementId),
           isError: true,
         };
       }
-      const chain = await (deps.chain ?? getRequirementChain)(projectId, r.id);
+      let chain: RequirementTraceabilityChain;
+      try {
+        chain = await (deps.chain ?? getRequirementChain)(projectId, r.id);
+      } catch (err) {
+        // Soft-deleted between the read above and the trace: same answer as not found.
+        if ((err as { code?: string } | null)?.code === "REQUIREMENT_NOT_FOUND") {
+          return { text: notFoundText(args.requirementId), isError: true };
+        }
+        throw err;
+      }
 
       const status = resolveRequirementReviewStatus(
         r.reviewStatus,
