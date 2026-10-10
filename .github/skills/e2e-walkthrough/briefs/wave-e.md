@@ -2,8 +2,10 @@
 
 You are wave E of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read
 [`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md) for Phases 15–20 (PR review, impact,
-"Tested by" in traceability, usage and cost, settings, admin) and the "Developer: real open Miniflux
-issues" table (#4478, #4511, #4336) with what each must surface.
+"Tested by" in traceability, usage and cost, settings, admin) and the "Developer: real Miniflux
+change requests" table with what each must surface: three open feature requests (#4478, #4511,
+#4336) and three bug reports fixed upstream after `v2.3.3` (#4479 Google Reader API, #4386 web
+UI, #4456 fetcher; #1044).
 
 ## State you start from
 
@@ -20,15 +22,23 @@ issues" table (#4478, #4511, #4336) with what each must surface.
 ## Do
 
 1. Phases 15–20 as the plan defines them, skipping `{{REMOVED_PHASES}}`.
-2. For each of the three developer issues: chat "where would I implement this?", impact
-   analysis, and Spec Kit `/specify` → `/plan`. Score **each output** (impact "directly
+2. For each of the six developer requests: chat "where would I implement this?", impact
+   analysis, and Spec Kit `/specify` → `/plan`. Paste a request's title and body as the
+   requirement; for the three closed ones, take them from a read-only
+   `gh issue view <n> -R miniflux/v2` and never their fixing PR, which would hand METIS the
+   answer. Score **each output** (impact "directly
    affected" plus "probable call sites", chat answer, plan) against the issue's **reference
    change set** in the plan ("Reference change sets"), using its "Scoring a change plan" rules:
    file and function `tp` / `fp` / `fn`, migration correct, and the false positives by name.
-   Keep the "must surface" verdict beside it (runs 3 to 6: 3/3 by the brief, 2/3 strictly,
-   #4478 still proposing a `users` column). First re-check #4547 and #4552 with
+   Keep the "must surface" verdict beside it, scored **N/6** from this run (runs 3 to 6 scored
+   the first three only: 3/3 by the brief, 2/3 strictly, #4478 still proposing a `users`
+   column; compare those three like for like). First re-check #4547 and #4552 with
    `gh pr view <n> -R miniflux/v2 --json state,mergedAt` (read-only); if one has merged, score
-   #4511 against its merged diff and say so. A sandbox draft only if the run's cap of 2 is not
+   #4511 against its merged diff and say so. Also check
+   `gh pr list -R miniflux/v2 --state merged --search "merged:>2026-07-24 feat in:title"`: a
+   feature merged since `v2.3.3` replaces a bug-fix request, as the plan says. Snapshot the
+   ledger before and after each request (chat, impact and plan together) for its
+   **per-request ledger delta**. A sandbox draft only if the run's cap of 2 is not
    used up. Open the collapsed **Blast radius** group (`[data-testid=blast-radius-toggle]`)
    before you screenshot the "Writes affected data" rows.
 3. **Phase 17 is "Tested by"** (#812), not the removed Test Coverage page; the plan has its
@@ -118,13 +128,20 @@ as plain text.
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
 3. **Developer-issue change plans**: one row per issue and output (`impact`, `chat`, `plan`),
-   nine rows in all, with counts so the ratios can be checked:
+   eighteen rows in all (six requests: #4478, #4511, #4336, #4479, #4386, #4456), with counts
+   so the ratios can be checked:
 
    | Issue | Output | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must-surface | False positives |
    |---|---|---|---|---|---|---|
 
    "False positives" lists each by name, `must not` items first. These rows go into `run.json`
-   `changePlanAccuracy` (the skill, section 7).
+   `changePlanAccuracy` (the skill, section 7), with `source` `upstream` for #4479, #4386 and
+   #4456.
+
+   Then the **per-request ledger delta**, one row per request:
+
+   | Issue | Input tok | Output tok | Cache-read tok | Cost |
+   |---|---|---|---|---|
 4. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
 5. **Findings** — one line each: severity, phase, symptom, evidence path. Do not file issues.
 6. **`Durable finding:` lines** — anything a future run must know. Prefix each with exactly

@@ -40,6 +40,14 @@ No project, run or requirement IDs are given on purpose. Find everything through
    scores its outputs: file and function `tp` / `fp` / `fn`, migration correct, false
    positives by name, and the step's "must hold" verdict beside them. Scoring reads the
    persona's own screen; it is not a non-UI action.
+
+   **Swapping J2's request.** J2 stays on #4336 by default, so runs compare like for like. A
+   run may swap it to one of the bug reports fixed upstream (#4479, #4386 or #4456, #1044), whose
+   change sets are upstream truth: Dev pastes that issue's title and body (never its fixing PR)
+   in place of #4336's, the #4336-specific "must hold" cells (J2.1's `read_at` writers, J2.3's
+   "what about Fever and Google Reader?") read against that request's "must surface" row, and J2.1 and J2.4 are scored against **that** request's reference change set by the
+   same rules, with `source` `upstream`. Name the swap in the journey's verdict and in the
+   change-plan rows' `issue`, and do not compare its scores with an earlier run's #4336 rows.
 6. Verify the fixes listed below as you pass the step each one names.
 
 ## Fixes to verify this wave
