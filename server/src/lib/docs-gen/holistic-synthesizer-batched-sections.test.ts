@@ -379,6 +379,15 @@ describe("an onyourleft-sized project (143 modules, 16,384-token cap — run 9's
 
 // ── #741: a length-capped catalogue ───────────────────────────────────────
 
+// #995 — run 6: drafted citation markers (~110 characters each) were counted
+// against the caps, then rendered as short footnotes or dropped, so the BRD
+// came out at 189k of 250k while its sections dropped 108 topics.
+const CITATIONS = ` [${Array.from(
+  { length: 6 },
+  (_, i) =>
+    `facts:repo:${encodeURIComponent(JSON.stringify(["cmv1nna3w0001", "cmv1nnb0h0002", `internal/m${i}`]))}:1`,
+).join(", ")}]`;
+
 describe("#741 — a single-call section is fitted to its cap before it is fact-checked", () => {
   it("shortens every non-batched section and only checks what is kept", async () => {
     vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "5000");
@@ -399,6 +408,26 @@ describe("#741 — a single-call section is fitted to its cap before it is fact-
       expect(judged.length, group.id).toBeGreaterThan(0);
       for (const j of judged) expect(j.chars, group.id).toBeLessThanOrEqual(5_000);
     }
+  });
+
+  it("measures a single-call section as rendered, citation markers as footnotes (#995)", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "5000");
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "100000");
+    const cited = await run(onyourleftSized(), fakeModel({ marker: CITATIONS }));
+    const plain = await run(onyourleftSized(), fakeModel());
+    const rules = (result: { markdown: string }) =>
+      sectionGroupsFor("business-requirements")
+        .filter((g) => !g.batched)
+        .reduce(
+          (n, g) => n + (sectionOf(result.markdown, g.label).match(/\*\*Rule from /g)?.length ?? 0),
+          0,
+        );
+    expect(cited.markdown).not.toContain("facts:repo:");
+    // The markers render away (no source admits them here), so they cost the
+    // sections almost none of their rules: only the long-erring count of each
+    // as a footnote reference, about one rule in ten.
+    expect(rules(plain)).toBeGreaterThan(5);
+    expect(rules(cited)).toBeGreaterThanOrEqual(rules(plain) * 0.8);
   });
 });
 
@@ -553,6 +582,63 @@ describe("#741 — a batched section is planned and fitted to its length cap", (
     }
     const body = result.markdown.slice(result.markdown.indexOf("\n## "));
     expect(body.length).toBeGreaterThan(30_000 * 0.9);
+  });
+
+  it("fills the document cap as rendered, not as drafted with citation markers (#995)", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
+    const result = await run(onyourleftSized(), fakeModel({ marker: CITATIONS }));
+    expect(result.markdown).not.toContain("facts:repo:");
+    const body = result.markdown.slice(result.markdown.indexOf("\n## "));
+    expect(body.length).toBeLessThanOrEqual(30_000 + 400);
+    expect(body.length).toBeGreaterThan(30_000 * 0.9);
+  });
+
+  it("counts the footnote definitions against the document cap (#995)", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
+    scoreFaithfulnessMock.mockResolvedValue(verified(1, 1));
+    const ids = Array.from({ length: 60 }, (_, i) => `rag:doc${i}:0`);
+    const grounding = {
+      sources: ids.map((sourceId, i) => ({
+        sourceId,
+        kind: "rag",
+        label: `docs/requirements/${"long-path-segment/".repeat(4)}chapter-${i}.md`,
+        text: "retrieved evidence",
+      })),
+      sourceIds: new Set(ids),
+      isEmpty: false,
+    } as unknown as GroundingContext;
+    const result = await run(
+      onyourleftSized(),
+      fakeModel({ marker: ` [${ids.join(", ")}]` }),
+      grounding,
+    );
+    const definitions = result.markdown.match(/^\[\^src-\d+\]: .*$/gm) ?? [];
+    expect(definitions.join("\n").length).toBeGreaterThan(5_000);
+    const body = result.markdown.slice(result.markdown.indexOf("\n## "));
+    // Body, definitions and the fixed footer.
+    expect(body.length).toBeLessThanOrEqual(30_000 + 400);
+    expect(body.length).toBeGreaterThan(30_000 * 0.9);
+  });
+
+  it("fills the section cap as rendered, not as drafted with citation markers (#995)", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "100000");
+    // Room for two of this fixture's rules as rendered, but not as drafted.
+    const cap = 15_000;
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", String(cap));
+    const cited = sectionOf(
+      (await run(onyourleftSized(), fakeModel({ marker: CITATIONS }))).markdown,
+      RULES.label,
+    );
+    const plain = sectionOf((await run(onyourleftSized(), fakeModel())).markdown, RULES.label);
+    expect(cited).toContain("**Shortened for length.**");
+    expect(cited).not.toContain("facts:repo:");
+    expect(cited.length).toBeLessThanOrEqual(cap);
+    // The markers render away, so they cost the section none of its rules.
+    const rules = (md: string) => md.match(/\*\*Rule from /g)?.length ?? 0;
+    expect(rules(plain)).toBeGreaterThan(1);
+    expect(rules(cited)).toBe(rules(plain));
   });
 
   it("plans as before when the section fits its cap", () => {

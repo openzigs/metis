@@ -21,6 +21,12 @@
  *    a note naming the topics it left out. {@link fitSectionsToDocumentBudget}
  *    does the same across the document, shortening the longest sections first.
  *
+ * #995 — every length here is measured by a {@link Measure}, by default the
+ * markdown's own length. Generation passes the length the text will have once
+ * its citation markers are footnote references: a drafted marker is ~110
+ * characters and renders as ~10, so measuring the draft cut sections at ~59k
+ * drafted that rendered at ~30k, leaving a quarter of the document cap unused.
+ *
  * Pure: no I/O and no model calls.
  */
 import { getConfigService, type ConfigService } from "../config/config-service.js";
@@ -79,6 +85,25 @@ export function sectionBudgetScale(estimatedChars: number, sectionMaxChars: numb
 /** A batch's word budget, from its (already scaled) estimated characters. */
 export function batchWordBudget(estimatedChars: number): number {
   return Math.max(150, Math.round(estimatedChars / CHARS_PER_WORD / 50) * 50);
+}
+
+/** #995 — the length a piece of markdown counts for against a cap. */
+export type Measure = (markdown: string) => number;
+
+const rawLength: Measure = (markdown) => markdown.length;
+
+/** `measure` with its results remembered, for the repeated refits of one document. */
+function memoize(measure: Measure): Measure {
+  if (measure === rawLength) return measure;
+  const known = new Map<string, number>();
+  return (markdown) => {
+    let n = known.get(markdown);
+    if (n === undefined) {
+      n = measure(markdown);
+      known.set(markdown, n);
+    }
+    return n;
+  };
 }
 
 /** One indivisible piece of a section: a heading line, or a whole paragraph/fence/table. */
@@ -150,12 +175,15 @@ const headingText = (unit: Unit): string => HEADING.exec(unit.text)?.[2] ?? unit
  * The sentences of `text` that fit `max` characters, whole. Used only when a
  * section's first paragraph alone is over budget.
  */
-function leadingSentences(text: string, max: number): string {
+function leadingSentences(text: string, max: number, measure: Measure): string {
   const sentences = text.match(/[^.!?]+(?:[.!?]+["')\]]*\s*|$)/g) ?? [text];
   let kept = "";
+  let used = 0;
   for (const sentence of sentences) {
-    if (kept.length + sentence.length > max) break;
+    const cost = measure(sentence);
+    if (used + cost > max) break;
     kept += sentence;
+    used += cost;
   }
   return kept.trim();
 }
@@ -175,7 +203,7 @@ export interface FitResult {
   trimmed: boolean;
   /** Headings of the topics left out (the shallowest level that was cut). */
   omittedTopics: string[];
-  /** Length before fitting. */
+  /** Length before fitting, as the fit measured it. */
   originalChars: number;
 }
 
@@ -201,13 +229,16 @@ function mergeTopics(first: readonly string[], rest: readonly string[]): string[
  * #995 — `alreadyOmitted` are the topics an earlier fit (the section cap) left
  * out. A refit (the document cap) cuts before that fit's closing note, which
  * is always last, and its own note lists both sets.
+ *
+ * #995 — `measure` is what counts against `maxChars` (see {@link Measure}).
  */
 export function fitSectionToBudget(
   markdown: string,
   maxChars: number,
   alreadyOmitted: readonly string[] = [],
+  measure: Measure = rawLength,
 ): FitResult {
-  const originalChars = markdown.length;
+  const originalChars = measure(markdown);
   if (originalChars <= maxChars) {
     return {
       markdown,
@@ -222,7 +253,7 @@ export function fitSectionToBudget(
   let used = 0;
   let cut = all.length;
   for (let i = 0; i < all.length; i++) {
-    const cost = all[i].text.length + 2;
+    const cost = measure(all[i].text) + 2;
     if (used + cost > room) {
       cut = i;
       break;
@@ -237,9 +268,9 @@ export function fitSectionToBudget(
     const first = all.findIndex((u) => u.depth === 0);
     if (first >= 0) {
       const heads = all.slice(0, first).filter((u) => u.depth > 0);
-      const headChars = heads.reduce((n, u) => n + u.text.length + 2, 0);
+      const headChars = heads.reduce((n, u) => n + measure(u.text) + 2, 0);
       const lead = isProse(all[first].text)
-        ? leadingSentences(all[first].text, Math.max(0, room - headChars))
+        ? leadingSentences(all[first].text, Math.max(0, room - headChars), measure)
         : "";
       kept.length = 0;
       kept.push(...heads);
@@ -269,7 +300,7 @@ export function fitSectionToBudget(
   let fitted = assemble();
   // #995 — a note naming long topics can outgrow the room reserved for it; give
   // it the last kept units rather than overrun the budget the caller counts on.
-  while (fitted.markdown.length > maxChars && kept.length > 1) {
+  while (measure(fitted.markdown) > maxChars && kept.length > 1) {
     kept.pop();
     cut -= 1;
     fitted = assemble();
@@ -293,14 +324,18 @@ const MAX_REDISTRIBUTION_ROUNDS = 100;
  *
  * `alreadyOmitted[i]` are the topics section `i` lost to an earlier cap; the
  * result's `omittedTopics[i]` lists those and any this fit leaves out.
+ *
+ * #995 — `measure` is what counts against `maxChars` (see {@link Measure}).
  */
 export function fitSectionsToDocumentBudget(
   sections: readonly string[],
   maxChars: number,
   alreadyOmitted: ReadonlyArray<readonly string[]> = [],
+  measure: Measure = rawLength,
 ): { sections: string[]; trimmed: number; omittedTopics: string[][] } {
+  const length = memoize(measure);
   const earlier = sections.map((_, i) => [...(alreadyOmitted[i] ?? [])]);
-  const lengths = sections.map((s) => s.length);
+  const lengths = sections.map((s) => length(s));
   const total = lengths.reduce((n, l) => n + l, 0);
   if (total <= maxChars) return { sections: [...sections], trimmed: 0, omittedTopics: earlier };
   const sorted = [...lengths].sort((a, b) => a - b);
@@ -318,9 +353,12 @@ export function fitSectionsToDocumentBudget(
   const floor = Math.max(allowance, NOTE_RESERVE * 2);
   const budgets = sections.map(() => floor);
   const fits = sections.map((section, i) =>
-    section.length <= allowance ? null : fitSectionToBudget(section, floor, earlier[i]),
+    lengths[i] <= allowance ? null : fitSectionToBudget(section, floor, earlier[i], length),
   );
-  const lengthOf = (i: number): number => fits[i]?.markdown.length ?? sections[i].length;
+  const lengthOf = (i: number): number => {
+    const fit = fits[i];
+    return fit ? length(fit.markdown) : lengths[i];
+  };
   // Sections that are still shortened and may yet take more room.
   const open = new Set(fits.flatMap((fit, i) => (fit?.trimmed ? [i] : [])));
   for (let round = 0; round < MAX_REDISTRIBUTION_ROUNDS && open.size > 0; round++) {
@@ -330,8 +368,8 @@ export function fitSectionsToDocumentBudget(
     for (const i of [...open]) {
       const before = lengthOf(i);
       const budget = budgets[i] + share;
-      const refit = fitSectionToBudget(sections[i], budget, earlier[i]);
-      const grew = refit.markdown.length - before;
+      const refit = fitSectionToBudget(sections[i], budget, earlier[i], length);
+      const grew = length(refit.markdown) - before;
       if (grew > slack) {
         // Its next topic is bigger than all the room left: no larger budget
         // keeps anything less, so it is done.
