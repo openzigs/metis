@@ -21,11 +21,16 @@ issues" table (#4478, #4511, #4336) with what each must surface.
 
 1. Phases 15–20 as the plan defines them, skipping `{{REMOVED_PHASES}}`.
 2. For each of the three developer issues: chat "where would I implement this?", impact
-   analysis, and Spec Kit `/specify` → `/plan`. Score each against the plan's "must surface"
-   column (run 2: 0/3). A sandbox draft only if the run's cap of 2 is not used up.
-   Run 3 scored 3/3 by the brief and 2/3 strictly: #4478 still proposed a `users` column. Open
-   the collapsed **Blast radius** group (`[data-testid=blast-radius-toggle]`) before you
-   screenshot the "Writes affected data" rows.
+   analysis, and Spec Kit `/specify` → `/plan`. Score **each output** (impact "directly
+   affected" plus "probable call sites", chat answer, plan) against the issue's **reference
+   change set** in the plan ("Reference change sets"), using its "Scoring a change plan" rules:
+   file and function `tp` / `fp` / `fn`, migration correct, and the false positives by name.
+   Keep the "must surface" verdict beside it (runs 3 to 6: 3/3 by the brief, 2/3 strictly,
+   #4478 still proposing a `users` column). First re-check #4547 and #4552 with
+   `gh pr view <n> -R miniflux/v2 --json state,mergedAt` (read-only); if one has merged, score
+   #4511 against its merged diff and say so. A sandbox draft only if the run's cap of 2 is not
+   used up. Open the collapsed **Blast radius** group (`[data-testid=blast-radius-toggle]`)
+   before you screenshot the "Writes affected data" rows.
 3. **Phase 17 is "Tested by"** (#812), not the removed Test Coverage page; the plan has its
    steps. Its ledger delta must be 0.
 4. Phase 18: compare the Usage page, the **All projects** view and `GET /api/admin/usage`
@@ -112,7 +117,14 @@ as plain text.
    |---|---|---|---|---|---|---|---|---|
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
-3. **Developer-issue impact**: issue | surfaced the must-surface item? | evidence. Score N/3.
+3. **Developer-issue change plans**: one row per issue and output (`impact`, `chat`, `plan`),
+   nine rows in all, with counts so the ratios can be checked:
+
+   | Issue | Output | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must-surface | False positives |
+   |---|---|---|---|---|---|---|
+
+   "False positives" lists each by name, `must not` items first. These rows go into `run.json`
+   `changePlanAccuracy` (the skill, section 7).
 4. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
 5. **Findings** — one line each: severity, phase, symptom, evidence path. Do not file issues.
 6. **`Durable finding:` lines** — anything a future run must know. Prefix each with exactly

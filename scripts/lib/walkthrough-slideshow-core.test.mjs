@@ -760,6 +760,49 @@ describe("filesystem", () => {
         expect(fs.existsSync(path.join(tmp, "run"))).toBe(false);
       });
 
+      it("renders change-plan precision and recall per issue and output (#1042)", () => {
+        fs.writeFileSync(
+          path.join(evidence, "run.json"),
+          JSON.stringify({ ...runInfo(), changePlanAccuracy: accuracyFixture() }),
+        );
+        buildSlideshow(reportOpts());
+        const report = read("report");
+        const sections = [...report.matchAll(/<section class="slide slide--(\w+)/g)].map(
+          (m) => m[1],
+        );
+        // Its own slide, after the steps and before the closing new-issues slide.
+        expect(sections.slice(-2)).toEqual(["accuracy", "issues"]);
+        expect(report).toContain("<h2>Change-plan accuracy</h2>");
+        // Rows sorted by issue, then by output in the scoring order; ratios computed from counts.
+        const rows = [...report.matchAll(/<tr><th scope="row">(.*?)<\/tr>/g)]
+          .map((m) => m[1])
+          .filter((r) => r.includes("miniflux/v2/issues"));
+        expect(rows).toHaveLength(3);
+        expect(rows[0]).toMatch(/\/4336"[^>]*>#4336<\/a><\/th><td>impact<\/td><td>curated<\/td>/);
+        expect(rows[1]).toMatch(/#4478<\/a><\/th><td>chat<\/td>/);
+        expect(rows[2]).toMatch(/#4478<\/a><\/th><td>j2-plan<\/td>/);
+        // 4336 impact: files 3 tp 1 fp 2 fn -> P 75% (3/4), R 60% (3/5); functions 0/0 named.
+        expect(rows[0]).toContain(
+          "<td>75% (3/4)</td><td>60% (3/5)</td><td>–</td><td>0% (0/9)</td><td>yes</td>",
+        );
+        // 4478 chat: migration wrong reads "no".
+        expect(rows[1]).toContain("<td>100% (2/2)</td><td>67% (2/3)</td>");
+        expect(rows[1]).toMatch(/<td>no<\/td>$/);
+        expect(read("tutorial")).not.toContain("Change-plan accuracy");
+      });
+
+      it("omits the accuracy slide without the field or with an empty list", () => {
+        fs.writeFileSync(path.join(evidence, "run.json"), JSON.stringify(runInfo()));
+        buildSlideshow(reportOpts());
+        expect(read("report")).not.toContain("slide--accuracy");
+        fs.writeFileSync(
+          path.join(evidence, "run.json"),
+          JSON.stringify({ changePlanAccuracy: [] }),
+        );
+        buildSlideshow(reportOpts());
+        expect(read("report")).not.toContain("slide--accuracy");
+      });
+
       it("fails the build, naming the field, and writes nothing on an invalid run.json", () => {
         fs.writeFileSync(
           path.join(evidence, "run.json"),
@@ -832,6 +875,36 @@ function fixesFixture() {
   ];
 }
 
+/** Change-plan scores (#1042): one issue across two outputs, another on one. */
+function accuracyFixture() {
+  return [
+    {
+      issue: 4478,
+      output: "j2-plan",
+      source: "curated",
+      files: { tp: 1, fp: 3, fn: 2 },
+      functions: { tp: 1, fp: 0, fn: 1 },
+      migrationCorrect: true,
+    },
+    {
+      issue: 4478,
+      output: "chat",
+      source: "curated",
+      files: { tp: 2, fp: 0, fn: 1 },
+      functions: { tp: 0, fp: 2, fn: 2 },
+      migrationCorrect: false,
+    },
+    {
+      issue: 4336,
+      output: "impact",
+      source: "curated",
+      files: { tp: 3, fp: 1, fn: 2 },
+      functions: { tp: 0, fp: 0, fn: 9 },
+      migrationCorrect: true,
+    },
+  ];
+}
+
 /** A valid run.json for the 3-step fixture (waves A and D). */
 function runInfo() {
   return {
@@ -874,6 +947,7 @@ describe("run.json parsing (#947)", () => {
         metisSha: undefined,
         previousRunSha: undefined,
         fixes: undefined,
+        changePlanAccuracy: undefined,
       },
       errors: [],
     });
@@ -1063,6 +1137,103 @@ describe("run.json parsing (#947)", () => {
     const ok = runInfo();
     ok.ledger.tokens = Number.MAX_SAFE_INTEGER;
     expect(parseRunInfo(JSON.stringify(ok)).errors).toEqual([]);
+  });
+});
+
+describe("run.json changePlanAccuracy (#1042)", () => {
+  it("accepts a valid list and returns it", () => {
+    const { run, errors } = parseRunInfo(JSON.stringify({ changePlanAccuracy: accuracyFixture() }));
+    expect(errors).toEqual([]);
+    expect(run?.changePlanAccuracy).toEqual(accuracyFixture());
+  });
+
+  /** @param {(rows: any[]) => void} mutate */
+  const errorsOf = (mutate) => {
+    const rows = /** @type {any[]} */ (accuracyFixture());
+    mutate(rows);
+    const { run, errors } = parseRunInfo(JSON.stringify({ changePlanAccuracy: rows }));
+    expect(run).toBeNull();
+    return errors.join("\n");
+  };
+
+  it("rejects a non-array", () => {
+    expect(parseRunInfo(JSON.stringify({ changePlanAccuracy: {} })).errors).toEqual([
+      'run.json: "changePlanAccuracy" must be an array',
+    ]);
+  });
+
+  it.each(
+    /** @type {Array<[string, (rows: any[]) => void, string]>} */ ([
+      ["a non-object row", (r) => (r[0] = 3), "changePlanAccuracy[0]: expected a JSON object"],
+      ["an unknown field", (r) => (r[1].ratio = 1), 'changePlanAccuracy[1]: unknown field "ratio"'],
+      [
+        "a string issue",
+        (r) => (r[0].issue = "4478"),
+        'changePlanAccuracy[0]: "issue" must be a positive issue number',
+      ],
+      [
+        "an unknown output",
+        (r) => (r[0].output = "spec"),
+        'changePlanAccuracy[0]: "output" must be one of impact, chat, plan, j2-impact, j2-plan',
+      ],
+      [
+        "an unknown source",
+        (r) => (r[2].source = "upstream-ish"),
+        'changePlanAccuracy[2]: "source" must be one of upstream, candidate, curated',
+      ],
+      [
+        "ratios instead of counts",
+        (r) => (r[0].files = { precision: 0.5, recall: 1 }),
+        'changePlanAccuracy[0] files: unknown field "precision"',
+      ],
+      [
+        "a missing count",
+        (r) => delete r[0].functions.fn,
+        'changePlanAccuracy[0] functions: "fn" must be a non-negative integer',
+      ],
+      [
+        "a negative count",
+        (r) => (r[1].files.fp = -1),
+        'changePlanAccuracy[1] files: "fp" must be a non-negative integer',
+      ],
+      [
+        "a fractional count",
+        (r) => (r[1].functions.tp = 0.5),
+        'changePlanAccuracy[1] functions: "tp" must be a non-negative integer',
+      ],
+      [
+        "files not an object",
+        (r) => (r[2].files = [3, 1, 2]),
+        'changePlanAccuracy[2]: "files" must be an object { tp, fp, fn }',
+      ],
+      [
+        "a string migrationCorrect",
+        (r) => (r[0].migrationCorrect = "yes"),
+        'changePlanAccuracy[0]: "migrationCorrect" must be true or false',
+      ],
+      [
+        "a duplicate issue and output",
+        (r) => (r[1].output = "j2-plan"),
+        "changePlanAccuracy[1]: duplicate row for #4478 j2-plan",
+      ],
+      [
+        "a change set of another size for the same issue",
+        (r) => (r[1].files.fn = 5),
+        "changePlanAccuracy[1]: #4478 files tp + fn is 7, but an earlier row has 3; the change set is the same for every output",
+      ],
+      [
+        "a function change set of another size for the same issue",
+        (r) => (r[1].functions.tp = 1),
+        "changePlanAccuracy[1]: #4478 functions tp + fn is 3, but an earlier row has 2",
+      ],
+      [
+        "another source for the same issue",
+        (r) => (r[1].source = "upstream"),
+        'changePlanAccuracy[1]: #4478 "source" is upstream, but an earlier row has curated',
+      ],
+    ]),
+  )("rejects %s, naming the row and field", (_label, mutate, message) => {
+    expect(errorsOf(mutate)).toContain(message);
   });
 });
 

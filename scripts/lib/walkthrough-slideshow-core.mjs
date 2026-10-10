@@ -235,7 +235,34 @@ export const SEVERITIES = /** @type {const} */ (["high", "medium", "low"]);
 export const LEDGER_WAVES = /** @type {const} */ ([...WAVES, "BA"]);
 
 /** Top-level keys `run.json` may carry. */
-const RUN_FIELDS = ["newIssues", "ledger", "waves", "metisSha", "previousRunSha", "fixes"];
+const RUN_FIELDS = [
+  "newIssues",
+  "ledger",
+  "waves",
+  "metisSha",
+  "previousRunSha",
+  "fixes",
+  "changePlanAccuracy",
+];
+
+/**
+ * The change-plan outputs a run scores against a reference change set (#1042, TEST_PLAN.md
+ * "Scoring a change plan"), in the order the deck lists them: wave E's impact analysis, chat
+ * answer and Spec Kit plan, then wave F's J2.1 impact and J2.4 plan.
+ */
+export const CHANGE_PLAN_OUTPUTS = /** @type {const} */ ([
+  "impact",
+  "chat",
+  "plan",
+  "j2-impact",
+  "j2-plan",
+]);
+
+/** Where a reference change set comes from: a merged PR, unmerged candidate PRs, or curated. */
+export const CHANGE_SET_SOURCES = /** @type {const} */ (["upstream", "candidate", "curated"]);
+
+/** Where the sample project's issues live; the change-plan rows link there, not to METIS. */
+export const SAMPLE_ISSUE_URL_BASE = "https://github.com/miniflux/v2/issues/";
 
 /** The only ledger table `run.json` may name (`e2e-walkthrough` skill, section 5). */
 export const LEDGER_SOURCE = "token_usages";
@@ -261,6 +288,27 @@ export const LEDGER_SOURCE = "token_usages";
  * @property {string | undefined} metisSha the METIS commit the run tested (#954)
  * @property {string | undefined} previousRunSha the previous run's `metisSha` (#954)
  * @property {RunFix[] | undefined} fixes what the run verified, with a verdict each (#954)
+ * @property {ChangePlanScore[] | undefined} changePlanAccuracy change plans scored (#1042)
+ */
+
+/**
+ * Counts, not ratios, so the deck computes precision and recall itself and a row cannot claim a
+ * ratio its counts do not support.
+ *
+ * @typedef {object} MatchCounts
+ * @property {number} tp named and in the change set
+ * @property {number} fp named and not in the change set
+ * @property {number} fn in the change set and not named
+ */
+
+/**
+ * @typedef {object} ChangePlanScore
+ * @property {number} issue the sample project's issue number, e.g. 4478
+ * @property {(typeof CHANGE_PLAN_OUTPUTS)[number]} output
+ * @property {(typeof CHANGE_SET_SOURCES)[number]} source
+ * @property {MatchCounts} files
+ * @property {MatchCounts} functions
+ * @property {boolean} migrationCorrect
  */
 
 /**
@@ -327,6 +375,106 @@ function checkTotal(obj, at, times, extra, errors) {
   ) {
     errors.push(`${at}: "since" must be before "until"`);
   }
+}
+
+const SCORE_FIELDS = ["issue", "output", "source", "files", "functions", "migrationCorrect"];
+
+/**
+ * Check `run.json`'s `changePlanAccuracy` rows (#1042); push errors naming the row and field.
+ * Beyond each row's shape, the rows for one issue must agree on its source and on the size of
+ * its change set (`tp + fn`, for files and for functions): the set is the same whichever output
+ * is scored, so a disagreement means a row was counted against the wrong set.
+ *
+ * @param {unknown[]} rows
+ * @param {string[]} errors
+ */
+function checkChangePlanAccuracy(rows, errors) {
+  /** @type {Set<string>} */
+  const seen = new Set();
+  /** @type {Map<number, { source: unknown, files: number | null, functions: number | null }>} */
+  const perIssue = new Map();
+  rows.forEach((row, i) => {
+    const at = `run.json changePlanAccuracy[${i}]`;
+    if (!isPlainObject(row)) {
+      errors.push(`${at}: expected a JSON object`);
+      return;
+    }
+    for (const key of Object.keys(row)) {
+      if (!SCORE_FIELDS.includes(key)) errors.push(`${at}: unknown field "${key}"`);
+    }
+    const issueOk = Number.isInteger(row.issue) && Number(row.issue) > 0;
+    if (!issueOk) errors.push(`${at}: "issue" must be a positive issue number`);
+    const outputOk = CHANGE_PLAN_OUTPUTS.includes(/** @type {any} */ (row.output));
+    if (!outputOk) {
+      errors.push(`${at}: "output" must be one of ${CHANGE_PLAN_OUTPUTS.join(", ")}`);
+    }
+    if (!CHANGE_SET_SOURCES.includes(/** @type {any} */ (row.source))) {
+      errors.push(`${at}: "source" must be one of ${CHANGE_SET_SOURCES.join(", ")}`);
+    }
+    const sizes = {
+      files: checkCounts(row.files, at, "files", errors),
+      functions: checkCounts(row.functions, at, "functions", errors),
+    };
+    if (typeof row.migrationCorrect !== "boolean") {
+      errors.push(`${at}: "migrationCorrect" must be true or false`);
+    }
+    if (!issueOk) return;
+    const issue = Number(row.issue);
+    if (outputOk) {
+      const key = `${issue} ${row.output}`;
+      if (seen.has(key)) errors.push(`${at}: duplicate row for #${issue} ${row.output}`);
+      seen.add(key);
+    }
+    const first = perIssue.get(issue);
+    if (!first) {
+      perIssue.set(issue, { source: row.source, ...sizes });
+      return;
+    }
+    if (row.source !== first.source) {
+      errors.push(
+        `${at}: #${issue} "source" is ${String(row.source)}, but an earlier row has ${String(first.source)}`,
+      );
+    }
+    for (const kind of /** @type {const} */ (["files", "functions"])) {
+      const size = sizes[kind];
+      const expected = first[kind];
+      if (size !== null && expected !== null && size !== expected) {
+        errors.push(
+          `${at}: #${issue} ${kind} tp + fn is ${size}, but an earlier row has ${expected}; the change set is the same for every output`,
+        );
+      }
+    }
+  });
+}
+
+/**
+ * Check one `{ tp, fp, fn }` object; return the change-set size `tp + fn`, or null if invalid.
+ *
+ * @param {unknown} counts
+ * @param {string} at
+ * @param {string} name
+ * @param {string[]} errors
+ * @returns {number | null}
+ */
+function checkCounts(counts, at, name, errors) {
+  if (!isPlainObject(counts)) {
+    errors.push(`${at}: "${name}" must be an object { tp, fp, fn }`);
+    return null;
+  }
+  let ok = true;
+  for (const key of Object.keys(counts)) {
+    if (!["tp", "fp", "fn"].includes(key)) {
+      errors.push(`${at} ${name}: unknown field "${key}"`);
+      ok = false;
+    }
+  }
+  for (const key of ["tp", "fp", "fn"]) {
+    if (!(Number.isSafeInteger(counts[key]) && Number(counts[key]) >= 0)) {
+      errors.push(`${at} ${name}: "${key}" must be a non-negative integer`);
+      ok = false;
+    }
+  }
+  return ok ? Number(counts.tp) + Number(counts.fn) : null;
 }
 
 /**
@@ -443,6 +591,14 @@ export function parseRunInfo(text) {
     }
   }
 
+  if (raw.changePlanAccuracy !== undefined) {
+    if (!Array.isArray(raw.changePlanAccuracy)) {
+      errors.push(`run.json: "changePlanAccuracy" must be an array`);
+    } else {
+      checkChangePlanAccuracy(raw.changePlanAccuracy, errors);
+    }
+  }
+
   if (errors.length > 0) return { run: null, errors };
   return {
     run: {
@@ -452,6 +608,7 @@ export function parseRunInfo(text) {
       metisSha: /** @type {string | undefined} */ (raw.metisSha),
       previousRunSha: /** @type {string | undefined} */ (raw.previousRunSha),
       fixes: /** @type {RunFix[] | undefined} */ (raw.fixes),
+      changePlanAccuracy: /** @type {ChangePlanScore[] | undefined} */ (raw.changePlanAccuracy),
     },
     errors: [],
   };
@@ -756,6 +913,51 @@ function renderFixesSummary(fixes) {
 }
 
 /**
+ * A ratio as a whole percentage with its counts, e.g. `75% (3/4)`; `–` when nothing was named
+ * (precision) or the change set is empty (recall), where the ratio is undefined, not zero.
+ *
+ * @param {number} num
+ * @param {number} den
+ * @returns {string}
+ */
+function ratio(num, den) {
+  return den === 0 ? "–" : `${Math.round((num / den) * 100)}% (${num}/${den})`;
+}
+
+/**
+ * The report's change-plan accuracy slide (#1042): one row per issue and output, with file and
+ * function precision (`tp / (tp + fp)`) and recall (`tp / (tp + fn)`), computed here from the
+ * counts `run.json` stores.
+ *
+ * @param {ChangePlanScore[]} rows
+ * @returns {string}
+ */
+function accuracySlide(rows) {
+  const sorted = [...rows].sort(
+    (a, b) =>
+      a.issue - b.issue ||
+      CHANGE_PLAN_OUTPUTS.indexOf(a.output) - CHANGE_PLAN_OUTPUTS.indexOf(b.output),
+  );
+  /** @param {MatchCounts} c */
+  const pr = (c) => `<td>${ratio(c.tp, c.tp + c.fp)}</td><td>${ratio(c.tp, c.tp + c.fn)}</td>`;
+  return `<section class="slide slide--accuracy" aria-label="Change-plan accuracy">
+  <h2>Change-plan accuracy</h2>
+  <table class="waves">
+    <caption>Precision and recall against each issue's reference change set (TEST_PLAN.md, developer issues)</caption>
+    <thead><tr><th scope="col">Issue</th><th scope="col">Output</th><th scope="col">Source</th><th scope="col">File precision</th><th scope="col">File recall</th><th scope="col">Function precision</th><th scope="col">Function recall</th><th scope="col">Migration correct</th></tr></thead>
+    <tbody>
+${sorted
+  .map(
+    (r) =>
+      `      <tr><th scope="row"><a href="${SAMPLE_ISSUE_URL_BASE}${r.issue}" rel="noopener noreferrer" target="_blank">#${r.issue}</a></th><td>${escapeHtml(r.output)}</td><td>${escapeHtml(r.source)}</td>${pr(r.files)}${pr(r.functions)}<td>${r.migrationCorrect ? "yes" : "no"}</td></tr>`,
+  )
+  .join("\n")}
+    </tbody>
+  </table>
+</section>`;
+}
+
+/**
  * @param {string} value a WORKS or USEFUL value
  * @param {string} [axis] "Works" or "Useful"; prefixes the label on a step slide
  * @returns {string}
@@ -968,6 +1170,10 @@ ${c.steps.map((s) => `    <li>${escapeHtml(s.title)}</li>`).join("\n")}
       );
     });
   });
+
+  // Report only: the change-plan scores (#1042), when the run recorded any.
+  const accuracy = input.run?.changePlanAccuracy ?? [];
+  if (!tutorial && accuracy.length > 0) slides.push(accuracySlide(accuracy));
 
   // Report only: one closing slide listing what the run filed, with titles.
   const filed = input.run?.newIssues ?? [];

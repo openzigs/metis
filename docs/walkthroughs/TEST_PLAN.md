@@ -475,9 +475,121 @@ These three issues were open on 2026-10-02. For each one:
 
 | Issue | What METIS must surface (Useful) |
 |---|---|
-| [#4478 "Mark all as read older than X"](https://github.com/miniflux/v2/issues/4478) | **That the storage method already exists:** `Storage.MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`), reached today only through the Google Reader API (`internal/googlereader/handler.go:1225`). So the plan is to expose it through the REST API (`internal/api/entry_handlers.go`) and the web UI. **No migration.** If METIS proposes new SQL or a new column, mark it **weak** (runs 3 and 4 still proposed a `users` column, #791). |
-| [#4511 "Last successful refresh in feed API"](https://github.com/miniflux/v2/issues/4511) | Needs a **new migration** appended in `internal/database/migrations.go`, a field on `model.Feed` (`internal/model/feed.go`), a write in `UpdateFeed` (`internal/storage/feed.go:331`, beside `checked_at` and `parsing_error_count` at :342-344) and in the error path (`:437-438`), plus the API JSON. Impact must name table `feeds`, the new column, and the API and Google Reader/Fever consumers. |
+| [#4478 "Mark all as read older than X"](https://github.com/miniflux/v2/issues/4478) | **That the storage method already exists:** `Storage.MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`), reached today only through the Google Reader API (`internal/googlereader/handler.go:1225`). So the plan is to expose it through the web UI and, optionally, the REST API (`internal/api/user_handlers.go`, where `markUserAsReadHandler` lives; earlier runs named `entry_handlers.go`, which has no mark-all handler). **No migration.** If METIS proposes new SQL or a new column, mark it **weak** (runs 3 and 4 still proposed a `users` column, #791). |
+| [#4511 "Last successful refresh in feed API"](https://github.com/miniflux/v2/issues/4511) | Needs a **new migration** appended in `internal/database/migrations.go`, a field on `model.Feed` (`internal/model/feed.go`), a write in `UpdateFeed` (`internal/storage/feed.go:331`, beside `checked_at` and `parsing_error_count` at :342-344) and **not** in the error path (`UpdateFeedError`, :431; both upstream candidate PRs leave it alone, so a *successful* refresh time does not move on a failure), plus the API JSON. Impact must name table `feeds`, the new column, and the API and Google Reader/Fever consumers. |
 | [#4336 "Add read_at timestamp to entries"](https://github.com/miniflux/v2/issues/4336) | A migration on `entries`, and **every status-change path**: `SetEntriesStatus` (`entry.go:412`), `SetEntriesStatusAndCountVisible` (`:431`), `MarkAllAsRead` (`:506`), `MarkAllAsReadBeforeDate` (`:523`), and the Fever and Google Reader handlers. Impact must list all of them; **missing two or more counts as weak**. |
+
+The "must surface" column stays as the continuity verdict for runs 3 to 6. It cannot tell a plan
+that names the right four functions from one that names them among forty wrong ones, so each
+output is also **scored on precision and recall** against a reference change set (#1042).
+
+### Upstream state of the three requests (checked 2026-10-10)
+
+Read-only `gh` against `miniflux/v2`: `main` at `899fe04c`, and `v2.3.3` (2026-07-24) still the
+latest release. No feature PR has merged since `v2.3.3`, so none of these change sets is "what
+upstream actually did". Re-check before each run: if a candidate PR has merged, switch that
+request's change set to the merged diff and its source to `upstream`.
+
+| Feature request | Upstream state | Change set source |
+|---|---|---|
+| [#4478](https://github.com/miniflux/v2/issues/4478) Mark all as read older than X | Issue open; no PR references or implements it | `curated` (from `v2.3.3`, no upstream) |
+| [#4511](https://github.com/miniflux/v2/issues/4511) Last successful refresh in feed API | Issue open; two open, unmerged PRs, [#4547](https://github.com/miniflux/v2/pull/4547) (head `d6c8e393`) and [#4552](https://github.com/miniflux/v2/pull/4552) (head `b257374f`) | `candidate` (what both PRs change) |
+| [#4336](https://github.com/miniflux/v2/issues/4336) Add `read_at` timestamp to entries | Issue open; no PR references or implements it | `curated` (from `v2.3.3`, no upstream) |
+
+### Reference change sets
+
+Lines are at `v2.3.3`. **Scored** items make up the set. **Neutral** items are reasonable to
+name (a caller that needs no change, an optional extra) and count neither way. Anything else a
+plan names is a false positive, and the **must not** items are the known wrong answers to list
+by name.
+
+#### #4478: Mark all as read older than X
+
+- **Source:** `curated from v2.3.3`. Curated, no upstream: not upstream truth.
+- **Files (3):** `internal/ui/unread_mark_all_read.go`; `internal/template/templates/views/unread_entries.html` (the age choice next to "Mark all as read"); `internal/storage/entry.go`.
+- **Functions (2):**
+  - `ui.(*handler).markAllAsRead` (`internal/ui/unread_mark_all_read.go:13`): takes the age and calls a dated storage method.
+  - One slot, either answer scores it: reuse `storage.(*Storage).MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`), or give `storage.(*Storage).MarkGloballyVisibleFeedsAsRead` (`internal/storage/entry.go:549`, what the UI calls today, which also honours "hide globally") a `before` parameter. Naming both still scores one.
+- **Migration:** no.
+- **Neutral:** `internal/api/user_handlers.go` `markUserAsReadHandler` (:109) and `internal/api/api.go` (a REST equivalent); `internal/googlereader/handler.go` `markAllAsReadHandler` (:1155, the only caller of `MarkAllAsReadBeforeDate` today, cited as evidence); `client/client.go`; `internal/ui/static/js/app.js`; user settings for the offered ages (`internal/model/user.go`).
+- **Must not:** a new column on `users` (#791); any new migration in `internal/database/migrations.go`; a new storage method that duplicates `MarkAllAsReadBeforeDate`.
+- **Test files (not scored):** `internal/storage/entry_test.go`, `internal/api/api_integration_test.go`.
+
+#### #4511: Last successful refresh in feed API
+
+- **Source:** `upstream candidate PRs #4547/#4552 (unmerged)`. The set is what **both** change (`gh pr view <n> -R miniflux/v2 --json files`).
+- **Files (6):** `internal/database/migrations.go`, `internal/model/feed.go`, `internal/storage/feed.go`, `internal/storage/feed_query_builder.go`, `internal/reader/handler/handler.go`, `client/model.go`.
+- **Functions (9):**
+  - `database.migrations` (`internal/database/migrations.go:16`): one entry appended.
+  - `model.Feed` (`internal/model/feed.go:24`) and `client.Feed` (`client/model.go:143`): a nullable `LastSuccessfulRefreshAt`.
+  - `handler.CreateFeedFromSubscriptionDiscovery` (`internal/reader/handler/handler.go:40`), `handler.CreateFeed` (:104), `handler.RefreshFeed` (:196): set it on success.
+  - `storage.(*Storage).CreateFeed` (`internal/storage/feed.go:216`) and `storage.(*Storage).UpdateFeed` (:331): write the column.
+  - `storage.(*feedQueryBuilder).GetFeeds` (`internal/storage/feed_query_builder.go:139`): read it.
+- **Migration:** yes, `feeds.last_successful_refresh_at` (`timestamp with time zone`, nullable).
+- **Neutral:** `model.(*Feed).MarkRefreshSuccessful` (added by #4552 only); `storage.(*Storage).UpdateFeedError` (`internal/storage/feed.go:431`) named as the path that must **not** write it; the REST, Fever and Google Reader feed handlers, which serialise `model.Feed` and need no change.
+- **Must not:** writing the column in the error path (`UpdateFeedError`); a new table; any change to `entries`.
+- **Test files (not scored):** `internal/api/feed_successful_refresh_integration_test.go` (#4547), `internal/api/api_integration_test.go` (#4552).
+
+#### #4336: Add `read_at` timestamp to entries
+
+- **Source:** `curated from v2.3.3`. Curated, no upstream: not upstream truth.
+- **Files (5):** `internal/database/migrations.go`, `internal/model/entry.go`, `internal/storage/entry.go`, `internal/storage/entry_query_builder.go`, `client/model.go`.
+- **Functions (11):**
+  - `database.migrations` (`internal/database/migrations.go:16`).
+  - `model.Entry` (`internal/model/entry.go:27`) and `client.Entry` (`client/model.go:262`): a `ReadAt` field.
+  - `storage.(*EntryQueryBuilder).GetEntries` (`internal/storage/entry_query_builder.go:270`): read it.
+  - Every writer that sets `status` to read, in `internal/storage/entry.go`: `SetEntriesStatus` (:412), `SetEntriesStatusAndCountVisible` (:431), `MarkAllAsRead` (:506), `MarkAllAsReadBeforeDate` (:523), `MarkGloballyVisibleFeedsAsRead` (:549), `MarkFeedAsRead` (:581), `MarkCategoryAsRead` (:608). The must-surface row lists four; the last three also write `status = read` and are in the set.
+- **Migration:** yes, `entries.read_at` (`timestamptz`, nullable; the request also proposes an index on it).
+- **Neutral:** the `read_at_after` / `read_at_before` filters the request proposes (`api.configureFilters`, `internal/api/entry_handlers.go:560`, new `EntryQueryBuilder` methods, `client/client.go`); the handlers that reach the writers: Fever `handleWriteItems` (`internal/fever/handler.go:401`) and `handleWriteGroups` (:510), Google Reader `editTagHandler` (`internal/googlereader/handler.go:187`) and `markAllAsReadHandler` (:1155), REST `setEntryStatusAndStarredHandler` (`internal/api/entry_handlers.go:198`), UI `updateEntriesStatus` (`internal/ui/entry_update_status.go:16`); `ArchiveEntries` (`internal/storage/entry.go:368`, sets `removed`, not `read`).
+- **Must not:** reusing `changed_at` as the read time instead of a new column; a new table for read events.
+- **Test files (not scored):** `internal/storage/entry_test.go`, `internal/api/api_integration_test.go`.
+
+### Scoring a change plan
+
+Score each output on its own: wave E's impact analysis (**"directly affected" plus "probable
+call sites"**, together), its chat answer to "where would I implement this?", its Spec Kit plan,
+and wave F's J2.1 impact and J2.4 plan.
+
+- **Files.** `tp` = set files the output names; `fp` = files it names that are neither in the
+  set nor neutral; `fn` = set files it does not name. **Precision** = `tp / (tp + fp)`;
+  **recall** = `tp / (tp + fn)`. A file named twice counts once.
+- **Functions**, the same way at symbol level. A slot with alternatives (#4478's storage method)
+  is one set item.
+- **Excluded from both sides:** test files (`*_test.go`, anything under a `tests` directory) and
+  generated files (a `Code generated … DO NOT EDIT.` header; none of the three sets has one).
+  Naming one is neither `tp` nor `fp`.
+- **A symbol counts as named** when the output gives (a) its identifier together with its file,
+  in the same bullet, sentence or table row; or (b) a `file:line` that falls inside its body at
+  `v2.3.3`; or (c) the bare identifier, when only one non-test declaration in `v2.3.3` has that
+  name (`SetEntriesStatusAndCountVisible` qualifies; `CreateFeed`, declared in both
+  `internal/reader/handler` and `internal/storage`, does not). An identifier given with the
+  wrong file is not named, and counts as a false positive.
+- **Migration correct:** `yes` when the output proposes a migration exactly when the set has one,
+  on the set's table, with the set's column or an unambiguous synonym. Saying nothing about a
+  migration is correct only where the set has none.
+- **Must-surface**: still record the table's verdict alongside, for continuity with runs 3 to 6.
+
+**Worked example.** J2.1's impact for #4336 names, across "directly affected" and "probable call
+sites": `internal/storage/entry.go`, `internal/database/migrations.go`,
+`internal/fever/handler.go`, `internal/model/feed.go` and `internal/storage/entry_test.go`; the
+symbols `SetEntriesStatus` in `internal/storage/entry.go`, `internal/storage/entry.go:510`, the
+bare `SetEntriesStatusAndCountVisible`, `model.Feed` and `handleWriteItems`; and proposes
+`ALTER TABLE entries ADD COLUMN read_at timestamptz`.
+
+- Files: the test file is excluded and the Fever handler is neutral. `entry.go` and
+  `migrations.go` are `tp` (2), `model/feed.go` is `fp` (1), and `model/entry.go`,
+  `entry_query_builder.go` and `client/model.go` are `fn` (3). Precision 2/3 = 67%, recall
+  2/5 = 40%.
+- Functions: `SetEntriesStatus` (rule a), `:510`, inside `MarkAllAsRead` at 506 to 520 (rule b),
+  and `SetEntriesStatusAndCountVisible` (rule c) are `tp` (3); `handleWriteItems` is neutral;
+  `model.Feed` is `fp` (1); the other 8 set items are `fn`. Precision 3/4 = 75%, recall
+  3/11 = 27%.
+- Migration correct: yes. Must-surface: weak (it misses `MarkAllAsReadBeforeDate` and the
+  Google Reader handlers: two or more).
+
+Recorded in `run.json` as `{ "issue": 4336, "output": "j2-impact", "source": "curated",
+"files": { "tp": 2, "fp": 1, "fn": 3 }, "functions": { "tp": 3, "fp": 1, "fn": 8 },
+"migrationCorrect": true }`. The report deck computes the ratios from these counts.
 
 ## Journeys (wave F)
 
@@ -593,6 +705,7 @@ citations; J2.5's titles are J2.4's tasks.
 - [ ] `speckit.specify` and `speckit.plan` report **grounded on K > 0 retrieved chunks**.
 - [ ] 8/8 BA questions answered. Pass bar: **at least 6 correct with valid citations**.
 - [ ] 3/3 developer issues have an impact analysis, a plan, and a sandbox draft. For #4478, METIS surfaces `MarkAllAsReadBeforeDate`.
+- [ ] Every developer-issue output (impact, chat, plan, J2.1, J2.4) has file and function precision and recall and a migration verdict against its reference change set, recorded in `run.json` `changePlanAccuracy`.
 - [ ] Journeys 1 and 2 each have a verdict on the three journey pass bars (completed in the UI, no data lost between steps, within budget), with the step where any of them broke.
 - [ ] Nothing was published, commented or reviewed on `miniflux/v2`; verify with `gh` and attach the output.
 - [ ] Per-phase token/cost table posted; total spend within the project budget.
