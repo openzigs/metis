@@ -243,6 +243,7 @@ const RUN_FIELDS = [
   "previousRunSha",
   "fixes",
   "changePlanAccuracy",
+  "docQuality",
 ];
 
 /**
@@ -263,6 +264,18 @@ export const CHANGE_SET_SOURCES = /** @type {const} */ (["upstream", "candidate"
 
 /** Where the sample project's issues live; the change-plan rows link there, not to METIS. */
 export const SAMPLE_ISSUE_URL_BASE = "https://github.com/miniflux/v2/issues/";
+
+/**
+ * Documents `docQuality` may score (#1041), in deck order, with their row labels. The answer
+ * key and rubric are in `docs/walkthroughs/TEST_PLAN.md`, Phase 9.
+ */
+export const DOC_QUALITY_DOCS = /** @type {const} */ ({
+  brd: "BRD",
+  architecture: "Architecture",
+});
+
+/** The per-section usefulness grades of the Phase 9 rubric. */
+export const SECTION_GRADES = /** @type {const} */ (["A", "B", "C", "F"]);
 
 /** The only ledger table `run.json` may name (`e2e-walkthrough` skill, section 5). */
 export const LEDGER_SOURCE = "token_usages";
@@ -289,6 +302,16 @@ export const LEDGER_SOURCE = "token_usages";
  * @property {string | undefined} previousRunSha the previous run's `metisSha` (#954)
  * @property {RunFix[] | undefined} fixes what the run verified, with a verdict each (#954)
  * @property {ChangePlanScore[] | undefined} changePlanAccuracy change plans scored (#1042)
+ * @property {Partial<Record<keyof typeof DOC_QUALITY_DOCS, DocQuality>> | undefined} docQuality
+ *   the Phase 9 doc-quality scores, per document (#1041)
+ */
+
+/**
+ * @typedef {object} DocQuality
+ * @property {{ hit: number, total: number }} coverage key facts present / in the answer key
+ * @property {{ correct: number, stated: number }} accuracy present key facts stated correctly
+ * @property {number} hallucinations concrete claims with no support at the pinned commit
+ * @property {Record<"A" | "B" | "C" | "F", number>} sectionGrades top-level sections per grade
  */
 
 /**
@@ -412,8 +435,8 @@ function checkChangePlanAccuracy(rows, errors) {
       errors.push(`${at}: "source" must be one of ${CHANGE_SET_SOURCES.join(", ")}`);
     }
     const sizes = {
-      files: checkCounts(row.files, at, "files", errors),
-      functions: checkCounts(row.functions, at, "functions", errors),
+      files: checkMatchCounts(row.files, at, "files", errors),
+      functions: checkMatchCounts(row.functions, at, "functions", errors),
     };
     if (typeof row.migrationCorrect !== "boolean") {
       errors.push(`${at}: "migrationCorrect" must be true or false`);
@@ -456,7 +479,7 @@ function checkChangePlanAccuracy(rows, errors) {
  * @param {string[]} errors
  * @returns {number | null}
  */
-function checkCounts(counts, at, name, errors) {
+function checkMatchCounts(counts, at, name, errors) {
   if (!isPlainObject(counts)) {
     errors.push(`${at}: "${name}" must be an object { tp, fp, fn }`);
     return null;
@@ -475,6 +498,100 @@ function checkCounts(counts, at, name, errors) {
     }
   }
   return ok ? Number(counts.tp) + Number(counts.fn) : null;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is number}
+ */
+function isCount(value) {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+/**
+ * Check an object holding only the given count fields; push errors under `at`.
+ *
+ * @param {Record<string, unknown>} obj
+ * @param {string} at
+ * @param {readonly string[]} keys
+ * @param {string} unknownLabel "field" or "grade"
+ * @param {string[]} errors
+ * @returns {boolean} whether every count is valid
+ */
+function checkCounts(obj, at, keys, unknownLabel, errors) {
+  for (const key of Object.keys(obj)) {
+    if (!keys.includes(key)) {
+      const expected = unknownLabel === "grade" ? ` (expected ${keys.join(", ")})` : "";
+      errors.push(`${at}: unknown ${unknownLabel} "${key}"${expected}`);
+    }
+  }
+  let ok = true;
+  for (const key of keys) {
+    if (!isCount(obj[key])) {
+      errors.push(`${at}: "${key}" must be a non-negative integer`);
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+/**
+ * Validate one document's Phase 9 doc-quality score (#1041); push errors under `at`. Accuracy
+ * is judged over the key facts that are present, so its `stated` must equal coverage's `hit`.
+ *
+ * @param {unknown} doc
+ * @param {string} at
+ * @param {string[]} errors
+ */
+function checkDocQuality(doc, at, errors) {
+  if (!isPlainObject(doc)) {
+    errors.push(`${at}: expected a JSON object`);
+    return;
+  }
+  const fields = ["coverage", "accuracy", "hallucinations", "sectionGrades"];
+  for (const key of Object.keys(doc)) {
+    if (!fields.includes(key)) errors.push(`${at}: unknown field "${key}"`);
+  }
+
+  const { coverage, accuracy, sectionGrades } = doc;
+  let coverageOk = false;
+  if (!isPlainObject(coverage)) {
+    errors.push(`${at}: "coverage" must be an object`);
+  } else if (checkCounts(coverage, `${at}.coverage`, ["hit", "total"], "field", errors)) {
+    if (coverage.total === 0) {
+      errors.push(`${at}.coverage: "total" must be a positive integer`);
+    } else if (Number(coverage.hit) > Number(coverage.total)) {
+      errors.push(
+        `${at}.coverage: "hit" (${coverage.hit}) must not exceed "total" (${coverage.total})`,
+      );
+    } else {
+      coverageOk = true;
+    }
+  }
+
+  if (!isPlainObject(accuracy)) {
+    errors.push(`${at}: "accuracy" must be an object`);
+  } else if (checkCounts(accuracy, `${at}.accuracy`, ["correct", "stated"], "field", errors)) {
+    if (Number(accuracy.correct) > Number(accuracy.stated)) {
+      errors.push(
+        `${at}.accuracy: "correct" (${accuracy.correct}) must not exceed "stated" (${accuracy.stated})`,
+      );
+    } else if (coverageOk && accuracy.stated !== /** @type {any} */ (coverage).hit) {
+      errors.push(
+        `${at}: accuracy "stated" (${accuracy.stated}) must equal coverage "hit" (${/** @type {any} */ (coverage).hit})`,
+      );
+    }
+  }
+
+  if (!isCount(doc.hallucinations)) {
+    errors.push(`${at}: "hallucinations" must be a non-negative integer`);
+  }
+
+  if (!isPlainObject(sectionGrades)) {
+    errors.push(`${at}: "sectionGrades" must be an object`);
+  } else {
+    checkCounts(sectionGrades, `${at}.sectionGrades`, SECTION_GRADES, "grade", errors);
+  }
 }
 
 /**
@@ -599,6 +716,25 @@ export function parseRunInfo(text) {
     }
   }
 
+  if (raw.docQuality !== undefined) {
+    const docs = Object.keys(DOC_QUALITY_DOCS);
+    if (!isPlainObject(raw.docQuality)) {
+      errors.push(
+        `run.json: "docQuality" must be an object keyed by document (${docs.join(", ")})`,
+      );
+    } else {
+      for (const [doc, score] of Object.entries(raw.docQuality)) {
+        if (!docs.includes(doc)) {
+          errors.push(
+            `run.json docQuality: unknown document "${doc}" (expected ${docs.join(", ")})`,
+          );
+        } else {
+          checkDocQuality(score, `run.json docQuality.${doc}`, errors);
+        }
+      }
+    }
+  }
+
   if (errors.length > 0) return { run: null, errors };
   return {
     run: {
@@ -609,6 +745,7 @@ export function parseRunInfo(text) {
       previousRunSha: /** @type {string | undefined} */ (raw.previousRunSha),
       fixes: /** @type {RunFix[] | undefined} */ (raw.fixes),
       changePlanAccuracy: /** @type {ChangePlanScore[] | undefined} */ (raw.changePlanAccuracy),
+      docQuality: /** @type {RunInfo["docQuality"]} */ (raw.docQuality),
     },
     errors: [],
   };
@@ -958,6 +1095,29 @@ ${sorted
 }
 
 /**
+ * The Phase 9 doc-quality table (#1041): one row per scored document, BRD first. Every cell is
+ * a validated integer, so nothing here needs escaping.
+ *
+ * @param {NonNullable<RunInfo["docQuality"]>} docQuality
+ * @returns {string}
+ */
+function renderDocQuality(docQuality) {
+  const rows = /** @type {Array<keyof typeof DOC_QUALITY_DOCS>} */ (Object.keys(DOC_QUALITY_DOCS))
+    .filter((doc) => docQuality[doc] !== undefined)
+    .map((doc) => {
+      const q = /** @type {DocQuality} */ (docQuality[doc]);
+      return `      <tr><th scope="row">${DOC_QUALITY_DOCS[doc]}</th><td>${q.coverage.hit}/${q.coverage.total}</td><td>${q.accuracy.correct}/${q.accuracy.stated}</td><td>${q.hallucinations}</td>${SECTION_GRADES.map((g) => `<td>${q.sectionGrades[g]}</td>`).join("")}</tr>`;
+    });
+  return `  <table class="waves doc-quality">
+    <caption>Doc quality against the Phase 9 answer key</caption>
+    <thead><tr><th scope="col">Document</th><th scope="col">Coverage</th><th scope="col">Accuracy</th><th scope="col">Hallucinations</th>${SECTION_GRADES.map((g) => `<th scope="col">Sections ${g}</th>`).join("")}</tr></thead>
+    <tbody>
+${rows.join("\n")}
+    </tbody>
+  </table>`;
+}
+
+/**
  * @param {string} value a WORKS or USEFUL value
  * @param {string} [axis] "Works" or "Useful"; prefixes the label on a step slide
  * @returns {string}
@@ -1145,7 +1305,7 @@ ${waveRows
   </table>
 ${spend}
   <p class="spend">Issues checked: ${issues.length ? renderIssueLinks(issues) : "none"}</p>
-${run?.fixes ? `${renderFixesSummary(run.fixes)}\n` : ""}${newIssues ? `  <p class="spend">New issues filed (${newIssues.length}): ${renderNewIssuesInline(newIssues)}</p>\n` : ""}</section>`);
+${run?.fixes ? `${renderFixesSummary(run.fixes)}\n` : ""}${run?.docQuality ? `${renderDocQuality(run.docQuality)}\n` : ""}${newIssues ? `  <p class="spend">New issues filed (${newIssues.length}): ${renderNewIssuesInline(newIssues)}</p>\n` : ""}</section>`);
   }
 
   chapters.forEach((c, ci) => {

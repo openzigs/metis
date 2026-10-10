@@ -948,6 +948,7 @@ describe("run.json parsing (#947)", () => {
         previousRunSha: undefined,
         fixes: undefined,
         changePlanAccuracy: undefined,
+        docQuality: undefined,
       },
       errors: [],
     });
@@ -1285,5 +1286,215 @@ describe("shipped assets", () => {
         inlineAssets: { css: "", js: "x='</script>'" },
       }),
     ).toThrow("</script");
+  });
+});
+
+/** A valid `docQuality` (#1041): the format sample from `briefs/wave-c.md`. */
+function docQualityFixture() {
+  return {
+    brd: {
+      coverage: { hit: 11, total: 15 },
+      accuracy: { correct: 10, stated: 11 },
+      hallucinations: 2,
+      sectionGrades: { A: 3, B: 4, C: 1, F: 0 },
+    },
+    architecture: {
+      coverage: { hit: 9, total: 15 },
+      accuracy: { correct: 9, stated: 9 },
+      hallucinations: 0,
+      sectionGrades: { A: 2, B: 3, C: 0, F: 0 },
+    },
+  };
+}
+
+describe("run.json docQuality (#1041)", () => {
+  it("accepts both documents, one document, and its absence", () => {
+    const r = /** @type {any} */ (runInfo());
+    r.docQuality = docQualityFixture();
+    const { run, errors } = parseRunInfo(JSON.stringify(r));
+    expect(errors).toEqual([]);
+    expect(run?.docQuality).toEqual(docQualityFixture());
+
+    r.docQuality = { architecture: docQualityFixture().architecture };
+    expect(parseRunInfo(JSON.stringify(r)).errors).toEqual([]);
+
+    expect(parseRunInfo(JSON.stringify(runInfo())).run?.docQuality).toBeUndefined();
+  });
+
+  it("accepts a document that stated no key fact", () => {
+    const r = {
+      docQuality: {
+        brd: {
+          coverage: { hit: 0, total: 15 },
+          accuracy: { correct: 0, stated: 0 },
+          hallucinations: 0,
+          sectionGrades: { A: 0, B: 0, C: 0, F: 1 },
+        },
+      },
+    };
+    expect(parseRunInfo(JSON.stringify(r)).errors).toEqual([]);
+  });
+
+  /** @param {(d: any) => void} mutate */
+  const errorsOf = (mutate) => {
+    const r = /** @type {any} */ (runInfo());
+    r.docQuality = docQualityFixture();
+    mutate(r.docQuality);
+    const { run, errors } = parseRunInfo(JSON.stringify(r));
+    expect(run).toBeNull();
+    return errors.join("\n");
+  };
+
+  it.each(
+    /** @type {Array<[string, (d: any) => void, string]>} */ ([
+      [
+        "an unknown document",
+        (d) => (d.database = d.brd),
+        'run.json docQuality: unknown document "database" (expected brd, architecture)',
+      ],
+      [
+        "a non-object document",
+        (d) => (d.brd = 3),
+        "run.json docQuality.brd: expected a JSON object",
+      ],
+      [
+        "an unknown document field",
+        (d) => (d.brd.score = 1),
+        'run.json docQuality.brd: unknown field "score"',
+      ],
+      [
+        "a missing coverage",
+        (d) => delete d.brd.coverage,
+        'run.json docQuality.brd: "coverage" must be an object',
+      ],
+      [
+        "an unknown coverage field",
+        (d) => (d.brd.coverage.missed = 4),
+        'run.json docQuality.brd.coverage: unknown field "missed"',
+      ],
+      [
+        "a fractional coverage hit",
+        (d) => (d.brd.coverage.hit = 1.5),
+        'run.json docQuality.brd.coverage: "hit" must be a non-negative integer',
+      ],
+      [
+        "a zero coverage total",
+        (d) => (d.brd.coverage.total = 0),
+        'run.json docQuality.brd.coverage: "total" must be a positive integer',
+      ],
+      [
+        "hit above total",
+        (d) => (d.architecture.coverage.hit = 16),
+        'run.json docQuality.architecture.coverage: "hit" (16) must not exceed "total" (15)',
+      ],
+      [
+        "accuracy not an object",
+        (d) => (d.brd.accuracy = 0.9),
+        'run.json docQuality.brd: "accuracy" must be an object',
+      ],
+      [
+        "a negative accuracy correct",
+        (d) => (d.brd.accuracy.correct = -1),
+        'run.json docQuality.brd.accuracy: "correct" must be a non-negative integer',
+      ],
+      [
+        "correct above stated",
+        (d) => (d.brd.accuracy.correct = 12),
+        'run.json docQuality.brd.accuracy: "correct" (12) must not exceed "stated" (11)',
+      ],
+      [
+        "stated unequal to the coverage hit",
+        (d) => (d.architecture.accuracy = { correct: 8, stated: 8 }),
+        'run.json docQuality.architecture: accuracy "stated" (8) must equal coverage "hit" (9)',
+      ],
+      [
+        "a string hallucination count",
+        (d) => (d.brd.hallucinations = "2"),
+        'run.json docQuality.brd: "hallucinations" must be a non-negative integer',
+      ],
+      [
+        "a missing grade",
+        (d) => delete d.brd.sectionGrades.F,
+        'run.json docQuality.brd.sectionGrades: "F" must be a non-negative integer',
+      ],
+      [
+        "an unknown grade",
+        (d) => (d.brd.sectionGrades.D = 1),
+        'run.json docQuality.brd.sectionGrades: unknown grade "D" (expected A, B, C, F)',
+      ],
+      [
+        "sectionGrades as an array",
+        (d) => (d.brd.sectionGrades = [3, 4, 1, 0]),
+        'run.json docQuality.brd: "sectionGrades" must be an object',
+      ],
+    ]),
+  )("rejects %s, naming the field", (_label, mutate, message) => {
+    expect(errorsOf(mutate)).toContain(message);
+  });
+
+  it.each([
+    ["an array", []],
+    ["a number", 7],
+    ["null", null],
+  ])("rejects docQuality as %s", (_label, value) => {
+    const r = /** @type {any} */ (runInfo());
+    r.docQuality = value;
+    expect(parseRunInfo(JSON.stringify(r)).errors).toEqual([
+      'run.json: "docQuality" must be an object keyed by document (brd, architecture)',
+    ]);
+  });
+
+  it("still rejects unknown top-level fields alongside a valid docQuality", () => {
+    const r = /** @type {any} */ (runInfo());
+    r.docQuality = docQualityFixture();
+    r.docScore = 1;
+    expect(parseRunInfo(JSON.stringify(r)).errors).toEqual(['run.json: unknown field "docScore"']);
+  });
+
+  /** @param {any} run @param {"report" | "tutorial"} [kind] */
+  const deckOf = (run, kind = "report") =>
+    renderDeck({
+      kind,
+      title: "T",
+      steps: [valid()],
+      imageSrc: () => "x.png",
+      inlineAssets: null,
+      run,
+    });
+
+  it("renders a doc-quality table on the report summary, one row per scored document", () => {
+    const r = /** @type {any} */ (runInfo());
+    r.docQuality = docQualityFixture();
+    const report = deckOf(parseRunInfo(JSON.stringify(r)).run);
+    expect(report).toContain('<table class="waves doc-quality">');
+    expect(report).toContain("<caption>Doc quality against the Phase 9 answer key</caption>");
+    expect(report).toContain(
+      '<tr><th scope="row">BRD</th><td>11/15</td><td>10/11</td><td>2</td><td>3</td><td>4</td><td>1</td><td>0</td></tr>',
+    );
+    expect(report).toContain(
+      '<tr><th scope="row">Architecture</th><td>9/15</td><td>9/9</td><td>0</td><td>2</td><td>3</td><td>0</td><td>0</td></tr>',
+    );
+    // On the summary slide, BRD first.
+    const start = report.indexOf('aria-label="Summary"');
+    const summary = report.slice(start, report.indexOf("</section>", start));
+    expect(summary).toContain("doc-quality");
+    expect(summary.indexOf(">BRD<")).toBeLessThan(summary.indexOf(">Architecture<"));
+  });
+
+  it("renders only the documents that were scored", () => {
+    const { run } = parseRunInfo(
+      JSON.stringify({ docQuality: { architecture: docQualityFixture().architecture } }),
+    );
+    const report = deckOf(run);
+    expect(report).toContain('<th scope="row">Architecture</th>');
+    expect(report).not.toContain('<th scope="row">BRD</th>');
+  });
+
+  it("omits the table when docQuality is absent, and from the tutorial", () => {
+    expect(deckOf(parseRunInfo(JSON.stringify(runInfo())).run)).not.toContain("doc-quality");
+    expect(deckOf(null)).not.toContain("doc-quality");
+    const r = /** @type {any} */ (runInfo());
+    r.docQuality = docQualityFixture();
+    expect(deckOf(parseRunInfo(JSON.stringify(r)).run, "tutorial")).not.toContain("doc-quality");
   });
 });

@@ -291,6 +291,98 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
   - The DB doc's schema graph shows the `entries → feeds → users` foreign keys.
   - Provenance links resolve to real lines.
   - **Baseline:** run 4's full-scope BRD cost **$1.91, took 30 min and was 171 KB** under a 500¢ `DOCS_GEN_MAX_RUN_COST_CENTS`. Run 3's was $8.73, 2 h 51 min and 2.19 MB.
+  - **Scored:** both documents scored against the answer key below (#1041).
+
+#### Phase 9 — doc-quality answer key and rubric (#1041)
+
+The caps above measure how **big** a document is; this key measures how **good** it is. Score the
+exported BRD (scope `full`) and architecture document (scope `repository`) against the two tables
+below, with the rubric that follows, and report the numbers in the fixed block from
+`briefs/wave-c.md`. Every ground-truth cite is a `file:line` in `miniflux/v2` at **`v2.3.3`** =
+`c4d54f87a81b30aa173fddf05d7ff83ae7da5796`, read from the source at that commit (not from an
+earlier run's output). Open the cited line before scoring a fact you are unsure of.
+
+**Baseline (run 6):** the full-scope BRD was **188,654 characters** and listed **108 topics** as
+dropped (#995, reopened); the architecture document (by repository) dropped its **"Technology
+Stack"** section, along with three data-architecture topics, at a stated limit of about 60k. Doc
+quality had never been scored before this key, so the next run is the first scored one.
+
+**BRD answer key (scope `full`)**: business rules, workflows and data entities.
+
+| Id | The document must say | Ground truth at `v2.3.3` |
+|---|---|---|
+| BRD-1 | Feed refresh has two schedulers, chosen by `POLLING_SCHEDULER`: `round_robin` (the default) and `entry_frequency`. | `internal/config/options.go:511-518` |
+| BRD-2 | Under `entry_frequency`, a feed's interval is one week divided by its weekly entry count (times `SCHEDULER_ENTRY_FREQUENCY_FACTOR`), clamped between a minimum (5 min) and a maximum (24 h); a feed with no entries that week waits the maximum. A feed's own TTL, `Retry-After` or cache headers can lengthen the interval. | `internal/model/feed.go:123-150`; `internal/config/options.go:540`, `:548` |
+| BRD-3 | Every `POLLING_FREQUENCY` (60 min) the scheduler takes a batch of up to `BATCH_SIZE` (100) enabled feeds whose next check is due and refreshes them. | `internal/cli/scheduler.go:33-48`; `internal/config/options.go:108`, `:487` |
+| BRD-4 | A feed stops being polled once its parsing-error count reaches `POLLING_PARSING_ERROR_LIMIT` (default 3). | `internal/config/options.go:503-505`; `internal/storage/batch.go:48-53` |
+| BRD-5 | Cleanup retention: **read** entries are archived after **60 days** (`CLEANUP_ARCHIVE_READ_DAYS`), **unread** entries after **180 days** (`CLEANUP_ARCHIVE_UNREAD_DAYS`). | `internal/config/options.go:134`, `:139`; `internal/cli/cleanup_tasks.go:26`, `:39` |
+| BRD-6 | **Starred** entries are never archived (nor are shared ones). | `internal/storage/entry.go:379` (`starred is false`), `:380` (`share_code=''`) |
+| BRD-7 | Archiving deletes the entry and records a tombstone, so the same item is not imported again on the next refresh. | `internal/storage/entry.go:367`, `:391`; skipped on insert at `:119-121` |
+| BRD-8 | Third-party integrations are per user, under `internal/integration/` (29 service packages): the **Save** action sends one entry to read-later and bookmarking services (Wallabag, Readwise, Pinboard and others). | `internal/integration/integration.go:40-41` |
+| BRD-9 | New entries found by a refresh are pushed to the user's notification integrations (Matrix, webhook, ntfy, Apprise, Discord, Slack and others). | `internal/integration/integration.go:511`; called at `internal/reader/handler/handler.go:338-339` |
+| BRD-10 | A password must be at least 6 characters. | `internal/validator/user.go:163-164` |
+| BRD-11 | An entry's status is `unread` (the default) or `read`; no other status is accepted. | `internal/model/entry.go:12-13`; `internal/validator/entry.go:42-48`; default at `internal/database/migrations.go:86` |
+| BRD-12 | A user cannot subscribe to the same feed URL twice, and a feed's category must belong to the same user. | `internal/validator/feed.go:23`, `:27`; `internal/database/migrations.go:69` |
+| BRD-13 | Category titles are unique per user. | `internal/database/migrations.go:52` |
+| BRD-14 | Data model: users own categories, feeds and entries; a feed belongs to one category; an entry belongs to one feed and is unique per feed by content hash; deleting a user deletes everything they own. | `internal/database/migrations.go:23-91` (foreign keys at `:53`, `:70-71`, `:88-90`) |
+| BRD-15 | Per-feed and per-user block and keep rules filter entries out during processing. | `internal/reader/processor/processor.go:75`; `internal/reader/filter/filter.go:101` |
+
+**Architecture answer key (scope `repository`)**: components, data flow, integrations and stack.
+
+| Id | The document must say | Ground truth at `v2.3.3` |
+|---|---|---|
+| ARCH-1 | Technology stack: a single Go binary (Go 1.26); `main` only calls `cli.Parse()`. | `go.mod:6`; `main.go:11` |
+| ARCH-2 | Technology stack: PostgreSQL is the only database, through `database/sql` and `lib/pq`. | `internal/database/postgresql.go:15`; `go.mod:13` |
+| ARCH-3 | `internal/cli` is the entry point: it opens the connection pool, runs or checks migrations, builds the storage layer and starts the daemon. | `internal/cli/cli.go:40`, `:157`, `:168`, `:175`, `:222`, `:248` |
+| ARCH-4 | `daemon.go` creates the worker pool, starts the scheduler (unless disabled or in maintenance mode) and starts the HTTP server. | `internal/cli/daemon.go:33`, `:35-36`, `:41-42` |
+| ARCH-5 | `scheduler.go` runs two loops: the feed scheduler and the cleanup scheduler, which calls `runCleanupTasks` in `cleanup_tasks.go`. | `internal/cli/scheduler.go:15-31`, `:53-56`; `internal/cli/cleanup_tasks.go:16` |
+| ARCH-6 | `internal/storage` is the data-access layer: one `Storage` over `*sql.DB` with hand-written SQL. | `internal/storage/storage.go:13`, `:18` |
+| ARCH-7 | `internal/database` owns the connection pool and the schema migrations (an ordered list of Go functions). | `internal/database/postgresql.go:14`; `internal/database/migrations.go:16`; `internal/database/database.go:13` |
+| ARCH-8 | `internal/ui` is the server-rendered web UI, mounted as the catch-all route. | `internal/ui/ui.go:17`; `internal/http/server/routes.go:46` |
+| ARCH-9 | `internal/api` is the REST API, mounted under the v1 prefix only when the API is enabled. | `internal/api/api.go:20`; `internal/http/server/routes.go:36-38` |
+| ARCH-10 | `internal/fever` and `internal/googlereader` are compatibility APIs for third-party reader apps. | `internal/http/server/routes.go:27-28`, `:31-33` |
+| ARCH-11 | `internal/worker` is a pool of `WORKER_POOL_SIZE` (16) goroutines fed from a queue; each job refreshes one feed. | `internal/worker/pool.go:23`, `:42`; `internal/worker/worker.go:47`; `internal/config/options.go:600` |
+| ARCH-12 | `internal/reader/fetcher` makes the HTTP request for a feed. | `internal/reader/fetcher/request_builder.go:49`, `:152`; used at `internal/reader/handler/handler.go:224`, `:243` |
+| ARCH-13 | `internal/reader/parser` detects and parses the feed format (RSS, Atom, RDF, JSON) and `internal/reader/processor` filters and transforms the entries before they are stored. | `internal/reader/parser/parser.go:20`; `internal/reader/processor/processor.go:27` |
+| ARCH-14 | Data flow: scheduler → worker pool → `handler.RefreshFeed` → fetcher → parser → processor → storage (`RefreshFeedEntries`, then `UpdateFeed`). | `internal/cli/scheduler.go:36-48`; `internal/worker/worker.go:47`; `internal/reader/handler/handler.go:196`, `:243`, `:287`, `:319`, `:325`, `:367`; `internal/storage/entry.go:320` |
+| ARCH-15 | Integrations (`internal/integration`) are called from the refresh path for new entries and from the Save action. | `internal/reader/handler/handler.go:339`; `internal/integration/integration.go:41`, `:511` |
+
+**Scoring rubric.** Score each document on four measures. Two scorers following these rules
+should reach the same numbers; where you hesitate, open the cited line and apply the rule.
+
+- **Coverage** = key facts **present** / key facts in the key (for example 11/15).
+- **Accuracy** = key facts stated **correctly** / key facts **present**. A present fact is stated
+  either correctly or wrongly, so accuracy's denominator always equals coverage's numerator
+  (`run.json` rejects a `docQuality` entry where they differ).
+- **Hallucinations** = the number of **concrete claims** outside the key (a named function,
+  file, package, config option, default value, table or column) that have no support at
+  `v2.3.3`. List each one with the sentence it came from.
+- **Usefulness per section**: one grade per top-level section of the document.
+  **A** a new team member could act on it (specific, correct, points at code or settings);
+  **B** right but thin; **C** generic or vague (could describe any feed reader);
+  **F** wrong or misleading. Report the count of each grade.
+
+What counts:
+
+- **Present** means stated **in substance**, anywhere in the document, not keyword-matched. A
+  keyword with no claim behind it is not present; the right claim in other words is.
+  *Worked example (BRD-1):* "Miniflux can either check every feed on a fixed cycle or check busy
+  feeds more often than quiet ones, configured by `POLLING_SCHEDULER`" is **present**, although
+  it never says `entry_frequency`. A configuration table that lists `POLLING_SCHEDULER` with the
+  description "the polling scheduler" is **not present**: it names the option and says nothing
+  about the two modes.
+- **Correct** means it agrees with the cited lines on every detail it states. "Read entries are
+  removed after 90 days" makes BRD-5 present but **wrong** (the default is 60). A wrong key fact
+  counts against accuracy only; do not also count it as a hallucination.
+- **Hallucination** means a concrete claim with nothing at `v2.3.3` to support it; search the
+  source at the tag before counting one. *Worked example:* "retention is controlled by
+  `CLEANUP_ARCHIVE_DAYS`" is **one hallucination**: no option of that name exists at `v2.3.3`
+  (the real ones are `CLEANUP_ARCHIVE_READ_DAYS` and `CLEANUP_ARCHIVE_UNREAD_DAYS`). So is
+  "entries can be set to `removed`": that status was retired into `entry_tombstones`
+  (`internal/database/migrations.go:1472-1493`) and the validator rejects it
+  (`internal/validator/entry.go:42-48`). A vague claim with nothing concrete in it ("Miniflux
+  uses caching to improve performance") is not a hallucination; it lowers the section's grade.
+- Count each distinct hallucination once, however often it repeats.
 
 ### Phase 10 — Chat with citations
 - **Steps:**
