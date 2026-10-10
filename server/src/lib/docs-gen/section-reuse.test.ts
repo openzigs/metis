@@ -154,7 +154,7 @@ describe("#246 — the reuse record accepts every warning kind a section can car
 });
 
 describe("#262 — a stored snapshot from another contract version", () => {
-  it.each([1, 2, SECTION_SYNTHESIS_VERSION + 1])(
+  it.each([1, 2, 3, SECTION_SYNTHESIS_VERSION + 1])(
     "parses a version-%i snapshot as stored but never reuses it",
     (version) => {
       const stored = { ...snapshot(), version };

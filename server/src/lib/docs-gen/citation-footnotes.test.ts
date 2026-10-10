@@ -4,7 +4,12 @@
  * stripper), empty `(,,,)` punctuation, or URL-encoded module keys.
  */
 import { describe, expect, it } from "vitest";
-import { renderCitationFootnotes, readableSourceReference } from "./citation-footnotes.js";
+import {
+  citationDefinitionsLength,
+  renderCitationFootnotes,
+  readableSourceReference,
+  renderedCitationLength,
+} from "./citation-footnotes.js";
 import { factsSourceId, type GroundingSource } from "./grounding/grounding-context.js";
 
 const repo = {
@@ -158,5 +163,43 @@ describe("renderCitationFootnotes (#737)", () => {
   it("resolves an unterminated marker at end of line", () => {
     const out = renderCitationFootnotes(`Truncated [${ui0}`, sources);
     expect(out.split("\n")[0]).toBe("Truncated[^src-1]");
+  });
+});
+
+describe("rendered length (#995)", () => {
+  const md = [
+    `Storage owns SQL [${storage0}, ${ui0}].`,
+    `The UI renders it ([${ui0}]) and validates feeds [${symbolId}].`,
+    "```",
+    `[${storage0}] stays as written in code`,
+    "```",
+    "Plain prose with no citation.",
+  ].join("\n");
+  const rendered = renderCitationFootnotes(md, sources);
+  const definitions = citationDefinitionsLength(md, sources);
+
+  it("measures the body as rendered, each reference at a four-digit number", () => {
+    const body = rendered.length - definitions;
+    // Four references render; each is counted three digits wider than "[^src-1]".
+    expect(renderedCitationLength(md)).toBe(body + 4 * 3);
+    expect(renderedCitationLength(md)).toBeLessThan(md.length / 2);
+  });
+
+  it("counts an id no source admits as a reference: it errs long, never short", () => {
+    const unknown = "Invented [facts:nowhere:9].";
+    expect(renderCitationFootnotes(unknown, sources)).toBe("Invented.");
+    expect(renderedCitationLength(unknown)).toBe("Invented[^src-0000].".length);
+  });
+
+  it("leaves uncited markdown at its own length", () => {
+    expect(renderedCitationLength("Plain.\n\n```\n[x]\n```")).toBe(
+      "Plain.\n\n```\n[x]\n```".length,
+    );
+  });
+
+  it("gives the length of the appended definitions, 0 when nothing is cited", () => {
+    expect(rendered.slice(rendered.length - definitions)).toMatch(/^\n\n\[\^src-1\]: /);
+    expect(rendered.slice(0, rendered.length - definitions)).not.toContain("]: ");
+    expect(citationDefinitionsLength("No citations here.", sources)).toBe(0);
   });
 });

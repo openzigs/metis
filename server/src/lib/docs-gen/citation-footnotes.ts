@@ -101,21 +101,67 @@ function readableBareId(id: string, byId: ReadonlyMap<string, GroundingSource>):
 }
 
 /**
- * Replace the cited grounding ids in an assembled document with document-scoped
- * footnotes, and append their definitions. `sources` is every source admitted
- * to any section of the run; ids outside it are dropped.
+ * Rewrite every marker cluster outside fenced code as the references
+ * `referenceFor` gives its ids (each distinct reference once; an id it returns
+ * null for is dropped), and every bare id as its readable form.
  */
-export function renderCitationFootnotes(
+function rewriteMarkers(
+  markdown: string,
+  byId: ReadonlyMap<string, GroundingSource>,
+  referenceFor: (id: string) => string | null,
+): string {
+  const renderCluster = (
+    _match: string,
+    lead: string,
+    open: string | undefined,
+    inner: string,
+    close: string | undefined,
+  ): string => {
+    const references: string[] = [];
+    for (const marker of inner.match(MARKER_RE) ?? []) {
+      const body = marker.replace(/^\[\s*/, "").replace(/\]$/, "");
+      for (const token of body.split(/[,;\s]+/)) {
+        if (!/^(?:facts|rag|web):/.test(token)) continue;
+        const reference = referenceFor(token);
+        if (reference !== null && !references.includes(reference)) references.push(reference);
+      }
+    }
+    const refs = references.join("");
+    // A bracket pair the cluster owns is dropped with it; an unmatched one
+    // belongs to the surrounding prose and is kept.
+    if (open && !close) return `${lead}(${refs}`;
+    if (close && !open) return `${refs})`;
+    return refs;
+  };
+
+  let inFence = false;
+  return markdown
+    .split("\n")
+    .map((line) => {
+      if (/^\s*(```|~~~)/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+      return line
+        .replace(CLUSTER_RE, renderCluster)
+        .replace(BARE_ID_RE, (match, id: string) => readableBareId(id, byId) ?? match);
+    })
+    .join("\n");
+}
+
+/** The rewritten body and the footnote definitions it references, in order. */
+function renderParts(
   markdown: string,
   sources: Iterable<GroundingSource>,
-): string {
+): { body: string; definitions: string[] } {
   const byId = new Map<string, GroundingSource>();
   for (const s of sources) if (!byId.has(s.sourceId)) byId.set(s.sourceId, s);
 
   // One number per distinct READABLE reference, in order of first citation.
   const numberOf = new Map<string, number>();
   const definitions: string[] = [];
-  const footnoteFor = (id: string): number | null => {
+  const body = rewriteMarkers(markdown, byId, (id) => {
     const source = byId.get(id);
     if (!source) return null;
     const reference = readableSourceReference(source);
@@ -125,45 +171,59 @@ export function renderCitationFootnotes(
       numberOf.set(reference, n);
       definitions.push(`[^${LABEL_PREFIX}${n}]: ${reference}`);
     }
-    return n;
-  };
-
-  const renderCluster = (
-    _match: string,
-    lead: string,
-    open: string | undefined,
-    inner: string,
-    close: string | undefined,
-  ): string => {
-    const numbers: number[] = [];
-    for (const marker of inner.match(MARKER_RE) ?? []) {
-      const body = marker.replace(/^\[\s*/, "").replace(/\]$/, "");
-      for (const token of body.split(/[,;\s]+/)) {
-        if (!/^(?:facts|rag|web):/.test(token)) continue;
-        const n = footnoteFor(token);
-        if (n !== null && !numbers.includes(n)) numbers.push(n);
-      }
-    }
-    const refs = numbers.map((n) => `[^${LABEL_PREFIX}${n}]`).join("");
-    // A bracket pair the cluster owns is dropped with it; an unmatched one
-    // belongs to the surrounding prose and is kept.
-    if (open && !close) return `${lead}(${refs}`;
-    if (close && !open) return `${refs})`;
-    return refs;
-  };
-
-  let inFence = false;
-  const lines = markdown.split("\n").map((line) => {
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      return line;
-    }
-    if (inFence) return line;
-    return line
-      .replace(CLUSTER_RE, renderCluster)
-      .replace(BARE_ID_RE, (match, id: string) => readableBareId(id, byId) ?? match);
+    return `[^${LABEL_PREFIX}${n}]`;
   });
+  return { body, definitions };
+}
 
-  const body = lines.join("\n");
+/**
+ * Replace the cited grounding ids in an assembled document with document-scoped
+ * footnotes, and append their definitions. `sources` is every source admitted
+ * to any section of the run; ids outside it are dropped.
+ */
+export function renderCitationFootnotes(
+  markdown: string,
+  sources: Iterable<GroundingSource>,
+): string {
+  const { body, definitions } = renderParts(markdown, sources);
   return definitions.length > 0 ? `${body}\n\n${definitions.join("\n")}` : body;
+}
+
+/** Digits a footnote number is counted at by {@link renderedCitationLength}. */
+const COUNTED_FOOTNOTE_DIGITS = 4;
+
+/**
+ * #995 — how long `markdown` will be once {@link renderCitationFootnotes} has
+ * rewritten its markers, without the definitions appended at the end. A drafted
+ * marker (`[facts:repo:%5B%22…%22%5D:1]`, ~110 characters) renders as a short
+ * `[^src-N]`, so a length cap measured on the draft cuts a citation-heavy
+ * section to a fraction of its budget.
+ *
+ * Section by section, before the document's sources and numbering are known, so
+ * it errs long: every cited id counts as its own reference (rendering may drop
+ * an unadmitted one, or merge two that name one module) at a four-digit number.
+ */
+export function renderedCitationLength(markdown: string): number {
+  const index = new Map<string, number>();
+  return rewriteMarkers(markdown, new Map(), (id) => {
+    let n = index.get(id);
+    if (n === undefined) {
+      n = index.size;
+      index.set(id, n);
+    }
+    return `[^${LABEL_PREFIX}${String(n).padStart(COUNTED_FOOTNOTE_DIGITS, "0")}]`;
+  }).length;
+}
+
+/**
+ * #995 — the characters {@link renderCitationFootnotes} appends to `markdown`
+ * for its footnote definitions (0 when it cites nothing). Trimming text only
+ * removes citations, so the value for a draft bounds the value for any fit of it.
+ */
+export function citationDefinitionsLength(
+  markdown: string,
+  sources: Iterable<GroundingSource>,
+): number {
+  const { definitions } = renderParts(markdown, sources);
+  return definitions.length > 0 ? 2 + definitions.join("\n").length : 0;
 }

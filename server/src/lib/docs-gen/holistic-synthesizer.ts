@@ -74,7 +74,11 @@ import {
   minedLineSources,
   type MinedLineSource,
 } from "./grounding/mined-line-sources.js";
-import { renderCitationFootnotes } from "./citation-footnotes.js";
+import {
+  citationDefinitionsLength,
+  renderCitationFootnotes,
+  renderedCitationLength,
+} from "./citation-footnotes.js";
 import { scopedToGeneration } from "./generation-control.js";
 import { isGenerationStop, throwIfGenerationStopped } from "./generation-scope.js";
 import {
@@ -3704,9 +3708,10 @@ async function synthesizeBatchedSection(input: {
         )
       : "";
   // #741 — the batch budgets are requests; this is the guarantee.
+  // #995 — measured as the section will render, citations as footnotes.
   const fit =
     merged && input.sectionMaxChars !== undefined
-      ? fitSectionToBudget(merged, input.sectionMaxChars)
+      ? fitSectionToBudget(merged, input.sectionMaxChars, [], renderedCitationLength)
       : null;
   if (fit?.trimmed) input.onShortened?.(fit.markdown, fit.omittedTopics);
   const markdown = fit ? fit.markdown : merged;
@@ -3994,7 +3999,8 @@ export async function synthesizeFinalDocument(
     sectionCapOmissions.set(markdown.trim(), omittedTopics);
   };
   const fitToSectionCap = (markdown: string, maxChars: number): string => {
-    const fit = fitSectionToBudget(markdown, maxChars);
+    // #995 — measured as the section will render, citations as footnotes.
+    const fit = fitSectionToBudget(markdown, maxChars, [], renderedCitationLength);
     if (fit.trimmed) recordShortened(fit.markdown, fit.omittedTopics);
     return fit.markdown;
   };
@@ -4899,10 +4905,19 @@ export async function synthesizeFinalDocument(
   // first at topic boundaries, before footnotes are numbered.
   // #995 — what a section already lost to the section cap is listed with what
   // the document cap takes, and both reach the manifest's provenance.
+  // #995 — measured as the document will render: each citation marker (~110
+  // drafted characters) as its short footnote reference, and the footnote
+  // definitions' room set aside first. Measuring the draft left run 6's BRD at
+  // 189k of 250k while it dropped 108 topics.
+  const footnoteDefinitionsChars = citationDefinitionsLength(
+    sectionMarkdowns.join("\n\n"),
+    selectedEvidenceById.values(),
+  );
   const fittedSections = fitSectionsToDocumentBudget(
     sectionMarkdowns,
-    documentMaxChars,
+    Math.max(0, documentMaxChars - footnoteDefinitionsChars),
     sectionOwners.map((owner) => manifestSections[owner].omittedTopics ?? []),
+    renderedCitationLength,
   );
   if (fittedSections.trimmed > 0) {
     log.info("Document over its length cap; longest sections shortened", {

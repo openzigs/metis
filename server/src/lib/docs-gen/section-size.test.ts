@@ -17,6 +17,7 @@ import {
   resolveSectionMaxChars,
   sectionBudgetScale,
 } from "./section-size.js";
+import { renderCitationFootnotes, renderedCitationLength } from "./citation-footnotes.js";
 
 const config = (values: Record<string, number>): ConfigService =>
   ({ getNumber: (key: string, d?: number) => values[key] ?? d }) as unknown as ConfigService;
@@ -279,5 +280,88 @@ describe("fitSectionsToDocumentBudget", () => {
     expect(sections.reduce((n, s) => n + s.length, 0)).toBeLessThanOrEqual(max);
     expect(sections[1]).toContain("**Shortened for length.**");
     expect(sections[2]).toContain("**Shortened for length.**");
+  });
+});
+
+// #995 — run 6: each drafted citation marker is ~110 characters and renders as
+// a ~10-character footnote reference, so a cap measured on the draft cut
+// sections at ~59k drafted that rendered at ~28–34k.
+describe("caps measured as the text renders (#995)", () => {
+  const marker = (t: number, p: number): string =>
+    `[${[0, 1, 2]
+      .map(
+        (k) =>
+          `facts:repo:${encodeURIComponent(JSON.stringify(["cmv1nna3w", "cmv1nnb0h", `internal/m${t}-${p}-${k}`]))}:1`,
+      )
+      .join(", ")}]`;
+  /** `topics` H3 topics of short, citation-heavy paragraphs. */
+  function citedSection(title: string, topics: number): string {
+    const parts = [`## ${title}`, "Rules the system enforces."];
+    for (let t = 1; t <= topics; t++) {
+      parts.push(`### Topic ${t}`);
+      for (let p = 1; p <= 3; p++)
+        parts.push(`Rule ${t}.${p} holds for every feed ${marker(t, p)}.`);
+    }
+    return parts.join("\n\n");
+  }
+  /** Rendered with every cited id admitted, as a fully grounded run would. */
+  const rendered = (md: string): string =>
+    renderCitationFootnotes(
+      md,
+      [...new Set(md.match(/facts:repo:[^,\]\s]+/g) ?? [])].map((sourceId) => ({
+        sourceId,
+        kind: "facts" as const,
+        label: "m",
+        text: "",
+      })),
+    ).replace(/\n\n\[\^src-1\]: [\s\S]*$/, "");
+
+  it("fills a citation-heavy section to its budget as rendered", () => {
+    const section = citedSection("Rules", 200);
+    const max = 20_000;
+    const drafted = fitSectionToBudget(section, max);
+    const fit = fitSectionToBudget(section, max, [], renderedCitationLength);
+    expect(fit.trimmed).toBe(true);
+    expect(fit.originalChars).toBe(renderedCitationLength(section));
+    expect(renderedCitationLength(fit.markdown)).toBeLessThanOrEqual(max);
+    expect(rendered(fit.markdown).length).toBeLessThanOrEqual(max);
+    expect(rendered(fit.markdown).length).toBeGreaterThan(max - 1_500);
+    // Measured on the draft, the same section renders at a fraction of its budget.
+    expect(rendered(drafted.markdown).length).toBeLessThan(max / 2);
+    expect(fit.omittedTopics.length).toBeLessThan(drafted.omittedTopics.length);
+  });
+
+  it("keeps a section that fits as rendered whole, however long its draft", () => {
+    const section = citedSection("Rules", 20);
+    expect(section.length).toBeGreaterThan(10_000);
+    expect(renderedCitationLength(section)).toBeLessThan(5_000);
+    expect(fitSectionToBudget(section, 5_000, [], renderedCitationLength)).toMatchObject({
+      markdown: section,
+      trimmed: false,
+    });
+  });
+
+  it("measures a lone over-long first paragraph sentence by sentence", () => {
+    const sentences = Array.from({ length: 120 }, (_, i) => `Sentence ${i} ${marker(i, 0)}.`);
+    const section = ["## Rules", sentences.join(" ")].join("\n\n");
+    const max = 2_000;
+    const fit = fitSectionToBudget(section, max, [], renderedCitationLength);
+    const kept = (md: string) => md.match(/Sentence \d+/g)?.length ?? 0;
+    expect(fit.trimmed).toBe(true);
+    expect(renderedCitationLength(fit.markdown)).toBeLessThanOrEqual(max);
+    expect(kept(fit.markdown)).toBeGreaterThan(kept(fitSectionToBudget(section, max).markdown) * 3);
+  });
+
+  it("fills the document budget as rendered", () => {
+    const sections = ["Rules", "Workflows", "Data Model"].map((t) => citedSection(t, 120));
+    const max = 40_000;
+    const fit = fitSectionsToDocumentBudget(sections, max, [], renderedCitationLength);
+    const total = fit.sections.reduce((n, s) => n + rendered(s).length, 0);
+    expect(fit.trimmed).toBe(3);
+    expect(total).toBeLessThanOrEqual(max);
+    // Within the few digits per reference the measure errs long by.
+    expect(total).toBeGreaterThan(max - 3_000);
+    const drafted = fitSectionsToDocumentBudget(sections, max);
+    expect(drafted.sections.reduce((n, s) => n + rendered(s).length, 0)).toBeLessThan(max / 2);
   });
 });

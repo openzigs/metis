@@ -106,8 +106,11 @@ export type SectionSynthesisRecord = z.infer<typeof sectionRecordSchema>;
  * 3 — #246/#262: a section whose fact-check THREW was stored under version 2 with
  * no score and no warning, indistinguishable from a verified one. A version-2
  * snapshot cannot say whether it was written before or after that fix, so none
- * is reused: each is written and fact-checked afresh once. */
-export const SECTION_SYNTHESIS_VERSION = 3;
+ * is reused: each is written and fact-checked afresh once.
+ * 4 — #995: the section cap is measured on the rendered text (citations as
+ * footnotes), not the drafted text. A version-3 section the old cap trimmed
+ * stays cut short (24–34k against ~41–43k limits), so none is reused. */
+export const SECTION_SYNTHESIS_VERSION = 4;
 export const sectionSynthesisSchema = z
   .object({
     version: z.literal(SECTION_SYNTHESIS_VERSION),
