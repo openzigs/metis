@@ -151,6 +151,22 @@ describe("parsePhaseMap", () => {
     expect(map?.issues["939"]).toMatchObject({ wave: "F" });
   });
 
+  it("accepts wave G, the optional implement-the-plan wave (#1043)", () => {
+    const { map, errors } = parsePhaseMap(
+      JSON.stringify({ issues: { 1043: { wave: "G", phase: "G" } } }),
+    );
+    expect(errors).toEqual([]);
+    expect(map?.issues["1043"]).toEqual({ wave: "G", phase: "G" });
+    expect(
+      checkFix(
+        { pr: 1, issues: [2], wave: "G", phase: "G", check: "x" },
+        "f",
+        { withStatus: false },
+        [],
+      ),
+    ).toBe(true);
+  });
+
   it("accepts a skip entry and rejects a skip with other fields or no reason", () => {
     expect(parsePhaseMap(JSON.stringify({ prs: { 1: { skip: "Tooling" } } })).errors).toEqual([]);
     expect(
@@ -180,7 +196,7 @@ describe("parsePhaseMap", () => {
     expect(errors).toEqual([
       'fix-phase-map.json: unknown field "extra"',
       'fix-phase-map.json issues.1: unknown field "other"',
-      'fix-phase-map.json issues.1: "wave" must be one of A, B, C, D, E, F, BA',
+      'fix-phase-map.json issues.1: "wave" must be one of A, B, C, D, E, F, G, BA',
       'fix-phase-map.json issues.1: "phase" must be a non-empty string',
       'fix-phase-map.json issues.1: "check" must be a non-empty string when present',
       "fix-phase-map.json issues.2: expected a JSON object",
@@ -223,7 +239,7 @@ describe("checkFix", () => {
       {
         pr: 0,
         issues: [-1],
-        wave: "G",
+        wave: "H",
         phase: "",
         check: 3,
         status: "done",
@@ -239,7 +255,7 @@ describe("checkFix", () => {
       'f: unknown field "y"',
       'f: "pr" must be a positive PR number',
       'f: "issues" must be an array of positive issue numbers',
-      'f: "wave" must be one of A, B, C, D, E, F, BA',
+      'f: "wave" must be one of A, B, C, D, E, F, G, BA',
       'f: "phase" must be a non-empty string',
       'f: "check" must be a non-empty string',
       'f: "carried" must be one of confirmed, partial, regressed, not-exercised when present',
@@ -503,9 +519,9 @@ describe("renderScopeComment and fixLine", () => {
       phase: "1",
       check: "c",
     });
-    expect(orderFixes([f(3, "BA"), f(2, "A"), f(1, "A"), f(4, "F")]).map((x) => x.pr)).toEqual([
-      1, 2, 4, 3,
-    ]);
+    expect(
+      orderFixes([f(3, "BA"), f(5, "G"), f(2, "A"), f(1, "A"), f(4, "F")]).map((x) => x.pr),
+    ).toEqual([1, 2, 4, 5, 3]);
     expect(fixLine(f(1, "A"))).toBe("- PR #1, Phase 1: c");
   });
 });

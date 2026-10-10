@@ -156,6 +156,8 @@ describe("fillBriefs", () => {
   it("knows a wave for every committed brief", () => {
     for (const name of fs.readdirSync(BRIEFS)) expect(BRIEF_WAVES[name], name).toBeDefined();
     expect(BRIEF_WAVES["wave-f.md"]).toBe("F");
+    expect(BRIEF_WAVES["wave-g.md"]).toBe("G");
+    expect(Object.values(BRIEF_WAVES)).toEqual(["A", "B", "C", "D", "E", "F", "G", "BA"]);
   });
 });
 
@@ -299,6 +301,36 @@ describe("fill-brief.mjs (runner, real briefs)", () => {
     const waveF = fs.readFileSync(path.join(out, "wave-f.md"), "utf8");
     expect(waveF).toContain("PR #2");
     expect(waveF).not.toMatch(/\{\{/);
+    const waveG = fs.readFileSync(path.join(out, "wave-g.md"), "utf8");
+    expect(waveG).not.toMatch(/\{\{/);
+
+    // --wave G fills only the optional wave G brief, with its own fixes (#1043).
+    fs.writeFileSync(fixesPath, JSON.stringify(doc({ fixes: [fix(1, "A"), fix(5, "G")] })));
+    const outG = path.join(tmp, "out-g");
+    const onlyG = spawnSync(
+      process.execPath,
+      [
+        RUNNER,
+        "--state",
+        statePath,
+        "--fixes",
+        fixesPath,
+        "--out",
+        outG,
+        "--briefs",
+        BRIEFS,
+        "--wave",
+        "G",
+      ],
+      { encoding: "utf8" },
+    );
+    expect(onlyG.stderr).toBe("");
+    expect(onlyG.status).toBe(0);
+    expect(fs.readdirSync(outG)).toEqual(["wave-g.md"]);
+    const filledG = fs.readFileSync(path.join(outG, "wave-g.md"), "utf8");
+    expect(filledG).toContain("PR #5");
+    expect(filledG).not.toContain("PR #1,");
+    fs.writeFileSync(fixesPath, JSON.stringify(doc()));
 
     const partial = { ...placeholders };
     delete partial.RUN_NUMBER;
