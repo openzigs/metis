@@ -94,6 +94,71 @@
     },
     "954": {
       "skip": "walkthrough tooling (wave F and fixes-since are this run's own machinery)"
+    },
+    "988": {
+      "wave": "D",
+      "phase": "S21",
+      "check": "Publish works for a feature with a long generated slug: the speckit: label is cut to 50 characters with a hash, and a 422 would name the rejected field"
+    },
+    "993": {
+      "wave": "D",
+      "phase": "S21",
+      "check": "Exported issue titles keep the full task text (no cut at '('), bodies carry the task text, Tasks to export lets you pick a subset, and the toast links the created issues"
+    },
+    "994": {
+      "wave": "D",
+      "phase": "S9",
+      "check": "Start analysis sends spec.md's acceptance criteria and NFRs whole; the analysis page says only spec.md's requirements were sent, names any left out, and lists plan.md/tasks.md/constitution.md as not sent"
+    },
+    "995": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The full-scope BRD drops fewer topics than run 5's 41, short sections pass unused room on, and provenance lists any dropped topics"
+    },
+    "999": {
+      "wave": "B",
+      "phase": "8",
+      "check": "The Requirements hub opens on a completed run that has requirements, offers a run picker with counts, and Request review follows the chosen run"
+    },
+    "1000": {
+      "wave": "B",
+      "phase": "7",
+      "check": "Clarification answers record who wrote them (suggestion accepted, edited or typed), answered questions leave the open list, and requirements with criteria get a 'check the acceptance criteria' flag"
+    },
+    "1001": {
+      "wave": "B",
+      "phase": "7",
+      "check": "A code investigation cut short by its budget says so, and Continue reruns the code agent with a doubled budget"
+    },
+    "989": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "Request review keeps already-approved requirements approved, and withdrawing the review restores their previous status"
+    },
+    "990": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "The requirement Edit dialog edits acceptance criteria, versioned like the body; a cleared list stays cleared on reopen, and the draft uses the edited criteria"
+    },
+    "991": {
+      "wave": "F",
+      "phase": "J1.7",
+      "check": "Documentation can be scoped to an analysis run's requirements (approved only by default), and the BRD covers those requirements"
+    },
+    "1006": {
+      "wave": "F",
+      "phase": "J1.1",
+      "check": "The GitHub import filters by a title prefix such as '[Feature]:' and strips it, and an analysis can start from selected imported items, which the run links back to"
+    },
+    "992": {
+      "wave": "E",
+      "phase": "16",
+      "check": "Impacted symbols link to their file and line on the project's GitHub repo at the pinned commit"
+    },
+    "1003": {
+      "wave": "E",
+      "phase": "16",
+      "check": "#4478's impact proposes no column that already exists (no entries.published_at); record whether users.mark_as_read_older_than_days is still proposed (#791)"
     }
   },
   "prs": {}
