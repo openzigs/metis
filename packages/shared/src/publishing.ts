@@ -308,6 +308,12 @@ export const dryRunActionSchema = z.object({
   parentIssueNumber: z.number().int().optional(),
   existingIssueNumber: z.number().int().optional(),
   reason: z.string().optional(),
+  /**
+   * #744 — set on an issue action whose draft the approval gate
+   * (`requireApprovedReview`) would block: a live run of this batch is refused
+   * with 409 `APPROVAL_REQUIRED`.
+   */
+  blockedByApprovalGate: z.boolean().optional(),
 });
 export type DryRunAction = z.infer<typeof dryRunActionSchema>;
 
@@ -328,6 +334,18 @@ export type DryRunAction = z.infer<typeof dryRunActionSchema>;
 export const CREDENTIAL_CHECK_RESULTS = ["resolved", "missing", "unresolved"] as const;
 export type CredentialCheckResult = (typeof CREDENTIAL_CHECK_RESULTS)[number];
 
+/**
+ * #744 — the approval gate's verdict for a dry run:
+ *
+ *   - `off`         — the project does not require an approved review.
+ *   - `passed`      — the gate is on and every draft is approved and current.
+ *   - `blocked`     — the gate is on and a live run would be refused (409).
+ *   - `unavailable` — the gate could not be checked; the live run fails
+ *                     closed (503), so this is a refusal too.
+ */
+export const APPROVAL_GATE_CHECK_RESULTS = ["off", "passed", "blocked", "unavailable"] as const;
+export type ApprovalGateCheckResult = (typeof APPROVAL_GATE_CHECK_RESULTS)[number];
+
 export const dryRunPlanSchema = z.object({
   batchId: idSchema,
   targetOwner: z.string(),
@@ -345,6 +363,19 @@ export const dryRunPlanSchema = z.object({
    * SCREAMING_SNAKE code only — never vault contents or upstream text.
    */
   credentialErrorCode: z.string().max(64).nullable().default(null),
+  /**
+   * #744 — the approval gate's verdict on this batch, so a preview predicts
+   * the live run's 409 `APPROVAL_REQUIRED` instead of listing creates that
+   * will never happen. Null on plans persisted before #744.
+   */
+  approvalGate: z
+    .object({
+      check: z.enum(APPROVAL_GATE_CHECK_RESULTS),
+      /** Drafts the gate would block (unapproved or untraceable). */
+      blockedDraftIds: z.array(idSchema),
+    })
+    .nullable()
+    .default(null),
 });
 export type DryRunPlan = z.infer<typeof dryRunPlanSchema>;
 

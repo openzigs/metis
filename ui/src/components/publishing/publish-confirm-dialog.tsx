@@ -28,6 +28,7 @@ import type { DryRunPlan } from "@metis/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
+  approvalGateWarning,
   credentialWarning,
   estimatedDurationLabel,
   summarizeDryRunPlan,
@@ -63,6 +64,7 @@ export function PublishConfirmDialog({
   const repo = `${target.owner}/${target.repo}`;
   const summary = plan ? summarizeDryRunPlan(plan) : [];
   const credential = plan ? credentialWarning(plan) : null;
+  const gate = plan ? approvalGateWarning(plan) : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -126,6 +128,15 @@ export function PublishConfirmDialog({
             data-testid="publish-confirm-credential"
           >
             {credential}
+          </p>
+        )}
+
+        {gate && (
+          <p
+            className="mt-2 rounded bg-warning-muted p-2 text-xs text-warning"
+            data-testid="publish-confirm-approval-gate"
+          >
+            {gate}
           </p>
         )}
 

@@ -33,6 +33,7 @@ import { prisma } from "../prisma.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import { createChildLogger } from "../logger.js";
 import { computeDedupHash } from "./dedup.js";
+import { publishableLabels } from "./label-sync.js";
 import { buildEpicTitle } from "./epic-title.js";
 import { canCreateTickets } from "../analysis/approval-checkpoint.js";
 import {
@@ -155,6 +156,47 @@ function findLiveRequirements(analysisId: string) {
 }
 
 /**
+ * #744 — whether a reviewer rejected this requirement. Same precedence as
+ * `resolveRequirementReviewStatus`: the typed column, else the legacy
+ * `review:*` label for rows written before the column existed.
+ */
+function isRejectedRequirement(r: { reviewStatus: string | null; labels: string }): boolean {
+  const legacy = parseLabels(r.labels).find((l) => l.startsWith("review:"));
+  return (r.reviewStatus ?? legacy?.slice("review:".length)) === "rejected";
+}
+
+/** Draft statuses that a publish run would still pick up (never published). */
+const UNPUBLISHED_DRAFT_STATUSES = ["draft", "approved", "failed"];
+
+/**
+ * #744 — a rejected requirement must not stay publishable through a draft
+ * generated before it was rejected. Generation no longer refreshes such a
+ * draft, so it is withdrawn (soft-deleted) instead; a published or in-flight
+ * draft is left alone — what already reached the tracker is not undone here.
+ */
+async function withdrawRejectedDrafts(
+  projectId: string,
+  rejectedRequirementIds: string[],
+): Promise<string[]> {
+  if (rejectedRequirementIds.length === 0) return [];
+  const where = {
+    projectId,
+    requirementId: { in: rejectedRequirementIds },
+    status: { in: UNPUBLISHED_DRAFT_STATUSES },
+    deletedAt: null,
+  };
+  // Ids are returned (and logged by the caller) so a withdrawn draft carrying
+  // a reviewer edit can be recovered if the requirement is reopened.
+  const rows = await prisma.issueDraft.findMany({ where, select: { id: true } });
+  if (rows.length === 0) return [];
+  await prisma.issueDraft.updateMany({
+    where: { ...where, id: { in: rows.map((r) => r.id) } },
+    data: { deletedAt: new Date() },
+  });
+  return rows.map((r) => r.id);
+}
+
+/**
  * Issue #723 — the analysis's requirements, promoting them first when the gate
  * is open but nothing was promoted. The review PUT promotes as each approval
  * resolves (including a reopened-and-re-reviewed one), but a run stranded
@@ -259,7 +301,10 @@ export async function listDraftCandidates(
   if (!analysis) {
     throw new PublishError(404, "ANALYSIS_NOT_FOUND", `analysis not found: ${analysisId}`);
   }
-  const requirements = await findLiveRequirements(analysisId);
+  // #744 — a rejected requirement is never a draft candidate.
+  const requirements = (await findLiveRequirements(analysisId)).filter(
+    (r) => !isRejectedRequirement(r),
+  );
   const source = isImportAnalysis(analysis.metadata) ? "import" : "analysis";
   return {
     analysisId,
@@ -299,11 +344,32 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   if (!analysis) {
     throw new PublishError(404, "ANALYSIS_NOT_FOUND", `analysis not found: ${opts.analysisId}`);
   }
-  const requirements = selectRequirements(
-    await loadOrPromoteRequirements(opts.analysisId, analysis.status),
-    analysis,
-    opts.requirementIds,
-  );
+  // #744 — rejected requirements produce no draft, and any draft generated
+  // for one before it was rejected is withdrawn rather than left publishable.
+  const live = await loadOrPromoteRequirements(opts.analysisId, analysis.status);
+  const rejectedIds = live.filter(isRejectedRequirement).map((r) => r.id);
+  const rejected = new Set(rejectedIds);
+  const reviewed = live.filter((r) => !rejected.has(r.id));
+  if (reviewed.length === 0) {
+    throw new PublishError(
+      400,
+      "NO_REQUIREMENTS",
+      `analysis has no requirements to draft — all ${rejectedIds.length} were rejected; reopen the ones to keep on the Requirements page`,
+      false,
+      { analysisId: opts.analysisId, rejectedCount: rejectedIds.length },
+    );
+  }
+  const requirements = selectRequirements(reviewed, analysis, opts.requirementIds);
+  // Withdraw only after selection validated: a 400 above must leave rows untouched.
+  const withdrawnIds = await withdrawRejectedDrafts(opts.projectId, rejectedIds);
+  if (withdrawnIds.length > 0) {
+    log.info("withdrew drafts of rejected requirements", {
+      projectId: opts.projectId,
+      analysisId: opts.analysisId,
+      withdrawn: withdrawnIds.length,
+      withdrawnDraftIds: withdrawnIds,
+    });
+  }
 
   const summary: GeneratedDraftSummary = {
     total: 0,
@@ -361,7 +427,9 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       draftType,
       "metis-generated",
       `priority:${req.priority}`,
-      ...parseLabels(req.labels),
+      // #744 — never the hidden `finding:<id>` / `review:*` labels: they name
+      // internal rows and would become labels in the target repository.
+      ...publishableLabels(parseLabels(req.labels)),
       ...(opts.defaultLabels ?? []),
     ]);
     const body = renderFeatureBody({

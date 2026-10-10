@@ -6,10 +6,10 @@
  * the network. Returned to the UI for review and stored on the
  * `PublishBatch.dryRunPlan` column for replay.
  */
-import { type DryRunAction, type DryRunPlan, type GhLabel } from "./internal-shared.js";
-import type { CredentialCheckResult } from "@metis/shared";
+import { type DryRunAction, type DryRunPlan } from "./internal-shared.js";
+import type { ApprovalGateCheckResult, CredentialCheckResult } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
-import { combineLabels, DEFAULT_PUBLISH_LABELS } from "./label-sync.js";
+import { labelsToSync, publishableLabels } from "./label-sync.js";
 import { computeBodyHash, computeDedupHash, injectMarker } from "./dedup.js";
 
 export interface DryRunInput {
@@ -37,27 +37,32 @@ export interface DryRunInput {
    * bare error code are recorded, never the token.
    */
   credential?: { check: CredentialCheckResult; errorCode: string | null };
+  /**
+   * #744 — the approval gate's verdict on these drafts, resolved by the
+   * caller (`previewDraftsGate`) so the builder stays pure. Omitted → the
+   * plan carries no verdict (`approvalGate: null`).
+   */
+  approvalGate?: { check: ApprovalGateCheckResult; blockedDraftIds: string[] };
 }
 
 export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
   const actions: DryRunAction[] = [];
-  // 1. label upserts — one per distinct label name.
-  const labels = combineLabels(DEFAULT_PUBLISH_LABELS, input.additionalLabels) as GhLabel[];
-  const seen = new Set<string>();
-  const draftLabels = new Set<string>();
-  for (const d of input.drafts) for (const l of d.labels) draftLabels.add(l);
-  for (const l of [
-    ...labels,
-    ...Array.from(draftLabels).map((n) => ({ name: n, color: "ededed" }) as GhLabel),
-  ]) {
-    const key = l.name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+  // 1. label upserts — one per label some draft carries, plus the batch's
+  // requested labels (#744: never a hidden `finding:<id>` label, never an
+  // unused base label). Mirrors the live run's `syncLabels` call.
+  const drafts = input.drafts.map((d) => ({ ...d, labels: publishableLabels(d.labels) }));
+  for (const l of labelsToSync(
+    drafts.map((d) => d.labels),
+    input.additionalLabels,
+  )) {
     actions.push({ kind: "label.upsert", labels: [l.name] });
   }
+  const blocked = new Set(input.approvalGate?.blockedDraftIds ?? []);
+  const gateMark = (draftId: string) =>
+    blocked.has(draftId) ? { blockedByApprovalGate: true } : {};
   // 2. epics first then features, mirroring the runtime ordering.
-  const epics = input.drafts.filter((d) => d.draftType === "epic");
-  const features = input.drafts.filter((d) => d.draftType !== "epic");
+  const epics = drafts.filter((d) => d.draftType === "epic");
+  const features = drafts.filter((d) => d.draftType !== "epic");
   const ordered = [...epics, ...features];
   const epicNumbers = new Map<string, number>();
   let nextSyntheticNumber = 1000;
@@ -84,6 +89,7 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
           title: d.title,
           body: stampedBody,
           labels: d.labels,
+          ...gateMark(d.id),
         });
       }
       if (d.draftType === "epic") epicNumbers.set(d.id, existing.issueNumber);
@@ -96,6 +102,7 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
       body: stampedBody,
       labels: d.labels,
       parentDraftId: d.parentDraftId ?? undefined,
+      ...gateMark(d.id),
     });
     const synthetic = nextSyntheticNumber++;
     if (d.draftType === "epic") epicNumbers.set(d.id, synthetic);
@@ -121,7 +128,36 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
     credentialResolved: credential.check === "resolved",
     credentialCheck: credential.check,
     credentialErrorCode: credential.errorCode,
+    approvalGate: input.approvalGate
+      ? {
+          check: input.approvalGate.check,
+          blockedDraftIds: [...input.approvalGate.blockedDraftIds],
+        }
+      : null,
   };
+}
+
+/**
+ * The warning a completed dry run records on its batch row, or `null` when a
+ * live run of the same batch would get as far as GitHub. #1093 covers the
+ * credential; #744 adds the approval gate, which refuses the live run (409)
+ * when it blocks and fails closed (503) when it cannot be checked.
+ */
+export function dryRunWarning(plan: DryRunPlan): string | null {
+  const reasons: string[] = [];
+  if (!plan.credentialResolved) {
+    reasons.push(`the GitHub credential did not resolve (${plan.credentialCheck})`);
+  }
+  const gate = plan.approvalGate;
+  if (gate?.check === "blocked") {
+    reasons.push(
+      `the approval gate would block ${gate.blockedDraftIds.length} draft(s) (APPROVAL_REQUIRED)`,
+    );
+  } else if (gate?.check === "unavailable") {
+    reasons.push("the approval gate could not be checked (APPROVAL_GATE_UNAVAILABLE)");
+  }
+  if (reasons.length === 0) return null;
+  return `dry run completed, but ${reasons.join(" and ")} — a live publish would be rejected`;
 }
 
 // Prisma re-export for downstream callers without dragging a hard dep.

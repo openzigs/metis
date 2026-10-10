@@ -41,6 +41,7 @@ function makePlan(over: Partial<DryRunPlan> = {}): DryRunPlan {
     credentialResolved: true,
     credentialCheck: "resolved",
     credentialErrorCode: null,
+    approvalGate: null,
     ...over,
   };
 }
@@ -134,6 +135,28 @@ describe("PublishConfirmDialog", () => {
       />,
     );
     expect(screen.getByTestId("publish-confirm-credential")).toHaveTextContent(/did not resolve/i);
+  });
+
+  it("#744 — warns when the approval gate would refuse the publish", () => {
+    render(
+      <PublishConfirmDialog
+        {...baseProps}
+        plan={makePlan({ approvalGate: { check: "blocked", blockedDraftIds: ["draft_1"] } })}
+      />,
+    );
+    expect(screen.getByTestId("publish-confirm-approval-gate")).toHaveTextContent(
+      /APPROVAL_REQUIRED/,
+    );
+  });
+
+  it("#744 — no gate warning when the gate passes", () => {
+    render(
+      <PublishConfirmDialog
+        {...baseProps}
+        plan={makePlan({ approvalGate: { check: "passed", blockedDraftIds: [] } })}
+      />,
+    );
+    expect(screen.queryByTestId("publish-confirm-approval-gate")).toBeNull();
   });
 
   it("shows the estimated duration alongside the counts", () => {

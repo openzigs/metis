@@ -275,6 +275,80 @@ describe("reconcileIssueChange", () => {
     expect(result.handled).toBe(false);
     expect(result.reason).toBe("NO_DIFF");
   });
+
+  it("#744 — a pre-#744 draft's hidden finding label (never published) is not drift", async () => {
+    vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue({
+      id: "pub-1",
+      batchId: "batch-1",
+      draftId: "draft-1",
+      issueNumber: 42,
+      issueId: "node-id-abc",
+      htmlUrl: "",
+      status: "created",
+      destination: "github",
+      parentIssueNumber: null,
+      dedupHash: null,
+      bodyHash: null,
+      errorMessage: null,
+      publishedAt: new Date(),
+      batch: { id: "batch-1", projectId: "proj-1", project: { id: "proj-1" } },
+      draft: {
+        id: "draft-1",
+        title: "New Title",
+        body: "Updated body",
+        labels: JSON.stringify(["bug", "finding:cmv1tix0d0vyu7d9kr8tbqrgq"]),
+        requirementId: null,
+      },
+    } as never);
+    const event = makeEvent({
+      current: {
+        title: "New Title",
+        body: "Updated body",
+        state: "open",
+        labels: ["bug"],
+        assignees: [],
+      },
+    });
+    const result = await reconcileIssueChange(event);
+    expect(result.reason).toBe("NO_DIFF");
+  });
+
+  it("#744 — an issue published before #744 still carries finding:<id> on GitHub; that is not drift", async () => {
+    vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue({
+      id: "pub-1",
+      batchId: "batch-1",
+      draftId: "draft-1",
+      issueNumber: 42,
+      issueId: "node-id-abc",
+      htmlUrl: "",
+      status: "created",
+      destination: "github",
+      parentIssueNumber: null,
+      dedupHash: null,
+      bodyHash: null,
+      errorMessage: null,
+      publishedAt: new Date(),
+      batch: { id: "batch-1", projectId: "proj-1", project: { id: "proj-1" } },
+      draft: {
+        id: "draft-1",
+        title: "New Title",
+        body: "Updated body",
+        labels: JSON.stringify(["bug", "finding:cmv1tix0d0vyu7d9kr8tbqrgq"]),
+        requirementId: null,
+      },
+    } as never);
+    const event = makeEvent({
+      current: {
+        title: "New Title",
+        body: "Updated body",
+        state: "open",
+        labels: ["bug", "finding:cmv1tix0d0vyu7d9kr8tbqrgq"],
+        assignees: [],
+      },
+    });
+    const result = await reconcileIssueChange(event);
+    expect(result.reason).toBe("NO_DIFF");
+  });
 });
 
 describe("getDriftEventProjectId (#102)", () => {

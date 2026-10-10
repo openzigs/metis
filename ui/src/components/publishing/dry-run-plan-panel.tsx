@@ -77,6 +77,29 @@ export function credentialWarning(plan: DryRunPlan): string | null {
   }
 }
 
+/**
+ * #744 — the approval-gate warning to show, or `null` when the gate is off or
+ * passes. A plan persisted before #744 carries no verdict and shows none.
+ */
+export function approvalGateWarning(plan: DryRunPlan): string | null {
+  const gate = plan.approvalGate;
+  if (!gate) return null;
+  switch (gate.check) {
+    case "blocked": {
+      const n = gate.blockedDraftIds.length;
+      return `Approval required: ${n} draft${n === 1 ? "" : "s"} in this batch ${
+        n === 1 ? "has" : "have"
+      } no approved, up-to-date review. A live publish will be refused (APPROVAL_REQUIRED) until ${
+        n === 1 ? "it is" : "they are"
+      } approved.`;
+    }
+    case "unavailable":
+      return "The approval gate could not be checked, so a live publish would be refused. Retry later.";
+    default:
+      return null;
+  }
+}
+
 function actionDetail(action: DryRunAction): string {
   switch (action.kind) {
     case "label.upsert":
@@ -103,6 +126,7 @@ export interface DryRunPlanPanelProps {
 export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
   const summary = summarizeDryRunPlan(plan);
   const warning = credentialWarning(plan);
+  const gateWarning = approvalGateWarning(plan);
   const shown = plan.actions.slice(0, maxRows);
   const hidden = plan.actions.length - shown.length;
 
@@ -126,6 +150,16 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
         </p>
       )}
 
+      {gateWarning && (
+        <p
+          className="mt-2 rounded bg-warning-muted p-2 text-xs text-warning"
+          role="status"
+          data-testid="dry-run-approval-gate"
+        >
+          {gateWarning}
+        </p>
+      )}
+
       <ul className="mt-2 flex flex-wrap gap-2">
         {summary.map((s) => (
           <li key={s.kind} className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">
@@ -140,6 +174,11 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
             <span className="w-6 shrink-0 text-right text-muted-foreground">{i + 1}</span>
             <span className="w-40 shrink-0 font-mono text-foreground">{action.kind}</span>
             <span className="truncate text-muted-foreground">{actionDetail(action)}</span>
+            {action.blockedByApprovalGate && (
+              <span className="shrink-0 rounded bg-warning-muted px-1 text-warning">
+                needs approval
+              </span>
+            )}
           </li>
         ))}
       </ol>

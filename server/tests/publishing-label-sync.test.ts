@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   combineLabels,
   DEFAULT_PUBLISH_LABELS,
+  labelsToSync,
+  publishableLabels,
   syncLabels,
 } from "../src/lib/publishing/label-sync.js";
 import type {
@@ -94,5 +96,46 @@ describe("combineLabels", () => {
     expect(names).toContain("custom-tag");
     expect(names.filter((n) => n.toLowerCase() === "custom-tag").length).toBe(1);
     expect(names.filter((n) => n.toLowerCase() === "feature").length).toBe(1);
+  });
+});
+
+describe("publishableLabels (#744)", () => {
+  it("drops hidden finding:/review: labels, blanks and case-insensitive duplicates", () => {
+    expect(
+      publishableLabels([
+        "feature",
+        "finding:cmv1tix0d0vyu7d9kr8tbqrgq",
+        "review:rejected",
+        "  ",
+        " Auth ",
+        "auth",
+      ]),
+    ).toEqual(["feature", "Auth"]);
+  });
+});
+
+describe("labelsToSync (#744)", () => {
+  it("upserts only labels a draft carries, keeping base colours, plus requested extras", () => {
+    const out = labelsToSync(
+      [
+        ["feature", "metis-generated", "priority:high", "finding:abc"],
+        ["Feature", "feeds"],
+      ],
+      ["release-1", "finding:xyz"],
+    );
+    expect(out.map((l) => l.name)).toEqual([
+      "feature",
+      "metis-generated",
+      "priority:high",
+      "feeds",
+      "release-1",
+    ]);
+    const base = new Map(DEFAULT_PUBLISH_LABELS.map((l) => [l.name, l]));
+    expect(out[0]).toEqual(base.get("feature"));
+    expect(out.find((l) => l.name === "feeds")?.color).toBe("ededed");
+  });
+
+  it("upserts nothing for a batch with no labels at all", () => {
+    expect(labelsToSync([[], []], [])).toEqual([]);
   });
 });

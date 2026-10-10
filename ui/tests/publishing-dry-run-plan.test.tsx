@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { DryRunPlan } from "@metis/shared";
 import {
+  approvalGateWarning,
   credentialWarning,
   DryRunPlanPanel,
   estimatedDurationLabel,
@@ -35,6 +36,7 @@ function makePlan(over: Partial<DryRunPlan> = {}): DryRunPlan {
     credentialResolved: true,
     credentialCheck: "resolved",
     credentialErrorCode: null,
+    approvalGate: null,
     ...over,
   };
 }
@@ -113,7 +115,65 @@ describe("credentialWarning (#1093)", () => {
   });
 });
 
+describe("approvalGateWarning (#744)", () => {
+  it("is silent when the plan has no verdict, or the gate is off or passed", () => {
+    expect(approvalGateWarning(makePlan())).toBeNull();
+    expect(
+      approvalGateWarning(makePlan({ approvalGate: { check: "off", blockedDraftIds: [] } })),
+    ).toBeNull();
+    expect(
+      approvalGateWarning(makePlan({ approvalGate: { check: "passed", blockedDraftIds: [] } })),
+    ).toBeNull();
+    const legacy = { ...makePlan() } as Partial<DryRunPlan>;
+    delete legacy.approvalGate;
+    expect(approvalGateWarning(legacy as DryRunPlan)).toBeNull();
+  });
+
+  it("says a live publish will be refused, with the blocked-draft count", () => {
+    expect(
+      approvalGateWarning(
+        makePlan({ approvalGate: { check: "blocked", blockedDraftIds: ["draft_000000001"] } }),
+      ),
+    ).toBe(
+      "Approval required: 1 draft in this batch has no approved, up-to-date review. A live publish will be refused (APPROVAL_REQUIRED) until it is approved.",
+    );
+    expect(
+      approvalGateWarning(
+        makePlan({ approvalGate: { check: "blocked", blockedDraftIds: ["a", "b"] } }),
+      ),
+    ).toMatch(/^Approval required: 2 drafts in this batch have .* until they are approved\.$/);
+  });
+
+  it("treats an unverifiable gate as a refusal too", () => {
+    expect(
+      approvalGateWarning(
+        makePlan({ approvalGate: { check: "unavailable", blockedDraftIds: [] } }),
+      ),
+    ).toMatch(/could not be checked/);
+  });
+});
+
 describe("DryRunPlanPanel", () => {
+  it("#744 — warns about the gate and tags each blocked action", () => {
+    const plan = makePlan({
+      approvalGate: { check: "blocked", blockedDraftIds: ["draft_000000002"] },
+    });
+    plan.actions[2] = { ...plan.actions[2], blockedByApprovalGate: true };
+    render(<DryRunPlanPanel plan={plan} />);
+    expect(screen.getByTestId("dry-run-approval-gate").textContent).toMatch(/APPROVAL_REQUIRED/);
+    expect(screen.getAllByText("needs approval")).toHaveLength(1);
+  });
+
+  it("#744 — shows no gate warning or tags when the gate passes", () => {
+    render(
+      <DryRunPlanPanel
+        plan={makePlan({ approvalGate: { check: "passed", blockedDraftIds: [] } })}
+      />,
+    );
+    expect(screen.queryByTestId("dry-run-approval-gate")).toBeNull();
+    expect(screen.queryByText("needs approval")).toBeNull();
+  });
+
   it("renders the plan a dry run produced instead of leaving it invisible", () => {
     render(<DryRunPlanPanel plan={makePlan()} />);
     // The reported symptom: Recent batches showed "Published 0 / Failed 0 /

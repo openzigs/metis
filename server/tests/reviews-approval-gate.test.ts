@@ -118,6 +118,7 @@ const {
   assertRequirementsExportable,
   assertDocumentExportable,
   collectDraftRequirementIds,
+  previewDraftsGate,
 } = await import("../src/lib/reviews/approval-gate.js");
 
 function seedProject(id: string, flag: boolean | null): void {
@@ -586,5 +587,59 @@ describe("assertDocumentExportable", () => {
     await expect(
       assertDocumentExportable({ projectId: "p1", documentId: "doc1", context: "doc.export" }),
     ).rejects.toMatchObject({ statusCode: 503, code: "APPROVAL_GATE_UNAVAILABLE" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// previewDraftsGate (#744) — the dry-run's prediction of the live gate
+// ---------------------------------------------------------------------------
+
+describe("previewDraftsGate (#744)", () => {
+  it("reports `off` when the flag is explicitly false", async () => {
+    seedProject("p1", false);
+    await expect(previewDraftsGate("p1", [draft("d1", null)])).resolves.toEqual({
+      check: "off",
+      blockedDraftIds: [],
+    });
+  });
+
+  it("names exactly the drafts the live gate would block, without auditing", async () => {
+    seedProject("p1", true);
+    seedRequirement("r_ok", "p1", 2);
+    seedRequirement("r_stale", "p1", 3);
+    seedApprovedItem("r_ok", 2);
+    seedApprovedItem("r_stale", 1); // approved an older version
+    const result = await previewDraftsGate("p1", [
+      draft("d_ok", "r_ok"),
+      draft("d_stale", "r_stale"),
+      draft("d_unlinked", null),
+      draft("d_epic", null, { requirementIds: ["r_ok", "r_stale"] }),
+    ]);
+    expect(result.check).toBe("blocked");
+    expect(result.blockedDraftIds).toEqual(["d_stale", "d_unlinked", "d_epic"]);
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it("reports `passed` when every draft is approved and current", async () => {
+    seedProject("p1", true);
+    seedRequirement("r1", "p1", 0);
+    seedApprovedItem("r1", 0);
+    await expect(previewDraftsGate("p1", [draft("d1", "r1")])).resolves.toEqual({
+      check: "passed",
+      blockedDraftIds: [],
+    });
+  });
+
+  it("fails closed to `unavailable` when the check itself errors", async () => {
+    seedProject("p1", true);
+    seedRequirement("r1", "p1", 0);
+    reviewLookupThrows = true;
+    await expect(previewDraftsGate("p1", [draft("d1", "r1")])).resolves.toEqual({
+      check: "unavailable",
+      blockedDraftIds: [],
+    });
+    reviewLookupThrows = false;
+    // A missing project is not "gate off" either.
+    await expect(previewDraftsGate("nope", [])).resolves.toMatchObject({ check: "unavailable" });
   });
 });
