@@ -66,7 +66,12 @@ export interface GroundingToolCall {
  * successful call with hits read this project's knowledge base. Its cross-project sibling `search-knowledge-global` is deliberately
  * absent (and is not offered to a scoped chat — `CHAT_EXCLUDED_TOOLS`).
  */
-const PROJECT_READ_METIS_TOOLS: ReadonlySet<string> = new Set(["search-knowledge"]);
+const PROJECT_READ_METIS_TOOLS: ReadonlySet<string> = new Set([
+  "search-knowledge",
+  // #1030 — read the session project's requirements (refused when unscoped).
+  "list_requirements",
+  "get_requirement",
+]);
 
 function readsProject(c: GroundingToolCall): boolean {
   if (c.source === "code") return true;

@@ -107,6 +107,18 @@ describe("countProjectToolReads (#439)", () => {
       expect(countProjectToolReads([call])).toBe(0);
     });
   });
+
+  describe("#1030 — the project-scoped requirement tools", () => {
+    it.each(["list_requirements", "get_requirement"])(
+      "counts a %s call that returned requirements",
+      (tool) => {
+        const call = { tool, source: "metis" as const, executed: true, resultCount: 2 };
+        expect(countProjectToolReads([call])).toBe(1);
+        expect(countProjectToolReads([{ ...call, resultCount: 0 }])).toBe(0);
+        expect(countProjectToolReads([{ ...call, source: "mcp" as const }])).toBe(0);
+      },
+    );
+  });
 });
 
 describe("withToolReads (#439)", () => {

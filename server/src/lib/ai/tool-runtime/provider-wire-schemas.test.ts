@@ -31,6 +31,10 @@ import { createInspectSchemaTool } from "../tools/inspect-schema.js";
 import { createQueryDatabaseTool } from "../tools/query-database.js";
 import { buildSearchKnowledgeTool } from "../../rag/search-knowledge-tool.js";
 import { buildSearchKnowledgeGlobalTool } from "../../rag/search-knowledge-global-tool.js";
+import {
+  createGetRequirementTool,
+  createListRequirementsTool,
+} from "../../requirements/requirements-chat-tools.js";
 import { buildProvider } from "../providers/factory.js";
 import { resetLocalConcurrencyLimitersForTests } from "../providers/openai-compatible-provider.js";
 import type { AIConfig } from "../config.js";
@@ -156,6 +160,8 @@ function bootRegistry(): ToolRegistry {
     createQueryDatabaseTool(),
     buildSearchKnowledgeGlobalTool(),
     buildSearchKnowledgeTool(),
+    createListRequirementsTool(),
+    createGetRequirementTool(),
     mcpFallback,
   ]) {
     registry.register(t as unknown as ToolDefinition);

@@ -122,6 +122,44 @@
       "query"
     ]
   },
+  "list_requirements": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "approved",
+          "rejected",
+          "deferred"
+        ],
+        "description": "Only requirements in this review status"
+      },
+      "label": {
+        "type": "string",
+        "description": "Only requirements carrying this label"
+      },
+      "query": {
+        "type": "string",
+        "description": "Words to look for in the title or body; a requirement matching any word is kept"
+      },
+      "limit": {
+        "type": "integer"
+      }
+    }
+  },
+  "get_requirement": {
+    "type": "object",
+    "properties": {
+      "requirementId": {
+        "type": "string",
+        "description": "Id from list_requirements"
+      }
+    },
+    "required": [
+      "requirementId"
+    ]
+  },
   "mcp.example.echo": {
     "type": "object"
   }
