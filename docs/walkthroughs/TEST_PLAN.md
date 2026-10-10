@@ -2,7 +2,7 @@
 
 This is the test plan for the end-to-end walkthrough tracked in
 [#706](https://github.com/openzigs/metis/issues/706): phases 1–20, Spec Kit S1–S24, pass bars, the
-Business Analyst questions, the developer issues and the persona journeys. It moved here from #706's body in #948 so that
+Business Analyst questions, the developer issues, the persona journeys and the optional wave G build proof. It moved here from #706's body in #948 so that
 changes to it are reviewed, show up in PRs and are checked by CI. **Results still go on #706**, as
 one comment per run built from [`RESULTS_TEMPLATE.md`](RESULTS_TEMPLATE.md).
 
@@ -760,6 +760,58 @@ citations; J2.5's titles are J2.4's tasks.
 
 - Admin onboarding a team: workspace, members, budgets, model preferences.
 - Reviewer: receives a review request, comments with @mentions, approves.
+
+## Wave G — implement the plan (optional)
+
+Waves D and F show that METIS writes a Spec Kit `tasks.md`; nothing there shows the tasks can be
+implemented or that the result compiles. Wave G hands one feature request's `tasks.md` to an
+implementing agent, which builds it on a branch of the sandbox fork and proves whether it builds
+and its tests pass. That turns "the plan looks right" into "the plan produced working code", and
+scores the diff against the reference change set. It runs from `briefs/wave-g.md` in the skill,
+dispatched to an implementing agent, not `ui-vision`: no browser and no METIS calls.
+
+- **When:** after wave D, or after journey J2 if wave F ran. Skip it on a targeted run that did
+  not touch Spec Kit.
+- **Input:** one feature request's `tasks.md` and `plan.md`, exported from METIS (the feature
+  tree's artifact viewer on the Spec Kit page). Default request: **#4478**, wave D's feature, whose
+  tasks S7 already wrote. If wave F ran, J2.4's tasks for **#4336** are the alternative. #4511 has
+  the most trustworthy change set (the two upstream candidate PRs), but no wave writes tasks for
+  it.
+- **Steps:**
+  1. Clone `openzigs/flux-v2` and check out `c4d54f87` (= `v2.3.3`; the fork has the commit but
+     **not the `v2.3.3` tag**, so branch from the SHA). Miniflux `v2.3.3` declares `go 1.26.0`.
+  2. Create the branch `walkthrough/run-<N>-<issue>`, for example `walkthrough/run-7-4478`.
+  3. Implement the tasks in order, **one commit per task**.
+  4. Run `go build ./...`, `go vet ./...` and `go test ./...`. The API integration tests
+     (`internal/api/api_integration_test.go`) skip unless the `TEST_MINIFLUX_*` variables are
+     set, so no running Miniflux or database is needed.
+  5. Score the diff (`git diff c4d54f87..HEAD`) against the request's reference change set, by
+     the "Scoring a change plan" rules above. Test files are excluded there, so the new tests
+     are counted on their own row.
+  6. Push the branch to `openzigs/flux-v2`, and nothing else (the skill, section 4).
+- **Human-correction rule:** the agent implements each task **as written**. Where a task is
+  wrong, missing or ambiguous, the agent still finishes the change but records the task as
+  **needed correction**, with a one-line reason (for example "task adds a `users` column; the
+  storage method already exists"). A task the agent had to add counts as one.
+- **Budget:** stop at about **$3** of the agent's LLM spend or **45 minutes**, whichever comes
+  first, and score what exists. A stop before the build is "builds: not reached", not a fail of
+  METIS. Target: $1 to $3 and 30 to 45 minutes.
+
+### Score
+
+| Measure | Value |
+|---|---|
+| Builds | yes / no (`go build ./...`) |
+| Tests pass | yes / no, with failing package names (`go test ./...`) |
+| New tests written | count |
+| Tasks needing correction | N of M, each with its reason |
+| Diff vs reference change set | file and function precision and recall, by "Scoring a change plan" |
+| Agent cost | the implementing agent's own tokens and dollars, reported **separately** from METIS spend |
+| Wall time | minutes |
+
+The agent's spend is not in METIS's `token_usages` ledger. Report it from the agent's own usage
+and keep it out of the run's METIS totals. The score goes into `run.json` as `buildProof` (the
+skill, section 7), and the report deck shows it on a "Build proof" slide.
 
 ## Evidence to capture (per phase)
 

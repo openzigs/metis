@@ -33,8 +33,11 @@ export const FIX_STATUSES = /** @type {const} */ ([
   "not-exercised",
 ]);
 
-/** Waves a fix can be verified in: the six browser waves plus the BA re-ask over the API. */
-export const FIX_WAVES = /** @type {const} */ (["A", "B", "C", "D", "E", "F", "BA"]);
+/**
+ * Waves a fix can be verified in: the six browser waves, the optional wave G that implements a
+ * Spec Kit plan on the sandbox fork (#1043), and the BA re-ask over the API.
+ */
+export const FIX_WAVES = /** @type {const} */ (["A", "B", "C", "D", "E", "F", "G", "BA"]);
 
 /** The label every walkthrough finding carries. */
 export const WALKTHROUGH_LABEL = "e2e-walkthrough";

@@ -27,6 +27,7 @@ export const BRIEF_WAVES = /** @type {Record<string, string>} */ ({
   "wave-d.md": "D",
   "wave-e.md": "E",
   "wave-f.md": "F",
+  "wave-g.md": "G",
   "ba-reask.md": "BA",
 });
 
@@ -206,7 +207,9 @@ export function runFillBrief(argv, io) {
     const known = new Set(Object.values(BRIEF_WAVES));
     const bad = waves.filter((w) => !known.has(w));
     if (bad.length > 0) {
-      io.error(`--wave: unknown wave ${bad.join(", ")}; expected ${[...known].join(", ")}\n${USAGE}`);
+      io.error(
+        `--wave: unknown wave ${bad.join(", ")}; expected ${[...known].join(", ")}\n${USAGE}`,
+      );
       return 2;
     }
   }

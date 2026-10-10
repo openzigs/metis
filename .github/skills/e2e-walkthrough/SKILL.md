@@ -97,7 +97,7 @@ to 20M with 1.53M already used.
 
 ## 3. Waves
 
-Each wave is one `ui-vision` dispatch, **in sequence** — the waves share one browser.
+Waves A–F are one `ui-vision` dispatch each, **in sequence** — they share one browser.
 Fill the wave's brief with `fill-brief.mjs` (section 3a), putting the state the previous wave
 returned into the state file's `placeholders`. Record each wave's returned IDs before
 dispatching the next.
@@ -110,6 +110,7 @@ dispatching the next.
 | D | Spec Kit S1–S24 | `briefs/wave-d.md` |
 | E | Phases 15–20 + developer-issue impact | `briefs/wave-e.md` |
 | F | Journeys 1 (analyst) and 2 (developer), **UI only**, no IDs handed over | `briefs/wave-f.md` |
+| G | *Optional.* Implement one request's Spec Kit `tasks.md` on a branch of `openzigs/flux-v2` and prove it builds (`TEST_PLAN.md`, "Wave G") | `briefs/wave-g.md` |
 | BA | The 8 BA questions over `POST /api/ai/chat`, one project-scoped session each | `briefs/ba-reask.md` |
 
 The BA re-ask needs no browser. Create a session with `POST /api/ai/sessions`
@@ -117,6 +118,12 @@ The BA re-ask needs no browser. Create a session with `POST /api/ai/sessions`
 `POST /api/ai/chat` `{"sessionId":"…","message":"…"}`. Run it over the API even when Phase 10
 runs in the UI: in run 3 the auto-mode classifier blocked selecting the `/chat` project-scope
 radio, so the UI path may be unavailable without an allow rule.
+
+Wave G is **optional**: run it after wave D, or after journey J2 if wave F ran, and skip it on a
+targeted run that did not touch Spec Kit. Dispatch it to an **implementing agent**, not
+`ui-vision`; it needs no browser and makes no METIS calls. Its state carries `FEATURE_ISSUE`
+(default `4478`), `TASKS_PATH` and `PLAN_PATH` (the `tasks.md` and `plan.md` exported from
+METIS), and `SCRATCH_DIR`; fill it with `--wave G`.
 
 Wave F's personas know names, not IDs: its state carries `WORKSPACE_NAME`, `PROJECT_NAME` and
 `J1_PROJECT_NAME` (the fresh project journey 1 creates), never a project or run ID. Its sandbox
@@ -193,6 +200,13 @@ Phase 9, and create the Phase 13 scheduler job **after** Phase 9's documents fin
   server yet" reason. Spend no sandbox slot on it. If Publish is enabled, #953 has landed:
   publish within the 2-issue cap, to `openzigs/flux-v2` only. **Finding-publish has no dry
   run**: it publishes at once and counts against the cap. Impact analyses have no draft path.
+- **Wave G** (optional) writes **only** to `openzigs/flux-v2`, and **only** as a push of its
+  branch `walkthrough/run-<N>-<issue>`. **No pull requests**, no issues and no comments on any
+  repository, and **nothing at all on `miniflux/v2`**. Before pushing, `git remote get-url origin`
+  must be `openzigs/flux-v2`. No secrets in the code or commit messages; no `.env` committed.
+  **Budget:** about **$3** of the agent's spend or **45 minutes**, whichever comes first; a stop
+  is scored as it stands ("builds: not reached"), not as a fail of METIS. The check below covers
+  wave G too.
 - Afterwards, both must return `[]`:
   ```bash
   gh search issues --repo miniflux/v2 --author <user> --json url
@@ -256,6 +270,11 @@ cancel and resume on a **new** document.
 against the answer key and rubric in `TEST_PLAN.md` Phase 9 (coverage, accuracy,
 hallucinations, A/B/C/F per section) and returns a fixed `Doc quality —` line per document.
 Copy the numbers into `run.json` as `docQuality` (section 7).
+
+**Wave G's cost is not METIS spend (#1043).** The implementing agent's tokens and dollars are
+not in `token_usages`: report them from the agent's own usage, **separately**, and never add them
+to the run's METIS totals or the `ledger` / `waves` figures. They go in `run.json`
+`buildProof.agentCostUsd` (section 7), which the deck labels as the agent's own.
 
 **Approved requirements.** Report how many promoted requirements have no acceptance criteria and
 no code link (#909, #926; the query is in wave B's brief).
@@ -366,7 +385,11 @@ before:
                            "migrationCorrect": true }],
   "docQuality": { "brd": { "coverage": { "hit": 11, "total": 15 },
                            "accuracy": { "correct": 10, "stated": 11 }, "hallucinations": 2,
-                           "sectionGrades": { "A": 3, "B": 4, "C": 1, "F": 0 } } }
+                           "sectionGrades": { "A": 3, "B": 4, "C": 1, "F": 0 } } },
+  "buildProof": { "issue": 4478, "branch": "walkthrough/run-7-4478", "commit": "0123abcd",
+                  "builds": true, "testsPass": false, "tasksTotal": 8, "tasksCorrected": 2,
+                  "files": { "tp": 2, "fp": 1, "fn": 1 }, "functions": { "tp": 2, "fp": 0, "fn": 0 },
+                  "agentCostUsd": 2.15, "wallMinutes": 38 }
 }
 ```
 
@@ -376,7 +399,7 @@ before:
   `token_usages`. `tokens` is `SUM("inputTokens" + "outputTokens")` and **excludes
   cache-read tokens**, which is how step `tokens` are counted, so the unattributed remainder
   compares like with like. `costUsd` is `SUM(COALESCE("costUsd", "costCents" / 100.0))`.
-- `waves`: optional per-wave totals over each wave's window, keyed `A`–`F` and `BA`;
+- `waves`: optional per-wave totals over each wave's window, keyed `A`–`G` and `BA`;
   `since` / `until` are optional here and record the window.
 - `metisSha` / `previousRunSha`: the METIS commit this run tested and the one the previous run
   did. The next run's `fixes-since` starts from `metisSha`.
@@ -395,6 +418,14 @@ before:
   `sectionGrades` (`A`/`B`/`C`/`F` counts), as non-negative integers. `hit ≤ total`,
   `correct ≤ stated`, and `stated` must equal `hit` (accuracy is judged over present facts).
   The report summary then shows a doc-quality table, one row per scored document.
+- `buildProof` (#1043): wave G's score, when it ran. `branch` is `walkthrough/run-<N>-<issue>`
+  and must name `issue`; `commit` is the branch head. `builds` and `testsPass` are `true`,
+  `false` or `null` (not reached); tests cannot pass on a build that did not, and a build not
+  reached leaves tests not reached. `tasksCorrected ≤ tasksTotal`. `files` and `functions` hold
+  counts against the reference change set, and must agree on `tp + fn` with any
+  `changePlanAccuracy` row for the same issue. `agentCostUsd` is the implementing agent's own
+  spend (section 5), never METIS's. The report deck adds a "Build proof" slide after the
+  change-plan accuracy slide.
 
 Every key is optional. Unknown fields are rejected, and an invalid file fails the build,
 naming the field, before anything is written. With `ledger`, the summary shows the ledger
@@ -435,7 +466,7 @@ screenshot path check out.
 | Field | Required | Meaning |
 |---|---|---|
 | `id` | yes | Unique step id, e.g. `a-2-1` |
-| `wave` | yes | `A`–`F` |
+| `wave` | yes | `A`–`G` |
 | `phase` | yes | `"2"`, `"S4"`, `"J1.4"`; ordered naturally within a wave |
 | `chapter` | yes | Feature area, e.g. "Connect a repository"; becomes a tutorial chapter |
 | `title` | yes | Step title; also the screenshot's `alt` text |
