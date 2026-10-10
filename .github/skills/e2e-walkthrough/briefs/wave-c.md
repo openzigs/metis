@@ -49,6 +49,15 @@ out" note.
   lists the sections it reused (#857). Record the spend of both attempts.
 - The database document's model calls appear in the ledger under `docs-gen` (#858, PR #869).
 
+**Phase 9 — score the BRD and the architecture document (#1041).** Size is not quality. Fetch
+the export of the full-scope BRD and of the architecture document (scope `repository`) into
+`{{SCRATCH_DIR}}/wave-c/`, then score each against the Phase 9 answer key and rubric in the
+test plan ("Phase 9 — doc-quality answer key and rubric"). Read the whole document, not a
+keyword search: a fact is present when it is stated in substance. Check every concrete claim
+outside the key against the Miniflux source at `v2.3.3` before you count it as a
+hallucination, and grade every top-level section A, B, C or F. Return the fixed block under
+Return, item 2.
+
 **Phase 10 — a follow-up keeps its citations (#773, PR #923).** In one project-scoped session,
 ask BA question 1, then follow up with `Show me the exact lines for the first citation`.
 - Expected: the follow-up keeps the earlier verified `file:line` and does not say it "had not
@@ -138,13 +147,24 @@ as plain text.
 1. **State hand-off**: document IDs, chat session IDs, the URLs of any sandbox issues
    created, the docs-gen caps table (per document: cost, ceiling hit, body and longest-section
    characters), and the ledger snapshot timestamp at the end of the wave.
-2. **Per-phase table**:
+2. **Doc quality** — exactly these two lines, in this format, then under each the ids of the
+   key facts it missed, the ids it stated wrongly, and each hallucination with the sentence it
+   came from:
+
+   ```
+   Doc quality — BRD: coverage 11/15 · accuracy 10/11 · hallucinations 2 · sections A3 B4 C1 F0
+   Doc quality — Architecture: coverage 9/15 · accuracy 9/9 · hallucinations 0 · sections A2 B3 C0 F0
+   ```
+
+   (The numbers are a format sample.) Accuracy's denominator is coverage's numerator. The
+   operator copies these into `run.json` as `docQuality` (`e2e-walkthrough` skill, section 5).
+3. **Per-phase table**:
 
    | Phase | Wall time | Input tok | Output tok | Cache-read tok | Cost | Console errors | Works | Useful |
    |---|---|---|---|---|---|---|---|---|
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
-3. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
-4. **Findings** — one line each: severity, phase, symptom, evidence path. Do not file issues.
-5. **`Durable finding:` lines** — anything a future run must know. Prefix each with exactly
+4. **Fix verification** — for each fix under "Fixes to verify this wave": fix | PR | confirmed / partial / regressed / not-exercised | step id.
+5. **Findings** — one line each: severity, phase, symptom, evidence path. Do not file issues.
+6. **`Durable finding:` lines** — anything a future run must know. Prefix each with exactly
    `Durable finding:`.

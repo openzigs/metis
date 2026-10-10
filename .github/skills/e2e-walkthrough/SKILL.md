@@ -252,6 +252,11 @@ Test **Cancel generation** once on purpose (wave C). Run 3's BRD was 2.19 MB and
 **Regenerate** works only on a failed, cancelled, or degraded-with-no-version document, so test
 cancel and resume on a **new** document.
 
+**Doc quality, not only size (#1041).** Wave C scores the BRD and the architecture document
+against the answer key and rubric in `TEST_PLAN.md` Phase 9 (coverage, accuracy,
+hallucinations, A/B/C/F per section) and returns a fixed `Doc quality —` line per document.
+Copy the numbers into `run.json` as `docQuality` (section 7).
+
 **Approved requirements.** Report how many promoted requirements have no acceptance criteria and
 no code link (#909, #926; the query is in wave B's brief).
 
@@ -354,7 +359,10 @@ before:
   "previousRunSha": "7cc6310df6999f3f627016d41a0f46f4ec4e9011",
   "fixes": [{ "pr": 950, "issues": [939], "wave": "F", "phase": "J1.4",
               "check": "Approving the checkpoint approves the requirements",
-              "status": "confirmed", "evidence": "f-j1-4-1" }]
+              "status": "confirmed", "evidence": "f-j1-4-1" }],
+  "docQuality": { "brd": { "coverage": { "hit": 11, "total": 15 },
+                           "accuracy": { "correct": 10, "stated": 11 }, "hallucinations": 2,
+                           "sectionGrades": { "A": 3, "B": 4, "C": 1, "F": 0 } } }
 }
 ```
 
@@ -371,6 +379,11 @@ before:
 - `fixes`: every entry of `fixes.json`'s `fixes[]` with a `status` of `confirmed`, `partial`,
   `regressed` or `not-exercised`, and `evidence`, the step id that shows it (required for all
   but `not-exercised`; it must exist in `steps.jsonl`). Keep `carried` when an entry has it.
+- `docQuality`: wave C's doc-quality scores, keyed `brd` and/or `architecture`, each with all
+  four of `coverage` (`hit`/`total`), `accuracy` (`correct`/`stated`), `hallucinations` and
+  `sectionGrades` (`A`/`B`/`C`/`F` counts), as non-negative integers. `hit ≤ total`,
+  `correct ≤ stated`, and `stated` must equal `hit` (accuracy is judged over present facts).
+  The report summary then shows a doc-quality table, one row per scored document.
 
 Every key is optional. Unknown fields are rejected, and an invalid file fails the build,
 naming the field, before anything is written. With `ledger`, the summary shows the ledger
