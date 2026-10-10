@@ -47,7 +47,7 @@
 import { GITHUB_API_VERSION, type CredentialCheckResult, type DryRunPlan } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
-import { assertDraftsPublishable } from "../reviews/approval-gate.js";
+import { assertDraftsPublishable, previewDraftsGate } from "../reviews/approval-gate.js";
 import { createChildLogger } from "../logger.js";
 import { getVaultService } from "../vault/vault-service.js";
 import { readBoundSecret, resolveVaultRef } from "../connectors/vault-resolver.js";
@@ -67,8 +67,8 @@ import {
   parseMarker,
   stripMarker,
 } from "./dedup.js";
-import { combineLabels, DEFAULT_PUBLISH_LABELS, syncLabels } from "./label-sync.js";
-import { buildDryRunPlan } from "./dry-run.js";
+import { labelsToSync, publishableLabels, syncLabels } from "./label-sync.js";
+import { buildDryRunPlan, dryRunWarning } from "./dry-run.js";
 import { notifyPublishRolledBack } from "../teams/notification-hooks.js";
 import { pagerDutyPublishRollback } from "../pagerduty/alerting-hooks.js";
 import {
@@ -157,6 +157,7 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     drafts.map((d) => d.id),
   );
   const credential = await preflightCredential(input.secretRef);
+  const approvalGate = await previewDraftsGate(input.projectId, drafts);
   return buildDryRunPlan({
     batchId: PREVIEW_PLAN_BATCH_ID,
     targetOwner: input.targetOwner,
@@ -175,6 +176,7 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     existingByHash,
     perCallMs: rateLimit.delayMs,
     credential,
+    approvalGate,
   });
 }
 
@@ -267,6 +269,10 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     // DNS, no host allow-list and no GitHub endpoint. The token is resolved
     // and immediately discarded — only the verdict reaches the plan.
     const credential = await preflightCredential(input.secretRef, input.boundSecretId);
+    // #744 — predict the approval gate the live run enforces above, so the
+    // plan does not list creates a live run would refuse with 409. DB-only:
+    // M1 still holds.
+    const approvalGate = await previewDraftsGate(batch.projectId, drafts);
     const plan = buildDryRunPlan({
       batchId: batch.id,
       targetOwner: dryTarget.owner,
@@ -285,6 +291,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       existingByHash,
       perCallMs: rateLimit.delayMs,
       credential,
+      approvalGate,
     });
     await prisma.publishBatch.update({
       where: { id: batch.id },
@@ -293,12 +300,10 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
         dryRunPlan: JSON.stringify(plan),
         completedAt: new Date(),
         totalDrafts: drafts.length,
-        // #1093 — a preview whose credential would not resolve still yields a
+        // #1093 / #744 — a preview the live run would refuse still yields a
         // useful plan, but it must not read as an unqualified success in the
         // batch list.
-        errorMessage: plan.credentialResolved
-          ? null
-          : `dry run completed, but the GitHub credential did not resolve (${plan.credentialCheck}) — a live publish would be rejected`,
+        errorMessage: dryRunWarning(plan),
       },
     });
     audit({
@@ -312,6 +317,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
         actions: plan.totalActions,
         dryRun: true,
         credentialCheck: plan.credentialCheck,
+        approvalGateCheck: approvalGate.check,
       },
     });
     emitter().completed({
@@ -352,7 +358,12 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     phase: "sync-labels",
     step: "starting",
   });
-  const labels = combineLabels(DEFAULT_PUBLISH_LABELS, extractAdditionalLabels(batch.metadata));
+  // #744 — only labels some draft carries (plus the batch's requested ones);
+  // the dry-run plan lists exactly these.
+  const labels = labelsToSync(
+    drafts.map((d) => parseLabels(d.labels)),
+    extractAdditionalLabels(batch.metadata),
+  );
   await syncLabels(client, { owner: target.owner, repo: target.repo }, labels);
 
   emitter().progress({
@@ -466,7 +477,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           data: {
             title: draft.title,
             body: stampedBody,
-            labels: parseLabels(draft.labels),
+            labels: publishableLabels(parseLabels(draft.labels)),
           },
         });
         const identity = readIssueIdentity(updated.data);
@@ -490,7 +501,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           data: {
             title: draft.title,
             body: stampedBody,
-            labels: parseLabels(draft.labels),
+            labels: publishableLabels(parseLabels(draft.labels)),
             assignees: parseLabels(draft.assignees),
           },
         });

@@ -9,6 +9,7 @@
  * Labels are deduplicated by name (case-insensitive) before being sent.
  */
 import type { PublishOctokitLike, GhLabel } from "./types.js";
+import { isHiddenRequirementLabel } from "../analysis/requirement-labels.js";
 
 export const DEFAULT_PUBLISH_LABELS: GhLabel[] = [
   { name: "epic", color: "3E4B9E", description: "Top-level epic grouping" },
@@ -91,4 +92,45 @@ export function combineLabels(base: GhLabel[], extras: string[]): GhLabel[] {
     out.push({ name: trimmed, color: "ededed", description: "Custom label from METIS" });
   }
   return out;
+}
+
+/**
+ * #744 — the labels a draft may carry onto a published issue. A requirement's
+ * hidden `finding:<id>` traceability labels (and legacy `review:*` ones) name
+ * internal database rows; drafts generated before #744 copied them, so they
+ * are stripped here, at the boundary, rather than trusted to be absent.
+ */
+export function publishableLabels(labels: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of labels) {
+    const name = raw.trim();
+    const key = name.toLowerCase();
+    if (!name || isHiddenRequirementLabel(name) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+/**
+ * #744 — the labels a publish run upserts: those some draft in the batch
+ * actually carries (a base label keeps its colour and description), plus the
+ * labels the user explicitly asked for on the batch. A base label no draft
+ * uses is not created in the target repository.
+ */
+export function labelsToSync(
+  draftLabels: ReadonlyArray<readonly string[]>,
+  additionalLabels: readonly string[],
+): GhLabel[] {
+  const base = new Map(DEFAULT_PUBLISH_LABELS.map((l) => [l.name.toLowerCase(), l]));
+  const used = publishableLabels(draftLabels.flat()).map(
+    (name): GhLabel =>
+      base.get(name.toLowerCase()) ?? {
+        name,
+        color: "ededed",
+        description: "Custom label from METIS",
+      },
+  );
+  return combineLabels(used, publishableLabels(additionalLabels));
 }

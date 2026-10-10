@@ -196,6 +196,28 @@ describe("publishDraftToJira", () => {
     );
   });
 
+  it("#744 — never sends a hidden finding:<id> label to Jira", async () => {
+    seedConnection();
+    seedDraft("draft_f", {
+      labels: JSON.stringify(["enhancement", "finding:cmv1tix0d0vyu7d9kr8tbqrgq"]),
+    });
+    mockCreateIssue.mockResolvedValueOnce({
+      id: "10003",
+      key: "PROJ-3",
+      self: "https://test.atlassian.net/rest/api/3/issue/10003",
+    });
+    await publishDraftToJira({
+      draftId: "draft_f",
+      batchId: "batch_1",
+      connectionId: "conn_1",
+      projectKey: "PROJ",
+      actorId: "user_1",
+    });
+    expect(mockCreateIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ["enhancement"] }),
+    );
+  });
+
   it("returns failed status on Jira API error", async () => {
     seedConnection();
     seedDraft();

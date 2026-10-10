@@ -502,6 +502,40 @@ describe("runBatch — happy path", () => {
   });
 });
 
+describe("runBatch — labels (#744)", () => {
+  it("never sends a finding:<id> label, and upserts only labels some draft carries", async () => {
+    seedDraft({
+      id: "feat_1",
+      title: "[Feature] Feed refresh",
+      labels: JSON.stringify(["feature", "metis-generated", "finding:cmv1tix0d0vyu7d9kr8tbqrgq"]),
+    });
+    seedBatch({});
+    const calls: OctokitRequestArgs[] = [];
+    const base = makeFakeOctokit();
+    __setPublishOctokitFactory(async () =>
+      fakeOctokit({
+        request: async (args) => {
+          calls.push(args);
+          return base.request(args);
+        },
+      }),
+    );
+    await runBatch({
+      batchId: "batch_1",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+
+    const labelPuts = calls
+      .filter((c) => c.method === "PUT" && /\/labels\//.test(c.url ?? ""))
+      .map((c) => decodeURIComponent((c.url ?? "").split("/labels/")[1]));
+    expect(labelPuts).toEqual(["feature", "metis-generated"]);
+    const create = calls.find((c) => c.method === "POST" && /\/issues$/.test(c.url ?? ""));
+    expect((create?.data as { labels: string[] }).labels).toEqual(["feature", "metis-generated"]);
+  });
+});
+
 describe("#1091 — issue identifiers (recorded GitHub REST shape)", () => {
   /**
    * Run `fn` with the success-path `publishedIssue.upsert` throwing, then

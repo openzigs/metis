@@ -33,6 +33,7 @@
 import { AppError } from "../../middleware/error-handler.js";
 import { audit } from "../audit/audit-service.js";
 import { prisma } from "../prisma.js";
+import type { ApprovalGateCheckResult } from "@metis/shared";
 
 export const APPROVAL_REQUIRED = "APPROVAL_REQUIRED";
 export const APPROVAL_GATE_UNAVAILABLE = "APPROVAL_GATE_UNAVAILABLE";
@@ -223,14 +224,7 @@ export async function assertDraftsPublishable(
     if (!(await isGateEnforced(opts.projectId))) return;
 
     const drafts = typeof opts.drafts === "function" ? await opts.drafts() : opts.drafts;
-    const unlinkedDraftIds: string[] = [];
-    const requirementIds = new Set<string>();
-    for (const draft of drafts) {
-      const ids = collectDraftRequirementIds(draft);
-      if (ids.length === 0) unlinkedDraftIds.push(draft.id);
-      for (const id of ids) requirementIds.add(id);
-    }
-    const unapproved = await findUnapprovedRequirementIds(opts.projectId, [...requirementIds]);
+    const { unapproved, unlinkedDraftIds } = await evaluateDrafts(opts.projectId, drafts);
     if (unapproved.length > 0 || unlinkedDraftIds.length > 0) {
       throw blocked(opts.projectId, opts, {
         ...(unapproved.length > 0 ? { requirementIds: unapproved } : {}),
@@ -238,6 +232,63 @@ export async function assertDraftsPublishable(
       });
     }
   });
+}
+
+/**
+ * The gate's decision on a set of drafts (gate assumed on): the requirement
+ * ids without an approved current review, the drafts tracing to no
+ * requirement, and every draft that one of those two reasons blocks.
+ */
+async function evaluateDrafts(
+  projectId: string,
+  drafts: GateDraft[],
+): Promise<{ unapproved: string[]; unlinkedDraftIds: string[]; blockedDraftIds: string[] }> {
+  const unlinkedDraftIds: string[] = [];
+  const idsByDraft = new Map<string, string[]>();
+  const requirementIds = new Set<string>();
+  for (const draft of drafts) {
+    const ids = collectDraftRequirementIds(draft);
+    idsByDraft.set(draft.id, ids);
+    if (ids.length === 0) unlinkedDraftIds.push(draft.id);
+    for (const id of ids) requirementIds.add(id);
+  }
+  const unapproved = await findUnapprovedRequirementIds(projectId, [...requirementIds]);
+  const unapprovedSet = new Set(unapproved);
+  const blockedDraftIds = drafts
+    .filter((d) => {
+      const ids = idsByDraft.get(d.id) ?? [];
+      return ids.length === 0 || ids.some((id) => unapprovedSet.has(id));
+    })
+    .map((d) => d.id);
+  return { unapproved, unlinkedDraftIds, blockedDraftIds };
+}
+
+/** #744 — what {@link previewDraftsGate} predicts for a live publish. */
+export interface DraftsGatePreview {
+  check: ApprovalGateCheckResult;
+  blockedDraftIds: string[];
+}
+
+/**
+ * #744 — the gate's verdict for a dry run, WITHOUT throwing or auditing a
+ * block: a preview is how a user discovers what still needs review, so it
+ * reports what `assertDraftsPublishable` would decide for the same drafts.
+ *
+ * Mirrors the live gate's fail-closed rule: when the check itself fails (DB
+ * down, project missing) the verdict is `unavailable`, because the live run
+ * would be refused too — never `off` or `passed`.
+ */
+export async function previewDraftsGate(
+  projectId: string,
+  drafts: GateDraft[],
+): Promise<DraftsGatePreview> {
+  try {
+    if (!(await isGateEnforced(projectId))) return { check: "off", blockedDraftIds: [] };
+    const { blockedDraftIds } = await evaluateDrafts(projectId, drafts);
+    return { check: blockedDraftIds.length > 0 ? "blocked" : "passed", blockedDraftIds };
+  } catch {
+    return { check: "unavailable", blockedDraftIds: [] };
+  }
 }
 
 /**

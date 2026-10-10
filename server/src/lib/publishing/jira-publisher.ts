@@ -11,6 +11,7 @@ import { getVaultService } from "../vault/vault-service.js";
 import { createJiraClient, JiraApiError, type JiraClient } from "../connectors/jira/jira-client.js";
 import { assertConnectorHostAllowed } from "../connectors/network-allowlist.js";
 import type { JiraCreateIssueFields } from "../connectors/jira/types.js";
+import { publishableLabels } from "./label-sync.js";
 
 const log = createChildLogger("jira-publisher");
 
@@ -119,8 +120,8 @@ function mapDraftToJiraFields(
     ...mapping.additionalFields,
   };
 
-  // Map labels
-  const labels = safeParseLabelArray(draft.labels);
+  // Map labels — never a hidden `finding:<id>` traceability label (#744).
+  const labels = publishableLabels(safeParseLabelArray(draft.labels));
   if (labels.length > 0) {
     fields.labels = labels;
   }

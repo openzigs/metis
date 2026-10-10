@@ -22,6 +22,7 @@ import type {
   DriftResolutionAction,
 } from "@metis/shared";
 import { isUniqueViolation } from "../db/prisma-errors.js";
+import { isHiddenRequirementLabel } from "../analysis/requirement-labels.js";
 
 const log = createChildLogger("sync-reconcile");
 
@@ -76,7 +77,9 @@ export async function reconcileIssueChange(
     title: publishedIssue.draft.title ?? "",
     body: publishedIssue.draft.body ?? "",
     state: publishedIssue.status === "created" ? "open" : "open",
-    labels: safeJsonArray(publishedIssue.draft.labels),
+    // #744 — the publisher never sends hidden `finding:<id>` labels, so they
+    // must not read as drift on drafts generated before they were dropped.
+    labels: safeJsonArray(publishedIssue.draft.labels).filter((l) => !isHiddenRequirementLabel(l)),
     assignees: [],
   };
 
