@@ -35,7 +35,12 @@ No project, run or requirement IDs are given on purpose. Find everything through
    fall back to `fetch()`, SQL, or an ID from an earlier wave.
 4. **Journey 1 publishes** within the run's cap of 2: dry run first, sandbox only. If the cap is
    used up, dry-run only and say so. Journey 2's task export follows the same cap.
-5. Verify the fixes listed below as you pass the step each one names.
+5. **Score J2.1 (impact) and J2.4 (Spec Kit plan)** against #4336's reference change set in
+   the plan ("Reference change sets"), by its "Scoring a change plan" rules, exactly as wave E
+   scores its outputs: file and function `tp` / `fp` / `fn`, migration correct, false
+   positives by name, and the step's "must hold" verdict beside them. Scoring reads the
+   persona's own screen; it is not a non-UI action.
+6. Verify the fixes listed below as you pass the step each one names.
 
 ## Fixes to verify this wave
 
@@ -80,6 +85,12 @@ happened. A blocked step still gets a line and a screenshot of where the persona
 1. **Per journey**: completed in the UI (yes / no, and the step where it broke), data lost
    between steps (which handoff, what was lost), wall time and ledger cost against the budget.
 2. **Per step**: step | Works | Useful | handoff held? | evidence path.
+   Journey 2 adds its change-plan rows, one each for `j2-impact` (J2.1) and `j2-plan` (J2.4):
+
+   | Issue | Output | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must hold | False positives |
+   |---|---|---|---|---|---|---|
+
+   These go into `run.json` `changePlanAccuracy` (the skill, section 7).
 3. **Fix verification** — for each fix listed above: fix | PR | confirmed / partial / regressed /
    not-exercised | step id.
 4. **Findings** — one line each: severity, journey step, symptom, evidence path. Do not file

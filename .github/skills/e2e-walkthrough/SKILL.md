@@ -360,6 +360,10 @@ before:
   "fixes": [{ "pr": 950, "issues": [939], "wave": "F", "phase": "J1.4",
               "check": "Approving the checkpoint approves the requirements",
               "status": "confirmed", "evidence": "f-j1-4-1" }],
+  "changePlanAccuracy": [{ "issue": 4336, "output": "j2-impact", "source": "curated",
+                           "files": { "tp": 2, "fp": 1, "fn": 3 },
+                           "functions": { "tp": 3, "fp": 1, "fn": 8 },
+                           "migrationCorrect": true }],
   "docQuality": { "brd": { "coverage": { "hit": 11, "total": 15 },
                            "accuracy": { "correct": 10, "stated": 11 }, "hallucinations": 2,
                            "sectionGrades": { "A": 3, "B": 4, "C": 1, "F": 0 } } }
@@ -379,6 +383,13 @@ before:
 - `fixes`: every entry of `fixes.json`'s `fixes[]` with a `status` of `confirmed`, `partial`,
   `regressed` or `not-exercised`, and `evidence`, the step id that shows it (required for all
   but `not-exercised`; it must exist in `steps.jsonl`). Keep `carried` when an entry has it.
+- `changePlanAccuracy` (#1042): one row per developer issue and output from wave E's and
+  wave F's change-plan tables. `output` is `impact`, `chat`, `plan`, `j2-impact` or `j2-plan`;
+  `source` is `upstream`, `candidate` or `curated`, as the plan's change set states. `files` and
+  `functions` hold **counts** (`tp`, `fp`, `fn`), not ratios: the deck computes precision and
+  recall. One row per issue and output, and every row for an issue must agree on `source` and
+  on `tp + fn` (the change set's size). The report deck adds a "Change-plan accuracy" slide
+  before the new-issues slide.
 - `docQuality`: wave C's doc-quality scores, keyed `brd` and/or `architecture`, each with all
   four of `coverage` (`hit`/`total`), `accuracy` (`correct`/`stated`), `hallucinations` and
   `sectionGrades` (`A`/`B`/`C`/`F` counts), as non-negative integers. `hit ≤ total`,
