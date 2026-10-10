@@ -657,3 +657,183 @@ function groundProposals(
 
   return { proposals, rejections };
 }
+
+// ── #791: a column an existing writer already covers ─────────────────────────
+
+/** Words that carry no meaning in an identifier (`MarkAllAsRead`, `older_than_days`). */
+const IDENTIFIER_STOPWORDS: ReadonlySet<string> = new Set([
+  "a",
+  "all",
+  "an",
+  "and",
+  "as",
+  "at",
+  "by",
+  "for",
+  "in",
+  "n",
+  "of",
+  "on",
+  "or",
+  "than",
+  "the",
+  "to",
+  "x",
+]);
+
+/**
+ * A small, hand-written fold of words that name the same thing in a function
+ * name and in a requirement or column name: `MarkAllAsReadBeforeDate` against
+ * "older than X days" / `older_than_days`. Applied after the plural is stripped.
+ */
+const WORD_EQUIVALENTS: Readonly<Record<string, string>> = {
+  older: "before",
+  earlier: "before",
+  prior: "before",
+  day: "date",
+  time: "date",
+  timestamp: "date",
+};
+
+/** Lowercase content words of an identifier or text, camelCase split and folded. */
+function contentWords(text: string): Set<string> {
+  const words = text
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/);
+  const out = new Set<string>();
+  for (const raw of words) {
+    if (!raw || IDENTIFIER_STOPWORDS.has(raw)) continue;
+    out.add(foldWord(raw));
+  }
+  return out;
+}
+
+/** A lowercase word with its plural stripped, folded through {@link WORD_EQUIVALENTS}. */
+function foldWord(raw: string): string {
+  const singular =
+    raw.length > 3 && raw.endsWith("s") && !raw.endsWith("ss") ? raw.slice(0, -1) : raw;
+  return WORD_EQUIVALENTS[singular] ?? singular;
+}
+
+/** `internal/storage/entry.go::MarkAllAsRead` / `Storage.MarkAllAsRead` → `MarkAllAsRead`. */
+function functionName(qualifiedName: string): string {
+  const afterFile = qualifiedName.split("::").pop() ?? qualifiedName;
+  return afterFile.slice(afterFile.lastIndexOf(".") + 1);
+}
+
+/** Fewest content words for a name to say anything specific. */
+const MIN_CONTENT_WORDS = 2;
+
+function isSubset(small: ReadonlySet<string>, big: ReadonlySet<string>): boolean {
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
+}
+
+/**
+ * Words that ask for a value to be KEPT rather than used once: "remember the
+ * chosen days", "store the threshold", "a default per user", "a setting". An
+ * operation parameter ("mark as read older than X days") carries none of them.
+ */
+const PERSISTENCE_CUE =
+  /^(remember(s|ed|ing)?|stor(e|es|ed|ing)|sav(e|es|ed|ing)|persist(s|ed|ing)?|keep(s|ing)?|kept|defaults?|preferences?|settings?)$/;
+
+/** How many words either side of a persistence cue still count as "close to the value". */
+const PERSISTENCE_WINDOW = 4;
+
+/**
+ * True when the requirement asks to persist the value a column would hold: a
+ * {@link PERSISTENCE_CUE} within {@link PERSISTENCE_WINDOW} words of one of the
+ * column's content words ("remember the chosen **days**" for `mark_read_days`).
+ * A writer that takes the value as an argument stores nothing, so a column the
+ * requirement asks to persist is not a restatement of that writer.
+ */
+export function asksToPersistValue(requirementText: string, columnName: string): boolean {
+  const column = contentWords(columnName);
+  if (column.size === 0) return false;
+  const tokens = requirementText
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    if (!PERSISTENCE_CUE.test(tokens[i]!)) continue;
+    const from = Math.max(0, i - PERSISTENCE_WINDOW);
+    const to = Math.min(tokens.length - 1, i + PERSISTENCE_WINDOW);
+    for (let j = from; j <= to; j++) {
+      if (j !== i && column.has(foldWord(tokens[j]!))) return true;
+    }
+  }
+  return false;
+}
+
+/** Ceiling on the confidence of a proposal kept although an existing writer may cover it. */
+export const COVERED_PROPOSAL_CONFIDENCE = 0.3;
+
+/** A proposal the #791 check removed — carried on the result, not only in a log line. */
+export interface DroppedColumnProposal {
+  row: AffectedTableInput;
+  /** Qualified name of the existing writer that already performs the operation. */
+  writer: string;
+  reason: string;
+}
+
+/**
+ * #791 — drop the proposed columns that only restate an operation an existing
+ * writer already performs. "Mark all as read older than X days" drew
+ * `users.mark_read_older_than_days` on 1 of 3 runs while `MarkAllAsReadBeforeDate`
+ * exists; the prompt rule against it did not hold, so this is the structural check.
+ *
+ * A writer COVERS the requirement when every content word of its name appears in
+ * the requirement (`mark read before date` in "mark … read … older than X days").
+ * A proposal RESTATES that writer when every content word of the column name is
+ * one of the writer's (`mark read before date` ⊇ `mark_read_older_than_days`).
+ * Both sides need {@link MIN_CONTENT_WORDS}: a one-word column (`read_at`) or a
+ * one-word writer (`UpdateFeed`) never decides anything.
+ *
+ * A restating proposal is still KEPT when the requirement asks to persist its
+ * value ({@link asksToPersistValue}: "… and remember the chosen days per user"
+ * → `users.mark_read_days`) — the writer takes the value as an argument and
+ * stores nothing. That row is borderline, so it is kept at no more than
+ * {@link COVERED_PROPOSAL_CONFIDENCE} with a `relevanceRationale` saying why.
+ * Every dropped row comes back in `dropped` with its writer and reason, for the
+ * caller to put on the result. Pure — no I/O.
+ */
+export function dropProposalsRestatingWriters(
+  requirementText: string,
+  proposals: AffectedTableInput[],
+  writerQualifiedNames: readonly string[],
+): { kept: AffectedTableInput[]; dropped: DroppedColumnProposal[] } {
+  if (proposals.length === 0 || writerQualifiedNames.length === 0) {
+    return { kept: proposals, dropped: [] };
+  }
+  const required = contentWords(requirementText);
+  const covering = writerQualifiedNames
+    .map((qn) => ({ qn, words: contentWords(functionName(qn)) }))
+    .filter((w) => w.words.size >= MIN_CONTENT_WORDS && isSubset(w.words, required));
+
+  const kept: AffectedTableInput[] = [];
+  const dropped: DroppedColumnProposal[] = [];
+  for (const row of proposals) {
+    const column = contentWords(row.columnName ?? "");
+    const writer =
+      column.size >= MIN_CONTENT_WORDS
+        ? covering.find((w) => isSubset(column, w.words))
+        : undefined;
+    if (!writer) {
+      kept.push(row);
+    } else if (asksToPersistValue(requirementText, row.columnName ?? "")) {
+      kept.push({
+        ...row,
+        confidence: Math.min(row.confidence, COVERED_PROPOSAL_CONFIDENCE),
+        relevanceRationale: `An existing write path may cover this (${functionName(writer.qn)}); kept because the requirement asks to persist the value.`,
+      });
+    } else {
+      dropped.push({
+        row,
+        writer: writer.qn,
+        reason: `An existing write path already covers this (${functionName(writer.qn)}); the requirement does not ask to store the value.`,
+      });
+    }
+  }
+  return { kept, dropped };
+}

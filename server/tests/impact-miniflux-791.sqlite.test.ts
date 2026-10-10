@@ -320,6 +320,98 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(byName.get(`${GREADER}::markAllAsReadHandler`)?.relation).toBe("caller");
     });
 
+    it("#4478 older-than: proposes no new column, because MarkAllAsReadBeforeDate already does it", async () => {
+      // Run 6's proposal, returned on every run: the check must be structural, not a
+      // matter of how the model happened to answer.
+      const proposer = vi.fn(async () => [
+        {
+          objectKind: "column" as const,
+          tableName: "users",
+          columnName: "mark_read_older_than_days",
+          columnType: "INTEGER",
+          changeKind: "add-column" as const,
+          suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_older_than_days INTEGER;",
+          source: "sqlglot" as const,
+          reconciliation: null,
+          confidence: 0.5,
+        },
+      ]);
+      const seeds = [
+        {
+          codeSymbolId: ids.get("markAllAsRead")!,
+          filePath: UI_MARK,
+          qualifiedName: `${UI_MARK}::markAllAsRead`,
+          startLine: 13,
+          endLine: 30,
+          confidence: 1,
+        },
+      ];
+      for (let i = 0; i < 3; i++) {
+        const { symbols, tables } = await run(REQ_4478, {
+          mapRequirement: async () => seeds,
+          additiveColumnProposer: proposer,
+        });
+        expect(names(symbols)).toContain(`${ENTRY}::MarkAllAsReadBeforeDate`);
+        expect(tables.filter((t) => t.changeKind === "add-column")).toEqual([]);
+      }
+      expect(proposer).toHaveBeenCalledTimes(3);
+    });
+
+    it("#4478 + 'remember the chosen days per user': keeps users.mark_read_days, annotated", async () => {
+      const { tables } = await run(
+        `${REQ_4478} Remember the chosen days per user so the next run uses them.`,
+        {
+          mapRequirement: async () => [
+            {
+              codeSymbolId: ids.get("markAllAsRead")!,
+              filePath: UI_MARK,
+              qualifiedName: `${UI_MARK}::markAllAsRead`,
+              startLine: 13,
+              endLine: 30,
+              confidence: 1,
+            },
+          ],
+          additiveColumnProposer: async () => [
+            {
+              objectKind: "column" as const,
+              tableName: "users",
+              columnName: "mark_read_days",
+              columnType: "INTEGER",
+              changeKind: "add-column" as const,
+              suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_days INTEGER;",
+              source: "sqlglot" as const,
+              reconciliation: null,
+              confidence: 0.5,
+            },
+          ],
+        },
+      );
+      const added = tables.filter((t) => t.changeKind === "add-column");
+      expect(added.map((t) => `${t.tableName}.${t.columnName}`)).toEqual(["users.mark_read_days"]);
+      expect(added[0]!.relevanceRationale).toMatch(/MarkAllAsReadBeforeDate/);
+    });
+
+    it("#4511 last refresh: keeps the last_successful_refresh column proposal", async () => {
+      const { tables } = await run(REQ_4511, {
+        additiveColumnProposer: async () => [
+          {
+            objectKind: "column" as const,
+            tableName: "feeds",
+            columnName: "last_successful_refresh",
+            columnType: "TIMESTAMP",
+            changeKind: "add-column" as const,
+            suggestedDdl: "ALTER TABLE feeds ADD COLUMN last_successful_refresh TIMESTAMP;",
+            source: "sqlglot" as const,
+            reconciliation: null,
+            confidence: 0.5,
+          },
+        ],
+      });
+      expect(tables.filter((t) => t.changeKind === "add-column").map((t) => t.columnName)).toEqual([
+        "last_successful_refresh",
+      ]);
+    });
+
     it("#4511 last refresh: names the refresh writers of checked_at", async () => {
       const { symbols } = await run(REQ_4511);
       const all = names(symbols);
