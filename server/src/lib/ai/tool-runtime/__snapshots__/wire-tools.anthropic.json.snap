@@ -25,6 +25,22 @@
     }
   },
   {
+    "name": "get_requirement",
+    "description": "Read one of this project's METIS requirements in full: body, review status, labels, acceptance criteria, code links, data (table/column) mappings, and its requirement → spec → code trace with the tests that cover it. Take the id from list_requirements.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "requirementId": {
+          "type": "string",
+          "description": "Id from list_requirements"
+        }
+      },
+      "required": [
+        "requirementId"
+      ]
+    }
+  },
+  {
     "name": "inspect_schema",
     "description": "Inspect the schema (tables + columns) of a project database connector. Returns tables with their columns (name, type, nullable, primaryKey). Read-only; project-scoped; credentials resolved via vault.",
     "input_schema": {
@@ -41,6 +57,36 @@
       "required": [
         "connectorId"
       ]
+    }
+  },
+  {
+    "name": "list_requirements",
+    "description": "List this project's METIS requirements (the ones produced by analyses or imported), optionally filtered by review status (draft|approved|rejected|deferred), label, or words in the title/body. Use this — not the knowledge-base search — whenever the user asks about the project's requirements. Returns id, title, status, labels and how many code links and data (table/column) mappings each has; read one in full with get_requirement.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "approved",
+            "rejected",
+            "deferred"
+          ],
+          "description": "Only requirements in this review status"
+        },
+        "label": {
+          "type": "string",
+          "description": "Only requirements carrying this label"
+        },
+        "query": {
+          "type": "string",
+          "description": "Words to look for in the title or body; a requirement matching any word is kept"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      }
     }
   },
   {
