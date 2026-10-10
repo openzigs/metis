@@ -231,7 +231,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
   - The preview shows a count roughly equal to Miniflux's open *issues* (fewer than the 287 issues + PRs).
   - The run completes.
   - Jira shows a clean "not configured" state. **Skip its live path unless credentials exist**, and record "skipped: no credentials".
-- **Useful:** the imported items include #4511, #4336 and #4478 with their titles intact.
+- **Useful:** the imported items include #4511, #4336 and #4478 with their titles intact. The three bug reports added to the developer requests (#4479, #4386, #4456, #1044) are **closed** upstream, so a `state` `open` import must **not** include them (if it does, the state filter is broken: a finding). To have them as imported items too, add a second source with state `closed` (the import page's "State (open / closed / all)"; about 1,280 closed issues on 2026-10-10) and check that they arrive with their titles intact. Otherwise paste their text from a read-only `gh issue view <n> -R miniflux/v2`.
 
 ### Phase 7 — Analysis, deep dive and agents
 - **Steps:**
@@ -557,36 +557,66 @@ Over the chat API (the BA re-ask), `inspect_schema` and `query_database` are ref
 7. **Which third-party services can saved articles be sent to?** Expect: an enumeration matching `internal/integration/*` (31 entries at the tag) and `internal/model/integration.go`.
 8. **Draw the core data model.** Expect: an ER diagram with users → categories → feeds → entries → enclosures, plus icons and api_keys, that matches the DB connector's inspect output.
 
-### Developer: real open Miniflux issues
+### Developer: real Miniflux change requests
 
-These three issues were open on 2026-10-02. For each one:
+Six real requests a developer would paste into impact analysis. The first three (#4478, #4511,
+#4336) are feature requests, open on 2026-10-02 and all storage-heavy. The last three (#4479,
+#4386, #4456, added by #1044) are bug reports **closed upstream by a merged fix**, chosen to
+cover the Google Reader API, the web UI and the fetcher, and to be scored against what upstream
+actually changed. All six are asked against the pinned `v2.3.3`, which still has each bug. For
+each one:
 1. Ask chat "where would I implement this?".
 2. Run **impact analysis** (Phase 16).
-3. Run Spec Kit `speckit.specify` → `speckit.plan` (#4478 is done in the Spec Kit section; repeat it briefly for the other two).
+3. Run Spec Kit `speckit.specify` → `speckit.plan` (#4478 is done in the Spec Kit section; repeat it briefly for the other five).
 4. Draft an issue or PR into the **sandbox** (Phase 12), only if the run's cap of 2 is not used up.
+
+**Cost.** The three added requests mean about three more impact analyses and three more Spec Kit
+plans per run. Snapshot the ledger before and after each request's chat, impact and plan, and
+record the **per-request ledger delta** (tokens and cost) in wave E's return, so the added cost is
+measured rather than estimated.
 
 | Issue | What METIS must surface (Useful) |
 |---|---|
 | [#4478 "Mark all as read older than X"](https://github.com/miniflux/v2/issues/4478) | **That the storage method already exists:** `Storage.MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`), reached today only through the Google Reader API (`internal/googlereader/handler.go:1225`). So the plan is to expose it through the web UI and, optionally, the REST API (`internal/api/user_handlers.go`, where `markUserAsReadHandler` lives; earlier runs named `entry_handlers.go`, which has no mark-all handler). **No migration.** If METIS proposes new SQL or a new column, mark it **weak** (runs 3 and 4 still proposed a `users` column, #791). |
 | [#4511 "Last successful refresh in feed API"](https://github.com/miniflux/v2/issues/4511) | Needs a **new migration** appended in `internal/database/migrations.go`, a field on `model.Feed` (`internal/model/feed.go`), a write in `UpdateFeed` (`internal/storage/feed.go:331`, beside `checked_at` and `parsing_error_count` at :342-344) and **not** in the error path (`UpdateFeedError`, :431; both upstream candidate PRs leave it alone, so a *successful* refresh time does not move on a failure), plus the API JSON. Impact must name table `feeds`, the new column, and the API and Google Reader/Fever consumers. |
 | [#4336 "Add read_at timestamp to entries"](https://github.com/miniflux/v2/issues/4336) | A migration on `entries`, and **every status-change path**: `SetEntriesStatus` (`entry.go:412`), `SetEntriesStatusAndCountVisible` (`:431`), `MarkAllAsRead` (`:506`), `MarkAllAsReadBeforeDate` (`:523`), and the Fever and Google Reader handlers. Impact must list all of them; **missing two or more counts as weak**. |
+| [#4479 "Reader API `stream/items/ids` count is always 1000 on 2.3.3"](https://github.com/miniflux/v2/issues/4479) (Google Reader API) | **That the cap is `WithLimit`:** it clamps to `model.MaxEntryLimit`, 1000 (`internal/storage/entry_query_builder.go:204`; `internal/model/entry.go:20`), and the four Google Reader stream handlers pass `rm.Count` through it (`internal/googlereader/handler.go:1015`, `:1052`, `:1076`, `:1128`). The ID-list maximum `model.MaxEntryIDsLimit` (10000, `internal/model/entry.go:24`) and `WithLimitAndMaximum` (`entry_query_builder.go:210`) already exist. **No migration.** A plan that changes only `streamItemIDsHandler` (:952), or proposes any schema change, is **weak**. |
+| [#4386 "After 'Mark this page as read' the feed shows 0 entries"](https://github.com/miniflux/v2/issues/4386) (web UI) | **That the unread page already handles this:** `showUnreadPage` restarts at offset 0 when `offset >= countUnread` (`internal/ui/unread_entries.go:38`), and `showFeedEntriesPage` (`internal/ui/feed_entries.go:15`) and `showCategoryEntriesPage` (`internal/ui/category_entries.go:15`) do not. `markPageAsReadAction` (`internal/ui/static/js/app.js:577`) reloads the same `?offset=` URL. **No migration and no storage change**; a plan that edits `EntryQueryBuilder` or the status writers is **weak**. |
+| [#4456 "Request gets blocked when using private address proxy"](https://github.com/miniflux/v2/issues/4456) (fetcher) | **That only an explicit proxy is a trusted hop:** in `RequestBuilder.ExecuteRequest` (`internal/reader/fetcher/request_builder.go:152`) the exemption at :210-220 compares against `proxyDialAddress` (:178), built from the feed, application or rotator proxy only; a proxy from the environment (`http.ProxyFromEnvironment`, :202) is dialled through `directDialer`, whose `Control` (:186) rejects a private IP. A plan that turns the private-network check off (`FETCHER_ALLOW_PRIVATE_NETWORKS`, or dropping `Control`) is **weak**: it removes the SSRF guard instead of trusting the proxy. |
 
 The "must surface" column stays as the continuity verdict for runs 3 to 6. It cannot tell a plan
 that names the right four functions from one that names them among forty wrong ones, so each
 output is also **scored on precision and recall** against a reference change set (#1042).
 
-### Upstream state of the three requests (checked 2026-10-10)
+### Upstream state of the six requests (checked 2026-10-10)
 
 Read-only `gh` against `miniflux/v2`: `main` at `899fe04c`, and `v2.3.3` (2026-07-24) still the
-latest release. No feature PR has merged since `v2.3.3`, so none of these change sets is "what
-upstream actually did". Re-check before each run: if a candidate PR has merged, switch that
-request's change set to the merged diff and its source to `upstream`.
+latest release. No feature PR has merged since `v2.3.3` (the only `feat` title merged since is a
+Polish translation, #4527), so none of the three feature change sets is "what upstream actually
+did". Re-check before each run: if a candidate PR has merged, switch that request's change set to
+the merged diff and its source to `upstream`. A genuine feature request with a merged
+implementation after `v2.3.3`, including any of the first three, **replaces** a bug-fix entry
+when one appears; #4494 (passkey login loses `redirect_url`, fixed by
+[#4500](https://github.com/miniflux/v2/pull/4500), `106cdd09`, UI and JS) and
+[#4526](https://github.com/miniflux/v2/pull/4526) (enforce `DISABLE_LOCAL_AUTH` on the REST API
+and password changes, `76889f08`, no linked issue: the PR description is the request) are the
+alternates.
+
+**Gap: integrations.** None of the six touches `internal/integration/` (Wallabag and the other
+third-party services). No change merged there since `v2.3.3` closes an issue; add one when it
+appears. **Option: a second pin.** A genuine feature merged *before* `v2.3.3` (for example #4372,
+REST endpoints for unread and starred entry IDs) is already in the pinned code, so METIS would
+find it implemented. Scoring one needs a second Miniflux project pinned at that PR's parent
+commit, which is a second full ingest; it is out of scope for now.
 
 | Feature request | Upstream state | Change set source |
 |---|---|---|
 | [#4478](https://github.com/miniflux/v2/issues/4478) Mark all as read older than X | Issue open; no PR references or implements it | `curated` (from `v2.3.3`, no upstream) |
 | [#4511](https://github.com/miniflux/v2/issues/4511) Last successful refresh in feed API | Issue open; two open, unmerged PRs, [#4547](https://github.com/miniflux/v2/pull/4547) (head `d6c8e393`) and [#4552](https://github.com/miniflux/v2/pull/4552) (head `b257374f`) | `candidate` (what both PRs change) |
 | [#4336](https://github.com/miniflux/v2/issues/4336) Add `read_at` timestamp to entries | Issue open; no PR references or implements it | `curated` (from `v2.3.3`, no upstream) |
+| [#4479](https://github.com/miniflux/v2/issues/4479) Reader API `stream/items/ids` count is always 1000 | Closed 2026-08-09 by [#4497](https://github.com/miniflux/v2/pull/4497), merged as `2f9e07bd` | `upstream` |
+| [#4386](https://github.com/miniflux/v2/issues/4386) "Mark this page as read" leaves 0 entries | Closed 2026-10-03 by [#4519](https://github.com/miniflux/v2/pull/4519), merged as `c52bdef6` | `upstream` |
+| [#4456](https://github.com/miniflux/v2/issues/4456) Request blocked with a private-address proxy | Closed 2026-10-03 by [#4513](https://github.com/miniflux/v2/pull/4513), merged as `b683d3b4` | `upstream` |
 
 ### Reference change sets
 
@@ -636,6 +666,46 @@ by name.
 - **Must not:** reusing `changed_at` as the read time instead of a new column; a new table for read events.
 - **Test files (not scored):** `internal/storage/entry_test.go`, `internal/api/api_integration_test.go`.
 
+The next three sets are upstream truth: their files are the merged PR's non-test files
+(`gh pr view <n> -R miniflux/v2 --json files`), and their functions are the ones the merge diff
+changes, cited at `v2.3.3`.
+
+#### #4479: Reader API `stream/items/ids` count is always 1000
+
+- **Source:** `upstream PR #4497 (merged 2f9e07bd)`.
+- **Files (2):** `internal/googlereader/handler.go`; `internal/googlereader/README.md` (the `n` parameter, :420 and :440, now documents the 10000 cap and `continuation`).
+- **Functions (4):** in `internal/googlereader/handler.go`, each swaps `WithLimit(rm.Count)` for `WithLimitAndMaximum(rm.Count, model.MaxEntryIDsLimit)`:
+  - `googlereader.(*greaderHandler).handleReadingListStreamHandler` (:1005, call at :1015).
+  - `googlereader.(*greaderHandler).handleStarredStreamHandler` (:1049, call at :1052).
+  - `googlereader.(*greaderHandler).handleReadStreamHandler` (:1073, call at :1076).
+  - `googlereader.(*greaderHandler).handleFeedStreamHandler` (:1119, call at :1128).
+- **Migration:** no.
+- **Neutral:** `storage.(*EntryQueryBuilder).WithLimit` (`internal/storage/entry_query_builder.go:204`, the cause) and `WithLimitAndMaximum` (:210), both unchanged; `model.MaxEntryLimit` and `model.MaxEntryIDsLimit` (`internal/model/entry.go:20`, `:24`), unchanged; `googlereader.(*greaderHandler).streamItemIDsHandler` (:952, which dispatches to the four) and `getItemRefsAndContinuation` (:1097).
+- **Must not:** raising `model.MaxEntryLimit` (it is also the REST API's `limit` cap and the `entries_per_page` maximum; upstream used the separate ID-list maximum); any migration.
+- **Test files (not scored):** none in the PR.
+
+#### #4386: After "Mark this page as read" the feed shows 0 entries
+
+- **Source:** `upstream PR #4519 (merged c52bdef6)`.
+- **Files (2):** `internal/ui/feed_entries.go`, `internal/ui/category_entries.go`.
+- **Functions (2):** each wraps its unread query (lines 36-44 in both files) in a closure and re-runs it at offset 0 when `offset >= count && count > 0`:
+  - `ui.(*handler).showFeedEntriesPage` (`internal/ui/feed_entries.go:15`).
+  - `ui.(*handler).showCategoryEntriesPage` (`internal/ui/category_entries.go:15`).
+- **Migration:** no.
+- **Neutral:** `ui.(*handler).showUnreadPage` (`internal/ui/unread_entries.go:15`, the existing restart at :38, cited as the pattern); `ui.getPagination` (`internal/ui/pagination.go:23`); `markPageAsReadAction` (`internal/ui/static/js/app.js:577`) and the `markPageAsRead` buttons in `internal/template/templates/views/feed_entries.html` and `category_entries.html` (:22); `ui.(*handler).updateEntriesStatus` (`internal/ui/entry_update_status.go:16`).
+- **Must not:** any change to `internal/storage/` (the query builder or the status writers); any migration.
+- **Test files (not scored):** none in the PR.
+
+#### #4456: Request gets blocked when using a private-address proxy
+
+- **Source:** `upstream PR #4513 (merged b683d3b4)`.
+- **Files (1):** `internal/reader/fetcher/request_builder.go`. (`go.mod` is unchanged: the new `golang.org/x/net/http/httpproxy` import comes from `golang.org/x/net`, already required at `go.mod:18`.)
+- **Functions (1):** `fetcher.(*RequestBuilder).ExecuteRequest` (:152): resolves the environment proxy with `httpproxy.FromEnvironment().ProxyFunc()` in place of `http.ProxyFromEnvironment` (:202), records every proxy it routes through as trusted, and drops the `proxyDialAddress != ""` condition (:210) so the trusted-hop dialer is always installed.
+- **Migration:** no.
+- **Neutral:** a new helper holding the trusted proxy addresses (upstream's `trustedProxyAddresses`, with `add` and `contains`; any name, since it is new); `fetcher.normalizeDialAddress` (:295) and `fetcher.normalizeProxyDialAddress` (:304), unchanged; `urllib.IsNonPublicIP` (`internal/urllib/url.go:183`); `config.(*configOptions).FetcherAllowPrivateNetworks` (`internal/config/options.go:806`).
+- **Must not:** turning the private-network check off, by default or for every dial (`FETCHER_ALLOW_PRIVATE_NETWORKS`, or removing the `Control` callback at :186); exempting every private address rather than the proxy's.
+- **Test files (not scored):** `internal/reader/fetcher/request_builder_test.go`.
+
 ### Scoring a change plan
 
 Score each output on its own: wave E's impact analysis (**"directly affected" plus "probable
@@ -648,7 +718,7 @@ and wave F's J2.1 impact and J2.4 plan.
 - **Functions**, the same way at symbol level. A slot with alternatives (#4478's storage method)
   is one set item.
 - **Excluded from both sides:** test files (`*_test.go`, anything under a `tests` directory) and
-  generated files (a `Code generated … DO NOT EDIT.` header; none of the three sets has one).
+  generated files (a `Code generated … DO NOT EDIT.` header; none of the six sets has one).
   Naming one is neither `tp` nor `fp`.
 - **A symbol counts as named** when the output gives (a) its identifier together with its file,
   in the same bullet, sentence or table row; or (b) a `file:line` that falls inside its body at
@@ -796,7 +866,7 @@ citations; J2.5's titles are J2.4's tasks.
 - [ ] Spec Kit S1–S23 each have a verdict (S24 optional). Every artifact in `SPEC_KIT_ARTIFACT_NAMES` was produced, edited and viewed. Every `SPECKIT_COMMANDS` entry was invoked at least once.
 - [ ] `speckit.specify` and `speckit.plan` report **grounded on K > 0 retrieved chunks**.
 - [ ] 8/8 BA questions answered. Pass bar: **at least 6 correct with valid citations**.
-- [ ] 3/3 developer issues have an impact analysis, a plan, and a sandbox draft. For #4478, METIS surfaces `MarkAllAsReadBeforeDate`.
+- [ ] 6/6 developer requests (#4478, #4511, #4336, #4479, #4386, #4456) have an impact analysis, a plan, and a sandbox draft, with a per-request ledger delta. For #4478, METIS surfaces `MarkAllAsReadBeforeDate`.
 - [ ] Every developer-issue output (impact, chat, plan, J2.1, J2.4) has file and function precision and recall and a migration verdict against its reference change set, recorded in `run.json` `changePlanAccuracy`.
 - [ ] Journeys 1 and 2 each have a verdict on the three journey pass bars (completed in the UI, no data lost between steps, within budget), with the step where any of them broke.
 - [ ] Nothing was published, commented or reviewed on `miniflux/v2`; verify with `gh` and attach the output.

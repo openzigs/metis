@@ -101,7 +101,7 @@ Lineage edges (reads + writes): {{…}}.
 - [ ] `/specify` and `/plan` grounded with K > 0
 - [ ] 8/8 BA questions; at least 6 correct with valid citations
 - [ ] Journeys 1 and 2 each scored on completed, no data lost, and within budget
-- [ ] 3/3 developer issues with impact, plan and sandbox draft; #4478 surfaces `MarkAllAsReadBeforeDate`
+- [ ] 6/6 developer requests with impact, plan, sandbox draft and per-request ledger delta; #4478 surfaces `MarkAllAsReadBeforeDate`
 - [ ] Nothing published, commented or reviewed on `miniflux/v2` (`gh search issues/prs --repo miniflux/v2 --author <user>` → `[]`)
 - [ ] Per-phase token/cost table posted; total within budget
 - [ ] Every failure filed as its own issue
