@@ -253,4 +253,38 @@ describe("ImportService.runSource job-lifecycle emits (#424)", () => {
     );
     expect(jobs.completed).toHaveBeenCalled();
   });
+
+  it("does not walk every page twice to count a title-prefix import (#1006)", async () => {
+    importerRef.count.mockResolvedValue(1);
+    importerRef.fetchAll = async function* (
+      _f: unknown,
+      ctx?: { onProgress?: (i: { fetched: number }) => void },
+    ) {
+      ctx?.onProgress?.({ fetched: 1 });
+      yield issue(1);
+    };
+    const prisma = fakePrisma();
+    prisma.importSource.findFirst.mockResolvedValue({
+      ...SOURCE_ROW,
+      filter: JSON.stringify({
+        owner: "octo",
+        repo: "hello",
+        state: "open",
+        titlePrefixes: ["[Feature]:"],
+      }),
+    });
+    const jobs = spyEmitter();
+
+    await buildService(prisma, jobs).runSource("src-1", { runId: "run-1" });
+
+    expect(importerRef.count).not.toHaveBeenCalled();
+    expect(jobs.progress).toHaveBeenCalledWith(
+      "import-sync",
+      "run-1",
+      "proj-1",
+      0,
+      expect.stringMatching(/Fetched 1 issues$/),
+    );
+    expect(jobs.completed).toHaveBeenCalled();
+  });
 });

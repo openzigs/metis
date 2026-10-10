@@ -39,6 +39,14 @@ export interface RequirementRef {
 /** Max candidates parsed out of the free-text box (shared with #735's mapping). */
 export const DEFAULT_NEW_REQUIREMENT_MAX_CANDIDATES = 8;
 
+/** The configured new-requirement candidate cap (`ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES`). */
+export function resolveNewRequirementCandidateCap(): number {
+  return getConfigService().getNumber(
+    "ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES",
+    DEFAULT_NEW_REQUIREMENT_MAX_CANDIDATES,
+  );
+}
+
 /**
  * The `NR-*` id namespace for new-requirement candidates — deliberately DISJOINT
  * from the document agent's `REQ-*` ids so downstream code (#735 affected-code,
@@ -107,12 +115,7 @@ export async function extractNewRequirementCandidatesWithAccount(
     return none;
   }
 
-  const cap =
-    maxCandidates ??
-    getConfigService().getNumber(
-      "ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES",
-      DEFAULT_NEW_REQUIREMENT_MAX_CANDIDATES,
-    );
+  const cap = maxCandidates ?? resolveNewRequirementCandidateCap();
   const effectiveCap = Math.max(0, cap);
 
   const candidates: RequirementRef[] = [];

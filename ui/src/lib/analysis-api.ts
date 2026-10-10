@@ -8,6 +8,8 @@ import type {
   AnalysisResultAgentKey,
   AnalysisCapability,
   AnalysisCapabilityPreview,
+  AnalysisSourceRequirement,
+  ImportedRequirementOptions,
   AnalysisAffectedCode,
   AnalysisDatabaseAware,
   AnalysisEscalation,
@@ -328,6 +330,11 @@ export interface AnalysisSnapshot extends AnalysisListItem {
    * never applicable (no code/database agent ran) or on runs that predate #855.
    */
   databaseAware: AnalysisDatabaseAware | null;
+  /**
+   * Issue #1006 — the imported requirements this run was started from, each
+   * with the `NR-*` id it carried. Empty for runs not started from them.
+   */
+  sourceRequirements: AnalysisSourceRequirement[];
 }
 
 type AnalysisSnapshotPayload = AnalysisListItem &
@@ -346,6 +353,7 @@ type AnalysisSnapshotPayload = AnalysisListItem &
     affectedCode: AnalysisAffectedCode | null;
     escalation: AnalysisEscalation | null;
     databaseAware: AnalysisDatabaseAware | null;
+    sourceRequirements: AnalysisSourceRequirement[];
   }>;
 
 export interface AnalysisCostCapStatus {
@@ -418,6 +426,7 @@ export const analysisApi = {
       affectedCode: snapshot.affectedCode ?? null,
       escalation: snapshot.escalation ?? null,
       databaseAware: snapshot.databaseAware ?? null,
+      sourceRequirements: snapshot.sourceRequirements ?? [],
     })),
 
   /**
@@ -427,6 +436,17 @@ export const analysisApi = {
    */
   capabilityPreview: (projectId: string) =>
     apiFetch<AnalysisCapabilityPreview>(`/projects/${projectId}/analyses/capability`),
+
+  /**
+   * Issue #1006 — the project's imported requirements a run can start from,
+   * newest first and capped server-side; `q` narrows by title or issue number.
+   */
+  importedRequirements: (projectId: string, q = "") =>
+    apiFetch<ImportedRequirementOptions>(
+      `/projects/${projectId}/analyses/imported-requirements${
+        q ? `?q=${encodeURIComponent(q)}` : ""
+      }`,
+    ),
 
   cancel: (id: string) =>
     apiFetch<{ cancelled: boolean }>(`/analyses/${id}/cancel`, { method: "POST" }),

@@ -16,6 +16,7 @@ import {
   type AnalysisResultAgentKey,
   type AnalysisAgentKey,
   type AnalysisCapability,
+  type AnalysisSourceRequirement,
   type AnalysisAffectedCode,
   type AnalysisDatabaseAware,
   type AnalysisEscalation,
@@ -110,6 +111,8 @@ export interface CreateAnalysisInput {
   model?: string;
   /** Free-text new-requirements string (#905); persisted for regenerate parity. */
   extraInstructions?: string;
+  /** Issue #1006 — the imported requirements the run was started from. */
+  sourceRequirements?: AnalysisSourceRequirement[];
   /**
    * Issue #994 — a Spec Kit handoff's record of what it sent and left out,
    * persisted as `metadata.specKitHandoff` for the analysis page to state.
@@ -190,6 +193,9 @@ export async function createAnalysis(input: CreateAnalysisInput) {
         documentIds: input.documentIds ?? [],
         model: input.model ?? null,
         extraInstructions: input.extraInstructions ?? null,
+        ...(input.sourceRequirements?.length
+          ? { sourceRequirements: input.sourceRequirements }
+          : {}),
         ...(input.specKitHandoff ? { specKitHandoff: input.specKitHandoff } : {}),
       }),
     },
@@ -1823,7 +1829,42 @@ function toSnapshot(
     // Issue #855 (Epic #852) — the database-aware-analysis resolver's decision
     // for this run. Null when the resolver was never applicable or pre-#855.
     databaseAware: extractDatabaseAware(metadata),
+    // Issue #1006 — the imported requirements the run was started from.
+    ...extractSourceRequirements(metadata),
   };
+}
+
+/**
+ * Issue #1006 — the `sourceRequirements` persisted at start, keeping only
+ * well-formed entries. Spread into the snapshot, so a run that was not started
+ * from imported requirements carries no key at all.
+ */
+function extractSourceRequirements(metadata: Record<string, unknown> | null): {
+  sourceRequirements?: AnalysisSourceRequirement[];
+} {
+  const value = metadata?.sourceRequirements;
+  if (!Array.isArray(value)) return {};
+  const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+  const items = value.flatMap((raw): AnalysisSourceRequirement[] => {
+    if (!raw || typeof raw !== "object") return [];
+    const r = raw as Record<string, unknown>;
+    const candidateId = str(r.candidateId);
+    const requirementId = str(r.requirementId);
+    const title = str(r.title);
+    const externalSource = str(r.externalSource);
+    if (!candidateId || !requirementId || title === null || !externalSource) return [];
+    return [
+      {
+        candidateId,
+        requirementId,
+        title,
+        externalSource,
+        externalId: str(r.externalId),
+        externalUrl: str(r.externalUrl),
+      },
+    ];
+  });
+  return items.length > 0 ? { sourceRequirements: items } : {};
 }
 
 /**

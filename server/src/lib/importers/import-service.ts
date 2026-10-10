@@ -611,9 +611,15 @@ export class ImportService {
       // Best-effort total so the live progress bar can be determinate. A failure
       // to count (e.g. a provider that doesn't support it) degrades gracefully to
       // an indeterminate bar — it never fails the run.
+      // #1006 — a title-prefix count walks every issue page (no search qualifier
+      // matches a prefix), so counting would double the run's API calls for a
+      // progress bar: skip it and show the indeterminate bar instead.
       let total: number | undefined;
+      const countWalksEveryPage = "titlePrefixes" in filter && !!filter.titlePrefixes?.length;
       try {
-        total = await importer.count(filter, { signal: opts.signal });
+        total = countWalksEveryPage
+          ? undefined
+          : await importer.count(filter, { signal: opts.signal });
       } catch {
         total = undefined;
       }

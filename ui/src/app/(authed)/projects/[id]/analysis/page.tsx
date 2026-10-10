@@ -71,6 +71,8 @@ import { AddDocumentsPanel } from "@/components/analysis/add-documents-panel";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import { useScrollToAnchor } from "@/hooks/use-scroll-to-anchor";
 import { EvaluateRequirementsPanel } from "@/components/analysis/evaluate-requirements-panel";
+import { ImportedRequirementsPicker } from "@/components/analysis/imported-requirements-picker";
+import { SourceRequirementsPanel } from "@/components/analysis/source-requirements-panel";
 import { CrossDocFindingsPanel } from "@/components/analysis/CrossDocFindingsPanel";
 import { StakeholdersPanel } from "@/components/analysis/StakeholdersPanel";
 import { stakeholderApi } from "@/lib/stakeholder-api";
@@ -379,6 +381,7 @@ export default function AnalysisPage(): React.ReactElement {
       extraInstructions?: string;
       enableWebResearch?: boolean;
       enableClarification?: boolean;
+      importedRequirementIds?: string[];
     }) => analysisApi.start(projectId, input),
     successMessage: "Analysis started",
     invalidateKeys: [queryKeys.analyses.forProject(projectId), ["analyses", "cost-cap"]],
@@ -644,6 +647,8 @@ export default function AnalysisPage(): React.ReactElement {
   const [enableClarification, setEnableClarification] = useState(true);
   // Issue #907 — free-text new requirements (requirements→code gap evaluation).
   const [extraInstructions, setExtraInstructions] = useState("");
+  // Issue #1006 — imported requirements the run starts from.
+  const [importedRequirementIds, setImportedRequirementIds] = useState<string[]>([]);
 
   // Issue #906 — auto-select a freshly-ingested doc after the documents cache
   // has been invalidated/refetched so the new row exists before it is checked.
@@ -789,6 +794,12 @@ export default function AnalysisPage(): React.ReactElement {
             </div>
           </div>
 
+          <ImportedRequirementsPicker
+            projectId={projectId}
+            selected={importedRequirementIds}
+            onChange={setImportedRequirementIds}
+          />
+
           <EvaluateRequirementsPanel value={extraInstructions} onChange={setExtraInstructions} />
 
           <ModelRecommendation
@@ -841,7 +852,9 @@ export default function AnalysisPage(): React.ReactElement {
             <AnalysisCapabilityHint projectId={projectId} selectedAgents={selectedAgents} />
             <AnalysisRunSummary
               docCount={selectedDocs.length}
-              hasRequirements={extraInstructions.trim().length > 0}
+              hasRequirements={
+                extraInstructions.trim().length > 0 || importedRequirementIds.length > 0
+              }
             />
             <div className="flex items-center gap-3">
               <Button
@@ -854,6 +867,8 @@ export default function AnalysisPage(): React.ReactElement {
                       extraInstructions.trim().length > 0 ? extraInstructions.trim() : undefined,
                     enableWebResearch: enableWebResearch || undefined,
                     enableClarification: enableClarification || undefined,
+                    importedRequirementIds:
+                      importedRequirementIds.length > 0 ? importedRequirementIds : undefined,
                   })
                 }
                 disabled={
@@ -989,6 +1004,9 @@ export default function AnalysisPage(): React.ReactElement {
                     }
                     continuing={continueInvestigation.isPending}
                   />
+
+                  {/* Issue #1006 — the imported requirements this run started from. */}
+                  <SourceRequirementsPanel sourceRequirements={detail.data.sourceRequirements} />
 
                   {/* Issue #1112 (Epic #1107) — account for every requirement the user
                   typed: analyzed, merged into another, or dropped with a reason.

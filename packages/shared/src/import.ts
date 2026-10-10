@@ -38,6 +38,13 @@ export const githubFilterSchema = z.object({
   repo: z.string().min(1).max(120),
   labels: labelList.optional(),
   state: z.enum(["open", "closed", "all"]).default("open"),
+  /**
+   * Issue #1006 — keep only issues whose title starts with one of these
+   * prefixes (case-insensitive), and strip the matched prefix from the imported
+   * title. For trackers that mark a type with a title tag such as `[Feature]:`
+   * rather than a label. Plain prefixes, never patterns: no regex reaches the server.
+   */
+  titlePrefixes: z.array(z.string().trim().min(1).max(64)).max(20).optional(),
 });
 export type GithubFilter = z.infer<typeof githubFilterSchema>;
 

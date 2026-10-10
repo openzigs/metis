@@ -2245,6 +2245,27 @@ describe("AnalysisOrchestrator extraInstructions plumbing (#905)", () => {
     expect(meta.extraInstructions).toBe("Add SSO support for enterprise tenants");
   });
 
+  it("#1006 — persists the imported requirements the run was started from", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const link = {
+      candidateId: "NR-1",
+      requirementId: "req-3401",
+      title: "Mark all entries as read",
+      externalSource: "github",
+      externalId: "3401",
+      externalUrl: "https://github.com/miniflux/v2/issues/3401",
+    };
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      extraInstructions: `- ${link.title}`,
+      sourceRequirements: [link],
+    });
+    await drain(analysisId);
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}");
+    expect(meta.sourceRequirements).toEqual([link]);
+  });
+
   it("keeps a Spec Kit handoff record in metadata through the run (#994)", async () => {
     const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
     const specKitHandoff = { artifacts: ["spec.md"], sent: ["AC-1"], omitted: ["AC-2"] };
