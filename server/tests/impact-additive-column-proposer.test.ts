@@ -31,6 +31,8 @@ import {
   buildAdditiveCandidates,
   buildAdditiveDdlMessages,
   buildExistingColumnsLookup,
+  COVERED_PROPOSAL_CONFIDENCE,
+  asksToPersistValue,
   dropProposalsRestatingWriters,
   groundColumnType,
   impactLlmAdditiveDdlEnabled,
@@ -1082,5 +1084,81 @@ describe("#791 — dropProposalsRestatingWriters (an existing write path already
     expect(
       dropProposalsRestatingWriters(REQ_4478, rows, ["Storage.MarkAllAsReadBeforeDate"]).kept,
     ).toEqual([]);
+  });
+
+  // Review finding on #1045: the rule could not tell an operation parameter from
+  // a value the requirement asks to store, and dropped a correct column silently.
+  const REQ_REMEMBER = "Mark all as read older than X days, and remember the chosen days per user.";
+
+  it("#4478 as written still drops users.mark_read_days, with the writer and reason", () => {
+    const { kept, dropped } = dropProposalsRestatingWriters(
+      REQ_4478,
+      [proposal("users", "mark_read_days")],
+      WRITERS,
+    );
+    expect(kept).toEqual([]);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]!.row.columnName).toBe("mark_read_days");
+    expect(dropped[0]!.writer).toBe(WRITERS[0]);
+    expect(dropped[0]!.reason).toMatch(/existing write path already covers this/);
+    expect(dropped[0]!.reason).toContain("MarkAllAsReadBeforeDate");
+  });
+
+  it("keeps users.mark_read_days when the requirement asks to remember the chosen days", () => {
+    const { kept, dropped } = dropProposalsRestatingWriters(
+      REQ_REMEMBER,
+      [proposal("users", "mark_read_days")],
+      WRITERS,
+    );
+    expect(dropped).toEqual([]);
+    expect(kept.map((r) => `${r.tableName}.${r.columnName}`)).toEqual(["users.mark_read_days"]);
+  });
+
+  it("annotates a kept borderline row with lower confidence and the reason", () => {
+    const [row] = dropProposalsRestatingWriters(
+      REQ_REMEMBER,
+      [proposal("users", "mark_read_days")],
+      WRITERS,
+    ).kept;
+    expect(row!.confidence).toBe(COVERED_PROPOSAL_CONFIDENCE);
+    expect(row!.confidence).toBeLessThan(0.5);
+    expect(row!.relevanceRationale).toMatch(/existing write path may cover this/i);
+    expect(row!.relevanceRationale).toContain("MarkAllAsReadBeforeDate");
+    // Everything else about the proposal is unchanged.
+    expect(row!.suggestedDdl).toBe(proposal("users", "mark_read_days").suggestedDdl);
+  });
+
+  it("leaves a row no writer covers untouched (no annotation, same confidence)", () => {
+    const keep = proposal("users", "mark_read_reminder_email");
+    const [row] = dropProposalsRestatingWriters(REQ_REMEMBER, [keep], WRITERS).kept;
+    expect(row).toEqual(keep);
+  });
+});
+
+describe("#791 review — asksToPersistValue", () => {
+  it.each([
+    ["remember the chosen days per user", "mark_read_days"],
+    ["Store the number of days as the user's default.", "mark_read_days"],
+    ["a per-user setting for how many days to keep", "mark_read_days"],
+    ["Persisted days should survive a restart.", "mark_read_days"],
+    ["save the cutoff date", "mark_read_before_date"],
+  ])("finds a persistence cue next to the value: %s", (text, column) => {
+    expect(asksToPersistValue(text, column)).toBe(true);
+  });
+
+  it.each([
+    // #4478 as written: the days are an argument, nothing asks to keep them.
+    [
+      "This gives people the option to just let things that are older than X days be marked as read.",
+      "mark_read_days",
+    ],
+    // A cue far from any word of the column does not count.
+    [
+      "Remember that the button sits in the header toolbar next to search; mark all as read older than X days.",
+      "mark_read_days",
+    ],
+    ["remember the chosen days", ""],
+  ])("finds none: %s", (text, column) => {
+    expect(asksToPersistValue(text, column)).toBe(false);
   });
 });
