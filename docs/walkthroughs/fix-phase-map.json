@@ -159,6 +159,33 @@
       "wave": "E",
       "phase": "16",
       "check": "#4478's impact proposes no column that already exists (no entries.published_at); record whether users.mark_as_read_older_than_days is still proposed (#791)"
+    },
+    "1030": {
+      "wave": "F",
+      "phase": "J1.6",
+      "check": "Chat lists and reads the project's approved requirements (list_requirements / get_requirement) and names which touch the database; it never says they do not exist"
+    },
+    "744": {
+      "wave": "F",
+      "phase": "J1.8",
+      "check": "The publish dry-run plan creates no finding:<id> or other internal-id labels, skips rejected requirements, and shows the approval gate"
+    },
+    "791": {
+      "wave": "E",
+      "phase": "16",
+      "check": "Across at least 3 #4478 impact runs, no users column is proposed (MarkAllAsReadBeforeDate covers it); dropped proposals come back with their reason"
+    },
+    "1041": {
+      "skip": "walkthrough tooling: the Phase 9 answer key and rubric this run uses"
+    },
+    "1042": {
+      "skip": "walkthrough tooling: change-plan precision/recall scoring this run uses"
+    },
+    "1043": {
+      "skip": "walkthrough tooling: optional wave G this run uses"
+    },
+    "1044": {
+      "skip": "walkthrough tooling: three more developer requests this run uses"
     }
   },
   "prs": {}
