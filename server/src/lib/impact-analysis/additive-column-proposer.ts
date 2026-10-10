@@ -657,3 +657,110 @@ function groundProposals(
 
   return { proposals, rejections };
 }
+
+// ── #791: a column an existing writer already covers ─────────────────────────
+
+/** Words that carry no meaning in an identifier (`MarkAllAsRead`, `older_than_days`). */
+const IDENTIFIER_STOPWORDS: ReadonlySet<string> = new Set([
+  "a",
+  "all",
+  "an",
+  "and",
+  "as",
+  "at",
+  "by",
+  "for",
+  "in",
+  "n",
+  "of",
+  "on",
+  "or",
+  "than",
+  "the",
+  "to",
+  "x",
+]);
+
+/**
+ * A small, hand-written fold of words that name the same thing in a function
+ * name and in a requirement or column name: `MarkAllAsReadBeforeDate` against
+ * "older than X days" / `older_than_days`. Applied after the plural is stripped.
+ */
+const WORD_EQUIVALENTS: Readonly<Record<string, string>> = {
+  older: "before",
+  earlier: "before",
+  prior: "before",
+  day: "date",
+  time: "date",
+  timestamp: "date",
+};
+
+/** Lowercase content words of an identifier or text, camelCase split and folded. */
+function contentWords(text: string): Set<string> {
+  const words = text
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/);
+  const out = new Set<string>();
+  for (const raw of words) {
+    if (!raw || IDENTIFIER_STOPWORDS.has(raw)) continue;
+    const singular =
+      raw.length > 3 && raw.endsWith("s") && !raw.endsWith("ss") ? raw.slice(0, -1) : raw;
+    out.add(WORD_EQUIVALENTS[singular] ?? singular);
+  }
+  return out;
+}
+
+/** `internal/storage/entry.go::MarkAllAsRead` / `Storage.MarkAllAsRead` → `MarkAllAsRead`. */
+function functionName(qualifiedName: string): string {
+  const afterFile = qualifiedName.split("::").pop() ?? qualifiedName;
+  return afterFile.slice(afterFile.lastIndexOf(".") + 1);
+}
+
+/** Fewest content words for a name to say anything specific. */
+const MIN_CONTENT_WORDS = 2;
+
+function isSubset(small: ReadonlySet<string>, big: ReadonlySet<string>): boolean {
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
+}
+
+/**
+ * #791 — drop the proposed columns that only restate an operation an existing
+ * writer already performs. "Mark all as read older than X days" drew
+ * `users.mark_read_older_than_days` on 1 of 3 runs while `MarkAllAsReadBeforeDate`
+ * exists; the prompt rule against it did not hold, so this is the structural check.
+ *
+ * A writer COVERS the requirement when every content word of its name appears in
+ * the requirement (`mark read before date` in "mark … read … older than X days").
+ * A proposal RESTATES that writer when every content word of the column name is
+ * one of the writer's (`mark read before date` ⊇ `mark_read_older_than_days`).
+ * Both sides need {@link MIN_CONTENT_WORDS}: a one-word column (`read_at`) or a
+ * one-word writer (`UpdateFeed`) never decides anything. Pure — no I/O.
+ */
+export function dropProposalsRestatingWriters(
+  requirementText: string,
+  proposals: AffectedTableInput[],
+  writerQualifiedNames: readonly string[],
+): { kept: AffectedTableInput[]; dropped: { row: AffectedTableInput; writer: string }[] } {
+  if (proposals.length === 0 || writerQualifiedNames.length === 0) {
+    return { kept: proposals, dropped: [] };
+  }
+  const required = contentWords(requirementText);
+  const covering = writerQualifiedNames
+    .map((qn) => ({ qn, words: contentWords(functionName(qn)) }))
+    .filter((w) => w.words.size >= MIN_CONTENT_WORDS && isSubset(w.words, required));
+
+  const kept: AffectedTableInput[] = [];
+  const dropped: { row: AffectedTableInput; writer: string }[] = [];
+  for (const row of proposals) {
+    const column = contentWords(row.columnName ?? "");
+    const writer =
+      column.size >= MIN_CONTENT_WORDS
+        ? covering.find((w) => isSubset(column, w.words))
+        : undefined;
+    if (writer) dropped.push({ row, writer: writer.qn });
+    else kept.push(row);
+  }
+  return { kept, dropped };
+}

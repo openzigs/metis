@@ -33,6 +33,7 @@ import type { CodeGraphDataSource, GraphEdge, GraphSymbol } from "../code-graph/
 import { randomUUID } from "node:crypto";
 import { blastRadius, type RadiusSymbol } from "./blast-radius.js";
 import { addDataPathWriters, pruneTangentialSchemaSeeds } from "./data-path-writers.js";
+import { dropProposalsRestatingWriters } from "./additive-column-proposer.js";
 import { loadResolvedGoCalls } from "./go-call-resolution.js";
 import {
   crossToSchema,
@@ -396,23 +397,16 @@ export async function computeProjectImpact(
     // this result — so it can only ever APPEND `add-column` rows to tables the
     // deterministic crossing surfaced. Runs after the #936 filter so nothing is
     // proposed on a table judged tangential. Best-effort: the proposer never
-    // throws (its own contract), but guard anyway.
+    // throws (its own contract), but guard anyway. The proposals are appended
+    // only after the #791 data-path writers are known (below).
+    let proposedColumns: AffectedTableInput[] = [];
     if (deps.additiveColumnProposer && affectedTables.length > 0) {
       try {
-        const proposed = await deps.additiveColumnProposer(
+        proposedColumns = await deps.additiveColumnProposer(
           `${change.title}\n${change.body}`,
           affectedTables,
           { projectId, liveIndex: deps.liveIndexFor?.(projectId) ?? null },
         );
-        if (proposed.length > 0) {
-          // Same ordering the crossing itself emits (table, then column), so the
-          // proposals interleave with their table's existing rows.
-          affectedTables = [...affectedTables, ...proposed].sort(
-            (a, b) =>
-              a.tableName.localeCompare(b.tableName) ||
-              (a.columnName ?? "").localeCompare(b.columnName ?? ""),
-          );
-        }
       } catch (err) {
         log.warn("additive column proposer failed; keeping crossing output", {
           projectId,
@@ -467,6 +461,34 @@ export async function computeProjectImpact(
         projectId,
         error: String(err),
       });
+    }
+
+    // #791 — a proposed column that only restates what an existing writer already
+    // does ("mark all as read older than X days" → `users.mark_read_older_than_days`
+    // while `MarkAllAsReadBeforeDate` exists) is dropped. Checked here, against the
+    // writers the data names, so it holds whatever the model answered.
+    if (proposedColumns.length > 0) {
+      const { kept, dropped } = dropProposalsRestatingWriters(
+        `${change.title}\n${change.body}`,
+        proposedColumns,
+        affectedSymbols.filter((s) => s.relation === "data-writer").map((s) => s.qualifiedName),
+      );
+      for (const d of dropped) {
+        log.info("dropped a proposed column an existing writer already covers", {
+          projectId,
+          column: `${d.row.tableName}.${d.row.columnName}`,
+          writer: d.writer,
+        });
+      }
+      // Same ordering the crossing itself emits (table, then column), so the
+      // proposals interleave with their table's existing rows.
+      if (kept.length > 0) {
+        affectedTables = [...affectedTables, ...kept].sort(
+          (a, b) =>
+            a.tableName.localeCompare(b.tableName) ||
+            (a.columnName ?? "").localeCompare(b.columnName ?? ""),
+        );
+      }
     }
   }
   const fileSet = new Set(affectedSymbols.map((s) => s.filePath));

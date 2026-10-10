@@ -31,6 +31,7 @@ import {
   buildAdditiveCandidates,
   buildAdditiveDdlMessages,
   buildExistingColumnsLookup,
+  dropProposalsRestatingWriters,
   groundColumnType,
   impactLlmAdditiveDdlEnabled,
   proposeAdditiveColumns,
@@ -995,5 +996,91 @@ describe("buildExistingColumnsLookup (#1003)", () => {
   it("returns nothing for an unknown table or with no sources", () => {
     expect(buildExistingColumnsLookup({ liveIndex: live })("users")).toEqual([]);
     expect(buildExistingColumnsLookup({})("entries")).toEqual([]);
+  });
+});
+
+describe("#791 — dropProposalsRestatingWriters (an existing write path already covers it)", () => {
+  const REQ_4478 =
+    "Feature (miniflux #4478): Mark all as read older than X. Right now you can either mark a page as read or mark everything as read. This gives people the option to just let things that are older than X days be marked as read.";
+  const WRITERS = [
+    "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+    "internal/storage/entry.go::SetEntriesStatus",
+  ];
+  const proposal = (tableName: string, columnName: string): AffectedTableInput => ({
+    objectKind: "column",
+    tableName,
+    columnName,
+    columnType: "INTEGER",
+    changeKind: "add-column",
+    suggestedDdl: `ALTER TABLE ${tableName} ADD COLUMN ${columnName} INTEGER; -- SUGGESTED`,
+    source: "sqlglot",
+    reconciliation: null,
+    confidence: 0.5,
+  });
+
+  it("drops a column that only restates the operation an existing writer already performs", () => {
+    const { kept, dropped } = dropProposalsRestatingWriters(
+      REQ_4478,
+      [
+        proposal("users", "mark_read_older_than_days"),
+        proposal("users", "mark_as_read_older_than_days"),
+      ],
+      WRITERS,
+    );
+    expect(kept).toEqual([]);
+    expect(dropped.map((d) => [d.row.columnName, d.writer])).toEqual([
+      ["mark_read_older_than_days", WRITERS[0]],
+      ["mark_as_read_older_than_days", WRITERS[0]],
+    ]);
+  });
+
+  it("keeps a column that carries data the writer's name does not cover", () => {
+    const keep = proposal("users", "mark_read_reminder_email");
+    const { kept, dropped } = dropProposalsRestatingWriters(REQ_4478, [keep], WRITERS);
+    expect(kept).toEqual([keep]);
+    expect(dropped).toEqual([]);
+  });
+
+  it("keeps everything when the writer does not implement the requested operation", () => {
+    // MarkAllAsReadBeforeDate's `before`/`date` appear nowhere in this requirement.
+    const rows = [proposal("users", "mark_read_older_than_days")];
+    const text = "Mark all as read should also mark the entries of hidden categories.";
+    expect(dropProposalsRestatingWriters(text, rows, WRITERS).kept).toEqual(rows);
+  });
+
+  it("keeps a single-word column even when the writer covers it (#4336 read_at)", () => {
+    const rows = [proposal("entries", "read_at")];
+    const text = "Add a read_at timestamp; mark all as read must set it.";
+    expect(
+      dropProposalsRestatingWriters(text, rows, ["internal/storage/entry.go::MarkAllAsRead"]).kept,
+    ).toEqual(rows);
+  });
+
+  it("keeps a new column on the table an UpdateFeed writer touches (#4511)", () => {
+    const rows = [proposal("feeds", "last_successful_refresh")];
+    const text =
+      "Store and return the last time a feed was successfully refreshed; update it on every successful refresh.";
+    expect(
+      dropProposalsRestatingWriters(text, rows, ["internal/storage/feed.go::UpdateFeed"]).kept,
+    ).toEqual(rows);
+  });
+
+  it("passes through when there are no writers or no proposals", () => {
+    const rows = [proposal("users", "mark_read_older_than_days")];
+    expect(dropProposalsRestatingWriters(REQ_4478, rows, []).kept).toEqual(rows);
+    expect(dropProposalsRestatingWriters(REQ_4478, [], WRITERS)).toEqual({
+      kept: [],
+      dropped: [],
+    });
+  });
+
+  it("reads a bare or dotted writer name as well as a file-qualified one", () => {
+    const rows = [proposal("users", "mark_read_older_than_days")];
+    expect(dropProposalsRestatingWriters(REQ_4478, rows, ["MarkAllAsReadBeforeDate"]).kept).toEqual(
+      [],
+    );
+    expect(
+      dropProposalsRestatingWriters(REQ_4478, rows, ["Storage.MarkAllAsReadBeforeDate"]).kept,
+    ).toEqual([]);
   });
 });
