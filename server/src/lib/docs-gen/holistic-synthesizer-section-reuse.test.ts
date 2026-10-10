@@ -413,7 +413,7 @@ describe("#262 — reuse records written under an older grounding contract", () 
     expect(warm.regeneration).toEqual({ mode: "unchanged", changed: [] });
   });
 
-  it.each([1, 2, SECTION_SYNTHESIS_VERSION + 1])(
+  it.each([1, 2, 3, SECTION_SYNTHESIS_VERSION + 1])(
     "a manifest holding a version-%i snapshot still parses, losslessly, and is not reused",
     async (version) => {
       const cold = await synth();
