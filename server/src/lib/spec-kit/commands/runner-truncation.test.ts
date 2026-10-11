@@ -273,6 +273,29 @@ describe("runSpecKitAgent output-cap recovery (#944)", () => {
     expect(keepsPriorVersion(true, { content: partial })).toBe(false);
     expect(keepsPriorVersion(true, null)).toBe(false);
     expect(keepsPriorVersion(false, { content: "# Whole plan\n" })).toBe(false);
+    // An empty stored artifact is no complete version (gates.ts reads it the same way).
+    expect(keepsPriorVersion(true, { content: "" })).toBe(false);
+    expect(keepsPriorVersion(true, { content: " \n\t\n" })).toBe(false);
+  });
+
+  it("#1057 — allowEmptyOutput returns '' for an empty or no-text reply instead of failing", async () => {
+    for (const reply of [
+      { content: "", finishReason: "stop" },
+      { content: "Let me think about the pl", finishReason: "length" },
+    ]) {
+      const { provider, calls } = scriptedProvider([reply]);
+      const out = await runSpecKitAgent({
+        command: "checklist",
+        project,
+        systemPrompt: "SYS",
+        userPrompt: "USER",
+        deps: { provider },
+        allowEmptyOutput: true,
+      });
+      expect(out.content).toBe("");
+      expect(out.truncated).toBe(reply.finishReason === "length");
+      expect(calls).toHaveLength(1);
+    }
   });
 
   it("#1057 — a continuation that adds nothing is not re-sent; the salvage is kept and marked", async () => {

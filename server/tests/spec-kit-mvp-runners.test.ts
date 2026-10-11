@@ -723,7 +723,7 @@ describe("runPlanExpanded", () => {
       if (system.includes("plan.md") && !system.includes("quickstart.md")) {
         return {
           ...(await super.chat(m, o)),
-          content: m.length > 1 ? "" : "# Partial plan\n## Summa",
+          content: m.length > 1 ? "" : "# Partial plan\nTouches `internal/partial.go`.\n## Summa",
           finishReason: "length",
         };
       }
@@ -734,23 +734,55 @@ describe("runPlanExpanded", () => {
   it("#1057 — a cut-off plan.md never replaces a complete one, and the feature is not planned", async () => {
     const fid = seedFeature("p1", "007-keep");
     seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
-    seedFeatureArtifact(fid, "plan.md", "# Complete plan\n");
+    const complete = "# Complete plan\nEdits `internal/kept.go`.\n";
+    seedFeatureArtifact(fid, "plan.md", complete);
     const r = await runPlanExpanded({
       projectId: "p1",
       featureSlug: "007-keep",
       deps: { provider: new CutPlan("# Doc\n") },
+      // Neither path exists, so each is reported: the note names the plan it checked.
+      pathLookup: {
+        hasCodeGraph: vi.fn(async () => true),
+        findExisting: vi.fn(async () => [] as string[]),
+      },
     });
     const plans = [...featureArtifactRows.values()].filter(
       (row) => row.featureId === fid && row.key === "plan.md",
     );
     expect(plans).toHaveLength(1);
-    expect(plans[0]).toMatchObject({ content: "# Complete plan\n", version: 1 });
-    expect(r.artifacts.find((a) => a.key === "plan.md")!.content).toBe("# Complete plan\n");
+    expect(plans[0]).toMatchObject({ content: complete, version: 1 });
+    expect(r.artifacts.find((a) => a.key === "plan.md")!.content).toBe(complete);
     expect(r.partialContent?.["plan.md"]).toContain("# Partial plan");
     expect(r.partialContent?.["plan.md"]).toMatch(/\*\*Incomplete:\*\*/);
     expect(r.message).toContain("`plan.md` was cut off");
     expect(r.message).toContain("kept as current");
+    // The path check describes the kept plan.md, not the unsaved partial reply.
+    expect(r.partialContent?.["plan.md"]).toContain("`internal/partial.go`");
+    expect(r.message).toContain("1 referenced path is not in the project's code graph");
+    expect(r.message).toContain("`internal/kept.go`");
+    expect(r.message).not.toContain("internal/partial.go");
     expect(featureRows.get(fid)!.status).not.toBe("planned");
+  });
+
+  it("#1057 — a cut-off plan.md replaces an empty or whitespace-only stored plan.md", async () => {
+    for (const [slug, empty] of [
+      ["011-empty", ""],
+      ["012-blank", "  \n\t\n"],
+    ] as const) {
+      const fid = seedFeature("p1", slug);
+      seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+      seedFeatureArtifact(fid, "plan.md", empty);
+      const r = await runPlanExpanded({
+        projectId: "p1",
+        featureSlug: slug,
+        deps: { provider: new CutPlan("# Doc\n") },
+      });
+      const plan = r.artifacts.find((a) => a.key === "plan.md")!;
+      expect(plan.content).toContain("# Partial plan");
+      expect(plan.content).toMatch(/\*\*Incomplete:\*\*/);
+      expect(r.partialContent).toBeUndefined();
+      expect(featureRows.get(fid)!.status).not.toBe("planned");
+    }
   });
 
   it("#1057 — a cut-off plan.md with no prior version is saved, marked, warned, not planned", async () => {
@@ -1116,6 +1148,35 @@ describe("runChecklist", () => {
     expect(r.sources).toEqual({ security: "feature", accessibility: "template" });
     expect(checklistBody("checklist-accessibility.md")).toMatch(/Generic template/);
     expect(r.message).toMatch(/generic template: accessibility/);
+  });
+
+  it("#1057 — an empty or no-text cut-off reply keeps the #787 generic-template fallback", async () => {
+    class CutBeforeText extends FakeProvider {
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        return { ...(await super.chat(m, o)), content: "Thinking ab", finishReason: "length" };
+      }
+    }
+    for (const provider of [
+      new FakeProvider(""),
+      new FakeProvider("  \n"),
+      new CutBeforeText(""),
+    ]) {
+      featureArtifactRows.clear();
+      seedPlanned();
+      const r = await runChecklist({
+        projectId: "p1",
+        featureSlug: "001-foo",
+        domains: ["security"],
+        mode: "overwrite",
+        deps: { provider },
+      });
+      expect(r.sources).toEqual({ security: "template" });
+      expect(r.message).toMatch(/generic template: security \(the model returned no items\)/);
+      const sec = checklistBody("checklist-security.md");
+      expect(sec).toMatch(/Generic template/);
+      expect(sec).toContain("Secrets loaded from vault");
+      expect(sec).not.toMatch(/Incomplete/);
+    }
   });
 
   it("#787 makes no model call for an offline provider and labels every file generic", async () => {

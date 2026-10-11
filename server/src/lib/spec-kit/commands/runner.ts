@@ -102,6 +102,13 @@ export interface RunCommandInput {
    * Default `"markdown"`.
    */
   format?: "markdown" | "yaml";
+  /**
+   * #1057 — opt out of the empty-reply and no-text-before-the-cap failures, for
+   * a caller with its own fallback (`/speckit.checklist` writes the labelled
+   * generic templates, #787). The run then returns `content: ""` instead of
+   * throwing; `truncated` still reports a cut. Every other command keeps them.
+   */
+  allowEmptyOutput?: boolean;
 }
 
 export interface RunCommandOutput {
@@ -160,14 +167,20 @@ export function isIncompleteArtifact(content: string): boolean {
 
 /**
  * #1057 — a partial reply never replaces a complete stored version. `true`
- * when this run was cut off and the stored version is complete: the caller
+ * when this run was cut off and the stored version is complete (non-empty and
+ * without the Incomplete note, as `gates.ts` reads a stored plan): the caller
  * keeps that version current and returns the partial text instead of writing it.
  */
 export function keepsPriorVersion(
   truncated: boolean,
   prior: { content: string } | null | undefined,
 ): boolean {
-  return truncated && prior != null && !isIncompleteArtifact(prior.content);
+  return (
+    truncated &&
+    prior != null &&
+    prior.content.trim().length > 0 &&
+    !isIncompleteArtifact(prior.content)
+  );
 }
 
 const CONTINUE_PROMPT = [
@@ -346,7 +359,7 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     // before any artifact is written; with a salvaged prefix it stops
     // continuing and keeps the #944 marked salvage.
     if (whole.trim().length === 0) {
-      if (kept.trim().length === 0) {
+      if (kept.trim().length === 0 && !input.allowEmptyOutput) {
         failNoOutput(
           "output_exhausted",
           SPEC_KIT_OUTPUT_EXHAUSTED_CODE,
@@ -365,7 +378,8 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
   }
   // #1057 — a reply that finished normally but said nothing is no artifact
   // either: written as "", a caller's template is appended to it as a stub.
-  if (kept.trim().length === 0) {
+  const empty = kept.trim().length === 0;
+  if (empty && !input.allowEmptyOutput) {
     failNoOutput(
       "empty_output",
       SPEC_KIT_EMPTY_OUTPUT_CODE,
@@ -373,7 +387,7 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
         "Re-run the command.",
     );
   }
-  if (truncated)
+  if (truncated && !empty)
     kept = `${kept.trimEnd()}\n\n${input.format === "yaml" ? SPEC_KIT_TRUNCATION_NOTE_YAML : SPEC_KIT_TRUNCATION_NOTE}\n`;
 
   // 4. Outbound safety pass.

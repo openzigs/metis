@@ -161,6 +161,9 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
       actorId: input.actorId ?? null,
       sessionId: input.sessionId ?? null,
       deps: { provider },
+      // #1057 — an empty or cut-off-before-any-text reply keeps the #787
+      // fallback (labelled generic templates, "the model returned no items").
+      allowEmptyOutput: true,
     });
     tokensUsed = run.tokensUsed;
     derived = parseChecklistSections(run.content, domains);
