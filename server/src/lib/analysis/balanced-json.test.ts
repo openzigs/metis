@@ -63,7 +63,9 @@ describe("#1002 extractJsonObject — balanced-brace extraction", () => {
   });
 
   it("prefers the leading object over a fenced snippet inside one of its strings", () => {
-    const draft = { title: "t", body: 'Use:\n```json\n{"x":1}\n```\nin the config.' };
+    // Inline, so the fence body starts with `{` (a fence that opens with an
+    // escaped newline is skipped by the fence branch on its own).
+    const draft = { title: "t", body: 'Set ```{"x":1}``` in the config.' };
     expect(extractJsonObject(`${JSON.stringify(draft)}\nHope that helps!`)).toEqual(draft);
   });
 
