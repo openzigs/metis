@@ -46,9 +46,13 @@ import { ArtifactContent } from "@/components/spec-kit/artifact-content";
 import { HoverHint } from "@/components/spec-kit/hover-hint";
 import {
   describeSpecKitError,
+  emptyInputHint,
   isNoProjectAccess,
   loadHandoff,
+  partialReplies,
   saveHandoff,
+  specKitErrorCode,
+  type PartialReply,
   type SpecKitHandoff,
 } from "@/lib/spec-kit-display";
 import { useAuth } from "@/lib/auth-context";
@@ -66,7 +70,6 @@ import {
 } from "@/lib/spec-kit-export";
 import { IssueLinks } from "@/components/spec-kit/issue-links";
 
-const FAILED = "The Spec Kit operation failed. Please try again.";
 /** Shown on a write control the viewer cannot use (#789 — the server gates it). */
 const REQUIRES_UPDATE = "Requires project.update";
 /** #936 — shown when the server's dry run reports it cannot publish (`publishAvailable: false`). */
@@ -127,7 +130,22 @@ export default function SpecKitPage() {
   const [editingDraft, setEditingDraft] = useState<string | null>(null);
   const [commandBuffer, setCommandBuffer] = useState("");
   const [lastResultMessage, setLastResultMessage] = useState<string | null>(null);
-  const [lastErrorMessage, setLastErrorMessage] = useState<string | null>(null);
+  // #1037 — the failure the page shows: its text, and the server's code when it sent one.
+  const [lastError, setLastError] = useState<{ text: string; code: string | null } | null>(null);
+  const setLastErrorMessage = (text: string | null): void =>
+    setLastError(text === null ? null : { text, code: null });
+  /**
+   * #1037 — a failed call says why in BOTH places: the error card and the
+   * toast carry the same sentence (the server's message, in the page's words).
+   * The toast used to be one generic line whatever had happened.
+   */
+  const reportFailure = (err: unknown): void => {
+    const text = describeSpecKitError(err);
+    setLastError({ text, code: specKitErrorCode(err) });
+    toast.error(text);
+  };
+  // #1057 / #1037 — cut-off replies the last command returned without saving.
+  const [lastPartial, setLastPartial] = useState<PartialReply[]>([]);
   const router = useRouter();
   // #789 — null ⇒ the project-level `.specify/` set; otherwise a feature slug.
   // #945 — kept in the URL (`?feature=<slug>`), so leaving the page and coming
@@ -241,10 +259,7 @@ export default function SpecKitPage() {
       });
     },
     // #945 — a refused save (e.g. too long) says why, in words, and keeps the draft.
-    onError: (err) => {
-      setLastErrorMessage(describeSpecKitError(err));
-      toast.error(FAILED);
-    },
+    onError: reportFailure,
   });
 
   const constitutionMutation = useMutation({
@@ -262,6 +277,7 @@ export default function SpecKitPage() {
           ? `Generated constitution.md (v${result.artifact.version}).`
           : "Generated constitution.md.");
       setLastResultMessage(confirmation);
+      setLastPartial([]);
       if (result.grounded === false) toast.warning(confirmation);
       else toast.success(confirmation);
       setSelectedName("constitution.md");
@@ -270,9 +286,11 @@ export default function SpecKitPage() {
         queryKey: queryKeys.projects.specKitFiles(projectId),
       });
     },
-    onError: () => {
-      // Issue #423 — user-safe terminal failure toast (no raw error leak).
-      toast.error("The Spec Kit operation failed. Please try again.");
+    // Issue #423 — a user-safe terminal failure toast: a non-API error is never
+    // shown raw. #1037 — an API error's own message is, here and in the card.
+    onError: (err) => {
+      setLastResultMessage(null);
+      reportFailure(err);
     },
   });
 
@@ -299,12 +317,17 @@ export default function SpecKitPage() {
           ? createdIssueLinks(result.created)
           : [];
       setLastIssueLinks(issueLinks);
+      // #1057 / #1037 — a cut-off reply that was not saved is shown, not lost,
+      // and the toast is a warning: the command ran but changed less than asked.
+      const partial = partialReplies(result.partialContent);
+      setLastPartial(partial);
       if (result.message) {
         if (issueLinks.length > 0) {
           toast.success(result.message, {
             description: <IssueLinks links={issueLinks} testId="spec-kit-toast-issue-links" />,
           });
-        } else toast.success(result.message);
+        } else if (partial.length > 0) toast.warning(result.message);
+        else toast.success(result.message);
       }
       setCommandBuffer("");
       const featureSlug = input.options.featureSlug ?? null;
@@ -355,9 +378,9 @@ export default function SpecKitPage() {
     onError: (err) => {
       setLastResultMessage(null);
       setLastIssueLinks([]);
+      setLastPartial([]);
       // #945 — the page's own words, never API field names or a raw issue array.
-      setLastErrorMessage(describeSpecKitError(err));
-      toast.error(FAILED);
+      reportFailure(err);
     },
   });
 
@@ -374,9 +397,7 @@ export default function SpecKitPage() {
       setEditingDraft(null);
       refreshArtifacts();
     },
-    onError: () => {
-      toast.error(FAILED);
-    },
+    onError: reportFailure,
   });
 
   // #789 — "Start analysis with these artifacts" after `/speckit.implement`.
@@ -409,9 +430,7 @@ export default function SpecKitPage() {
       setHandoff(null);
       router.push(`/projects/${projectId}/analysis?analysisId=${encodeURIComponent(id)}`);
     },
-    onError: () => {
-      toast.error(FAILED);
-    },
+    onError: reportFailure,
   });
 
   const enabled = enabledQuery.data?.enabled ?? false;
@@ -474,6 +493,14 @@ export default function SpecKitPage() {
     }
     if (FEATURE_REQUIRED_COMMANDS.has(parsed.command) && selectedFeature === null) {
       setLastErrorMessage(`Select a feature first: /${parsed.command} works on one feature.`);
+      return;
+    }
+    // #1037 — a command that cannot run on nothing says what to type, instead
+    // of sending `{ input: "" }` for the server to refuse.
+    const hint = emptyInputHint(parsed.command, parsed.input);
+    if (hint) {
+      setLastResultMessage(null);
+      setLastErrorMessage(hint);
       return;
     }
     // The constitution is the project's; every other command runs in the
@@ -1154,15 +1181,38 @@ export default function SpecKitPage() {
             {lastIssueLinks.length > 0 ? (
               <IssueLinks links={lastIssueLinks} testId="spec-kit-result-issue-links" />
             ) : null}
+            {/* #1057 / #1037 — the cut-off reply the server did not save. */}
+            {lastPartial.length > 0 ? (
+              <div className="mt-2 space-y-1" data-testid="spec-kit-partial">
+                <p className="font-medium text-warning">
+                  Cut-off reply, not saved. The previous version is still the current one.
+                </p>
+                {lastPartial.map((p) => (
+                  <details key={p.key} data-testid={`spec-kit-partial-${p.key}`}>
+                    <summary className="cursor-pointer text-warning">
+                      Show the cut-off {p.key}
+                    </summary>
+                    <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-warning/40 bg-warning-muted p-2">
+                      {p.content}
+                    </pre>
+                  </details>
+                ))}
+              </div>
+            ) : null}
           </Card>
         ) : null}
-        {lastErrorMessage ? (
+        {lastError ? (
           <Card
             className="border-destructive p-3 text-xs text-destructive"
             data-testid="spec-kit-error"
             role="alert"
           >
-            {lastErrorMessage}
+            {lastError.text}
+            {lastError.code ? (
+              <div className="mt-1 font-mono opacity-80" data-testid="spec-kit-error-code">
+                {lastError.code}
+              </div>
+            ) : null}
           </Card>
         ) : null}
       </aside>
