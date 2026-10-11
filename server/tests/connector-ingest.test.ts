@@ -117,6 +117,8 @@ describe("repoMetadataToUnits", () => {
   it("emits OVERVIEW + README + manifest units with redaction", () => {
     const units = repoMetadataToUnits("conn_1", {
       repo: { full_name: "o/r", default_branch: "main", size: 10 },
+      ref: "main",
+      refFoundUpstream: true,
       languages: { TypeScript: 100 },
       topLevel: [{ type: "file", name: "package.json", path: "package.json", size: 50 }],
       readme: "Contact alice@example.com for help",
@@ -130,6 +132,43 @@ describe("repoMetadataToUnits", () => {
     expect(overview?.body).toContain("o/r");
     const pkg = units.find((u) => u.filename.endsWith("package.json"));
     expect(pkg?.body).toContain('"name"');
+  });
+
+  // #1056 — the OVERVIEW names the ref the documents were read at, not just the
+  // upstream default branch, and does not present languages as the ref's.
+  it("names the pinned ref and its commit; labels languages repo-wide", () => {
+    const units = repoMetadataToUnits("conn_1", {
+      repo: { full_name: "o/r", default_branch: "main", size: 10 },
+      ref: "v2.3.3",
+      refFoundUpstream: true,
+      languages: { Go: 100 },
+      topLevel: [],
+      readme: null,
+      manifests: {},
+      headSha: "c4d54f8",
+    });
+    const overview = units.find((u) => u.filename.endsWith("OVERVIEW.md"))?.body ?? "";
+    expect(overview).toContain("- Ref: v2.3.3\n");
+    expect(overview).toContain("- Commit: c4d54f8\n");
+    expect(overview).toContain("- Upstream default branch: main\n");
+    expect(overview).toContain("- Languages (repo-wide, not specific to this ref): Go\n");
+  });
+
+  // #1056 review — the implicit `main` of an untested `master` repo was read
+  // with no ref, so the OVERVIEW says so rather than claiming `main`.
+  it("notes a ref that was not found upstream and fell back to the default branch", () => {
+    const units = repoMetadataToUnits("conn_1", {
+      repo: { full_name: "o/r", default_branch: "master", size: 10 },
+      ref: "main",
+      refFoundUpstream: false,
+      languages: {},
+      topLevel: [],
+      readme: null,
+      manifests: {},
+      headSha: null,
+    });
+    const overview = units.find((u) => u.filename.endsWith("OVERVIEW.md"))?.body ?? "";
+    expect(overview).toContain("- Ref: main (not found upstream; read the default branch)\n");
   });
 });
 
@@ -208,6 +247,8 @@ describe("ingestRepoMetadata", () => {
   it("writes documents + invokes knowledge.ingestDocument and updates connector", async () => {
     const summary = await ingestRepoMetadata("proj_1", "conn_repo_1", "user_1", {
       repo: { full_name: "o/r", default_branch: "main", size: 10 },
+      ref: "main",
+      refFoundUpstream: true,
       languages: { TypeScript: 100 },
       topLevel: [],
       readme: "hi",

@@ -76,10 +76,13 @@ export function repoMetadataToUnits(connectorId: string, meta: RepoMetadata): In
   const repoFull = meta.repo.full_name;
   const overview =
     `# Repository ${repoFull}\n\n` +
-    `- Default branch: ${meta.repo.default_branch}\n` +
-    `- Languages: ${Object.keys(meta.languages).join(", ") || "(unknown)"}\n` +
-    `- Top-level entries: ${meta.topLevel.map((t) => `${t.type === "dir" ? "/" : ""}${t.name}`).join(", ")}\n` +
-    `- HEAD sha: ${meta.headSha ?? "(unknown)"}\n`;
+    // #1056 — the README, manifests and tree below were read at this ref, so
+    // name it; the upstream default branch is context only.
+    `- Ref: ${meta.ref}${meta.refFoundUpstream ? "" : " (not found upstream; read the default branch)"}\n` +
+    `- Commit: ${meta.headSha ?? "(unknown)"}\n` +
+    `- Upstream default branch: ${meta.repo.default_branch}\n` +
+    `- Languages (repo-wide, not specific to this ref): ${Object.keys(meta.languages).join(", ") || "(unknown)"}\n` +
+    `- Top-level entries: ${meta.topLevel.map((t) => `${t.type === "dir" ? "/" : ""}${t.name}`).join(", ")}\n`;
   units.push({
     filename: `${REPO_FILENAME_PREFIX}:${connectorId}:OVERVIEW.md`,
     body: redactString(overview),
