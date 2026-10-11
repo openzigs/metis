@@ -28,6 +28,7 @@ import { loadAsPreamble } from "../constitution-meta.js";
 import { OfflineStubProvider } from "../../ai/providers/offline-stub-provider.js";
 import { SpecKitArtifactError } from "../artifacts.js";
 import { detectTruncation } from "../../docs-gen/truncation.js";
+import { resolveSpecKitOutputOptions } from "../output-budget.js";
 
 export interface SpecKitProjectContext {
   id: string;
@@ -101,6 +102,13 @@ export interface RunCommandInput {
    * Default `"markdown"`.
    */
   format?: "markdown" | "yaml";
+  /**
+   * #1057 — opt out of the empty-reply and no-text-before-the-cap failures, for
+   * a caller with its own fallback (`/speckit.checklist` writes the labelled
+   * generic templates, #787). The run then returns `content: ""` instead of
+   * throwing; `truncated` still reports a cut. Every other command keeps them.
+   */
+  allowEmptyOutput?: boolean;
 }
 
 export interface RunCommandOutput {
@@ -132,6 +140,48 @@ export const SPEC_KIT_TRUNCATION_NOTE =
 /** The same note as a YAML comment, so a salvaged contract still parses. */
 export const SPEC_KIT_TRUNCATION_NOTE_YAML =
   "# Incomplete: this document was cut off at the model's output-token limit. Re-run the command, or split the request.";
+
+/**
+ * #1057 — the error a command fails with when a reply hit the output cap
+ * without one whole line of text (typically: all reasoning, no answer). It is
+ * thrown before any artifact is written, so the previous version stays.
+ */
+export const SPEC_KIT_OUTPUT_EXHAUSTED_CODE = "SPEC_KIT_OUTPUT_EXHAUSTED";
+
+/**
+ * #1057 — the error a command fails with when the model finished normally but
+ * replied with nothing (empty or whitespace only). Writing `""` would leave the
+ * same stub shape as an exhausted budget, so nothing is written.
+ */
+export const SPEC_KIT_EMPTY_OUTPUT_CODE = "SPEC_KIT_EMPTY_OUTPUT";
+
+/**
+ * #1057 — `true` when an artifact carries the #944 Incomplete note, so a
+ * stored version can be told apart from a complete one.
+ */
+export function isIncompleteArtifact(content: string): boolean {
+  return (
+    content.includes(SPEC_KIT_TRUNCATION_NOTE) || content.includes(SPEC_KIT_TRUNCATION_NOTE_YAML)
+  );
+}
+
+/**
+ * #1057 — a partial reply never replaces a complete stored version. `true`
+ * when this run was cut off and the stored version is complete (non-empty and
+ * without the Incomplete note, as `gates.ts` reads a stored plan): the caller
+ * keeps that version current and returns the partial text instead of writing it.
+ */
+export function keepsPriorVersion(
+  truncated: boolean,
+  prior: { content: string } | null | undefined,
+): boolean {
+  return (
+    truncated &&
+    prior != null &&
+    prior.content.trim().length > 0 &&
+    !isIncompleteArtifact(prior.content)
+  );
+}
 
 const CONTINUE_PROMPT = [
   "Your previous reply was cut off at the output-token limit. Continue the SAME",
@@ -246,12 +296,25 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     // OpenAI-compatible path, where transparent gateway caching applies instead.
     callType: "spec-kit" as const,
     promptCaching: { system: true },
+    // #1057 — an explicit output cap and reasoning effort (config-driven), so
+    // a thinking-by-default model cannot spend the provider default reasoning.
+    ...resolveSpecKitOutputOptions(provider.model),
   };
   let kept = "";
   let truncated = false;
   let continuations = 0;
   let totalTokens = 0;
   let response: Awaited<ReturnType<AIProvider["chat"]>>;
+  // #1057 — fail before any artifact is written, so the previous version stays.
+  const failNoOutput = (reason: string, code: string, message: string): never => {
+    audit({
+      actor: input.actorId ? { id: input.actorId } : null,
+      action: `spec_kit.command.${input.command}.failed`,
+      target: { type: "project", id: input.project.id },
+      metadata: { reason, provider: response.provider, model: response.model, tokens: totalTokens },
+    });
+    throw new SpecKitArtifactError(502, code, message);
+  };
   for (;;) {
     const messages: ChatMessage[] =
       kept.length === 0
@@ -290,12 +353,41 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
         ? `${cut.text}\n`
         : ""
       : keepWholeLines(cut.text);
+    // #1057 — a cut reply with no whole line made no progress, and re-sending
+    // the same turn spends the same budget the same way (run 7: three
+    // attempts, three stubs). With nothing kept at all the command fails here,
+    // before any artifact is written; with a salvaged prefix it stops
+    // continuing and keeps the #944 marked salvage.
+    if (whole.trim().length === 0) {
+      if (kept.trim().length === 0 && !input.allowEmptyOutput) {
+        failNoOutput(
+          "output_exhausted",
+          SPEC_KIT_OUTPUT_EXHAUSTED_CODE,
+          `/${input.command}: the model reached its output-token limit before writing any text ` +
+            "(its reasoning likely used the whole budget). Nothing was saved; the previous version is kept. " +
+            "Lower SPEC_KIT_REASONING, raise SPEC_KIT_MAX_OUTPUT_TOKENS, or split the request.",
+        );
+      }
+      truncated = true;
+      break;
+    }
     kept = joinContinuation(kept, whole);
     truncated = true;
     if (continuations >= MAX_SPEC_KIT_CONTINUATIONS) break;
     continuations++;
   }
-  if (truncated)
+  // #1057 — a reply that finished normally but said nothing is no artifact
+  // either: written as "", a caller's template is appended to it as a stub.
+  const empty = kept.trim().length === 0;
+  if (empty && !input.allowEmptyOutput) {
+    failNoOutput(
+      "empty_output",
+      SPEC_KIT_EMPTY_OUTPUT_CODE,
+      `/${input.command}: the model returned an empty reply. Nothing was saved; the previous version is kept. ` +
+        "Re-run the command.",
+    );
+  }
+  if (truncated && !empty)
     kept = `${kept.trimEnd()}\n\n${input.format === "yaml" ? SPEC_KIT_TRUNCATION_NOTE_YAML : SPEC_KIT_TRUNCATION_NOTE}\n`;
 
   // 4. Outbound safety pass.

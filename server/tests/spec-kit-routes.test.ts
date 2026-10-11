@@ -604,6 +604,27 @@ describe("/api/projects/:projectId/spec-kit provider injection (#381)", () => {
     );
   });
 
+  it("#1057 — legacy /commands/plan returns partialContent when the complete plan.md is kept", async () => {
+    const { runPlan } = await import("../src/lib/spec-kit/commands/plan.js");
+    const kept = { ...stubResult("plan"), partialContent: "# Partial plan\n\n> **Incomplete:**\n" };
+    vi.mocked(runPlan).mockResolvedValueOnce(kept as never);
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/plan")
+      .send({ input: "" });
+    expect(res.status).toBe(200);
+    expect(res.body.data.command).toBe("plan");
+    expect(res.body.data.artifact.content).toBe("ok");
+    expect(res.body.data.partialContent).toBe("# Partial plan\n\n> **Incomplete:**\n");
+  });
+
+  it("legacy /commands/plan omits partialContent when the reply was saved", async () => {
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/plan")
+      .send({ input: "" });
+    expect(res.status).toBe(200);
+    expect(res.body.data).not.toHaveProperty("partialContent");
+  });
+
   it("namespaced speckit.specify injects the resolved provider", async () => {
     const { runSpecifyFeature } = await import("../src/lib/spec-kit/commands/specify-feature.js");
     (runSpecifyFeature as any).mockClear();

@@ -4,7 +4,13 @@
  */
 import type { SpecKitArtifactDto } from "@metis/shared";
 import { getArtifact, writeArtifact, SpecKitArtifactError } from "../artifacts.js";
-import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
+import {
+  runSpecKitAgent,
+  loadProjectContext,
+  keepsPriorVersion,
+  truncationWarning,
+  type RunDeps,
+} from "./runner.js";
 import {
   buildSpecKitRagContext,
   type CallerLookup,
@@ -50,6 +56,11 @@ export interface PlanResult {
   artifact: SpecKitArtifactDto;
   tokensUsed: number;
   message: string;
+  /**
+   * #1057 — the cut-off reply, set only when it was NOT saved because a
+   * complete plan.md already existed (that version stays current).
+   */
+  partialContent?: string;
 }
 
 export async function runPlan(input: PlanInput): Promise<PlanResult> {
@@ -104,6 +115,18 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     ragContext: rag.context,
     ragChunksUsed: rag.usedChunks,
   });
+
+  // #1057 — a cut-off reply never replaces a complete plan.md: the stored
+  // version stays current and the partial text is returned to the caller.
+  const prior = run.truncated ? await getArtifact(input.projectId, "plan.md") : null;
+  if (prior && keepsPriorVersion(run.truncated, prior)) {
+    return {
+      artifact: prior,
+      tokensUsed: run.tokensUsed,
+      partialContent: run.content,
+      message: `plan.md was cut off at the model's output-token limit, so the complete plan.md (v${prior.version}) is kept as current and the partial reply was not saved — re-run the command or split the request.`,
+    };
+  }
 
   const artifact = await writeArtifact({
     projectId: input.projectId,
