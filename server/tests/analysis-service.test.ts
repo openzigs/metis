@@ -1306,6 +1306,31 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
     expect(structured?.requirements[0].title).toBe("Audit logging");
   });
 
+  it("#1058 — records a failed extraction and clears it on a later good one", async () => {
+    const a = await createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document"],
+      documentIds: ["doc-1234567890"],
+      model: "stub",
+    });
+    const meta = () => JSON.parse(analyses.get(a.id)!.metadata!);
+    const failure = { reason: "unparseable", at: "2026-10-11T00:00:00.000Z" };
+
+    await persistAnalysisEnhancement(a.id, { structuredExtractionFailure: failure });
+    expect(meta().structuredExtractionFailure).toEqual(failure);
+
+    // An unrelated patch leaves the marker alone.
+    await persistAnalysisEnhancement(a.id, {
+      enhancement: { enableWebResearch: false, enableClarification: true },
+    });
+    expect(meta().structuredExtractionFailure).toEqual(failure);
+
+    await persistAnalysisEnhancement(a.id, { structuredExtractionFailure: null });
+    expect("structuredExtractionFailure" in meta()).toBe(false);
+    expect(meta().enhancement.enableClarification).toBe(true);
+  });
+
   it("persists webResearch digests", async () => {
     const a = await createAnalysis({
       projectId: "proj-abcdefghij",

@@ -2212,12 +2212,33 @@ export class AnalysisOrchestrator {
     if (rawInput.trim().length === 0) return;
 
     const extractor = new RequirementsExtractor({ provider, model: input.model });
-    const structured = await extractor.extract(rawInput, input.signal);
+    let structured: Awaited<ReturnType<RequirementsExtractor["extract"]>>;
+    try {
+      structured = await extractor.extract(rawInput, input.signal);
+    } catch (err) {
+      // #1058 — a failed extraction is NOT an empty one. The caller treats the
+      // enhancement as best-effort and only logs, so without a durable marker
+      // this run is indistinguishable from "no requirements, nothing to ask":
+      // no questions, no approval checkpoint, and nothing on screen to say why.
+      // A cancelled run is not a failure and is not marked.
+      if (!input.signal.aborted) {
+        const reason = (err as { reason?: unknown }).reason;
+        await persistAnalysisEnhancement(input.analysisId, {
+          structuredExtractionFailure: {
+            reason: typeof reason === "string" ? reason : "provider-error",
+            at: new Date().toISOString(),
+          },
+        });
+      }
+      throw err;
+    }
     // Issue #909 — a fresh run id with every extraction: the model numbers each
     // run's list from REQ-001, so the id alone cannot say which run it is from.
     await persistAnalysisEnhancement(input.analysisId, {
       structuredRequirements: structured,
       structuredRunId: randomUUID(),
+      // #1058 — a successful extraction supersedes an earlier failed one.
+      structuredExtractionFailure: null,
     });
 
     // Epic #202 (#215) — HITL approval checkpoints. Create one approval request

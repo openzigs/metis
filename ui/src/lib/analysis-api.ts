@@ -956,6 +956,12 @@ export interface StructuredRequirementsPayload {
 export interface EnhancementMetadata {
   enhancement?: { enableWebResearch: boolean; enableClarification: boolean };
   structuredRequirements?: StructuredRequirementsPayload;
+  /**
+   * Issue #1058 — present only when structured extraction ran and failed (the
+   * model's answer could not be read after a re-prompt, or the call failed).
+   * Not the same as an empty `structuredRequirements`.
+   */
+  structuredExtractionFailure?: { reason: string; at: string };
   webResearch?: WebResearchResultPayload;
   /**
    * Epic #202 (#216) / Issue #1104 — the approval gate's durable state. When

@@ -237,9 +237,23 @@ export interface PromotionBlockedState {
 /** #256 — terminal promotion outcome surfaced to the UI alongside the marker. */
 export type PromotionStatus = "allowed" | "blocked";
 
+/**
+ * Issue #1058 — structured extraction ran and produced nothing usable (the
+ * model's answer could not be read after a re-prompt, or the call failed).
+ * Present only on such a run, so its presence is the signal; the UI words the
+ * message itself and never renders `reason`'s detail.
+ */
+export interface StructuredExtractionFailure {
+  /** `unparseable` | `schema-invalid` | `empty-response` | `provider-error`. */
+  reason: string;
+  at: string;
+}
+
 export interface AnalysisEnhancementPatch {
   enhancement?: { enableWebResearch: boolean; enableClarification: boolean };
   structuredRequirements?: StructuredRequirements;
+  /** Issue #1058 — set on a failed extraction; `null` clears it on a good one. */
+  structuredExtractionFailure?: StructuredExtractionFailure | null;
   webResearch?: WebResearchResult;
   /** Epic #202 (#216) — promotion-gating state from the approval checkpoints. */
   promotionBlocked?: PromotionBlockedState;
@@ -346,6 +360,10 @@ function applyEnhancementPatch(
         runId?: string;
       };
     next.structuredRequirements = stored;
+  }
+  if (patch.structuredExtractionFailure === null) delete next.structuredExtractionFailure;
+  else if (patch.structuredExtractionFailure !== undefined) {
+    next.structuredExtractionFailure = patch.structuredExtractionFailure;
   }
   if (patch.webResearch !== undefined) next.webResearch = patch.webResearch;
   if (patch.promotionBlocked !== undefined) next.promotionBlocked = patch.promotionBlocked;

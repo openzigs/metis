@@ -62,10 +62,15 @@ export function EnhancementResults({
   // Nothing was requested — render nothing rather than empty scaffolding.
   if (!webResearchEnabled && !clarificationEnabled) return null;
 
-  const structured = enhancement.structuredRequirements;
+  // Issue #1058 — extraction ran and failed. Whatever `structuredRequirements`
+  // holds is then from an earlier run, so the "no open questions" banner must
+  // not vouch for this one.
+  const extractionFailed = Boolean(enhancement.structuredExtractionFailure);
+  const structured = extractionFailed ? undefined : enhancement.structuredRequirements;
 
   return (
     <div className="space-y-4">
+      {extractionFailed && <StructuredExtractionFailedNotice />}
       {clarificationEnabled && structured && (
         <p data-testid="collaboration-hint" className="text-xs text-muted-foreground">
           Collaborate: answer the clarifying questions below, Approve/Reject and comment on each
@@ -89,6 +94,27 @@ export function EnhancementResults({
           structured={structured}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Issue #1058 — the requirements-extraction step failed (the model's answer
+ * could not be read, or the call failed). Before this notice the run showed
+ * "No open questions — requirements look complete", asked nothing and created
+ * no approval checkpoint: a failed step dressed as a clean result. The wording
+ * is fixed here; the server's `reason` is for the log, not the screen.
+ */
+function StructuredExtractionFailedNotice(): React.ReactElement {
+  return (
+    <div
+      role="alert"
+      data-testid="structured-extraction-failed"
+      className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+    >
+      <span aria-hidden>⚠</span> METIS could not read the requirements out of the model’s answer, so
+      no clarifying questions or approval checkpoints were prepared for this run. This step failed —
+      it does not mean the requirements are complete. Run the analysis again to retry.
     </div>
   );
 }

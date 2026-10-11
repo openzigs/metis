@@ -178,6 +178,8 @@ export interface StructuredVerdictRequest<T> {
   signal?: AbortSignal;
   maxTokens?: number;
   callType?: CacheTelemetryCallType;
+  /** #1058 — expose no tools to the model (a pure extraction call). */
+  disableTools?: boolean;
   /**
    * Used ONLY when the active provider declares `responseFormat` support
    * (#1115). Supplying it to a provider that drops it would be a silent no-op,
@@ -304,6 +306,7 @@ export async function requestStructuredVerdict<T>(
     ...(request.signal ? { signal: request.signal } : {}),
     ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
     ...(request.callType ? { callType: request.callType } : {}),
+    ...(request.disableTools ? { disableTools: true } : {}),
     ...(usedResponseFormat ? { responseFormat: request.responseFormat } : {}),
   };
 
