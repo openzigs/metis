@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { specKitApi, type SpecKitFeatureStatus } from "@/lib/spec-kit-api";
 import { queryKeys } from "@/lib/query-keys";
+import { describeSpecKitError } from "@/lib/spec-kit-display";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
@@ -72,8 +73,9 @@ export function FeaturePanel({ projectId, enabled, canWrite, selectedSlug, onSel
         queryKey: queryKeys.projects.specKitFeaturesAll(projectId),
       });
     },
-    onError: () => {
-      toast.error("The Spec Kit operation failed. Please try again.");
+    // #1037 — the server's reason (e.g. "not archived"), not one generic line.
+    onError: (err) => {
+      toast.error(describeSpecKitError(err));
     },
   });
 

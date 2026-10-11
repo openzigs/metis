@@ -13,9 +13,18 @@
  *
  * The OpenAPI body is generated from the plan + spec by the Architect
  * agent; this module post-processes it to ensure it lints clean.
+ *
+ * #1065 — plan.md is generated FIRST and handed to the data model, the
+ * contract and the quickstart, so they follow the plan instead of guessing at
+ * it (run 7: a contract endpoint the plan had put out of scope). Nothing is
+ * written until every artifact has been generated AND passed the store's own
+ * checks, so a failed model call or an oversized artifact leaves the previous
+ * set whole rather than a mix of old and new. The five writes are not one
+ * database transaction: a database error part-way can still leave a mixed set.
  */
 import yaml from "js-yaml";
 import {
+  assertFeatureArtifactWritable,
   writeFeatureArtifact,
   getFeatureArtifact,
   type FeatureArtifactDto,
@@ -31,6 +40,12 @@ import {
   type RunDeps,
 } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
+import {
+  findContractPlanContradictions,
+  NO_REST_SURFACE_EXTENSION,
+  NO_REST_SURFACE_MARKER,
+  planHasNoRestSurfaceMarker,
+} from "../contract-check.js";
 import { PLAN_SYSTEM_PROMPT as LEGACY_PLAN_SYSTEM_PROMPT } from "./prompts.js";
 import { describeUndeclaredMermaidNodes, findUndeclaredMermaidNodes } from "../mermaid-check.js";
 import {
@@ -97,10 +112,24 @@ const CONTRACT_SYSTEM_PROMPT = [
   "",
   "Output **YAML ONLY** (no markdown fences, no prose). The document MUST be a",
   "valid OpenAPI 3.1.0 specification with at minimum: `openapi: 3.1.0`, `info`",
-  "(title + version), and at least one path operation derived from the feature's",
-  "API surface. If the feature has no API surface, emit a stub with a single",
-  "`/health` GET that returns 200.",
+  "(title + version) and `paths`.",
+  "",
+  "Define ONLY the path operations the plan puts in scope — the endpoints it adds",
+  "or changes. Never invent an endpoint, and never add a placeholder such as",
+  "`/health`. If the plan adds or changes no REST/HTTP endpoint, that is a valid",
+  `result: emit \`paths: {}\` and \`${NO_REST_SURFACE_EXTENSION}: true\`, and say why in`,
+  "`info.description`.",
 ].join("\n");
+
+/**
+ * #1065 — appended to the plan.md request, so the contract step can tell "no
+ * endpoint" from "endpoints not listed" without guessing.
+ */
+const PLAN_REST_SURFACE_ASK = [
+  "Under `## Components`, name every REST/HTTP endpoint this feature adds or",
+  "changes as `METHOD /path`. If it adds or changes none, write exactly the line",
+  `\`${NO_REST_SURFACE_MARKER}\` there instead.`,
+].join(" ");
 
 export interface PlanInput {
   projectId: string;
@@ -187,17 +216,21 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     "```",
   ].join("\n");
 
-  const artifacts: FeatureArtifactDto[] = [];
   let totalTokens = 0;
   // #944 — artifacts whose reply the output cap still cut off.
   const truncated: string[] = [];
-  const generate = async (key: string, systemPrompt: string, ask: string): Promise<string> => {
+  const generate = async (
+    key: string,
+    systemPrompt: string,
+    ask: string,
+    context = userBase,
+  ): Promise<string> => {
     const format = key.endsWith(".yaml") ? ("yaml" as const) : ("markdown" as const);
     const run = await runSpecKitAgent({
       command: "plan",
       project,
       systemPrompt,
-      userPrompt: `${userBase}\n\n${ask}`,
+      userPrompt: `${context}\n\n${ask}`,
       actorId: input.actorId ?? null,
       sessionId: input.sessionId ?? null,
       deps: input.deps,
@@ -212,24 +245,41 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   // #1057 — cut-off replies NOT saved because a complete version already
   // existed; that version stays current and the partial text is returned.
   const partialContent: Record<string, string> = {};
-  const write = async (key: string, content: string): Promise<FeatureArtifactDto> => {
+  // #1065 — nothing is written while another artifact can still fail to be
+  // generated: each one is staged here and the set is written once all five
+  // exist. A 502 from any model call (#1057) therefore leaves the previous set
+  // whole. The write phase below is NOT a transaction — see the note there.
+  const staged: Array<{ key: string; content: string; prior: FeatureArtifactDto | null }> = [];
+  /** Stage an artifact; returns the content that will be current after this run. */
+  const stage = async (key: string, content: string): Promise<string> => {
     const cut = truncated.includes(key);
-    const prior = cut ? await getFeatureArtifact(feature.id, key) : null;
-    let current: FeatureArtifactDto;
-    if (prior && keepsPriorVersion(cut, prior)) {
-      partialContent[key] = content;
-      current = prior;
-    } else {
-      current = await writeFeatureArtifact({
-        featureId: feature.id,
-        key,
-        content,
-        actorId: input.actorId ?? null,
-      });
-    }
-    artifacts.push(current);
-    return current;
+    const stored = cut ? await getFeatureArtifact(feature.id, key) : null;
+    const prior = stored && keepsPriorVersion(cut, stored) ? stored : null;
+    if (prior) partialContent[key] = content;
+    staged.push({ key, content, prior });
+    return prior ? prior.content : content;
   };
+
+  // plan.md first (#1065) — the data model, contract and quickstart follow it.
+  let planContent = await generate(
+    "plan.md",
+    PLAN_SYSTEM_PROMPT,
+    `Produce plan.md per the system instructions. ${PLAN_REST_SURFACE_ASK}`,
+  );
+  if (!/^##\s+Constitution Compliance Check/m.test(planContent)) {
+    planContent = `${planContent.trim()}\n\n## Constitution Compliance Check\n\n| Principle | Status | Notes |\n| --- | --- | --- |\n| (auto-generated) | n/a | populate per principle from .specify/memory/constitution.md |\n`;
+  }
+  // The plan the later artifacts must agree with is the one that stays current:
+  // the complete earlier version when this reply was cut off (#1057).
+  const currentPlan = await stage("plan.md", planContent);
+  const withPlan = [
+    userBase,
+    "",
+    "plan.md — the plan this document MUST agree with. Do not add scope it does not contain:",
+    "```md",
+    currentPlan,
+    "```",
+  ].join("\n");
 
   // Phase 0 — research.md (always emitted).
   let researchContent = await generate(
@@ -241,46 +291,72 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   if (noClarMarkers && !/^##\s+Resolved Unknowns/m.test(researchContent)) {
     researchContent = `${researchContent.trim()}\n\n## Resolved Unknowns: none\n`;
   }
-  await write("research.md", researchContent);
+  await stage("research.md", researchContent);
 
   // Phase 1 — data-model.md
-  await write(
+  await stage(
     "data-model.md",
     await generate(
       "data-model.md",
       DATA_MODEL_SYSTEM_PROMPT,
-      "Produce data-model.md per the system instructions.",
+      "Produce data-model.md per the system instructions. Model only the entities and fields the plan above adds or changes.",
+      withPlan,
     ),
   );
 
-  // Phase 1 — contracts/api.openapi.yaml
-  const contract = await generate(
+  // Phase 1 — contracts/api.openapi.yaml. A plan that declares no REST surface
+  // gets the explicit empty contract without a model call: there is nothing to
+  // derive, and a model asked for a contract tends to supply an endpoint.
+  const noRestSurface = planHasNoRestSurfaceMarker(currentPlan);
+  const currentContract = await stage(
     "contracts/api.openapi.yaml",
-    CONTRACT_SYSTEM_PROMPT,
-    "Produce the OpenAPI 3.1 contract per the system instructions.",
+    noRestSurface
+      ? noRestSurfaceContract(feature.slug, `plan.md declares \`${NO_REST_SURFACE_MARKER}\`.`)
+      : ensureValidOpenAPI(
+          await generate(
+            "contracts/api.openapi.yaml",
+            CONTRACT_SYSTEM_PROMPT,
+            "Produce the OpenAPI 3.1 contract per the system instructions, from the plan above.",
+            withPlan,
+          ),
+          feature.slug,
+        ),
   );
-  await write("contracts/api.openapi.yaml", ensureValidOpenAPI(contract, feature.slug));
 
   // Phase 1 — quickstart.md
-  await write(
+  await stage(
     "quickstart.md",
     await generate(
       "quickstart.md",
       QUICKSTART_SYSTEM_PROMPT,
-      "Produce quickstart.md per the system instructions.",
+      "Produce quickstart.md per the system instructions, for the change the plan above describes.",
+      withPlan,
     ),
   );
 
-  // Plan.md (last — references the others).
-  let planContent = await generate(
-    "plan.md",
-    PLAN_SYSTEM_PROMPT,
-    "Produce plan.md per the system instructions.",
-  );
-  if (!/^##\s+Constitution Compliance Check/m.test(planContent)) {
-    planContent = `${planContent.trim()}\n\n## Constitution Compliance Check\n\n| Principle | Status | Notes |\n| --- | --- | --- |\n| (auto-generated) | n/a | populate per principle from .specify/memory/constitution.md |\n`;
+  // Every artifact exists. Before the first write, run every check the store
+  // makes ahead of its database calls (key shape, 200,000-character cap) on the
+  // whole set, so a refusal that can be known in advance refuses all five.
+  // What is left is a database error between two writes: the store has no
+  // transaction, so that — and only that — can still leave a mixed set.
+  for (const item of staged) {
+    if (!item.prior) assertFeatureArtifactWritable(item.key, item.content);
   }
-  const plan = await write("plan.md", planContent);
+  // Write the set. plan.md goes last so it is the artifact the page opens on,
+  // as before.
+  const artifacts: FeatureArtifactDto[] = [];
+  for (const item of [...staged.slice(1), staged[0]!]) {
+    artifacts.push(
+      item.prior ??
+        (await writeFeatureArtifact({
+          featureId: feature.id,
+          key: item.key,
+          content: item.content,
+          actorId: input.actorId ?? null,
+        })),
+    );
+  }
+  const plan = artifacts[artifacts.length - 1]!;
 
   // #1057 — a cut-off plan.md does not make the feature `planned`.
   const planCut = truncated.includes("plan.md");
@@ -305,6 +381,19 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     .map((a) => describeUndeclaredMermaidNodes(a.key, findUndeclaredMermaidNodes(a.content)))
     .join("");
 
+  // #1065 — a contract operation the plan does not account for is reported at
+  // once, not left for `/speckit.analyze` to find.
+  const contradictions = findContractPlanContradictions(
+    [{ key: "contracts/api.openapi.yaml", content: currentContract }],
+    currentPlan,
+  );
+  const contractNote =
+    contradictions.length > 0
+      ? ` Contract check: ${contradictions.join(" ")} Correct plan.md or the contract before /speckit.tasks.`
+      : noRestSurface
+        ? " The plan declares no REST surface, so the contract defines no endpoint."
+        : "";
+
   const kept = Object.keys(partialContent);
   const keptNote =
     kept.length > 0
@@ -314,16 +403,41 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
 
   return {
     artifacts,
-    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${pathNote}${noneNote}${mermaidNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
+    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${pathNote}${noneNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
     tokensUsed: totalTokens,
     ...(kept.length > 0 ? { partialContent } : {}),
   };
 }
 
 /**
+ * #1065 — the contract of a feature with no REST surface: valid OpenAPI 3.1
+ * with no path at all, marked so a reader (and `/speckit.analyze`) can tell an
+ * intended empty contract from a missing one.
+ */
+export function noRestSurfaceContract(featureSlug: string, reason: string): string {
+  return yaml.dump(
+    {
+      openapi: "3.1.0",
+      info: {
+        title: featureSlug,
+        version: "0.1.0",
+        description: `This feature adds or changes no REST endpoint. ${reason}`,
+      },
+      paths: {},
+      [NO_REST_SURFACE_EXTENSION]: true,
+    },
+    { lineWidth: 100 },
+  );
+}
+
+/**
  * Ensure the model output is a valid OpenAPI 3.1 YAML. Strips markdown
  * fences, parses with js-yaml, and ensures the document has the required
  * top-level keys. Returns the canonical YAML serialisation.
+ *
+ * #1065 — a contract with no path is accepted as it is, and a reply that is
+ * not OpenAPI becomes a contract with no path: it used to become a `/health`
+ * stub, an endpoint nobody had planned.
  */
 export function ensureValidOpenAPI(raw: string, featureSlug: string): string {
   let body = raw.trim();
@@ -337,21 +451,22 @@ export function ensureValidOpenAPI(raw: string, featureSlug: string): string {
     doc = null;
   }
   if (!doc || typeof doc.openapi !== "string" || !doc.info) {
-    // Fall back to a stub so the contract artifact always lints clean.
-    doc = {
-      openapi: "3.1.0",
-      info: { title: featureSlug, version: "0.1.0" },
-      paths: {
-        "/health": {
-          get: {
-            summary: "Liveness probe",
-            responses: { "200": { description: "OK" } },
-          },
+    // Still lints clean, and declares nothing the model did not write.
+    return yaml.dump(
+      {
+        openapi: "3.1.0",
+        info: {
+          title: featureSlug,
+          version: "0.1.0",
+          description:
+            "The model's reply was not a valid OpenAPI document, so no endpoint is declared. Re-run /speckit.plan.",
         },
+        paths: {},
       },
-    };
-  } else if (typeof doc.openapi === "string" && !doc.openapi.startsWith("3.1")) {
-    doc.openapi = "3.1.0";
+      { lineWidth: 100 },
+    );
   }
+  if (!doc.openapi.startsWith("3.1")) doc.openapi = "3.1.0";
+  if (!doc.paths || typeof doc.paths !== "object") doc.paths = {};
   return yaml.dump(doc, { lineWidth: 100 });
 }

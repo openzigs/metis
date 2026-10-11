@@ -36,6 +36,7 @@ import {
   ANALYSIS_RETRIEVE_K,
   analysisRoom,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
+  codeInvestigationContinueLimitReached,
   deriveCapabilityReasons,
   isCodeCitation,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
@@ -441,6 +442,26 @@ interface SynthesisOutcome {
 export const CONTINUE_BUDGET_MULTIPLIER = 2;
 
 /**
+ * #1062 — "Continue with a larger budget" was asked for again on an analysis
+ * that has already used every continuation it is allowed
+ * (`MAX_CODE_INVESTIGATION_CONTINUATIONS`). Each one reruns at the same enlarged
+ * budget, so another would spend the same tokens to stop in the same place.
+ */
+export class CodeInvestigationContinueLimitError extends Error {
+  readonly code = "CODE_INVESTIGATION_CONTINUE_LIMIT";
+  constructor(
+    readonly analysisId: string,
+    readonly continuations: number,
+  ) {
+    super(
+      `The code analysis has already been continued ${continuations === 1 ? "once" : `${continuations} times`} at ${CONTINUE_BUDGET_MULTIPLIER}× the configured budget, the largest a continuation can use. ` +
+        "Raise ANALYSIS_AGENT_TOKEN_BUDGET and start a new analysis, or analyse fewer requirements per run.",
+    );
+    this.name = "CodeInvestigationContinueLimitError";
+  }
+}
+
+/**
  * #773 / #739 / #1001 — the turn caps for the agentic code pass's standard and
  * deep sub-passes. The cap scales with the requirements each pass investigates
  * (see `resolveAgenticMaxTurns`) unless the #739 escalation policy owns it, and
@@ -819,6 +840,22 @@ export class AnalysisOrchestrator {
   }
 
   /**
+   * #1062 — pre-flight for "Continue with a larger budget": refuses with
+   * {@link CodeInvestigationContinueLimitError} once the analysis has used every
+   * continuation it is allowed. Without it a rerun that was cut short again kept
+   * its Continue button, and each click bought the same enlarged run again.
+   */
+  async assertCanContinueInvestigation(analysisId: string): Promise<void> {
+    const capability = await getAnalysisCapability(analysisId);
+    if (codeInvestigationContinueLimitReached(capability)) {
+      throw new CodeInvestigationContinueLimitError(
+        analysisId,
+        capability?.codeInvestigationContinuations ?? 0,
+      );
+    }
+  }
+
+  /**
    * Re-run a single specialist agent on an existing analysis (#57). Re-runs
    * synthesis afterwards so requirements stay consistent with findings.
    *
@@ -843,6 +880,8 @@ export class AnalysisOrchestrator {
     extendBudget?: boolean;
   }): Promise<void> {
     const { analysis } = await this.assertCanRegenerate(opts.analysisId);
+    // #1062 — the route pre-checks this; a direct caller is held to it too.
+    if (opts.extendBudget) await this.assertCanContinueInvestigation(opts.analysisId);
     // #724 — bill the regenerated agent and the re-synthesis to the project.
     const scope = {
       projectId: analysis.projectId,
@@ -955,7 +994,9 @@ export class AnalysisOrchestrator {
       // #1001 — the regenerated code pass replaced the code findings, so the
       // run's retrieval health and "cut short" reason must describe IT, not the
       // pass it replaced — otherwise a continued run keeps offering to continue.
-      if (opts.agentKey === "code") await this.refreshCodeInvestigation(opts.analysisId);
+      if (opts.agentKey === "code") {
+        await this.refreshCodeInvestigation(opts.analysisId, opts.extendBudget === true);
+      }
       this.emitCompleted(opts.analysisId);
     } catch (err) {
       outcome = "failed";
@@ -1380,16 +1421,24 @@ export class AnalysisOrchestrator {
    * retrieval health (the gap report reads it) and re-derive the capability's
    * code-retrieval flags from it, so the banner describes the pass that now
    * owns the code findings. Best-effort, like every capability write.
+   *
+   * #1062 — `continued` marks a "Continue with a larger budget" rerun: it is
+   * counted on the record (the limit reads the count), and when the rerun was cut
+   * short as well, what it left unreached is recorded so the banner can say so
+   * instead of silently offering to continue again.
    */
-  private async refreshCodeInvestigation(analysisId: string): Promise<void> {
+  private async refreshCodeInvestigation(analysisId: string, continued = false): Promise<void> {
     const health = mergeRetrievalHealth(this.retrievalHealths.get(analysisId) ?? []);
     this.retrievalHealths.delete(analysisId);
-    // Single-shot regenerates record no retrieval health; leave the record alone.
-    if (!health) return;
-    try {
-      await persistAnalysisEnhancement(analysisId, { retrieval: health });
-    } catch (err) {
-      log.warn("Retrieval-health persist failed", { analysisId, error: (err as Error).message });
+    // Single-shot regenerates record no retrieval health; leave the record alone
+    // — unless this was a continuation, which is counted whatever it recorded.
+    if (!health && !continued) return;
+    if (health) {
+      try {
+        await persistAnalysisEnhancement(analysisId, { retrieval: health });
+      } catch (err) {
+        log.warn("Retrieval-health persist failed", { analysisId, error: (err as Error).message });
+      }
     }
     let capability: AnalysisCapability | null;
     try {
@@ -1399,14 +1448,36 @@ export class AnalysisOrchestrator {
       return;
     }
     if (!capability) return;
-    const flags = {
-      codeRetrievalDegraded: health.degraded,
-      codeInvestigationCutShort: health.exhausted === true,
-    };
-    await this.persistAndEmitCapability(analysisId, {
+    const next: AnalysisCapability = {
       ...capability,
-      ...flags,
-      reasons: deriveCapabilityReasons({ ...capability, ...flags }),
+      ...(health
+        ? {
+            codeRetrievalDegraded: health.degraded,
+            codeInvestigationCutShort: health.exhausted === true,
+          }
+        : {}),
+      ...(continued
+        ? { codeInvestigationContinuations: (capability.codeInvestigationContinuations ?? 0) + 1 }
+        : {}),
+    };
+    if (health) {
+      // An ordinary regenerate ran at the configured budget and now owns the
+      // findings, so the count starts again: a continuation of THIS pass would
+      // be a larger run than the one just made, which is what the limit is not
+      // meant to refuse (and "the rerun was also cut short" would be untrue).
+      if (!continued) delete next.codeInvestigationContinuations;
+      // The counts describe the pass that now owns the findings, or nothing.
+      delete next.codeInvestigationUnreached;
+      if (health.exhausted === true && health.unverifiedRequirements !== undefined) {
+        next.codeInvestigationUnreached = {
+          unreached: health.unverifiedRequirements,
+          total: health.requirementCount,
+        };
+      }
+    }
+    await this.persistAndEmitCapability(analysisId, {
+      ...next,
+      reasons: deriveCapabilityReasons(next),
     });
   }
 

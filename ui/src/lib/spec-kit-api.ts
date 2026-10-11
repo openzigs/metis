@@ -73,6 +73,12 @@ export interface SpecKitRunOptions {
  */
 export interface SpecKitCommandResult {
   message: string;
+  /**
+   * #1057 — a reply cut off at the output cap that was NOT saved because a
+   * complete version exists: by artifact key from `speckit.plan`, one string
+   * (plan.md) from the legacy `plan`.
+   */
+  partialContent?: string | Record<string, string>;
   artifactName?: SpecKitArtifactName | null;
   artifact?:
     SpecKitArtifactDto | { key: string } | { context: string[]; orchestratorRoute: string } | null;

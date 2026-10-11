@@ -88,9 +88,18 @@ const assertCanRegenerate = vi.fn(async () => undefined);
 const regenerateAgent = vi.fn(async () => undefined);
 const assertCanResumeRepos = vi.fn(async () => ({ skippedRepos: [{ connectorId: "c1" }] }));
 const resumeSkippedRepos = vi.fn(async () => undefined);
+// #1062 — the pre-flight that limits "Continue with a larger budget".
+const assertCanContinueInvestigation = vi.fn(async () => undefined);
+const { FakeContinueLimitError } = vi.hoisted(() => ({
+  FakeContinueLimitError: class extends Error {
+    readonly code = "CODE_INVESTIGATION_CONTINUE_LIMIT";
+    readonly continuations = 1;
+  },
+}));
 const orchestrator = {
   cancel,
   assertCanRegenerate,
+  assertCanContinueInvestigation,
   regenerateAgent,
   assertCanResumeRepos,
   resumeSkippedRepos,
@@ -103,6 +112,7 @@ vi.mock("../lib/analysis/index.js", () => ({
   ANALYSIS_SPECIALIST_AGENT_KEYS: ["document", "code", "database", "web"],
   AnalysisOrchestrator: class {},
   AnalysisNotRegeneratableError: class extends Error {},
+  CodeInvestigationContinueLimitError: FakeContinueLimitError,
   CostCapExceededError: class extends Error {},
   assertCanStartAnalysis: vi.fn(),
   getAllPersonas: vi.fn(),
@@ -363,6 +373,41 @@ describe("/api/analyses top-level router — cross-tenant scope (#1099)", () => 
         .send({ tokenBudget: 10_000_000 });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe("VALIDATION_ERROR");
+      expect(regenerateAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("#1062 — Continue is limited", () => {
+    it("refuses a continuation past the limit with 409 and the reason, and starts nothing", async () => {
+      currentUser = DEV_WS_A;
+      assertCanContinueInvestigation.mockRejectedValueOnce(
+        new FakeContinueLimitError("already continued once at 2× the configured budget") as never,
+      );
+      const res = await request(app)
+        .post("/api/analyses/an-1/agents/code/regenerate")
+        .send({ extendBudget: true });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("CODE_INVESTIGATION_CONTINUE_LIMIT");
+      expect(res.body.error.message).toContain("already continued once");
+      expect(res.body.error.details).toEqual({ continuations: 1 });
+      expect(regenerateAgent).not.toHaveBeenCalled();
+    });
+
+    it("checks the limit only for a continuation, never for an ordinary regenerate", async () => {
+      currentUser = DEV_WS_A;
+      assertCanContinueInvestigation.mockClear();
+      const res = await request(app).post("/api/analyses/an-1/agents/code/regenerate");
+      expect(res.status).toBe(202);
+      expect(assertCanContinueInvestigation).not.toHaveBeenCalled();
+    });
+
+    it("surfaces any other pre-flight failure as itself", async () => {
+      currentUser = DEV_WS_A;
+      assertCanContinueInvestigation.mockRejectedValueOnce(new Error("db down") as never);
+      const res = await request(app)
+        .post("/api/analyses/an-1/agents/code/regenerate")
+        .send({ extendBudget: true });
+      expect(res.status).toBe(500);
       expect(regenerateAgent).not.toHaveBeenCalled();
     });
   });

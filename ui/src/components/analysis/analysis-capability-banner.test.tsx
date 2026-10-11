@@ -9,7 +9,11 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { deriveCapabilityReasons, type AnalysisCapability } from "@metis/shared";
+import {
+  deriveCapabilityReasons,
+  MAX_CODE_INVESTIGATION_CONTINUATIONS,
+  type AnalysisCapability,
+} from "@metis/shared";
 import { AnalysisCapabilityBanner } from "./analysis-capability-banner";
 
 function capability(overrides: Partial<AnalysisCapability> = {}): AnalysisCapability {
@@ -119,5 +123,69 @@ describe("AnalysisCapabilityBanner continue action (#1001)", () => {
       <AnalysisCapabilityBanner capability={withSkipped} onContinueInvestigation={() => {}} />,
     );
     expect(screen.queryByTestId("continue-code-investigation")).not.toBeInTheDocument();
+  });
+
+  it("a first cut-short run shows no rerun note and no limit reason", () => {
+    render(<AnalysisCapabilityBanner capability={cutShort} onContinueInvestigation={() => {}} />);
+    expect(screen.queryByTestId("rerun-also-cut-short")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("continue-limit-reason")).not.toBeInTheDocument();
+  });
+});
+
+describe("AnalysisCapabilityBanner after a continued rerun (#1062)", () => {
+  const rerunCutShort = capability({
+    codeInvestigationCutShort: true,
+    codeInvestigationContinuations: MAX_CODE_INVESTIGATION_CONTINUATIONS,
+    codeInvestigationUnreached: { unreached: 9, total: 16 },
+  });
+
+  it("says the rerun was also cut short, with how many requirements it left", () => {
+    render(
+      <AnalysisCapabilityBanner capability={rerunCutShort} onContinueInvestigation={() => {}} />,
+    );
+    expect(screen.getByTestId("rerun-also-cut-short")).toHaveTextContent(
+      "The rerun was also cut short: 9 of 16 requirements unreached.",
+    );
+  });
+
+  it("stops offering Continue at the limit and shows the reason instead", () => {
+    const onContinue = vi.fn();
+    render(
+      <AnalysisCapabilityBanner capability={rerunCutShort} onContinueInvestigation={onContinue} />,
+    );
+    expect(screen.queryByTestId("continue-code-investigation")).not.toBeInTheDocument();
+    const reason = screen.getByTestId("continue-limit-reason");
+    expect(reason).toHaveTextContent(/Continue is not offered again/);
+    expect(reason).toHaveTextContent("ANALYSIS_AGENT_TOKEN_BUDGET");
+    // The "re-run with a larger budget" advice is gone: it can no longer be followed here.
+    expect(
+      screen.getByTestId("capability-reason-code-investigation-cut-short"),
+    ).not.toHaveTextContent(/Re-run the code investigation with a larger/);
+  });
+
+  it("shows the reason to a read-only viewer too", () => {
+    render(<AnalysisCapabilityBanner capability={rerunCutShort} />);
+    expect(screen.getByTestId("rerun-also-cut-short")).toBeInTheDocument();
+    expect(screen.getByTestId("continue-limit-reason")).toBeInTheDocument();
+  });
+
+  it("says so without counts when the rerun reported none", () => {
+    render(
+      <AnalysisCapabilityBanner
+        capability={capability({
+          codeInvestigationCutShort: true,
+          codeInvestigationContinuations: 1,
+        })}
+      />,
+    );
+    expect(screen.getByTestId("rerun-also-cut-short")).toHaveTextContent(
+      /^The rerun was also cut short\.$/,
+    );
+  });
+
+  it("uses semantic colour tokens only", () => {
+    const { container } = render(<AnalysisCapabilityBanner capability={rerunCutShort} />);
+    expect(container.innerHTML).not.toMatch(/(amber|yellow|orange|red)-\d{2,3}/);
+    expect(screen.getByTestId("rerun-also-cut-short").className).toContain("text-warning");
   });
 });

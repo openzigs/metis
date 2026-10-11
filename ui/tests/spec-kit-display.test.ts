@@ -6,11 +6,65 @@ import { ApiError } from "@/lib/api-client";
 import {
   describeSpecKitError,
   displayArtifactText,
+  emptyInputHint,
   isMarkdownArtifact,
   isNoProjectAccess,
   loadHandoff,
+  partialReplies,
   saveHandoff,
+  specKitErrorCode,
 } from "@/lib/spec-kit-display";
+
+describe("#1037 — errors and cut-off replies", () => {
+  it("puts an empty-input refusal in the page's words", () => {
+    expect(
+      describeSpecKitError(
+        new ApiError(
+          400,
+          "/speckit.constitution requires the constitution body in the request input.",
+          "SPECKIT_EMPTY_INPUT",
+        ),
+      ),
+    ).toBe("This command needs text after it. Type it after the command, then run it again.");
+  });
+
+  it("keeps the message of the 502 output failures", () => {
+    for (const code of ["SPEC_KIT_OUTPUT_EXHAUSTED", "SPEC_KIT_EMPTY_OUTPUT"]) {
+      const err = new ApiError(502, `/plan: nothing was saved (${code}).`, code);
+      expect(describeSpecKitError(err)).toBe(`/plan: nothing was saved (${code}).`);
+      expect(specKitErrorCode(err)).toBe(code);
+    }
+  });
+
+  it("falls back to the generic sentence for an API error with no message", () => {
+    expect(describeSpecKitError(new ApiError(500, "  "))).toBe(
+      "The Spec Kit operation failed. Please try again.",
+    );
+  });
+
+  it("has no code for a non-API error or an API error without one", () => {
+    expect(specKitErrorCode(new Error("x"))).toBeNull();
+    expect(specKitErrorCode(new ApiError(500, "boom"))).toBeNull();
+  });
+
+  it("hints only for the commands that need input, and only when it is empty", () => {
+    expect(emptyInputHint("speckit.constitution", "  ")).toContain("/speckit.constitution");
+    expect(emptyInputHint("speckit.specify", "")).toContain("/speckit.specify");
+    expect(emptyInputHint("speckit.constitution", "# Principles")).toBeNull();
+    expect(emptyInputHint("speckit.tasks", "")).toBeNull();
+  });
+
+  it("reads partialContent as a map, as one string, or as nothing", () => {
+    expect(partialReplies({ "plan.md": "# P", "quickstart.md": "  ", n: 3 })).toEqual([
+      { key: "plan.md", content: "# P" },
+    ]);
+    expect(partialReplies("# Legacy plan")).toEqual([{ key: "plan.md", content: "# Legacy plan" }]);
+    expect(partialReplies(" ")).toEqual([]);
+    expect(partialReplies(undefined)).toEqual([]);
+    expect(partialReplies(null)).toEqual([]);
+    expect(partialReplies(["a"])).toEqual([]);
+  });
+});
 
 describe("displayArtifactText", () => {
   it("drops the checklist's base64 marker line and keeps everything else", () => {
