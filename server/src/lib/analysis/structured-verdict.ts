@@ -109,6 +109,11 @@ export interface StructuredVerdictTelemetry {
   /** Tokens summed across every attempt — a retry is not free and is billed here. */
   usage: TokenUsage;
   durationMs: number;
+  /**
+   * #1002 — the model id the provider reported on its last response. Absent
+   * when no call returned (a provider error on the first attempt).
+   */
+  model?: string;
 }
 
 /** The verifier produced a verdict that validated against the caller's schema. */
@@ -128,6 +133,13 @@ export interface StructuredVerdictNoSignal extends StructuredVerdictTelemetry {
   reason: NoVerdictReason;
   /** Human-readable cause (parse error / schema issues / provider message). */
   detail: string;
+  /**
+   * #1002 — the error the provider threw, on `reason: "provider-error"` only.
+   * A caller that is NOT one of many (a single user-initiated call, where the
+   * right answer to a transport failure is the original error and its HTTP
+   * mapping) rethrows this instead of flattening it into a message.
+   */
+  cause?: unknown;
 }
 
 /** The only two things a verifier call can yield. */
@@ -300,6 +312,7 @@ export async function requestStructuredVerdict<T>(
   let attempts = 0;
   let malformedAttempts = 0;
   let lastFailure: AttemptFailure = { reason: "unparseable", detail: "no attempt was made" };
+  let model: string | undefined;
 
   const finish = (
     outcome: StructuredVerdictOutcome<T>,
@@ -316,6 +329,7 @@ export async function requestStructuredVerdict<T>(
       const response = await provider.chat(messages, opts);
       usage = addUsage(usage, response.usage);
       content = response.content;
+      model = response.model;
     } catch (err) {
       // Cancellation is the one failure that must still propagate: an aborted
       // run should stop, not manufacture a run's worth of "no signal".
@@ -332,11 +346,13 @@ export async function requestStructuredVerdict<T>(
           status: "no-signal",
           reason: "provider-error",
           detail,
+          cause: err,
           attempts,
           retried: attempts > 1,
           usedResponseFormat,
           usage,
           durationMs: Date.now() - started,
+          ...(model ? { model } : {}),
         },
         {
           attempts,
@@ -361,6 +377,7 @@ export async function requestStructuredVerdict<T>(
           usedResponseFormat,
           usage,
           durationMs: Date.now() - started,
+          ...(model ? { model } : {}),
         },
         {
           attempts,
@@ -412,6 +429,7 @@ export async function requestStructuredVerdict<T>(
       usedResponseFormat,
       usage,
       durationMs: Date.now() - started,
+      ...(model ? { model } : {}),
     },
     {
       attempts,
