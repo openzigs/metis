@@ -223,8 +223,11 @@ describe("#1077 capabilities on DeepSeek's OpenAI-format endpoint", () => {
   });
 
   it("reports no structured output at all for a model the operator marks as taking neither", () => {
+    // Only `jsonObject` is overridden: the catalog still says `jsonSchema: true`
+    // for an `openai` model, so it is the ENDPOINT limit that removes the schema
+    // mode and must then report that nothing is left.
     process.env[MODEL_CATALOG_OVERRIDES_ENV] = JSON.stringify({
-      "openai:deepseek-odd": { capabilities: { jsonSchema: false, jsonObject: false } },
+      "openai:deepseek-odd": { capabilities: { jsonObject: false } },
     });
     const provider = makeProvider(DEEPSEEK_URL, "deepseek-odd");
 
