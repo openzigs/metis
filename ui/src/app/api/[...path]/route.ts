@@ -14,7 +14,13 @@
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
-import { isSpecKitCommandRequest, specKitCommandFetch } from "@/lib/spec-kit-proxy-timeout";
+import { isUnsafeProxySegment, pathBelowUpstreamBase } from "@/lib/proxy-upstream";
+import {
+  isSpecKitCommandRequest,
+  specKitCommandFetch,
+  type UpstreamFetch,
+  type UpstreamRequestInit,
+} from "@/lib/spec-kit-proxy-timeout";
 
 interface RouteCtx {
   params: Promise<{ path?: string[] }>;
@@ -26,18 +32,33 @@ const NON_FORWARDABLE = new Set([
   "content-length", // re-derived by fetch
 ]);
 
+const invalidPath = (): NextResponse =>
+  NextResponse.json(
+    { success: false, error: { code: "BAD_REQUEST", message: "Invalid request path" } },
+    { status: 400 },
+  );
+
 async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
   const { path = [] } = await ctx.params;
 
+  // #1069 — Next decodes each catch-all segment, so one element can hold `/`,
+  // `\` or `?`, and `new URL` would normalise it to another upstream route.
+  // Refuse those, then decide everything below from the RESOLVED path.
+  if (path.some(isUnsafeProxySegment)) return invalidPath();
+
+  const upstreamUrl = new URL(`${UPSTREAM_API_BASE}/${path.join("/")}`);
+  // Never leave the upstream API: `/api/` with the default base.
+  const upstreamPath = pathBelowUpstreamBase(upstreamUrl, UPSTREAM_API_BASE);
+  if (upstreamPath === null) return invalidPath();
+
   // Auth endpoints have their own proxy.
-  if (path[0] === "auth") {
+  if (upstreamPath.split("/")[0] === "auth") {
     return NextResponse.json(
       { success: false, error: { code: "NOT_FOUND", message: "Use /api/auth/*" } },
       { status: 404 },
     );
   }
 
-  const upstreamUrl = new URL(`${UPSTREAM_API_BASE}/${path.join("/")}`);
   const search = req.nextUrl.search;
   if (search) upstreamUrl.search = search;
 
@@ -48,9 +69,12 @@ async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
   const access = req.cookies.get(ACCESS_COOKIE)?.value;
   if (access) headers.set("Authorization", `Bearer ${access}`);
 
-  const init: RequestInit & { duplex?: "half" } = {
+  const init: UpstreamRequestInit = {
     method: req.method,
     headers,
+    // Abort the upstream request when the client goes away: an abandoned Spec
+    // Kit command would otherwise hold its socket for the whole long timeout.
+    signal: req.signal,
   };
   if (req.method !== "GET" && req.method !== "HEAD") {
     // Pass the request body through verbatim — supports multipart uploads.
@@ -61,7 +85,9 @@ async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
   // #1069 — a Spec Kit command holds the request open for a whole model call,
   // longer than fetch's default 300 s wait for headers. Only those routes get
   // the longer timeout.
-  const send = isSpecKitCommandRequest(req.method, path) ? specKitCommandFetch() : fetch;
+  const send: UpstreamFetch = isSpecKitCommandRequest(req.method, upstreamPath)
+    ? specKitCommandFetch()
+    : fetch;
   const upstream = await send(upstreamUrl, init);
 
   const responseHeaders = new Headers();

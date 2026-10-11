@@ -19,7 +19,7 @@
  * checklists, issue export, delete and the `/speckit.implement` → analysis
  * handoff are buttons.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -295,11 +295,25 @@ export default function SpecKitPage() {
     },
   });
 
+  // #1069 — aborted when the page is left. A command (or the poll for its lost
+  // response) can outlive the page by minutes, and TanStack still runs the
+  // mutation's callbacks then: the abort stops the poll's requests, and the
+  // callbacks below do nothing, so a late result never navigates back here.
+  const leftPage = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    leftPage.current = controller;
+    return () => controller.abort();
+  }, []);
+  const hasLeftPage = (): boolean => leftPage.current?.signal.aborted !== false;
+
   const commandMutation = useMutation({
     // #1069 — after a lost response (a bare 5xx from the proxy, a dropped
     // connection) this polls for the artifact the command was writing.
     mutationFn: (input: { command: SpecKitNamespacedCommand; options: SpecKitRunOptions }) =>
-      runSpecKitCommandWithRecovery(projectId, input.command, input.options),
+      runSpecKitCommandWithRecovery(projectId, input.command, input.options, {
+        signal: leftPage.current?.signal,
+      }),
     // #936 — a command is a write (an artifact, a model call, issues on GitHub):
     // never resend it on a 5xx, which sent one click's request twice.
     retry: false,
@@ -311,6 +325,7 @@ export default function SpecKitPage() {
     // surfacing the line in the result card. The grounded line is preserved
     // byte-for-byte as the success toast text.
     onSuccess: (result, input) => {
+      if (hasLeftPage()) return;
       setLastErrorMessage(null);
       setLastResultMessage(result.message);
       // #993 — a live export links the issues it created, in the toast and the
@@ -379,6 +394,7 @@ export default function SpecKitPage() {
       refreshArtifacts();
     },
     onError: (err) => {
+      if (hasLeftPage()) return;
       setLastResultMessage(null);
       setLastIssueLinks([]);
       setLastPartial([]);
