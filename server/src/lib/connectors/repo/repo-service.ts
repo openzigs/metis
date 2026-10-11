@@ -107,7 +107,7 @@ export interface OctokitLike {
       listLanguages: (params: { owner: string; repo: string }) => Promise<{
         data: Record<string, number>;
       }>;
-      getReadme: (params: { owner: string; repo: string }) => Promise<{
+      getReadme: (params: { owner: string; repo: string; ref?: string }) => Promise<{
         data: { content: string; encoding: string };
       }>;
       getContent: (params: { owner: string; repo: string; path: string; ref?: string }) => Promise<{
@@ -888,6 +888,13 @@ async function resolveConfiguredRef(
 
 export interface RepoMetadata {
   repo: { full_name: string; default_branch: string; size: number };
+  /**
+   * #1056 — the connector's configured branch or tag. The tree, README and
+   * manifests were read at `headSha` (this ref's commit) when it resolved, and
+   * at this ref otherwise — never at `repo.default_branch`.
+   */
+  ref: string;
+  /** Repo-wide: GitHub's languages endpoint takes no ref. */
   languages: Record<string, number>;
   topLevel: Array<{ type: "dir" | "file"; name: string; path: string; size: number }>;
   readme: string | null;
@@ -908,6 +915,29 @@ const KEY_MANIFESTS = [
   "docker-compose.yml",
   "Gemfile",
 ];
+
+/**
+ * #714 / #1056 — the commit `ref` (a branch or tag) points at upstream, or null
+ * when it cannot be resolved. Metadata and content reads pass it as their
+ * `ref` so a connector pinned to a tag never reads the default branch.
+ */
+async function resolveRefSha(
+  octokit: OctokitLike,
+  git: { ownerOrOrg: string; repoName: string },
+  ref: string,
+): Promise<string | null> {
+  try {
+    const commits = await octokit.rest.repos.listCommits({
+      owner: git.ownerOrOrg,
+      repo: git.repoName,
+      sha: ref,
+      per_page: 1,
+    });
+    return commits.data[0]?.sha ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export async function fetchRepoMetadata(
   projectId: string,
@@ -934,9 +964,15 @@ export async function fetchRepoMetadata(
     repo: git.repoName,
   });
 
+  // #714 — the commit at the configured ref (a tag, say), not the tip of the
+  // repo's default branch. #1056 — every read below is pinned to it, so the
+  // tree, README and manifests describe the ref that deep ingest clones.
+  const headSha = await resolveRefSha(octokit, git, conn.defaultBranch);
+  const ref = headSha ?? conn.defaultBranch;
+
   emitter().progress({ connectorId: id, projectId, kind: "repo", phase: "metadata", step: "tree" });
   const tree = await octokit.rest.repos
-    .getContent({ owner: git.ownerOrOrg, repo: git.repoName, path: "" })
+    .getContent({ owner: git.ownerOrOrg, repo: git.repoName, path: "", ref })
     .catch(() => ({
       data: [] as Array<{ type: "dir" | "file"; name: string; path: string; size: number }>,
     }));
@@ -951,7 +987,11 @@ export async function fetchRepoMetadata(
   });
   let readme: string | null = null;
   try {
-    const r = await octokit.rest.repos.getReadme({ owner: git.ownerOrOrg, repo: git.repoName });
+    const r = await octokit.rest.repos.getReadme({
+      owner: git.ownerOrOrg,
+      repo: git.repoName,
+      ref,
+    });
     readme = decodeContent(r.data.content, r.data.encoding);
   } catch {
     readme = null;
@@ -974,6 +1014,7 @@ export async function fetchRepoMetadata(
         owner: git.ownerOrOrg,
         repo: git.repoName,
         path: m,
+        ref,
       });
       const fd = f.data;
       if (!Array.isArray(fd) && fd.type === "file") {
@@ -982,21 +1023,6 @@ export async function fetchRepoMetadata(
     } catch {
       /* skip */
     }
-  }
-
-  let headSha: string | null = null;
-  try {
-    // #714 — the commit at the configured ref (a tag, say), not the tip of
-    // the repo's default branch.
-    const commits = await octokit.rest.repos.listCommits({
-      owner: git.ownerOrOrg,
-      repo: git.repoName,
-      sha: conn.defaultBranch,
-      per_page: 1,
-    });
-    headSha = commits.data[0]?.sha ?? null;
-  } catch {
-    headSha = null;
   }
 
   await prisma.repoConnection.update({
@@ -1024,6 +1050,7 @@ export async function fetchRepoMetadata(
       default_branch: repo.data.default_branch,
       size: repo.data.size,
     },
+    ref: conn.defaultBranch,
     languages: languages.data,
     topLevel,
     readme,
@@ -1048,7 +1075,9 @@ export async function openRepoContentFetcher(
   const git = assertGitConnector(conn);
   await assertHostFromBaseUrl(conn.apiBaseUrl);
   const octokit = await acquireOctokit(conn.apiBaseUrl, conn.secretRef);
-  const where = { owner: git.ownerOrOrg, repo: git.repoName };
+  // #1056 — read at the configured ref's commit, not the default branch.
+  const ref = (await resolveRefSha(octokit, git, conn.defaultBranch)) ?? conn.defaultBranch;
+  const where = { owner: git.ownerOrOrg, repo: git.repoName, ref };
   // An API failure (a path that does not exist, a revoked token) is reported
   // by status and code; the upstream message stays out of the response.
   const getContent = async (p: string) => {

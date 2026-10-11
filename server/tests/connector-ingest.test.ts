@@ -117,6 +117,7 @@ describe("repoMetadataToUnits", () => {
   it("emits OVERVIEW + README + manifest units with redaction", () => {
     const units = repoMetadataToUnits("conn_1", {
       repo: { full_name: "o/r", default_branch: "main", size: 10 },
+      ref: "main",
       languages: { TypeScript: 100 },
       topLevel: [{ type: "file", name: "package.json", path: "package.json", size: 50 }],
       readme: "Contact alice@example.com for help",
@@ -130,6 +131,25 @@ describe("repoMetadataToUnits", () => {
     expect(overview?.body).toContain("o/r");
     const pkg = units.find((u) => u.filename.endsWith("package.json"));
     expect(pkg?.body).toContain('"name"');
+  });
+
+  // #1056 — the OVERVIEW names the ref the documents were read at, not just the
+  // upstream default branch, and does not present languages as the ref's.
+  it("names the pinned ref and its commit; labels languages repo-wide", () => {
+    const units = repoMetadataToUnits("conn_1", {
+      repo: { full_name: "o/r", default_branch: "main", size: 10 },
+      ref: "v2.3.3",
+      languages: { Go: 100 },
+      topLevel: [],
+      readme: null,
+      manifests: {},
+      headSha: "c4d54f8",
+    });
+    const overview = units.find((u) => u.filename.endsWith("OVERVIEW.md"))?.body ?? "";
+    expect(overview).toContain("- Ref: v2.3.3\n");
+    expect(overview).toContain("- Commit: c4d54f8\n");
+    expect(overview).toContain("- Upstream default branch: main\n");
+    expect(overview).toContain("- Languages (repo-wide, not specific to this ref): Go\n");
   });
 });
 
@@ -208,6 +228,7 @@ describe("ingestRepoMetadata", () => {
   it("writes documents + invokes knowledge.ingestDocument and updates connector", async () => {
     const summary = await ingestRepoMetadata("proj_1", "conn_repo_1", "user_1", {
       repo: { full_name: "o/r", default_branch: "main", size: 10 },
+      ref: "main",
       languages: { TypeScript: 100 },
       topLevel: [],
       readme: "hi",

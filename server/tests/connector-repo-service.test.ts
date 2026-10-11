@@ -149,6 +149,7 @@ import {
   fetchRepoMetadata,
   getRepoConnector,
   listRepoConnectors,
+  openRepoContentFetcher,
   resolveRepoCloneMaxBytes,
   pullOrCloneRepo,
   readCloneHeadSha,
@@ -193,8 +194,8 @@ function makeOctokit(
   overrides: Partial<{
     get: () => Promise<unknown>;
     listLanguages: () => Promise<unknown>;
-    getReadme: () => Promise<unknown>;
-    getContent: (params: { path: string }) => Promise<unknown>;
+    getReadme: (params: { ref?: string }) => Promise<unknown>;
+    getContent: (params: { path: string; ref?: string }) => Promise<unknown>;
     listCommits: (params: Record<string, unknown>) => Promise<unknown>;
     getRef: (params: { ref: string }) => Promise<unknown>;
   }> = {},
@@ -1361,5 +1362,97 @@ describe("#714 — the clone records the commit it checked out", () => {
     expect(out.pulled).toBe(false);
     expect(out.commitSha).toBe(SHA);
     expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(SHA2);
+  });
+});
+
+// #1056 — a pinned connector read go.mod, the README and the top-level tree from
+// the default branch. This fake answers only reads pinned to the ref's commit,
+// so any content call that drops `ref` fails the test.
+describe("#1056 — metadata and content reads are pinned to the ref's commit", () => {
+  const PIN_SHA = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+  const b64 = (t: string) => Buffer.from(t, "utf8").toString("base64");
+
+  function pinnedOctokit(listCommits?: () => Promise<unknown>) {
+    const requireRef = (params: { ref?: string }, expected: string) => {
+      if (params.ref !== expected) throw new Error(`content read without ref ${expected}`);
+    };
+    return (expected: string) =>
+      makeOctokit({
+        ...(listCommits
+          ? { listCommits }
+          : { listCommits: async () => ({ data: [{ sha: PIN_SHA }] }) }),
+        getReadme: async (params) => {
+          requireRef(params, expected);
+          return { data: { content: b64("# README at v2.3.3"), encoding: "base64" } };
+        },
+        getContent: async (params) => {
+          requireRef(params, expected);
+          if (params.path === "") {
+            // The ref's tree: go.mod is here (the default branch's would differ).
+            return { data: [{ type: "file", name: "go.mod", path: "go.mod", size: 40 }] };
+          }
+          return {
+            data: {
+              type: "file",
+              encoding: "base64",
+              content: b64("require github.com/PuerkitoBio/goquery v1.12.0"),
+              path: params.path,
+              size: 40,
+            },
+          };
+        },
+      });
+  }
+
+  async function pinnedConnector(label: string) {
+    return createRepoConnector(
+      "proj_1",
+      { provider: "github", label, ownerOrOrg: "o", repoName: "r", defaultBranch: "v2.3.3" },
+      "user_1",
+    );
+  }
+
+  it("passes the resolved SHA to the tree, README and every manifest read", async () => {
+    const octokit = pinnedOctokit()(PIN_SHA);
+    __setOctokitFactory(() => octokit);
+    const c = await pinnedConnector("pin-1056");
+    const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
+
+    expect(meta.readme).toBe("# README at v2.3.3");
+    expect(meta.manifests["go.mod"]).toContain("v1.12.0");
+    expect(meta.topLevel.map((t) => t.name)).toEqual(["go.mod"]);
+    expect(meta.ref).toBe("v2.3.3");
+    expect(meta.headSha).toBe(PIN_SHA);
+    const content = vi.mocked(octokit.rest.repos.getContent).mock.calls;
+    const readme = vi.mocked(octokit.rest.repos.getReadme).mock.calls;
+    expect(content.map((c) => c[0].path)).toEqual(["", "go.mod"]);
+    expect(readme).toHaveLength(1);
+    for (const [params] of [...content, ...readme]) expect(params.ref).toBe(PIN_SHA);
+  });
+
+  it("falls back to the configured ref when its commit cannot be resolved", async () => {
+    const octokit = pinnedOctokit(async () => {
+      throw new Error("network");
+    })("v2.3.3");
+    __setOctokitFactory(() => octokit);
+    const c = await pinnedConnector("pin-1056-fallback");
+    const meta = await fetchRepoMetadata("proj_1", c.id, "user_1");
+
+    expect(meta.headSha).toBeNull();
+    expect(meta.readme).toBe("# README at v2.3.3");
+    expect(meta.manifests["go.mod"]).toContain("v1.12.0");
+  });
+
+  it("the skills-import content fetcher lists and reads at the resolved SHA", async () => {
+    const octokit = pinnedOctokit()(PIN_SHA);
+    __setOctokitFactory(() => octokit);
+    const c = await pinnedConnector("pin-1056-fetcher");
+    const { fetcher } = await openRepoContentFetcher("proj_1", c.id);
+
+    expect((await fetcher.list("")).map((e) => e.path)).toEqual(["go.mod"]);
+    expect(await fetcher.read("go.mod")).toContain("v1.12.0");
+    const content = vi.mocked(octokit.rest.repos.getContent).mock.calls;
+    expect(content).toHaveLength(2);
+    for (const [params] of content) expect(params.ref).toBe(PIN_SHA);
   });
 });
