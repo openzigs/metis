@@ -1539,6 +1539,59 @@ describe("SpecKitPage — #789", () => {
       expect(toastError).toHaveBeenCalledWith(text);
     });
 
+    it("a refused save toasts the server's reason too", async () => {
+      m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "S")] });
+      m.putFile!.mockRejectedValue(new ApiError(413, "The artifact is too large.", "TOO_LARGE"));
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      fireEvent.click(await screen.findByTestId("spec-kit-edit-button"));
+      fireEvent.click(screen.getByTestId("spec-kit-save-button"));
+      await waitFor(() => expect(toastError).toHaveBeenCalledWith("The artifact is too large."));
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    it("a refused delete says why in the toast and the card", async () => {
+      m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "S")] });
+      m.deleteFile!.mockRejectedValue(
+        new ApiError(409, "spec.md is being edited by someone else.", "CONFLICT"),
+      );
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      fireEvent.click(await screen.findByTestId("spec-kit-delete-button"));
+      await answerDialog("Delete");
+      const text = "spec.md is being edited by someone else.";
+      await waitFor(() => expect(toastError).toHaveBeenCalledWith(text));
+      expect(screen.getByTestId("spec-kit-error")).toHaveTextContent(text);
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    it("a refused analysis start says why", async () => {
+      m.runCommand!.mockResolvedValue({
+        message: "handoff",
+        artifactName: null,
+        artifact: { context: ["spec.md"], orchestratorRoute: "/api/projects/p1/analyses" },
+      });
+      startAnalysis.mockRejectedValue(
+        new ApiError(429, "The monthly analysis cap is reached.", "COST_CAP_EXCEEDED"),
+      );
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("/speckit.implement");
+      fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));
+      await waitFor(() =>
+        expect(toastError).toHaveBeenCalledWith("The monthly analysis cap is reached."),
+      );
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    it("a refused feature archive toasts the server's reason", async () => {
+      m.archiveFeature!.mockRejectedValue(
+        new ApiError(409, "001-a is already archived.", "SPECKIT_FEATURE_ARCHIVED"),
+      );
+      await openFeature();
+      fireEvent.click(screen.getByTestId("spec-kit-feature-archive"));
+      await waitFor(() => expect(toastError).toHaveBeenCalledWith("001-a is already archived."));
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
     it("shows a cut-off reply that was not saved, and warns instead of confirming", async () => {
       m.runCommand!.mockResolvedValue({
         message: "Generated 5 plan artifacts. `plan.md` was cut off; the previous one is kept.",
