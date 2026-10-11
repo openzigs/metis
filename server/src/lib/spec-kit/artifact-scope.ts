@@ -11,9 +11,10 @@
  * (the default, unchanged) or one feature's `specs/<slug>/` set.
  */
 import type { SpecKitArtifactDto } from "@metis/shared";
-import { getArtifact, writeArtifact } from "./artifacts.js";
+import { getArtifact, listArtifacts, writeArtifact } from "./artifacts.js";
 import {
   getFeatureArtifact,
+  listFeatureArtifacts,
   writeFeatureArtifact,
   type FeatureArtifactDto,
 } from "./feature-artifacts.js";
@@ -29,6 +30,8 @@ export interface ArtifactScope {
   /** The feature's slug, when the scope is one feature. */
   readonly featureSlug: string | null;
   get(name: string): Promise<ScopedArtifact | null>;
+  /** #1065 — every artifact in the set, so a command can read `contracts/*`. */
+  list(): Promise<ScopedArtifact[]>;
   write(name: string, content: string, actorId: string | null): Promise<ScopedArtifact>;
 }
 
@@ -39,6 +42,7 @@ export function projectArtifactScope(projectId: string): ArtifactScope {
     location: ".specify/",
     featureSlug: null,
     get: (name) => getArtifact(projectId, name),
+    list: () => listArtifacts(projectId),
     write: (name, content, actorId) => writeArtifact({ projectId, name, content, actorId }),
   };
 }
@@ -52,9 +56,15 @@ export function featureArtifactScope(
     location: `specs/${feature.slug}/`,
     featureSlug: feature.slug,
     get: (name) => getFeatureArtifact(feature.id, name),
+    list: () => listFeatureArtifacts(feature.id),
     write: (name, content, actorId) =>
       writeFeatureArtifact({ featureId: feature.id, key: name, content, actorId }),
   };
+}
+
+/** An artifact's name within its set: a feature artifact's `key`, a project artifact's `name`. */
+export function artifactKey(artifact: ScopedArtifact): string {
+  return "key" in artifact ? artifact.key : artifact.name;
 }
 
 /** ` for <slug>` in a feature scope, empty for the project — for result messages. */

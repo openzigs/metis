@@ -1429,4 +1429,245 @@ describe("SpecKitPage — #789", () => {
       expect(screen.queryByTestId("spec-kit-handoff")).toBeNull();
     });
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // #1037 — a failure says why, in the toast as well as the card
+  // ───────────────────────────────────────────────────────────────────────────
+  describe("#1037 — errors are shown, not hidden behind a generic toast", () => {
+    const GENERIC = "The Spec Kit operation failed. Please try again.";
+    const EXHAUSTED =
+      "/plan: the model reached its output-token limit before writing any text (its reasoning likely used the whole budget). Nothing was saved; the previous version is kept. Lower SPEC_KIT_REASONING, raise SPEC_KIT_MAX_OUTPUT_TOKENS, or split the request.";
+
+    it("says what to type for /speckit.constitution with nothing after it, and sends nothing", async () => {
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("/speckit.constitution");
+      const error = await screen.findByTestId("spec-kit-error");
+      expect(error).toHaveTextContent("Type the constitution text after /speckit.constitution");
+      expect(m.runCommand).not.toHaveBeenCalled();
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    it("says what to type for /speckit.specify with nothing after it", async () => {
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("/speckit.specify   ");
+      expect(await screen.findByTestId("spec-kit-error")).toHaveTextContent(
+        "Describe the feature after /speckit.specify",
+      );
+      expect(m.runCommand).not.toHaveBeenCalled();
+    });
+
+    it("a command that needs no input still runs on an empty one", async () => {
+      m.runCommand!.mockResolvedValue({ message: "ok", artifactName: "tasks.md" });
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("/speckit.tasks");
+      await waitFor(() =>
+        expect(m.runCommand).toHaveBeenCalledWith("p1", "speckit.tasks", { input: "" }),
+      );
+    });
+
+    it("shows a server SPECKIT_EMPTY_INPUT in the card and the toast, in the page's words", async () => {
+      m.runCommand!.mockRejectedValue(
+        new ApiError(
+          400,
+          "/speckit.constitution requires the constitution body in the request input.",
+          "SPECKIT_EMPTY_INPUT",
+        ),
+      );
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("/speckit.clarify why");
+      const text =
+        "This command needs text after it. Type it after the command, then run it again.";
+      expect(await screen.findByTestId("spec-kit-error")).toHaveTextContent(text);
+      expect(screen.getByTestId("spec-kit-error")).not.toHaveTextContent("request input");
+      expect(toastError).toHaveBeenCalledWith(text);
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    it("shows the 412 gate text in the toast too, not the generic line", async () => {
+      m.runCommand!.mockRejectedValue(
+        new ApiError(412, "plan.md is required", "SPECKIT_GATE_UNMET", { required: "planGate" }),
+      );
+      await openFeature();
+      fireEvent.click(screen.getByTestId("spec-kit-run-checklist"));
+      const text = "This feature has no plan.md yet. Run /speckit.plan on it first.";
+      expect(await screen.findByTestId("spec-kit-error")).toHaveTextContent(text);
+      expect(toastError).toHaveBeenCalledWith(text);
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+      expect(screen.getByTestId("spec-kit-error-code")).toHaveTextContent("SPECKIT_GATE_UNMET");
+    });
+
+    it.each([
+      ["SPEC_KIT_OUTPUT_EXHAUSTED", EXHAUSTED],
+      [
+        "SPEC_KIT_EMPTY_OUTPUT",
+        "/plan: the model returned an empty reply. Nothing was saved; the previous version is kept. Re-run the command.",
+      ],
+    ])("shows the 502 %s message and its code", async (code, message) => {
+      m.runCommand!.mockRejectedValue(new ApiError(502, message, code));
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("/speckit.tasks");
+      expect(await screen.findByTestId("spec-kit-error")).toHaveTextContent(message);
+      expect(screen.getByTestId("spec-kit-error-code")).toHaveTextContent(code);
+      expect(toastError).toHaveBeenCalledWith(message);
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    it("a page-side message carries no error code", async () => {
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("hello");
+      await screen.findByTestId("spec-kit-error");
+      expect(screen.queryByTestId("spec-kit-error-code")).toBeNull();
+    });
+
+    it("a failed Generate constitution shows the server's message in the card and the toast", async () => {
+      m.generateConstitution!.mockRejectedValue(
+        new ApiError(402, "The project's monthly token budget is used up.", "BUDGET_EXCEEDED"),
+      );
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() =>
+        expect(screen.getByTestId("spec-kit-generate-constitution")).not.toBeDisabled(),
+      );
+      fireEvent.click(screen.getByTestId("spec-kit-generate-constitution"));
+      const text = "The project's monthly token budget is used up.";
+      expect(await screen.findByTestId("spec-kit-error")).toHaveTextContent(text);
+      expect(toastError).toHaveBeenCalledWith(text);
+    });
+
+    it("a refused save toasts the server's reason too", async () => {
+      m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "S")] });
+      m.putFile!.mockRejectedValue(new ApiError(413, "The artifact is too large.", "TOO_LARGE"));
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      fireEvent.click(await screen.findByTestId("spec-kit-edit-button"));
+      fireEvent.click(screen.getByTestId("spec-kit-save-button"));
+      await waitFor(() => expect(toastError).toHaveBeenCalledWith("The artifact is too large."));
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    it("a refused delete says why in the toast and the card", async () => {
+      m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "S")] });
+      m.deleteFile!.mockRejectedValue(
+        new ApiError(409, "spec.md is being edited by someone else.", "CONFLICT"),
+      );
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      fireEvent.click(await screen.findByTestId("spec-kit-delete-button"));
+      await answerDialog("Delete");
+      const text = "spec.md is being edited by someone else.";
+      await waitFor(() => expect(toastError).toHaveBeenCalledWith(text));
+      expect(screen.getByTestId("spec-kit-error")).toHaveTextContent(text);
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    it("a refused analysis start says why", async () => {
+      m.runCommand!.mockResolvedValue({
+        message: "handoff",
+        artifactName: null,
+        artifact: { context: ["spec.md"], orchestratorRoute: "/api/projects/p1/analyses" },
+      });
+      startAnalysis.mockRejectedValue(
+        new ApiError(429, "The monthly analysis cap is reached.", "COST_CAP_EXCEEDED"),
+      );
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("/speckit.implement");
+      fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));
+      await waitFor(() =>
+        expect(toastError).toHaveBeenCalledWith("The monthly analysis cap is reached."),
+      );
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    // PR #1083 review — a retry that works must take the refusal off the page.
+    it("a delete that succeeds after a refused one clears the error card", async () => {
+      m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "S")] });
+      m.deleteFile!.mockRejectedValueOnce(
+        new ApiError(409, "spec.md is being edited by someone else.", "CONFLICT"),
+      );
+      m.deleteFile!.mockResolvedValueOnce(undefined);
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      fireEvent.click(await screen.findByTestId("spec-kit-delete-button"));
+      await answerDialog("Delete");
+      expect(await screen.findByTestId("spec-kit-error")).toHaveTextContent(
+        "spec.md is being edited by someone else.",
+      );
+      fireEvent.click(screen.getByTestId("spec-kit-delete-button"));
+      await answerDialog("Delete");
+      await waitFor(() => expect(m.deleteFile).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByTestId("spec-kit-error")).not.toBeInTheDocument());
+    });
+
+    it("an analysis start that succeeds after a refused one clears the error card", async () => {
+      m.runCommand!.mockResolvedValue({
+        message: "handoff",
+        artifactName: null,
+        artifact: { context: ["spec.md"], orchestratorRoute: "/api/projects/p1/analyses" },
+      });
+      startAnalysis.mockRejectedValueOnce(
+        new ApiError(429, "The monthly analysis cap is reached.", "COST_CAP_EXCEEDED"),
+      );
+      startAnalysis.mockResolvedValueOnce({ id: "an_retry" });
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("/speckit.implement");
+      fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));
+      expect(await screen.findByTestId("spec-kit-error")).toHaveTextContent(
+        "The monthly analysis cap is reached.",
+      );
+      fireEvent.click(screen.getByTestId("spec-kit-start-analysis"));
+      await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByTestId("spec-kit-error")).not.toBeInTheDocument());
+    });
+
+    it("a refused feature archive toasts the server's reason", async () => {
+      m.archiveFeature!.mockRejectedValue(
+        new ApiError(409, "001-a is already archived.", "SPECKIT_FEATURE_ARCHIVED"),
+      );
+      await openFeature();
+      fireEvent.click(screen.getByTestId("spec-kit-feature-archive"));
+      await waitFor(() => expect(toastError).toHaveBeenCalledWith("001-a is already archived."));
+      expect(toastError).not.toHaveBeenCalledWith(GENERIC);
+    });
+
+    it("shows a cut-off reply that was not saved, and warns instead of confirming", async () => {
+      m.runCommand!.mockResolvedValue({
+        message: "Generated 5 plan artifacts. `plan.md` was cut off; the previous one is kept.",
+        artifacts: [{ key: "plan.md" }],
+        partialContent: { "plan.md": "# Partial plan\nTouches internal/partial.go" },
+      });
+      await openFeature();
+      typeAndRun("/speckit.plan");
+      const partial = await screen.findByTestId("spec-kit-partial");
+      expect(partial).toHaveTextContent("Cut-off reply, not saved");
+      expect(within(partial).getByTestId("spec-kit-partial-plan.md")).toHaveTextContent(
+        "Touches internal/partial.go",
+      );
+      expect(toastWarning).toHaveBeenCalledWith(
+        "Generated 5 plan artifacts. `plan.md` was cut off; the previous one is kept.",
+      );
+      expect(toastSuccess).not.toHaveBeenCalled();
+      // Semantic tokens only — never a raw palette class.
+      expect(partial.innerHTML).not.toMatch(/(amber|yellow|orange|red)-\d{2,3}/);
+    });
+
+    it("an ordinary success shows no cut-off block, and the next run clears an earlier one", async () => {
+      m.runCommand!.mockResolvedValueOnce({
+        message: "kept",
+        artifacts: [{ key: "plan.md" }],
+        partialContent: { "plan.md": "# Partial" },
+      });
+      m.runCommand!.mockResolvedValueOnce({ message: "fine", artifacts: [{ key: "plan.md" }] });
+      await openFeature();
+      typeAndRun("/speckit.plan");
+      await screen.findByTestId("spec-kit-partial");
+      typeAndRun("/speckit.plan");
+      await waitFor(() => expect(screen.getByTestId("spec-kit-result")).toHaveTextContent("fine"));
+      expect(screen.queryByTestId("spec-kit-partial")).toBeNull();
+      expect(toastSuccess).toHaveBeenCalledWith("fine");
+    });
+  });
 });

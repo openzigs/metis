@@ -38,7 +38,56 @@ const CODE_TEXT: Record<string, string> = {
   SPEC_KIT_PLAN_NEEDS_SPEC: "There is no spec.md yet. Run /speckit.specify first.",
   SPEC_KIT_ANALYZE_INCOMPLETE:
     "/speckit.analyze needs spec.md, plan.md and tasks.md. Run /speckit.specify, /speckit.plan and /speckit.tasks first.",
+  // #1037 — the server's text speaks of "the request input".
+  SPECKIT_EMPTY_INPUT:
+    "This command needs text after it. Type it after the command, then run it again.",
 };
+
+/** #1037 — shown for any failure that carries no usable message of its own. */
+export const SPEC_KIT_FAILED = "The Spec Kit operation failed. Please try again.";
+
+/**
+ * #1037 — what to type, for a command that cannot run on an empty input. The
+ * page says this instead of sending a request the server can only refuse
+ * (`SPECKIT_EMPTY_INPUT`). `null` for a command that needs no input.
+ */
+const EMPTY_INPUT_HINT: Record<string, string> = {
+  "speckit.constitution":
+    "Type the constitution text after /speckit.constitution, then run it again. To draft one from the project's knowledge instead, use Generate constitution.md.",
+  "speckit.specify":
+    "Describe the feature after /speckit.specify, for example: /speckit.specify let users export entries as CSV.",
+};
+
+export function emptyInputHint(command: string, input: string): string | null {
+  if (input.trim().length > 0) return null;
+  return EMPTY_INPUT_HINT[command] ?? null;
+}
+
+/** #1037 — the server's error code for a failed call (`SPEC_KIT_OUTPUT_EXHAUSTED`, …), or null. */
+export function specKitErrorCode(err: unknown): string | null {
+  return err instanceof ApiError && err.code ? err.code : null;
+}
+
+/** #1057 / #1037 — a cut-off reply the server kept out of the store, by artifact. */
+export interface PartialReply {
+  key: string;
+  content: string;
+}
+
+/**
+ * The cut-off replies a command returned as `partialContent`: a map by
+ * artifact key from `/speckit.plan`, or one string (plan.md) from the legacy
+ * `/plan`. `[]` when there is none.
+ */
+export function partialReplies(partial: unknown): PartialReply[] {
+  if (typeof partial === "string") {
+    return partial.trim().length > 0 ? [{ key: "plan.md", content: partial }] : [];
+  }
+  if (!partial || typeof partial !== "object" || Array.isArray(partial)) return [];
+  return Object.entries(partial as Record<string, unknown>).flatMap(([key, content]) =>
+    typeof content === "string" && content.trim().length > 0 ? [{ key, content }] : [],
+  );
+}
 
 interface ValidationIssue {
   path?: unknown;
@@ -68,10 +117,14 @@ function describeValidationIssues(message: string): string | null {
   return `The request was not accepted — ${parts.join("; ")}.`;
 }
 
-/** The error text the page shows for a failed Spec Kit call. */
+/**
+ * The error text the page shows for a failed Spec Kit call — in the error card
+ * and, since #1037, in the toast too. A non-API error (a thrown `TypeError`, a
+ * network stack) is never shown: it gets the generic sentence.
+ */
 export function describeSpecKitError(err: unknown): string {
   if (!(err instanceof ApiError)) {
-    return "The Spec Kit operation failed. Please try again.";
+    return SPEC_KIT_FAILED;
   }
   if (err.code === "SPECKIT_GATE_UNMET") {
     const details = err.details as { required?: unknown } | undefined;
@@ -83,7 +136,7 @@ export function describeSpecKitError(err: unknown): string {
     const issues = describeValidationIssues(err.message);
     if (issues) return issues;
   }
-  return err.message;
+  return err.message.trim().length > 0 ? err.message : SPEC_KIT_FAILED;
 }
 
 /** True when the project is missing or the viewer is not a member of its workspace. */

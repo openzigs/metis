@@ -37,8 +37,13 @@ vi.mock("../socket/job-events.js", () => ({
   genericFailureMessage: (kind: string) => `${kind} failed`,
 }));
 
-const { AnalysisOrchestrator, CONTINUE_BUDGET_MULTIPLIER, resolvePassTurnCaps } =
-  await import("./orchestrator.js");
+const {
+  AnalysisOrchestrator,
+  CodeInvestigationContinueLimitError,
+  CONTINUE_BUDGET_MULTIPLIER,
+  resolvePassTurnCaps,
+} = await import("./orchestrator.js");
+const { MAX_CODE_INVESTIGATION_CONTINUATIONS } = await import("@metis/shared");
 const { resolveAgenticMaxTurns } = await import("./agentic-pass-context.js");
 const { createCapabilityTracker, finalizeCapability } = await import("./analysis-capability.js");
 
@@ -318,5 +323,135 @@ describe("#1001 the banner describes the regenerated pass", () => {
     );
     expect(serviceMock.persistAnalysisCapability).not.toHaveBeenCalled();
     expect(orch.retrievalHealths.has("an_1")).toBe(false);
+  });
+});
+
+/**
+ * #1062 — #706 run 7: the continued pass used 270k tokens, was cut short again,
+ * and the page showed the same notice and the same Continue button as before.
+ */
+describe("#1062 a rerun that is cut short too says so, and Continue is limited", () => {
+  const persisted = () =>
+    serviceMock.persistAnalysisCapability.mock.calls[0][1] as AnalysisCapability;
+  const asOrch = (orch: Stubbed) =>
+    orch as unknown as {
+      assertCanContinueInvestigation: (id: string) => Promise<void>;
+      regenerateAgent: (o: {
+        analysisId: string;
+        agentKey: string;
+        actorId: string;
+        extendBudget?: boolean;
+      }) => Promise<void>;
+      assertCanRegenerate: ReturnType<typeof vi.fn>;
+    };
+
+  it("records what the continued pass left unreached when it ran out again", async () => {
+    const orch = makeOrchestrator({ ...health(true), unverifiedRequirements: 9 });
+    await regenerate(orch, { extendBudget: true });
+    expect(persisted()).toMatchObject({
+      codeInvestigationCutShort: true,
+      codeInvestigationContinuations: 1,
+      codeInvestigationUnreached: { unreached: 9, total: 16 },
+      reasons: ["code-investigation-cut-short"],
+    });
+  });
+
+  it("counts the continuation and drops the gap once the continued pass finishes", async () => {
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationUnreached: { unreached: 9, total: 16 },
+    });
+    const orch = makeOrchestrator(health(false));
+    await regenerate(orch, { extendBudget: true });
+    const next = persisted();
+    expect(next.codeInvestigationContinuations).toBe(1);
+    expect(next.codeInvestigationCutShort).toBe(false);
+    expect(next).not.toHaveProperty("codeInvestigationUnreached");
+    expect(next.reasons).toEqual([]);
+  });
+
+  it("records no gap when the cut-short pass reported no unverified count", async () => {
+    const orch = makeOrchestrator(health(true));
+    await regenerate(orch, { extendBudget: true });
+    expect(persisted()).not.toHaveProperty("codeInvestigationUnreached");
+    expect(persisted().codeInvestigationContinuations).toBe(1);
+  });
+
+  it("an ordinary regenerate is not counted as a continuation", async () => {
+    const orch = makeOrchestrator(health(true));
+    await regenerate(orch);
+    expect(persisted()).not.toHaveProperty("codeInvestigationContinuations");
+  });
+
+  it("an ordinary regenerate after a continuation starts the count again", async () => {
+    // Continue finished, then a plain 1× regenerate is cut short: continuing THAT
+    // pass is a larger run, so it must be offered — and it is not "the rerun".
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationCutShort: false,
+      codeInvestigationContinuations: 1,
+      reasons: [],
+    });
+    const orch = makeOrchestrator({ ...health(true), unverifiedRequirements: 4 });
+    await regenerate(orch);
+    const next = persisted();
+    expect(next).not.toHaveProperty("codeInvestigationContinuations");
+    expect(next.codeInvestigationCutShort).toBe(true);
+    expect(next.codeInvestigationUnreached).toEqual({ unreached: 4, total: 16 });
+  });
+
+  it("counts a continuation that recorded no retrieval health, and keeps the flag", async () => {
+    // A single-shot rerun records nothing: uncounted, Continue could be clicked forever.
+    const orch = makeOrchestrator();
+    await regenerate(orch, { extendBudget: true });
+    expect(serviceMock.persistAnalysisEnhancement).not.toHaveBeenCalled();
+    expect(persisted()).toMatchObject({
+      codeInvestigationCutShort: true,
+      codeInvestigationContinuations: 1,
+      reasons: ["code-investigation-cut-short"],
+    });
+  });
+
+  it("refuses another continuation once the limit is reached, naming the reason", async () => {
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationContinuations: MAX_CODE_INVESTIGATION_CONTINUATIONS,
+    });
+    const orch = asOrch(makeOrchestrator());
+    await expect(orch.assertCanContinueInvestigation("an_1")).rejects.toMatchObject({
+      code: "CODE_INVESTIGATION_CONTINUE_LIMIT",
+      continuations: MAX_CODE_INVESTIGATION_CONTINUATIONS,
+      message: expect.stringContaining(`${CONTINUE_BUDGET_MULTIPLIER}× the configured budget`),
+    });
+    await expect(orch.assertCanContinueInvestigation("an_1")).rejects.toBeInstanceOf(
+      CodeInvestigationContinueLimitError,
+    );
+  });
+
+  it("allows the first continuation, and one on a record with no capability", async () => {
+    const orch = asOrch(makeOrchestrator());
+    await expect(orch.assertCanContinueInvestigation("an_1")).resolves.toBeUndefined();
+    serviceMock.getAnalysisCapability.mockResolvedValue(null);
+    await expect(orch.assertCanContinueInvestigation("an_1")).resolves.toBeUndefined();
+  });
+
+  it("regenerateAgent itself refuses a continuation past the limit, before any model call", async () => {
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationContinuations: MAX_CODE_INVESTIGATION_CONTINUATIONS,
+    });
+    const stub = makeOrchestrator();
+    const orch = asOrch(stub);
+    orch.assertCanRegenerate = vi.fn(async () => ({ analysis: ANALYSIS }));
+    await expect(
+      orch.regenerateAgent({
+        analysisId: "an_1",
+        agentKey: "code",
+        actorId: "u1",
+        extendBudget: true,
+      }),
+    ).rejects.toBeInstanceOf(CodeInvestigationContinueLimitError);
+    expect(stub.runAgenticCodeAgent).not.toHaveBeenCalled();
+    expect(stub.runOneAgent).not.toHaveBeenCalled();
   });
 });

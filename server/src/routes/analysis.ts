@@ -49,6 +49,7 @@ import { AppError } from "../middleware/error-handler.js";
 import {
   AnalysisOrchestrator,
   AnalysisNotRegeneratableError,
+  CodeInvestigationContinueLimitError,
   CostCapExceededError,
   assertCanStartAnalysis,
   type OrchestratorDeps,
@@ -538,6 +539,19 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           throw new AppError(409, "PROJECT_ARCHIVED", err.message);
         }
         throw err;
+      }
+      // #1062 — "Continue with a larger budget" is limited: every continuation
+      // reruns at the same enlarged budget, so once it has been used another
+      // one is refused here, with the reason, rather than accepted and repeated.
+      if (extendBudget) {
+        try {
+          await orch.assertCanContinueInvestigation(id);
+        } catch (err) {
+          if (err instanceof CodeInvestigationContinueLimitError) {
+            throw new AppError(409, err.code, err.message, { continuations: err.continuations });
+          }
+          throw err;
+        }
       }
       const actor = actorFromReq(req);
       void orch

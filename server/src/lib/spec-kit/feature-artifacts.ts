@@ -94,20 +94,31 @@ export interface WriteFeatureArtifactInput {
   actorId?: string | null;
 }
 
-export async function writeFeatureArtifact(
-  input: WriteFeatureArtifactInput,
-): Promise<FeatureArtifactDto> {
-  const key = assertKey(input.key);
-  if (typeof input.content !== "string") {
+/**
+ * Every check {@link writeFeatureArtifact} makes before it touches the database
+ * (key shape, content type, size cap). Exported so a command that writes
+ * several artifacts can refuse the whole set before writing the first one.
+ * Returns the validated key.
+ */
+export function assertFeatureArtifactWritable(key: string, content: unknown): string {
+  const valid = assertKey(key);
+  if (typeof content !== "string") {
     throw new SpecKitArtifactError(400, "SPECKIT_INVALID_CONTENT", "Content must be a string");
   }
-  if (input.content.length > 200_000) {
+  if (content.length > 200_000) {
     throw new SpecKitArtifactError(
       413,
       "SPECKIT_CONTENT_TOO_LARGE",
       "Spec Kit artifacts are capped at 200,000 characters",
     );
   }
+  return valid;
+}
+
+export async function writeFeatureArtifact(
+  input: WriteFeatureArtifactInput,
+): Promise<FeatureArtifactDto> {
+  const key = assertFeatureArtifactWritable(input.key, input.content);
   const existing = await prisma.specKitFeatureArtifact.findUnique({
     where: { featureId_key: { featureId: input.featureId, key } },
   });
