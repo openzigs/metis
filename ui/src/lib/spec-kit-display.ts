@@ -4,6 +4,7 @@
  * words, and the `/speckit.implement` handoff kept across navigation.
  */
 import { ApiError } from "@/lib/api-client";
+import { SpecKitCommandPendingError } from "@/lib/spec-kit-recovery";
 
 /** The checklist's hidden record of the checks it generated (base64 JSON, #787). */
 const GENERATED_CHECKS_MARKER = "<!-- speckit-generated-checks:";
@@ -123,6 +124,8 @@ function describeValidationIssues(message: string): string | null {
  * network stack) is never shown: it gets the generic sentence.
  */
 export function describeSpecKitError(err: unknown): string {
+  // #1069 — a lost response is "may still be running", not a failure.
+  if (err instanceof SpecKitCommandPendingError) return err.message;
   if (!(err instanceof ApiError)) {
     return SPEC_KIT_FAILED;
   }

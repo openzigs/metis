@@ -49,6 +49,23 @@ vi.mock("@/lib/spec-kit-api", () => ({
   },
 }));
 
+// #1069 — the real recovery, minus its 5 s waits: two reads, no delay.
+vi.mock("@/lib/spec-kit-recovery", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/spec-kit-recovery")>();
+  return {
+    ...actual,
+    runSpecKitCommandWithRecovery: (
+      projectId: string,
+      command: Parameters<typeof actual.runSpecKitCommandWithRecovery>[1],
+      options: Parameters<typeof actual.runSpecKitCommandWithRecovery>[2],
+    ) =>
+      actual.runSpecKitCommandWithRecovery(projectId, command, options, {
+        intervalMs: 0,
+        attempts: 2,
+      }),
+  };
+});
+
 // #953 — the vault picker has its own suite (vault-picker.test.tsx); here it is a
 // plain input so a test can pick a `${vault:label}` without driving the Select.
 vi.mock("@/components/connectors/vault-picker", () => ({
@@ -252,6 +269,47 @@ describe("SpecKitPage", () => {
     );
     // No raw error in the toast.
     expect(toastError).not.toHaveBeenCalledWith(expect.stringContaining("stack"));
+  });
+
+  it("#1069 shows the artifact a command saved after its response was lost", async () => {
+    // The proxy's own 500: status text, no error envelope.
+    m.runCommand!.mockRejectedValue(new ApiError(500, "Internal Server Error"));
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
+    // From here the server has the constitution the lost command saved.
+    m.listFiles!.mockResolvedValueOnce({ enabled: true, artifacts: [] }).mockResolvedValue({
+      enabled: true,
+      artifacts: [artifact("constitution.md", "# Recovered principles", 1)],
+    });
+    fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
+      target: { value: "/speckit.constitution Be kind" },
+    });
+    fireEvent.click(screen.getByTestId("spec-kit-run-button"));
+
+    const recovered =
+      "The command finished, but its response was lost. Showing the saved constitution.md.";
+    await waitFor(() => expect(screen.getByTestId("spec-kit-result")).toHaveTextContent(recovered));
+    expect(toastSuccess).toHaveBeenCalledWith(recovered);
+    expect(toastError).not.toHaveBeenCalled();
+    expect(m.runCommand).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByText("Recovered principles")).toBeInTheDocument());
+  });
+
+  it("#1069 says the command may still be running when no newer artifact appears", async () => {
+    m.runCommand!.mockRejectedValue(new ApiError(500, "Internal Server Error"));
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
+      target: { value: "/specify go" },
+    });
+    fireEvent.click(screen.getByTestId("spec-kit-run-button"));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/may still be running/)),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(expect.stringContaining("Internal Server Error"));
+    expect(screen.queryByText(/Internal Server Error/)).not.toBeInTheDocument();
+    expect(m.runCommand).toHaveBeenCalledTimes(1);
   });
 
   it("shows slash-command suggestions while typing", async () => {

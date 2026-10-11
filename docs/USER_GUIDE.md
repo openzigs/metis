@@ -3621,6 +3621,8 @@ The Spec Kit page has three columns:
 
 Spec Kit commands are not run from the Workbench chat. Its `/` suggestions were removed (#789) because a picked command was sent to the model as plain text.
 
+**Long-running commands (#1069).** A command holds its request open until the model has answered. The UI's API proxy waits up to 15 minutes for a Spec Kit command; set `METIS_SPEC_KIT_PROXY_TIMEOUT_MS` on the UI server to change that (milliseconds, clamped to 5-60 minutes). Other requests keep the 5-minute default. If the response is lost anyway (a proxy error with no message from the server, or a dropped connection), the page does not resend the command. It checks the artifacts every 5 seconds for up to 3 minutes and opens the one the command saved. If none appears it says the command may still be running: check the artifact list again shortly. An error the server reports itself (for example a missing provider key) is shown as it is. `/speckit.implement` and `/speckit.taskstoissues` save no artifact, so they are not polled for.
+
 ### v1.3 additions (Epic #396)
 
 **Namespaced `speckit.*` commands.** All commands now live under the `speckit.` namespace (e.g., `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.constitution`, `/speckit.checklist`, `/speckit.taskstoissues`). The legacy bare aliases (`/specify`, `/plan`, etc.) still work but respond with `Deprecation: true` + `Link: <speckit.{cmd}>; rel="successor-version"` headers.

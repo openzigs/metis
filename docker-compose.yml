@@ -199,6 +199,8 @@ services:
       - "3000:3000"
     environment:
       METIS_API_URL: http://server:4000/api
+      # #1069 — proxy wait for a Spec Kit command, ms (clamped to 5-60 minutes).
+      METIS_SPEC_KIT_PROXY_TIMEOUT_MS: ${METIS_SPEC_KIT_PROXY_TIMEOUT_MS:-900000}
       NEXT_PUBLIC_API_URL: http://localhost:4000/api
       NEXT_PUBLIC_SOCKET_URL: http://localhost:4000
     depends_on:

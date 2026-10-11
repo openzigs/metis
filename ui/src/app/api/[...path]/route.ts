@@ -14,6 +14,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
+import { isSpecKitCommandRequest, specKitCommandFetch } from "@/lib/spec-kit-proxy-timeout";
 
 interface RouteCtx {
   params: Promise<{ path?: string[] }>;
@@ -57,7 +58,11 @@ async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
     init.duplex = "half";
   }
 
-  const upstream = await fetch(upstreamUrl, init);
+  // #1069 — a Spec Kit command holds the request open for a whole model call,
+  // longer than fetch's default 300 s wait for headers. Only those routes get
+  // the longer timeout.
+  const send = isSpecKitCommandRequest(req.method, path) ? specKitCommandFetch() : fetch;
+  const upstream = await send(upstreamUrl, init);
 
   const responseHeaders = new Headers();
   upstream.headers.forEach((v, k) => {

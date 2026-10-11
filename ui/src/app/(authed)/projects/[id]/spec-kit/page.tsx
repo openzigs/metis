@@ -27,6 +27,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { SPEC_KIT_ARTIFACT_NAMES, isSpecKitArtifactName } from "@metis/shared";
 import type { SpecKitArtifactName, SpecKitNamespacedCommand } from "@metis/shared";
 import { specKitApi, type SpecKitRunOptions } from "@/lib/spec-kit-api";
+import { runSpecKitCommandWithRecovery } from "@/lib/spec-kit-recovery";
 import { analysisApi } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
@@ -295,8 +296,10 @@ export default function SpecKitPage() {
   });
 
   const commandMutation = useMutation({
+    // #1069 — after a lost response (a bare 5xx from the proxy, a dropped
+    // connection) this polls for the artifact the command was writing.
     mutationFn: (input: { command: SpecKitNamespacedCommand; options: SpecKitRunOptions }) =>
-      specKitApi.runCommand(projectId, input.command, input.options),
+      runSpecKitCommandWithRecovery(projectId, input.command, input.options),
     // #936 — a command is a write (an artifact, a model call, issues on GitHub):
     // never resend it on a 5xx, which sent one click's request twice.
     retry: false,
