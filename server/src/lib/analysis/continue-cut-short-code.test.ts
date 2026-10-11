@@ -383,6 +383,23 @@ describe("#1062 a rerun that is cut short too says so, and Continue is limited",
     expect(persisted()).not.toHaveProperty("codeInvestigationContinuations");
   });
 
+  it("an ordinary regenerate after a continuation starts the count again", async () => {
+    // Continue finished, then a plain 1× regenerate is cut short: continuing THAT
+    // pass is a larger run, so it must be offered — and it is not "the rerun".
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationCutShort: false,
+      codeInvestigationContinuations: 1,
+      reasons: [],
+    });
+    const orch = makeOrchestrator({ ...health(true), unverifiedRequirements: 4 });
+    await regenerate(orch);
+    const next = persisted();
+    expect(next).not.toHaveProperty("codeInvestigationContinuations");
+    expect(next.codeInvestigationCutShort).toBe(true);
+    expect(next.codeInvestigationUnreached).toEqual({ unreached: 4, total: 16 });
+  });
+
   it("counts a continuation that recorded no retrieval health, and keeps the flag", async () => {
     // A single-shot rerun records nothing: uncounted, Continue could be clicked forever.
     const orch = makeOrchestrator();

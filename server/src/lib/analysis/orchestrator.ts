@@ -1461,6 +1461,11 @@ export class AnalysisOrchestrator {
         : {}),
     };
     if (health) {
+      // An ordinary regenerate ran at the configured budget and now owns the
+      // findings, so the count starts again: a continuation of THIS pass would
+      // be a larger run than the one just made, which is what the limit is not
+      // meant to refuse (and "the rerun was also cut short" would be untrue).
+      if (!continued) delete next.codeInvestigationContinuations;
       // The counts describe the pass that now owns the findings, or nothing.
       delete next.codeInvestigationUnreached;
       if (health.exhausted === true && health.unverifiedRequirements !== undefined) {
