@@ -65,4 +65,15 @@ describe("stripInternalMarkers", () => {
     expect(stripInternalMarkers(enriched)).not.toContain("<!--");
     expect(stripInternalMarkers(enriched)).toContain("## Clarifications");
   });
+
+  // Issue #998 — the criteria flag (#1116) is a second marker kind, written inline.
+  it("removes every metis: marker kind", () => {
+    const flagged = "> **Check the criteria.** <!-- metis:criteria-predate-answers -->";
+    expect(stripInternalMarkers(flagged)).toBe("> **Check the criteria.**");
+    expect(stripInternalMarkers("a <!--metis:some-future_marker:v2--> b")).toBe("a  b");
+  });
+
+  it("leaves an ordinary HTML comment for the renderer to drop", () => {
+    expect(stripInternalMarkers("a <!-- note --> b")).toBe("a <!-- note --> b");
+  });
 });

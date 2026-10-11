@@ -145,6 +145,34 @@ describe("GapReport", () => {
     expect(screen.getAllByTestId("verification-badge-confirmed").length).toBeGreaterThan(0);
   });
 
+  // Issue #998 — the card printed the requirement body as plain text.
+  it("renders the requirement body as Markdown and hides the metis: markers", async () => {
+    getGapReport.mockResolvedValue({
+      ...REPORT,
+      requirements: [
+        {
+          ...REPORT.requirements[0],
+          body: [
+            "Users **authenticate** with a password.",
+            "",
+            "<!-- metis:clarifications:start -->",
+            "## Clarifications",
+            "",
+            "- **Q:** SSO?",
+            "<!-- metis:clarifications:end -->",
+          ].join("\n"),
+        },
+      ],
+    });
+    renderPanel();
+    const card = await screen.findByTestId("gap-report-card-req-1");
+    const body = within(card).getByTestId("requirement-body");
+    expect(within(body).getByText("authenticate").tagName).toBe("STRONG");
+    expect(within(body).getByRole("heading", { name: "Clarifications" })).toBeInTheDocument();
+    expect(body.textContent).not.toContain("metis:");
+    expect(body.textContent).not.toMatch(/\*\*|##/);
+  });
+
   it("renders an explicit no-evidence marker and 'unestimated' effort", async () => {
     renderPanel();
     const card = await screen.findByTestId("gap-report-card-req-2");

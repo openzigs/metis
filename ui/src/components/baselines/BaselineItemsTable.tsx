@@ -3,6 +3,7 @@
  * AS OF its pinned version (server-side reconstruction over the
  * RequirementVersion substrate — never the current state).
  */
+import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { Card } from "@/components/ui/card";
 import type { BaselineItem } from "@/lib/baselines-api";
 
@@ -54,11 +55,8 @@ export function BaselineItemsTable({ items }: { items: BaselineItem[] }) {
                 {drift ? <span className="text-xs text-warning">{drift}</span> : null}
               </div>
               {meta ? <p className="text-xs text-muted-foreground">{meta}</p> : null}
-              {item.snapshot?.body ? (
-                <p className="whitespace-pre-wrap break-words text-xs text-foreground/80">
-                  {item.snapshot.body}
-                </p>
-              ) : null}
+              {/* #998 — the pinned body is Markdown; render it as the Requirements tab does. */}
+              <RequirementBody body={item.snapshot?.body} />
             </Card>
           </li>
         );

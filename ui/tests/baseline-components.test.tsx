@@ -134,6 +134,43 @@ describe("BaselineItemsTable", () => {
     expect(screen.getByText("now at v4")).toBeInTheDocument();
   });
 
+  // Issue #998 — pinned bodies printed raw Markdown and METIS's block markers.
+  it("renders a pinned body as Markdown and hides the metis: markers", () => {
+    const body = [
+      "### Summary",
+      "",
+      "Users can **export** feeds.",
+      "",
+      "<!-- metis:clarifications:start -->",
+      "## Clarifications",
+      "",
+      "- **Q:** Which format?",
+      "  **A:** OPML",
+      "",
+      "> **Check the acceptance criteria.** Edit them. <!-- metis:criteria-predate-answers -->",
+      "<!-- metis:clarifications:end -->",
+    ].join("\n");
+    const item = makeItem();
+    render(<BaselineItemsTable items={[{ ...item, snapshot: { ...item.snapshot!, body } }]} />);
+    const card = screen.getByTestId("baseline-item-req-1");
+    expect(screen.getByRole("heading", { name: "Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Clarifications" })).toBeInTheDocument();
+    expect(screen.getByText("export").tagName).toBe("STRONG");
+    expect(card.querySelector("blockquote")).not.toBeNull();
+    expect(card.textContent).not.toContain("metis:");
+    expect(card.textContent).not.toMatch(/\*\*|##|<!--/);
+  });
+
+  it("does not turn raw HTML in a pinned body into markup", () => {
+    const item = makeItem();
+    const body = 'Hi <img src=x onerror="alert(1)"> <script>alert(2)</script> there';
+    const { container } = render(
+      <BaselineItemsTable items={[{ ...item, snapshot: { ...item.snapshot!, body } }]} />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+  });
+
   it("renders an empty state", () => {
     render(<BaselineItemsTable items={[]} />);
     expect(screen.getByText(/pins no requirements/i)).toBeInTheDocument();

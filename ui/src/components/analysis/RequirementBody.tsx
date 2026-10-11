@@ -19,11 +19,15 @@ import remarkGfm from "remark-gfm";
  * they are malformed enough not to parse as an HTML comment.
  */
 
-const CLARIFICATION_MARKER = /<!--\s*metis:clarifications:(?:start|end)\s*-->/g;
+/**
+ * Every METIS block marker, not only the clarification pair: the criteria flag
+ * (`<!-- metis:criteria-predate-answers -->`, #1116) is written inline too (#998).
+ */
+const INTERNAL_MARKER = /<!--\s*metis:[\w:-]+\s*-->/g;
 
 /** The body with METIS's internal block markers removed. */
 export function stripInternalMarkers(body: string): string {
-  return body.replace(CLARIFICATION_MARKER, "").trim();
+  return body.replace(INTERNAL_MARKER, "").trim();
 }
 
 export function RequirementBody({ body }: { body: string | null | undefined }) {
