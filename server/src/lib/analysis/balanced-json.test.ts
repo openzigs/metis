@@ -108,9 +108,48 @@ describe("#1002 parseFirstBalancedJsonObject", () => {
     expect(parseFirstBalancedJsonObject('{bad} {"a":1}', { leadingOnly: true })).toEqual({
       found: false,
     });
-    expect(parseFirstBalancedJsonObject('{"a":1} {"b":2}', { leadingOnly: true })).toEqual({
+    expect(parseFirstBalancedJsonObject('{"a":1} then {"b":2}', { leadingOnly: true })).toEqual({
       found: true,
       value: { a: 1 },
+    });
+  });
+
+  /**
+   * PR #1084 review — the early-close guard covered `,` `]` `}` `:` and not
+   * the three tokens that OPEN a sibling value. A model that closes its object
+   * early does not always write the comma, and each of these shapes returned
+   * the leading object with the rest of the answer dropped: a new silent
+   * success, where `main` threw and the agent runner went to repair.
+   */
+  describe("declines a leading object that a sibling value follows", () => {
+    const LEADING = '{"summary":"ok","findings":[{"title":"T"}]}';
+
+    it.each([
+      ["{", `${LEADING}\n{"title":"T2"}]}`],
+      ["[", `${LEADING}\n[{"title":"T2"}]}`],
+      ['"', `${LEADING}\n"title":"T2"}]}`],
+    ])("when the continuation starts with %s", (_token, text) => {
+      // The leading object parses on its own — that is the trap.
+      expect(JSON.parse(LEADING)).toMatchObject({ summary: "ok" });
+      expect(parseFirstBalancedJsonObject(text)).toEqual({ found: false });
+      expect(parseFirstBalancedJsonObject(text, { leadingOnly: true })).toEqual({ found: false });
+      // End to end: it throws, with the offset the truncation log reads (#1224).
+      expect(() => extractJsonObject(text)).toThrow(/position \d+/);
+      expect(() => extractJsonObject(`Result:\n${text}`)).toThrow(SyntaxError);
+    });
+
+    it.each([["{"], ["["], ['"']])("with no whitespace before %s", (token) => {
+      expect(parseFirstBalancedJsonObject(`{"a":1}${token}`)).toEqual({ found: false });
+    });
+
+    it("still accepts prose after the object, which is what the guard must not catch", () => {
+      expect(parseFirstBalancedJsonObject(`${LEADING}\nNote: see the config.`)).toEqual({
+        found: true,
+        value: JSON.parse(LEADING),
+      });
+      expect(parseFirstBalancedJsonObject(`${LEADING}\n\`\`\`\nmore`)).toMatchObject({
+        found: true,
+      });
     });
   });
 

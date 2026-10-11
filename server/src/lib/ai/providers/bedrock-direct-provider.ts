@@ -1036,6 +1036,11 @@ export class OpenAICompatibleProvider implements AIProvider {
    * model catalog, so an operator can declare it for any other runtime with
    * `AI_MODEL_CATALOG_OVERRIDES`
    * (`{"openai:<model>":{"capabilities":{"jsonSchema":false}}}`).
+   *
+   * `model` is the id the caller REQUESTED, never the resolved one: the catalog
+   * is keyed by model id, and on bedrock-gateway the resolved value is an
+   * inference-profile ARN no catalog entry or override names. Same rule as
+   * {@link shouldSendTools}.
    */
   private wireResponseFormat(opts: ChatOptions, model: string): ChatOptions["responseFormat"] {
     const rf = opts.responseFormat;
@@ -1542,6 +1547,7 @@ export class OpenAICompatibleProvider implements AIProvider {
           includeTemperature,
           includeReasoningEffort,
           includeTools,
+          requestedModel,
         );
         return toolsRequested && !includeTools ? { ...response, toolsDropped: true } : response;
       } catch (err) {
@@ -1611,6 +1617,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     includeTemperature: boolean,
     includeReasoningEffort = true,
     includeTools = false,
+    requestedModel = model,
   ): Promise<ChatResponse> {
     const url = this.chatUrl(model);
 
@@ -1623,6 +1630,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       includeTemperature,
       includeReasoningEffort,
       includeTools,
+      requestedModel,
     );
     const carriesResponseFormat = includeResponseFormat && opts.responseFormat != null;
     const carriesReasoningEffort = this.canFallBackFromReasoningEffort(body);
@@ -1837,6 +1845,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         includeTemperature,
         includeReasoningEffort,
         sendTools,
+        requestedModel,
       );
       const carriesResponseFormat = includeResponseFormat && opts.responseFormat != null;
       const carriesReasoningEffort = this.canFallBackFromReasoningEffort(body);
@@ -2176,6 +2185,8 @@ export class OpenAICompatibleProvider implements AIProvider {
     includeTemperature = true,
     includeReasoningEffort = true,
     includeTools = false,
+    /** The id the caller asked for — what the catalog is keyed by. */
+    requestedModel = model,
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model,
@@ -2224,7 +2235,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     // Studio builds) returns a 400/422 which `chat`/`stream` catch to retry
     // once WITHOUT it (see {@link isStructuredOutputUnsupportedStatus}).
     if (includeResponseFormat && opts.responseFormat) {
-      body.response_format = this.wireResponseFormat(opts, model);
+      body.response_format = this.wireResponseFormat(opts, requestedModel);
     }
     // #132 — native tools. `includeTools` is false unless the caller supplied
     // tools AND this model may take them (see `shouldSendTools`).

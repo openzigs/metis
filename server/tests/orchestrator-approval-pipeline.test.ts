@@ -16,6 +16,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider } from "../src/lib/ai/types.js";
+import { RequirementsExtractionError } from "../src/lib/analysis/requirements-extractor.js";
 
 // ── Durable approval row store (backs the real approval-checkpoint service) ──
 interface ApprovalRow {
@@ -116,11 +117,17 @@ const withheldRecord = (proposedCount: number) => ({
 });
 
 const extractMock = vi.fn();
-vi.mock("../src/lib/analysis/requirements-extractor.js", () => ({
-  RequirementsExtractor: class {
-    extract = extractMock;
-  },
-}));
+vi.mock("../src/lib/analysis/requirements-extractor.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/analysis/requirements-extractor.js")>();
+  return {
+    // The real error class: the orchestrator reads `reason` only off this type.
+    RequirementsExtractionError: actual.RequirementsExtractionError,
+    RequirementsExtractor: class {
+      extract = extractMock;
+    },
+  };
+});
 
 const augmentMock = vi.fn();
 vi.mock("../src/lib/analysis/web-research-augmenter.js", () => ({
@@ -275,9 +282,7 @@ describe("#215 — orchestrator creates approval requests after extraction/clari
       });
 
     it("persists a failure marker, no structured requirements and no approvals", async () => {
-      const failure = Object.assign(new Error("Structured requirements extraction failed"), {
-        reason: "unparseable",
-      });
+      const failure = new RequirementsExtractionError("unparseable", "no JSON object");
       extractMock.mockRejectedValue(failure);
       const { orch } = makeOrchestrator();
 
@@ -301,6 +306,37 @@ describe("#215 — orchestrator creates approval requests after extraction/clari
       expect(persisted.enhancement.find((e) => "structuredExtractionFailure" in e)).toMatchObject({
         structuredExtractionFailure: { reason: "provider-error" },
       });
+    });
+
+    it("does not trust a `reason` on an error that is not the extractor's own", async () => {
+      // Any thrown value can carry a `reason` (an AbortSignal's, an upstream
+      // SDK's). Only RequirementsExtractionError's is one of the four.
+      extractMock.mockRejectedValue(
+        Object.assign(new Error("upstream said no"), { reason: "rate_limit_exceeded" }),
+      );
+      const { orch } = makeOrchestrator();
+      await expect(run(orch, "ana-foreign")).rejects.toThrow("upstream said no");
+      expect(persisted.enhancement.find((e) => "structuredExtractionFailure" in e)).toMatchObject({
+        structuredExtractionFailure: { reason: "provider-error" },
+      });
+    });
+
+    it("rethrows the extraction error even when the marker write fails", async () => {
+      const failure = new RequirementsExtractionError("schema-invalid", "missing requirements");
+      extractMock.mockRejectedValue(failure);
+      const { persistAnalysisEnhancement } =
+        await import("../src/lib/analysis/analysis-service.js");
+      const original = vi.mocked(persistAnalysisEnhancement).getMockImplementation()!;
+      vi.mocked(persistAnalysisEnhancement).mockImplementation(async (id, patch) => {
+        if ("structuredExtractionFailure" in patch) throw new Error("database is down");
+        return original(id, patch);
+      });
+      const { orch } = makeOrchestrator();
+      try {
+        await expect(run(orch, "ana-marker-down")).rejects.toBe(failure);
+      } finally {
+        vi.mocked(persistAnalysisEnhancement).mockImplementation(original);
+      }
     });
 
     it("does not mark a cancelled run as a failed extraction", async () => {

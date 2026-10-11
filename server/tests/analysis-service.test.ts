@@ -1315,7 +1315,7 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
       model: "stub",
     });
     const meta = () => JSON.parse(analyses.get(a.id)!.metadata!);
-    const failure = { reason: "unparseable", at: "2026-10-11T00:00:00.000Z" };
+    const failure = { reason: "unparseable" as const, at: "2026-10-11T00:00:00.000Z" };
 
     await persistAnalysisEnhancement(a.id, { structuredExtractionFailure: failure });
     expect(meta().structuredExtractionFailure).toEqual(failure);

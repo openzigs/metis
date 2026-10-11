@@ -82,6 +82,7 @@ import { sumLedgerUsage } from "../finops/ledger-totals.js";
 import { isServerAuthored } from "./server-authored.js";
 import { CODE_GRAPH_DOCUMENT_PREFIX } from "./fused-code-chunks.js";
 import type { ToolCallTelemetry } from "./tool-telemetry.js";
+import type { NoVerdictReason } from "./structured-verdict.js";
 import type {
   ClarificationApplication,
   StructuredRequirements,
@@ -244,8 +245,7 @@ export type PromotionStatus = "allowed" | "blocked";
  * message itself and never renders `reason`'s detail.
  */
 export interface StructuredExtractionFailure {
-  /** `unparseable` | `schema-invalid` | `empty-response` | `provider-error`. */
-  reason: string;
+  reason: NoVerdictReason;
   at: string;
 }
 

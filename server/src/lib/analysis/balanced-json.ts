@@ -10,8 +10,9 @@
  * This scanner walks the text ONCE, tracking brace depth and — while inside an
  * object — JSON string state and backslash escapes, so a `}` inside a string
  * value does not close anything. Each top-level `{…}` span is handed to
- * `JSON.parse` in order and the first that parses wins — unless JSON
- * punctuation follows it, which is a structural divergence and not commentary.
+ * `JSON.parse` in order and the first that parses wins — unless a JSON token
+ * follows it (punctuation, or the opening of another value), which is a
+ * structural divergence and not commentary.
  *
  * Linear by construction: every character is visited once by the scan, and the
  * spans passed to `JSON.parse` are disjoint, so parsing is bounded by the input
@@ -69,7 +70,7 @@ export function parseFirstBalancedJsonObject(
           }
           if (parsed) {
             // What follows decides whether this object is the answer. Prose is
-            // commentary. JSON punctuation means the model closed the object
+            // commentary. A JSON token means the model closed the object
             // EARLY and kept writing it (`{"findings":[…]}, {…}]}` — observed
             // on long agent answers): accepting the leading part would drop
             // the rest silently, where failing sends it to repair or re-prompt.
@@ -94,10 +95,25 @@ function couldBeJsonObject(text: string, start: number): boolean {
   return ch === 0x22 || ch === 0x7d;
 }
 
-/** True when the first token at or after `from` is `,` `]` `}` or `:`. */
+/**
+ * True when the first token at or after `from` is one JSON itself could
+ * continue with: `,` `]` `}` `:` — or `{` `[` `"`, the start of a sibling
+ * value. The second group matters as much as the first: a model that closes
+ * its object early does not always write the comma
+ * (`{"findings":[{…}]}\n{…}]}`), and accepting the leading object there drops
+ * the remaining findings just as silently.
+ */
 function continuesStructurally(text: string, from: number): boolean {
   const ch = nextTokenCode(text, from);
-  return ch === 0x2c || ch === 0x5d || ch === 0x7d || ch === 0x3a;
+  return (
+    ch === 0x2c /* , */ ||
+    ch === 0x5d /* ] */ ||
+    ch === 0x7d /* } */ ||
+    ch === 0x3a /* : */ ||
+    ch === 0x7b /* { */ ||
+    ch === 0x5b /* [ */ ||
+    ch === 0x22 /* " */
+  );
 }
 
 /** Char code of the first non-whitespace character at or after `from`, or -1. */

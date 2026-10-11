@@ -268,3 +268,49 @@ describe("#1077 the same downgrade for any runtime, by catalog override", () => 
     expect(bodies[0]!.response_format).toEqual(SCHEMA);
   });
 });
+
+/**
+ * PR #1084 review — on bedrock-gateway the model on the wire is an
+ * inference-profile ARN, and the catalog (and any override) is keyed by the id
+ * the caller asked for. `wireResponseFormat` looked the ARN up, found nothing,
+ * and sent the schema verbatim to a model the operator had marked as taking
+ * none. `shouldSendTools` already used the requested id.
+ */
+describe("#1077 a bedrock-gateway override is read by the requested model id", () => {
+  const MODEL = "anthropic.claude-test-model";
+  const ARN = "arn:aws:bedrock:us-east-1:000000000000:application-inference-profile/abc123";
+
+  function gateway() {
+    process.env[MODEL_CATALOG_OVERRIDES_ENV] = JSON.stringify({
+      [`bedrock-gateway:${MODEL}`]: { capabilities: { jsonSchema: false, jsonObject: true } },
+    });
+    return new OpenAICompatibleProvider({
+      baseUrl: "https://gateway.example.org/api/v1",
+      apiKey: "placeholder-not-a-key",
+      model: MODEL,
+      providerKey: "bedrock-gateway",
+      modelProfileMap: { [MODEL]: ARN },
+      retryBaseDelayMs: 1,
+      sleepFn: async () => undefined,
+    });
+  }
+
+  it("sends json_object on chat, with the profile ARN as the wire model", async () => {
+    const bodies = stubFetch(jsonOk());
+    await gateway().chat(USER, { responseFormat: SCHEMA });
+    expect(bodies[0]!.model).toBe(ARN);
+    expect(bodies[0]!.response_format).toEqual({ type: "json_object" });
+  });
+
+  it("does the same on the streaming path", async () => {
+    const bodies = stubFetch(sseOk());
+    await drain(gateway().stream(USER, { responseFormat: SCHEMA }));
+    expect(bodies[0]!.model).toBe(ARN);
+    expect(bodies[0]!.response_format).toEqual({ type: "json_object" });
+  });
+
+  it("agrees with what the provider reports for that model", () => {
+    expect(supportsResponseFormat(gateway(), MODEL, "json_schema")).toBe(false);
+    expect(supportsResponseFormat(gateway(), MODEL, "json_object")).toBe(true);
+  });
+});

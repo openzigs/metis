@@ -189,7 +189,7 @@ import {
 import { createRunDocumentLookup, projectDocumentQueries } from "./run-document-lookup.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
-import { RequirementsExtractor } from "./requirements-extractor.js";
+import { RequirementsExtractionError, RequirementsExtractor } from "./requirements-extractor.js";
 import {
   NO_WEB_SEARCH_PROVIDER_NOTICE,
   WebResearchAugmenter,
@@ -2222,13 +2222,21 @@ export class AnalysisOrchestrator {
       // no questions, no approval checkpoint, and nothing on screen to say why.
       // A cancelled run is not a failure and is not marked.
       if (!input.signal.aborted) {
-        const reason = (err as { reason?: unknown }).reason;
-        await persistAnalysisEnhancement(input.analysisId, {
-          structuredExtractionFailure: {
-            reason: typeof reason === "string" ? reason : "provider-error",
-            at: new Date().toISOString(),
-          },
-        });
+        // Only the extractor's own error carries a reason from the union; any
+        // other throw (transport, a bug) is recorded as a provider failure.
+        const reason = err instanceof RequirementsExtractionError ? err.reason : "provider-error";
+        try {
+          await persistAnalysisEnhancement(input.analysisId, {
+            structuredExtractionFailure: { reason, at: new Date().toISOString() },
+          });
+        } catch (markerErr) {
+          // The extraction error is the one the caller must see; a failed
+          // marker write is logged and must not replace it.
+          log.error("Could not record the structured-extraction failure marker", {
+            analysisId: input.analysisId,
+            error: (markerErr as Error).message,
+          });
+        }
       }
       throw err;
     }

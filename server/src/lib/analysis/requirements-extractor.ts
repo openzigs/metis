@@ -21,6 +21,7 @@ import { createChildLogger } from "../logger.js";
 import { extractJsonObject } from "./agent-runner.js";
 import {
   hasVerdict,
+  jsonObjectWhereDeclared,
   requestStructuredVerdict,
   type NoVerdictReason,
 } from "./structured-verdict.js";
@@ -133,9 +134,9 @@ export class RequirementsExtractor {
       model: this.model,
       signal,
       disableTools: true,
-      // #1077 — JSON mode where the provider has one (the OpenAI-compatible
-      // adapters); omitted by the helper everywhere else.
-      responseFormat: { type: "json_object" },
+      // #1077 — JSON mode only where the backend is declared json_object-only
+      // (DeepSeek's OpenAI-format host, or a catalog override).
+      responseFormat: jsonObjectWhereDeclared(this.provider, this.model),
     });
     if (!hasVerdict(outcome)) {
       throw new RequirementsExtractionError(outcome.reason, outcome.detail);

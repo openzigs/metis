@@ -243,6 +243,45 @@ describe("deepDiveFinding", () => {
     },
   );
 
+  it.each([
+    ["empty", ""],
+    ["whitespace only", " \n\t "],
+  ])(
+    "re-prompts after an %s answer without replaying it as an assistant turn",
+    async (_l, blank) => {
+      // The Anthropic Messages API answers an assistant turn with no text with
+      // a 400, which would turn a recoverable empty answer into a provider error.
+      const answers = [blank, JSON.stringify(VALID_DRAFT)];
+      const { provider, chat } = makeProvider(() => reply(answers.shift()!));
+
+      const result = await deepDiveFinding(provider, baseInput());
+
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(result.draft.title).toBe(VALID_DRAFT.title);
+      for (const [sent] of chat.mock.calls as Array<[ChatMessage[]]>) {
+        for (const message of sent) {
+          expect(String(message.content).trim()).not.toBe("");
+        }
+        expect(sent.filter((m) => m.role === "assistant")).toEqual([]);
+      }
+      // The re-prompt still says what went wrong and what is owed.
+      const retry = chat.mock.calls[1]![0] as ChatMessage[];
+      expect(retry.at(-1)!.role).toBe("user");
+      expect(String(retry.at(-1)!.content)).toMatch(/response was empty/);
+      expect(String(retry.at(-1)!.content)).toContain("title");
+    },
+  );
+
+  it("still replays a non-empty unreadable answer as the assistant turn", async () => {
+    const answers = ["I cannot help with that.", JSON.stringify(VALID_DRAFT)];
+    const { provider, chat } = makeProvider(() => reply(answers.shift()!));
+
+    await deepDiveFinding(provider, baseInput());
+
+    const retry = chat.mock.calls[1]![0] as ChatMessage[];
+    expect(retry.at(-2)).toEqual({ role: "assistant", content: "I cannot help with that." });
+  });
+
   it("#1002 rethrows a provider failure unchanged, without a second call", async () => {
     class UpstreamError extends Error {
       readonly status = 429;

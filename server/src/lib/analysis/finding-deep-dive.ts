@@ -30,7 +30,11 @@ import { createChildLogger } from "../logger.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { getPersona } from "./personas.js";
 import { buildDeepDivePrompt } from "./prompts.js";
-import { hasVerdict, requestStructuredVerdict } from "./structured-verdict.js";
+import {
+  hasVerdict,
+  jsonObjectWhereDeclared,
+  requestStructuredVerdict,
+} from "./structured-verdict.js";
 
 const log = createChildLogger("analysis-deep-dive");
 
@@ -135,6 +139,7 @@ export async function deepDiveFinding(
   });
 
   const messages: ChatMessage[] = [{ role: "user", content: userMessage }];
+  const model = input.model ?? tierModelFor(provider, HAIKU_MODEL_ID);
 
   const outcome = await requestStructuredVerdict(provider, {
     label: "deep-dive",
@@ -143,11 +148,11 @@ export async function deepDiveFinding(
     expectedShape: DRAFT_SHAPE,
     messages,
     systemMessage,
-    model: input.model ?? tierModelFor(provider, HAIKU_MODEL_ID),
+    model,
     signal: input.signal,
-    // #1077 — JSON mode where the provider has one (the OpenAI-compatible
-    // adapters); omitted by the helper everywhere else.
-    responseFormat: { type: "json_object" },
+    // #1077 — JSON mode only where the backend is declared json_object-only
+    // (DeepSeek's OpenAI-format host, or a catalog override).
+    responseFormat: jsonObjectWhereDeclared(provider, model),
   });
 
   if (!hasVerdict(outcome)) {

@@ -73,3 +73,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [vitest 5 jest-dom second copy](project_vitest5-jest-dom-second-copy.md) — jest-dom/vitest loads another vitest copy; extend expect locally (#668)
 - [float USD to cents](project_float-usd-to-cents.md) — costUsd*100 float error; round to cents before sign/zero checks (#950)
 - [vitest retry masks failures](project_vitest-retry-masks-deterministic.md) — retry:2 hid 6 real failures; clearAllMocks keeps once-values (#963)
+- [Decline guards: every token](project_decline-guards-need-every-continuation-token.md) — silent-success holes evade throw-fuzz (#1084)

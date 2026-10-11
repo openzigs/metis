@@ -961,7 +961,10 @@ export interface EnhancementMetadata {
    * model's answer could not be read after a re-prompt, or the call failed).
    * Not the same as an empty `structuredRequirements`.
    */
-  structuredExtractionFailure?: { reason: string; at: string };
+  structuredExtractionFailure?: {
+    reason: "unparseable" | "schema-invalid" | "empty-response" | "provider-error";
+    at: string;
+  };
   webResearch?: WebResearchResultPayload;
   /**
    * Epic #202 (#216) / Issue #1104 — the approval gate's durable state. When

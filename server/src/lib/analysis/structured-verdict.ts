@@ -61,7 +61,7 @@
  * harness (#1108) prints it via {@link formatStructuredVerdictReport}.
  */
 import type { ZodType } from "zod";
-import { supportsResponseFormat } from "../ai/capabilities.js";
+import { resolveCapabilities, supportsResponseFormat } from "../ai/capabilities.js";
 import type {
   AIProvider,
   CacheTelemetryCallType,
@@ -245,7 +245,10 @@ function parseVerdict<T>(
  * The re-prompt. It tells the model three things it did not have the first
  * time: that its output failed, WHY it failed, and exactly what shape is owed.
  * The model's own bad output is replayed as an assistant turn so the correction
- * is anchored to it.
+ * is anchored to it — unless there was none. An empty (or whitespace-only)
+ * answer is NOT replayed: the Anthropic Messages API rejects an assistant turn
+ * with no text with a 400, which would turn a recoverable empty answer into a
+ * provider error. The re-prompt already says the response was empty.
  */
 function buildRepairTurns(
   raw: string,
@@ -253,8 +256,12 @@ function buildRepairTurns(
   schemaName: string,
   expectedShape: string,
 ): ChatMessage[] {
+  const echoed: ChatMessage[] =
+    raw.trim().length === 0
+      ? []
+      : [{ role: "assistant", content: clip(raw, MAX_ECHOED_BODY_CHARS) }];
   return [
-    { role: "assistant", content: clip(raw, MAX_ECHOED_BODY_CHARS) },
+    ...echoed,
     {
       role: "user",
       content: [
@@ -280,17 +287,42 @@ function buildRepairTurns(
  */
 function responseFormatFor(
   provider: AIProvider,
+  model: string | undefined,
   requested: ResponseFormat | undefined,
 ): ResponseFormat | undefined {
   if (!requested) return undefined;
-  if (supportsResponseFormat(provider, undefined, requested.type)) return requested;
-  if (
-    requested.type === "json_schema" &&
-    supportsResponseFormat(provider, undefined, "json_object")
-  ) {
+  if (supportsResponseFormat(provider, model, requested.type)) return requested;
+  if (requested.type === "json_schema" && supportsResponseFormat(provider, model, "json_object")) {
     return { type: "json_object" };
   }
   return undefined;
+}
+
+/**
+ * #1077 — `json_object` for a stage that has no schema of its own, but ONLY
+ * where the adapter or the model catalog has declared the backend json_object-
+ * only: `jsonSchema: false` with `jsonObject: true`. That is DeepSeek's
+ * OpenAI-format host, or a model an operator marked `jsonSchema:false` in
+ * `AI_MODEL_CATALOG_OVERRIDES`.
+ *
+ * Everywhere else it returns `undefined` and the stage stays on prompt-only
+ * JSON, as it was before #1077. The OpenAI-compatible default (`jsonObject`
+ * unset, or `true` from the provider-key default) is a guess, not a
+ * declaration: the same adapter fronts Ollama, LM Studio, vLLM and gateways,
+ * and one that rejects the field answers 400 — which is not memoised, so every
+ * call would pay a rejected round-trip, and any unrelated 400 (context length)
+ * would be retried once without the field for nothing.
+ *
+ * @param model the model the call will name; defaults to the provider's own.
+ */
+export function jsonObjectWhereDeclared(
+  provider: AIProvider,
+  model?: string,
+): ResponseFormat | undefined {
+  const caps = resolveCapabilities(provider, model ?? provider.model);
+  return caps.responseFormat === true && caps.jsonSchema === false && caps.jsonObject === true
+    ? { type: "json_object" }
+    : undefined;
 }
 
 /**
@@ -323,7 +355,7 @@ export async function requestStructuredVerdict<T>(
   }
 
   const metrics = request.metrics ?? structuredVerdictMetrics;
-  const responseFormat = responseFormatFor(provider, request.responseFormat);
+  const responseFormat = responseFormatFor(provider, request.model, request.responseFormat);
   const usedResponseFormat = responseFormat !== undefined;
   const opts: ChatOptions = {
     ...(request.systemMessage ? { systemMessage: request.systemMessage } : {}),
