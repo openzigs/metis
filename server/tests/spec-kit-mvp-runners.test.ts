@@ -687,6 +687,34 @@ describe("runPlanExpanded", () => {
     );
   });
 
+  it("#1057 — a reasoning-only plan.md reply fails the command; no stub plan.md is written", async () => {
+    class ReasoningOnlyPlan extends FakeProvider {
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        const system = String((o as { systemMessage?: string }).systemMessage ?? "");
+        if (system.includes("plan.md") && !system.includes("quickstart.md")) {
+          return { ...(await super.chat(m, o)), content: "", finishReason: "length" };
+        }
+        return super.chat(m, o);
+      }
+    }
+    const fid = seedFeature("p1", "006-stub");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    seedFeatureArtifact(fid, "plan.md", "# Previous plan\n");
+    await expect(
+      runPlanExpanded({
+        projectId: "p1",
+        featureSlug: "006-stub",
+        deps: { provider: new ReasoningOnlyPlan("# Doc\n") },
+      }),
+    ).rejects.toMatchObject({ code: "SPEC_KIT_OUTPUT_EXHAUSTED" });
+    const plans = [...featureArtifactRows.values()].filter(
+      (r) => r.featureId === fid && r.key === "plan.md",
+    );
+    expect(plans).toHaveLength(1);
+    expect(plans[0].content).toBe("# Previous plan\n");
+    expect(featureRows.get(fid)!.status).not.toBe("planned");
+  });
+
   it("#944 — a cut-off OpenAPI contract keeps its whole lines instead of the /health stub", async () => {
     class CapOnContract extends FakeProvider {
       async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {

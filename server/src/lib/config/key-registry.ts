@@ -369,6 +369,23 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#25 — how much a Phase-1 docs-gen FACT-EXTRACTION call may reason. auto (default): low effort for a model that REASONS BY DEFAULT (DeepSeek deepseek-v4-pro / deepseek-flash, or a claude-* name sent to DeepSeek's Anthropic endpoint) and nothing for every other model, so Claude on api.anthropic.com is unchanged. provider-default: send nothing (DeepSeek then thinks at its default, high). off: thinking disabled. low / medium / high: that effort for ANY model — on Claude this turns adaptive thinking on. Phase 1 is mechanical extraction: with the #41 output budget, deepseek-v4-pro at its default spent ~19,800 output tokens and ~88 s per module, mostly reasoning. Honoured by the anthropic provider (thinking + output_config.effort; DeepSeek maps medium to high); other providers ignore it. DOCS_GEN_REASONING_ALLOWANCE_TOKENS still sizes the cap.",
     sensitive: false,
   },
+  // ── Issue #1057 — Spec Kit output budget ──────────────────────────────
+  SPEC_KIT_MAX_OUTPUT_TOKENS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(512),
+    description:
+      "#1057 — OUTPUT cap (max_tokens) for one Spec Kit model call (/speckit.specify, plan, tasks, clarify, analyze, constitution, checklist). Default 21333, the Anthropic SDK's non-streaming bound (ADR 0008) — the anthropic provider clamps any larger value to it. Clamped down to the model's known output ceiling; a model with no known ceiling gets 8192 unless this is set. Before #1057 no cap was sent, so the anthropic path used its 16000 default and a thinking-by-default model could spend all of it reasoning.",
+    sensitive: false,
+  },
+  SPEC_KIT_REASONING: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["auto", "provider-default", "off", "low", "medium", "high"]),
+    description:
+      "#1057 — how much a Spec Kit model call may reason. Same values as DOCS_GEN_PHASE1_REASONING. auto (default): low effort for a model that REASONS BY DEFAULT (DeepSeek deepseek-v4-pro / deepseek-flash, or a claude-* name sent to DeepSeek's Anthropic endpoint) and nothing for every other model, so Claude on api.anthropic.com is unchanged. provider-default: send nothing. off: thinking disabled. low / medium / high: that effort for any model. In #706 run 7 deepseek-flash at its default (high) spent the whole output cap reasoning and /speckit.plan returned no text three times.",
+    sensitive: false,
+  },
   DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS: {
     tier: "tunable",
     valueType: "int",

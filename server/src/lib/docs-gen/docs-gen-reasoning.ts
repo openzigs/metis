@@ -38,8 +38,8 @@ export const DEFAULT_THINKING_MODEL_PHASE1_EFFORT = "low" as const;
 /** The per-request options a resolved mode contributes to a chat call. */
 export type DocsGenReasoningOptions = Pick<ChatOptions, "reasoningEffort" | "disableThinking">;
 
-function readMode(config: ConfigService): DocsGenReasoningMode {
-  const raw = config.get("DOCS_GEN_PHASE1_REASONING")?.trim().toLowerCase();
+function readMode(config: ConfigService, key: string): DocsGenReasoningMode {
+  const raw = config.get(key)?.trim().toLowerCase();
   return (DOCS_GEN_REASONING_MODES as readonly string[]).includes(raw ?? "")
     ? (raw as DocsGenReasoningMode)
     : "auto";
@@ -68,7 +68,20 @@ export function resolvePhase1Reasoning(
   config: ConfigService = getConfigService(),
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): DocsGenReasoningOptions {
-  const mode = readMode(config);
+  return resolveReasoningSetting("DOCS_GEN_PHASE1_REASONING", model, config, env);
+}
+
+/**
+ * #1057 — the same resolution for any config key that takes the
+ * {@link DOCS_GEN_REASONING_MODES} values (`SPEC_KIT_REASONING` uses it too).
+ */
+export function resolveReasoningSetting(
+  key: string,
+  model: string | undefined,
+  config: ConfigService = getConfigService(),
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): DocsGenReasoningOptions {
+  const mode = readMode(config, key);
   switch (mode) {
     case "provider-default":
       return {};

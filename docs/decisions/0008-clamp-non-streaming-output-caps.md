@@ -124,3 +124,7 @@ clamping it would be an over-block on a cap deliberately raised for it (#1226).
   one remaining Bedrock spelling to `claude-opus-4-1-20250805` before sending.
   That is a real reduction in output budget for those ids, and it is the SDK's
   number, not ours — the alternative is a hard client-side throw.
+- Spec Kit (#1057) sends its own explicit cap, `SPEC_KIT_MAX_OUTPUT_TOKENS`,
+  defaulting to this bound (21,333) rather than the provider's 16,000, and a
+  `SPEC_KIT_REASONING` effort (`low` for thinking-by-default models). A reply
+  that reaches the cap with no text fails the command instead of being saved.

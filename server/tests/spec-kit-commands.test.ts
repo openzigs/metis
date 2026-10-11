@@ -369,6 +369,22 @@ describe("/plan", () => {
     expect(r.message).toMatch(/grounded on 1 retrieved chunk/);
   });
 
+  it("#1057 — a reasoning-only reply at the output cap fails and keeps the previous plan.md", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    await writeArtifact({ projectId: "p1", name: "plan.md", content: "# Previous plan\n" });
+    class ReasoningOnly extends FakeProvider {
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        return { ...(await super.chat(m, o)), content: "", finishReason: "length" };
+      }
+    }
+    await expect(
+      runPlan({ projectId: "p1", deps: { provider: new ReasoningOnly("") } }),
+    ).rejects.toMatchObject({ status: 502, code: "SPEC_KIT_OUTPUT_EXHAUSTED" });
+    const plans = [...artifactRows.values()].filter((r) => r.name === "plan.md");
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ content: "# Previous plan\n", version: 1 });
+  });
+
   it("still produces a valid plan.md ungrounded when retrieval is empty/fails (#375)", async () => {
     await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
     const ks = fakeKnowledgeService([]);

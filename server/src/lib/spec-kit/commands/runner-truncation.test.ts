@@ -31,6 +31,7 @@ const {
   joinContinuation,
   SPEC_KIT_TRUNCATION_NOTE,
   SPEC_KIT_TRUNCATION_NOTE_YAML,
+  SPEC_KIT_OUTPUT_EXHAUSTED_CODE,
 } = await import("./runner.js");
 
 const project = {
@@ -203,13 +204,84 @@ describe("runSpecKitAgent output-cap recovery (#944)", () => {
     expect(doc[0]).toBe("a");
   });
 
-  it("a reply cut before any whole line retries from the original prompt", async () => {
+  it("#1057 — a reply cut before any whole line fails the command instead of re-sending it", async () => {
     const { provider, calls } = scriptedProvider([
       { content: "", finishReason: "max_tokens" },
       { content: "# Q\n", finishReason: "stop" },
     ]);
+    const audit = (await import("../../audit/audit-service.js")).audit;
+    await expect(run(provider)).rejects.toMatchObject({
+      status: 502,
+      code: SPEC_KIT_OUTPUT_EXHAUSTED_CODE,
+      message: expect.stringMatching(/output-token limit before writing any text/),
+    });
+    expect(calls).toHaveLength(1);
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "spec_kit.command.plan.failed",
+        metadata: expect.objectContaining({ reason: "output_exhausted" }),
+      }),
+    );
+    expect(vi.mocked(audit)).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "spec_kit.command.plan" }),
+    );
+  });
+
+  it("#1057 — reasoning-only replies (half a line, then length) never become a stub", async () => {
+    const { provider, calls } = scriptedProvider([
+      { content: "Let me think about the pl", finishReason: "length" },
+    ]);
+    await expect(run(provider)).rejects.toMatchObject({ code: SPEC_KIT_OUTPUT_EXHAUSTED_CODE });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("#1057 — an empty gateway placeholder reply fails too", async () => {
+    const { provider } = scriptedProvider([
+      { content: "[No response text was returned by the model (stopReason=max_tokens)]" },
+    ]);
+    await expect(run(provider)).rejects.toMatchObject({ code: SPEC_KIT_OUTPUT_EXHAUSTED_CODE });
+  });
+
+  it("#1057 — a continuation that adds nothing is not re-sent; the salvage is kept and marked", async () => {
+    const { provider, calls } = scriptedProvider([
+      { content: "# Q\n- one\n- tw", finishReason: "max_tokens" },
+      { content: "", finishReason: "max_tokens" },
+    ]);
     const out = await run(provider);
-    expect(calls[1]).toHaveLength(1);
-    expect(out).toMatchObject({ content: "# Q\n", truncated: false });
+    expect(calls).toHaveLength(2);
+    expect(out.truncated).toBe(true);
+    expect(out.continuations).toBe(1);
+    expect(out.content).toBe(`# Q\n- one\n\n${SPEC_KIT_TRUNCATION_NOTE}\n`);
+  });
+});
+
+describe("runSpecKitAgent output budget (#1057)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("sends an explicit max_tokens on every call", async () => {
+    const seen: unknown[] = [];
+    const { provider } = scriptedProvider([{ content: "# Done\n", finishReason: "stop" }]);
+    const chat = provider.chat.bind(provider);
+    provider.chat = async (m, o) => {
+      seen.push(o);
+      return chat(m, o);
+    };
+    await run(provider);
+    expect(seen[0]).toMatchObject({ maxTokens: expect.any(Number), callType: "spec-kit" });
+  });
+
+  it("asks a thinking-by-default model for low reasoning effort", async () => {
+    const seen: unknown[] = [];
+    const { provider } = scriptedProvider([{ content: "# Done\n", finishReason: "stop" }]);
+    const chat = provider.chat.bind(provider);
+    const deepseek = Object.assign(Object.create(Object.getPrototypeOf(provider)), provider, {
+      model: "deepseek-flash",
+      chat: async (m: ChatMessage[], o: unknown) => {
+        seen.push(o);
+        return chat(m, o as never);
+      },
+    }) as AIProvider;
+    await run(deepseek);
+    expect(seen[0]).toMatchObject({ reasoningEffort: "low" });
   });
 });

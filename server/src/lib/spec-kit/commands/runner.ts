@@ -28,6 +28,7 @@ import { loadAsPreamble } from "../constitution-meta.js";
 import { OfflineStubProvider } from "../../ai/providers/offline-stub-provider.js";
 import { SpecKitArtifactError } from "../artifacts.js";
 import { detectTruncation } from "../../docs-gen/truncation.js";
+import { resolveSpecKitOutputOptions } from "../output-budget.js";
 
 export interface SpecKitProjectContext {
   id: string;
@@ -132,6 +133,13 @@ export const SPEC_KIT_TRUNCATION_NOTE =
 /** The same note as a YAML comment, so a salvaged contract still parses. */
 export const SPEC_KIT_TRUNCATION_NOTE_YAML =
   "# Incomplete: this document was cut off at the model's output-token limit. Re-run the command, or split the request.";
+
+/**
+ * #1057 — the error a command fails with when a reply hit the output cap
+ * without one whole line of text (typically: all reasoning, no answer). It is
+ * thrown before any artifact is written, so the previous version stays.
+ */
+export const SPEC_KIT_OUTPUT_EXHAUSTED_CODE = "SPEC_KIT_OUTPUT_EXHAUSTED";
 
 const CONTINUE_PROMPT = [
   "Your previous reply was cut off at the output-token limit. Continue the SAME",
@@ -246,6 +254,9 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     // OpenAI-compatible path, where transparent gateway caching applies instead.
     callType: "spec-kit" as const,
     promptCaching: { system: true },
+    // #1057 — an explicit output cap and reasoning effort (config-driven), so
+    // a thinking-by-default model cannot spend the provider default reasoning.
+    ...resolveSpecKitOutputOptions(provider.model),
   };
   let kept = "";
   let truncated = false;
@@ -290,6 +301,35 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
         ? `${cut.text}\n`
         : ""
       : keepWholeLines(cut.text);
+    // #1057 — a cut reply with no whole line made no progress, and re-sending
+    // the same turn spends the same budget the same way (run 7: three
+    // attempts, three stubs). With nothing kept at all the command fails here,
+    // before any artifact is written; with a salvaged prefix it stops
+    // continuing and keeps the #944 marked salvage.
+    if (whole.trim().length === 0) {
+      if (kept.trim().length === 0) {
+        audit({
+          actor: input.actorId ? { id: input.actorId } : null,
+          action: `spec_kit.command.${input.command}.failed`,
+          target: { type: "project", id: input.project.id },
+          metadata: {
+            reason: "output_exhausted",
+            provider: response.provider,
+            model: response.model,
+            tokens: totalTokens,
+          },
+        });
+        throw new SpecKitArtifactError(
+          502,
+          SPEC_KIT_OUTPUT_EXHAUSTED_CODE,
+          `/${input.command}: the model reached its output-token limit before writing any text ` +
+            "(its reasoning likely used the whole budget). Nothing was saved; the previous version is kept. " +
+            "Lower SPEC_KIT_REASONING, raise SPEC_KIT_MAX_OUTPUT_TOKENS, or split the request.",
+        );
+      }
+      truncated = true;
+      break;
+    }
     kept = joinContinuation(kept, whole);
     truncated = true;
     if (continuations >= MAX_SPEC_KIT_CONTINUATIONS) break;
