@@ -17,6 +17,37 @@
  * `imports` edges are deliberately NOT followed: for a file-only target they
  * would link every test that imports the package.
  *
+ * Go only (#1034): the ingest leaves a call through a receiver or a struct field
+ * (`client.CreateBookmark(…)`, `h.store.SetEntriesStatus(…)`) unresolved, 76% of
+ * Miniflux's call edges, so the walk above never saw the test making it. Those
+ * calls are bound here by the impact-analysis resolver
+ * (`impact-analysis/go-call-resolution.ts`) and reported as a fourth, weakest
+ * relation:
+ *
+ * | `inferred-call` | a test-file symbol has an UNRESOLVED Go call that binds, by  | 0.5  |
+ * |                 | callee name, to a target symbol                              |      |
+ *
+ * The resolver binds on the bare callee name, the only thing the parser keeps
+ * for a selector call, stdlib calls included. That is safe for a blast radius
+ * and not for a coverage claim, so THIS consumer narrows the bind (the resolver
+ * itself is unchanged for impact analysis):
+ *  - the test's package must be the target's, or import it, and the target must
+ *    be the ONLY visible function of that name (the resolver's own rule);
+ *  - the name must be distinctive: two words or more and not a well-known
+ *    stdlib/testing name, so `Close`, `Run`, `New`, `WithTimeout` never bind
+ *    (`go-inferred-call-names.ts` has the rule and its reasons);
+ *  - an unexported name binds only from its own package (Go's rule).
+ * An inferred link is never promoted: it is labelled apart from `exercises` in
+ * the API and the UI, ranks below every ingest-derived relation, and does NOT
+ * count toward the hub guard below, so adding one cannot hide or downgrade a
+ * test that was already listed. Inside a target the ingest's own edges make a
+ * hub, it is filtered like any other caller.
+ * A rangeless whole-file target does not follow them: it expands to every symbol
+ * of the file, which already links unrelated tests (#955, #1004). The step is
+ * skipped unless a target is Go, and goes away once the ingest resolves
+ * receivers itself (#1071): delete `loadGoResolvedEdges`, `goResolvedEdgesInto`
+ * and the `inferred-call` relation.
+ *
  * Four guards keep a broad mapping from fanning out (#860, #905):
  *  - A file-only target that records a line range expands only to the symbols
  *    overlapping that range, not the whole file. The range is applied before the
@@ -65,6 +96,8 @@ import { AppError } from "../../middleware/error-handler.js";
 import { BM25Index, tokenizeCodeRoots } from "../code-graph/hybrid-search.js";
 import { classifyTestSymbol, siblingTestPaths } from "../code-graph/test-conventions.js";
 import { getConfigService } from "../config/config-service.js";
+import { goPackageDir, loadResolvedGoCalls } from "../impact-analysis/go-call-resolution.js";
+import { isDistinctiveGoCallee, isExportedGoName } from "./go-inferred-call-names.js";
 import { denoiseRequirementQuery } from "./requirement-code-mapping.js";
 import { ANALYSIS_GROUNDING_SOURCE } from "./seed-code-links-from-findings.js";
 
@@ -97,8 +130,18 @@ export const DEFAULT_TESTED_BY_MAX_SYMBOLS_PER_FILE = 500;
 export const DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS = 2;
 export const DEFAULT_TESTED_BY_LIMIT = 10;
 
-const BASE_SCORE: Record<TestLinkRelation, number> = { direct: 1, exercises: 0.8, naming: 0.6 };
-const RELATION_RANK: Record<TestLinkRelation, number> = { direct: 0, exercises: 1, naming: 2 };
+const BASE_SCORE: Record<TestLinkRelation, number> = {
+  direct: 1,
+  exercises: 0.8,
+  naming: 0.6,
+  "inferred-call": 0.5,
+};
+const RELATION_RANK: Record<TestLinkRelation, number> = {
+  direct: 0,
+  exercises: 1,
+  naming: 2,
+  "inferred-call": 3,
+};
 /** Name tokens that mark a test rather than say what it tests. */
 const TEST_NAME_TOKENS = new Set(["test", "tests", "benchmark", "fuzz", "example", "spec"]);
 /** Shortest folded symbol name a test-name prefix may match (`Val` must not win). */
@@ -324,6 +367,8 @@ interface GraphRows {
   /** `TESTED_BY_MAX_SYMBOLS_PER_FILE`, applied per target by {@link fileTargetSymbols}. */
   perFileCap: number;
   edgesInto: Map<string, SymbolRow[]>;
+  /** #1034 — test callers reached only through a Go call bound after ingest. */
+  goResolvedEdgesInto: Map<string, SymbolRow[]>;
   siblingSymbolsByFile: Map<string, SymbolRow[]>;
 }
 
@@ -351,7 +396,71 @@ function fileTargetSymbols(t: TestedByTarget, graph: GraphRows): SymbolRow[] {
 const targetIsTest = (t: TestedByTarget): boolean =>
   classifyTestSymbol({ filePath: t.filePath }).isTestFile;
 
-/** Load symbols, incoming edges and sibling test symbols: three queries at most. */
+/** A Go symbol's simple name, as the resolver reads it: the tail after the last `::`. */
+function goSimpleName(sym: Pick<SymbolRow, "qualifiedName">): string {
+  const i = sym.qualifiedName.lastIndexOf("::");
+  return i === -1 ? sym.qualifiedName : sym.qualifiedName.slice(i + 2);
+}
+
+/**
+ * #1034 — the test callers behind the Go `calls` edges the ingest left
+ * unresolved, keyed by the target they reach. Three reads for the resolver, one
+ * more for the callers when something bound; none when no target is Go.
+ *
+ * The unresolved-calls read is narrowed to the targets' own names, so its size
+ * follows the batch and not the project (16.5k rows on Miniflux otherwise).
+ *
+ * A bound call is kept only when its NAME is evidence (see
+ * `go-inferred-call-names.ts`): the name is distinctive, or the test is named
+ * for it (`TestValidateCertFile` calling `Validate`), the same prefix rule the
+ * `naming` relation uses. Either alone is a guess; a stray `Close` in
+ * `TestFetchFeedIcon` is neither.
+ */
+async function loadGoResolvedEdges(
+  prisma: TestedByPrisma,
+  projectId: string,
+  goTargets: ReadonlyMap<string, SymbolRow>,
+): Promise<Map<string, SymbolRow[]>> {
+  const into = new Map<string, SymbolRow[]>();
+  if (goTargets.size === 0) return into;
+  const calleeNames = [...new Set([...goTargets.values()].map(goSimpleName))];
+  const resolved = (await loadResolvedGoCalls(prisma, projectId, { calleeNames })).filter((r) =>
+    goTargets.has(r.toSymbolId),
+  );
+  if (resolved.length === 0) return into;
+  const callers: SymbolRow[] = await prisma.codeSymbol.findMany({
+    where: { projectId, id: { in: [...new Set(resolved.map((r) => r.fromSymbolId))] } },
+    select: SYMBOL_SELECT,
+  });
+  const callerById = new Map(callers.map((c) => [c.id, c]));
+  for (const r of resolved) {
+    const from = callerById.get(r.fromSymbolId);
+    const target = goTargets.get(r.toSymbolId);
+    if (!from || !target) continue;
+    const test = classifyTestSymbol(from);
+    if (!test.isTestFile) continue;
+    const name = goSimpleName(target);
+    const samePackage = goPackageDir(from.filePath) === goPackageDir(target.filePath);
+    // Named for it counts only inside the target's package, as `naming` does:
+    // from `internal/api`, `TestVersionHandler` calling `runtime.Version()` bound
+    // to `client.go::Version` (measured on Miniflux).
+    const namedForIt =
+      samePackage &&
+      test.isTestSymbol &&
+      matchTestSubject(from.name, test.subjectHint, [target]) !== null;
+    if (!isDistinctiveGoCallee(name) && !namedForIt) continue;
+    // Go's own rule: an unexported name is reachable only inside its package, so
+    // from anywhere else the call is to something local of the same name.
+    if (!isExportedGoName(name) && !samePackage) continue;
+    pushTo(into, r.toSymbolId, from);
+  }
+  return into;
+}
+
+/**
+ * Load symbols, incoming edges and sibling test symbols: three queries, plus
+ * {@link loadGoResolvedEdges}' for a Go target.
+ */
 async function loadGraph(
   prisma: TestedByPrisma,
   projectId: string,
@@ -376,6 +485,7 @@ async function loadGraph(
     symbolsByFile: new Map(),
     perFileCap,
     edgesInto: new Map(),
+    goResolvedEdgesInto: new Map(),
     siblingSymbolsByFile: new Map(),
   };
 
@@ -396,9 +506,15 @@ async function loadGraph(
   }
 
   const edgeTargets = new Set<string>(graph.symbolById.keys());
+  const goTargets = new Map<string, SymbolRow>();
+  for (const s of graph.symbolById.values()) if (s.language === "go") goTargets.set(s.id, s);
   for (const t of targets) {
     if (t.codeSymbolId || targetIsTest(t)) continue;
-    for (const s of fileTargetSymbols(t, graph)) edgeTargets.add(s.id);
+    for (const s of fileTargetSymbols(t, graph)) {
+      edgeTargets.add(s.id);
+      // A rangeless whole-file target never follows a call bound here (#955, #1004).
+      if (t.startLine != null && s.language === "go") goTargets.set(s.id, s);
+    }
   }
   if (edgeTargets.size) {
     const edges = await prisma.codeEdge.findMany({
@@ -431,6 +547,9 @@ async function loadGraph(
     });
     for (const row of rows) pushTo(graph.siblingSymbolsByFile, row.filePath, row);
   }
+
+  // #1034 — last, so the reads above keep their order and it is one line to remove.
+  graph.goResolvedEdgesInto = await loadGoResolvedEdges(prisma, projectId, goTargets);
   return graph;
 }
 
@@ -522,8 +641,16 @@ function resolveOne(
     const targetSymbols = fileOnly ? fileTargetSymbols(t, graph) : one ? [one] : [];
 
     const exercised: Array<{ from: SymbolRow; ts: SymbolRow }> = [];
+    // #1034 — calls bound here by name, kept apart from the ingest's own edges
+    // all the way to the relation they are reported under.
+    const inferred: Array<{ from: SymbolRow; ts: SymbolRow }> = [];
+    // A rangeless whole-file target expands to the whole file, so it keeps to
+    // the edges the ingest resolved (#955, #1004).
+    const followGoResolved = !fileOnly || t.startLine != null;
     for (const ts of targetSymbols) {
       for (const from of graph.edgesInto.get(ts.id) ?? []) exercised.push({ from, ts });
+      if (!followGoResolved) continue;
+      for (const from of graph.goResolvedEdgesInto.get(ts.id) ?? []) inferred.push({ from, ts });
     }
     // #860 — through a hub, a test calling the target is setup, not evidence of
     // testing THIS requirement: keep it only when it is about it (by the test's
@@ -532,27 +659,33 @@ function resolveOne(
     // other packages' tests call it to build their fixtures. Only FOREIGN callers
     // make a hub; once it is one, its own-package tests are judged the same way
     // (#905), since every config requirement maps to the one constructor.
+    // Only the ingest's edges are counted (#1034): an inferred call is a guess,
+    // and a guess must not turn a target into a hub and so hide a listed test.
     const own = ownTestDirs(t.filePath, one?.language);
     const isForeign = (from: SymbolRow): boolean => !own.has(dirname(from.filePath));
     const foreignDirs = new Set(
       exercised.filter((x) => isForeign(x.from)).map((x) => dirname(x.from.filePath)),
     );
     const hub = foreignDirs.size >= hubThreshold;
-    for (const { from, ts } of exercised) {
-      if (
-        hub &&
-        !sharesRequirementWords(from.name, requirementWords) &&
-        !sharesRequirementWords(ts.name, requirementWords)
-      ) {
-        continue;
+    const offerCalls = (
+      calls: ReadonlyArray<{ from: SymbolRow; ts: SymbolRow }>,
+      relation: TestLinkRelation,
+    ): void => {
+      for (const { from, ts } of calls) {
+        if (
+          hub &&
+          !sharesRequirementWords(from.name, requirementWords) &&
+          !sharesRequirementWords(ts.name, requirementWords)
+        ) {
+          continue;
+        }
+        offer(
+          testNodeFromSymbol(from, relation, { filePath: ts.filePath, symbol: ts.qualifiedName }),
+        );
       }
-      offer(
-        testNodeFromSymbol(from, "exercises", {
-          filePath: ts.filePath,
-          symbol: ts.qualifiedName,
-        }),
-      );
-    }
+    };
+    offerCalls(exercised, "exercises");
+    offerCalls(inferred, "inferred-call");
 
     for (const p of siblingTestPaths(t.filePath, one?.language)) {
       for (const sym of graph.siblingSymbolsByFile.get(p) ?? []) {

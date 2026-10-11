@@ -173,6 +173,18 @@ describe("TraceabilityView — Tested by (#816)", () => {
             subject: { filePath: CODE.filePath, symbol: null },
             score: 0.4,
           },
+          {
+            // #1034 — bound by callee name after ingest: labelled as a guess.
+            codeSymbolId: "t-4",
+            filePath: "internal/api/user_test.go",
+            symbol: "internal/api/user_test.go::TestCreateUserHandler",
+            name: "TestCreateUserHandler",
+            startLine: 70,
+            convention: "go-testing",
+            relation: "inferred-call",
+            subject: { filePath: CODE.filePath, symbol: "ValidatePassword" },
+            score: 0.4,
+          },
         ],
       }),
     );
@@ -180,7 +192,7 @@ describe("TraceabilityView — Tested by (#816)", () => {
 
     const section = await screen.findByRole("region", { name: /^Tested by/ });
     const rows = within(section).getAllByTestId("traceability-test-row");
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
     expect(rows[0]).toHaveTextContent("internal/validator/user_test.go:18");
     expect(rows[0]).toHaveTextContent("TestValidatePassword");
     expect(within(rows[0]).getByText("Calls the code")).toBeInTheDocument();
@@ -188,7 +200,10 @@ describe("TraceabilityView — Tested by (#816)", () => {
     expect(within(rows[1]).getByText("internal/validator/password_test.go")).toBeInTheDocument();
     expect(within(rows[1]).getByText("Mapped directly")).toBeInTheDocument();
     expect(within(rows[2]).getByText("Naming convention")).toBeInTheDocument();
-    expect(within(section).getByRole("heading", { name: "Tested by (3)" })).toBeInTheDocument();
+    // Told apart from a call the ingest resolved ("Calls the code").
+    expect(within(rows[3]).getByText("Inferred call")).toBeInTheDocument();
+    expect(within(rows[3]).queryByText("Calls the code")).toBeNull();
+    expect(within(section).getByRole("heading", { name: "Tested by (4)" })).toBeInTheDocument();
     expect(screen.queryByTestId("traceability-no-test")).toBeNull();
     expect(screen.queryByTestId("traceability-no-code")).toBeNull();
   });

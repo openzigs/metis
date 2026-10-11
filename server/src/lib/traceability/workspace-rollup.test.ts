@@ -259,7 +259,15 @@ describe("getWorkspaceTraceabilitySummary", () => {
     code: Record<string, Array<string | CodeRow>>;
     specCode?: Record<string, Array<CodeRow & { specDocumentId: string }>>;
     symbols?: Sym[];
-    edges?: Array<{ projectId: string; kind: string; fromSymbolId: string; toSymbolId: string }>;
+    edges?: Array<{
+      projectId: string;
+      kind: string;
+      fromSymbolId: string;
+      /** Null for a Go call the ingest left unresolved (#1034). */
+      toSymbolId: string | null;
+      toQualifiedName?: string;
+      filePath?: string;
+    }>;
   }) {
     const codeRows = (pid: string): CodeRow[] =>
       (opts.code[pid] ?? []).map((c) =>
@@ -343,6 +351,10 @@ describe("getWorkspaceTraceabilitySummary", () => {
             )
             .map((e) => ({
               toSymbolId: e.toSymbolId,
+              // Read only by the Go call resolver, for an unresolved edge (#1034).
+              fromSymbolId: e.fromSymbolId,
+              filePath: e.filePath,
+              toQualifiedName: e.toQualifiedName ?? null,
               fromSymbol: symbols.find(
                 (x) => x.id === e.fromSymbolId && x.projectId === e.projectId,
               ),
@@ -534,6 +546,38 @@ describe("getWorkspaceTraceabilitySummary", () => {
       expect(prisma.requirement.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { projectId: "projA", deletedAt: null } }),
       );
+    });
+
+    it("#1034 — an inferred call counts as tested, never as strictly tested", async () => {
+      listAccessibleProjectsInWorkspace.mockResolvedValue(["projA"]);
+      const base = fixture(["projA"], ["R7"]);
+      const prisma = summaryPrisma({
+        ...base,
+        code: { projA: [row("R7", "pkg/store.go", "s-st")] },
+        symbols: [
+          sym("s-st", "pkg/store.go", "SaveEntryStatus"),
+          sym("t-st", "pkg/store_roundtrip_test.go", "TestRoundTrip"),
+        ],
+        // `store.SaveEntryStatus(…)` in a same-package test: unresolved at ingest.
+        edges: [
+          {
+            projectId: "projA",
+            kind: "calls",
+            fromSymbolId: "t-st",
+            toSymbolId: null,
+            toQualifiedName: "SaveEntryStatus",
+            filePath: "pkg/store_roundtrip_test.go",
+          },
+        ],
+      });
+      const result = await getWorkspaceTraceabilitySummary(actor, "ws1", {
+        prisma: prisma as never,
+      });
+      expect(result.projects[0]).toMatchObject({
+        codeMappedRequirements: 1,
+        testCoverage: 1,
+        strictTestCoverage: 0,
+      });
     });
 
     it("reports 1, not more, when every code-mapped requirement is tested", async () => {

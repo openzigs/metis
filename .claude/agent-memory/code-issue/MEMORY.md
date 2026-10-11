@@ -75,3 +75,5 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [vitest retry masks failures](project_vitest-retry-masks-deterministic.md) — retry:2 hid 6 real failures; clearAllMocks keeps once-values (#963)
 - [Decline guards: every token](project_decline-guards-need-every-continuation-token.md) — silent-success holes evade throw-fuzz (#1084)
 - [Regex negatives pass incidentally](project_speckit-regex-negatives-pass-incidentally.md) — test the one-change near-miss (#1083)
+- [Go resolver binds by bare name](project_go-call-resolver-binds-by-bare-name.md) — false positives for claims (#1086)
+- [Pin skipHtml on textContent](project_react-markdown-skiphtml-needs-textcontent-assert.md) — no-<img> passes anyway (#1086)

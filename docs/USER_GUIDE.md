@@ -1565,7 +1565,8 @@ Each requirement's card on an analysis's **Requirements** tab shows its traceabi
 |---|---|
 | **Mapped directly** | The code mapped to the requirement is itself a test file or test. |
 | **Calls the code** | A test calls (or references) code mapped to the requirement. |
-| **Naming convention** | A test in the conventional test file for the mapped code is named for it. This is the weakest signal. |
+| **Naming convention** | A test in the conventional test file for the mapped code is named for it. A weak signal. |
+| **Inferred call** | Go only. The test calls a method whose name matches the mapped code, but METIS could not see which object the call was made on, so it matched by name. It is shown only when the name is distinctive (two words or more, and not a common Go library name such as `Close` or `WithTimeout`) or the test is named for the method. This is the weakest signal: read the test before relying on it. |
 
 Mapped code that is itself a test carries a small **test** badge in the chain.
 
@@ -1709,7 +1710,7 @@ Individual requirement links (Section 12.8) are most useful when you can see the
 
 Open your workspace and select the **Traceability** tab (`/workspaces/<id>/traceability`). You'll see two panels:
 
-- **Per-project coverage** — a table with one row per project in the workspace, showing its requirement count, how many of those requirements are **linked across projects**, and its **spec** and **code** coverage as percentages. A **Tested** column shows the share of requirements *with mapped code* that have at least one linked test (any of the "Tested by" labels in Section 12.4). Requirements with no mapped code are left out of that figure, and a project with none shows "No mapped code" instead of a percentage. Hover the badge for the strict figure, which counts only **Mapped directly** and **Calls the code** links, not **Naming convention**. It's a quick read on which projects are well-connected and well-covered, and which are lagging.
+- **Per-project coverage** — a table with one row per project in the workspace, showing its requirement count, how many of those requirements are **linked across projects**, and its **spec** and **code** coverage as percentages. A **Tested** column shows the share of requirements *with mapped code* that have at least one linked test (any of the "Tested by" labels in Section 12.4). Requirements with no mapped code are left out of that figure, and a project with none shows "No mapped code" instead of a percentage. Hover the badge for the strict figure, which counts only **Mapped directly** and **Calls the code** links, not **Naming convention** or **Inferred call**. It's a quick read on which projects are well-connected and well-covered, and which are lagging.
 - **Cross-project link map** — a diagram of the workspace's cross-project requirement links: each project is a box, each participating requirement a node, and each link a typed arrow between them. When there are no cross-project links yet, the panel says so.
 
 **What you see respects your access.** The rollup only ever includes projects you can access within that workspace, and a cross-project link appears **only when you can access both of its endpoints** — so the view never reveals a requirement, project, or link you aren't entitled to see. Asking for a workspace you don't belong to returns "not found".

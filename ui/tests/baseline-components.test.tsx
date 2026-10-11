@@ -134,6 +134,67 @@ describe("BaselineItemsTable", () => {
     expect(screen.getByText("now at v4")).toBeInTheDocument();
   });
 
+  // Issue #998 — pinned bodies printed raw Markdown and METIS's block markers.
+  it("renders a pinned body as Markdown and hides the metis: markers", () => {
+    const body = [
+      "### Summary",
+      "",
+      "Users can **export** feeds.",
+      "",
+      "<!-- metis:clarifications:start -->",
+      "## Clarifications",
+      "",
+      "- **Q:** Which format?",
+      "  **A:** OPML",
+      "",
+      "> **Check the acceptance criteria.** Edit them. <!-- metis:criteria-predate-answers -->",
+      "<!-- metis:clarifications:end -->",
+    ].join("\n");
+    const item = makeItem();
+    render(<BaselineItemsTable items={[{ ...item, snapshot: { ...item.snapshot!, body } }]} />);
+    const card = screen.getByTestId("baseline-item-req-1");
+    expect(screen.getByRole("heading", { name: "Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Clarifications" })).toBeInTheDocument();
+    expect(screen.getByText("export").tagName).toBe("STRONG");
+    expect(card.querySelector("blockquote")).not.toBeNull();
+    expect(card.textContent).not.toContain("metis:");
+    expect(card.textContent).not.toMatch(/\*\*|##|<!--/);
+  });
+
+  it("does not turn raw HTML in a pinned body into markup", () => {
+    const item = makeItem();
+    const body = 'Hi <img src=x onerror="alert(1)"> <script>alert(2)</script> there';
+    const { container } = render(
+      <BaselineItemsTable items={[{ ...item, snapshot: { ...item.snapshot!, body } }]} />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+    // Pins `skipHtml`: without it the tags are printed as text (see RequirementBody.test).
+    const text = screen.getByTestId("requirement-body").textContent ?? "";
+    expect(text).not.toContain("<");
+    expect(text).not.toContain("onerror");
+  });
+
+  it("does not load a remote image from a pinned body", () => {
+    const item = makeItem();
+    const body = "Layout: ![wireframe](https://tracker.example/pixel.png)";
+    const { container } = render(
+      <BaselineItemsTable items={[{ ...item, snapshot: { ...item.snapshot!, body } }]} />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.getByRole("link", { name: "wireframe" })).toHaveAttribute(
+      "href",
+      "https://tracker.example/pixel.png",
+    );
+  });
+
+  it("breaks a long unbroken token in a pinned body", () => {
+    const item = makeItem();
+    const body = `sha256:${"0123456789abcdef".repeat(12)}`;
+    render(<BaselineItemsTable items={[{ ...item, snapshot: { ...item.snapshot!, body } }]} />);
+    expect(screen.getByTestId("requirement-body")).toHaveClass("break-words");
+  });
+
   it("renders an empty state", () => {
     render(<BaselineItemsTable items={[]} />);
     expect(screen.getByText(/pins no requirements/i)).toBeInTheDocument();

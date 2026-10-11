@@ -9,4 +9,6 @@ export const TEST_RELATION_LABEL: Record<TestLinkRelation, string> = {
   direct: "Mapped directly",
   exercises: "Calls the code",
   naming: "Naming convention",
+  // #1034 — bound by callee name after ingest: a guess, and labelled as one.
+  "inferred-call": "Inferred call",
 };

@@ -27,7 +27,9 @@ describe("getRequirementChain", () => {
           startLine: 10,
         },
       ])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([])
+      // #1034 — the Go call resolver's read of the project's callables: none here.
+      .mockResolvedValue([]);
     const codeEdgeFindMany = vi.fn().mockResolvedValue([
       {
         toSymbolId: "sym-v",

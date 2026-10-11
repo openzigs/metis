@@ -219,9 +219,12 @@ export interface RequirementTraceabilityChain {
  * - `direct` — a mapped target is itself a test file/symbol;
  * - `exercises` — a test symbol has a `calls`/`references` edge into a mapped symbol;
  * - `naming` — a test in the conventional sibling test file is named for a mapped
- *   symbol, or (file-only target) shares a requirement token.
+ *   symbol, or (file-only target) shares a requirement token;
+ * - `inferred-call` — Go only (#1034): the ingest left the test's call unresolved
+ *   and it was bound afterwards by callee NAME, so it is a guess. The weakest
+ *   relation, and never a strict (`direct` / `exercises`) link.
  */
-export const TEST_LINK_RELATIONS = ["direct", "exercises", "naming"] as const;
+export const TEST_LINK_RELATIONS = ["direct", "exercises", "naming", "inferred-call"] as const;
 export type TestLinkRelation = (typeof TEST_LINK_RELATIONS)[number];
 
 /** A test that covers a requirement, resolved from its mapped code. */

@@ -9,6 +9,7 @@
  * document version diffs are out of scope for this issue.
  */
 import { useQuery } from "@tanstack/react-query";
+import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { Card } from "@/components/ui/card";
 import { historyApi } from "@/lib/history-api";
 import { queryKeys } from "@/lib/query-keys";
@@ -65,10 +66,10 @@ export function ReviewItemCard({ item }: { item: ReviewItem }) {
         </p>
       ) : entry ? (
         <>
-          {typeof snapshot?.body === "string" && snapshot.body !== "" ? (
-            <p className="whitespace-pre-wrap break-words text-sm text-foreground/90">
-              {snapshot.body}
-            </p>
+          {/* #998 — the pinned body is Markdown and carries METIS block markers; its
+              headings sit under this card's h3 title. */}
+          {typeof snapshot?.body === "string" ? (
+            <RequirementBody body={snapshot.body} minHeadingLevel={4} />
           ) : null}
           <SnapshotMeta snapshot={snapshot ?? {}} />
           <div className="space-y-1">

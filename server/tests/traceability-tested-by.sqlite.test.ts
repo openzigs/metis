@@ -271,5 +271,58 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(byId.get(ids.pw)!.map((t) => t.relation)).toEqual(["exercises", "naming"]);
       expect(JSON.stringify(matrix)).not.toContain("TestMapRoles");
     });
+
+    it("#1034 — lists a test that reaches the mapped method through an unresolved Go call", async () => {
+      const g = `g-${PROJ}`;
+      const LT = "internal/integration/linktaco/linktaco.go";
+      const LT_TEST = "internal/integration/linktaco/linktaco_test.go";
+      const create = await symbol(PROJ, g, LT, "CreateBookmark", 30);
+      // Another integration declares the same method name; linktaco does not import it.
+      await symbol(PROJ, g, "internal/integration/linkding/linkding.go", "CreateBookmark", 30);
+      const test = await symbol(PROJ, g, LT_TEST, "TestMissingCredentials", 240);
+      // What the Go parser writes for `client.CreateBookmark(…)`: no target symbol.
+      await db.codeEdge.create({
+        data: {
+          codeGraphId: g,
+          projectId: PROJ,
+          kind: "calls",
+          fromSymbolId: test,
+          toSymbolId: null,
+          toQualifiedName: "CreateBookmark",
+          filePath: LT_TEST,
+          line: 261,
+        },
+      });
+      const requirement = await db.requirement.create({
+        data: {
+          projectId: PROJ,
+          analysisId: `an-${PROJ}`,
+          title: "Require API Token and Organization Slug for LinkTaco Integration",
+          body: "",
+        },
+      });
+      await db.requirementCodeMapping.create({
+        data: {
+          requirementId: requirement.id,
+          projectId: PROJ,
+          codeSymbolId: create,
+          filePath: LT,
+          startLine: 30,
+          endLine: 40,
+          source: "analysis-grounding",
+        },
+      });
+
+      const res = await get(`/api/projects/${PROJ}/requirements/${requirement.id}/traceability`);
+      expect(res.status).toBe(200);
+      expect(res.body.data.testedBy).toHaveLength(1);
+      expect(res.body.data.testedBy[0]).toMatchObject({
+        filePath: LT_TEST,
+        name: "TestMissingCredentials",
+        // Bound by name after ingest: reported apart from an ingest-resolved call.
+        relation: "inferred-call",
+        subject: { filePath: LT, symbol: `${LT}::CreateBookmark` },
+      });
+    });
   },
 );
