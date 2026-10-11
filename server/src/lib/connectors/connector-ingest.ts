@@ -78,7 +78,7 @@ export function repoMetadataToUnits(connectorId: string, meta: RepoMetadata): In
     `# Repository ${repoFull}\n\n` +
     // #1056 — the README, manifests and tree below were read at this ref, so
     // name it; the upstream default branch is context only.
-    `- Ref: ${meta.ref}\n` +
+    `- Ref: ${meta.ref}${meta.refFoundUpstream ? "" : " (not found upstream; read the default branch)"}\n` +
     `- Commit: ${meta.headSha ?? "(unknown)"}\n` +
     `- Upstream default branch: ${meta.repo.default_branch}\n` +
     `- Languages (repo-wide, not specific to this ref): ${Object.keys(meta.languages).join(", ") || "(unknown)"}\n` +

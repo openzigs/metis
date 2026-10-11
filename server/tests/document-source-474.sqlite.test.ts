@@ -315,6 +315,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await ingestRepoMetadata(PROJ, "c-repo", USER, {
           repo: { full_name: "o/r", default_branch: "main", size: 1 },
           ref: "main",
+          refFoundUpstream: true,
           languages: {},
           topLevel: [],
           readme: "hi",
