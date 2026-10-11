@@ -4,10 +4,13 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  expandDataPathWriters,
+  requirementIdentifierColumns,
   requirementNamedColumns,
   resolveDataPathWriters,
   type DataPathDataSource,
 } from "./data-path-writers.js";
+import type { CodeGraphDataSource } from "../code-graph/query-service.js";
 import type { AffectedTableInput } from "./schema-impact.js";
 
 interface Sym {
@@ -279,5 +282,101 @@ describe("resolveDataPathWriters (#791)", () => {
         dataSource: partial,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("requirementIdentifierColumns (#1036)", () => {
+  const columns = symbols
+    .filter((s) => s.kind === "column")
+    .map((s) => ({ id: s.id, name: s.name }));
+
+  it("counts a compound column name, and not a bare English word that is also a column", () => {
+    // `status` is in the text ("status changes") and so scores a writer, but it is
+    // not evidence that the request is about that column. `changed_at` is.
+    expect(requirementIdentifierColumns(READ_AT, columns)).toEqual(["entries.changed_at"]);
+  });
+
+  it("counts a one-word column when the request writes it as code", () => {
+    expect(
+      requirementIdentifierColumns("Set `status` to read when the entry is opened.", columns),
+    ).toEqual(["entries.status"]);
+  });
+
+  it("is empty when the request names no column", () => {
+    expect(requirementIdentifierColumns("Mark all as read older than X days.", columns)).toEqual(
+      [],
+    );
+  });
+});
+
+describe("resolveDataPathWriters — namesRequirementColumn (#1036)", () => {
+  it("is true only for a writer of a column the request names as an identifier", async () => {
+    const writers = await resolveDataPathWriters({
+      requirementText: READ_AT,
+      seedIds: [],
+      primaryTables: [table("entries")],
+      dataSource: dataSource(),
+      excludeIds: new Set(),
+    });
+    const byId = new Map(writers.map((w) => [w.id, w.namesRequirementColumn]));
+    // UPDATE … SET status, changed_at — `changed_at` is named as an identifier.
+    expect(byId.get("SetEntriesStatus")).toBe(true);
+    // INSERTs `status` only, which the text mentions as an English word.
+    expect(byId.get("createEntry")).toBe(false);
+  });
+});
+
+describe("expandDataPathWriters (#1036)", () => {
+  const graph: CodeGraphDataSource = {
+    getSymbol: async () => null,
+    getEdgesFrom: async () => [],
+    getEdgesTo: async () => [],
+    getSymbolsByFile: async () => [],
+    getSymbolsByIds: async () => [],
+  };
+  const seed = {
+    codeSymbolId: "SetEntriesStatus",
+    filePath: ENTRY,
+    qualifiedName: `${ENTRY}::SetEntriesStatus`,
+    startLine: 412,
+    endLine: 422,
+    relation: "direct" as const,
+    depth: 0,
+    confidence: 1,
+  };
+
+  it("reports a writer the seeding already found, without listing it twice", async () => {
+    const { symbols: out, writers } = await expandDataPathWriters([seed], {
+      requirementText: READ_AT,
+      seedIds: ["SetEntriesStatus"],
+      primaryTables: [table("entries")],
+      dataSource: dataSource(),
+      graph,
+    });
+    // It is a writer: #791 needs to know that even though the row stays `direct`.
+    expect(writers.map((w) => w.id)).toContain("SetEntriesStatus");
+    expect(out.filter((s) => s.codeSymbolId === "SetEntriesStatus")).toEqual([seed]);
+    expect(out.filter((s) => s.relation === "data-writer").map((s) => s.codeSymbolId)).toContain(
+      "MarkAllAsReadBeforeDate",
+    );
+  });
+
+  it("returns the symbols untouched, and still every writer, when all are already listed", async () => {
+    const all = [
+      "SetEntriesStatus",
+      "SetEntriesStatusAndCountVisible",
+      "MarkAllAsRead",
+      "MarkAllAsReadBeforeDate",
+      "createEntry",
+    ].map((id) => ({ ...seed, codeSymbolId: id }));
+    const { symbols: out, writers } = await expandDataPathWriters(all, {
+      requirementText: READ_AT,
+      seedIds: [],
+      primaryTables: [table("entries")],
+      dataSource: dataSource(),
+      graph,
+    });
+    expect(out).toBe(all);
+    expect(writers.length).toBeGreaterThanOrEqual(4);
   });
 });

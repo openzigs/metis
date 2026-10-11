@@ -50,6 +50,12 @@ export interface DataPathWriter {
   confidence: number;
   /** The target columns it writes, `table.column`, sorted. */
   columns: string[];
+  /**
+   * #1036 — true when it writes a column the requirement names as an identifier
+   * ({@link requirementIdentifierColumns}): the request is about this data, so
+   * the writer is code to edit and not only code to review.
+   */
+  namesRequirementColumn: boolean;
 }
 
 export interface ResolveDataPathWritersInput {
@@ -120,6 +126,27 @@ export function requirementNamedColumns(
     .map((c) => c.id);
 }
 
+/**
+ * #1036 — the subset of {@link requirementNamedColumns} the requirement names AS
+ * AN IDENTIFIER: a compound name (`changed_at`, `read_at`), or any name inside a
+ * code span (\`status\`). A bare English word that happens to be a column
+ * (`title`, `description`, `status` in "status changes") still scores a writer,
+ * but is not evidence that the request is about that column — and "this request
+ * is about this data" is what makes a writer an edit candidate.
+ */
+export function requirementIdentifierColumns(
+  requirementText: string,
+  columns: ReadonlyArray<{ id: string; name: string }>,
+): string[] {
+  const spans = (requirementText.match(/`[^`\n]+`/g) ?? []).join(" ").toLowerCase();
+  const inSpans = new Set(spans.match(/[a-z0-9_]+/g) ?? []);
+  const named = new Set(requirementNamedColumns(requirementText, columns));
+  return columns
+    .filter((c) => named.has(c.id))
+    .filter((c) => c.name.includes("_") || inSpans.has(c.name.toLowerCase()))
+    .map((c) => c.id);
+}
+
 export async function resolveDataPathWriters(
   input: ResolveDataPathWritersInput,
 ): Promise<DataPathWriter[]> {
@@ -144,6 +171,7 @@ export async function resolveDataPathWriters(
   const named = new Map<string, number>();
   for (const id of input.seedIds) if (columnById.has(id)) named.set(id, SEEDED_COLUMN_WEIGHT);
   for (const id of requirementNamedColumns(input.requirementText, columns)) named.set(id, 1);
+  const identifierNamed = new Set(requirementIdentifierColumns(input.requirementText, columns));
 
   // 3 — what the seeded code itself writes: each reached writer's UPDATE set.
   const reached = await resolveDownstreamDataLayer(input.seedIds, ds, DEFAULT_MAX_DOWNSTREAM_DEPTH);
@@ -157,6 +185,7 @@ export async function resolveDataPathWriters(
 
   const points = new Map<string, number>();
   const written = new Map<string, Set<string>>();
+  const writesNamedColumn = new Set<string>();
   const candidates = new Set<string>();
   for (const e of await ds.getWriterEdgesTo([...lookup])) {
     candidates.add(e.fromSymbolId);
@@ -164,6 +193,7 @@ export async function resolveDataPathWriters(
     const p = WRITE_POINTS[e.kind];
     if (weight === undefined || p === undefined) continue;
     if (weight < 1 && e.kind !== "writes") continue;
+    if (identifierNamed.has(e.toSymbolId)) writesNamedColumn.add(e.fromSymbolId);
     const cols = written.get(e.fromSymbolId) ?? new Set<string>();
     if (cols.has(e.toSymbolId)) continue;
     cols.add(e.toSymbolId);
@@ -210,6 +240,7 @@ export async function resolveDataPathWriters(
     columns: [...(written.get(d.id) ?? [])]
       .map((id) => columnById.get(id)?.qualifiedName ?? id)
       .sort(),
+    namesRequirementColumn: writesNamedColumn.has(d.id),
   }));
 }
 
@@ -253,16 +284,30 @@ export async function addDataPathWriters<T extends DataPathAffectedSymbol>(
   symbols: T[],
   input: AddDataPathWritersInput,
 ): Promise<Array<T | DataPathAffectedSymbol>> {
+  return (await expandDataPathWriters(symbols, input)).symbols;
+}
+
+/**
+ * {@link addDataPathWriters}, also returning EVERY writer the data names — the
+ * ones already in `symbols` included. A writer the seeding found first is still a
+ * writer: #1036 needs it to decide which writers are edit candidates, and #791
+ * needs it to decide which proposed columns an existing write path covers.
+ */
+export async function expandDataPathWriters<T extends DataPathAffectedSymbol>(
+  symbols: T[],
+  input: AddDataPathWritersInput,
+): Promise<{ symbols: Array<T | DataPathAffectedSymbol>; writers: DataPathWriter[] }> {
   const present = new Set(symbols.map((s) => s.codeSymbolId).filter(Boolean) as string[]);
-  const writers = await resolveDataPathWriters({
+  const allWriters = await resolveDataPathWriters({
     requirementText: input.requirementText,
     seedIds: input.seedIds,
     primaryTables: input.primaryTables,
     dataSource: input.dataSource,
-    excludeIds: present,
+    excludeIds: new Set(),
     maxWriters: input.maxWriters,
   });
-  if (writers.length === 0) return symbols;
+  const writers = allWriters.filter((w) => !present.has(w.id));
+  if (writers.length === 0) return { symbols, writers: allWriters };
 
   const added: DataPathAffectedSymbol[] = writers.map((w) => ({
     codeSymbolId: w.id,
@@ -302,13 +347,19 @@ export async function addDataPathWriters<T extends DataPathAffectedSymbol>(
     .slice(0, input.maxCallers ?? DEFAULT_MAX_WRITER_CALLERS);
   added.push(...callers);
 
-  return [...symbols, ...added].sort((a, b) => a.depth - b.depth || b.confidence - a.confidence);
+  return {
+    symbols: [...symbols, ...added].sort(
+      (a, b) => a.depth - b.depth || b.confidence - a.confidence,
+    ),
+    writers: allWriters,
+  };
 }
 
 /**
- * Drop the direct schema seeds (a `table` / `column` the mapper matched by
- * name) whose table the relevance filter put only in the secondary bucket. Code
- * seeds and every non-direct row are kept.
+ * Drop the schema seeds (a `table` / `column` the mapper matched by name, or —
+ * since #1036 — one the hybrid seeding returned among its best hits, listed as
+ * `related`) whose table the relevance filter put only in the secondary bucket.
+ * Code symbols and every graph-walk row are kept.
  */
 export async function pruneTangentialSchemaSeeds<T extends DataPathAffectedSymbol>(
   symbols: T[],
@@ -319,8 +370,9 @@ export async function pruneTangentialSchemaSeeds<T extends DataPathAffectedSymbo
   const kept = new Set(primary.map((t) => t.tableName));
   const tangential = new Set(secondary.map((t) => t.tableName).filter((t) => !kept.has(t)));
   if (tangential.size === 0) return symbols;
+  const isSeed = (s: DataPathAffectedSymbol) => s.relation === "direct" || s.relation === "related";
   const directIds = symbols
-    .filter((s) => s.relation === "direct" && s.codeSymbolId)
+    .filter((s) => isSeed(s) && s.codeSymbolId)
     .map((s) => s.codeSymbolId as string);
   const drop = new Set<string>();
   for (const sym of await dataSource.getSchemaSymbolsByIds(directIds)) {
@@ -333,7 +385,5 @@ export async function pruneTangentialSchemaSeeds<T extends DataPathAffectedSymbo
   }
   return drop.size === 0
     ? symbols
-    : symbols.filter(
-        (s) => !(s.relation === "direct" && s.codeSymbolId && drop.has(s.codeSymbolId)),
-      );
+    : symbols.filter((s) => !(isSeed(s) && s.codeSymbolId && drop.has(s.codeSymbolId)));
 }

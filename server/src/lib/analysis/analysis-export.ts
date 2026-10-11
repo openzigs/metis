@@ -28,6 +28,7 @@
 import {
   formatCodeCitationLocator,
   DDL_RISK_LABEL,
+  impactSymbolRole,
   groupImpactTables,
   groupRepresentative,
   type DdlRiskClass,
@@ -853,10 +854,22 @@ function impactItemSection(item: ImpactItemView, ctx: ImpactItemLabelContext): s
     parts.push(impactTablesBlock(item.affectedTablesSecondary));
   }
 
-  // Affected code symbols (direct matches + transitive blast-radius).
-  if (item.affectedSymbols.length > 0) {
-    parts.push("#### Affected code");
-    parts.push(item.affectedSymbols.map(impactSymbolBullet).join("\n"));
+  // #1036 — affected code as TWO lists, because they answer different questions
+  // and are scored differently: the code to edit (small), and the code to review.
+  const editCandidates = item.affectedSymbols.filter(
+    (s) => impactSymbolRole(s) === "edit-candidate",
+  );
+  const blastRadius = item.affectedSymbols.filter((s) => impactSymbolRole(s) === "blast-radius");
+  if (editCandidates.length > 0) {
+    parts.push("#### Files to edit (edit candidates)");
+    parts.push(editCandidates.map(impactSymbolBullet).join("\n"));
+  }
+  if (blastRadius.length > 0) {
+    parts.push("#### Blast radius (for review)");
+    parts.push(
+      "_Callers, lineage writers and related code. Listed for review; not a claim that each one changes._",
+    );
+    parts.push(blastRadius.map(impactSymbolBullet).join("\n"));
   }
 
   // #962/#1004 — the tests that already cover the impacted code.

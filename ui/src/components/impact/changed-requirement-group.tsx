@@ -2,11 +2,18 @@
  * ChangedRequirementGroup — Epic #159 (#165).
  *
  * Renders one impacted requirement within a project: its severity/score and
- * the affected symbols split into direct hits vs the transitive blast radius.
+ * the affected symbols as two lists (#1036) — the files to edit, kept small, and
+ * the wider blast radius to review. The split is `impactSymbolRole` from
+ * `@metis/shared`, the same rule the API's `editCandidateFiles` uses.
  */
 "use client";
 
-import type { ImpactItemView, ImpactTableFeedbackVerdict, ProjectObjectUsage } from "@metis/shared";
+import {
+  impactSymbolRole,
+  type ImpactItemView,
+  type ImpactTableFeedbackVerdict,
+  type ProjectObjectUsage,
+} from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { renderInlineCode } from "@/lib/inline-code-text";
@@ -48,7 +55,7 @@ export interface ChangedRequirementGroupProps {
   onDeleteFeedback?: (itemId: string, feedbackId: string) => void;
 }
 
-/** Group blast-radius symbols by file, preserving first-seen file order. */
+/** Group symbols by file, preserving first-seen file order. */
 function groupByFile(
   symbols: ImpactItemView["affectedSymbols"],
 ): Array<{ filePath: string; symbols: ImpactItemView["affectedSymbols"] }> {
@@ -74,14 +81,18 @@ export function ChangedRequirementGroup({
 }: ChangedRequirementGroupProps) {
   // #992 — the item's project repo (from the page's provider) for symbol links.
   const repo = useImpactSymbolRepo(item.projectId);
-  // Strongest hits first so the card is scannable top-down.
-  const direct = item.affectedSymbols
-    .filter((s) => s.relation === "direct")
+  // #1036 — two lists. Strongest edit candidates first so the card is scannable
+  // top-down; each file once, with the symbols that put it there.
+  const editCandidates = item.affectedSymbols
+    .filter((s) => impactSymbolRole(s) === "edit-candidate")
     .sort((a, b) => b.confidence - a.confidence);
-  const radius = item.affectedSymbols.filter((s) => s.relation !== "direct");
+  const radius = item.affectedSymbols.filter((s) => impactSymbolRole(s) === "blast-radius");
 
-  const directFileCount = new Set(direct.map((s) => s.filePath)).size;
+  const editFileGroups = groupByFile(editCandidates);
   const radiusFileGroups = groupByFile(radius);
+  // Files that are ONLY in the blast radius: a file to edit is not "more to review".
+  const editFiles = new Set(editFileGroups.map((g) => g.filePath));
+  const reviewOnlyFileCount = radiusFileGroups.filter((g) => !editFiles.has(g.filePath)).length;
 
   // #962 — the impacted test files, grouped out of the prod blast radius, and the
   // untested write-path callouts. Both are deterministic QA-handoff signals.
@@ -102,9 +113,9 @@ export function ChangedRequirementGroup({
           </h3>
           <p className="text-xs text-muted-foreground" data-testid="impact-headline">
             <span className="font-medium text-foreground">
-              {direct.length} directly affected across {directFileCount} files
+              {editFileGroups.length} {editFileGroups.length === 1 ? "file" : "files"} to edit
             </span>{" "}
-            · {radius.length} callers
+            · {reviewOnlyFileCount} more to review
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -195,14 +206,23 @@ export function ChangedRequirementGroup({
         </div>
       ) : null}
 
-      {direct.length > 0 ? (
-        <div data-testid="direct-impacts">
-          <p className="mb-1 text-xs font-medium text-muted-foreground">Directly affected</p>
-          <ul className="space-y-1">
-            {direct.map((s) => (
-              <AffectedSymbolRow key={s.id} symbol={s} repo={repo} />
+      {editCandidates.length > 0 ? (
+        <div data-testid="edit-candidates">
+          <p className="mb-1 text-xs font-medium text-muted-foreground">
+            Files to edit — the code this change most likely has to touch
+          </p>
+          <div className="space-y-3">
+            {editFileGroups.map((group) => (
+              <div key={group.filePath} data-testid="edit-candidate-file-group">
+                <p className="mb-1 truncate font-mono text-xs text-foreground">{group.filePath}</p>
+                <ul className="space-y-1">
+                  {group.symbols.map((s) => (
+                    <AffectedSymbolRow key={s.id} symbol={s} repo={repo} />
+                  ))}
+                </ul>
+              </div>
             ))}
-          </ul>
+          </div>
         </div>
       ) : null}
 
@@ -215,8 +235,8 @@ export function ChangedRequirementGroup({
             className="cursor-pointer text-xs font-medium text-muted-foreground"
             data-testid="blast-radius-toggle"
           >
-            Blast radius — {radius.length} symbols across {radiusFileGroups.length} files
-            (callers/importers)
+            Blast radius — {radius.length} symbols across {radiusFileGroups.length} files to review
+            (callers, data writers, related code)
           </summary>
           <div className="mt-2 space-y-3">
             {radiusFileGroups.map((group) => (

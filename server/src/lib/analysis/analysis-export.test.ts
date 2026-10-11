@@ -806,6 +806,8 @@ function impactItem(overrides: Partial<ImpactItemView> = {}): ImpactItemView {
     affectedTablesSecondary: [],
     affectedTests: [],
     writePathGaps: [],
+    editCandidateFiles: [],
+    blastRadiusFiles: [],
     feedback: [],
     ...overrides,
   };
@@ -853,11 +855,59 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     expect(md).toContain("Rationale: Directly referenced by the changed requirement.");
     expect(md).toContain("Suggested DDL (review only, never executed):");
     expect(md).toContain("Consumers: Beta (reads)");
-    // Affected code.
-    expect(md).toContain("#### Affected code");
+    // Affected code: the one (direct, depth 0) symbol is an edit candidate.
+    expect(md).toContain("#### Files to edit (edit candidates)");
+    expect(md).not.toContain("#### Blast radius (for review)");
     expect(md).toContain("src/orders/service.ts:10-42");
     expect(md).toContain("OrderService.place");
     expect(md.endsWith("\n")).toBe(true);
+  });
+
+  it("#1036 — lists the code to edit apart from the code to review", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            affectedSymbols: [
+              impactSymbol({ qualifiedName: "Storage.MarkAllAsReadBeforeDate", depth: 0 }),
+              impactSymbol({
+                id: "s-2",
+                qualifiedName: "greader.markAllAsReadHandler",
+                relation: "caller",
+                depth: 1,
+              }),
+              impactSymbol({
+                id: "s-3",
+                qualifiedName: "ui.showUnreadPage",
+                relation: "related",
+                depth: 1,
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    const edit = md.indexOf("#### Files to edit (edit candidates)");
+    const radius = md.indexOf("#### Blast radius (for review)");
+    expect(edit).toBeGreaterThan(-1);
+    expect(radius).toBeGreaterThan(edit);
+    // Each symbol under its own heading, and only there.
+    expect(md.slice(edit, radius)).toContain("Storage.MarkAllAsReadBeforeDate");
+    expect(md.slice(edit, radius)).not.toContain("markAllAsReadHandler");
+    expect(md.slice(radius)).toContain("greader.markAllAsReadHandler");
+    expect(md.slice(radius)).toContain("ui.showUnreadPage");
+    expect(md.slice(radius)).not.toContain("Storage.MarkAllAsReadBeforeDate");
+    expect(md).toContain("not a claim that each one changes");
+  });
+
+  it("#1036 — a result with only blast-radius symbols has no edit-candidate heading", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [impactItem({ affectedSymbols: [impactSymbol({ relation: "caller", depth: 2 })] })],
+      }),
+    );
+    expect(md).not.toContain("#### Files to edit");
+    expect(md).toContain("#### Blast radius (for review)");
   });
 
   it("is deterministic — identical input yields byte-identical output", () => {

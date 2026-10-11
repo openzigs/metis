@@ -102,6 +102,8 @@ function item(opts: Partial<ImpactItemView> & { projectId: string }): ImpactItem
     affectedSymbols: opts.affectedSymbols ?? [],
     affectedTests: [],
     writePathGaps: [],
+    editCandidateFiles: [],
+    blastRadiusFiles: [],
     affectedTables: opts.affectedTables ?? [],
     affectedTablesSecondary: [],
     feedback: [],

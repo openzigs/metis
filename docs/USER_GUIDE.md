@@ -1922,18 +1922,32 @@ dependencies).
    click **New analysis**.
 2. Provide the requirement change — either **Paste text** of the new/changed
    requirements, or pick an existing **document** that has already been ingested.
+   A pasted **issue** (a title followed by sections such as *Summary*, *Proposed
+   Solution*, *Steps to Reproduce*, *Expected Behavior*) is read as **one**
+   change: the proposed solution and expected behaviour refine it, the problem
+   statement and reproduction steps are kept as context, and empty form fields,
+   bare links, version fields and sign-offs are left out. A document that lists
+   several requirements is still split into one change per requirement.
 3. Select **two or more projects** to compare the change against. Each project's
    source must already be ingested into the code graph.
 4. Click **Run impact analysis**. METIS starts the run and opens the results
    view, which updates automatically as the analysis completes.
 5. The report is grouped **per project**. For each impacted requirement you see a
-   **severity** badge and **impact score**, the **directly affected** symbols,
-   and the **blast radius** symbols tagged with their relation (caller, importer,
-   dependency) and depth. Symbols tagged **Writes affected data** are the
-   functions that update or insert the columns the change touches — found from
-   the project's SQL, so they appear even when their names share no word with
-   the requirement (for example every function that marks an entry read) — and
-   are followed by their callers.
+   **severity** badge and **impact score**, and the affected code as two lists:
+   - **Files to edit** — a short list of the files the change most likely has to
+     touch, each with the symbols that put it there. These come from the same
+     code search chat uses, from the project's SQL (symbols tagged **Writes
+     affected data** update or insert the columns the change touches, so they
+     appear even when their names share no word with the request), and, when a
+     table gains a column, from where that table is defined and the types named
+     for it (**Defines affected data**).
+   - **Blast radius** — a wider list to *review*: callers and importers of the
+     files to edit, data writers the request is not directly about, and
+     **Related** code the search found or that is built the same way as a match.
+     Being listed here is not a claim that the code has to change.
+
+   The card's headline counts both (*"3 files to edit · 41 more to review"*), and
+   the markdown export has the same two sections.
 
 Only projects you have access to appear in the picker, and you can only open a
 report whose projects are all visible to you.

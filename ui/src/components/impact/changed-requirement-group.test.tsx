@@ -54,6 +54,8 @@ function item(matchQuality: MatchQuality, overrides: Partial<ImpactItemView> = {
     ],
     affectedTests: [],
     writePathGaps: [],
+    editCandidateFiles: [],
+    blastRadiusFiles: [],
     affectedTables: [],
     affectedTablesSecondary: [],
     feedback: [],
@@ -292,6 +294,103 @@ describe("ChangedRequirementGroup tangential secondary bucket (#1022)", () => {
     );
     expect(screen.getByTestId("schema-impact-secondary-toggle")).toHaveTextContent(
       "3 tables pruned as low-relevance",
+    );
+  });
+});
+
+describe("ChangedRequirementGroup — files to edit vs blast radius (#1036)", () => {
+  const symbol = (
+    id: string,
+    filePath: string,
+    relation: ImpactItemView["affectedSymbols"][number]["relation"],
+    depth: number,
+    confidence = 0.6,
+  ) => ({
+    id,
+    codeSymbolId: id,
+    filePath,
+    qualifiedName: `${filePath}::${id}`,
+    startLine: 1,
+    endLine: 9,
+    relation,
+    depth,
+    confidence,
+  });
+  const ENTRY = "internal/storage/entry.go";
+  const run4478 = item("strong", {
+    affectedSymbols: [
+      symbol("MarkAllAsReadBeforeDate", ENTRY, "direct", 0, 0.9),
+      // A lineage writer the engine promoted: same file, still one file to edit.
+      symbol("SetEntriesStatus", ENTRY, "data-writer", 0, 0.7),
+      symbol("markAllAsRead", "internal/ui/unread_mark_all_read.go", "direct", 0, 1),
+      // A lineage writer it did NOT promote, a caller and a related hit: review only.
+      symbol("UpdateFeed", "internal/storage/feed.go", "data-writer", 1),
+      symbol("markAllAsReadHandler", "internal/googlereader/handler.go", "caller", 2),
+      symbol("ArchiveEntries", ENTRY, "related", 1),
+    ],
+  });
+
+  it("lists the edit candidates under Files to edit, one group per file, strongest first", () => {
+    render(<ChangedRequirementGroup item={run4478} />);
+    const edit = screen.getByTestId("edit-candidates");
+    const groups = within(edit).getAllByTestId("edit-candidate-file-group");
+    expect(groups.map((g) => g.querySelector("p")?.textContent)).toEqual([
+      "internal/ui/unread_mark_all_read.go",
+      ENTRY,
+    ]);
+    expect(within(groups[1]!).getAllByTestId("affected-symbol-row")).toHaveLength(2);
+    expect(within(edit).getByText(`${ENTRY}::MarkAllAsReadBeforeDate`)).toBeInTheDocument();
+  });
+
+  it("keeps a writer the engine did not promote out of Files to edit", () => {
+    render(<ChangedRequirementGroup item={run4478} />);
+    const edit = screen.getByTestId("edit-candidates");
+    expect(
+      within(edit).queryByText("internal/storage/feed.go::UpdateFeed"),
+    ).not.toBeInTheDocument();
+    const radius = screen.getByTestId("blast-radius-impacts");
+    expect(within(radius).getByText("internal/storage/feed.go::UpdateFeed")).toBeInTheDocument();
+    expect(within(radius).queryByText(`${ENTRY}::MarkAllAsReadBeforeDate`)).not.toBeInTheDocument();
+  });
+
+  it("counts files to edit, and only the OTHER files as more to review", () => {
+    render(<ChangedRequirementGroup item={run4478} />);
+    // entry.go is in both lists; it is a file to edit, not one more to review.
+    expect(screen.getByTestId("impact-headline").textContent).toBe(
+      "2 files to edit · 2 more to review",
+    );
+    expect(screen.getByTestId("blast-radius-toggle").textContent).toMatch(
+      /3 symbols across 3 files to\s+review/,
+    );
+  });
+
+  it("labels the two new relations", () => {
+    render(
+      <ChangedRequirementGroup
+        item={item("strong", {
+          affectedSymbols: [
+            symbol("Entry", "internal/model/entry.go", "data-model", 0),
+            symbol("showUnreadPage", "internal/ui/unread_entries.go", "related", 1),
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText("Defines affected data")).toBeInTheDocument();
+    expect(screen.getByText("Related")).toBeInTheDocument();
+    expect(screen.getByTestId("impact-headline").textContent).toBe(
+      "1 file to edit · 1 more to review",
+    );
+  });
+
+  it("renders no Files to edit section when the result has only blast radius", () => {
+    render(
+      <ChangedRequirementGroup
+        item={item("weak", { affectedSymbols: [symbol("h", "a.go", "caller", 1)] })}
+      />,
+    );
+    expect(screen.queryByTestId("edit-candidates")).not.toBeInTheDocument();
+    expect(screen.getByTestId("impact-headline").textContent).toBe(
+      "0 files to edit · 1 more to review",
     );
   });
 });

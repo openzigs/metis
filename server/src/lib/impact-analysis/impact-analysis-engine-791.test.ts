@@ -15,19 +15,22 @@ vi.mock("./data-path-writers.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./data-path-writers.js")>();
   return {
     ...actual,
-    addDataPathWriters: async <T extends { relation: string }>(symbols: T[]) => [
-      ...symbols,
-      {
-        codeSymbolId: "W",
-        filePath: "internal/storage/entry.go",
-        qualifiedName: WRITER,
-        startLine: 1,
-        endLine: 10,
-        relation: "data-writer",
-        depth: 1,
-        confidence: 0.6,
-      },
-    ],
+    expandDataPathWriters: async <T extends { relation: string }>(symbols: T[]) => ({
+      symbols: [
+        ...symbols,
+        {
+          codeSymbolId: "W",
+          filePath: "internal/storage/entry.go",
+          qualifiedName: WRITER,
+          startLine: 1,
+          endLine: 10,
+          relation: "data-writer",
+          depth: 1,
+          confidence: 0.6,
+        },
+      ],
+      writers: [],
+    }),
   };
 });
 

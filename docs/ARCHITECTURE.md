@@ -2423,8 +2423,12 @@ the measurement lessons behind the split — is documented once in
 
 | Module                         | Responsibility                                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `extract-changes.ts`           | Splits the source document into discrete changed requirements (`ChangeExtractor` / `heuristicChangeExtractor`). |
-| `requirement-code-mapping.ts`  | (traceability) Maps each requirement to seed code symbols via BM25 search over the project's symbols.   |
+| `extract-changes.ts`           | Splits the source document into discrete changed requirements (`ChangeExtractor` / `heuristicChangeExtractor`). Since #1036 this is the reader for a multi-requirement document only; see `change-request.ts`. |
+| `change-request.ts`            | **#1036 — reads a pasted issue as ONE change with sub-aspects.** `parseChangeRequest` recognises the issue shape (a title, then at least two headings from the vocabulary issue templates use) and returns `{ primaryRequest, subAspects, context, ignored }`; empty form fields, bare URLs, version/browser fields and sign-offs go to `ignored` with a reason. Anything else returns `null` and `shapeAwareChangeExtractor` (the engine's default) falls back to the heuristic splitter, so the mode is chosen from the input's shape. Deterministic; an LLM extractor can replace it behind the same `ChangeExtractor`. |
+| `change-seeds.ts`              | **#1036 — hybrid seeding, split in two.** `resolveChangeSeeds` searches with the chat path's `HybridCodeSearch` (via `createDefaultCodeSearcher`: BM25 fused with symbol embeddings) on two queries — the title, and the request without rejected alternatives, code fences or links — and ranks the hits by FILE (`Σ hitᵢ × 0.5ⁱ`, so agreement lifts a file and size does not). The top `MAX_EDIT_FILES` files are the **edit candidates**; everything else retrieved is `related`. Never throws. |
+| `structural-twins.ts`          | **#1036 — functions built like a retrieved one**, by Jaccard overlap of callee NAMES (which exist for the 76% of Go calls the parser leaves unresolved). Blast radius only: bare names collide, so a twin is never an edit candidate. |
+| `impact-roles.ts`              | **#1036 — settles edit candidate vs blast radius** once every stage has run. A lineage writer is promoted to an edit candidate only when something besides the lineage says the request is about its data (it sits in a selected file, writes a column the request names as an identifier, or its table gains a column); a table that gains a column brings its definition and the types named for it in as `data-model` edit candidates; `related` hits are appended as blast radius. |
+| `requirement-code-mapping.ts`  | (traceability) Maps each requirement to seed code symbols via BM25 search over the project's symbols. Impact analysis uses it only when a mapper is injected (the opt-in `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` flags); its default seeding is `change-seeds.ts`. |
 | `blast-radius.ts`              | BFS over the code graph (incoming = callers/importers, outgoing = dependencies) with depth + edge-type weighted confidence decay. |
 | `impact-analysis-engine.ts`    | `computeProjectImpact` (pure per-project scorer), `PrismaCodeGraphDataSource` (project-scoped graph reads), and the async `trigger`/`execute` service. Crosses each project's affected symbols into the schema graph (best-effort) and persists `ImpactAffectedTable` rows. |
 | `live-schema-ingest.ts`        | `LiveSchemaIndex` over an introspected `DbSchemaSnapshot` (authoritative reconciliation source), plus `parseDdlFile` / `persistDdlFile` for `.sql` DDL, `persistLiveSchema` writers, and **(Epic #293 #301)** `persistLiveRoutines` — materializes introspected procedures/functions as `live-db` `procedure`/`function` symbols (routine bodies are never read). |
@@ -2448,6 +2452,44 @@ the measurement lessons behind the split — is documented once in
   default — see [Impact Analysis LLM stages](./IMPACT_ANALYSIS_LLM_STAGES.md) →
   "Defaults, and what they cost". Deterministic output remains the floor: the
   #1024 degradation contract, not the flags, is what guarantees it.
+- **Edit candidates vs blast radius (#1036)** — an impact result reports two
+  lists, because they are scored differently: **edit candidates** (the code the
+  change probably has to edit; small; scored on precision and recall) and the
+  **blast radius** (code to review; wide; scored on recall only). The role is
+  carried by `ImpactAffectedSymbol.depth` — `0` is an edit candidate, anything
+  further out is blast radius — and has one definition, `impactSymbolRole` in
+  `@metis/shared`, used by the read path (`ImpactItemView.editCandidateFiles` /
+  `blastRadiusFiles`), the markdown export and the UI. No migration: `depth` has
+  always meant "0 = direct, ≥1 = blast radius", and a run stored before #1036
+  reads through the same rule. Relations added: `data-model` and `related`.
+
+  ```mermaid
+  flowchart LR
+    Text[Pasted text] --> Shape{One issue?}
+    Shape -- yes --> One[One change + sub-aspects]
+    Shape -- no --> Split[Heuristic splitter]
+    One --> Seed[Hybrid search, ranked by file]
+    Split --> Seed
+    Seed --> Edit[Edit candidates · depth 0]
+    Seed --> Related[Related hits]
+    Edit --> Callers[Callers, 2 hops]
+    Edit --> Cross[Schema crossing]
+    Cross --> Writers[Lineage writers]
+    Writers -- request is about this data --> Edit
+    Writers -- otherwise --> Radius[Blast radius · depth ≥ 1]
+    Cross -- table gains a column --> Model[Table definition + types] --> Edit
+    Related --> Twins[Structural twins] --> Radius
+    Related --> Radius
+    Callers --> Radius
+  ```
+
+  Measured on the walkthrough run-7 Miniflux graph, six developer issues,
+  deterministic stages only (no model in the loop): the splitter + BM25 path named
+  61 to 118 files per issue at 1 to 3% file precision (2% overall) and 40% of the
+  reference files; this path's **edit candidates** are 37% precise and hold 53%
+  of them (micro-averaged), and its **blast radius** holds 84%. Two of the nineteen
+  reference files (an HTML template and a README) are not in the code graph and
+  cannot be reached by any stage here.
 - **Persistence** — `ImpactAnalysis` (run header), `ImpactItem` (one
   project × requirement-change row), `ImpactAffectedSymbol` (per-symbol hit with
   `relation` + `depth`), and `RequirementCodeMapping` (cached requirement→symbol links).

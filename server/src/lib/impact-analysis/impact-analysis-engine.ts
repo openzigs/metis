@@ -32,7 +32,16 @@ import {
 import type { CodeGraphDataSource, GraphEdge, GraphSymbol } from "../code-graph/query-service.js";
 import { randomUUID } from "node:crypto";
 import { blastRadius, type RadiusSymbol } from "./blast-radius.js";
-import { addDataPathWriters, pruneTangentialSchemaSeeds } from "./data-path-writers.js";
+import {
+  expandDataPathWriters,
+  pruneTangentialSchemaSeeds,
+  type DataPathWriter,
+} from "./data-path-writers.js";
+import { assignImpactRoles, tablesGainingColumns } from "./impact-roles.js";
+import { prismaSeedSymbolLoader, resolveChangeSeeds, type ChangeSeeds } from "./change-seeds.js";
+import { shapeAwareChangeExtractor } from "./change-request.js";
+import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
+import { createDefaultCodeSearcher } from "../code-graph/project-code-searcher.js";
 import {
   dropProposalsRestatingWriters,
   type DroppedColumnProposal,
@@ -42,6 +51,7 @@ import {
   crossToSchema,
   PrismaSchemaImpactDataSource,
   type AffectedTableInput,
+  type CodeSymbolDetail,
   type CrossProjectIdentityResolver,
   type SchemaImpactDataSource,
 } from "./schema-impact.js";
@@ -64,7 +74,6 @@ import type {
 } from "./impact-summarizer.js";
 import type { LiveSchemaIndex } from "./live-schema-ingest.js";
 import {
-  heuristicChangeExtractor,
   type ChangedRequirement,
   type ChangeExtractor,
   type ChangeType,
@@ -148,8 +157,18 @@ type MapRequirementFn = (
   projectId: string,
 ) => Promise<RequirementCodeMatch[]>;
 
+/** #1036 — seed one change into a project. See {@link resolveChangeSeeds}. */
+export type SeedChangeFn = (change: ChangedRequirement, projectId: string) => Promise<ChangeSeeds>;
+
 export interface ComputeImpactDeps {
   mapRequirement: MapRequirementFn;
+  /**
+   * #1036 — hybrid-search seeding that SPLITS what it retrieves: the symbols in
+   * the files the change probably edits, and everything else it found. When set
+   * it replaces {@link mapRequirement} for this change. Must never throw (its own
+   * contract, `change-seeds.ts`).
+   */
+  seedChange?: SeedChangeFn;
   dataSourceFor: (projectId: string) => CodeGraphDataSource;
   maxDepth?: number;
   /** When set (and `includeSchemaImpact` is true), cross the blast radius into the schema graph. */
@@ -250,10 +269,36 @@ export async function computeProjectImpact(
 ): Promise<ProjectImpactResult> {
   const maxDepth = deps.maxDepth ?? DEFAULT_MAX_DEPTH;
 
-  const matches = await deps.mapRequirement(
-    { id: change.requirementId ?? "", title: change.title, body: change.body },
-    projectId,
-  );
+  // #1036 — seed with the split retrieval when it is wired: `matches` are then
+  // the EDIT CANDIDATES, and `related` is what else was retrieved, for review.
+  // Without it (an injected `mapRequirement`), every match is a seed, as before.
+  let matches: RequirementCodeMatch[];
+  let related: RequirementCodeMatch[] = [];
+  let schemaSeeds: RequirementCodeMatch[] = [];
+  if (deps.seedChange) {
+    const seeds = await deps.seedChange(change, projectId);
+    matches = seeds.editCandidates;
+    related = seeds.related;
+    schemaSeeds = seeds.schemaSeeds;
+    // Functions built like a retrieved one are review material too. Best-effort.
+    try {
+      const twins = await resolveStructuralTwins(deps.dataSourceFor(projectId), [
+        ...matches,
+        ...related,
+      ]);
+      related = [...related, ...twins];
+    } catch (err) {
+      log.warn("structural-twin lookup failed; keeping retrieval", {
+        projectId,
+        error: String(err),
+      });
+    }
+  } else {
+    matches = await deps.mapRequirement(
+      { id: change.requirementId ?? "", title: change.title, body: change.body },
+      projectId,
+    );
+  }
 
   const topConfidence = matches.reduce((m, c) => Math.max(m, c.confidence), 0);
 
@@ -269,8 +314,25 @@ export async function computeProjectImpact(
     confidence: m.confidence,
   }));
 
+  // #1036 — a table or column among the best hits is not code to edit, but it is
+  // still a seed for the schema crossing and the lineage writers below.
+  const schemaRows: AffectedSymbolResult[] = schemaSeeds.map((m) => ({
+    codeSymbolId: m.codeSymbolId,
+    filePath: m.filePath,
+    qualifiedName: m.qualifiedName,
+    startLine: m.startLine,
+    endLine: m.endLine,
+    relation: "related" as const,
+    depth: 1,
+    confidence: m.confidence,
+  }));
+
   // Transitive blast radius from the resolved seed symbols.
   const seedIds = matches.map((m) => m.codeSymbolId).filter((id): id is string => Boolean(id));
+  const dataSeedIds = [
+    ...seedIds,
+    ...schemaSeeds.map((m) => m.codeSymbolId).filter((id): id is string => Boolean(id)),
+  ];
 
   let radius: RadiusSymbol[] = [];
   if (seedIds.length > 0) {
@@ -286,7 +348,7 @@ export async function computeProjectImpact(
 
   // Merge + dedupe (direct wins over radius).
   const byKey = new Map<string, AffectedSymbolResult>();
-  for (const d of direct) {
+  for (const d of [...direct, ...schemaRows]) {
     byKey.set(d.codeSymbolId ?? `path:${d.qualifiedName}`, d);
   }
   for (const r of radius) {
@@ -335,6 +397,8 @@ export async function computeProjectImpact(
   let affectedTables: AffectedTableInput[] = [];
   let affectedTablesSecondary: AffectedTableInput[] = [];
   let droppedColumnProposals: DroppedColumnProposal[] = [];
+  let dataPathWriters: DataPathWriter[] = [];
+  let dataModel: CodeSymbolDetail[] = [];
   if (deps.includeSchemaImpact !== false && deps.schemaDataSourceFor) {
     const impactedIds = affectedSymbols
       .map((s) => s.codeSymbolId)
@@ -460,13 +524,15 @@ export async function computeProjectImpact(
     // primary set so a table the #936 filter judged tangential contributes none.
     // Best-effort: a failure leaves the code impact as it was.
     try {
-      affectedSymbols = await addDataPathWriters(affectedSymbols, {
+      const expanded = await expandDataPathWriters(affectedSymbols, {
         requirementText: `${change.title}\n${change.body}`,
-        seedIds,
+        seedIds: dataSeedIds,
         primaryTables: affectedTables,
         dataSource: schemaDataSource,
         graph: deps.dataSourceFor(projectId),
       });
+      affectedSymbols = expanded.symbols;
+      dataPathWriters = expanded.writers;
     } catch (err) {
       log.warn("data-path writer expansion failed; keeping code impact", {
         projectId,
@@ -504,7 +570,31 @@ export async function computeProjectImpact(
         );
       }
     }
+
+    // #1036 — a table that gains a column has two more places to edit that no
+    // search finds from the request's wording: where the table is defined, and
+    // the types named for it. Best-effort.
+    const growingTables = tablesGainingColumns(affectedTables);
+    if (growingTables.length > 0 && schemaDataSource.getDataModelSymbols) {
+      try {
+        dataModel = await schemaDataSource.getDataModelSymbols(growingTables);
+      } catch (err) {
+        log.warn("data-model lookup failed; keeping code impact", {
+          projectId,
+          error: String(err),
+        });
+      }
+    }
   }
+
+  // #1036 — settle which symbols are EDIT CANDIDATES (depth 0) and which are
+  // BLAST RADIUS, then add what the seeding retrieved but did not select.
+  affectedSymbols = assignImpactRoles(affectedSymbols, {
+    writers: dataPathWriters,
+    growingTables: tablesGainingColumns(affectedTables),
+    dataModel,
+    related,
+  });
   const fileSet = new Set(affectedSymbols.map((s) => s.filePath));
   const { quality: matchQuality, reason: matchQualityReason } = deriveMatchQualityDetailed(
     affectedSymbols
@@ -695,13 +785,18 @@ export class PrismaCodeGraphDataSource implements CodeGraphDataSource {
  * symbols and edges. All graph lookups become O(1) Map operations — eliminates
  * the N×changes×depth Prisma round-trips that make BFS slow on large graphs.
  */
-export class InMemoryCodeGraphDataSource implements CodeGraphDataSource {
+export class InMemoryCodeGraphDataSource implements CodeGraphDataSource, CalleeNameSource {
   private readonly byId: Map<string, GraphSymbol>;
   private readonly edgesFrom: Map<string, GraphEdge[]>;
   private readonly edgesTo: Map<string, GraphEdge[]>;
   private readonly byFile: Map<string, GraphSymbol[]>;
 
-  constructor(symbols: GraphSymbol[], edges: GraphEdge[]) {
+  constructor(
+    symbols: GraphSymbol[],
+    edges: GraphEdge[],
+    /** #1036 — per function, the names it calls (resolved or not). */
+    private readonly calleeNames: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
+  ) {
     this.byId = new Map(symbols.map((s) => [s.id, s]));
     this.byFile = new Map();
     for (const s of symbols) {
@@ -719,6 +814,10 @@ export class InMemoryCodeGraphDataSource implements CodeGraphDataSource {
       if (to) to.push(e);
       else this.edgesTo.set(e.toSymbolId, [e]);
     }
+  }
+
+  calleeNameSets(): ReadonlyMap<string, ReadonlySet<string>> {
+    return this.calleeNames;
   }
 
   async getSymbol(symbolId: string): Promise<GraphSymbol | null> {
@@ -750,13 +849,25 @@ export async function loadProjectGraph(
   prisma: Pick<PrismaClient, "codeSymbol" | "codeEdge">,
   projectId: string,
 ): Promise<InMemoryCodeGraphDataSource> {
-  const [symbolRows, edgeRows] = await Promise.all([
+  const [symbolRows, edgeRows, callRows] = await Promise.all([
     prisma.codeSymbol.findMany({ where: { projectId }, select: SYMBOL_SELECT }),
     prisma.codeEdge.findMany({
       where: { projectId, kind: { in: [...CODE_EDGE_KINDS] }, toSymbolId: { not: null } },
       select: { id: true, fromSymbolId: true, toSymbolId: true, kind: true },
     }),
+    // #1036 — every call by NAME, resolved or not, for structural twins. A Go
+    // `h.store.X()` has no target symbol, but it does have a name.
+    prisma.codeEdge.findMany({
+      where: { projectId, kind: "calls", toQualifiedName: { not: null } },
+      select: { fromSymbolId: true, toQualifiedName: true },
+    }),
   ]);
+  const calleeNames = new Map<string, Set<string>>();
+  for (const c of callRows) {
+    const names = calleeNames.get(c.fromSymbolId) ?? new Set<string>();
+    names.add(c.toQualifiedName as string);
+    calleeNames.set(c.fromSymbolId, names);
+  }
   const symbols = symbolRows.map(toGraphSymbol);
   const edges: GraphEdge[] = edgeRows.map((e) => ({
     id: e.id,
@@ -781,7 +892,7 @@ export async function loadProjectGraph(
     symbols: symbols.length,
     edges: edges.length,
   });
-  return new InMemoryCodeGraphDataSource(symbols, edges);
+  return new InMemoryCodeGraphDataSource(symbols, edges, calleeNames);
 }
 
 // ---- Service API -----------------------------------------------------------
@@ -804,6 +915,11 @@ export interface ImpactServiceDeps {
   prisma?: ImpactPrisma;
   extractor?: ChangeExtractor;
   mapRequirement?: MapRequirementFn;
+  /**
+   * #1036 — split hybrid seeding. Defaults to {@link defaultSeedChange} when no
+   * `mapRequirement` is injected; an injected `mapRequirement` is used as-is.
+   */
+  seedChange?: SeedChangeFn;
   dataSourceFor?: (projectId: string) => CodeGraphDataSource;
   maxDepth?: number;
   schemaDataSourceFor?: (projectId: string) => SchemaImpactDataSource;
@@ -891,6 +1007,19 @@ export interface TriggerImpactAnalysisInput {
   expandDaoSiblings?: boolean;
   /** When true, the blast radius also walks downstream dependencies. Default false. */
   includeDependencies?: boolean;
+}
+
+/**
+ * #1036 — the production seeding: {@link resolveChangeSeeds} over the SAME fused
+ * searcher chat's `search_code_symbols` uses (`HybridCodeSearch`: BM25 fused with
+ * symbol embeddings). One searcher per run, so its lexical index is built once.
+ * A project whose symbols are not embedded yet degrades to BM25 inside the
+ * searcher; nothing here throws.
+ */
+export function defaultSeedChange(prisma: Pick<PrismaClient, "codeSymbol">): SeedChangeFn {
+  const searcher = createDefaultCodeSearcher();
+  const loadSymbols = prismaSeedSymbolLoader(prisma);
+  return (change, projectId) => resolveChangeSeeds(change, projectId, { searcher, loadSymbols });
 }
 
 function resolvePrisma(deps: ImpactServiceDeps): ImpactPrisma {
@@ -1005,9 +1134,15 @@ async function runImpactAnalysis(
   deps: ImpactServiceDeps = {},
 ): Promise<void> {
   const prisma = resolvePrisma(deps);
-  const extractor = deps.extractor ?? heuristicChangeExtractor;
+  // #1036 — an issue is read as ONE change with sub-aspects; anything else keeps
+  // the heuristic splitter (the shape-aware extractor falls back to it).
+  const extractor = deps.extractor ?? shapeAwareChangeExtractor;
   const mapRequirement: MapRequirementFn =
     deps.mapRequirement ?? ((req, projectId) => mapRequirementToCode(req, projectId));
+  // #1036 — seed with the chat path's hybrid search unless the caller chose a
+  // mapper of its own (the opt-in LLM seeding flags, and tests).
+  const seedChange: SeedChangeFn | undefined =
+    deps.seedChange ?? (deps.mapRequirement ? undefined : defaultSeedChange(prisma));
   const schemaDataSourceFor =
     deps.includeSchemaImpact === false
       ? undefined
@@ -1111,6 +1246,7 @@ async function runImpactAnalysis(
       for (const change of changes) {
         const result = await computeProjectImpact(change, projectId, {
           mapRequirement,
+          seedChange,
           dataSourceFor: dataSourceForProject,
           maxDepth: deps.maxDepth,
           schemaDataSourceFor,

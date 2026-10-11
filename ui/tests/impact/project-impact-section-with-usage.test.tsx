@@ -64,6 +64,8 @@ function item(over: Partial<ImpactItemView> = {}): ImpactItemView {
     affectedTablesSecondary: [],
     affectedTests: [],
     writePathGaps: [],
+    editCandidateFiles: [],
+    blastRadiusFiles: [],
     feedback: [],
     summary: null,
     ...over,

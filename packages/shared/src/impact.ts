@@ -34,6 +34,10 @@ export type RequirementCodeMappingSource = (typeof REQUIREMENT_CODE_MAPPING_SOUR
  *   - `dependency` — a downstream dependency reached via the graph.
  *   - `data-writer` — writes a column the change touches (#791): found through
  *                    SQL lineage, not through a call path or a word match.
+ *   - `data-model` — defines the data a new column lands in (#1036): the table's
+ *                    own definition, or a type named for that table.
+ *   - `related`    — retrieved for the request but below the edit-candidate cut
+ *                    (#1036). Listed for review; never a claim that it changes.
  */
 export const IMPACT_AFFECTED_RELATIONS = [
   "direct",
@@ -41,8 +45,49 @@ export const IMPACT_AFFECTED_RELATIONS = [
   "importer",
   "dependency",
   "data-writer",
+  "data-model",
+  "related",
 ] as const;
 export type ImpactAffectedRelation = (typeof IMPACT_AFFECTED_RELATIONS)[number];
+
+// ---- Edit candidates vs blast radius (#1036) --------------------------------
+
+/**
+ * #1036 — the two lists an impact result reports, which are scored differently:
+ *   - `edit-candidate` — code the change probably has to EDIT. Kept small;
+ *     scored on precision AND recall.
+ *   - `blast-radius`   — code to REVIEW because it calls, reads or sits beside
+ *     an edit candidate. Kept wide; scored on recall only.
+ */
+export const IMPACT_SYMBOL_ROLES = ["edit-candidate", "blast-radius"] as const;
+export type ImpactSymbolRole = (typeof IMPACT_SYMBOL_ROLES)[number];
+
+/**
+ * #1036 — the role of one affected symbol. A symbol at `depth` 0 is part of the
+ * seed set and so an edit candidate; anything further out is blast radius. This
+ * is the contract `depth` has always carried ("0 = direct, ≥1 = blast radius").
+ * The relation alone cannot decide it: a lineage writer is an edit candidate for
+ * a data change and only review material for a UI bug.
+ */
+export function impactSymbolRole(symbol: { depth: number }): ImpactSymbolRole {
+  return symbol.depth === 0 ? "edit-candidate" : "blast-radius";
+}
+
+/**
+ * #1036 — the files behind the two lists, in first-seen order. `blastRadiusFiles`
+ * is the WHOLE reviewed surface, so it includes the edit-candidate files: a file
+ * to edit is inside the blast radius by definition, and recall is measured on it.
+ */
+export function impactFileLists(symbols: ReadonlyArray<{ filePath: string; depth: number }>): {
+  editCandidateFiles: string[];
+  blastRadiusFiles: string[];
+} {
+  const edit = new Set<string>();
+  for (const s of symbols) if (impactSymbolRole(s) === "edit-candidate") edit.add(s.filePath);
+  const all = new Set<string>(edit);
+  for (const s of symbols) all.add(s.filePath);
+  return { editCandidateFiles: [...edit], blastRadiusFiles: [...all] };
+}
 
 // ---- Match quality (#961) --------------------------------------------------
 
@@ -498,6 +543,18 @@ export interface ImpactItemView {
    * Empty when no impacted symbol lives in a test file.
    */
   affectedTests: ImpactAffectedSymbolView[];
+  /**
+   * #1036 — the production files the change probably has to EDIT: the files of the
+   * `edit-candidate` symbols in {@link affectedSymbols} (see
+   * {@link impactSymbolRole}). Small and precise; the list to score on precision
+   * and recall.
+   */
+  editCandidateFiles: string[];
+  /**
+   * #1036 — every production file in the result, edit candidates first. Wide by
+   * design; the list to score on recall only.
+   */
+  blastRadiusFiles: string[];
   /**
    * #962 (epic #960) — impacted tables whose WRITE path (the symbols that
    * `writes`/`persists-to` them) is reached by no test. A deterministic

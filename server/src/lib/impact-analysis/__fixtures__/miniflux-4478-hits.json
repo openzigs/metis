@@ -1,0 +1,1549 @@
+{
+  "queries": [
+    {
+      "query": "Mark all as read older than X",
+      "hits": [
+        {
+          "symbolId": "s1",
+          "filePath": "internal/ui/unread_mark_all_read.go",
+          "name": "markAllAsRead",
+          "kind": "function",
+          "score": 0.016393
+        },
+        {
+          "symbolId": "s2",
+          "filePath": "client/client.go",
+          "name": "MarkAllAsReadContext",
+          "kind": "function",
+          "score": 0.016104
+        },
+        {
+          "symbolId": "s3",
+          "filePath": "client/client.go",
+          "name": "MarkAllAsRead",
+          "kind": "function",
+          "score": 0.015886
+        },
+        {
+          "symbolId": "s4",
+          "filePath": "client/client.go",
+          "name": "MarkFeedAsRead",
+          "kind": "function",
+          "score": 0.015548
+        },
+        {
+          "symbolId": "s5",
+          "filePath": "internal/googlereader/handler.go",
+          "name": "markAllAsReadHandler",
+          "kind": "function",
+          "score": 0.015385
+        },
+        {
+          "symbolId": "s6",
+          "filePath": "internal/storage/entry.go",
+          "name": "MarkFeedAsRead",
+          "kind": "function",
+          "score": 0.015079
+        },
+        {
+          "symbolId": "s7",
+          "filePath": "internal/storage/entry.go",
+          "name": "MarkAllAsReadBeforeDate",
+          "kind": "function",
+          "score": 0.014925
+        },
+        {
+          "symbolId": "s8",
+          "filePath": "client/client.go",
+          "name": "MarkFeedAsReadContext",
+          "kind": "function",
+          "score": 0.014628
+        },
+        {
+          "symbolId": "s9",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "handlePlayerProgressionSaveAndMarkAsReadOnCompletion",
+          "kind": "function",
+          "score": 0.014294
+        },
+        {
+          "symbolId": "s10",
+          "filePath": "internal/model/entry.go",
+          "name": "ShouldMarkAsReadOnView",
+          "kind": "function",
+          "score": 0.014146
+        },
+        {
+          "symbolId": "s11",
+          "filePath": "internal/ui/form/settings.go",
+          "name": "MarkAsReadBehavior",
+          "kind": "function",
+          "score": 0.013663
+        },
+        {
+          "symbolId": "s12",
+          "filePath": "internal/ui/unread_mark_all_read.go",
+          "name": "unread_mark_all_read.go",
+          "kind": "module",
+          "score": 0.013463
+        },
+        {
+          "symbolId": "s13",
+          "filePath": "internal/fever/handler.go",
+          "name": "handleWriteFeeds",
+          "kind": "function",
+          "score": 0.01338
+        },
+        {
+          "symbolId": "s14",
+          "filePath": "client/client.go",
+          "name": "MarkCategoryAsRead",
+          "kind": "function",
+          "score": 0.013214
+        },
+        {
+          "symbolId": "s15",
+          "filePath": "internal/reader/readingtime/readingtime.go",
+          "name": "EstimateReadingTime",
+          "kind": "function",
+          "score": 0.013194
+        },
+        {
+          "symbolId": "s16",
+          "filePath": "internal/ui/category_mark_as_read.go",
+          "name": "category_mark_as_read.go",
+          "kind": "module",
+          "score": 0.012979
+        },
+        {
+          "symbolId": "s17",
+          "filePath": "internal/ui/form/settings.go",
+          "name": "extractMarkAsReadBehavior",
+          "kind": "function",
+          "score": 0.012782
+        },
+        {
+          "symbolId": "s18",
+          "filePath": "client/client.go",
+          "name": "MarkCategoryAsReadContext",
+          "kind": "function",
+          "score": 0.012692
+        },
+        {
+          "symbolId": "s19",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "updateUnreadCounterValue",
+          "kind": "function",
+          "score": 0.012667
+        },
+        {
+          "symbolId": "s20",
+          "filePath": "internal/ui/feed_mark_as_read.go",
+          "name": "markFeedAsRead",
+          "kind": "function",
+          "score": 0.011901
+        },
+        {
+          "symbolId": "s21",
+          "filePath": "internal/storage/batch.go",
+          "name": "WithNextCheckExpired",
+          "kind": "function",
+          "score": 0.011875
+        },
+        {
+          "symbolId": "s22",
+          "filePath": "internal/storage/entry_query_builder.go",
+          "name": "BeforePublishedDate",
+          "kind": "function",
+          "score": 0.011728
+        },
+        {
+          "symbolId": "s23",
+          "filePath": "internal/storage/entry.go",
+          "name": "MarkAllAsRead",
+          "kind": "function",
+          "score": 0.011713
+        },
+        {
+          "symbolId": "s24",
+          "filePath": "internal/storage/feed.go",
+          "name": "CheckedAt",
+          "kind": "function",
+          "score": 0.011585
+        },
+        {
+          "symbolId": "s25",
+          "filePath": "internal/storage/feed.go",
+          "name": "ResetNextCheckAt",
+          "kind": "function",
+          "score": 0.011446
+        },
+        {
+          "symbolId": "s26",
+          "filePath": "internal/reader/filter/filter_test.go",
+          "name": "BenchmarkIsDateMatchingPattern",
+          "kind": "function",
+          "score": 0.01131
+        },
+        {
+          "symbolId": "s27",
+          "filePath": "internal/storage/entry_query_builder.go",
+          "name": "BeforeChangedDate",
+          "kind": "function",
+          "score": 0.011047
+        },
+        {
+          "symbolId": "s28",
+          "filePath": "internal/config/options.go",
+          "name": "CleanupArchiveUnreadInterval",
+          "kind": "function",
+          "score": 0.010795
+        },
+        {
+          "symbolId": "s29",
+          "filePath": "internal/reader/rss/adapter.go",
+          "name": "findEntryDate",
+          "kind": "function",
+          "score": 0.010674
+        },
+        {
+          "symbolId": "s30",
+          "filePath": "internal/reader/date/parser_test.go",
+          "name": "parser_test.go",
+          "kind": "module",
+          "score": 0.010556
+        },
+        {
+          "symbolId": "s31",
+          "filePath": "internal/reader/date/parser_test.go",
+          "name": "FuzzParse",
+          "kind": "function",
+          "score": 0.01044
+        },
+        {
+          "symbolId": "s32",
+          "filePath": "internal/storage/feed.go",
+          "name": "Less",
+          "kind": "function",
+          "score": 0.010326
+        },
+        {
+          "symbolId": "s33",
+          "filePath": "internal/model/feed.go",
+          "name": "CheckedNow",
+          "kind": "function",
+          "score": 0.010215
+        },
+        {
+          "symbolId": "s34",
+          "filePath": "internal/reader/processor/nebula.go",
+          "name": "shouldFetchNebulaWatchTime",
+          "kind": "function",
+          "score": 0.010106
+        },
+        {
+          "symbolId": "s35",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "markPageAsReadAction",
+          "kind": "function",
+          "score": 0.010056
+        },
+        {
+          "symbolId": "s36",
+          "filePath": "internal/reader/fetcher/response_handler.go",
+          "name": "CacheControlMaxAge",
+          "kind": "function",
+          "score": 0.01
+        },
+        {
+          "symbolId": "s37",
+          "filePath": "internal/reader/fetcher/request_builder.go",
+          "name": "WithLastModified",
+          "kind": "function",
+          "score": 0.009896
+        },
+        {
+          "symbolId": "s38",
+          "filePath": "internal/storage/entry.go",
+          "name": "FlushHistory",
+          "kind": "function",
+          "score": 0.009794
+        },
+        {
+          "symbolId": "s39",
+          "filePath": "internal/model/feed_test.go",
+          "name": "checkTargetInterval",
+          "kind": "function",
+          "score": 0.009694
+        },
+        {
+          "symbolId": "s40",
+          "filePath": "internal/reader/filter/filter.go",
+          "name": "isDateMatchingPattern",
+          "kind": "function",
+          "score": 0.009596
+        },
+        {
+          "symbolId": "s41",
+          "filePath": "internal/storage/feed.go",
+          "name": "FetchCounters",
+          "kind": "function",
+          "score": 0.009406
+        },
+        {
+          "symbolId": "s42",
+          "filePath": "internal/storage/entry.go",
+          "name": "MarkCategoryAsRead",
+          "kind": "function",
+          "score": 0.009391
+        },
+        {
+          "symbolId": "s43",
+          "filePath": "internal/reader/fetcher/response_handler.go",
+          "name": "LastModified",
+          "kind": "function",
+          "score": 0.009314
+        },
+        {
+          "symbolId": "s44",
+          "filePath": "internal/storage/feed.go",
+          "name": "FeedsWithCounters",
+          "kind": "function",
+          "score": 0.009223
+        },
+        {
+          "symbolId": "s45",
+          "filePath": "internal/storage/feed.go",
+          "name": "Len",
+          "kind": "function",
+          "score": 0.009135
+        },
+        {
+          "symbolId": "s46",
+          "filePath": "internal/ui/category_mark_feed_as_read.go",
+          "name": "markCategoryFeedAsRead",
+          "kind": "function",
+          "score": 0.009102
+        },
+        {
+          "symbolId": "s47",
+          "filePath": "internal/reader/fetcher/response_handler.go",
+          "name": "Expires",
+          "kind": "function",
+          "score": 0.009048
+        },
+        {
+          "symbolId": "s48",
+          "filePath": "internal/reader/date/parser.go",
+          "name": "checkTimezoneRange",
+          "kind": "function",
+          "score": 0.008962
+        },
+        {
+          "symbolId": "s49",
+          "filePath": "internal/ui/feed_mark_as_read.go",
+          "name": "feed_mark_as_read.go",
+          "kind": "module",
+          "score": 0.008894
+        },
+        {
+          "symbolId": "s50",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "openOriginalLinkFromListView",
+          "kind": "function",
+          "score": 0.008879
+        },
+        {
+          "symbolId": "s51",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "toggleEntryStatus",
+          "kind": "function",
+          "score": 0.008796
+        },
+        {
+          "symbolId": "s52",
+          "filePath": "internal/model/web_session.go",
+          "name": "MarkForceRefreshed",
+          "kind": "function",
+          "score": 0.008768
+        },
+        {
+          "symbolId": "s53",
+          "filePath": "internal/ui/category_mark_as_read.go",
+          "name": "markCategoryAsRead",
+          "kind": "function",
+          "score": 0.008718
+        },
+        {
+          "symbolId": "s54",
+          "filePath": "internal/storage/entry_query_builder.go",
+          "name": "AfterPublishedDate",
+          "kind": "function",
+          "score": 0.008636
+        },
+        {
+          "symbolId": "s55",
+          "filePath": "internal/storage/entry_query_builder.go",
+          "name": "WithStarred",
+          "kind": "function",
+          "score": 0.008559
+        },
+        {
+          "symbolId": "s56",
+          "filePath": "internal/reader/filter/filter.go",
+          "name": "matchesRule",
+          "kind": "function",
+          "score": 0.008482
+        },
+        {
+          "symbolId": "s57",
+          "filePath": "internal/storage/entry_query_builder.go",
+          "name": "AfterChangedDate",
+          "kind": "function",
+          "score": 0.00819
+        },
+        {
+          "symbolId": "s58",
+          "filePath": "internal/reader/sanitizer/sanitizer.go",
+          "name": "shouldIgnoreTag",
+          "kind": "function",
+          "score": 0.00812
+        },
+        {
+          "symbolId": "s59",
+          "filePath": "internal/model/user.go",
+          "name": "UseTimezone",
+          "kind": "function",
+          "score": 0.008051
+        },
+        {
+          "symbolId": "s60",
+          "filePath": "internal/googlereader/handler.go",
+          "name": "handleReadStreamHandler",
+          "kind": "function",
+          "score": 0.008029
+        }
+      ]
+    },
+    {
+      "query": "Mark all as read older than X\n\nA dropdown on the mark as read for times. Times could be configured in settings.\n\nRight now you can either mark a page as read or mark everything as read. This gives people the option to just let things that are older than X days be marked as read. Common options would be 24 hours, 1 week, 1 month",
+      "hits": [
+        {
+          "symbolId": "s1",
+          "filePath": "internal/ui/unread_mark_all_read.go",
+          "name": "markAllAsRead",
+          "kind": "function",
+          "score": 0.01638
+        },
+        {
+          "symbolId": "s11",
+          "filePath": "internal/ui/form/settings.go",
+          "name": "MarkAsReadBehavior",
+          "kind": "function",
+          "score": 0.016069
+        },
+        {
+          "symbolId": "s4",
+          "filePath": "client/client.go",
+          "name": "MarkFeedAsRead",
+          "kind": "function",
+          "score": 0.015804
+        },
+        {
+          "symbolId": "s2",
+          "filePath": "client/client.go",
+          "name": "MarkAllAsReadContext",
+          "kind": "function",
+          "score": 0.015601
+        },
+        {
+          "symbolId": "s3",
+          "filePath": "client/client.go",
+          "name": "MarkAllAsRead",
+          "kind": "function",
+          "score": 0.015435
+        },
+        {
+          "symbolId": "s8",
+          "filePath": "client/client.go",
+          "name": "MarkFeedAsReadContext",
+          "kind": "function",
+          "score": 0.015027
+        },
+        {
+          "symbolId": "s17",
+          "filePath": "internal/ui/form/settings.go",
+          "name": "extractMarkAsReadBehavior",
+          "kind": "function",
+          "score": 0.014837
+        },
+        {
+          "symbolId": "s10",
+          "filePath": "internal/model/entry.go",
+          "name": "ShouldMarkAsReadOnView",
+          "kind": "function",
+          "score": 0.014637
+        },
+        {
+          "symbolId": "s6",
+          "filePath": "internal/storage/entry.go",
+          "name": "MarkFeedAsRead",
+          "kind": "function",
+          "score": 0.014453
+        },
+        {
+          "symbolId": "s5",
+          "filePath": "internal/googlereader/handler.go",
+          "name": "markAllAsReadHandler",
+          "kind": "function",
+          "score": 0.014095
+        },
+        {
+          "symbolId": "s61",
+          "filePath": "internal/ui/form/settings.go",
+          "name": "markReadBehavior",
+          "kind": "type",
+          "score": 0.014092
+        },
+        {
+          "symbolId": "s20",
+          "filePath": "internal/ui/feed_mark_as_read.go",
+          "name": "markFeedAsRead",
+          "kind": "function",
+          "score": 0.013964
+        },
+        {
+          "symbolId": "s14",
+          "filePath": "client/client.go",
+          "name": "MarkCategoryAsRead",
+          "kind": "function",
+          "score": 0.013402
+        },
+        {
+          "symbolId": "s7",
+          "filePath": "internal/storage/entry.go",
+          "name": "MarkAllAsReadBeforeDate",
+          "kind": "function",
+          "score": 0.013149
+        },
+        {
+          "symbolId": "s15",
+          "filePath": "internal/reader/readingtime/readingtime.go",
+          "name": "EstimateReadingTime",
+          "kind": "function",
+          "score": 0.013014
+        },
+        {
+          "symbolId": "s28",
+          "filePath": "internal/config/options.go",
+          "name": "CleanupArchiveUnreadInterval",
+          "kind": "function",
+          "score": 0.012926
+        },
+        {
+          "symbolId": "s9",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "handlePlayerProgressionSaveAndMarkAsReadOnCompletion",
+          "kind": "function",
+          "score": 0.012711
+        },
+        {
+          "symbolId": "s12",
+          "filePath": "internal/ui/unread_mark_all_read.go",
+          "name": "unread_mark_all_read.go",
+          "kind": "module",
+          "score": 0.012536
+        },
+        {
+          "symbolId": "s16",
+          "filePath": "internal/ui/category_mark_as_read.go",
+          "name": "category_mark_as_read.go",
+          "kind": "module",
+          "score": 0.012492
+        },
+        {
+          "symbolId": "s13",
+          "filePath": "internal/fever/handler.go",
+          "name": "handleWriteFeeds",
+          "kind": "function",
+          "score": 0.012338
+        },
+        {
+          "symbolId": "s62",
+          "filePath": "internal/config/options.go",
+          "name": "CleanupArchiveReadInterval",
+          "kind": "function",
+          "score": 0.012219
+        },
+        {
+          "symbolId": "s18",
+          "filePath": "client/client.go",
+          "name": "MarkCategoryAsReadContext",
+          "kind": "function",
+          "score": 0.012087
+        },
+        {
+          "symbolId": "s35",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "markPageAsReadAction",
+          "kind": "function",
+          "score": 0.011801
+        },
+        {
+          "symbolId": "s63",
+          "filePath": "internal/config/options.go",
+          "name": "ForceRefreshInterval",
+          "kind": "function",
+          "score": 0.011676
+        },
+        {
+          "symbolId": "s49",
+          "filePath": "internal/ui/feed_mark_as_read.go",
+          "name": "feed_mark_as_read.go",
+          "kind": "module",
+          "score": 0.011656
+        },
+        {
+          "symbolId": "s33",
+          "filePath": "internal/model/feed.go",
+          "name": "CheckedNow",
+          "kind": "function",
+          "score": 0.011599
+        },
+        {
+          "symbolId": "s24",
+          "filePath": "internal/storage/feed.go",
+          "name": "CheckedAt",
+          "kind": "function",
+          "score": 0.01092
+        },
+        {
+          "symbolId": "s46",
+          "filePath": "internal/ui/category_mark_feed_as_read.go",
+          "name": "markCategoryFeedAsRead",
+          "kind": "function",
+          "score": 0.010811
+        },
+        {
+          "symbolId": "s29",
+          "filePath": "internal/reader/rss/adapter.go",
+          "name": "findEntryDate",
+          "kind": "function",
+          "score": 0.010795
+        },
+        {
+          "symbolId": "s53",
+          "filePath": "internal/ui/category_mark_as_read.go",
+          "name": "markCategoryAsRead",
+          "kind": "function",
+          "score": 0.010781
+        },
+        {
+          "symbolId": "s64",
+          "filePath": "internal/config/options.go",
+          "name": "MetricsRefreshInterval",
+          "kind": "function",
+          "score": 0.010763
+        },
+        {
+          "symbolId": "s22",
+          "filePath": "internal/storage/entry_query_builder.go",
+          "name": "BeforePublishedDate",
+          "kind": "function",
+          "score": 0.010556
+        },
+        {
+          "symbolId": "s23",
+          "filePath": "internal/storage/entry.go",
+          "name": "MarkAllAsRead",
+          "kind": "function",
+          "score": 0.010488
+        },
+        {
+          "symbolId": "s65",
+          "filePath": "internal/reader/fetcher/response_handler.go",
+          "name": "IsRateLimited",
+          "kind": "function",
+          "score": 0.01044
+        },
+        {
+          "symbolId": "s43",
+          "filePath": "internal/reader/fetcher/response_handler.go",
+          "name": "LastModified",
+          "kind": "function",
+          "score": 0.010326
+        },
+        {
+          "symbolId": "s47",
+          "filePath": "internal/reader/fetcher/response_handler.go",
+          "name": "Expires",
+          "kind": "function",
+          "score": 0.010215
+        },
+        {
+          "symbolId": "s66",
+          "filePath": "internal/reader/processor/reading_time.go",
+          "name": "updateEntryReadingTime",
+          "kind": "function",
+          "score": 0.009896
+        },
+        {
+          "symbolId": "s67",
+          "filePath": "internal/ui/form/settings.go",
+          "name": "NewSettingsForm",
+          "kind": "function",
+          "score": 0.009865
+        },
+        {
+          "symbolId": "s52",
+          "filePath": "internal/model/web_session.go",
+          "name": "MarkForceRefreshed",
+          "kind": "function",
+          "score": 0.009803
+        },
+        {
+          "symbolId": "s25",
+          "filePath": "internal/storage/feed.go",
+          "name": "ResetNextCheckAt",
+          "kind": "function",
+          "score": 0.009794
+        },
+        {
+          "symbolId": "s68",
+          "filePath": "internal/config/options.go",
+          "name": "FetchOdyseeWatchTime",
+          "kind": "function",
+          "score": 0.009587
+        },
+        {
+          "symbolId": "s69",
+          "filePath": "internal/validator/user.go",
+          "name": "validateReadingSpeed",
+          "kind": "function",
+          "score": 0.009314
+        },
+        {
+          "symbolId": "s48",
+          "filePath": "internal/reader/date/parser.go",
+          "name": "checkTimezoneRange",
+          "kind": "function",
+          "score": 0.009223
+        },
+        {
+          "symbolId": "s70",
+          "filePath": "internal/config/options.go",
+          "name": "FetchBilibiliWatchTime",
+          "kind": "function",
+          "score": 0.009135
+        },
+        {
+          "symbolId": "s19",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "updateUnreadCounterValue",
+          "kind": "function",
+          "score": 0.009135
+        },
+        {
+          "symbolId": "s36",
+          "filePath": "internal/reader/fetcher/response_handler.go",
+          "name": "CacheControlMaxAge",
+          "kind": "function",
+          "score": 0.008962
+        },
+        {
+          "symbolId": "s71",
+          "filePath": "internal/reader/sanitizer/sanitizer.go",
+          "name": "isValidFetchPriorityValue",
+          "kind": "function",
+          "score": 0.008879
+        },
+        {
+          "symbolId": "s72",
+          "filePath": "internal/config/options.go",
+          "name": "SchedulerEntryFrequencyMaxInterval",
+          "kind": "function",
+          "score": 0.0088
+        },
+        {
+          "symbolId": "s27",
+          "filePath": "internal/storage/entry_query_builder.go",
+          "name": "BeforeChangedDate",
+          "kind": "function",
+          "score": 0.008796
+        },
+        {
+          "symbolId": "s73",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "setReadStatusButtonState",
+          "kind": "function",
+          "score": 0.008671
+        },
+        {
+          "symbolId": "s74",
+          "filePath": "internal/model/web_session.go",
+          "name": "LastForceRefresh",
+          "kind": "function",
+          "score": 0.008636
+        },
+        {
+          "symbolId": "s42",
+          "filePath": "internal/storage/entry.go",
+          "name": "MarkCategoryAsRead",
+          "kind": "function",
+          "score": 0.008592
+        },
+        {
+          "symbolId": "s45",
+          "filePath": "internal/storage/feed.go",
+          "name": "Len",
+          "kind": "function",
+          "score": 0.008559
+        },
+        {
+          "symbolId": "s34",
+          "filePath": "internal/reader/processor/nebula.go",
+          "name": "shouldFetchNebulaWatchTime",
+          "kind": "function",
+          "score": 0.008482
+        },
+        {
+          "symbolId": "s37",
+          "filePath": "internal/reader/fetcher/request_builder.go",
+          "name": "WithLastModified",
+          "kind": "function",
+          "score": 0.008407
+        },
+        {
+          "symbolId": "s75",
+          "filePath": "internal/integration/linkding/linkding.go",
+          "name": "linkdingBookmark",
+          "kind": "class",
+          "score": 0.008333
+        },
+        {
+          "symbolId": "s76",
+          "filePath": "internal/config/options.go",
+          "name": "PollingFrequency",
+          "kind": "function",
+          "score": 0.008283
+        },
+        {
+          "symbolId": "s77",
+          "filePath": "internal/config/options.go",
+          "name": "FetchNebulaWatchTime",
+          "kind": "function",
+          "score": 0.008138
+        },
+        {
+          "symbolId": "s51",
+          "filePath": "internal/ui/static/js/app.js",
+          "name": "toggleEntryStatus",
+          "kind": "function",
+          "score": 0.00812
+        },
+        {
+          "symbolId": "s39",
+          "filePath": "internal/model/feed_test.go",
+          "name": "checkTargetInterval",
+          "kind": "function",
+          "score": 0.007983
+        }
+      ]
+    }
+  ],
+  "symbols": [
+    {
+      "id": "s1",
+      "qualifiedName": "internal/ui/unread_mark_all_read.go::markAllAsRead",
+      "filePath": "internal/ui/unread_mark_all_read.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 13,
+      "endLine": 20
+    },
+    {
+      "id": "s2",
+      "qualifiedName": "client/client.go::MarkAllAsReadContext",
+      "filePath": "client/client.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 334,
+      "endLine": 337
+    },
+    {
+      "id": "s3",
+      "qualifiedName": "client/client.go::MarkAllAsRead",
+      "filePath": "client/client.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 327,
+      "endLine": 331
+    },
+    {
+      "id": "s4",
+      "qualifiedName": "client/client.go::MarkFeedAsRead",
+      "filePath": "client/client.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 749,
+      "endLine": 753
+    },
+    {
+      "id": "s5",
+      "qualifiedName": "internal/googlereader/handler.go::markAllAsReadHandler",
+      "filePath": "internal/googlereader/handler.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 1155,
+      "endLine": 1232
+    },
+    {
+      "id": "s6",
+      "qualifiedName": "internal/storage/entry.go::MarkFeedAsRead",
+      "filePath": "internal/storage/entry.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 581,
+      "endLine": 605
+    },
+    {
+      "id": "s7",
+      "qualifiedName": "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+      "filePath": "internal/storage/entry.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 523,
+      "endLine": 544
+    },
+    {
+      "id": "s8",
+      "qualifiedName": "client/client.go::MarkFeedAsReadContext",
+      "filePath": "client/client.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 756,
+      "endLine": 759
+    },
+    {
+      "id": "s9",
+      "qualifiedName": "internal/ui/static/js/app.js::handlePlayerProgressionSaveAndMarkAsReadOnCompletion",
+      "filePath": "internal/ui/static/js/app.js",
+      "kind": "function",
+      "language": "js",
+      "startLine": 999,
+      "endLine": 1025
+    },
+    {
+      "id": "s10",
+      "qualifiedName": "internal/model/entry.go::ShouldMarkAsReadOnView",
+      "filePath": "internal/model/entry.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 62,
+      "endLine": 75
+    },
+    {
+      "id": "s11",
+      "qualifiedName": "internal/ui/form/settings.go::MarkAsReadBehavior",
+      "filePath": "internal/ui/form/settings.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 61,
+      "endLine": 74
+    },
+    {
+      "id": "s12",
+      "qualifiedName": "internal/ui/unread_mark_all_read.go",
+      "filePath": "internal/ui/unread_mark_all_read.go",
+      "kind": "module",
+      "language": "go",
+      "startLine": 1,
+      "endLine": 21
+    },
+    {
+      "id": "s13",
+      "qualifiedName": "internal/fever/handler.go::handleWriteFeeds",
+      "filePath": "internal/fever/handler.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 481,
+      "endLine": 502
+    },
+    {
+      "id": "s14",
+      "qualifiedName": "client/client.go::MarkCategoryAsRead",
+      "filePath": "client/client.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 530,
+      "endLine": 534
+    },
+    {
+      "id": "s15",
+      "qualifiedName": "internal/reader/readingtime/readingtime.go::EstimateReadingTime",
+      "filePath": "internal/reader/readingtime/readingtime.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 16,
+      "endLine": 26
+    },
+    {
+      "id": "s16",
+      "qualifiedName": "internal/ui/category_mark_as_read.go",
+      "filePath": "internal/ui/category_mark_as_read.go",
+      "kind": "module",
+      "language": "go",
+      "startLine": 1,
+      "endLine": 36
+    },
+    {
+      "id": "s17",
+      "qualifiedName": "internal/ui/form/settings.go::extractMarkAsReadBehavior",
+      "filePath": "internal/ui/form/settings.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 78,
+      "endLine": 91
+    },
+    {
+      "id": "s18",
+      "qualifiedName": "client/client.go::MarkCategoryAsReadContext",
+      "filePath": "client/client.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 537,
+      "endLine": 540
+    },
+    {
+      "id": "s19",
+      "qualifiedName": "internal/ui/static/js/app.js::updateUnreadCounterValue",
+      "filePath": "internal/ui/static/js/app.js",
+      "kind": "function",
+      "language": "js",
+      "startLine": 899,
+      "endLine": 910
+    },
+    {
+      "id": "s20",
+      "qualifiedName": "internal/ui/feed_mark_as_read.go::markFeedAsRead",
+      "filePath": "internal/ui/feed_mark_as_read.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 13,
+      "endLine": 29
+    },
+    {
+      "id": "s21",
+      "qualifiedName": "internal/storage/batch.go::WithNextCheckExpired",
+      "filePath": "internal/storage/batch.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 56,
+      "endLine": 59
+    },
+    {
+      "id": "s22",
+      "qualifiedName": "internal/storage/entry_query_builder.go::BeforePublishedDate",
+      "filePath": "internal/storage/entry_query_builder.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 86,
+      "endLine": 90
+    },
+    {
+      "id": "s23",
+      "qualifiedName": "internal/storage/entry.go::MarkAllAsRead",
+      "filePath": "internal/storage/entry.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 506,
+      "endLine": 520
+    },
+    {
+      "id": "s24",
+      "qualifiedName": "internal/storage/feed.go::CheckedAt",
+      "filePath": "internal/storage/feed.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 44,
+      "endLine": 52
+    },
+    {
+      "id": "s25",
+      "qualifiedName": "internal/storage/feed.go::ResetNextCheckAt",
+      "filePath": "internal/storage/feed.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 473,
+      "endLine": 476
+    },
+    {
+      "id": "s26",
+      "qualifiedName": "internal/reader/filter/filter_test.go::BenchmarkIsDateMatchingPattern",
+      "filePath": "internal/reader/filter/filter_test.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 1406,
+      "endLine": 1413
+    },
+    {
+      "id": "s27",
+      "qualifiedName": "internal/storage/entry_query_builder.go::BeforeChangedDate",
+      "filePath": "internal/storage/entry_query_builder.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 72,
+      "endLine": 76
+    },
+    {
+      "id": "s28",
+      "qualifiedName": "internal/config/options.go::CleanupArchiveUnreadInterval",
+      "filePath": "internal/config/options.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 671,
+      "endLine": 673
+    },
+    {
+      "id": "s29",
+      "qualifiedName": "internal/reader/rss/adapter.go::findEntryDate",
+      "filePath": "internal/reader/rss/adapter.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 259,
+      "endLine": 280
+    },
+    {
+      "id": "s30",
+      "qualifiedName": "internal/reader/date/parser_test.go",
+      "filePath": "internal/reader/date/parser_test.go",
+      "kind": "module",
+      "language": "go",
+      "startLine": 1,
+      "endLine": 255
+    },
+    {
+      "id": "s31",
+      "qualifiedName": "internal/reader/date/parser_test.go::FuzzParse",
+      "filePath": "internal/reader/date/parser_test.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 10,
+      "endLine": 16
+    },
+    {
+      "id": "s32",
+      "qualifiedName": "internal/storage/feed.go::Less",
+      "filePath": "internal/storage/feed.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 21,
+      "endLine": 33
+    },
+    {
+      "id": "s33",
+      "qualifiedName": "internal/model/feed.go::CheckedNow",
+      "filePath": "internal/model/feed.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 114,
+      "endLine": 120
+    },
+    {
+      "id": "s34",
+      "qualifiedName": "internal/reader/processor/nebula.go::shouldFetchNebulaWatchTime",
+      "filePath": "internal/reader/processor/nebula.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 12,
+      "endLine": 18
+    },
+    {
+      "id": "s35",
+      "qualifiedName": "internal/ui/static/js/app.js::markPageAsReadAction",
+      "filePath": "internal/ui/static/js/app.js",
+      "kind": "function",
+      "language": "js",
+      "startLine": 577,
+      "endLine": 596
+    },
+    {
+      "id": "s36",
+      "qualifiedName": "internal/reader/fetcher/response_handler.go::CacheControlMaxAge",
+      "filePath": "internal/reader/fetcher/response_handler.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 68,
+      "endLine": 80
+    },
+    {
+      "id": "s37",
+      "qualifiedName": "internal/reader/fetcher/request_builder.go::WithLastModified",
+      "filePath": "internal/reader/fetcher/request_builder.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 77,
+      "endLine": 82
+    },
+    {
+      "id": "s38",
+      "qualifiedName": "internal/storage/entry.go::FlushHistory",
+      "filePath": "internal/storage/entry.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 487,
+      "endLine": 503
+    },
+    {
+      "id": "s39",
+      "qualifiedName": "internal/model/feed_test.go::checkTargetInterval",
+      "filePath": "internal/model/feed_test.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 70,
+      "endLine": 77
+    },
+    {
+      "id": "s40",
+      "qualifiedName": "internal/reader/filter/filter.go::isDateMatchingPattern",
+      "filePath": "internal/reader/filter/filter.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 207,
+      "endLine": 255
+    },
+    {
+      "id": "s41",
+      "qualifiedName": "internal/storage/feed.go::FetchCounters",
+      "filePath": "internal/storage/feed.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 151,
+      "endLine": 157
+    },
+    {
+      "id": "s42",
+      "qualifiedName": "internal/storage/entry.go::MarkCategoryAsRead",
+      "filePath": "internal/storage/entry.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 608,
+      "endLine": 642
+    },
+    {
+      "id": "s43",
+      "qualifiedName": "internal/reader/fetcher/response_handler.go::LastModified",
+      "filePath": "internal/reader/fetcher/response_handler.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 40,
+      "endLine": 46
+    },
+    {
+      "id": "s44",
+      "qualifiedName": "internal/storage/feed.go::FeedsWithCounters",
+      "filePath": "internal/storage/feed.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 144,
+      "endLine": 148
+    },
+    {
+      "id": "s45",
+      "qualifiedName": "internal/storage/feed.go::Len",
+      "filePath": "internal/storage/feed.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 19,
+      "endLine": 19
+    },
+    {
+      "id": "s46",
+      "qualifiedName": "internal/ui/category_mark_feed_as_read.go::markCategoryFeedAsRead",
+      "filePath": "internal/ui/category_mark_feed_as_read.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 13,
+      "endLine": 35
+    },
+    {
+      "id": "s47",
+      "qualifiedName": "internal/reader/fetcher/response_handler.go::Expires",
+      "filePath": "internal/reader/fetcher/response_handler.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 56,
+      "endLine": 66
+    },
+    {
+      "id": "s48",
+      "qualifiedName": "internal/reader/date/parser.go::checkTimezoneRange",
+      "filePath": "internal/reader/date/parser.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 368,
+      "endLine": 374
+    },
+    {
+      "id": "s49",
+      "qualifiedName": "internal/ui/feed_mark_as_read.go",
+      "filePath": "internal/ui/feed_mark_as_read.go",
+      "kind": "module",
+      "language": "go",
+      "startLine": 1,
+      "endLine": 30
+    },
+    {
+      "id": "s50",
+      "qualifiedName": "internal/ui/static/js/app.js::openOriginalLinkFromListView",
+      "filePath": "internal/ui/static/js/app.js",
+      "kind": "function",
+      "language": "js",
+      "startLine": 818,
+      "endLine": 839
+    },
+    {
+      "id": "s51",
+      "qualifiedName": "internal/ui/static/js/app.js::toggleEntryStatus",
+      "filePath": "internal/ui/static/js/app.js",
+      "kind": "function",
+      "language": "js",
+      "startLine": 633,
+      "endLine": 656
+    },
+    {
+      "id": "s52",
+      "qualifiedName": "internal/model/web_session.go::MarkForceRefreshed",
+      "filePath": "internal/model/web_session.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 263,
+      "endLine": 267
+    },
+    {
+      "id": "s53",
+      "qualifiedName": "internal/ui/category_mark_as_read.go::markCategoryAsRead",
+      "filePath": "internal/ui/category_mark_as_read.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 14,
+      "endLine": 35
+    },
+    {
+      "id": "s54",
+      "qualifiedName": "internal/storage/entry_query_builder.go::AfterPublishedDate",
+      "filePath": "internal/storage/entry_query_builder.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 93,
+      "endLine": 97
+    },
+    {
+      "id": "s55",
+      "qualifiedName": "internal/storage/entry_query_builder.go::WithStarred",
+      "filePath": "internal/storage/entry_query_builder.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 62,
+      "endLine": 69
+    },
+    {
+      "id": "s56",
+      "qualifiedName": "internal/reader/filter/filter.go::matchesRule",
+      "filePath": "internal/reader/filter/filter.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 179,
+      "endLine": 205
+    },
+    {
+      "id": "s57",
+      "qualifiedName": "internal/storage/entry_query_builder.go::AfterChangedDate",
+      "filePath": "internal/storage/entry_query_builder.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 79,
+      "endLine": 83
+    },
+    {
+      "id": "s58",
+      "qualifiedName": "internal/reader/sanitizer/sanitizer.go::shouldIgnoreTag",
+      "filePath": "internal/reader/sanitizer/sanitizer.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 612,
+      "endLine": 624
+    },
+    {
+      "id": "s59",
+      "qualifiedName": "internal/model/user.go::UseTimezone",
+      "filePath": "internal/model/user.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 215,
+      "endLine": 219
+    },
+    {
+      "id": "s60",
+      "qualifiedName": "internal/googlereader/handler.go::handleReadStreamHandler",
+      "filePath": "internal/googlereader/handler.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 1073,
+      "endLine": 1095
+    },
+    {
+      "id": "s61",
+      "qualifiedName": "internal/ui/form/settings.go::markReadBehavior",
+      "filePath": "internal/ui/form/settings.go",
+      "kind": "type",
+      "language": "go",
+      "startLine": 17,
+      "endLine": 17
+    },
+    {
+      "id": "s62",
+      "qualifiedName": "internal/config/options.go::CleanupArchiveReadInterval",
+      "filePath": "internal/config/options.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 667,
+      "endLine": 669
+    },
+    {
+      "id": "s63",
+      "qualifiedName": "internal/config/options.go::ForceRefreshInterval",
+      "filePath": "internal/config/options.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 735,
+      "endLine": 737
+    },
+    {
+      "id": "s64",
+      "qualifiedName": "internal/config/options.go::MetricsRefreshInterval",
+      "filePath": "internal/config/options.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 897,
+      "endLine": 899
+    },
+    {
+      "id": "s65",
+      "qualifiedName": "internal/reader/fetcher/response_handler.go::IsRateLimited",
+      "filePath": "internal/reader/fetcher/response_handler.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 98,
+      "endLine": 100
+    },
+    {
+      "id": "s66",
+      "qualifiedName": "internal/reader/processor/reading_time.go::updateEntryReadingTime",
+      "filePath": "internal/reader/processor/reading_time.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 61,
+      "endLine": 107
+    },
+    {
+      "id": "s67",
+      "qualifiedName": "internal/ui/form/settings.go::NewSettingsForm",
+      "filePath": "internal/ui/form/settings.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 168,
+      "endLine": 215
+    },
+    {
+      "id": "s68",
+      "qualifiedName": "internal/config/options.go::FetchOdyseeWatchTime",
+      "filePath": "internal/config/options.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 727,
+      "endLine": 729
+    },
+    {
+      "id": "s69",
+      "qualifiedName": "internal/validator/user.go::validateReadingSpeed",
+      "filePath": "internal/validator/user.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 156,
+      "endLine": 161
+    },
+    {
+      "id": "s70",
+      "qualifiedName": "internal/config/options.go::FetchBilibiliWatchTime",
+      "filePath": "internal/config/options.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 719,
+      "endLine": 721
+    },
+    {
+      "id": "s71",
+      "qualifiedName": "internal/reader/sanitizer/sanitizer.go::isValidFetchPriorityValue",
+      "filePath": "internal/reader/sanitizer/sanitizer.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 388,
+      "endLine": 394
+    },
+    {
+      "id": "s72",
+      "qualifiedName": "internal/config/options.go::SchedulerEntryFrequencyMaxInterval",
+      "filePath": "internal/config/options.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 975,
+      "endLine": 977
+    },
+    {
+      "id": "s73",
+      "qualifiedName": "internal/ui/static/js/app.js::setReadStatusButtonState",
+      "filePath": "internal/ui/static/js/app.js",
+      "kind": "function",
+      "language": "js",
+      "startLine": 244,
+      "endLine": 248
+    },
+    {
+      "id": "s74",
+      "qualifiedName": "internal/model/web_session.go::LastForceRefresh",
+      "filePath": "internal/model/web_session.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 183,
+      "endLine": 188
+    },
+    {
+      "id": "s75",
+      "qualifiedName": "internal/integration/linkding/linkding.go::linkdingBookmark",
+      "filePath": "internal/integration/linkding/linkding.go",
+      "kind": "class",
+      "language": "go",
+      "startLine": 63,
+      "endLine": 68
+    },
+    {
+      "id": "s76",
+      "qualifiedName": "internal/config/options.go::PollingFrequency",
+      "filePath": "internal/config/options.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 933,
+      "endLine": 935
+    },
+    {
+      "id": "s77",
+      "qualifiedName": "internal/config/options.go::FetchNebulaWatchTime",
+      "filePath": "internal/config/options.go",
+      "kind": "function",
+      "language": "go",
+      "startLine": 723,
+      "endLine": 725
+    }
+  ]
+}

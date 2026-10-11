@@ -433,8 +433,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const all = names(symbols);
       expect(all).not.toContain("api_keys.last_used_at");
-      // …and its writer is not named either: the table is not in the primary set.
-      expect(all).not.toContain("internal/storage/api_key.go::SetAPIKeyUsedTimestamp");
+      // …and its writer is not named AS A WRITER either: the table is not in the
+      // primary set. (Since #1036 the search may still list the function for
+      // review as `related` — on its name, not on the tangential table's data.)
+      const apiKeyWriter = symbols.filter(
+        (r) => r.qualifiedName === "internal/storage/api_key.go::SetAPIKeyUsedTimestamp",
+      );
+      expect(apiKeyWriter.map((r) => r.relation)).not.toContain("data-writer");
+      expect(apiKeyWriter.every((r) => r.depth > 0)).toBe(true);
       expect(all).toContain(`${FEED}::UpdateFeed`);
       expect(tables.find((t) => t.tableName === "api_keys")?.relevanceTier).toBe("unlikely");
     });

@@ -98,6 +98,8 @@ function item(projectId: string): ImpactItemView {
       symbol({ id: "s3", filePath: "src/orders/service.test.ts", qualifiedName: "placeTest" }),
     ],
     writePathGaps: [],
+    editCandidateFiles: [],
+    blastRadiusFiles: [],
     affectedTables: [],
     affectedTablesSecondary: [],
     feedback: [],

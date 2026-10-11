@@ -63,6 +63,8 @@ function item(over: Partial<ImpactItemView> = {}): ImpactItemView {
     affectedTablesSecondary: [],
     affectedTests: [],
     writePathGaps: [],
+    editCandidateFiles: [],
+    blastRadiusFiles: [],
     feedback: [],
     summary: null,
     ...over,
@@ -105,15 +107,15 @@ describe("AffectedSymbolRow", () => {
 });
 
 describe("ChangedRequirementGroup", () => {
-  it("splits direct and blast-radius impacts", () => {
+  it("splits files to edit from the blast radius (#1036)", () => {
     render(<ChangedRequirementGroup item={item()} />);
-    expect(screen.getByTestId("direct-impacts")).toBeInTheDocument();
+    expect(screen.getByTestId("edit-candidates")).toBeInTheDocument();
     expect(screen.getByTestId("blast-radius-impacts")).toBeInTheDocument();
     expect(screen.getByTestId("requirement-severity")).toHaveTextContent("high");
     expect(screen.getByText("Add login")).toBeInTheDocument();
   });
 
-  it("renders a scannable headline with direct/file/caller counts", () => {
+  it("renders a scannable headline: files to edit, and the other files to review (#1036)", () => {
     render(
       <ChangedRequirementGroup
         item={item({
@@ -126,13 +128,13 @@ describe("ChangedRequirementGroup", () => {
         })}
       />,
     );
-    // 2 direct across 2 files · 2 callers (relation !== direct)
+    // src/a.ts + src/b.ts to edit; src/c.ts (two symbols, one file) to review.
     expect(screen.getByTestId("impact-headline")).toHaveTextContent(
-      "2 directly affected across 2 files · 2 callers",
+      "2 files to edit · 1 more to review",
     );
   });
 
-  it("sorts directly-affected rows by confidence descending", () => {
+  it("sorts edit-candidate rows by confidence descending", () => {
     render(
       <ChangedRequirementGroup
         item={item({
@@ -143,7 +145,7 @@ describe("ChangedRequirementGroup", () => {
         })}
       />,
     );
-    const directList = screen.getByTestId("direct-impacts");
+    const directList = screen.getByTestId("edit-candidates");
     const rows = directList.querySelectorAll('[data-testid="affected-symbol-row"]');
     // Strongest hit (0.95) renders first.
     expect(rows[0]).toHaveTextContent("a.high");
@@ -212,7 +214,7 @@ describe("ChangedRequirementGroup", () => {
         })}
       />,
     );
-    expect(screen.queryByTestId("direct-impacts")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("edit-candidates")).not.toBeInTheDocument();
     expect(screen.getByTestId("blast-radius-impacts")).toBeInTheDocument();
     expect(screen.getByTestId("requirement-severity")).toHaveTextContent("low");
 

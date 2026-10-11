@@ -121,6 +121,8 @@ const detail: ImpactAnalysisDetail = {
       affectedTablesSecondary: [],
       affectedTests: [],
       writePathGaps: [],
+      editCandidateFiles: [],
+      blastRadiusFiles: [],
       feedback: [],
       summary: null,
     },

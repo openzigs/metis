@@ -11,6 +11,7 @@
  * seed the multi-project mapping when no LLM is wired.
  */
 import { CHANGE_TYPES } from "@metis/shared";
+import type { ChangeRequest } from "./change-request.js";
 
 export type ChangeType = (typeof CHANGE_TYPES)[number];
 
@@ -25,6 +26,11 @@ export interface ChangedRequirement {
   priorityChanged?: boolean;
   typeChanged?: boolean;
   hasChildren?: boolean;
+  /**
+   * #1036 — the structure this change was read from, when the input was one
+   * issue (`change-request.ts`). Absent for a change the splitter produced.
+   */
+  request?: ChangeRequest;
 }
 
 export interface ChangeExtractor {

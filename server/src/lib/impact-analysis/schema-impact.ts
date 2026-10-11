@@ -24,6 +24,8 @@ import type {
 import { SCHEMA_IMPACT_EDGE_KINDS, isLiveSchemaSource } from "@metis/shared";
 import type { LiveSchemaIndex } from "./live-schema-ingest.js";
 import { loadResolvedGoCalls, type ResolvedGoCall } from "./go-call-resolution.js";
+import { isTestFilePath } from "../code-graph/call-resolution.js";
+import { LIVE_SCHEMA_FILE } from "../code-graph/schema-graph.js";
 
 /**
  * A schema symbol reachable from impacted code: a `table`/`column` (#168) or, as
@@ -122,6 +124,12 @@ export interface SchemaImpactDataSource {
   getWriterEdgesTo?(schemaSymbolIds: string[]): Promise<SchemaEdgeRow[]>;
   /** #791 — location and language of the given code symbols. */
   getCodeSymbolDetails?(ids: string[]): Promise<CodeSymbolDetail[]>;
+  /**
+   * #1036 — where the named tables are defined in the repository, and the
+   * production types named for them ({@link entityTypeKeysForTable}). The places
+   * a new column has to be added that no call path or lineage edge leads to.
+   */
+  getDataModelSymbols?(tableNames: string[]): Promise<CodeSymbolDetail[]>;
 }
 
 /** #791 — a code symbol's location, for a data-path writer the result names. */
@@ -268,11 +276,33 @@ function inferColumnType(columnName: string, descriptor: string | null): string 
  *      restricted to directional add verbs so "create a report for admins" is ignored.
  * Returns null when no additive intent is present or the field reduces to a bare
  * descriptor with no real column name. Pure — no I/O.
+ *
+ * #1036 — a request that WRITES THE DDL ITSELF (`ALTER TABLE entries ADD COLUMN
+ * read_at TIMESTAMPTZ;`, as a pasted developer issue often does) is read first:
+ * it names the table and the column outright, where the prose beside it (`Add a
+ * \`read_at\` TIMESTAMP column to the \`entries\` table`) defeats both forms above.
+ * Only the two identifiers are taken from the statement; the type is still
+ * inferred from the column name, so no user-written type text reaches the
+ * suggestion.
  */
 export function detectAdditiveColumnIntent(
   text: string | null | undefined,
 ): AdditiveColumnIntent | null {
   if (!text) return null;
+
+  const stated = text.match(
+    /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s+ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_]\w*)\s+[A-Za-z]/i,
+  );
+  if (stated) {
+    const columnName = toSnakeIdentifier(stated[2]!);
+    const entity = toSnakeIdentifier(stated[1]!.slice(stated[1]!.lastIndexOf(".") + 1));
+    // `ADD CONSTRAINT …` / `ADD PRIMARY KEY …` add no column.
+    const notAColumn = /^(constraint|primary|foreign|unique|check|index|key)$/.test(columnName);
+    if (columnName && entity && !notAColumn) {
+      const columnType = inferColumnType(columnName, null);
+      return { columnName, columnType, entity, confidence: columnType ? "medium" : "low" };
+    }
+  }
 
   const withDescriptor = new RegExp(
     `\\b(?:add|introduce|create|include)\\s+(?:a|an|the)\\s+([A-Za-z][\\w-]*(?:\\s+[A-Za-z][\\w-]*){0,2}?)\\s+(${FIELD_DESCRIPTOR})\\s+(?:to|on|onto|for|in)\\s+(?:the\\s+)?([A-Za-z][\\w-]*)\\b`,
@@ -937,6 +967,38 @@ async function chunkedIn<T>(ids: string[], fn: (chunk: string[]) => Promise<T[]>
   return results;
 }
 
+/** Code-symbol kinds that can model a table: a struct, class, interface or alias. */
+const ENTITY_TYPE_KINDS = ["class", "interface", "type", "struct"] as const;
+
+/** Lowercase, separators removed: `user_sessions` and `UserSession` compare equal. */
+function entityKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** `entries` → `entry`, `statuses` → `status`, `feeds` → `feed`. Unchanged when singular. */
+function singularTableWord(word: string): string {
+  if (word.endsWith("ies") && word.length > 3) return `${word.slice(0, -3)}y`;
+  if (/(ss|x|ch|sh|us)es$/.test(word)) return word.slice(0, -2);
+  if (word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+  return word;
+}
+
+/**
+ * #1036 — the comparable names a type modelling `tableName` would carry: the
+ * table's own name and its singular (`entries` → `entries`, `entry`;
+ * `user_sessions` → `usersessions`, `usersession`). Compared with
+ * {@link entityKey} of a symbol's name, so `Entry` and `UserSession` match.
+ * An exact-name rule: a type merely CONTAINING the word (`EntryQueryBuilder`)
+ * does not match.
+ */
+export function entityTypeKeysForTable(tableName: string): string[] {
+  const bare = tableName.slice(tableName.lastIndexOf(".") + 1).toLowerCase();
+  const parts = bare.split(/[^a-z0-9]+/).filter(Boolean);
+  if (parts.length === 0) return [];
+  const singular = [...parts.slice(0, -1), singularTableWord(parts[parts.length - 1]!)];
+  return [...new Set([parts.join(""), singular.join("")])];
+}
+
 /** A `SchemaImpactDataSource` scoped to one project, backed by Prisma. */
 export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
   constructor(
@@ -1061,6 +1123,47 @@ export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
         },
       }),
     );
+  }
+
+  /** #1036 — definition sites of the named tables, and the types named for them. */
+  async getDataModelSymbols(tableNames: string[]): Promise<CodeSymbolDetail[]> {
+    if (tableNames.length === 0) return [];
+    const select = {
+      id: true,
+      kind: true,
+      name: true,
+      qualifiedName: true,
+      filePath: true,
+      startLine: true,
+      endLine: true,
+      language: true,
+    } as const;
+    const bare = (n: string) => n.slice(n.lastIndexOf(".") + 1).toLowerCase();
+    const wantedTables = new Set(tableNames.map(bare));
+    const wantedTypes = new Set(tableNames.flatMap(entityTypeKeysForTable));
+    const [tables, types] = await Promise.all([
+      this.prisma.codeSymbol.findMany({
+        where: { projectId: this.projectId, kind: "table", language: "sql" },
+        select,
+      }),
+      this.prisma.codeSymbol.findMany({
+        where: {
+          projectId: this.projectId,
+          kind: { in: [...ENTITY_TYPE_KINDS] },
+          language: { not: "sql" },
+        },
+        select,
+      }),
+    ]);
+    return [
+      // A table introspected from a live database has no file in the repository.
+      ...tables.filter(
+        (t) => wantedTables.has(bare(t.qualifiedName)) && t.filePath !== LIVE_SCHEMA_FILE,
+      ),
+      ...types.filter((t) => wantedTypes.has(entityKey(t.name)) && !isTestFilePath(t.filePath)),
+    ]
+      .sort((a, b) => a.filePath.localeCompare(b.filePath) || a.startLine - b.startLine)
+      .map(({ name: _name, ...detail }) => detail);
   }
 
   private goCallsP: Promise<ResolvedGoCall[]> | null = null;

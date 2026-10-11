@@ -917,6 +917,8 @@ describe("#956 computeSharedTableImpacts (run-level rollup)", () => {
       affectedSymbols: [],
       affectedTests: [],
       writePathGaps: [],
+      editCandidateFiles: [],
+      blastRadiusFiles: [],
       feedback: [],
       affectedTablesSecondary: [],
       affectedTables: tableNames.map((tableName) => ({
@@ -1220,6 +1222,46 @@ describe("#962 groups impacted test files out of the prod blast radius", () => {
       "org.jpetstore.mapper.AccountMapperTest.testUpdate",
       "org.jpetstore.service.AccountServiceTest.testUpdate",
     ]);
+  });
+
+  it("#1036 — reports the edit-candidate files apart from the whole blast radius, tests in neither", async () => {
+    const symbols = [
+      rawSymbol({ filePath: "internal/storage/entry.go", relation: "direct", depth: 0 }),
+      rawSymbol({ filePath: "internal/storage/entry.go", relation: "data-writer", depth: 0 }),
+      // A lineage writer the engine did NOT promote: review, not edit.
+      rawSymbol({ filePath: "internal/storage/feed.go", relation: "data-writer", depth: 1 }),
+      rawSymbol({ filePath: "internal/model/entry.go", relation: "data-model", depth: 0 }),
+      rawSymbol({ filePath: "internal/api/handlers.go", relation: "caller", depth: 2 }),
+      rawSymbol({ filePath: "internal/ui/page.go", relation: "related", depth: 1 }),
+      rawSymbol({ filePath: "internal/storage/entry_test.go", relation: "direct", depth: 0 }),
+    ];
+    const detail = await getImpactAnalysisDetail("ia-962", symbolItemPrisma(symbols) as never);
+    const item = detail!.items[0];
+    expect(item.editCandidateFiles).toEqual([
+      "internal/storage/entry.go",
+      "internal/model/entry.go",
+    ]);
+    expect(item.blastRadiusFiles).toEqual([
+      "internal/storage/entry.go",
+      "internal/model/entry.go",
+      "internal/storage/feed.go",
+      "internal/api/handlers.go",
+      "internal/ui/page.go",
+    ]);
+    // The new relations survive the read path.
+    expect(item.affectedSymbols.map((s) => s.relation)).toContain("data-model");
+    expect(item.affectedSymbols.map((s) => s.relation)).toContain("related");
+  });
+
+  it("#1036 — a run stored before the split reads its mapper hits as its edit candidates", async () => {
+    const symbols = [
+      rawSymbol({ filePath: "a.go", relation: "direct", depth: 0 }),
+      rawSymbol({ filePath: "w.go", relation: "data-writer", depth: 1 }),
+      rawSymbol({ filePath: "c.go", relation: "caller", depth: 2 }),
+    ];
+    const detail = await getImpactAnalysisDetail("ia-962", symbolItemPrisma(symbols) as never);
+    expect(detail!.items[0].editCandidateFiles).toEqual(["a.go"]);
+    expect(detail!.items[0].blastRadiusFiles).toEqual(["a.go", "w.go", "c.go"]);
   });
 
   it("emits an empty affectedTests list when no impacted symbol is a test file", async () => {

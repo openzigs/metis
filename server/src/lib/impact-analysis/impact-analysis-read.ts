@@ -28,6 +28,7 @@ import {
   DDL_CHANGE_KINDS,
   DDL_RISK_CLASSES,
   deriveMatchQualityDetailed,
+  impactFileLists,
   IMPACT_CONSUMER_RESOLUTIONS,
   IMPACT_CONSUMER_USAGES,
   IMPACT_TABLE_FEEDBACK_VERDICTS,
@@ -330,6 +331,11 @@ function toItemView(item: RawItem): ImpactItemView {
   }
 
   const allSymbols = item.affectedSymbols.map(toAffectedSymbolView);
+  const productionSymbols = allSymbols.filter((s) => !isTestFilePath(s.filePath));
+  // #1036 — the two lists a caller scores differently, derived from the persisted
+  // depths by the one shared definition. A run stored before #1036 reads through
+  // the same rule: its mapper hits are its edit candidates.
+  const { editCandidateFiles, blastRadiusFiles } = impactFileLists(productionSymbols);
 
   // #961/#994 — derive the requirement→code match quality (+ WHY, when weak)
   // from the persisted DIRECT (seed) confidences+paths. The direct affected
@@ -369,8 +375,10 @@ function toItemView(item: RawItem): ImpactItemView {
     // keeps the prod symbols a BA scans unpolluted and gives QA a "tests covering
     // the impacted code" list with a count. `writePathGaps` is filled by the
     // async schema-graph pass in `getImpactAnalysisDetail` (empty otherwise).
-    affectedSymbols: allSymbols.filter((s) => !isTestFilePath(s.filePath)),
+    affectedSymbols: productionSymbols,
     affectedTests: allSymbols.filter((s) => isTestFilePath(s.filePath)),
+    editCandidateFiles,
+    blastRadiusFiles,
     writePathGaps: [],
     affectedTables,
     affectedTablesSecondary,
