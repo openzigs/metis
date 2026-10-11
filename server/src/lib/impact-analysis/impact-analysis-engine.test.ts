@@ -323,7 +323,7 @@ describe("computeProjectImpact", () => {
       ]);
     });
 
-    it("hands the proposer the project and its live schema index (#1003)", async () => {
+    it("hands the proposer the project, its live schema index (#1003) and the lineage writers (#791)", async () => {
       const live = new LiveSchemaIndex([]);
       const contexts: unknown[] = [];
       await runWith(
@@ -333,7 +333,8 @@ describe("computeProjectImpact", () => {
         },
         { liveIndexFor: () => live },
       );
-      expect(contexts).toEqual([{ projectId: "proj-1", liveIndex: live }]);
+      // No lineage hooks on this data source, so there are no writers to hand over.
+      expect(contexts).toEqual([{ projectId: "proj-1", liveIndex: live, writers: [] }]);
     });
 
     it("proposes only on tables that SURVIVED the #936 relevance filter", async () => {

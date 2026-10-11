@@ -5,6 +5,9 @@
 import { describe, expect, it } from "vitest";
 import {
   expandDataPathWriters,
+  MAX_WRITER_SQL_CHARS,
+  parseWriterText,
+  profileDataPathWriters,
   requirementIdentifierColumns,
   requirementNamedColumns,
   resolveDataPathWriters,
@@ -378,5 +381,144 @@ describe("expandDataPathWriters (#1036)", () => {
     });
     expect(out).toBe(all);
     expect(writers.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+// The text METIS stored for this symbol in the run-7 Miniflux graph, verbatim
+// (`CodeSymbolEmbedding.text`; the body is cut after ten lines at ingest).
+const MARK_BEFORE_DATE_TEXT = [
+  "function MarkAllAsReadBeforeDate in internal/storage/entry.go",
+  "func (s *Storage) MarkAllAsReadBeforeDate(userID int64, before time.Time) error {",
+  "\tquery := `",
+  "\t\tUPDATE",
+  "\t\t\tentries",
+  "\t\tSET",
+  "\t\t\tstatus=$1,",
+  "\t\t\tchanged_at=now()",
+  "\t\tWHERE",
+  "\t\t\tuser_id=$2 AND status=$3 AND published_at < $4",
+  "\t`",
+].join("\n");
+
+describe("parseWriterText (#791)", () => {
+  it("reads a Go method: the receiver is not a parameter, the SQL ends at the backtick", () => {
+    expect(parseWriterText(MARK_BEFORE_DATE_TEXT)).toEqual({
+      signature: "func (s *Storage) MarkAllAsReadBeforeDate(userID int64, before time.Time) error",
+      parameters: ["userID int64", "before time.Time"],
+      sql: "UPDATE entries SET status=$1, changed_at=now() WHERE user_id=$2 AND status=$3 AND published_at < $4",
+    });
+  });
+
+  it("keeps a parameter whose type has its own commas or parentheses whole", () => {
+    const { parameters } = parseWriterText(
+      "func Apply(ids map[string][]int64, fn func(a, b int) error, n int) {",
+    );
+    expect(parameters).toEqual(["ids map[string][]int64", "fn func(a, b int) error", "n int"]);
+  });
+
+  it("drops self/this from a method, and reads a declaration with no header line", () => {
+    expect(parseWriterText("def mark_read(self, before: datetime):\n    pass").parameters).toEqual([
+      "before: datetime",
+    ]);
+    expect(parseWriterText("async markRead(this: Store, before: Date) {").parameters).toEqual([
+      "before: Date",
+    ]);
+  });
+
+  it("returns no parameters for a declaration it cannot read, and no SQL when there is none", () => {
+    expect(parseWriterText("type Entry struct {\n\tID int64\n}")).toEqual({
+      signature: "type Entry struct",
+      parameters: [],
+      sql: null,
+    });
+    expect(parseWriterText("func broken(a int {").parameters).toEqual([]);
+    expect(parseWriterText("")).toEqual({ signature: null, parameters: [], sql: null });
+  });
+
+  it("caps a long statement", () => {
+    const long = `func f() {\n q := \`UPDATE t SET ${"a=1, ".repeat(200)}\``;
+    expect(parseWriterText(long).sql!.length).toBe(MAX_WRITER_SQL_CHARS);
+  });
+});
+
+describe("profileDataPathWriters (#791)", () => {
+  // MarkAllAsReadBeforeDate as the lineage records it: it writes two entries
+  // columns and READS three more — the WHERE of its UPDATE.
+  const predicateEdges: Edge[] = [
+    { fromSymbolId: "MarkAllAsReadBeforeDate", toSymbolId: "entries", kind: "writes" },
+    { fromSymbolId: "MarkAllAsReadBeforeDate", toSymbolId: "entries.published_at", kind: "reads" },
+    { fromSymbolId: "MarkAllAsReadBeforeDate", toSymbolId: "feeds.checked_at", kind: "reads" },
+  ];
+  const published = col("entries.published_at");
+  const source = (texts: Record<string, string> | null): DataPathDataSource => {
+    const base = dataSource();
+    return {
+      ...base,
+      async getSchemaEdgesFrom(ids) {
+        return [...edges, ...predicateEdges].filter((e) => ids.includes(e.fromSymbolId));
+      },
+      async getSchemaSymbolsByIds(ids) {
+        return [...symbols, published]
+          .filter((sym) => ids.includes(sym.id) && sym.language === "sql" && sym.kind !== "method")
+          .map((sym) => ({
+            id: sym.id,
+            kind: sym.kind as "table" | "column",
+            name: sym.name,
+            qualifiedName: sym.qualifiedName,
+            source: "sqlglot" as const,
+          }));
+      },
+      ...(texts
+        ? {
+            async getCodeSymbolTexts(ids: string[]) {
+              return ids.flatMap((id) => (texts[id] ? [{ id, text: texts[id]! }] : []));
+            },
+          }
+        : {}),
+    };
+  };
+  const writer = {
+    id: "MarkAllAsReadBeforeDate",
+    qualifiedName: `${ENTRY}::MarkAllAsReadBeforeDate`,
+    filePath: ENTRY,
+    startLine: 523,
+    endLine: 533,
+    confidence: 0.8,
+    columns: ["entries.changed_at", "entries.status"],
+    namesRequirementColumn: false,
+  };
+
+  it("separates the columns a writer filters on from the ones it writes", async () => {
+    const [profile] = await profileDataPathWriters(
+      [writer],
+      source({ MarkAllAsReadBeforeDate: MARK_BEFORE_DATE_TEXT }),
+    );
+    expect(profile).toMatchObject({
+      id: "MarkAllAsReadBeforeDate",
+      writeTables: ["entries"],
+      // `entries.id` and `entries.published_at` are read on the table it writes.
+      predicateColumns: ["entries.id", "entries.published_at"],
+      // A read of a table it does not write is not a predicate of this statement.
+      readColumns: ["feeds.checked_at"],
+      parameters: ["userID int64", "before time.Time"],
+    });
+    expect(profile!.sql).toContain("published_at < $4");
+  });
+
+  it("still profiles tables and predicates when no symbol text is stored", async () => {
+    const [bare] = await profileDataPathWriters([writer], source(null));
+    expect(bare).toMatchObject({
+      writeTables: ["entries"],
+      predicateColumns: ["entries.id", "entries.published_at"],
+      signature: null,
+      parameters: [],
+      sql: null,
+    });
+    const [untexted] = await profileDataPathWriters([writer], source({}));
+    expect(untexted!.signature).toBeNull();
+  });
+
+  it("asks nothing for no writers", async () => {
+    expect(await profileDataPathWriters([], source({}))).toEqual([]);
   });
 });

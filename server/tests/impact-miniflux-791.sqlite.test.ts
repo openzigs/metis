@@ -16,6 +16,9 @@
  *   #4511 last refresh → UpdateFeed and UpdateFeedError (they write checked_at);
  *   and no Go function is ever reported as a database routine.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -55,8 +58,17 @@ const MIGRATIONS = "internal/database/migrations.go";
 
 const REQ_4336 =
   "Feature Request (miniflux #4336): Track reading time — add read_at timestamp to entries. Miniflux currently does not record when an entry was read. The changed_at field updates whenever an entry is modified (including status changes), but there is no dedicated field to know when exactly a user marked an entry as read. Proposed: add a read_at TIMESTAMP column to the entries table. When an entry transitions from unread to read, set read_at = NOW().";
-const REQ_4478 =
-  "Feature (miniflux #4478): Mark all as read older than X. Right now you can either mark a page as read or mark everything as read. This gives people the option to just let things that are older than X days be marked as read.";
+// #791 — the VERBATIM issue text impact analysis was given in walkthrough run 7.
+// This constant used to be a condensed paraphrase; #1045 passed on it and then
+// regressed 3 runs in 3 on the real text, which carries the sentence the model
+// kept turning into a column ("Times could be configured in settings.").
+const REQ_4478 = readFileSync(
+  join(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/lib/impact-analysis/__fixtures__/miniflux-4478.md",
+  ),
+  "utf8",
+);
 const REQ_4511 =
   "Feature (miniflux #4511): Last Successful refresh in feed API. Store and return the last time a feed was successfully refreshed. I use the Feed API (GET /v1/feeds/{feedID}) to start with the feed that was refreshed longest ago, but the Last Refreshed parameter (checked_at) only tells me when the last attempted refresh was, not when the last successful refresh was.";
 
@@ -184,6 +196,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "entries.status",
         "entries.changed_at",
         "entries.reading_time",
+        "entries.published_at",
+        "entries.user_id",
         "feeds",
         "feeds.checked_at",
         "feeds.parsing_error_count",
@@ -205,6 +219,33 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await edge("writes", id, ids.get("entries.changed_at")!, ENTRY);
         await edge("writes", id, ids.get("entries")!, ENTRY);
       }
+      // #791 — what MarkAllAsReadBeforeDate DOES, as the run-7 graph records it: the
+      // WHERE of its UPDATE is a pair of `reads` on the table it writes, and the
+      // text the symbol was embedded from holds its parameters and its SQL.
+      const beforeDate = ids.get("MarkAllAsReadBeforeDate")!;
+      await edge("reads", beforeDate, ids.get("entries.published_at")!, ENTRY);
+      await edge("reads", beforeDate, ids.get("entries.user_id")!, ENTRY);
+      await db.codeSymbolEmbedding.create({
+        data: {
+          projectId: PROJ,
+          codeGraphId: GRAPH,
+          symbolId: beforeDate,
+          contentHash: "MarkAllAsReadBeforeDate",
+          text: [
+            "function MarkAllAsReadBeforeDate in internal/storage/entry.go",
+            "func (s *Storage) MarkAllAsReadBeforeDate(userID int64, before time.Time) error {",
+            "\tquery := `",
+            "\t\tUPDATE",
+            "\t\t\tentries",
+            "\t\tSET",
+            "\t\t\tstatus=$1,",
+            "\t\t\tchanged_at=now()",
+            "\t\tWHERE",
+            "\t\t\tuser_id=$2 AND status=$3 AND published_at < $4",
+            "\t`",
+          ].join("\n"),
+        },
+      });
       const readTime = await fn(ENTRY, "GetReadTime", 300);
       await edge("reads", readTime, ids.get("entries.reading_time")!, ENTRY);
       await edge("reads", readTime, ids.get("entries")!, ENTRY);
@@ -320,75 +361,91 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(byName.get(`${GREADER}::markAllAsReadHandler`)?.relation).toBe("caller");
     });
 
-    it("#4478 older-than: proposes no new column, because MarkAllAsReadBeforeDate already does it", async () => {
-      // Run 6's proposal, returned on every run: the check must be structural, not a
-      // matter of how the model happened to answer.
-      const proposer = vi.fn(async () => [
-        {
-          objectKind: "column" as const,
-          tableName: "users",
-          columnName: "mark_read_older_than_days",
-          columnType: "INTEGER",
-          changeKind: "add-column" as const,
-          suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_older_than_days INTEGER;",
-          source: "sqlglot" as const,
-          reconciliation: null,
-          confidence: 0.5,
-        },
-      ]);
-      const seeds = [
-        {
-          codeSymbolId: ids.get("markAllAsRead")!,
-          filePath: UI_MARK,
-          qualifiedName: `${UI_MARK}::markAllAsRead`,
-          startLine: 13,
-          endLine: 30,
-          confidence: 1,
-        },
+    const usersColumn = (columnName: string, columnType: string) => ({
+      objectKind: "column" as const,
+      tableName: "users",
+      columnName,
+      columnType,
+      changeKind: "add-column" as const,
+      suggestedDdl: `ALTER TABLE users ADD COLUMN ${columnName} ${columnType};`,
+      source: "sqlglot" as const,
+      reconciliation: null,
+      confidence: 0.5,
+    });
+    const uiSeed = () => [
+      {
+        codeSymbolId: ids.get("markAllAsRead")!,
+        filePath: UI_MARK,
+        qualifiedName: `${UI_MARK}::markAllAsRead`,
+        startLine: 13,
+        endLine: 30,
+        confidence: 1,
+      },
+    ];
+
+    it("#4478 verbatim: no core users column across three runs, whatever the proposer names it", async () => {
+      // What the proposer returned in run 7 (UI run, re-run, fresh POST) and, last,
+      // the name from runs 3, 4 and 6. #1045 only caught a name that restated the
+      // writer; none of these do.
+      const answers = [
+        [usersColumn("mark_read_time_options", "TEXT")],
+        [usersColumn("mark_read_delay", "INTEGER")],
+        [
+          usersColumn("mark_read_times", "TEXT"),
+          usersColumn("mark_read_older_than_days", "INTEGER"),
+        ],
       ];
-      for (let i = 0; i < 3; i++) {
+      const proposer = vi.fn(async () => answers[proposer.mock.calls.length - 1]!);
+      for (let i = 0; i < answers.length; i++) {
         const { symbols, tables } = await run(REQ_4478, {
-          mapRequirement: async () => seeds,
+          mapRequirement: async () => uiSeed(),
           additiveColumnProposer: proposer,
         });
         expect(names(symbols)).toContain(`${ENTRY}::MarkAllAsReadBeforeDate`);
         expect(tables.filter((t) => t.changeKind === "add-column")).toEqual([]);
       }
+      // Once per run: the issue is one change, so the proposer is not asked per section.
       expect(proposer).toHaveBeenCalledTimes(3);
     });
 
-    it("#4478 + 'remember the chosen days per user': keeps users.mark_read_days, annotated", async () => {
+    it("#4478 verbatim: the proposer is shown MarkAllAsReadBeforeDate with its parameters and predicate", async () => {
+      const proposer = vi.fn(
+        async (
+          _text: string,
+          _tables: unknown,
+          _context: {
+            writers: Array<{
+              qualifiedName: string;
+              parameters: string[];
+              predicateColumns: string[];
+              sql: string | null;
+            }>;
+          },
+        ) => [],
+      );
+      await run(REQ_4478, {
+        mapRequirement: async () => uiSeed(),
+        additiveColumnProposer: proposer,
+      });
+      const writer = proposer.mock.calls[0]![2].writers.find(
+        (w) => w.qualifiedName === `${ENTRY}::MarkAllAsReadBeforeDate`,
+      )!;
+      expect(writer.parameters).toEqual(["userID int64", "before time.Time"]);
+      expect(writer.predicateColumns).toEqual(["entries.published_at", "entries.user_id"]);
+      expect(writer.sql).toContain("published_at < $4");
+    });
+
+    it("#4478 + 'remember the chosen days per user': still no core users column", async () => {
+      // Before the durable fix this row was KEPT, annotated, at lower confidence. A
+      // remembered preference is optional settings persistence, never a core migration.
       const { tables } = await run(
-        `${REQ_4478} Remember the chosen days per user so the next run uses them.`,
+        `${REQ_4478}\nRemember the chosen days per user so the next run uses them.`,
         {
-          mapRequirement: async () => [
-            {
-              codeSymbolId: ids.get("markAllAsRead")!,
-              filePath: UI_MARK,
-              qualifiedName: `${UI_MARK}::markAllAsRead`,
-              startLine: 13,
-              endLine: 30,
-              confidence: 1,
-            },
-          ],
-          additiveColumnProposer: async () => [
-            {
-              objectKind: "column" as const,
-              tableName: "users",
-              columnName: "mark_read_days",
-              columnType: "INTEGER",
-              changeKind: "add-column" as const,
-              suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_days INTEGER;",
-              source: "sqlglot" as const,
-              reconciliation: null,
-              confidence: 0.5,
-            },
-          ],
+          mapRequirement: async () => uiSeed(),
+          additiveColumnProposer: async () => [usersColumn("mark_read_days", "INTEGER")],
         },
       );
-      const added = tables.filter((t) => t.changeKind === "add-column");
-      expect(added.map((t) => `${t.tableName}.${t.columnName}`)).toEqual(["users.mark_read_days"]);
-      expect(added[0]!.relevanceRationale).toMatch(/MarkAllAsReadBeforeDate/);
+      expect(tables.filter((t) => t.changeKind === "add-column")).toEqual([]);
     });
 
     it("#4511 last refresh: keeps the last_successful_refresh column proposal", async () => {

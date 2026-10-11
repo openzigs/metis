@@ -34,8 +34,10 @@ import { randomUUID } from "node:crypto";
 import { blastRadius, type RadiusSymbol } from "./blast-radius.js";
 import {
   expandDataPathWriters,
+  profileDataPathWriters,
   pruneTangentialSchemaSeeds,
   type DataPathWriter,
+  type DataPathWriterProfile,
 } from "./data-path-writers.js";
 import { assignImpactRoles, tablesGainingColumns } from "./impact-roles.js";
 import { prismaSeedSymbolLoader, resolveChangeSeeds, type ChangeSeeds } from "./change-seeds.js";
@@ -43,9 +45,11 @@ import { shapeAwareChangeExtractor } from "./change-request.js";
 import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
 import { createDefaultCodeSearcher } from "../code-graph/project-code-searcher.js";
 import {
-  dropProposalsRestatingWriters,
-  type DroppedColumnProposal,
-} from "./additive-column-proposer.js";
+  gateColumnProposals,
+  normalizeProposerOutput,
+  type GatedColumnProposal,
+  type ProposerOutput,
+} from "./column-proposal-gate.js";
 import { loadResolvedGoCalls } from "./go-call-resolution.js";
 import {
   crossToSchema,
@@ -142,12 +146,20 @@ export interface ProjectImpactResult {
    */
   coverageGaps: ClauseCoverageGap[];
   /**
-   * #791 — `add-column` proposals removed because an existing writer already
-   * performs the operation and the requirement does not ask to store the value,
-   * each with that writer and the reason. Never part of `affectedTables`. Not
-   * persisted (no schema column). Empty when nothing was dropped.
+   * #791 — `add-column` proposals the deterministic gate kept OUT of the result
+   * because an existing write path already takes the value as a parameter and
+   * nothing asks to store it; each with that writer (file and line) and the
+   * reason. Never part of `affectedTables`. Persisted and shown since #1051.
    */
-  droppedColumnProposals: DroppedColumnProposal[];
+  droppedColumnProposals: GatedColumnProposal[];
+  /**
+   * #791 — "Optional: settings persistence": `add-column` proposals that would
+   * only remember a preferred value for an operation that already exists, or
+   * that the proposer itself classed as a user preference. Never part of
+   * `affectedTables`, so never part of "migration needed". Persisted and shown
+   * since #1051.
+   */
+  optionalColumnProposals: GatedColumnProposal[];
 }
 
 export const DEFAULT_MAX_DEPTH = 2;
@@ -199,8 +211,16 @@ export interface ComputeImpactDeps {
      * #1003 — the project and its live schema, so the proposer can check each
      * column against everything that already exists, not only the crossed rows.
      */
-    context: { projectId: string; liveIndex: LiveSchemaIndex | null },
-  ) => Promise<AffectedTableInput[]>;
+    context: {
+      projectId: string;
+      liveIndex: LiveSchemaIndex | null;
+      /**
+       * #791 — the lineage writers of the data this requirement touches, with
+       * what each one does. Empty when the lineage named none.
+       */
+      writers: DataPathWriterProfile[];
+    },
+  ) => Promise<ProposerOutput>;
   /**
    * #1005 — optional CLAUSE-vs-IMPACT reconciler run LAST, once the surfaced set
    * is final. Given the requirement text plus every table on screen (primary AND
@@ -396,7 +416,8 @@ export async function computeProjectImpact(
   // schema-graph failure must never sink the code-impact result).
   let affectedTables: AffectedTableInput[] = [];
   let affectedTablesSecondary: AffectedTableInput[] = [];
-  let droppedColumnProposals: DroppedColumnProposal[] = [];
+  let droppedColumnProposals: GatedColumnProposal[] = [];
+  let optionalColumnProposals: GatedColumnProposal[] = [];
   let dataPathWriters: DataPathWriter[] = [];
   let dataModel: CodeSymbolDetail[] = [];
   if (deps.includeSchemaImpact !== false && deps.schemaDataSourceFor) {
@@ -464,31 +485,10 @@ export async function computeProjectImpact(
       }
     }
 
-    // #1001 — ADDITIVE-COLUMN proposals. The #923 regex fast path only fires for a
-    // developer imperative ("add a status flag to account"); a business analyst
-    // writes obligations ("a cancelled order must record who cancelled it and
-    // when") and got only `-- Verify column …` noise. The proposer asks the model
-    // which NEW columns the requirement implies, grounded in the tables ALREADY in
-    // this result — so it can only ever APPEND `add-column` rows to tables the
-    // deterministic crossing surfaced. Runs after the #936 filter so nothing is
-    // proposed on a table judged tangential. Best-effort: the proposer never
-    // throws (its own contract), but guard anyway. The proposals are appended
-    // only after the #791 data-path writers are known (below).
-    let proposedColumns: AffectedTableInput[] = [];
-    if (deps.additiveColumnProposer && affectedTables.length > 0) {
-      try {
-        proposedColumns = await deps.additiveColumnProposer(
-          `${change.title}\n${change.body}`,
-          affectedTables,
-          { projectId, liveIndex: deps.liveIndexFor?.(projectId) ?? null },
-        );
-      } catch (err) {
-        log.warn("additive column proposer failed; keeping crossing output", {
-          projectId,
-          error: String(err),
-        });
-      }
-    }
+    // #1001 — the tables the additive-column proposer may propose on: the primary
+    // set as it stands after the #936 filter, BEFORE the #1029 recovery judge (which
+    // only runs when this is empty), so nothing is proposed on a recovered table.
+    const proposeOn = affectedTables;
 
     // #1029 — column-informed RECOVERY judge, GATED to the total-miss case: it runs
     // ONLY when the crossing + #936 filter surfaced NO primary table, which is exactly
@@ -540,34 +540,86 @@ export async function computeProjectImpact(
       });
     }
 
-    // #791 — a proposed column that only restates what an existing writer already
-    // does ("mark all as read older than X days" → `users.mark_read_older_than_days`
-    // while `MarkAllAsReadBeforeDate` exists) is dropped onto the result's
-    // `droppedColumnProposals`, unless the requirement asks to persist the value
-    // (then it is kept at lower confidence with the reason). Checked here, against
-    // the writers the data names, so it holds whatever the model answered.
-    if (proposedColumns.length > 0) {
-      const { kept, dropped } = dropProposalsRestatingWriters(
-        `${change.title}\n${change.body}`,
-        proposedColumns,
-        affectedSymbols.filter((s) => s.relation === "data-writer").map((s) => s.qualifiedName),
-      );
-      droppedColumnProposals = dropped;
-      for (const d of dropped) {
-        log.info("dropped a proposed column an existing writer already covers", {
+    // #1001 — ADDITIVE-COLUMN proposals. The #923 regex fast path only fires for a
+    // developer imperative ("add a status flag to account"); a business analyst
+    // writes obligations ("a cancelled order must record who cancelled it and
+    // when") and got only `-- Verify column …` noise. The proposer asks the model
+    // which NEW columns the requirement implies, grounded in the tables ALREADY in
+    // this result — so it can only ever APPEND `add-column` rows to tables the
+    // deterministic crossing surfaced. Runs after the #936 filter so nothing is
+    // proposed on a table judged tangential.
+    //
+    // #791 — it runs ONCE per request (an issue is one change since #1036), AFTER
+    // the lineage writers are known, and is handed them with what each one does
+    // (parameters, written tables, predicate columns, SQL): the model sees the
+    // existing write paths before it proposes new state. Best-effort throughout —
+    // a profiling fault means the proposer sees no writers, and the gate below
+    // then has none to cover anything.
+    if (deps.additiveColumnProposer && proposeOn.length > 0) {
+      let writerProfiles: DataPathWriterProfile[] = [];
+      try {
+        writerProfiles = await profileDataPathWriters(dataPathWriters, schemaDataSource);
+      } catch (err) {
+        log.warn("data-path writer profiling failed; proposing without write paths", {
           projectId,
-          column: `${d.row.tableName}.${d.row.columnName}`,
-          writer: d.writer,
+          error: String(err),
         });
       }
-      // Same ordering the crossing itself emits (table, then column), so the
-      // proposals interleave with their table's existing rows.
-      if (kept.length > 0) {
-        affectedTables = [...affectedTables, ...kept].sort(
-          (a, b) =>
-            a.tableName.localeCompare(b.tableName) ||
-            (a.columnName ?? "").localeCompare(b.columnName ?? ""),
+      let proposed: ReturnType<typeof normalizeProposerOutput> = {
+        proposals: [],
+        coveringWriterIds: [],
+      };
+      try {
+        proposed = normalizeProposerOutput(
+          await deps.additiveColumnProposer(`${change.title}\n${change.body}`, proposeOn, {
+            projectId,
+            liveIndex: deps.liveIndexFor?.(projectId) ?? null,
+            writers: writerProfiles,
+          }),
         );
+      } catch (err) {
+        log.warn("additive column proposer failed; keeping crossing output", {
+          projectId,
+          error: String(err),
+        });
+      }
+
+      // #791 — the deterministic gate. Whatever the model answered, a column that
+      // would only hold an INPUT of an operation an existing write path already
+      // performs is never a core migration: it is either "Optional: settings
+      // persistence" or not proposed, each with the covering writer and the
+      // reason (`column-proposal-gate.ts`). Neither list touches `affectedTables`.
+      if (proposed.proposals.length > 0) {
+        const gated = gateColumnProposals({
+          requirementText: `${change.title}\n${change.body}`,
+          proposals: proposed.proposals,
+          coveringWriterIds: proposed.coveringWriterIds,
+          writers: writerProfiles,
+        });
+        droppedColumnProposals = gated.rejected;
+        optionalColumnProposals = gated.optional;
+        for (const [outcome, list] of [
+          ["not proposed", gated.rejected],
+          ["optional", gated.optional],
+        ] as const) {
+          for (const g of list) {
+            log.info("gated a proposed column", {
+              projectId,
+              outcome,
+              column: `${g.row.tableName}.${g.row.columnName}`,
+              writer: g.writer?.qualifiedName ?? null,
+            });
+          }
+        }
+        // Same ordering the crossing itself emits (table, then column), so the
+        // proposals interleave with their table's existing rows.
+        if (gated.core.length > 0) {
+          affectedTables = [...affectedTables, ...gated.core].sort(
+            (a, b) =>
+              a.tableName.localeCompare(b.tableName) ||
+              (a.columnName ?? "").localeCompare(b.columnName ?? ""),
+          );
+        }
       }
     }
 
@@ -641,6 +693,7 @@ export async function computeProjectImpact(
     affectedTablesSecondary,
     coverageGaps,
     droppedColumnProposals,
+    optionalColumnProposals,
   };
 }
 

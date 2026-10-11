@@ -387,3 +387,161 @@ export async function pruneTangentialSchemaSeeds<T extends DataPathAffectedSymbo
     ? symbols
     : symbols.filter((s) => !(isSeed(s) && s.codeSymbolId && drop.has(s.codeSymbolId)));
 }
+
+// ── #791 — what each writer DOES: its SQL, its parameters, the columns it filters on ──
+
+/**
+ * A lineage writer described well enough to decide what it already covers. The
+ * #1045 check compared a proposed column NAME with the writer NAME, and regressed
+ * 3 runs in 3 as soon as the model named its column `mark_read_delay` instead of
+ * `mark_read_older_than_days`. What a writer covers is what it does: it writes
+ * these tables, it filters on these columns, it takes these arguments.
+ */
+export interface DataPathWriterProfile extends DataPathWriter {
+  /** Every table it UPDATEs or INSERTs into, sorted. */
+  writeTables: string[];
+  /**
+   * The columns it READS on a table it also writes — the WHERE of an UPDATE or a
+   * DELETE (`published_at` in `UPDATE entries … WHERE published_at < $4`). The
+   * lineage records them as plain `reads`; a read of the written table is the
+   * predicate. `table.column`, sorted.
+   */
+  predicateColumns: string[];
+  /** The columns it reads on tables it does not write. `table.column`, sorted. */
+  readColumns: string[];
+  /** The declaration line, when the symbol's text is stored; else null. */
+  signature: string | null;
+  /** The declared parameters, as written (`before time.Time`). Empty when unknown. */
+  parameters: string[];
+  /** The first SQL statement in its body, whitespace-collapsed and capped; else null. */
+  sql: string | null;
+}
+
+/** Longest SQL excerpt kept per writer (it is shown to a model and to a reader). */
+export const MAX_WRITER_SQL_CHARS = 400;
+
+/** `function X in path` — the header line the embedding text opens with. */
+const SYMBOL_TEXT_HEADER =
+  /^(function|method|class|interface|type|struct|module)\s+\S+\s+in\s+\S+$/;
+const SQL_START = /\b(UPDATE\s+\S|INSERT\s+INTO\b|DELETE\s+FROM\b|MERGE\s+INTO\b|SELECT\s)/i;
+
+/** Split `a int, b map[string]int, c func(x, y)` on its top-level commas. */
+function splitTopLevel(list: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of list) {
+    if (ch === "(" || ch === "[" || ch === "{" || ch === "<") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}" || ch === ">") depth--;
+    if (ch === "," && depth === 0) {
+      parts.push(current);
+      current = "";
+    } else current += ch;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+/** The text between `open` at `from` and its matching close; null when unbalanced. */
+function balancedGroup(text: string, from: number): { inner: string; end: number } | null {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") {
+      depth--;
+      if (depth === 0) return { inner: text.slice(from + 1, i), end: i };
+    }
+  }
+  return null;
+}
+
+/**
+ * Read a declaration, its parameters and its first SQL statement out of a
+ * symbol's stored text (`CodeSymbolEmbedding.text`: a header line, the
+ * declaration, the body). Best-effort and language-light: a Go receiver
+ * (`func (s *Storage) Name(…)`) is skipped, a `self` / `this` parameter is
+ * dropped, and anything it cannot read comes back empty rather than guessed.
+ */
+export function parseWriterText(text: string): {
+  signature: string | null;
+  parameters: string[];
+  sql: string | null;
+} {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const start = SYMBOL_TEXT_HEADER.test((lines[0] ?? "").trim()) ? 1 : 0;
+  const declAt = lines.findIndex((l, i) => i >= start && l.trim() !== "");
+  if (declAt === -1) return { signature: null, parameters: [], sql: null };
+  const signature = lines[declAt]!.trim().replace(/\s*[{:]\s*$/, "");
+
+  let from = signature.indexOf("(");
+  // `func (s *Storage) Name(` — the first group is the receiver.
+  if (/^func\s*\(/.test(signature) && from !== -1) {
+    const receiver = balancedGroup(signature, from);
+    from = receiver ? signature.indexOf("(", receiver.end + 1) : -1;
+  }
+  const group = from === -1 ? null : balancedGroup(signature, from);
+  const parameters = group
+    ? splitTopLevel(group.inner).filter((param) => !/^(self|this|cls)\b/.test(param))
+    : [];
+
+  const body = lines.slice(declAt + 1).join("\n");
+  const sqlAt = body.search(SQL_START);
+  let sql: string | null = null;
+  if (sqlAt !== -1) {
+    const rest = body.slice(sqlAt);
+    // A statement in a string literal ends at the closing backtick or quote.
+    const close = rest.search(/[`"']/);
+    sql = (close === -1 ? rest : rest.slice(0, close)).replace(/\s+/g, " ").trim();
+    if (sql.length > MAX_WRITER_SQL_CHARS) sql = `${sql.slice(0, MAX_WRITER_SQL_CHARS - 1)}…`;
+  }
+  return { signature, parameters, sql: sql && sql.length > 0 ? sql : null };
+}
+
+function tableOf(qualifiedColumn: string): string {
+  const dot = qualifiedColumn.lastIndexOf(".");
+  return dot === -1 ? qualifiedColumn : qualifiedColumn.slice(0, dot);
+}
+
+/**
+ * Describe each writer by what it does. One pass over the lineage edges that
+ * start at the writers, plus the stored symbol text when the data source has
+ * it. A writer with no stored text still gets its tables and predicates.
+ */
+export async function profileDataPathWriters(
+  writers: readonly DataPathWriter[],
+  dataSource: DataPathDataSource,
+): Promise<DataPathWriterProfile[]> {
+  if (writers.length === 0) return [];
+  const ids = writers.map((w) => w.id);
+  const edges = await dataSource.getSchemaEdgesFrom(ids);
+  const targets = await dataSource.getSchemaSymbolsByIds([
+    ...new Set(edges.map((e) => e.toSymbolId)),
+  ]);
+  const targetById = new Map(targets.map((t) => [t.id, t]));
+  const textById = new Map(
+    dataSource.getCodeSymbolTexts
+      ? (await dataSource.getCodeSymbolTexts(ids)).map((t) => [t.id, t.text] as const)
+      : [],
+  );
+
+  return writers.map((w) => {
+    const writeTables = new Set<string>();
+    const reads = new Set<string>();
+    for (const e of edges) {
+      if (e.fromSymbolId !== w.id) continue;
+      const target = targetById.get(e.toSymbolId);
+      if (!target || (target.kind !== "table" && target.kind !== "column")) continue;
+      const table = target.kind === "column" ? tableOf(target.qualifiedName) : target.qualifiedName;
+      if (e.kind === "writes" || e.kind === "persists-to") writeTables.add(table);
+      else if (e.kind === "reads" && target.kind === "column") reads.add(target.qualifiedName);
+    }
+    const parsed = parseWriterText(textById.get(w.id) ?? "");
+    return {
+      ...w,
+      writeTables: [...writeTables].sort(),
+      predicateColumns: [...reads].filter((c) => writeTables.has(tableOf(c))).sort(),
+      readColumns: [...reads].filter((c) => !writeTables.has(tableOf(c))).sort(),
+      ...parsed,
+    };
+  });
+}

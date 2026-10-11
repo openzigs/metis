@@ -2711,6 +2711,49 @@ where a symbol reached only that way contributes its writes, not its reads. Sche
 are `language: "sql"` rows only, so an application `function` is never a DB routine. When
 the #936 filter judges a table tangential, a column seed of that table leaves the direct set.
 
+**#791 — a proposed column an existing write path already covers (durable fix).** The
+additive-column proposer kept answering Miniflux #4478 ("mark all as read older than X")
+with a new `users` column, while `MarkAllAsReadBeforeDate(userID, before time.Time)`
+already does it. #1045 decided coverage by NAME — the column had to restate the writer —
+and regressed 3 runs in 3 once the model called its column `mark_read_delay`. Coverage is
+now decided by what the writer DOES:
+
+```mermaid
+flowchart LR
+  Writers[Lineage writers] --> Profile[Profile: parameters, written tables,<br/>predicate columns, SQL]
+  Profile --> Proposer[Proposer: covering writers first,<br/>then a justification per column]
+  Profile --> Gate{Deterministic gate}
+  Proposer --> Gate
+  Gate -- on a covering writer's table,<br/>or nothing covers it --> Core[Affected tables: ADD COLUMN]
+  Gate -- request asks to configure it,<br/>or proposer says user-preference --> Optional[Optional: settings persistence]
+  Gate -- a writer takes the value<br/>as a parameter --> Rejected[Not proposed, with the writer and why]
+```
+
+- `profileDataPathWriters` (`data-path-writers.ts`) describes each lineage writer: the
+  tables it writes, the columns it READS on a table it also writes (the WHERE of its
+  UPDATE — the lineage records them as plain `reads`, so the predicate is derived), and its
+  parameters and first SQL statement, read from the text the symbol was embedded from
+  (`CodeSymbolEmbedding.text`; `CodeSymbol` stores neither).
+- The proposer runs **once per request**, after the writers are known, and is shown them as
+  numbered `W` lines. Its reply lists the covering writers first, then gives each proposal
+  a `justification` (`operation-needs-new-data` or `user-preference`) and a `coveredBy`.
+  A `W` number outside the list resolves to nothing, as an out-of-range table index does.
+- `gateColumnProposals` (`column-proposal-gate.ts`) decides, and the model's answer is an
+  input to it, not its authority. A writer **covers** a request when the request is bounded
+  by an age or a point in time ("older than X") and the writer filters the table it writes
+  on a time-valued column. A column on a table no covering writer writes is then `core`
+  only if the request asks to record something, `optional` if it asks to configure the
+  value (or the proposer called it a user preference), and otherwise `rejected`. A column
+  on the covering writer's own table (`entries.read_at`) is untouched.
+- `optional` and `rejected` proposals never enter `affectedTables`, so neither is part of
+  the migration a change is reported to need. They are returned on the result as
+  `optionalColumnProposals` / `droppedColumnProposals`, each with the covering writer's
+  file and line and the reason.
+
+The lexical `dropProposalsRestatingWriters` is removed. Known limit: only time/age bounds
+are recognised structurally; another kind of bound is covered only when the proposer
+declares the covering writer itself.
+
 API: `POST /api/impact-analyses` (returns `202` with `{id,status,projectIds}`),
 `GET /api/impact-analyses`, `GET /api/impact-analyses/:id`. Guarded by the
 `analysis.run` and `analysis.read` permissions. UI lives under `/impact-analyses`.

@@ -54,6 +54,7 @@ import {
   buildExistingColumnsLookup,
   impactLlmAdditiveDdlEnabled,
   proposeAdditiveColumns,
+  toProposedColumns,
 } from "../lib/impact-analysis/additive-column-proposer.js";
 import {
   buildImpactSummarizer,
@@ -240,7 +241,7 @@ function additiveColumnProposerDep(
   // #1003 — a proposal is checked against every column that already exists (live
   // schema + code graph), not only the crossed ones. Memoized per project.
   const loadCatalog = buildPrismaTableCatalogLoader(prisma);
-  return async (requirementText, tables, { projectId, liveIndex }) => {
+  return async (requirementText, tables, { projectId, liveIndex, writers }) => {
     const catalog = await loadCatalog(projectId).catch((err: unknown) => {
       log.warn("table catalog unavailable; checking proposals against the live schema only", {
         projectId,
@@ -251,8 +252,14 @@ function additiveColumnProposerDep(
     const result = await proposeAdditiveColumns(requirementText, tables, liveProvider, {
       enabled: true,
       existingColumns: buildExistingColumnsLookup({ liveIndex, catalog }),
+      // #791 — the existing write paths, so the model sees what already performs
+      // the request before it proposes new state.
+      writers,
     });
-    return result.rows;
+    // #791 — the rows WITH the model's justification and covering writers: the
+    // engine's deterministic gate reads both, and trusts neither to make a column
+    // a core migration.
+    return { proposals: toProposedColumns(result), coveringWriterIds: result.coveringWriterIds };
   };
 }
 

@@ -2034,6 +2034,26 @@ unavailable or returns something ungrounded, the report renders exactly as it
 would without AI — the proposals are **added** to the deterministic results and
 never replace them, so nothing is lost either way.
 
+**When existing code already does it.** Some requests ask for something the code
+can already do: *"mark all as read older than X"* is already a function that
+takes the cut-off date as an argument. METIS checks each proposed column against
+the functions that write the affected data — what they take as parameters and
+what they filter on — before showing it:
+
+- A column the change genuinely needs (for example `entries.read_at`, set by the
+  code that marks an entry read) is shown under **Proposed column changes**, as
+  before.
+- A column that would only **remember a preferred value** for an operation that
+  already exists — because the request says the value should be configurable, or
+  the model itself classed it as a user preference — is an **optional settings
+  column**. It is kept apart from the proposed changes and is **not** part of the
+  migration the change needs.
+- A column whose value an existing function already takes as an argument, and
+  that nothing asks to store, is **not proposed**.
+
+This check is made by rules over the code graph, not by the AI model, so it gives
+the same answer whatever the model called the column.
+
 **Affected procedures & functions.** When the impacted code invokes a stored
 **procedure** or **function**, those routines are listed in their own *Affected
 procedures & functions* sub-section beneath the tables. METIS introspects routine

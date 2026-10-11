@@ -15,6 +15,10 @@ import type { AffectedTableInput } from "../lib/impact-analysis/schema-impact.js
 import type { ImpactItemFacts } from "../lib/impact-analysis/impact-summarizer.js";
 import { runInImpactProjectScope } from "../lib/impact-analysis/impact-llm-scope.js";
 import { LiveSchemaIndex } from "../lib/impact-analysis/live-schema-ingest.js";
+import {
+  normalizeProposerOutput,
+  type ProposerOutput,
+} from "../lib/impact-analysis/column-proposal-gate.js";
 
 // ── Fakes wired before the module graph loads ───────────────────────────────
 
@@ -107,6 +111,11 @@ function universalReply(): string {
 }
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
+
+/** The column names in the wired proposer's (structured, since #791) answer. */
+function proposedColumnNames(output: ProposerOutput): (string | null)[] {
+  return normalizeProposerOutput(output).proposals.map((p) => p.row.columnName);
+}
 
 function tableRow(name: string): AffectedTableInput {
   return {
@@ -337,6 +346,7 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
       await deps.additiveColumnProposer!(requirement, [tableRow("orders")], {
         projectId: "proj-1",
         liveIndex: null,
+        writers: [],
       });
       await deps.clauseCoverageReconciler!(requirement, "proj-1", ["orders"]);
       await deps.impactSummarizer!.summarizeItem(itemFacts());
@@ -384,11 +394,12 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
         {
           projectId: "proj-1",
           liveIndex: null,
+          writers: [],
         },
       ),
     );
 
-    expect(rows.map((r) => r.columnName)).toEqual(["read_at"]);
+    expect(proposedColumnNames(rows)).toEqual(["read_at"]);
   });
 
   it("#1003 — the wired proposer drops a column only the LIVE schema has", async () => {
@@ -428,11 +439,74 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
       deps.additiveColumnProposer!(
         "Mark entries older than N days as read",
         [tableRow("entries")],
-        { projectId: "proj-1", liveIndex },
+        { projectId: "proj-1", liveIndex, writers: [] },
       ),
     );
 
-    expect(rows.map((r) => r.columnName)).toEqual(["read_at"]);
+    expect(proposedColumnNames(rows)).toEqual(["read_at"]);
+  });
+
+  it("#791 — the wired proposer shows the model the write paths and returns its structured answer", async () => {
+    vi.stubEnv("IMPACT_LLM_ADDITIVE_DDL", "1");
+    let prompt = "";
+    providerFactory = () =>
+      liveProvider((messages) => {
+        prompt = messages;
+        return JSON.stringify({
+          coveringWriters: [{ writer: 0, covers: "marks entries read before a date" }],
+          proposals: [
+            {
+              index: 0,
+              column: "mark_read_delay",
+              type: "INTEGER",
+              justification: "user-preference",
+              coveredBy: 0,
+            },
+          ],
+        });
+      });
+    const writer = {
+      id: "sym-before-date",
+      qualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+      filePath: "internal/storage/entry.go",
+      startLine: 523,
+      endLine: 533,
+      confidence: 0.8,
+      columns: ["entries.status"],
+      namesRequirementColumn: false,
+      writeTables: ["entries"],
+      predicateColumns: ["entries.published_at"],
+      readColumns: [],
+      signature: "func (s *Storage) MarkAllAsReadBeforeDate(userID int64, before time.Time) error",
+      parameters: ["userID int64", "before time.Time"],
+      sql: "UPDATE entries SET status=$1 WHERE published_at < $4",
+    };
+
+    const deps = impactRunDeps("user-1", ["proj-1"]);
+    const output = await runInImpactProjectScope("proj-1", () =>
+      deps.additiveColumnProposer!("Mark all as read older than X", [tableRow("users")], {
+        projectId: "proj-1",
+        liveIndex: null,
+        writers: [writer],
+      }),
+    );
+
+    // The model was shown what already exists…
+    expect(prompt).toContain("EXISTING WRITE PATHS:");
+    expect(prompt).toContain("[W0] MarkAllAsReadBeforeDate (internal/storage/entry.go:523)");
+    expect(prompt).toContain("before time.Time");
+    // …and its own account of each proposal reaches the engine's gate, by writer id.
+    expect(normalizeProposerOutput(output)).toEqual({
+      proposals: [
+        {
+          row: expect.objectContaining({ tableName: "users", columnName: "mark_read_delay" }),
+          justification: "user-preference",
+          coveredByWriterId: "sym-before-date",
+          rationale: "",
+        },
+      ],
+      coveringWriterIds: ["sym-before-date"],
+    });
   });
 
   it("#1003 — a catalog failure degrades to proposing against the crossed columns", async () => {
@@ -451,11 +525,12 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
         {
           projectId: "proj-1",
           liveIndex: null,
+          writers: [],
         },
       ),
     );
 
-    expect(rows.map((r) => r.columnName)).toEqual(["read_at"]);
+    expect(proposedColumnNames(rows)).toEqual(["read_at"]);
   });
 
   it("writes nothing and builds no session when every flag is off", async () => {

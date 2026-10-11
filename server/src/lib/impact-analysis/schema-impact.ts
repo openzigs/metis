@@ -130,6 +130,13 @@ export interface SchemaImpactDataSource {
    * a new column has to be added that no call path or lineage edge leads to.
    */
   getDataModelSymbols?(tableNames: string[]): Promise<CodeSymbolDetail[]>;
+  /**
+   * #791 — the stored text of the given code symbols (a header line, the
+   * declaration, the body), for a writer's parameters and SQL. `CodeSymbol`
+   * carries neither; the text a symbol was embedded from does. Symbols with no
+   * stored text are simply absent from the result.
+   */
+  getCodeSymbolTexts?(ids: string[]): Promise<Array<{ id: string; text: string }>>;
 }
 
 /** #791 — a code symbol's location, for a data-path writer the result names. */
@@ -1002,9 +1009,27 @@ export function entityTypeKeysForTable(tableName: string): string[] {
 /** A `SchemaImpactDataSource` scoped to one project, backed by Prisma. */
 export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
   constructor(
-    private readonly prisma: Pick<PrismaClient, "codeSymbol" | "codeEdge">,
+    private readonly prisma: Pick<PrismaClient, "codeSymbol" | "codeEdge"> &
+      Partial<Pick<PrismaClient, "codeSymbolEmbedding">>,
     private readonly projectId: string,
   ) {}
+
+  /**
+   * #791 — the text each symbol was embedded from. `[]` when the client does not
+   * expose the table (a narrowed test double), so a writer profile simply has no
+   * signature or SQL.
+   */
+  async getCodeSymbolTexts(ids: string[]): Promise<Array<{ id: string; text: string }>> {
+    const embeddings = this.prisma.codeSymbolEmbedding;
+    if (ids.length === 0 || !embeddings) return [];
+    const rows = await chunkedIn(ids, (chunk) =>
+      embeddings.findMany({
+        where: { projectId: this.projectId, symbolId: { in: chunk } },
+        select: { symbolId: true, text: true },
+      }),
+    );
+    return rows.map((r) => ({ id: r.symbolId, text: r.text }));
+  }
 
   async getSchemaEdgesFrom(symbolIds: string[]): Promise<SchemaEdgeRow[]> {
     if (symbolIds.length === 0) return [];
