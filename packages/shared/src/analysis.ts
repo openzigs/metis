@@ -2337,8 +2337,39 @@ export interface AnalysisCapability {
    * #1001 still parse.
    */
   codeInvestigationCutShort?: boolean;
+  /**
+   * Issue #1062 — how many "Continue with a larger budget" reruns of the code
+   * agent have finished on this analysis. Absent ⇒ none. Continue is refused once
+   * it reaches {@link MAX_CODE_INVESTIGATION_CONTINUATIONS}.
+   */
+  codeInvestigationContinuations?: number;
+  /**
+   * Issue #1062 — what the latest code pass left unreached when it too ran out
+   * of budget: `unreached` of `total` requirements are `could-not-verify`. Set
+   * only while `codeInvestigationCutShort` is true and the pass reported counts.
+   */
+  codeInvestigationUnreached?: { unreached: number; total: number };
   /** Derived, enumerated degradation reasons. Empty ⇒ fully capable run. */
   reasons: AnalysisCapabilityReason[];
+}
+
+/**
+ * Issue #1062 — how many times one analysis may "Continue with a larger budget".
+ *
+ * Every continuation reruns the code agent at the SAME enlarged budget (the
+ * server's `CONTINUE_BUDGET_MULTIPLIER` × `ANALYSIS_AGENT_TOKEN_BUDGET`), so a
+ * second one spends the same tokens to stop in the same place: in #706 run 7 the
+ * rerun was cut short again and the button simply stayed. One continuation is
+ * therefore the budget ceiling. Raising it means making the multiplier grow per
+ * continuation as well — a higher number alone only repeats the run.
+ */
+export const MAX_CODE_INVESTIGATION_CONTINUATIONS = 1;
+
+/** Issue #1062 — `true` once an analysis has used every continuation it is allowed. */
+export function codeInvestigationContinueLimitReached(
+  capability: Pick<AnalysisCapability, "codeInvestigationContinuations"> | null | undefined,
+): boolean {
+  return (capability?.codeInvestigationContinuations ?? 0) >= MAX_CODE_INVESTIGATION_CONTINUATIONS;
 }
 
 /**

@@ -8,8 +8,32 @@
  * what was NOT analyzed and how to fix it — rather than the pipeline degrading
  * silently. A fully-capable run renders nothing.
  */
-import { isAnalysisDegraded, type AnalysisCapability } from "@metis/shared";
+import {
+  codeInvestigationContinueLimitReached,
+  isAnalysisDegraded,
+  type AnalysisCapability,
+} from "@metis/shared";
 import { CAPABILITY_REASON_COPY } from "@/lib/analysis-capability-copy";
+
+/**
+ * Issue #1062 — why "Continue with a larger budget" is no longer offered. Every
+ * continuation reruns at the same enlarged budget, so another would spend the
+ * same tokens to stop in the same place.
+ */
+export const CONTINUE_LIMIT_REASON =
+  "Continue is not offered again: the code analysis has already been re-run at the largest budget a continuation can use. Ask an administrator to raise ANALYSIS_AGENT_TOKEN_BUDGET and start a new analysis, or analyse fewer requirements per run.";
+
+/**
+ * Issue #1062 — the sentence shown when a "Continue with a larger budget" rerun
+ * ran out of budget as well, with the gap it left when the pass reported one.
+ * `null` when no continuation has run.
+ */
+export function rerunAlsoCutShortText(capability: AnalysisCapability): string | null {
+  if ((capability.codeInvestigationContinuations ?? 0) < 1) return null;
+  const gap = capability.codeInvestigationUnreached;
+  if (!gap) return "The rerun was also cut short.";
+  return `The rerun was also cut short: ${gap.unreached} of ${gap.total} requirements unreached.`;
+}
 
 interface Props {
   capability: AnalysisCapability | null;
@@ -69,13 +93,28 @@ export function AnalysisCapabilityBanner({
           const skipped = isSkippedRepos
             ? ` (${capability.skippedRepos.map((r) => r.label).join(", ")})`
             : "";
+          // Issue #1062 — a Continue rerun that was cut short too says so, and
+          // Continue is not offered past its limit (the reason is shown instead).
+          const isCutShort = reason === "code-investigation-cut-short";
+          const rerunNote = isCutShort ? rerunAlsoCutShortText(capability) : null;
+          const continueLimited = isCutShort && codeInvestigationContinueLimitReached(capability);
           return (
             <li key={reason} data-testid={`capability-reason-${reason}`} className="text-warning">
               <span className="font-medium">
                 {copy.title}
                 {skipped}
               </span>{" "}
-              <span className="text-warning">{copy.action}</span>
+              {continueLimited ? null : <span className="text-warning">{copy.action}</span>}
+              {rerunNote ? (
+                <p className="mt-1.5 font-medium text-warning" data-testid="rerun-also-cut-short">
+                  {rerunNote}
+                </p>
+              ) : null}
+              {continueLimited ? (
+                <p className="mt-1 text-warning" data-testid="continue-limit-reason">
+                  {CONTINUE_LIMIT_REASON}
+                </p>
+              ) : null}
               {/* Issue #741 — offer a one-click resume of the skipped repos. */}
               {isSkippedRepos && onResumeRepos ? (
                 <div className="mt-1.5">
@@ -93,7 +132,7 @@ export function AnalysisCapabilityBanner({
                 </div>
               ) : null}
               {/* Issue #1001 — continue a code pass that ran out of budget. */}
-              {reason === "code-investigation-cut-short" && onContinueInvestigation ? (
+              {isCutShort && !continueLimited && onContinueInvestigation ? (
                 <div className="mt-1.5">
                   <button
                     type="button"
