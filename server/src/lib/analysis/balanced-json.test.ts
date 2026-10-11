@@ -114,7 +114,17 @@ describe("#1002 parseFirstBalancedJsonObject", () => {
     });
   });
 
-  it("does not treat a quote in the prose between objects as a string", () => {
+  it("does not treat a quote in the prose BETWEEN two brace spans as a string", () => {
+    // The scan is already running (it started at `{x}`) and is back at depth 0
+    // when it meets the lone quote. Opening a string there would swallow the
+    // object that follows.
+    expect(parseFirstBalancedJsonObject('{x} it is 5" wide {"a":1}')).toEqual({
+      found: true,
+      value: { a: 1 },
+    });
+  });
+
+  it("does not treat a quote in the prose before the first brace as a string", () => {
     expect(parseFirstBalancedJsonObject('he said "hi {"a":1}')).toEqual({
       found: true,
       value: { a: 1 },
