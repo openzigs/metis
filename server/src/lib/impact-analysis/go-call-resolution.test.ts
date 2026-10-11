@@ -180,5 +180,61 @@ describe("loadResolvedGoCalls", () => {
       kind: "calls",
       toSymbolId: null,
     });
+    // Impact analysis passes no names and still reads every unresolved call.
+    expect(edges.mock.calls[0][0].where).not.toHaveProperty("toQualifiedName");
+  });
+
+  describe("calleeNames (#1034)", () => {
+    const symbols = [
+      {
+        id: "before-date",
+        qualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+        filePath: "internal/storage/entry.go",
+      },
+    ];
+
+    it("narrows the unresolved-calls read to those names, and nothing else", async () => {
+      const edges = vi
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            fromSymbolId: "gr",
+            filePath: "internal/googlereader/handler.go",
+            toQualifiedName: "MarkAllAsReadBeforeDate",
+          },
+        ])
+        .mockResolvedValueOnce([
+          { filePath: "internal/googlereader/handler.go", toQualifiedName: STORAGE },
+        ]);
+      const prisma = {
+        codeSymbol: { findMany: vi.fn().mockResolvedValue(symbols) },
+        codeEdge: { findMany: edges },
+      };
+      expect(
+        await loadResolvedGoCalls(prisma as never, "p", {
+          calleeNames: ["MarkAllAsReadBeforeDate"],
+        }),
+      ).toEqual([{ fromSymbolId: "gr", toSymbolId: "before-date" }]);
+      expect(edges.mock.calls[0][0].where).toEqual({
+        projectId: "p",
+        kind: "calls",
+        toSymbolId: null,
+        filePath: { endsWith: ".go" },
+        toQualifiedName: { in: ["MarkAllAsReadBeforeDate"] },
+      });
+      // Candidates and imports stay whole: ambiguity is judged over them.
+      expect(prisma.codeSymbol.findMany.mock.calls[0][0].where).not.toHaveProperty("name");
+      expect(edges.mock.calls[1][0].where).not.toHaveProperty("toQualifiedName");
+    });
+
+    it("reads nothing for an empty list", async () => {
+      const prisma = {
+        codeSymbol: { findMany: vi.fn().mockResolvedValue(symbols) },
+        codeEdge: { findMany: vi.fn() },
+      };
+      expect(await loadResolvedGoCalls(prisma as never, "p", { calleeNames: [] })).toEqual([]);
+      expect(prisma.codeSymbol.findMany).not.toHaveBeenCalled();
+      expect(prisma.codeEdge.findMany).not.toHaveBeenCalled();
+    });
   });
 });

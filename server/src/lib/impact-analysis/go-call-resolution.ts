@@ -124,7 +124,18 @@ type GoResolutionPrisma = Pick<PrismaClient, "codeSymbol" | "codeEdge">;
 export async function loadResolvedGoCalls(
   prisma: GoResolutionPrisma,
   projectId: string,
+  opts?: {
+    /**
+     * Read only the unresolved calls to these callee names (#1034). The Go parser
+     * stores the bare field name, so this is an exact match on `toQualifiedName`.
+     * Left out, every unresolved call is read, as impact analysis does. The
+     * DECISION is the same either way: ambiguity is judged over the candidates
+     * of a name, which are still all loaded, never over the calls.
+     */
+    calleeNames?: readonly string[];
+  },
 ): Promise<ResolvedGoCall[]> {
+  if (opts?.calleeNames?.length === 0) return [];
   const symbols = await prisma.codeSymbol.findMany({
     where: { projectId, language: "go", kind: { in: ["function", "method"] } },
     select: { id: true, qualifiedName: true, filePath: true },
@@ -141,7 +152,13 @@ export async function loadResolvedGoCalls(
 
   const [callRows, importRows] = await Promise.all([
     prisma.codeEdge.findMany({
-      where: { projectId, kind: "calls", toSymbolId: null, filePath: { endsWith: ".go" } },
+      where: {
+        projectId,
+        kind: "calls",
+        toSymbolId: null,
+        filePath: { endsWith: ".go" },
+        ...(opts?.calleeNames ? { toQualifiedName: { in: [...opts.calleeNames] } } : {}),
+      },
       select: { fromSymbolId: true, filePath: true, toQualifiedName: true },
     }),
     prisma.codeEdge.findMany({

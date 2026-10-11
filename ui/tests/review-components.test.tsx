@@ -163,6 +163,84 @@ describe("ReviewItemCard", () => {
     expect(historyListMock).toHaveBeenCalledWith("req-1", { pageSize: 100 });
   });
 
+  // Issue #998 — the pinned body was printed as raw `whitespace-pre-wrap` text.
+  it("renders the pinned body as sanitised Markdown, without the metis: markers", async () => {
+    const body = [
+      'Users **authenticate** with a password. <img src=x onerror="alert(1)">',
+      "",
+      "![beacon](https://tracker.example/pixel.png)",
+      "",
+      "<!-- metis:clarifications:start -->",
+      "## Clarifications",
+      "",
+      "- **Q:** SSO?",
+      "",
+      "> **Check the criteria.** <!-- metis:criteria-predate-answers -->",
+      "<!-- metis:clarifications:end -->",
+    ].join("\n");
+    historyListMock.mockResolvedValue({
+      versions: [
+        {
+          version: 3,
+          changedFields: { priority: { from: "low", to: "high" } },
+          actorId: "u1",
+          reason: null,
+          createdAt: "2026-05-01T00:00:00.000Z",
+          snapshot: { title: "v3 title", body },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 100,
+      currentVersion: 3,
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ReviewItemCard item={makeRequirementItem()} />
+      </Wrapper>,
+    );
+    const rendered = await screen.findByTestId("requirement-body");
+    expect(screen.getByText("authenticate").tagName).toBe("STRONG");
+    // Under the card's h3 title, beside its h4 "Changes introduced by" heading.
+    expect(screen.getByRole("heading", { name: "Clarifications", level: 4 })).toBeInTheDocument();
+    expect(rendered.querySelector("h1, h2, h3")).toBeNull();
+    expect(rendered.querySelector("blockquote")).not.toBeNull();
+    const text = rendered.textContent ?? "";
+    expect(text).not.toContain("metis:");
+    expect(text).not.toMatch(/\*\*|##|<!--|</);
+    expect(text).not.toContain("onerror");
+    expect(rendered.querySelector("img")).toBeNull();
+    expect(screen.getByRole("link", { name: "beacon" })).toBeInTheDocument();
+  });
+
+  it("renders no body block for a pinned snapshot without one", async () => {
+    historyListMock.mockResolvedValue({
+      versions: [
+        {
+          version: 3,
+          changedFields: {},
+          actorId: "u1",
+          reason: null,
+          createdAt: "2026-05-01T00:00:00.000Z",
+          snapshot: { title: "v3 title", body: "" },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 100,
+      currentVersion: 3,
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ReviewItemCard item={makeRequirementItem()} />
+      </Wrapper>,
+    );
+    expect(await screen.findByText("v3 title")).toBeInTheDocument();
+    expect(screen.queryByTestId("requirement-body")).toBeNull();
+  });
+
   it("falls back gracefully when the pinned version has no history entry", async () => {
     historyListMock.mockResolvedValue({
       versions: [],

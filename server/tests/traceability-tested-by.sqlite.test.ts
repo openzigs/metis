@@ -288,7 +288,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           kind: "calls",
           fromSymbolId: test,
           toSymbolId: null,
-          toQualifiedName: "client.CreateBookmark",
+          toQualifiedName: "CreateBookmark",
           filePath: LT_TEST,
           line: 261,
         },
@@ -319,7 +319,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.body.data.testedBy[0]).toMatchObject({
         filePath: LT_TEST,
         name: "TestMissingCredentials",
-        relation: "exercises",
+        // Bound by name after ingest: reported apart from an ingest-resolved call.
+        relation: "inferred-call",
         subject: { filePath: LT, symbol: `${LT}::CreateBookmark` },
       });
     });

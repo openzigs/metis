@@ -168,9 +168,32 @@ describe("GapReport", () => {
     const card = await screen.findByTestId("gap-report-card-req-1");
     const body = within(card).getByTestId("requirement-body");
     expect(within(body).getByText("authenticate").tagName).toBe("STRONG");
-    expect(within(body).getByRole("heading", { name: "Clarifications" })).toBeInTheDocument();
+    // Under the card's h5 title: an h2 there would break the page's heading order.
+    expect(
+      within(body).getByRole("heading", { name: "Clarifications", level: 6 }),
+    ).toBeInTheDocument();
+    expect(within(card).getByRole("heading", { name: REPORT.requirements[0].title })).toBe(
+      card.querySelector("h5"),
+    );
+    expect(card.querySelector("h1, h2, h3, h4")).toBeNull();
     expect(body.textContent).not.toContain("metis:");
     expect(body.textContent).not.toMatch(/\*\*|##/);
+  });
+
+  it("does not load a remote image from a requirement body", async () => {
+    getGapReport.mockResolvedValue({
+      ...REPORT,
+      requirements: [
+        { ...REPORT.requirements[0], body: "Flow: ![chart](https://tracker.example/p.png)" },
+      ],
+    });
+    renderPanel();
+    const card = await screen.findByTestId("gap-report-card-req-1");
+    expect(card.querySelector("img")).toBeNull();
+    expect(within(card).getByRole("link", { name: "chart" })).toHaveAttribute(
+      "href",
+      "https://tracker.example/p.png",
+    );
   });
 
   it("renders an explicit no-evidence marker and 'unestimated' effort", async () => {

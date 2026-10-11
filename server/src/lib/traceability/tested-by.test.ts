@@ -161,7 +161,8 @@ function fakePrisma(f: Fixture) {
                 e.projectId === where.projectId &&
                 e.kind === where.kind &&
                 (where.toSymbolId !== null || e.toSymbolId === null) &&
-                (e.filePath ?? "").endsWith(suffix),
+                (e.filePath ?? "").endsWith(suffix) &&
+                inList(where.toQualifiedName, e.toQualifiedName),
             )
             .map((e) => ({
               fromSymbolId: e.fromSymbolId,
@@ -515,13 +516,16 @@ describe("resolveTestedBy — Go calls the ingest left unresolved (#1034)", () =
     sym("h", API, "updateEntries", { startLine: 10 }),
     sym("t-api", API_TEST, "TestUpdateEntriesHandler", { startLine: 20 }),
   ];
-  /** `h.store.SetEntriesStatus(…)` from the handler test: unresolved at ingest. */
+  /**
+   * `h.store.SetEntriesStatus(…)` from the handler test: unresolved at ingest,
+   * and stored as the parser writes it, by the bare field name.
+   */
   const methodCall = {
     projectId: P,
     kind: "calls",
     fromSymbolId: "t-api",
     toSymbolId: null,
-    toQualifiedName: "h.store.SetEntriesStatus",
+    toQualifiedName: "SetEntriesStatus",
     filePath: API_TEST,
   };
   const importsStorage = {
@@ -543,7 +547,7 @@ describe("resolveTestedBy — Go calls the ingest left unresolved (#1034)", () =
       edges: [methodCall, importsStorage],
     });
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(names(out)).toEqual([["TestUpdateEntriesHandler", "exercises"]]);
+    expect(names(out)).toEqual([["TestUpdateEntriesHandler", "inferred-call"]]);
     expect(out[0]).toMatchObject({
       codeSymbolId: "t-api",
       filePath: API_TEST,
@@ -570,13 +574,13 @@ describe("resolveTestedBy — Go calls the ingest left unresolved (#1034)", () =
           kind: "calls",
           fromSymbolId: "lt-test",
           toSymbolId: null,
-          toQualifiedName: "client.CreateBookmark",
+          toQualifiedName: "CreateBookmark",
           filePath: LT_TEST,
         },
       ],
     });
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(names(out)).toEqual([["TestMissingCredentials", "exercises"]]);
+    expect(names(out)).toEqual([["TestMissingCredentials", "inferred-call"]]);
   });
 
   it("follows the resolved call into a ranged file target", async () => {
@@ -587,7 +591,7 @@ describe("resolveTestedBy — Go calls the ingest left unresolved (#1034)", () =
       edges: [methodCall, importsStorage],
     });
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
-    expect(names(out)).toEqual([["TestUpdateEntriesHandler", "exercises"]]);
+    expect(names(out)).toEqual([["TestUpdateEntriesHandler", "inferred-call"]]);
   });
 
   it("does not follow it into a rangeless whole-file target (#955, #1004)", async () => {
@@ -611,7 +615,53 @@ describe("resolveTestedBy — Go calls the ingest left unresolved (#1034)", () =
     });
     const out = await resolveTestedBy(P, ["r1", "r2"], undefined, batch.deps);
     expect(out.get("r1")).toEqual([]);
-    expect(names(out.get("r2")!)).toEqual([["TestUpdateEntriesHandler", "exercises"]]);
+    expect(names(out.get("r2")!)).toEqual([["TestUpdateEntriesHandler", "inferred-call"]]);
+  });
+
+  it("reads no Go call graph for a batch whose only Go target is a rangeless file row", async () => {
+    // The load-time copy of the rangeless guard: without it the answer is the
+    // same (the resolve-time guard drops the links) and only the cost shows.
+    const { prisma, deps: d } = deps({
+      requirements: [req("r1", "Mark entries as read")],
+      codeMappings: [fileMap("r1", STORE)],
+      symbols: storeSymbols,
+      edges: [methodCall, importsStorage],
+    });
+    expect((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")).toEqual([]);
+    // Not vacuous: the ingest-edge read did run for the file's symbols.
+    expect(prisma.codeEdge.findMany.mock.calls.length).toBeGreaterThan(0);
+    for (const [arg] of prisma.codeEdge.findMany.mock.calls) {
+      expect(arg.where.toSymbolId).not.toBeNull();
+      expect(arg.where.kind).not.toBe("imports");
+    }
+    // Nor the resolver's read of the project's Go callables.
+    for (const [arg] of prisma.codeSymbol.findMany.mock.calls) {
+      expect(arg.where.language).toBeUndefined();
+    }
+  });
+
+  it("reads only the unresolved calls to the targets' own names", async () => {
+    const noise = Array.from({ length: 50 }, (_, i) => ({
+      ...methodCall,
+      toQualifiedName: `Unrelated${i}`,
+    }));
+    const { prisma, deps: d } = deps({
+      requirements: [req("r1", "Mark entries as read")],
+      codeMappings: [fileMap("r1", STORE, "s-set")],
+      symbols: storeSymbols,
+      edges: [methodCall, importsStorage, ...noise],
+    });
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    expect(names(out)).toEqual([["TestUpdateEntriesHandler", "inferred-call"]]);
+    const unresolvedReads = prisma.codeEdge.findMany.mock.calls.filter(
+      ([arg]) => arg.where.toSymbolId === null,
+    );
+    expect(unresolvedReads).toHaveLength(1);
+    expect(unresolvedReads[0][0].where.toQualifiedName).toEqual({ in: ["SetEntriesStatus"] });
+    const rows = await prisma.codeEdge.findMany.mock.results.find(
+      (_, i) => prisma.codeEdge.findMany.mock.calls[i][0].where.toSymbolId === null,
+    )!.value;
+    expect(rows).toHaveLength(1);
   });
 
   it("does not guess when the callee is ambiguous or out of reach", async () => {
@@ -641,31 +691,220 @@ describe("resolveTestedBy — Go calls the ingest left unresolved (#1034)", () =
     expect((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")).toEqual([]);
   });
 
-  it("counts a resolved call toward the hub guard like any other edge", async () => {
+  describe("an inferred call is labelled apart and never promoted", () => {
+    const STORE_TEST = "internal/storage/entry_test.go";
     const FEVER_TEST = "internal/fever/handler_test.go";
-    const fixture = {
+    const feverCall = { ...methodCall, fromSymbolId: "t-fever", filePath: FEVER_TEST };
+    const feverImport = { ...importsStorage, filePath: "internal/fever/handler.go" };
+    const symbols = [...storeSymbols, sym("t-fever", FEVER_TEST, "TestFeverMarkRead")];
+    /** With the storage package's own test, which is also a `naming` match. */
+    const withOwnTest = [...symbols, sym("t-own", STORE_TEST, "TestSetEntriesStatus")];
+    /** What the ingest resolved itself: the own-package test and ONE foreign test. */
+    const ingestEdges = [
+      { projectId: P, kind: "calls", fromSymbolId: "t-own", toSymbolId: "s-set" },
+      { projectId: P, kind: "calls", fromSymbolId: "t-api", toSymbolId: "s-set" },
+    ];
+    const base = {
       requirements: [req("r1", "Password length policy for accounts")],
       codeMappings: [fileMap("r1", STORE, "s-set")],
-      symbols: [...storeSymbols, sym("t-fever", FEVER_TEST, "TestFeverMarkRead")],
-      edges: [
-        methodCall,
-        importsStorage,
-        { ...methodCall, fromSymbolId: "t-fever", filePath: FEVER_TEST },
-        { ...importsStorage, filePath: "internal/fever/handler.go" },
-      ],
+      symbols,
     };
-    // Two foreign test directories make the target a hub; neither test nor the
-    // callee shares the title's words, so neither is kept.
-    const hub = deps(fixture);
-    expect((await resolveTestedBy(P, ["r1"], undefined, hub.deps)).get("r1")).toEqual([]);
-    // Not vacuous: with the hub guard out of reach, both are listed.
-    const noHub = deps(fixture, { hubMinForeignTestDirs: 99 });
-    expect(
-      names((await resolveTestedBy(P, ["r1"], undefined, noHub.deps)).get("r1")!).sort(),
-    ).toEqual([
-      ["TestFeverMarkRead", "exercises"],
-      ["TestUpdateEntriesHandler", "exercises"],
-    ]);
+
+    it("scores below every ingest-derived relation and sorts last", async () => {
+      const { deps: d } = deps({
+        ...base,
+        symbols: withOwnTest,
+        edges: [ingestEdges[0], feverCall, feverImport],
+      });
+      const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+      expect(names(out)).toEqual([
+        ["TestSetEntriesStatus", "exercises"],
+        ["TestFeverMarkRead", "inferred-call"],
+      ]);
+      // 0.6 is `naming`'s base: an inferred call can never outscore one.
+      expect(out[1].score).toBeLessThan(0.6);
+      expect(out[1].score).toBeGreaterThan(0);
+    });
+
+    it("keeps the ingest's own relation when the same test is also bound by name", async () => {
+      const { deps: d } = deps({
+        ...base,
+        edges: [ingestEdges[1], methodCall, importsStorage],
+      });
+      const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+      expect(names(out)).toEqual([["TestUpdateEntriesHandler", "exercises"]]);
+    });
+
+    it("does not count toward the hub guard, so it cannot hide a listed test (#860)", async () => {
+      // The review's probe. Before: own-package + one foreign test, both `exercises`.
+      const own = { ...base, symbols: withOwnTest };
+      const before = deps({ ...own, edges: ingestEdges });
+      const listed = [
+        ["TestUpdateEntriesHandler", "exercises"],
+        ["TestSetEntriesStatus", "exercises"],
+      ];
+      expect(names((await resolveTestedBy(P, ["r1"], undefined, before.deps)).get("r1")!)).toEqual(
+        listed,
+      );
+      // Add a bound call from a SECOND foreign package. Counted, it would make
+      // the target a hub: neither test nor callee shares the title's words, so
+      // the foreign test would vanish and the own test fall back to `naming`.
+      const after = deps({ ...own, edges: [...ingestEdges, feverCall, feverImport] });
+      expect(names((await resolveTestedBy(P, ["r1"], undefined, after.deps)).get("r1")!)).toEqual([
+        ...listed,
+        ["TestFeverMarkRead", "inferred-call"],
+      ]);
+    });
+
+    it("alone, bound calls from any number of packages never make a hub", async () => {
+      const { deps: d } = deps({
+        ...base,
+        edges: [methodCall, importsStorage, feverCall, feverImport],
+      });
+      expect(names((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!).sort()).toEqual([
+        ["TestFeverMarkRead", "inferred-call"],
+        ["TestUpdateEntriesHandler", "inferred-call"],
+      ]);
+    });
+
+    it("is filtered like any caller once the ingest's own edges make the target a hub", async () => {
+      const READER_TEST = "internal/reader/handler_test.go";
+      const hubFixture = {
+        ...base,
+        symbols: [...symbols, sym("t-reader", READER_TEST, "TestReaderRefresh")],
+        // Two foreign directories resolved at ingest: a hub with no help from the bound call.
+        edges: [
+          ingestEdges[1],
+          { projectId: P, kind: "calls", fromSymbolId: "t-reader", toSymbolId: "s-set" },
+          feverCall,
+          feverImport,
+        ],
+      };
+      const hub = deps(hubFixture);
+      expect((await resolveTestedBy(P, ["r1"], undefined, hub.deps)).get("r1")).toEqual([]);
+      // Not vacuous: out of the hub's reach, all three are listed.
+      const noHub = deps(hubFixture, { hubMinForeignTestDirs: 99 });
+      expect(
+        names((await resolveTestedBy(P, ["r1"], undefined, noHub.deps)).get("r1")!).sort(),
+      ).toEqual([
+        ["TestFeverMarkRead", "inferred-call"],
+        ["TestReaderRefresh", "exercises"],
+        ["TestUpdateEntriesHandler", "exercises"],
+      ]);
+    });
+  });
+
+  describe("a bound call is kept only when its name is evidence", () => {
+    const STORAGE = "internal/storage/storage.go";
+    const STORAGE_TEST = "internal/storage/storage_test.go";
+    const call = (fromSymbolId: string, filePath: string, toQualifiedName: string) => ({
+      projectId: P,
+      kind: "calls",
+      fromSymbolId,
+      toSymbolId: null,
+      toQualifiedName,
+      filePath,
+    });
+    const one = async (f: Parameters<typeof deps>[0]) =>
+      names((await resolveTestedBy(P, ["r1"], undefined, deps(f).deps)).get("r1")!);
+
+    it("does not read a stray Close() in a handler test as testing storage.Close", async () => {
+      // The review's probe: `resp.Body.Close()` is stored as an unresolved `Close`,
+      // internal/api imports storage, and storage declares the only visible `Close`.
+      const fixture = {
+        requirements: [req("r1", "Close the database connection pool")],
+        codeMappings: [fileMap("r1", STORAGE, "s-close")],
+        symbols: [
+          sym("s-close", STORAGE, "Close"),
+          sym("h", API, "updateEntries"),
+          sym("t-icon", API_TEST, "TestFetchFeedIcon"),
+        ],
+        edges: [call("t-icon", API_TEST, "Close"), importsStorage],
+      };
+      expect(await one(fixture)).toEqual([]);
+      const gaps = await listUntestedRequirements(P, undefined, deps(fixture).deps);
+      expect(gaps.tested).toBe(0);
+      expect(gaps.untested.map((g) => g.requirementId)).toEqual(["r1"]);
+    });
+
+    it("does not bind a well-known compound stdlib name (context.WithTimeout)", async () => {
+      const FETCH = "internal/reader/fetcher/request_builder.go";
+      const FETCH_TEST = "internal/reader/fetcher/response_handler_test.go";
+      expect(
+        await one({
+          requirements: [req("r1", "Request timeout")],
+          codeMappings: [fileMap("r1", FETCH, "f-timeout")],
+          symbols: [
+            sym("f-timeout", FETCH, "WithTimeout"),
+            sym("t-ctx", FETCH_TEST, "TestResponseHandlerCancelled"),
+          ],
+          edges: [call("t-ctx", FETCH_TEST, "WithTimeout")],
+        }),
+      ).toEqual([]);
+    });
+
+    it("binds a one-word name when a same-package test is named for it", async () => {
+      // Miniflux: TestValidateCertFileAndKeyFile calls configParser.options.Validate().
+      const PARSER = "internal/config/parser.go";
+      const OPTS_TEST = "internal/config/options_parsing_test.go";
+      const fixture = {
+        requirements: [req("r1", "Reject an invalid configuration")],
+        codeMappings: [fileMap("r1", PARSER, "c-validate")],
+        symbols: [
+          sym("c-validate", PARSER, "Validate"),
+          sym("t-validate", OPTS_TEST, "TestValidateCertFileAndKeyFile"),
+          // Same package, same call, but not named for it: `err.Validate()` of anything.
+          sym("t-other", OPTS_TEST, "TestHTTPClientProxyOptionParsing"),
+        ],
+        edges: [call("t-validate", OPTS_TEST, "Validate"), call("t-other", OPTS_TEST, "Validate")],
+      };
+      expect(await one(fixture)).toEqual([["TestValidateCertFileAndKeyFile", "inferred-call"]]);
+    });
+
+    it("does not take a test's name as evidence from another package", async () => {
+      // Miniflux: internal/api's TestVersionHandler calls runtime.Version(), and
+      // client/client.go declares the only visible project `Version`.
+      const CLIENT = "client/client.go";
+      expect(
+        await one({
+          requirements: [req("r1", "Report the server version")],
+          codeMappings: [fileMap("r1", CLIENT, "c-version")],
+          symbols: [
+            sym("c-version", CLIENT, "Version"),
+            sym("h", API, "versionHandler"),
+            sym("t-version", API_TEST, "TestVersionHandler"),
+          ],
+          edges: [
+            call("t-version", API_TEST, "Version"),
+            { ...importsStorage, toQualifiedName: "miniflux.app/v2/client" },
+          ],
+        }),
+      ).toEqual([]);
+    });
+
+    it("binds an unexported name only from its own package", async () => {
+      const symbols = [
+        sym("s-dedupe", STORAGE, "removeDuplicateEntries"),
+        sym("h", API, "updateEntries"),
+        sym("t-far", API_TEST, "TestUpdateEntriesHandler"),
+        sym("t-near", STORAGE_TEST, "TestEntryCleanup"),
+      ];
+      const base = {
+        requirements: [req("r1", "Deduplicate entries")],
+        codeMappings: [fileMap("r1", STORAGE, "s-dedupe")],
+        symbols,
+      };
+      // A local closure of the same name in a package that imports storage.
+      expect(
+        await one({
+          ...base,
+          edges: [call("t-far", API_TEST, "removeDuplicateEntries"), importsStorage],
+        }),
+      ).toEqual([]);
+      expect(
+        await one({ ...base, edges: [call("t-near", STORAGE_TEST, "removeDuplicateEntries")] }),
+      ).toEqual([["TestEntryCleanup", "inferred-call"]]);
+    });
   });
 
   it("reads no Go call graph for a project whose targets are not Go", async () => {

@@ -98,6 +98,11 @@ describe("TraceabilityMatrix", () => {
           tests: [
             { filePath: "server/src/auth.test.ts", symbol: "login suite", relation: "exercises" },
             { filePath: "server/src/legacy.test.ts", symbol: "legacy" },
+            {
+              filePath: "internal/api/user_test.go",
+              symbol: "TestCreateUserHandler",
+              relation: "inferred-call",
+            },
           ],
         },
       ],
@@ -107,6 +112,9 @@ describe("TraceabilityMatrix", () => {
     const withRelation = within(row).getByText("server/src/auth.test.ts").closest("li");
     expect(withRelation).toHaveTextContent("server/src/auth.test.ts · Calls the code");
     expect(withRelation).toHaveAttribute("title", "Calls the code");
+    // #1034 — a call bound by name after ingest says so.
+    const inferred = within(row).getByText("internal/api/user_test.go").closest("li");
+    expect(inferred).toHaveTextContent("internal/api/user_test.go · Inferred call");
     // A pre-#815 link with no relation renders the bare path, no suffix.
     const bare = within(row).getByText("server/src/legacy.test.ts").closest("li");
     expect(bare).toHaveTextContent(/^server\/src\/legacy\.test\.ts$/);

@@ -324,7 +324,9 @@ export async function getWorkspaceTraceabilitySummary(
         const strongest = tests.get(r.id)?.[0];
         if (!strongest) continue;
         tested++;
-        if (strongest.relation !== "naming") strictlyTested++;
+        // Named, not "anything but naming": a weak relation added later
+        // (`inferred-call`, #1034) must not become strict by default.
+        if (strongest.relation === "direct" || strongest.relation === "exercises") strictlyTested++;
       }
       return {
         projectId: pid,

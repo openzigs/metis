@@ -106,8 +106,9 @@ function GapReportCard({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h5 className="text-sm font-semibold text-foreground">{req.title}</h5>
-          {/* #998 — a requirement body is Markdown, and carries METIS block markers. */}
-          <RequirementBody body={req.body} />
+          {/* #998 — a requirement body is Markdown, and carries METIS block markers.
+              Its headings go under the h5 title above, never over it. */}
+          <RequirementBody body={req.body} minHeadingLevel={6} />
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
           {/* Issue #773 — the verdict LEADS: it is the field a BA acts on. */}
