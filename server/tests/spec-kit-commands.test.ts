@@ -385,6 +385,50 @@ describe("/plan", () => {
     expect(plans[0]).toMatchObject({ content: "# Previous plan\n", version: 1 });
   });
 
+  it("#1057 — an empty reply that finished normally writes nothing", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    await writeArtifact({ projectId: "p1", name: "plan.md", content: "# Previous plan\n" });
+    await expect(
+      runPlan({ projectId: "p1", deps: { provider: new FakeProvider("   \n") } }),
+    ).rejects.toMatchObject({ status: 502, code: "SPEC_KIT_EMPTY_OUTPUT" });
+    const plans = [...artifactRows.values()].filter((r) => r.name === "plan.md");
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ content: "# Previous plan\n", version: 1 });
+  });
+
+  /** #1057 — cut after one whole line; continuations add nothing. */
+  class CutReply extends FakeProvider {
+    async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+      return {
+        ...(await super.chat(m, o)),
+        content: m.length > 1 ? "" : "# Partial plan\n## Summa",
+        finishReason: "length",
+      };
+    }
+  }
+
+  it("#1057 — a cut-off reply keeps the complete plan.md current and returns the partial text", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    await writeArtifact({ projectId: "p1", name: "plan.md", content: "# Complete plan\n" });
+    const r = await runPlan({ projectId: "p1", deps: { provider: new CutReply("") } });
+    const plans = [...artifactRows.values()].filter((row) => row.name === "plan.md");
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ content: "# Complete plan\n", version: 1 });
+    expect(r.artifact).toMatchObject({ content: "# Complete plan\n", version: 1 });
+    expect(r.partialContent).toContain("# Partial plan");
+    expect(r.partialContent).toMatch(/\*\*Incomplete:\*\*/);
+    expect(r.message).toMatch(/cut off .* kept as current/);
+  });
+
+  it("#1057 — a cut-off reply with no prior plan.md is saved, marked and warned", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const r = await runPlan({ projectId: "p1", deps: { provider: new CutReply("") } });
+    expect(r.artifact.content).toContain("# Partial plan");
+    expect(r.artifact.content).toMatch(/\*\*Incomplete:\*\*/);
+    expect(r.partialContent).toBeUndefined();
+    expect(r.message).toContain("Warning: `plan.md` was cut off");
+  });
+
   it("still produces a valid plan.md ungrounded when retrieval is empty/fails (#375)", async () => {
     await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
     const ks = fakeKnowledgeService([]);

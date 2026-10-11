@@ -32,6 +32,9 @@ const {
   SPEC_KIT_TRUNCATION_NOTE,
   SPEC_KIT_TRUNCATION_NOTE_YAML,
   SPEC_KIT_OUTPUT_EXHAUSTED_CODE,
+  SPEC_KIT_EMPTY_OUTPUT_CODE,
+  isIncompleteArtifact,
+  keepsPriorVersion,
 } = await import("./runner.js");
 
 const project = {
@@ -240,6 +243,36 @@ describe("runSpecKitAgent output-cap recovery (#944)", () => {
       { content: "[No response text was returned by the model (stopReason=max_tokens)]" },
     ]);
     await expect(run(provider)).rejects.toMatchObject({ code: SPEC_KIT_OUTPUT_EXHAUSTED_CODE });
+  });
+
+  it("#1057 — an empty reply that finished normally fails instead of returning ''", async () => {
+    for (const content of ["", "  \n\t\n"]) {
+      vi.clearAllMocks();
+      const { provider, calls } = scriptedProvider([{ content, finishReason: "stop" }]);
+      const audit = (await import("../../audit/audit-service.js")).audit;
+      await expect(run(provider)).rejects.toMatchObject({
+        status: 502,
+        code: SPEC_KIT_EMPTY_OUTPUT_CODE,
+      });
+      expect(calls).toHaveLength(1);
+      expect(vi.mocked(audit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "spec_kit.command.plan.failed",
+          metadata: expect.objectContaining({ reason: "empty_output" }),
+        }),
+      );
+    }
+  });
+
+  it("#1057 — isIncompleteArtifact / keepsPriorVersion decide when a stored version stays", () => {
+    const partial = `# Q\n\n${SPEC_KIT_TRUNCATION_NOTE}\n`;
+    expect(isIncompleteArtifact(partial)).toBe(true);
+    expect(isIncompleteArtifact(`a: 1\n${SPEC_KIT_TRUNCATION_NOTE_YAML}\n`)).toBe(true);
+    expect(isIncompleteArtifact("# Whole plan\n")).toBe(false);
+    expect(keepsPriorVersion(true, { content: "# Whole plan\n" })).toBe(true);
+    expect(keepsPriorVersion(true, { content: partial })).toBe(false);
+    expect(keepsPriorVersion(true, null)).toBe(false);
+    expect(keepsPriorVersion(false, { content: "# Whole plan\n" })).toBe(false);
   });
 
   it("#1057 — a continuation that adds nothing is not re-sent; the salvage is kept and marked", async () => {

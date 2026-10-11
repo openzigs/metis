@@ -23,7 +23,13 @@ import {
 import { resolveFeatureBySlug, updateFeatureStatus } from "../features.js";
 import { requireGate, GateUnmetError } from "../gates.js";
 import { loadAsPreamble } from "../constitution-meta.js";
-import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
+import {
+  runSpecKitAgent,
+  loadProjectContext,
+  keepsPriorVersion,
+  truncationWarning,
+  type RunDeps,
+} from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
 import { PLAN_SYSTEM_PROMPT as LEGACY_PLAN_SYSTEM_PROMPT } from "./prompts.js";
 import { describeUndeclaredMermaidNodes, findUndeclaredMermaidNodes } from "../mermaid-check.js";
@@ -117,6 +123,11 @@ export interface PlanResult {
   artifacts: FeatureArtifactDto[];
   message: string;
   tokensUsed: number;
+  /**
+   * #1057 — cut-off replies by artifact key, set only for those NOT saved
+   * because a complete version already existed (that version stays current).
+   */
+  partialContent?: Record<string, string>;
 }
 
 export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
@@ -198,15 +209,26 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     if (run.truncated) truncated.push(key);
     return run.content;
   };
-  const write = async (key: string, content: string): Promise<void> => {
-    artifacts.push(
-      await writeFeatureArtifact({
+  // #1057 — cut-off replies NOT saved because a complete version already
+  // existed; that version stays current and the partial text is returned.
+  const partialContent: Record<string, string> = {};
+  const write = async (key: string, content: string): Promise<FeatureArtifactDto> => {
+    const cut = truncated.includes(key);
+    const prior = cut ? await getFeatureArtifact(feature.id, key) : null;
+    let current: FeatureArtifactDto;
+    if (prior && keepsPriorVersion(cut, prior)) {
+      partialContent[key] = content;
+      current = prior;
+    } else {
+      current = await writeFeatureArtifact({
         featureId: feature.id,
         key,
         content,
         actorId: input.actorId ?? null,
-      }),
-    );
+      });
+    }
+    artifacts.push(current);
+    return current;
   };
 
   // Phase 0 — research.md (always emitted).
@@ -258,13 +280,15 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   if (!/^##\s+Constitution Compliance Check/m.test(planContent)) {
     planContent = `${planContent.trim()}\n\n## Constitution Compliance Check\n\n| Principle | Status | Notes |\n| --- | --- | --- |\n| (auto-generated) | n/a | populate per principle from .specify/memory/constitution.md |\n`;
   }
-  await write("plan.md", planContent);
+  const plan = await write("plan.md", planContent);
 
-  await updateFeatureStatus(feature.id, "planned", input.actorId ?? null);
+  // #1057 — a cut-off plan.md does not make the feature `planned`.
+  const planCut = truncated.includes("plan.md");
+  if (!planCut) await updateFeatureStatus(feature.id, "planned", input.actorId ?? null);
 
   // #786 — the same post-generation path check as `/plan` (#20): an invented
   // path is reported, never trusted.
-  const paths = await verifyPlanPaths(input.projectId, planContent, input.pathLookup);
+  const paths = await verifyPlanPaths(input.projectId, plan.content, input.pathLookup);
   const existingNamed = paths.referenced.length - paths.unverified.length;
   const noneNote =
     paths.checked && existingNamed === 0
@@ -281,10 +305,18 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     .map((a) => describeUndeclaredMermaidNodes(a.key, findUndeclaredMermaidNodes(a.content)))
     .join("");
 
+  const kept = Object.keys(partialContent);
+  const keptNote =
+    kept.length > 0
+      ? ` The complete previous ${kept.map((k) => `\`${k}\``).join(", ")} ${kept.length === 1 ? "is" : "are"} kept as current; the cut-off ${kept.length === 1 ? "reply was" : "replies were"} not saved and ${kept.length === 1 ? "is" : "are"} returned in \`partialContent\`.`
+      : "";
+  const statusNote = planCut ? " The feature was not marked planned." : "";
+
   return {
     artifacts,
-    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${pathNote}${noneNote}${mermaidNote}${truncationWarning(truncated)}`,
+    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${pathNote}${noneNote}${mermaidNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
     tokensUsed: totalTokens,
+    ...(kept.length > 0 ? { partialContent } : {}),
   };
 }
 

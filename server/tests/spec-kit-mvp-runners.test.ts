@@ -238,6 +238,7 @@ import {
 } from "../src/lib/spec-kit/features.js";
 import { runChecklist } from "../src/lib/spec-kit/commands/checklist.js";
 import { runPlanExpanded } from "../src/lib/spec-kit/commands/plan-expanded.js";
+import { SPEC_KIT_TRUNCATION_NOTE } from "../src/lib/spec-kit/commands/runner.js";
 import { runSpecifyFeature } from "../src/lib/spec-kit/commands/specify-feature.js";
 import { computePlanDigest, runTasksToIssues } from "../src/lib/spec-kit/commands/taskstoissues.js";
 import {
@@ -713,6 +714,84 @@ describe("runPlanExpanded", () => {
     expect(plans).toHaveLength(1);
     expect(plans[0].content).toBe("# Previous plan\n");
     expect(featureRows.get(fid)!.status).not.toBe("planned");
+  });
+
+  /** #1057 — the plan.md call is cut after one whole line; continuations add nothing. */
+  class CutPlan extends FakeProvider {
+    async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+      const system = String((o as { systemMessage?: string }).systemMessage ?? "");
+      if (system.includes("plan.md") && !system.includes("quickstart.md")) {
+        return {
+          ...(await super.chat(m, o)),
+          content: m.length > 1 ? "" : "# Partial plan\n## Summa",
+          finishReason: "length",
+        };
+      }
+      return super.chat(m, o);
+    }
+  }
+
+  it("#1057 — a cut-off plan.md never replaces a complete one, and the feature is not planned", async () => {
+    const fid = seedFeature("p1", "007-keep");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    seedFeatureArtifact(fid, "plan.md", "# Complete plan\n");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "007-keep",
+      deps: { provider: new CutPlan("# Doc\n") },
+    });
+    const plans = [...featureArtifactRows.values()].filter(
+      (row) => row.featureId === fid && row.key === "plan.md",
+    );
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ content: "# Complete plan\n", version: 1 });
+    expect(r.artifacts.find((a) => a.key === "plan.md")!.content).toBe("# Complete plan\n");
+    expect(r.partialContent?.["plan.md"]).toContain("# Partial plan");
+    expect(r.partialContent?.["plan.md"]).toMatch(/\*\*Incomplete:\*\*/);
+    expect(r.message).toContain("`plan.md` was cut off");
+    expect(r.message).toContain("kept as current");
+    expect(featureRows.get(fid)!.status).not.toBe("planned");
+  });
+
+  it("#1057 — a cut-off plan.md with no prior version is saved, marked, warned, not planned", async () => {
+    const fid = seedFeature("p1", "008-first");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "008-first",
+      deps: { provider: new CutPlan("# Doc\n") },
+    });
+    const plan = r.artifacts.find((a) => a.key === "plan.md")!;
+    expect(plan.content).toContain("# Partial plan");
+    expect(plan.content).toMatch(/\*\*Incomplete:\*\*/);
+    expect(r.partialContent).toBeUndefined();
+    expect(r.message).toContain("Warning: `plan.md` was cut off");
+    expect(r.message).toContain("not marked planned");
+    expect(featureRows.get(fid)!.status).not.toBe("planned");
+  });
+
+  it("#1057 — a cut-off plan.md may replace an earlier Incomplete one", async () => {
+    const fid = seedFeature("p1", "009-again");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    seedFeatureArtifact(fid, "plan.md", `# Old\n\n${SPEC_KIT_TRUNCATION_NOTE}\n`);
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "009-again",
+      deps: { provider: new CutPlan("# Doc\n") },
+    });
+    expect(r.artifacts.find((a) => a.key === "plan.md")!.content).toContain("# Partial plan");
+    expect(r.partialContent).toBeUndefined();
+  });
+
+  it("#1057 — a whole plan.md marks the feature planned", async () => {
+    const fid = seedFeature("p1", "010-whole");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "010-whole",
+      deps: { provider: new FakeProvider("# Doc\n") },
+    });
+    expect(featureRows.get(fid)!.status).toBe("planned");
   });
 
   it("#944 — a cut-off OpenAPI contract keeps its whole lines instead of the /health stub", async () => {

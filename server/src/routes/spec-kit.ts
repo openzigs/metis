@@ -721,6 +721,8 @@ export interface DispatchedCommandResult {
   artifact: unknown;
   message: string;
   tokensUsed: number;
+  /** #1057 — a cut-off reply kept out of the store because a complete version exists. */
+  partialContent?: string;
 }
 
 /**
@@ -793,6 +795,7 @@ async function dispatchCommand(
         artifact: r.artifact,
         message: r.message,
         tokensUsed: r.tokensUsed,
+        ...(r.partialContent !== undefined ? { partialContent: r.partialContent } : {}),
       };
     }
     case "tasks": {

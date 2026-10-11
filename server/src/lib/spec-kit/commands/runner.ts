@@ -141,6 +141,35 @@ export const SPEC_KIT_TRUNCATION_NOTE_YAML =
  */
 export const SPEC_KIT_OUTPUT_EXHAUSTED_CODE = "SPEC_KIT_OUTPUT_EXHAUSTED";
 
+/**
+ * #1057 — the error a command fails with when the model finished normally but
+ * replied with nothing (empty or whitespace only). Writing `""` would leave the
+ * same stub shape as an exhausted budget, so nothing is written.
+ */
+export const SPEC_KIT_EMPTY_OUTPUT_CODE = "SPEC_KIT_EMPTY_OUTPUT";
+
+/**
+ * #1057 — `true` when an artifact carries the #944 Incomplete note, so a
+ * stored version can be told apart from a complete one.
+ */
+export function isIncompleteArtifact(content: string): boolean {
+  return (
+    content.includes(SPEC_KIT_TRUNCATION_NOTE) || content.includes(SPEC_KIT_TRUNCATION_NOTE_YAML)
+  );
+}
+
+/**
+ * #1057 — a partial reply never replaces a complete stored version. `true`
+ * when this run was cut off and the stored version is complete: the caller
+ * keeps that version current and returns the partial text instead of writing it.
+ */
+export function keepsPriorVersion(
+  truncated: boolean,
+  prior: { content: string } | null | undefined,
+): boolean {
+  return truncated && prior != null && !isIncompleteArtifact(prior.content);
+}
+
 const CONTINUE_PROMPT = [
   "Your previous reply was cut off at the output-token limit. Continue the SAME",
   "document exactly where it stops: start with the next line, do not repeat any",
@@ -263,6 +292,16 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
   let continuations = 0;
   let totalTokens = 0;
   let response: Awaited<ReturnType<AIProvider["chat"]>>;
+  // #1057 — fail before any artifact is written, so the previous version stays.
+  const failNoOutput = (reason: string, code: string, message: string): never => {
+    audit({
+      actor: input.actorId ? { id: input.actorId } : null,
+      action: `spec_kit.command.${input.command}.failed`,
+      target: { type: "project", id: input.project.id },
+      metadata: { reason, provider: response.provider, model: response.model, tokens: totalTokens },
+    });
+    throw new SpecKitArtifactError(502, code, message);
+  };
   for (;;) {
     const messages: ChatMessage[] =
       kept.length === 0
@@ -308,19 +347,8 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     // continuing and keeps the #944 marked salvage.
     if (whole.trim().length === 0) {
       if (kept.trim().length === 0) {
-        audit({
-          actor: input.actorId ? { id: input.actorId } : null,
-          action: `spec_kit.command.${input.command}.failed`,
-          target: { type: "project", id: input.project.id },
-          metadata: {
-            reason: "output_exhausted",
-            provider: response.provider,
-            model: response.model,
-            tokens: totalTokens,
-          },
-        });
-        throw new SpecKitArtifactError(
-          502,
+        failNoOutput(
+          "output_exhausted",
           SPEC_KIT_OUTPUT_EXHAUSTED_CODE,
           `/${input.command}: the model reached its output-token limit before writing any text ` +
             "(its reasoning likely used the whole budget). Nothing was saved; the previous version is kept. " +
@@ -334,6 +362,16 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     truncated = true;
     if (continuations >= MAX_SPEC_KIT_CONTINUATIONS) break;
     continuations++;
+  }
+  // #1057 — a reply that finished normally but said nothing is no artifact
+  // either: written as "", a caller's template is appended to it as a stub.
+  if (kept.trim().length === 0) {
+    failNoOutput(
+      "empty_output",
+      SPEC_KIT_EMPTY_OUTPUT_CODE,
+      `/${input.command}: the model returned an empty reply. Nothing was saved; the previous version is kept. ` +
+        "Re-run the command.",
+    );
   }
   if (truncated)
     kept = `${kept.trimEnd()}\n\n${input.format === "yaml" ? SPEC_KIT_TRUNCATION_NOTE_YAML : SPEC_KIT_TRUNCATION_NOTE}\n`;
