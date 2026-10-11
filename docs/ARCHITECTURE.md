@@ -2483,13 +2483,23 @@ the measurement lessons behind the split — is documented once in
     Callers --> Radius
   ```
 
-  Measured on the walkthrough run-7 Miniflux graph, six developer issues,
-  deterministic stages only (no model in the loop): the splitter + BM25 path named
-  61 to 118 files per issue at 1 to 3% file precision (2% overall) and 40% of the
-  reference files; this path's **edit candidates** are 37% precise and hold 53%
-  of them (micro-averaged), and its **blast radius** holds 84%. Two of the nineteen
-  reference files (an HTML template and a README) are not in the code graph and
-  cannot be reached by any stage here.
+  Measured by replaying the six developer issues of walkthrough run 7 on that
+  run's Miniflux graph, deterministic stages only (no model in the loop),
+  micro-averaged over the 19 reference files, test files and neutral files
+  excluded as the walkthrough's scoring rule says:
+
+  | | Files named per issue | Precision | Recall |
+  |---|---|---|---|
+  | Before: everything named (splitter + BM25) | 62 to 117 | 2% | 47% |
+  | Before: mapper hits + lineage writers only | 11 to 44 | 5% | 37% |
+  | After: **edit candidates** | 3 to 7 | 37% | 53% |
+  | After: **blast radius** (recall only) | 46 to 98 | — | 84% |
+
+  Six issues is a small sample: read the direction, not the second digit. Two of
+  the nineteen reference files (an HTML template and a README) are not in the
+  code graph and cannot be reached by any stage here. A table that gains a
+  column only through the LLM proposer (#4511's `feeds`) gets its `data-model`
+  edit candidates only when that stage runs.
 - **Persistence** — `ImpactAnalysis` (run header), `ImpactItem` (one
   project × requirement-change row), `ImpactAffectedSymbol` (per-symbol hit with
   `relation` + `depth`), and `RequirementCodeMapping` (cached requirement→symbol links).
@@ -2749,6 +2759,19 @@ flowchart LR
   the migration a change is reported to need. They are returned on the result as
   `optionalColumnProposals` / `droppedColumnProposals`, each with the covering writer's
   file and line and the reason.
+- **Stored and shown (#1051).** Both lists are persisted per item in
+  `ImpactColumnProposal` (`impact_column_proposals`: `disposition` `rejected` | `optional`,
+  the proposed column and its text-only DDL, the gate's `reason`, and the covering
+  writer's `writerQualifiedName` / `writerFilePath` / `writerStartLine` / `writerEndLine`;
+  `ON DELETE CASCADE` from `ImpactItem`). A table of its own rather than more rows in
+  `impact_affected_tables`, so nothing that reads the affected tables — the page, the
+  export, drift, the shared-table rollup, consumer resolution — can take a ruled-out column
+  for a change the requirement needs. `GET /api/impact-analyses/:id` returns them on each
+  item as `droppedColumnProposals` and `optionalColumnProposals`
+  (`ImpactColumnProposalView`); the impact card shows **Optional: settings persistence**
+  (with the DDL) and **Not proposed** (without it) under the proposed column changes, and
+  the markdown export has the same two sections. A run stored before #1051 returns two
+  empty lists.
 
 The lexical `dropProposalsRestatingWriters` is removed. Known limit: only time/age bounds
 are recognised structurally; another kind of bound is covered only when the proposer

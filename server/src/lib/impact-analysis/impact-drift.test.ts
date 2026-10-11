@@ -72,6 +72,8 @@ function item(opts: Partial<ImpactItemView> & { projectId: string }): ImpactItem
     writePathGaps: [],
     editCandidateFiles: [],
     blastRadiusFiles: [],
+    droppedColumnProposals: [],
+    optionalColumnProposals: [],
     affectedTables: opts.affectedTables ?? [],
     affectedTablesSecondary: opts.affectedTablesSecondary ?? [],
     feedback: [],

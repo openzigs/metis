@@ -408,6 +408,51 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(proposer).toHaveBeenCalledTimes(3);
     });
 
+    it("#1051 — stores each ruled-out column with the covering writer, and deletes it with the run", async () => {
+      const analysis = await db.impactAnalysis.create({
+        data: { sourceText: REQ_4478, startedById: "u-791" },
+      });
+      await executeImpactAnalysis(analysis.id, [PROJ], {
+        mapRequirement: async () => uiSeed(),
+        additiveColumnProposer: async () => [usersColumn("mark_read_delay", "INTEGER")],
+      });
+      const stored = await db.impactColumnProposal.findMany({
+        where: { impactItem: { impactAnalysisId: analysis.id } },
+      });
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({
+        disposition: "optional",
+        tableName: "users",
+        columnName: "mark_read_delay",
+        columnType: "INTEGER",
+        writerQualifiedName: `${ENTRY}::MarkAllAsReadBeforeDate`,
+        writerFilePath: ENTRY,
+        writerStartLine: 523,
+      });
+      expect(stored[0]!.reason).toContain("(before time.Time)");
+
+      // The API shape, read back through the real query and its include.
+      const { getImpactAnalysisDetail } =
+        await import("../src/lib/impact-analysis/impact-analysis-read.js");
+      const detail = await getImpactAnalysisDetail(analysis.id, db as never);
+      const item = detail!.items[0]!;
+      expect(item.optionalColumnProposals.map((p) => `${p.tableName}.${p.columnName}`)).toEqual([
+        "users.mark_read_delay",
+      ]);
+      expect(item.optionalColumnProposals[0]!.writer).toEqual({
+        qualifiedName: `${ENTRY}::MarkAllAsReadBeforeDate`,
+        filePath: ENTRY,
+        startLine: 523,
+        endLine: 538,
+      });
+      expect(item.droppedColumnProposals).toEqual([]);
+      expect(item.affectedTables.filter((t) => t.changeKind === "add-column")).toEqual([]);
+
+      // ON DELETE CASCADE from the run, through its items.
+      await db.impactAnalysis.delete({ where: { id: analysis.id } });
+      expect(await db.impactColumnProposal.count({ where: { id: stored[0]!.id } })).toBe(0);
+    });
+
     it("#4478 verbatim: the proposer is shown MarkAllAsReadBeforeDate with its parameters and predicate", async () => {
       const proposer = vi.fn(
         async (

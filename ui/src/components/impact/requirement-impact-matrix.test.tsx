@@ -48,6 +48,8 @@ function item(overrides: Partial<ImpactItemView> = {}): ImpactItemView {
     writePathGaps: [],
     editCandidateFiles: [],
     blastRadiusFiles: [],
+    droppedColumnProposals: [],
+    optionalColumnProposals: [],
     feedback: [],
     ...overrides,
   };

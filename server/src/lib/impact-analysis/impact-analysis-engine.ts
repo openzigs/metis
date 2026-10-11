@@ -957,6 +957,7 @@ type ImpactPrisma = Pick<
   | "impactAffectedSymbol"
   | "impactAffectedTable"
   | "impactAffectedTableConsumer"
+  | "impactColumnProposal"
   | "document"
   | "knowledgeChunk"
   | "quarantineChunk"
@@ -1554,6 +1555,33 @@ async function runImpactAnalysis(
           if (consumerRows.length > 0) {
             await prisma.impactAffectedTableConsumer.createMany({ data: consumerRows });
           }
+        }
+
+        // #1051 — the proposed columns the #791 gate kept OUT of the affected
+        // tables, each with the covering write path (file and line) and the
+        // reason. Stored in their own table: before this they lived only on the
+        // in-memory result and in a log line, so a reviewer could not see what
+        // was ruled out. Nothing is written when the gate ruled nothing out.
+        const ruledOut = [
+          ...result.droppedColumnProposals.map((g) => ({ disposition: "rejected", g })),
+          ...result.optionalColumnProposals.map((g) => ({ disposition: "optional", g })),
+        ];
+        if (ruledOut.length > 0) {
+          await prisma.impactColumnProposal.createMany({
+            data: ruledOut.map(({ disposition, g }) => ({
+              impactItemId: item.id,
+              disposition,
+              tableName: g.row.tableName,
+              columnName: g.row.columnName ?? "",
+              columnType: g.row.columnType,
+              suggestedDdl: g.row.suggestedDdl,
+              reason: g.reason,
+              writerQualifiedName: g.writer?.qualifiedName ?? null,
+              writerFilePath: g.writer?.filePath ?? null,
+              writerStartLine: g.writer?.startLine ?? null,
+              writerEndLine: g.writer?.endLine ?? null,
+            })),
+          });
         }
 
         totalImpactedSymbols += result.affectedSymbolCount;

@@ -443,6 +443,41 @@ export interface ImpactAffectedSymbolView {
 }
 
 /**
+ * #1051 — what became of a proposed column the #791 gate kept out of the
+ * affected tables:
+ *   - `rejected` — "Not proposed": an existing write path already takes the value
+ *     as a parameter and nothing asks to store it;
+ *   - `optional` — "Optional: settings persistence": it would only remember a
+ *     preferred value. Not part of the migration the change needs.
+ */
+export const IMPACT_COLUMN_PROPOSAL_DISPOSITIONS = ["rejected", "optional"] as const;
+export type ImpactColumnProposalDisposition = (typeof IMPACT_COLUMN_PROPOSAL_DISPOSITIONS)[number];
+
+/** #1051 — the existing write path a ruled-out proposal is set against. */
+export interface ImpactColumnProposalWriter {
+  qualifiedName: string;
+  filePath: string;
+  startLine: number | null;
+  endLine: number | null;
+}
+
+/**
+ * #1051 — one proposed column that is NOT part of the affected tables, with why.
+ * `suggestedDdl` is text only and never executed. `reason` is written by the
+ * deterministic gate, not by a model.
+ */
+export interface ImpactColumnProposalView {
+  id: string;
+  tableName: string;
+  columnName: string;
+  columnType: string | null;
+  suggestedDdl: string | null;
+  reason: string;
+  /** Null for an optional preference no existing write path relates to. */
+  writer: ImpactColumnProposalWriter | null;
+}
+
+/**
  * #962 (epic #960) — a callout that an impacted database table's WRITE path
  * (the code symbols that `writes`/`persists-to` it) is reached by NO test. Purely
  * a QA-handoff signal for a BA: "this mutation is not covered — verify before
@@ -575,6 +610,18 @@ export interface ImpactItemView {
    * them (recall safety). Empty when the filter did not run.
    */
   affectedTablesSecondary: ImpactAffectedTableView[];
+  /**
+   * #1051 — "Not proposed": columns the model proposed that an existing write
+   * path already covers (#791), each with that writer and the reason. Never in
+   * {@link affectedTables}. Empty for a run stored before #1051.
+   */
+  droppedColumnProposals: ImpactColumnProposalView[];
+  /**
+   * #1051 — "Optional: settings persistence": proposed columns that would only
+   * remember a preferred value (#791). Never in {@link affectedTables}, so not
+   * part of the migration the change needs. Empty for a run stored before #1051.
+   */
+  optionalColumnProposals: ImpactColumnProposalView[];
   /**
    * Issue #966 (Epic #960) — accumulated BA feedback on this item's affected
    * tables (both the primary and secondary buckets share this one list; a

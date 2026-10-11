@@ -712,6 +712,16 @@ Score each output on its own: wave E's impact analysis (**"directly affected" pl
 call sites"**, together), its chat answer to "where would I implement this?", its Spec Kit plan,
 and wave F's J2.1 impact and J2.4 plan.
 
+**Since #1036 the impact result has two lists**, and the old section names are gone from the
+page: **Files to edit** (the API item's `editCandidateFiles`) and **Blast radius**
+(`blastRadiusFiles`, which includes the files to edit). Until #1073 changes this rule, "impact
+analysis" above means **both lists together**, so a run stays comparable with runs 7 and
+earlier. Record the two lists separately as well: #1073 scores the files to edit on precision
+and recall, and the blast radius on recall only. A column listed under **Optional: settings
+persistence** or **Not proposed** (#791, #1051) is **not** a proposed column and not a
+migration: for #4478 the owner decision in #1068 accepts an optional, labelled settings column
+and rejects only a column among the proposed changes.
+
 - **Files.** `tp` = set files the output names; `fp` = files it names that are neither in the
   set nor neutral; `fn` = set files it does not name. **Precision** = `tp / (tp + fp)`;
   **recall** = `tp / (tp + fn)`. A file named twice counts once.

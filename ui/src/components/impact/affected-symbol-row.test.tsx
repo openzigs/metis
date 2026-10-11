@@ -100,6 +100,8 @@ function item(projectId: string): ImpactItemView {
     writePathGaps: [],
     editCandidateFiles: [],
     blastRadiusFiles: [],
+    droppedColumnProposals: [],
+    optionalColumnProposals: [],
     affectedTables: [],
     affectedTablesSecondary: [],
     feedback: [],

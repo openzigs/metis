@@ -56,6 +56,8 @@ function item(matchQuality: MatchQuality, overrides: Partial<ImpactItemView> = {
     writePathGaps: [],
     editCandidateFiles: [],
     blastRadiusFiles: [],
+    droppedColumnProposals: [],
+    optionalColumnProposals: [],
     affectedTables: [],
     affectedTablesSecondary: [],
     feedback: [],
@@ -392,5 +394,50 @@ describe("ChangedRequirementGroup — files to edit vs blast radius (#1036)", ()
     expect(screen.getByTestId("impact-headline").textContent).toBe(
       "0 files to edit · 1 more to review",
     );
+  });
+});
+
+describe("ChangedRequirementGroup — ruled-out column proposals (#1051)", () => {
+  const proposal = (id: string, columnName: string) => ({
+    id,
+    tableName: "users",
+    columnName,
+    columnType: "INTEGER",
+    suggestedDdl: `ALTER TABLE users ADD COLUMN ${columnName} INTEGER;`,
+    reason: "MarkAllAsReadBeforeDate already filters entries.published_at by its argument.",
+    writer: {
+      qualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+      filePath: "internal/storage/entry.go",
+      startLine: 523,
+      endLine: 533,
+    },
+  });
+
+  it("shows the optional settings column and the not-proposed column, each under its own heading", () => {
+    render(
+      <ChangedRequirementGroup
+        item={item("strong", {
+          optionalColumnProposals: [proposal("o1", "mark_read_default")],
+          droppedColumnProposals: [proposal("d1", "mark_read_delay")],
+        })}
+      />,
+    );
+    const optional = screen.getByTestId("optional-column-proposals");
+    const dropped = screen.getByTestId("dropped-column-proposals");
+    expect(within(optional).getByTestId("column-proposal-column").textContent).toBe(
+      "users.mark_read_default",
+    );
+    expect(within(dropped).getByTestId("column-proposal-column").textContent).toBe(
+      "users.mark_read_delay",
+    );
+    expect(within(dropped).getByTestId("column-proposal-writer").textContent).toContain(
+      "MarkAllAsReadBeforeDate (internal/storage/entry.go:523)",
+    );
+  });
+
+  it("shows neither section when nothing was ruled out", () => {
+    render(<ChangedRequirementGroup item={item("strong")} />);
+    expect(screen.queryByTestId("optional-column-proposals")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("dropped-column-proposals")).not.toBeInTheDocument();
   });
 });

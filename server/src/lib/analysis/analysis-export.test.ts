@@ -808,6 +808,8 @@ function impactItem(overrides: Partial<ImpactItemView> = {}): ImpactItemView {
     writePathGaps: [],
     editCandidateFiles: [],
     blastRadiusFiles: [],
+    droppedColumnProposals: [],
+    optionalColumnProposals: [],
     feedback: [],
     ...overrides,
   };
@@ -908,6 +910,57 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     );
     expect(md).not.toContain("#### Files to edit");
     expect(md).toContain("#### Blast radius (for review)");
+  });
+
+  it("#1051 — lists the ruled-out column proposals with the covering writer, and never their DDL", () => {
+    const proposal = (id: string, columnName: string) => ({
+      id,
+      tableName: "users",
+      columnName,
+      columnType: "INTEGER",
+      suggestedDdl: `ALTER TABLE users ADD COLUMN ${columnName} INTEGER;`,
+      reason: "MarkAllAsReadBeforeDate already filters entries.published_at by its argument.",
+      writer: {
+        qualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+        filePath: "internal/storage/entry.go",
+        startLine: 523,
+        endLine: 533,
+      },
+    });
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            optionalColumnProposals: [proposal("o1", "mark_read_default")],
+            droppedColumnProposals: [
+              proposal("d1", "mark_read_delay"),
+              { ...proposal("d2", "mark_read_times"), columnType: null, writer: null },
+            ],
+          }),
+        ],
+      }),
+    );
+    const optional = md.indexOf("#### Optional: settings persistence (not part of the migration)");
+    const dropped = md.indexOf("#### Not proposed (an existing write path covers it)");
+    expect(optional).toBeGreaterThan(-1);
+    expect(dropped).toBeGreaterThan(optional);
+    expect(md.slice(optional, dropped)).toContain(
+      "- `users.mark_read_default` (INTEGER) — covered by `internal/storage/entry.go::MarkAllAsReadBeforeDate` at `internal/storage/entry.go:523`. MarkAllAsReadBeforeDate already filters",
+    );
+    expect(md.slice(optional, dropped)).not.toContain("mark_read_delay");
+    expect(md.slice(dropped)).toContain("- `users.mark_read_delay` (INTEGER) — covered by");
+    // No type and no writer: the bullet says only what is known.
+    expect(md.slice(dropped)).toContain(
+      "- `users.mark_read_times`. MarkAllAsReadBeforeDate already",
+    );
+    // A column that is not part of the change must not come with a copyable ALTER TABLE.
+    expect(md).not.toContain("ADD COLUMN mark_read");
+  });
+
+  it("#1051 — has neither heading when nothing was ruled out", () => {
+    const md = serializeImpactAnalysisMarkdown(impactDetail());
+    expect(md).not.toContain("Optional: settings persistence");
+    expect(md).not.toContain("#### Not proposed");
   });
 
   it("is deterministic — identical input yields byte-identical output", () => {

@@ -41,6 +41,7 @@ import {
   type ImpactAffectedSymbolView,
   type ImpactAffectedTableView,
   type ImpactAnalysisDetail,
+  type ImpactColumnProposalView,
   type ImpactItemView,
   type ImpactTableConsumerView,
   type RequirementCoverage,
@@ -569,6 +570,30 @@ function impactSymbolBullet(sym: ImpactAffectedSymbolView): string {
   )}, depth ${sym.depth} · confidence ${sym.confidence.toFixed(2)}`;
 }
 
+/**
+ * #1051 — one heading and a bullet per ruled-out proposal: the column, the
+ * covering write path with its file and line, and the gate's reason. Nothing
+ * when the list is empty. The DDL is deliberately NOT repeated here: these
+ * columns are not part of the change, and a copied `ALTER TABLE` would say
+ * otherwise.
+ */
+function columnProposalSection(heading: string, proposals: ImpactColumnProposalView[]): string[] {
+  if (proposals.length === 0) return [];
+  const bullets = proposals.map((p) => {
+    const column = codeSpan(`${p.tableName}.${p.columnName}`);
+    const type = p.columnType ? ` (${mdInline(p.columnType)})` : "";
+    const writer = p.writer
+      ? ` — covered by ${codeSpan(p.writer.qualifiedName)} at ${codeSpan(
+          p.writer.startLine != null
+            ? `${p.writer.filePath}:${p.writer.startLine}`
+            : p.writer.filePath,
+        )}`
+      : "";
+    return `- ${column}${type}${writer}. ${mdInline(p.reason)}`;
+  });
+  return [heading, bullets.join("\n")];
+}
+
 /** #963/#956 — render the cross-project consumer state for an affected table. */
 function impactConsumerLines(table: ImpactAffectedTableView): string[] {
   // `consumerResolution === undefined` ⇒ consumers were not computed for this
@@ -853,6 +878,19 @@ function impactItemSection(item: ImpactItemView, ctx: ImpactItemLabelContext): s
     );
     parts.push(impactTablesBlock(item.affectedTablesSecondary));
   }
+
+  // #1051 — the proposed columns the #791 gate kept out of the tables above, so
+  // a reader of the export sees what was ruled out and why.
+  parts.push(
+    ...columnProposalSection(
+      "#### Optional: settings persistence (not part of the migration)",
+      item.optionalColumnProposals,
+    ),
+    ...columnProposalSection(
+      "#### Not proposed (an existing write path covers it)",
+      item.droppedColumnProposals,
+    ),
+  );
 
   // #1036 — affected code as TWO lists, because they answer different questions
   // and are scored differently: the code to edit (small), and the code to review.

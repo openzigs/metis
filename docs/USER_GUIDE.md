@@ -2054,6 +2054,21 @@ what they filter on — before showing it:
 This check is made by rules over the code graph, not by the AI model, so it gives
 the same answer whatever the model called the column.
 
+You can see what was ruled out, and why. Under the proposed column changes, each
+impacted requirement shows two more lists when they apply:
+
+- **Optional: settings persistence** — the optional settings columns, each with
+  its suggested `ALTER TABLE` text and a note that it is not part of the
+  migration the change needs.
+- **Not proposed** — the columns existing code already covers.
+
+Every entry names the function that already does the work, with its file and line
+(a link to the repository when the project has one connected), and the reason —
+for example *"`MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`) already
+filters `entries.published_at` by its argument (`before time.Time`)"*. The same
+two lists are in the markdown export and in the API response. Analyses run before
+this version show neither list.
+
 **Affected procedures & functions.** When the impacted code invokes a stored
 **procedure** or **function**, those routines are listed in their own *Affected
 procedures & functions* sub-section beneath the tables. METIS introspects routine

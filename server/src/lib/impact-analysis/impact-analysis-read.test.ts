@@ -919,6 +919,8 @@ describe("#956 computeSharedTableImpacts (run-level rollup)", () => {
       writePathGaps: [],
       editCandidateFiles: [],
       blastRadiusFiles: [],
+      droppedColumnProposals: [],
+      optionalColumnProposals: [],
       feedback: [],
       affectedTablesSecondary: [],
       affectedTables: tableNames.map((tableName) => ({
@@ -2252,5 +2254,111 @@ describe("#1013 read path resolves the per-item requirement title", () => {
       "Cancel an order within 24 hours.",
       "Support partial shipments.",
     ]);
+  });
+});
+
+describe("#1051 — stored column proposals on the read path", () => {
+  const proposal = (over: Record<string, unknown>) => ({
+    id: "cp-1",
+    disposition: "rejected",
+    tableName: "users",
+    columnName: "mark_read_delay",
+    columnType: "INTEGER",
+    suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER;",
+    reason: "An existing write path covers this.",
+    writerQualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+    writerFilePath: "internal/storage/entry.go",
+    writerStartLine: 523,
+    writerEndLine: 533,
+    ...over,
+  });
+  /** One item carrying the given stored proposals (or none of the relation at all). */
+  function prismaWith(columnProposals: unknown[] | undefined) {
+    const base = symbolItemPrisma([rawSymbol({ filePath: "a.go", relation: "direct", depth: 0 })]);
+    return {
+      impactAnalysis: {
+        findFirst: vi.fn(async () => {
+          const row = await base.impactAnalysis.findFirst();
+          return {
+            ...row,
+            items: row.items.map((item: Record<string, unknown>) =>
+              columnProposals === undefined ? item : { ...item, columnProposals },
+            ),
+          };
+        }),
+      },
+    };
+  }
+
+  it("splits them by disposition and rebuilds the covering writer", async () => {
+    const detail = await getImpactAnalysisDetail(
+      "ia-962",
+      prismaWith([
+        proposal({ id: "cp-1" }),
+        proposal({ id: "cp-2", disposition: "optional", columnName: "mark_read_default" }),
+      ]) as never,
+    );
+    const item = detail!.items[0];
+    expect(item.droppedColumnProposals).toEqual([
+      {
+        id: "cp-1",
+        tableName: "users",
+        columnName: "mark_read_delay",
+        columnType: "INTEGER",
+        suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER;",
+        reason: "An existing write path covers this.",
+        writer: {
+          qualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+          filePath: "internal/storage/entry.go",
+          startLine: 523,
+          endLine: 533,
+        },
+      },
+    ]);
+    expect(item.optionalColumnProposals.map((p) => p.id)).toEqual(["cp-2"]);
+  });
+
+  it("returns a null writer unless both its name and its file are stored", async () => {
+    const detail = await getImpactAnalysisDetail(
+      "ia-962",
+      prismaWith([
+        proposal({ id: "none", writerQualifiedName: null, writerFilePath: null }),
+        proposal({ id: "no-file", writerFilePath: null }),
+        proposal({ id: "no-name", writerQualifiedName: null }),
+      ]) as never,
+    );
+    expect(detail!.items[0].droppedColumnProposals.map((p) => p.writer)).toEqual([
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it("keeps a writer whose line is unknown", async () => {
+    const detail = await getImpactAnalysisDetail(
+      "ia-962",
+      prismaWith([proposal({ writerStartLine: null, writerEndLine: null })]) as never,
+    );
+    expect(detail!.items[0].droppedColumnProposals[0]!.writer).toEqual({
+      qualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+      filePath: "internal/storage/entry.go",
+      startLine: null,
+      endLine: null,
+    });
+  });
+
+  it("shows a disposition it does not know under neither heading", async () => {
+    const detail = await getImpactAnalysisDetail(
+      "ia-962",
+      prismaWith([proposal({ disposition: "deferred" })]) as never,
+    );
+    expect(detail!.items[0].droppedColumnProposals).toEqual([]);
+    expect(detail!.items[0].optionalColumnProposals).toEqual([]);
+  });
+
+  it("returns two empty lists for a run stored before #1051", async () => {
+    const detail = await getImpactAnalysisDetail("ia-962", prismaWith(undefined) as never);
+    expect(detail!.items[0].droppedColumnProposals).toEqual([]);
+    expect(detail!.items[0].optionalColumnProposals).toEqual([]);
   });
 });

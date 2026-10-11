@@ -123,6 +123,8 @@ const detail: ImpactAnalysisDetail = {
       writePathGaps: [],
       editCandidateFiles: [],
       blastRadiusFiles: [],
+      droppedColumnProposals: [],
+      optionalColumnProposals: [],
       feedback: [],
       summary: null,
     },

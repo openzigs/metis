@@ -44,6 +44,8 @@ function item(over: Partial<ImpactItemView> = {}): ImpactItemView {
     writePathGaps: [],
     editCandidateFiles: [],
     blastRadiusFiles: [],
+    droppedColumnProposals: [],
+    optionalColumnProposals: [],
     feedback: [],
     summary: null,
     ...over,

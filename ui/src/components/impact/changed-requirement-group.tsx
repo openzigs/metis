@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { renderInlineCode } from "@/lib/inline-code-text";
 import { AffectedSymbolRow } from "./affected-symbol-row";
 import { AffectedTablesSection } from "./affected-tables-section";
+import { ColumnProposalsSection } from "./column-proposals-section";
 import { useImpactSymbolRepo } from "./impact-symbol-repo-context";
 
 const SEVERITY_VARIANT: Record<
@@ -293,6 +294,21 @@ export function ChangedRequirementGroup({
         onDeleteFeedback={
           onDeleteFeedback ? (feedbackId) => onDeleteFeedback(item.id, feedbackId) : undefined
         }
+      />
+
+      {/* #1051 — the proposed columns that are NOT in the tables above (#791): an
+          optional settings column, and columns an existing write path already
+          covers. Directly under the proposed changes, so what was ruled out is
+          read next to what was kept. Each renders nothing when empty. */}
+      <ColumnProposalsSection
+        variant="optional"
+        proposals={item.optionalColumnProposals}
+        repo={repo}
+      />
+      <ColumnProposalsSection
+        variant="rejected"
+        proposals={item.droppedColumnProposals}
+        repo={repo}
       />
 
       {/* #936 — low-confidence secondary bucket: tables the relevance filter
