@@ -145,6 +145,9 @@ export async function deepDiveFinding(
     systemMessage,
     model: input.model ?? tierModelFor(provider, HAIKU_MODEL_ID),
     signal: input.signal,
+    // #1077 — JSON mode where the provider has one (the OpenAI-compatible
+    // adapters); omitted by the helper everywhere else.
+    responseFormat: { type: "json_object" },
   });
 
   if (!hasVerdict(outcome)) {

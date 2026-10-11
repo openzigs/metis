@@ -133,6 +133,9 @@ export class RequirementsExtractor {
       model: this.model,
       signal,
       disableTools: true,
+      // #1077 — JSON mode where the provider has one (the OpenAI-compatible
+      // adapters); omitted by the helper everywhere else.
+      responseFormat: { type: "json_object" },
     });
     if (!hasVerdict(outcome)) {
       throw new RequirementsExtractionError(outcome.reason, outcome.detail);

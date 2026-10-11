@@ -42,6 +42,7 @@ import {
 import { messageText } from "../types.js";
 import { createUnsupportedToolsWarner, type ProviderCapabilities } from "../capabilities.js";
 import { catalogCapabilities, ensureLocalDiscovery } from "../model-catalog.js";
+import { isDeepSeekEndpoint } from "./anthropic-endpoint.js";
 import type {
   AIProvider,
   ChatChunk,
@@ -830,10 +831,17 @@ export class OpenAICompatibleProvider implements AIProvider {
    * typed tool calls. This is the adapter-wide answer; a particular model can
    * say otherwise through {@link capabilitiesFor} (the model catalog, #135).
    */
-  readonly capabilities: ProviderCapabilities = {
-    responseFormat: true,
-    nativeToolCalls: true,
-  };
+  readonly capabilities: ProviderCapabilities;
+  /**
+   * #1077 — `baseUrl` is DeepSeek's OpenAI-format API (`api.deepseek.com`).
+   * Its `response_format` takes `text` or `json_object` only — no `json_schema`
+   * (api-docs.deepseek.com/api/create-chat-completion) — and its output cap is
+   * `max_tokens`. Keyed on the host, as the Anthropic adapter keys the same
+   * vendor's other endpoint.
+   */
+  private readonly deepSeekEndpoint: boolean;
+  /** #1077 — models already logged as downgraded from `json_schema`. */
+  private readonly jsonSchemaDowngradedModels = new Set<string>();
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly defaultModel: string;
@@ -923,6 +931,10 @@ export class OpenAICompatibleProvider implements AIProvider {
 
   constructor(opts: OpenAICompatibleProviderOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    this.deepSeekEndpoint = isDeepSeekEndpoint(this.baseUrl);
+    this.capabilities = this.deepSeekEndpoint
+      ? { responseFormat: true, nativeToolCalls: true, jsonSchema: false, jsonObject: true }
+      : { responseFormat: true, nativeToolCalls: true };
     this.apiKey = opts.apiKey;
     this.defaultModel = opts.model;
     this.key = opts.providerKey ?? "bedrock-gateway";
@@ -991,7 +1003,7 @@ export class OpenAICompatibleProvider implements AIProvider {
    * model gets this provider key's defaults, which match {@link capabilities}.
    */
   capabilitiesFor(model: string): ProviderCapabilities {
-    const caps = catalogCapabilities(this.key, model);
+    const caps = this.withEndpointLimits(catalogCapabilities(this.key, model));
     // #141 — a runtime that has already rejected `tools` for this model (see
     // {@link toolsRejectedModels}) is not tool-capable, whatever the catalog
     // guessed, so a caller choosing between native and text tool calls picks
@@ -1000,6 +1012,44 @@ export class OpenAICompatibleProvider implements AIProvider {
     return caps.nativeToolCalls && this.toolsRejectedModels.has(resolved)
       ? { ...caps, nativeToolCalls: false }
       : caps;
+  }
+
+  /** #1077 — the catalog's answer with this endpoint's limits applied. */
+  private withEndpointLimits(caps: ProviderCapabilities): ProviderCapabilities {
+    if (!this.deepSeekEndpoint || caps.jsonSchema === false) return caps;
+    return { ...caps, jsonSchema: false, responseFormat: caps.jsonObject === true };
+  }
+
+  /**
+   * #1077 — the `response_format` to put on the wire for `model`.
+   *
+   * A `json_schema` request to a model that takes `json_object` but not
+   * `json_schema` is sent as `json_object`. Before this, such an endpoint
+   * (DeepSeek's OpenAI-format API) answered the schema with a 400, the #336
+   * retry dropped `response_format` altogether, and the caller was back on
+   * prompt-only JSON — the mode that produced 5 valid answers in 24.
+   *
+   * `json_object` guarantees syntactically valid JSON, NOT the schema's shape:
+   * every caller already validates and re-prompts, and states the shape in its
+   * prompt (which also satisfies the runtime's "the prompt must mention JSON"
+   * rule). The limit comes from the endpoint (DeepSeek's host) or from the
+   * model catalog, so an operator can declare it for any other runtime with
+   * `AI_MODEL_CATALOG_OVERRIDES`
+   * (`{"openai:<model>":{"capabilities":{"jsonSchema":false}}}`).
+   */
+  private wireResponseFormat(opts: ChatOptions, model: string): ChatOptions["responseFormat"] {
+    const rf = opts.responseFormat;
+    if (!rf || rf.type !== "json_schema") return rf;
+    const caps = this.capabilitiesFor(model);
+    if (caps.jsonSchema !== false || caps.jsonObject !== true) return rf;
+    if (!this.jsonSchemaDowngradedModels.has(model)) {
+      this.jsonSchemaDowngradedModels.add(model);
+      log.info(
+        "Sending response_format json_object in place of json_schema — this model does not take a schema",
+        { provider: this.key, model, schema: rf.json_schema.name },
+      );
+    }
+    return { type: "json_object" };
   }
 
   /**
@@ -2135,8 +2185,12 @@ export class OpenAICompatibleProvider implements AIProvider {
     // reasoning models reject `max_tokens` outright. Every other runtime
     // (Ollama, vLLM, LM Studio, bedrock-access-gateway) keeps `max_tokens`,
     // byte-for-byte as before.
+    // #1077 — DeepSeek's OpenAI-format API documents `max_tokens` only, so it
+    // is not sent the newer name even when configured as `openai`.
     const maxTokensField =
-      this.key === "openai" || this.key === "azure" ? "max_completion_tokens" : "max_tokens";
+      (this.key === "openai" || this.key === "azure") && !this.deepSeekEndpoint
+        ? "max_completion_tokens"
+        : "max_tokens";
     body[maxTokensField] = opts.maxTokens ?? this.defaultMaxTokens;
     if (includeTemperature) {
       body.temperature = opts.temperature ?? this.defaultTemperature;
@@ -2170,7 +2224,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     // Studio builds) returns a 400/422 which `chat`/`stream` catch to retry
     // once WITHOUT it (see {@link isStructuredOutputUnsupportedStatus}).
     if (includeResponseFormat && opts.responseFormat) {
-      body.response_format = opts.responseFormat;
+      body.response_format = this.wireResponseFormat(opts, model);
     }
     // #132 — native tools. `includeTools` is false unless the caller supplied
     // tools AND this model may take them (see `shouldSendTools`).

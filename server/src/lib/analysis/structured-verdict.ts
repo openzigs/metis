@@ -67,7 +67,7 @@ import type {
   CacheTelemetryCallType,
   ChatMessage,
   ChatOptions,
-  JsonSchemaResponseFormat,
+  ResponseFormat,
   TokenUsage,
 } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
@@ -185,7 +185,7 @@ export interface StructuredVerdictRequest<T> {
    * (#1115). Supplying it to a provider that drops it would be a silent no-op,
    * so this helper omits it there rather than passing it and hoping.
    */
-  responseFormat?: JsonSchemaResponseFormat;
+  responseFormat?: ResponseFormat;
   /** Metrics sink. Defaults to the process-wide {@link structuredVerdictMetrics}. */
   metrics?: StructuredVerdictMetrics;
 }
@@ -270,6 +270,30 @@ function buildRepairTurns(
 }
 
 /**
+ * #1077 — the `responseFormat` to send, probed per MODE rather than as one
+ * flag. A `json_object` request is not handed to an adapter that only honours
+ * `json_schema` (the Anthropic Messages API), where it would be dropped with a
+ * warning and misreported as used. A `json_schema` request to an adapter that
+ * takes only `json_object` (DeepSeek's OpenAI-format endpoint) is sent as
+ * `json_object`: valid JSON is still worth having, and the schema is enforced
+ * by the parse-validate-re-prompt loop either way.
+ */
+function responseFormatFor(
+  provider: AIProvider,
+  requested: ResponseFormat | undefined,
+): ResponseFormat | undefined {
+  if (!requested) return undefined;
+  if (supportsResponseFormat(provider, undefined, requested.type)) return requested;
+  if (
+    requested.type === "json_schema" &&
+    supportsResponseFormat(provider, undefined, "json_object")
+  ) {
+    return { type: "json_object" };
+  }
+  return undefined;
+}
+
+/**
  * Obtain a schema-validated verdict from `provider`, re-prompting once on
  * malformation and degrading to {@link StructuredVerdictNoSignal} rather than
  * throwing.
@@ -299,7 +323,8 @@ export async function requestStructuredVerdict<T>(
   }
 
   const metrics = request.metrics ?? structuredVerdictMetrics;
-  const usedResponseFormat = Boolean(request.responseFormat) && supportsResponseFormat(provider);
+  const responseFormat = responseFormatFor(provider, request.responseFormat);
+  const usedResponseFormat = responseFormat !== undefined;
   const opts: ChatOptions = {
     ...(request.systemMessage ? { systemMessage: request.systemMessage } : {}),
     ...(request.model ? { model: request.model } : {}),
@@ -307,7 +332,7 @@ export async function requestStructuredVerdict<T>(
     ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
     ...(request.callType ? { callType: request.callType } : {}),
     ...(request.disableTools ? { disableTools: true } : {}),
-    ...(usedResponseFormat ? { responseFormat: request.responseFormat } : {}),
+    ...(responseFormat ? { responseFormat } : {}),
   };
 
   let messages = request.messages;
