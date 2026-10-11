@@ -49,6 +49,33 @@ vi.mock("@/lib/spec-kit-api", () => ({
   },
 }));
 
+// #1069 — the real recovery, minus its 5 s waits: two reads, no delay, and a
+// clock on which every response is lost a minute after the command was sent
+// (a mocked command fails at once, which would read as a failed send). The
+// page's own timing — its abort signal — is passed through.
+const recoverySignals = vi.hoisted(() => [] as Array<AbortSignal | undefined>);
+vi.mock("@/lib/spec-kit-recovery", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/spec-kit-recovery")>();
+  return {
+    ...actual,
+    runSpecKitCommandWithRecovery: (
+      projectId: string,
+      command: Parameters<typeof actual.runSpecKitCommandWithRecovery>[1],
+      options: Parameters<typeof actual.runSpecKitCommandWithRecovery>[2],
+      timing: Parameters<typeof actual.runSpecKitCommandWithRecovery>[3] = {},
+    ) => {
+      recoverySignals.push(timing.signal);
+      let clock = 0;
+      return actual.runSpecKitCommandWithRecovery(projectId, command, options, {
+        ...timing,
+        intervalMs: 0,
+        attempts: 2,
+        now: () => (clock += 60_000),
+      });
+    },
+  };
+});
+
 // #953 — the vault picker has its own suite (vault-picker.test.tsx); here it is a
 // plain input so a test can pick a `${vault:label}` without driving the Select.
 vi.mock("@/components/connectors/vault-picker", () => ({
@@ -103,6 +130,8 @@ import { commentApi } from "@/lib/collaboration-api";
 import SpecKitPage from "@/app/(authed)/projects/[id]/spec-kit/page";
 import { ApiError } from "@/lib/api-client";
 import { createQueryClient } from "@/lib/query-client";
+import { queryKeys } from "@/lib/query-keys";
+import { loadHandoff } from "@/lib/spec-kit-display";
 
 const collabMock = commentApi as unknown as {
   listForArtifact: ReturnType<typeof vi.fn>;
@@ -252,6 +281,193 @@ describe("SpecKitPage", () => {
     );
     // No raw error in the toast.
     expect(toastError).not.toHaveBeenCalledWith(expect.stringContaining("stack"));
+  });
+
+  it("#1069 shows the artifact a command saved after its response was lost", async () => {
+    // The proxy's own 500: status text, no error envelope.
+    m.runCommand!.mockRejectedValue(new ApiError(500, "Internal Server Error"));
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
+    // From here the server has the constitution the lost command saved.
+    m.listFiles!.mockResolvedValueOnce({ enabled: true, artifacts: [] }).mockResolvedValue({
+      enabled: true,
+      artifacts: [artifact("constitution.md", "# Recovered principles", 1)],
+    });
+    fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
+      target: { value: "/speckit.constitution Be kind" },
+    });
+    fireEvent.click(screen.getByTestId("spec-kit-run-button"));
+
+    const recovered =
+      "The command's response was lost, but a newer constitution.md was saved. Showing it.";
+    await waitFor(() => expect(screen.getByTestId("spec-kit-result")).toHaveTextContent(recovered));
+    expect(toastSuccess).toHaveBeenCalledWith(recovered);
+    expect(toastError).not.toHaveBeenCalled();
+    expect(m.runCommand).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByText("Recovered principles")).toBeInTheDocument());
+  });
+
+  it("#1069 says the command may still be running when no newer artifact appears", async () => {
+    m.runCommand!.mockRejectedValue(new ApiError(500, "Internal Server Error"));
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
+      target: { value: "/specify go" },
+    });
+    fireEvent.click(screen.getByTestId("spec-kit-run-button"));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/may still be running/)),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(expect.stringContaining("Internal Server Error"));
+    expect(screen.queryByText(/Internal Server Error/)).not.toBeInTheDocument();
+    expect(m.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  // TanStack runs a mutation's option callbacks after the page is gone. A late
+  // result must not navigate back here, but the toast, the cache refresh and
+  // the saved handoff are app-wide and still happen.
+  describe("#1069 a command that settles after the page was left", () => {
+    const created = {
+      id: "f_new",
+      slug: "new-feature",
+      title: "New feature",
+      status: "draft",
+      branchName: null,
+      updatedAt: "2026-10-11T00:00:00.000Z",
+    };
+
+    /** Send `command`, leave the page while it is in flight, and hand back its settle handles. */
+    async function leaveMidCommand(command: string) {
+      let settle!: { resolve: (value: unknown) => void; reject: (err: unknown) => void };
+      m.runCommand!.mockImplementation(
+        () => new Promise((resolve, reject) => (settle = { resolve, reject })),
+      );
+      recoverySignals.length = 0;
+      const queryClient = createQueryClient();
+      const view = render(<SpecKitPage />, {
+        wrapper: makeWrapper({ initialUser: WRITER, queryClient }),
+      });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
+      fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
+        target: { value: command },
+      });
+      fireEvent.click(screen.getByTestId("spec-kit-run-button"));
+      await waitFor(() => expect(m.runCommand).toHaveBeenCalledTimes(1));
+      // The page hands the recovery a live signal…
+      expect(recoverySignals).toHaveLength(1);
+      expect(recoverySignals[0]).toBeInstanceOf(AbortSignal);
+      expect(recoverySignals[0]!.aborted).toBe(false);
+
+      view.unmount();
+      // …and aborts it when it is left.
+      expect(recoverySignals[0]!.aborted).toBe(true);
+      routerReplace.mockClear();
+      toastSuccess.mockClear();
+      toastError.mockClear();
+      toastWarning.mockClear();
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const finish = async (how: (s: typeof settle) => void): Promise<void> => {
+        await act(async () => {
+          how(settle);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        });
+      };
+      return { finish, invalidate };
+    }
+
+    it("reports the success and refreshes the artifacts, without navigating", async () => {
+      const { finish, invalidate } = await leaveMidCommand("/speckit.specify A new feature");
+      await finish((s) => s.resolve({ message: "Generated spec.md", feature: created }));
+
+      expect(toastSuccess).toHaveBeenCalledWith("Generated spec.md");
+      expect(toastError).not.toHaveBeenCalled();
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: queryKeys.projects.specKitFiles("p1"),
+      });
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: queryKeys.projects.specKitFeaturesAll("p1"),
+      });
+      expect(routerReplace).not.toHaveBeenCalled();
+    });
+
+    it("reports the failure", async () => {
+      const { finish } = await leaveMidCommand("/speckit.specify A new feature");
+      await finish((s) => s.reject(new ApiError(502, "The model did not answer.", "LLM_FAILED")));
+
+      expect(toastError).toHaveBeenCalledTimes(1);
+      expect(toastError).toHaveBeenCalledWith("The model did not answer.");
+      expect(toastSuccess).not.toHaveBeenCalled();
+      expect(routerReplace).not.toHaveBeenCalled();
+    });
+
+    it("keeps the /speckit.implement handoff for the next visit", async () => {
+      const { finish } = await leaveMidCommand("/speckit.implement");
+      expect(loadHandoff("p1")).toBeNull();
+      await finish((s) =>
+        s.resolve({
+          message: "Spec Kit handoff ready with 2 artifact(s)",
+          artifactName: null,
+          artifact: {
+            context: ["spec.md", "plan.md"],
+            orchestratorRoute: "/api/projects/p1/analyses",
+          },
+        }),
+      );
+
+      expect(loadHandoff("p1")).toEqual({ context: ["spec.md", "plan.md"], feature: null });
+      expect(toastSuccess).toHaveBeenCalledWith("Spec Kit handoff ready with 2 artifact(s)");
+      expect(routerReplace).not.toHaveBeenCalled();
+    });
+
+    // The poll is aborted with the page, so a lost response has no result to
+    // report: that is the abandoned poll, not a failed command.
+    it("shows no error when the response is lost and the poll is abandoned", async () => {
+      const { finish, invalidate } = await leaveMidCommand("/speckit.specify A new feature");
+      const readsBefore = m.listFeatures!.mock.calls.length;
+      // From here the server has the feature the command created.
+      m.listFeatures!.mockResolvedValue({ features: [created] });
+      await finish((s) => s.reject(new ApiError(500, "Internal Server Error")));
+
+      expect(toastError).not.toHaveBeenCalled();
+      expect(toastSuccess).not.toHaveBeenCalled();
+      expect(toastWarning).not.toHaveBeenCalled();
+      expect(routerReplace).not.toHaveBeenCalled();
+      expect(invalidate).not.toHaveBeenCalled();
+      // The recovery made no read after the page was left.
+      expect(m.listFeatures!.mock.calls.length).toBe(readsBefore);
+    });
+  });
+
+  it("#1069 opens the feature a lost /speckit.specify created while the page is open", async () => {
+    const created = {
+      id: "f_new",
+      slug: "new-feature",
+      title: "New feature",
+      status: "draft",
+      branchName: null,
+      updatedAt: "2026-10-11T00:00:00.000Z",
+    };
+    // The feature exists from the moment the command is sent, not before.
+    let sent = false;
+    m.listFeatures!.mockImplementation(async () => ({ features: sent ? [created] : [] }));
+    m.runCommand!.mockImplementation(async () => {
+      sent = true;
+      throw new ApiError(500, "Internal Server Error");
+    });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeInTheDocument());
+    routerReplace.mockClear();
+    fireEvent.change(screen.getByTestId("spec-kit-command-input"), {
+      target: { value: "/speckit.specify A new feature" },
+    });
+    fireEvent.click(screen.getByTestId("spec-kit-run-button"));
+
+    await waitFor(() =>
+      expect(routerReplace).toHaveBeenCalledWith("/projects/p1/spec-kit?feature=new-feature", {
+        scroll: false,
+      }),
+    );
   });
 
   it("shows slash-command suggestions while typing", async () => {

@@ -19,7 +19,7 @@
  * checklists, issue export, delete and the `/speckit.implement` → analysis
  * handoff are buttons.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -27,6 +27,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { SPEC_KIT_ARTIFACT_NAMES, isSpecKitArtifactName } from "@metis/shared";
 import type { SpecKitArtifactName, SpecKitNamespacedCommand } from "@metis/shared";
 import { specKitApi, type SpecKitRunOptions } from "@/lib/spec-kit-api";
+import {
+  SpecKitCommandCancelledError,
+  runSpecKitCommandWithRecovery,
+} from "@/lib/spec-kit-recovery";
 import { analysisApi } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
@@ -294,9 +298,27 @@ export default function SpecKitPage() {
     },
   });
 
+  // #1069 — aborted when the page is left. A command (or the poll for its lost
+  // response) can outlive the page by minutes, and TanStack still runs the
+  // mutation's callbacks then. The abort stops the poll's requests, and the
+  // callbacks below then skip only what belongs to this page: its state and the
+  // navigation back to it. The toast, the cache refresh and the saved handoff
+  // are app-wide, so a late result is still reported wherever the user is.
+  const leftPage = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    leftPage.current = controller;
+    return () => controller.abort();
+  }, []);
+  const hasLeftPage = (): boolean => leftPage.current?.signal.aborted !== false;
+
   const commandMutation = useMutation({
+    // #1069 — after a lost response (a bare 5xx from the proxy, a dropped
+    // connection) this polls for the artifact the command was writing.
     mutationFn: (input: { command: SpecKitNamespacedCommand; options: SpecKitRunOptions }) =>
-      specKitApi.runCommand(projectId, input.command, input.options),
+      runSpecKitCommandWithRecovery(projectId, input.command, input.options, {
+        signal: leftPage.current?.signal,
+      }),
     // #936 — a command is a write (an artifact, a model call, issues on GitHub):
     // never resend it on a 5xx, which sent one click's request twice.
     retry: false,
@@ -308,19 +330,22 @@ export default function SpecKitPage() {
     // surfacing the line in the result card. The grounded line is preserved
     // byte-for-byte as the success toast text.
     onSuccess: (result, input) => {
-      setLastErrorMessage(null);
-      setLastResultMessage(result.message);
+      const onPage = !hasLeftPage();
+      if (onPage) {
+        setLastErrorMessage(null);
+        setLastResultMessage(result.message);
+      }
       // #993 — a live export links the issues it created, in the toast and the
       // result card; a dry run's placeholders are never links.
       const issueLinks =
         input.command === "speckit.taskstoissues" && input.options.dryRun !== true
           ? createdIssueLinks(result.created)
           : [];
-      setLastIssueLinks(issueLinks);
+      if (onPage) setLastIssueLinks(issueLinks);
       // #1057 / #1037 — a cut-off reply that was not saved is shown, not lost,
       // and the toast is a warning: the command ran but changed less than asked.
       const partial = partialReplies(result.partialContent);
-      setLastPartial(partial);
+      if (onPage) setLastPartial(partial);
       if (result.message) {
         if (issueLinks.length > 0) {
           toast.success(result.message, {
@@ -329,8 +354,19 @@ export default function SpecKitPage() {
         } else if (partial.length > 0) toast.warning(result.message);
         else toast.success(result.message);
       }
-      setCommandBuffer("");
       const featureSlug = input.options.featureSlug ?? null;
+      // `/speckit.implement` returns its handoff as `artifact: { context, orchestratorRoute }`.
+      const handedOff =
+        result.artifact && "orchestratorRoute" in result.artifact
+          ? { context: result.artifact.context, feature: featureSlug }
+          : null;
+      refreshArtifacts();
+      if (!onPage) {
+        // #945 — the handoff is kept for the next visit, not for this page view.
+        if (handedOff) saveHandoff(projectId, handedOff);
+        return;
+      }
+      setCommandBuffer("");
       if (result.feature) {
         // `/speckit.specify` created (or re-specified) a feature: open it.
         selectFeature(result.feature.slug);
@@ -341,10 +377,7 @@ export default function SpecKitPage() {
       } else if (result.artifacts && result.artifacts.length > 0) {
         setSelectedKey(result.artifacts[result.artifacts.length - 1]!.key);
       }
-      // `/speckit.implement` returns its handoff as `artifact: { context, orchestratorRoute }`.
-      if (result.artifact && "orchestratorRoute" in result.artifact) {
-        setHandoff({ context: result.artifact.context, feature: featureSlug });
-      }
+      if (handedOff) setHandoff(handedOff);
       if (input.command === "speckit.taskstoissues") {
         setPreviewedExport(
           input.options.dryRun && input.options.featureSlug
@@ -373,9 +406,14 @@ export default function SpecKitPage() {
             : null,
         );
       }
-      refreshArtifacts();
     },
     onError: (err) => {
+      // The poll was abandoned because the page was left: nothing failed.
+      if (err instanceof SpecKitCommandCancelledError) return;
+      if (hasLeftPage()) {
+        toast.error(describeSpecKitError(err));
+        return;
+      }
       setLastResultMessage(null);
       setLastIssueLinks([]);
       setLastPartial([]);
