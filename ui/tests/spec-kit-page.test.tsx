@@ -1582,6 +1582,47 @@ describe("SpecKitPage — #789", () => {
       expect(toastError).not.toHaveBeenCalledWith(GENERIC);
     });
 
+    // PR #1083 review — a retry that works must take the refusal off the page.
+    it("a delete that succeeds after a refused one clears the error card", async () => {
+      m.listFiles!.mockResolvedValue({ enabled: true, artifacts: [artifact("spec.md", "S")] });
+      m.deleteFile!.mockRejectedValueOnce(
+        new ApiError(409, "spec.md is being edited by someone else.", "CONFLICT"),
+      );
+      m.deleteFile!.mockResolvedValueOnce(undefined);
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      fireEvent.click(await screen.findByTestId("spec-kit-delete-button"));
+      await answerDialog("Delete");
+      expect(await screen.findByTestId("spec-kit-error")).toHaveTextContent(
+        "spec.md is being edited by someone else.",
+      );
+      fireEvent.click(screen.getByTestId("spec-kit-delete-button"));
+      await answerDialog("Delete");
+      await waitFor(() => expect(m.deleteFile).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByTestId("spec-kit-error")).not.toBeInTheDocument());
+    });
+
+    it("an analysis start that succeeds after a refused one clears the error card", async () => {
+      m.runCommand!.mockResolvedValue({
+        message: "handoff",
+        artifactName: null,
+        artifact: { context: ["spec.md"], orchestratorRoute: "/api/projects/p1/analyses" },
+      });
+      startAnalysis.mockRejectedValueOnce(
+        new ApiError(429, "The monthly analysis cap is reached.", "COST_CAP_EXCEEDED"),
+      );
+      startAnalysis.mockResolvedValueOnce({ id: "an_retry" });
+      render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-command-input")).toBeEnabled());
+      typeAndRun("/speckit.implement");
+      fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));
+      expect(await screen.findByTestId("spec-kit-error")).toHaveTextContent(
+        "The monthly analysis cap is reached.",
+      );
+      fireEvent.click(screen.getByTestId("spec-kit-start-analysis"));
+      await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByTestId("spec-kit-error")).not.toBeInTheDocument());
+    });
+
     it("a refused feature archive toasts the server's reason", async () => {
       m.archiveFeature!.mockRejectedValue(
         new ApiError(409, "001-a is already archived.", "SPECKIT_FEATURE_ARCHIVED"),

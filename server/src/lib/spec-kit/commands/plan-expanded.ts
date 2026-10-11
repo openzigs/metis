@@ -17,11 +17,14 @@
  * #1065 — plan.md is generated FIRST and handed to the data model, the
  * contract and the quickstart, so they follow the plan instead of guessing at
  * it (run 7: a contract endpoint the plan had put out of scope). Nothing is
- * written until every artifact has been generated, so a failed call leaves the
- * previous set whole rather than a mix of old and new.
+ * written until every artifact has been generated AND passed the store's own
+ * checks, so a failed model call or an oversized artifact leaves the previous
+ * set whole rather than a mix of old and new. The five writes are not one
+ * database transaction: a database error part-way can still leave a mixed set.
  */
 import yaml from "js-yaml";
 import {
+  assertFeatureArtifactWritable,
   writeFeatureArtifact,
   getFeatureArtifact,
   type FeatureArtifactDto,
@@ -242,9 +245,10 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   // #1057 — cut-off replies NOT saved because a complete version already
   // existed; that version stays current and the partial text is returned.
   const partialContent: Record<string, string> = {};
-  // #1065 — nothing is written while another artifact can still fail: each one
-  // is staged here and the set is written once all five exist. A 502 from any
-  // call (#1057) therefore leaves the previous set whole.
+  // #1065 — nothing is written while another artifact can still fail to be
+  // generated: each one is staged here and the set is written once all five
+  // exist. A 502 from any model call (#1057) therefore leaves the previous set
+  // whole. The write phase below is NOT a transaction — see the note there.
   const staged: Array<{ key: string; content: string; prior: FeatureArtifactDto | null }> = [];
   /** Stage an artifact; returns the content that will be current after this run. */
   const stage = async (key: string, content: string): Promise<string> => {
@@ -330,8 +334,16 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     ),
   );
 
-  // Every artifact exists: write the set. plan.md goes last so it is the
-  // artifact the page opens on, as before.
+  // Every artifact exists. Before the first write, run every check the store
+  // makes ahead of its database calls (key shape, 200,000-character cap) on the
+  // whole set, so a refusal that can be known in advance refuses all five.
+  // What is left is a database error between two writes: the store has no
+  // transaction, so that — and only that — can still leave a mixed set.
+  for (const item of staged) {
+    if (!item.prior) assertFeatureArtifactWritable(item.key, item.content);
+  }
+  // Write the set. plan.md goes last so it is the artifact the page opens on,
+  // as before.
   const artifacts: FeatureArtifactDto[] = [];
   for (const item of [...staged.slice(1), staged[0]!]) {
     artifacts.push(

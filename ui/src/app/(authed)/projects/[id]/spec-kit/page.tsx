@@ -394,6 +394,8 @@ export default function SpecKitPage() {
         : specKitApi.deleteFeatureArtifact(projectId, target.feature, target.key),
     onSuccess: (_void, target) => {
       toast.success(`Deleted ${target.title}.`);
+      // A retry that worked must not leave the earlier refusal on the page.
+      setLastErrorMessage(null);
       setEditingDraft(null);
       refreshArtifacts();
     },
@@ -427,6 +429,7 @@ export default function SpecKitPage() {
           ? `Analysis started. ${omittedCount} part(s) of spec.md did not fit and were not sent; the analysis page lists them.`
           : "Analysis started.",
       );
+      setLastErrorMessage(null);
       setHandoff(null);
       router.push(`/projects/${projectId}/analysis?analysisId=${encodeURIComponent(id)}`);
     },

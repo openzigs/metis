@@ -1179,6 +1179,68 @@ describe("#1065 — contract vs plan", () => {
     expect(featureRows.get(fid)!.status).not.toBe("planned");
   });
 
+  // PR #1083 review — the write phase is five separate writes. A refusal the
+  // store can make without the database (the size cap) is made for all five
+  // before the first write, so it cannot leave three new artifacts beside two old.
+  it("writes nothing when one artifact is over the size cap, although all five were generated", async () => {
+    const fid = seedFeature("p1", "027-toolarge");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    for (const key of ["plan.md", "research.md", "data-model.md", "quickstart.md"]) {
+      seedFeatureArtifact(fid, key, `# previous ${key}\n`);
+    }
+    seedFeatureArtifact(fid, "contracts/api.openapi.yaml", "previous contract\n");
+    const before = stored(fid);
+    // quickstart.md is written fourth of five: research, data model and the
+    // contract would already be new by the time the store refused it.
+    const provider = new ScriptedProvider({
+      "quickstart.md": `# Quickstart\n${"x".repeat(200_001)}`,
+    });
+    await expect(
+      runPlanExpanded({ projectId: "p1", featureSlug: "027-toolarge", deps: { provider } }),
+    ).rejects.toMatchObject({ code: "SPECKIT_CONTENT_TOO_LARGE" });
+    expect(provider.calls).toHaveLength(5);
+    expect(stored(fid)).toEqual(before);
+    expect(featureRows.get(fid)!.status).not.toBe("planned");
+  });
+
+  it("a plan that pairs the marker with an endpoint still gets a contract call", async () => {
+    const fid = seedFeature("p1", "028-nearmiss");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const provider = new ScriptedProvider({
+      "plan.md":
+        "# Plan\n\n## Components\n\n- REST surface: none of the existing endpoints change; adds `PUT /entries/mark-all-as-read`\n",
+      "contracts/api.openapi.yaml": INVENTED_CONTRACT,
+    });
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "028-nearmiss",
+      deps: { provider },
+    });
+    expect(provider.calls.map((c) => c.artifact)).toContain("contracts/api.openapi.yaml");
+    const contract = r.artifacts.find((a) => a.key === "contracts/api.openapi.yaml")!;
+    expect(contract.content).toContain("/entries/mark-all-as-read");
+    expect(r.message).not.toContain("The plan declares no REST surface");
+    expect(r.message).not.toContain("Contract check");
+  });
+
+  it("reports a plan endpoint the contract leaves out", async () => {
+    const fid = seedFeature("p1", "029-missing");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "029-missing",
+      deps: {
+        provider: new ScriptedProvider({
+          "plan.md": "# Plan\n\nAdds `PUT /entries/mark-all-as-read` and `DELETE /tags/{id}`.\n",
+          "contracts/api.openapi.yaml": INVENTED_CONTRACT,
+        }),
+      },
+    });
+    expect(r.message).toContain(
+      "Contract check: plan.md names `DELETE /tags/{id}`, which `contracts/api.openapi.yaml` does not define",
+    );
+  });
+
   it("writes nothing when plan.md itself fails, and stops before the other four calls", async () => {
     const fid = seedFeature("p1", "025-planfail");
     seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
