@@ -17,6 +17,17 @@
  * `imports` edges are deliberately NOT followed: for a file-only target they
  * would link every test that imports the package.
  *
+ * Go only (#1034): the ingest leaves a call through a receiver or a struct field
+ * (`client.CreateBookmark(…)`, `h.store.SetEntriesStatus(…)`) unresolved, 76% of
+ * Miniflux's call edges, so the walk above never saw the test making it. Those
+ * calls are bound here by the impact-analysis resolver
+ * (`impact-analysis/go-call-resolution.ts`: one visible candidate or nothing) and
+ * followed as `exercises` edges into a symbol target or a RANGED file target.
+ * A rangeless whole-file target does not follow them: it expands to every symbol
+ * of the file, which already links unrelated tests (#955, #1004). The step is
+ * skipped unless a target is Go, and goes away once the ingest resolves
+ * receivers itself (#1071): delete `loadGoResolvedEdges` and `goResolvedEdgesInto`.
+ *
  * Four guards keep a broad mapping from fanning out (#860, #905):
  *  - A file-only target that records a line range expands only to the symbols
  *    overlapping that range, not the whole file. The range is applied before the
@@ -65,6 +76,7 @@ import { AppError } from "../../middleware/error-handler.js";
 import { BM25Index, tokenizeCodeRoots } from "../code-graph/hybrid-search.js";
 import { classifyTestSymbol, siblingTestPaths } from "../code-graph/test-conventions.js";
 import { getConfigService } from "../config/config-service.js";
+import { loadResolvedGoCalls } from "../impact-analysis/go-call-resolution.js";
 import { denoiseRequirementQuery } from "./requirement-code-mapping.js";
 import { ANALYSIS_GROUNDING_SOURCE } from "./seed-code-links-from-findings.js";
 
@@ -324,6 +336,8 @@ interface GraphRows {
   /** `TESTED_BY_MAX_SYMBOLS_PER_FILE`, applied per target by {@link fileTargetSymbols}. */
   perFileCap: number;
   edgesInto: Map<string, SymbolRow[]>;
+  /** #1034 — test callers reached only through a Go call bound after ingest. */
+  goResolvedEdgesInto: Map<string, SymbolRow[]>;
   siblingSymbolsByFile: Map<string, SymbolRow[]>;
 }
 
@@ -351,7 +365,38 @@ function fileTargetSymbols(t: TestedByTarget, graph: GraphRows): SymbolRow[] {
 const targetIsTest = (t: TestedByTarget): boolean =>
   classifyTestSymbol({ filePath: t.filePath }).isTestFile;
 
-/** Load symbols, incoming edges and sibling test symbols: three queries at most. */
+/**
+ * #1034 — the test callers behind the Go `calls` edges the ingest left
+ * unresolved, keyed by the target they reach. Three reads for the resolver, one
+ * more for the callers when something bound; none when no target is Go.
+ */
+async function loadGoResolvedEdges(
+  prisma: TestedByPrisma,
+  projectId: string,
+  goTargetIds: ReadonlySet<string>,
+): Promise<Map<string, SymbolRow[]>> {
+  const into = new Map<string, SymbolRow[]>();
+  if (goTargetIds.size === 0) return into;
+  const resolved = (await loadResolvedGoCalls(prisma, projectId)).filter((r) =>
+    goTargetIds.has(r.toSymbolId),
+  );
+  if (resolved.length === 0) return into;
+  const callers: SymbolRow[] = await prisma.codeSymbol.findMany({
+    where: { projectId, id: { in: [...new Set(resolved.map((r) => r.fromSymbolId))] } },
+    select: SYMBOL_SELECT,
+  });
+  const callerById = new Map(callers.map((c) => [c.id, c]));
+  for (const r of resolved) {
+    const from = callerById.get(r.fromSymbolId);
+    if (from && classifyTestSymbol(from).isTestFile) pushTo(into, r.toSymbolId, from);
+  }
+  return into;
+}
+
+/**
+ * Load symbols, incoming edges and sibling test symbols: three queries, plus
+ * {@link loadGoResolvedEdges}' for a Go target.
+ */
 async function loadGraph(
   prisma: TestedByPrisma,
   projectId: string,
@@ -376,6 +421,7 @@ async function loadGraph(
     symbolsByFile: new Map(),
     perFileCap,
     edgesInto: new Map(),
+    goResolvedEdgesInto: new Map(),
     siblingSymbolsByFile: new Map(),
   };
 
@@ -396,9 +442,15 @@ async function loadGraph(
   }
 
   const edgeTargets = new Set<string>(graph.symbolById.keys());
+  const goTargets = new Set<string>();
+  for (const s of graph.symbolById.values()) if (s.language === "go") goTargets.add(s.id);
   for (const t of targets) {
     if (t.codeSymbolId || targetIsTest(t)) continue;
-    for (const s of fileTargetSymbols(t, graph)) edgeTargets.add(s.id);
+    for (const s of fileTargetSymbols(t, graph)) {
+      edgeTargets.add(s.id);
+      // A rangeless whole-file target never follows a call bound here (#955, #1004).
+      if (t.startLine != null && s.language === "go") goTargets.add(s.id);
+    }
   }
   if (edgeTargets.size) {
     const edges = await prisma.codeEdge.findMany({
@@ -431,6 +483,9 @@ async function loadGraph(
     });
     for (const row of rows) pushTo(graph.siblingSymbolsByFile, row.filePath, row);
   }
+
+  // #1034 — last, so the reads above keep their order and it is one line to remove.
+  graph.goResolvedEdgesInto = await loadGoResolvedEdges(prisma, projectId, goTargets);
   return graph;
 }
 
@@ -522,8 +577,13 @@ function resolveOne(
     const targetSymbols = fileOnly ? fileTargetSymbols(t, graph) : one ? [one] : [];
 
     const exercised: Array<{ from: SymbolRow; ts: SymbolRow }> = [];
+    // #1034 — a rangeless whole-file target expands to the whole file, so it
+    // keeps to the edges the ingest resolved (#955, #1004).
+    const followGoResolved = !fileOnly || t.startLine != null;
     for (const ts of targetSymbols) {
       for (const from of graph.edgesInto.get(ts.id) ?? []) exercised.push({ from, ts });
+      if (!followGoResolved) continue;
+      for (const from of graph.goResolvedEdgesInto.get(ts.id) ?? []) exercised.push({ from, ts });
     }
     // #860 — through a hub, a test calling the target is setup, not evidence of
     // testing THIS requirement: keep it only when it is about it (by the test's

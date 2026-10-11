@@ -54,7 +54,17 @@ interface Fixture {
     startLine?: number | null;
   }>;
   symbols?: Sym[];
-  edges?: Array<{ projectId: string; kind: string; fromSymbolId: string; toSymbolId: string }>;
+  edges?: Array<{
+    projectId: string;
+    kind: string;
+    fromSymbolId: string;
+    /** Null for an edge the ingest left unresolved (#1034). */
+    toSymbolId: string | null;
+    /** The callee or import path as parsed; read only for unresolved and `imports` edges. */
+    toQualifiedName?: string;
+    /** The edge's own file; read only for unresolved and `imports` edges. */
+    filePath?: string;
+  }>;
 }
 
 type Where = Record<string, unknown>;
@@ -72,7 +82,12 @@ function fakePrisma(f: Fixture) {
   const symWhere = (s: Sym, w: Where): boolean => {
     if (s.projectId !== w.projectId) return false;
     if (w.OR) return (w.OR as Where[]).some((o) => symWhere(s, { ...o, projectId: w.projectId }));
-    return inList(w.id, s.id) && inList(w.filePath, s.filePath);
+    return (
+      inList(w.id, s.id) &&
+      inList(w.filePath, s.filePath) &&
+      inList(w.language, s.language) &&
+      inList(w.kind, s.kind)
+    );
   };
   const prisma = {
     analysis: {
@@ -137,6 +152,23 @@ function fakePrisma(f: Fixture) {
     },
     codeEdge: {
       findMany: vi.fn(async ({ where }: { where: Where }) => {
+        // #1034 — the Go call resolver's two reads: unresolved calls, and imports.
+        if (where.toSymbolId === null || where.kind === "imports") {
+          const suffix = (where.filePath as { endsWith: string }).endsWith;
+          return (f.edges ?? [])
+            .filter(
+              (e) =>
+                e.projectId === where.projectId &&
+                e.kind === where.kind &&
+                (where.toSymbolId !== null || e.toSymbolId === null) &&
+                (e.filePath ?? "").endsWith(suffix),
+            )
+            .map((e) => ({
+              fromSymbolId: e.fromSymbolId,
+              filePath: e.filePath,
+              toQualifiedName: e.toQualifiedName ?? null,
+            }));
+        }
         const fromScope = (where.fromSymbol as Where | undefined)?.projectId;
         return (f.edges ?? [])
           .filter(
@@ -434,9 +466,10 @@ describe("resolveTestedBy", () => {
     );
     expect(resOne.get("r0")!.length).toBeGreaterThan(0);
     expect(resMany.size).toBe(25);
-    // requirement, code mappings, spec mappings, spec code, target symbols, edges, siblings.
-    expect(totalCalls(one.prisma)).toBe(7);
-    expect(totalCalls(many.prisma)).toBe(7);
+    // requirement, code mappings, spec mappings, spec code, target symbols, edges, siblings,
+    // and — a Go target only — the call resolver's callables, unresolved calls and imports (#1034).
+    expect(totalCalls(one.prisma)).toBe(10);
+    expect(totalCalls(many.prisma)).toBe(10);
   });
 
   it("never reads another project's symbols or edges for a shared file path", async () => {
@@ -469,6 +502,205 @@ describe("resolveTestedBy", () => {
       ],
     });
     expect((await resolveTestedBy(P, ["r1", "r2"], undefined, d)).size).toBe(0);
+  });
+});
+
+describe("resolveTestedBy — Go calls the ingest left unresolved (#1034)", () => {
+  const STORE = "internal/storage/entry.go";
+  const API_TEST = "internal/api/entry_test.go";
+  const API = "internal/api/api.go";
+  const storeSymbols = [
+    sym("s-set", STORE, "SetEntriesStatus", { startLine: 100 }),
+    sym("s-trunc", STORE, "truncateStringForTSVectorField", { startLine: 300 }),
+    sym("h", API, "updateEntries", { startLine: 10 }),
+    sym("t-api", API_TEST, "TestUpdateEntriesHandler", { startLine: 20 }),
+  ];
+  /** `h.store.SetEntriesStatus(…)` from the handler test: unresolved at ingest. */
+  const methodCall = {
+    projectId: P,
+    kind: "calls",
+    fromSymbolId: "t-api",
+    toSymbolId: null,
+    toQualifiedName: "h.store.SetEntriesStatus",
+    filePath: API_TEST,
+  };
+  const importsStorage = {
+    projectId: P,
+    kind: "imports",
+    fromSymbolId: "h",
+    toSymbolId: null,
+    toQualifiedName: "miniflux.app/v2/internal/storage",
+    filePath: API,
+  };
+  const names = (out: Array<{ name: string; relation: string }>) =>
+    out.map((t) => [t.name, t.relation]);
+
+  it("lists a test that reaches the mapped method through a struct field", async () => {
+    const { deps: d } = deps({
+      requirements: [req("r1", "Mark entries as read")],
+      codeMappings: [fileMap("r1", STORE, "s-set")],
+      symbols: storeSymbols,
+      edges: [methodCall, importsStorage],
+    });
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    expect(names(out)).toEqual([["TestUpdateEntriesHandler", "exercises"]]);
+    expect(out[0]).toMatchObject({
+      codeSymbolId: "t-api",
+      filePath: API_TEST,
+      subject: { filePath: STORE, symbol: `${STORE}::SetEntriesStatus` },
+    });
+  });
+
+  it("lists a same-package test that calls the mapped method on a receiver", async () => {
+    // The issue's case: `client.CreateBookmark(…)` inside a linktaco test.
+    const LT = "internal/integration/linktaco/linktaco.go";
+    const LT_TEST = "internal/integration/linktaco/linktaco_test.go";
+    const { deps: d } = deps({
+      requirements: [req("r1", "Require API token and organization slug")],
+      codeMappings: [fileMap("r1", LT, "lt-create")],
+      symbols: [
+        sym("lt-create", LT, "CreateBookmark"),
+        // Another integration's method of the same name: not visible from linktaco.
+        sym("ld-create", "internal/integration/linkding/linkding.go", "CreateBookmark"),
+        sym("lt-test", LT_TEST, "TestMissingCredentials", { startLine: 200 }),
+      ],
+      edges: [
+        {
+          projectId: P,
+          kind: "calls",
+          fromSymbolId: "lt-test",
+          toSymbolId: null,
+          toQualifiedName: "client.CreateBookmark",
+          filePath: LT_TEST,
+        },
+      ],
+    });
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    expect(names(out)).toEqual([["TestMissingCredentials", "exercises"]]);
+  });
+
+  it("follows the resolved call into a ranged file target", async () => {
+    const { deps: d } = deps({
+      requirements: [req("r1", "Mark entries as read")],
+      codeMappings: [{ ...fileMap("r1", STORE), startLine: 100, endLine: 105 }],
+      symbols: storeSymbols,
+      edges: [methodCall, importsStorage],
+    });
+    const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
+    expect(names(out)).toEqual([["TestUpdateEntriesHandler", "exercises"]]);
+  });
+
+  it("does not follow it into a rangeless whole-file target (#955, #1004)", async () => {
+    // A whole-file row expands to every symbol of entry.go; binding the call
+    // graph's gap there would link every handler test that touches storage.
+    const { deps: d } = deps({
+      requirements: [req("r1", "Mark entries as read")],
+      codeMappings: [fileMap("r1", STORE)],
+      symbols: storeSymbols,
+      edges: [methodCall, importsStorage],
+    });
+    expect((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")).toEqual([]);
+
+    // Still not followed when another requirement's symbol mapping loads the
+    // very same bound call in the same batch.
+    const batch = deps({
+      requirements: [req("r1", "Mark entries as read"), req("r2", "Mark entries as read")],
+      codeMappings: [fileMap("r1", STORE), fileMap("r2", STORE, "s-set")],
+      symbols: storeSymbols,
+      edges: [methodCall, importsStorage],
+    });
+    const out = await resolveTestedBy(P, ["r1", "r2"], undefined, batch.deps);
+    expect(out.get("r1")).toEqual([]);
+    expect(names(out.get("r2")!)).toEqual([["TestUpdateEntriesHandler", "exercises"]]);
+  });
+
+  it("does not guess when the callee is ambiguous or out of reach", async () => {
+    const base = {
+      requirements: [req("r1", "Mark entries as read")],
+      codeMappings: [fileMap("r1", STORE, "s-set")],
+    };
+    // No import of the storage package from the caller's package.
+    const unreachable = deps({ ...base, symbols: storeSymbols, edges: [methodCall] });
+    expect((await resolveTestedBy(P, ["r1"], undefined, unreachable.deps)).get("r1")).toEqual([]);
+    // Two visible candidates of the same name.
+    const ambiguous = deps({
+      ...base,
+      symbols: [...storeSymbols, sym("h-set", API, "SetEntriesStatus", { startLine: 50 })],
+      edges: [methodCall, importsStorage],
+    });
+    expect((await resolveTestedBy(P, ["r1"], undefined, ambiguous.deps)).get("r1")).toEqual([]);
+  });
+
+  it("ignores a resolved call from a non-test file", async () => {
+    const { deps: d } = deps({
+      requirements: [req("r1", "Mark entries as read")],
+      codeMappings: [fileMap("r1", STORE, "s-set")],
+      symbols: storeSymbols,
+      edges: [{ ...methodCall, fromSymbolId: "h", filePath: API }, importsStorage],
+    });
+    expect((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")).toEqual([]);
+  });
+
+  it("counts a resolved call toward the hub guard like any other edge", async () => {
+    const FEVER_TEST = "internal/fever/handler_test.go";
+    const fixture = {
+      requirements: [req("r1", "Password length policy for accounts")],
+      codeMappings: [fileMap("r1", STORE, "s-set")],
+      symbols: [...storeSymbols, sym("t-fever", FEVER_TEST, "TestFeverMarkRead")],
+      edges: [
+        methodCall,
+        importsStorage,
+        { ...methodCall, fromSymbolId: "t-fever", filePath: FEVER_TEST },
+        { ...importsStorage, filePath: "internal/fever/handler.go" },
+      ],
+    };
+    // Two foreign test directories make the target a hub; neither test nor the
+    // callee shares the title's words, so neither is kept.
+    const hub = deps(fixture);
+    expect((await resolveTestedBy(P, ["r1"], undefined, hub.deps)).get("r1")).toEqual([]);
+    // Not vacuous: with the hub guard out of reach, both are listed.
+    const noHub = deps(fixture, { hubMinForeignTestDirs: 99 });
+    expect(
+      names((await resolveTestedBy(P, ["r1"], undefined, noHub.deps)).get("r1")!).sort(),
+    ).toEqual([
+      ["TestFeverMarkRead", "exercises"],
+      ["TestUpdateEntriesHandler", "exercises"],
+    ]);
+  });
+
+  it("reads no Go call graph for a project whose targets are not Go", async () => {
+    const { prisma, deps: d } = deps({
+      requirements: [req("r1", "x")],
+      codeMappings: [fileMap("r1", "pkg/a.ts", "a")],
+      symbols: [sym("a", "pkg/a.ts", "doThing"), sym("t", "pkg/a.test.ts", "suite")],
+      edges: [{ projectId: P, kind: "calls", fromSymbolId: "t", toSymbolId: "a" }],
+    });
+    await resolveTestedBy(P, ["r1"], undefined, d);
+    expect(prisma.codeEdge.findMany.mock.calls.length).toBeGreaterThan(0);
+    for (const [arg] of prisma.codeEdge.findMany.mock.calls) {
+      expect(arg.where.toSymbolId).not.toBeNull();
+      expect(arg.where.kind).not.toBe("imports");
+    }
+  });
+
+  it("scopes every resolver read to the project", async () => {
+    const { prisma, deps: d } = deps({
+      requirements: [req("r1", "Mark entries as read")],
+      codeMappings: [fileMap("r1", STORE, "s-set")],
+      symbols: [
+        ...storeSymbols,
+        { ...sym("b-t", API_TEST, "TestOtherProject"), projectId: "proj-b" },
+      ],
+      edges: [
+        importsStorage,
+        { ...methodCall, projectId: "proj-b", fromSymbolId: "b-t" },
+        { ...importsStorage, projectId: "proj-b" },
+      ],
+    });
+    expect((await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")).toEqual([]);
+    for (const model of [prisma.codeSymbol, prisma.codeEdge]) {
+      for (const [arg] of model.findMany.mock.calls) expect(arg.where.projectId).toBe(P);
+    }
   });
 });
 
