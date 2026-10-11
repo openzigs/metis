@@ -42,6 +42,7 @@ import type { DocumentSource } from "../documents/document-source.js";
 import { createChildLogger } from "../logger.js";
 import { displayFilename } from "../rag/hit-locator.js";
 import { DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
+import { parseFirstBalancedJsonObject } from "./balanced-json.js";
 import { buildSpecialistPrompt } from "./prompts.js";
 import { responseFormatForAgent } from "./structured-output-schemas.js";
 
@@ -152,9 +153,21 @@ export function enrichCitations(
  */
 export function extractJsonObject(raw: string): unknown {
   const trimmed = raw.trim();
-  // Quick path \u2014 the model obeyed.
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    return JSON.parse(trimmed);
+  if (trimmed.startsWith("{")) {
+    // Quick path \u2014 the model obeyed.
+    if (trimmed.endsWith("}")) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        // #1002 — not necessarily malformed: `{...} then close the } block`
+        // also starts with `{` and ends with `}`. Fall through.
+      }
+    }
+    // #1002 — the answer leads and commentary follows. Taken BEFORE the fence
+    // branch because a draft's own Markdown can carry a fenced snippet inside a
+    // string value, which the fence pattern would otherwise match.
+    const leading = parseFirstBalancedJsonObject(trimmed, { leadingOnly: true });
+    if (leading.found) return leading.value;
   }
   // Strip ```json ... ``` style fences.
   //
@@ -181,7 +194,16 @@ export function extractJsonObject(raw: string): unknown {
     const inner = fenceMatch[1].trim();
     if (inner.startsWith("{")) return JSON.parse(inner);
   }
-  // Brute-force \u2014 grab the substring from the first `{` to the matching `}`.
+  // #1002 — the first balanced `{...}` that parses, wherever it sits. This
+  // replaces the first-`{`-to-LAST-`}` slice as the extraction step: that slice
+  // broke on any prose after the object that contained a brace.
+  const balanced = parseFirstBalancedJsonObject(trimmed);
+  if (balanced.found) return balanced.value;
+  // The scan found nothing it would accept. The pre-#1002 slice stays as the
+  // last resort, mostly for the error it throws: its `SyntaxError ... at
+  // position N` is what the agent runner's truncation diagnosis reads (#1224).
+  // It can still succeed on the one shape the scan declines — a lone object
+  // followed by stray punctuation (`{"a":1},`) — exactly as it always did.
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
   if (start >= 0 && end > start) {

@@ -4,10 +4,27 @@
  * Accepts raw text or markdown input and uses an LLM (Haiku via model
  * router) to extract structured requirements with identified ambiguities
  * and evidence needs.
+ *
+ * #1058 — an answer that cannot be read is an ERROR, never an empty list. This
+ * module used to catch the `JSON.parse` failure, log it and return
+ * `{ requirements: [] }`, which is also what a text with no requirements
+ * yields — so a malformed answer looked like "requirements look complete", and
+ * no clarifying questions and no approval checkpoint followed. The call now
+ * goes through `requestStructuredVerdict` (one re-prompt carrying the parse
+ * error and the expected shape) and throws {@link RequirementsExtractionError}
+ * when that fails too.
  */
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
+import { extractJsonObject } from "./agent-runner.js";
+import {
+  hasVerdict,
+  jsonObjectWhereDeclared,
+  requestStructuredVerdict,
+  type NoVerdictReason,
+} from "./structured-verdict.js";
 import type {
   StructuredRequirement,
   StructuredRequirements,
@@ -47,6 +64,38 @@ const VALID_PRIORITIES: ReadonlySet<string> = new Set<RequirementEnhancementPrio
   "nice-to-have",
 ]);
 
+/**
+ * The envelope only. Each requirement is still read leniently below (a wrong
+ * `type` falls back to "functional", a non-string stakeholder is dropped):
+ * rejecting a whole extraction over one malformed field would trade a silent
+ * failure for a noisy one. What is NOT lenient is the envelope itself — an
+ * answer with no `requirements` array is not an extraction.
+ */
+const extractionSchema = z.object({ requirements: z.array(z.unknown()) });
+
+/** The shape quoted back to the model in the re-prompt. */
+const EXTRACTION_SHAPE =
+  '{ "requirements": [ { "title": string, "description": string, "type": string, ' +
+  '"stakeholders": string[], "priority": string, ' +
+  '"ambiguities": [ { "field": string, "description": string, "suggestedQuestion": string } ], ' +
+  '"evidenceNeeds": [ { "description": string, "domain": string, "searchHints": string[] } ] } ] }';
+
+/**
+ * #1058 — structured extraction produced nothing usable. Distinct from an empty
+ * result: the model was asked and its answer could not be read (or the call
+ * failed), so "there are no requirements" has NOT been established.
+ */
+export class RequirementsExtractionError extends Error {
+  constructor(
+    /** Why — the `requestStructuredVerdict` no-signal reason. */
+    readonly reason: NoVerdictReason,
+    detail: string,
+  ) {
+    super(`Structured requirements extraction failed (${reason}): ${detail}`);
+    this.name = "RequirementsExtractionError";
+  }
+}
+
 export interface RequirementsExtractorDeps {
   provider: AIProvider;
   model?: string;
@@ -76,13 +125,24 @@ export class RequirementsExtractor {
 
     log.info("Extracting structured requirements from input", { chars: rawInput.length });
 
-    const response = await this.provider.chat(messages, {
+    const outcome = await requestStructuredVerdict(this.provider, {
+      label: "requirements-extraction",
+      schema: extractionSchema,
+      schemaName: "requirements",
+      expectedShape: EXTRACTION_SHAPE,
+      messages,
       model: this.model,
       signal,
       disableTools: true,
+      // #1077 — JSON mode only where the backend is declared json_object-only
+      // (DeepSeek's OpenAI-format host, or a catalog override).
+      responseFormat: jsonObjectWhereDeclared(this.provider, this.model),
     });
+    if (!hasVerdict(outcome)) {
+      throw new RequirementsExtractionError(outcome.reason, outcome.detail);
+    }
 
-    const parsed = this.parseResponse(response.content, rawInput);
+    const parsed = this.toStructured(outcome.verdict.requirements, rawInput);
 
     log.info("Extracted structured requirements", {
       requirements: parsed.requirements.length,
@@ -94,30 +154,27 @@ export class RequirementsExtractor {
   }
 
   /**
-   * Parse and validate the LLM response into StructuredRequirements.
-   * @internal — exposed for testing.
+   * Parse and validate one LLM response into StructuredRequirements.
+   *
+   * @throws RequirementsExtractionError when `content` holds no JSON object or
+   *   the object has no `requirements` array (#1058 — never an empty result).
+   * @internal — exposed for testing; `extract` adds the re-prompt.
    */
   parseResponse(content: string, rawSource: string): StructuredRequirements {
     let json: unknown;
     try {
-      // Strip markdown fences if present
-      const cleaned = content.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
-      json = JSON.parse(cleaned);
-    } catch {
-      log.warn("Failed to parse LLM response as JSON, returning empty result");
-      return { requirements: [], totalAmbiguities: 0, totalEvidenceNeeds: 0 };
+      json = extractJsonObject(content);
+    } catch (err) {
+      throw new RequirementsExtractionError("unparseable", (err as Error).message);
     }
-
-    if (
-      !json ||
-      typeof json !== "object" ||
-      !Array.isArray((json as Record<string, unknown>).requirements)
-    ) {
-      log.warn("LLM response missing 'requirements' array");
-      return { requirements: [], totalAmbiguities: 0, totalEvidenceNeeds: 0 };
+    const envelope = extractionSchema.safeParse(json);
+    if (!envelope.success) {
+      throw new RequirementsExtractionError("schema-invalid", "missing 'requirements' array");
     }
+    return this.toStructured(envelope.data.requirements, rawSource);
+  }
 
-    const rawReqs = (json as { requirements: unknown[] }).requirements;
+  private toStructured(rawReqs: unknown[], rawSource: string): StructuredRequirements {
     const requirements: StructuredRequirement[] = [];
     let totalAmbiguities = 0;
     let totalEvidenceNeeds = 0;

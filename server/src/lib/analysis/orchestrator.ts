@@ -190,7 +190,7 @@ import {
 import { createRunDocumentLookup, projectDocumentQueries } from "./run-document-lookup.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
-import { RequirementsExtractor } from "./requirements-extractor.js";
+import { RequirementsExtractionError, RequirementsExtractor } from "./requirements-extractor.js";
 import {
   NO_WEB_SEARCH_PROVIDER_NOTICE,
   WebResearchAugmenter,
@@ -2283,12 +2283,41 @@ export class AnalysisOrchestrator {
     if (rawInput.trim().length === 0) return;
 
     const extractor = new RequirementsExtractor({ provider, model: input.model });
-    const structured = await extractor.extract(rawInput, input.signal);
+    let structured: Awaited<ReturnType<RequirementsExtractor["extract"]>>;
+    try {
+      structured = await extractor.extract(rawInput, input.signal);
+    } catch (err) {
+      // #1058 — a failed extraction is NOT an empty one. The caller treats the
+      // enhancement as best-effort and only logs, so without a durable marker
+      // this run is indistinguishable from "no requirements, nothing to ask":
+      // no questions, no approval checkpoint, and nothing on screen to say why.
+      // A cancelled run is not a failure and is not marked.
+      if (!input.signal.aborted) {
+        // Only the extractor's own error carries a reason from the union; any
+        // other throw (transport, a bug) is recorded as a provider failure.
+        const reason = err instanceof RequirementsExtractionError ? err.reason : "provider-error";
+        try {
+          await persistAnalysisEnhancement(input.analysisId, {
+            structuredExtractionFailure: { reason, at: new Date().toISOString() },
+          });
+        } catch (markerErr) {
+          // The extraction error is the one the caller must see; a failed
+          // marker write is logged and must not replace it.
+          log.error("Could not record the structured-extraction failure marker", {
+            analysisId: input.analysisId,
+            error: (markerErr as Error).message,
+          });
+        }
+      }
+      throw err;
+    }
     // Issue #909 — a fresh run id with every extraction: the model numbers each
     // run's list from REQ-001, so the id alone cannot say which run it is from.
     await persistAnalysisEnhancement(input.analysisId, {
       structuredRequirements: structured,
       structuredRunId: randomUUID(),
+      // #1058 — a successful extraction supersedes an earlier failed one.
+      structuredExtractionFailure: null,
     });
 
     // Epic #202 (#215) — HITL approval checkpoints. Create one approval request

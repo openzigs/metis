@@ -41,6 +41,7 @@
 import { describe, expect, it } from "vitest";
 
 import { extractJsonObject } from "./agent-runner.js";
+import { parseFirstBalancedJsonObject, type BalancedJsonResult } from "./balanced-json.js";
 
 /**
  * The pre-#1253 pattern, verbatim, as the differential oracle. This regex is
@@ -65,14 +66,38 @@ const OLD_FENCE_PATTERN = /```(?:json)?\s*([\s\S]*?)```/;
  */
 function extractJsonObjectViaOldFence(raw: string): unknown {
   const trimmed = raw.trim();
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    return JSON.parse(trimmed);
-  }
+  const leading = leadingObject(trimmed);
+  if (leading.found) return leading.value;
   const fenceMatch = trimmed.match(OLD_FENCE_PATTERN);
   if (fenceMatch && fenceMatch[1]) {
     const inner = fenceMatch[1].trim();
     if (inner.startsWith("{")) return JSON.parse(inner);
   }
+  return balancedOrThrow(trimmed);
+}
+
+/**
+ * #1002 — the two branches either side of the fence, shared by both oracles.
+ * They changed in #1002 (the first-`{`-to-last-`}` slice became a balanced
+ * scan) and are NOT what this file is about, so the oracles track production
+ * for them: the differential below stays a statement about the fence pattern
+ * alone. Their own behaviour is pinned absolutely in `balanced-json.test.ts`.
+ */
+function leadingObject(trimmed: string): BalancedJsonResult {
+  if (!trimmed.startsWith("{")) return { found: false };
+  if (trimmed.endsWith("}")) {
+    try {
+      return { found: true, value: JSON.parse(trimmed) };
+    } catch {
+      /* fall through, as production does */
+    }
+  }
+  return parseFirstBalancedJsonObject(trimmed, { leadingOnly: true });
+}
+
+function balancedOrThrow(trimmed: string): unknown {
+  const balanced = parseFirstBalancedJsonObject(trimmed);
+  if (balanced.found) return balanced.value;
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
   if (start >= 0 && end > start) {
@@ -89,15 +114,9 @@ function extractJsonObjectViaOldFence(raw: string): unknown {
  */
 function extractJsonObjectWithoutFence(raw: string): unknown {
   const trimmed = raw.trim();
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    return JSON.parse(trimmed);
-  }
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    return JSON.parse(trimmed.slice(start, end + 1));
-  }
-  throw new Error("Model response did not contain a JSON object");
+  const leading = leadingObject(trimmed);
+  if (leading.found) return leading.value;
+  return balancedOrThrow(trimmed);
 }
 
 /**
@@ -455,21 +474,28 @@ describe("#1253 the fence capture is unchanged by dropping the whitespace class"
    * also survive deleting the fence branch outright (#1244 adversarial panel,
    * test-falsifiability lens).
    *
-   * These cases have no such escape: a second `}` appears after the fenced
-   * object, so the brute-force slice spans past it and fails to parse. The
-   * fence branch is the only thing that can produce the expected answer, and
-   * the assertions are ABSOLUTE rather than differential.
+   * These cases have no such escape. #1002 replaced the brute-force slice with
+   * a balanced-brace scan, which CAN recover a fenced object followed by a
+   * stray `}` (the three shapes this block used before then), so the cases now
+   * put an UNCLOSED `{` in the prose ahead of the fence: the scan's depth never
+   * returns to zero, no balanced span exists, and the fence branch is the only
+   * thing that can produce the expected answer. The assertions are ABSOLUTE
+   * rather than differential.
    */
   it.each([
-    ["two fenced objects", 'prose ```json\n{"a":9}\n``` more ```json\n{"b":10}\n```', { a: 9 }],
     [
-      "a fenced object followed by prose containing a brace",
-      'Use this:\n```json\n{"a":1}\n```\nthen close the } block.',
+      "two fenced objects after an unclosed brace",
+      'Open the { block. ```json\n{"a":9}\n``` more ```json\n{"b":10}\n```',
+      { a: 9 },
+    ],
+    [
+      "a fenced object after prose with an unclosed brace",
+      'Inside `if (x) {` use this:\n```json\n{"a":1}\n```\nand carry on.',
       { a: 1 },
     ],
     [
-      "a padded fenced object followed by a stray brace",
-      '```json   \n\n\t{"nested":{"x":1}}\n```\ntrailing }',
+      "a padded fenced object after an unclosed brace",
+      'function f() {\n```json   \n\n\t{"nested":{"x":1}}\n```\ntrailing',
       { nested: { x: 1 } },
     ],
   ])("only the fence branch can decide the %s case", (_label, text, expected) => {

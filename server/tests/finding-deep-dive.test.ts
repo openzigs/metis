@@ -2,12 +2,16 @@
  * Unit tests for the finding deep-dive engine (Issue #178).
  *
  * The engine is exercised with an injected fake provider so we can assert the
- * exactly-one-LLM-call contract, prompt-injection escaping, loose JSON parsing,
+ * one-call-plus-at-most-one-re-prompt contract (#1002), prompt-injection escaping, loose JSON parsing,
  * schema validation, and abort handling — all without a network round-trip.
  */
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../src/lib/ai/types.js";
-import { deepDiveFinding } from "../src/lib/analysis/finding-deep-dive.js";
+import {
+  DEEP_DIVE_UNREADABLE_MESSAGE,
+  deepDiveFinding,
+} from "../src/lib/analysis/finding-deep-dive.js";
+import { AppError } from "../src/middleware/error-handler.js";
 import { HAIKU_MODEL_ID } from "../src/lib/ai/model-router.js";
 import type { Citation } from "@metis/shared";
 
@@ -149,26 +153,154 @@ describe("deepDiveFinding", () => {
     expect(captured).toContain("BEGIN OPERATOR NOTES");
   });
 
-  it("throws a clear error on non-JSON output", async () => {
-    const { provider } = makeProvider(() => ({
-      content: "I cannot help with that.",
-      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-      model: "haiku",
-      provider: "offline-stub",
-    }));
+  // ── #1002 — unreadable answers: tolerate, re-prompt once, then say so plainly ──
 
-    await expect(deepDiveFinding(provider, baseInput())).rejects.toThrow(/non-JSON/i);
+  const reply = (content: string): ChatResponse => ({
+    content,
+    usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    model: "haiku",
+    provider: "offline-stub",
   });
 
-  it("throws when the model output fails schema validation", async () => {
-    const { provider } = makeProvider(() => ({
-      content: JSON.stringify({ problemStatement: "missing title" }),
-      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-      model: "haiku",
-      provider: "offline-stub",
-    }));
+  it("#1002 reads a draft followed by prose containing braces, in one call", async () => {
+    // The reported shape: a valid object, then commentary. The old extractor
+    // threw `Unexpected non-whitespace character after JSON at position N`.
+    const { provider, chat } = makeProvider(() =>
+      reply(`${JSON.stringify(VALID_DRAFT)}\n\nNote: wrap it in \`if (ok) { ... }\`.`),
+    );
 
-    await expect(deepDiveFinding(provider, baseInput())).rejects.toThrow();
+    const result = await deepDiveFinding(provider, baseInput());
+
+    expect(result.draft.title).toBe(VALID_DRAFT.title);
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("#1002 re-prompts once with the error and the expected shape, then succeeds", async () => {
+    const answers = ["I cannot help with that.", JSON.stringify(VALID_DRAFT)];
+    const { provider, chat } = makeProvider(() => reply(answers.shift()!));
+
+    const result = await deepDiveFinding(provider, baseInput());
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(result.draft.title).toBe(VALID_DRAFT.title);
+    // Both calls are billed.
+    expect(result.usage.totalTokens).toBe(30);
+    const retryMessages = chat.mock.calls[1]![0] as ChatMessage[];
+    // The model's own bad answer is replayed, followed by the correction.
+    expect(retryMessages.at(-2)).toMatchObject({
+      role: "assistant",
+      content: "I cannot help with that.",
+    });
+    const correction = String(retryMessages.at(-1)!.content);
+    expect(correction).toContain("could not be parsed");
+    expect(correction).toContain('"problemStatement": string');
+    // The retry is the same request otherwise.
+    expect(chat.mock.calls[1]![1]).toEqual(chat.mock.calls[0]![1]);
+  });
+
+  it("#1002 re-prompts on a schema-invalid draft too", async () => {
+    const answers = [
+      JSON.stringify({ problemStatement: "missing title" }),
+      JSON.stringify(VALID_DRAFT),
+    ];
+    const { provider, chat } = makeProvider(() => reply(answers.shift()!));
+
+    const result = await deepDiveFinding(provider, baseInput());
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(result.draft.title).toBe(VALID_DRAFT.title);
+    expect(String((chat.mock.calls[1]![0] as ChatMessage[]).at(-1)!.content)).toContain("title");
+  });
+
+  it.each([
+    ["not JSON", "I cannot help with that."],
+    ["malformed", '{"title": "t", "problemStatement" "p"}'],
+    ["truncated", '{"title":"t","problemStatement":"cut off mid-sen'],
+    ["schema-invalid", JSON.stringify({ problemStatement: "missing title" })],
+    ["empty", "   "],
+  ])(
+    "#1002 fails with a plain message, never the parser's, when both answers are %s",
+    async (_l, bad) => {
+      const { provider, chat } = makeProvider(() => reply(bad));
+
+      const err = await deepDiveFinding(provider, baseInput()).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(err).toBeInstanceOf(AppError);
+      expect(err).toMatchObject({
+        statusCode: 502,
+        code: "DEEP_DIVE_UNREADABLE",
+        message: DEEP_DIVE_UNREADABLE_MESSAGE,
+      });
+      // What the dialog renders is `message` — no offsets, no parser vocabulary,
+      // none of the model's text.
+      const shown = JSON.stringify({ ...(err as AppError), message: (err as AppError).message });
+      expect(shown).not.toMatch(/position|JSON|Unexpected|token|Zod|expected/i);
+      expect(shown).not.toContain("missing title");
+    },
+  );
+
+  it.each([
+    ["empty", ""],
+    ["whitespace only", " \n\t "],
+  ])(
+    "re-prompts after an %s answer without replaying it as an assistant turn",
+    async (_l, blank) => {
+      // The Anthropic Messages API answers an assistant turn with no text with
+      // a 400, which would turn a recoverable empty answer into a provider error.
+      const answers = [blank, JSON.stringify(VALID_DRAFT)];
+      const { provider, chat } = makeProvider(() => reply(answers.shift()!));
+
+      const result = await deepDiveFinding(provider, baseInput());
+
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(result.draft.title).toBe(VALID_DRAFT.title);
+      for (const [sent] of chat.mock.calls as Array<[ChatMessage[]]>) {
+        for (const message of sent) {
+          expect(String(message.content).trim()).not.toBe("");
+        }
+        expect(sent.filter((m) => m.role === "assistant")).toEqual([]);
+      }
+      // The re-prompt still says what went wrong and what is owed.
+      const retry = chat.mock.calls[1]![0] as ChatMessage[];
+      expect(retry.at(-1)!.role).toBe("user");
+      expect(String(retry.at(-1)!.content)).toMatch(/response was empty/);
+      expect(String(retry.at(-1)!.content)).toContain("title");
+    },
+  );
+
+  it("still replays a non-empty unreadable answer as the assistant turn", async () => {
+    const answers = ["I cannot help with that.", JSON.stringify(VALID_DRAFT)];
+    const { provider, chat } = makeProvider(() => reply(answers.shift()!));
+
+    await deepDiveFinding(provider, baseInput());
+
+    const retry = chat.mock.calls[1]![0] as ChatMessage[];
+    expect(retry.at(-2)).toEqual({ role: "assistant", content: "I cannot help with that." });
+  });
+
+  it("#1002 rethrows a provider failure unchanged, without a second call", async () => {
+    class UpstreamError extends Error {
+      readonly status = 429;
+    }
+    const upstream = new UpstreamError("rate limited");
+    const { provider, chat } = makeProvider(() => {
+      throw upstream;
+    });
+
+    await expect(deepDiveFinding(provider, baseInput())).rejects.toBe(upstream);
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("#1002 reports the provider's configured model when the response names none", async () => {
+    const { provider } = makeProvider(
+      () => ({ content: JSON.stringify(VALID_DRAFT) }) as unknown as ChatResponse,
+    );
+    const result = await deepDiveFinding(provider, baseInput());
+    expect(result.model).toBe("stub-model");
   });
 
   it("aborts before calling the provider when the signal is already aborted", async () => {

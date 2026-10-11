@@ -61,13 +61,13 @@
  * harness (#1108) prints it via {@link formatStructuredVerdictReport}.
  */
 import type { ZodType } from "zod";
-import { supportsResponseFormat } from "../ai/capabilities.js";
+import { resolveCapabilities, supportsResponseFormat } from "../ai/capabilities.js";
 import type {
   AIProvider,
   CacheTelemetryCallType,
   ChatMessage,
   ChatOptions,
-  JsonSchemaResponseFormat,
+  ResponseFormat,
   TokenUsage,
 } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
@@ -109,6 +109,11 @@ export interface StructuredVerdictTelemetry {
   /** Tokens summed across every attempt — a retry is not free and is billed here. */
   usage: TokenUsage;
   durationMs: number;
+  /**
+   * #1002 — the model id the provider reported on its last response. Absent
+   * when no call returned (a provider error on the first attempt).
+   */
+  model?: string;
 }
 
 /** The verifier produced a verdict that validated against the caller's schema. */
@@ -128,6 +133,13 @@ export interface StructuredVerdictNoSignal extends StructuredVerdictTelemetry {
   reason: NoVerdictReason;
   /** Human-readable cause (parse error / schema issues / provider message). */
   detail: string;
+  /**
+   * #1002 — the error the provider threw, on `reason: "provider-error"` only.
+   * A caller that is NOT one of many (a single user-initiated call, where the
+   * right answer to a transport failure is the original error and its HTTP
+   * mapping) rethrows this instead of flattening it into a message.
+   */
+  cause?: unknown;
 }
 
 /** The only two things a verifier call can yield. */
@@ -166,12 +178,14 @@ export interface StructuredVerdictRequest<T> {
   signal?: AbortSignal;
   maxTokens?: number;
   callType?: CacheTelemetryCallType;
+  /** #1058 — expose no tools to the model (a pure extraction call). */
+  disableTools?: boolean;
   /**
    * Used ONLY when the active provider declares `responseFormat` support
    * (#1115). Supplying it to a provider that drops it would be a silent no-op,
    * so this helper omits it there rather than passing it and hoping.
    */
-  responseFormat?: JsonSchemaResponseFormat;
+  responseFormat?: ResponseFormat;
   /** Metrics sink. Defaults to the process-wide {@link structuredVerdictMetrics}. */
   metrics?: StructuredVerdictMetrics;
 }
@@ -231,7 +245,10 @@ function parseVerdict<T>(
  * The re-prompt. It tells the model three things it did not have the first
  * time: that its output failed, WHY it failed, and exactly what shape is owed.
  * The model's own bad output is replayed as an assistant turn so the correction
- * is anchored to it.
+ * is anchored to it — unless there was none. An empty (or whitespace-only)
+ * answer is NOT replayed: the Anthropic Messages API rejects an assistant turn
+ * with no text with a 400, which would turn a recoverable empty answer into a
+ * provider error. The re-prompt already says the response was empty.
  */
 function buildRepairTurns(
   raw: string,
@@ -239,8 +256,12 @@ function buildRepairTurns(
   schemaName: string,
   expectedShape: string,
 ): ChatMessage[] {
+  const echoed: ChatMessage[] =
+    raw.trim().length === 0
+      ? []
+      : [{ role: "assistant", content: clip(raw, MAX_ECHOED_BODY_CHARS) }];
   return [
-    { role: "assistant", content: clip(raw, MAX_ECHOED_BODY_CHARS) },
+    ...echoed,
     {
       role: "user",
       content: [
@@ -253,6 +274,55 @@ function buildRepairTurns(
       ].join("\n"),
     },
   ];
+}
+
+/**
+ * #1077 — the `responseFormat` to send, probed per MODE rather than as one
+ * flag. A `json_object` request is not handed to an adapter that only honours
+ * `json_schema` (the Anthropic Messages API), where it would be dropped with a
+ * warning and misreported as used. A `json_schema` request to an adapter that
+ * takes only `json_object` (DeepSeek's OpenAI-format endpoint) is sent as
+ * `json_object`: valid JSON is still worth having, and the schema is enforced
+ * by the parse-validate-re-prompt loop either way.
+ */
+function responseFormatFor(
+  provider: AIProvider,
+  model: string | undefined,
+  requested: ResponseFormat | undefined,
+): ResponseFormat | undefined {
+  if (!requested) return undefined;
+  if (supportsResponseFormat(provider, model, requested.type)) return requested;
+  if (requested.type === "json_schema" && supportsResponseFormat(provider, model, "json_object")) {
+    return { type: "json_object" };
+  }
+  return undefined;
+}
+
+/**
+ * #1077 — `json_object` for a stage that has no schema of its own, but ONLY
+ * where the adapter or the model catalog has declared the backend json_object-
+ * only: `jsonSchema: false` with `jsonObject: true`. That is DeepSeek's
+ * OpenAI-format host, or a model an operator marked `jsonSchema:false` in
+ * `AI_MODEL_CATALOG_OVERRIDES`.
+ *
+ * Everywhere else it returns `undefined` and the stage stays on prompt-only
+ * JSON, as it was before #1077. The OpenAI-compatible default (`jsonObject`
+ * unset, or `true` from the provider-key default) is a guess, not a
+ * declaration: the same adapter fronts Ollama, LM Studio, vLLM and gateways,
+ * and one that rejects the field answers 400 — which is not memoised, so every
+ * call would pay a rejected round-trip, and any unrelated 400 (context length)
+ * would be retried once without the field for nothing.
+ *
+ * @param model the model the call will name; defaults to the provider's own.
+ */
+export function jsonObjectWhereDeclared(
+  provider: AIProvider,
+  model?: string,
+): ResponseFormat | undefined {
+  const caps = resolveCapabilities(provider, model ?? provider.model);
+  return caps.responseFormat === true && caps.jsonSchema === false && caps.jsonObject === true
+    ? { type: "json_object" }
+    : undefined;
 }
 
 /**
@@ -285,14 +355,16 @@ export async function requestStructuredVerdict<T>(
   }
 
   const metrics = request.metrics ?? structuredVerdictMetrics;
-  const usedResponseFormat = Boolean(request.responseFormat) && supportsResponseFormat(provider);
+  const responseFormat = responseFormatFor(provider, request.model, request.responseFormat);
+  const usedResponseFormat = responseFormat !== undefined;
   const opts: ChatOptions = {
     ...(request.systemMessage ? { systemMessage: request.systemMessage } : {}),
     ...(request.model ? { model: request.model } : {}),
     ...(request.signal ? { signal: request.signal } : {}),
     ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
     ...(request.callType ? { callType: request.callType } : {}),
-    ...(usedResponseFormat ? { responseFormat: request.responseFormat } : {}),
+    ...(request.disableTools ? { disableTools: true } : {}),
+    ...(responseFormat ? { responseFormat } : {}),
   };
 
   let messages = request.messages;
@@ -300,6 +372,7 @@ export async function requestStructuredVerdict<T>(
   let attempts = 0;
   let malformedAttempts = 0;
   let lastFailure: AttemptFailure = { reason: "unparseable", detail: "no attempt was made" };
+  let model: string | undefined;
 
   const finish = (
     outcome: StructuredVerdictOutcome<T>,
@@ -316,6 +389,7 @@ export async function requestStructuredVerdict<T>(
       const response = await provider.chat(messages, opts);
       usage = addUsage(usage, response.usage);
       content = response.content;
+      model = response.model;
     } catch (err) {
       // Cancellation is the one failure that must still propagate: an aborted
       // run should stop, not manufacture a run's worth of "no signal".
@@ -332,11 +406,13 @@ export async function requestStructuredVerdict<T>(
           status: "no-signal",
           reason: "provider-error",
           detail,
+          cause: err,
           attempts,
           retried: attempts > 1,
           usedResponseFormat,
           usage,
           durationMs: Date.now() - started,
+          ...(model ? { model } : {}),
         },
         {
           attempts,
@@ -361,6 +437,7 @@ export async function requestStructuredVerdict<T>(
           usedResponseFormat,
           usage,
           durationMs: Date.now() - started,
+          ...(model ? { model } : {}),
         },
         {
           attempts,
@@ -412,6 +489,7 @@ export async function requestStructuredVerdict<T>(
       usedResponseFormat,
       usage,
       durationMs: Date.now() - started,
+      ...(model ? { model } : {}),
     },
     {
       attempts,

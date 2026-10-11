@@ -2,7 +2,10 @@
  * Tests for RequirementsExtractor (Epic #597 / Issue #622).
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { RequirementsExtractor } from "../src/lib/analysis/requirements-extractor.js";
+import {
+  RequirementsExtractionError,
+  RequirementsExtractor,
+} from "../src/lib/analysis/requirements-extractor.js";
 import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
 
 function mockProvider(content: string): AIProvider {
@@ -23,7 +26,103 @@ function mockProvider(content: string): AIProvider {
   };
 }
 
+/** A provider that returns `answers` in order (or throws an Error entry). */
+function sequenceProvider(answers: Array<string | Error>): AIProvider {
+  const provider = mockProvider("");
+  const chat = vi.fn(async () => {
+    const next = answers.shift();
+    if (next === undefined) throw new Error("unexpected extra provider call");
+    if (next instanceof Error) throw next;
+    return {
+      content: next,
+      usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+      model: "test-model",
+      provider: "offline-stub",
+    } as ChatResponse;
+  });
+  return { ...provider, chat } as AIProvider;
+}
+
+const ONE_REQUIREMENT = JSON.stringify({
+  requirements: [{ title: "Login", description: "Users can log in", ambiguities: [] }],
+});
+
 describe("RequirementsExtractor", () => {
+  /**
+   * #1058 — a malformed answer used to be caught, logged and returned as
+   * `{ requirements: [] }`. That is also what "this text has no requirements"
+   * looks like, so the run reported "requirements look complete" and asked no
+   * questions.
+   */
+  describe("extract — an unreadable answer is an error, never an empty result (#1058)", () => {
+    it("succeeds on the re-prompt when the first answer is malformed", async () => {
+      const provider = sequenceProvider(["Sure! Here are the requirements:", ONE_REQUIREMENT]);
+      const result = await new RequirementsExtractor({ provider }).extract("Users must log in");
+
+      expect(result.requirements).toHaveLength(1);
+      expect(result.requirements[0]!.title).toBe("Login");
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      // The re-prompt replays the bad answer and states what is owed.
+      const retry = vi.mocked(provider.chat).mock.calls[1]![0];
+      expect(retry.at(-2)).toMatchObject({
+        role: "assistant",
+        content: "Sure! Here are the requirements:",
+      });
+      expect(String(retry.at(-1)!.content)).toContain('"requirements": [');
+      // ...on top of the original conversation, with tools still off.
+      expect(retry.slice(0, 2)).toEqual(vi.mocked(provider.chat).mock.calls[0]![0]);
+      expect(vi.mocked(provider.chat).mock.calls[1]![1]).toMatchObject({ disableTools: true });
+    });
+
+    it.each([
+      ["prose", "I could not find any JSON to give you.", "unparseable"],
+      ["truncated JSON", '{"requirements":[{"title":"Login","descr', "unparseable"],
+      ["an object with no requirements array", '{"items":[]}', "schema-invalid"],
+      ["a requirements field that is not an array", '{"requirements":"none"}', "schema-invalid"],
+      ["nothing", "  ", "empty-response"],
+    ])("fails loudly when both answers are %s", async (_label, bad, reason) => {
+      const provider = sequenceProvider([bad, bad]);
+      const err = await new RequirementsExtractor({ provider }).extract("Users must log in").then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(RequirementsExtractionError);
+      expect((err as RequirementsExtractionError).reason).toBe(reason);
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+    });
+
+    it("fails loudly when the provider call itself fails", async () => {
+      const provider = sequenceProvider([new Error("upstream 503")]);
+      await expect(
+        new RequirementsExtractor({ provider }).extract("Users must log in"),
+      ).rejects.toMatchObject({ name: "RequirementsExtractionError", reason: "provider-error" });
+      expect(provider.chat).toHaveBeenCalledTimes(1);
+    });
+
+    it("still returns an empty result when the model genuinely found none", async () => {
+      const provider = sequenceProvider(['{"requirements": []}']);
+      const result = await new RequirementsExtractor({ provider }).extract("Lorem ipsum");
+      expect(result).toEqual({ requirements: [], totalAmbiguities: 0, totalEvidenceNeeds: 0 });
+      expect(provider.chat).toHaveBeenCalledTimes(1);
+    });
+
+    it("reads an answer wrapped in prose without a second call", async () => {
+      const provider = sequenceProvider([`Here you go:\n${ONE_REQUIREMENT}\nLet me know {if} ok.`]);
+      const result = await new RequirementsExtractor({ provider }).extract("Users must log in");
+      expect(result.requirements).toHaveLength(1);
+      expect(provider.chat).toHaveBeenCalledTimes(1);
+    });
+
+    it("propagates cancellation instead of reporting a failed extraction", async () => {
+      const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
+      const provider = sequenceProvider([abort]);
+      await expect(
+        new RequirementsExtractor({ provider }).extract("Users must log in"),
+      ).rejects.toBe(abort);
+    });
+  });
+
   describe("extract", () => {
     it("returns empty result for empty input", async () => {
       const provider = mockProvider("{}");
@@ -118,14 +217,15 @@ describe("RequirementsExtractor", () => {
       extractor = new RequirementsExtractor({ provider: mockProvider("") });
     });
 
-    it("handles invalid JSON gracefully", () => {
-      const result = extractor.parseResponse("not json", "raw");
-      expect(result.requirements).toEqual([]);
+    it("#1058 throws on invalid JSON instead of returning an empty result", () => {
+      expect(() => extractor.parseResponse("not json", "raw")).toThrow(RequirementsExtractionError);
+      expect(() => extractor.parseResponse("not json", "raw")).toThrow(/unparseable/);
     });
 
-    it("handles missing requirements array", () => {
-      const result = extractor.parseResponse(JSON.stringify({ foo: "bar" }), "raw");
-      expect(result.requirements).toEqual([]);
+    it("#1058 throws on a missing requirements array instead of returning an empty result", () => {
+      expect(() => extractor.parseResponse(JSON.stringify({ foo: "bar" }), "raw")).toThrow(
+        /schema-invalid/,
+      );
     });
 
     it("strips markdown fences from response", () => {

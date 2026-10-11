@@ -2,15 +2,18 @@
  * Issue #178 — Finding deep-dive engine.
  *
  * Expands a single analysis finding into a structured, publishable issue draft
- * (`FindingIssueDraft`) via exactly ONE bounded LLM call. The provider is
- * injected so tests can assert call-count and feed deterministic output without
- * a network round-trip.
+ * (`FindingIssueDraft`) via ONE bounded LLM call, plus at most one re-prompt
+ * when that call's answer cannot be read (#1002). The provider is injected so
+ * tests can assert call-count and feed deterministic output without a network
+ * round-trip.
  *
  * Security: the finding text and any user-supplied `instructions` are treated
  * as UNTRUSTED data — fenced and scrubbed by `buildDeepDivePrompt`
  * (prompt-injection defence-in-depth). The model output is never trusted: it is
  * parsed loosely (`extractJsonObject`) then validated against
- * `findingIssueDraftSchema` before it leaves this module.
+ * `findingIssueDraftSchema` before it leaves this module — both inside
+ * `requestStructuredVerdict`, which re-prompts once with the parse or schema
+ * error (#1002). The parser's own message never leaves this module.
  */
 import {
   findingIssueDraftSchema,
@@ -24,17 +27,36 @@ import {
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
 import { HAIKU_MODEL_ID, tierModelFor } from "../ai/model-router.js";
 import { createChildLogger } from "../logger.js";
-import { extractJsonObject } from "./agent-runner.js";
+import { AppError } from "../../middleware/error-handler.js";
 import { getPersona } from "./personas.js";
 import { buildDeepDivePrompt } from "./prompts.js";
+import {
+  hasVerdict,
+  jsonObjectWhereDeclared,
+  requestStructuredVerdict,
+} from "./structured-verdict.js";
 
 const log = createChildLogger("analysis-deep-dive");
 
-const DEFAULT_USAGE: TokenUsage = {
-  promptTokens: 0,
-  completionTokens: 0,
-  totalTokens: 0,
-};
+/**
+ * #1002 — what the user is told when the model's answer could not be read as a
+ * draft after the re-prompt. Deliberately free of parser detail: the reported
+ * defect was `Unexpected non-whitespace character after JSON at position 2019`
+ * shown verbatim in the dialog. The cause is in the server log.
+ */
+export const DEEP_DIVE_UNREADABLE_MESSAGE =
+  "The model's answer could not be turned into an issue draft. Please try again.";
+
+/** The shape quoted back to the model in the re-prompt. */
+const DRAFT_SHAPE = [
+  "{",
+  '  "title": string,',
+  '  "problemStatement": string,',
+  '  "affected": { "files": string[], "requirementIds": string[] },',
+  '  "acceptanceCriteria": string[],',
+  '  "suggestedLabels": string[]',
+  "}",
+].join("\n");
 
 export interface DeepDiveEngineInput {
   projectName: string;
@@ -86,7 +108,11 @@ function formatCitations(citations: SnapshotCitation[]): string[] {
 }
 
 /**
- * Run the deep-dive expansion. Makes exactly one `provider.chat` call.
+ * Run the deep-dive expansion. Makes one `provider.chat` call, and a second
+ * only when the first answer was empty, not JSON, or failed the draft schema.
+ *
+ * @throws AppError 502 `DEEP_DIVE_UNREADABLE` — both answers were unreadable.
+ * @throws the provider's own error, unchanged, when the call itself failed.
  */
 export async function deepDiveFinding(
   provider: AIProvider,
@@ -113,31 +139,39 @@ export async function deepDiveFinding(
   });
 
   const messages: ChatMessage[] = [{ role: "user", content: userMessage }];
+  const model = input.model ?? tierModelFor(provider, HAIKU_MODEL_ID);
 
-  const response = await provider.chat(messages, {
+  const outcome = await requestStructuredVerdict(provider, {
+    label: "deep-dive",
+    schema: findingIssueDraftSchema,
+    schemaName: "issue draft",
+    expectedShape: DRAFT_SHAPE,
+    messages,
     systemMessage,
-    model: input.model ?? tierModelFor(provider, HAIKU_MODEL_ID),
+    model,
     signal: input.signal,
+    // #1077 — JSON mode only where the backend is declared json_object-only
+    // (DeepSeek's OpenAI-format host, or a catalog override).
+    responseFormat: jsonObjectWhereDeclared(provider, model),
   });
 
-  let parsed: unknown;
-  try {
-    parsed = extractJsonObject(response.content);
-  } catch (err) {
-    log.error("Deep-dive non-JSON response", {
-      contentLength: response.content.length,
-      contentPreview: response.content.slice(0, 500),
-      provider: response.provider,
-      model: response.model,
+  if (!hasVerdict(outcome)) {
+    // A transport failure is not a malformed answer: surface the provider's
+    // own error (and its HTTP mapping) exactly as before the helper was used.
+    if (outcome.reason === "provider-error") throw outcome.cause;
+    log.error("Deep-dive answer unreadable after re-prompt", {
+      reason: outcome.reason,
+      detail: outcome.detail,
+      attempts: outcome.attempts,
+      provider: provider.key,
+      model: outcome.model,
     });
-    throw new Error(`Deep-dive returned non-JSON output: ${(err as Error).message}`);
+    throw new AppError(502, "DEEP_DIVE_UNREADABLE", DEEP_DIVE_UNREADABLE_MESSAGE);
   }
 
-  const draft = findingIssueDraftSchema.parse(parsed);
-
   return {
-    draft,
-    usage: response.usage ?? DEFAULT_USAGE,
-    model: response.model,
+    draft: outcome.verdict,
+    usage: outcome.usage,
+    model: outcome.model ?? provider.model,
   };
 }
