@@ -236,6 +236,8 @@ import {
   updateFeatureStatus,
   ensureLegacyFeature,
 } from "../src/lib/spec-kit/features.js";
+import { runAnalyze } from "../src/lib/spec-kit/commands/analyze.js";
+import { featureArtifactScope } from "../src/lib/spec-kit/artifact-scope.js";
 import { runChecklist } from "../src/lib/spec-kit/commands/checklist.js";
 import { runPlanExpanded } from "../src/lib/spec-kit/commands/plan-expanded.js";
 import { SPEC_KIT_TRUNCATION_NOTE } from "../src/lib/spec-kit/commands/runner.js";
@@ -1000,11 +1002,308 @@ describe("feature commands are grounded (#786, #785)", () => {
         "MarkAllAsReadBeforeDate (function) — internal/api/x.go:523-544 (beside MarkAllAsRead)",
       );
     }
-    // plan.md is written under the grounding + existing-capability contract.
-    expect(provider.systems.at(-1)).toContain("EXISTING CAPABILITY CHECK");
-    expect(provider.systems.at(-1)).toContain("Constitution Compliance Check");
+    // plan.md is written under the grounding + existing-capability contract —
+    // and first (#1065), so the later artifacts can follow it.
+    expect(provider.systems.at(0)).toContain("EXISTING CAPABILITY CHECK");
+    expect(provider.systems.at(0)).toContain("Constitution Compliance Check");
     expect(knowledgeService.search.mock.calls[0]![1]).toContain("Mark all entries as read");
     expect(r.message).toMatch(/grounded on \d+ retrieved chunks? and 2 code symbols/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1065 — the contract follows the plan, and /speckit.analyze checks that it does
+// ─────────────────────────────────────────────────────────────────────────────
+describe("#1065 — contract vs plan", () => {
+  const INVENTED_CONTRACT = [
+    "openapi: 3.1.0",
+    "info:",
+    "  title: T",
+    "  version: 1.0.0",
+    "paths:",
+    "  /entries/mark-all-as-read:",
+    "    put:",
+    "      responses:",
+    "        '204': { description: done }",
+    "",
+  ].join("\n");
+
+  /** Which artifact a call is for, read off its system prompt. */
+  function artifactOf(system: string): string {
+    if (system.includes("quickstart.md")) return "quickstart.md";
+    if (system.includes("valid OpenAPI 3.1.0 specification")) return "contracts/api.openapi.yaml";
+    if (system.includes("data-model.md")) return "data-model.md";
+    if (system.includes("research.md")) return "research.md";
+    return "plan.md";
+  }
+
+  /** Answers per artifact, records the call order and each call's user prompt. */
+  class ScriptedProvider extends FakeProvider {
+    readonly calls: Array<{ artifact: string; user: string }> = [];
+    constructor(private readonly replies: Record<string, string | (() => ChatResponse)>) {
+      super("# Doc\n");
+    }
+    async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+      const system = String((o as { systemMessage?: string }).systemMessage ?? "");
+      const artifact = artifactOf(system);
+      this.calls.push({ artifact, user: String(m[0]!.content) });
+      const reply = this.replies[artifact];
+      if (typeof reply === "function") return reply();
+      const base = await super.chat(m, o);
+      return reply === undefined ? base : { ...base, content: reply };
+    }
+  }
+
+  const stored = (fid: string): Record<string, string> =>
+    Object.fromEntries(
+      [...featureArtifactRows.values()]
+        .filter((r) => r.featureId === fid)
+        .map((r) => [r.key, r.content]),
+    );
+
+  it("generates plan.md first and hands it to the data model, contract and quickstart", async () => {
+    const fid = seedFeature("p1", "020-order");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const provider = new ScriptedProvider({
+      "plan.md": "# Plan\n\nPLAN-SENTINEL adds `PUT /entries/mark-all-as-read`.\n",
+      "contracts/api.openapi.yaml": INVENTED_CONTRACT,
+    });
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "020-order",
+      deps: { provider },
+    });
+    expect(provider.calls.map((c) => c.artifact)).toEqual([
+      "plan.md",
+      "research.md",
+      "data-model.md",
+      "contracts/api.openapi.yaml",
+      "quickstart.md",
+    ]);
+    for (const call of provider.calls.slice(2)) {
+      expect(call.user, call.artifact).toContain("PLAN-SENTINEL");
+    }
+    // The plan request asks for the REST surface to be stated.
+    expect(provider.calls[0]!.user).toContain("REST surface: none");
+    // The contract agrees with the plan, so nothing is reported.
+    expect(r.message).not.toContain("Contract check");
+    // plan.md is still the last artifact returned (the one the page opens).
+    expect(r.artifacts.at(-1)!.key).toBe("plan.md");
+  });
+
+  it("a plan with no new endpoint yields no invented endpoint, and no contract call", async () => {
+    const fid = seedFeature("p1", "021-norest");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const provider = new ScriptedProvider({
+      "plan.md": "# Plan\n\n## Components\n\n- REST surface: none\n- UI only.\n",
+      // What the model would have invented, had it been asked.
+      "contracts/api.openapi.yaml": INVENTED_CONTRACT,
+    });
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "021-norest",
+      deps: { provider },
+    });
+    const contract = r.artifacts.find((a) => a.key === "contracts/api.openapi.yaml")!;
+    expect(contract.content).toContain("paths: {}");
+    expect(contract.content).toContain("x-no-rest-surface: true");
+    expect(contract.content).not.toContain("mark-all-as-read");
+    expect(contract.content).not.toContain("/health");
+    expect(provider.calls.map((c) => c.artifact)).not.toContain("contracts/api.openapi.yaml");
+    expect(r.artifacts).toHaveLength(5);
+    expect(r.message).toContain("The plan declares no REST surface");
+  });
+
+  it("reports a contract operation the plan never mentions", async () => {
+    const fid = seedFeature("p1", "022-drift");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "022-drift",
+      deps: {
+        provider: new ScriptedProvider({
+          "plan.md": "# Plan\n\nChanges the storage layer only.\n",
+          "contracts/api.openapi.yaml": INVENTED_CONTRACT,
+        }),
+      },
+    });
+    expect(r.message).toContain(
+      "Contract check: `contracts/api.openapi.yaml` defines `PUT /entries/mark-all-as-read`, which plan.md never mentions.",
+    );
+  });
+
+  it("the contract prompt no longer asks for a /health stub", async () => {
+    class Systems extends FakeProvider {
+      readonly systems: string[] = [];
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        this.systems.push(String((o as { systemMessage?: string }).systemMessage ?? ""));
+        return super.chat(m, o);
+      }
+    }
+    const fid = seedFeature("p1", "023-prompt");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const provider = new Systems("# Doc\n");
+    await runPlanExpanded({ projectId: "p1", featureSlug: "023-prompt", deps: { provider } });
+    const contractSystem = provider.systems.find((s) =>
+      s.includes("valid OpenAPI 3.1.0 specification"),
+    )!;
+    expect(contractSystem).toContain("Never invent an endpoint");
+    expect(contractSystem).toContain("x-no-rest-surface: true");
+    expect(contractSystem).not.toContain("emit a stub");
+  });
+
+  it("writes nothing when a later artifact fails: the previous set stays whole", async () => {
+    const fid = seedFeature("p1", "024-atomic");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    for (const key of ["plan.md", "research.md", "data-model.md", "quickstart.md"]) {
+      seedFeatureArtifact(fid, key, `# previous ${key}\n`);
+    }
+    seedFeatureArtifact(fid, "contracts/api.openapi.yaml", "previous contract\n");
+    const before = stored(fid);
+    // quickstart.md — the LAST call — hits the cap before writing any text.
+    const provider = new ScriptedProvider({
+      "quickstart.md": () =>
+        ({
+          content: "",
+          provider: "offline-stub",
+          model: "fake-model",
+          usage: { promptTokens: 5, completionTokens: 16000, totalTokens: 16005 },
+          finishReason: "length",
+        }) as unknown as ChatResponse,
+    });
+    await expect(
+      runPlanExpanded({ projectId: "p1", featureSlug: "024-atomic", deps: { provider } }),
+    ).rejects.toMatchObject({ code: "SPEC_KIT_OUTPUT_EXHAUSTED" });
+    expect(provider.calls).toHaveLength(5);
+    expect(stored(fid)).toEqual(before);
+    expect(featureRows.get(fid)!.status).not.toBe("planned");
+  });
+
+  it("writes nothing when plan.md itself fails, and stops before the other four calls", async () => {
+    const fid = seedFeature("p1", "025-planfail");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const before = stored(fid);
+    const provider = new ScriptedProvider({ "plan.md": "   \n" });
+    await expect(
+      runPlanExpanded({ projectId: "p1", featureSlug: "025-planfail", deps: { provider } }),
+    ).rejects.toMatchObject({ code: "SPEC_KIT_EMPTY_OUTPUT" });
+    expect(provider.calls.map((c) => c.artifact)).toEqual(["plan.md"]);
+    expect(stored(fid)).toEqual(before);
+  });
+
+  it("a cut-off plan.md with a complete earlier one: the later artifacts follow the kept plan", async () => {
+    const fid = seedFeature("p1", "026-keptplan");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    seedFeatureArtifact(fid, "plan.md", "# Complete plan\n\nKEPT-PLAN\n\nREST surface: none\n");
+    let planCalls = 0;
+    const provider = new ScriptedProvider({
+      "plan.md": () =>
+        ({
+          content: planCalls++ === 0 ? "# Partial plan\nCUT-PLAN adds POST /x\n## Summa" : "",
+          provider: "offline-stub",
+          model: "fake-model",
+          usage: { promptTokens: 5, completionTokens: 7, totalTokens: 12 },
+          finishReason: "length",
+        }) as unknown as ChatResponse,
+    });
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "026-keptplan",
+      deps: { provider },
+    });
+    const dataModelCall = provider.calls.find((c) => c.artifact === "data-model.md")!;
+    expect(dataModelCall.user).toContain("KEPT-PLAN");
+    expect(dataModelCall.user).not.toContain("CUT-PLAN");
+    // The kept plan declares no REST surface, so the contract follows IT.
+    expect(stored(fid)["contracts/api.openapi.yaml"]).toContain("paths: {}");
+    expect(r.partialContent?.["plan.md"]).toContain("CUT-PLAN");
+  });
+
+  describe("/speckit.analyze on a feature", () => {
+    const OK_REPORT = "## Summary\n\nOK\n\n## Contradictions\n- none\n";
+
+    function seedAnalyzable(slug: string, plan: string, contract: string | null): string {
+      const fid = seedFeature("p1", slug);
+      seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+      seedFeatureArtifact(fid, "plan.md", plan);
+      seedFeatureArtifact(fid, "tasks.md", "- [ ] T001 do it (AC-1)\n");
+      seedFeatureArtifact(fid, "data-model.md", "# Data Model\n\nDATA-MODEL-SENTINEL\n");
+      if (contract !== null) seedFeatureArtifact(fid, "contracts/api.openapi.yaml", contract);
+      return fid;
+    }
+
+    it("flags a planted contradiction even when the model reports OK", async () => {
+      const fid = seedAnalyzable(
+        "030-planted",
+        "# Plan\n\nNo REST endpoint is in scope for this feature.\n",
+        INVENTED_CONTRACT,
+      );
+      const provider = new ScriptedProvider({ "plan.md": OK_REPORT });
+      const r = await runAnalyze({
+        projectId: "p1",
+        deps: { provider },
+        scope: featureArtifactScope({ id: fid, slug: "030-planted" }),
+      });
+      expect(r.verdict).toBe("WARN");
+      const finding =
+        "plan.md states that no REST endpoint is in scope, but `contracts/api.openapi.yaml` defines `PUT /entries/mark-all-as-read`.";
+      expect(r.message).toContain("Contract check: 1 contradiction with plan.md");
+      expect(r.message).toContain(finding);
+      expect(r.artifact.content).toContain("## Contract vs plan");
+      expect(r.artifact.content).toContain(`- ${finding}`);
+      expect(r.artifact.content).toContain("raised to `WARN`");
+      // The model was shown both Phase 1 artifacts.
+      const user = provider.calls[0]!.user;
+      expect(user).toContain("DATA-MODEL-SENTINEL");
+      expect(user).toContain("contracts/api.openapi.yaml:");
+      expect(user).toContain("/entries/mark-all-as-read");
+      expect(user).toContain(
+        "Also check data-model.md, contracts/api.openapi.yaml against plan.md",
+      );
+    });
+
+    it("leaves a BLOCK verdict alone and still lists the contradiction", async () => {
+      const fid = seedAnalyzable("031-block", "# Plan\n\nStorage only.\n", INVENTED_CONTRACT);
+      const r = await runAnalyze({
+        projectId: "p1",
+        deps: { provider: new ScriptedProvider({ "plan.md": "## Summary\n\nBLOCK\n" }) },
+        scope: featureArtifactScope({ id: fid, slug: "031-block" }),
+      });
+      expect(r.verdict).toBe("BLOCK");
+      expect(r.artifact.content).toContain("which plan.md never mentions.");
+      expect(r.artifact.content).not.toContain("raised to `WARN`");
+    });
+
+    it("reports nothing when the contract agrees with the plan", async () => {
+      const fid = seedAnalyzable(
+        "032-agree",
+        "# Plan\n\nAdds `PUT /entries/mark-all-as-read`.\n",
+        INVENTED_CONTRACT,
+      );
+      const r = await runAnalyze({
+        projectId: "p1",
+        deps: { provider: new ScriptedProvider({ "plan.md": OK_REPORT }) },
+        scope: featureArtifactScope({ id: fid, slug: "032-agree" }),
+      });
+      expect(r.verdict).toBe("OK");
+      expect(r.message).not.toContain("Contract check");
+      expect(r.artifact.content).not.toContain("## Contract vs plan");
+    });
+
+    it("works without a contract or data model", async () => {
+      const fid = seedFeature("p1", "033-bare");
+      seedFeatureArtifact(fid, "spec.md", "s");
+      seedFeatureArtifact(fid, "plan.md", "p");
+      seedFeatureArtifact(fid, "tasks.md", "t");
+      const provider = new ScriptedProvider({ "plan.md": OK_REPORT });
+      const r = await runAnalyze({
+        projectId: "p1",
+        deps: { provider },
+        scope: featureArtifactScope({ id: fid, slug: "033-bare" }),
+      });
+      expect(r.verdict).toBe("OK");
+      expect(provider.calls[0]!.user).not.toContain("Also check");
+    });
   });
 });
 

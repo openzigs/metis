@@ -74,7 +74,10 @@ import {
   parseChecklistSections,
   DEFAULT_CHECKLIST_DOMAINS,
 } from "../src/lib/spec-kit/commands/checklist.js";
-import { ensureValidOpenAPI } from "../src/lib/spec-kit/commands/plan-expanded.js";
+import {
+  ensureValidOpenAPI,
+  noRestSurfaceContract,
+} from "../src/lib/spec-kit/commands/plan-expanded.js";
 import { renderIssueBody, noopIssueClient } from "../src/lib/spec-kit/commands/taskstoissues.js";
 import { SpecKitArtifactError } from "../src/lib/spec-kit/artifacts.js";
 
@@ -287,16 +290,45 @@ describe("ensureValidOpenAPI", () => {
     expect(out).toContain("openapi:");
   });
 
-  it("returns a /health stub when input is invalid YAML", () => {
+  it("#1065 — invalid YAML becomes a contract with no endpoint, never a /health stub", () => {
     const out = ensureValidOpenAPI("::: not yaml :::", "001-x");
     expect(out).toContain("openapi:");
-    expect(out).toContain("/health");
+    expect(out).toContain("paths: {}");
+    expect(out).toContain("not a valid OpenAPI document");
+    expect(out).not.toContain("/health");
   });
 
-  it("returns a stub when openapi key is missing", () => {
+  it("returns a no-endpoint contract when openapi key is missing", () => {
     const out = ensureValidOpenAPI("foo: bar\n", "001-foo");
     expect(out).toContain("openapi:");
     expect(out).toContain("001-foo");
+    expect(out).not.toContain("/health");
+  });
+
+  it("#1065 — accepts an explicit no-REST-surface contract without inventing an endpoint", () => {
+    const explicit =
+      "openapi: 3.1.0\ninfo:\n  title: x\n  version: 1.0.0\npaths: {}\nx-no-rest-surface: true\n";
+    const out = ensureValidOpenAPI(explicit, "001-x");
+    expect(out).toContain("paths: {}");
+    expect(out).toContain("x-no-rest-surface: true");
+    expect(out).not.toContain("/health");
+  });
+
+  it("#1065 — a contract that omits `paths` gets an empty one, and a 3.0 version is raised", () => {
+    const out = ensureValidOpenAPI(
+      "openapi: 3.0.3\ninfo:\n  title: x\n  version: 1.0.0\n",
+      "001-x",
+    );
+    expect(out).toContain("openapi: 3.1.0");
+    expect(out).toContain("paths: {}");
+  });
+
+  it("#1065 — noRestSurfaceContract is valid OpenAPI 3.1 with no path and the marker", () => {
+    const out = noRestSurfaceContract("001-x", "Because.");
+    expect(out).toContain("openapi: 3.1.0");
+    expect(out).toContain("paths: {}");
+    expect(out).toContain("x-no-rest-surface: true");
+    expect(out).toContain("Because.");
   });
 });
 

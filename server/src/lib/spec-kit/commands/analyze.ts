@@ -6,9 +6,16 @@
  *
  * The artifact is append-only so the operator can see how consistency
  * has evolved over multiple `/analyze` runs without losing history.
+ *
+ * #1065 — it also reads `data-model.md` and every `contracts/*` artifact when
+ * the set has them, and checks each contract operation against plan.md in code
+ * (`findContractPlanContradictions`): a contract that defines an endpoint the
+ * plan puts out of scope is reported whether or not the model notices.
  */
 import { SpecKitArtifactError } from "../artifacts.js";
+import { findContractPlanContradictions } from "../contract-check.js";
 import {
+  artifactKey,
   forFeature,
   projectArtifactScope,
   type ArtifactScope,
@@ -72,6 +79,17 @@ export async function runAnalyze(input: AnalyzeInput): Promise<AnalyzeResult> {
         : "Run /specify, /plan, and /tasks before /analyze",
     );
   }
+  // #1065 — the Phase 1 artifacts, when this set has them (a feature's does).
+  const others = await scope.list();
+  const dataModel = others.find((a) => artifactKey(a) === "data-model.md") ?? null;
+  const contracts = others
+    .filter((a) => artifactKey(a).startsWith("contracts/"))
+    .map((a) => ({ key: artifactKey(a), content: a.content }));
+  const phaseOne = [
+    ...(dataModel ? [{ key: "data-model.md", content: dataModel.content, lang: "md" }] : []),
+    ...contracts.map((c) => ({ ...c, lang: "yaml" })),
+  ];
+
   const project = await loadProjectContext(input.projectId);
   const userPrompt = [
     "spec.md:",
@@ -89,6 +107,15 @@ export async function runAnalyze(input: AnalyzeInput): Promise<AnalyzeResult> {
     tasks.content,
     "```",
     "",
+    ...phaseOne.flatMap((a) => [`${a.key}:`, "```" + a.lang, a.content, "```", ""]),
+    ...(phaseOne.length > 0
+      ? [
+          `Also check ${phaseOne.map((a) => a.key).join(", ")} against plan.md: under`,
+          "`## Contradictions`, report every endpoint, entity or field they define that",
+          "the plan puts out of scope or never mentions.",
+          "",
+        ]
+      : []),
     "Run the cross-phase consistency check now.",
   ].join("\n");
 
@@ -105,15 +132,39 @@ export async function runAnalyze(input: AnalyzeInput): Promise<AnalyzeResult> {
   const now = input.now ?? (() => new Date());
   const existing = await scope.get("analysis.md");
   const prev = existing?.content ?? "# Spec Kit consistency reports\n";
-  const block = `${REPORT_HEADER(now().toISOString())}\n${run.content.trim()}\n`;
+  // #1065 — the contract is checked against the plan in code, so a planted
+  // contradiction is reported even when the model's report says `OK`.
+  const contradictions = findContractPlanContradictions(contracts, plan.content);
+  const modelVerdict = parseVerdict(run.content);
+  const raised = contradictions.length > 0 && (modelVerdict === "OK" || modelVerdict === "UNKNOWN");
+  const verdict = raised ? "WARN" : modelVerdict;
+  const contractSection =
+    contradictions.length > 0
+      ? [
+          "",
+          "## Contract vs plan",
+          "",
+          "Checked in code, not by the model:",
+          "",
+          ...contradictions.map((c) => `- ${c}`),
+          ...(raised ? ["", "The verdict of this run is raised to `WARN`."] : []),
+          "",
+        ].join("\n")
+      : "";
+  const block = `${REPORT_HEADER(now().toISOString())}\n${run.content.trim()}\n${contractSection}`;
   const next = `${prev.trimEnd()}\n${block}`;
 
   const artifact = await scope.write("analysis.md", next, input.actorId ?? null);
 
+  const n = contradictions.length;
+  const contractNote =
+    n > 0
+      ? ` Contract check: ${n} contradiction${n === 1 ? "" : "s"} with plan.md — ${contradictions.join(" ")}`
+      : "";
   return {
     artifact,
-    verdict: parseVerdict(run.content),
+    verdict,
     tokensUsed: run.tokensUsed,
-    message: `Appended consistency report to analysis.md (v${artifact.version})${forFeature(scope)}.`,
+    message: `Appended consistency report to analysis.md (v${artifact.version})${forFeature(scope)}.${contractNote}`,
   };
 }
