@@ -81,12 +81,18 @@ export function mdInline(value: string): string {
  * `\n`) but each line is HTML-escaped and trailing whitespace trimmed.
  */
 export function mdBlock(value: string): string {
-  return value
-    .replace(/\r\n?/g, "\n")
-    .split("\n")
-    .map((line) => escapeHtml(line).replace(/\s+$/g, ""))
-    .join("\n")
-    .trim();
+  return (
+    value
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      // `trimEnd()`, not `/\s+$/`: the pattern retries a run of whitespace from each
+      // of its positions when the line does not end in it — quadratic (PR #1090
+      // review 3). Both strip exactly the ECMAScript WhiteSpace and LineTerminator
+      // characters; `analysis-export.test.ts` proves them equal.
+      .map((line) => escapeHtml(line).trimEnd())
+      .join("\n")
+      .trim()
+  );
 }
 
 /**

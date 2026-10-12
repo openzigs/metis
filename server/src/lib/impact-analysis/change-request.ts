@@ -249,15 +249,22 @@ function classifyHeading(heading: string): SectionClass {
  * in — but they are counted like an unknown `#` heading, so a requirements
  * document marked up in bold (`**Background**`, `**Context**`, `**REQ-1 Export**`,
  * …) is not read as one issue (PR #1090 review 2).
+ *
+ * `boldSections` counts the sections a bold line OPENED. It says whether bold is
+ * this document's section markup at all: in an issue form whose sections are
+ * `###` headings, `**Note**` and `**Edit**` are emphasis, and three of them must
+ * not outvote three template headings (PR #1090 review 3).
  */
 function splitSections(text: string): {
   preamble: string[];
   sections: RawSection[];
   unknownBoldLabels: number;
+  boldSections: number;
 } {
   const preamble: string[] = [];
   const sections: RawSection[] = [];
   let unknownBoldLabels = 0;
+  let boldSections = 0;
   let inFence = false;
   for (const line of text.replace(/\r\n?/g, "\n").split("\n")) {
     if (FENCE_LINE.test(line)) inFence = !inFence;
@@ -269,13 +276,14 @@ function splitSections(text: string): {
     }
     if (bold !== null && classifyHeading(bold) !== "unknown") {
       sections.push({ level: BOLD_HEADING_LEVEL, heading: bold.trim(), lines: [] });
+      boldSections++;
       continue;
     }
     if (bold !== null) unknownBoldLabels++;
     if (sections.length > 0) sections[sections.length - 1]!.lines.push(line);
     else preamble.push(line);
   }
-  return { preamble, sections, unknownBoldLabels };
+  return { preamble, sections, unknownBoldLabels, boldSections };
 }
 
 /** Why a single line carries no request; null when it is content. */
@@ -338,14 +346,15 @@ function sameText(a: string, b: string): boolean {
 /**
  * Parse `text` as one issue. Returns null when it is not recognisably one: fewer
  * than {@link MIN_RECOGNISED_HEADINGS} template headings, no more template
- * headings than unknown ones (unknown whole-line bold labels included), more
- * than one top-level title, or a heading that introduces a requirement list.
+ * headings than unknown ones (unknown whole-line bold labels included, in a
+ * document that marks its sections in bold), more than one top-level title, or
+ * a heading that introduces a requirement list.
  */
 export function parseChangeRequest(text: string | null | undefined): ChangeRequest | null {
   const trimmed = (text ?? "").trim();
   if (trimmed.length === 0) return null;
 
-  const { preamble, sections, unknownBoldLabels } = splitSections(trimmed);
+  const { preamble, sections, unknownBoldLabels, boldSections } = splitSections(trimmed);
   if (sections.filter((s) => s.level === 1).length > 1) return null;
 
   // A leading `# Title` is the title, not a section.
@@ -357,9 +366,12 @@ export function parseChangeRequest(text: string | null | undefined): ChangeReque
   if (recognised < MIN_RECOGNISED_HEADINGS) return null;
   // A document with a "Background" and a "Problem" section and then one section
   // per requirement is still a requirements document: template headings have to
-  // outnumber the ones this parser does not know — `#` headings and whole-line
-  // bold labels alike.
-  if (classes.length - recognised + unknownBoldLabels >= recognised) return null;
+  // outnumber the ones this parser does not know — `#` headings, and whole-line
+  // bold labels where bold is how this document marks a section (it opened at
+  // least one template section). Where every section is a `#` heading, a bold
+  // line is a remark in its section and is not counted.
+  const unknownBold = boldSections > 0 ? unknownBoldLabels : 0;
+  if (classes.length - recognised + unknownBold >= recognised) return null;
 
   const ignored: IgnoredFragment[] = [];
   const preambleLines = titled ? sections[0]!.lines : preamble;
@@ -439,11 +451,57 @@ export function renderRequestBody(request: ChangeRequest): string {
 }
 
 /**
- * The text to search code with: the request, its sub-aspects and its context,
- * without the alternatives the reporter rejected, code fences (JSON keys and SQL,
- * not names of code to find) or inline links.
+ * One section as search text: no code fences (JSON keys and SQL, not names of
+ * code to find), no inline links, whitespace collapsed.
  */
-export function requestRetrievalText(request: ChangeRequest): string {
+function retrievalPart(part: string): string {
+  return (
+    part
+      .replace(/(```|~~~)[\s\S]*?(\1|$)/g, " ")
+      // Bounded on both sides, and a label holds no `[`: unbounded, `[^\]]+` and
+      // `[^)]*` are quadratic on a long run of `[` or of unclosed `[a](http://…`
+      // (text is accepted up to 500,000 characters). A link longer than the
+      // bound is left to the URL pattern below.
+      .replace(/\[([^[\]\n]{1,300})\]\(\s{0,8}https?:\/\/[^)\s]{0,500}\)/g, "$1")
+      .replace(/https?:\/\/\S+/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
+}
+
+/**
+ * A section is cut to this many times the caller's limit BEFORE it is cleaned.
+ * Cleaning only ever shortens, so the head of a section is all a capped caller
+ * can use; the factor leaves room for what cleaning removes from that head.
+ */
+export const RETRIEVAL_PART_HEADROOM = 4;
+
+/**
+ * The text to search code with: the request, its sub-aspects and its context,
+ * without the alternatives the reporter rejected, code fences or inline links.
+ *
+ * `maxChars` is for a caller that will keep only the first `maxChars` characters
+ * of the result (`seedQueries`, which caps its query). With it the work is
+ * bounded by that limit, not by the request: each section is cut to
+ * `maxChars × RETRIEVAL_PART_HEADROOM` before the replace chain, and sections
+ * stop being read once the text is already longer than `maxChars`. Without it
+ * the whole request went through the chain — up to 500,000 characters, twice
+ * over for the worst input — to produce a query that was then cut to 4,000
+ * (PR #1090 review 3).
+ *
+ * The result is IDENTICAL to the uncapped one whenever no section is longer
+ * than `maxChars × RETRIEVAL_PART_HEADROOM` and the uncapped text is no longer
+ * than `maxChars`; and when no section is over that length, its first
+ * `maxChars` characters are identical whatever the total (stopping early drops
+ * only text past the limit). A longer section is cleaned from its head alone,
+ * so a fence or link that spans the cut is treated as unclosed.
+ */
+export function requestRetrievalText(
+  request: ChangeRequest,
+  options: { maxChars?: number } = {},
+): string {
+  const { maxChars } = options;
   const parts = [
     request.primaryRequest,
     ...request.subAspects.map((s) => s.text),
@@ -451,22 +509,23 @@ export function requestRetrievalText(request: ChangeRequest): string {
       .filter((s) => !NON_SEEDING_CONTEXT.has(normalizeHeading(s.heading)))
       .map((s) => s.text),
   ];
-  return parts
-    .map((p) =>
-      p
-        .replace(/(```|~~~)[\s\S]*?(\1|$)/g, " ")
-        // Bounded on both sides, and a label holds no `[`: unbounded, `[^\]]+` and
-        // `[^)]*` are quadratic on a long run of `[` or of unclosed `[a](http://…`
-        // (text is accepted up to 500,000 characters). A link longer than the
-        // bound is left to the URL pattern below.
-        .replace(/\[([^[\]\n]{1,300})\]\(\s{0,8}https?:\/\/[^)\s]{0,500}\)/g, "$1")
-        .replace(/https?:\/\/\S+/g, " ")
-        .replace(/[ \t]+/g, " ")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim(),
-    )
-    .filter((p) => p.length > 0)
-    .join("\n\n");
+  if (maxChars === undefined) {
+    return parts
+      .map(retrievalPart)
+      .filter((p) => p.length > 0)
+      .join("\n\n");
+  }
+  const partLimit = maxChars * RETRIEVAL_PART_HEADROOM;
+  const cleaned: string[] = [];
+  let length = 0;
+  for (const part of parts) {
+    const text = retrievalPart(part.length > partLimit ? part.slice(0, partLimit) : part);
+    if (text.length === 0) continue;
+    length += text.length + (cleaned.length > 0 ? 2 : 0);
+    cleaned.push(text);
+    if (length > maxChars) break;
+  }
+  return cleaned.join("\n\n");
 }
 
 // ── What the request ASKS, as opposed to what it says around it (#791) ───────

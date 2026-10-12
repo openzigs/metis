@@ -49,6 +49,18 @@ interface SchemaEdgeRow {
 }
 
 /**
+ * An edge INTO a schema symbol, as {@link SchemaImpactDataSource.getWriterEdgesTo}
+ * returns it. `source` is REQUIRED here, not optional: `isOrmMappingEdge`
+ * (`data-path-writers.ts`) reads it to keep a Prisma model or a JPA entity out
+ * of the writer list, and while it was optional the `select` and the mapping
+ * that supply it could both be deleted with typecheck and every test green
+ * (PR #1090 review 3). Null is "the extractor recorded none".
+ */
+export interface WriterEdgeRow extends SchemaEdgeRow {
+  source: string | null;
+}
+
+/**
  * #928 — a downstream CODE edge (`calls`/`executes`) used to walk from an
  * impacted code symbol INTO the data-access layer (mapper/DAO methods and the
  * MyBatis statement symbols they `executes`). Only the endpoints are needed for
@@ -123,7 +135,7 @@ export interface SchemaImpactDataSource {
   /** #791 — the `column` schema symbols of the named tables (data-path-writers.ts). */
   getColumnsOfTables?(tableNames: string[]): Promise<SchemaSymbolRow[]>;
   /** #791 — `writes` / `persists-to` edges INTO the given schema symbols. */
-  getWriterEdgesTo?(schemaSymbolIds: string[]): Promise<SchemaEdgeRow[]>;
+  getWriterEdgesTo?(schemaSymbolIds: string[]): Promise<WriterEdgeRow[]>;
   /** #791 — location and language of the given code symbols. */
   getCodeSymbolDetails?(ids: string[]): Promise<CodeSymbolDetail[]>;
   /**
@@ -1114,7 +1126,7 @@ export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
   }
 
   /** #791 — `writes` / `persists-to` edges into the given schema symbols. */
-  async getWriterEdgesTo(schemaSymbolIds: string[]): Promise<SchemaEdgeRow[]> {
+  async getWriterEdgesTo(schemaSymbolIds: string[]): Promise<WriterEdgeRow[]> {
     if (schemaSymbolIds.length === 0) return [];
     const rows = await chunkedIn(schemaSymbolIds, (chunk) =>
       this.prisma.codeEdge.findMany({

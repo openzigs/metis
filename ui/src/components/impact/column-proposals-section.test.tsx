@@ -83,8 +83,16 @@ describe("ColumnProposalsSection — Optional: settings persistence (#1051)", ()
     expect(within(section).getByText("Optional: settings persistence (1)")).toBeInTheDocument();
     expect(section.textContent).toContain("Not part of the migration this change needs.");
     // …and says how to get a column the change does need (#791: in a covered
-    // request the model cannot add one; the user's own DDL can).
-    expect(section.textContent).toContain("write its ALTER TABLE statement in the request");
+    // request no model answer can add one; what the user writes can — DDL or a
+    // plain add-a-column sentence).
+    expect(section.textContent).toContain(
+      "ask for it in the request: write its ALTER TABLE statement",
+    );
+    expect(section.textContent).toContain("add a delay field to users");
+    // Both ways a column lands here are named, not only the covered one.
+    expect(section.textContent).toContain(
+      "the model itself classed the column as a remembered preference",
+    );
     expect(within(section).getByTestId("column-proposal-ddl").textContent).toBe(
       "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER;",
     );
@@ -157,7 +165,7 @@ describe("ColumnProposalsSection — Proposed, not checked (#791)", () => {
   const unchecked = proposal({
     writer: null,
     reason:
-      "Not checked: the SQL lineage named no write path for this request, so there was nothing to compare this column with. Review it as an unverified proposal.",
+      "Not checked: the SQL lineage named no write path on the tables this analysis reached for the request, so there was nothing to compare this column with. Review it as an unverified proposal.",
   });
 
   it("says the column is proposed above and was not checked, with the reason", () => {

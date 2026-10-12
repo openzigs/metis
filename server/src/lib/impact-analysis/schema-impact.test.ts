@@ -822,6 +822,60 @@ describe("crossToSchema — DAO/mapper sibling expansion (#922)", () => {
   });
 });
 
+describe("PrismaSchemaImpactDataSource.getWriterEdgesTo — each edge carries its extractor (#791, PR #1090 review 3)", () => {
+  // `isOrmMappingEdge` reads `source` to tell a Prisma model's mapping edge from
+  // a MyBatis insert. This double returns ONLY the columns the query selects, as
+  // the database does, so dropping `source` from the select or from the mapping
+  // fails here. (The same path runs on real SQLite in
+  // `tests/impact-miniflux-791.sqlite.test.ts`.)
+  const STORED = [
+    { id: "e1", fromSymbolId: "Entry", toSymbolId: "col-1", kind: "persists-to", source: "orm" },
+    {
+      id: "e2",
+      fromSymbolId: "insertEntry",
+      toSymbolId: "col-1",
+      kind: "persists-to",
+      source: "mybatis",
+    },
+    { id: "e3", fromSymbolId: "SetStatus", toSymbolId: "col-1", kind: "writes", source: "sqlglot" },
+    { id: "e4", fromSymbolId: "legacy", toSymbolId: "col-1", kind: "writes", source: null },
+  ];
+  function selectingPrisma() {
+    const findMany = vi.fn(async (args: { select: Record<string, boolean> }) =>
+      STORED.map((row) =>
+        Object.fromEntries(Object.entries(row).filter(([column]) => args.select[column] === true)),
+      ),
+    );
+    return { codeSymbol: { findMany: vi.fn() }, codeEdge: { findMany } };
+  }
+
+  it("returns every edge with the source the row holds, null included", async () => {
+    const prisma = selectingPrisma();
+    const ds = new PrismaSchemaImpactDataSource(prisma as never, "proj-7");
+    expect(await ds.getWriterEdgesTo(["col-1"])).toEqual([
+      { fromSymbolId: "Entry", toSymbolId: "col-1", kind: "persists-to", source: "orm" },
+      { fromSymbolId: "insertEntry", toSymbolId: "col-1", kind: "persists-to", source: "mybatis" },
+      { fromSymbolId: "SetStatus", toSymbolId: "col-1", kind: "writes", source: "sqlglot" },
+      { fromSymbolId: "legacy", toSymbolId: "col-1", kind: "writes", source: null },
+    ]);
+    expect(prisma.codeEdge.findMany).toHaveBeenCalledWith({
+      where: {
+        projectId: "proj-7",
+        toSymbolId: { in: ["col-1"] },
+        kind: { in: ["writes", "persists-to"] },
+      },
+      select: { fromSymbolId: true, toSymbolId: true, kind: true, source: true },
+    });
+  });
+
+  it("asks nothing for no ids", async () => {
+    const prisma = selectingPrisma();
+    const ds = new PrismaSchemaImpactDataSource(prisma as never, "proj-7");
+    expect(await ds.getWriterEdgesTo([])).toEqual([]);
+    expect(prisma.codeEdge.findMany).not.toHaveBeenCalled();
+  });
+});
+
 describe("PrismaSchemaImpactDataSource — sibling resolution (#922)", () => {
   it("resolves code symbols by id, project-scoped, for any kind", async () => {
     const prisma = {

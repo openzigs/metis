@@ -305,7 +305,9 @@ describe("computeProjectImpact — nothing the proposer declares changes the gat
       ],
       getWriterEdgesTo: async (ids) => [
         ...(await base.getWriterEdgesTo!(ids)),
-        ...extra.filter((e) => ids.includes(e.toSymbolId) && e.kind === "writes"),
+        ...extra
+          .filter((e) => ids.includes(e.toSymbolId) && e.kind === "writes")
+          .map((e) => ({ ...e, source: "sqlglot" })),
       ],
       getCodeSymbolDetails: async (ids) => [
         ...(await base.getCodeSymbolDetails!(ids)),
@@ -399,7 +401,7 @@ describe("computeProjectImpact — lineage writers and growing tables reach role
     });
   });
 
-  it("the user's own DDL is the one route to core in a covered request, and it does promote", async () => {
+  it("the user's own DDL makes a column core in a covered request, and it does promote", async () => {
     const text = ISSUE_4478.replace(
       "Times could be configured in settings.",
       "Times could be configured in settings.\n\nALTER TABLE entries ADD COLUMN read_at TIMESTAMPTZ;",
@@ -549,6 +551,47 @@ describe("computeProjectImpact — the DDL fast path reads what the request asks
     expect(result.affectedTables.map((t) => t.suggestedDdl).join("\n")).toContain(
       "ADD COLUMN read_at",
     );
+  });
+
+  // PR #1090 review 3 — the header used to say "the only route to core is
+  // ALTER TABLE". These are the other things the user can write.
+  describe("in the covered #4478 request: what the USER writes is core, what the model proposes stays optional", () => {
+    const proposer: Proposer = async () => [column("users", "mark_read_delay", "INTEGER")];
+    const withSentence = (sentence: string) =>
+      ISSUE_4478.replace(
+        "Times could be configured in settings.",
+        `Times could be configured in settings. ${sentence}`,
+      );
+    const added = (result: Awaited<ReturnType<typeof run>>) =>
+      result.affectedTables.filter((t) => t.changeKind === "add-column");
+
+    it.each([
+      ["add a <name> field to <table>", "Add a mark_read_delay field to users."],
+      ["add <name> to <table>", "Add mark_read_delay to users."],
+    ])('the prose form "%s" marks the users table add-column', async (_form, sentence) => {
+      const text = withSentence(sentence);
+      expect(text).not.toBe(ISSUE_4478);
+      const result = await run(text, { additiveColumnProposer: proposer });
+      // The fast path marks the TABLE row; the model's own column is still optional.
+      expect(added(result).map((t) => [t.tableName, t.objectKind])).toEqual([["users", "table"]]);
+      expect(added(result)[0]!.suggestedDdl).toContain("mark_read_delay");
+      expect(result.optionalColumnProposals.map((o) => o.row.columnName)).toEqual([
+        "mark_read_delay",
+      ]);
+      expect(result.uncheckedColumnProposals).toEqual([]);
+    });
+
+    it("DDL under a heading the parser does not know counts as asked for: an unknown heading is a sub-section", async () => {
+      const text = `${ISSUE_4478.trimEnd()}\n\n### Workaround\n\nToday I run this by hand:\n\nALTER TABLE users ADD COLUMN mark_read_delay INTEGER;\n`;
+      const result = await run(text, { additiveColumnProposer: proposer });
+      expect(added(result).map((t) => t.tableName)).toEqual(["users"]);
+      expect(added(result)[0]!.suggestedDdl).toContain("ADD COLUMN mark_read_delay");
+    });
+
+    it("the verbatim request triggers none of them", async () => {
+      const result = await run(ISSUE_4478, { additiveColumnProposer: proposer });
+      expect(added(result)).toEqual([]);
+    });
   });
 
   it("does not propose a column whose DDL is only quoted under Alternatives considered", async () => {

@@ -9,17 +9,23 @@
  * the search tokenizer (19 s). Each fix came with a timing test for the pattern
  * the review had named, and none for the pattern beside it.
  *
- * So this test names no pattern. It parses each file below with the TypeScript
- * compiler, takes EVERY regex literal and EVERY `new RegExp(…)` it finds, and
- * runs each over every input in {@link ADVERSARIAL_INPUTS}. A pattern added to
- * one of these files tomorrow is covered without anyone remembering to add it.
+ * So this test names no pattern, and (since review 3) no file under
+ * `lib/impact-analysis/` either. It parses each file in {@link FUZZED_FILES} with
+ * the TypeScript compiler, takes EVERY regex literal and EVERY `new RegExp(…)` it
+ * finds, and runs each over every input in {@link ADVERSARIAL_INPUTS}. A pattern
+ * added to one of these files tomorrow, or a file added to that directory, is
+ * covered without anyone remembering to add it.
  *
  * What it does not do: decide which patterns see request text. It does not need
  * to — every pattern in a listed file has to be linear, whatever it is applied
  * to. A `new RegExp` whose source cannot be evaluated statically FAILS the test
  * rather than being skipped.
+ *
+ * ITS LIMIT. The corpus is fixed, so what a green run shows is "linear on these
+ * shapes at these sizes", not "linear". A pattern that is slow only on a shape
+ * nobody listed passes.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -27,26 +33,35 @@ import { describe, expect, it } from "vitest";
 
 const SERVER_SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
+const IMPACT_DIR = "lib/impact-analysis";
+
 /**
- * The production files of the impact chain that PR #1090 (#1036, #791, #1051)
- * touches, plus the search tokenizer its queries reach. Add a file here when a
- * change makes it read request text.
+ * Files outside `lib/impact-analysis/` that request text (or text derived from
+ * it) reaches: the search its queries run through, the export that renders the
+ * request and the gate's reasons, and the route that accepts it. A file IN that
+ * directory needs no entry — see {@link FUZZED_FILES}.
  */
-export const FUZZED_FILES: readonly string[] = [
-  "lib/impact-analysis/additive-column-proposer.ts",
-  "lib/impact-analysis/change-request.ts",
-  "lib/impact-analysis/change-seeds.ts",
-  "lib/impact-analysis/column-proposal-gate.ts",
-  "lib/impact-analysis/data-path-writers.ts",
-  "lib/impact-analysis/extract-changes.ts",
-  "lib/impact-analysis/impact-analysis-engine.ts",
-  "lib/impact-analysis/impact-analysis-read.ts",
-  "lib/impact-analysis/impact-roles.ts",
-  "lib/impact-analysis/schema-impact.ts",
-  "lib/impact-analysis/structural-twins.ts",
+export const FUZZED_FILES_ELSEWHERE: readonly string[] = [
+  "lib/analysis/analysis-export.ts",
   "lib/code-graph/hybrid-search.ts",
   "lib/code-graph/project-code-searcher.ts",
   "lib/rag/fused-code-context.ts",
+  "routes/impact-analysis.ts",
+];
+
+/**
+ * What is fuzzed: EVERY production file directly under `lib/impact-analysis/`,
+ * read from disk, plus {@link FUZZED_FILES_ELSEWHERE}. The list used to be
+ * written out by hand as "the files PR #1090 touches", and review 3 found five
+ * files it should have held (one with a quadratic pattern). Derived, a file
+ * added to the directory tomorrow is covered without anyone listing it.
+ */
+export const FUZZED_FILES: readonly string[] = [
+  ...readdirSync(resolve(SERVER_SRC, IMPACT_DIR))
+    .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts") && !name.endsWith(".d.ts"))
+    .sort()
+    .map((name) => `${IMPACT_DIR}/${name}`),
+  ...FUZZED_FILES_ELSEWHERE,
 ];
 
 /** Size of every input. The review's measurements were taken at this size. */
@@ -288,6 +303,21 @@ function bestMs(regex: FoundRegex, text: string): number {
   return best;
 }
 
+/**
+ * A deliberately slow pattern for the self-tests below, assembled at run time.
+ *
+ * Written as one string literal, `"^(a+)+$"` is what CodeQL's
+ * `js/redos` query exists to find, and it found it: the alert turned the PR's
+ * `CodeQL` check red (PR #1090 review 3). The pattern is not a defect — it is
+ * the input that proves this suite fails on an exponential pattern rather than
+ * hanging — so it is kept, but as fragments none of which is a regular
+ * expression with a nested quantifier. Nothing is suppressed and no path is
+ * taken out of the scan.
+ */
+function slowPattern(...fragments: string[]): FoundRegex {
+  return { file: "self-test", line: 1, source: fragments.join(""), flags: "" };
+}
+
 /** Every input at every size, built once. */
 const INPUT_TEXTS: ReadonlyArray<{ name: string; size: number; text: string }[]> =
   ADVERSARIAL_INPUTS.map(([name, build]) =>
@@ -347,6 +377,32 @@ describe("regex extraction (the fuzz below is only as good as this)", () => {
     }
   });
 
+  it("covers every production file of the directory, and the named files outside it (review 3)", () => {
+    // The five files review 3 found missing from the hand-written list, the
+    // files that list held, and the route. A file dropped from either half of
+    // FUZZED_FILES fails here, not silently.
+    for (const file of [
+      "lib/analysis/analysis-export.ts",
+      "routes/impact-analysis.ts",
+      "lib/impact-analysis/clause-coverage-reconciler.ts",
+      "lib/impact-analysis/impact-summarizer.ts",
+      "lib/impact-analysis/ddl-risk-classifier.ts",
+      "lib/impact-analysis/change-request.ts",
+      "lib/impact-analysis/column-proposal-gate.ts",
+      "lib/impact-analysis/schema-impact.ts",
+      "lib/code-graph/hybrid-search.ts",
+      "lib/code-graph/project-code-searcher.ts",
+      "lib/rag/fused-code-context.ts",
+    ]) {
+      expect(FUZZED_FILES, file).toContain(file);
+    }
+    // 31 at the time of writing: the directory is read, not listed.
+    const inDirectory = FUZZED_FILES.filter((f) => f.startsWith("lib/impact-analysis/"));
+    expect(inDirectory.length).toBeGreaterThanOrEqual(30);
+    expect(FUZZED_FILES.filter((f) => f.endsWith(".test.ts"))).toEqual([]);
+    expect(new Set(FUZZED_FILES).size).toBe(FUZZED_FILES.length);
+  });
+
   it("can evaluate every `new RegExp` in the listed files, bar the reviewed run-time ones", () => {
     const unevaluated = collected.flatMap((c) => c.bad).map(({ file, text }) => ({ file, text }));
     expect(unevaluated).toEqual(RUNTIME_BUILT_PATTERNS.map(({ file, text }) => ({ file, text })));
@@ -354,12 +410,12 @@ describe("regex extraction (the fuzz below is only as good as this)", () => {
   });
 
   it("flags the quadratic pattern this PR shipped, on the review's input", () => {
-    const shipped: FoundRegex = {
-      file: "change-request.ts@b86ca7a0",
-      line: 181,
-      source: "^\\s*(?:\\*\\*|__)([^*_\\n]{1,120})(?:\\*\\*|__)\\s*:?\\s*$",
-      flags: "",
-    };
+    // `change-request.ts:181` at b86ca7a0, in three fragments (see `slowPattern`).
+    const shipped = slowPattern(
+      "^\\s*(?:\\*\\*|__)([^*_\\n]{1,120})(?:\\*\\*|__)",
+      "\\s*:?",
+      "\\s*$",
+    );
     const slow = firstSlow(shipped);
     expect(slow?.name).toBe("bold, spaces, char");
     // Caught on the way up the ladder, well before 200 KB and its 23 seconds.
@@ -369,10 +425,13 @@ describe("regex extraction (the fuzz below is only as good as this)", () => {
   it("FAILS, rather than hangs, on a cubic and on an exponential pattern", () => {
     const start = performance.now();
     // Unanchored, the shipped tail is cubic: no result at 200 KB in fifteen minutes.
-    const cubic = firstSlow({ file: "x", line: 1, source: "\\s*:?\\s*$", flags: "" });
+    const cubicPattern = slowPattern("\\s*", ":?", "\\s*", "$");
+    const cubic = firstSlow(cubicPattern);
     expect(cubic).not.toBeNull();
     expect(cubic!.size).toBeLessThanOrEqual(4000);
-    const exponential = firstSlow({ file: "x", line: 1, source: "^(a+)+$", flags: "" });
+    // A group that repeats, holding a repeat of the same letter, anchored.
+    const exponentialPattern = slowPattern("^", "(", "a+", ")", "+", "$");
+    const exponential = firstSlow(exponentialPattern);
     expect(exponential).not.toBeNull();
     expect(exponential!.size).toBeLessThanOrEqual(32);
     expect(performance.now() - start).toBeLessThan(120_000);

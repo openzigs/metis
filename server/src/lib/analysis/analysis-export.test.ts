@@ -62,6 +62,59 @@ describe("mdInline", () => {
 });
 
 describe("mdBlock", () => {
+  // PR #1090 review 3: the per-line strip was `/\s+$/g`, quadratic on a line of
+  // spaces that ends in a character. `trimEnd()` replaced it.
+  describe("strips trailing whitespace exactly as the pattern it replaced did", () => {
+    const esc = (line: string) =>
+      line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    /** `mdBlock` as it was before the change, line strip included. */
+    const before = (value: string) =>
+      value
+        .replace(/\r\n?/g, "\n")
+        .split("\n")
+        .map((line) => esc(line).replace(/\s+$/g, ""))
+        .join("\n")
+        .trim();
+
+    it("agrees on every UTF-16 code unit, trailing, leading and in the middle", () => {
+      const differing: number[] = [];
+      for (let code = 0; code <= 0xffff; code++) {
+        const ch = String.fromCharCode(code);
+        const samples = [`a${ch}`, `a${ch}${ch} `, `${ch}a`, `a${ch}b`, `a ${ch}\nb${ch}`];
+        if (samples.some((text) => mdBlock(text) !== before(text))) differing.push(code);
+      }
+      expect(differing).toEqual([]);
+    });
+
+    it("agrees on 20,000 generated strings of whitespace, text and markup", () => {
+      let seed = 1090;
+      const next = (n: number) => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed % n;
+      };
+      const alphabet = [
+        " ",
+        " ",
+        "\t",
+        "\n",
+        "\r",
+        "\r\n",
+        "\u00a0",
+        "\u2028",
+        "\ufeff",
+        "\v",
+        "\f",
+      ];
+      alphabet.push("a", "b", "<", "&", ">", "#", "\u200b", "\u180e", "\u0085");
+      for (let i = 0; i < 20_000; i++) {
+        const length = next(16);
+        let text = "";
+        for (let j = 0; j < length; j++) text += alphabet[next(alphabet.length)];
+        expect(mdBlock(text), JSON.stringify(text)).toBe(before(text));
+      }
+    });
+  });
+
   it("preserves line breaks but escapes each line", () => {
     expect(mdBlock("a <b>\nc & d")).toBe("a &lt;b&gt;\nc &amp; d");
   });
@@ -979,7 +1032,8 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
                 columnName: "mark_read_delay",
                 columnType: "INTEGER",
                 suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER;",
-                reason: "Not checked: the SQL lineage named no write path for this request.",
+                reason:
+                  "Not checked: the SQL lineage named no write path on the tables this analysis reached for the request.",
                 writer: null,
               },
             ],
@@ -990,7 +1044,7 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     const at = md.indexOf("#### Proposed, not checked (each row says why)");
     expect(at).toBeGreaterThan(-1);
     expect(md.slice(at)).toContain(
-      "- `users.mark_read_delay` (INTEGER). Not checked: the SQL lineage named no write path for this request.",
+      "- `users.mark_read_delay` (INTEGER). Not checked: the SQL lineage named no write path on the tables this analysis reached for the request.",
     );
     // It sits with the other gate sections, before the code lists.
     expect(at).toBeLessThan(md.indexOf("#### Files to edit"));

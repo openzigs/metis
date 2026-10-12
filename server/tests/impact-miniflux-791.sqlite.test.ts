@@ -521,6 +521,121 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(all).toContain(`${FEED}::UpdateFeedError`);
     });
 
+    it("PR #1090 review 3 — the real writer-edge query returns each edge's extractor, and a Prisma model's mapping edge names no writer", async () => {
+      const { PrismaSchemaImpactDataSource } =
+        await import("../src/lib/impact-analysis/schema-impact.js");
+      const { resolveDataPathWriters } =
+        await import("../src/lib/impact-analysis/data-path-writers.js");
+      const status = ids.get("entries.status")!;
+      // A Prisma `model Entry`, stored the way `orm-extractor.ts` stores it: an
+      // origin symbol (kind `method`, language `sql`) with a `persists-to` edge,
+      // source `orm`, to each mapped column. Removed again below, so no other
+      // test in this file sees it.
+      const model = await db.codeSymbol.create({
+        data: {
+          codeGraphId: GRAPH,
+          projectId: PROJ,
+          kind: "method",
+          name: "Entry",
+          qualifiedName: "prisma/schema.prisma::Entry",
+          filePath: "prisma/schema.prisma",
+          startLine: 10,
+          endLine: 30,
+          language: "sql",
+          source: "orm",
+          contentHash: "prisma/schema.prisma::Entry",
+        },
+      });
+      const mapping = await db.codeEdge.create({
+        data: {
+          codeGraphId: GRAPH,
+          projectId: PROJ,
+          kind: "persists-to",
+          fromSymbolId: model.id,
+          toSymbolId: status,
+          filePath: "prisma/schema.prisma",
+          line: 12,
+          source: "orm",
+        },
+      });
+      try {
+        const ds = new PrismaSchemaImpactDataSource(db, PROJ);
+        const edges = await ds.getWriterEdgesTo([status]);
+        // The real query, on a real row: the extractor comes back with the edge.
+        expect(edges.find((e) => e.fromSymbolId === model.id)).toEqual({
+          fromSymbolId: model.id,
+          toSymbolId: status,
+          kind: "persists-to",
+          source: "orm",
+        });
+        // The lineage edges of this fixture were stored without one: null, not absent.
+        const lineage = edges.filter((e) => e.fromSymbolId !== model.id);
+        expect(lineage.length).toBeGreaterThanOrEqual(3);
+        expect(lineage.every((e) => "source" in e && e.source === null)).toBe(true);
+
+        const writers = await resolveDataPathWriters({
+          requirementText: "Change how the entry status is written.",
+          seedIds: [status],
+          primaryTables: [
+            {
+              objectKind: "table",
+              tableName: "entries",
+              columnName: null,
+              columnType: null,
+              changeKind: "reference",
+              suggestedDdl: null,
+              source: "sqlglot",
+              reconciliation: null,
+              confidence: 1,
+            },
+          ],
+          dataSource: ds,
+          excludeIds: new Set(),
+        });
+        const writerNames = writers.map((w) => w.qualifiedName);
+        expect(writerNames).toContain(`${ENTRY}::SetEntriesStatus`);
+        expect(writerNames).not.toContain("prisma/schema.prisma::Entry");
+      } finally {
+        await db.codeEdge.delete({ where: { id: mapping.id } });
+        await db.codeSymbol.delete({ where: { id: model.id } });
+      }
+    });
+
+    it("PR #1090 review 3 — #4478 on the real engine with the #936 table filter demoting `entries`: still no core proposed column", async () => {
+      const baseline = await run(REQ_4478, {
+        mapRequirement: async () => uiSeed(),
+        additiveColumnProposer: async () => [usersColumn("mark_read_delay", "INTEGER")],
+      });
+      expect(baseline.tables.filter((t) => t.changeKind === "add-column")).toEqual([]);
+      // This fixture's crossing reaches `entries` alone, so the adversarial
+      // answer is the one that leaves the proposer something to propose on:
+      // `entries` tangential, and a `users` row in the primary set.
+      expect([...new Set(baseline.tables.map((t) => t.tableName))]).toEqual(["entries"]);
+
+      const proposer = vi.fn(async () => [usersColumn("mark_read_delay", "INTEGER")]);
+      const { tables } = await run(REQ_4478, {
+        mapRequirement: async () => uiSeed(),
+        additiveColumnProposer: proposer,
+        tableRelevanceFilter: async (
+          _text: string,
+          rows: Array<{ tableName: string; objectKind: string; columnName: string | null }>,
+        ) => ({
+          primary: [
+            {
+              ...rows.find((r) => r.objectKind === "table")!,
+              tableName: "users",
+              suggestedDdl: null,
+            },
+          ],
+          secondary: rows.map((r) => ({ ...r, relevanceTier: "unlikely" })),
+        }),
+      });
+      expect(proposer).toHaveBeenCalledTimes(1);
+      expect(tables.find((t) => t.tableName === "entries")?.relevanceTier).toBe("unlikely");
+      expect(tables.map((t) => t.tableName)).toContain("users");
+      expect(tables.filter((t) => t.changeKind === "add-column")).toEqual([]);
+    });
+
     it("drops a word-matched column seed once the relevance filter judges its table tangential", async () => {
       const baseline = names((await run(REQ_4511)).symbols);
       expect(baseline).toContain("api_keys.last_used_at");

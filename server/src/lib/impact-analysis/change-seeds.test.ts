@@ -11,7 +11,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tokenizeCodeRoots } from "../code-graph/hybrid-search.js";
 import { describe, expect, it, vi } from "vitest";
-import { extractChangesByShape } from "./change-request.js";
+import {
+  extractChangesByShape,
+  requestRetrievalText,
+  RETRIEVAL_PART_HEADROOM,
+  type ChangeRequest,
+} from "./change-request.js";
 import {
   EDIT_POOL,
   fileScore,
@@ -471,5 +476,148 @@ describe("resolveChangeSeeds — which channels answered (#1036, PR #1090 review
       schemaSeeds: [],
       retrievalMode: "bm25-only",
     });
+  });
+});
+
+describe("seedQueries — the request is cut BEFORE it is cleaned, and the query is the same (PR #1090 review 3)", () => {
+  /** `capQuery` as `change-seeds.ts` has it. */
+  const cap = (text: string): string => {
+    if (text.length <= MAX_SEED_QUERY_CHARS) return text;
+    const head = text.slice(0, MAX_SEED_QUERY_CHARS);
+    const lastBreak = Math.max(head.lastIndexOf(" "), head.lastIndexOf("\n"));
+    return lastBreak >= MAX_SEED_QUERY_CHARS - 100 ? head.slice(0, lastBreak).trimEnd() : head;
+  };
+  /** The request query as it was built before: clean ALL of it, then cut. */
+  const before = (request: ChangeRequest): string => cap(requestRetrievalText(request));
+  /** Through `seedQueries`, with no title: the request query is the only one (none when empty). */
+  const now = (request: ChangeRequest): string =>
+    seedQueries({ title: "", body: "", request })[0] ?? "";
+  const PART_LIMIT = MAX_SEED_QUERY_CHARS * RETRIEVAL_PART_HEADROOM;
+
+  const request = (
+    primary: string,
+    subs: string[] = [],
+    context: string[] = [],
+  ): ChangeRequest => ({
+    title: "T",
+    kind: "feature",
+    primaryRequest: primary,
+    subAspects: subs.map((text, i) => ({ heading: `Sub ${i}`, text })),
+    context: context.map((text, i) => ({
+      heading: i % 3 === 2 ? "Alternatives considered" : `Context ${i}`,
+      text,
+    })),
+    ignored: [],
+  });
+
+  it.each(["miniflux-4478.md", "miniflux-4336.md", "miniflux-4479.md", "miniflux-4386.md"])(
+    "%s: byte-identical query",
+    (name) => {
+      const [change] = extractChangesByShape(read(name));
+      expect(change!.request).toBeDefined();
+      expect(now(change!.request!)).toBe(before(change!.request!));
+      // …and under the cap, so it is the whole cleaned request.
+      expect(now(change!.request!)).toBe(requestRetrievalText(change!.request!));
+    },
+  );
+
+  /** Everything the replace chain acts on, closed and unclosed. */
+  const FRAGMENTS = [
+    "mark all as read ",
+    "older than 30 days. ",
+    "[a link](https://example.com/x) ",
+    "[an unclosed link](https://example.com/",
+    "[ ",
+    "https://example.com/path?q=1 ",
+    "```\nSELECT 1;\n```\n",
+    "```\nnever closed ",
+    "~~~\nfenced\n~~~\n",
+    "   \t  ",
+    "\n\n\n\n",
+    "\n",
+    "MarkAllAsReadBeforeDate ",
+    "x",
+  ];
+
+  it("is byte-identical on 3,000 generated requests whose sections are each within the pre-clean limit", () => {
+    let seed = 1090;
+    const next = (n: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    const section = (maxLength: number): string => {
+      const target = next(maxLength);
+      let text = "";
+      while (text.length < target) {
+        const fragment = FRAGMENTS[next(FRAGMENTS.length)]!;
+        // Now and then, a long run of one fragment.
+        text += next(10) === 0 ? fragment.repeat(1 + next(200)) : fragment;
+      }
+      return text.slice(0, maxLength);
+    };
+    let underCap = 0;
+    let overCap = 0;
+    for (let i = 0; i < 3000; i++) {
+      // A third small (the six run-7 issues are 0.6 to 1.7 KB), a third around
+      // the cap, a third well over it in total with every section in the limit.
+      const size = [600, 3000, PART_LIMIT][i % 3]!;
+      const r = request(
+        section(size),
+        Array.from({ length: next(4) }, () => section(size)),
+        Array.from({ length: next(4) }, () => section(size)),
+      );
+      const all = [r.primaryRequest, ...r.subAspects, ...r.context].map((part) =>
+        typeof part === "string" ? part.length : part.text.length,
+      );
+      expect(Math.max(...all)).toBeLessThanOrEqual(PART_LIMIT);
+      if (requestRetrievalText(r).length <= MAX_SEED_QUERY_CHARS) underCap++;
+      else overCap++;
+      expect(now(r), `request ${i}`).toBe(before(r));
+    }
+    // Both sides of the cap are really exercised.
+    expect(underCap).toBeGreaterThan(500);
+    expect(overCap).toBeGreaterThan(500);
+  });
+
+  it("reads no more of a section than the pre-clean limit: the rest of 500,000 characters changes nothing", () => {
+    const head = "alpha beta ".repeat(PART_LIMIT).slice(0, PART_LIMIT);
+    const short = request(head);
+    for (const tail of [
+      "x".repeat(484_000),
+      "[a](http://x".repeat(40_000),
+      "```".repeat(160_000),
+    ]) {
+      expect(now(request(head + tail))).toBe(now(short));
+    }
+    expect(now(short).length).toBeLessThanOrEqual(MAX_SEED_QUERY_CHARS);
+  });
+
+  it("stops cleaning sections once the query is full: 100,000 later sections cost nothing", () => {
+    const full = "alpha beta ".repeat(500);
+    expect(full.length).toBeGreaterThan(MAX_SEED_QUERY_CHARS);
+    const many = request(
+      full,
+      Array.from({ length: 100_000 }, () => "later"),
+    );
+    // Each cleaned section is five `replace` calls. Counted, not timed.
+    const replace = vi.spyOn(String.prototype, "replace");
+    let calls: number;
+    let query: string;
+    try {
+      query = now(many);
+      calls = replace.mock.calls.length;
+    } finally {
+      replace.mockRestore();
+    }
+    expect(calls).toBeLessThan(20);
+    expect(query).toBe(before(many));
+  });
+
+  it("a section longer than the limit is cleaned from its head alone (the documented difference)", () => {
+    // A fence that closes past the cut is read as unclosed: the text after it is
+    // lost to this query, where cleaning the whole section would have kept it.
+    const long = `intro\n\`\`\`\n${"x".repeat(PART_LIMIT)}\n\`\`\`\nafter the fence`;
+    expect(before(request(long))).toBe("intro\n \nafter the fence");
+    expect(now(request(long))).toBe("intro");
   });
 });

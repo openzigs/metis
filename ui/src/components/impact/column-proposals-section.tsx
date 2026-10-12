@@ -5,8 +5,10 @@
  * (#791), so a reviewer can see what was ruled out and why:
  *
  *   - `optional` — "Optional: settings persistence". A column that would only
- *     remember a preferred value for an operation that already exists. Shown
- *     with its suggested DDL, labelled as outside the migration the change needs.
+ *     remember a preferred value: for an operation that already exists, or
+ *     (in a request the gate could not check) one the proposer itself labelled
+ *     a preference — that row cites no write path. Shown with its suggested
+ *     DDL, labelled as outside the migration the change needs.
  *   - `rejected` — "Not proposed". An existing write path appears to take the
  *     value as a parameter already; each row says what was checked. Shown WITHOUT
  *     DDL: a copyable `ALTER TABLE` under a "not proposed" heading would say the
@@ -31,7 +33,7 @@ export type ColumnProposalVariant = "optional" | "rejected" | "unchecked";
 const COPY: Record<ColumnProposalVariant, { title: string; note: string; testId: string }> = {
   optional: {
     title: "Optional: settings persistence",
-    note: "Not part of the migration this change needs. An existing write path may already cover the request, so a column the model proposed is never added on its own. Add one only to remember a preferred value; if the change does need a column, write its ALTER TABLE statement in the request.",
+    note: "Not part of the migration this change needs. Either an existing write path may already cover the request, or the model itself classed the column as a remembered preference; each row says which. Add one only to remember a preferred value. If the change does need a column, ask for it in the request: write its ALTER TABLE statement, or a sentence such as \u201cadd a delay field to users\u201d.",
     testId: "optional-column-proposals",
   },
   rejected: {

@@ -36,6 +36,7 @@ import {
   requestAsksToConfigure,
   requestHasTimeBound,
   timePredicates,
+  uncheckedPreferenceReason,
   type ColumnJustification,
   type ProposedColumn,
 } from "./column-proposal-gate.js";
@@ -403,10 +404,106 @@ describe("gateColumnProposals — a covered request has no core column, whatever
 
   it("the sweep is not vacuous: the same answers ARE core once no writer filters on a time", () => {
     const result = gate(REQUEST_4478, ANSWERS, [SET_STATUS, UPDATE_USER]);
-    expect(result.core).toHaveLength(ANSWERS.length);
-    expect(result.unchecked).toHaveLength(ANSWERS.length);
-    expect(result.optional).toEqual([]);
+    // Every answer but the ones the proposer itself labelled a preference.
+    const unlabelled = ANSWERS.filter((a) => a.justification !== "user-preference");
+    expect(unlabelled.length).toBe((ANSWERS.length * 2) / 3);
+    expect(result.core).toEqual(unlabelled.map((a) => a.row));
+    expect(result.unchecked).toHaveLength(unlabelled.length);
+    expect(result.optional).toHaveLength(ANSWERS.length - unlabelled.length);
     expect(result.rejected).toEqual([]);
+  });
+
+  /** Writer sets with no time-filtering writer, and none at all: never covered. */
+  const UNCOVERED_WRITER_SETS: DataPathWriterProfile[][] = [
+    [],
+    [SET_STATUS],
+    [SET_STATUS, UPDATE_USER],
+  ];
+  const FAILED = "Not checked: looking up the existing write paths failed.";
+
+  it("no label, declaration or type the model returns ever INCREASES core, covered or not (review 3)", () => {
+    // The baseline for a column is the ruling it gets with nothing declared: no
+    // justification, no covering writer, an empty declared list. Whatever the
+    // model then adds, core may only shrink.
+    const key = (row: AffectedTableInput) =>
+      `${row.tableName}.${row.columnName}:${row.columnType ?? "<untyped>"}`;
+    const failures: string[] = [];
+    let combinations = 0;
+    const requests = [
+      REQUESTS[0]!,
+      REQUESTS[1]!,
+      ["no time bound", plain("Add a dark theme.")],
+    ] as const;
+    for (const [label, request] of requests) {
+      for (const writers of [...COVERED_WRITER_SETS, ...UNCOVERED_WRITER_SETS]) {
+        for (const unavailable of [null, FAILED]) {
+          const run = (proposals: ProposedColumn[], coveringWriterIds: string[]) =>
+            new Set(
+              gateColumnProposals({
+                request,
+                proposals,
+                coveringWriterIds,
+                writers,
+                writersUnavailableReason: unavailable,
+              }).core.map(key),
+            );
+          const bare = ANSWERS.filter(
+            (a) => a.justification === null && a.coveredByWriterId === null,
+          );
+          const baseline = run(bare, []);
+          for (const coveringWriterIds of DECLARED_LISTS) {
+            const core = run(ANSWERS, coveringWriterIds);
+            combinations += ANSWERS.length;
+            const added = [...core].filter((k) => !baseline.has(k));
+            if (added.length > 0) {
+              failures.push(
+                `${label} | writers ${writers.map((w) => w.id).join(",") || "none"} | ` +
+                  `${unavailable ? "lookup failed" : "lookup ok"} | declared [${coveringWriterIds.join(",")}]: ` +
+                  `${added.length} added to core, first ${added[0]}`,
+              );
+            }
+          }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+    expect(combinations).toBeGreaterThan(1_000_000);
+  });
+
+  it("in an uncovered request core is exactly the columns the proposer did not label a preference", () => {
+    for (const [label, request] of REQUESTS) {
+      for (const writers of UNCOVERED_WRITER_SETS) {
+        for (const coveringWriterIds of DECLARED_LISTS) {
+          const result = gateColumnProposals({
+            request,
+            proposals: ANSWERS,
+            coveringWriterIds,
+            writers,
+          });
+          const at = `${label} | ${writers.map((w) => w.id).join(",") || "none"}`;
+          const unlabelled = ANSWERS.filter((a) => a.justification !== "user-preference");
+          expect(result.core.length, at).toBe(unlabelled.length);
+          expect(
+            result.core.every((row, i) => row === unlabelled[i]!.row),
+            at,
+          ).toBe(true);
+          // Every demoted column was labelled by the proposer, cites no writer,
+          // and says it was not checked.
+          expect(result.optional.length, at).toBe(ANSWERS.length - unlabelled.length);
+          expect(
+            result.optional.every(
+              (o) =>
+                o.writer === null &&
+                o.reason.includes("Not checked: ") &&
+                o.row.changeKind === "add-column",
+            ),
+            at,
+          ).toBe(true);
+          expect(result.unchecked.length, at).toBe(result.core.length);
+          expect(result.rejected, at).toEqual([]);
+        }
+      }
+    }
   });
 
   it("the review-2 repros, one by one", () => {
@@ -591,16 +688,97 @@ describe("gateColumnProposals — an uncovered request: core, and marked uncheck
     proposal("users", "theme", "TEXT", "user-preference"),
     proposal("feeds", "last_cleanup_at", "TIMESTAMP", null, "MarkAllAsReadBeforeDate"),
   ];
+  /**
+   * The gate does not rule: every column is core and unchecked — bar the one the
+   * proposer itself labelled a preference (`users.theme`), which is optional
+   * with the same reason (owner decision, PR #1090 review 3).
+   */
   const expectAllCoreUnchecked = (result: ReturnType<typeof gate>, reason: string) => {
-    expect(result.core).toEqual(P.map((p) => p.row));
-    expect(result.optional).toEqual([]);
+    const [delay, theme, cleanup] = P;
+    expect(result.core).toEqual([delay!.row, cleanup!.row]);
+    expect(result.optional).toEqual([
+      { row: theme!.row, writer: null, reason: uncheckedPreferenceReason(reason) },
+    ]);
     expect(result.rejected).toEqual([]);
-    expect(result.unchecked).toEqual(P.map((p) => ({ row: p.row, writer: null, reason })));
+    expect(result.unchecked).toEqual(
+      [delay!, cleanup!].map((p) => ({ row: p.row, writer: null, reason })),
+    );
   };
+
+  describe("a column the proposer labels a preference is optional here too (owner decision, review 3)", () => {
+    const FAILED =
+      "Not checked: looking up the existing write paths failed, so there was nothing to compare this column with. Review it as an unverified proposal.";
+    const failedLookup = (proposals: ProposedColumn[], coveringWriterIds: string[] = []) =>
+      gateColumnProposals({
+        request: REQUEST_4478,
+        proposals,
+        coveringWriterIds,
+        writers: [],
+        writersUnavailableReason: FAILED,
+      });
+
+    it("verbatim #4478 with the writer lookup FAILING: the labelled users column is optional, not core", () => {
+      const labelled = proposal("users", "mark_read_delay", "INTEGER", "user-preference");
+      const result = failedLookup([labelled]);
+      expect(result.core).toEqual([]);
+      expect(result.unchecked).toEqual([]);
+      expect(result.rejected).toEqual([]);
+      expect(result.optional).toEqual([
+        {
+          row: labelled.row,
+          writer: null,
+          reason:
+            "Optional: settings persistence. The proposer classed this column as a user preference, so it would only remember a preferred value and is not part of the migration this change needs. " +
+            FAILED,
+        },
+      ]);
+    });
+
+    it("the same column WITHOUT the label stays core and unchecked: the gate still does not rule", () => {
+      for (const justification of [null, "operation-needs-new-data"] as const) {
+        const result = failedLookup([
+          proposal("users", "mark_read_delay", "INTEGER", justification),
+        ]);
+        expect(names(result.core.map((row) => ({ row })))).toEqual(["mark_read_delay"]);
+        expect(result.unchecked.map((u) => u.reason)).toEqual([FAILED]);
+        expect(result.optional).toEqual([]);
+      }
+    });
+
+    it("holds for each reason the gate cannot check, and says which", () => {
+      const labelled = [proposal("users", "mark_read_delay", "INTEGER", "user-preference")];
+      const cases: Array<[ReturnType<typeof gate>, string]> = [
+        [gate(REQUEST_4478, labelled, []), NO_WRITERS_REASON],
+        [gate(REQUEST_4478, labelled, [SET_STATUS, UPDATE_USER]), noTimeFilterReason(2)],
+        [gate("Add a dark theme.", labelled, [MARK_BEFORE_DATE]), NO_TIME_BOUND_REASON],
+      ];
+      for (const [result, why] of cases) {
+        expect(result.core).toEqual([]);
+        expect(result.optional.map((o) => o.reason)).toEqual([uncheckedPreferenceReason(why)]);
+        expect(result.optional[0]!.writer).toBeNull();
+      }
+    });
+
+    it("is the LABEL only: a self-declared covering writer or a declared list demotes nothing", () => {
+      const declared = proposal(
+        "users",
+        "mark_read_delay",
+        "INTEGER",
+        null,
+        "MarkAllAsReadBeforeDate",
+      );
+      const result = failedLookup([declared], ["MarkAllAsReadBeforeDate", "UpdateUser"]);
+      expect(result.core).toEqual([declared.row]);
+      expect(result.optional).toEqual([]);
+    });
+  });
 
   it("the lineage named no writer at all", () => {
     expectAllCoreUnchecked(gate(REQUEST_4478, P, []), NO_WRITERS_REASON);
-    expect(NO_WRITERS_REASON).toMatch(/^Not checked: the SQL lineage named no write path/);
+    // Scoped to what the lookup was asked about, never "for this request".
+    expect(NO_WRITERS_REASON).toBe(
+      "Not checked: the SQL lineage named no write path on the tables this analysis reached for the request, so there was nothing to compare this column with. Review it as an unverified proposal.",
+    );
   });
 
   it("the writers could not be looked up: the caller's reason is carried", () => {
@@ -639,8 +817,9 @@ describe("gateColumnProposals — an uncovered request: core, and marked uncheck
     }
   });
 
-  it("nothing the proposer declares rules a column out here: the gate does not rule", () => {
-    // A self-declared cover, a preference label and a declared list change nothing.
+  it("no writer the proposer declares rules a column out here: the gate does not rule", () => {
+    // A self-declared cover and a declared list change nothing; the preference
+    // label demotes its own column and no other.
     const result = gate(
       "Add a dark theme.",
       P,

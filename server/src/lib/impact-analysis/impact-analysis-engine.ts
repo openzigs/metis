@@ -36,6 +36,7 @@ import {
   expandDataPathWriters,
   profileDataPathWriters,
   pruneTangentialSchemaSeeds,
+  resolveDataPathWriters,
   type DataPathWriter,
   type DataPathWriterProfile,
 } from "./data-path-writers.js";
@@ -486,6 +487,13 @@ export async function computeProjectImpact(
       log.warn("schema impact crossing failed", { projectId, error: String(err) });
     }
 
+    // #791 — every table the crossing reached, kept as it is HERE: before the
+    // #936 filter (a model) sorts it into primary and secondary. The gate's
+    // writer lookup below reads this list, never the filtered one, so whether a
+    // request is covered does not turn on a model's answer (PR #1090 review 3).
+    const crossedTables = affectedTables;
+    let relevanceFilterApplied = false;
+
     // #936 — OUTPUT relevance filter: prune tangential (`unlikely`) tables into a
     // secondary bucket to raise precision without destroying the #928 recall win.
     // Best-effort: the filter never throws (its own contract), but guard anyway so
@@ -498,6 +506,7 @@ export async function computeProjectImpact(
         );
         affectedTables = filtered.primary;
         affectedTablesSecondary = filtered.secondary;
+        relevanceFilterApplied = true;
       } catch (err) {
         log.warn("table relevance filter failed; keeping unfiltered crossing", {
           projectId,
@@ -561,7 +570,9 @@ export async function computeProjectImpact(
 
     // #791 — the functions that WRITE the data this change touches, found through
     // SQL lineage rather than a word match, plus their callers. Runs on the final
-    // primary set so a table the #936 filter judged tangential contributes none.
+    // primary set so a table the #936 filter judged tangential contributes none
+    // TO THE SYMBOLS LISTED. (The gate's coverage decision does not read this
+    // list when the filter ran — see `gateWriterProfiles` below.)
     // Best-effort: a failure leaves the code impact as it was.
     try {
       const expanded = await expandDataPathWriters(affectedSymbols, {
@@ -608,6 +619,38 @@ export async function computeProjectImpact(
           error: String(err),
         });
       }
+
+      // #791 — the writers the GATE decides coverage from. `dataPathWriters` above
+      // was looked up on the primary set, which the #936 filter shaped: demote
+      // `entries` and `MarkAllAsReadBeforeDate` is never found, #4478 is
+      // "uncovered", and its `users` column is core on one model answer (PR #1090
+      // review 3). So when the filter ran, the gate gets its own lookup over
+      // every table the crossing reached. The symbols listed for review and the
+      // writers shown to the proposer stay scoped to the primary set. Without the
+      // filter the two lists are the same list, and nothing is looked up twice.
+      // A fault here is a failed lookup like any other: the gate says so.
+      let gateWriterProfiles = writerProfiles;
+      if (relevanceFilterApplied && !writerLookupFailed) {
+        try {
+          gateWriterProfiles = await profileDataPathWriters(
+            await resolveDataPathWriters({
+              requirementText: `${change.title}\n${change.body}`,
+              seedIds: dataSeedIds,
+              primaryTables: crossedTables,
+              dataSource: schemaDataSource,
+              excludeIds: new Set(),
+            }),
+            schemaDataSource,
+          );
+        } catch (err) {
+          writerLookupFailed = true;
+          gateWriterProfiles = [];
+          log.warn("gate writer lookup failed; proposed columns pass unchecked", {
+            projectId,
+            error: String(err),
+          });
+        }
+      }
       let proposed: ReturnType<typeof normalizeProposerOutput> = {
         proposals: [],
         coveringWriterIds: [],
@@ -633,13 +676,15 @@ export async function computeProjectImpact(
       // core migration, whatever it answered: each is "Optional: settings
       // persistence" or not proposed, with the covering writer and the reason,
       // and neither list touches `affectedTables`. In any other request the gate
-      // does not rule: the columns pass, each marked `unchecked` with why.
+      // does not rule: the columns pass, each marked `unchecked` with why — bar a
+      // column the proposer itself labelled a preference, which is optional there
+      // too (a demotion only; it can never add to `affectedTables`).
       if (proposed.proposals.length > 0) {
         const gated = gateColumnProposals({
           request: gateText,
           proposals: proposed.proposals,
           coveringWriterIds: proposed.coveringWriterIds,
-          writers: writerProfiles,
+          writers: writerLookupFailed ? [] : gateWriterProfiles,
           writersUnavailableReason: writerLookupFailed ? WRITERS_FAILED_REASON : null,
         });
         droppedColumnProposals = gated.rejected;

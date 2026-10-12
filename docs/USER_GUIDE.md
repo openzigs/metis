@@ -2055,14 +2055,15 @@ filters the data it writes by a date or time. For a covered request:
   proposed**.
 - Every other proposed column is an **optional settings column**: shown, kept
   apart from the proposed changes, and **not** part of the migration.
-- If the change really does need a new column, **write it in the request** as
-  `ALTER TABLE <table> ADD COLUMN <column> <type>`. A statement you wrote is
-  always proposed.
+- If the change really does need a new column, **ask for it in the request**:
+  write `ALTER TABLE <table> ADD COLUMN <column> <type>`, or a sentence such as
+  *"add a delay field to users"*. A column you asked for is always proposed.
 
 This check is made by rules over the code graph, not by the AI model, and no
 answer the model gives can turn a column into a required one. It reads what the
-request *asks for* (its title, summary and proposed solution), not the
-background around it.
+request *asks for* — its title, summary and proposed solution, and any section
+under a heading METIS does not recognise — not the background around it
+(the problem statement, alternatives you considered, logs).
 
 That rule has a cost. Suppose a request says *"delete entries older than 30
 days, and record when each feed was last cleaned"*. The second half does need a
@@ -2078,7 +2079,10 @@ For every other request the check does not rule, and the page says so:
 - it found such functions, and none filters by a date or time.
 
 In those cases the proposed columns are still proposed, and each is listed again
-under **Proposed, not checked** with the reason.
+under **Proposed, not checked** with the reason. One exception: a column the
+model itself describes as only a remembered preference is listed under
+**Optional: settings persistence** instead, with the same reason, and is not
+part of the migration.
 
 You can see what was ruled out, and why. Under the proposed column changes, each
 impacted requirement shows up to three more lists:

@@ -13,17 +13,16 @@
  * declared). Each of those was one sentence or one answer away from a core
  * `users` column (PR #1090, reviews 1 and 2).
  *
- * THE RULE is monotone, and what makes a request covered is nothing the model
- * controls.
+ * THE RULE is monotone, and what makes a request covered is nothing the
+ * proposer controls.
  *
  * A request is COVERED when it is bounded by an age or a date ("older than X")
  * AND at least one STRUCTURAL lineage writer filters the table it writes on a
  * time column. That writer already takes such a bound as an argument.
  *
- * INVARIANT. In a covered request the model cannot produce a core column by any
- * answer; core comes only from DDL the user wrote. Whatever table, column name,
- * type, justification or covering writer the proposer returns, and whatever else
- * the request says, each proposal is one of:
+ * INVARIANT. In a covered request NO FIELD A MODEL CHOSE can make a column core.
+ * Whatever table, column name, type, justification or covering writer the
+ * proposer returns, and whatever else the request says, each proposal is one of:
  *
  *   - `rejected` — it restates the bound: a column that could hold an age or a
  *                  count, which the proposer did not call a preference, in a
@@ -34,10 +33,31 @@
  *                  affected tables, so never part of "migration needed".
  *
  * The settings cue, the proposer's justification and the column type choose
- * between those two and nothing else. The only route to `core` in a covered
- * request is an explicit `ALTER TABLE … ADD COLUMN` in the request itself, which
- * `crossToSchema` reads before the proposer runs (`schema-impact.ts`): the
- * user's statement, not the model's.
+ * between those two and nothing else.
+ *
+ * WHERE CORE COMES FROM INSTEAD: what the USER wrote. `crossToSchema` reads the
+ * ask before the proposer runs (`detectAdditiveColumnIntent`, `schema-impact.ts`)
+ * and marks a table `add-column` on any of three forms: an
+ * `ALTER TABLE … ADD COLUMN` statement, "add a <name> field|column|flag to
+ * <table>", or "add <name> to <table>". It reads them in the primary request
+ * AND in its sub-sections — and a heading the parser does not know is a
+ * sub-section, so DDL pasted under "Workaround" counts as asked for. None of
+ * that passes through this gate, and none of it is a model's answer.
+ *
+ * WHAT "COVERED" RESTS ON, AND ITS ONE LIMIT. This function decides it from the
+ * request text and the writers it is handed. The engine hands it the writers of
+ * EVERY table the schema crossing reached, looked up before the #936 relevance
+ * filter (a model) sorts those tables into primary and secondary: the first
+ * wiring scoped the lookup to the primary set, so one filter answer demoting
+ * `entries` left #4478 uncovered and its `users` column core (PR #1090 review
+ * 3). The #1029 recovery judge cannot reach the gate at all: it runs only when
+ * no primary table is left, and then the proposer is not called. The limit:
+ * which tables the crossing reaches follows from the SEEDS. By default those are
+ * a search result; with `IMPACT_LLM_SEEDING` or `IMPACT_LLM_ENTITY_SEEDS` on, a
+ * model ranks or adds them, and a seeding that never reaches the covering
+ * writer's table leaves the request uncovered.
+ * `impact-analysis-engine-791-llm-deps.test.ts` pins both halves at the engine
+ * level.
  *
  * THE ACCEPTED COST. A genuinely new column in a covered request
  * (`feeds.last_cleanup_at` in "delete entries older than 30 days and record when
@@ -46,12 +66,23 @@
  * The gate cannot tell that column from a copy of the bound without reading
  * intent out of prose, and reading intent out of prose is what failed twice.
  *
- * IN AN UNCOVERED REQUEST THE GATE DOES NOT RULE. Every proposal is `core`, as
- * it was before this gate existed, and is ALSO returned under `unchecked` with
- * the reason nothing could be checked: describing the write paths failed, the
+ * IN AN UNCOVERED REQUEST THE GATE DOES NOT RULE. A proposal is `core`, as it
+ * was before this gate existed, and is ALSO returned under `unchecked` with the
+ * reason nothing could be checked: describing the write paths failed, the
  * lineage named none, the request has no age or date bound, or none of the
  * named write paths filters on a time column. The API, the page and the export
  * say so.
+ *
+ * ONE DEMOTION SURVIVES THERE (owner decision, PR #1090 review 3). A column the
+ * proposer ITSELF labels `user-preference` is `optional` in an uncovered request
+ * too, with no writer cited and the same reason nothing was checked. Uncovered
+ * is the common case (an ORM project whose writes the lineage cannot read, a
+ * pre-#807 graph, a failed lookup), and "an optional, labelled settings column
+ * is acceptable; a core `users` column is not" has to hold there as well. It is
+ * a demotion and nothing else: the label can take a column OUT of core and
+ * never put one in, so across both branches no label, declaration or type the
+ * model returns ever increases `core`. `coveredByWriterId` and the declared
+ * writer list are still not read.
  *
  * Pure — no I/O. Every pattern applied to request text is linear: the text is
  * accepted up to 500,000 characters (`createImpactAnalysisSchema`), and
@@ -101,7 +132,9 @@ export interface GatedProposals {
   rejected: GatedColumnProposal[];
   /**
    * The `core` rows the gate could NOT check, each with why. Every row here is
-   * also in {@link core} — this marks columns, it never adds one.
+   * also in {@link core} — this marks columns, it never adds one. (A column the
+   * proposer labelled a preference is not here: it is in {@link optional}, and
+   * its reason carries the same "not checked" sentence.)
    */
   unchecked: GatedColumnProposal[];
 }
@@ -259,9 +292,22 @@ export function canHoldBound(columnType: string | null): boolean {
   return !/^(timestamp|date|bool)/i.test((columnType ?? "").trim());
 }
 
-/** Why a column passed with nothing to check it against. */
+/**
+ * Why a column passed with nothing to check it against. "On the tables this
+ * analysis reached": the lookup is asked about those tables and no others, so
+ * it must not claim more (it once read "for this request" while the table that
+ * had the write path had not been asked about — PR #1090 review 3).
+ */
 export const NO_WRITERS_REASON =
-  "Not checked: the SQL lineage named no write path for this request, so there was nothing to compare this column with. Review it as an unverified proposal.";
+  "Not checked: the SQL lineage named no write path on the tables this analysis reached for the request, so there was nothing to compare this column with. Review it as an unverified proposal.";
+
+/**
+ * The ruling on a column the proposer labelled a preference in a request the
+ * gate could not check: optional, and `notChecked` says why nothing was checked.
+ */
+export function uncheckedPreferenceReason(notChecked: string): string {
+  return `Optional: settings persistence. The proposer classed this column as a user preference, so it would only remember a preferred value and is not part of the migration this change needs. ${notChecked}`;
+}
 
 /** Why a column passed in a request the gate has no rule for. */
 export const NO_TIME_BOUND_REASON =
@@ -281,7 +327,9 @@ export interface GateColumnProposalsInput {
   request: RequestGateText;
   /**
    * The proposer's columns. Of each, the gate reads `row.columnType` and
-   * `justification`, and only to choose between `optional` and `rejected`.
+   * `justification`: in a covered request only to choose between `optional` and
+   * `rejected`, in an uncovered one only to demote a `user-preference` column
+   * from `core` to `optional`. Neither can add to `core`.
    * `coveredByWriterId` and the proposer's list of covering writers are NOT
    * read: nothing the model declares changes whether a request is covered.
    */
@@ -292,7 +340,11 @@ export interface GateColumnProposalsInput {
    * `column-proposal-gate.test.ts`), and deliberately never read.
    */
   coveringWriterIds?: readonly string[];
-  /** Every writer the lineage named for this request, profiled. */
+  /**
+   * Every writer the lineage named on the tables the crossing reached, profiled.
+   * The caller must NOT narrow this by anything a model chose (the engine looks
+   * it up before the #936 relevance filter is applied).
+   */
   writers: readonly DataPathWriterProfile[];
   /**
    * Set when {@link writers} is empty because describing them FAILED, not
@@ -318,7 +370,8 @@ export function coveringWriters(
  *
  *   covered request   → `rejected` when the column restates the bound, else
  *                       `optional`. Never `core`.
- *   uncovered request → `core`, and `unchecked` with the reason.
+ *   uncovered request → `optional` when the proposer labelled the column a
+ *                       preference; else `core`, and `unchecked` with the reason.
  */
 export function gateColumnProposals(input: GateColumnProposalsInput): GatedProposals {
   const out: GatedProposals = { core: [], optional: [], rejected: [], unchecked: [] };
@@ -333,6 +386,15 @@ export function gateColumnProposals(input: GateColumnProposalsInput): GatedPropo
           ? noTimeFilterReason(input.writers.length)
           : NO_TIME_BOUND_REASON);
     for (const proposal of input.proposals) {
+      // Demotion only, and only on the proposer's own label: see the header.
+      if (proposal.justification === "user-preference") {
+        out.optional.push({
+          row: proposal.row,
+          writer: null,
+          reason: uncheckedPreferenceReason(reason),
+        });
+        continue;
+      }
       out.core.push(proposal.row);
       out.unchecked.push({ row: proposal.row, writer: null, reason });
     }

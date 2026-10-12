@@ -11,7 +11,7 @@ In this project a ReDoS fix that bounds the reported pattern tends to ship besid
 
 **How to apply:**
 
-- The fuzz is `server/src/lib/impact-analysis/request-regex-fuzz.test.ts`. It lists files, not patterns: add a file to `FUZZED_FILES` when a change makes it read request text. A `new RegExp` it cannot evaluate statically fails unless listed in `RUNTIME_BUILT_PATTERNS` with what it is built from.
+- The fuzz is `server/src/lib/impact-analysis/request-regex-fuzz.test.ts`. It lists no pattern, and since review 3 no file under `lib/impact-analysis/` either (the directory is read from disk); add a file to `FUZZED_FILES_ELSEWHERE` when a change makes a file outside it read request text. A `new RegExp` it cannot evaluate statically fails unless listed in `RUNTIME_BUILT_PATTERNS` with what it is built from.
 - It runs each pattern as a global `replace`, the most work any use of it can do, so it also flags a pattern only ever applied to a short string. Fix those too (trim first, or cut by index) rather than exempting them; all three found so far had an index-based equivalent, proved equal to the old pattern by a seeded sweep.
 - The shape to look for is `X\s*$` or two adjacent optional runs: linear when it matches, quadratic on `X` + a long run + one other character.
 - The gate's invariant is now monotone ("in a covered request the model cannot produce a core column by any answer") and asserted as a product over tables, types, column names, justifications, declared writers and request variants in `column-proposal-gate.test.ts`. A new field in the proposer's answer goes into that product in the same change.

@@ -19,6 +19,7 @@ import {
 } from "./change-request.js";
 import { seedQueries } from "./change-seeds.js";
 import { extractChangesHeuristically } from "./extract-changes.js";
+import { expectLinearTime } from "../../../tests/helpers/linear-time.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (issue: number): string =>
@@ -466,6 +467,81 @@ describe("a requirements document marked up in bold is not one issue (#1036, PR 
     expect(request.subAspects.map((s) => s.heading)).toEqual(["Proposed Solution"]);
   });
 
+  describe("bold REMARKS in an issue whose sections are `#` headings (PR #1090 review 3)", () => {
+    // Three whole-line bold remarks in a three-heading issue. Counted like
+    // unknown headings they reached the known count (3 >= 3) and sent a plain
+    // issue form to the splitter. Bold is this document's emphasis, not its
+    // section markup: its sections are `###`.
+    const withRemarks = (remarks: string[]) =>
+      [
+        "# [Feature]: Cache the feed list",
+        "### Feature Summary",
+        "Cache the feed list.",
+        remarks[0],
+        "It is fetched on every page.",
+        "### What problem does this feature solve?",
+        remarks[1],
+        "The page takes two seconds.",
+        "### Proposed Solution",
+        "Keep it for a minute.",
+        ...remarks.slice(2),
+        "Invalidate on a feed change.",
+      ]
+        .filter((line) => line !== undefined)
+        .join("\n\n");
+
+    it.each([
+      [3, ["**Note**", "**Important**", "**Edit**"]],
+      [5, ["**Note**", "**Important**", "**Edit**", "__Update__", "**Edit 2**:"]],
+    ])("%i remarks: still ONE change, each remark prose in its section", (_count, remarks) => {
+      const text = withRemarks(remarks);
+      const request = parseChangeRequest(text);
+      expect(request).not.toBeNull();
+      const changes = extractChangesByShape(text);
+      expect(changes).toHaveLength(1);
+      expect(request!.subAspects.map((s) => s.heading)).toEqual(["Proposed Solution"]);
+      expect(request!.primaryRequest).toContain("**Note**");
+      expect(changes[0]!.body).toContain("**Edit**");
+    });
+
+    it("the count still applies where bold IS the section markup: a bold-template report with as many unknown bold labels as known ones goes to the splitter", () => {
+      // The trade-off that remains, stated: three template labels in bold, three
+      // bold labels outside the vocabulary. That is the shape of a requirements
+      // document marked up in bold, and nothing in the text says otherwise.
+      const text = [
+        "Counter does not update",
+        "**Describe the bug**",
+        "The counter is wrong.",
+        "**To Reproduce**",
+        "Open the page.",
+        "**Expected behavior**",
+        "It drops.",
+        "**Note**",
+        "Seen twice.",
+        "**Important**",
+        "Only on mobile.",
+        "**Edit**",
+        "Also on desktop.",
+      ].join("\n\n");
+      expect(parseChangeRequest(text)).toBeNull();
+    });
+
+    it("one bold-marked template section is enough for bold to count as markup", () => {
+      const text = [
+        "# T",
+        "### Summary",
+        "Do it.",
+        "**Problem**",
+        "It is slow.",
+        "**REQ-1 Export**",
+        "The system shall export.",
+        "**REQ-2 Import**",
+        "The system shall import.",
+      ].join("\n\n");
+      expect(parseChangeRequest(text)).toBeNull();
+    });
+  });
+
   it("does not count a bold line inside a code fence", () => {
     const text =
       "# T\n\n### Summary\n\nDo it.\n\n### Problem\n\n```md\n**One**\n\n**Two**\n\n**Three**\n```";
@@ -507,42 +583,95 @@ describe("requestGateText — what the request asks, without what surrounds it (
 });
 
 describe("parsing stays linear on a 200 KB paste (PR #1090 review)", () => {
-  function bestOf3(run: () => unknown): number {
-    let best = Infinity;
-    for (let i = 0; i < 3; i++) {
-      const start = performance.now();
-      run();
-      best = Math.min(best, performance.now() - start);
-    }
-    return best;
-  }
+  // No wall-clock bound: `expectLinearTime` passes a call that is fast at full
+  // size, and otherwise compares it with the same call at a quarter of the size.
+  // The 100 ms bound that stood here went red on CI at 102 to 148 ms on linear
+  // code (PR #1090 review 3).
   const SIZE = 200_000;
-  const fill = (unit: string) => unit.repeat(Math.ceil(SIZE / unit.length)).slice(0, SIZE);
-  const issueWith = (body: string) =>
-    `# [Feature]: Mark all as read older than X\n\n### Feature Summary\n\n${body}\n\n### Proposed Solution\n\n${body}\n`;
-  const INPUTS: Record<string, string> = {
+  type Build = (size: number) => string;
+  const fill =
+    (unit: string): Build =>
+    (size) =>
+      unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+  const issueWith =
+    (body: Build): Build =>
+    (size) =>
+      `# [Feature]: Mark all as read older than X\n\n### Feature Summary\n\n${body(size)}\n\n### Proposed Solution\n\n${body(size)}\n`;
+  const INPUTS: Record<string, Build> = {
     "one whitespace-free token": fill("a."),
     "a run of [ (an unclosed link label)": issueWith(fill("[")),
     "unclosed links": issueWith(fill("[a](http://x")),
-    "a heading of question marks": `# ${fill("?")}x\n\n### Summary\n\nx\n\n### Problem\n\ny`,
-    "a section heading of question marks": `# T\n\n### Summary\n\nx\n\n### ${fill("?")}x\n\ny\n\n### Problem\n\nz`,
-    "a heading followed by spaces": `#${fill(" ")}x`,
-    "a bold line that never closes": `**${fill("a")}`,
+    "a heading of question marks": (size) =>
+      `# ${fill("?")(size)}x\n\n### Summary\n\nx\n\n### Problem\n\ny`,
+    "a section heading of question marks": (size) =>
+      `# T\n\n### Summary\n\nx\n\n### ${fill("?")(size)}x\n\ny\n\n### Problem\n\nz`,
+    "a heading followed by spaces": (size) => `#${fill(" ")(size)}x`,
+    "a bold line that never closes": (size) => `**${fill("a")(size)}`,
     // PR #1090 review 2: 23 s on the pattern this replaced, inside a recognised issue.
-    "a bold label, spaces, then a character": issueWith(`**a**${fill(" ")}x`),
-    "a bold label, a colon, spaces, then a character": issueWith(`**a**:${fill(" ")}x`),
+    "a bold label, spaces, then a character": issueWith((size) => `**a**${fill(" ")(size)}x`),
+    "a bold label, a colon, spaces, then a character": issueWith(
+      (size) => `**a**:${fill(" ")(size)}x`,
+    ),
     "minified JSON in an issue": issueWith(fill('{"a":[1,2],"b":"c"},')),
   };
 
   it.each(Object.keys(INPUTS))(
-    "%s: parse, split and build the search queries well under 100 ms",
+    "%s: parse, split and build the search queries in linear time",
     (name) => {
-      const text = INPUTS[name]!;
-      expect(text.length).toBeGreaterThanOrEqual(SIZE);
-      expect(bestOf3(() => parseChangeRequest(text))).toBeLessThan(100);
-      const changes = extractChangesByShape(text);
-      expect(bestOf3(() => changes.map((c) => seedQueries(c)))).toBeLessThan(100);
-      expect(bestOf3(() => changes.map((c) => requestGateText(c)))).toBeLessThan(100);
+      const build = INPUTS[name]!;
+      expect(build(SIZE).length).toBeGreaterThanOrEqual(SIZE);
+      expectLinearTime(`${name} / parse`, (size) => {
+        const text = build(size);
+        return () => parseChangeRequest(text);
+      });
+      expectLinearTime(`${name} / search queries`, (size) => {
+        const changes = extractChangesByShape(build(size));
+        return () => changes.map((c) => seedQueries(c));
+      });
+      expectLinearTime(`${name} / gate text`, (size) => {
+        const changes = extractChangesByShape(build(size));
+        return () => changes.map((c) => requestGateText(c));
+      });
     },
   );
+
+  describe("expectLinearTime itself, on a clock the test controls", () => {
+    /** A call that takes `cost(size)` ms on a fake clock, slowed `load` times. */
+    const fake = (cost: (size: number) => number, load = 1) => {
+      let clock = 0;
+      const at = (size: number) => () => {
+        clock += cost(size) * load;
+      };
+      return { at, now: () => clock };
+    };
+    const check = (cost: (size: number) => number, load = 1) => {
+      const { at, now } = fake(cost, load);
+      return () => expectLinearTime("fake", at, 200_000, now);
+    };
+
+    it("passes linear work, idle (30 ms) and on a machine twenty times slower (600 ms)", () => {
+      const linear = (size: number) => (30 * size) / 200_000;
+      expect(check(linear)).not.toThrow();
+      // The run that went red on CI: same code, a loaded runner.
+      expect(check(linear, 5)).not.toThrow();
+      expect(check(linear, 20)).not.toThrow();
+      expect(check(linear, 200)).not.toThrow();
+    });
+
+    it("fails quadratic work, idle or loaded", () => {
+      // 23 s at 200 KB, as the bold-heading pattern was.
+      const quadratic = (size: number) => 23_000 * (size / 200_000) ** 2;
+      expect(check(quadratic)).toThrow(/not linear/);
+      expect(check(quadratic, 20)).toThrow(/not linear/);
+      // Slow enough at full size and instant at a quarter: not linear either.
+      expect(check((size) => (size === 200_000 ? 5000 : 0))).toThrow(/not linear/);
+    });
+
+    it("past the bound only the ratio decides: slow n·log n work passes", () => {
+      // Not what this guards against, and not near sixteen times.
+      const nLogN = (size: number) => (size * Math.log2(size)) / 1000;
+      expect(nLogN(200_000)).toBeGreaterThan(250);
+      expect(check(nLogN)).not.toThrow();
+    });
+  });
 });

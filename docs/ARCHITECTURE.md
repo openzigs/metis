@@ -2781,8 +2781,9 @@ the model chose (table, column name, type, declared writers); two reviews each f
 way from one ordinary sentence, or one answer, to a core `users` column. The rule is now
 monotone:
 
-> **Invariant.** In a covered request the model cannot produce a core column by any
-> answer; core comes only from DDL the user wrote.
+> **Invariant.** In a covered request no field a model chose can make a column core.
+> Core comes from what the user wrote: DDL or an explicit add-a-column sentence, in
+> the request or one of its sub-sections.
 
 ```mermaid
 flowchart LR
@@ -2792,8 +2793,10 @@ flowchart LR
   Proposer --> Covered
   Covered -- yes, and the column restates the bound --> Rejected[Not proposed, with the writer and what was checked]
   Covered -- yes, anything else --> Optional[Optional: settings persistence]
-  Covered -- no: the gate does not rule --> Core[Affected tables: ADD COLUMN<br/>and marked Proposed, not checked]
-  DDL[ALTER TABLE written in the request] --> CoreDDL[Affected tables: ADD COLUMN]
+  Covered -- no: the gate does not rule --> Label{Labelled user-preference<br/>by the proposer?}
+  Label -- no --> Core[Affected tables: ADD COLUMN<br/>and marked Proposed, not checked]
+  Label -- yes --> Optional
+  DDL[Written in the request: ALTER TABLE,<br/>or an add-a-column sentence] --> CoreDDL[Affected tables: ADD COLUMN]
 ```
 
 - `profileDataPathWriters` (`data-path-writers.ts`) describes each lineage writer: the
@@ -2809,9 +2812,22 @@ flowchart LR
   covered when it is bounded by an age or a point in time ("older than X") **and** at
   least one lineage writer filters the table it writes on a time-valued column
   (`published_at`, or camelCase `publishedAt`): that writer already takes such a bound as
-  an argument. Both facts come from the request and the lineage. Nothing the model
+  an argument. Both facts come from the request and the lineage. Nothing the proposer
   returns — its table, its column name, its type, its justification, the writers it
   declares — is read to decide it, and no other wording of the request is either.
+- **Which writers the gate is handed is not a model's choice either.** The engine looks
+  them up on every table the schema crossing reached, BEFORE the #936 relevance filter
+  sorts those tables into primary and secondary. The first wiring reused the lookup made
+  on the primary set, so one filter answer (`entries` is tangential) left #4478 uncovered
+  and its `users` column core (PR #1090 review 3). The symbols listed for review and the
+  writers shown to the proposer stay scoped to the primary set; when no filter ran the
+  two lookups are one. The #1029 recovery judge cannot reach the gate: it runs only when
+  no primary table is left, and then the proposer is not called. **The one limit:** which
+  tables the crossing reaches follows from the seeds. By default they are a search
+  result; with `IMPACT_LLM_SEEDING` or `IMPACT_LLM_ENTITY_SEEDS` on a model ranks or adds
+  them, and a seeding that never reaches the covering writer's table leaves the request
+  uncovered. `impact-analysis-engine-791-llm-deps.test.ts` asserts all of this at
+  `computeProjectImpact`, with each optional LLM dependency answering adversarially.
 - **In a covered request every proposal is `optional` or `rejected`, never `core`.**
   `rejected` when the column restates the bound: it could hold an age or a count (a
   number, text, or no type), the proposer did not call it a preference, and the request
@@ -2821,11 +2837,14 @@ flowchart LR
   the covering writer's own table is ruled like any other. Each ruling cites the covering
   writer with the most evidence (a typed time argument, then the lineage's own ranking),
   not the first in list order, and a rejection states what was checked.
-- **The only route to `core` in a covered request is DDL in the request itself.** An
-  `ALTER TABLE … ADD COLUMN` the user wrote is read by the deterministic additive-intent
-  fast path in `crossToSchema`, before the proposer runs. It reads what the request asks
-  (`requestGateText`: the primary request and its sub-aspects, never a context section),
-  so DDL quoted under "Alternatives considered" proposes nothing.
+- **Core in a covered request comes from what the user wrote, not from a model.** The
+  deterministic additive-intent fast path in `crossToSchema` (`detectAdditiveColumnIntent`)
+  runs before the proposer and marks a table `add-column` on three forms: an
+  `ALTER TABLE … ADD COLUMN` statement, "add a `<name>` field|column|flag to `<table>`",
+  and "add `<name>` to `<table>`". It reads what the request asks (`requestGateText`: the
+  primary request and its sub-aspects, never a context section), so DDL quoted under
+  "Alternatives considered" proposes nothing. A heading the parser does not know is a
+  sub-aspect, so DDL pasted under "Workaround" does count as asked for.
 - **The accepted cost.** A genuinely new column in a covered request — `feeds.last_cleanup_at`
   in "delete entries older than 30 days and record when each feed was last cleaned" — is
   shown as optional, not core. Optional columns do not enter `affectedTables`, so they
@@ -2833,22 +2852,34 @@ flowchart LR
   cannot tell that column from a copy of the bound without reading intent out of prose,
   and that is what failed twice. The owner accepted "optional and labelled"; the reason
   on the row says to write the `ALTER TABLE` in the request if the change needs it.
-- **In an uncovered request the gate does not rule.** Every proposal is `core`, as before
+- **In an uncovered request the gate does not rule.** A proposal is `core`, as before
   the gate existed, and is also returned under `uncheckedColumnProposals` with the
   reason: looking up the write paths failed; the lineage named none; the request is not
   bounded by an age or a date; or write paths were named and none filters on a time
-  column. The proposer's own labels are not applied here either. The #791 guarantee
-  therefore needs SQL lineage, and covers time-bounded requests only: anywhere else every
-  proposal is `core` and marked, so the API, the page and the export say nothing vetted it.
+  column. The #791 guarantee therefore needs SQL lineage, and covers time-bounded
+  requests only: anywhere else a proposal is `core` and marked, so the API, the page and
+  the export say nothing vetted it.
+- **One demotion applies there (owner decision).** A column the proposer itself labels
+  `user-preference` is `optional` in an uncovered request too, with no writer cited and
+  the same "not checked" reason. Uncovered is the common case (an ORM project whose writes
+  the lineage cannot read, a failed lookup), and a core `users` column for a remembered
+  preference is what the owner ruled out. It is a demotion only: the label takes a column
+  out of `core` and can never put one in, so no label, declaration or type the model
+  returns increases `core` in either branch. `coveredBy` and the declared writers are
+  still not read.
 - **Request text is untrusted and long.** It is accepted up to 500,000 characters, so
   every pattern applied to it has to be linear. That is enforced by enumeration, not by
-  naming patterns: `request-regex-fuzz.test.ts` parses the impact chain's production
-  files with the TypeScript compiler, takes every regex literal and every `new RegExp`,
-  and times each on 51 adversarial 200 KB inputs under 250 ms. A pattern added to one of
-  those files is covered without a test being written for it; a `new RegExp` whose
-  source cannot be evaluated statically fails the test unless it is listed with what it
-  is built from. The search query built from a request is capped at 4,000 characters
-  (`MAX_SEED_QUERY_CHARS`).
+  naming patterns: `request-regex-fuzz.test.ts` parses every production file under
+  `lib/impact-analysis/` (read from disk, so a new file is covered by default) plus a
+  short list outside it (the search, the export, the route) with the TypeScript compiler,
+  takes every regex literal and every `new RegExp`, and times each on 54 adversarial
+  inputs up to 200 KB under 250 ms. A `new RegExp` whose source cannot be evaluated
+  statically fails the test unless it is listed with what it is built from. The corpus
+  is fixed, so a green run means "linear on these shapes", not "linear". The search query
+  built from a request is capped at 4,000 characters (`MAX_SEED_QUERY_CHARS`), and the
+  request is cut down before it is cleaned, not after. Timing tests assert the shape
+  (`tests/helpers/linear-time.ts`: fast at full size, or a linear ratio against a quarter
+  of it), never a wall-clock bound near the idle figure.
 - `optional` and `rejected` proposals never enter `affectedTables`, so neither is part of
   the migration a change is reported to need. They are returned on the result as
   `optionalColumnProposals` / `droppedColumnProposals`, each with the writer's file and

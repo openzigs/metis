@@ -120,8 +120,13 @@ export function schemaDataSource(
       SYMBOLS.filter(
         (s) => s.kind === "column" && tables.includes(s.qualifiedName.split(".")[0]!),
       ).map(schemaRow),
+    // Every edge of this fixture is SQL lineage; the extractor is part of the row
+    // (`WriterEdgeRow.source`), as the real query returns it.
     getWriterEdgesTo: async (ids) =>
-      EDGES.filter((e) => ids.includes(e.toSymbolId) && e.kind === "writes"),
+      EDGES.filter((e) => ids.includes(e.toSymbolId) && e.kind === "writes").map((e) => ({
+        ...e,
+        source: "sqlglot",
+      })),
     getCodeSymbolDetails: async (ids) => SYMBOLS.filter((s) => ids.includes(s.id)),
     getCodeSymbolTexts: async (ids) =>
       ids.flatMap((id) => (TEXTS[id] ? [{ id, text: TEXTS[id]! }] : [])),

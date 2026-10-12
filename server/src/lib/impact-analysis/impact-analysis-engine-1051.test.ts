@@ -196,22 +196,24 @@ describe("executeImpactAnalysis — ruled-out column proposals are stored and re
     expect(item.optionalColumnProposals.map((p) => p.columnName)).toEqual(["mark_read_default"]);
   });
 
+  const ACCENT_ISSUE =
+    // Not time-bounded, so the gate does not rule.
+    "# [Feature]: Accent colour\n\n### Feature Summary\n\nLet a user pick an accent colour.\n\n### Proposed Solution\n\nA colour picker on the mark all as read page.";
+  const accent = (justification: "user-preference" | "operation-needs-new-data") => async () => ({
+    proposals: [
+      {
+        row: column("users", "accent_colour", "TEXT"),
+        justification,
+        coveredByWriterId: null,
+        rationale: "",
+      },
+    ],
+    coveringWriterIds: [],
+  });
+
   it("stores an unchecked column with a null writer: it rests on no write path", async () => {
-    const { proposals, item } = await runIssue(
-      // Not time-bounded, so the gate does not rule: the column is core, and marked.
-      "# [Feature]: Accent colour\n\n### Feature Summary\n\nLet a user pick an accent colour.\n\n### Proposed Solution\n\nA colour picker on the mark all as read page.",
-      async () => ({
-        proposals: [
-          {
-            row: column("users", "accent_colour", "TEXT"),
-            justification: "user-preference" as const,
-            coveredByWriterId: null,
-            rationale: "",
-          },
-        ],
-        coveringWriterIds: [],
-      }),
-    );
+    // The column is core, and marked.
+    const { proposals, item } = await runIssue(ACCENT_ISSUE, accent("operation-needs-new-data"));
     expect(proposals).toHaveLength(1);
     expect(proposals[0]).toMatchObject({
       disposition: "unchecked",
@@ -223,6 +225,27 @@ describe("executeImpactAnalysis — ruled-out column proposals are stored and re
     expect(proposals[0]!.reason).toMatch(/^Not checked: the request is not bounded/);
     expect(item.optionalColumnProposals).toEqual([]);
     expect(item.uncheckedColumnProposals[0]!.writer).toBeNull();
+  });
+
+  it("stores a column the proposer labelled a preference as OPTIONAL there, with a null writer and why it was not checked (PR #1090 review 3)", async () => {
+    const { proposals, item } = await runIssue(ACCENT_ISSUE, accent("user-preference"));
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({
+      disposition: "optional",
+      columnName: "accent_colour",
+      writerQualifiedName: null,
+      writerFilePath: null,
+      writerStartLine: null,
+      writerEndLine: null,
+    });
+    expect(proposals[0]!.reason).toMatch(
+      /^Optional: settings persistence\. The proposer classed this column as a user preference.* Not checked: the request is not bounded/,
+    );
+    expect(item.uncheckedColumnProposals).toEqual([]);
+    expect(item.optionalColumnProposals.map((p) => p.columnName)).toEqual(["accent_colour"]);
+    expect(item.optionalColumnProposals[0]!.writer).toBeNull();
+    // Not in the migration: no add-column row for it.
+    expect(item.affectedTables.filter((t) => t.changeKind === "add-column")).toEqual([]);
   });
 
   it("writes nothing when the gate rules nothing out", async () => {

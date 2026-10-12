@@ -138,9 +138,11 @@ function dataSource(
         }));
     },
     async getWriterEdgesTo(ids) {
-      return edges.filter(
-        (e) => ids.includes(e.toSymbolId) && (e.kind === "writes" || e.kind === "persists-to"),
-      );
+      return edges
+        .filter(
+          (e) => ids.includes(e.toSymbolId) && (e.kind === "writes" || e.kind === "persists-to"),
+        )
+        .map((e) => ({ ...e, source: "sqlglot" }));
     },
     async getCodeSymbolDetails(ids) {
       return ids.flatMap((id) => {
@@ -203,8 +205,18 @@ describe("resolveDataPathWriters — a MyBatis mapper statement is a writer (PR 
       },
     ],
     getWriterEdgesTo: async () => [
-      { fromSymbolId: "stmt", toSymbolId: "orders.status", kind: "writes" as const },
-      { fromSymbolId: "syn", toSymbolId: "orders.status", kind: "writes" as const },
+      {
+        fromSymbolId: "stmt",
+        toSymbolId: "orders.status",
+        kind: "writes" as const,
+        source: "mybatis",
+      },
+      {
+        fromSymbolId: "syn",
+        toSymbolId: "orders.status",
+        kind: "writes" as const,
+        source: "mybatis",
+      },
     ],
     getCodeSymbolDetails: async (ids) => [statement, synthetic].filter((s) => ids.includes(s.id)),
   };
