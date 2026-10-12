@@ -517,6 +517,18 @@ describe("a module path of one segment, or of one letter", () => {
       "unbound external",
     );
   });
+
+  it("…from ANOTHER module too, where only the declared path can place the import", () => {
+    const tree = {
+      "xm/lib/l.go": "package lib\n\nfunc L() {}\n",
+      "ym/cmd/main.go": 'package main\n\nimport "x/lib"\n\nfunc main() {\n\tlib.L()\n}\n',
+    };
+    const modules = [
+      { dir: "xm", path: "x" },
+      { dir: "ym", path: "y" },
+    ];
+    expect(goVerdicts(tree, modules).get("ym/cmd/main.go:6:L")).toBe("package xm/lib/l.go::L");
+  });
 });
 
 describe("dot imports are read once each", () => {
@@ -621,6 +633,32 @@ describe("an import block longer than one call's budget is not read — for ever
     );
     const call = parsed[1].edges.find((e) => e.kind === "calls")!.goCallee!;
     expect(resolver.resolveCall("p/p.go", call)).toEqual({ kind: "unknown" });
+  });
+});
+
+describe("only the budget is swallowed", () => {
+  it("any other throw while resolving a call reaches the caller, which counts and names it", () => {
+    // Ingest reports a throw as `goBinding.errors` with the call's place; an
+    // over-budget call as `overBudget`. A resolver bug must not pass for the latter.
+    const parsed = parseSource("p/p.go", "package p\n\nfunc f() {}\n", "go");
+    const resolver = createGoResolver(
+      [{ filePath: "p/p.go", facts: parsed.goFacts!, isTest: false }],
+      GO_TEST_MODULE,
+    );
+    const poisoned = {
+      e: "sel" as const,
+      name: "M",
+      get x(): never {
+        throw new Error("a resolver bug");
+      },
+    };
+    expect(() => resolver.resolveCall("p/p.go", poisoned)).toThrow("a resolver bug");
+    // And the resolver is usable afterwards.
+    expect(resolver.resolveCall("p/p.go", { e: "name", name: "f" })).toEqual({
+      kind: "bound",
+      qualifiedName: "p/p.go::f",
+      via: "same-package",
+    });
   });
 });
 
