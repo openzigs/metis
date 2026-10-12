@@ -83,6 +83,7 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/socket/mcp-status-eviction.ts",
   "server/src/lib/socket/registry.ts",
   "server/src/lib/socket/user-disconnect.ts",
+  "server/src/lib/spec-kit/job-store.ts",
   "server/src/lib/vault/binding-write-mark.ts",
   "server/src/lib/vault/vault-service.ts",
   "server/src/middleware/auth.ts",

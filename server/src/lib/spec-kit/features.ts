@@ -191,6 +191,35 @@ export async function createFeature(input: CreateFeatureInput): Promise<SpecKitF
   );
 }
 
+/**
+ * #1059 — remove a feature that a `/speckit.specify` created for itself and
+ * then wrote nothing into (the command failed, was cancelled or timed out
+ * before it saved). One conditional delete: a feature that has any artifact,
+ * has left `draft`, or has a discussion attached is never removed, whatever
+ * the caller believes. Returns whether a feature was removed.
+ */
+export async function discardEmptyDraftFeature(
+  featureId: string,
+  actorId?: string | null,
+): Promise<boolean> {
+  const removed = await prisma.specKitFeature.deleteMany({
+    where: {
+      id: featureId,
+      status: "draft",
+      artifacts: { none: {} },
+      discussionThreads: { none: {} },
+    },
+  });
+  if (removed.count === 0) return false;
+  audit({
+    actor: actorId ? { id: actorId } : null,
+    action: "speckit.feature.discarded",
+    target: { type: "speckit_feature", id: featureId },
+    metadata: { reason: "specify_saved_nothing" },
+  });
+  return true;
+}
+
 export const SPECKIT_FEATURE_ARCHIVED_STATUS = "archived";
 
 export interface ListFeaturesOptions {

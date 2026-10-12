@@ -70,6 +70,7 @@ import { createDispatcher } from "./lib/finops/channels/dispatcher.js";
 import { startChargebackScheduler } from "./lib/finops/chargeback-scheduler.js";
 import { startWorkspaceUsageRollup } from "./lib/workspaces/usage-rollup.js";
 import { startInterruptedGenerationSweeper } from "./lib/docs-gen/interrupted-generations.js";
+import { startSpecKitJobSweeper } from "./lib/spec-kit/jobs.js";
 import { startReplacedSecretSweep } from "./lib/vault/secret-retirement.js";
 import { reconcileStrandedGeneratedDocPublications } from "./lib/docs-gen/generated-doc-publication-recovery.js";
 import { backfillSecretBindings } from "./lib/vault/secret-binding-backfill.js";
@@ -449,6 +450,9 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
     // Fail any whose heartbeat stopped (now, then every minute) instead of
     // leaving it `generating` forever.
     startInterruptedGenerationSweeper();
+    // #1059 — Spec Kit jobs run in-process too. A job whose heartbeat stopped
+    // is failed as interrupted (now, then every 30 seconds), never resumed.
+    startSpecKitJobSweeper();
   }
 
   // Epic #163, Issue #119 — attach the ACP WebSocket server. Disabled in

@@ -10,4 +10,4 @@ section: Changed
     receiver's type was not examined; neither is bound by name. Binding has reported ceilings.
   - Existing graphs upgrade in place on their next ingest, once, without regenerating
     auto-updating documents; a file that cannot be upgraded is named and retried when it changes.
-  - Impact results, requirement links and "Tested by" can change on Go projects (OPERATIONS §6.5).
+  - Impact results, requirement links and "Tested by" can change on Go projects (OPERATIONS §6.6).

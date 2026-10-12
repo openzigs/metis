@@ -21,6 +21,8 @@ export const queryKeys = {
     /** Epic #193 — Spec Kit Mode artifacts. */
     specKitFiles: (id: string) => [...queryKeys.projects.all, "spec-kit", id, "files"] as const,
     specKitEnabled: (id: string) => [...queryKeys.projects.all, "spec-kit", id, "enabled"] as const,
+    /** #1059 — the project's running Spec Kit jobs (metadata only). */
+    specKitJobs: (id: string) => [...queryKeys.projects.all, "spec-kit", id, "jobs"] as const,
     /** #789 — prefix of every per-feature key, so one invalidation refreshes them all. */
     specKitFeaturesAll: (id: string) =>
       [...queryKeys.projects.all, "spec-kit", id, "features"] as const,

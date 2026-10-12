@@ -110,6 +110,9 @@ export async function resolveProjectProvider(projectId: string): Promise<AIProvi
     const which = named ? `AI provider "${named}"` : "the deployment's AI provider";
     throw new AIProviderError(
       `Provider credentials unavailable for project: ${which} is not configured on this server. An administrator can find the reason in the server log.`,
+      502,
+      // Written here, from the project's own configuration: safe to store and show (#1059).
+      { clientSafe: true },
     );
   }
 }

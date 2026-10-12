@@ -793,7 +793,13 @@ export class AnthropicProvider implements AIProvider {
     const name = err instanceof Error ? err.name : "Error";
     const message = err instanceof Error ? err.message : String(err);
     log.error("Anthropic provider error", { op, name, status });
-    return new AIProviderError(`anthropic ${op} failed (${name}): ${message}`, status ?? 502);
+    // `details` names the operation and the error class WITHOUT the upstream
+    // text, for callers that store or forward a bounded message (#1059).
+    return new AIProviderError(`anthropic ${op} failed (${name}): ${message}`, status ?? 502, {
+      provider: "anthropic",
+      operation: op,
+      errorName: name,
+    });
   }
 }
 

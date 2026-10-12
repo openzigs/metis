@@ -99,6 +99,10 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Recursion audit: bound work, not depth](project_recursion-audit-must-bound-work-not-depth.md) — lattice + scaling ratio (#1071)
 - [Test helper keys must be unique](project_test-helper-keys-must-be-unique.md) — throw on a duplicate key (#1071)
 - [Suppression needs evidence, once](project_suppression-rule-needs-positive-evidence-acknowledged-once.md) — not a missing field (#1071)
+- [Spec Kit jobs: test seams](project_speckit-jobs-test-seams-and-runner-choice.md) — mock job-store; park the stub, no sleeps (#1059)
+- [Job tables: DB commit + one clock](project_heartbeat-sweep-tables-db-commit-and-one-clock.md) — in-memory stop misses other replicas (#1059)
+- [New Prisma model: 3 PG artefacts](project_new-prisma-model-three-postgres-artefacts.md) — baseline CREATE TABLE; run schema-parity (#1059)
+- [Lock key = resource width](project_lock-key-as-wide-as-the-resource.md) — reserve after cheap failures; idempotency token; req.ip (#1059)
 - [Test the STAMPED body](project_publishing-safety-is-tested-on-the-stamped-body.md) — strip split a code span; double honours status
 - [Title rule change: look up old hash](project_draft-title-rule-change-needs-old-title-lookup.md) — else 2nd draft, 2nd issue (#1064)
 - [`pgrep -f` loop matches itself](project_pgrep-f-wait-loop-matches-itself.md) — never exits; use ps + grep "node .*(vitest|tsc)"
