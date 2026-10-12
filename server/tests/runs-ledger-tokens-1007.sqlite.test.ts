@@ -9,8 +9,13 @@
  * — is read for the same run and must give the same two figures, and both must
  * equal a direct SQL sum over `token_usages`.
  *
- * It also pins the chat-turn listing: chat turns are read from the ledger, in
- * the caller's projects only.
+ * And one COST: the stored ledger cost, with unpriced tokens said to be
+ * unpriced, on every one of those surfaces (review of #1112 — one session read
+ * $3.01 on `/runs`, 301¢ on the run's page and $1.50 plus 100,000 unpriced
+ * tokens on the header).
+ *
+ * The chat-turn listing is pinned through the real router in
+ * `runs-chat-turns-route.sqlite.test.ts`.
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
@@ -37,16 +42,16 @@ vi.mock("../src/lib/prisma.js", async () => {
 const { listRuns, getRun, computeRunCost } = await import("../src/lib/replay/runs-service.js");
 const { listAnalysesForProject, getAnalysisSnapshot } =
   await import("../src/lib/analysis/analysis-service.js");
-const { listChatTurns } = await import("../src/lib/ai/conversation/chat-turn-ledger.js");
-const { encodeRequestTokens, priceLedgerTokensExact } =
-  await import("../src/lib/finops/token-tracker.js");
-const { getRate } = await import("../src/lib/finops/provider-rates.js");
+const { encodeRequestTokens } = await import("../src/lib/finops/token-tracker.js");
 
 const USER = "u-1007";
 const DONE = "an-done";
 const GOING = "an-going";
 const QUIET = "an-quiet";
 const OLD = "an-old";
+/** The reviewer's reproduction: its own project, one analysis session. */
+const REVIEW_PROJECT = "p-review";
+const REVIEWED = "an-reviewed";
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#1007 run token figures read the ledger (real SQLite)",
@@ -134,7 +139,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.user.create({
         data: { id: USER, username: USER, displayName: USER, email: `${USER}@x.test` },
       });
-      for (const id of ["p-a", "p-other"]) {
+      for (const id of ["p-a", "p-other", REVIEW_PROJECT]) {
         await db.project.create({ data: { id, name: id, slug: id, createdById: USER } });
       }
       const analyses = [
@@ -182,6 +187,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         outputTokens: 2_000,
         cacheReadTokens: 30_000,
         agentStep: "analysis",
+        // Recorded at 6.9¢; today's rate card would make it 6.9¢ too, or not —
+        // nothing reads the rate card for a cost any more.
+        costUsd: 0.069,
+        costCents: 7,
         createdAt: at(10),
       });
       // OpenAI convention: the 8,000 prompt tokens INCLUDE 5,000 cache reads.
@@ -194,6 +203,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         outputTokens: 1_000,
         cacheReadTokens: 5_000,
         agentStep: "analysis",
+        // A row from before #761: whole cents only.
+        costUsd: null,
+        costCents: 2,
         createdAt: at(11),
       });
       // One row summing two model calls (#1080), each under Haiku 5.5's
@@ -205,6 +217,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         inputTokens: 120_000,
         outputTokens: 200,
         agentStep: "analysis",
+        // What `recordUsage` stored: each 60,000-token request in the short tier.
+        costUsd: 0.0121,
+        costCents: 1,
         createdAt: at(12),
         requests: [
           [60_000, 100, 0, 0],
@@ -212,6 +227,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ],
       });
       // Spend AFTER the run finished (a deep dive): the stored total never saw it.
+      // Recorded UNPRICED (the helper's default): 1,000 tokens of unknown cost.
       await usage({
         projectId: "p-a",
         sessionId: DONE,
@@ -240,39 +256,57 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         createdAt: at(50),
       });
 
-      // ── chat turns ──
-      // A turn that ran a tool loop: one row, three model calls, 0.042¢.
-      await usage({
-        projectId: "p-a",
-        sessionId: "chat-a",
-        inputTokens: 900,
-        outputTokens: 90,
-        cacheReadTokens: 300,
-        agentStep: "chat",
-        costUsd: 0.00042,
-        costCents: 0,
-        createdAt: at(20),
-        requests: [
-          [300, 30, 0, 0],
-          [300, 30, 100, 0],
-          [300, 30, 200, 0],
-        ],
+      // ── the reviewer's reproduction (review of #1112) ──
+      await db.analysis.create({
+        data: {
+          id: REVIEWED,
+          projectId: REVIEW_PROJECT,
+          startedById: USER,
+          status: "completed",
+          totalTokens: 5,
+          startedAt: at(0),
+          completedAt: at(9),
+        },
       });
-      await usage({
-        projectId: "p-a",
-        sessionId: "chat-a",
-        inputTokens: 50,
-        outputTokens: 5,
-        agentStep: "chat-estimated",
-        createdAt: at(21),
+      const reviewed = await db.agentRun.create({
+        data: {
+          sessionId: REVIEWED,
+          projectId: REVIEW_PROJECT,
+          kind: "analysis",
+          status: "completed",
+          startedAt: at(0),
+          completedAt: at(9),
+        },
       });
+      runIds.set(REVIEWED, reviewed.id);
+      // 1,000,000 Sonnet input tokens stored at $1.00 (today's card: $3.00).
       await usage({
-        projectId: "p-other",
-        sessionId: "chat-other",
-        inputTokens: 600,
+        projectId: REVIEW_PROJECT,
+        sessionId: REVIEWED,
+        inputTokens: 1_000_000,
+        agentStep: "analysis",
+        costUsd: 1.0,
+        costCents: 100,
+        createdAt: at(1),
+      });
+      // 100,000 tokens stored UNPRICED, of a model that has a price today.
+      await usage({
+        projectId: REVIEW_PROJECT,
+        sessionId: REVIEWED,
+        model: "claude-haiku-5-5",
+        inputTokens: 100_000,
+        agentStep: "analysis",
+        createdAt: at(2),
+      });
+      // Seven tokens stored at $0.50.
+      await usage({
+        projectId: REVIEW_PROJECT,
+        sessionId: REVIEWED,
+        inputTokens: 7,
         agentStep: "chat",
         costUsd: 0.5,
-        createdAt: at(22),
+        costCents: 50,
+        createdAt: at(4),
       });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
@@ -305,46 +339,81 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(pastRun.totalTokens).toBe(1_000);
     });
 
-    it("prices the run from the same rows, the summed row request by request", async () => {
+    /** The ledger's own cost of a session: what was recorded, and the tokens recorded unpriced. */
+    async function sqlCost(projectId: string, sessionId: string) {
+      const [row] = await db.$queryRaw<Array<{ costUsd: number | null; unpriced: bigint }>>`
+        SELECT
+          SUM(COALESCE("costUsd", "costCents" / 100.0)) AS "costUsd",
+          COALESCE(SUM(CASE WHEN "costUsd" IS NULL AND "costCents" IS NULL
+                            THEN "totalTokens" ELSE 0 END), 0) AS "unpriced"
+        FROM "token_usages"
+        WHERE "projectId" = ${projectId} AND "sessionId" = ${sessionId}`;
+      return { costUsd: Number(row!.costUsd), unpricedTokens: Number(row!.unpriced) };
+    }
+
+    it("the cost is the stored ledger cost on every surface, unpriced tokens named", async () => {
+      const sql = await sqlCost("p-a", DONE);
+      // 6.9¢ + 2¢ (whole-cent row) + 1.21¢; the deep dive's 1,000 tokens have no price.
+      expect(sql.costUsd).toBeCloseTo(0.1011, 12);
+      expect(sql.unpricedTokens).toBe(1_000);
+
       const cost = await computeRunCost(runIds.get(DONE)!);
+      const listed = (await listRuns({ projectId: "p-a" })).find((r) => r.sessionId === DONE)!;
+      const detail = (await getRun(runIds.get(DONE)!))!.run;
+      const header = (await getAnalysisSnapshot(DONE))!.ledgerUsage!;
+
       expect(cost.tokens).toEqual(DONE_TOKENS);
       expect(cost.totalTokens).toBe(DONE_TOKENS.withCache);
-      const listed = (await listRuns({ projectId: "p-a" })).find((r) => r.sessionId === DONE)!;
-      expect(listed.costUsd).toBeCloseTo(cost.costUsd, 12);
+      for (const usd of [cost.costUsd, listed.costUsd, detail.costUsd, header.costUsd]) {
+        expect(usd).toBeCloseTo(sql.costUsd, 12);
+      }
+      expect(detail.costCents).toBe(10);
+      for (const unpriced of [
+        cost.unpricedTokens,
+        listed.unpricedTokens,
+        detail.unpricedTokens,
+        header.unpricedTokens,
+      ]) {
+        expect(unpriced).toBe(sql.unpricedTokens);
+      }
+    });
 
-      // Each row priced on its own by the ledger's row pricer, then summed.
-      const haiku = {
-        inputTokens: 120_000,
-        outputTokens: 200,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-      };
-      const half = {
-        inputTokens: 60_000,
-        outputTokens: 100,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-      };
-      const haikuRate = getRate("anthropic", "claude-haiku-5-5");
-      const perRequest = priceLedgerTokensExact("anthropic", haikuRate, haiku, [half, half])!;
-      const asOneRequest = priceLedgerTokensExact("anthropic", haikuRate, haiku, null)!;
-      // Two 60,000-token requests: 120,000 × $0.10/M + 200 × $0.50/M = 1.21¢.
-      // As one 120,000-token request it is over the threshold: 6.05¢.
-      expect(perRequest).toBeCloseTo(1.21, 10);
-      expect(asOneRequest).toBeCloseTo(6.05, 10);
-      const sonnet = priceLedgerTokensExact(
-        "anthropic",
-        getRate("anthropic", "claude-3-5-sonnet"),
-        { inputTokens: 10_500, outputTokens: 2_500, cacheReadTokens: 30_000, cacheWriteTokens: 0 },
-        null,
-      )!;
-      const gpt = priceLedgerTokensExact(
-        "openai",
-        getRate("openai", "gpt-4o"),
-        { inputTokens: 8_000, outputTokens: 1_000, cacheReadTokens: 5_000, cacheWriteTokens: 0 },
-        null,
-      )!;
-      expect(cost.costUsd * 100).toBeCloseTo(sonnet + gpt + perRequest, 9);
+    it("the reviewer's reproduction: /runs, the run's page and the header give one cost", async () => {
+      const sql = await sqlCost(REVIEW_PROJECT, REVIEWED);
+      expect(sql).toEqual({ costUsd: 1.5, unpricedTokens: 100_000 });
+
+      const listed = (await listRuns({ projectId: REVIEW_PROJECT }))[0]!;
+      const detail = (await getRun(runIds.get(REVIEWED)!))!.run;
+      const header = (await getAnalysisSnapshot(REVIEWED))!.ledgerUsage!;
+
+      // It was 3.010021 here, 301 there, and 1.5 with 100,000 unpriced on the header.
+      expect(listed.costUsd).toBe(1.5);
+      expect(listed.unpricedTokens).toBe(100_000);
+      expect(detail.costCents).toBe(150);
+      expect(detail.costUsd).toBe(1.5);
+      expect(detail.unpricedTokens).toBe(100_000);
+      expect(header.costUsd).toBe(1.5);
+      expect(header.unpricedTokens).toBe(100_000);
+      const tokens = { withoutCache: 1_100_007, withCache: 1_100_007 };
+      expect(listed.tokens).toEqual(tokens);
+      expect(detail.tokens).toEqual(tokens);
+      expect(header.tokens).toEqual(tokens);
+    });
+
+    it("says how much of a finished run's figure was recorded after it finished", async () => {
+      const [row] = await db.$queryRaw<Array<{ withoutCache: bigint; withCache: bigint }>>`
+        SELECT SUM("inputTokens" + "outputTokens") AS "withoutCache",
+               SUM("inputTokens" + "outputTokens" + "cacheReadTokens" + "cacheWriteTokens") AS "withCache"
+        FROM "token_usages"
+        WHERE "projectId" = 'p-a' AND "sessionId" = ${DONE} AND "createdAt" > ${at(30)}`;
+      const sql = { withoutCache: Number(row!.withoutCache), withCache: Number(row!.withCache) };
+      expect(sql).toEqual({ withoutCache: 1_000, withCache: 1_000 });
+      const listed = (await listRuns({ projectId: "p-a" })).find((r) => r.sessionId === DONE)!;
+      expect(listed.tokensAfterRun).toEqual(sql);
+      expect((await getRun(runIds.get(DONE)!))!.run.tokensAfterRun).toEqual(sql);
+      // A run that is going has finished nothing.
+      const going = (await listRuns({ projectId: "p-a" })).find((r) => r.sessionId === GOING)!;
+      expect(going.tokensAfterRun).toEqual({ withoutCache: 0, withCache: 0 });
     });
 
     it("a run that is going shows its ledger total so far, not 0", async () => {
@@ -367,56 +436,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
       expect(runs.find((r) => r.sessionId === OLD)!.totalTokens).toBe(240_792);
       expect((await getAnalysisSnapshot(OLD))!.ledgerUsage!.tokens).toEqual(zero);
-    });
-
-    describe("chat turns", () => {
-      it("lists a project's chat turns from the ledger, newest first, with the exact cost", async () => {
-        const turns = await listChatTurns({ projectId: "p-a" });
-        expect(turns.map((t) => [t.sessionId, t.step, t.requests])).toEqual([
-          ["chat-a", "chat-estimated", 1],
-          ["chat-a", "chat", 3],
-        ]);
-        const turn = turns[1]!;
-        expect(turn.tokens).toEqual(await sqlTokensOfStep("chat"));
-        expect(turn.tokens).toEqual({ withoutCache: 990, withCache: 1_290 });
-        // A fraction of a cent, as recorded; whole cents would read 0.
-        expect(turn.costUsd).toBeCloseTo(0.00042, 12);
-        // An unpriced row says so rather than reading $0.
-        expect(turns[0]!.costUsd).toBeNull();
-      });
-
-      async function sqlTokensOfStep(step: string) {
-        const [row] = await db.$queryRaw<Array<{ withoutCache: bigint; withCache: bigint }>>`
-          SELECT SUM("inputTokens" + "outputTokens") AS "withoutCache",
-                 SUM("inputTokens" + "outputTokens" + "cacheReadTokens" + "cacheWriteTokens") AS "withCache"
-          FROM "token_usages" WHERE "projectId" = 'p-a' AND "agentStep" = ${step}`;
-        return { withoutCache: Number(row!.withoutCache), withCache: Number(row!.withCache) };
-      }
-
-      it("never lists an analysis row as a chat turn", async () => {
-        const turns = await listChatTurns({});
-        expect(turns.every((t) => t.step.startsWith("chat"))).toBe(true);
-        expect(turns).toHaveLength(3);
-      });
-
-      it("keeps a caller to their own projects, whatever they filter by", async () => {
-        const mine = { accessibleProjectIds: ["p-a"] };
-        expect((await listChatTurns(mine)).map((t) => t.projectId)).toEqual(["p-a", "p-a"]);
-        // Another project's session id, or its project id, surfaces nothing.
-        expect(await listChatTurns({ ...mine, sessionId: "chat-other" })).toEqual([]);
-        expect(await listChatTurns({ ...mine, projectId: "p-other" })).toEqual([]);
-        expect(await listChatTurns({ accessibleProjectIds: [] })).toEqual([]);
-        // An admin (no narrowing) sees it.
-        expect(await listChatTurns({ sessionId: "chat-other" })).toHaveLength(1);
-      });
-
-      it("filters by session and time, and caps the page", async () => {
-        expect(await listChatTurns({ projectId: "p-a", sessionId: "chat-a" })).toHaveLength(2);
-        expect(await listChatTurns({ projectId: "p-a", from: at(21) })).toHaveLength(1);
-        expect(await listChatTurns({ projectId: "p-a", to: at(20) })).toHaveLength(1);
-        expect(await listChatTurns({ limit: 1 })).toHaveLength(1);
-        expect(await listChatTurns({ limit: 0 })).toHaveLength(3);
-      });
     });
   },
 );

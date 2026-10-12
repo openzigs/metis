@@ -72,7 +72,8 @@ export function DeploymentCapCard({ cap }: { cap: AnalysisCostCapStatus }): Reac
  * the ledger's once it has any — the live figure, and the same two figures the
  * run lists show (#1007) — `in progress` for a run that has none yet, and the
  * run's own stored total, said to be that, for a run from before analysis spend
- * was metered (#724). Cost is the ledger's only.
+ * was metered (#724) — or `ledger unavailable` when it could not be read. Cost
+ * is the ledger's stored cost only, the figure `/runs` shows for the same run.
  */
 export function runSpendLabel(
   run: Pick<AnalysisSnapshot, "totalTokens" | "ledgerUsage"> & { status?: string },
@@ -86,7 +87,9 @@ export function runSpendLabel(
   const parts = [
     fallback ??
       runTokensLabel({
-        tokens: ledger?.tokens,
+        // No `ledgerUsage` at all is a ledger that could not be read; one
+        // without `tokens` here has a zero total, i.e. it was read and is empty.
+        tokens: ledger ? (ledger.tokens ?? { withCache: 0, withoutCache: 0 }) : null,
         storedTotal: run.totalTokens,
         status: run.status,
       }),

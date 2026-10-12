@@ -17,6 +17,9 @@ import {
   type LedgerUsageRow,
 } from "../finops/ledger-usage-summary.js";
 
+export const RUN_LIST_DEFAULT_LIMIT = 50;
+export const RUN_LIST_MAX_LIMIT = 200;
+
 export type AgentRunKind = "analysis" | "chat" | "tool";
 export type AgentRunStatus = "running" | "completed" | "failed" | "cancelled";
 export type AgentRunStepKind = "prompt" | "tool_call" | "tool_result" | "response" | "agent_phase";
@@ -99,14 +102,46 @@ export interface RunCost {
   totalTokens: number;
   /** #1007 — the run's ledger tokens, with and without cache. */
   tokens: LedgerTokens;
+  /** With-cache tokens of the run's rows recorded UNPRICED (#22): no cost is known for them. */
+  unpricedTokens: number;
+  /**
+   * The part of {@link tokens} recorded AFTER the run finished. Only an
+   * analysis run can have any (a deep dive, a regenerate or a clarification
+   * round bills the analysis's session, #943); zero while a run is going.
+   */
+  tokensAfterRun: LedgerTokens;
 }
+
+const NO_TOKENS: LedgerTokens = { withCache: 0, withoutCache: 0 };
 
 const NO_RUN_COST: RunCost = {
   costCents: 0,
   costUsd: 0,
   totalTokens: 0,
-  tokens: { withCache: 0, withoutCache: 0 },
+  tokens: NO_TOKENS,
+  unpricedTokens: 0,
+  tokensAfterRun: NO_TOKENS,
 };
+
+type RunWindow = { kind: string; startedAt: Date; completedAt: Date | null };
+
+/** A run's figures from its ledger rows — the one place they are derived. */
+function runFigures(
+  run: RunWindow,
+  rows: ReadonlyArray<LedgerUsageRow & { createdAt: Date }>,
+): RunCost {
+  const { exactCents, tokens, unpricedTokens } = summariseLedgerRows(rows);
+  const finishedAt = run.completedAt;
+  const after = finishedAt ? rows.filter((r) => r.createdAt > finishedAt) : [];
+  return {
+    costCents: Math.round(exactCents),
+    costUsd: exactCents / 100,
+    totalTokens: tokens.withCache,
+    tokens,
+    unpricedTokens,
+    tokensAfterRun: after.length > 0 ? summariseLedgerRows(after).tokens : NO_TOKENS,
+  };
+}
 
 /**
  * Attribute real LLM cost to a single AgentRun (#runs cost attribution).
@@ -127,22 +162,22 @@ const NO_RUN_COST: RunCost = {
  * run only (its inclusive upper bound), never to both — provably no double-count.
  *
  * Matched rows are summed by `summariseLedgerRows` — the one definition of a
- * run's tokens and cost (#1007) — grouped by (provider, model); per group we look up the rate
- * and price it unrounded, then round the run's total once (#977). We
- * re-derive cost from tokens (rather than summing the per-row `costCents`
- * stored at insert) because the brief requires grouping by provider/model and
- * applying current rates — rates may have shifted since insert. The tradeoff:
- * if a rate has changed, the attributed cost can differ from the historical
- * stored cost; for `/runs` reporting we prefer the current rate card.
+ * run's tokens and cost (#1007). The cost is the STORED ledger cost of the
+ * priced rows, rounded once for the run (#977), which is what the usage pages
+ * and the analysis header sum; rows recorded unpriced are reported as
+ * `unpricedTokens`, not priced at today's rates. (Until the review of #1112
+ * this re-priced the rows at the current rate card, so one run read $3.01 here
+ * and $1.50 plus 100,000 unpriced tokens on the analysis header.)
  *
- * #943 — an `analysis` run is the exception: its session is the analysis id,
- * which has exactly one run, and work on the analysis after the run finished
- * (a regenerate, a clarification round, a deep dive) bills the same session.
- * Windowing it dropped that spend — $0.14 shown for a $0.46 analysis — so an
- * analysis run sums every ledger row of its session.
+ * #943 — an `analysis` run is the exception to the window: its session is the
+ * analysis id, which has exactly one run, and work on the analysis after the
+ * run finished (a regenerate, a clarification round, a deep dive) bills the
+ * same session. Windowing it dropped that spend — $0.14 shown for a $0.46
+ * analysis — so an analysis run sums every ledger row of its session, and
+ * reports the part recorded after it finished as `tokensAfterRun`.
  *
- * Returns `{ costCents: 0, totalTokens: 0 }` when the run is missing or no
- * usage falls in-window. Never throws.
+ * Returns zero figures when the run is missing or no usage falls in-window.
+ * Throws only if the database read does.
  */
 export async function computeRunCost(runId: string): Promise<RunCost> {
   const run = await prisma.agentRun.findUnique({
@@ -159,62 +194,48 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
       ...(run.projectId ? { projectId: run.projectId } : {}),
       ...(run.kind === "analysis" ? {} : { createdAt: { gt: run.startedAt, lte: upperBound } }),
     },
-    select: LEDGER_USAGE_SELECT,
+    select: { ...LEDGER_USAGE_SELECT, createdAt: true },
   });
-  const { exactCents, tokens } = summariseLedgerRows(rows);
-  return {
-    costCents: Math.round(exactCents),
-    costUsd: exactCents / 100,
-    totalTokens: tokens.withCache,
-    tokens,
-  };
+  return runFigures(run, rows);
 }
 
 /** Whether a ledger row written at `at` belongs to `run` — {@link computeRunCost}'s window. */
-function inRunWindow(
-  run: { kind: string; startedAt: Date; completedAt: Date | null },
-  at: Date,
-  now: Date,
-): boolean {
+function inRunWindow(run: RunWindow, at: Date, now: Date): boolean {
   if (run.kind === "analysis") return true;
   return at > run.startedAt && at <= (run.completedAt ?? now);
 }
 
-/** A run's figures from the ledger, as a `/runs` row shows them. */
-interface RunLedgerFigures {
-  costUsd: number;
-  tokens: LedgerTokens;
-}
-
 /**
- * #977 — the unrounded cost, in USD, of each run on a `/runs` page, priced
- * exactly as {@link computeRunCost} prices one run, from ONE ledger read for
- * every session on the page. A failed read yields an empty map: the caller
- * shows the stored whole-cent figure instead, and the list still loads.
+ * #977 — the figures of each run on a `/runs` page, exactly as
+ * {@link computeRunCost} gives one run's, from ONE ledger read for every
+ * session on the page. A failed read yields an empty map: the caller shows the
+ * stored whole-cent figure instead, and the list still loads.
  *
  * #1007 — and its tokens from the same rows, so the list cannot disagree with
  * the ledger: the stored `totalTokens` column is written when a run finishes,
  * reads 0 until then and misses spend after it.
  */
 async function runLedgerFigures(
-  runs: ReadonlyArray<{
-    id: string;
-    sessionId: string;
-    projectId: string | null;
-    kind: string;
-    startedAt: Date;
-    completedAt: Date | null;
-  }>,
-): Promise<Map<string, RunLedgerFigures>> {
-  const out = new Map<string, RunLedgerFigures>();
+  runs: ReadonlyArray<RunWindow & { id: string; sessionId: string; projectId: string | null }>,
+): Promise<Map<string, RunCost>> {
+  const out = new Map<string, RunCost>();
   if (runs.length === 0) return out;
   const sessionIds = [...new Set(runs.map((r) => r.sessionId))];
+  // When every run on the page has a project, the read names those projects so
+  // it walks `(projectId, createdAt)` instead of scanning the ledger. A page
+  // with a project-less (system) run — an admin's only — keeps the plain read.
+  const projectIds = runs.every((r) => r.projectId !== null)
+    ? [...new Set(runs.map((r) => r.projectId as string))]
+    : null;
   let rows: Array<
     LedgerUsageRow & { sessionId: string | null; projectId: string; createdAt: Date }
   >;
   try {
     rows = await prisma.tokenUsage.findMany({
-      where: { sessionId: { in: sessionIds } },
+      where: {
+        ...(projectIds ? { projectId: { in: projectIds } } : {}),
+        sessionId: { in: sessionIds },
+      },
       select: { ...LEDGER_USAGE_SELECT, sessionId: true, projectId: true, createdAt: true },
     });
   } catch {
@@ -235,8 +256,7 @@ async function runLedgerFigures(
         // The same project scope as `computeRunCost`.
         (run.projectId === null || r.projectId === run.projectId),
     );
-    const { exactCents, tokens } = summariseLedgerRows(mine);
-    out.set(run.id, { costUsd: exactCents / 100, tokens });
+    out.set(run.id, runFigures(run, mine));
   }
   return out;
 }
@@ -296,6 +316,16 @@ export interface ListRunsFilter {
   limit?: number;
 }
 
+/**
+ * A list's page size: `requested` when it is a positive whole number, else
+ * `fallback`; never more than `max`. `?limit=abc` used to reach Prisma as `NaN`
+ * (a 500) and `?limit=-3` as a negative `take` (the OLDEST three rows).
+ */
+export function pageSize(requested: number | undefined, fallback: number, max: number): number {
+  const n = typeof requested === "number" && Number.isFinite(requested) ? Math.trunc(requested) : 0;
+  return Math.min(n > 0 ? n : fallback, max);
+}
+
 export async function listRuns(filter: ListRunsFilter): Promise<
   Array<{
     id: string;
@@ -308,14 +338,21 @@ export async function listRuns(filter: ListRunsFilter): Promise<
     latencyMs: number | null;
     totalTokens: number;
     costCents: number;
-    /** #977 — unrounded USD from the ledger; `null` when the ledger could not be read. */
+    /**
+     * #977 — the STORED ledger cost of the run's priced rows, unrounded USD;
+     * `null` when the ledger could not be read.
+     */
     costUsd: number | null;
+    /** Tokens of the run's rows recorded unpriced (#22); `null` with `costUsd`. */
+    unpricedTokens: number | null;
     /**
      * #1007 — the run's tokens from the ledger, which move while it runs;
      * `null` when the ledger could not be read. `totalTokens` is the column
      * written when the run finished, kept for a run from before the ledger.
      */
     tokens: LedgerTokens | null;
+    /** The part of `tokens` recorded after the run finished; `null` with `tokens`. */
+    tokensAfterRun: LedgerTokens | null;
     stepCount: number;
   }>
 > {
@@ -338,7 +375,7 @@ export async function listRuns(filter: ListRunsFilter): Promise<
   const rows = await prisma.agentRun.findMany({
     where,
     orderBy: { startedAt: "desc" },
-    take: Math.min(filter.limit ?? 50, 200),
+    take: pageSize(filter.limit, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT),
     include: { _count: { select: { steps: true } } },
   });
   const ledger = await runLedgerFigures(rows);
@@ -354,7 +391,9 @@ export async function listRuns(filter: ListRunsFilter): Promise<
     totalTokens: r.totalTokens,
     costCents: r.costCents,
     costUsd: ledger.get(r.id)?.costUsd ?? null,
+    unpricedTokens: ledger.get(r.id)?.unpricedTokens ?? null,
     tokens: ledger.get(r.id)?.tokens ?? null,
+    tokensAfterRun: ledger.get(r.id)?.tokensAfterRun ?? null,
     stepCount: r._count.steps,
   }));
 }
@@ -371,8 +410,14 @@ export async function getRun(runId: string): Promise<{
     latencyMs: number | null;
     totalTokens: number;
     costCents: number;
+    /** The ledger cost unrounded, in USD; `null` when the ledger could not be read. */
+    costUsd: number | null;
+    /** Tokens of the run's rows recorded unpriced (#22); `null` with `costUsd`. */
+    unpricedTokens: number | null;
     /** #1007 — the run's tokens from the ledger; `null` when it could not be read. */
     tokens: LedgerTokens | null;
+    /** The part of `tokens` recorded after the run finished; `null` with `tokens`. */
+    tokensAfterRun: LedgerTokens | null;
   };
   steps: Array<{
     id: string;
@@ -390,12 +435,14 @@ export async function getRun(runId: string): Promise<{
     include: { steps: { orderBy: { ord: "asc" } } },
   });
   if (!row) return null;
-  // #943 — an analysis run is priced live over its whole session, so spend
-  // after the run was closed (a clarification round, a deep dive) is shown.
-  // A failed ledger read falls back to the stored cost; it never fails the read.
-  // #1007 — the tokens come from the same read, for every kind of run.
+  // #943 — a run's cost is read live from the ledger, so an analysis run shows
+  // spend after it was closed (a clarification round, a deep dive). Every kind
+  // of run reads it, as the `/runs` list does, so a run's page and its list row
+  // are one figure. A failed ledger read falls back to the cost stored at
+  // finish; it never fails the read.
+  // #1007 — the tokens come from the same read.
   const ledger = await computeRunCost(row.id).catch(() => null);
-  const costCents = row.kind === "analysis" && ledger ? ledger.costCents : row.costCents;
+  const costCents = ledger ? ledger.costCents : row.costCents;
   return {
     run: {
       id: row.id,
@@ -408,7 +455,10 @@ export async function getRun(runId: string): Promise<{
       latencyMs: row.latencyMs,
       totalTokens: row.totalTokens,
       costCents,
+      costUsd: ledger?.costUsd ?? null,
+      unpricedTokens: ledger?.unpricedTokens ?? null,
       tokens: ledger?.tokens ?? null,
+      tokensAfterRun: ledger?.tokensAfterRun ?? null,
     },
     steps: row.steps.map((s) => ({
       id: s.id,

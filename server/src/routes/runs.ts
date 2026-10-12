@@ -15,6 +15,7 @@
 import { Router } from "express";
 import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
+import { runsPreAuthRateLimiter, runsUserRateLimiter } from "../middleware/runs-rate-limit.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireRunProjectAccess } from "../middleware/require-run-project-access.js";
 import { listRuns } from "../lib/replay/runs-service.js";
@@ -35,57 +36,90 @@ function parseDate(value: unknown): Date | undefined {
   return d;
 }
 
+/**
+ * `?limit=`: a positive whole number, or absent. Anything else (`abc`, `-3`,
+ * `0`, an array) is ignored like a malformed date, and the list's default page
+ * size applies — `abc` used to be a 500 and `-3` returned rows.
+ */
+function parseLimit(value: unknown): number | undefined {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return undefined;
+  const n = Number.parseInt(value, 10);
+  return n > 0 ? n : undefined;
+}
+
 export function runsRouter(): Router {
   const r = Router();
 
   // #305 — an explicit `?projectId=` must name a project the caller can reach
   // (404 otherwise); every non-admin list, filtered or not, is narrowed to the
   // caller's projects, so `?sessionId=` cannot surface another tenant's runs.
-  r.get("/", requireAuth, requirePermission("analysis.read"), async (req, res) => {
-    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
-    const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
-    const from = parseDate(req.query.from);
-    const to = parseDate(req.query.to);
-    const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
-    if (projectId) await assertProjectAccess(req.user, projectId);
-    const accessibleProjectIds = isAdminActor(req.user)
-      ? undefined
-      : await listAccessibleProjectIds(req.user);
-    const items = await listRuns({ projectId, sessionId, from, to, limit, accessibleProjectIds });
-    res.json(ok({ items }));
-  });
+  r.get(
+    "/",
+    runsPreAuthRateLimiter,
+    requireAuth,
+    runsUserRateLimiter,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+      const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+      const from = parseDate(req.query.from);
+      const to = parseDate(req.query.to);
+      const limit = parseLimit(req.query.limit);
+      if (projectId) await assertProjectAccess(req.user, projectId);
+      const accessibleProjectIds = isAdminActor(req.user)
+        ? undefined
+        : await listAccessibleProjectIds(req.user);
+      const items = await listRuns({ projectId, sessionId, from, to, limit, accessibleProjectIds });
+      res.json(ok({ items }));
+    },
+  );
 
   // #1007 — chat turns are not runs; this lists them from the usage ledger so
-  // a chat turn's cost can be read on `/runs`. Project-scoped exactly like the
-  // list above: an explicit `?projectId=` must be reachable (404 otherwise) and
-  // a non-admin is always narrowed to their own projects, so `?sessionId=`
-  // cannot surface another tenant's spend. Registered before `/:id`.
-  r.get("/chat-turns", requireAuth, requirePermission("analysis.read"), async (req, res) => {
-    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
-    const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
-    const from = parseDate(req.query.from);
-    const to = parseDate(req.query.to);
-    const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
-    if (projectId) await assertProjectAccess(req.user, projectId);
-    const accessibleProjectIds = isAdminActor(req.user)
-      ? undefined
-      : await listAccessibleProjectIds(req.user);
-    const items = await listChatTurns({
-      projectId,
-      sessionId,
-      from,
-      to,
-      limit,
-      accessibleProjectIds,
-    });
-    res.json(ok({ items }));
-  });
+  // a chat turn's cost can be read on `/runs`. Two rules narrow it:
+  //   • project scope, exactly like the list above: an explicit `?projectId=`
+  //     must be reachable (404 otherwise) and a non-admin is always narrowed
+  //     to their own projects;
+  //   • OWNERSHIP: only turns of chat sessions the caller owns, for an admin
+  //     too. A chat session is owner-only everywhere else
+  //     (`loadAuthorizedSession`), so a `?sessionId=` that is someone else's
+  //     surfaces nothing.
+  // Registered before `/:id`.
+  r.get(
+    "/chat-turns",
+    runsPreAuthRateLimiter,
+    requireAuth,
+    runsUserRateLimiter,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+      const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+      const from = parseDate(req.query.from);
+      const to = parseDate(req.query.to);
+      const limit = parseLimit(req.query.limit);
+      if (projectId) await assertProjectAccess(req.user, projectId);
+      const accessibleProjectIds = isAdminActor(req.user)
+        ? undefined
+        : await listAccessibleProjectIds(req.user);
+      const page = await listChatTurns({
+        userId: req.user.userId,
+        projectId,
+        sessionId,
+        from,
+        to,
+        limit,
+        accessibleProjectIds,
+      });
+      res.json(ok(page));
+    },
+  );
 
   r.get(
     "/:id",
+    runsPreAuthRateLimiter,
     requireAuth,
+    runsUserRateLimiter,
     requirePermission("analysis.read"),
     requireRunProjectAccess,
     (_req, res) => {
@@ -96,7 +130,9 @@ export function runsRouter(): Router {
   // /replay is the same payload — naming is for UI clarity (no re-execute).
   r.get(
     "/:id/replay",
+    runsPreAuthRateLimiter,
     requireAuth,
+    runsUserRateLimiter,
     requirePermission("analysis.read"),
     requireRunProjectAccess,
     (_req, res) => {
@@ -114,7 +150,9 @@ export function runsRouter(): Router {
    */
   r.get(
     "/:id/sandbox-sessions",
+    runsPreAuthRateLimiter,
     requireAuth,
+    runsUserRateLimiter,
     requirePermission("analysis.read"),
     requireRunProjectAccess,
     async (req, res) => {

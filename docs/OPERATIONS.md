@@ -601,6 +601,18 @@ hand is judged by its real age whether its timestamp has Prisma's shape
 `timestampFormat` to `unixepoch-ms`: an integer timestamp is not a date `julianday()` reads,
 and such rows would never be swept or pruned.
 
+**Agent Runs (`/api/runs`) request limits (#1007).** The run list, the chat-turn list and a
+run's page are limited per signed-in user, on the same principle as the job limits above.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `RUNS_LIMIT_MAX` | `3000` | Requests to `/api/runs…` allowed per **signed-in user** per window. The Agent Runs page makes two per load and per filter keystroke, a run's page three. Past it the answer is `429 RUNS_RATE_LIMITED`. Environment variable, read per request. |
+| `RUNS_PREAUTH_LIMIT_MAX` | `20000` | A coarse guard in front of authentication on the same routes. It counts per user for a request carrying an access token this server signed (expired or not), and per connecting peer for every other request, which would be answered 401 anyway. Environment variable, read per request. |
+| `RUNS_LIMIT_WINDOW_MS` | `900000` (15 minutes) | The window for both. Environment variable, read at startup. |
+
+Neither limit uses the client address, for the reason given above, and neither counts per
+presented token: a caller cannot create a new counter by inventing a token.
+
 ---
 
 ## 7. Container Image Sizes

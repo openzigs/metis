@@ -7,9 +7,12 @@
  * and a from/to date range. Click a row to drill into the timeline view.
  *
  * Issue #1007 — a chat turn is not a run (it has no replay timeline), so it
- * never appeared here and its cost could not be read. The page now lists chat
- * turns in their own table, read from the usage ledger under the same filters.
- * Every token figure on the page is the ledger's, named with and without cache.
+ * never appeared here and its cost could not be read. The page now lists the
+ * viewer's own chat turns in their own table, read from the usage ledger under
+ * the same filters, with each listed session's spend outside its turn rows
+ * (sub-agents, apply-diff, summaries) so a session's figures add up to the
+ * ledger. Every token figure on the page is the ledger's, named with and
+ * without cache, and every cost is the ledger's stored cost.
  */
 import { useMemo, useState } from "react";
 import Link from "next/link";
@@ -27,9 +30,11 @@ import {
   runsApi,
   type AgentRunListFilters,
   type AgentRunSummary,
+  type ChatSessionSpend,
+  type ChatSpend,
   type ChatTurnSummary,
 } from "@/lib/runs-api";
-import { formatRunCost } from "@/lib/run-cost";
+import { RECORDED_COST_HEADER, formatRunCost } from "@/lib/run-cost";
 import { formatLedgerTokens, runTokensLabel } from "@/lib/run-tokens";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -85,11 +90,10 @@ const runColumns: ResponsiveColumn<AgentRunSummary>[] = [
   },
   {
     key: "cost",
-    header: "Cost",
-    // Show a dollar amount only when cost has actually been attributed
-    // (costCents > 0). A run that consumed tokens but has costCents === 0 is
-    // unattributed (run-finish never aggregates TokenUsage cost into
-    // AgentRun.costCents), so show "—" rather than a misleading "$0.0000".
+    header: RECORDED_COST_HEADER,
+    // The ledger's stored cost of the run's priced calls, plus the tokens it
+    // holds unpriced, said to be that. A run with neither reads "—" rather
+    // than a misleading "$0.0000".
     cell: (r) => formatRunCost(r),
   },
 ];
@@ -101,6 +105,12 @@ const CHAT_STEP_NOTE: Record<string, string> = {
 
 const chatTurnColumns: ResponsiveColumn<ChatTurnSummary>[] = [
   { key: "time", header: "Time", cell: (t) => formatTimestamp(t.createdAt) },
+  {
+    // The unfiltered list spans every project the viewer has chatted in.
+    key: "project",
+    header: "Project",
+    cell: (t) => <span className="font-mono text-xs">{t.projectId}</span>,
+  },
   {
     key: "session",
     header: "Session",
@@ -115,11 +125,55 @@ const chatTurnColumns: ResponsiveColumn<ChatTurnSummary>[] = [
   { key: "tokens", header: "Tokens (usage ledger)", cell: (t) => formatLedgerTokens(t.tokens) },
   {
     key: "cost",
-    header: "Cost",
+    header: RECORDED_COST_HEADER,
     // A chat turn costs a fraction of a cent: four places, never "$0.00".
     cell: (t) =>
       t.costUsd === null ? "unpriced" : formatRunCost({ costCents: null, costUsd: t.costUsd }),
   },
+];
+
+/** "4 calls · 25.3k tok without cache · 31.1k with cache · $0.1165 + 1.1k unpriced tok". */
+function spendLabel(spend: ChatSpend, unit: string): string {
+  if (spend.calls === 0) return "none";
+  const cost =
+    spend.costUsd === null && spend.unpricedTokens === 0
+      ? "unpriced"
+      : formatRunCost({
+          costCents: null,
+          costUsd: spend.costUsd,
+          unpricedTokens: spend.unpricedTokens,
+        });
+  return `${spend.calls} ${unit}${spend.calls === 1 ? "" : "s"} · ${formatLedgerTokens(spend.tokens)} · ${cost}`;
+}
+
+/**
+ * One row per chat session with a turn listed above: the session's turn rows,
+ * its spend outside them, and the two together — the session's chat spend as
+ * the ledger has it.
+ */
+const chatSessionColumns: ResponsiveColumn<ChatSessionSpend>[] = [
+  {
+    key: "session",
+    header: "Session",
+    cell: (s) => <span className="font-mono text-xs">{s.sessionId}</span>,
+  },
+  {
+    key: "project",
+    header: "Project",
+    cell: (s) => <span className="font-mono text-xs">{s.projectId}</span>,
+  },
+  {
+    key: "turns",
+    header: "Chat turns",
+    cell: (s) =>
+      `${s.turnCount} turn${s.turnCount === 1 ? "" : "s"} · ${spendLabel(s.turns, "model call")}`,
+  },
+  {
+    key: "other",
+    header: "Sub-agents, apply-diff, summaries",
+    cell: (s) => spendLabel(s.other, "call"),
+  },
+  { key: "total", header: "Session total", cell: (s) => spendLabel(s.total, "call") },
 ];
 
 export default function RunsPage() {
@@ -220,9 +274,13 @@ export default function RunsPage() {
         <div>
           <h2 className="text-base font-semibold">Chat turns</h2>
           <p className="text-xs text-muted-foreground">
-            A chat turn is not a run: it has no timeline to replay. Its tokens and cost are read
-            here from the usage ledger, one row per turn, newest first. Chat in a session with no
-            project is not in a project&apos;s ledger and is not listed.
+            A chat turn is not a run: it has no timeline to replay. Your own chat turns are read
+            here from the usage ledger, newest first: one row per turn, holding the chat
+            model&apos;s calls in that turn. A turn that used a sub-agent or apply-diff, or that was
+            followed by a conversation summary, spent more than its row; that spend is recorded
+            against the session, not the turn, and is shown per session below. Only chat sessions
+            you own are listed. Chat in a session with no project is not in a project&apos;s ledger
+            and is not listed.
           </p>
         </div>
         {chatTurns.isLoading ? (
@@ -233,16 +291,35 @@ export default function RunsPage() {
           </div>
         ) : (chatTurns.data?.items ?? []).length === 0 ? (
           <div className="text-sm text-muted-foreground" data-testid="runs-chat-turns-empty">
-            No chat turns match these filters.
+            No chat turns of yours match these filters.
           </div>
         ) : (
-          <ResponsiveTable
-            data={chatTurns.data!.items}
-            getRowKey={(t) => t.id}
-            ariaLabel="Chat turns"
-            data-testid="runs-chat-turns-table"
-            columns={chatTurnColumns}
-          />
+          <>
+            <ResponsiveTable
+              data={chatTurns.data!.items}
+              getRowKey={(t) => t.id}
+              ariaLabel="Chat turns"
+              data-testid="runs-chat-turns-table"
+              columns={chatTurnColumns}
+            />
+            {(chatTurns.data!.sessions ?? []).length > 0 ? (
+              <div className="space-y-1 pt-2">
+                <h3 className="text-sm font-semibold">Session totals</h3>
+                <p className="text-xs text-muted-foreground">
+                  Each listed session&apos;s whole chat spend in the ledger, whatever page of turns
+                  is shown above: its turn rows, the calls recorded against the session outside
+                  them, and the two together.
+                </p>
+                <ResponsiveTable
+                  data={chatTurns.data!.sessions!}
+                  getRowKey={(s) => s.sessionId}
+                  ariaLabel="Chat session totals"
+                  data-testid="runs-chat-sessions-table"
+                  columns={chatSessionColumns}
+                />
+              </div>
+            ) : null}
+          </>
         )}
       </Card>
     </div>

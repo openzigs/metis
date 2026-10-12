@@ -22,7 +22,10 @@ export function formatLedgerTokens(tokens: LedgerTokens): string {
 }
 
 export interface RunTokensInput {
-  /** The run's ledger tokens; null or absent when the ledger could not be read. */
+  /**
+   * The run's ledger tokens. `null` or absent means the ledger COULD NOT BE
+   * READ; zero figures mean it was read and holds no row for the run.
+   */
   tokens?: LedgerTokens | null;
   /** The total stored when the run finished: 0 until then. */
   storedTotal?: number | null;
@@ -34,13 +37,30 @@ export interface RunTokensInput {
  *   • the ledger's figures once it holds any, which move while the run goes;
  *   • `in progress` for a run that is going and has no ledger row yet — never
  *     "0 tok", which read as a run that spent nothing;
- *   • the stored total, said to be that, for a run the ledger has no rows for
- *     (one from before analysis spend was metered) or could not be read for.
+ *   • otherwise the total stored at finish, said to be that, with the REASON
+ *     the ledger's figure is not shown: `not in the ledger` when the ledger was
+ *     read and has no row (a run from before analysis spend was metered), or
+ *     `ledger unavailable` when it could not be read — its rows may well be
+ *     there (review of #1112: both used to read "not in the ledger").
  */
 export function runTokensLabel(run: RunTokensInput): string {
   if (run.tokens && run.tokens.withCache > 0) return formatLedgerTokens(run.tokens);
   if (run.status === "running" || run.status === "pending") return "in progress";
+  const ledgerRead = run.tokens != null;
   const stored = run.storedTotal ?? 0;
-  if (stored > 0) return `${formatTokens(stored)} tok recorded at finish (not in the ledger)`;
-  return "0 tok";
+  if (stored > 0) {
+    return `${formatTokens(stored)} tok recorded at finish (${ledgerRead ? "not in the ledger" : "ledger unavailable"})`;
+  }
+  return ledgerRead ? "0 tok" : "ledger unavailable";
+}
+
+/**
+ * The note under a finished analysis run's tokens when part of them was
+ * recorded after it finished (a deep dive, a regenerate, a clarification
+ * round): "includes 339.8k tok without cache · 393.2k with cache recorded
+ * after the run finished". `null` when there is none.
+ */
+export function tokensAfterRunNote(after: LedgerTokens | null | undefined): string | null {
+  if (!after || after.withCache <= 0) return null;
+  return `includes ${formatLedgerTokens(after)} recorded after the run finished`;
 }

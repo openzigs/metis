@@ -99,3 +99,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Test the STAMPED body](project_publishing-safety-is-tested-on-the-stamped-body.md) — strip split a code span; double honours status
 - [Title rule change: look up old hash](project_draft-title-rule-change-needs-old-title-lookup.md) — else 2nd draft, 2nd issue (#1064)
 - [`pgrep -f` loop matches itself](project_pgrep-f-wait-loop-matches-itself.md) — never exits; use ps + grep "node .*(vitest|tsc)"
+- [New route: own limiter, keyed on user](project_new-route-needs-its-own-limiter-keyed-on-user.md) — no global one; CodeQL lands late (#1007)
+- [Run tokens: 2 values; chat row ≠ turn](project_run-tokens-two-values-and-chat-row-is-not-the-turn.md) — stored cost, one definition
+- [`analysis.read`: every role has it](project_analysis-read-is-held-by-every-role.md) — no 403 test; test scoping + ownership

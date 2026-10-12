@@ -84,7 +84,11 @@ import { asDocumentSource, type DocumentSource } from "../documents/document-sou
 import type { TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { sumLedgerUsage } from "../finops/ledger-totals.js";
-import { sessionLedgerTokens } from "../finops/ledger-usage-summary.js";
+import {
+  sessionLedgerSummary,
+  sessionLedgerTokens,
+  summaryCostUsd,
+} from "../finops/ledger-usage-summary.js";
 import { isServerAuthored } from "./server-authored.js";
 import { CODE_GRAPH_DOCUMENT_PREFIX } from "./fused-code-chunks.js";
 import type { ToolCallTelemetry } from "./tool-telemetry.js";
@@ -1377,12 +1381,24 @@ async function readAnalysisLedgerUsage(
       costUsd: t.costUsd,
       unpricedTokens: t.unpricedTokens,
     };
-    // #1007 — the tokens as the run lists show them, from the same rows.
-    const tokens = await sessionLedgerTokens(projectId, [analysisId]).then(
-      (bySession) => bySession.get(analysisId) ?? { withCache: 0, withoutCache: 0 },
-      () => undefined,
-    );
-    return tokens ? { ...usage, tokens } : usage;
+    // #1007 — the tokens, cost and unpriced tokens as the run lists show them,
+    // from ONE summary of the session's rows (`summariseLedgerRows`), so this
+    // header and `/runs` cannot differ. The snapshot is polled every 2.5 s
+    // while a run goes: the rows are loaded only when the aggregate above says
+    // the session's ledger moved (it is append-only), not on every poll.
+    const summary = await sessionLedgerSummary(
+      projectId,
+      analysisId,
+      `${t.calls}:${t.totalTokens}`,
+    ).catch(() => undefined);
+    return summary
+      ? {
+          totalTokens: t.totalTokens,
+          tokens: summary.tokens,
+          costUsd: summaryCostUsd(summary),
+          unpricedTokens: summary.unpricedTokens,
+        }
+      : usage;
   } catch (err) {
     log.warn("analysis ledger usage could not be read", {
       analysisId,

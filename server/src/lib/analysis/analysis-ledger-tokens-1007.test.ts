@@ -20,12 +20,16 @@ interface LedgerRow {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   requestTokens: string | null;
+  costCents: number | null;
+  costUsd: number | null;
 }
 
 const state = vi.hoisted(() => ({
   ledger: [] as unknown[],
   ledgerFails: false,
   analyses: [] as unknown[],
+  /** How many times the ledger's ROWS were loaded. */
+  rowReads: 0,
 }));
 const sumLedgerUsage = vi.hoisted(() => vi.fn());
 vi.mock("../finops/ledger-totals.js", () => ({ sumLedgerUsage }));
@@ -53,16 +57,23 @@ vi.mock("../prisma.js", () => ({
     crossDocFinding: { findMany: vi.fn(async () => []) },
     tokenUsage: {
       findMany: vi.fn(
-        async ({ where }: { where: { projectId: string; sessionId: { in: string[] } } }) => {
+        async ({
+          where,
+        }: {
+          where: { projectId: string; sessionId: string | { in: string[] } };
+        }) => {
           if (state.ledgerFails) throw new Error("ledger unavailable");
-          if (typeof where.projectId !== "string" || !Array.isArray(where.sessionId?.in)) {
+          const sessions =
+            typeof where.sessionId === "string" ? [where.sessionId] : where.sessionId?.in;
+          if (typeof where.projectId !== "string" || !Array.isArray(sessions)) {
             throw new Error("fake ledger: the read must name a project and its sessions");
           }
+          state.rowReads += 1;
           return (state.ledger as LedgerRow[]).filter(
             (r) =>
               r.projectId === where.projectId &&
               r.sessionId !== null &&
-              where.sessionId.in.includes(r.sessionId),
+              sessions.includes(r.sessionId),
           );
         },
       ),
@@ -72,6 +83,7 @@ vi.mock("../prisma.js", () => ({
 }));
 
 import { getAnalysisSnapshot, listAnalysesForProject } from "./analysis-service.js";
+import { clearSessionLedgerSummaryCache } from "../finops/ledger-usage-summary.js";
 
 function usage(sessionId: string, row: Partial<LedgerRow> = {}): LedgerRow {
   return {
@@ -84,6 +96,8 @@ function usage(sessionId: string, row: Partial<LedgerRow> = {}): LedgerRow {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     requestTokens: null,
+    costCents: null,
+    costUsd: null,
     ...row,
   };
 }
@@ -102,6 +116,8 @@ const analysis = (id: string, status: string, totalTokens: number) => ({
 });
 
 beforeEach(() => {
+  clearSessionLedgerSummaryCache();
+  state.rowReads = 0;
   state.ledgerFails = false;
   state.analyses = [
     analysis("an-done", "completed", 439_244),
@@ -110,7 +126,13 @@ beforeEach(() => {
   ];
   state.ledger = [
     // The finished run: 457,901 without cache, 545,197 with (#706 run 5).
-    usage("an-done", { inputTokens: 238_621, outputTokens: 219_280, cacheReadTokens: 87_296 }),
+    usage("an-done", {
+      inputTokens: 238_621,
+      outputTokens: 219_280,
+      cacheReadTokens: 87_296,
+      costUsd: 0.3352,
+      costCents: 34,
+    }),
     // An OpenAI-convention row: its 900 prompt tokens include 400 cache reads.
     usage("an-going", {
       provider: "openai",
@@ -169,12 +191,69 @@ describe("getAnalysisSnapshot ledgerUsage.tokens (#1007)", () => {
     const snap = await getAnalysisSnapshot("an-done");
     expect(snap?.ledgerUsage).toEqual({
       totalTokens: 545_197,
-      costUsd: 0.3352,
+      costUsd: expect.closeTo(0.3352, 10),
       unpricedTokens: 0,
       tokens: { withoutCache: 457_901, withCache: 545_197 },
     });
     const listed = (await listAnalysesForProject("p-1")).find((r) => r.id === "an-done")!;
     expect(snap?.ledgerUsage?.tokens).toEqual(listed.ledgerTokens);
+  });
+
+  it("takes the cost and the unpriced tokens from the same rows as the tokens", async () => {
+    // A second row the ledger holds unpriced, and a stale aggregate cost: the
+    // header must say what the row summary says, as `/runs` does.
+    (state.ledger as LedgerRow[]).push(
+      usage("an-done", { inputTokens: 60_000, cacheReadTokens: 40_000 }),
+    );
+    sumLedgerUsage.mockResolvedValue({
+      totalTokens: 645_197,
+      costUsd: 9.99,
+      unpricedTokens: 1,
+      calls: 78,
+    });
+    const snap = await getAnalysisSnapshot("an-done");
+    expect(snap?.ledgerUsage).toEqual({
+      totalTokens: 645_197,
+      costUsd: expect.closeTo(0.3352, 10),
+      unpricedTokens: 100_000,
+      tokens: { withoutCache: 517_901, withCache: 645_197 },
+    });
+  });
+
+  it("says the cost is unknown, not $0, when no row of the run was priced", async () => {
+    state.ledger = [usage("an-done", { inputTokens: 500 })];
+    const snap = await getAnalysisSnapshot("an-done");
+    expect(snap?.ledgerUsage).toMatchObject({ costUsd: null, unpricedTokens: 500 });
+  });
+
+  describe("polled every 2.5 s while a run goes", () => {
+    it("loads the session's rows once while its ledger has not moved", async () => {
+      for (let poll = 0; poll < 5; poll += 1) await getAnalysisSnapshot("an-done");
+      expect(state.rowReads).toBe(1);
+      expect(sumLedgerUsage).toHaveBeenCalledTimes(5);
+    });
+
+    it("loads them again as soon as a row is added, and shows the new figures", async () => {
+      await getAnalysisSnapshot("an-done");
+      (state.ledger as LedgerRow[]).push(usage("an-done", { inputTokens: 99, costUsd: 0.01 }));
+      sumLedgerUsage.mockResolvedValue({
+        totalTokens: 545_296,
+        costUsd: 0.3452,
+        unpricedTokens: 0,
+        calls: 78,
+      });
+      const snap = await getAnalysisSnapshot("an-done");
+      expect(state.rowReads).toBe(2);
+      expect(snap?.ledgerUsage?.tokens).toEqual({ withoutCache: 458_000, withCache: 545_296 });
+      expect(snap?.ledgerUsage?.costUsd).toBeCloseTo(0.3452, 10);
+    });
+
+    it("keeps each session's rows apart", async () => {
+      await getAnalysisSnapshot("an-done");
+      const quiet = await getAnalysisSnapshot("an-quiet");
+      expect(quiet?.ledgerUsage?.tokens).toEqual({ withoutCache: 0, withCache: 0 });
+      expect(state.rowReads).toBe(2);
+    });
   });
 
   it("is zero, not absent, for a run with no ledger rows", async () => {

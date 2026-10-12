@@ -154,14 +154,27 @@ describe("runSpendLabel (#977, #1007)", () => {
     }
   });
 
-  it("says a stored total is that when the ledger has no rows or is unreadable", () => {
-    const stored = "1.5k tok recorded at finish (not in the ledger)";
+  it("says a stored total is that, and WHY the ledger's figure is not shown", () => {
+    // The ledger was read and holds no row for the run.
+    const absent = "1.5k tok recorded at finish (not in the ledger)";
     expect(
       runSpendLabel({ totalTokens: 1_500, status: "completed", ledgerUsage: ledger(0, 0, 0) }),
-    ).toBe(stored);
-    expect(runSpendLabel({ totalTokens: 1_500, ledgerUsage: null })).toBe(stored);
-    expect(runSpendLabel({ totalTokens: 1_500 })).toBe(stored);
-    expect(runSpendLabel({ totalTokens: 0, status: "cancelled" })).toBe("0 tok");
+    ).toBe(absent);
+    // Read, empty, and sent without the two figures: still "not in the ledger".
+    expect(
+      runSpendLabel({
+        totalTokens: 1_500,
+        ledgerUsage: { totalTokens: 0, costUsd: 0, unpricedTokens: 0 },
+      }),
+    ).toBe(absent);
+    // The ledger could not be read: its rows may well be there.
+    const unread = "1.5k tok recorded at finish (ledger unavailable)";
+    expect(runSpendLabel({ totalTokens: 1_500, ledgerUsage: null })).toBe(unread);
+    expect(runSpendLabel({ totalTokens: 1_500 })).toBe(unread);
+    expect(runSpendLabel({ totalTokens: 0, status: "cancelled" })).toBe("ledger unavailable");
+    expect(
+      runSpendLabel({ totalTokens: 0, status: "cancelled", ledgerUsage: ledger(0, 0, 0) }),
+    ).toBe("0 tok");
   });
 
   it("labels a ledger total that came without the two figures as with cache", () => {

@@ -217,6 +217,7 @@ vi.mock("@/components/requirements/requirement-links-panel", () => ({
 
 import AnalysisPage from "@/app/(authed)/projects/[id]/analysis/page";
 import { projectsApi } from "@/lib/projects-api";
+import { analysisApi } from "@/lib/analysis-api";
 
 function renderPage() {
   render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
@@ -224,6 +225,7 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(analysisApi.get).mockResolvedValue(RUNNING as never);
 });
 
 describe("analysis page usage header (#977)", () => {
@@ -245,6 +247,49 @@ describe("analysis page usage header (#977)", () => {
       expect(started).toHaveTextContent("41.0k tok without cache · 52.3k with cache · $0.0123"),
     );
     expect(started.textContent).not.toMatch(/· 0 tok/);
+  });
+
+  // Panel (test-falsifiability) on #1112: the in-flight label was proven only
+  // on `runSpendLabel`. The fixture above always has ledger tokens, so a page
+  // that stopped passing the run's `status` to the label still passed. These
+  // render the PAGE for a run that is going and has spent nothing yet.
+  it("the header of a run that is going with no ledger row reads in progress, not 0 tok", async () => {
+    vi.mocked(analysisApi.get).mockResolvedValue({
+      ...RUNNING,
+      ledgerUsage: {
+        totalTokens: 0,
+        costUsd: 0,
+        unpricedTokens: 0,
+        tokens: { withoutCache: 0, withCache: 0 },
+      },
+    } as never);
+    renderPage();
+    await screen.findByText(/^Started /);
+    const spend = await screen.findByTestId("analysis-run-spend");
+    expect(spend.textContent).toBe("in progress");
+    expect(spend.textContent).not.toContain("0 tok");
+  });
+
+  it("…and still reads in progress when the run's ledger could not be read", async () => {
+    vi.mocked(analysisApi.get).mockResolvedValue({ ...RUNNING, ledgerUsage: null } as never);
+    renderPage();
+    await screen.findByText(/^Started /);
+    expect((await screen.findByTestId("analysis-run-spend")).textContent).toBe("in progress");
+  });
+
+  it("a finished run whose ledger could not be read says so, not that it is absent", async () => {
+    vi.mocked(analysisApi.get).mockResolvedValue({
+      ...RUNNING,
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      totalTokens: 439_244,
+      ledgerUsage: null,
+    } as never);
+    renderPage();
+    await screen.findByText(/^Started /);
+    expect((await screen.findByTestId("analysis-run-spend")).textContent).toBe(
+      "439.2k tok recorded at finish (ledger unavailable)",
+    );
   });
 
   it("the run list shows the same ledger figures as the header, and never 0 tok for a run that is going (#1007)", async () => {

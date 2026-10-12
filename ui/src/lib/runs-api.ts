@@ -19,22 +19,39 @@ export interface AgentRunSummary {
   totalTokens: number | null;
   costCents: number | null;
   /**
-   * #977 — the run's unrounded cost in USD from the ledger (list only). `null`
-   * or absent when it could not be read; the view falls back to `costCents`.
+   * #977 — the run's cost in USD, unrounded: the ledger's STORED cost of its
+   * priced calls (what each was priced at when recorded, never a re-price).
+   * `null` or absent when the ledger could not be read; the view falls back to
+   * `costCents`.
    */
   costUsd?: number | null;
+  /**
+   * Tokens of the run's calls the ledger holds UNPRICED (#22): their cost is
+   * unknown and is in no cost figure. `null` or absent with `costUsd`.
+   */
+  unpricedTokens?: number | null;
   /**
    * #1007 — the run's tokens from the ledger, with and without cache; they
    * move while the run goes. `null` or absent when the ledger could not be
    * read. `totalTokens` is the total stored when the run finished.
    */
   tokens?: LedgerTokens | null;
+  /**
+   * The part of `tokens` recorded AFTER the run finished — an analysis run
+   * also counts a later deep dive, regenerate or clarification round on its
+   * analysis. Zero for a run that is going; `null` or absent with `tokens`.
+   */
+  tokensAfterRun?: LedgerTokens | null;
   stepCount: number;
 }
 
 /**
- * #1007 — a chat turn as the usage ledger recorded it. A chat turn is not a
- * run (it has no replay timeline); this is where its cost is read.
+ * #1007 — a chat turn's own row in the usage ledger: the chat model's calls in
+ * that turn. A chat turn is not a run (it has no replay timeline); this is
+ * where its cost is read. A turn that used a sub-agent or `apply_diff`, or
+ * that triggered a compaction, spent more than its row: those calls are
+ * separate ledger rows tied only to the session — see {@link ChatSessionSpend}.
+ * Only the caller's own chat sessions are listed.
  */
 export interface ChatTurnSummary {
   id: string;
@@ -45,11 +62,42 @@ export interface ChatTurnSummary {
   provider: string;
   model: string;
   createdAt: string;
-  /** Model calls in the turn; more than one when it ran a tool loop. */
+  /** The chat model's calls in the turn; more than one when it ran a tool loop. */
   requests: number;
   tokens: LedgerTokens;
-  /** Unrounded USD from the ledger; `null` when the model is unpriced. */
+  /** The ledger's stored cost, unrounded USD; `null` when the row was recorded unpriced. */
   costUsd: number | null;
+}
+
+/** A slice of one chat session's ledger rows, summed. */
+export interface ChatSpend {
+  /** Model calls. */
+  calls: number;
+  tokens: LedgerTokens;
+  /** Stored cost of the priced rows; `null` when none was priced; `0` for no rows. */
+  costUsd: number | null;
+  /** Tokens of rows recorded unpriced. */
+  unpricedTokens: number;
+}
+
+/**
+ * One chat session's WHOLE chat spend in the ledger, whatever page of turns is
+ * listed: its turn rows, the rows other writers billed to the session
+ * (sub-agent calls, `apply_diff`, compaction summaries), and their sum.
+ */
+export interface ChatSessionSpend {
+  sessionId: string;
+  projectId: string;
+  turnCount: number;
+  turns: ChatSpend;
+  other: ChatSpend;
+  total: ChatSpend;
+}
+
+export interface ChatTurnPage {
+  items: ChatTurnSummary[];
+  /** One entry per session with a turn in `items`. Absent from an older server. */
+  sessions?: ChatSessionSpend[];
 }
 
 export interface AgentRunStep {
@@ -85,14 +133,14 @@ export const runsApi = {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return apiFetch<{ items: AgentRunSummary[] }>(`/runs${suffix}`);
   },
-  /** #1007 — chat turns from the usage ledger, under the same filters. */
-  chatTurns(filters: AgentRunListFilters = {}): Promise<{ items: ChatTurnSummary[] }> {
+  /** #1007 — the caller's own chat turns from the usage ledger, under the same filters. */
+  chatTurns(filters: AgentRunListFilters = {}): Promise<ChatTurnPage> {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(filters)) {
       if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
     }
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return apiFetch<{ items: ChatTurnSummary[] }>(`/runs/chat-turns${suffix}`);
+    return apiFetch<ChatTurnPage>(`/runs/chat-turns${suffix}`);
   },
   get(id: string): Promise<AgentRunDetail> {
     return apiFetch<AgentRunDetail>(`/runs/${encodeURIComponent(id)}`);
