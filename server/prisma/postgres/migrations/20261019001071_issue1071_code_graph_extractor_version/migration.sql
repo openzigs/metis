@@ -35,12 +35,14 @@ ALTER TABLE "code_graphs" ADD COLUMN IF NOT EXISTS "extractorUpgradedAt" TIMESTA
 -- for without being regenerated (see the SQLite migration of the same name):
 -- at most one row per document. Idempotent DDL, as every Postgres migration
 -- here: `IF NOT EXISTS`, and the FK behind a pg_constraint existence guard.
+-- "graphs" is JSON: per graph, a digest of its rows and its upgrade mark.
 -- Rollback: DROP TABLE "generated_document_acknowledgements";
 CREATE TABLE IF NOT EXISTS "generated_document_acknowledgements" (
     "documentId" TEXT NOT NULL,
     "version" INTEGER NOT NULL,
     "upgradedAt" TIMESTAMP(3) NOT NULL,
     "fingerprint" TEXT NOT NULL,
+    "graphs" TEXT,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "generated_document_acknowledgements_pkey" PRIMARY KEY ("documentId")

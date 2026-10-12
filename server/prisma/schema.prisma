@@ -4042,19 +4042,26 @@ model GeneratedDocumentVersion {
 /// stand for without being regenerated. At most one row per document, written
 /// when a check finds that a code-graph extractor upgrade rewrote the graph
 /// (`CodeGraph.extractorUpgradedAt`) and nothing else the document reads
-/// changed. Later checks treat `fingerprint` as the document's baseline beside
-/// its version's own manifest, so the upgrade is acknowledged exactly once and
-/// the next change of the graph regenerates. A row whose `version` is not the
+/// changed — or that a graph's upgrade mark moved without changing them. Later
+/// checks treat the row as the document's baseline in place of its version's
+/// own manifest, so an upgrade is acknowledged exactly once, per graph, and
+/// the next change of a graph regenerates. A row whose `version` is not the
 /// document's latest is stale and ignored. The version's manifest is immutable
 /// and is never touched.
 model GeneratedDocumentAcknowledgement {
   documentId  String   @id
   /// The published version this acknowledgement belongs to.
   version     Int
-  /// The `CodeGraph.extractorUpgradedAt` it answers: a later mark is a new upgrade.
+  /// The latest `CodeGraph.extractorUpgradedAt` among the graphs recorded in
+  /// `graphs`. Informational: the rule compares the per-graph marks below.
   upgradedAt  DateTime
   /// Fingerprint of the acknowledged generation inputs.
   fingerprint String
+  /// JSON: graph tag (a hash of the graph id) → `{ rows, mark }` — the digest of
+  /// that graph's rows in the acknowledged inputs and the upgrade mark the
+  /// graph carried. A later difference is put down to an upgrade only for a
+  /// graph whose mark is no longer this one. Null: none recorded.
+  graphs      String?
   updatedAt   DateTime @updatedAt
 
   document GeneratedDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)

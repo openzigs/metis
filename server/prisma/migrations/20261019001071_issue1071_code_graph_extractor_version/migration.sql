@@ -37,13 +37,18 @@ ALTER TABLE "code_graphs" ADD COLUMN "extractorUpgradedAt" DATETIME;
 -- document reads changed. A table of its own, not a column on
 -- "generated_document_versions": every reader of a version row would otherwise
 -- carry it, and a version's provenance stays as published. New, empty table:
--- no backfill. Rollback: DROP TABLE "generated_document_acknowledgements"; the
--- next check then compares against each version's own manifest again.
+-- no backfill. "graphs" is JSON: per graph the document reads (keyed by a hash
+-- of the graph id), a digest of that graph's rows in the acknowledged inputs
+-- and the "extractorUpgradedAt" mark the graph carried — what lets the next
+-- difference be put down to an upgrade of THAT graph or not. Rollback: DROP
+-- TABLE "generated_document_acknowledgements"; the next check then compares
+-- against each version's own manifest again.
 CREATE TABLE "generated_document_acknowledgements" (
     "documentId" TEXT NOT NULL PRIMARY KEY,
     "version" INTEGER NOT NULL,
     "upgradedAt" DATETIME NOT NULL,
     "fingerprint" TEXT NOT NULL,
+    "graphs" TEXT,
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "generated_document_acknowledgements_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "generated_documents" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );

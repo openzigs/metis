@@ -4357,6 +4357,7 @@ CREATE TABLE "generated_document_acknowledgements" (
     "version" INTEGER NOT NULL,
     "upgradedAt" TIMESTAMP(3) NOT NULL,
     "fingerprint" TEXT NOT NULL,
+    "graphs" TEXT,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "generated_document_acknowledgements_pkey" PRIMARY KEY ("documentId")

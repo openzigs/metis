@@ -104,8 +104,7 @@ import {
 } from "../lib/docs-gen/regeneration-plan.js";
 import {
   acknowledgeExtractorUpgrade,
-  extractorUpgradeMark,
-  isUnseenUpgradeMark,
+  isAttributableToUpgrade,
   settleExtractorUpgrade,
   type AcknowledgedUpgrade,
 } from "../lib/docs-gen/extractor-upgrade.js";
@@ -1275,7 +1274,6 @@ export async function generateDocumentAsync(
     if (automatic && inputSnapshot && lastVersion) {
       const settled = await settleExtractorUpgrade({
         documentId: docId,
-        scope: { projectId, codeGraphId: policy.codeGraphId },
         latest: lastVersion,
         published: previous,
         current: inputSnapshot,
@@ -1283,14 +1281,12 @@ export async function generateDocumentAsync(
       if (settled.outcome !== "changed") return;
     }
     // #1071 — an upgrade that rewrites the graph WHILE this run is going is
-    // not changed inputs either. The evidence is the graph's own mark, newer
-    // than the moment the inputs were captured (and than any mark this run has
-    // already tolerated); what the run then stands for is recorded when it
-    // publishes. The graph is read only when the inputs differ in graph rows.
-    const upgrade: { seen: Date; acknowledged: AcknowledgedUpgrade | null } = {
-      seen: new Date(),
-      acknowledged: null,
-    };
+    // not changed inputs either. The evidence is the mark of the very graph
+    // whose rows differ: not the one the run captured for it (nor one this run
+    // has already tolerated). The fresh capture reads the document's own
+    // graphs and no others, so another repository's upgrade is never evidence
+    // here; what the run then stands for is recorded when it publishes.
+    const upgrade: { acknowledged: AcknowledgedUpgrade | null } = { acknowledged: null };
     const inputsStand = async (
       row: Parameters<typeof captureGenerationInputs>[0],
       rowPolicy: Parameters<typeof captureGenerationInputs>[1],
@@ -1300,10 +1296,11 @@ export async function generateDocumentAsync(
       const standsFor = upgrade.acknowledged?.snapshot ?? inputSnapshot;
       if (fresh.fingerprint === standsFor.fingerprint) return true;
       if (!isGraphRowsOnlyChange(standsFor, fresh)) return false;
-      const mark = await extractorUpgradeMark({ projectId, codeGraphId: rowPolicy.codeGraphId });
-      if (!isUnseenUpgradeMark(mark, upgrade.seen)) return false;
-      upgrade.seen = mark;
-      upgrade.acknowledged = { upgradedAt: mark, snapshot: fresh };
+      // A run's own capture always records its graphs: no "older record" here.
+      if (!standsFor.graphs || !isAttributableToUpgrade(standsFor.graphs, fresh.graphs)) {
+        return false;
+      }
+      upgrade.acknowledged = { snapshot: fresh };
       return true;
     };
     const acquired = await prisma.generatedDocument.updateMany({
@@ -1933,10 +1930,7 @@ export async function generateDocumentAsync(
       // upgrade rewrote the graph meanwhile, this says what the version stands
       // for, so the next check does not take that rewrite for a change.
       if (upgrade.acknowledged) {
-        await acknowledgeExtractorUpgrade(tx, docId, nextVersion, {
-          upgradedAt: upgrade.acknowledged.upgradedAt,
-          fingerprint: upgrade.acknowledged.snapshot.fingerprint,
-        });
+        await acknowledgeExtractorUpgrade(tx, docId, nextVersion, upgrade.acknowledged.snapshot);
       }
       return persistGeneratedDocTask(
         tx,

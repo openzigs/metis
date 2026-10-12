@@ -2,7 +2,12 @@
 import { prisma } from "../prisma.js";
 import { assertEvidencePolicy, type EvidencePolicy } from "./evidence-policy.js";
 import { filterPrimaryEvidence } from "./evidence-filter.js";
-import { fingerprintInputs, inputHash, type GenerationInputSnapshot } from "./regeneration-plan.js";
+import {
+  fingerprintInputs,
+  inputHash,
+  type GenerationInputSnapshot,
+  type GraphStates,
+} from "./regeneration-plan.js";
 import {
   PHASE1_PROMPT_VERSION,
   buildDocsGenProvider,
@@ -124,11 +129,19 @@ export async function captureGenerationInputs(
   // A multiset preserves duplicate declarations/edges/chunks without depending
   // on transient row IDs or query order. Never overwrite a same-name entry.
   const entries = new Map<string, string[]>();
-  const add = (kind: string, identity: unknown, value: unknown): void => {
+  // #1071 — every graph-row item, by the graph whose row it is: what lets a
+  // difference be attributed to ONE graph (`extractor-upgrade.ts`).
+  const rowsByGraph = new Map<string, string[]>();
+  const add = (kind: string, identity: unknown, value: unknown, codeGraphId?: string): void => {
     const key = `${kind}:${hash(identity)}`;
     const bucket = entries.get(key) ?? [];
-    bucket.push(hash(value));
+    const valueHash = hash(value);
+    bucket.push(valueHash);
     entries.set(key, bucket);
+    if (codeGraphId === undefined) return;
+    const rows = rowsByGraph.get(codeGraphId);
+    if (rows) rows.push(`${key}=${valueHash}`);
+    else rowsByGraph.set(codeGraphId, [`${key}=${valueHash}`]);
   };
   const repositories = await loadRepositorySources(where);
   const symbolKey = (s: (typeof symbols)[number]): unknown[] => [
@@ -143,12 +156,12 @@ export async function captureGenerationInputs(
   const scopedSymbols = symbols.filter((s) => !isJunkSourcePath(s.filePath));
   const byId = new Map(scopedSymbols.map((s) => [s.id, symbolKey(s)]));
   for (const symbol of scopedSymbols) {
-    add("symbol", symbolKey(symbol), [
-      symbol.name,
-      symbol.contentHash,
-      symbol.language,
-      symbol.source,
-    ]);
+    add(
+      "symbol",
+      symbolKey(symbol),
+      [symbol.name, symbol.contentHash, symbol.language, symbol.source],
+      symbol.codeGraphId,
+    );
   }
   for (const edge of edges) {
     add(
@@ -162,10 +175,12 @@ export async function captureGenerationInputs(
         edge.line,
       ],
       [json(edge.metadata), edge.source],
+      edge.fromSymbol.codeGraphId,
     );
   }
   // Same eligible rationale pool as Phase 1; chunk IDs to avoid SQL bind limits.
   const ids = [...byId.keys()];
+  const graphOfSymbol = new Map(scopedSymbols.map((s) => [s.id, s.codeGraphId]));
   for (let offset = 0; offset < ids.length; offset += 500) {
     const findings = await prisma.finding.findMany({
       where: {
@@ -175,14 +190,19 @@ export async function captureGenerationInputs(
       },
     });
     for (const finding of findings) {
-      add("finding", [byId.get(finding.symbolId!), finding.category, finding.title], {
-        body: finding.body,
-        evidence: json(finding.evidence),
-        severity: finding.severity,
-        derivation: finding.derivation,
-        confidence: finding.confidence,
-        verificationStatus: finding.verificationStatus,
-      });
+      add(
+        "finding",
+        [byId.get(finding.symbolId!), finding.category, finding.title],
+        {
+          body: finding.body,
+          evidence: json(finding.evidence),
+          severity: finding.severity,
+          derivation: finding.derivation,
+          confidence: finding.confidence,
+          verificationStatus: finding.verificationStatus,
+        },
+        graphOfSymbol.get(finding.symbolId!),
+      );
     }
   }
   for (const repository of repositories.values()) {
@@ -319,7 +339,23 @@ export async function captureGenerationInputs(
       items[`${key}:${index}`] = value;
     });
   }
-  const snapshot = fingerprintInputs(items);
+  // #1071 — the graphs this document reads (the same scope as the rows above,
+  // never the project's other graphs), each with a digest of its own rows and
+  // the upgrade mark it carries now. Read last: a mark that moves while the
+  // rows are being read is then newer than the rows, never older.
+  const scopedGraphs = await prisma.codeGraph.findMany({
+    where: { projectId: doc.projectId, ...(policy.codeGraphId ? { id: policy.codeGraphId } : {}) },
+    select: { id: true, extractorUpgradedAt: true },
+  });
+  const graphs: GraphStates = {};
+  for (const id of new Set([...scopedGraphs.map((g) => g.id), ...rowsByGraph.keys()])) {
+    const mark = scopedGraphs.find((g) => g.id === id)?.extractorUpgradedAt ?? null;
+    graphs[inputHash(id)] = {
+      rows: inputHash([...(rowsByGraph.get(id) ?? [])].sort()),
+      mark: mark ? mark.toISOString() : null,
+    };
+  }
+  const snapshot = fingerprintInputs(items, graphs);
   Object.freeze(snapshot.items);
   return Object.freeze(snapshot);
 }

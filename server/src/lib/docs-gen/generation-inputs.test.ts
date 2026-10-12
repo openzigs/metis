@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   project: vi.fn(),
   findings: vi.fn(),
   repositories: vi.fn(),
+  graphs: vi.fn(),
   filter: vi.fn(),
   config: vi.fn(),
   phase1: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("../prisma.js", () => ({
     knowledgeChunk: { findMany: mocks.chunks },
     project: { findFirst: mocks.project },
     finding: { findMany: mocks.findings },
+    codeGraph: { findMany: mocks.graphs },
   },
 }));
 vi.mock("../ai/config.js", () => ({ loadAIConfig: mocks.config }));
@@ -145,6 +147,7 @@ beforeEach(async () => {
   mocks.repositories.mockResolvedValue(
     new Map([["g", { codeGraphId: "g", repoConnectorId: "a", root, commitSha: "head" }]]),
   );
+  mocks.graphs.mockResolvedValue([{ id: "g", extractorUpgradedAt: null }]);
   mocks.filter.mockImplementation(async (candidates: unknown[]) => candidates);
   mocks.config.mockReturnValue({
     provider: "local-gemma",
@@ -163,30 +166,118 @@ afterEach(async () => {
 });
 
 describe("captureGenerationInputs — a code-graph extractor upgrade (#1071)", () => {
-  it("carries nothing about the extractor: a graph's version does not move the snapshot", async () => {
+  it("an upgrade mark moves no item and not the fingerprint: it is recorded beside them, per graph", async () => {
     // A project no upgrade rewrote must compare exactly as it did before #1071,
-    // so the snapshot holds no item that every graph gains on its next ingest.
+    // so no ITEM is one that every graph gains on its next ingest.
     mocks.symbols.mockResolvedValue([symbol()]);
     await file("src/mod.ts", "source");
     const before = await capture();
-    mocks.repositories.mockResolvedValue(
-      new Map([
-        [
-          "g",
-          {
-            codeGraphId: "g",
-            repoConnectorId: "a",
-            root,
-            commitSha: "head",
-            extractorVersion: 1,
-            extractorUpgradedAt: new Date(),
-          },
-        ],
-      ]),
-    );
+    const mark = new Date(Date.UTC(2026, 0, 1));
+    mocks.graphs.mockResolvedValue([{ id: "g", extractorUpgradedAt: mark }]);
     const after = await capture();
-    expect(after).toEqual(before);
+    expect(after.fingerprint).toBe(before.fingerprint);
+    expect(after.items).toEqual(before.items);
     expect(Object.keys(after.items).filter((key) => key.startsWith("extractor"))).toEqual([]);
+    // One graph in scope; its rows are the same, its mark is not.
+    const [tag] = Object.keys(before.graphs!);
+    expect(Object.keys(after.graphs!)).toEqual([tag]);
+    expect(tag).not.toContain("g");
+    expect(before.graphs![tag]).toEqual({ rows: after.graphs![tag].rows, mark: null });
+    expect(after.graphs![tag].mark).toBe(mark.toISOString());
+  });
+
+  it("reads the marks of the graphs the document reads, and of no other", async () => {
+    await capture();
+    expect(mocks.graphs).toHaveBeenLastCalledWith({
+      where: { projectId: "p", id: "g" },
+      select: { id: true, extractorUpgradedAt: true },
+    });
+    const unscoped = { ...policy, repoConnectorId: undefined, codeGraphId: undefined };
+    await captureGenerationInputs({ ...doc, scope: "full" }, unscoped);
+    expect(mocks.graphs).toHaveBeenLastCalledWith({
+      where: { projectId: "p" },
+      select: { id: true, extractorUpgradedAt: true },
+    });
+  });
+
+  it("gives each graph its OWN mark, and still names a graph whose row was read but whose graph row was not", async () => {
+    const unscoped = { ...policy, repoConnectorId: undefined, codeGraphId: undefined };
+    const full = () => captureGenerationInputs({ ...doc, scope: "full" }, unscoped);
+    mocks.repositories.mockResolvedValue(new Map());
+    mocks.symbols.mockResolvedValue([
+      symbol(),
+      symbol({ id: "sh", codeGraphId: "h", qualifiedName: "H.run" }),
+    ]);
+    const mark = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, 7));
+    mocks.graphs.mockResolvedValue([
+      { id: "g", extractorUpgradedAt: null },
+      { id: "h", extractorUpgradedAt: mark },
+    ]);
+    const marks = Object.values((await full()).graphs!).map((g) => g.mark);
+    // To the millisecond: one graph marked, the other not.
+    expect(marks.sort()).toEqual([mark.toISOString(), null].sort());
+    expect(mark.toISOString()).toContain(".007Z");
+
+    // The graph row of `h` went between the two reads: its rows are still attributed, unmarked.
+    mocks.graphs.mockResolvedValue([{ id: "g", extractorUpgradedAt: null }]);
+    const without = (await full()).graphs!;
+    expect(Object.keys(without)).toHaveLength(2);
+    expect(Object.values(without).map((g) => g.mark)).toEqual([null, null]);
+  });
+
+  it("digests each graph's rows apart: a symbol, an edge or a finding moves ITS graph's digest only", async () => {
+    const unscoped = { ...policy, repoConnectorId: undefined, codeGraphId: undefined };
+    const full = () => captureGenerationInputs({ ...doc, scope: "full" }, unscoped);
+    mocks.repositories.mockResolvedValue(new Map());
+    mocks.graphs.mockResolvedValue([
+      { id: "g", extractorUpgradedAt: null },
+      { id: "h", extractorUpgradedAt: null },
+      { id: "empty", extractorUpgradedAt: null },
+    ]);
+    const inG = symbol();
+    const inH = symbol({ id: "sh", codeGraphId: "h", qualifiedName: "H.run" });
+    const edge = (fromSymbol: unknown, line: number) => ({
+      fromSymbol,
+      toSymbol: null,
+      toQualifiedName: "x",
+      kind: "calls",
+      filePath: "src/mod.ts",
+      line,
+      metadata: null,
+      source: null,
+    });
+    mocks.symbols.mockResolvedValue([inG, inH]);
+    const base = await full();
+    // Three graphs, the one without a row included.
+    expect(Object.keys(base.graphs!)).toHaveLength(3);
+    const changedTags = (next: Awaited<ReturnType<typeof full>>) =>
+      Object.keys(base.graphs!).filter((t) => base.graphs![t].rows !== next.graphs![t].rows);
+
+    // A symbol of h.
+    mocks.symbols.mockResolvedValue([inG, { ...inH, contentHash: "other" }]);
+    const symbolMoved = await full();
+    expect(changedTags(symbolMoved)).toHaveLength(1);
+    const [tagH] = changedTags(symbolMoved);
+    // An edge from a symbol of g.
+    mocks.symbols.mockResolvedValue([inG, inH]);
+    mocks.edges.mockResolvedValue([edge(inG, 3)]);
+    const edgeMoved = await full();
+    expect(changedTags(edgeMoved)).toHaveLength(1);
+    const [tagG] = changedTags(edgeMoved);
+    expect(tagG).not.toBe(tagH);
+    // A finding on the symbol of h.
+    mocks.edges.mockResolvedValue([]);
+    mocks.findings.mockResolvedValue([finding({ symbolId: "sh" })]);
+    expect(changedTags(await full())).toEqual([tagH]);
+    // The same rows in another order are the same digest.
+    mocks.findings.mockResolvedValue([]);
+    mocks.symbols.mockResolvedValue([inH, inG]);
+    expect((await full()).graphs).toEqual(base.graphs);
+    // Something that is not a graph row moves no digest.
+    mocks.chunks.mockResolvedValue([chunk()]);
+    const evidence = await full();
+    expect(evidence.fingerprint).not.toBe(base.fingerprint);
+    expect(evidence.graphs).toEqual(base.graphs);
   });
 
   it("an in-place upgrade (renamed symbol, re-bound edge) moves graph-row items only", async () => {

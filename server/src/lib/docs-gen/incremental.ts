@@ -81,7 +81,6 @@ export async function checkIncrementalRegeneration(
         orderBy: { version: "desc" },
         select: {
           version: true,
-          createdAt: true,
           provenanceManifest: true,
         },
       });
@@ -100,7 +99,6 @@ export async function checkIncrementalRegeneration(
       // for the first time. That is acknowledged — once — and spends nothing.
       const settled = await settleExtractorUpgrade({
         documentId: doc.id,
-        scope: { projectId: doc.projectId, codeGraphId: policy.codeGraphId },
         latest,
         published: previous,
         current: snapshot,

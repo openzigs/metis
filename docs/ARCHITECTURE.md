@@ -3682,37 +3682,64 @@ running (`IngestStats.filesUnparseable`, up to 50 names; the count is never capp
 renames of `impact_column_proposals` are matched from one read of that table per upgrade
 (it has no index on the writer columns), by primary key.
 
-**An upgrade spends no model calls by itself — and is acknowledged once.** The scheduled
-repository refresh runs an incremental ingest and then schedules regeneration of
+**An upgrade spends no model calls by itself — and is acknowledged once, per graph.** The
+scheduled repository refresh runs an incremental ingest and then schedules regeneration of
 auto-updating generated documents, whose inputs snapshot identifies every symbol and edge by
 qualified name; the upgrade would therefore regenerate each of them with no repository
 change. The rule that prevents it rests on positive evidence
 ([`docs-gen/extractor-upgrade.ts`](../server/src/lib/docs-gen/extractor-upgrade.ts)):
 
-1. the ingest that rewrites a graph for an upgrade marks it — `CodeGraph.extractorUpgradedAt`
-   moves in the same transaction as every write of the rewrite, and only then;
-2. a difference between a document's baseline and its current inputs is put down to the
+1. the ingest that rewrites a graph for an upgrade marks THAT graph —
+   `CodeGraph.extractorUpgradedAt` moves in the same transaction as every write of the
+   rewrite, and only then;
+2. a snapshot of a document's inputs records, beside its items and outside its fingerprint,
+   one entry per graph the document reads (`GenerationInputSnapshot.graphs`): a digest of the
+   items derived from that graph's rows, and the mark the graph carried when the snapshot was
+   taken;
+3. a difference between a document's baseline and its current inputs is put down to an
    upgrade only when it is confined to graph rows (`symbol:`, `edge:`, `finding:`; every
-   source file, SQL file, evidence chunk and setting identical) **and** a graph the document
-   reads carries a mark newer than the document's latest version and than the last mark
-   acknowledged for it;
-3. it is then acknowledged, once: the fingerprint of the current inputs is recorded for the
-   document (`GeneratedDocumentAcknowledgement`, one row per document; the version's manifest
-   is not touched, nothing is published, no model is called) and every later check treats it
-   as a baseline beside the manifest's.
+   source file, SQL file, evidence chunk and setting identical) **and** every graph whose
+   rows differ carries a mark that is not the one the baseline recorded for that same graph.
+   Rows that differ in a graph whose mark did not move are a real change and regenerate —
+   whatever was upgraded elsewhere in the project in the same refresh;
+4. it is then acknowledged, once: the current inputs — fingerprint, per-graph digests and
+   marks — are recorded for the document (`GeneratedDocumentAcknowledgement`, one row per
+   document; the version's manifest is not touched, nothing is published, no model is called)
+   and are the baseline of every later check.
 
 So the next change confined to graph rows — a lineage backfill, a re-introspection of the
-live schema, new rationale findings — matches neither baseline and has no new mark, and
-regenerates. A project whose graph no upgrade rewrote has no mark, and every check there is
-exactly what it was before #1071: the snapshot itself carries nothing about the extractor,
-and the acknowledgement and the mark are read only for a difference confined to graph rows.
-The same test is applied by the scheduled check, by an automatic run about to start (a task
-queued for the rewrite alone settles it instead of running), and by the mid-run and commit
-fences of a run in flight: a run that an upgrade overtakes goes on only when the mark is
-newer than the moment the run captured its inputs, and it records what it then stands for
-when it publishes. (The first form of this rule inferred the upgrade from the
-baseline lacking a field newer snapshots carried — true of every document published before
-the deploy, in every project, for ever — and so swallowed every later graph-only change.)
+live schema, new rationale findings — finds its graph's mark where the baseline left it,
+and regenerates. A mark is compared only with another mark of the same graph, and only for
+identity: never with a version's date, with the current time or with another graph's mark,
+so clock skew between the ingest writer, the database and the generating process cannot make
+the rule acknowledge anything. A mark that moves while the document's inputs do not (the
+upgrade rewrote nothing this document reads) is recorded as seen at the next check, so it is
+not evidence for a later change either. A project whose graph no upgrade rewrote has no
+mark, and every check there is exactly what it was before #1071: no item of the snapshot
+says anything about the extractor, and the acknowledgement is read only when the inputs
+differ in graph rows alone or a mark is not the one the published version recorded. The same
+test is applied by the scheduled check, by an automatic run about to start (a task queued
+for the rewrite alone settles it instead of running), and by the mid-run and commit fences
+of a run in flight: a run that an upgrade overtakes goes on only when the graph whose rows
+moved carries another mark than the run captured for it — the run reads the marks of the
+document's own graphs and no others — and it records what it then stands for when it
+publishes.
+
+Two limits, both stated in the module header. **A version published before per-graph
+attribution existed** has no `graphs` in its manifest, so its difference cannot be placed in
+a graph: it is put down to an upgrade only when every graph the document reads carries a
+mark. A document over one graph is therefore never regenerated by the upgrade; a
+project-wide document over several graphs of which one was not upgraded (it holds no Go)
+regenerates once, and its new version records `graphs`. **Attribution is per graph, not per
+row**: when the same ingest that upgrades a graph also changes that graph's rows for another
+reason (a lineage backfill that runs with it, a re-introspection just before), the two are
+acknowledged together — once per upgrade per document, and only for a change confined to
+that graph's rows; a source change always regenerates. (The first form of this rule inferred
+the upgrade from the baseline lacking a field newer snapshots carried — true of every
+document published before the deploy, in every project, for ever — and so swallowed every
+later graph-only change. The second read one mark for the whole project and compared it
+with the version's date: a real change in one graph was acknowledged because another had
+been upgraded, and a mark ahead of the version's clock acknowledged a later real change.)
 
 **Cost.** Go declarations are not persisted, so an incremental ingest that parses, deletes or
 re-binds any Go file re-parses every unchanged Go file for its declarations and re-binds its

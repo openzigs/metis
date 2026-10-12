@@ -1,12 +1,35 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-/** Hashes only: no source text, credentials, database row IDs, or timestamps. */
+/**
+ * #1071 — one code graph as a snapshot saw it: a digest of the items derived
+ * from ITS rows, and the extractor-upgrade mark it carried at that moment
+ * (`CodeGraph.extractorUpgradedAt`, ISO; null when no upgrade ever rewrote it).
+ */
+export const graphStateSchema = z
+  .object({ rows: z.string().min(1), mark: z.string().min(1).nullable() })
+  .strict();
+export type GraphState = z.infer<typeof graphStateSchema>;
+/** Graph tag (a hash of the graph's id, never the id) → its state. */
+export const graphStatesSchema = z.record(z.string(), graphStateSchema);
+export type GraphStates = z.infer<typeof graphStatesSchema>;
+
+/**
+ * Hashes only: no source text, credentials or database row IDs. The one
+ * timestamp is each graph's upgrade mark, compared for identity alone.
+ *
+ * `graphs` (#1071) says which graph each graph-row item belongs to, in
+ * aggregate, and which upgrade mark each graph carried. It is NOT part of the
+ * fingerprint — the items are, exactly as before — so a snapshot recorded
+ * without it compares as it always did. Absent on every manifest written
+ * before per-graph attribution existed.
+ */
 export const generationInputSnapshotSchema = z
   .object({
     version: z.literal(1),
     fingerprint: z.string().min(1),
     items: z.record(z.string(), z.string()),
+    graphs: graphStatesSchema.optional(),
   })
   .strict();
 export type GenerationInputSnapshot = z.infer<typeof generationInputSnapshotSchema>;
@@ -24,9 +47,17 @@ export function inputHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-export function fingerprintInputs(items: Record<string, string>): GenerationInputSnapshot {
+export function fingerprintInputs(
+  items: Record<string, string>,
+  graphs?: GraphStates,
+): GenerationInputSnapshot {
   const sorted = Object.fromEntries(Object.entries(items).sort(([a], [b]) => a.localeCompare(b)));
-  return { version: 1, fingerprint: inputHash(sorted), items: sorted };
+  return {
+    version: 1,
+    fingerprint: inputHash(sorted),
+    items: sorted,
+    ...(graphs ? { graphs } : {}),
+  };
 }
 
 /**

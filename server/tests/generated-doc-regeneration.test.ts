@@ -27,6 +27,7 @@ const state = vi.hoisted(() => ({
     version: number;
     upgradedAt: Date;
     fingerprint: string;
+    graphs: string | null;
   },
   /**
    * A clock that only moves forward, one second a tick, so versions and upgrade
@@ -654,6 +655,97 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     expect(state.versions).toHaveLength(3);
   });
 
+  /** Version `index`'s manifest as a release before per-graph attribution wrote it: no `graphs`. */
+  const makeLegacy = (index = 0) => {
+    const manifest = JSON.parse(state.versions[index].provenanceManifest as string);
+    expect(manifest.inputSnapshot.graphs).toBeDefined();
+    delete manifest.inputSnapshot.graphs;
+    state.versions[index].provenanceManifest = JSON.stringify(manifest);
+  };
+
+  it("a version published BEFORE graphs were recorded: the upgrade of its one graph is still quiet, once", async () => {
+    await baseline();
+    makeLegacy();
+    upgradeOnNextIngest();
+    await ingest();
+    quiet();
+    expect(state.versions).toHaveLength(1);
+    expect(acknowledged()?.fingerprint).toBe((await snapshot()).fingerprint);
+    // The acknowledgement carries the graph's state, so the next change is told from the upgrade.
+    expect(JSON.parse(acknowledged()!.graphs!)).toEqual((await snapshot()).graphs);
+    graphOnlyChange(1);
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+  });
+
+  it("a version published before graphs were recorded, on a graph nothing upgraded, regenerates as it always did", async () => {
+    await baseline();
+    makeLegacy();
+    graphOnlyChange(1);
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+    expect(acknowledged()).toBeNull();
+    // The new version records its graphs.
+    expect(
+      parseGeneratedDocVersionManifest(state.versions[1].provenanceManifest).inputSnapshot?.graphs,
+    ).toEqual((await snapshot()).graphs);
+  });
+
+  it("a mark AHEAD of every later version's date is not evidence for a later change (clock skew)", async () => {
+    await baseline();
+    // The upgrading ingest ran on a host whose clock is an hour ahead.
+    state.duringIngest = () => {
+      rewriteGraph();
+      state.extractorUpgradedAt = new Date(state.clock + 3_600_000);
+    };
+    await ingest();
+    quiet();
+    expect(acknowledged()?.upgradedAt.getTime()).toBeGreaterThan(state.clock);
+
+    // A real change: version 2, published "before" that mark by the clocks.
+    graphOnlyChange(1);
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+    expect((state.versions[1].createdAt as Date).getTime()).toBeLessThan(
+      state.extractorUpgradedAt!.getTime(),
+    );
+
+    // And another, with no new upgrade: it regenerates. Compared with the
+    // version's date, the stale mark would still look new and swallow it.
+    graphOnlyChange(2);
+    await ingest();
+    expect(state.versions).toHaveLength(3);
+    expect(acknowledged(2)).toBeNull();
+  });
+
+  it("a mark BEHIND the version's date is still that upgrade (clock skew the other way)", async () => {
+    await baseline();
+    state.duringIngest = () => {
+      rewriteGraph();
+      state.extractorUpgradedAt = new Date(state.clock - 3_600_000);
+    };
+    await ingest();
+    quiet();
+    expect(state.versions).toHaveLength(1);
+    expect(acknowledged()?.fingerprint).toBe((await snapshot()).fingerprint);
+  });
+
+  it("an upgrade that changes nothing this document reads is adopted: the next graph-only change regenerates", async () => {
+    await baseline();
+    // The mark moves, the rows this document reads do not.
+    state.duringIngest = () => {
+      state.extractorUpgradedAt = state.tick();
+    };
+    await ingest();
+    quiet();
+    expect(acknowledged()?.upgradedAt).toEqual(state.extractorUpgradedAt);
+    expect(acknowledged()?.fingerprint).toBe((await snapshot()).fingerprint);
+
+    graphOnlyChange(1);
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+  });
+
   it("an upgrade that lands together with a real change still regenerates", async () => {
     await baseline();
     upgradeOnNextIngest();
@@ -781,6 +873,28 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     await ingest();
     expect(state.versions).toHaveLength(2);
     expect(acknowledged()).toBeNull();
+  });
+
+  it("an upgrade of ANOTHER repository's graph DURING the run is not evidence for a change in this one", async () => {
+    // Mid-run: the project's other repository is upgraded, and this
+    // document's own graph gets a lineage backfill. The run reads the mark of
+    // its own graph only.
+    state.otherGraphUpgradedAt = state.tick();
+    state.mutation = () => {
+      graphOnlyChange(1);
+      state.otherGraphUpgradedAt = state.tick();
+    };
+    await ingest();
+    // Changed inputs: that run published nothing, and the replanned one stands for the current inputs.
+    expect(state.versions).toHaveLength(1);
+    expect(state.publications).toHaveBeenCalledTimes(1);
+    expect(
+      parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest).inputSnapshot
+        ?.fingerprint,
+    ).toBe((await snapshot()).fingerprint);
+    expect(acknowledged()).toBeNull();
+    // The document's snapshot names its own graph and no other.
+    expect(Object.keys((await snapshot()).graphs ?? {})).toHaveLength(1);
   });
 
   it("a mark that was already there when the run started is not evidence for a change DURING it", async () => {
