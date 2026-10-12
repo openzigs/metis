@@ -8,7 +8,12 @@ import { makeWrapper } from "./test-utils";
 // ─── RunsPage additional branches ────────────────────────────────────────────
 
 vi.mock("@/lib/runs-api", () => ({
-  runsApi: { list: vi.fn(), get: vi.fn(), replay: vi.fn() },
+  runsApi: {
+    list: vi.fn(),
+    get: vi.fn(),
+    replay: vi.fn(),
+    chatTurns: vi.fn(async () => ({ items: [] })),
+  },
   agentsMdApi: { getMarkdown: vi.fn(), preview: vi.fn() },
 }));
 
@@ -159,7 +164,10 @@ describe("RunsPage — additional branch coverage", () => {
     );
     await waitFor(() => expect(screen.getByTestId("runs-table")).toBeInTheDocument());
     // Tokens are rendered, but cost is unattributed so no "$0.0000" misleading value.
-    expect(screen.getByText("5000")).toBeInTheDocument();
+    // This fixture carries no ledger figures at all: the ledger was not read.
+    expect(
+      screen.getByText("5.0k tok recorded at finish (ledger unavailable)"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("$0.0000")).not.toBeInTheDocument();
     expect(screen.queryAllByText("—").length).toBeGreaterThan(0);
   });

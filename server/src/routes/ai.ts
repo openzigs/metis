@@ -76,6 +76,7 @@ import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/cha
 import {
   CHAT_TURN_AGENT_STEP,
   ESTIMATED_TURN_AGENT_STEP,
+  SUBAGENT_AGENT_STEP,
   TurnUsageMeter,
   billableTurnUsage,
 } from "../lib/ai/conversation/turn-usage.js";
@@ -875,7 +876,7 @@ function bindSubAgents(
       provider: ctx.provider.key,
       model,
       usage,
-      agentStep: "subagent",
+      agentStep: SUBAGENT_AGENT_STEP,
       ...(live.meter.projectId ? { projectId: live.meter.projectId } : {}),
     });
     if (live.meter.projectId) {
@@ -883,7 +884,7 @@ function bindSubAgents(
         projectId: live.meter.projectId,
         sessionId: live.meter.sessionId,
         userId: live.meter.userId,
-        agentStep: "subagent",
+        agentStep: SUBAGENT_AGENT_STEP,
         provider: ctx.provider.key,
         model,
         inputTokens: usage.promptTokens,

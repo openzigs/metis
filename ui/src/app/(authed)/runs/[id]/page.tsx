@@ -14,6 +14,8 @@ import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
 import { runsApi, type AgentRunStep } from "@/lib/runs-api";
+import { runTokensLabel, tokensAfterRunNote } from "@/lib/run-tokens";
+import { RECORDED_COST_HEADER, formatRunCost } from "@/lib/run-cost";
 import { SandboxStatusBadge } from "@/components/sandbox/SandboxStatusBadge";
 import { SandboxSessionTable } from "@/components/sandbox/SandboxSessionTable";
 import { PageHeader } from "@/components/ui/page-header";
@@ -148,8 +150,27 @@ export default function RunDetailPage() {
               </div>
             </div>
             <div>
-              <div className="text-xs uppercase text-muted-foreground">Total tokens</div>
-              <div className="font-medium">{detail.data.run.totalTokens ?? "—"}</div>
+              <div className="text-xs uppercase text-muted-foreground">Tokens (usage ledger)</div>
+              <div className="font-medium" data-testid="run-tokens">
+                {runTokensLabel({
+                  tokens: detail.data.run.tokens,
+                  storedTotal: detail.data.run.totalTokens,
+                  status: detail.data.run.status,
+                })}
+              </div>
+              {/* #1007 review — an analysis run's figure covers work on the
+                  analysis after the run finished; say how much of it that is. */}
+              {tokensAfterRunNote(detail.data.run.tokensAfterRun) ? (
+                <div className="text-xs text-muted-foreground" data-testid="run-tokens-after-run">
+                  {tokensAfterRunNote(detail.data.run.tokensAfterRun)}
+                </div>
+              ) : null}
+            </div>
+            <div>
+              <div className="text-xs uppercase text-muted-foreground">{RECORDED_COST_HEADER}</div>
+              <div className="font-medium" data-testid="run-cost">
+                {formatRunCost(detail.data.run)}
+              </div>
             </div>
           </Card>
 

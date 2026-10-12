@@ -305,6 +305,26 @@ export function verifyAccessToken(token: string): AuthPayload {
 }
 
 /**
+ * The user id inside an access token THIS server signed, whether or not it has
+ * expired; `null` for anything else (no signature match, a refresh token, a
+ * malformed string). NOT an authentication — `requireAuth` decides that. It is
+ * for a rate-limit key that must be something a caller cannot choose: only a
+ * holder of a token we issued to a user can produce that user's id here.
+ */
+export function signedAccessTokenUserId(token: string): string | null {
+  try {
+    const decoded = jwt.verify(token, getSecret(), { ignoreExpiration: true }) as {
+      userId?: unknown;
+      type?: unknown;
+    };
+    if (decoded.type === "refresh") return null;
+    return typeof decoded.userId === "string" && decoded.userId ? decoded.userId : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Verify a refresh token and ensure it has not been revoked.
  *
  * Async because the revocation check now hits the persistent store (an indexed

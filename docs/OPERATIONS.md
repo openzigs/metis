@@ -601,6 +601,21 @@ hand is judged by its real age whether its timestamp has Prisma's shape
 `timestampFormat` to `unixepoch-ms`: an integer timestamp is not a date `julianday()` reads,
 and such rows would never be swept or pruned.
 
+**Agent Runs request limits (#1007).** Five routes are limited per signed-in user, on the same
+principle as the job limits above: `GET /api/runs` (the run list), `GET /api/runs/chat-turns`,
+`GET /api/runs/:id`, `GET /api/runs/:id/replay` and `GET /api/runs/:id/sandbox-sessions`. The
+background-run routes on the same path (`/api/runs/background…`, `/api/runs/group…`,
+`POST /api/runs/:id/steer`) are not limited yet (#1116).
+
+| Setting | Default | What it does |
+|---|---|---|
+| `RUNS_LIMIT_MAX` | `3000` | Requests to those five routes allowed per **signed-in user** per window. The Agent Runs page makes two per load and per filter keystroke, a run's page three. Past it the answer is `429 RUNS_RATE_LIMITED`. Environment variable, read per request. |
+| `RUNS_PREAUTH_LIMIT_MAX` | `20000` | A coarse guard in front of authentication on the same routes. It counts per user for a request carrying an access token this server signed (expired or not), and per connecting peer for every other request, which would be answered 401 anyway. Environment variable, read per request. |
+| `RUNS_LIMIT_WINDOW_MS` | `900000` (15 minutes) | The window for both. Environment variable, read at startup. |
+
+Neither limit uses the client address, for the reason given above, and neither counts per
+presented token: a caller cannot create a new counter by inventing a token.
+
 ---
 
 ### 6.5 `DOCS_GEN_TOPIC_PLAN` (#1070): off by default; turning it on costs one rewrite per BRD

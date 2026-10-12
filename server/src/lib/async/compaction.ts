@@ -23,6 +23,7 @@ import type { AIProvider, ChatMessage, ProviderKey, TokenUsage } from "../ai/typ
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getTokenTracker } from "../ai/token-tracker.js";
+import { COMPACTION_AGENT_STEP } from "../ai/conversation/turn-usage.js";
 import { recordUsage as recordProjectUsage } from "../finops/token-tracker.js";
 import {
   messageRowData,
@@ -103,14 +104,14 @@ function meterSummaryCall(
     model,
     usage: res.usage,
     projectId: meter.projectId ?? undefined,
-    agentStep: "compaction",
+    agentStep: COMPACTION_AGENT_STEP,
   });
   if (meter.projectId) {
     recordProjectUsage({
       projectId: meter.projectId,
       sessionId: meter.sessionId,
       userId: meter.userId,
-      agentStep: "compaction",
+      agentStep: COMPACTION_AGENT_STEP,
       provider: res.provider,
       model,
       inputTokens: res.usage.promptTokens,

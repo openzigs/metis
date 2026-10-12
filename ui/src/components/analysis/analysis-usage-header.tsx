@@ -13,12 +13,9 @@
  */
 import type { AnalysisSnapshot, AnalysisCostCapStatus } from "@/lib/analysis-api";
 import type { UsageSummary } from "@/lib/projects-api";
+import { formatTokens, runTokensLabel } from "@/lib/run-tokens";
 
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
+export { formatTokens };
 
 /**
  * Unrounded USD, rounded only here: four places, because one analysis call is
@@ -71,14 +68,32 @@ export function DeploymentCapCard({ cap }: { cap: AnalysisCostCapStatus }): Reac
 }
 
 /**
- * "41.0k tok · $0.0123" for a run. Tokens are the ledger's once it has any —
- * the live figure — and the run's own `totalTokens` before that (a run from
- * before analysis spend was metered, #724). Cost is the ledger's only.
+ * "41.0k tok without cache · 52.3k with cache · $0.0123" for a run. Tokens are
+ * the ledger's once it has any — the live figure, and the same two figures the
+ * run lists show (#1007) — `in progress` for a run that has none yet, and the
+ * run's own stored total, said to be that, for a run from before analysis spend
+ * was metered (#724) — or `ledger unavailable` when it could not be read. Cost
+ * is the ledger's stored cost only, the figure `/runs` shows for the same run.
  */
-export function runSpendLabel(run: Pick<AnalysisSnapshot, "totalTokens" | "ledgerUsage">): string {
+export function runSpendLabel(
+  run: Pick<AnalysisSnapshot, "totalTokens" | "ledgerUsage"> & { status?: string },
+): string {
   const ledger = run.ledgerUsage;
-  const tokens = ledger && ledger.totalTokens > 0 ? ledger.totalTokens : run.totalTokens;
-  const parts = [`${formatTokens(tokens)} tok`];
+  // A server that sent only the ledger total: it is the with-cache figure.
+  const fallback =
+    ledger && !ledger.tokens && ledger.totalTokens > 0
+      ? `${formatTokens(ledger.totalTokens)} tok with cache`
+      : null;
+  const parts = [
+    fallback ??
+      runTokensLabel({
+        // No `ledgerUsage` at all is a ledger that could not be read; one
+        // without `tokens` here has a zero total, i.e. it was read and is empty.
+        tokens: ledger ? (ledger.tokens ?? { withCache: 0, withoutCache: 0 }) : null,
+        storedTotal: run.totalTokens,
+        status: run.status,
+      }),
+  ];
   if (ledger && ledger.totalTokens > 0) {
     if (ledger.costUsd === null) parts.push("unpriced");
     else {

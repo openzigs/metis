@@ -99,5 +99,9 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Test the STAMPED body](project_publishing-safety-is-tested-on-the-stamped-body.md) — strip split a code span; double honours status
 - [Title rule change: look up old hash](project_draft-title-rule-change-needs-old-title-lookup.md) — else 2nd draft, 2nd issue (#1064)
 - [`pgrep -f` loop matches itself](project_pgrep-f-wait-loop-matches-itself.md) — never exits; use ps + grep "node .*(vitest|tsc)"
+- [New route: own limiter, keyed on user](project_new-route-needs-its-own-limiter-keyed-on-user.md) — no global one; CodeQL lands late (#1007)
+- [Run tokens: 2 values; chat row ≠ turn](project_run-tokens-two-values-and-chat-row-is-not-the-turn.md) — stored cost, one definition
+- [`analysis.read`: every role has it](project_analysis-read-is-held-by-every-role.md) — no 403 test; test scoping + ownership
+- [SQLite: 999 binds, no chunk w/ take](project_sqlite-adapter-999-bind-values-in-list-needs-batching.md) — batch IN lists; test >1,000 (#1112)
 - [BRD plan (#1070)](project_brd-plan-tests-and-docs-gen-offline-replay.md) — run =off tests on the new path; budgets are targets; ships off
 - [requirementId guard; recording doubles](project_requirement-id-guard-and-recording-doubles.md) — agentic+single-shot unchecked (#1027)
