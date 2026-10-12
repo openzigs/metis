@@ -7,12 +7,15 @@ import { describe, expect, it } from "vitest";
 import type { CodeGraphDataSource, GraphSymbol } from "../code-graph/query-service.js";
 import {
   findStructuralTwins,
+  findStructuralTwinsYielding,
   hasCalleeNames,
   MAX_TWINS,
   MAX_TWINS_PER_SEED,
+  MAX_TWIN_SEEDS,
   MIN_CALLEES,
   resolveStructuralTwins,
   TWIN_CONFIDENCE_FACTOR,
+  type TwinCapReport,
 } from "./structural-twins.js";
 
 const SHARED = [
@@ -121,6 +124,105 @@ describe("findStructuralTwins (#1036)", () => {
     expect(findStructuralTwins(["near", "exact"], map)).toEqual([
       { id: "twin", seedId: "exact", similarity: 1 },
     ]);
+  });
+});
+
+describe("findStructuralTwins — what its caps removed (#1060)", () => {
+  const names = (prefix: string) => Array.from({ length: 10 }, (_, i) => `${prefix}c${i}`);
+
+  it("reports the twins over the per-seed cap, best first", () => {
+    const map = new Map<string, ReadonlySet<string>>([["seed", new Set(names(""))]]);
+    for (let i = 0; i < MAX_TWINS_PER_SEED + 2; i++) map.set(`twin${i}`, new Set(names("")));
+    const report: TwinCapReport = { seedsNotCompared: 0, cut: [] };
+    const kept = findStructuralTwins(["seed"], map, report);
+    expect(kept.map((t) => t.id)).toEqual(["twin0", "twin1", "twin2", "twin3"]);
+    expect(report.cut).toEqual([
+      { id: "twin4", seedId: "seed", similarity: 1 },
+      { id: "twin5", seedId: "seed", similarity: 1 },
+    ]);
+    expect(report.seedsNotCompared).toBe(0);
+  });
+
+  it("does not report a function over one seed's cap that another seed keeps", () => {
+    // seedA has four exact twins and `near` (9 of 11 names): `near` is its fifth, over the cap.
+    // seedB IS `near`'s callee set, so `near` is seedB's best twin and t3 its fifth.
+    const a = names("a");
+    const b = [...a.slice(0, 9), "other"];
+    const map = new Map<string, ReadonlySet<string>>([
+      ["seedA", new Set(a)],
+      ["seedB", new Set(b)],
+      ["near", new Set(b)],
+    ]);
+    for (let i = 0; i < MAX_TWINS_PER_SEED; i++) map.set(`t${i}`, new Set(a));
+    const report: TwinCapReport = { seedsNotCompared: 0, cut: [] };
+    const kept = findStructuralTwins(["seedA", "seedB"], map, report);
+    expect(kept.map((t) => t.id).sort()).toEqual(["near", "t0", "t1", "t2", "t3"]);
+    expect(kept.find((t) => t.id === "near")).toEqual({
+      id: "near",
+      seedId: "seedB",
+      similarity: 1,
+    });
+    // Each was over ONE seed's cap and is in the result under the other: nothing was left out.
+    expect(report.cut).toEqual([]);
+  });
+
+  it("reports the twins over the overall cap, and the seeds past the seed cap", () => {
+    const map = new Map<string, ReadonlySet<string>>();
+    const seedIds: string[] = [];
+    for (let s = 0; s < MAX_TWIN_SEEDS + 3; s++) {
+      const id = `seed${String(s).padStart(3, "0")}`;
+      seedIds.push(id);
+      // Only the first seven have callees: 28 twins, four each.
+      if (s >= 7) continue;
+      map.set(id, new Set(names(id)));
+      for (let i = 0; i < MAX_TWINS_PER_SEED; i++) map.set(`${id}-twin${i}`, new Set(names(id)));
+    }
+    const report: TwinCapReport = { seedsNotCompared: 0, cut: [] };
+    const kept = findStructuralTwins(seedIds, map, report);
+    expect(kept).toHaveLength(MAX_TWINS);
+    expect(report.cut).toHaveLength(7 * MAX_TWINS_PER_SEED - MAX_TWINS);
+    // Nothing is both kept and reported cut.
+    const keptIds = new Set(kept.map((t) => t.id));
+    expect(report.cut.some((t) => keptIds.has(t.id))).toBe(false);
+    expect(report.seedsNotCompared).toBe(3);
+  });
+
+  it("returns the same twins with or without a report", () => {
+    const report: TwinCapReport = { seedsNotCompared: 0, cut: [] };
+    expect(findStructuralTwins(["feed"], callees, report)).toEqual(
+      findStructuralTwins(["feed"], callees),
+    );
+    expect(report).toEqual({ seedsNotCompared: 0, cut: [] });
+  });
+});
+
+describe("findStructuralTwinsYielding (#1060)", () => {
+  it("finds the same twins, waiting once after each seed it compared", async () => {
+    const seeds = ["feed", "login", "tiny", "unknown"];
+    const waits: number[] = [];
+    const report: TwinCapReport = { seedsNotCompared: 0, cut: [] };
+    const found = await findStructuralTwinsYielding(
+      seeds,
+      callees,
+      async () => {
+        waits.push(waits.length);
+      },
+      report,
+    );
+    expect(found).toEqual(findStructuralTwins(seeds, callees));
+    // `feed` and `login` have enough callees to be compared; `tiny` and `unknown` do not.
+    expect(waits).toHaveLength(2);
+  });
+
+  it("stops the scan when the wait rejects", async () => {
+    let compared = 0;
+    await expect(
+      findStructuralTwinsYielding(["feed", "category", "login"], callees, async () => {
+        compared++;
+        throw new Error("out of time");
+      }),
+    ).rejects.toThrow("out of time");
+    expect(compared).toBe(1);
   });
 });
 

@@ -725,6 +725,10 @@ and rejects only a column among the proposed changes. A column listed under **Pr
 checked** IS among the proposed changes (the gate had no write path to check it against): count
 it as proposed, and record that it was unchecked.
 
+- **A Spec Kit plan is scored on `plan.md` alone.** `plan-context.md` (#1060) lists every file
+  the planner was given, not the files the plan changes: it is never scored as a plan, and a
+  file named only there is not "named". Use it to tell a retrieval miss (the set file is not
+  listed) from a planning miss (it is listed and the plan does not name it).
 - **Files.** `tp` = set files the output names; `fp` = files it names that are neither in the
   set nor neutral; `fn` = set files it does not name. **Precision** = `tp / (tp + fp)`;
   **recall** = `tp / (tp + fn)`. A file named twice counts once.

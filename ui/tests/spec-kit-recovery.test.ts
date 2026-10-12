@@ -344,6 +344,56 @@ describe("a send that failed is not a lost response", () => {
   });
 });
 
+describe("speckit.plan and its plan-context.md record (#1060)", () => {
+  it("recognises a finished plan before the record is written, and never shows the record as the result", async () => {
+    // The server writes plan-context.md after plan.md. A poll that lands between
+    // the two sees the generated artifacts and no record: the plan is found.
+    m.listFeatureArtifacts!.mockResolvedValueOnce(
+      artifacts({ "spec.md": 1, "plan.md": 1 }),
+    ).mockResolvedValueOnce(
+      artifacts({ "spec.md": 1, "research.md": 1, "data-model.md": 1, "plan.md": 2 }),
+    );
+    m.runCommand!.mockRejectedValue(proxy500());
+    const early = await runSpecKitCommandWithRecovery(
+      "p1",
+      "speckit.plan",
+      { featureSlug: "f1" },
+      timing,
+    );
+    expect(early.artifacts).toEqual([
+      { key: "research.md" },
+      { key: "data-model.md" },
+      { key: "plan.md" },
+    ]);
+
+    // A poll that lands after it: the record changed too, and is not listed.
+    timing.now = lostAfter(60_000);
+    m.listFeatureArtifacts!.mockReset();
+    m.listFeatureArtifacts!.mockResolvedValueOnce(
+      artifacts({ "spec.md": 1, "plan.md": 1, "plan-context.md": 1 }),
+    ).mockResolvedValueOnce(artifacts({ "spec.md": 1, "plan.md": 2, "plan-context.md": 2 }));
+    const late = await runSpecKitCommandWithRecovery(
+      "p1",
+      "speckit.plan",
+      { featureSlug: "f1" },
+      timing,
+    );
+    expect(late.artifacts).toEqual([{ key: "plan.md" }]);
+    expect(late.message).not.toContain("plan-context.md");
+  });
+
+  it("does not take a new record alone for a finished plan", async () => {
+    // The record without a newer plan.md is not this command's result.
+    m.listFeatureArtifacts!.mockResolvedValueOnce(
+      artifacts({ "spec.md": 1, "plan.md": 1 }),
+    ).mockResolvedValue(artifacts({ "spec.md": 1, "plan.md": 1, "plan-context.md": 1 }));
+    m.runCommand!.mockRejectedValue(proxy500());
+    await expect(
+      runSpecKitCommandWithRecovery("p1", "speckit.plan", { featureSlug: "f1" }, timing),
+    ).rejects.toBeInstanceOf(SpecKitCommandPendingError);
+  });
+});
+
 describe("only this command's own artifacts count as its result", () => {
   it("commandWrites names what each command writes, per scope", () => {
     const writes = (
@@ -362,6 +412,9 @@ describe("only this command's own artifacts count as its result", () => {
       "checklist-security.md",
       "tasks.md",
       "analysis.md",
+      // #1060 — METIS's record of what the planner was given. `speckit.plan`
+      // writes it, last, and it is no command's RESULT: none of the lists below has it.
+      "plan-context.md",
     ];
     expect(writes("speckit.specify", "f1", featureKeys)).toEqual(["spec.md"]);
     expect(writes("speckit.clarify", "f1", featureKeys)).toEqual(["clarify.md"]);
