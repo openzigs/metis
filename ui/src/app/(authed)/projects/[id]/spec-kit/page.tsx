@@ -24,13 +24,29 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { SPEC_KIT_ARTIFACT_NAMES, isSpecKitArtifactName } from "@metis/shared";
-import type { SpecKitArtifactName, SpecKitNamespacedCommand } from "@metis/shared";
+import { SPEC_KIT_ARTIFACT_NAMES, isSpecKitArtifactName, isSpecKitJobActive } from "@metis/shared";
+import type {
+  JobLifecycleEvent,
+  SpecKitArtifactName,
+  SpecKitJobDto,
+  SpecKitNamespacedCommand,
+} from "@metis/shared";
 import { specKitApi, type SpecKitRunOptions } from "@/lib/spec-kit-api";
 import {
-  SpecKitCommandCancelledError,
-  runSpecKitCommandWithRecovery,
-} from "@/lib/spec-kit-recovery";
+  SPEC_KIT_ACTIVE_JOBS_POLL_MS,
+  SpecKitJobAbandonedError,
+  SpecKitJobCancelledError,
+  findSpecKitJobsOnOpen,
+  forgetWatchedJob,
+  isFreshSpecKitResult,
+  runSpecKitCommand,
+  specKitCommandLockScope,
+  specKitJobHolding,
+  watchSpecKitJob,
+  type SpecKitJobOrigin,
+} from "@/lib/spec-kit-jobs";
+import { useSocket } from "@/lib/socket-client";
+import { joinJobRoom } from "@/lib/job-rooms";
 import { analysisApi } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
@@ -73,6 +89,41 @@ import {
   type CreatedIssueLink,
 } from "@/lib/spec-kit-export";
 import { IssueLinks } from "@/components/spec-kit/issue-links";
+
+/** #1059 — a job the page reports without acting on it: it ended elsewhere, or earlier. */
+interface JobNotice {
+  id: string;
+  tone: "info" | "error";
+  text: string;
+  /** The feature to offer to open; null for the project-level files. */
+  featureSlug: string | null;
+}
+
+/** #1059 — one line for a live job: what it is, where, and what it is doing. */
+function jobProgressText(job: SpecKitJobDto): string {
+  const where = job.featureSlug ? ` on ${job.featureSlug}` : "";
+  if (job.status === "cancelling") return `Cancelling /${job.command}${where}…`;
+  if (job.status === "saving") return `/${job.command}${where}: saving the result…`;
+  return `/${job.command}${where}: ${job.phase ?? "starting"}…`;
+}
+
+/** #1059 — a job found already finished, said as something that happened earlier. */
+function pastJobNotice(job: SpecKitJobDto): JobNotice {
+  const where = job.featureSlug ? ` on ${job.featureSlug}` : "";
+  const when = job.finishedAt ? ` at ${new Date(job.finishedAt).toLocaleString()}` : "";
+  const outcome =
+    job.status === "succeeded"
+      ? "finished"
+      : job.status === "cancelled"
+        ? "was cancelled; nothing was saved"
+        : `failed: ${job.error?.message ?? "no reason was recorded"}`;
+  return {
+    id: job.id,
+    tone: job.status === "failed" ? "error" : "info",
+    text: `Earlier${when}, /${job.command}${where} ${outcome}`,
+    featureSlug: job.featureSlug,
+  };
+}
 
 /** Shown on a write control the viewer cannot use (#789 — the server gates it). */
 const REQUIRES_UPDATE = "Requires project.update";
@@ -298,12 +349,14 @@ export default function SpecKitPage() {
     },
   });
 
-  // #1069 — aborted when the page is left. A command (or the poll for its lost
-  // response) can outlive the page by minutes, and TanStack still runs the
-  // mutation's callbacks then. The abort stops the poll's requests, and the
-  // callbacks below then skip only what belongs to this page: its state and the
-  // navigation back to it. The toast, the cache refresh and the saved handoff
-  // are app-wide, so a late result is still reported wherever the user is.
+  // #1069 — aborted when the page is left. TanStack still runs a mutation's
+  // callbacks then, so the callbacks below skip what belongs to this page: its
+  // state and the navigation back to it. The toast, the cache refresh and the
+  // saved handoff are app-wide, so a late result is still reported wherever
+  // the user is.
+  // #1059 — a job is no longer watched once the page is left (the abort ends
+  // the watch). The job itself carries on, and the page attaches to it again
+  // when it is next opened.
   const leftPage = useRef<AbortController | null>(null);
   useEffect(() => {
     const controller = new AbortController();
@@ -312,26 +365,141 @@ export default function SpecKitPage() {
   }, []);
   const hasLeftPage = (): boolean => leftPage.current?.signal.aborted !== false;
 
+  // #1059 — the project's live jobs, from the active list (metadata only: no
+  // result). It is what shows a feature as busy — whoever started the job, and
+  // in whichever tab — and it is polled, so another member's job appears here
+  // without anyone having to be refused first.
+  const jobsKey = queryKeys.projects.specKitJobs(projectId);
+  const activeJobsQuery = useQuery({
+    queryKey: jobsKey,
+    queryFn: () => specKitApi.listActiveJobs(projectId),
+    enabled: Boolean(projectId) && enabledQuery.data?.enabled === true,
+    refetchInterval: SPEC_KIT_ACTIVE_JOBS_POLL_MS,
+  });
+  // The jobs this page view is WATCHING (its own): each one's latest state, and
+  // where the page was when this tab started it (absent for one it only found
+  // running). Fresher than the list, which is read less often.
+  const [watching, setWatching] = useState<
+    Record<string, { job: SpecKitJobDto; origin?: SpecKitJobOrigin }>
+  >({});
+  const watchingRef = useRef(watching);
+  watchingRef.current = watching;
+  // Jobs this page saw end: the list may still name them until its next read.
+  const [endedJobs, setEndedJobs] = useState<string[]>([]);
+  // Requests in flight that are not (yet) a job: a start not answered yet, or a
+  // command that answers on the request itself.
+  const [sending, setSending] = useState(0);
+  const [jobNotices, setJobNotices] = useState<JobNotice[]>([]);
+  // The selection as it is NOW, for a callback that runs minutes after it was made.
+  const selectedFeatureRef = useRef(selectedFeature);
+  selectedFeatureRef.current = selectedFeature;
+
+  const noteJob = (job: SpecKitJobDto, origin: SpecKitJobOrigin | undefined): void => {
+    if (isSpecKitJobActive(job.status)) {
+      setWatching((prev) => ({ ...prev, [job.id]: { job, ...(origin ? { origin } : {}) } }));
+      return;
+    }
+    setWatching(({ [job.id]: _ended, ...rest }) => rest);
+    setEndedJobs((prev) => [...prev, job.id]);
+  };
+
+  // #1059 — the job's own `job:lifecycle` events (kind `spec-kit`), when the
+  // page has a socket: each one makes the watch read the job at once. The
+  // timed read goes on regardless, so no event is ever relied on.
+  const socket = useSocket();
+  const socketRef = useRef(socket);
+  socketRef.current = socket;
+  const followJob = (jobId: string, onEvent: () => void): (() => void) => {
+    const live = socketRef.current;
+    if (!live) return () => undefined;
+    const leave = joinJobRoom(live, jobId);
+    const onLifecycle = (event: JobLifecycleEvent): void => {
+      if (event.jobId === jobId) onEvent();
+    };
+    live.on("job:lifecycle" as never, onLifecycle as never);
+    return () => {
+      leave();
+      live.off("job:lifecycle" as never, onLifecycle as never);
+    };
+  };
+
+  /** One run of a command: `attach` watches a job that already exists. */
+  interface CommandRun {
+    command: SpecKitNamespacedCommand;
+    options: SpecKitRunOptions;
+    attach?: SpecKitJobDto;
+    /** Where the page was when THIS TAB started it; absent for a job it only found. */
+    origin?: SpecKitJobOrigin;
+  }
+  // The job each run turned out to be, for the callbacks that only get the run.
+  const jobOfRun = useRef(new WeakMap<CommandRun, string>());
+  /**
+   * True when a run's outcome belongs on the page as it is now: this tab
+   * started it, and the page still shows where it was started. Otherwise the
+   * outcome is announced (a toast, a notice) but moves nothing: not the
+   * selection, not the command box, not the saved handoff.
+   */
+  const isHere = (input: CommandRun): boolean =>
+    !hasLeftPage() &&
+    input.origin !== undefined &&
+    selectedFeatureRef.current === input.origin.scope;
+
   const commandMutation = useMutation({
-    // #1069 — after a lost response (a bare 5xx from the proxy, a dropped
-    // connection) this polls for the artifact the command was writing.
-    mutationFn: (input: { command: SpecKitNamespacedCommand; options: SpecKitRunOptions }) =>
-      runSpecKitCommandWithRecovery(projectId, input.command, input.options, {
+    // #1059 — a model-backed command is started as a background job and then
+    // watched until it is terminal; `attach` watches one that is already
+    // running (after a reload, or a visit to another page). Several can be
+    // under way at once: one per feature.
+    mutationFn: async (input: CommandRun) => {
+      const hooks = {
         signal: leftPage.current?.signal,
-      }),
+        origin: input.origin,
+        subscribe: followJob,
+        onUpdate: (job: SpecKitJobDto): void => {
+          jobOfRun.current.set(input, job.id);
+          if (!hasLeftPage()) noteJob(job, input.origin);
+        },
+      };
+      if (input.attach) return watchSpecKitJob(projectId, input.attach.id, hooks, input.attach);
+      // Counted as "sending" until it is a job (which the page then shows as
+      // such) or, for a command that is not a job, until it has answered.
+      let counted = true;
+      const sent = (): void => {
+        if (!counted) return;
+        counted = false;
+        setSending((n) => n - 1);
+      };
+      setSending((n) => n + 1);
+      try {
+        return await runSpecKitCommand(projectId, input.command, input.options, {
+          ...hooks,
+          onUpdate: (job: SpecKitJobDto): void => {
+            sent();
+            hooks.onUpdate(job);
+          },
+        });
+      } finally {
+        sent();
+      }
+    },
     // #936 — a command is a write (an artifact, a model call, issues on GitHub):
     // never resend it on a 5xx, which sent one click's request twice.
     retry: false,
-    // Issue #423 — Spec Kit commands stream `job:lifecycle` (kind `spec-kit`).
-    // The command is awaited server-side and the response carries the verbatim
-    // grounded-completion line ("Generated spec.md (v3) … grounded on N retrieved
-    // chunks."), so we fire the terminal toast from the callbacks (a late
-    // `subscribe:job` would miss the already-emitted terminal event) and keep
-    // surfacing the line in the result card. The grounded line is preserved
-    // byte-for-byte as the success toast text.
+    onSettled: (_result, _error, input) => {
+      if (hasLeftPage()) return;
+      // A watch that gave up (the job could not be read) is no longer watching;
+      // the list says whether the job itself is still running.
+      const jobId = jobOfRun.current.get(input);
+      if (jobId) setWatching(({ [jobId]: _settled, ...rest }) => rest);
+      void queryClient.invalidateQueries({ queryKey: jobsKey });
+    },
+    // Issue #423 — the result carries the verbatim grounded-completion line
+    // ("Generated spec.md (v3) … grounded on N retrieved chunks."), so the
+    // terminal toast fires from the callbacks and the line is kept in the
+    // result card, byte for byte.
     onSuccess: (result, input) => {
       const onPage = !hasLeftPage();
-      if (onPage) {
+      const here = isHere(input);
+      if (here) {
         setLastErrorMessage(null);
         setLastResultMessage(result.message);
       }
@@ -341,11 +509,11 @@ export default function SpecKitPage() {
         input.command === "speckit.taskstoissues" && input.options.dryRun !== true
           ? createdIssueLinks(result.created)
           : [];
-      if (onPage) setLastIssueLinks(issueLinks);
+      if (here) setLastIssueLinks(issueLinks);
       // #1057 / #1037 — a cut-off reply that was not saved is shown, not lost,
       // and the toast is a warning: the command ran but changed less than asked.
       const partial = partialReplies(result.partialContent);
-      if (onPage) setLastPartial(partial);
+      if (here) setLastPartial(partial);
       if (result.message) {
         if (issueLinks.length > 0) {
           toast.success(result.message, {
@@ -364,6 +532,22 @@ export default function SpecKitPage() {
       if (!onPage) {
         // #945 — the handoff is kept for the next visit, not for this page view.
         if (handedOff) saveHandoff(projectId, handedOff);
+        return;
+      }
+      if (!here) {
+        // #1059 — the command ended somewhere the page is not showing (another
+        // feature, or a job this tab did not start). It is announced; the
+        // selection, the command box and the saved handoff stay as they are.
+        if (handedOff) saveHandoff(projectId, handedOff);
+        setJobNotices((prev) => [
+          ...prev,
+          {
+            id: jobOfRun.current.get(input) ?? `${input.command}-${prev.length}`,
+            tone: "info",
+            text: result.message || `/${input.command} finished.`,
+            featureSlug: result.feature?.slug ?? featureSlug,
+          },
+        ]);
         return;
       }
       setCommandBuffer("");
@@ -407,10 +591,24 @@ export default function SpecKitPage() {
         );
       }
     },
-    onError: (err) => {
-      // The poll was abandoned because the page was left: nothing failed.
-      if (err instanceof SpecKitCommandCancelledError) return;
-      if (hasLeftPage()) {
+    onError: (err, input) => {
+      // The watch ended because the page was left: nothing failed, and the job
+      // is picked up again when the page is next opened.
+      if (err instanceof SpecKitJobAbandonedError) return;
+      const here = isHere(input);
+      // #1059 — a cancelled command is not a failure: said once, without a code.
+      if (err instanceof SpecKitJobCancelledError) {
+        toast.warning(err.message);
+        if (!here) return;
+        setLastResultMessage(null);
+        setLastIssueLinks([]);
+        setLastPartial([]);
+        setLastError({ text: err.message, code: null });
+        return;
+      }
+      // Elsewhere (the page was left, or it now shows another feature): said
+      // in a toast, and the page's own cards are left alone.
+      if (!here) {
         toast.error(describeSpecKitError(err));
         return;
       }
@@ -419,6 +617,60 @@ export default function SpecKitPage() {
       setLastPartial([]);
       // #945 — the page's own words, never API field names or a raw issue array.
       reportFailure(err);
+    },
+  });
+
+  // #1059 — on opening the page, pick the viewer's jobs up again.
+  //
+  // A job still RUNNING is watched, and nothing else: the page does not move to
+  // its feature and does not stop the viewer running a command elsewhere (the
+  // server accepts one). It is shown as running, with a way to open it.
+  //
+  // A job this tab was watching that FINISHED while the page was away is shown
+  // as if the page had stayed open — result card, toast, cache refresh (#1088)
+  // — but only when this tab started it and it finished a short while ago
+  // (`isFreshSpecKitResult`). Otherwise it is a line saying what happened
+  // earlier: reopening a tab the next morning must not select yesterday's
+  // feature or clear a handoff saved since.
+  // Once per project per page view.
+  const attachTried = useRef<string | null>(null);
+  const userId = user?.id;
+  const watchJob = commandMutation.mutate;
+  useEffect(() => {
+    if (!projectId || !userId || attachTried.current === projectId) return;
+    attachTried.current = projectId;
+    void findSpecKitJobsOnOpen(projectId, userId).then(({ running, finished }) => {
+      if (leftPage.current?.signal.aborted !== false) return;
+      const attach = (job: SpecKitJobDto, origin: SpecKitJobOrigin | undefined): void => {
+        // Already watched: the viewer started it while this lookup was in flight.
+        if (watchingRef.current[job.id]) return;
+        watchJob({
+          command: job.command,
+          options: job.featureSlug !== null ? { featureSlug: job.featureSlug } : {},
+          attach: job,
+          ...(origin ? { origin } : {}),
+        });
+      };
+      for (const { job, origin } of running) attach(job, origin);
+      for (const { job, origin } of finished) {
+        if (origin && isFreshSpecKitResult(job)) {
+          attach(job, origin);
+          continue;
+        }
+        forgetWatchedJob(projectId, job.id);
+        setJobNotices((prev) => [...prev, pastJobNotice(job)]);
+      }
+    });
+  }, [projectId, userId, watchJob]);
+
+  // #1059 — cancel the running job. The watch then sees it end as cancelled.
+  const cancelMutation = useMutation({
+    mutationFn: (jobId: string) => specKitApi.cancelJob(projectId, jobId),
+    retry: false,
+    // E.g. 409: the command is already saving its result.
+    onError: (err) => toast.error(describeSpecKitError(err)),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: jobsKey });
     },
   });
 
@@ -478,7 +730,39 @@ export default function SpecKitPage() {
   // #372 — show the BA/PM onboarding panel until the first artifact exists.
   const hasArtifacts = (filesQuery.data?.artifacts.length ?? 0) > 0;
   const suggestions = useMemo(() => suggestPaletteCommands(commandBuffer), [commandBuffer]);
-  const busy = commandMutation.isPending;
+  // #1059 — every live job of the project: the list, overlaid with what this
+  // page is watching (fresher), less the ones it has seen end.
+  const liveJobs = useMemo(() => {
+    const byId = new Map<string, SpecKitJobDto>();
+    for (const job of activeJobsQuery.data?.jobs ?? []) {
+      if (isSpecKitJobActive(job.status) && !endedJobs.includes(job.id)) byId.set(job.id, job);
+    }
+    for (const { job } of Object.values(watching)) byId.set(job.id, job);
+    return [...byId.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  }, [activeJobsQuery.data, watching, endedJobs]);
+  // The jobs that belong to what the page shows: the one holding this
+  // feature's lock (anyone's), and any this tab started from here — a
+  // `/speckit.specify` started on the project files runs under the NEW
+  // feature's slug, and is still this view's command.
+  const hereJobs = liveJobs.filter(
+    (job) =>
+      job.featureSlug === selectedFeature || watching[job.id]?.origin?.scope === selectedFeature,
+  );
+  const otherJobs = liveJobs.filter((job) => !hereJobs.includes(job));
+  // What Run is refused for: only the scope the typed command would lock, and
+  // only while a live job holds it. Other features are never held up.
+  const typedCommand = useMemo(() => parsePaletteCommand(commandBuffer), [commandBuffer]);
+  const lockScope = typedCommand
+    ? specKitCommandLockScope(typedCommand.command, selectedFeature)
+    : selectedFeature;
+  const runBlockedBy = lockScope === undefined ? null : specKitJobHolding(liveJobs, lockScope);
+  const runBlockedHint = runBlockedBy
+    ? `/${runBlockedBy.command} is running ${
+        runBlockedBy.featureSlug ? `on ${runBlockedBy.featureSlug}` : "on the project files"
+      } (started by ${runBlockedBy.startedById === user?.id ? "you" : "another member"}). Run is available here again when it ends; other features are not affected.`
+    : undefined;
+  // The feature's own buttons wait for a request in flight and for the feature's job.
+  const busy = sending > 0 || specKitJobHolding(liveJobs, selectedFeature) !== null;
   // #789 / #936 — the dry run that Publish acts on: same feature, same tasks.md.
   const tasksVersion = featureArtifacts.find((a) => a.key === "tasks.md")?.version ?? null;
   const exportPreview =
@@ -521,7 +805,7 @@ export default function SpecKitPage() {
   const clearHint = writeHint ?? (!credentialReady ? CREDENTIAL_NEEDED : undefined);
 
   const run = (command: SpecKitNamespacedCommand, options: SpecKitRunOptions = {}): void => {
-    commandMutation.mutate({ command, options });
+    commandMutation.mutate({ command, options, origin: { scope: selectedFeature } });
   };
 
   const submitBuffer = (): void => {
@@ -530,6 +814,13 @@ export default function SpecKitPage() {
       setLastErrorMessage(
         "Start with a Spec Kit command, e.g. /speckit.specify, /speckit.plan or /speckit.tasks.",
       );
+      return;
+    }
+    // #1059 — the Enter key must not get past a disabled Run; it says why.
+    if (sending > 0) return;
+    if (runBlockedHint) {
+      setLastResultMessage(null);
+      setLastErrorMessage(runBlockedHint);
       return;
     }
     if (FEATURE_REQUIRED_COMMANDS.has(parsed.command) && selectedFeature === null) {
@@ -913,7 +1204,7 @@ export default function SpecKitPage() {
             value={commandBuffer}
             onChange={(e) => setCommandBuffer(e.target.value)}
             placeholder="/speckit.specify build a billing dashboard"
-            disabled={!canWrite || !enabled || commandMutation.isPending}
+            disabled={!canWrite || !enabled}
             title={writeHint}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -940,19 +1231,24 @@ export default function SpecKitPage() {
               ))}
             </ul>
           ) : null}
-          <HoverHint hint={writeHint} className="flex w-full">
+          <HoverHint hint={writeHint ?? runBlockedHint} className="flex w-full">
             <Button
               type="button"
               size="sm"
               onClick={submitBuffer}
-              disabled={!canWrite || !enabled || commandMutation.isPending}
-              title={writeHint}
+              disabled={!canWrite || !enabled || sending > 0 || runBlockedBy !== null}
+              title={writeHint ?? runBlockedHint}
               data-testid="spec-kit-run-button"
               className="w-full"
             >
-              {commandMutation.isPending ? "Running…" : "Run"}
+              {sending > 0 || runBlockedBy ? "Running…" : "Run"}
             </Button>
           </HoverHint>
+          {runBlockedHint ? (
+            <p className="text-xs text-muted-foreground" data-testid="spec-kit-run-blocked">
+              {runBlockedHint}
+            </p>
+          ) : null}
         </Card>
 
         {/* #789 — the per-feature commands that need no typed input. */}
@@ -1207,13 +1503,129 @@ export default function SpecKitPage() {
           </Card>
         ) : null}
 
-        {commandMutation.isPending || constitutionMutation.isPending ? (
-          <JobProgress
-            indeterminate
-            message="Running Spec Kit command…"
-            label="Spec Kit command progress"
-            testId="spec-kit-progress"
-          />
+        {sending > 0 || constitutionMutation.isPending || hereJobs.length > 0 ? (
+          <div className="space-y-2">
+            {hereJobs.length === 0 ? (
+              <JobProgress
+                indeterminate
+                message="Running Spec Kit command…"
+                label="Spec Kit command progress"
+                testId="spec-kit-progress"
+              />
+            ) : null}
+            {hereJobs.map((job, index) => {
+              const mine = job.startedById === user?.id;
+              // The first job keeps the plain test ids; a second one is told apart by its id.
+              const suffix = index === 0 ? "" : `-${job.id}`;
+              return (
+                <div key={job.id} className="space-y-2">
+                  <JobProgress
+                    indeterminate
+                    message={jobProgressText(job)}
+                    label="Spec Kit command progress"
+                    testId={`spec-kit-progress${suffix}`}
+                  />
+                  <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span data-testid={`spec-kit-job-note${suffix}`}>
+                      {mine
+                        ? "Runs on the server: you can leave this page and come back."
+                        : "Started by another member. It runs on the server; this page shows it end."}
+                    </span>
+                    {mine ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!canWrite || cancelMutation.isPending || job.status !== "running"}
+                        onClick={() => cancelMutation.mutate(job.id)}
+                        data-testid={`spec-kit-job-cancel${suffix}`}
+                      >
+                        {job.status === "cancelling" || cancelMutation.isPending
+                          ? "Cancelling…"
+                          : job.status === "saving"
+                            ? "Saving…"
+                            : "Cancel"}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {/* #1059 — commands running elsewhere in the project: shown, never in the way. */}
+        {otherJobs.length > 0 ? (
+          <Card className="space-y-2 p-3 text-xs" data-testid="spec-kit-other-jobs">
+            <p className="font-medium">Also running in this project</p>
+            <ul className="space-y-1">
+              {otherJobs.map((job) => (
+                <li
+                  key={job.id}
+                  className="flex items-center justify-between gap-2"
+                  data-testid={`spec-kit-other-job-${job.id}`}
+                >
+                  <span>
+                    {jobProgressText(job)}{" "}
+                    <span className="text-muted-foreground">
+                      (started by {job.startedById === user?.id ? "you" : "another member"})
+                    </span>
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => selectFeature(job.featureSlug)}
+                    data-testid={`spec-kit-other-job-open-${job.id}`}
+                  >
+                    {job.featureSlug ? `Open ${job.featureSlug}` : "Open project files"}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+            <p className="text-muted-foreground">
+              You can keep working here: a command is held up only on the feature it runs on.
+            </p>
+          </Card>
+        ) : null}
+
+        {jobNotices.length > 0 ? (
+          <Card className="space-y-2 p-3 text-xs" data-testid="spec-kit-job-notices">
+            {jobNotices.map((notice) => (
+              <div
+                key={notice.id}
+                className="flex items-start justify-between gap-2"
+                data-testid={`spec-kit-job-notice-${notice.id}`}
+              >
+                <span className={notice.tone === "error" ? "text-destructive" : undefined}>
+                  {notice.text}
+                </span>
+                <span className="flex shrink-0 gap-1">
+                  {notice.featureSlug !== selectedFeature ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => selectFeature(notice.featureSlug)}
+                      data-testid={`spec-kit-job-notice-open-${notice.id}`}
+                    >
+                      {notice.featureSlug ? `Open ${notice.featureSlug}` : "Open project files"}
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      setJobNotices((prev) => prev.filter((other) => other.id !== notice.id))
+                    }
+                    data-testid={`spec-kit-job-notice-dismiss-${notice.id}`}
+                  >
+                    Dismiss
+                  </Button>
+                </span>
+              </div>
+            ))}
+          </Card>
         ) : null}
 
         {lastResultMessage ? (

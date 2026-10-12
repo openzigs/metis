@@ -394,6 +394,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#1057 — how much a Spec Kit model call may reason. Same values as DOCS_GEN_PHASE1_REASONING. auto (default): low effort for a model that REASONS BY DEFAULT (DeepSeek deepseek-v4-pro / deepseek-flash, or a claude-* name sent to DeepSeek's Anthropic endpoint) and nothing for every other model, so Claude on api.anthropic.com is unchanged. provider-default: send nothing. off: thinking disabled. low / medium / high: that effort for any model. In #706 run 7 deepseek-flash at its default (high) spent the whole output cap reasoning and /speckit.plan returned no text three times.",
     sensitive: false,
   },
+  // ── Issue #1059 — Spec Kit commands as background jobs ───────────────
+  SPEC_KIT_JOB_TIMEOUT_MS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(60_000).max(21_600_000),
+    description:
+      "#1059 — the longest one Spec Kit command may run as a job, in milliseconds. Default 1800000 (30 minutes); 60000 to 21600000 (1 minute to 6 hours), and a value outside that range is ignored. Past it the in-flight model call is aborted and the job fails with 504 SPEC_KIT_JOB_TIMEOUT before saving anything, so the previous version of every artifact is kept. A job that has already started saving is never stopped. /speckit.plan is five model calls in sequence and ran 5 to 8 minutes in #706 run 7. Read when a job starts.",
+    sensitive: false,
+  },
   // ── Issue #1060 — Spec Kit plan localisation ─────────────────────────
   SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET: {
     tier: "tunable",

@@ -17,12 +17,21 @@
  * Errors are normalised through `AppError` so the global error handler
  * surfaces them with the project's standard envelope.
  */
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
+  SPECKIT_LEGACY_ALIAS,
+  SPEC_KIT_JOB_NOT_FOUND_CODE,
+  SPEC_KIT_JOB_RUNNING_CODE,
+  SPEC_KIT_JOB_SAVING_CODE,
+  SPEC_KIT_NOT_A_JOB_CODE,
+  SPEC_KIT_START_TOKEN_HEADER,
   isSpecKitArtifactName,
-  isSpecKitCommand,
+  isSpecKitJobCommand,
   type SpecKitCommand,
+  type SpecKitJobDto,
+  type SpecKitJobError,
+  type SpecKitNamespacedCommand,
   normalizeSpecKitCommand,
   specKitCommandRequestSchema,
   specKitWriteRequestSchema,
@@ -55,7 +64,10 @@ import { runImplement } from "../lib/spec-kit/commands/implement.js";
 import { runConstitution } from "../lib/spec-kit/commands/constitution.js";
 import { runChecklist } from "../lib/spec-kit/commands/checklist.js";
 import { runPlanExpanded } from "../lib/spec-kit/commands/plan-expanded.js";
-import { runSpecifyFeature } from "../lib/spec-kit/commands/specify-feature.js";
+import {
+  runSpecifyFeature,
+  specifyFeatureTitle,
+} from "../lib/spec-kit/commands/specify-feature.js";
 import {
   clearStuckTasksExport,
   exportTasksToGitHub,
@@ -65,6 +77,8 @@ import {
 import { PublishError } from "../lib/publishing/types.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import {
+  createFeature,
+  discardEmptyDraftFeature,
   listFeatures,
   resolveFeatureBySlug,
   archiveFeature,
@@ -84,16 +98,42 @@ import {
   type GateName,
 } from "../lib/spec-kit/gates.js";
 import { featureArtifactScope, type ArtifactScope } from "../lib/spec-kit/artifact-scope.js";
-import { BudgetExceededError } from "../lib/finops/budget-enforcer.js";
+import { BudgetExceededError, assertWithinBudget } from "../lib/finops/budget-enforcer.js";
+import { audit } from "../lib/audit/audit-service.js";
 import { SafetyDeniedError } from "../lib/safety/safety-hook.js";
 import { resolveProjectProvider } from "../lib/ai/project-provider.js";
-import { AIProviderError } from "../lib/ai/errors.js";
+import { AIProviderError, describeProviderErrorSafely } from "../lib/ai/errors.js";
 import { isRetiredProviderError } from "../lib/ai/retired-providers.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
 import { recordJobScope } from "../lib/socket/job-scope-store.js";
 import { createChildLogger } from "../lib/logger.js";
 import { randomUUID } from "node:crypto";
+import { ZodError } from "zod";
+import { zodErrorToFriendly } from "../middleware/error-handler.js";
+import { mapStatusCarryingError } from "../middleware/http-status-errors.js";
+import {
+  specKitJobPreAuthRateLimiter,
+  specKitJobUserReadRateLimiter,
+  specKitJobUserWriteRateLimiter,
+} from "../middleware/spec-kit-job-rate-limit.js";
+import { SPECKIT_FEATURE_SLUG_RE } from "../lib/spec-kit/features.js";
+import {
+  SPEC_KIT_JOB_CANCELLED_MESSAGE,
+  SPEC_KIT_JOB_INTERNAL_ERROR,
+  SPEC_KIT_JOB_START_TOKEN_RE,
+  SpecKitJobAlreadyStartedError,
+  SpecKitJobConflictError,
+  SpecKitJobSavingError,
+  cancelSpecKitJob,
+  extractCompletionMessage,
+  getSpecKitJob,
+  listActiveSpecKitJobs,
+  specKitJobHolding,
+  specKitJobIdForStart,
+  startSpecKitJob,
+  type StartedSpecKitJob,
+} from "../lib/spec-kit/jobs.js";
 
 const log = createChildLogger("spec-kit");
 
@@ -113,18 +153,72 @@ function ok<T>(data: T): { success: true; data: T } {
  * preserved verbatim and is NOT regressed by the async refactor. When a result
  * has no message (defensive — should not happen for the LLM commands), fall back
  * to a generic completion label so the terminal toast still reads sensibly.
+ *
+ * #1059 — it lives with the job runner now, which emits the same terminal line.
  */
-export function extractCompletionMessage(result: unknown, fallback: string): string {
-  if (
-    result &&
-    typeof result === "object" &&
-    "message" in result &&
-    typeof (result as { message: unknown }).message === "string" &&
-    (result as { message: string }).message.length > 0
-  ) {
-    return (result as { message: string }).message;
+export { extractCompletionMessage };
+
+/**
+ * #1059 — the error a client is shown for whatever a command threw, as this
+ * route maps it.
+ *
+ * One class is NOT stored with its own message: a provider failure. Its message
+ * can carry the upstream service's free text (`anthropic chat failed (…): <what
+ * the provider said>`), and a job's error is kept for a day and readable by
+ * every member who can read the project — not, as on a request that is simply
+ * answered, by the caller alone. It is stored as the provider, the operation,
+ * the error class and the HTTP status; the job runner logs the full error.
+ */
+export function toSpecKitJobError(err: unknown): SpecKitJobError {
+  if (err instanceof AIProviderError) {
+    return {
+      status: 502,
+      code: "AI_PROVIDER_KEY_UNAVAILABLE",
+      message: describeProviderErrorSafely(err),
+    };
   }
-  return fallback;
+  try {
+    rethrow(err);
+  } catch (mapped) {
+    if (mapped instanceof AppError) {
+      return {
+        status: mapped.statusCode,
+        code: mapped.code,
+        message: mapped.message,
+        ...(mapped.details ? { details: mapped.details } : {}),
+      };
+    }
+    if (mapped instanceof ZodError) {
+      const friendly = zodErrorToFriendly(mapped);
+      return {
+        status: 400,
+        code: "VALIDATION_ERROR",
+        message: friendly.message,
+        details: { fields: friendly.fields },
+      };
+    }
+    // Status and code only: the message of any other error class is never
+    // forwarded (see http-status-errors.ts).
+    const carried = mapStatusCarryingError(mapped);
+    if (carried) {
+      return { status: carried.statusCode, code: carried.code, message: carried.message };
+    }
+  }
+  return SPEC_KIT_JOB_INTERNAL_ERROR;
+}
+
+/** #1059 — a terminal job's result, or the error the synchronous route answers with. */
+function jobResultOrThrow(job: SpecKitJobDto): unknown {
+  if (job.status === "succeeded") return job.result;
+  if (job.status === "cancelled") {
+    throw new AppError(409, "SPEC_KIT_JOB_CANCELLED", SPEC_KIT_JOB_CANCELLED_MESSAGE);
+  }
+  const error = job.error ?? SPEC_KIT_JOB_INTERNAL_ERROR;
+  throw new AppError(error.status, error.code, error.message, error.details);
+}
+
+function jobNotFound(): AppError {
+  return new AppError(404, SPEC_KIT_JOB_NOT_FOUND_CODE, "No such Spec Kit job in this project");
 }
 
 /**
@@ -267,6 +361,309 @@ async function ensureEnabled(projectId: string): Promise<void> {
   }
 }
 
+/** A `/commands/:cmd` request, checked as far as it can be before the command runs. */
+interface PreparedCommand {
+  projectId: string;
+  canonical: SpecKitNamespacedCommand;
+  /** The command as the caller named it (`/plan` for the legacy alias), for progress text. */
+  label: string;
+  /** The feature whose artifacts the command writes; `null` for the project-level set. */
+  featureSlug: string | null;
+  actor: string;
+  run: () => Promise<unknown>;
+  /**
+   * Set for a command that creates a NEW feature (`speckit.specify` without a
+   * `featureSlug`). It writes nothing another such command writes, so it must
+   * not hold the project-level key: `reserve` creates the feature — the store
+   * gives two concurrent creators different numbers — and the job is started
+   * under that feature's own slug, running `run(slug)`.
+   *
+   * `preflight` is everything that can refuse the command without a model
+   * call and that used to be decided before a feature existed (the provider,
+   * the budget). It runs BEFORE `reserve`, so a project whose provider cannot
+   * be built answers its 502 / 409 and creates nothing, on every attempt.
+   */
+  newFeature?: {
+    preflight: () => Promise<void>;
+    reserve: () => Promise<ReservedFeature>;
+    run: (featureSlug: string) => Promise<unknown>;
+  };
+}
+
+/** A feature a command created for itself, before its job started. */
+interface ReservedFeature {
+  id: string;
+  slug: string;
+}
+
+/**
+ * The budget gate `runSpecKitAgent` applies before its model call, applied
+ * before a feature is created for the command. Same error, same audit event.
+ */
+async function assertSpecifyWithinBudget(projectId: string, actor: string): Promise<void> {
+  try {
+    await assertWithinBudget(projectId);
+  } catch (err) {
+    if (err instanceof BudgetExceededError) {
+      audit({
+        actor: { id: actor },
+        action: "spec_kit.command.specify.denied",
+        target: { type: "project", id: projectId },
+        metadata: { reason: "budget_exceeded" },
+      });
+    }
+    throw err;
+  }
+}
+
+/**
+ * Remove the feature a job reserved for itself when that job saved nothing.
+ * Never throws. Three things keep it from removing anything else:
+ *
+ *   - it waits for the job's own command to have ENDED (`work`), so nothing of
+ *     that job can still create or write the feature afterwards;
+ *   - it leaves a feature that a live job holds (somebody started a command on
+ *     the draft in the meantime);
+ *   - the delete itself is conditional on the feature still being an empty
+ *     draft (`discardEmptyDraftFeature`), and names the feature by the id this
+ *     job was given at the reservation, never by slug.
+ */
+async function discardReservedFeature(
+  projectId: string,
+  feature: ReservedFeature,
+  actor: string,
+  work?: Promise<unknown>,
+): Promise<void> {
+  try {
+    await work?.catch(() => undefined);
+    if (await specKitJobHolding(projectId, feature.slug)) return;
+    await discardEmptyDraftFeature(feature.id, actor);
+  } catch (err) {
+    log.warn("could not remove the empty feature a failed /speckit.specify created", {
+      projectId,
+      feature: feature.slug,
+      error: String(err),
+    });
+  }
+}
+
+/**
+ * Validate a command request and bind the command to run. Everything the
+ * command needs of the request is read here, because a job outlives it.
+ *
+ * MVP-1: both the `speckit.*` namespaced form and the v1.2 legacy short names
+ * are accepted. A legacy name sets a `Deprecation` header and dispatches the
+ * original v1.2 handler, so its result shape (and its project-level `.specify/`
+ * scope) does not change.
+ */
+async function prepareCommand(req: Request, res: Response): Promise<PreparedCommand> {
+  const parsed = specKitCommandRequestSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+  }
+  const cmdRaw = String(req.params.cmd ?? "");
+  const input = parsed.data.input;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const normalized = normalizeSpecKitCommand(cmdRaw);
+  if (!normalized) {
+    throw new AppError(400, "SPEC_KIT_UNKNOWN_COMMAND", `Unknown Spec Kit command: ${cmdRaw}`);
+  }
+  const projectId = projectIdFrom(req);
+  const { canonical } = normalized;
+  const legacyCmd = normalized.legacy ? SPECKIT_LEGACY_ALIAS[canonical] : null;
+  if (legacyCmd) {
+    res.setHeader("Deprecation", "true");
+    res.setHeader(
+      "Link",
+      `</api/projects/${projectId}/spec-kit/commands/${canonical}>; rel="successor-version"`,
+    );
+  }
+  try {
+    await ensureEnabled(projectId);
+    const actor = actorId(req);
+    const resolveProvider = memoizeProviderResolver(() => resolveProjectProvider(projectId));
+    if (legacyCmd) {
+      return {
+        projectId,
+        canonical,
+        label: `/${legacyCmd}`,
+        featureSlug: null,
+        actor,
+        run: () => dispatchCommand(legacyCmd, projectId, input, actor, resolveProvider),
+      };
+    }
+    // Object-level scope (BOLA) for the one command that publishes to a third
+    // party: `project.update` alone would let a member of workspace A publish
+    // workspace B's tasks. Checked before anything runs, so a refused caller
+    // records no job scope and emits no `started` event.
+    if (canonical === "speckit.taskstoissues" && req.user) {
+      await assertProjectAccess(req.user, projectId);
+    }
+    const ctx = {
+      force: req.header("x-speckit-force") === "1" || req.header("x-speckit-force") === "true",
+      user: req.user,
+    };
+    const featureSlug = typeof body.featureSlug === "string" ? body.featureSlug : null;
+    const dispatch = (commandBody: Record<string, unknown>) => (): Promise<unknown> =>
+      dispatchNamespaced(canonical, projectId, input, actor, commandBody, ctx, resolveProvider);
+    if (canonical === "speckit.specify" && featureSlug === null) {
+      // Refused here, before a feature is created for it (400 SPECKIT_EMPTY_INPUT).
+      const title = specifyFeatureTitle(input);
+      return {
+        projectId,
+        canonical,
+        label: `/${canonical}`,
+        featureSlug: null,
+        actor,
+        run: dispatch(body),
+        newFeature: {
+          preflight: async () => {
+            await resolveProvider();
+            await assertSpecifyWithinBudget(projectId, actor);
+          },
+          reserve: async () => {
+            const feature = await createFeature({ projectId, title, actorId: actor });
+            return { id: feature.id, slug: feature.slug };
+          },
+          run: (slug) => dispatch({ ...body, featureSlug: slug })(),
+        },
+      };
+    }
+    return {
+      projectId,
+      canonical,
+      label: `/${canonical}`,
+      featureSlug,
+      actor,
+      run: dispatch(body),
+    };
+  } catch (err) {
+    rethrow(err);
+  }
+}
+
+/**
+ * #1059 — start a prepared command as a job. A second start on the same feature
+ * (or on the project-level set) is refused with 409 `SPEC_KIT_JOB_RUNNING`,
+ * naming the job that holds it: there is never a second job writing it.
+ *
+ * The key is exactly as wide as what the command writes. A command that creates
+ * a new feature has that feature created first and is locked under its slug,
+ * so any number of members can each create a feature at the same time, and a
+ * project-level command does not block them. That feature is removed again if
+ * the job ends without having saved anything into it.
+ *
+ * `jobId` is set when the caller sent a start token: the start then creates
+ * that job or throws `SpecKitJobAlreadyStartedError` (nothing new is left).
+ */
+async function startCommandJob(
+  prepared: PreparedCommand,
+  jobId?: string,
+): Promise<StartedSpecKitJob> {
+  let cmd = prepared;
+  let reserved: ReservedFeature | null = null;
+  /** The reserved feature's own command, once the job has started running it. */
+  let work: Promise<unknown> | undefined;
+  if (prepared.newFeature) {
+    const { preflight, reserve, run } = prepared.newFeature;
+    try {
+      await preflight();
+    } catch (err) {
+      // Answered as the job would have stored it (a provider failure without
+      // the provider's own words), on this route and on the synchronous one.
+      const refused = toSpecKitJobError(err);
+      throw new AppError(refused.status, refused.code, refused.message, refused.details);
+    }
+    const feature = await reserve();
+    reserved = feature;
+    cmd = {
+      ...prepared,
+      featureSlug: feature.slug,
+      run: () => {
+        work = run(feature.slug);
+        return work;
+      },
+    };
+  }
+  // The slug is part of the lock key, so it is checked here rather than
+  // minutes into the command (which refuses it with the same code).
+  if (cmd.featureSlug !== null && !SPECKIT_FEATURE_SLUG_RE.test(cmd.featureSlug)) {
+    throw new AppError(
+      400,
+      "SPECKIT_INVALID_SLUG",
+      `Slug must match ^\\d{3}-[a-z0-9-]{1,80}$ (got: ${cmd.featureSlug.slice(0, 120)})`,
+    );
+  }
+  try {
+    const started = await startSpecKitJob({
+      ...(jobId !== undefined ? { id: jobId } : {}),
+      projectId: cmd.projectId,
+      command: cmd.canonical,
+      featureSlug: cmd.featureSlug,
+      actorId: cmd.actor,
+      label: cmd.label,
+      run: cmd.run,
+      mapError: toSpecKitJobError,
+    });
+    if (reserved) {
+      const feature = reserved;
+      // `done` never rejects, and neither does the removal.
+      void started.done.then((job) =>
+        job.status === "succeeded"
+          ? undefined
+          : discardReservedFeature(cmd.projectId, feature, cmd.actor, work),
+      );
+    }
+    return started;
+  } catch (err) {
+    // The job never ran (its scope could not be recorded, or this very start
+    // had already been made): the feature reserved for it is nobody's.
+    if (reserved) await discardReservedFeature(cmd.projectId, reserved, cmd.actor);
+    if (err instanceof SpecKitJobConflictError) {
+      throw new AppError(409, SPEC_KIT_JOB_RUNNING_CODE, err.message, {
+        ...(err.holder
+          ? {
+              jobId: err.holder.id,
+              command: err.holder.command,
+              featureSlug: err.holder.featureSlug,
+            }
+          : {}),
+      });
+    }
+    throw err;
+  }
+}
+
+/**
+ * The id of the job the request's start token names for THIS caller in THIS
+ * project, or `undefined` when the request carries none. 400 for a token that
+ * is not 16 to 128 characters of `A-Z a-z 0-9 _ -`.
+ */
+function startTokenJobId(req: Request, projectId: string): string | undefined {
+  const token = req.header(SPEC_KIT_START_TOKEN_HEADER);
+  if (token === undefined) return undefined;
+  if (!SPEC_KIT_JOB_START_TOKEN_RE.test(token)) {
+    throw new AppError(
+      400,
+      "SPECKIT_INVALID_START_TOKEN",
+      "X-SpecKit-Start-Token must be 16 to 128 characters of A-Z, a-z, 0-9, _ or -",
+    );
+  }
+  return specKitJobIdForStart(projectId, actorId(req), token);
+}
+
+/** The job a repeated start names, provided it is a start of the same command. */
+function sameStart(job: SpecKitJobDto, cmd: PreparedCommand): SpecKitJobDto {
+  if (job.command !== cmd.canonical) {
+    throw new AppError(
+      409,
+      "SPECKIT_START_TOKEN_REUSED",
+      `This start token already started /${job.command}. Use a new token for each command you start.`,
+    );
+  }
+  return job;
+}
+
 export function specKitRouter(): Router {
   const r = Router({ mergeParams: true });
 
@@ -394,19 +791,18 @@ export function specKitRouter(): Router {
     }
   });
 
-  // Epic #406 (#423) — Spec Kit commands are LLM-backed and froze the UI on a
-  // static "Running…" label with no progress or terminal toast. They now run
-  // under the unified `job:lifecycle` bus (kind `spec-kit`): a `jobId` is minted,
-  // `started` → `progress` stream while the command runs, and the
-  // GROUNDED-COMPLETION line ("Generated spec.md (v3) … grounded on N retrieved
-  // chunks.") is surfaced VERBATIM as the terminal `completed` message (#423
-  // invariant). The HTTP response still carries the full command result + the
-  // `jobId` so existing callers keep their precise success payload AND error
-  // contract: budget/safety/provider/gate failures still map to their proper 4xx
-  // via `rethrow()` (the bus additionally gets a generic, user-safe `failed`
-  // event). A single LLM call is not corpus-scale, so awaiting it carries no
-  // gateway risk — the corpus-scale op (embeddings reindex) is the one made fully
-  // async (202 + jobId) elsewhere.
+  // Epic #406 (#423) — Spec Kit commands stream `job:lifecycle` (kind
+  // `spec-kit`) and their GROUNDED-COMPLETION line ("Generated spec.md (v3) …
+  // grounded on N retrieved chunks.") is the terminal `completed` message.
+  //
+  // #1059 — this route still ANSWERS WITH THE RESULT, for API clients (the MCP
+  // transport, scripts, the walkthrough's API-only checks): same payload, same
+  // statuses and codes. But a command that makes a model call now runs as a job
+  // (`startSpecKitJob`) that this request merely waits on, so it holds the same
+  // per-feature lock as a job started with `POST /commands/:cmd/jobs`, and a
+  // caller whose connection drops can still read the outcome from
+  // `GET /jobs/:jobId`. A long command should be started as a job instead: a
+  // request held for minutes is at the mercy of every proxy in between.
   // #953 — `speckit.taskstoissues` files real GitHub issues, so it is rate
   // limited ahead of auth (by address) and after it (live runs, by user). Both
   // limiters skip every other command.
@@ -417,114 +813,142 @@ export function specKitRouter(): Router {
     requirePermission("project.update"),
     specKitExportLiveRateLimiter,
     async (req, res) => {
-      const parsed = specKitCommandRequestSchema.safeParse(req.body ?? {});
-      if (!parsed.success) {
-        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-      }
-      const cmdRaw = String(req.params.cmd ?? "");
-      const input = parsed.data.input;
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      // MVP-1: accept both `speckit.*` namespaced form and the v1.2 legacy
-      // short names. Set a `Deprecation` header on legacy invocations.
-      const normalized = normalizeSpecKitCommand(cmdRaw);
-      if (normalized) {
-        if (normalized.legacy) {
-          res.setHeader("Deprecation", "true");
-          res.setHeader(
-            "Link",
-            `</api/projects/${projectIdFrom(req)}/spec-kit/commands/${normalized.canonical}>; rel="successor-version"`,
-          );
-          // Legacy aliases preserve v1.2 behavior — dispatch through the
-          // original handler so the streamed result shape does not change.
-          try {
-            const projectId = projectIdFrom(req);
-            await ensureEnabled(projectId);
-            const legacyCmd = normalized.canonical.replace(/^speckit\./, "") as SpecKitCommand;
-            if (!isSpecKitCommand(legacyCmd)) {
-              throw new AppError(
-                400,
-                "SPEC_KIT_UNKNOWN_COMMAND",
-                `Legacy alias has no v1.2 dispatcher: ${cmdRaw}`,
-              );
-            }
-            const actor = actorId(req);
-            const jobId = randomUUID();
-            const result = await runSpecKitCommandJob(jobId, projectId, `/${legacyCmd}`, () =>
-              dispatchCommand(
-                legacyCmd,
-                projectId,
-                input,
-                actor,
-                memoizeProviderResolver(() => resolveProjectProvider(projectId)),
-              ),
-            );
-            // Preserve the v1.2 response shape (command, artifactName, message, …)
-            // and add the `jobId` so the client can correlate the live progress it
-            // already received over the `job:lifecycle` bus.
-            res.json(ok({ ...(result as Record<string, unknown>), jobId }));
-          } catch (err) {
-            rethrow(err);
-          }
+      const cmd = await prepareCommand(req, res);
+      try {
+        if (!isSpecKitJobCommand(cmd.canonical)) {
+          const jobId = randomUUID();
+          const result = await runSpecKitCommandJob(jobId, cmd.projectId, cmd.label, cmd.run);
+          // Results vary in shape; spread them and add the `jobId` so the client
+          // can correlate the streamed progress with this response.
+          res.json(ok({ ...(result as Record<string, unknown>), jobId }));
           return;
         }
-        try {
-          const projectId = projectIdFrom(req);
-          await ensureEnabled(projectId);
-          const actor = actorId(req);
-          // Object-level scope (BOLA) for the one command that publishes to a
-          // third party: `project.update` alone would let a member of workspace
-          // A publish workspace B's tasks. Checked before the job wrapper so a
-          // refused caller records no job scope and emits no `started` event.
-          if (normalized.canonical === "speckit.taskstoissues" && req.user) {
-            await assertProjectAccess(req.user, projectId);
-          }
-          const jobId = randomUUID();
-          const result = await runSpecKitCommandJob(
-            jobId,
-            projectId,
-            `/${normalized.canonical}`,
-            () =>
-              dispatchNamespaced(
-                normalized.canonical,
-                projectId,
-                input,
-                actor,
-                body,
-                req,
-                memoizeProviderResolver(() => resolveProjectProvider(projectId)),
-              ),
-          );
-          // Namespaced results vary in shape; spread them and add the `jobId` so
-          // the client can correlate the streamed progress with this response.
-          res.json(ok({ ...(result as Record<string, unknown>), jobId }));
-        } catch (err) {
-          rethrow(err);
-        }
-        return;
-      }
-      if (!isSpecKitCommand(cmdRaw)) {
-        throw new AppError(400, "SPEC_KIT_UNKNOWN_COMMAND", `Unknown Spec Kit command: ${cmdRaw}`);
-      }
-      try {
-        const projectId = projectIdFrom(req);
-        await ensureEnabled(projectId);
-        const actor = actorId(req);
-        const jobId = randomUUID();
-        const result = await runSpecKitCommandJob(jobId, projectId, `/${cmdRaw}`, () =>
-          dispatchCommand(
-            cmdRaw,
-            projectId,
-            input,
-            actor,
-            memoizeProviderResolver(() => resolveProjectProvider(projectId)),
-          ),
+        const started = await startCommandJob(cmd);
+        const job = await started.done;
+        res.json(
+          ok({
+            ...(jobResultOrThrow(job) as Record<string, unknown>),
+            jobId: job.id,
+          }),
         );
-        // Preserve the v1.2 DispatchedCommandResult shape (command, artifactName,
-        // artifact, message — incl. the grounded-completion line — tokensUsed) and
-        // add the `jobId` so the client can correlate the streamed progress.
-        res.json(ok({ ...(result as Record<string, unknown>), jobId }));
       } catch (err) {
         rethrow(err);
+      }
+    },
+  );
+
+  // ---- #1059: Spec Kit commands as background jobs -------------------------
+  // Every job endpoint checks the caller against the PROJECT (object-level
+  // scope first, so another tenant's caller gets a 404 whatever their role),
+  // then the role, and reads a job only through `(projectId, jobId)`: a job id
+  // from another project is indistinguishable from one that never existed.
+  //
+  // Rate limits, the same arrangement on all four (`spec-kit-job-rate-limit.ts`):
+  // a coarse limiter in front of `requireAuth` (CodeQL js/missing-rate-limiting)
+  // whose key no caller can aim at another, then — straight after `requireAuth`
+  // — the budget that matters, per signed-in user: one for reads, one for
+  // starts and cancels. Never the client address, which the client can choose.
+  //
+  // `X-SpecKit-Start-Token` makes a start repeatable: a second start carrying
+  // the same token, from the same user in the same project, is answered with
+  // the job the first one started — no second feature, no second run — so a
+  // client whose 202 was lost can find its job instead of guessing.
+  r.post(
+    "/commands/:cmd/jobs",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    specKitJobUserWriteRateLimiter,
+    requireProjectAccess(),
+    requirePermission("project.update"),
+    async (req, res) => {
+      const cmd = await prepareCommand(req, res);
+      if (!isSpecKitJobCommand(cmd.canonical)) {
+        throw new AppError(
+          400,
+          SPEC_KIT_NOT_A_JOB_CODE,
+          `/${cmd.canonical} does not run as a job — send it to POST /spec-kit/commands/${cmd.canonical}.`,
+        );
+      }
+      const jobId = startTokenJobId(req, cmd.projectId);
+      const answer = (job: SpecKitJobDto): void => {
+        res
+          .status(202)
+          .location(`/api/projects/${cmd.projectId}/spec-kit/jobs/${job.id}`)
+          .json(ok({ jobId: job.id, job }));
+      };
+      try {
+        // Looked up first, so a repeat does not even reserve a feature; the
+        // primary key settles the two that arrive together (caught below).
+        const already = jobId ? await getSpecKitJob(cmd.projectId, jobId) : null;
+        answer(already ? sameStart(already, cmd) : (await startCommandJob(cmd, jobId)).job);
+      } catch (err) {
+        if (err instanceof SpecKitJobAlreadyStartedError) {
+          answer(sameStart(err.job, cmd));
+          return;
+        }
+        rethrow(err);
+      }
+    },
+  );
+
+  r.get(
+    "/jobs",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    specKitJobUserReadRateLimiter,
+    requireProjectAccess(),
+    requirePermission("project.read"),
+    async (req, res) => {
+      const projectId = projectIdFrom(req);
+      // With a start token: also the job that token started for this caller,
+      // running or finished — how a client recovers a start whose 202 was lost.
+      const startedId = startTokenJobId(req, projectId);
+      res.json(
+        ok({
+          jobs: await listActiveSpecKitJobs(projectId),
+          ...(startedId !== undefined
+            ? { started: await getSpecKitJob(projectId, startedId) }
+            : {}),
+        }),
+      );
+    },
+  );
+
+  r.get(
+    "/jobs/:jobId",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    specKitJobUserReadRateLimiter,
+    requireProjectAccess(),
+    requirePermission("project.read"),
+    async (req, res) => {
+      const job = await getSpecKitJob(projectIdFrom(req), String(req.params.jobId ?? ""));
+      if (!job) throw jobNotFound();
+      res.json(ok({ job }));
+    },
+  );
+
+  r.post(
+    "/jobs/:jobId/cancel",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    specKitJobUserWriteRateLimiter,
+    requireProjectAccess(),
+    requirePermission("project.update"),
+    async (req, res) => {
+      try {
+        const job = await cancelSpecKitJob(
+          projectIdFrom(req),
+          String(req.params.jobId ?? ""),
+          actorId(req),
+        );
+        if (!job) throw jobNotFound();
+        res.json(ok({ job }));
+      } catch (err) {
+        if (err instanceof SpecKitJobSavingError) {
+          throw new AppError(409, SPEC_KIT_JOB_SAVING_CODE, err.message);
+        }
+        throw err;
       }
     },
   );
@@ -854,12 +1278,16 @@ async function dispatchNamespaced(
   input: string,
   actor: string,
   body: Record<string, unknown>,
-  req: Request,
+  /**
+   * #1059 — what the command needs of the request, read before it runs: a job
+   * outlives the request that started it.
+   */
+  ctx: { force: boolean; user: Request["user"] },
   resolveProvider: ProviderResolver,
 ): Promise<unknown> {
   // Per-feature commands accept a `featureSlug` body field.
   const featureSlug = typeof body.featureSlug === "string" ? body.featureSlug : undefined;
-  const force = req.header("x-speckit-force") === "1" || req.header("x-speckit-force") === "true";
+  const { force } = ctx;
   // #788 — `speckit.constitution` is gated by the route's `project.update`, like
   // every other Spec Kit write. A second `speckit.constitution.write` check here
   // never decided anything: every role holding `project.update` also held it.
@@ -925,14 +1353,14 @@ async function dispatchNamespaced(
       // live export through the vault-bound, target-guarded GitHub client.
       const extra = tasksExportBodySchema.safeParse(body);
       if (!extra.success) throw new AppError(400, "BAD_REQUEST", extra.error.message);
-      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      if (!ctx.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
       // BOLA: assertProjectAccess already ran in the route, before the job wrapper.
       const exportInput = {
         projectId,
         featureSlug,
         force,
         actorId: actor,
-        actorRole: req.user.role,
+        actorRole: ctx.user.role,
         ...(typeof body.repo === "object" && body.repo !== null
           ? { repo: body.repo as { owner: string; name: string } }
           : {}),
