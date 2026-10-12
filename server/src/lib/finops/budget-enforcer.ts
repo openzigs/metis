@@ -21,7 +21,7 @@
 import { prisma } from "../prisma.js";
 import { resolveRate } from "./provider-rates.js";
 import { LEDGER_COST_SELECT, ledgerRowCents, normalizeCents } from "./ledger-cost.js";
-import { canonicalTokenCounts, priceCanonicalTokensExact } from "./token-tracker.js";
+import { ledgerRowSummedRequests, priceLedgerTokensExact } from "./token-tracker.js";
 
 export class BudgetExceededError extends Error {
   readonly status = 402;
@@ -174,6 +174,7 @@ export async function projectMonthlyCostForCeiling(
       cacheReadTokens: true,
       cacheWriteTokens: true,
       totalTokens: true,
+      requestTokens: true,
       ...LEDGER_COST_SELECT,
     },
   });
@@ -182,11 +183,14 @@ export async function projectMonthlyCostForCeiling(
   for (const r of rows) {
     // #264 — re-price through the same uncached-share rule `recordUsage` uses,
     // or a gateway row's cache reads are billed again at the input rate.
+    // #1080 — and request by request, when the row sums several.
     const rowCents =
       ledgerRowCents(r) ??
-      priceCanonicalTokensExact(
+      priceLedgerTokensExact(
+        r.provider,
         resolveRate(r.provider, r.model),
-        canonicalTokenCounts(r.provider, r),
+        r,
+        ledgerRowSummedRequests(r),
       );
     if (rowCents === null) unpricedTokens += r.totalTokens;
     else cents += rowCents;

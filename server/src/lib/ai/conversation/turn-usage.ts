@@ -14,11 +14,18 @@
  * each store NOT yet written — so a turn is metered once per store, never
  * twice, and a turn that spent nothing writes no (zero) row.
  *
+ * #1080 — a turn is ONE row per store holding the sum of its model calls, and
+ * a model priced by prompt length (Claude Haiku 5.5) bills each call in one
+ * tier. The meter therefore also keeps each call's own usage
+ * ({@link TurnUsageMeter.requests}) and every recorder of a turn passes it on,
+ * so the row's cost is the sum of its calls' prices, not the price of the sum.
+ *
  * Sub-agent calls and compaction summaries meter themselves per call
  * (`bindSubAgents`, `providerSummarizer`) and are deliberately not counted here.
  */
 import { createChildLogger } from "../../logger.js";
 import { recordUsage as recordProjectUsage } from "../../finops/token-tracker.js";
+import { ledgerRequests } from "../../finops/summed-requests.js";
 import { getTokenTracker } from "../token-tracker.js";
 import type { ProviderKey, TokenUsage } from "../types.js";
 import { estimateTextTokens, type TokenRatio } from "./token-estimator.js";
@@ -98,6 +105,7 @@ export interface TurnUsageScope {
 
 export class TurnUsageMeter {
   private spent: TokenUsage | null = null;
+  private calls: TokenUsage[] = [];
   private perUserRecorded = false;
   private projectRecorded = false;
 
@@ -108,8 +116,19 @@ export class TurnUsageMeter {
     return this.spent;
   }
 
+  /**
+   * #1080 — each model call's own usage, in order; they add up to {@link usage}.
+   * A turn is recorded as ONE row holding their sum, and a model priced by
+   * prompt length bills each call in one tier, so both usage stores are handed
+   * these (`requests`) and price the row call by call.
+   */
+  get requests(): readonly TokenUsage[] {
+    return this.calls;
+  }
+
   /** One more model call of this turn returned and reported `u`. */
   add(u: TokenUsage): void {
+    this.calls.push({ ...u });
     const s = this.spent ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     this.spent = {
       promptTokens: s.promptTokens + (u.promptTokens ?? 0),
@@ -123,6 +142,7 @@ export class TurnUsageMeter {
   /** A single-call turn's provider reported its (whole) usage. */
   set(u: TokenUsage): void {
     this.spent = { ...u };
+    this.calls = [{ ...u }];
   }
 
   /** The success path wrote the per-user `AITokenUsage` row. */
@@ -160,6 +180,7 @@ export class TurnUsageMeter {
           },
           agentStep: FAILED_TURN_AGENT_STEP,
           ...(projectId ? { projectId } : {}),
+          requests: this.calls,
         });
       } catch (err) {
         log.error("Failed to meter a failed chat turn (per-user usage)", {
@@ -182,6 +203,7 @@ export class TurnUsageMeter {
           outputTokens: u.completionTokens,
           cacheReadTokens: u.cacheReadTokens,
           cacheWriteTokens: u.cacheWriteTokens,
+          requests: ledgerRequests(this.calls),
         });
       } catch (err) {
         log.error("Failed to meter a failed chat turn (project usage)", {

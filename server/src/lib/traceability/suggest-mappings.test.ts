@@ -7,6 +7,8 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "../ai/providers/anthropic-provider.js";
+import { DEEPSEEK_OPENAI_FORMAT_DEFAULT_MAX_TOKENS } from "../ai/providers/bedrock-direct-provider.js";
+import { OpenAICompatibleProvider } from "../ai/providers/openai-compatible-provider.js";
 import type { AIProvider } from "../ai/types.js";
 import {
   DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS,
@@ -425,6 +427,72 @@ describe("suggestMappings output cap (#751)", () => {
     const sent = (chat.mock.calls[0]![1] as { maxTokens: number }).maxTokens;
     expect(sent).toBe(ANTHROPIC_DEFAULT_MAX_TOKENS);
     expect(sent).toBeGreaterThanOrEqual(16_000);
+  });
+
+  it("never LOWERS a DeepSeek host below the 65,536 its adapter inherits (#1077 review)", async () => {
+    // The REAL adapter, pointed at DeepSeek: with no cap of its own a chat call
+    // there gets 65,536. The 8,192 "floor" used to be sent instead — lower, and
+    // between the 4,096 measured failing and the 16,000 measured passing.
+    const real = new OpenAICompatibleProvider({
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "placeholder-not-a-key",
+      model: "deepseek-flash",
+      providerKey: "openai",
+      discoverCapabilities: false,
+    });
+    expect(real.defaultMaxTokens).toBe(DEEPSEEK_OPENAI_FORMAT_DEFAULT_MAX_TOKENS);
+    const { chat } = truncatingProvider([]);
+    vi.spyOn(real, "chat").mockImplementation(chat as unknown as typeof real.chat);
+
+    await suggestMappings("proj-1", "req-1", deps(real));
+
+    const sent = (chat.mock.calls[0]![1] as { maxTokens: number }).maxTokens;
+    expect(sent).toBe(65_536);
+  });
+
+  it("still raises the same adapter on any other host from 4,096 to the 8,192 target", async () => {
+    const real = new OpenAICompatibleProvider({
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "placeholder-not-a-key",
+      model: "gpt-4o",
+      providerKey: "openai",
+      discoverCapabilities: false,
+    });
+    expect(real.defaultMaxTokens).toBe(4096);
+    const { chat } = truncatingProvider([]);
+    vi.spyOn(real, "chat").mockImplementation(chat as unknown as typeof real.chat);
+
+    await suggestMappings("proj-1", "req-1", deps(real));
+
+    expect(chat.mock.calls[0]![1]).toMatchObject({ maxTokens: 8_192 });
+  });
+
+  it("reads the adapter's own default, whatever its key — and ignores a junk one", async () => {
+    const withDefault = async (defaultMaxTokens: unknown, key = "openai") => {
+      const { provider, chat } = asProvider(key, "some-model");
+      Object.assign(provider, { defaultMaxTokens });
+      await suggestMappings("proj-1", "req-1", deps(provider));
+      return (chat.mock.calls[0]![1] as { maxTokens: number }).maxTokens;
+    };
+    // An operator-configured default above the target is kept…
+    expect(await withDefault(20_000)).toBe(20_000);
+    // …one below it is raised to the target…
+    expect(await withDefault(2_000)).toBe(8_192);
+    // …and a value that is no limit at all falls back to the key's default.
+    expect(await withDefault(Number.NaN)).toBe(8_192);
+    expect(await withDefault(0)).toBe(8_192);
+    expect(await withDefault(undefined, "anthropic")).toBe(ANTHROPIC_DEFAULT_MAX_TOKENS);
+  });
+
+  it("an operator's explicit cap is still used as given on a DeepSeek host", async () => {
+    const { provider, chat } = asProvider("openai", "deepseek-flash");
+    Object.assign(provider, { defaultMaxTokens: DEEPSEEK_OPENAI_FORMAT_DEFAULT_MAX_TOKENS });
+    await suggestMappings(
+      "proj-1",
+      "req-1",
+      deps(provider, { DATA_MAPPING_SUGGEST_MAX_OUTPUT_TOKENS: "3000" }),
+    );
+    expect(chat.mock.calls[0]![1]).toMatchObject({ maxTokens: 3000 });
   });
 
   it("re-asks a cap-truncated batch as two halves instead of skipping it", async () => {

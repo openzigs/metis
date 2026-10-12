@@ -57,3 +57,51 @@ describe("billableTurnUsage", () => {
     }
   });
 });
+
+// #1080 (PR #1092 review) — a turn is recorded as ONE row holding the sum of its
+// model calls; a model priced by prompt length bills each call in one tier, so
+// the meter keeps each call's own usage for the recorders.
+describe("TurnUsageMeter.requests", () => {
+  const scope = {
+    sessionId: "s-1",
+    userId: "u-1",
+    projectId: null,
+    provider: "anthropic" as const,
+    model: "claude-haiku-5-5",
+  };
+  const call = (promptTokens: number, completionTokens: number) => ({
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+  });
+
+  it("keeps each call in order beside the running sum", async () => {
+    const { TurnUsageMeter } = await import("./turn-usage.js");
+    const meter = new TurnUsageMeter(scope);
+    expect(meter.requests).toEqual([]);
+
+    meter.add(call(30_000, 1_000));
+    meter.add(call(120_000, 500));
+
+    expect(meter.requests).toEqual([call(30_000, 1_000), call(120_000, 500)]);
+    expect(meter.usage).toMatchObject({ promptTokens: 150_000, completionTokens: 1_500 });
+  });
+
+  it("copies what it is given, so a caller reusing its usage object cannot rewrite a call", async () => {
+    const { TurnUsageMeter } = await import("./turn-usage.js");
+    const meter = new TurnUsageMeter(scope);
+    const reused = call(10, 1);
+    meter.add(reused);
+    reused.promptTokens = 999;
+    expect(meter.requests[0]!.promptTokens).toBe(10);
+  });
+
+  it("a single-call turn's `set` is one request, replacing anything added before", async () => {
+    const { TurnUsageMeter } = await import("./turn-usage.js");
+    const meter = new TurnUsageMeter(scope);
+    meter.add(call(5, 5));
+    meter.set(call(40, 9));
+    expect(meter.requests).toEqual([call(40, 9)]);
+    expect(meter.usage).toEqual(call(40, 9));
+  });
+});

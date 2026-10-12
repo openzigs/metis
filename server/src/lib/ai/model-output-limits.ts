@@ -75,6 +75,22 @@ export const MODEL_MAX_OUTPUT_TOKENS: ReadonlyMap<string, ModelOutputLimit> = ne
     "claude-mythos-5",
     { maxOutputTokens: 128000, source: "Anthropic Models API max_tokens (128K)" },
   ],
+  // #1080 — the 5.5 generation. NOT read from the Models API (no key was
+  // available): the figure is the "Max output" row of the models overview,
+  // https://platform.claude.com/docs/en/about-claude/models/overview, read
+  // 2026-10-11. Re-verify with the Models API as for the rows above.
+  [
+    "claude-opus-5-5",
+    { maxOutputTokens: 128000, source: "Anthropic models overview — Max output 128K tokens" },
+  ],
+  [
+    "claude-sonnet-5-5",
+    { maxOutputTokens: 128000, source: "Anthropic models overview — Max output 128K tokens" },
+  ],
+  [
+    "claude-haiku-5-5",
+    { maxOutputTokens: 128000, source: "Anthropic models overview — Max output 128K tokens" },
+  ],
   ["claude-opus-5", { maxOutputTokens: 128000, source: "Anthropic Models API max_tokens (128K)" }],
   [
     "claude-opus-4-8",

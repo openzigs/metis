@@ -224,7 +224,7 @@ export class AnthropicProvider implements AIProvider {
   );
   private readonly client: Anthropic;
   private readonly defaultModel: string;
-  private readonly defaultMaxTokens: number;
+  readonly defaultMaxTokens: number;
   private readonly streamMaxTokens: number;
   /** #25 — `baseUrl` is DeepSeek's Anthropic-compatible endpoint. */
   private readonly deepSeekEndpoint: boolean;

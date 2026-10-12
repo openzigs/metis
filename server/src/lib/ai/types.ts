@@ -589,6 +589,14 @@ export interface AIProvider {
    * auto-mode runs on its configured model rather than a guessed Claude id.
    */
   servesRouterModel?(modelId: string): boolean;
+  /**
+   * #1077 — the output-token limit a `chat()` call on this adapter gets when
+   * the caller sets no `maxTokens`. It depends on the adapter AND on where it
+   * points (4,096 on an OpenAI-compatible host, 65,536 on DeepSeek's, 16,000 on
+   * Anthropic), so a caller that sets its own limit as a floor reads it here
+   * rather than assuming one. Optional: a test double need not declare it.
+   */
+  readonly defaultMaxTokens?: number;
 
   chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse>;
   stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk>;

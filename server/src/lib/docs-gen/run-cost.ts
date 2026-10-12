@@ -15,10 +15,16 @@
  * `self-hosted` for local-gemma, `zero-priced` for anything else priced at zero
  * (offline-stub, an admin price entry of 0), which is not
  * necessarily self-hosted.
+ *
+ * #1080 — a model priced by prompt length (Claude Haiku 5.5) bills each request
+ * in one tier, so a run's calls to it are tallied in two lines: the calls whose
+ * prompt was over the threshold (`promptTier: "long"`) and the rest. Each line
+ * is then priced at its own tier; pricing the summed tokens as if they were one
+ * request would put a run of many small calls in the long-prompt tier.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createChildLogger } from "../logger.js";
-import { estimateUsageCostUsd } from "../ai/token-tracker.js";
+import { estimateUsageCostUsd, usagePromptTier } from "../ai/token-tracker.js";
 import type { UsageProvider } from "../ai/types.js";
 import { resolveRate } from "../finops/provider-rates.js";
 import { currentGenerationScope } from "./generation-scope.js";
@@ -51,17 +57,34 @@ export interface RunUsageLine {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /**
+   * #1080 — set (to `"long"`) only on the line holding a prompt-length-priced
+   * model's calls whose prompt was over its threshold.
+   */
+  promptTier?: "long";
 }
 
-/** Accumulates the token counts of one run, per provider + model. */
+/** Accumulates the token counts of one run, per provider + model (+ price tier). */
 export class RunUsage {
   private readonly byModel = new Map<string, RunUsageLine>();
 
   add(event: RunUsageEvent): void {
-    const key = `${event.provider}\u0000${event.model}`;
+    const long =
+      usagePromptTier(
+        event.model,
+        {
+          promptTokens: count(event.inputTokens),
+          completionTokens: count(event.outputTokens),
+          cacheReadTokens: count(event.cacheReadTokens),
+          cacheWriteTokens: count(event.cacheWriteTokens),
+        },
+        event.provider as UsageProvider,
+      ) === "long";
+    const key = `${event.provider}\u0000${event.model}${long ? "\u0000long" : ""}`;
     const line = this.byModel.get(key) ?? {
       provider: event.provider,
       model: event.model,
+      ...(long ? { promptTier: "long" as const } : {}),
       calls: 0,
       inputTokens: 0,
       outputTokens: 0,
@@ -132,6 +155,10 @@ export function estimateRunCost(usage: RunUsage): RunCostEstimate {
         cacheWriteTokens: line.cacheWriteTokens,
       },
       line.provider as UsageProvider,
+      "5m",
+      // The line's calls were sorted by tier one at a time; do not re-decide
+      // it from their sum.
+      line.promptTier ?? "standard",
     );
     return costUsd === null
       ? { ...line, pricing: "unpriced", costUsd: null }
@@ -210,7 +237,12 @@ export function logRunCost(
     estimatedCostUsd: usd(estimate.estimatedCostUsd),
     byModel: estimate.lines
       .filter((l) => l.pricing === "priced")
-      .map((l) => ({ model: label(l), calls: l.calls, costUsd: usd(l.costUsd ?? 0) })),
+      .map((l) => ({
+        model: label(l),
+        calls: l.calls,
+        costUsd: usd(l.costUsd ?? 0),
+        ...(l.promptTier ? { promptTier: l.promptTier } : {}),
+      })),
     // Calls left out of the total, so a partial estimate says it is partial.
     ...(unpriced.length ? { unpricedModels: unpriced } : {}),
     ...(selfHosted.length ? { selfHostedModels: selfHosted } : {}),

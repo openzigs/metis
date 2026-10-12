@@ -17,9 +17,26 @@ import { prisma } from "../prisma.js";
 import {
   computeCostCents,
   computeCostCentsExact,
+  isLongPrompt,
   resolveRate,
+  tierRate,
   type TokenRate,
 } from "./provider-rates.js";
+import {
+  encodeRequestTokens,
+  ledgerRowRequests,
+  ledgerRowSummedRequests,
+  summedRequests,
+  type RequestTokenCounts,
+} from "./summed-requests.js";
+
+export {
+  encodeRequestTokens,
+  ledgerRowRequests,
+  ledgerRowSummedRequests,
+  summedRequests,
+  type RequestTokenCounts,
+};
 
 const log = createChildLogger("finops-token-tracker");
 
@@ -36,6 +53,14 @@ export interface RecordUsageInput {
   userId?: string;
   /** #792 — the pipeline step that spent the tokens, for "by agent step". */
   agentStep?: string;
+  /**
+   * #1080 — for a caller that records the SUM of several model requests as one
+   * row (a chat turn that ran a tool loop, a discussion reply): each request's
+   * own counts, which must add up to the counts above. The row is then priced
+   * request by request and stores them ({@link summedRequests}). Omit it when
+   * the counts above are one request's.
+   */
+  requests?: readonly RequestTokenCounts[];
 }
 
 export interface RecordUsageResult {
@@ -187,6 +212,78 @@ function canonicalCostUsage(counts: CanonicalTokenCounts) {
   };
 }
 
+/** The tokens of a row that bill in one price tier of its model. */
+export interface TierShare {
+  /** True for the share from requests over the rate's prompt-length threshold. */
+  longPrompt: boolean;
+  counts: CanonicalTokenCounts;
+}
+
+/**
+ * #1080 — a row's tokens as the share each price tier bills. One share, the
+ * whole row, when the rate has no prompt-length tier or the row is one request
+ * (`requests` null) — so every other model is priced exactly as before. For a
+ * summed row on a tiered rate, each request is put in the tier ITS prompt falls
+ * in and the tiers are summed apart.
+ */
+export function ledgerTierShares(
+  provider: string,
+  rate: TokenRate | null,
+  counts: StoredTokenCounts,
+  requests: readonly StoredTokenCounts[] | null,
+): TierShare[] {
+  if (!rate?.longPrompt || !requests) {
+    const canonical = canonicalTokenCounts(provider, counts);
+    return [
+      {
+        longPrompt: rate !== null && isLongPrompt(rate, canonicalCostUsage(canonical)),
+        counts: canonical,
+      },
+    ];
+  }
+  const shares = new Map<boolean, CanonicalTokenCounts>();
+  for (const request of requests) {
+    // #264 — each request's counts are made disjoint BEFORE summing.
+    const c = canonicalTokenCounts(provider, request);
+    const longPrompt = isLongPrompt(rate, canonicalCostUsage(c));
+    const s = shares.get(longPrompt);
+    shares.set(
+      longPrompt,
+      s
+        ? {
+            freshInputTokens: s.freshInputTokens + c.freshInputTokens,
+            outputTokens: s.outputTokens + c.outputTokens,
+            cacheReadTokens: s.cacheReadTokens + c.cacheReadTokens,
+            cacheWriteTokens: s.cacheWriteTokens + c.cacheWriteTokens,
+            totalTokens: s.totalTokens + c.totalTokens,
+          }
+        : c,
+    );
+  }
+  return [...shares].map(([longPrompt, c]) => ({ longPrompt, counts: c }));
+}
+
+/**
+ * #1080 — the unrounded cost in cents of a row's tokens, each request in its
+ * own price tier ({@link ledgerTierShares}); `null` when the model is unpriced
+ * (#22). THE way to price a row from its tokens: `recordUsage`, and every
+ * reader that re-prices a stored row.
+ */
+export function priceLedgerTokensExact(
+  provider: string,
+  rate: TokenRate | null,
+  counts: StoredTokenCounts,
+  requests: readonly StoredTokenCounts[] | null,
+): number | null {
+  if (rate === null) return null;
+  return ledgerTierShares(provider, rate, counts, requests).reduce(
+    (cents, share) =>
+      cents +
+      computeCostCentsExact(tierRate(rate, share.longPrompt), canonicalCostUsage(share.counts)),
+    0,
+  );
+}
+
 /**
  * Record a usage event. Returns the canonical token totals + computed cost
  * synchronously; the durable insert + Socket.IO emit run on a microtask.
@@ -208,7 +305,15 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
   const totalTokens = canonical.totalTokens;
   // #22 — the single pricing source; `null` for a model METIS has no price for.
   // #761 — priced ONCE, unrounded; `costCents` is the same figure to the cent.
-  const exactCents = priceCanonicalTokensExact(resolveRate(input.provider, input.model), canonical);
+  // #1080 — a row that sums several requests is priced request by request.
+  const stored = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
+  const requests = summedRequests(stored, input.requests);
+  const exactCents = priceLedgerTokensExact(
+    input.provider,
+    resolveRate(input.provider, input.model),
+    stored,
+    requests,
+  );
   const costCents = exactCents === null ? null : Math.round(exactCents);
   const costUsd = exactCents === null ? null : exactCents / 100;
 
@@ -236,6 +341,7 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
       costUsd,
       ...(input.userId ? { userId: input.userId } : {}),
       ...(input.agentStep ? { agentStep: input.agentStep } : {}),
+      ...(requests ? { requestTokens: encodeRequestTokens(requests) } : {}),
     }).finally(() => {
       pending -= 1;
       settle();
@@ -286,6 +392,7 @@ async function persist(row: {
   costUsd: number | null;
   userId?: string;
   agentStep?: string;
+  requestTokens?: string;
 }): Promise<void> {
   try {
     await prisma.tokenUsage.create({ data: row });
