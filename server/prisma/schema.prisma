@@ -3621,6 +3621,13 @@ model CodeGraph {
   /// automatic document regeneration needs to tell that rewrite from a real
   /// change of the graph; null when no upgrade ever rewrote it.
   extractorUpgradedAt DateTime?
+  /// Issue #1071 — the Go call binding the ingest's time ceiling left
+  /// unfinished: JSON `{ "version": <extractor version the rows have>,
+  /// "files": { "<path>": <index of the first call edge not yet resolved> } }`.
+  /// While it is set `extractorVersion` is not stamped, the stored answer of
+  /// every skipped call is kept, and the next ingest resumes these files
+  /// first, whether or not a Go file changed. Null when binding is complete.
+  goBindingIncomplete String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 

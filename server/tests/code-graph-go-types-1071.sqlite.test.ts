@@ -1028,10 +1028,18 @@ func main() { storage.Deep() }
         rootDir: root,
         incremental: false,
         sqlLineageOverride: false,
-        // Building the resolver alone takes more than no time at all.
+        // Building the resolver alone takes more than no time at all — and no
+        // minimum number of calls is let through first.
         goBindingMaxMs: -1,
+        goBindingMinCalls: 0,
       });
-      expect(stats.goBinding).toMatchObject({ calls: 5, skipped: 5, errors: 0, overBudget: 0 });
+      expect(stats.goBinding).toMatchObject({
+        calls: 5,
+        skipped: 5,
+        errors: 0,
+        overBudget: 0,
+        incomplete: { files: 1, calls: 5 },
+      });
       const got = await calls(projectId);
       // Nothing is decided by type: no verdict, and no type binding.
       expect(
@@ -1043,10 +1051,16 @@ func main() { storage.Deep() }
       );
 
       // Control: with the default ceiling nothing is skipped, and the next
-      // ingest that touches a Go file decides what the short one left.
-      await applyTree(root, { "internal/api/entry.go": `${HANDLER}\nfunc extra() {}\n` });
+      // ingest decides what the short one left — no Go file has to change
+      // (`code-graph-go-binding-incomplete-1071.sqlite.test.ts`).
       const full = await ingest(projectId, root);
-      expect(full.goBinding).toMatchObject({ skipped: 0, errors: 0, overBudget: 0 });
+      expect(full.goBinding).toMatchObject({
+        skipped: 0,
+        errors: 0,
+        overBudget: 0,
+        resumedFiles: 1,
+        incomplete: null,
+      });
       expect(await calls(projectId)).toContain(
         "internal/api/entry.go::handler::updateEntries > SetEntriesStatus → " +
           "internal/storage/storage.go::Storage::SetEntriesStatus (receiver-type)",

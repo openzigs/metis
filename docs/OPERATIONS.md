@@ -681,9 +681,24 @@ The ingest log reports the step as `Go calls bound by type` with `files`, `calls
 that is not in the source: `errors` (a call's resolution threw; `failures` names up to 50
 as `file:line callee` — worth reporting), `overBudget` (a step budget ran out: a type with
 an enormous embedding fan-out, in practice generated code) or `skipped` (the time ceiling
-was reached; that ingest's Go binding is incomplete and the next ingest that touches a Go
-file tries again). Such a call is never given a decided verdict: it goes on to the
-name-based rules as before #1071 and can still be bound, labelled `name`. A Go file hidden
+was reached; that ingest's Go binding is incomplete). Such a call is never given a decided
+verdict, and it never replaces an answer the graph already holds: for a file whose content
+did not change, the stored row of an unresolved call is left exactly as it was. Only a file
+that was itself re-parsed has no stored answer to keep; there the call goes on to the
+name-based rules as before #1071 and can still be bound, labelled `name`.
+
+**When the time ceiling is reached, the binding is finished by the next ingests.** The
+graph records what is left (`code_graphs.goBindingIncomplete`: each file with unresolved
+calls and the call it stopped at), `extractorVersion` is not stamped until nothing is left,
+and the next ingest takes those files up first, whether or not any Go file changed; an
+upgrade the ceiling interrupted is resumed, not started again. Every ingest resolves at
+least `GO_BINDING_MIN_CALLS` (2,000) calls whatever the clock says, so the work always
+shrinks. Where to see it: the Deep Ingest completion message and the Sync panel on the
+Connections page say `Go call binding is not finished: N calls in M files…`; the ingest
+log's warning carries `incomplete: { files, calls }` and, on the runs that continue,
+`resumedFiles`. To finish sooner, run Sync again: each run continues from where the last
+stopped. `overBudget` and `errors` are not resumed (the same input ends the same way), and
+a full re-ingest starts from the beginning. A Go file hidden
 by `.metisignore` (`*_gen.go`, `*.pb.go`) is not read, so names only it declares stay
 undecided for the rest of its directory rather than being recorded as external.
 

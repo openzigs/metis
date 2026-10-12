@@ -22,6 +22,13 @@ export interface DeepIngestOutcome {
     graphFiles?: number;
     graphSymbols?: number;
     graphEdges?: number;
+    /**
+     * #1071 — what binding Go calls by type left unfinished (`IngestStats.goBinding`):
+     * `incomplete` is set when the ingest's time ceiling was reached. Not a
+     * failure — the graph is usable and the next ingest continues — but the
+     * user is told ({@link goBindingIncompleteNote}).
+     */
+    goBinding?: { incomplete: GoBindingIncompleteCounts | null } | null;
   };
   source: { documentsCreated: number; chunkCount: number; failures: number };
   /**
@@ -43,6 +50,32 @@ export interface DeepIngestOutcome {
 
 function plural(n: number, singular: string, pluralForm = `${singular}s`): string {
   return `${n} ${n === 1 ? singular : pluralForm}`;
+}
+
+/** #1071 — the Go files, and the calls in them, an ingest's time ceiling left unbound by type. */
+export interface GoBindingIncompleteCounts {
+  files: number;
+  calls: number;
+}
+
+/**
+ * #1071 — the sentence that tells the user Go call binding is unfinished, or
+ * null when it is complete. Counts only. Shared by the Deep Ingest completion
+ * text and the Sync summary, so both say the same thing.
+ */
+export function goBindingIncompleteNote(
+  incomplete: GoBindingIncompleteCounts | null | undefined,
+): string | null {
+  if (!incomplete || incomplete.files <= 0) return null;
+  const what =
+    incomplete.calls > 0
+      ? `${plural(incomplete.calls, "Go call")} in ${plural(incomplete.files, "file")}`
+      : `Go calls in ${plural(incomplete.files, "file")}`;
+  return (
+    `Go call binding is not finished: ${what} ${incomplete.calls === 1 ? "is" : "are"} not yet bound by type ` +
+    `(the time limit for that step was reached). Nothing already bound was changed; ` +
+    `the next ingest continues from there.`
+  );
 }
 
 function formatBytes(bytes: number): string {
@@ -79,16 +112,20 @@ export function deepIngestCompletionMessage(outcome: DeepIngestOutcome): string 
   ];
   if (cloneSizeBytes > 0) totals.push(`${formatBytes(cloneSizeBytes)} cloned`);
 
+  // #1071 — an unfinished Go binding is said after the totals, whatever else happened.
+  const note = goBindingIncompleteNote(codeGraph.goBinding?.incomplete);
+  const tail = `${totals.join(", ")}.${note ? ` ${note}` : ""}`;
+
   const failureCount = deepIngestFailureCount(outcome);
   if (failureCount === 0 && outcome.schedulingWarning)
-    return `Deep ingest completed with a warning: ${outcome.schedulingWarning} ${totals.join(", ")}.`;
-  if (failureCount === 0) return `Deep ingest complete: ${totals.join(", ")}.`;
+    return `Deep ingest completed with a warning: ${outcome.schedulingWarning} ${tail}`;
+  if (failureCount === 0) return `Deep ingest complete: ${tail}`;
 
   return (
     `Deep ingest completed with ${plural(failureCount, "failure")}: ` +
     `${describeFailures({ source, metadata })}. ` +
     `Automatic document regeneration was skipped; run the ingest again to retry. ` +
-    `${totals.join(", ")}.`
+    tail
   );
 }
 

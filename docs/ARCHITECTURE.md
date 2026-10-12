@@ -3634,13 +3634,48 @@ so a call costs its own length and a tree costs declarations plus calls (the sam
 | --- | --- | --- |
 | Steps for one call | `GO_CALL_STEP_BUDGET` (10,000; `go-type-resolution.ts`) | The call is left undecided by type; counted in `IngestStats.goBinding.overBudget`. |
 | Steps for one type's member set | `GO_TYPE_STEP_BUDGET` (100,000) | No member of that type is decided, for any call; counted in `overBudget`. |
-| Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` (30 s; `ingest.ts`, per run `IngestOptions.goBindingMaxMs`) | Every remaining call of the run is left undecided by type; counted in `goBinding.skipped`, and the next ingest that touches a Go file tries again. |
+| Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` (30 s; `ingest.ts`, per run `IngestOptions.goBindingMaxMs`) | Every remaining call of the run is left undecided by type and counted in `goBinding.skipped`; where each file stopped is recorded on the graph and the next ingest resumes there (below). At least `GO_BINDING_MIN_CALLS` (2,000) calls are resolved first whatever the clock says. |
 
 Resolving one call cannot fail the ingest either: a throw leaves that call undecided, is
 counted (`goBinding.errors`) and named (`goBinding.failures`, `file:line callee`, up to 50).
-A call left undecided for any of these reasons goes on to the name-evidence rules exactly as
-before #1071, so it can still be bound and is then labelled `name`. A warning log line
-carries all four counters.
+A warning log line carries all four counters.
+
+**A call the step did not resolve never replaces a stored answer** (PR #1104, review
+cycle 3: on a fully bound Miniflux graph, one touched file under a 12 ms ceiling rewrote
+1,599 correct `receiver-type` bindings as name guesses and stripped about 7,000 decided
+verdicts). Every Go call's verdict is worked out as a *plan* before any edge is written;
+a call the plan marks unresolved — the ceiling, a step budget, a throw, a resolver that
+could not be built — leaves the row of an unchanged file exactly as it is. Two cases have
+no stored answer to keep and take the name-evidence one, labelled `name` when it binds: a
+file that was itself re-parsed or upgraded (its rows are written new), and a row that
+names a binding whose target symbol no longer exists.
+
+**What the ceiling leaves is recorded and resumed.** `CodeGraph.goBindingIncomplete` holds
+`{ version, files: { path: index } }`: for each file, the index among its Go call edges of
+the first call not resolved (after the ceiling every later call is skipped, so what is left
+of a file is its tail), and the extractor version the graph's rows already have. While it is
+set, `extractorVersion` is not stamped. The next incremental ingest reads it and
+
+- with **no Go file changed**, re-parses the Go files for their declarations and resolves
+  only the listed files, each from its recorded index — the earlier calls were resolved on
+  the same tree and their rows stand;
+- with **a Go file changed**, re-binds everything from the first call as before, the listed
+  files first, so the ceiling tripping again still finishes old work before new;
+- treats an **interrupted upgrade** as resumed: the rows are current, so no symbol is renamed
+  and no file rewritten a second time, and the in-place re-binds move
+  `extractorUpgradedAt` like every other write of that upgrade.
+
+Progress does not depend on the clock: `GO_BINDING_MIN_CALLS` calls are resolved in every
+run before the ceiling is consulted (one call is bounded by the step budgets), so an
+interrupted binding takes at most `ceil(calls / 2,000)` ingests. Over-budget and failed
+calls are not recorded — resolving them again ends the same way. A full re-ingest ignores
+the record. `IngestStats.goBinding.incomplete` (`{ files, calls }`) and `resumedFiles`
+report it; the Deep Ingest completion message and the Sync summary
+(`codeGraph.goBindingIncomplete`) show it to the user
+(`connectors/repo/deep-ingest-outcome.ts`, `goBindingIncompleteNote`). The ceiling is
+measured with `IngestOptions.goBindingNow` (default `performance.now`), which the tests
+replace to make it trip after an exact number of calls
+(`tests/code-graph-go-binding-incomplete-1071.sqlite.test.ts`).
 
 Measured on Miniflux v2.3.3 (21,100 Go call edges): resolved in the graph 4,967 → 8,348
 (3,985 `receiver-type`, 2,286 `same-package`, 2,076 `package`, 1 `name`). Of the 12,752 left:

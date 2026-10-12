@@ -31,6 +31,14 @@ ALTER TABLE "code_graphs" ADD COLUMN "extractorUpgradeFailed" TEXT;
 -- "extractorUpgradedAt"; an upgrade refresh then regenerates documents.
 ALTER TABLE "code_graphs" ADD COLUMN "extractorUpgradedAt" DATETIME;
 
+-- The Go call binding an ingest's time ceiling left unfinished (JSON: the
+-- extractor version the rows have, and per file the index of the first call
+-- not yet resolved by type; NULL: binding is complete). The next ingest
+-- resumes from it, and "extractorVersion" is stamped only once it is NULL
+-- again. Rollback: DROP COLUMN "goBindingIncomplete" — an interrupted binding
+-- is then finished only by the next ingest that touches a Go file.
+ALTER TABLE "code_graphs" ADD COLUMN "goBindingIncomplete" TEXT;
+
 -- The inputs a generated document's latest version was acknowledged to stand
 -- for without being regenerated: at most one row per document, written when a
 -- check finds that an extractor upgrade rewrote the graph and nothing else the

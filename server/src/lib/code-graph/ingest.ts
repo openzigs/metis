@@ -139,6 +139,19 @@ export interface IngestOptions {
    */
   goBindingMaxMs?: number;
   /**
+   * #1071 — the fewest Go calls one run resolves by type whatever the ceiling
+   * says; defaults to {@link GO_BINDING_MIN_CALLS}. It is what makes an
+   * interrupted binding converge: every ingest finishes at least this many of
+   * the calls still open.
+   */
+  goBindingMinCalls?: number;
+  /**
+   * #1071 — the clock the ceiling is measured with, in milliseconds; defaults
+   * to `performance.now`. A seam for tests, so that a ceiling can be made to
+   * trip after an exact number of calls instead of whenever the machine says.
+   */
+  goBindingNow?: () => number;
+  /**
    * User who triggered the ingest. Required for rationale-finding persistence
    * because the Finding→AgentResult→Analysis chain needs a User row. When
    * omitted, rationale extraction still runs but findings are not written —
@@ -305,8 +318,22 @@ export interface IngestStats {
    *  - `overBudget` — resolving it would have passed the resolver's step
    *    budgets (`GO_CALL_STEP_BUDGET`, `GO_TYPE_STEP_BUDGET`);
    *  - `skipped` — the whole step had already used {@link GO_BINDING_MAX_MS}
-   *    when the call came up. Non-zero means this ingest's Go binding is
-   *    INCOMPLETE; the next ingest that touches a Go file tries again.
+   *    when the call came up (and {@link GO_BINDING_MIN_CALLS} calls had been
+   *    resolved). Non-zero means this ingest's Go binding is INCOMPLETE.
+   *
+   * None of the three ever REPLACES an answer the graph already holds: the
+   * stored row of an unchanged file's call is left as it is. Only a file that
+   * was itself re-parsed has no stored answer to keep, and gets the
+   * name-evidence one.
+   *
+   * `incomplete` is what the time ceiling left open after this run — the files
+   * with calls not yet resolved by type and how many calls that is (counted
+   * for the files this run read) — or null when nothing is. It is recorded on
+   * the graph (`CodeGraph.goBindingIncomplete`), the extractor version is not
+   * stamped while it stands, and the next ingest resumes there FIRST, whether
+   * or not a Go file changed. `resumedFiles` is how many files this run took
+   * up from such a record. Over-budget and failed calls are not in it:
+   * resolving them again would end the same way.
    */
   goBinding: {
     files: number;
@@ -316,6 +343,8 @@ export interface IngestStats {
     failures: string[];
     overBudget: number;
     skipped: number;
+    resumedFiles: number;
+    incomplete: { files: number; calls: number } | null;
   } | null;
   /**
    * #721 — true when an incremental ingest re-extracted the lineage of every
@@ -446,8 +475,61 @@ export const NAMED_FILES_CAP = 50;
  * are left undecided by type (`IngestStats.goBinding.skipped`), a warning
  * names the count, and the ingest goes on: a slow resolver never holds an
  * ingest for minutes. Overridable per run with `IngestOptions.goBindingMaxMs`.
+ *
+ * What the ceiling leaves is not lost and not silent: the stored answer of a
+ * skipped call is kept, the graph records where each file stopped
+ * (`CodeGraph.goBindingIncomplete`, {@link GoBindingIncomplete}), and the next
+ * ingest takes it up from there.
  */
 export const GO_BINDING_MAX_MS = 30_000;
+
+/**
+ * #1071 — the fewest Go calls one ingest resolves by type, whatever
+ * {@link GO_BINDING_MAX_MS} says. One call is bounded by the resolver's own
+ * step budgets (about 0.1 ms at worst), so this adds a fraction of a second
+ * to the ceiling — and it is what guarantees that an interrupted binding
+ * finishes: each ingest closes at least this many of the calls still open,
+ * even when building the resolver alone uses the whole ceiling.
+ */
+export const GO_BINDING_MIN_CALLS = 2_000;
+
+/**
+ * #1071 — `CodeGraph.goBindingIncomplete`: the Go binding the time ceiling
+ * left unfinished.
+ *
+ * `files` maps a file to the index, among that file's Go call edges in source
+ * order, of the first call not yet resolved by type; every call before it was.
+ * (Once the ceiling is reached every later call is skipped, so what is left of
+ * a file is always its tail.) `version` is the extractor version the graph's
+ * ROWS already have: an upgrade the ceiling interrupted has renamed every
+ * symbol and rewritten every edge, so it is resumed, not started again —
+ * although `CodeGraph.extractorVersion` is stamped only once nothing is left.
+ */
+export interface GoBindingIncomplete {
+  version: number;
+  files: Record<string, number>;
+}
+
+/**
+ * `CodeGraph.goBindingIncomplete` as the files still open and where each
+ * resumes. Anything unreadable, or written for another extractor version, is
+ * "nothing recorded": the worst that costs is the old behaviour, an upgrade or
+ * a re-bind from the start.
+ */
+export function parseGoBindingIncomplete(stored: string | null | undefined): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!stored) return out;
+  try {
+    const parsed = JSON.parse(stored) as Partial<GoBindingIncomplete> | null;
+    if (!parsed || parsed.version !== CODE_GRAPH_EXTRACTOR_VERSION) return out;
+    for (const [file, index] of Object.entries(parsed.files ?? {})) {
+      if (Number.isInteger(index) && index >= 0) out.set(file, index);
+    }
+  } catch {
+    // A corrupt value is nothing recorded.
+  }
+  return out;
+}
 
 /** Bytes of a `go.mod` read for its `module` line, which sits at the top. */
 const GO_MOD_READ_LIMIT = 64 * 1024;
@@ -567,9 +649,19 @@ export async function ingestCodeGraph(
 
   // #1071 — the languages whose unchanged files an older extractor wrote. A
   // full re-ingest rewrites every row anyway.
-  const upgradeLanguages = incremental
-    ? extractorUpgradeLanguages(graph.extractorVersion)
-    : new Set<string>();
+  //
+  // A graph whose Go binding the time ceiling interrupted says so
+  // (`goBindingIncomplete`): which files are still open, and that its rows
+  // already have the current shape — so an interrupted upgrade is resumed, and
+  // not started again only to be interrupted at the same place.
+  const goBindingPending = incremental
+    ? parseGoBindingIncomplete(graph.goBindingIncomplete)
+    : new Map<string, number>();
+  const rowsVersion =
+    goBindingPending.size > 0 ? CODE_GRAPH_EXTRACTOR_VERSION : graph.extractorVersion;
+  const upgradeLanguages = incremental ? extractorUpgradeLanguages(rowsVersion) : new Set<string>();
+  // What this run leaves open in turn; written back in Step 8.
+  const goBindingLeft = new Map<string, number>();
   // #1071 — files an earlier upgrade could not reach, with the hash of the
   // content that failed. A full re-ingest starts clean.
   const rememberedFailures = incremental
@@ -816,6 +908,14 @@ export async function ingestCodeGraph(
       upgradeFailures,
       nextUpgradeMark,
       goBindingMaxMs: options.goBindingMaxMs ?? GO_BINDING_MAX_MS,
+      goBindingMinCalls: options.goBindingMinCalls ?? GO_BINDING_MIN_CALLS,
+      goBindingNow: options.goBindingNow ?? (() => performance.now()),
+      goBindingPending,
+      goBindingLeft,
+      // The version was never stamped: rows of unchanged Go files re-bound in
+      // place (only a resume does that; the upgrade itself rewrites them whole)
+      // are the rest of an extractor upgrade.
+      goBindingResumesUpgrade: extractorUpgradeLanguages(graph.extractorVersion).has("go"),
     },
   );
 
@@ -1029,7 +1129,18 @@ export async function ingestCodeGraph(
       // each with the hash of the content that failed. The upgrade is then not
       // repeated for the rest of the tree, and a listed file is retried only
       // when its content changes.
-      extractorVersion: CODE_GRAPH_EXTRACTOR_VERSION,
+      //
+      // It is NOT stamped while Go binding is incomplete: the graph then
+      // carries the record of what is left instead, and the version follows
+      // on the ingest that finishes it.
+      ...(goBindingLeft.size === 0 ? { extractorVersion: CODE_GRAPH_EXTRACTOR_VERSION } : {}),
+      goBindingIncomplete:
+        goBindingLeft.size === 0
+          ? null
+          : JSON.stringify({
+              version: CODE_GRAPH_EXTRACTOR_VERSION,
+              files: Object.fromEntries(goBindingLeft),
+            } satisfies GoBindingIncomplete),
       extractorUpgradeFailed:
         upgradeFailures.size > 0 ? JSON.stringify(Object.fromEntries(upgradeFailures)) : null,
       // #758 — the commit label moves only when the graph is complete.
@@ -1140,7 +1251,7 @@ function reportIngest(projectId: string, stats: IngestStats): void {
     const incomplete = errors + overBudget + skipped > 0;
     log[incomplete ? "warn" : "info"](
       incomplete
-        ? "Go calls bound by type; some were left undecided by type (errors: resolution threw, overBudget: a step budget ran out, skipped: the time ceiling was reached)"
+        ? "Go calls bound by type; some were left undecided by type (errors: resolution threw, overBudget: a step budget ran out, skipped: the time ceiling was reached — recorded on the graph as `incomplete` and resumed by the next ingest)"
         : "Go calls bound by type",
       {
         projectId,
@@ -1190,6 +1301,7 @@ async function upsertCodeGraph(
   lineageFingerprint: string | null;
   extractorVersion: number | null;
   extractorUpgradeFailed: string | null;
+  goBindingIncomplete: string | null;
 }> {
   // #758 — the commit label is written by Step 8, not here: a run that fails
   // part-way must not relabel a graph it never finished rebuilding.
@@ -1207,6 +1319,7 @@ async function upsertCodeGraph(
       lineageFingerprint: true,
       extractorVersion: true,
       extractorUpgradeFailed: true,
+      goBindingIncomplete: true,
     },
   });
 }
@@ -1272,7 +1385,37 @@ interface IngestTreeState {
   nextUpgradeMark: () => Date;
   /** #1071 — the ceiling on time spent resolving Go calls by type ({@link GO_BINDING_MAX_MS}). */
   goBindingMaxMs: number;
+  /** #1071 — calls resolved whatever the ceiling says ({@link GO_BINDING_MIN_CALLS}). */
+  goBindingMinCalls: number;
+  /** #1071 — the clock the ceiling is measured with. */
+  goBindingNow: () => number;
+  /** #1071 — files an earlier run's ceiling left open, and the call index each resumes at. */
+  goBindingPending: ReadonlyMap<string, number>;
+  /** #1071 — the files THIS run leaves open in turn: filled by `persistParsed`. */
+  goBindingLeft: Map<string, number>;
+  /** #1071 — the pending work is the rest of an extractor upgrade (the version is not stamped yet). */
+  goBindingResumesUpgrade: boolean;
 }
+
+/** #1071 — what the binding step decided for one Go call, before any row is written. */
+interface PlannedGoCall {
+  verdict: GoCallVerdict;
+  /**
+   * The call was NOT resolved by type in this run — the ceiling, a step
+   * budget, a throw, or (resuming) it was resolved by an earlier run and not
+   * looked at again. Its stored row, if it has one, is the better answer.
+   */
+  unresolved: boolean;
+}
+
+const GO_CALL_NOT_RESOLVED: PlannedGoCall = { verdict: { kind: "unknown" }, unresolved: true };
+
+/** `metadata` of a Go call edge that says it IS bound: with no target left, there is no answer to keep. */
+const GO_BOUND_METADATA: ReadonlySet<string> = new Set(
+  (["package", "same-package", "receiver-type", GO_RESOLUTION_NAME] as const).map(
+    goResolutionMetadata,
+  ),
+);
 
 async function persistParsed(
   prisma: PrismaClient,
@@ -1496,6 +1639,11 @@ async function persistParsed(
   const allPaths = [...parsedFiles.map((f) => f.filePath), ...tree.unchangedFiles.keys()];
   const importCtx = buildImportResolutionContext(allPaths);
   const affectedFiles: ParsedFile[] = [];
+  // #1071 — set when this run only FINISHES Go binding an earlier one left
+  // open: no Go file moved, so the calls resolved then still stand.
+  let goResumeOnly = false;
+  // Unchanged Go files read for their declarations alone (their edges stand).
+  const goDeclarationFiles: ParsedFile[] = [];
   if (tree.unchangedFiles.size > 0) {
     const names = previousTargets.names;
     for (const file of parsedFiles) {
@@ -1542,6 +1690,14 @@ async function persistParsed(
       for (const [relPath, file] of tree.unchangedFiles) {
         if (file.language === "go") affected.add(relPath);
       }
+    } else if (tree.goBindingPending.size > 0) {
+      // Nothing in Go moved, but an earlier run's ceiling left calls open:
+      // those files are re-bound from where they stopped, and nothing else is.
+      goResumeOnly = true;
+      // (A listed file that is not unchanged would have been a changed or a
+      // deleted Go file, and this branch not taken; one the walk could not
+      // read fails its re-parse below and stays on the record.)
+      for (const relPath of tree.goBindingPending.keys()) affected.add(relPath);
     }
     for (const relPath of affected) {
       // An upgraded file is already re-parsed, and its edges are rewritten below.
@@ -1551,6 +1707,15 @@ async function persistParsed(
       if (reparsed) affectedFiles.push(reparsed);
     }
     stats.filesRebound += affectedFiles.length;
+    if (goResumeOnly) {
+      // The resolver needs every Go file's declarations, whoever's calls it decides.
+      for (const [relPath, file] of tree.unchangedFiles) {
+        if (file.language !== "go" || affected.has(relPath)) continue;
+        await maybeYield();
+        const reparsed = await reparse(relPath);
+        if (reparsed) goDeclarationFiles.push(reparsed);
+      }
+    }
   }
 
   // ── Pass 2: build import-target index and persist edges. ────────────────
@@ -1558,9 +1723,10 @@ async function persistParsed(
     [...parsedFiles, ...affectedFiles, ...upgradedFiles],
     importCtx,
   );
-  const goT0 = performance.now();
+  const now = tree.goBindingNow;
+  const goT0 = now();
   const goBuilt = buildGoResolver(
-    [...parsedFiles, ...affectedFiles, ...upgradedFiles],
+    [...parsedFiles, ...affectedFiles, ...upgradedFiles, ...goDeclarationFiles],
     tree.goModules,
     [
       ...tree.unparsedGoPaths,
@@ -1575,38 +1741,97 @@ async function persistParsed(
     failures: goBuilt.failed ? ["(the resolver could not be built)"] : ([] as string[]),
     overBudget: 0,
     skipped: 0,
+    resumedFiles: 0,
   };
-  let goResolveMs = performance.now() - goT0;
+  let goResolveMs = now() - goT0;
+  /** Calls handed to the resolver so far: the first `goBindingMinCalls` go whatever the clock says. */
+  let goAttempted = 0;
   /**
    * One Go call's verdict. Resolution is the only step between a resolver bug
    * and a failed ingest, so a throw is counted, NAMED, and the call is left
    * UNDECIDED (`unknown`) — never a decided verdict, which later readers would
    * trust. The same holds for a call the resolver gave up on (its step budget)
    * and for every call that comes up after the step's time ceiling: undecided
-   * by type, counted, and left to the name-evidence rules.
+   * by type, counted, and marked `unresolved` — so that the answer an earlier,
+   * complete run stored for it is kept rather than replaced by a guess.
+   * `null` is the ceiling: the call was not looked at.
    */
-  const goVerdict = (filePath: string, edge: ParsedEdge, callee: GoExpr): GoCallVerdict => {
-    if (!goResolver) return { kind: "unknown" };
+  const goVerdict = (
+    resolver: GoResolver,
+    filePath: string,
+    edge: ParsedEdge,
+    callee: GoExpr,
+  ): PlannedGoCall | null => {
     goBinding.calls += 1;
-    if (goResolveMs > tree.goBindingMaxMs) {
+    if (goAttempted >= tree.goBindingMinCalls && goResolveMs > tree.goBindingMaxMs) {
       goBinding.skipped += 1;
-      return { kind: "unknown" };
+      return null;
     }
-    const t0 = performance.now();
+    goAttempted += 1;
+    const t0 = now();
     try {
-      const verdict = goResolver.resolveCall(filePath, callee);
-      if (verdict.kind === "unknown" && verdict.why === "budget") goBinding.overBudget += 1;
-      return verdict;
+      const verdict = resolver.resolveCall(filePath, callee);
+      const overBudget = verdict.kind === "unknown" && verdict.why === "budget";
+      if (overBudget) goBinding.overBudget += 1;
+      return { verdict, unresolved: overBudget };
     } catch {
       goBinding.errors += 1;
       if (goBinding.failures.length < NAMED_FILES_CAP) {
         goBinding.failures.push(`${filePath}:${edge.line} ${edge.toQualifiedName}`);
       }
-      return { kind: "unknown" };
+      return GO_CALL_NOT_RESOLVED;
     } finally {
-      goResolveMs += performance.now() - t0;
+      goResolveMs += now() - t0;
     }
   };
+
+  // ── The Go binding plan (#1071): every Go call's verdict, worked out BEFORE
+  // any edge is written, in the order that finishes old work first. The files
+  // an earlier run's ceiling left open come first, so each ingest makes
+  // progress on them even when the ceiling trips again; when no Go file moved
+  // they are the ONLY files looked at, each from the call it stopped at.
+  const goPlan = new Map<ParsedEdge, PlannedGoCall>();
+  let goIncompleteCalls = 0;
+  const goPlanned = new Set<string>();
+  if (goResolver) {
+    // Resuming, no Go file was parsed or upgraded: the affected ones are the open ones.
+    const candidates = [...parsedFiles, ...upgradedFiles, ...affectedFiles].filter(
+      (f) => f.language === "go",
+    );
+    const pendingFirst = [
+      ...candidates.filter((f) => tree.goBindingPending.has(f.filePath)),
+      ...candidates.filter((f) => !tree.goBindingPending.has(f.filePath)),
+    ];
+    for (const file of pendingFirst) {
+      const pendingAt = tree.goBindingPending.get(file.filePath);
+      if (pendingAt !== undefined) goBinding.resumedFiles += 1;
+      // Calls before the recorded index were resolved on this very tree.
+      const from = goResumeOnly ? (pendingAt ?? 0) : 0;
+      goPlanned.add(file.filePath);
+      let index = -1;
+      let firstSkipped = -1;
+      for (const edge of file.edges) {
+        if (edge.kind !== "calls" || !edge.goCallee) continue;
+        index += 1;
+        // No plan for it: its stored row stands (`resolveEdge`).
+        if (index < from) continue;
+        await maybeYield();
+        const planned = goVerdict(goResolver, file.filePath, edge, edge.goCallee);
+        goPlan.set(edge, planned ?? GO_CALL_NOT_RESOLVED);
+        if (planned === null && firstSkipped === -1) firstSkipped = index;
+      }
+      if (firstSkipped !== -1) {
+        tree.goBindingLeft.set(file.filePath, firstSkipped);
+        goIncompleteCalls += index + 1 - firstSkipped;
+      }
+    }
+  }
+  // A file still open that this run did not get to look at (it could not be
+  // re-read, or no resolver could be built) stays open where it was.
+  const deletedNow = new Set(tree.deletedPaths);
+  for (const [relPath, at] of tree.goBindingPending) {
+    if (!goPlanned.has(relPath) && !deletedNow.has(relPath)) tree.goBindingLeft.set(relPath, at);
+  }
   const persistedClassNames = await loadPersistedClassNames(
     prisma,
     codeGraphId,
@@ -1631,8 +1856,10 @@ async function persistParsed(
       toId = copybook ? (qnameToId.get(copybook) ?? null) : null;
     } else if (!toId && goResolver && edge.goCallee && edge.kind === "calls") {
       // #1071 — a Go call is decided by the declared types first; the
-      // name-evidence rules apply only where no type could be inferred.
-      const verdict = goVerdict(file.filePath, edge, edge.goCallee);
+      // name-evidence rules apply only where no type could be inferred. A call
+      // the plan left out was resolved by an earlier run and not looked at again.
+      const planned = goPlan.get(edge) ?? GO_CALL_NOT_RESOLVED;
+      const verdict = planned.verdict;
       let resolution: GoResolution | null = null;
       if (verdict.kind === "bound") {
         toId = qnameToId.get(verdict.qualifiedName) ?? null;
@@ -1648,6 +1875,7 @@ async function persistParsed(
         kind: edge.kind as string,
         toSymbolId: toId,
         metadata: resolution ? goResolutionMetadata(resolution) : null,
+        keepStored: planned.unresolved,
       };
     } else if (!toId) {
       toId = resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
@@ -1664,6 +1892,8 @@ async function persistParsed(
       kind,
       toSymbolId: toId,
       metadata: metadata ? JSON.stringify(metadata) : null,
+      // A Go call no resolver could be BUILT for was not resolved by type either.
+      keepStored: goBuilt.failed && edge.goCallee !== undefined,
     };
   };
 
@@ -1725,7 +1955,10 @@ async function persistParsed(
       batch.push({
         codeGraphId,
         projectId,
-        ...resolved,
+        fromSymbolId: resolved.fromSymbolId,
+        kind: resolved.kind,
+        toSymbolId: resolved.toSymbolId,
+        metadata: resolved.metadata,
         toQualifiedName: edge.toQualifiedName,
         filePath: file.filePath,
         line: edge.line,
@@ -1768,6 +2001,16 @@ async function persistParsed(
     for (const row of rows) {
       const next = wanted.get(edgeRowKey(row.fromSymbolId, row.toQualifiedName, row.line))?.shift();
       if (!next) continue;
+      // #1071 — a call this run did not resolve by type never replaces the
+      // answer the row holds. The one exception is a row that names a binding
+      // whose target is gone (its symbol was re-created): nothing is left to
+      // keep, so the name-evidence answer is written.
+      if (
+        next.keepStored &&
+        !(row.toSymbolId === null && row.metadata !== null && GO_BOUND_METADATA.has(row.metadata))
+      ) {
+        continue;
+      }
       if (
         next.kind === row.kind &&
         next.toSymbolId === row.toSymbolId &&
@@ -1782,11 +2025,29 @@ async function persistParsed(
         }),
       );
     }
-    if (updates.length > 0) await prisma.$transaction(updates);
+    if (updates.length === 0) continue;
+    if (tree.goBindingResumesUpgrade) {
+      // These rows are the rest of an extractor upgrade's rewrite, so the
+      // graph's upgrade mark moves with them like every other write of it.
+      updates.push(
+        prisma.codeGraph.update({
+          where: { id: codeGraphId },
+          data: { extractorUpgradedAt: tree.nextUpgradeMark() },
+        }),
+      );
+    }
+    await prisma.$transaction(updates);
   }
 
-  if (goBinding.files > 0) {
-    stats.goBinding = { ...goBinding, durationMs: Math.round(goParseMs + goResolveMs) };
+  if (goBinding.files > 0 || tree.goBindingLeft.size > 0) {
+    stats.goBinding = {
+      ...goBinding,
+      durationMs: Math.round(goParseMs + goResolveMs),
+      incomplete:
+        tree.goBindingLeft.size > 0
+          ? { files: tree.goBindingLeft.size, calls: goIncompleteCalls }
+          : null,
+    };
   }
 }
 
