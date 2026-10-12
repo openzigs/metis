@@ -182,3 +182,108 @@ export async function loadResolvedGoCalls(
   }
   return resolveGoCalls(calls, callables, imports);
 }
+
+/** Ids or names per `IN (…)` list: SQLite binds at most 999 variables per statement. */
+const SCOPED_IN_CHUNK = 500;
+/** Directory prefixes per `OR` list. */
+const SCOPED_OR_CHUNK = 100;
+
+/**
+ * #1060 — the resolvable Go calls OUT OF the given symbols, reading only what
+ * decides them. {@link loadResolvedGoCalls} reads every Go function, every
+ * unresolved call and every import of the project and resolves them all in one
+ * synchronous pass: 4.8 s on a 1M-call-edge project, which a request thread
+ * cannot afford. A walk from a dozen retrieved symbols needs the calls out of
+ * its frontier, the functions that carry one of THEIR callee names, and the
+ * imports of THEIR packages: three narrow reads, decided by
+ * {@link resolveGoCalls} as before.
+ *
+ * The result equals the whole-project resolution filtered by caller: ambiguity
+ * is judged over every candidate of a name (all loaded, by name) and the
+ * imports of the caller's package (all loaded, by directory).
+ *
+ * Candidates are read by the symbol's `name` column and compared, as everywhere
+ * else, by the tail of `qualifiedName`. The Go parser writes `<file>::<name>`,
+ * so the two are the same string (23,633 of 23,633 Go functions in the #706
+ * run-7 database).
+ */
+export async function loadResolvedGoCallsFrom(
+  prisma: GoResolutionPrisma,
+  projectId: string,
+  fromSymbolIds: readonly string[],
+): Promise<ResolvedGoCall[]> {
+  if (fromSymbolIds.length === 0) return [];
+  const calls: UnresolvedGoCall[] = [];
+  for (let i = 0; i < fromSymbolIds.length; i += SCOPED_IN_CHUNK) {
+    // "Unresolved" is checked on the rows, not in the query: with `toSymbolId:
+    // null` in the WHERE, SQLite walked its `(toSymbolId, kind)` index — every
+    // unresolved call of the project, 110 ms per read on 1M call edges — where
+    // `(fromSymbolId, kind)` reaches the callers' few rows directly.
+    const rows = await prisma.codeEdge.findMany({
+      where: {
+        projectId,
+        kind: "calls",
+        fromSymbolId: { in: fromSymbolIds.slice(i, i + SCOPED_IN_CHUNK) },
+        filePath: { endsWith: ".go" },
+      },
+      select: { fromSymbolId: true, toSymbolId: true, filePath: true, toQualifiedName: true },
+    });
+    for (const r of rows) {
+      if (!r.toSymbolId && r.toQualifiedName) {
+        calls.push({
+          fromSymbolId: r.fromSymbolId,
+          filePath: r.filePath,
+          toQualifiedName: r.toQualifiedName,
+        });
+      }
+    }
+  }
+  if (calls.length === 0) return [];
+
+  const names = [...new Set(calls.map((c) => calleeName(c.toQualifiedName)))].sort();
+  const callables: GoCallable[] = [];
+  for (let i = 0; i < names.length; i += SCOPED_IN_CHUNK) {
+    const rows = await prisma.codeSymbol.findMany({
+      where: {
+        projectId,
+        language: "go",
+        kind: { in: ["function", "method"] },
+        name: { in: names.slice(i, i + SCOPED_IN_CHUNK) },
+      },
+      select: { id: true, qualifiedName: true, filePath: true },
+    });
+    for (const s of rows) {
+      const at = s.qualifiedName.lastIndexOf("::");
+      callables.push({
+        id: s.id,
+        name: at === -1 ? s.qualifiedName : s.qualifiedName.slice(at + 2),
+        filePath: s.filePath,
+      });
+    }
+  }
+  if (callables.length === 0) return [];
+
+  // Imports pool per package directory, so read the files under each caller's
+  // directory. `startsWith` also returns the files of its sub-packages; they
+  // need no filtering here, because `resolveGoCalls` pools imports by the exact
+  // directory of the importing file and looks up the caller's.
+  const dirs = [...new Set(calls.map((c) => goPackageDir(c.filePath)))].sort();
+  const imports: GoImport[] = [];
+  for (let i = 0; i < dirs.length; i += SCOPED_OR_CHUNK) {
+    const rows = await prisma.codeEdge.findMany({
+      where: {
+        projectId,
+        kind: "imports",
+        filePath: { endsWith: ".go" },
+        OR: dirs
+          .slice(i, i + SCOPED_OR_CHUNK)
+          .map((d) => ({ filePath: { startsWith: d === "" ? "" : `${d}/` } })),
+      },
+      select: { filePath: true, toQualifiedName: true },
+    });
+    for (const r of rows) {
+      if (r.toQualifiedName) imports.push({ filePath: r.filePath, importPath: r.toQualifiedName });
+    }
+  }
+  return resolveGoCalls(calls, callables, imports);
+}

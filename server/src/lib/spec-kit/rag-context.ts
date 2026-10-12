@@ -129,6 +129,13 @@ export interface SpecKitLocalisation {
   source?: PlanLocalisationSource;
   /** Defaults to `SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET` ({@link DEFAULT_LOCALISATION_TOKEN_BUDGET}). */
   tokenBudget?: number;
+  /**
+   * Longest the walk may take before the context is built without it (and says
+   * so in `dropped`). Defaults to `LOCALISATION_TIME_BUDGET_MS`.
+   */
+  timeBudgetMs?: number;
+  /** Aborting it stops the walk at its next step. */
+  signal?: AbortSignal;
 }
 
 /** Default token budget of the #1060 localisation block. */
@@ -328,6 +335,10 @@ export async function buildSpecKitRagContext(
               DEFAULT_LOCALISATION_TOKEN_BUDGET,
             ),
           ...(opts.localise.source ? { source: opts.localise.source } : {}),
+          ...(opts.localise.timeBudgetMs !== undefined
+            ? { timeBudgetMs: opts.localise.timeBudgetMs }
+            : {}),
+          ...(opts.localise.signal ? { signal: opts.localise.signal } : {}),
         })
       : null;
 
@@ -338,11 +349,15 @@ export async function buildSpecKitRagContext(
     // from "retrieved and overlooked". Built from the structured results, never
     // parsed back out of the rendered text.
     const files = uniquePaths([
-      ...[...(hits ?? []), ...pinned].flatMap((h) =>
+      // The top-k hits only: a pinned chunk is by construction the rest of a
+      // NON-source document (`expandDocuments`), so it never names a file. A
+      // source file is a `repo` row; an upload may carry the same name (#547).
+      ...(hits ?? []).flatMap((h) =>
         h.source === "repo" ? [extractRepoRelPath(h.filename) ?? ""] : [],
       ),
+      // A sibling is declared in its anchor's file (`findSiblings`), so the
+      // anchors' files are the siblings' too.
       ...anchors.map((a) => a.filePath),
-      ...siblings.symbols.map((s) => s.filePath),
       ...callers.files,
       ...(localisation?.files ?? []),
     ]);

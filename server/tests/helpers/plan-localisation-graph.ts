@@ -257,7 +257,8 @@ export function fakeSource(graph: { symbols: Sym[]; edges: Edge[] }): PlanLocali
         if (e.kind !== "calls" || !e.callee) continue;
         out.set(e.from, (out.get(e.from) ?? new Set<string>()).add(e.callee));
       }
-      return out;
+      // Every caller: a superset of the candidates the production source narrows to.
+      return { sets: out };
     },
   };
 }
