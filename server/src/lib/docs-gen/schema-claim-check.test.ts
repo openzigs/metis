@@ -1614,6 +1614,7 @@ describe("a marker never lands inside code", () => {
     expectUntouched(`<pre>\n${inner}\n</pre>`);
     expectUntouched(`<PRE class="x">\n${inner}`);
     expectUntouched(`<!--\n${inner}\n-->`);
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- test input for the claim check, which must copy a raw HTML block as written; the string is never rendered.
     expectUntouched(`<script>\n\n${inner}\n</script>`);
     // Any other tag: to the next blank line.
     expectUntouched(`<div>\n${inner.split("\n").filter(Boolean).join("\n")}\n</div>`);
