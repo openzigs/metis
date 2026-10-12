@@ -17,12 +17,41 @@ import crypto from "node:crypto";
 import { PUBLISH_MARKER_PREFIX } from "@metis/shared";
 
 /**
- * Marker recogniser. Always rebuild a fresh RegExp at use sites — never
- * reuse this instance with the global flag (state leaks between exec()
- * calls). For global stripping see `MARKER_RE_GLOBAL` below.
+ * WHERE A MARKER COUNTS (#1064 review, B1).
+ *
+ * METIS writes its markers in one place only: the last lines of the published
+ * body, each alone on its line and flush with the margin — an optional source
+ * marker directly above the publish marker:
+ *
+ *   <draft body>
+ *   (blank line)
+ *   <!-- metis-source: project=… analysis=… requirement=… -->
+ *   <!-- metis-publish: batch=… draft=… hash=… -->
+ *
+ * THE RULE: only the body's final contiguous run of marker lines is METIS's
+ * marker block. It is the only thing {@link stripMarker} removes and the only
+ * thing {@link injectMarker} replaces, at publish, in the reconcile sweep and
+ * in drift detection alike, for issues published before #1064 (publish marker
+ * only) and after. Marker-shaped text anywhere else in a body is never
+ * stripped: stripping it used to put a newline in its place, and when the text
+ * sat inside a code span (a file path from an ingested repository) that
+ * newline split the span at publish time, so the issue showed headings, links
+ * and @-mentions the previewed draft did not.
+ *
+ * Marker-shaped text elsewhere is instead made inert where a body is WRITTEN —
+ * by the generator, the draft editor and drift adoption
+ * ({@link neutraliseMarkerText}) — so a stored draft holds no marker at all,
+ * and what a reviewer previews is, byte for byte, what is published in front
+ * of the block. {@link publishableBody} applies both steps once more at publish
+ * time for rows written before this rule.
  */
-const MARKER_RE = new RegExp(
-  `${escapeRe(PUBLISH_MARKER_PREFIX)}\\s*batch=([^\\s]+)\\s+draft=([^\\s]+)\\s+hash=([^\\s]+)\\s*-->`,
+
+/** Longest line considered as a marker line. Bounds every match below. */
+const MARKER_LINE_MAX = 600;
+
+/** A publish marker, alone on its line (not global, so it holds no state). */
+const PUBLISH_LINE_RE = new RegExp(
+  `^${escapeRe(PUBLISH_MARKER_PREFIX)}[ \\t]*batch=(\\S+)[ \\t]+draft=(\\S+)[ \\t]+hash=(\\S+?)[ \\t]*-->$`,
   "i",
 );
 
@@ -43,21 +72,15 @@ export const SOURCE_MARKER_PREFIX = "<!-- metis-source:";
 /** A source-marker value: an opaque id. Anything else is left out of the marker. */
 const SOURCE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
-/** One source marker. The body is bounded, so a flood of prefixes stays linear. */
-const SOURCE_MARKER_BODY = "[ \\t]*metis-source:([^>\\n]{0,300})-->";
+/** A source marker, alone on its line. The value part is bounded. */
+const SOURCE_LINE_RE = /^<!--[ \t]*metis-source:([^>\n]{0,300})-->$/i;
 
 /**
- * Either marker, with the newlines after it. The newlines BEFORE it are trimmed
- * by hand in {@link stripMarker}: a leading `\n*` here made the strip quadratic
- * on a body of blank lines (100,000 newlines took 3.5 s), since every newline
- * started a scan to the end of the run.
+ * The opener of anything shaped like a METIS marker comment, whatever follows
+ * it. Wider than the two line patterns above on purpose (any whitespace, no
+ * need to be well-formed or alone on a line).
  */
-function makeStripRe(): RegExp {
-  return new RegExp(
-    `(?:${escapeRe(PUBLISH_MARKER_PREFIX)}\\s*batch=[^\\s]+\\s+draft=[^\\s]+\\s+hash=[^\\s]+\\s*-->|<!--${SOURCE_MARKER_BODY})\\n*`,
-    "gi",
-  );
-}
+const MARKER_OPENER_RE = /<!--(?=\s*metis-(?:publish|source)\s*:)/gi;
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -88,32 +111,84 @@ export function buildMarkerComment(marker: PublishMarker): string {
   return `${PUBLISH_MARKER_PREFIX} batch=${marker.batchId} draft=${marker.draftId} hash=${marker.hash} -->`;
 }
 
-export function injectMarker(body: string, marker: PublishMarker, source?: SourceMarker): string {
-  // Replace existing marker comments if any are already present so re-publishes
-  // do not accumulate stale lines.
-  const stripped = stripMarker(body);
-  const trimmed = stripped.replace(/\s+$/u, "");
-  const sourceLine = source ? buildSourceMarkerComment(source) : null;
-  return `${trimmed}\n\n${sourceLine ? `${sourceLine}\n` : ""}${buildMarkerComment(marker)}\n`;
+/**
+ * Make marker-shaped text inert: `<!-- metis-publish:` becomes
+ * `<!- - metis-publish:` (likewise `metis-source`). It is then not an HTML
+ * comment and not a marker, so it shows as the literal text it is — in the
+ * draft preview and in the published issue alike. Everything else is left
+ * exactly as written; ordinary HTML comments and Markdown are untouched.
+ * Idempotent. Apply it wherever untrusted text is written into a draft body.
+ */
+export function neutraliseMarkerText(text: string): string {
+  return text.replace(MARKER_OPENER_RE, "<!- -");
+}
+
+interface TrailingBlock {
+  /** Index where the block starts (the first character of its first line). */
+  start: number;
+  /** The last publish marker in the block: the one METIS wrote. */
+  publish: PublishMarker;
 }
 
 /**
- * Strip ALL marker comments — global so an attacker-supplied requirement
- * body containing a fake marker cannot survive into the published issue
- * body and later be re-parsed as authoritative. Covers the publish marker and
- * the #1064 source marker alike, so the stripped text of a published issue is
- * the draft body it was published from (the reconcile sweep hashes it).
+ * The marker block at the end of a body: its final run of lines that are each
+ * a publish or source marker and nothing else (blank lines between them
+ * allowed), provided the run holds a publish marker. An indented marker, a
+ * marker with text beside it, and a marker followed by any other line are not
+ * part of it. One pass from the end; each pattern runs on one bounded line.
+ */
+function findTrailingBlock(body: string): TrailingBlock | null {
+  let start = -1;
+  let publish: PublishMarker | null = null;
+  let end = body.length;
+  while (end > 0) {
+    const lineStart = body.lastIndexOf("\n", end - 1) + 1;
+    if (end - lineStart > MARKER_LINE_MAX) break;
+    const text = body.slice(lineStart, end).trimEnd();
+    if (text !== "") {
+      const m = PUBLISH_LINE_RE.exec(text);
+      if (m) publish ??= { batchId: m[1]!, draftId: m[2]!, hash: m[3]! };
+      else if (!SOURCE_LINE_RE.test(text)) break;
+      start = lineStart;
+    }
+    end = lineStart - 1;
+  }
+  return publish && start >= 0 ? { start, publish } : null;
+}
+
+/**
+ * Remove the trailing marker block METIS wrote, and the blank lines before it.
+ * A body without one is returned unchanged; marker-shaped text anywhere else is
+ * never touched (see the note at the top of this file). So for every body:
+ * `stripMarker(injectMarker(body, …)) === publishableBody(body)`, and stripping
+ * that again changes nothing.
  */
 export function stripMarker(body: string): string {
-  let out = "";
-  let last = 0;
-  for (const m of body.matchAll(makeStripRe())) {
-    let end = m.index;
-    while (end > last && body.charCodeAt(end - 1) === 10) end -= 1;
-    out += `${body.slice(last, end)}\n`;
-    last = m.index + m[0].length;
-  }
-  return last === 0 ? body : out + body.slice(last);
+  const block = findTrailingBlock(body);
+  return block ? body.slice(0, block.start).trimEnd() : body;
+}
+
+/**
+ * The text that is published in front of the marker block, and that the body
+ * hash is taken over. For a body METIS generated, or one saved through the
+ * draft editor, this is the body itself less trailing whitespace: both already
+ * went through {@link neutraliseMarkerText}. The two steps here are the last
+ * line of defence for any other row — a draft that adopted a remote body which
+ * still carried METIS's own block (dropped), or one written before marker text
+ * was neutralised (made inert). The dry-run plan shows this same text.
+ */
+export function publishableBody(body: string): string {
+  return neutraliseMarkerText(stripMarker(body)).trimEnd();
+}
+
+/** The hash a draft body is compared by: over {@link publishableBody}. */
+export function computeDraftBodyHash(body: string): string {
+  return computeBodyHash(publishableBody(body));
+}
+
+export function injectMarker(body: string, marker: PublishMarker, source?: SourceMarker): string {
+  const sourceLine = source ? buildSourceMarkerComment(source) : null;
+  return `${publishableBody(body)}\n\n${sourceLine ? `${sourceLine}\n` : ""}${buildMarkerComment(marker)}\n`;
 }
 
 export interface SourceMarker {
@@ -174,36 +249,67 @@ export interface ParsedSourceMarker {
 const LEGACY_FOOTER_RE =
   /Generated by METIS · project=`([A-Za-z0-9_-]{1,64})` · analysis=`([A-Za-z0-9_-]{1,64})`(?: · requirement=`([A-Za-z0-9_-]{1,64})`)?/g;
 
+/** Every non-empty line of `body` short enough to be a marker line, last first. */
+function* markerCandidateLinesFromEnd(body: string): Generator<{ start: number; text: string }> {
+  let end = body.length;
+  for (;;) {
+    const start = end > 0 ? body.lastIndexOf("\n", end - 1) + 1 : 0;
+    if (end > start && end - start <= MARKER_LINE_MAX) {
+      yield { start, text: body.slice(start, end).replace(/[ \t\r]+$/, "") };
+    }
+    if (start === 0) return;
+    end = start - 1;
+  }
+}
+
+function sourceFromValue(value: string): ParsedSourceMarker | null {
+  const fields = new Map<string, string>();
+  for (const token of value.trim().split(/[ \t]+/)) {
+    const eq = token.indexOf("=");
+    if (eq > 0 && SOURCE_ID_RE.test(token.slice(eq + 1))) {
+      fields.set(token.slice(0, eq), token.slice(eq + 1));
+    }
+  }
+  const projectId = fields.get("project");
+  if (!projectId) return null;
+  return {
+    form: "marker",
+    projectId,
+    analysisId: fields.get("analysis") ?? null,
+    requirementId: fields.get("requirement") ?? null,
+  };
+}
+
 /**
  * Read back where an issue came from: the hidden source marker, or the visible
- * footer of an issue published before #1064. Whichever sits LAST in the body
- * wins, because METIS writes its own after the requirement text. Like the
- * publish marker this is a hint, never an authority: issue bodies are editable
- * by anyone with write access, so check the ids against the database before
- * acting on them.
+ * footer of an issue published before #1064. A marker counts only when it is
+ * alone on its line (where METIS writes it); whichever of the two forms sits
+ * LAST in the body wins, because METIS writes its own after the requirement
+ * text.
+ *
+ * WARNING — a hint, never an authority. Nothing calls this yet; whoever does
+ * must hold to three things:
+ *  - **Never use it for authorization**, or to decide which project, analysis
+ *    or requirement a caller may read or change. An issue body is editable by
+ *    anyone with write access to the tracker, and a later edit can append a
+ *    marker after the genuine one — which this function then returns.
+ *  - The `legacy-footer` form carries only the first 8 characters of the
+ *    project and analysis ids. Those prefixes are **not identifying**: a lookup
+ *    by prefix can match more than one row. Resolve through the full
+ *    requirement id or the `PublishedIssue` row instead.
+ *  - Confirm every id against the database (and the caller's own project)
+ *    before acting on it, as `reconcileFromRemote` does for the publish marker.
  */
 export function parseSourceMarker(body: string | null | undefined): ParsedSourceMarker | null {
   if (!body) return null;
   let found: { at: number; value: ParsedSourceMarker } | null = null;
-  for (const m of body.matchAll(new RegExp(`<!--${SOURCE_MARKER_BODY}`, "gi"))) {
-    const fields = new Map<string, string>();
-    for (const token of m[1]!.trim().split(/[ \t]+/)) {
-      const eq = token.indexOf("=");
-      if (eq > 0 && SOURCE_ID_RE.test(token.slice(eq + 1))) {
-        fields.set(token.slice(0, eq), token.slice(eq + 1));
-      }
+  for (const line of markerCandidateLinesFromEnd(body)) {
+    const m = SOURCE_LINE_RE.exec(line.text);
+    const value = m ? sourceFromValue(m[1]!) : null;
+    if (value) {
+      found = { at: line.start, value };
+      break;
     }
-    const projectId = fields.get("project");
-    if (!projectId) continue;
-    found = {
-      at: m.index,
-      value: {
-        form: "marker",
-        projectId,
-        analysisId: fields.get("analysis") ?? null,
-        requirementId: fields.get("requirement") ?? null,
-      },
-    };
   }
   for (const m of body.matchAll(LEGACY_FOOTER_RE)) {
     if (found && found.at > m.index) continue;
@@ -220,9 +326,20 @@ export function parseSourceMarker(body: string | null | undefined): ParsedSource
   return found?.value ?? null;
 }
 
+/**
+ * The publish marker of an issue body: the one in the trailing block METIS
+ * wrote, else — when someone has since added text below it on the tracker — the
+ * last publish marker that is alone on its line. Marker-shaped text inside a
+ * line (a code span, a sentence) is never read. A hint only: callers confirm it
+ * against `PublishedIssue` before acting (`reconcileFromRemote`).
+ */
 export function parseMarker(body: string | null | undefined): PublishMarker | null {
   if (!body) return null;
-  const m = MARKER_RE.exec(body);
-  if (!m) return null;
-  return { batchId: m[1], draftId: m[2], hash: m[3] };
+  const block = findTrailingBlock(body);
+  if (block) return block.publish;
+  for (const line of markerCandidateLinesFromEnd(body)) {
+    const m = PUBLISH_LINE_RE.exec(line.text);
+    if (m) return { batchId: m[1]!, draftId: m[2]!, hash: m[3]! };
+  }
+  return null;
 }

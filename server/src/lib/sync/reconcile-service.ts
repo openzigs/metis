@@ -23,6 +23,7 @@ import type {
 } from "@metis/shared";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import { isHiddenRequirementLabel } from "../analysis/requirement-labels.js";
+import { publishableBody, stripMarker } from "../publishing/dedup.js";
 
 const log = createChildLogger("sync-reconcile");
 
@@ -75,7 +76,8 @@ export async function reconcileIssueChange(
   // 2. Build local snapshot from draft
   const localSnapshot: IssueChangeFields = {
     title: publishedIssue.draft.title ?? "",
-    body: publishedIssue.draft.body ?? "",
+    // Compared the way it was published: without METIS's marker block.
+    body: publishableBody(publishedIssue.draft.body ?? ""),
     state: publishedIssue.status === "created" ? "open" : "open",
     // #744 — the publisher never sends hidden `finding:<id>` labels, so they
     // must not read as drift on drafts generated before they were dropped.
@@ -84,8 +86,15 @@ export async function reconcileIssueChange(
   };
 
   // 3. Compute field-level diffs
-  const fieldDiffs = computeFieldDiffs(localSnapshot, {
+  // The tracker's body ends with the marker block METIS wrote (publish and
+  // source markers). It is not part of the draft, so it is not drift and is
+  // never adopted into one. Only that trailing block is removed (`dedup.ts`).
+  const current: IssueChangeFields = {
     ...event.current,
+    body: stripMarker(event.current.body ?? ""),
+  };
+  const fieldDiffs = computeFieldDiffs(localSnapshot, {
+    ...current,
     // Issues published before #744 still carry `finding:<id>` on GitHub.
     labels: event.current.labels.filter((l) => !isHiddenRequirementLabel(l)),
   });
@@ -106,7 +115,7 @@ export async function reconcileIssueChange(
         deliveryId: event.deliveryId,
         action: event.action,
         fieldDiffs: JSON.stringify(fieldDiffs),
-        externalSnapshot: JSON.stringify(event.current),
+        externalSnapshot: JSON.stringify(current),
         localSnapshot: JSON.stringify(localSnapshot),
         status: "pending",
       },
@@ -121,7 +130,7 @@ export async function reconcileIssueChange(
       deliveryId: driftEvent.deliveryId,
       action: driftEvent.action as IssueChangeEvent["action"],
       fieldDiffs,
-      externalSnapshot: event.current,
+      externalSnapshot: current,
       localSnapshot,
       status: "pending",
       resolution: null,
@@ -210,7 +219,8 @@ export async function resolveDriftEvent(
         where: { id: publishedIssue.draftId },
         data: {
           title: externalSnapshot.title,
-          body: externalSnapshot.body,
+          // Snapshots stored before the block was stripped still carry it.
+          body: publishableBody(externalSnapshot.body ?? ""),
           labels: JSON.stringify(externalSnapshot.labels),
         },
       });

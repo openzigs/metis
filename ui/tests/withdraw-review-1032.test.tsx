@@ -230,6 +230,23 @@ describe("<WithdrawReviewButton />", () => {
     expect(toastError).not.toHaveBeenCalled();
   });
 
+  it("leaves focus alone when the withdraw is refused (the button is still there)", async () => {
+    withdrawMock.mockRejectedValue(new ApiError(409, "changed", "REVIEW_STATE_CHANGED"));
+    const heading = document.createElement("h1");
+    document.body.prepend(heading);
+    try {
+      renderButton();
+      await userEvent.click(screen.getByRole("button", { name: "Withdraw review" }));
+      const dialog = await screen.findByRole("alertdialog");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Withdraw review" }));
+      await waitFor(() => expect(toastError).toHaveBeenCalled());
+      expect(document.activeElement).not.toBe(heading);
+      expect(heading.hasAttribute("tabindex")).toBe(false);
+    } finally {
+      heading.remove();
+    }
+  });
+
   it("explains a refusal and re-reads the review, without claiming success", async () => {
     withdrawMock.mockRejectedValue(
       new ApiError(
@@ -303,6 +320,10 @@ describe("review page (/reviews/[id])", () => {
 
     await waitFor(() => expect(screen.queryByTestId("withdraw-review-rev-1")).toBeNull());
     expect(screen.getByText(/This review is a draft/)).toBeTruthy();
+    // The button is gone; focus is on the page heading, not lost to the body.
+    const heading = screen.getByRole("heading", { level: 1 });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(heading.getAttribute("tabindex")).toBe("-1");
   });
 });
 
@@ -350,5 +371,26 @@ describe("/reviews", () => {
     await waitFor(() => expect(withdrawMock).toHaveBeenCalledWith("rev-1"));
     await waitFor(() => expect(listMock.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(toastSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns focus to the row's own link after a withdraw from the row", async () => {
+    withdrawMock.mockResolvedValue(makeReview({ status: "draft" }));
+    const page = (reviews: ReviewRequest[]) => ({ reviews, total: 2, page: 1, pageSize: 50 });
+    renderList([makeReview({ id: "rev-other" }), makeReview()], REQUESTER);
+    // The reload after the withdraw shows the review as a draft: its button goes.
+    listMock.mockResolvedValue(
+      page([makeReview({ id: "rev-other" }), makeReview({ status: "draft" })]),
+    );
+    await userEvent.click(await screen.findByTestId("withdraw-review-rev-1"));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Withdraw review" }));
+
+    // The row of the review that was withdrawn — not the first row, not the body.
+    await waitFor(() => expect(screen.queryByTestId("withdraw-review-rev-1")).toBeNull());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId("review-row-rev-1")),
+    );
+    // The other row still offers its button; nothing moved there.
+    expect(screen.getByTestId("withdraw-review-rev-other")).toBeTruthy();
   });
 });

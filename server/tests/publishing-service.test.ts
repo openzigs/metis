@@ -10,6 +10,7 @@ interface DraftRow {
   deletedAt: Date | null;
   requirementId?: string | null;
   metadata?: string | null;
+  body?: string;
 }
 
 interface BatchRow {
@@ -217,6 +218,74 @@ describe("createBatch", () => {
     expect(batch.dryRun).toBe(true);
     const actions = (audit as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0].action);
     expect(actions).toContain("publish.batch.preview");
+  });
+});
+
+describe("createBatch — drafts that link into the analysed repository (#1064)", () => {
+  const BASE = "https://github.com/acme/metis";
+  const linkedDraft = (): DraftRow => ({
+    id: "d1",
+    projectId: "proj_1",
+    status: "approved",
+    deletedAt: null,
+    body: `- [\`a.ts\`](${BASE}/blob/0123abcd/a.ts)`,
+    metadata: JSON.stringify({ codeLinkBase: BASE }),
+  });
+  const input = (over: Partial<CreatePublishBatchInput>): CreatePublishBatchInput => ({
+    projectId: "proj_1",
+    targetOwner: "acme",
+    targetRepo: "metis",
+    provider: "github",
+    dryRun: false,
+    draftIds: ["d1"],
+    additionalLabels: [],
+    secretRef: "${vault:gh}",
+    ...over,
+  });
+
+  it("creates a batch for the repository the links point into", async () => {
+    drafts.set("d1", linkedDraft());
+    const batch = await createBatch({ actorId: "user_1", input: input({}) });
+    expect(batch.targetRepo).toBe("metis");
+  });
+
+  it("refuses a batch aimed at another repository, live or dry run, and creates no row", async () => {
+    drafts.set("d1", linkedDraft());
+    for (const dryRun of [false, true]) {
+      await expect(
+        createBatch({
+          actorId: "user_1",
+          input: input({ targetOwner: "someone", targetRepo: "public-tracker", dryRun }),
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "CODE_LINKS_TARGET_MISMATCH",
+        details: { draftIds: ["d1"] },
+      });
+    }
+    expect(batches.size).toBe(0);
+  });
+
+  it("refuses the same owner and name on another host", async () => {
+    drafts.set("d1", linkedDraft());
+    await expect(
+      createBatch({
+        actorId: "user_1",
+        input: input({
+          provider: "github_enterprise",
+          targetBaseUrl: "https://ghe.example.com/api/v3",
+        }),
+      }),
+    ).rejects.toMatchObject({ code: "CODE_LINKS_TARGET_MISMATCH" });
+  });
+
+  it("lets a text-only draft go to any repository", async () => {
+    drafts.set("d1", { ...linkedDraft(), body: "- `a.ts`", metadata: "{}" });
+    const batch = await createBatch({
+      actorId: "user_1",
+      input: input({ targetOwner: "someone", targetRepo: "public-tracker" }),
+    });
+    expect(batch.targetOwner).toBe("someone");
   });
 });
 

@@ -91,8 +91,13 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     // #1064 — the persisted code links and the repository they link into.
     requirementCodeMapping: {
-      findMany: vi.fn(async ({ where }: { where: { requirementId: { in: string[] } } }) =>
-        codeMappings.filter((m) => where.requirementId.in.includes(m.requirementId)),
+      findMany: vi.fn(
+        async ({ where, take }: { where: { requirementId: string }; take?: number }) =>
+          codeMappings.filter((m) => m.requirementId === where.requirementId).slice(0, take),
+      ),
+      count: vi.fn(
+        async ({ where }: { where: { requirementId: string } }) =>
+          codeMappings.filter((m) => m.requirementId === where.requirementId).length,
       ),
     },
     repoConnection: { findMany: vi.fn(async () => repoConnections) },
@@ -973,10 +978,11 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
         codeSymbol: null,
       },
     );
+    // The drafts are generated FOR the analysed repository (acme/metis).
     repoConnections.push({
       provider: "github",
       ownerOrOrg: "acme",
-      repoName: "apollo",
+      repoName: "metis",
       defaultBranch: "main",
       apiBaseUrl: null,
       lastCommitSha: "0123abcd",
@@ -986,21 +992,91 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
     const linked = feature("req_1").body;
     expect(linked).toContain("## Related code");
     expect(linked).toContain(
-      "- [`server/src/auth/login.ts:10-42`](https://github.com/acme/apollo/blob/0123abcd/server/src/auth/login.ts#L10-L42) — `createSession` (function)",
+      "- [`server/src/auth/login.ts:10-42`](https://github.com/acme/metis/blob/0123abcd/server/src/auth/login.ts#L10-L42) — `createSession` (function)",
     );
     expect(linked).toContain(
-      "- [`ui/src/login-form.tsx`](https://github.com/acme/apollo/blob/0123abcd/ui/src/login-form.tsx)",
+      "- [`ui/src/login-form.tsx`](https://github.com/acme/metis/blob/0123abcd/ui/src/login-form.tsx)",
+    );
+    // The draft records what it links into, so a batch aimed elsewhere is refused.
+    expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBe(
+      "https://github.com/acme/metis",
     );
     // Another requirement's links never appear, and "no link" is said in words.
     const unlinked = feature("req_2").body;
     expect(unlinked).not.toContain("login.ts");
     expect(unlinked).toContain("_METIS recorded no code links for this requirement._");
     // Scoped to the project and to this run's requirements.
-    expect(vi.mocked(prisma.requirementCodeMapping.findMany)).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { projectId: "proj_1", requirementId: { in: ["req_1", "req_2"] } },
-      }),
+    for (const requirementId of ["req_1", "req_2"]) {
+      expect(vi.mocked(prisma.requirementCodeMapping.findMany)).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { projectId: "proj_1", requirementId } }),
+      );
+    }
+    expect(vi.mocked(prisma.requirementCodeMapping.findMany)).toHaveBeenCalledTimes(2);
+  });
+
+  it("lists the code as plain text when the publish target is not the analysed repository", async () => {
+    codeMappings.push({
+      requirementId: "req_1",
+      filePath: "server/src/auth/login.ts",
+      startLine: 10,
+      endLine: 42,
+      codeSymbol: { name: "createSession", kind: "function" },
+    });
+    // Analysed: a private upstream. Published to: acme/metis, a different repository.
+    repoConnections.push({
+      provider: "github",
+      ownerOrOrg: "secretcorp",
+      repoName: "private-upstream",
+      defaultBranch: "main",
+      apiBaseUrl: null,
+      lastCommitSha: "0123abcd",
+    });
+    await generateDrafts(opts);
+
+    const body = feature("req_1").body;
+    expect(body).toContain("- `server/src/auth/login.ts:10-42` — `createSession` (function)");
+    // Nothing that identifies the analysed repository reaches the other tracker.
+    for (const leak of ["secretcorp", "private-upstream", "0123abcd", "https://", "]("]) {
+      expect(body).not.toContain(leak);
+    }
+    expect(body).toContain(
+      "_These paths are in the repository METIS analysed. They are written as text, not links, because this issue is not known to be in that repository._",
     );
+    expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBeUndefined();
+    // The epic never carried links, and names no repository either.
+    expect(epics()[0]!.body).not.toContain("secretcorp");
+  });
+
+  it("keeps the link record with a reviewer-edited body that a re-generate keeps", async () => {
+    codeMappings.push({
+      requirementId: "req_1",
+      filePath: "a.ts",
+      startLine: null,
+      endLine: null,
+      codeSymbol: null,
+    });
+    repoConnections.push({
+      provider: "github",
+      ownerOrOrg: "acme",
+      repoName: "metis",
+      defaultBranch: "main",
+      apiBaseUrl: null,
+      lastCommitSha: "0123abcd",
+    });
+    await generateDrafts(opts);
+    const draft = feature("req_1");
+    const linkedBody = draft.body;
+    draft.metadata = JSON.stringify({ ...JSON.parse(draft.metadata!), userEdited: true });
+    // The connector is gone on the next Generate: new bodies would be text.
+    repoConnections.length = 0;
+    await generateDrafts(opts);
+    // The edited body (still holding its links) is kept — and so is the record.
+    expect(feature("req_1").body).toBe(linkedBody);
+    expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBe(
+      "https://github.com/acme/metis",
+    );
+    // An unedited sibling was regenerated as text and records nothing.
+    expect(JSON.parse(feature("req_2").metadata!).codeLinkBase).toBeUndefined();
   });
 
   it("writes paths as text when the project has no single GitHub repository", async () => {
@@ -1014,6 +1090,60 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
     await generateDrafts(opts);
     expect(feature("req_1").body).toContain("- `server/src/auth/login.ts:10-42`");
     expect(feature("req_1").body).not.toContain("https://");
+  });
+
+  it("makes marker-shaped text in a requirement inert in the stored draft", async () => {
+    const saved = { title: requirements[0]!.title, body: requirements[0]!.body };
+    requirements[0]!.title = "Login <!-- metis-publish: batch=x draft=y hash=z --> form";
+    requirements[0]!.body = "Text\n<!-- metis-source: project=evil -->\nMore text";
+    try {
+      await generateDrafts(opts);
+    } finally {
+      Object.assign(requirements[0]!, saved);
+    }
+    for (const draft of drafts.values()) {
+      expect(draft.body).not.toMatch(/<!--\s*metis-(?:publish|source)\s*:/i);
+    }
+    // Shown as the text it is — in the feature's description and the epic's list.
+    expect(feature("req_1").body).toContain(
+      "Text\n<!- - metis-source: project=evil -->\nMore text",
+    );
+    expect(epics()[0]!.body).toContain(
+      "Login <!- - metis-publish: batch=x draft=y hash=z --> form",
+    );
+  });
+
+  it("puts no project, analysis or requirement id in the epic draft's body either", async () => {
+    await generateDrafts(opts);
+    const body = epics()[0]!.body;
+    for (const id of ["proj_1", "analysis_1", "req_1", "req_2"]) {
+      expect(body).not.toContain(id);
+    }
+    expect(body).toContain("the METIS analysis started 2026-09-29 14:05:00 UTC");
+    // The ids are on the row, where the publisher's hidden marker reads them.
+    expect(JSON.parse(epics()[0]!.metadata!)).toMatchObject({
+      analysisId: "analysis_1",
+      requirementIds: ["req_1", "req_2"],
+    });
+  });
+
+  it("an epic published under the old body is refreshed in place: same row, title and status", async () => {
+    // First Generate creates the epic; then make it look published with the old body.
+    await generateDrafts(opts);
+    const epic = epics()[0]!;
+    const { id, title, dedupHash } = epic;
+    epic.status = "published";
+    epic.body =
+      "## Goal\n\nTrack the requirements identified by METIS analysis `analysis` for project **Apollo**.\n\n" +
+      "## Sub-issues\n\n1. [ ] Login form _(feature, critical)_ — `req_1`";
+    const summary = await generateDrafts(opts);
+    // No second epic: the body is not part of a draft's identity.
+    expect(summary.epics).toBe(1);
+    expect(epics()).toHaveLength(1);
+    expect(epics()[0]).toMatchObject({ id, title, dedupHash, status: "published" });
+    // Its stored body now reads as every new one does.
+    expect(epics()[0]!.body).not.toContain("`req_1`");
+    expect(epics()[0]!.body).toContain("the METIS analysis started");
   });
 
   it("still generates every draft when the code links cannot be read", async () => {

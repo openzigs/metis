@@ -284,7 +284,7 @@ describe("dry-run plan lists issues before labels (#1064)", () => {
     return makePlan({ actions: [...labels, ...issues], totalActions: 31 });
   }
 
-  it("orders issue actions first, keeping run order within each group and each row's step", () => {
+  it("orders issue rows, then attaches, then labels — run order and step kept within each", () => {
     const rows = orderDryRunRows([
       { kind: "label.upsert", labels: ["a"] },
       { kind: "issue.create", draftId: "d1", title: "Epic" },
@@ -296,11 +296,60 @@ describe("dry-run plan lists issues before labels (#1064)", () => {
     expect(rows.map((r) => [r.step, r.action.kind])).toEqual([
       [2, "issue.create"],
       [4, "issue.update"],
-      [5, "subIssue.attach"],
       [6, "issue.skipDuplicate"],
+      [5, "subIssue.attach"],
       [1, "label.upsert"],
       [3, "label.upsert"],
     ]);
+  });
+
+  /** An epic and `n` features under it, as the run plans them: labels first. */
+  function epicPlan(n: number): DryRunPlan {
+    const labels = Array.from({ length: 5 }, (_, i) => ({
+      kind: "label.upsert" as const,
+      labels: [`label-${i}`],
+    }));
+    const features = Array.from({ length: n }, (_, i) => [
+      { kind: "issue.create" as const, draftId: `f${i}`, title: `[Feature] Requirement ${i}` },
+      { kind: "subIssue.attach" as const, draftId: `f${i}`, parentIssueNumber: 1000 },
+    ]).flat();
+    const actions = [
+      ...labels,
+      { kind: "issue.create" as const, draftId: "epic", title: "[Epic] Batch" },
+      ...features,
+    ];
+    return makePlan({ actions, totalActions: actions.length });
+  }
+
+  it("shows every title for an epic with 13 features, and with 24 — attaches no longer crowd them out", () => {
+    for (const n of [13, 24]) {
+      const { unmount } = render(<DryRunPlanPanel plan={epicPlan(n)} />);
+      expect(screen.getByText("[Epic] Batch")).toBeTruthy();
+      for (let i = 0; i < n; i += 1) {
+        expect(screen.getByText(`[Feature] Requirement ${i}`)).toBeTruthy();
+      }
+      // The hidden rows are attaches and labels, never an issue title.
+      expect(screen.getByTestId("dry-run-hidden").textContent).not.toContain("issue.create");
+      unmount();
+    }
+    // One epic and 25 features is 26 titles: the cut is said, by kind.
+    render(<DryRunPlanPanel plan={epicPlan(25)} />);
+    expect(screen.getByTestId("dry-run-hidden").textContent).toContain("1 issue.create");
+  });
+
+  it("numbers each list item with its run step, so the announced number is the printed one", () => {
+    render(<DryRunPlanPanel plan={run7Plan()} />);
+    const rows = screen.getAllByTestId("dry-run-row");
+    // The first row is step 26 of the run: the <li> says 26, not 1.
+    expect(rows[0]!.tagName).toBe("LI");
+    expect(rows[0]!.parentElement!.tagName).toBe("OL");
+    expect(rows[0]!.getAttribute("value")).toBe("26");
+    expect(rows[6]!.getAttribute("value")).toBe("1");
+    for (const row of rows) {
+      const printed = row.querySelector("[aria-hidden='true']")!;
+      // The printed copy is the same number, hidden so it is not read twice.
+      expect(printed.textContent).toBe(row.getAttribute("value"));
+    }
   });
 
   it("shows every issue title when the plan is cut at 25 rows", () => {

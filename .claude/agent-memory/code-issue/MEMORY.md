@@ -92,3 +92,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Mapper precision rule vs recall](project_mapper-precision-rules-halve-impact-recall.md) — run both evals; option, not global (#1063)
 - [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
 - [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — one null discards every requirement (#1063)
+- [Test the STAMPED body](project_publishing-safety-is-tested-on-the-stamped-body.md) — strip split a code span; double honours status
+- [Title rule change: look up old hash](project_draft-title-rule-change-needs-old-title-lookup.md) — else 2nd draft, 2nd issue (#1064)
+- [`pgrep -f` loop matches itself](project_pgrep-f-wait-loop-matches-itself.md) — never exits; use ps + grep "node .*(vitest|tsc)"

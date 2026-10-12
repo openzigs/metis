@@ -62,6 +62,7 @@ import {
 import {
   buildMarkerComment,
   computeBodyHash,
+  computeDraftBodyHash,
   computeDedupHash,
   injectMarker,
   parseMarker,
@@ -69,6 +70,7 @@ import {
   stripMarker,
 } from "./dedup.js";
 import { labelsToSync, publishableLabels, syncLabels } from "./label-sync.js";
+import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
 import { buildDryRunPlan, dryRunWarning } from "./dry-run.js";
 import { notifyPublishRolledBack } from "../teams/notification-hooks.js";
 import { pagerDutyPublishRollback } from "../pagerduty/alerting-hooks.js";
@@ -151,6 +153,12 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     },
     orderBy: [{ draftType: "asc" }, { createdAt: "asc" }],
   });
+  // #1064 — the confirmation must not describe a publish `createBatch` refuses.
+  assertCodeLinksMatchTarget(drafts, {
+    owner: input.targetOwner,
+    repo: input.targetRepo,
+    baseUrl: input.targetBaseUrl,
+  });
   const existingByHash = await loadExistingByHash(
     input.projectId,
     input.targetOwner,
@@ -228,6 +236,15 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       ...(batch.metadata ? safeWhereFromMetadata(batch.metadata) : {}),
     },
     orderBy: [{ draftType: "asc" }, { createdAt: "asc" }],
+  });
+
+  // #1064 — the lowest layer for this rule too (`createBatch` checks it first):
+  // a body that links into the analysed repository never reaches another one,
+  // whichever caller got here. Local comparison only, so a dry run stays pure.
+  assertCodeLinksMatchTarget(drafts, {
+    owner: batch.targetOwner,
+    repo: batch.targetRepo,
+    baseUrl: batch.targetBaseUrl,
   });
 
   // #619 — approval gate at the LOWEST publishing layer. This is the choke
@@ -428,7 +445,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     // Hash the user-supplied body (without the per-batch marker) so that
     // re-running an identical draft in a fresh batch dedup-skips instead of
     // appearing to "change" because the marker batchId differs.
-    const bodyHash = computeBodyHash(draft.body);
+    const bodyHash = computeDraftBodyHash(draft.body);
     // #1091 — set as soon as the remote issue provably exists, so the catch
     // block can record the divergence and the rollback can actually close it
     // even when the local write is what failed.

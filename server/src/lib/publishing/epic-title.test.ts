@@ -128,6 +128,71 @@ describe("buildEpicTitle", () => {
       );
     });
 
+    describe("the list shapes people actually write", () => {
+      const WHEN = "(analysis of 2026-09-29 14:05:33 UTC)";
+      const title = (text: string) => buildEpicTitle("P", analysis({ extraInstructions: text }));
+
+      it("a loose list — a blank line between the items", () => {
+        expect(title("- Mark all as read\n\n- Terminate sessions\n\n- Dedupe entries")).toBe(
+          `[Epic] P — 3 stated requirements ${WHEN}`,
+        );
+        expect(title("1. First\n\n2. Second")).toBe(`[Epic] P — 2 stated requirements ${WHEN}`);
+      });
+
+      it("items with wrapped, indented or nested continuation lines", () => {
+        const text = [
+          "- Mark all as read older than a",
+          "  number of days the user chooses",
+          "- Terminate all sessions for a user",
+          "wrapped without an indent",
+          "- Cross-feed deduplication",
+          "  - by URL",
+          "  - by content hash",
+        ].join("\n");
+        expect(title(text)).toBe(`[Epic] P — 3 stated requirements ${WHEN}`);
+      });
+
+      it("one imported item followed by a typed list, as the start form writes it", () => {
+        // `composeImportedRequirementInput`: one bullet, a bare heading, the list.
+        const text =
+          "- Imported: per-feed refresh timestamp\n\n## Requirements\n\n- Dark mode\n- Offline reading";
+        expect(title(text)).toBe(`[Epic] P — 3 stated requirements ${WHEN}`);
+        expect(title(text)).not.toContain("Imported");
+      });
+
+      it("none of them is named after its first requirement, and the old title still finds the old epic", () => {
+        for (const text of [
+          "- A one\n\n- B two",
+          "- A one\n  more\n- B two",
+          "- A one\n\n## Requirements\n\n- B two\n- C three",
+        ]) {
+          const a = analysis({ extraInstructions: text });
+          expect(buildEpicTitle("P", a)).not.toContain("A one");
+          // The title is the dedup key: an epic drafted under the old rule is
+          // looked up by the OLD title, which is still the first line.
+          expect(buildLegacyEpicTitle("P", a)).toBe("[Epic] P — A one");
+        }
+      });
+
+      it("still reads these as ONE stated requirement, titled by its first line", () => {
+        for (const [text, subject] of [
+          ["- Dark mode\n\nSome notes about it.", "Dark mode"],
+          ["- Dark mode\n  with a wrapped line", "Dark mode"],
+          ["- Dark mode\n\n## Background\n\n- a\n- b", "Dark mode"],
+          ["Export to CSV\n\n- include headers\n- UTF-8", "Export to CSV"],
+          ["- Only item\n\n## Requirements\n\nno list here", "Only item"],
+        ] as const) {
+          expect(title(text)).toBe(`[Epic] P — ${subject}`);
+        }
+      });
+
+      it("a list ends at the first paragraph after a blank line", () => {
+        expect(title("- a\n- b\n\nA paragraph.\n\n- not counted\n- nor this")).toBe(
+          `[Epic] P — 2 stated requirements ${WHEN}`,
+        );
+      });
+    });
+
     it("drops the time when the run has no start time", () => {
       expect(buildEpicTitle("P", analysis({ extraInstructions: FIVE }, null))).toBe(
         "[Epic] P — 5 stated requirements",

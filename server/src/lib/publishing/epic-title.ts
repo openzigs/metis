@@ -21,10 +21,11 @@
  *   4. with no requirement text: the import label, else `Analysis of <start
  *      time>`, which still keeps separate runs apart.
  *
- * "States one requirement" is read the way the analysis reads it (#1006,
- * `imported-requirement-input.ts`): a leading block of two or more bullet or
- * numbered lines is a list of requirements, one per line; anything else is one
- * stated requirement, whose first line titles it.
+ * "States one requirement": a text that opens with a list of two or more
+ * bullet or numbered items states that many (`leadingListCount` — tight or
+ * loose, items that wrap, and the one-imported-item-plus-typed-list shape the
+ * start form writes, #1006); anything else is one stated requirement, whose
+ * first line titles it.
  *
  * The title is also the draft's dedup key (`computeDedupHash`), so the same
  * analysis must always produce the same title — every input here is fixed once
@@ -77,29 +78,70 @@ function truncate(subject: string): string {
   return `${cut.trimEnd()}…`;
 }
 
-function formatStartedAt(startedAt: Date | null | undefined): string | null {
+export function formatStartedAt(startedAt: Date | null | undefined): string | null {
   if (!(startedAt instanceof Date) || Number.isNaN(startedAt.getTime())) return null;
   // "2026-09-29T14:05:33.000Z" → "2026-09-29 14:05:33 UTC" — to the second, so
   // runs started in the same minute stay apart.
   return `${startedAt.toISOString().slice(0, 19).replace("T", " ")} UTC`;
 }
 
-const LIST_LINE_RE = /^\s*(?:[-*+]|\d{1,9}[.)])\s+\S/;
+const LIST_LINE_RE = /^(\s*)(?:[-*+]|\d{1,9}[.)])\s+\S/;
+
+/** The bare heading `composeImportedRequirementInput` puts between one imported item and a typed list. */
+const COMPOSER_HEADING_RE = /^#{1,6}\s+Requirements\s*$/i;
 
 /**
- * How many requirements the text's opening list states: the number of lines in
- * its first block when every one of them (two or more) is a bullet or numbered
- * item, else 0. A heading above the list is not a list line, so a headed text
- * is 0 too and its heading names the batch.
+ * Count the items of the list that starts at `lines[from]`, and where it ends.
+ * An item is a bullet or numbered line no deeper than the first one. Lines that
+ * belong to an item are not items: an indented line (a wrapped or nested
+ * continuation) and an unindented line directly under an item (Markdown's lazy
+ * continuation). Blank lines between items are allowed (a loose list); after a
+ * blank line anything that is neither an item nor indented ends the list.
+ */
+function countListItems(lines: readonly string[], from: number): { count: number; next: number } {
+  const first = LIST_LINE_RE.exec(lines[from] ?? "");
+  if (!first) return { count: 0, next: from };
+  const depth = first[1]!.length;
+  let count = 0;
+  let afterBlank = false;
+  let i = from;
+  for (; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.trim() === "") {
+      afterBlank = true;
+      continue;
+    }
+    const item = LIST_LINE_RE.exec(line);
+    if (item && item[1]!.length <= depth) count += 1;
+    else if (afterBlank && !/^\s/.test(line)) break;
+    afterBlank = false;
+  }
+  return { count, next: i };
+}
+
+/**
+ * How many requirements the text's opening list states, or 0 when it does not
+ * open with a list of two or more (a heading above the list is not a list
+ * line, so a headed text is 0 too and its heading names the batch).
+ *
+ * The list is read the way Markdown reads one — tight or loose, with wrapped
+ * and nested lines belonging to their item — and one more shape is known: one
+ * imported requirement followed by a typed list is written by the start form
+ * as a single bullet, a bare `## Requirements` heading and the list. Those are
+ * requirements of one batch, so the two lists are counted together.
  */
 function leadingListCount(text: string): number {
-  const lines: string[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    if (line.trim() !== "") lines.push(line);
-    else if (lines.length > 0) break;
+  const lines = text.split(/\r?\n/);
+  let start = 0;
+  while (start < lines.length && lines[start]!.trim() === "") start += 1;
+  const opening = countListItems(lines, start);
+  let count = opening.count;
+  if (count === 1 && COMPOSER_HEADING_RE.test(lines[opening.next] ?? "")) {
+    let rest = opening.next + 1;
+    while (rest < lines.length && lines[rest]!.trim() === "") rest += 1;
+    count += countListItems(lines, rest).count;
   }
-  if (lines.length < 2) return 0;
-  return lines.every((l) => LIST_LINE_RE.test(l)) ? lines.length : 0;
+  return count >= 2 ? count : 0;
 }
 
 function subjectFor(analysis: EpicTitleAnalysis): string {

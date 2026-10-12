@@ -127,16 +127,19 @@ export interface DryRunPlanRow {
  * #1064 — the order the plan is LISTED in. The run upserts every label before
  * it creates an issue, so a plan cut at 25 rows showed 25 label upserts and hid
  * every issue title behind "…and 6 more". The titles are what a reviewer came
- * to check, so issue actions (create, update, skip, attach) are listed first,
- * in run order, and label upserts after them. Each row keeps its place in the
- * run as `step`, so the list never claims an order the run does not have.
+ * to check, so the rows that carry one (create, update, skip) are listed
+ * first, then the sub-issue attaches, then the label upserts — each group in
+ * run order. An attach row has no title and every feature under an epic adds
+ * one, so listed among the issues they pushed titles past the cut again from 13
+ * features; behind them, 24 features and their epic fit in 25 rows. Each row
+ * keeps its place in the run as `step`, so the list never claims an order the
+ * run does not have.
  */
 export function orderDryRunRows(actions: readonly DryRunAction[]): DryRunPlanRow[] {
   const rows = actions.map((action, i) => ({ action, step: i + 1 }));
-  return [
-    ...rows.filter((r) => r.action.kind !== "label.upsert"),
-    ...rows.filter((r) => r.action.kind === "label.upsert"),
-  ];
+  const group = (kind: string) =>
+    kind === "label.upsert" ? 2 : kind === "subIssue.attach" ? 1 : 0;
+  return [0, 1, 2].flatMap((g) => rows.filter((r) => group(r.action.kind) === g));
 }
 
 /** What the rows left out are, by kind: `6 label.upsert, 2 issue.create`. */
@@ -201,14 +204,19 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
 
       {reordered && (
         <p className="mt-3 text-xs text-muted-foreground" data-testid="dry-run-order-note">
-          Issues are listed first. The run upserts labels before it creates issues; the number on
-          each row is its place in the run.
+          Issues are listed first, then sub-issue links, then labels. The run upserts labels before
+          it creates issues; the number on each row is its place in the run.
         </p>
       )}
       <ol className="mt-3 max-h-64 overflow-y-auto text-xs">
         {shown.map(({ action, step }) => (
-          <li key={step} className="flex gap-2 py-0.5" data-testid="dry-run-row">
-            <span className="w-6 shrink-0 text-right text-muted-foreground">{step}</span>
+          // `value` makes the list item's own number the run step, so a screen
+          // reader announces the number that is printed; the printed copy is
+          // hidden from it so the step is not read twice.
+          <li key={step} value={step} className="flex gap-2 py-0.5" data-testid="dry-run-row">
+            <span aria-hidden="true" className="w-6 shrink-0 text-right text-muted-foreground">
+              {step}
+            </span>
             <span className="w-40 shrink-0 font-mono text-foreground">{action.kind}</span>
             <span className="truncate text-muted-foreground">{actionDetail(action)}</span>
             {action.blockedByApprovalGate && (

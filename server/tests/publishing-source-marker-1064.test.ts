@@ -97,27 +97,27 @@ describe("source marker (#1064)", () => {
     expect(parseMarker(oldPublished)).toEqual(PUBLISH);
   });
 
-  it("strips the same text the old newline-greedy pattern did", () => {
+  it("strips a trailing marker exactly as the old pattern did", () => {
+    // Where METIS writes its marker — the end of the body — the result is what
+    // the old whole-body pattern produced. (Markers elsewhere are no longer
+    // stripped at all: `publishing-marker-position-1064.test.ts`.)
     const marker = "<!-- metis-publish: batch=b draft=d hash=h -->";
-    for (const body of [
-      `a\n\n\n${marker}\n\n\nb`,
-      `${marker}\nb`,
-      `a\n${marker}`,
-      `a ${marker} b`,
-      `a\n\n${marker}\n\n${marker}\n\nb`,
-    ]) {
+    for (const body of [`a\n\n\n${marker}\n\n\n`, `a\n${marker}`, `a\n\n${marker}\n`]) {
       const old = body.replace(
         /\n*<!-- metis-publish:\s*batch=[^\s]+\s+draft=[^\s]+\s+hash=[^\s]+\s*-->\n*/gi,
         "\n",
       );
-      expect(stripMarker(body)).toBe(old);
+      expect(stripMarker(body)).toBe(old.trimEnd());
     }
   });
 
-  it("removes a forged source marker from requirement text before publishing", () => {
+  it("makes a forged source marker in requirement text inert, and reads back its own", () => {
     const body = "Real text\n<!-- metis-source: project=evil requirement=other -->\nMore";
     const stamped = injectMarker(body, PUBLISH, SOURCE);
-    expect(stamped).not.toContain("project=evil");
+    // The forged line is published as the visible text it is, not stripped
+    // (stripping would cut the body there) and not as a comment.
+    expect(stamped).toContain("<!- - metis-source: project=evil requirement=other -->");
+    expect(stamped.match(/<!-- metis-source:/g)).toHaveLength(1);
     expect(parseSourceMarker(stamped)).toEqual({ form: "marker", ...SOURCE });
   });
 });

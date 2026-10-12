@@ -10,7 +10,12 @@ import { type DryRunAction, type DryRunPlan } from "./internal-shared.js";
 import type { ApprovalGateCheckResult, CredentialCheckResult } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { labelsToSync, publishableLabels } from "./label-sync.js";
-import { computeBodyHash, computeDedupHash, injectMarker, type SourceMarker } from "./dedup.js";
+import {
+  computeDraftBodyHash,
+  computeDedupHash,
+  injectMarker,
+  type SourceMarker,
+} from "./dedup.js";
 
 export interface DryRunInput {
   batchId: string;
@@ -78,7 +83,7 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
     );
     // bodyHash is computed on the raw user-supplied body (no marker) so dry
     // runs match the live publisher's dedup semantics.
-    const bodyHash = computeBodyHash(d.body);
+    const bodyHash = computeDraftBodyHash(d.body);
     if (existing) {
       if (existing.bodyHash === bodyHash) {
         actions.push({

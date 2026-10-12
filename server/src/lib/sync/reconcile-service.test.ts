@@ -276,6 +276,78 @@ describe("reconcileIssueChange", () => {
     expect(result.reason).toBe("NO_DIFF");
   });
 
+  describe("METIS's own marker block is not drift (#1064)", () => {
+    const BLOCK =
+      "\n\n<!-- metis-source: project=proj-1 analysis=an-1 requirement=req-1 -->\n" +
+      "<!-- metis-publish: batch=batch-1 draft=draft-1 hash=abc -->\n";
+    const published = (draftBody: string) =>
+      ({
+        id: "pub-1",
+        batchId: "batch-1",
+        draftId: "draft-1",
+        issueNumber: 42,
+        issueId: "node-id-abc",
+        status: "created",
+        batch: { id: "batch-1", projectId: "proj-1", project: { id: "proj-1" } },
+        draft: {
+          id: "draft-1",
+          title: "New Title",
+          body: draftBody,
+          labels: JSON.stringify(["bug"]),
+          requirementId: null,
+        },
+      }) as never;
+    const remote = (body: string) =>
+      makeEvent({
+        current: { title: "New Title", body, state: "open", labels: ["bug"], assignees: [] },
+      });
+
+    it("an issue that differs from its draft only by the marker block has not drifted", async () => {
+      vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue(published("Draft body"));
+      const result = await reconcileIssueChange(remote(`Draft body${BLOCK}`));
+      expect(result).toEqual({ handled: false, reason: "NO_DIFF" });
+      expect(prisma.driftEvent.create).not.toHaveBeenCalled();
+    });
+
+    it("a real edit is reported without the marker block in the diff or the snapshot", async () => {
+      vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue(published("Draft body"));
+      vi.mocked(prisma.driftEvent.create).mockResolvedValue({
+        id: "drift-1",
+        publishedIssueId: "pub-1",
+        projectId: "proj-1",
+        requirementId: null,
+        source: "github",
+        deliveryId: "delivery-123",
+        action: "edited",
+        createdAt: new Date(),
+      } as never);
+      const emitDrift = vi.fn();
+      await reconcileIssueChange(remote(`Edited on GitHub${BLOCK}`), { emitDrift });
+
+      const data = vi.mocked(prisma.driftEvent.create).mock.calls[0]![0].data;
+      expect(JSON.parse(data.fieldDiffs as string)).toEqual([
+        { field: "body", local: "Draft body", external: "Edited on GitHub" },
+      ]);
+      expect(JSON.parse(data.externalSnapshot as string).body).toBe("Edited on GitHub");
+      expect(data.fieldDiffs).not.toContain("metis-");
+      expect(data.externalSnapshot).not.toContain("metis-");
+      // The row broadcast to the UI carries the same stripped snapshot.
+      expect(emitDrift.mock.calls[0]![1].externalSnapshot.body).toBe("Edited on GitHub");
+    });
+
+    it("marker-shaped text in the middle of the remote body is kept: only the block is cut", async () => {
+      vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue(published("Draft body"));
+      vi.mocked(prisma.driftEvent.create).mockResolvedValue({
+        id: "drift-1",
+        createdAt: new Date(),
+      } as never);
+      const edited = "a `<!-- metis-source: x -->` b";
+      await reconcileIssueChange(remote(`${edited}${BLOCK}`), { emitDrift: vi.fn() });
+      const data = vi.mocked(prisma.driftEvent.create).mock.calls[0]![0].data;
+      expect(JSON.parse(data.externalSnapshot as string).body).toBe(edited);
+    });
+  });
+
   it("#744 — a pre-#744 draft's hidden finding label (never published) is not drift", async () => {
     vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue({
       id: "pub-1",
@@ -444,6 +516,55 @@ describe("resolveDriftEvent", () => {
     expect(prisma.issueDraft.update).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: "draft-1" } }),
     );
+  });
+
+  it("#1064 — adopting never copies a marker into the draft", async () => {
+    // A snapshot stored before the block was stripped at detection still ends
+    // with it, and holds marker-shaped text a tracker user typed mid-body.
+    const adopted =
+      "Edited on GitHub with `<!-- metis-publish: batch=x draft=y hash=z -->` in it\n\n" +
+      "<!-- metis-source: project=proj-1 -->\n" +
+      "<!-- metis-publish: batch=batch-1 draft=draft-1 hash=abc -->\n";
+    const existing = {
+      id: "drift-1",
+      publishedIssueId: "pub-1",
+      projectId: "proj-1",
+      requirementId: null,
+      source: "github",
+      deliveryId: "del-1",
+      action: "edited",
+      fieldDiffs: "[]",
+      externalSnapshot: JSON.stringify({
+        title: "T",
+        body: adopted,
+        state: "open",
+        labels: [],
+        assignees: [],
+      }),
+      localSnapshot: "{}",
+      status: "pending",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    vi.mocked(prisma.driftEvent.findUnique).mockResolvedValue(existing as never);
+    vi.mocked(prisma.driftEvent.update).mockResolvedValue({
+      ...existing,
+      status: "resolved",
+      resolution: "adopt",
+    } as never);
+    vi.mocked(prisma.publishedIssue.findUnique).mockResolvedValue({
+      id: "pub-1",
+      draftId: "draft-1",
+    } as never);
+    vi.mocked(prisma.issueDraft.update).mockResolvedValue({} as never);
+
+    await resolveDriftEvent("drift-1", "adopt", "user-1");
+
+    const body = vi.mocked(prisma.issueDraft.update).mock.calls[0]![0].data.body as string;
+    expect(body).toBe(
+      "Edited on GitHub with `<!- - metis-publish: batch=x draft=y hash=z -->` in it",
+    );
+    expect(body).not.toMatch(/<!--\s*metis-/);
   });
 
   it("resolves with divergent action without updating draft", async () => {

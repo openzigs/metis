@@ -17,7 +17,7 @@
  * between the page loading and the click, so every refusal code is turned into
  * a sentence and the review is re-read.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { hasPermission } from "@metis/shared";
 import { Button } from "@/components/ui/button";
@@ -62,9 +62,37 @@ export interface WithdrawReviewButtonProps {
   user: Pick<AuthUser, "id" | "role"> | null | undefined;
 }
 
+/**
+ * Where keyboard focus goes once the withdraw has gone through and the button
+ * has unmounted (the review is no longer in review). Focus left on an unmounted
+ * element falls to the document body, which loses a keyboard or screen-reader
+ * user's place. In a list row the target is the row's own link; on the review
+ * page it is the page heading.
+ */
+export function withdrawFocusTarget(from: HTMLElement | null): HTMLElement | null {
+  if (!from) return null;
+  return (
+    from.closest("li")?.querySelector<HTMLElement>("a[href]") ??
+    document.querySelector<HTMLElement>("h1")
+  );
+}
+
+function focusElement(target: HTMLElement): void {
+  if (!target.isConnected) return;
+  // A heading is not focusable until it is given a tabindex; -1 keeps it out
+  // of the tab order.
+  if (target.tagName === "H1" && !target.hasAttribute("tabindex")) {
+    target.setAttribute("tabindex", "-1");
+  }
+  target.focus();
+}
+
 /** Renders nothing when the caller may not withdraw this review. */
 export function WithdrawReviewButton({ review, user }: WithdrawReviewButtonProps) {
   const [confirming, setConfirming] = useState(false);
+  const anchor = useRef<HTMLSpanElement>(null);
+  /** Set when a withdraw succeeds; used once, when the button then goes away. */
+  const focusNext = useRef<HTMLElement | null>(null);
   const qc = useQueryClient();
   const withdraw = useAppMutation<ReviewRequest, void>({
     mutationFn: () => reviewsApi.withdraw(review.id),
@@ -73,24 +101,48 @@ export function WithdrawReviewButton({ review, user }: WithdrawReviewButtonProps
     // The withdraw moves requirement statuses, which the requirements hub
     // reads from the analysis (same as the submit, #989).
     invalidateKeys: [queryKeys.reviews.all, queryKeys.analyses.all],
+    // Found now, while the button is still in the page to find it from.
+    onSuccess: () => {
+      focusNext.current = withdrawFocusTarget(anchor.current);
+    },
     // A refusal usually means the review is not what this page shows any more,
     // so re-read it: the button then follows the real status.
     onError: () => void qc.invalidateQueries({ queryKey: queryKeys.reviews.all }),
   });
 
-  if (!canWithdrawReview(review, user)) return null;
+  const offered = canWithdrawReview(review, user);
+  // Moved when the button unmounts, not when the request returns: the
+  // confirmation dialog hands focus back to the button as it closes, and that
+  // can land after the request has returned.
+  useEffect(() => {
+    if (offered || !focusNext.current) return;
+    focusElement(focusNext.current);
+    focusNext.current = null;
+  }, [offered]);
+  // The review page stops rendering this component altogether once the review
+  // is not in review, so the same move is made when it unmounts.
+  useEffect(
+    () => () => {
+      if (focusNext.current) focusElement(focusNext.current);
+    },
+    [],
+  );
+
+  if (!offered) return null;
 
   return (
     <>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={withdraw.isPending}
-        onClick={() => setConfirming(true)}
-        data-testid={`withdraw-review-${review.id}`}
-      >
-        {withdraw.isPending ? "Withdrawing…" : "Withdraw review"}
-      </Button>
+      <span ref={anchor} className="inline-flex shrink-0">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={withdraw.isPending}
+          onClick={() => setConfirming(true)}
+          data-testid={`withdraw-review-${review.id}`}
+        >
+          {withdraw.isPending ? "Withdrawing…" : "Withdraw review"}
+        </Button>
+      </span>
       <ConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}
