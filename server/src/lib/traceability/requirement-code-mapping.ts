@@ -434,6 +434,8 @@ interface Bm25Corpus {
   index: BM25Index;
   byId: Map<string, Bm25SymbolRow>;
   size: number;
+  /** {@link symbolNameTerms} per symbol id, filled on first use (#1063). */
+  nameTerms: Map<string, ReadonlySet<string>>;
 }
 
 /** Load a project's code symbols and build the BM25 index once. */
@@ -461,12 +463,18 @@ async function buildBm25Corpus(
     }));
     index.build(searchable);
   }
-  return { index, byId: new Map(rows.map((r) => [r.id, r])), size: rows.length };
+  return {
+    index,
+    byId: new Map(rows.map((r) => [r.id, r])),
+    size: rows.length,
+    nameTerms: new Map(),
+  };
 }
 
 /**
- * Issue #1063 — the fewest DISTINCT requirement terms a symbol's name must share
- * with a requirement before the analysis results page shows the two as linked.
+ * Issue #1063 — the fewest DISTINCT requirement terms a symbol's NAME must share
+ * with a requirement before the two are stored and shown as linked on the
+ * analysis results page.
  *
  * BM25 scores only the terms that MATCHED: a query term no symbol carries costs
  * a candidate nothing. So for "Add a button to terminate all sessions" (content
@@ -479,21 +487,37 @@ async function buildBm25Corpus(
  * required (or the only one, for a one-word requirement), and a requirement
  * with no such symbol gets no link.
  *
+ * The terms are counted against what the symbol is CALLED ({@link
+ * symbolNameTerms}), not against the BM25 document. The document is
+ * `name + qualifiedName`, and `qualifiedName` is `<filePath>::<name>`, so
+ * counting document terms let a directory (`internal`, `client`) or the file
+ * extension (`go`) be the second "shared term": "Add a button in the web client
+ * to terminate all sessions" reached `InlineKeyboardButton` again through
+ * `telegrambot/client.go` (review of PR #1095). Path terms still RANK, as before.
+ *
+ * SCOPE. This filters the requirement→code links that are PERSISTED AND SHOWN to
+ * a person (`AffectedCodeContext.result`), and nothing else:
+ *   - the code agent's AFFECTED CODE seed block and its citation-provenance file
+ *     list come from the same mapper WITHOUT the rule, exactly as before #1063
+ *     (`computeAffectedCodeContext` maps each requirement twice). The rule cuts
+ *     recall, and that agent is the one a wrong "no link" would starve;
+ *   - Impact Analysis seeding, the schema-impact producer, the escalation
+ *     context, the LLM seeder and the entity-seed union never set the option. On
+ *     the impact-recall fixture the rule cut table recall from 0.91 to 0.50.
+ *
  * PROVISIONAL and in-sample: chosen on the #706 run-7 Miniflux requirements and
- * the two committed eval fixtures. It trades recall for precision (reqmap
- * fixture: precision 0.71 to 0.87, recall 1.00 to 0.90), which suits a link a
- * person reads. It is NOT applied to Impact Analysis seeding, where recall is
- * the measure: on the impact-recall fixture it cut table recall from 0.91 to
- * 0.50. So it is an option of the searcher, set only by the analysis path.
+ * the two committed eval fixtures. It trades recall for precision. There is no
+ * stemming: "terminate a session" does not share `sessions`.
  */
 export const ANALYSIS_LINK_MIN_SHARED_TERMS = 2;
 
 /** Options for the BM25 searchers. */
 export interface Bm25SearcherOptions {
   /**
-   * Drop a candidate that shares fewer than this many DISTINCT terms with the
-   * (denoised) query. Default 1: any shared word is a candidate, as before
-   * #1063. See {@link ANALYSIS_LINK_MIN_SHARED_TERMS}.
+   * When 2 or more: drop a candidate whose NAME shares fewer than this many
+   * DISTINCT terms with the (denoised) query. Default 1: any candidate BM25
+   * scored is kept, path-only matches included, exactly as before #1063. See
+   * {@link ANALYSIS_LINK_MIN_SHARED_TERMS}.
    */
   minSharedTerms?: number;
 }
@@ -508,6 +532,65 @@ export function requiredSharedTerms(denoisedQuery: string, minSharedTerms = 1): 
   return Math.max(1, Math.min(Math.floor(minSharedTerms), distinct));
 }
 
+/** The file extension on a file's own name (`client.go` → `.go`). */
+const FILE_EXTENSION_RE = /\.[A-Za-z0-9]+$/;
+
+const hasPathSeparator = (text: string): boolean => text.includes("/") || text.includes("\\");
+
+/**
+ * Issue #1063 — the terms of what a symbol is CALLED, for the shared-terms rule.
+ *
+ * Counted:
+ *   - the symbol's own name (`InlineKeyboardButton` → inline, keyboard, button);
+ *   - its enclosing type or table, because that is part of how it is referred
+ *     to: `keyboard_handler.js::KeyboardHandler::listen` also counts keyboard
+ *     and handler, and the column `user_sessions.ip` also counts user and
+ *     sessions. For a dotted name with no `::` (schema rows, Java-style
+ *     `pkg.sub.Type.member`) only the owner next to the member counts; segments
+ *     further left are a package or schema, which is a path by another name;
+ *   - for a module (file) row, the file's base name without its extension
+ *     (`flush_sessions.go` → flush, sessions), since that IS its name.
+ *
+ * Never counted: directories, the file a non-module symbol lives in, and file
+ * extensions. Tokenised with the index's own tokenizer.
+ */
+export function symbolNameTerms(row: {
+  name: string;
+  qualifiedName: string;
+  filePath: string;
+}): ReadonlySet<string> {
+  const parts: string[] = [];
+  const qualified = row.qualifiedName;
+  if (qualified.includes("::")) {
+    parts.push(
+      ...qualified.split("::").filter((seg) => seg !== row.filePath && !hasPathSeparator(seg)),
+      row.name,
+    );
+  } else if (qualified === row.filePath || hasPathSeparator(qualified)) {
+    // A module row: `qualifiedName` is the path, `name` the file's base name.
+    parts.push(row.name.replace(FILE_EXTENSION_RE, ""));
+  } else {
+    parts.push(...qualified.split(".").slice(-2), row.name);
+  }
+  return new Set(tokenizeCode(parts.join(" ")));
+}
+
+/** How many of `queryTerms` the symbol's name carries (see {@link symbolNameTerms}). */
+function sharedNameTermCount(
+  corpus: Bm25Corpus,
+  symbolId: string,
+  queryTerms: ReadonlySet<string>,
+): number {
+  let terms = corpus.nameTerms.get(symbolId);
+  if (!terms) {
+    terms = symbolNameTerms(corpus.byId.get(symbolId)!);
+    corpus.nameTerms.set(symbolId, terms);
+  }
+  let shared = 0;
+  for (const term of queryTerms) if (terms.has(term)) shared++;
+  return shared;
+}
+
 /** Score a query against a pre-built corpus into ranked candidates. */
 function scoreBm25Corpus(
   corpus: Bm25Corpus,
@@ -520,26 +603,29 @@ function scoreBm25Corpus(
   // the QUERY so the entity nouns anchor the seed instead of a rare-in-corpus
   // scaffolding token dominating it. Corpus/index untouched.
   const denoised = denoiseRequirementQuery(query);
-  // #1063 — applied BEFORE the limit, so a requirement whose top hits each share
-  // one word still reaches the two-word hits ranked below them.
-  const required = requiredSharedTerms(denoised, options.minSharedTerms);
-  return corpus.index
-    .score(denoised)
-    .filter((s) => s.score > 0 && s.matchedTerms >= required)
-    .slice(0, limit)
-    .map((s) => {
-      const row = corpus.byId.get(s.symbolId)!;
-      return {
-        symbolId: row.id,
-        filePath: row.filePath,
-        qualifiedName: row.qualifiedName,
-        name: row.name,
-        kind: row.kind,
-        startLine: row.startLine,
-        endLine: row.endLine,
-        score: s.score,
-      } satisfies CodeSymbolCandidate;
-    });
+  let scored = corpus.index.score(denoised).filter((s) => s.score > 0);
+  // #1063 — only when a caller asks for it, and BEFORE the limit, so a
+  // requirement whose top hits each share one word still reaches the two-word
+  // hits ranked below them. Without the option nothing is filtered, so a caller
+  // that does not set it gets exactly the candidates it got before.
+  if ((options.minSharedTerms ?? 1) > 1) {
+    const queryTerms = new Set(tokenizeCode(denoised));
+    const required = requiredSharedTerms(denoised, options.minSharedTerms);
+    scored = scored.filter((s) => sharedNameTermCount(corpus, s.symbolId, queryTerms) >= required);
+  }
+  return scored.slice(0, limit).map((s) => {
+    const row = corpus.byId.get(s.symbolId)!;
+    return {
+      symbolId: row.id,
+      filePath: row.filePath,
+      qualifiedName: row.qualifiedName,
+      name: row.name,
+      kind: row.kind,
+      startLine: row.startLine,
+      endLine: row.endLine,
+      score: s.score,
+    } satisfies CodeSymbolCandidate;
+  });
 }
 
 export class Bm25CodeSymbolSearcher implements CodeSymbolSearcher {
@@ -570,11 +656,20 @@ export class Bm25CodeSymbolSearcher implements CodeSymbolSearcher {
  * mapping pass, and each instance is scoped to that pass (never a global cache).
  */
 export class MemoizingBm25CodeSymbolSearcher implements CodeSymbolSearcher {
-  private readonly cache = new Map<string, Promise<Bm25Corpus>>();
   constructor(
     private readonly prisma: Pick<PrismaClient, "codeSymbol">,
     private readonly options: Bm25SearcherOptions = {},
+    private readonly cache = new Map<string, Promise<Bm25Corpus>>(),
   ) {}
+
+  /**
+   * #1063 — a searcher over the SAME corpora with other options, so the analysis
+   * path can read one corpus load twice: with the shared-terms rule for the
+   * links it shows, without it for the code agent's seeds.
+   */
+  withOptions(options: Bm25SearcherOptions): MemoizingBm25CodeSymbolSearcher {
+    return new MemoizingBm25CodeSymbolSearcher(this.prisma, options, this.cache);
+  }
 
   async search(
     query: string,

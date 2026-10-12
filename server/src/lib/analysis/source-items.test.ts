@@ -163,6 +163,12 @@ describe("resolveSourceItems", () => {
     expect(resolveSourceItems('["NR-1","NR-9",4,null]', RUN)).toEqual([source(1)]);
   });
 
+  it("lists a repeated id once, in first-seen order (the page keys by candidateId)", () => {
+    const items = resolveSourceItems('["NR-2","NR-1","NR-2","NR-1","NR-2"]', RUN)!;
+    expect(items).toEqual([source(2), source(1)]);
+    expect(new Set(items.map((i) => i.candidateId)).size).toBe(items.length);
+  });
+
   it("is null, not [], when ids were stored and none resolves", () => {
     // Never "added by the analysis" on the strength of a stale id.
     expect(resolveSourceItems('["NR-9"]', RUN)).toBeNull();

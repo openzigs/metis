@@ -181,9 +181,15 @@ describe("#769 agent loop — final-answer retry", () => {
         isValidFinalAnswer: isJsonFinalAnswer,
       },
     });
-    // #1063 — an unusable retry also reports what it returned (asserted in
-    // agentic-recovery-reasoning.test.ts); this checks only that it did not succeed.
-    expect(result.finalAnswerRetry).toMatchObject({ attempted: true, succeeded: false });
+    // #1063 — an unusable retry reports exactly what it returned (PR #1095 panel, T1).
+    expect(result.finalAnswerRetry).toEqual({
+      attempted: true,
+      succeeded: false,
+      outcome: "prose",
+      responseLength: "I could not finish. Sorry.".length,
+      outputTokens: 5,
+      maxOutputTokens: 16_384,
+    });
     expect(result.hasFinalAnswer).toBe(false);
     expect(result.turnsExhausted).toBe(true);
     // The tool calls it DID make survive for the caller to salvage/report.

@@ -131,17 +131,40 @@ describe("synthesizedRequirementSchema — sourceIds (#1063)", () => {
     expect(synthesizedRequirementSchema.parse({ ...base, sourceIds: [] }).sourceIds).toEqual([]);
   });
 
-  it("bounds the list and each id", () => {
-    expect(
-      synthesizedRequirementSchema.safeParse({ ...base, sourceIds: Array(21).fill("NR-1") })
-        .success,
-    ).toBe(false);
-    expect(
-      synthesizedRequirementSchema.safeParse({ ...base, sourceIds: ["x".repeat(33)] }).success,
-    ).toBe(false);
-    expect(synthesizedRequirementSchema.safeParse({ ...base, sourceIds: [""] }).success).toBe(
-      false,
+  // Review of PR #1095 — the field fails SOFT. `runSynthesis` validates the
+  // whole reply with `synthesisOutputSchema`, so a strict field here cost every
+  // requirement of the reply for one malformed provenance value.
+  it.each([
+    ["null", null],
+    ["a bare string", "NR-1"],
+    ["a number", 4],
+    ["an object", { id: "NR-1" }],
+  ])("reads %s as ABSENT instead of failing the requirement", (_label, value) => {
+    const parsed = synthesizedRequirementSchema.safeParse({ ...base, sourceIds: value });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data!.sourceIds).toBeUndefined();
+  });
+
+  it("keeps a list whatever its entries, for cleanSourceIds to check", () => {
+    const long = "NR-1: Mark all as read older than X days";
+    const many = Array.from({ length: 21 }, (_, i) => `NR-${i}`);
+    expect(synthesizedRequirementSchema.parse({ ...base, sourceIds: [long] }).sourceIds).toEqual([
+      long,
+    ]);
+    expect(synthesizedRequirementSchema.parse({ ...base, sourceIds: many }).sourceIds).toEqual(
+      many,
     );
+    expect(synthesizedRequirementSchema.parse({ ...base, sourceIds: [""] }).sourceIds).toEqual([
+      "",
+    ]);
+    // An entry that is not a string becomes "", which is no run's id.
+    expect(
+      synthesizedRequirementSchema.parse({ ...base, sourceIds: [7, "NR-1", null] }).sourceIds,
+    ).toEqual(["", "NR-1", ""]);
+  });
+
+  it("still fails a requirement whose required fields are wrong", () => {
+    expect(synthesizedRequirementSchema.safeParse({ title: "", body: "b" }).success).toBe(false);
   });
 });
 
@@ -232,6 +255,159 @@ describe("runSynthesis — sourceIds (#1063)", () => {
       sourceItems: SOURCE_ITEMS,
     });
     expect(output.requirements[0]).toEqual(written);
+  });
+});
+
+/**
+ * Review of PR #1095 (blocking) — one requirement's malformed `sourceIds` used to
+ * fail whole-reply validation: two billed calls, then every requirement of the
+ * reply replaced by the raw findings. Each shape below goes through the real
+ * `runSynthesis`, beside a well-formed requirement that must survive with it.
+ */
+describe("runSynthesis — a malformed sourceIds never costs the reply (PR #1095 review)", () => {
+  const MALFORMED: Array<[string, unknown]> = [
+    ["null (a model writing null for none)", null],
+    ["a bare string", "NR-4"],
+    ["the id with its title, over 32 characters", ["NR-4: Add a button to terminate all sessions"]],
+    ["an empty string", [""]],
+    ["a number", 4],
+    ["a list of numbers", [4]],
+    ["21 ids, none of them the run's", Array.from({ length: 21 }, (_, i) => `XR-${i}`)],
+    ["an object", { id: "NR-4" }],
+  ];
+
+  it.each(MALFORMED)(
+    "%s: one call, every requirement kept, the field not recorded",
+    async (_label, value) => {
+      const { provider, calls } = providerReturning([
+        req("Define terminate-all-sessions", { sourceIds: ["NR-4"] }),
+        req("Complete intake", { sourceIds: value, evidenceFindingIndexes: [1] }),
+      ]);
+      const result = await runSynthesis(provider, {
+        projectName: "Miniflux",
+        findings: FINDINGS,
+        sourceItems: SOURCE_ITEMS,
+      });
+      expect(calls).toHaveLength(1);
+      expect(result.degraded).toBeUndefined();
+      expect(result.output.requirements.map((r) => r.title)).toEqual([
+        "Define terminate-all-sessions",
+        "Complete intake",
+      ]);
+      const [good, bad] = result.output.requirements;
+      // The well-formed neighbour keeps its link.
+      expect(good!.sourceIds).toEqual(["NR-4"]);
+      // Not recorded: the key is absent, so it can never read as "added".
+      expect("sourceIds" in bad!).toBe(false);
+      // Nothing else about the requirement changed.
+      expect(bad).toEqual(req("Complete intake", { evidenceFindingIndexes: [1] }));
+    },
+  );
+
+  it("keeps the run's own ids out of an over-long or mixed list", async () => {
+    const { provider, calls } = providerReturning([
+      req("A", { sourceIds: [...Array.from({ length: 30 }, (_, i) => `XR-${i}`), "NR-1"] }),
+      req("B", { sourceIds: [7, " NR-4 ", "", null], evidenceFindingIndexes: [1] }),
+    ]);
+    const result = await runSynthesis(provider, {
+      projectName: "Miniflux",
+      findings: FINDINGS,
+      sourceItems: SOURCE_ITEMS,
+    });
+    expect(calls).toHaveLength(1);
+    expect(result.degraded).toBeUndefined();
+    expect(result.output.requirements.map((r) => r.sourceIds)).toEqual([["NR-1"], ["NR-4"]]);
+  });
+
+  it("still rejects the reply when a REQUIRED field is malformed (the gate is not gone)", async () => {
+    const { provider, calls } = providerReturning([
+      req("A", { sourceIds: ["NR-4"] }),
+      req("", { sourceIds: ["NR-1"], evidenceFindingIndexes: [1] }),
+    ]);
+    const result = await runSynthesis(provider, {
+      projectName: "Miniflux",
+      findings: FINDINGS,
+      sourceItems: SOURCE_ITEMS,
+    });
+    expect(calls).toHaveLength(2);
+    expect(result.degraded?.reason).toBe("schema-invalid");
+  });
+});
+
+/**
+ * Panel gap T4 — a later call that rewrites a requirement already kept (same
+ * title, shared evidence) is merged into it, and its imported items must come
+ * along. The first reply is cut off after one whole requirement, so the second
+ * call is a continuation.
+ */
+describe("runSynthesis — sourceIds on a duplicate-title merge (#1063)", () => {
+  const cutOffAfter = (first: Record<string, unknown>): ChatResponse =>
+    ({
+      content: `{"summary":"s","requirements":[${JSON.stringify(first)},{"type":"feat`,
+      finishReason: "max_tokens",
+      usage: { promptTokens: 5, completionTokens: 7, totalTokens: 12 },
+      model: "stub",
+      provider: "offline-stub",
+    }) as ChatResponse;
+
+  async function mergeOf(firstIds: unknown, secondIds: unknown) {
+    const withIds = (ids: unknown) => (ids === undefined ? {} : { sourceIds: ids });
+    const replies: ChatResponse[] = [
+      cutOffAfter(
+        req("Terminate all sessions", { evidenceFindingIndexes: [0], ...withIds(firstIds) }),
+      ),
+      {
+        content: JSON.stringify({
+          summary: "s",
+          requirements: [
+            req("  terminate ALL sessions ", {
+              evidenceFindingIndexes: [0, 1],
+              ...withIds(secondIds),
+            }),
+          ],
+        }),
+        usage: { promptTokens: 5, completionTokens: 7, totalTokens: 12 },
+        model: "stub",
+        provider: "offline-stub",
+      } as ChatResponse,
+    ];
+    let n = 0;
+    const provider = {
+      key: "offline-stub",
+      model: "stub",
+      offline: true,
+      chat: vi.fn(async () => replies[Math.min(n++, replies.length - 1)]!),
+    } as unknown as AIProvider;
+    const result = await runSynthesis(provider, {
+      projectName: "Miniflux",
+      findings: FINDINGS,
+      sourceItems: SOURCE_ITEMS,
+    });
+    expect(n).toBe(2);
+    expect(result.output.requirements).toHaveLength(1);
+    expect(result.output.requirements[0]!.evidenceFindingIndexes).toEqual([0, 1]);
+    return result.output.requirements[0]!;
+  }
+
+  it("unions the imported items of both writings, in order, without repeats", async () => {
+    expect((await mergeOf(["NR-1"], ["NR-4", "NR-1"])).sourceIds).toEqual(["NR-1", "NR-4"]);
+  });
+
+  it("gives a requirement that had no source the later writing's", async () => {
+    expect((await mergeOf(undefined, ["NR-4"])).sourceIds).toEqual(["NR-4"]);
+  });
+
+  it("keeps the earlier source when the later writing did not say", async () => {
+    const merged = await mergeOf(["NR-1"], undefined);
+    expect(merged.sourceIds).toEqual(["NR-1"]);
+  });
+
+  it("keeps the earlier source when the later writing says 'none'", async () => {
+    expect((await mergeOf(["NR-1"], [])).sourceIds).toEqual(["NR-1"]);
+  });
+
+  it("leaves a requirement neither writing sourced as not recorded", async () => {
+    expect("sourceIds" in (await mergeOf(undefined, undefined))).toBe(false);
   });
 });
 

@@ -284,23 +284,15 @@ export class BM25Index {
   /**
    * Score all documents against a query and return ranked symbol IDs with scores.
    */
-  score(query: string): Array<{ symbolId: string; score: number; matchedTerms: number }> {
+  score(query: string): Array<{ symbolId: string; score: number }> {
     const queryTerms = this.tokenize(query);
     if (queryTerms.length === 0 || this.documents.length === 0) return [];
 
     const N = this.documents.length;
-    const results: Array<{ symbolId: string; score: number; matchedTerms: number }> = [];
-    // #1063 — the DISTINCT query terms, so a caller can tell "one shared word"
-    // from "two": a term the query repeats is still one piece of evidence.
-    const distinctTerms = new Set(queryTerms);
+    const results: Array<{ symbolId: string; score: number }> = [];
 
     for (const doc of this.documents) {
       let docScore = 0;
-      let matchedTerms = 0;
-      for (const term of distinctTerms) {
-        if (doc.termFreqs.has(term)) matchedTerms++;
-      }
-      if (matchedTerms === 0) continue;
 
       for (const term of queryTerms) {
         const tf = doc.termFreqs.get(term) ?? 0;
@@ -318,7 +310,7 @@ export class BM25Index {
       }
 
       if (docScore > 0) {
-        results.push({ symbolId: doc.symbolId, score: docScore, matchedTerms });
+        results.push({ symbolId: doc.symbolId, score: docScore });
       }
     }
 

@@ -61,23 +61,38 @@ export function estimateAffectedCodeTokens(text: string): number {
   return text.length === 0 ? 0 : Math.ceil(text.length / 4);
 }
 
-/** Result of the deterministic affected-code computation for one analysis run. */
+/**
+ * Result of the deterministic affected-code computation for one analysis run.
+ *
+ * It serves TWO readers, and since #1063 they do not get the same list:
+ *   - a PERSON reads `result` on the analysis page as "this requirement affects
+ *     this code". It carries only links that pass the shared-name-terms rule
+ *     ({@link ANALYSIS_LINK_MIN_SHARED_TERMS}); a requirement with none says so.
+ *   - the CODE AGENT is seeded with `block` and may cite `filePaths`. Both come
+ *     from the mapper WITHOUT that rule, as before #1063: the agent verifies
+ *     every seed with its tools, and the rule would have withheld symbols that
+ *     are right (`flushSessions`, `user_sessions`, `web_sessions`).
+ * With an injected `deps.mapRequirement` there is one mapper and one list.
+ */
 export interface AffectedCodeContext {
   /**
-   * Full per-candidate mapping for persistence + UI. `candidates` is COMPLETE
-   * (never truncated); `truncated` flags only that the rendered prompt `block`
-   * omitted some symbols/candidates to stay within the token budget.
+   * Per-candidate links for persistence + UI (rule applied). `candidates` is
+   * COMPLETE (never truncated); `truncated` flags only that the rendered prompt
+   * `block` omitted some symbols/candidates to stay within the token budget.
    */
   result: AnalysisAffectedCode;
-  /** Fenced-ready DATA block (token-budgeted; `""` when nothing to show). */
+  /**
+   * Fenced-ready DATA block of the code agent's seeds (rule NOT applied;
+   * token-budgeted; `""` when nothing to show).
+   */
   block: string;
   /** Estimated token cost of `block` (0 when empty) — carve this OUT of the
    * consuming agent's token budget rather than adding it on top (#729). */
   tokens: number;
   /**
-   * Every filePath that appears in `result.candidates` (normalised at the
-   * caller). Fed into the #734 code-citation provenance set so the code agent
-   * may cite a deterministically-mapped file without re-opening it via tools.
+   * Every filePath among the code agent's seeds (normalised at the caller). Fed
+   * into the #734 code-citation provenance set so the code agent may cite a
+   * deterministically-mapped file without re-opening it via tools.
    */
   filePaths: string[];
 }
@@ -227,30 +242,36 @@ export async function computeAffectedCodeContext(opts: {
 
   const prisma = (opts.deps?.prisma ??
     (defaultPrisma as unknown as AffectedCodePrisma)) as AffectedCodePrisma;
-  // #1063 — these links are shown to a person as "affected code", so a symbol
-  // must share two of the requirement's terms; one shared word linked "terminate
-  // all sessions" to a Telegram keyboard button. One corpus build per run.
-  const searcher = new MemoizingBm25CodeSymbolSearcher(prisma, {
+  // #1063 — one corpus load, two readings of it (see {@link AffectedCodeContext}):
+  // the links a person is shown need two shared NAME terms, because one shared
+  // word linked "terminate all sessions" to a Telegram keyboard button; the code
+  // agent's seeds do not, because the rule also drops symbols that are right.
+  const seedSearcher = new MemoizingBm25CodeSymbolSearcher(prisma);
+  const linkSearcher = seedSearcher.withOptions({
     minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS,
   });
-  const usesDefaultMapper = opts.deps?.mapRequirement === undefined;
-  const mapRequirement: MapRequirementFn =
-    opts.deps?.mapRequirement ??
-    ((req, projectId) => mapRequirementToCode(req, projectId, {}, { prisma, searcher }));
+  const injectedMapper = opts.deps?.mapRequirement;
+  const mapSeeds: MapRequirementFn =
+    injectedMapper ??
+    ((req, projectId) =>
+      mapRequirementToCode(req, projectId, {}, { prisma, searcher: seedSearcher }));
+  // An injected mapper is the caller's whole mapping: there is no second reading.
+  const mapLinks: MapRequirementFn | null = injectedMapper
+    ? null
+    : (req, projectId) =>
+        mapRequirementToCode(req, projectId, {}, { prisma, searcher: linkSearcher });
   // One data source per project (the graph is project-scoped). `blastRadius`
   // only walks depth ≤ 2, so the per-hop Prisma reads are bounded.
   const dataSourceFor =
     opts.deps?.dataSourceFor ??
     ((projectId: string) => new PrismaCodeGraphDataSource(prisma, projectId));
 
-  const candidates: AffectedCodeCandidate[] = [];
-  for (let i = 0; i < Math.min(changes.length, maxCandidates); i++) {
-    const change = changes[i];
-    // #768 — the SAME id the requirement candidate carries into the code agent's
-    // requirement set (`extractNewRequirementCandidates`), so a blast-radius
-    // mapping and its requirement entry are traceable to one another.
-    const id = newRequirementId(i);
-    let symbols: AffectedCodeSymbol[] = [];
+  const mapChange = async (
+    change: (typeof changes)[number],
+    id: string,
+    mapRequirement: MapRequirementFn,
+    use: "seed" | "link",
+  ): Promise<AffectedCodeSymbol[]> => {
     try {
       const impact = await computeProjectImpact(change, opts.projectId, {
         mapRequirement,
@@ -258,7 +279,7 @@ export async function computeAffectedCodeContext(opts: {
         // We only want the code-symbol impact here — no schema crossing.
         includeSchemaImpact: false,
       });
-      symbols = impact.affectedSymbols.slice(0, maxSymbols).map((s) => ({
+      return impact.affectedSymbols.slice(0, maxSymbols).map((s) => ({
         filePath: s.filePath,
         qualifiedName: s.qualifiedName,
         startLine: s.startLine,
@@ -273,33 +294,55 @@ export async function computeAffectedCodeContext(opts: {
       log.warn("affected-code mapping failed for candidate; emitting it with no symbols", {
         projectId: opts.projectId,
         candidateId: id,
+        use,
         error: String(err),
       });
+      return [];
     }
-    candidates.push({ id, title: change.title, body: change.body, symbols });
+  };
+
+  /** What the code agent is seeded with (no shared-terms rule). */
+  const seeds: AffectedCodeCandidate[] = [];
+  /** What is persisted and shown (rule applied); `seeds` itself when injected. */
+  const links: AffectedCodeCandidate[] = [];
+  for (let i = 0; i < Math.min(changes.length, maxCandidates); i++) {
+    const change = changes[i];
+    // #768 — the SAME id the requirement candidate carries into the code agent's
+    // requirement set (`extractNewRequirementCandidates`), so a blast-radius
+    // mapping and its requirement entry are traceable to one another.
+    const id = newRequirementId(i);
+    const head = { id, title: change.title, body: change.body };
+    const seedSymbols = await mapChange(change, id, mapSeeds, "seed");
+    seeds.push({ ...head, symbols: seedSymbols });
+    links.push({
+      ...head,
+      symbols: mapLinks ? await mapChange(change, id, mapLinks, "link") : seedSymbols,
+    });
   }
 
   // Degrade cleanly when NOTHING matched across all candidates — the typical
   // no-code-graph case (requirement-grounded mode). We keep today's behaviour:
-  // no fence is emitted and nothing is persisted, rather than showing an empty
-  // "(no code matched)" block that carries no signal. Per-candidate empty states
-  // still render when SOME candidates matched and others did not.
-  const hasAnySymbols = candidates.some((c) => c.symbols.length > 0);
-  if (!hasAnySymbols) {
+  // no fence is emitted, rather than an empty "(no code matched)" block that
+  // carries no signal. Per-candidate empty states still render when SOME
+  // candidates matched and others did not.
+  const hasAnySeed = seeds.some((c) => c.symbols.length > 0);
+  if (!hasAnySeed) {
     // #1063 — "the project has code and none of it matched" is a result, and the
     // page must say so. Only a project with NO code graph has nothing to report.
-    // Read from the corpus the mapper already loaded (no extra query); an
-    // injected mapper has no corpus to ask, and keeps the old behaviour. The
-    // prompt block stays empty either way: an all-empty list seeds nothing.
-    const hasCode = usesDefaultMapper && (await searcher.hasCodeGraph(opts.projectId));
+    // Read from the corpus the mapper already loaded (no extra query). An
+    // injected mapper never loads one, so it reads as "no code" and keeps the
+    // old behaviour without a separate check.
+    const hasCode = await seedSearcher.hasCodeGraph(opts.projectId);
     if (!hasCode) return EMPTY_AFFECTED_CODE_CONTEXT;
-    return { result: { candidates, truncated: false }, block: "", tokens: 0, filePaths: [] };
+    return { result: { candidates: links, truncated: false }, block: "", tokens: 0, filePaths: [] };
   }
 
-  const rendered = renderAffectedCodeBlock(candidates, tokenBudget);
-  const filePaths = [...new Set(candidates.flatMap((c) => c.symbols.map((s) => s.filePath)))];
+  // The block and the provenance list are the AGENT's: built from the seeds. A
+  // requirement the page shows as "No code matched" can still seed the agent.
+  const rendered = renderAffectedCodeBlock(seeds, tokenBudget);
+  const filePaths = [...new Set(seeds.flatMap((c) => c.symbols.map((s) => s.filePath)))];
   return {
-    result: { candidates, truncated: rendered.truncated },
+    result: { candidates: links, truncated: rendered.truncated },
     block: rendered.block,
     tokens: rendered.tokens,
     filePaths,

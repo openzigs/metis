@@ -72,6 +72,25 @@ export function resolvePhase1Reasoning(
 }
 
 /**
+ * Provider keys that put `ChatOptions.reasoningEffort` / `disableThinking` on
+ * the wire: the native `anthropic` provider (`thinking` + `output_config.effort`,
+ * `anthropic-provider.ts`) and `local-gemma` (`reasoning_effort` / `think`,
+ * `thinkingFields` in `bedrock-direct-provider.ts`). Every other key (`openai`,
+ * `azure`, `bedrock-gateway`) drops both, so a model that reasons by default
+ * behind an OpenAI-format endpoint is NOT bounded by any reasoning setting here.
+ * Keep in step with those two call sites.
+ */
+const REASONING_OPTION_PROVIDER_KEYS: ReadonlySet<string> = new Set(["anthropic", "local-gemma"]);
+
+/**
+ * PR #1095 review — whether a `*_REASONING` setting can reach the model through
+ * `providerKey`. Used so a note never advises a setting that does nothing.
+ */
+export function providerHonoursReasoningOptions(providerKey: string | undefined): boolean {
+  return providerKey !== undefined && REASONING_OPTION_PROVIDER_KEYS.has(providerKey);
+}
+
+/**
  * #1057 — the same resolution for any config key that takes the
  * {@link DOCS_GEN_REASONING_MODES} values (`SPEC_KIT_REASONING` uses it too).
  */

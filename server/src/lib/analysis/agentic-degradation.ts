@@ -36,6 +36,7 @@ import {
   type AnalysisSpecialistAgentKey,
 } from "@metis/shared";
 import type { AIProvider } from "../ai/types.js";
+import { providerHonoursReasoningOptions } from "../docs-gen/docs-gen-reasoning.js";
 import { extractJsonObject, repairAgentJson } from "./agent-runner.js";
 import {
   knownDocumentsForRepair,
@@ -382,6 +383,12 @@ const OUTPUT_CAP_FINISH_REASONS = new Set(["max_tokens", "length"]);
  * True when a recovery call returned NO text and stopped at its output cap: the
  * signature of a model that spent the whole cap reasoning (#706 run 7: 16,384
  * output tokens billed, 0 characters returned, twice).
+ *
+ * The provider's finish reason decides when there is one, WHATEVER the token
+ * count: the limit that stopped the call can be lower than the cap this code
+ * asked for (a model ceiling, the Anthropic SDK's non-streaming bound), and a
+ * provider may not report usage at all. The token count is only the fallback
+ * for a reply with no finish reason.
  */
 export function spentOutputCapWithoutText(attempt: AgenticRecoveryAttempt): boolean {
   if (attempt.responseLength > 0) return false;
@@ -389,22 +396,56 @@ export function spentOutputCapWithoutText(attempt: AgenticRecoveryAttempt): bool
   return attempt.maxOutputTokens !== undefined && attempt.outputTokens >= attempt.maxOutputTokens;
 }
 
+/** "N of CAP output tokens used", without claiming a match the numbers do not show. */
+function describeOutputTokensAtLimit(a: AgenticRecoveryAttempt): string {
+  if (a.maxOutputTokens === undefined) return `${a.outputTokens} output tokens used`;
+  if (a.outputTokens >= a.maxOutputTokens) {
+    return `${a.outputTokens} of ${a.maxOutputTokens} output tokens used`;
+  }
+  // Stopped at a limit below the one this call asked for (see above).
+  const used =
+    a.outputTokens > 0 ? `${a.outputTokens} output tokens used` : "no output-token count reported";
+  return `${used}; the call allowed ${a.maxOutputTokens}, so a lower provider or model limit applied`;
+}
+
+/** What {@link describeRecoveryAttempts} needs to know about the call's provider. */
+export interface RecoveryNoteContext {
+  /**
+   * The provider key the recovery calls went through. `ANALYSIS_RECOVERY_REASONING`
+   * reaches the model only where {@link providerHonoursReasoningOptions} is true;
+   * elsewhere the note must not advise it. Omitted ⇒ the setting is named as
+   * before (a caller that does not know its provider).
+   */
+  providerKey?: string;
+}
+
 /**
  * Issue #1063 — why a degraded pass recovered NOTHING, as notes a person can
  * act on. Before this the run said only "0 finding(s) were recovered": the
  * finish reason and token counts that explain it were in the server log and
- * nowhere else. Built from counts and the provider's finish reason only, never
- * from model text.
+ * nowhere else. Built from counts, the provider's finish reason and its key
+ * only, never from model text.
  */
-export function describeRecoveryAttempts(attempts: readonly AgenticRecoveryAttempt[]): string[] {
+export function describeRecoveryAttempts(
+  attempts: readonly AgenticRecoveryAttempt[],
+  context: RecoveryNoteContext = {},
+): string[] {
+  const settingReachesModel =
+    context.providerKey === undefined || providerHonoursReasoningOptions(context.providerKey);
+  // PR #1095 review — advise the setting only where it does something.
+  const advice = settingReachesModel
+    ? "ANALYSIS_RECOVERY_REASONING limits it (off turns reasoning off for these calls)."
+    : `ANALYSIS_RECOVERY_REASONING cannot limit it here: the ${context.providerKey} provider does not ` +
+      "send a reasoning setting to the model. Limit reasoning at the endpoint, use another model, " +
+      "or raise ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS.";
   return attempts.map((a) => {
     const who = RECOVERY_STEP_TEXT[a.step];
     const cap = a.maxOutputTokens !== undefined ? ` of ${a.maxOutputTokens}` : "";
     if (spentOutputCapWithoutText(a)) {
       return (
-        `${who} returned no text: it stopped at its output limit (${a.outputTokens}${cap} output tokens used). ` +
+        `${who} returned no text: it stopped at its output limit (${describeOutputTokensAtLimit(a)}). ` +
         "A model that reasons by default spends that limit on reasoning first. " +
-        "ANALYSIS_RECOVERY_REASONING limits it (off turns reasoning off for these calls)."
+        advice
       );
     }
     return (
@@ -456,6 +497,8 @@ export function buildDegradedAgentOutput(input: {
    * findings were recovered the calls did their job and need no explanation.
    */
   recovery?: readonly AgenticRecoveryAttempt[];
+  /** The provider the recovery calls went through (see {@link RecoveryNoteContext}). */
+  recoveryProviderKey?: string;
 }): AgentOutput {
   const toolNames = [...new Set(input.toolCalls.map((c) => c.tool))].sort();
   const investigation =
@@ -477,7 +520,9 @@ export function buildDegradedAgentOutput(input: {
         512,
       ),
       ...(input.salvaged.length === 0
-        ? describeRecoveryAttempts(input.recovery ?? []).map((n) => n.slice(0, 512))
+        ? describeRecoveryAttempts(input.recovery ?? [], {
+            providerKey: input.recoveryProviderKey,
+          }).map((n) => n.slice(0, 512))
         : []),
     ],
   };

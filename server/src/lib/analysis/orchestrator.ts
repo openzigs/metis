@@ -2947,6 +2947,8 @@ export class AnalysisOrchestrator {
               recovery: collectRecoveryAttempts(loopResult.finalAnswerRetry, evidenceSalvage, {
                 maxOutputTokens: finalAnswerMaxOutputTokens,
               }),
+              // …and advise the reasoning setting only where this provider sends it.
+              recoveryProviderKey: this.deps.provider.key,
             });
           }
           // #298 — no repair is silent: it is logged with its kind and position

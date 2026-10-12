@@ -42,6 +42,7 @@ const {
 } = await import("./agentic-degradation.js");
 const { resolveRecoveryReasoning, RECOVERY_REASONING_KEY } =
   await import("./agentic-pass-context.js");
+const { providerHonoursReasoningOptions } = await import("../docs-gen/docs-gen-reasoning.js");
 
 const CAP = 16_384;
 
@@ -177,6 +178,86 @@ describe("#1063 — the final-answer retry", () => {
     });
   });
 
+  // PR #1095 panel, T1 — a NON-EMPTY unusable retry. Forcing `responseLength`
+  // to 0 or `outcome` to "empty" in the loop left every suite green, and a
+  // truncated-JSON retry would then be persisted as "returned no text".
+  const TRUNCATED =
+    '{"agentKey":"code","summary":"s","findings":[{"category":"gap","severity":"high","title":"Sessions';
+  const SCHEMA_INVALID = JSON.stringify({ agentKey: "code", summary: "s", findings: "none" });
+  const PROSE = "I looked at the session code and could not decide.";
+
+  it.each([
+    ["prose", PROSE, "prose", "end_turn", 31],
+    ["truncated JSON", TRUNCATED, "truncated-json", "max_tokens", CAP],
+    ["schema-invalid JSON", SCHEMA_INVALID, "valid-json", "end_turn", 57],
+  ] as const)(
+    "reports exactly what a %s retry returned",
+    async (_label, content, outcome, finishReason, completionTokens) => {
+      const p = reasoningModel({
+        content,
+        finishReason,
+        usage: { promptTokens: 44_799, completionTokens, totalTokens: 44_799 + completionTokens },
+      });
+      const result = await runAgentLoop(p, loopInput, {
+        maxTurns: 2,
+        finalAnswerRetry: {
+          instruction: FINAL_ANSWER_INSTRUCTION,
+          isValidFinalAnswer: isSchemaValidFinalAnswer,
+          maxOutputTokens: CAP,
+        },
+      });
+      expect(content.length).toBeGreaterThan(0);
+      expect(result.hasFinalAnswer).toBe(false);
+      expect(result.finalAnswerRetry).toEqual({
+        attempted: true,
+        succeeded: false,
+        outcome,
+        finishReason,
+        responseLength: content.length,
+        outputTokens: completionTokens,
+        maxOutputTokens: CAP,
+      });
+      // …and the note built from it never says "returned no text".
+      const [note] = describeRecoveryAttempts(
+        collectRecoveryAttempts(result.finalAnswerRetry, undefined, { maxOutputTokens: CAP }),
+      );
+      expect(note).toContain(`returned ${content.length} character(s) with no usable finding`);
+      expect(note).not.toContain("returned no text");
+    },
+  );
+
+  it("records neither a finish reason nor a token count the provider did not report", async () => {
+    const p = reasoningModel({ content: PROSE, finishReason: undefined, usage: undefined });
+    const result = await runAgentLoop(p, loopInput, {
+      maxTurns: 2,
+      finalAnswerRetry: {
+        instruction: FINAL_ANSWER_INSTRUCTION,
+        isValidFinalAnswer: isSchemaValidFinalAnswer,
+      },
+    });
+    expect(result.finalAnswerRetry).toEqual({
+      attempted: true,
+      succeeded: false,
+      outcome: "prose",
+      responseLength: PROSE.length,
+      maxOutputTokens: CAP,
+    });
+  });
+
+  it("records nothing about the reply of a retry that succeeded", async () => {
+    const answer = JSON.stringify({ agentKey: "code", summary: "s", findings: [], notes: [] });
+    const p = reasoningModel({ content: answer, finishReason: "end_turn" });
+    const result = await runAgentLoop(p, loopInput, {
+      maxTurns: 2,
+      finalAnswerRetry: {
+        instruction: FINAL_ANSWER_INSTRUCTION,
+        isValidFinalAnswer: isSchemaValidFinalAnswer,
+        maxOutputTokens: CAP,
+      },
+    });
+    expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: true });
+  });
+
   it("reports nothing about a reply when the retry call throws", async () => {
     const p = reasoningModel();
     const chat = p.chat.bind(p);
@@ -296,6 +377,28 @@ describe("#1063 — saying why nothing was recovered", () => {
     [{ ...emptyAtCap, responseLength: 12 }, false],
     // Empty, but it stopped early of its own accord.
     [{ ...emptyAtCap, finishReason: "end_turn", outputTokens: 40 }, false],
+    // PR #1095 panel, T2 — the finish reason ALONE decides, below the cap this
+    // call asked for: the provider's limit can be lower (a model ceiling, the
+    // Anthropic SDK's non-streaming bound), and it is the provider saying so.
+    [{ ...emptyAtCap, finishReason: "max_tokens", outputTokens: 8_192 }, true],
+    [{ ...emptyAtCap, finishReason: "length", outputTokens: 8_192 }, true],
+    // …also when the provider reported no usage at all (recorded as 0).
+    [{ ...emptyAtCap, finishReason: "length", outputTokens: 0 }, true],
+    // …and when no cap is known to compare against.
+    [
+      {
+        step: "evidence-only" as const,
+        responseLength: 0,
+        outputTokens: 40,
+        finishReason: "length",
+      },
+      true,
+    ],
+    // Below the cap with a finish reason that is NOT an output limit: no.
+    [{ ...emptyAtCap, finishReason: "stop", outputTokens: 8_192 }, false],
+    [{ ...emptyAtCap, finishReason: "content_filter", outputTokens: 8_192 }, false],
+    // Below the cap with no finish reason: nothing says it hit a limit.
+    [{ ...emptyAtCap, finishReason: undefined, outputTokens: 8_192 }, false],
     // Empty and no cap known: nothing to compare the spend to.
     [
       { step: "evidence-only" as const, responseLength: 0, outputTokens: 40, finishReason: "stop" },
@@ -312,6 +415,103 @@ describe("#1063 — saying why nothing was recovered", () => {
     expect(notes[0]).toContain("16384 of 16384 output tokens used");
     expect(notes[0]).toContain("ANALYSIS_RECOVERY_REASONING");
     expect(notes[1]).toMatch(/^The evidence-only call returned no text/);
+  });
+
+  it("does not claim the cap was reached when the provider stopped the call below it", () => {
+    const [note] = describeRecoveryAttempts([{ ...emptyAtCap, outputTokens: 8_192 }]);
+    expect(note).toMatch(/^The final-answer call returned no text: it stopped at its output limit/);
+    expect(note).toContain(
+      "(8192 output tokens used; the call allowed 16384, so a lower provider or model limit applied)",
+    );
+    expect(note).not.toContain("8192 of 16384");
+    expect(note).toContain("ANALYSIS_RECOVERY_REASONING");
+  });
+
+  it("says so when the provider reported no output-token count", () => {
+    const [note] = describeRecoveryAttempts([
+      { ...emptyAtCap, finishReason: "length", outputTokens: 0 },
+    ]);
+    expect(note).toContain(
+      "(no output-token count reported; the call allowed 16384, so a lower provider or model limit applied)",
+    );
+    expect(note).not.toContain("0 of 16384");
+    expect(note).not.toContain("0 output tokens used");
+  });
+
+  it("gives only the tokens used when no cap is known", () => {
+    const [note] = describeRecoveryAttempts([
+      { step: "evidence-only", responseLength: 0, outputTokens: 40, finishReason: "length" },
+    ]);
+    expect(note).toContain("it stopped at its output limit (40 output tokens used).");
+  });
+
+  // PR #1095 review (low) — the reasoning options reach the wire only on the
+  // native `anthropic` provider and `local-gemma`; every other key drops them.
+  it.each(["anthropic", "local-gemma"])(
+    "advises the setting on %s, which sends it to the model",
+    (providerKey) => {
+      const [note] = describeRecoveryAttempts([emptyAtCap], { providerKey });
+      expect(note).toContain(
+        "ANALYSIS_RECOVERY_REASONING limits it (off turns reasoning off for these calls).",
+      );
+      expect(note).not.toContain("cannot limit it here");
+    },
+  );
+
+  it.each(["openai", "azure", "bedrock-gateway", "offline-stub"])(
+    "does not advise a setting that does nothing on %s, and says what can help",
+    (providerKey) => {
+      const notes = describeRecoveryAttempts(
+        [emptyAtCap, { ...emptyAtCap, step: "evidence-only" }],
+        {
+          providerKey,
+        },
+      );
+      for (const note of notes) {
+        expect(note).toContain("16384 of 16384 output tokens used");
+        expect(note).toContain(
+          `ANALYSIS_RECOVERY_REASONING cannot limit it here: the ${providerKey} provider does not send a reasoning setting to the model.`,
+        );
+        expect(note).toContain("ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS");
+        expect(note).not.toContain("limits it (off");
+        // Persisted notes are cut at 512 characters: the advice must fit whole.
+        expect(note.length).toBeLessThanOrEqual(512);
+        expect(note.endsWith("ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS.")).toBe(true);
+      }
+    },
+  );
+
+  it("fits the longest note it can write inside the persisted 512 characters", () => {
+    const [note] = describeRecoveryAttempts(
+      [{ ...emptyAtCap, step: "evidence-only", outputTokens: 0, maxOutputTokens: 1_000_000 }],
+      { providerKey: "bedrock-gateway" },
+    );
+    expect(note!.length).toBeLessThanOrEqual(512);
+  });
+
+  it("knows which providers send a reasoning setting", () => {
+    expect(providerHonoursReasoningOptions("anthropic")).toBe(true);
+    expect(providerHonoursReasoningOptions("local-gemma")).toBe(true);
+    for (const key of ["openai", "azure", "bedrock-gateway", "offline-stub", "", undefined]) {
+      expect(providerHonoursReasoningOptions(key)).toBe(false);
+    }
+  });
+
+  it("carries the provider through to the persisted notes of a total loss", () => {
+    const lost = (recoveryProviderKey?: string) =>
+      buildDegradedAgentOutput({
+        agentKey: "code",
+        reason: "token-budget",
+        toolCalls: [{ tool: "read_file_slice" }],
+        salvaged: [],
+        recovery: [emptyAtCap],
+        ...(recoveryProviderKey ? { recoveryProviderKey } : {}),
+      }).notes[2]!;
+    expect(lost("openai")).toContain("cannot limit it here: the openai provider");
+    expect(lost("anthropic")).toContain("ANALYSIS_RECOVERY_REASONING limits it");
+    // A caller that does not say keeps the note as it was.
+    expect(lost()).toContain("ANALYSIS_RECOVERY_REASONING limits it");
+    expect(agentOutputSchema.shape.notes.safeParse([lost("bedrock-gateway")]).success).toBe(true);
   });
 
   it("describes an unusable reply that did carry text differently", () => {
@@ -388,6 +588,22 @@ describe("#1063 — saying why nothing was recovered", () => {
     expect(output.notes[2]).toContain("The final-answer call returned no text");
     expect(output.notes[3]).toContain("The evidence-only call returned no text");
     for (const note of output.notes) expect(note.length).toBeLessThanOrEqual(512);
+  });
+
+  it("cuts a recovery note at the 512 characters a persisted note may have", () => {
+    // Only a provider key no real provider has can make the note this long; the
+    // cut is what keeps the whole agent output valid if one ever does.
+    const output = buildDegradedAgentOutput({
+      agentKey: "code",
+      reason: "token-budget",
+      toolCalls: [{ tool: "read_file_slice" }],
+      salvaged: [],
+      recovery: [emptyAtCap],
+      recoveryProviderKey: "k".repeat(600),
+    });
+    expect(output.notes[2]).toHaveLength(512);
+    expect(output.notes[2]).toMatch(/^The final-answer call returned no text/);
+    expect(agentOutputSchema.safeParse(output).success).toBe(true);
   });
 
   it("says nothing about the recovery calls when they did recover findings", () => {

@@ -142,7 +142,7 @@ type Recorded = { messages: ChatMessage[]; opts: ChatOptions };
  * A model that calls a tool on every loop turn and, asked to stop and answer,
  * returns NO text having been billed its whole output cap.
  */
-function makeProvider() {
+function makeProvider(key = "anthropic") {
   const recorded: Recorded[] = [];
   let turns = 0;
   const chat = vi.fn(async (messages: ChatMessage[], opts: ChatOptions = {}) => {
@@ -168,14 +168,15 @@ function makeProvider() {
       provider: "anthropic" as const,
     };
   });
-  return { provider: { chat, key: "anthropic" } as never, recorded };
+  return { provider: { chat, key } as never, recorded };
 }
 
 async function runPipeline(
   model: string,
   extra: Record<string, unknown> = {},
+  providerKey = "anthropic",
 ): Promise<Recorded[]> {
-  const { provider, recorded } = makeProvider();
+  const { provider, recorded } = makeProvider(providerKey);
   const orch = new AnalysisOrchestrator({
     provider,
     retrieve: async () => [],
@@ -301,7 +302,25 @@ describe("#1063 — a total loss says why", () => {
     expect(notes).toContain(
       `The evidence-only call returned no text: it stopped at its output limit (${CAP} of ${CAP} output tokens used).`,
     );
-    expect(notes).toContain("ANALYSIS_RECOVERY_REASONING");
+    expect(notes).toContain(
+      "ANALYSIS_RECOVERY_REASONING limits it (off turns reasoning off for these calls).",
+    );
+  });
+
+  // PR #1095 review — on a provider that drops the reasoning options the note
+  // must not tell the operator to change a setting that does nothing there.
+  it("does not advise the reasoning setting on a provider that never sends it", async () => {
+    await runPipeline("deepseek-flash", {}, "openai");
+    const notes = persistedCodeOutput().notes;
+    const recovery = notes.filter((n) => n.includes("returned no text"));
+    expect(recovery).toHaveLength(2);
+    for (const note of recovery) {
+      expect(note).toContain(
+        "ANALYSIS_RECOVERY_REASONING cannot limit it here: the openai provider does not send a reasoning setting to the model.",
+      );
+      expect(note).not.toContain("limits it (off");
+      expect(note.length).toBeLessThanOrEqual(512);
+    }
   });
 });
 

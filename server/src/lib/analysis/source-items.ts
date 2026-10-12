@@ -110,7 +110,7 @@ export function serializeSourceCandidateIds(
  * Resolve a stored `sourceCandidateIds` column against the run's imported
  * items. `null` when the column is null or unreadable, the run has no imported
  * items, or none of the stored ids is one of them; otherwise an id the run does
- * not list is left out.
+ * not list is left out, and a repeated id is listed once.
  */
 export function resolveSourceItems(
   column: string | null | undefined,
@@ -125,7 +125,9 @@ export function resolveSourceItems(
   }
   if (!Array.isArray(ids)) return null;
   const byId = new Map(sources.map((s) => [s.candidateId, s] as const));
-  const items = ids.flatMap((id) => {
+  // De-duplicated on read as well as on write: the page keys the list by
+  // `candidateId`, and a column edited by hand could repeat one.
+  const items = [...new Set(ids)].flatMap((id) => {
     const hit = typeof id === "string" ? byId.get(id) : undefined;
     return hit ? [hit] : [];
   });

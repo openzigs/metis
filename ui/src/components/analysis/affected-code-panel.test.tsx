@@ -56,13 +56,23 @@ describe("AffectedCodePanel", () => {
     expect(screen.getByTestId("affected-code-candidate-NR-4")).toHaveTextContent("0 symbols");
     const empty = screen.getByTestId("affected-code-empty-NR-4");
     expect(empty).toHaveTextContent(/No code matched/);
+    expect(empty).toHaveTextContent(/No symbol's name shares two of this requirement's terms/);
     expect(empty).toHaveTextContent(/nothing is linked rather than showing a weak guess/);
+    // The agent's seed list is wider than what is shown (PR #1095 review).
+    expect(empty).toHaveTextContent(
+      /code agent still investigates it, and may start from weaker candidates that are not shown here/,
+    );
   });
 
   it("explains the linking rule and that confidence is relative", () => {
     render(<AffectedCodePanel affectedCode={affectedCode} />);
     const panel = screen.getByTestId("affected-code-panel");
     expect(panel).toHaveTextContent(/shares at least two of the requirement's terms/);
+    // The rule is on the NAME: a directory or file extension is not a shared term.
+    expect(panel).toHaveTextContent(
+      /symbol's name \(with its enclosing type or table, never its file path\)/,
+    );
+    expect(panel).toHaveTextContent(/callers and importers of a direct match are listed with it/);
     expect(panel).toHaveTextContent(/not a probability/);
   });
 

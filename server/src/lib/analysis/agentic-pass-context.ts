@@ -79,6 +79,18 @@ export const RECOVERY_REASONING_KEY = "ANALYSIS_RECOVERY_REASONING";
  * fixed this failure for /speckit.plan: `low` effort for a model that reasons
  * by default, nothing for any other model (Claude on api.anthropic.com is sent
  * the same request as before). The loop's own turns are not affected.
+ *
+ * Two limits (review of PR #1095):
+ *   - the options reach the wire only on the `anthropic` provider and
+ *     `local-gemma` (`providerHonoursReasoningOptions`). Every other
+ *     OpenAI-format key drops them, so `deepseek-flash` behind `openai` is NOT
+ *     bounded by this; the degrade note says that rather than advising the key.
+ *   - `auto` is the only value verified for real Claude models, because it
+ *     sends them nothing. An explicit `low`/`medium`/`high` sends
+ *     `thinking: {type: "adaptive"}` + `output_config.effort`, and `off` sends
+ *     `thinking: {type: "disabled"}`; neither was checked per Claude model.
+ *     `auto` does not bound Claude either: `claude-sonnet-5` spends thinking
+ *     tokens from the same cap with no `thinking` field sent.
  */
 export function resolveRecoveryReasoning(
   model: string | undefined,

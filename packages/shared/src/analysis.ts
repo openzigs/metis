@@ -731,9 +731,18 @@ export const synthesizedRequirementSchema = z.object({
    * items this requirement restates or refines. `[]` is the model saying the
    * requirement is its own addition; ABSENT means it did not say, which must
    * never be read as "added by the analysis". No default, for that reason.
-   * Model output: every id is checked against the run's own before it is kept.
+   * Model output: every id is checked against the run's own before it is kept
+   * (`cleanSourceIds`), which is also where unknown and over-long ids go.
+   *
+   * FAILS SOFT, and must: `runSynthesis` validates the whole reply with
+   * {@link synthesisOutputSchema}, so a strict schema here let one requirement's
+   * `sourceIds: null` discard every requirement of the reply, twice, for a field
+   * that only says where a card came from. Anything that is not a list (`null`,
+   * a bare string, a number) reads as ABSENT; an entry that is not a string
+   * reads as `""`, which is no run's id. No length caps: an id the run does not
+   * list is dropped whatever its length, so a cap could only reject the reply.
    */
-  sourceIds: z.array(z.string().min(1).max(32)).max(20).optional(),
+  sourceIds: z.array(z.string().catch("")).optional().catch(undefined),
 });
 export type SynthesizedRequirement = z.infer<typeof synthesizedRequirementSchema>;
 

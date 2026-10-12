@@ -284,9 +284,16 @@ describe("#1314 — a JSON-shaped but schema-invalid answer must still get the r
   it("spends the retry at most once when the retry is also schema-invalid", async () => {
     const provider = makeSchemaInvalidProvider(SCHEMA_INVALID_JSON);
     const result = await runAgentLoop(provider, loopInput, { maxTurns: 4, ...SCHEMA_RETRY_OPTS });
-    // #1063 — an unusable retry also reports what it returned (asserted in
-    // agentic-recovery-reasoning.test.ts); this checks only that it did not succeed.
-    expect(result.finalAnswerRetry).toMatchObject({ attempted: true, succeeded: false });
+    // #1063 — an unusable retry reports exactly what it returned (PR #1095 panel, T1).
+    expect(result.finalAnswerRetry).toEqual({
+      attempted: true,
+      succeeded: false,
+      // Whole JSON that fails the findings schema: text came back, none usable.
+      outcome: "valid-json",
+      responseLength: SCHEMA_INVALID_JSON.length,
+      outputTokens: 5,
+      maxOutputTokens: DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS,
+    });
     expect(result.hasFinalAnswer).toBe(false);
     // Preserved for the caller's salvage pass rather than dropped (#1217 AC2).
     expect(result.salvageSource).toBe(SCHEMA_INVALID_JSON);
@@ -340,9 +347,16 @@ describe("#1217 AC1 — the retry gets an explicit OUTPUT cap, not the token bud
 describe("#1217 AC2 — an invalid retry answer is preserved, not discarded", () => {
   it("keeps a truncated-mid-array retry response as the salvage source", async () => {
     const { result } = await runBudgetStop(TRUNCATED_JSON);
-    // #1063 — an unusable retry also reports what it returned (asserted in
-    // agentic-recovery-reasoning.test.ts); this checks only that it did not succeed.
-    expect(result.finalAnswerRetry).toMatchObject({ attempted: true, succeeded: false });
+    // #1063 — an unusable retry reports exactly what it returned (PR #1095 panel, T1).
+    expect(result.finalAnswerRetry).toEqual({
+      attempted: true,
+      succeeded: false,
+      // Never "empty": a cut-off payload returned text, and says how much.
+      outcome: "truncated-json",
+      responseLength: TRUNCATED_JSON.length,
+      outputTokens: 5,
+      maxOutputTokens: DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS,
+    });
     expect(result.hasFinalAnswer).toBe(false);
     // The prose fallback still guards the caller-visible field (#718)...
     expect(result.finalResponse).toContain("tool-call limit");
