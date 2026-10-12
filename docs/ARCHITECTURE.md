@@ -5972,6 +5972,7 @@ are reported now. `plan-localisation.test.ts` holds one fixture per constant tha
 | `MAX_FUNCTIONS_PER_SEED_FILE` | 12 | `Retrieved files: N functions were not followed, past the first 12 of a retrieved file (…)` |
 | `MAX_WRITERS_PER_TABLE`, `MAX_READERS_PER_TABLE` | 16, 10 | `N more writers / readers not listed (in …)` |
 | `MAX_CALLEES`, `MAX_OTHER_CALLEES` | 16, 4 | `N more callees not listed (in …)` |
+| the callee step's second hop, outside the data layer | kept inside it only | `N callees one call further out, outside the data layer, not listed (in …)` |
 | `MAX_LISTED_TWINS`, and the finder's `MAX_TWINS_PER_SEED`, `MAX_TWINS` | 6, 4, 24 | `N more twins not listed (in …)`, counting what all three removed |
 | `MAX_TWIN_SEEDS` | 60 | `N retrieved functions were not compared for twins, past the first 60` |
 | `MAX_COLUMNS_PER_WRITER`, `MAX_NAMED_CALLERS` | 5, 3 | `+N more` on the row, and `N writers with more than 5 columns …` / `N callees with more than 3 callers …` |
@@ -5985,7 +5986,16 @@ are reported now. `plan-localisation.test.ts` holds one fixture per constant tha
 
 The two depth bounds (`DEFAULT_MAX_DOWNSTREAM_DEPTH`, and the callee step's second hop) are
 different in kind: past them nothing is enumerated, so there is nothing to count. The block's
-header states how far the walk goes.
+header states how far the walk goes. One part of the second hop is not past the bound: it is
+taken from the callees inside the data layer, and what those call *outside* it has been read
+when it is discarded, so it is counted (the row above). A callee outside the data layer is
+not walked from at all.
+
+The mocked-Prisma tests of the scoped reads cannot show an excluded item coming back through
+a query whose mock returns `[]` (#1094 cycle 2: a retrieved function left out of the 900-name
+pool was returned by the candidate query and compared after all). Each scoped read therefore
+also has a case on a real migrated SQLite database:
+`server/tests/plan-localisation-scoped-reads-1060.sqlite.test.ts`.
 
 **The walk's cost is bounded.** It runs on a request thread, and with the SQLite driver
 (`better-sqlite3`) every query is synchronous, so a read that grows with the project stalls
@@ -6013,17 +6023,11 @@ compare. No plan command passes a `signal` today: the commands have none to pass
 The context then ends with **Files in the Retrieved Context**, built from the structured
 results (source excerpts, symbol locators, callers, localisation rows), and
 `buildSpecKitRagContext` returns it as `files`. The plan prompt reserves "not in the
-retrieved context" for a file absent from that list, and `findFalseNotRetrievedClaims`
-(`grounding.ts`) checks the generated plan against it. The result is shown to the user, so
-the check is built to be precise and under-reports: a path is reported only when it is what
-the phrase is about (the nearest backticked span before the phrase in the same clause or
-table cell with nothing but a linking word between, a list of such spans, or a span a colon
-or dash introduces after the phrase) **and** is exactly a listed file. A directory, a bare
-file name, a path in another cell, clause or line, and a reworded phrase are not caught;
-`plan-context.md` is how a reader checks those. One false positive cannot be closed without
-reading English (a sentence that denies the claim), so the note states what was checked and
-not what the plan meant: `` `X` is in the list of files this plan was given (see
-`plan-context.md`), and the plan has "not in the retrieved context" next to it ``.
+retrieved context" for a file absent from that list. Nothing in METIS checks the generated
+plan against it: whether such a sentence is about a given path is a question about English,
+and a pattern-based check reported correct plans in two review cycles of #1094 and was
+removed before release. The stored list is the check: a reader opens `plan-context.md` and
+looks.
 
 `/speckit.plan` records the list and what was left out as the feature artifact
 `plan-context.md` and returns `retrievedFiles`. The record is written only when this run's
@@ -6043,8 +6047,18 @@ and 40 ms on the run-7 project to a command that already runs for minutes (#1059
 repeatable. Not reachable this way: a file that was never ingested (an HTML template, a
 README outside the indexed set), and code related to the spec only by wording that
 similarity ranked too low to seed the walk. A budget of `0` switches off the walk and its
-block and nothing else: the file list, the prompt's two instructions, `plan-context.md` and
-the check stay, so `0` is not the pre-#1060 prompt byte for byte.
+block and nothing else: the file list, the prompt's two instructions and `plan-context.md`
+stay, so `0` is not the pre-#1060 prompt byte for byte.
+
+**Comparing two builds offline.** The two time limits are wall-clock, so on a busy machine
+the same plan can get the twin section on one run and `structural twins skipped` on the
+next, or at 5 s no block at all. Nothing is silent (both are sentences in `dropped`), but a
+replay that scores context recall would then score a different block for a reason unrelated
+to the change under test. A replay therefore (1) passes `localise: { timeBudgetMs: Infinity,
+twinTimeBudgetMs: Infinity }` to `buildSpecKitRagContext`, which switches both limits off
+(the plan commands pass neither), and (2) asserts that no sentence in `dropped` contains
+`skipped` before it compares any number. The unit tests switch the limits off the same way,
+except the tests of the limits themselves.
 
 The legacy alias is preserved byte-for-byte in response shape (`{command, artifactName, artifact, message, tokensUsed}`) so existing v1.2 client integrations require no changes.
 

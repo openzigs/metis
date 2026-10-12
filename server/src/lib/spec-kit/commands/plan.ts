@@ -20,10 +20,8 @@ import {
 } from "../rag-context.js";
 import {
   describeContextDropped,
-  describeFalseNotRetrievedClaims,
   describeGrounding,
   extractRequirementText,
-  findFalseNotRetrievedClaims,
   PINNED_REQUIREMENT_DOCUMENTS,
   verifyPlanPaths,
   type PlanPathLookup,
@@ -174,15 +172,10 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     findUndeclaredMermaidNodes(run.content),
   );
 
-  // #1060 — "not in the retrieved context" is checked against what was retrieved.
-  const claimNote = describeFalseNotRetrievedClaims(
-    findFalseNotRetrievedClaims(run.content, rag.files),
-  );
-
   return {
     artifact,
     tokensUsed: run.tokensUsed,
     retrievedFiles: rag.files,
-    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${describeContextDropped(rag.dropped)}${pathNote}${noneNote}${claimNote}${mermaidNote}${truncationWarning(run.truncated ? ["plan.md"] : [])}`,
+    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${describeContextDropped(rag.dropped)}${pathNote}${noneNote}${mermaidNote}${truncationWarning(run.truncated ? ["plan.md"] : [])}`,
   };
 }

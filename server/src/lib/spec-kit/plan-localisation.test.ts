@@ -78,6 +78,11 @@ const SEEDS: LocalisationSeed[] = [
 const USERS_NOT_FOLLOWED =
   "Tables: 1 more table the retrieved code reaches was not followed (users)";
 
+/**
+ * Both time limits are off unless a test sets one: the block these tests pin
+ * must not depend on how busy the machine is (the full gate runs every package
+ * at once). The tests of the limits themselves pass their own.
+ */
 const localise = (over: Partial<Parameters<typeof buildPlanLocalisation>[0]> = {}) =>
   buildPlanLocalisation({
     projectId: "p1",
@@ -85,6 +90,8 @@ const localise = (over: Partial<Parameters<typeof buildPlanLocalisation>[0]> = {
     seeds: SEEDS,
     tokenBudget: 4000,
     source: fakeSource(minifluxGraph()),
+    timeBudgetMs: Number.POSITIVE_INFINITY,
+    twinTimeBudgetMs: Number.POSITIVE_INFINITY,
     ...over,
   });
 
@@ -260,7 +267,7 @@ describe("buildPlanLocalisation — the files similarity cannot reach (#1060)", 
   it("takes the second call hop only inside the data layer", async () => {
     const graph = minifluxGraph();
     graph.symbols.push(
-      // Called by the data layer, from outside it: a second-hop callee that is not kept.
+      // Called by the data layer, from outside it: a second-hop callee that is not kept, and counted.
       sym("deep", "function", "internal/timezone/tz.go::Convert", "internal/timezone/tz.go"),
       // Called by a first-hop callee that is itself outside the data layer: not followed.
       sym(
@@ -281,8 +288,12 @@ describe("buildPlanLocalisation — the files similarity cannot reach (#1060)", 
     expect(r.block).not.toContain("Encode");
     expect(r.files).not.toContain("internal/timezone/tz.go");
     expect(r.files).not.toContain("internal/http/response/enc.go");
-    // Not listed and not counted as left out either: they were never candidates.
-    expect(r.dropped).toEqual([USERS_NOT_FOLLOWED]);
+    // `Convert` was read and then not kept, so it is counted. `Encode` was never
+    // read (the hop is not taken from outside the data layer): nothing to count.
+    expect(r.dropped).toEqual([
+      "Called by the Retrieved Code and the Data Layer: 1 callee one call further out, outside the data layer, not listed (in internal/timezone/tz.go)",
+      USERS_NOT_FOLLOWED,
+    ]);
   });
 
   it("never names a test or a synthetic SQL origin as a reader, a callee or a twin", async () => {
@@ -885,6 +896,79 @@ describe("buildPlanLocalisation — every cap says what it cut", () => {
     expectLeftOut(r, /more than 2,000 functions share callee names/);
   });
 
+  it("second call hop: a callee outside the data layer is fetched, not listed, and counted", async () => {
+    // handle → Load (data layer) → Format, Trace (plumbing). The second hop is
+    // read to find query builders; what it finds elsewhere is in hand, so it is
+    // counted like every other cut (#1094 cycle 2).
+    const graph = {
+      symbols: [
+        sym("h", "function", "ui/h.go::handle", "ui/h.go"),
+        sym("t-feeds", "table", "feeds", "db/migrations.go"),
+        sym("c-id", "column", "feeds.id", "db/migrations.go"),
+        sym("w", "function", "st/feed.go::SaveFeed", "st/feed.go"),
+        sym("load", "function", "st/load.go::Load", "st/load.go"),
+        sym("builder", "function", "st/builder.go::NewBuilder", "st/builder.go"),
+        sym("fmt", "function", "util/format.go::Format", "util/format.go"),
+        sym("trace", "function", "log/trace.go::Trace", "log/trace.go"),
+      ] as Sym[],
+      edges: [
+        { from: "w", to: "c-id", kind: "writes" },
+        { from: "h", to: "w", kind: "calls", callee: "SaveFeed" },
+        { from: "h", to: "load", kind: "calls", callee: "Load" },
+        { from: "load", to: "builder", kind: "calls", callee: "NewBuilder" },
+        { from: "load", to: "fmt", kind: "calls", callee: "Format" },
+        { from: "load", to: "trace", kind: "calls", callee: "Trace" },
+      ] as Edge[],
+    };
+    const r = await localise({
+      requirementText: "feeds",
+      seeds: [{ id: "h", name: "handle", filePath: "ui/h.go", kind: "function" }],
+      tokenBudget: 20_000,
+      source: fakeSource(graph),
+    });
+    // The second hop inside the data layer is listed, as before.
+    expect(r.block).toContain("- Load (function)");
+    expect(r.block).toContain("- NewBuilder (function)");
+    expect(r.block).not.toContain("- Format (function)");
+    expect(r.block).not.toContain("- Trace (function)");
+    expect(expectLeftOut(r, /one call further out/)).toBe(
+      "Called by the Retrieved Code and the Data Layer: 2 callees one call further out, outside the data layer, not listed (in log/trace.go, util/format.go)",
+    );
+  });
+
+  it("second call hop: not taken from a callee outside the data layer, so there is nothing in hand to count", async () => {
+    // handle → D1 → D2, neither in the data layer. D2 is never read: this is the
+    // depth bound the header states, not a cut.
+    const graph = {
+      symbols: [
+        sym("h", "function", "ui/h.go::handle", "ui/h.go"),
+        sym("t-feeds", "table", "feeds", "db/migrations.go"),
+        sym("c-id", "column", "feeds.id", "db/migrations.go"),
+        sym("w", "function", "st/feed.go::SaveFeed", "st/feed.go"),
+        sym("d1", "function", "svc/d.go::D1", "svc/d.go", 20),
+        sym("d2", "function", "svc/d.go::D2", "svc/d.go", 40),
+      ] as Sym[],
+      edges: [
+        { from: "w", to: "c-id", kind: "writes" },
+        { from: "h", to: "w", kind: "calls", callee: "SaveFeed" },
+        { from: "h", to: "d1", kind: "calls", callee: "D1" },
+        { from: "d1", to: "d2", kind: "calls", callee: "D2" },
+      ] as Edge[],
+    };
+    const source = fakeSource(graph);
+    const asked = vi.spyOn(source.schema, "getCodeSymbolDetails");
+    const r = await localise({
+      requirementText: "feeds",
+      seeds: [{ id: "h", name: "handle", filePath: "ui/h.go", kind: "function" }],
+      tokenBudget: 20_000,
+      source,
+    });
+    expect(r.block).toContain("- D1 (function)");
+    expect(r.block).not.toContain("- D2 (function)");
+    expect(r.dropped.filter((d) => d.includes("one call further out"))).toEqual([]);
+    expect(asked.mock.calls.flatMap((c) => c[0])).not.toContain("d2");
+  });
+
   it("the depth bounds are stated in the header: past them nothing is enumerated to count", () => {
     expect(DEFAULT_MAX_DOWNSTREAM_DEPTH).toBe(2);
     expect(LOCALISATION_HEADER).toContain("The walk goes two");
@@ -907,6 +991,32 @@ describe("buildPlanLocalisation — a slow walk does not delay the plan (#1094 r
   it("has a time budget for the whole walk and a smaller one for the twin step", () => {
     expect(LOCALISATION_TIME_BUDGET_MS).toBe(5_000);
     expect(TWIN_TIME_BUDGET_MS).toBeLessThan(LOCALISATION_TIME_BUDGET_MS);
+  });
+
+  it("has no limit when the caller passes Infinity: nothing is skipped however slow a step is", async () => {
+    // For a test or an offline replay. A read that comes back after a timer
+    // turn: with a limit of Infinity handed to a timer, the timer fires at once.
+    const source = fakeSource(minifluxGraph());
+    const edges = source.schema.getSchemaEdgesFrom;
+    source.schema.getSchemaEdgesFrom = async (ids) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return edges(ids);
+    };
+    const names = source.calleeNameSets;
+    source.calleeNameSets = async (ids) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return names(ids);
+    };
+    const r = await localise({
+      source,
+      timeBudgetMs: Number.POSITIVE_INFINITY,
+      twinTimeBudgetMs: Number.POSITIVE_INFINITY,
+    });
+    expect(r.block).toContain(LOCALISATION_HEADER);
+    expect(r.block).toContain("- showCategoryEntriesPage (function)");
+    expect(r.dropped.filter((d) => d.includes("skipped"))).toEqual([]);
+    // The same walk with the limits unset is the same block: off is not a different walk.
+    expect((await localise({ source: fakeSource(minifluxGraph()) })).block).toBe(r.block);
   });
 
   it("gives up on a query that does not come back, and says the localisation was skipped", async () => {
@@ -991,6 +1101,7 @@ describe("buildPlanLocalisation — a slow walk does not delay the plan (#1094 r
   it("skips only the twin step when that step is the slow one, and says so", async () => {
     const source = fakeSource(minifluxGraph());
     source.calleeNameSets = () => new Promise(() => undefined);
+    // The whole walk has no limit here: only the twin step's can stop anything.
     const r = await localise({ source, twinTimeBudgetMs: 25 });
     // Everything before the twins is kept.
     expect(r.files).toContain(MIGRATIONS);
@@ -1284,7 +1395,9 @@ describe("createDefaultPlanLocalisationSource — callee names for the twin step
       // A twin shares at least 70% of a union of six or more names: five.
       having: { toQualifiedName: { _count: { gte: 5 } } },
       orderBy: [{ _count: { toQualifiedName: "desc" } }, { fromSymbolId: "asc" }],
-      take: TWIN_MAX_CANDIDATES + 1,
+      // One more than the limit, to know there were more, and room for the
+      // retrieved function itself, which matches its own names.
+      take: TWIN_MAX_CANDIDATES + 2,
     });
     expect(codeEdge.findMany.mock.calls[1]![0]).toMatchObject({
       where: {
@@ -1353,13 +1466,22 @@ describe("createDefaultPlanLocalisationSource — callee names for the twin step
       // Fits after s2 was left out: its names are all s1's.
       ...calls("s3", namesOf("a").slice(0, 6)),
     ]);
-    codeEdge.groupBy.mockResolvedValue([]);
+    // The database returns every function sharing five pooled names. That
+    // includes the retrieved ones, and s2 if it shares that many, as two
+    // functions of one file usually do. Returning `[]` here hid that s2 was
+    // then read back in as its own candidate (#1094 cycle 2; the case on a real
+    // database is in `plan-localisation-scoped-reads-1060.sqlite.test.ts`).
+    codeEdge.groupBy.mockResolvedValue(
+      ["s1", "s2", "s3"].map((fromSymbolId) => ({ fromSymbolId, _count: { toQualifiedName: 6 } })),
+    );
     const r = await source.calleeNameSets(["s1", "s2", "s3"]);
     expect(r.notes).toEqual([
       `1 retrieved function was not compared for twins (the retrieved code calls more than ${TWIN_MAX_POOLED_CALLEE_NAMES} distinct names)`,
     ]);
     // Not compared at all: comparing it with candidates found by other names would miss its twins.
     expect(r.sets.has("s2")).toBe(false);
+    // No retrieved function is read a second time as a candidate.
+    expect(codeEdge.findMany).toHaveBeenCalledTimes(1);
     expect(r.sets.has("s1")).toBe(true);
     expect(r.sets.has("s3")).toBe(true);
     const asked = codeEdge.groupBy.mock.calls[0]![0].where.toQualifiedName.in as string[];

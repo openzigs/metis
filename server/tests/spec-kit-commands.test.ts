@@ -467,7 +467,7 @@ describe("/plan", () => {
     expect(r.message).toContain("Warning: `plan.md` was cut off");
   });
 
-  it("#1060 — /plan follows the code graph to the data, returns the files it was given, and checks 'not in the retrieved context'", async () => {
+  it("#1060 — /plan follows the code graph to the data, returns the files it was given, and passes no verdict on the plan's 'not in the retrieved context'", async () => {
     await writeArtifact({
       projectId: "p1",
       name: "spec.md",
@@ -519,10 +519,10 @@ describe("/plan", () => {
       },
     });
     expect(r.retrievedFiles).toEqual([ENTRY, "internal/database/migrations.go"]);
-    // The check result, with no record to point at: `/plan` stores none.
-    expect(r.message).toContain(
-      ' Check before implementing: `internal/database/migrations.go` is in the list of files this plan was given, and the plan has "not in the retrieved context" next to it.',
-    );
+    // The plan says a listed file was not retrieved. No code decides what that
+    // sentence is about (#1094 cycle 2): `retrievedFiles` is how a reader checks it.
+    expect(r.message).not.toContain("Check before implementing");
+    expect(r.message).not.toContain("not in the retrieved context");
     expect(r.message).not.toContain("plan-context.md");
     // `/plan` has no `plan-context.md`, so the message is the only place that can
     // say what the localisation left out: it lists it in full.
@@ -577,8 +577,6 @@ describe("/plan", () => {
     });
     expect(r.retrievedFiles).toEqual([ENTRY, "internal/database/migrations.go"]);
     expect(r.message).not.toContain("Left out of the plan's context");
-    // A correct plan line that names a retrieved file beside an unretrieved one draws no note.
-    expect(r.message).not.toContain("Check before implementing");
   });
 
   it("#1060 — /plan returns an empty file list when nothing was retrieved", async () => {
@@ -589,7 +587,6 @@ describe("/plan", () => {
       deps: { provider: new FakeProvider("# Plan\n") },
     });
     expect(r.retrievedFiles).toEqual([]);
-    expect(r.message).not.toContain("not in the retrieved context");
   });
 
   it("still produces a valid plan.md ungrounded when retrieval is empty/fails (#375)", async () => {

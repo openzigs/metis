@@ -40,7 +40,8 @@
  * and in `plan-context.md`. `plan-localisation.test.ts` has one fixture per
  * constant that exceeds it. The two DEPTH bounds are different in kind: past
  * them nothing is enumerated, so there is nothing to count, and the header says
- * how far the walk goes.
+ * how far the walk goes. (What the callee step's second hop reads and does not
+ * keep IS in hand, and is counted.)
  *
  * BOUNDED. The walk runs on a request thread, and with the SQLite driver every
  * query is synchronous, so each read is scoped to what the walk follows: no
@@ -148,9 +149,13 @@ export interface BuildPlanLocalisationInput {
   tokenBudget: number;
   /** Defaults to the project's code graph through Prisma. */
   source?: PlanLocalisationSource;
-  /** Longest the whole walk may take. Defaults to {@link LOCALISATION_TIME_BUDGET_MS}. */
+  /**
+   * Longest the whole walk may take. Defaults to {@link LOCALISATION_TIME_BUDGET_MS}.
+   * `Infinity` switches the limit off: for a test or an offline replay, whose
+   * result must not depend on how busy the machine is. Never for a request.
+   */
   timeBudgetMs?: number;
-  /** Longest the twin step may take. Defaults to {@link TWIN_TIME_BUDGET_MS}. */
+  /** Longest the twin step may take. Defaults to {@link TWIN_TIME_BUDGET_MS}. `Infinity` as above. */
   twinTimeBudgetMs?: number;
   /** Aborting it stops the walk at its next step. */
   signal?: AbortSignal;
@@ -418,10 +423,13 @@ function createWalkClock(
       let timer: ReturnType<typeof setTimeout> | undefined;
       let onAbort: (() => void) | undefined;
       const stopped = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new WalkStopped("time")),
-          Math.max(0, deadline - performance.now()),
-        );
+        // No timer for a limit that is switched off: `setTimeout(…, Infinity)` fires at once.
+        if (Number.isFinite(deadline)) {
+          timer = setTimeout(
+            () => reject(new WalkStopped("time")),
+            Math.max(0, deadline - performance.now()),
+          );
+        }
         onAbort = () => reject(new WalkStopped("aborted"));
         signal?.addEventListener("abort", onAbort, { once: true });
       });
@@ -517,23 +525,28 @@ async function loadCalleeNameSets(
   if (pooled.size === 0) return { sets, notes };
 
   await checkpoint();
+  // The retrieved functions match their own names, so the query returns them
+  // too: room for all of them, and they are not candidates. A seed the pool
+  // left out usually comes back here as well (it shares names with another
+  // function of its file); reading its edges back in would compare it after
+  // all, against candidates found by other functions' names, under a note
+  // saying it was not compared (#1094 cycle 2).
+  const seeds = new Set(seedIds);
   const groups = await prisma.codeEdge.groupBy({
     by: ["fromSymbolId"],
     where: { projectId, kind: "calls", toQualifiedName: { in: [...pooled].sort() } },
     _count: { toQualifiedName: true },
     having: { toQualifiedName: { _count: { gte: MIN_SHARED_CALLEES } } },
     orderBy: [{ _count: { toQualifiedName: "desc" } }, { fromSymbolId: "asc" }],
-    take: TWIN_MAX_CANDIDATES + 1,
+    take: TWIN_MAX_CANDIDATES + seeds.size + 1,
   });
-  if (groups.length > TWIN_MAX_CANDIDATES) {
+  const found = groups.map((g) => g.fromSymbolId).filter((id) => !seeds.has(id));
+  if (found.length > TWIN_MAX_CANDIDATES) {
     notes.push(
       `more than ${TWIN_MAX_CANDIDATES.toLocaleString("en-US")} functions share callee names with the retrieved code: only the ${TWIN_MAX_CANDIDATES.toLocaleString("en-US")} sharing most were compared for twins`,
     );
   }
-  const candidates = groups
-    .slice(0, TWIN_MAX_CANDIDATES)
-    .map((g) => g.fromSymbolId)
-    .filter((id) => !sets.has(id));
+  const candidates = found.slice(0, TWIN_MAX_CANDIDATES);
 
   let read = 0;
   for (let i = 0; i < candidates.length; i += IN_CHUNK) {
@@ -1163,6 +1176,8 @@ async function calleeSection(walk: Walk): Promise<LocalisationSection> {
   const callersOf = new Map<string, Set<string>>();
   const byId = new Map<string, CodeSymbolDetail>();
   const inLayer = (d: CodeSymbolDetail) => walk.dataDirs.has(dirOf(d.filePath));
+  /** Fetched on the second hop and not kept: in hand, so counted like any other cut. */
+  const furtherOut: CodeSymbolDetail[] = [];
   let frontier = [...new Set([...walk.seedIds, ...walk.dataLayerIds])];
   for (let hop = 0; hop < 2 && frontier.length > 0; hop++) {
     await walk.clock.checkpoint();
@@ -1177,7 +1192,10 @@ async function calleeSection(walk: Walk): Promise<LocalisationSection> {
     const found = (await ds.getCodeSymbolDetails([...fresh])).filter(isNameableCode);
     for (const d of found) {
       // The second hop is taken, and its results kept, only inside the data layer.
-      if (hop > 0 && !inLayer(d)) continue;
+      if (hop > 0 && !inLayer(d)) {
+        furtherOut.push(d);
+        continue;
+      }
       byId.set(d.id, d);
       walk.names.set(d.id, simpleName(d.qualifiedName));
     }
@@ -1221,6 +1239,11 @@ async function calleeSection(walk: Walk): Promise<LocalisationSection> {
         "callees",
         ranked.filter((d) => !shown.includes(d)),
       ),
+      ...(furtherOut.length > 0
+        ? [
+            `${count(furtherOut.length, "callee", "callees")} one call further out, outside the data layer, not listed (in ${nameSome([...new Set(furtherOut.sort(byLocation).map((d) => d.filePath))])})`,
+          ]
+        : []),
       ...rowCap("callee", MAX_NAMED_CALLERS, "callers", manyCallers),
     ],
   };

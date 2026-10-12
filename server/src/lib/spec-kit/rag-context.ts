@@ -131,9 +131,17 @@ export interface SpecKitLocalisation {
   tokenBudget?: number;
   /**
    * Longest the walk may take before the context is built without it (and says
-   * so in `dropped`). Defaults to `LOCALISATION_TIME_BUDGET_MS`.
+   * so in `dropped`). Defaults to `LOCALISATION_TIME_BUDGET_MS`. `Infinity`
+   * switches the limit off, for an offline replay: see `twinTimeBudgetMs`.
    */
   timeBudgetMs?: number;
+  /**
+   * Longest the walk's twin step may take before it alone is skipped. Defaults
+   * to `TWIN_TIME_BUDGET_MS`. A replay that compares context recall between two
+   * builds passes `Infinity` for both, so a busy machine cannot change the
+   * block; the plan commands pass neither.
+   */
+  twinTimeBudgetMs?: number;
   /** Aborting it stops the walk at its next step. */
   signal?: AbortSignal;
 }
@@ -337,6 +345,9 @@ export async function buildSpecKitRagContext(
           ...(opts.localise.source ? { source: opts.localise.source } : {}),
           ...(opts.localise.timeBudgetMs !== undefined
             ? { timeBudgetMs: opts.localise.timeBudgetMs }
+            : {}),
+          ...(opts.localise.twinTimeBudgetMs !== undefined
+            ? { twinTimeBudgetMs: opts.localise.twinTimeBudgetMs }
             : {}),
           ...(opts.localise.signal ? { signal: opts.localise.signal } : {}),
         })

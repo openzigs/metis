@@ -58,10 +58,8 @@ import {
 } from "../rag-context.js";
 import {
   describeContextDropped,
-  describeFalseNotRetrievedClaims,
   describeGrounding,
   extractRequirementText,
-  findFalseNotRetrievedClaims,
   PINNED_REQUIREMENT_DOCUMENTS,
   PLAN_CONTEXT_ARTIFACT,
   renderPlanContext,
@@ -443,20 +441,13 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
         ? " The plan declares no REST surface, so the contract defines no endpoint."
         : "";
 
-  // #1060 — "not in the retrieved context" is checked against what was retrieved.
-  // A kept earlier plan was written from an earlier context, so it is not checked.
-  // With no record to point at, the notes carry their own detail.
-  const recordedIn = contextRecorded ? PLAN_CONTEXT_ARTIFACT : undefined;
-  const claimNote = recordsContext
-    ? describeFalseNotRetrievedClaims(
-        findFalseNotRetrievedClaims(plan.content, rag.files),
-        recordedIn,
-      )
-    : "";
+  // #1060 — the message says where the files the plan was given are recorded:
+  // that record is how a reader checks a "not in the retrieved context" in the
+  // plan. With no record to point at, the note carries its own detail.
   const contextNote = !recordsContext
     ? ""
     : contextRecorded
-      ? ` The ${rag.files.length} file${rag.files.length === 1 ? "" : "s"} the plan was given ${rag.files.length === 1 ? "is" : "are"} recorded in \`${PLAN_CONTEXT_ARTIFACT}\`.${describeContextDropped(rag.dropped, recordedIn)}`
+      ? ` The ${rag.files.length} file${rag.files.length === 1 ? "" : "s"} the plan was given ${rag.files.length === 1 ? "is" : "are"} recorded in \`${PLAN_CONTEXT_ARTIFACT}\`.${describeContextDropped(rag.dropped, PLAN_CONTEXT_ARTIFACT)}`
       : ` \`${PLAN_CONTEXT_ARTIFACT}\` (the record of the files this plan was given) could not be saved; an earlier one, if present, describes an earlier plan.md.${describeContextDropped(rag.dropped)}`;
 
   const kept = Object.keys(partialContent);
@@ -468,7 +459,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
 
   return {
     artifacts,
-    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${contextNote}${pathNote}${noneNote}${claimNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
+    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${contextNote}${pathNote}${noneNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
     tokensUsed: totalTokens,
     retrievedFiles: rag.files,
     ...(kept.length > 0 ? { partialContent } : {}),

@@ -1039,7 +1039,7 @@ describe("feature commands are grounded (#786, #785)", () => {
       edges: [{ from: "s-mark", to: "col", kind: "writes" }],
     });
 
-  it("#1060 — speckit.plan follows the code graph to the data, records what it was given, and checks 'not in the retrieved context'", async () => {
+  it("#1060 — speckit.plan follows the code graph to the data, records what it was given, and passes no verdict on the plan's 'not in the retrieved context'", async () => {
     const fid = seedFeature("p1", "008-read-at");
     seedFeatureArtifact(fid, "spec.md", "# Spec\nRecord when an entry was read.");
     const provider = new RecordingProvider(
@@ -1091,9 +1091,10 @@ describe("feature commands are grounded (#786, #785)", () => {
     expect(r.message).toContain(
       "The 5 files the plan was given are recorded in `plan-context.md`.",
     );
-    expect(r.message).toContain(
-      ' Check before implementing: `internal/database/migrations.go` is in the list of files this plan was given (see `plan-context.md`), and the plan has "not in the retrieved context" next to it.',
-    );
+    // The plan says a listed file was not retrieved. No code decides what that
+    // sentence is about (#1094 cycle 2): the record is how a reader checks it.
+    expect(r.message).not.toContain("Check before implementing");
+    expect(r.message).not.toContain("not in the retrieved context");
     // The record names the plan.md it describes, and is written after it (#1094 review M4).
     expect(context?.content).toContain("when it wrote `plan.md` v1.");
     // Written by the same actor as the plan it describes.
@@ -1108,8 +1109,8 @@ describe("feature commands are grounded (#786, #785)", () => {
 
   it("#1060 — a budget of 0 switches off the walk and its block, and nothing else", async () => {
     // What the setting's description promises (#1094 review L6): 0 is not the
-    // pre-#1060 prompt. The file list, the prompt's two instructions, the record
-    // and the check all stay.
+    // pre-#1060 prompt. The file list, the prompt's two instructions and the
+    // record all stay.
     process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET = "0";
     __resetConfigSingleton();
     try {
@@ -1145,7 +1146,6 @@ describe("feature commands are grounded (#786, #785)", () => {
         ),
       ).toBe(true);
       expect(r.message).toContain("recorded in `plan-context.md`");
-      expect(r.message).toContain(`Check before implementing: \`${ENTRY}\` is in the list`);
       expect(r.retrievedFiles).not.toContain("internal/database/migrations.go");
       const { CONFIG_KEYS } = await import("../src/lib/config/key-registry.js");
       expect(CONFIG_KEYS.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET!.description).toContain(
@@ -1240,10 +1240,6 @@ describe("feature commands are grounded (#786, #785)", () => {
         /Left out of the plan's context \(token budget, list cap or time limit\): .*not listed for the token budget/,
       );
       expect(r.message).not.toContain("listed in `plan-context.md`");
-      // … and the check result does not send the reader to a record that is not there.
-      expect(r.message).toContain(
-        `\`${ENTRY}\` is in the list of files this plan was given, and the plan has`,
-      );
       // The database's own words stay in the log.
       expect(r.message).not.toContain("database is locked");
     } finally {
@@ -1253,7 +1249,7 @@ describe("feature commands are grounded (#786, #785)", () => {
     }
   });
 
-  it("#1060 — a plan that makes no false claim gets no note", async () => {
+  it("#1060 — says nothing was left out when nothing was", async () => {
     const fid = seedFeature("p1", "009-clean");
     seedFeatureArtifact(fid, "spec.md", "# Spec\nRecord when an entry was read.");
     const r = await runPlanExpanded({
@@ -1270,7 +1266,6 @@ describe("feature commands are grounded (#786, #785)", () => {
       callerLookup,
       localisationSource: localisationSource(),
     });
-    expect(r.message).not.toContain("Check before implementing");
     expect(r.message).not.toContain("Left out of the plan's context");
   });
 

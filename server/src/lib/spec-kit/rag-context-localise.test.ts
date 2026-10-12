@@ -244,6 +244,23 @@ describe("buildSpecKitRagContext — plan localisation (#1060)", () => {
     ]);
   });
 
+  it("passes the twin step's own time limit through, so a replay can set both", async () => {
+    const source = fakeSource(minifluxGraph());
+    source.calleeNameSets = () => new Promise(() => undefined);
+    const r = await buildSpecKitRagContext(
+      "p1",
+      SPEC,
+      options({
+        localise: { source, timeBudgetMs: Number.POSITIVE_INFINITY, twinTimeBudgetMs: 25 },
+      }),
+    );
+    // The rest of the block is kept; only the twin step is skipped, at the limit given.
+    expect(r.context).toContain("## Change Localisation");
+    expect(r.dropped).toContain(
+      "Structural Twins of Retrieved Functions: structural twins skipped: looking for them took longer than 25 ms",
+    );
+  });
+
   it("stops the walk when the caller's signal aborts", async () => {
     const controller = new AbortController();
     controller.abort();

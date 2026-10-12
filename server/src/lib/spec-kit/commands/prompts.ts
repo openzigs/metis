@@ -153,7 +153,7 @@ export const PLAN_SYSTEM_PROMPT = [
   "    no stored data, say so and propose no schema change.",
   "  - `Files in the Retrieved Context` is the complete list of files you were",
   "    given. Write that a file is `not in the retrieved context` ONLY when it is",
-  "    absent from that list; that statement is checked against the list.",
+  "    absent from that list; the list is kept beside the plan for its reader.",
   "",
   "EXISTING CAPABILITY CHECK — REQUIRED before any **New** component, new",
   "function or new method (#785):",
