@@ -40,6 +40,8 @@ import {
   oracleSymbolsFor,
   type OracleView,
   readOracleView,
+  showAnswer,
+  showVerdict,
   verdictTable,
 } from "../../helpers/go-oracle.js";
 
@@ -156,6 +158,109 @@ describe("#1071 — the Go oracle corpus", () => {
     await expect(`${JSON.stringify(table, null, 1)}\n`).toMatchFileSnapshot(
       path.join(GO_ORACLE_FIXTURE, "verdicts.snapshot.json"),
     );
+  });
+
+  // ── Shapes that once survived every test (PR #1104, review cycle 4). ──────
+  //
+  // An independent mutation pass changed ten lines of the resolver and the
+  // walker with every test green; nine of the ten changed an answer on Go that
+  // compiles. Each shape is in the corpus now, where the rules above judge it
+  // against the type checker. The verdicts are ALSO stated here, because two
+  // of them are a call left undecided — which no rule above objects to, and
+  // which the checked-in table alone would let a careless `vitest -u` accept.
+  describe("the shapes an independent mutation pass found unpinned", () => {
+    const verdictsOf = (name: string): Map<string, string> => {
+      const view = GO_ORACLE_VIEWS.find((v) => v.name === name)!;
+      const { calls } = metisCallsOfView(readOracleView(view));
+      return new Map([...calls].map(([key, call]) => [key, showVerdict(call.verdict)]));
+    };
+    const answersOf = (name: string): Map<string, string> => {
+      const view = GO_ORACLE_VIEWS.find((v) => v.name === name)!;
+      const prefix = `${view.root}/`;
+      return new Map(
+        oracleCallsFor(snapshot, view).map((c) => [
+          `${c.file.slice(prefix.length)}:${c.line}:${c.name}`,
+          c.answer.k,
+        ]),
+      );
+    };
+
+    it("a dependency whose import path ends like a project directory is not that directory", () => {
+      // `github.com/acme/storage` beside the module `example.com/app` and its
+      // own `storage/`: as long before the last segment as the module path.
+      const v = verdictsOf("modules");
+      expect(v.get("app/thirdstore/dep.go:8:Save")).toBe("unbound external");
+      expect(v.get("app/thirdstore/dep.go:9:Ping")).toBe("unbound external-assumed");
+      expect(v.get("app/thirdstore/own.go:6:Save")).toBe("package app/storage/storage.go::Save");
+      expect(v.get("app/thirdstore/own.go:7:Ping")).toBe(
+        "receiver-type app/storage/storage.go::Conn::Ping",
+      );
+      expect(answersOf("modules").get("app/thirdstore/dep.go:8:Save")).toBe("external");
+    });
+
+    it("the result of a func type the source does not let it read is undecided — never external, and never a throw", () => {
+      const v = verdictsOf("modules");
+      // `type Factory = func() *Made`: an alias of a func type.
+      expect(v.get("app/values/factory.go:19:Save")).toBe("unknown");
+      // `type Opts = struct{ M *Made }`: an alias of a struct type written in place.
+      expect(v.get("app/values/factory.go:23:Save")).toBe("unknown");
+      // `type Hook func() *Dev`, declared once per platform.
+      expect(v.get("app/platform/use.go:21:Name")).toBe("unknown");
+      // The type checker binds all three: undecided is the honest answer, a
+      // decided one would be wrong.
+      const go = answersOf("modules");
+      expect(go.get("app/values/factory.go:19:Save")).toBe("func");
+      expect(go.get("app/values/factory.go:23:Save")).toBe("func");
+      expect(go.get("app/platform/use.go:21:Name")).toBe("func");
+    });
+
+    it("an element of a slice held in a FIELD is called through its value", () => {
+      // `s.handlers[i](1)`: the grammar reads it as a conversion to a generic
+      // type `s.handlers[i]`; what `s` is says otherwise.
+      const v = verdictsOf("modules");
+      expect(v.get("app/values/factory.go:27:handlers")).toBe("unbound func-value");
+      expect(v.get("app/values/factory.go:28:handlers")).toBe("unbound func-value");
+      expect(answersOf("modules").get("app/values/factory.go:27:handlers")).toBe("func-value");
+    });
+
+    it("twins declared in TEST files only: each caller's own file declares its callee", () => {
+      const v = verdictsOf("modules");
+      for (const goos of ["linux", "windows", "darwin"]) {
+        const file = `app/twintest/twin_${goos}_test.go`;
+        expect(v.get(`${file}:9:setup`)).toBe(`same-package ${file}::setup`);
+        expect(v.get(`${file}:10:Base`)).toBe("same-package app/twintest/twintest.go::Base");
+      }
+    });
+
+    it("a conversion from the external test package to a type only `export_test.go` declares keeps its methods", () => {
+      const v = verdictsOf("modules");
+      expect(v.get("app/embed/embed_x_test.go:20:TestOnly")).toBe("unbound conversion");
+      expect(v.get("app/embed/embed_x_test.go:20:Probe")).toBe(
+        "receiver-type app/embed/export_test.go::TestOnly::Probe",
+      );
+    });
+
+    it("two directories an import path ends in, with no go.mod: Go means the SHORTER one, and METIS binds neither", () => {
+      // `example.org/legacy/internal/storage`, in a tree whose root is that
+      // package root and which also holds `legacy/internal/storage/`. The
+      // longer directory used to be bound — a wrong target, by the type
+      // checker's own answer (PR #1104, review cycle 4).
+      const fromPackageRoot = verdictsOf("legacy-package-root");
+      expect(fromPackageRoot.get("cmd/app/main.go:26:Open")).toBe("unknown");
+      const view = GO_ORACLE_VIEWS.find((v) => v.name === "legacy-package-root")!;
+      const oracle = oracleCallsFor(snapshot, view).find(
+        (c) => c.file.endsWith("cmd/app/main.go") && c.line === 26,
+      )!;
+      expect(showAnswer(oracle.answer, view)).toBe("func internal/storage/storage.go::Open");
+      // A one-segment directory the path ends in is a second reading as well.
+      expect(fromPackageRoot.get("cmd/app/main.go:16:Save")).toBe("unknown");
+      expect(fromPackageRoot.get("cmd/app/main.go:18:Save")).toBe("unknown");
+      // From the GOPATH root the directory that HOLDS the whole path is the
+      // only reading there is.
+      expect(
+        verdictsOf("legacy-gopath-root").get("src/example.org/legacy/cmd/app/main.go:26:Open"),
+      ).toBe("package src/example.org/legacy/internal/storage/storage.go::Open");
+    });
   });
 
   // ── The checker itself: each rule must be able to fail. ───────────────────

@@ -1753,11 +1753,10 @@ export function createGoResolver(
    */
   const finish = (table: MemberTable, wide: number): MemberTable => {
     if (table.layerCount <= layerBudget) return table;
-    if (table.layerCount <= wide) {
-      const names = indexNames(table, wide);
-      if (names) return { ...table, names };
-    }
-    return overBudgetTable("retained");
+    // (No more layer types than the allowance either: building them stopped
+    // at the first level that would have passed it.)
+    const names = indexNames(table, wide);
+    return names ? { ...table, names } : overBudgetTable("retained");
   };
 
   /**

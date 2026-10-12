@@ -320,6 +320,36 @@ describe("what a type may keep is decided from the type, and past it nothing is 
     expect(over.retained).toMatchObject({ indexedNames: 0, layerTypes: 0, overRetained: 1 });
   });
 
+  it("layer types count against the allowance too, not only names", () => {
+    // `E` embeds a type named `X` from each of `packages` packages: one field
+    // name between them, so the names stay few while the layers do not. `T`
+    // declares twenty fields and `E`: 21 members, an allowance of 336.
+    const tree = (packages: number): GoTree => {
+      const out: GoTree = {};
+      let imports = "";
+      let embedded = "";
+      for (let i = 0; i < packages; i += 1) {
+        out[`x${i}/x.go`] = `package x${i}\n\ntype X struct{}\n`;
+        imports += `\t"example.com/app/x${i}"\n`;
+        embedded += `\tx${i}.X\n`;
+      }
+      let fields = "";
+      for (let i = 0; i < 20; i += 1) fields += `\tf${i} int\n`;
+      out["p/p.go"] =
+        `package p\n\nimport (\n${imports})\n\ntype E struct {\n${embedded}}\n\n` +
+        `func (E) Own() {}\n\ntype T struct {\n${fields}\tE\n}\n\nfunc f(t T) {\n\tt.Own()\n}\n`;
+      return out;
+    };
+    const allowance = GO_TYPE_RETAINED_PER_MEMBER * 21;
+    // T, E and the rest: exactly the allowance, then one more.
+    const within = prepare(tree(allowance - 2))();
+    expect(within.verdicts.map(show)).toEqual(["receiver-type p/p.go::E::Own"]);
+    expect(within.retained).toMatchObject({ layerTypes: allowance, overRetained: 0 });
+    const over = prepare(tree(allowance - 1))();
+    expect(over.verdicts.map(show)).toEqual(["unknown:budget"]);
+    expect(over.retained).toMatchObject({ layerTypes: 0, indexedNames: 0, overRetained: 1 });
+  });
+
   it("gives the same verdicts whatever was asked first", () => {
     for (const embedded of [10, GO_TYPE_LAYER_BUDGET - 1, 200]) {
       const run = prepare(reach(embedded));
