@@ -86,7 +86,41 @@
  *     spelling in the marker; nothing is corrected.
  *   - A type that cannot describe the schema's column is reported in the note.
  *
- * With an empty inventory nothing is checked and nothing is marked.
+ * With an empty inventory nothing is checked and nothing is marked. The same
+ * holds per table: a table whose column list is not known (the code graph has
+ * it by name only, from an ORM call site) has none of its columns judged, and
+ * is listed once as "columns not checked". And on the repository-SQL tier,
+ * whose prompt asks for an entity per SAS dataset, a name that is no table and
+ * IS a dataset of the code's data lineage is listed as not checked: a dataset
+ * is not a table, and marking each one would be wrong every time.
+ *
+ * ## A marker never goes into code
+ *
+ * A marker is written only where the check can tell the text is not code, as
+ * BOTH of the document's renderers read it (the viewer's remark, the export's
+ * `marked`). Where it cannot tell, it does not mark:
+ *
+ *   - a fenced block is delimited as CommonMark does: three or more backticks
+ *     or tildes, closed by the same character at least as many times, so a
+ *     four-backtick fence holding a three-backtick line is one block; a fence
+ *     the two renderers close differently is code to its later end;
+ *   - a line indented four columns or more (an indented code block, or a list
+ *     item's content) and a raw HTML block are copied as written;
+ *   - a code span is a run of N backticks to the next run of exactly N, so the
+ *     marker goes after the whole closing run, and a span that holds a backtick
+ *     is one span; an escaped or unpaired backtick opens nothing;
+ *   - a table is judged only when its header and delimiter rows have the same
+ *     number of cells, which is when a renderer draws one.
+ *
+ * `schema-claim-check.test.ts` holds this against `marked` itself, over
+ * generated documents.
+ *
+ * ## Twice is once
+ *
+ * A name directly followed by ` *(not in schema` is taken as already marked,
+ * whether an earlier pass or the model wrote it, and nothing is added there;
+ * a heading is read the same with its marker in it. So checking a checked
+ * section again changes nothing.
  *
  * Every scan here walks model output, so it is linear: lines are split once,
  * cells and code spans are found by index in a single pass, names resolve
@@ -108,9 +142,14 @@ import {
  *  - `not-a-column` — a row that describes an index, constraint, key or
  *    relation, or a first-cell name that is not a plain column name;
  *  - `view` — its own heading or row calls it a view;
- *  - `diagram-line` — a diagram line whose name could not be told from its type.
+ *  - `diagram-line` — a diagram line whose name could not be told from its type;
+ *  - `no-columns` — a TABLE whose column list is not known (the name stands for
+ *    the table, listed once): none of its columns is judged;
+ *  - `dataset` — a name the code's data lineage knows as a dataset, which the
+ *    repository-SQL prompt asks to be written as an entity. Not a table.
  */
-export type NotCheckedReason = "unread" | "not-a-column" | "view" | "diagram-line";
+export type NotCheckedReason =
+  "unread" | "not-a-column" | "view" | "diagram-line" | "no-columns" | "dataset";
 
 export interface SchemaCheckReport {
   /** False when there was no inventory to check against. */
@@ -196,10 +235,15 @@ interface ColumnLookup {
  *  - `found` — the tables it can mean (two when a same-named table is in two
  *    connectors or schemas);
  *  - `absent` — looked for where it would be, and not there: marked;
- *  - `unread` — the read cannot speak for where it would be: not checked.
+ *  - `unread` — the read cannot speak for where it would be: not checked;
+ *  - `dataset` — no table, and the code's data lineage has a dataset of that
+ *    name: not checked.
  */
 type TableVerdict =
-  { kind: "found"; tables: SchemaInventoryTable[] } | { kind: "absent" } | { kind: "unread" };
+  | { kind: "found"; tables: SchemaInventoryTable[] }
+  | { kind: "absent" }
+  | { kind: "unread" }
+  | { kind: "dataset" };
 
 function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   const bucket = map.get(key);
@@ -237,8 +281,15 @@ class InventoryIndex {
   /** True when a database of the project is unread, or its read may be cut short. */
   private readonly partlyUnread: boolean;
   private readonly columns = new Map<SchemaInventoryTable, ColumnLookup>();
+  /** Dataset names (lower case), whole and by their last part. */
+  private readonly datasets = new Set<string>();
 
   constructor(inventory: SchemaInventory) {
+    for (const dataset of inventory.datasets ?? []) {
+      const name = dataset.trim().toLowerCase();
+      this.datasets.add(name);
+      this.datasets.add(name.slice(name.lastIndexOf(".") + 1));
+    }
     this.partlyUnread = inventory.reads.some(
       (read) => read.how === "unread" || read.possiblyTruncated === true,
     );
@@ -273,7 +324,8 @@ class InventoryIndex {
    * speak for where it would be: see the module header.
    */
   resolveTable(raw: string): TableVerdict {
-    const parts = raw.trim().toLowerCase().split(".");
+    const whole = raw.trim().toLowerCase();
+    const parts = whole.split(".");
     const bare = parts[parts.length - 1];
     if (!bare) return { kind: "absent" };
     // `database.schema.table`: no read identifies a database by name.
@@ -295,6 +347,8 @@ class InventoryIndex {
       if (new Set(byNumber.map((table) => squash(table.name))).size === 1) found = byNumber;
     }
     if (found.length > 0) return { kind: "found", tables: [...new Set(found)] };
+    // `sales` or `work.sales`, for a dataset the lineage calls either.
+    if (this.datasets.has(whole) || this.datasets.has(bare)) return { kind: "dataset" };
     if (schema != null && !this.schemasRead.has(schema)) return { kind: "unread" };
     return this.partlyUnread ? { kind: "unread" } : { kind: "absent" };
   }
@@ -318,6 +372,15 @@ class InventoryIndex {
       }
     }
     return near ? { kind: "near", ...near } : { kind: "none" };
+  }
+
+  /**
+   * Those of `tables` whose columns are not known: a table the code graph has
+   * by name only (an ORM call site names the table and no column), or one a
+   * read returned without columns. Nothing can be said about a column of it.
+   */
+  withoutColumns(tables: readonly SchemaInventoryTable[]): SchemaInventoryTable[] {
+    return tables.filter((table) => table.columns.length === 0);
   }
 }
 
@@ -500,22 +563,75 @@ export function isTypeWord(token: string): boolean {
 
 interface Span {
   text: string;
-  /** Index of the opening backtick. */
+  /** Index of the first backtick of the opening run. */
   open: number;
-  /** Index of the closing backtick. */
+  /** Index of the last backtick of the closing run. */
   close: number;
 }
 
-/** Each `` `code span` `` of `text` between `from` and `to`, in order. */
+/**
+ * Each code span of `text` between `from` and `to`, in order, as CommonMark
+ * delimits one: a run of N backticks opens a span that the next run of EXACTLY
+ * N backticks closes, so `` ``a`b`` `` is one span holding a backtick, and a
+ * run with no partner is literal text. A backtick behind a backslash opens
+ * nothing. `open` is the first backtick of the opening run and `close` the LAST
+ * backtick of the closing run, so `close + 1` is always outside the span: that
+ * is where a marker goes.
+ *
+ * One pass to find the runs, and one forward-only cursor per run length to
+ * find a partner, so it is linear in the text.
+ */
 function spanRanges(text: string, from = 0, to = text.length): Span[] {
+  const runs: Array<{ at: number; length: number }> = [];
+  const byLength = new Map<number, number[]>();
+  for (let i = from; i < to;) {
+    if (text[i] !== "`") {
+      i += 1;
+      continue;
+    }
+    let end = i;
+    while (end < to && text[end] === "`") end++;
+    push(byLength, end - i, runs.length);
+    runs.push({ at: i, length: end - i });
+    i = end;
+  }
+  const cursor = new Map<number, number>();
+  /** The first run after `after` that is exactly `length` long, or -1. */
+  const partner = (length: number, after: number): number => {
+    const candidates = byLength.get(length);
+    if (!candidates) return -1;
+    let k = cursor.get(length) ?? 0;
+    while (k < candidates.length && candidates[k] <= after) k++;
+    cursor.set(length, k);
+    return k < candidates.length ? candidates[k] : -1;
+  };
   const spans: Span[] = [];
-  let at = from;
-  for (;;) {
-    const open = text.indexOf("`", at);
-    const close = open < 0 || open >= to ? -1 : text.indexOf("`", open + 1);
-    if (close < 0 || close >= to) break;
-    spans.push({ text: text.slice(open + 1, close), open, close });
-    at = close + 1;
+  let floor = from;
+  let r = 0;
+  while (r < runs.length) {
+    let open = runs[r].at;
+    let length = runs[r].length;
+    let slashes = 0;
+    while (open - slashes - 1 >= floor && text[open - slashes - 1] === "\\") slashes++;
+    if (slashes % 2 === 1) {
+      // The first backtick is escaped: the run that can open is one shorter.
+      open += 1;
+      length -= 1;
+    }
+    const q = length > 0 ? partner(length, r) : -1;
+    if (q < 0) {
+      r += 1;
+      continue;
+    }
+    let inner = text.slice(open + length, runs[q].at);
+    // One space of padding on each side is not part of the content.
+    if (inner.length > 1 && inner.startsWith(" ") && inner.endsWith(" ") && inner.trim() !== "") {
+      inner = inner.slice(1, -1);
+    }
+    const close = runs[q].at + runs[q].length - 1;
+    spans.push({ text: inner, open, close });
+    floor = close + 1;
+    r = q + 1;
   }
   return spans;
 }
@@ -581,13 +697,53 @@ function isTableRow(line: string): boolean {
   return line.trimStart().startsWith("|");
 }
 
-function isDelimiterRow(line: string): boolean {
+/** A line of nothing but spaces, tabs and a carriage return. */
+function isBlank(line: string): boolean {
+  return line.trim() === "";
+}
+
+/** How many cells a GFM row has: the outer pipes are optional, and an escaped pipe is none. */
+function cellCount(line: string): number {
   const text = line.trim();
-  if (!text.startsWith("|") || !text.includes("-")) return false;
-  for (const ch of text) {
-    if (ch !== "|" && ch !== "-" && ch !== ":" && ch !== " ") return false;
+  let count = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "\\") i++;
+    else if (text[i] === "|" && i > 0 && i < text.length - 1) count++;
   }
-  return true;
+  return count;
+}
+
+/**
+ * A GFM delimiter row: cells of dashes, each with an optional colon at either
+ * end, between pipes (the last one optional). Spaces only: with a tab in it,
+ * or after it, the export's parser draws no table.
+ */
+function isDelimiterRow(line: string): boolean {
+  let end = line.length;
+  if (line[end - 1] === "\r") end -= 1;
+  while (end > 0 && line[end - 1] === " ") end--;
+  let at = 0;
+  while (at < end && line[at] === " ") at++;
+  if (line[at] !== "|") return false;
+  at += 1;
+  let cells = 0;
+  while (at < end) {
+    while (at < end && line[at] === " ") at++;
+    if (line[at] === ":") at++;
+    let dashes = 0;
+    while (at < end && line[at] === "-") {
+      at++;
+      dashes++;
+    }
+    if (dashes === 0) return false;
+    if (line[at] === ":") at++;
+    while (at < end && line[at] === " ") at++;
+    cells += 1;
+    if (at === end) return true;
+    if (line[at] !== "|") return false;
+    at += 1;
+  }
+  return cells > 0;
 }
 
 function plainCell(text: string): string {
@@ -606,11 +762,183 @@ function fieldTableShape(header: Cell[]): { typeIndex: number } | null {
   return null;
 }
 
-function fenceOf(line: string): string | null {
+/**
+ * Columns of leading white space, counted to four: a tab runs to the next
+ * multiple of four. Four or more is where CommonMark starts an indented code
+ * block (or continues a list item; the check cannot tell which).
+ */
+function indentOf(line: string): number {
+  let columns = 0;
+  for (let i = 0; i < line.length && columns < 4; i++) {
+    if (line[i] === " ") columns += 1;
+    else if (line[i] === "\t") columns += 4 - (columns % 4);
+    else break;
+  }
+  return Math.min(columns, 4);
+}
+
+/**
+ * The fence a line opens, as CommonMark reads it: at most three spaces, then
+ * three or more backticks or tildes. A backtick fence whose info string holds
+ * a backtick is an inline code span, not a fence.
+ */
+function fenceOpening(line: string): { char: string; length: number } | null {
+  if (indentOf(line) > 3) return null;
   const text = line.trimStart();
-  if (text.startsWith("```")) return "```";
-  if (text.startsWith("~~~")) return "~~~";
-  return null;
+  const char = text[0];
+  if (char !== "`" && char !== "~") return null;
+  let length = 0;
+  while (length < text.length && text[length] === char) length++;
+  if (length < 3) return null;
+  if (char === "`" && text.indexOf("`", length) >= 0) return null;
+  return { char, length };
+}
+
+/**
+ * The two Markdown parsers a generated document goes through do not agree on
+ * what closes a fence: the viewer's (remark, which follows CommonMark) and the
+ * export's (`marked`). A line that is code to EITHER is treated as code.
+ *
+ *  - `commonmark`: at most three spaces, the fence's character at least as
+ *    many times as it was opened with, then only spaces or tabs.
+ *  - `marked`: the same, except that the run may go on in the OTHER fence
+ *    character too, and only spaces may follow it (a tab after the fence
+ *    leaves the block open).
+ *
+ * In both, a four-backtick fence is not closed by a three-backtick line
+ * inside it, and no fence is closed by a line that opens another (` ```go `).
+ */
+type FenceDialect = "commonmark" | "marked";
+
+function closesFence(
+  line: string,
+  fence: { char: string; length: number },
+  dialect: FenceDialect,
+): boolean {
+  if (indentOf(line) > 3) return false;
+  let end = line.length;
+  if (line[end - 1] === "\r") end -= 1;
+  while (
+    end > 0 &&
+    (line[end - 1] === " " || (dialect === "commonmark" && line[end - 1] === "\t"))
+  ) {
+    end -= 1;
+  }
+  let at = 0;
+  while (at < end && line[at] === " ") at++;
+  let run = 0;
+  while (at + run < end && line[at + run] === fence.char) run++;
+  if (run < fence.length) return false;
+  at += run;
+  if (dialect === "marked") while (at < end && (line[at] === "`" || line[at] === "~")) at++;
+  return at === end;
+}
+
+const RAW_HTML_TAGS = ["pre", "script", "style", "textarea"];
+const RAW_HTML_CLOSERS = RAW_HTML_TAGS.map((tag) => `</${tag}>`);
+
+/**
+ * How a line that starts raw HTML ends its block, or `null` when the line
+ * starts none. `<pre>`, `<script>`, `<style>` and `<textarea>` run to their
+ * closing tag and a comment to `-->`, blank lines included; any other tag runs
+ * to the next blank line.
+ */
+function htmlOpening(line: string): { until: readonly string[] | "blank" } | null {
+  if (indentOf(line) > 3) return null;
+  const text = line.trimStart().toLowerCase();
+  if (!text.startsWith("<") || text.length < 2) return null;
+  if (text.startsWith("<!--")) return { until: ["-->"] };
+  for (const tag of RAW_HTML_TAGS) {
+    if (!text.startsWith(tag, 1)) continue;
+    const after = text[1 + tag.length];
+    if (after === undefined || after === ">" || after === " " || after === "\t" || after === "\r") {
+      return { until: RAW_HTML_CLOSERS };
+    }
+  }
+  const next = text.charCodeAt(1);
+  const letter = next >= 97 && next <= 122;
+  return letter || text[1] === "/" || text[1] === "!" || text[1] === "?"
+    ? { until: "blank" }
+    : null;
+}
+
+interface FencedBlock {
+  /** Index of the line after the block: past the closing fence when it has one. */
+  end: number;
+  closed: boolean;
+}
+
+interface Blocks {
+  /** The fenced blocks, by the index of their opening line. */
+  fences: Map<number, FencedBlock>;
+  /**
+   * Lines where a marker could land inside code, or where the check cannot
+   * tell that it would not: every line of a fenced block, of a raw HTML
+   * block, and every line indented four columns or more. Such a line is
+   * copied exactly as written and nothing on it is judged.
+   */
+  opaque: boolean[];
+  /** The text ends inside a fence or a raw HTML block that was never closed. */
+  openAtEnd: boolean;
+}
+
+/**
+ * Which lines are, or may be, code: read once as each parser reads fences, and
+ * a line is opaque when it is to either. The fenced blocks themselves (read for
+ * a diagram, never written to) are CommonMark's.
+ */
+function scanBlocks(lines: readonly string[]): Blocks {
+  const blocks = scanBlocksAs(lines, "commonmark");
+  const other = scanBlocksAs(lines, "marked");
+  return {
+    fences: blocks.fences,
+    opaque: blocks.opaque.map((opaque, at) => opaque || other.opaque[at]),
+    openAtEnd: blocks.openAtEnd || other.openAtEnd,
+  };
+}
+
+/** One pass over the lines, with one parser's rule for closing a fence. */
+function scanBlocksAs(lines: readonly string[], dialect: FenceDialect): Blocks {
+  const fences = new Map<number, FencedBlock>();
+  const opaque = lines.map(() => false);
+  let openAtEnd = false;
+  let i = 0;
+  while (i < lines.length) {
+    const fence = fenceOpening(lines[i]);
+    if (fence) {
+      let close = i + 1;
+      while (close < lines.length && !closesFence(lines[close], fence, dialect)) close++;
+      const closed = close < lines.length;
+      const end = closed ? close + 1 : lines.length;
+      fences.set(i, { end, closed });
+      for (let at = i; at < end; at++) opaque[at] = true;
+      openAtEnd = !closed;
+      i = end;
+      continue;
+    }
+    const html = htmlOpening(lines[i]);
+    if (html) {
+      const until = html.until;
+      let end = i;
+      if (until === "blank") {
+        while (end < lines.length && !isBlank(lines[end])) end++;
+      } else {
+        const closes = (line: string): boolean => {
+          const lower = line.toLowerCase();
+          return until.some((closer) => lower.includes(closer));
+        };
+        while (end < lines.length && !closes(lines[end])) end++;
+        openAtEnd = end >= lines.length;
+        end = Math.min(end + 1, lines.length);
+      }
+      for (let at = i; at < end; at++) opaque[at] = true;
+      i = end;
+      continue;
+    }
+    if (indentOf(lines[i]) > 3 && !isBlank(lines[i])) opaque[i] = true;
+    i += 1;
+  }
+  return { fences, opaque, openAtEnd };
 }
 
 const HEADING_LABELS = ["entities:", "entity:", "tables:", "table:"];
@@ -734,8 +1062,30 @@ export function parseHeading(line: string): HeadingClaim | null {
   const label = HEADING_LABELS.find((candidate) => lower.startsWith(candidate));
   if (!label) return { names: [] };
   const from = at + label.length;
-  const paren = line.indexOf("(", from);
-  const names = headingNames(line, from, paren >= 0 ? paren : line.length);
+  // The heading's text stops before trailing white space (a CRLF's carriage
+  // return included) and before a closing run of `#`.
+  const isSpace = (ch: string): boolean => ch === " " || ch === "\t" || ch === "\r";
+  let stop = line.length;
+  while (stop > from && isSpace(line[stop - 1])) stop--;
+  let hashes = stop;
+  while (hashes > from && line[hashes - 1] === "#") hashes--;
+  if (hashes < stop && (hashes === from || isSpace(line[hashes - 1]))) {
+    stop = hashes;
+    while (stop > from && isSpace(line[stop - 1])) stop--;
+  }
+  const open = line.indexOf("(", from);
+  let paren = open >= 0 && open < stop ? open : -1;
+  // A heading that has been through the check carries a marker, whose own
+  // parenthesis is neither a name nor the heading's: the names end before the
+  // marker, and the heading's parenthesis is the next one. So the heading is
+  // read the same on a second pass.
+  let namesEnd = paren >= 0 ? paren : stop;
+  while (paren >= 2 && line.startsWith(MARKED, paren - 2)) {
+    namesEnd = Math.min(namesEnd, paren - 2);
+    const next = line.indexOf("(", line.indexOf(")", paren) + 1);
+    paren = next > paren && next < stop ? next : -1;
+  }
+  const names = headingNames(line, from, namesEnd);
   if (paren >= 0 && names.length === 1 && !names[0].name.includes(".")) {
     const close = line.indexOf(")", paren);
     const schema = schemaNamedIn(line.slice(paren + 1, close >= 0 ? close : line.length));
@@ -871,11 +1221,11 @@ function checkErDiagram(body: readonly string[], state: CheckState): void {
     if (!isQualifiedIdentifier(name)) return null;
     const verdict = state.index.resolveTable(name);
     if (verdict.kind === "found") return verdict.tables;
-    if (verdict.kind === "unread") {
-      state.found.notChecked.set(name, "unread");
-    } else {
+    if (verdict.kind === "absent") {
       state.found.unresolvedTables.add(name);
       state.found.inDiagram.add(name);
+    } else {
+      state.found.notChecked.set(name, verdict.kind);
     }
     return null;
   };
@@ -905,6 +1255,7 @@ function checkErDiagram(body: readonly string[], state: CheckState): void {
         continue;
       }
       const match = state.index.resolveColumn(block, attribute.name);
+      if (match.kind !== "exact" && listTablesWithoutColumns(state, block)) continue;
       if (match.kind !== "exact") {
         const qualified = `${table}.${attribute.name}`;
         flagColumn(state, qualified, match);
@@ -939,6 +1290,27 @@ function checkErDiagram(body: readonly string[], state: CheckState): void {
   }
 }
 
+/**
+ * Never judge a column against nothing, per table: when one of the tables a
+ * name could be a column of has no known columns, the name is not judged, and
+ * each such table is listed once as "columns not checked". True when it applied.
+ */
+function listTablesWithoutColumns(
+  state: CheckState,
+  tables: readonly SchemaInventoryTable[],
+): boolean {
+  const unknown = state.index.withoutColumns(tables);
+  for (const table of unknown) state.found.notChecked.set(table.name, "no-columns");
+  return unknown.length > 0;
+}
+
+interface PendingHeading {
+  claim: HeadingClaim;
+  /** Index of the heading's line in the output. */
+  at: number;
+  line: string;
+}
+
 interface RowContext {
   /** Tables the enclosing heading resolved to. */
   tables: SchemaInventoryTable[];
@@ -964,8 +1336,8 @@ function checkRosterRow(line: string, state: CheckState): string {
     if (verdict.kind === "found") continue;
     if (saysView(line)) {
       state.found.notChecked.set(span.text, "view");
-    } else if (verdict.kind === "unread") {
-      state.found.notChecked.set(span.text, "unread");
+    } else if (verdict.kind !== "absent") {
+      state.found.notChecked.set(span.text, verdict.kind);
     } else {
       state.found.unresolvedTables.add(span.text);
       markers.push({ at: span.close + 1, text: NOT_IN_SCHEMA });
@@ -1107,6 +1479,7 @@ function checkRow(line: string, typeIndex: number, context: RowContext, state: C
       state.found.notChecked.set(qualified, "not-a-column");
       continue;
     }
+    if (listTablesWithoutColumns(state, tables)) continue;
     flagColumn(state, qualified, match);
     markers.push({
       at: span.close + 1,
@@ -1151,7 +1524,10 @@ export function checkSchemaClaims(
     found,
   };
 
+  // Split on LF and joined on LF: a CRLF's carriage return stays at the end of
+  // its line, where nothing reads it as part of a name.
   const lines = markdown.split("\n");
+  const blocks = scanBlocks(lines);
   const out: string[] = [];
   /**
    * The `Entity:` / `Table:` heading whose field table has not been reached
@@ -1160,23 +1536,65 @@ export function checkSchemaClaims(
    * field table in the same sub-section (a struct, a message, an index list) is
    * never judged as columns of the heading's table.
    */
-  let heading: { claim: HeadingClaim; at: number; line: string } | null = null;
+  let heading: PendingHeading | null = null;
+  /**
+   * The heading's own claim: each name it gives is a table. The marker goes
+   * into the heading line, which is never code (an opaque line is no heading).
+   */
+  const claimHeading = (owner: PendingHeading): RowContext => {
+    const context: RowContext = { tables: [], complete: true };
+    const markers: Array<{ at: number; text: string }> = [];
+    for (const { name, end: nameEnd } of owner.claim.names) {
+      const verdict = state.index.resolveTable(name);
+      if (verdict.kind === "found") {
+        context.tables.push(...verdict.tables);
+        continue;
+      }
+      context.complete = false;
+      if (saysView(owner.line)) {
+        found.notChecked.set(name, "view");
+      } else if (verdict.kind !== "absent") {
+        found.notChecked.set(name, verdict.kind);
+      } else {
+        found.unresolvedTables.add(name);
+        markers.push({ at: nameEnd, text: NOT_IN_SCHEMA });
+      }
+    }
+    out[owner.at] = withMarkers(owner.line, markers);
+    return context;
+  };
 
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    const fence = fenceOf(line);
-    if (fence) {
-      let close = i + 1;
-      while (close < lines.length && !lines[close].trimStart().startsWith(fence)) close++;
-      const body = lines.slice(i + 1, close);
+    const fenced = blocks.fences.get(i);
+    if (fenced) {
+      const body = lines.slice(i + 1, fenced.closed ? fenced.end - 1 : fenced.end);
       const firstLine = body.find((entry) => entry.trim() !== "")?.trim() ?? "";
       if (line.toLowerCase().includes("mermaid") && firstLine.startsWith("erDiagram")) {
         checkErDiagram(body, state);
       }
       // The fence and everything in it, exactly as written.
-      for (let at = i; at < Math.min(close + 1, lines.length); at++) out.push(lines[at]);
-      i = close + 1;
+      for (let at = i; at < fenced.end; at++) out.push(lines[at]);
+      i = fenced.end;
+      continue;
+    }
+    if (blocks.opaque[i]) {
+      // Raw HTML, or indented far enough to be a code block: copied as
+      // written. A field table written there is still the first table under
+      // its heading, so it takes the heading with it (the heading's own name
+      // is judged; the rows, which may be code, are not).
+      if (
+        heading &&
+        isTableRow(line) &&
+        i + 1 < lines.length &&
+        isDelimiterRow(lines[i + 1].trimStart())
+      ) {
+        if (fieldTableShape(splitCells(line))) claimHeading(heading);
+        heading = null;
+      }
+      out.push(line);
+      i += 1;
       continue;
     }
     const claim = parseHeading(line);
@@ -1186,9 +1604,19 @@ export function checkSchemaClaims(
       i += 1;
       continue;
     }
-    if (isTableRow(line) && i + 1 < lines.length && isDelimiterRow(lines[i + 1])) {
+    // A table is a header row and a delimiter row of as many cells. With any
+    // other count no renderer draws a table: the lines are a paragraph, where
+    // a pipe ends nothing and a code span can run from one "cell" into the
+    // next, so nothing in them is judged.
+    if (
+      isTableRow(line) &&
+      i + 1 < lines.length &&
+      isDelimiterRow(lines[i + 1]) &&
+      !blocks.opaque[i + 1] &&
+      cellCount(line) === cellCount(lines[i + 1])
+    ) {
       let end = i + 2;
-      while (end < lines.length && isTableRow(lines[end])) end++;
+      while (end < lines.length && isTableRow(lines[end]) && !blocks.opaque[end]) end++;
       const shape = fieldTableShape(splitCells(line));
       // A field table is read only under an `Entity:` / `Table:` heading, and
       // only the first table under it: this one takes the heading with it.
@@ -1203,26 +1631,7 @@ export function checkSchemaClaims(
         i = end;
         continue;
       }
-      // The heading's own claim: each name it gives is a table.
-      const context: RowContext = { tables: [], complete: true };
-      const markers: Array<{ at: number; text: string }> = [];
-      for (const { name, end: nameEnd } of owner.claim.names) {
-        const verdict = state.index.resolveTable(name);
-        if (verdict.kind === "found") {
-          context.tables.push(...verdict.tables);
-          continue;
-        }
-        context.complete = false;
-        if (saysView(owner.line)) {
-          found.notChecked.set(name, "view");
-        } else if (verdict.kind === "unread") {
-          found.notChecked.set(name, "unread");
-        } else {
-          found.unresolvedTables.add(name);
-          markers.push({ at: nameEnd, text: NOT_IN_SCHEMA });
-        }
-      }
-      out[owner.at] = withMarkers(owner.line, markers);
+      const context = claimHeading(owner);
       out.push(line, lines[i + 1]);
       for (let row = i + 2; row < end; row++) {
         out.push(checkRow(lines[row], shape.typeIndex, context, state));
@@ -1258,6 +1667,7 @@ const NOT_CHECKED_WHY: Array<[NotCheckedReason, string]> = [
   ],
   ["view", "described as a view, which the schema that was read does not list as one"],
   ["diagram-line", "a diagram line whose column name could not be told from its type"],
+  ["dataset", "a dataset in the code's data lineage, not a database table"],
 ];
 
 /**
@@ -1271,6 +1681,20 @@ export function renderSchemaCheckNotice(
   inventory: SchemaInventory,
 ): string {
   if (!report.checked) {
+    // A database the project has and that could not be read is not "no
+    // connected database": say which it was.
+    const unread = inventory.reads.filter((read) => read.how === "unread");
+    if (unread.length > 0) {
+      const which = listedWith(unread, (read) => `"${read.connector}"`);
+      return (
+        `> **Schema not verified.** ` +
+        (unread.length === 1
+          ? `The project's database (${which}) could not be read`
+          : `The project's databases (${which}) could not be read`) +
+        `, and there is no database document and no SQL schema in the code graph, so the table ` +
+        `and column names in this section come from the code analysis alone and were not checked.`
+      );
+    }
     return (
       `> **Schema not verified.** No database schema was available for this project (no ` +
       `connected database, no database document and no SQL schema in the code graph), so the ` +
@@ -1307,6 +1731,13 @@ export function renderSchemaCheckNotice(
     const names = report.notChecked.filter((entry) => entry.why === why).map((e) => e.name);
     if (names.length > 0) lines.push(`> - Not checked (${words}): ${listed(names)}.`);
   }
+  const noColumns = report.notChecked.filter((entry) => entry.why === "no-columns");
+  if (noColumns.length > 0) {
+    lines.push(
+      `> - Columns not checked (no column list for this table): ` +
+        `${listed(noColumns.map((entry) => entry.name))}.`,
+    );
+  }
   if (lines.length === 0) return "";
   const truncated = inventory.reads.filter((read) => read.possiblyTruncated);
   if (truncated.length > 0) {
@@ -1332,17 +1763,15 @@ export function renderSchemaCheckNotice(
   ].join("\n");
 }
 
-/** Index of the first line matching `test` that is outside a code fence. */
-function findLine(lines: readonly string[], from: number, test: (line: string) => boolean): number {
-  let fence: string | null = null;
+/** Index of the first line matching `test` that is not, and may not be, code. */
+function findLine(
+  lines: readonly string[],
+  blocks: Blocks,
+  from: number,
+  test: (line: string) => boolean,
+): number {
   for (let i = from; i < lines.length; i++) {
-    const marker = fenceOf(lines[i]);
-    if (fence) {
-      if (marker === fence) fence = null;
-      continue;
-    }
-    if (marker) fence = marker;
-    else if (test(lines[i])) return i;
+    if (!blocks.opaque[i] && test(lines[i])) return i;
   }
   return -1;
 }
@@ -1352,7 +1781,13 @@ function findLine(lines: readonly string[], from: number, test: (line: string) =
  * that could not be matched, add the schema reference rendered from the
  * inventory, and say at the top what was found. Pure, so the section's reuse
  * record stores the result. Besides the markers it only INSERTS whole lines
- * (the note and the reference); no line the model wrote is removed or changed.
+ * (the note and the reference, each with the blank lines that keep it a block
+ * of its own); no line the model wrote is removed or changed.
+ *
+ * Where they go: the note directly under the section's `##` heading. The
+ * reference before the first `###` sub-section; with no sub-section, at the
+ * end; and when the text ends inside an unclosed fence, under the heading (and
+ * the note) instead, because at the end it would be inside that fence.
  */
 export function applySchemaGrounding(
   sectionMarkdown: string,
@@ -1364,14 +1799,28 @@ export function applySchemaGrounding(
   if (!notice && !reference) return { markdown, report };
 
   const lines = markdown.split("\n");
-  const h2 = findLine(lines, 0, (line) => line.startsWith("## "));
+  const blocks = scanBlocks(lines);
+  const h2 = findLine(lines, blocks, 0, (line) => line.startsWith("## "));
+  /** `block` as whole lines at `at`, kept apart from what follows by a blank line. */
+  const insertUnderHeading = (at: number, block: string): void => {
+    const next = lines[at];
+    lines.splice(at, 0, "", block, ...(next !== undefined && !isBlank(next) ? [""] : []));
+  };
   if (reference) {
     // Before the first sub-section, after the section's opening paragraphs.
-    const h3 = findLine(lines, h2 + 1, (line) => line.startsWith("### "));
+    const h3 = findLine(lines, blocks, h2 + 1, (line) => line.startsWith("### "));
     if (h3 >= 0) lines.splice(h3, 0, reference, "");
-    else lines.push("", reference);
+    // No sub-section: at the end, unless the text ends inside a fence or raw
+    // HTML block it never closed, where the reference would be swallowed and
+    // shown as code. Closing the block would be an edit to the model's text,
+    // so the reference goes BEFORE the body instead, under the heading.
+    else if (!blocks.openAtEnd) lines.push("", reference);
+    else if (h2 >= 0) insertUnderHeading(h2 + 1, reference);
+    else lines.unshift(reference, "");
   }
-  if (notice && h2 >= 0) lines.splice(h2 + 1, 0, "", notice);
+  // A blank line after the note as well as before it: without one, a
+  // paragraph that follows directly would be drawn into the note's quote.
+  if (notice && h2 >= 0) insertUnderHeading(h2 + 1, notice);
   else if (notice) lines.unshift(notice, "");
   return { markdown: lines.join("\n"), report };
 }

@@ -124,9 +124,20 @@ export interface SchemaInventory {
   source: SchemaInventorySource;
   /** Where it came from, in words a reader of the document understands. */
   label: string;
-  /** One entry per database connector; empty for repository SQL and `none`. */
+  /**
+   * One entry per database connector. Empty when the project has none; with
+   * repository SQL or `none` it holds only the databases that could not be
+   * read, so the section does not say the project has no database.
+   */
   reads: SchemaInventoryRead[];
   tables: SchemaInventoryTable[];
+  /**
+   * Repository SQL only, and absent when there are none: the dataset names the
+   * code's data lineage holds (SAS `data` steps and their inputs). That tier's
+   * prompt asks for an entity per dataset, and a dataset is not a table, so the
+   * claim check lists such a name as not checked instead of marking it.
+   */
+  datasets?: string[];
 }
 
 export const NO_SCHEMA_INVENTORY: SchemaInventory = {
@@ -142,6 +153,41 @@ export function isTypedInventory(inventory: SchemaInventory): boolean {
     inventory.tables.length > 0 &&
     (inventory.source === "live-schema" || inventory.source === "schema-graph")
   );
+}
+
+/**
+ * What a section's names were compared with, and why a name that did not match
+ * can still be real, in the words that fit the source. A document's
+ * `schema-unverified` line is built from these: it must not speak of a database
+ * read when only the repository's SQL was compared, nor call a stored schema
+ * the database.
+ */
+export function schemaComparisonWords(inventory: Pick<SchemaInventory, "source" | "reads">): {
+  what: string;
+  caveat: string;
+} {
+  if (inventory.source === "repository-sql") {
+    return {
+      what: "the SQL found in the repository",
+      caveat: "The repository's SQL is not the database",
+    };
+  }
+  const stored = inventory.reads.filter((read) => read.how === "stored");
+  if (inventory.source !== "schema-graph" || stored.length === 0) {
+    return { what: "the database schema", caveat: "A database read can be incomplete" };
+  }
+  const days = [...new Set(stored.map((read) => read.storedOn ?? "").filter(Boolean))].sort();
+  const from = days.length > 0 ? ` from ${days.join(", ")}` : "";
+  if (inventory.reads.some((read) => read.how === "live")) {
+    return {
+      what: `the database schema, part of it the stored schema${from}`,
+      caveat: "A database read can be incomplete, and a stored schema out of date",
+    };
+  }
+  return {
+    what: `the stored schema${from}`,
+    caveat: "A stored schema can be out of date, and the read it came from incomplete",
+  };
 }
 
 /** The distinct, non-empty schema names of `tables`, sorted. */

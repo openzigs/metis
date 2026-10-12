@@ -9,6 +9,7 @@
  * status from them so a doc with failed or ungrounded sections is NEVER reported
  * as a clean `ready`. Warnings are persisted (JSON) and surfaced in the UI.
  */
+import { schemaComparisonWords, type SchemaInventory } from "../schema-inventory.js";
 
 /** What kind of degradation occurred. */
 export type DocWarningKind =
@@ -1062,8 +1063,11 @@ export function sectionMissingWarning(section: string, reason: string): DocWarni
 export function schemaUnverifiedWarning(
   section: string,
   unmatched: readonly string[],
-  inventory: { label: string },
+  inventory: Pick<SchemaInventory, "label" | "source" | "reads">,
 ): DocWarning {
+  // Said in the words of what was compared: no database is read on the
+  // repository-SQL tier, and a stored schema is not today's database.
+  const { what, caveat } = schemaComparisonWords(inventory);
   const shown = unmatched.slice(0, 8).join(", ");
   const more = unmatched.length > 8 ? ` and ${unmatched.length - 8} more` : "";
   const names = unmatched.length === 1 ? "1 name" : `${unmatched.length} names`;
@@ -1071,10 +1075,10 @@ export function schemaUnverifiedWarning(
     kind: "schema-unverified",
     section,
     message:
-      `${names} in ${section} could not be matched to the database schema ` +
+      `${names} in ${section} could not be matched to ${what} ` +
       `(${shown}${more}). Compared with ${inventory.label}. They are marked or listed in the ` +
-      `section's Schema check note; nothing was removed or changed. A database read can be ` +
-      `incomplete, so an unmatched name can be real.`,
+      `section's Schema check note; nothing was removed or changed. ${caveat}, so an unmatched ` +
+      `name can be real.`,
     severity: "info",
   };
 }

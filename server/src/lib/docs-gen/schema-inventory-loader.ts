@@ -68,6 +68,12 @@ export interface SchemaInventoryDeps {
     projectId: string,
   ) => Promise<Array<{ dbConnectorId: string | null; graph: unknown; generatedAt: Date | null }>>;
   readRepositorySql: (projectId: string, codeGraphId?: string) => Promise<RepositorySqlSymbol[]>;
+  /**
+   * The dataset names in the code graph's data lineage (SAS `data` steps and
+   * the datasets they read). Read on the repository-SQL tier only, whose prompt
+   * asks for an entity per dataset.
+   */
+  readDatasetNames: (projectId: string, codeGraphId?: string) => Promise<string[]>;
 }
 
 /** How long one live introspection may take before the stored graph is used. */
@@ -106,6 +112,34 @@ export function introspectionRowsAtLeast(tables: readonly DbTableInfo[]): number
 
 /** Upper bound on code-graph schema symbols read for the repository-SQL tier. */
 const MAX_REPOSITORY_SQL_SYMBOLS = 50_000;
+/** Upper bound on lineage edges read, and on dataset names kept from them. */
+const MAX_LINEAGE_EDGES = 50_000;
+const MAX_DATASET_NAMES = 5_000;
+
+/**
+ * The dataset names of lineage edges: a `references` edge whose metadata says
+ * `lineage: "input" | "output"`, as `code-graph-summary.ts` reads them.
+ * Distinct, sorted (the inventory is hashed into the section's reuse inputs),
+ * and bounded.
+ */
+export function datasetNamesFromLineage(
+  edges: ReadonlyArray<{ metadata: string | null; toQualifiedName: string | null }>,
+): string[] {
+  const names = new Set<string>();
+  for (const edge of edges) {
+    if (!edge.metadata) continue;
+    let meta: { lineage?: unknown; dataset?: unknown } | null = null;
+    try {
+      meta = JSON.parse(edge.metadata) as { lineage?: unknown; dataset?: unknown } | null;
+    } catch {
+      continue;
+    }
+    if (!meta || (meta.lineage !== "input" && meta.lineage !== "output")) continue;
+    const dataset = typeof meta.dataset === "string" ? meta.dataset : (edge.toQualifiedName ?? "");
+    if (dataset.trim()) names.add(dataset.trim());
+  }
+  return [...names].sort().slice(0, MAX_DATASET_NAMES);
+}
 
 const defaultDeps: SchemaInventoryDeps = {
   listConnectors: (projectId) => listDbConnectors(projectId),
@@ -141,6 +175,20 @@ const defaultDeps: SchemaInventoryDeps = {
       orderBy: { qualifiedName: "asc" },
       take: MAX_REPOSITORY_SQL_SYMBOLS,
     }),
+  readDatasetNames: async (projectId, codeGraphId) =>
+    datasetNamesFromLineage(
+      await prisma.codeEdge.findMany({
+        where: {
+          projectId,
+          kind: "references",
+          metadata: { contains: '"lineage"' },
+          ...(codeGraphId ? { codeGraphId } : {}),
+        },
+        select: { metadata: true, toQualifiedName: true },
+        orderBy: { id: "asc" },
+        take: MAX_LINEAGE_EDGES,
+      }),
+    ),
 };
 
 /** Named, so the log (which records the class only) says what happened. */
@@ -331,6 +379,13 @@ export async function loadSchemaInventory(
     if (signal?.aborted) return NO_SCHEMA_INVENTORY;
     const repositoryTables = tablesFromRepositorySql(symbols);
     if (repositoryTables.length > 0) {
+      // That tier's prompt asks for an entity per dataset, and a dataset is no
+      // table: the check is told which names are datasets.
+      const datasets = await unlessAborted(
+        safely("reading dataset lineage", () => deps.readDatasetNames(projectId, codeGraphId), []),
+        [],
+      );
+      if (signal?.aborted) return NO_SCHEMA_INVENTORY;
       // The databases that could not be read stay on the record, so the prompt
       // and the section still say that the project has some.
       return {
@@ -340,6 +395,18 @@ export async function loadSchemaInventory(
           (reads.length > 0 ? `; ${reads.length} database(s) could not be read` : ""),
         reads,
         tables: repositoryTables.sort(byQualifiedName),
+        ...(datasets.length > 0 ? { datasets } : {}),
+      };
+    }
+    // Nothing to compare with. A database that could not be read is still a
+    // database the project has: it stays on the record, so the section does
+    // not say "no connected database" (every read left here is `unread`).
+    if (reads.length > 0) {
+      return {
+        source: "none",
+        label: `no schema source; ${reads.length} database(s) could not be read`,
+        reads,
+        tables: [],
       };
     }
     return NO_SCHEMA_INVENTORY;

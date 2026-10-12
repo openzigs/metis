@@ -11,6 +11,7 @@ import type { DbTableInfo, SchemaGraph } from "@metis/shared";
 const db = vi.hoisted(() => ({
   generatedDocument: { findMany: vi.fn() },
   codeSymbol: { findMany: vi.fn() },
+  codeEdge: { findMany: vi.fn() },
 }));
 const connectors = vi.hoisted(() => ({
   listDbConnectors: vi.fn(),
@@ -39,6 +40,7 @@ import {
   renderSchemaCoverage,
   renderSchemaPromptBlock,
   renderSchemaReference,
+  schemaComparisonWords,
   SCHEMA_REFERENCE_MAX_CHARS,
   tablesFromIntrospection,
   tablesFromRepositorySql,
@@ -52,6 +54,7 @@ import {
   renderColumnTable,
 } from "./schema-render.js";
 import {
+  datasetNamesFromLineage,
   introspectionRowsAtLeast,
   LIVE_INTROSPECTION_CONCURRENCY,
   loadSchemaInventory,
@@ -238,6 +241,7 @@ describe("loadSchemaInventory", () => {
     introspect: async () => [USERS, FEEDS],
     readSchemaGraphs: async () => [],
     readRepositorySql: async () => [],
+    readDatasetNames: async () => [],
     ...over,
   });
   const load = (over: Partial<SchemaInventoryDeps> = {}, actorId: string | undefined = "u1") =>
@@ -501,7 +505,17 @@ describe("loadSchemaInventory", () => {
       );
       // Sequential was 5 x 300 ms. With four at a time it is two rounds.
       expect(performance.now() - started).toBeLessThan(1_200);
-      expect(inventory).toBe(NO_SCHEMA_INVENTORY);
+      // Nothing was read, and the five databases stay on the record.
+      expect(inventory).toEqual({
+        source: "none",
+        label: "no schema source; 5 database(s) could not be read",
+        reads: ["c1", "c2", "c3", "c4", "c5"].map((connector) => ({
+          connector,
+          how: "unread",
+          schemas: [],
+        })),
+        tables: [],
+      });
     });
 
     it("stops at the overall deadline: what has not answered is not read", async () => {
@@ -547,7 +561,8 @@ describe("loadSchemaInventory", () => {
       );
       expect(LIVE_INTROSPECTION_CONCURRENCY).toBe(4);
       expect(calls).toEqual(["c1", "c2", "c3", "c4"]);
-      expect(inventory).toBe(NO_SCHEMA_INVENTORY);
+      expect(inventory.source).toBe("none");
+      expect(inventory.reads.map((read) => read.how)).toEqual(Array(10).fill("unread"));
     });
 
     it("a read that fails, rather than hangs, does not stop its worker", async () => {
@@ -598,7 +613,8 @@ describe("loadSchemaInventory", () => {
       const inventory = await load({
         introspect: () => new Promise<never>((_, reject) => (fail = reject)),
       });
-      expect(inventory).toBe(NO_SCHEMA_INVENTORY);
+      expect(inventory.source).toBe("none");
+      expect(inventory.reads).toEqual([{ connector: "miniflux-pg", how: "unread", schemas: [] }]);
       const unhandled = vi.fn();
       process.once("unhandledRejection", unhandled);
       fail(new Error("the driver gave up 90 s later"));
@@ -701,6 +717,97 @@ describe("loadSchemaInventory", () => {
     expect(plainConnectorLabel('a"b\\c\u0000d e')).toBe("a b c d e");
   });
 
+  // #1061 third panel — with every database unread and no SQL in the
+  // repository, the loader returned the constant empty inventory and the
+  // section said "no connected database" of a project that has one.
+  it("keeps the databases that could not be read on the record when nothing else is known", async () => {
+    for (const over of [
+      { introspect: async () => [] },
+      { introspect: () => Promise.reject(new Error("down")) },
+    ]) {
+      const inventory = await load(over);
+      expect(inventory).toEqual({
+        source: "none",
+        label: "no schema source; 1 database(s) could not be read",
+        reads: [{ connector: "miniflux-pg", how: "unread", schemas: [] }],
+        tables: [],
+      });
+      expect(inventory).not.toBe(NO_SCHEMA_INVENTORY);
+      expect(renderSchemaPromptBlock(inventory)).toBe("");
+      expect(renderSchemaReference(inventory)).toBe("");
+    }
+    // No user to read as: the connector is there and was not read.
+    const noActor = await loadSchemaInventory({ projectId: "p" }, deps());
+    expect(noActor.reads).toEqual([{ connector: "miniflux-pg", how: "unread", schemas: [] }]);
+    expect(noActor.source).toBe("none");
+    // A generation that was cancelled is told nothing.
+    const controller = new AbortController();
+    const cancelled = loadSchemaInventory(
+      { projectId: "p", actorId: "u1", signal: controller.signal },
+      deps({ introspect: never }),
+    );
+    controller.abort();
+    expect(await cancelled).toBe(NO_SCHEMA_INVENTORY);
+  });
+
+  // #1061 third review — the repository-SQL prompt asks for an entity per SAS
+  // dataset; the check is told which names are datasets.
+  it("reads the dataset names with repository SQL, and only then", async () => {
+    const readDatasetNames = vi.fn(async () => ["work.sales", "claims_raw"]);
+    const sql = async () => [{ kind: "table", name: "users", qualifiedName: "users" }];
+    const inventory = await loadSchemaInventory(
+      { projectId: "p", actorId: "u1", codeGraphId: "g1" },
+      deps({ listConnectors: async () => [], readRepositorySql: sql, readDatasetNames }),
+    );
+    expect(readDatasetNames).toHaveBeenCalledWith("p", "g1");
+    expect(inventory.source).toBe("repository-sql");
+    expect(inventory.datasets).toEqual(["work.sales", "claims_raw"]);
+    // None: the field is absent, so the section's reuse hash is what it was.
+    const none = await load({ listConnectors: async () => [], readRepositorySql: sql });
+    expect("datasets" in none).toBe(false);
+    // A failing read costs the dataset names, not the inventory.
+    const failed = await load({
+      listConnectors: async () => [],
+      readRepositorySql: sql,
+      readDatasetNames: () => Promise.reject(new Error("db down")),
+    });
+    expect(failed.source).toBe("repository-sql");
+    expect("datasets" in failed).toBe(false);
+    // Not read on the live tier or when there is nothing to compare with.
+    readDatasetNames.mockClear();
+    await load({ readDatasetNames });
+    await load({ introspect: async () => [], readDatasetNames });
+    expect(readDatasetNames).not.toHaveBeenCalled();
+  });
+
+  it("datasetNamesFromLineage keeps the lineage edges' dataset names, distinct and sorted", () => {
+    const edge = (metadata: string | null, toQualifiedName: string | null = null) => ({
+      metadata,
+      toQualifiedName,
+    });
+    expect(
+      datasetNamesFromLineage([
+        edge('{"lineage":"output","dataset":"work.sales"}'),
+        edge('{"lineage":"input","dataset":" claims_raw "}'),
+        edge('{"lineage":"input","dataset":"work.sales"}'),
+        // The name falls back to the edge's target.
+        edge('{"lineage":"input"}', "lib.members"),
+        // Not lineage, not JSON, not an object, no name: skipped.
+        edge('{"typeOnly":true,"note":"lineage"}', "x"),
+        edge('{"lineage":"sideways","dataset":"y"}'),
+        edge("{not json", "z"),
+        edge("null", "w"),
+        edge(null, "v"),
+        edge('{"lineage":"output","dataset":"  "}'),
+        edge('{"lineage":"output","dataset":7}', null),
+      ]),
+    ).toEqual(["claims_raw", "lib.members", "work.sales"]);
+    const many = Array.from({ length: 6_000 }, (_, n) =>
+      edge(JSON.stringify({ lineage: "output", dataset: `d${n}` })),
+    );
+    expect(datasetNamesFromLineage(many)).toHaveLength(5_000);
+  });
+
   it("returns the empty inventory when there is no source, and never throws", async () => {
     expect(await load({ listConnectors: async () => [] })).toBe(NO_SCHEMA_INVENTORY);
     const failing = (): Promise<never> => Promise.reject(new Error("db down"));
@@ -723,6 +830,7 @@ describe("loadSchemaInventory", () => {
       connectors.inspectDbConnector.mockResolvedValue({ tables: [USERS] });
       db.generatedDocument.findMany.mockResolvedValue([]);
       db.codeSymbol.findMany.mockResolvedValue([]);
+      db.codeEdge.findMany.mockResolvedValue([]);
     });
 
     it("introspects through the database document's own call, as the acting user", async () => {
@@ -769,6 +877,96 @@ describe("loadSchemaInventory", () => {
         projectId: "p",
         kind: { in: ["table", "column"] },
       });
+    });
+
+    it("reads the lineage edges for the dataset names, scoped the same way", async () => {
+      connectors.listDbConnectors.mockResolvedValue([]);
+      db.codeSymbol.findMany.mockResolvedValue([
+        { kind: "table", name: "users", qualifiedName: "users" },
+      ]);
+      db.codeEdge.findMany.mockResolvedValue([
+        { metadata: '{"lineage":"output","dataset":"work.sales"}', toQualifiedName: null },
+        { metadata: '{"typeOnly":true}', toQualifiedName: "lineage" },
+      ]);
+      const inventory = await loadSchemaInventory({ projectId: "p", codeGraphId: "g1" });
+      expect(inventory.datasets).toEqual(["work.sales"]);
+      expect(db.codeEdge.findMany.mock.calls[0][0]).toMatchObject({
+        where: {
+          projectId: "p",
+          kind: "references",
+          metadata: { contains: '"lineage"' },
+          codeGraphId: "g1",
+        },
+        select: { metadata: true, toQualifiedName: true },
+        take: 50_000,
+      });
+      await loadSchemaInventory({ projectId: "p" });
+      expect(db.codeEdge.findMany.mock.calls[1][0].where).toEqual({
+        projectId: "p",
+        kind: "references",
+        metadata: { contains: '"lineage"' },
+      });
+    });
+  });
+});
+
+describe("schemaComparisonWords: what the names were compared with, per source (#1061 third panel)", () => {
+  const read = (how: "live" | "stored" | "unread", storedOn?: string) => ({
+    connector: "pg",
+    how,
+    schemas: how === "unread" ? [] : ["public"],
+    ...(storedOn ? { storedOn } : {}),
+  });
+
+  it("a live read is the database schema, and can be incomplete", () => {
+    expect(schemaComparisonWords({ source: "live-schema", reads: [read("live")] })).toEqual({
+      what: "the database schema",
+      caveat: "A database read can be incomplete",
+    });
+  });
+
+  it("repository SQL is not called a database, and no read is mentioned", () => {
+    for (const reads of [[], [read("unread")]]) {
+      expect(schemaComparisonWords({ source: "repository-sql", reads })).toEqual({
+        what: "the SQL found in the repository",
+        caveat: "The repository's SQL is not the database",
+      });
+    }
+  });
+
+  it("a stored graph is the stored schema, with the day it is from", () => {
+    expect(
+      schemaComparisonWords({ source: "schema-graph", reads: [read("stored", "2026-10-10")] }),
+    ).toEqual({
+      what: "the stored schema from 2026-10-10",
+      caveat: "A stored schema can be out of date, and the read it came from incomplete",
+    });
+    // Several graphs: each day once, in order. No day known: none is given.
+    expect(
+      schemaComparisonWords({
+        source: "schema-graph",
+        reads: [
+          read("stored", "2026-10-10"),
+          read("stored", "2026-09-01"),
+          read("stored", "2026-10-10"),
+          read("unread"),
+        ],
+      }).what,
+    ).toBe("the stored schema from 2026-09-01, 2026-10-10");
+    expect(schemaComparisonWords({ source: "schema-graph", reads: [read("stored")] }).what).toBe(
+      "the stored schema",
+    );
+  });
+
+  it("one database read now and another from a stored graph: both are said", () => {
+    expect(
+      schemaComparisonWords({
+        source: "schema-graph",
+        reads: [read("live"), read("stored", "2026-10-10")],
+      }),
+    ).toEqual({
+      what: "the database schema, part of it the stored schema from 2026-10-10",
+      caveat: "A database read can be incomplete, and a stored schema out of date",
     });
   });
 });

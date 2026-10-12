@@ -7,6 +7,7 @@
  * name, on a cut-down Miniflux schema and the eight inventions the issue lists
  * from walkthrough run 7.
  */
+import { Lexer, type Token, type Tokens } from "marked";
 import { describe, expect, it } from "vitest";
 import { expectLinearTime } from "../../../tests/helpers/linear-time.js";
 import {
@@ -112,9 +113,9 @@ const notChecked = (report: SchemaCheckReport, why: string): string[] =>
   report.notChecked.filter((entry) => entry.why === why).map((entry) => entry.name);
 
 /**
- * Every marker the check can write, removed. Written here from the module's
- * header, not imported from it, so the test does not agree with the code by
- * construction.
+ * Every marker the check can write, removed by pattern. Only for the fixed
+ * documents below, which hold no text that looks like a marker; the property
+ * tests use `withoutAdded`, which reads the output beside the input instead.
  */
 function withoutMarkers(markdown: string): string {
   return markdown.replace(/ \*\(not in schema(?:; the schema has `[^`\n]*`)?\)\*/g, "");
@@ -202,11 +203,107 @@ function seeded(seed: number): () => number {
 }
 
 /**
+ * The strings the check may add after a name, written out from the module
+ * header and the inventory: the plain marker, and the near-miss marker for
+ * each column the schema has. Nothing here is imported from the module.
+ */
+function markersFor(inventory: SchemaInventory): string[] {
+  const out = new Set([" *(not in schema)*"]);
+  for (const entry of inventory.tables) {
+    for (const column of entry.columns) {
+      out.add(` *(not in schema; the schema has \`${column.name}\`)*`);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * `output` with what the check ADDED taken out, and where each addition stood.
+ *
+ * It is found by reading `output` beside `input`, never by pattern alone: a
+ * marker is the check's when `output` has it at a point where `input` does not.
+ * So a lookalike the model wrote (`*(not in schema)*` is ordinary Markdown) is
+ * model text, and stays. Everything else is copied, so if the check removed or
+ * changed a single byte, the result differs from `input`.
+ */
+function withoutAdded(
+  output: string,
+  input: string,
+  markers: readonly string[],
+): { text: string; added: number[] } {
+  const kept: string[] = [];
+  const added: number[] = [];
+  let from = 0;
+  let i = 0;
+  let j = 0;
+  while (j < output.length) {
+    if (output[j] === " " && output[j + 1] === "*") {
+      const marker = markers.find((m) => output.startsWith(m, j) && !input.startsWith(m, i));
+      if (marker) {
+        kept.push(output.slice(from, j));
+        added.push(j);
+        j += marker.length;
+        from = j;
+        continue;
+      }
+    }
+    i += 1;
+    j += 1;
+  }
+  kept.push(output.slice(from));
+  return { text: kept.join(""), added };
+}
+
+/**
+ * What a CommonMark + GFM renderer shows as code, by a parser that shares
+ * nothing with the check (`marked`, which the document export uses): fenced
+ * and indented blocks, and code spans.
+ */
+function codeTexts(markdown: string): string[] {
+  const out: string[] = [];
+  const walk = (tokens: readonly Token[] | undefined): void => {
+    for (const token of tokens ?? []) {
+      if (token.type === "code" || token.type === "codespan") out.push(token.raw);
+      if (token.type === "table") {
+        const grid = token as Tokens.Table;
+        for (const cell of grid.header) walk(cell.tokens);
+        for (const row of grid.rows) for (const cell of row) walk(cell.tokens);
+      } else if (token.type === "list") {
+        for (const item of (token as Tokens.List).items) walk(item.tokens);
+      } else if ("tokens" in token) {
+        walk(token.tokens);
+      }
+    }
+  };
+  walk(Lexer.lex(markdown, { gfm: true }));
+  return out;
+}
+
+/** The pieces of code that hold the marker text. */
+function marksInCode(markdown: string): string[] {
+  return codeTexts(markdown).filter((text) => text.includes("(not in schema"));
+}
+
+const TRAILING = [" ", "  ", "\t", " \t "];
+
+/**
  * A document made of the structures the check reads and the ones it must leave
  * alone, with real, invented, near-miss, qualified and odd names in each.
+ *
+ * It emits every lexical shape the check branches on, because a byte-for-byte
+ * property is only as wide as its generator (#1061 third review: the first
+ * one wrote LF, backtick fences, full rows and no trailing white space, and
+ * five text-deleting mutants passed it): LF, CRLF and mixed line endings; a
+ * final newline or none; tabs; trailing white space on any line; backtick,
+ * tilde and four-backtick fences, closed, unclosed and nested; indented code;
+ * raw HTML; rows with fewer than two pipes, escaped pipes and empty cells;
+ * one-, two- and three-backtick code spans, spans that hold a backtick,
+ * unbalanced and escaped backticks; text that already looks like a marker;
+ * headings with closing hashes; 20,000-character lines; non-ASCII text.
  */
 function generatedDocument(seed: number): string {
   const random = seeded(seed);
+  const chance = (p: number): boolean => random() < p;
   const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)];
   const tables = ["users", "feeds", "entries", "jobs", "Stat", "audit.users", "FeedIcon", "x.y.z"];
   const columns = [
@@ -230,129 +327,378 @@ function generatedDocument(seed: number): string {
     "> A note with `jobs` in it.",
     "- a list item naming `certificate_cache`",
     "",
+    "Benutzerkonten — größe, 用户, naïve café 🙂 `größe`.",
+    "The model wrote `jobs` *(not in schema)* here itself.",
+    'Inline <br> HTML and <span class="x">`users.nope`</span>.',
+    "A span holding a backtick: `` a`b `` and ``` `` ```, and a stray ` too.",
+    "Tabs\tbetween\twords, an escaped \\` backtick and a trailing backslash \\",
   ];
+  const name = (): string => pick(columns);
+  /** A first cell: every way a name can be written in, beside or out of a code span. */
   const cell = (): string => {
-    const shape = Math.floor(random() * 5);
-    if (shape === 0) return `\`${pick(columns)}\``;
-    if (shape === 1) return `\`${pick(columns)}\` / \`${pick(columns)}\``;
-    if (shape === 2) return `\`${pick(columns)}\` (login) and \`${pick(columns)}\` — legacy`;
-    if (shape === 3) return pick(columns);
-    return "—";
+    const shape = Math.floor(random() * 19);
+    if (shape === 0) return `\`${name()}\``;
+    if (shape === 1) return `\`${name()}\` / \`${name()}\``;
+    if (shape === 2) return `\`${name()}\` (login) and \`${name()}\` — legacy`;
+    if (shape === 3) return name();
+    if (shape === 4) return "—";
+    if (shape === 5) return `\`\`${name()}\`\``;
+    if (shape === 6) return `\`\` \`${name()}\` \`\``;
+    if (shape === 7) return `\`\`a\`${name()}\`\` and \`${name()}\``;
+    if (shape === 8) return `\`${name()}`;
+    if (shape === 9) return `\\\`${name()}\\\` and \\\`\`${name()}\``;
+    if (shape === 10) return `\`${name()}\` *(not in schema)*`;
+    if (shape === 11) return `\`${name()}\` *(not in schema; the schema has \`id\`)*`;
+    if (shape === 12) return `\`${name()}\` as written *(not in schema)*`;
+    if (shape === 13) return `\`${name()}\`*(not in schema)*`;
+    if (shape === 14) return "";
+    if (shape === 15) return `\`${name()}\\|x\` and \`${name()}\` \\| y`;
+    if (shape === 16) return `<code>${name()}</code> \`${name()}\`<br>`;
+    if (shape === 17) return `\`größe\` \`用户\` \`${name()}\``;
+    return `\`\`\`${name()}\`\`\` \`\`${name()}\``;
   };
-  const out: string[] = ["## Data Architecture", "", pick(prose), ""];
+  /** A table row: full, short of pipes, tabbed, indented, very long. */
+  const row = (rest: string): string => {
+    const shape = Math.floor(random() * 14);
+    if (shape === 0) return `| ${cell()}`;
+    if (shape === 1) return `${cell()} | ${pick(types)}`;
+    if (shape === 2) return pick(["|", "||", "| | |", "|  |"]);
+    if (shape === 3) return `|\t${cell()}\t|\t${pick(types)}\t|`;
+    if (shape === 4) return `  | ${cell()} | ${pick(types)} |${rest}`;
+    if (shape === 5) return `    | ${cell()} | ${pick(types)} |${rest}`;
+    if (shape === 6 && chance(0.2))
+      return `| ${cell()} | ${pick(types)} | ${"wide ".repeat(4000)}|`;
+    return `| ${cell()} | ${pick(types)} |${rest}`;
+  };
+  const heading = (): string => {
+    const label = pick(["Entity", "Table", "Entities", "Tables"]);
+    const table = pick(tables);
+    const written = pick([
+      `\`${table}\``,
+      table,
+      `\`${table}\` (audit schema)`,
+      `\`${table}\` (public schema)`,
+      `audit.\`${table}\``,
+      `\`${table}\` and \`${pick(tables)}\``,
+      `${table} and ${pick(tables)}`,
+      `\`${table}\` (a view)`,
+      `\`\`${table}\`\``,
+      `\`${table}\` *(not in schema)*`,
+      "`用户`",
+    ]);
+    const gap = pick([" ", " ", "\t", "  "]);
+    const closing = pick(["", "", "", " ###", " #", " ##  ", "###"]);
+    return `### ${label}:${gap}${written}${closing}`;
+  };
+  /** An entity heading and its field table: what the check judges when it is not code. */
+  const entityBlock = (indent = ""): string[] => {
+    const lines = [`${indent}${heading()}`, ""];
+    if (chance(0.4)) lines.push(`${indent}${pick(prose)}`, "");
+    lines.push(
+      `${indent}${pick(["| Field | Type | Constraint | Description |", "| Field | Type | Constraint | Description |", "| Column | Type | Constraint | Description"])}`,
+      `${indent}${pick(["|---|---|---|---|", "|---|---|---|---|", "| --- | :-- | --: | --- |", "|---|---|"])}`,
+    );
+    const rows = 1 + Math.floor(random() * 5);
+    for (let r = 0; r < rows; r++) {
+      lines.push(`${indent}${row(" FK → `users.id` | see `users.CreatedAt` |")}`);
+    }
+    return lines;
+  };
+  const erDiagram = (): string[] => {
+    const lines = ["erDiagram"];
+    for (let n = 0; n < 3; n++) {
+      const entityId = pick(tables).toUpperCase().split(".").join("_");
+      lines.push(`    ${entityId} ||--o{ ${pick(tables).toUpperCase()} : has`);
+      lines.push(`    ${entityId}${chance(0.3) ? '["audit.users"]' : ""} {`);
+      for (let a = 0; a < 3; a++) {
+        const attribute = pick(columns);
+        lines.push(
+          chance(0.5) ? `        ${pick(types)} ${attribute} PK` : `        ${attribute} bigint`,
+        );
+      }
+      lines.push("    }");
+    }
+    return lines;
+  };
+  /** `body` in a fence: backticks or tildes, three or more, closed by as many or more. */
+  const fenced = (info: string, body: readonly string[]): string[] => {
+    const char = pick(["`", "`", "~"]);
+    const length = pick([3, 3, 4, 5]);
+    const open = char.repeat(length);
+    const close = char.repeat(length + pick([0, 0, 1]));
+    return [`${open}${info}`, ...body, close];
+  };
+
+  const out: string[] = ["## Data Architecture", ...(chance(0.8) ? [""] : []), pick(prose), ""];
   const blocks = 3 + Math.floor(random() * 6);
   for (let b = 0; b < blocks; b++) {
-    const kind = Math.floor(random() * 6);
+    const kind = Math.floor(random() * 12);
     if (kind === 0) {
-      out.push("```mermaid", "erDiagram");
-      for (let n = 0; n < 3; n++) {
-        const name = pick(tables).toUpperCase().split(".").join("_");
-        out.push(`    ${name} ||--o{ ${pick(tables).toUpperCase()} : has`);
-        out.push(`    ${name}${random() < 0.3 ? '["audit.users"]' : ""} {`);
-        for (let a = 0; a < 3; a++) {
-          const attribute = pick(columns);
-          out.push(
-            random() < 0.5
-              ? `        ${pick(types)} ${attribute} PK`
-              : `        ${attribute} bigint`,
-          );
-        }
-        out.push("    }");
-      }
-      out.push("```", "");
-    } else if (kind === 1) {
-      const label = pick(["Entity", "Table", "Entities", "Tables"]);
-      const name = pick(tables);
-      const written = pick([
-        `\`${name}\``,
-        name,
-        `\`${name}\` (audit schema)`,
-        `audit.\`${name}\``,
-        `\`${name}\` and \`${pick(tables)}\``,
-        `\`${name}\` (a view)`,
-      ]);
-      out.push(`### ${label}: ${written}`, "");
-      if (random() < 0.5) out.push(pick(prose), "");
-      out.push("| Field | Type | Constraint | Description |", "|---|---|---|---|");
-      const rows = 1 + Math.floor(random() * 5);
-      for (let r = 0; r < rows; r++) {
-        out.push(`| ${cell()} | ${pick(types)} | FK → \`users.id\` | see \`users.CreatedAt\` |`);
-      }
-      out.push("");
-    } else if (kind === 2) {
-      out.push("### Tables and Their Roles", "", "| Table | Purpose |", "|---|---|");
-      for (let r = 0; r < 3; r++) out.push(`| \`${pick(tables)}\` | ${pick(prose)} |`);
-      out.push("");
+      out.push(...fenced("mermaid", erDiagram()), "");
+    } else if (kind === 1 || kind === 2) {
+      out.push(...entityBlock(), "");
     } else if (kind === 3) {
-      out.push("#### `Feed` struct", "", "| Field | Type |", "|---|---|");
-      out.push(`| ${cell()} | ${pick(types)} |`, "");
+      out.push("### Tables and Their Roles", "", "| Table | Purpose |", "|---|---|");
+      for (let r = 0; r < 3; r++) {
+        out.push(
+          chance(0.2)
+            ? `| \`\`${pick(tables)}\`\` | ${pick(prose)} |`
+            : `| \`${pick(tables)}\` | ${pick(prose)} |`,
+        );
+      }
+      out.push("");
     } else if (kind === 4) {
-      out.push("```go", "type Job struct { ID int64 }", "```", "");
+      out.push("#### `Feed` struct", "", "| Field | Type |", "|---|---|");
+      out.push(row(""), "");
+    } else if (kind === 5) {
+      out.push(...fenced("go", ["type Job struct { ID int64 }", "", ...entityBlock()]), "");
+    } else if (kind === 6) {
+      // A longer fence that holds shorter ones, of both kinds: none closes it.
+      const inner = ["```", ...entityBlock(), "```", "~~~", ...entityBlock(), "~~~", "```go"];
+      const char = pick(["`", "~"]);
+      out.push(`${char.repeat(4)}markdown`, ...inner, char.repeat(4), "");
+    } else if (kind === 7) {
+      // Indented far enough to be a code block, alone or under a real heading.
+      const indent = pick(["    ", "\t", "     ", "  \t"]);
+      if (chance(0.5)) out.push(heading(), "");
+      out.push(...entityBlock(indent).filter((line) => line.trim() !== ""), "");
+      if (chance(0.5)) out.push("| Field | Type |", "|---|---|", row(""), "");
+    } else if (kind === 8) {
+      const shape = Math.floor(random() * 4);
+      if (shape === 0) out.push("<pre>", ...entityBlock(), "</pre>", "");
+      else if (shape === 1)
+        out.push(
+          "<details>",
+          "<summary>Tables</summary>",
+          "",
+          ...entityBlock(),
+          "",
+          "</details>",
+          "",
+        );
+      else if (shape === 2) out.push("<!--", ...entityBlock(), "-->", "");
+      else
+        out.push(
+          '<div class="note">',
+          ...entityBlock().filter((line) => line !== ""),
+          "</div>",
+          "",
+        );
+    } else if (kind === 9) {
+      out.push("- a step", "", "    ```sql", "    | Field | Type |", "    ```", "");
+    } else if (kind === 10 && chance(0.3)) {
+      out.push(`${"A very long line of prose with `jobs` in it. ".repeat(450)}`, "");
     } else {
       out.push(pick(prose), "");
     }
   }
-  return out.join("\n");
+  // A block the text never closes: everything after it is code to a renderer.
+  if (chance(0.15)) {
+    out.push(pick(["```sql", "~~~", "````text", "<pre>", "<!-- unfinished"]), ...entityBlock());
+  }
+  if (chance(0.5)) out.push("");
+
+  const mode = seed % 3;
+  let text = "";
+  out.forEach((line, at) => {
+    const written = chance(0.2) ? `${line}${pick(TRAILING)}` : line;
+    const last = at === out.length - 1;
+    const eol = mode === 0 ? "\n" : mode === 1 ? "\r\n" : chance(0.5) ? "\r\n" : "\n";
+    text += last ? written : `${written}${eol}`;
+  });
+  return text;
 }
 
-describe("the check only marks (#1061 second review)", () => {
+/**
+ * Whether `output` is `input` plus the whole-line blocks `applySchemaGrounding`
+ * may insert (the note, the reference), each once, each with at most one blank
+ * line of its own on either side, plus markers. Every way of taking a block and
+ * its blank lines out is tried; one of them has to give back `input` exactly.
+ */
+function isInputPlusBlocks(
+  output: string,
+  input: string,
+  inserted: readonly string[],
+  markers: readonly string[],
+): boolean {
+  let candidates: string[][] = [output.split("\n")];
+  for (const block of inserted.filter(Boolean).map((text) => text.split("\n"))) {
+    const next: string[][] = [];
+    for (const lines of candidates) {
+      const starts: number[] = [];
+      for (let at = 0; at + block.length <= lines.length; at++) {
+        if (block.every((line, k) => lines[at + k] === line)) starts.push(at);
+      }
+      // Inserted once.
+      if (starts.length !== 1) continue;
+      const [at] = starts;
+      for (const before of [0, 1]) {
+        for (const after of [0, 1]) {
+          if (before && lines[at - 1] !== "") continue;
+          if (after && lines[at + block.length] !== "") continue;
+          next.push([...lines.slice(0, at - before), ...lines.slice(at + block.length + after)]);
+        }
+      }
+    }
+    candidates = next;
+  }
+  return candidates.some((lines) => withoutAdded(lines.join("\n"), input, markers).text === input);
+}
+
+describe("the check only marks (#1061 second and third review)", () => {
+  /** Two schemas read, so a heading's `(audit schema)` names one that was. */
+  const TWO_SCHEMAS = liveInventory(
+    [...TABLES, table("events", { id: "bigint", actor_ip: "inet" }, { schema: "audit" })],
+    [{ connector: "miniflux-pg", how: "live", schemas: ["audit", "public"] }],
+  );
   const INVENTORIES: Record<string, SchemaInventory> = {
     live: LIVE,
     stored: STORED,
     "repository SQL": REPO_SQL,
     "one database unread": ONE_UNREAD,
+    "two schemas read": TWO_SCHEMAS,
   };
-  const SEEDS = Array.from({ length: 150 }, (_, n) => n + 1);
+  const SEEDS = Array.from({ length: 180 }, (_, n) => n + 1);
+  const DOCUMENTS = SEEDS.map((seed) => ({
+    seed,
+    input: generatedDocument(seed),
+  }));
+
+  it("the generator emits every lexical shape the check branches on", () => {
+    const all = DOCUMENTS.map((document) => document.input);
+    const some = (test: (text: string) => boolean): number => all.filter(test).length;
+    const shapes: Record<string, number> = {
+      "LF only": some((t) => !t.includes("\r")),
+      "CRLF only": some((t) => t.includes("\r\n") && !/[^\r]\n/.test(t)),
+      "mixed line endings": some((t) => t.includes("\r\n") && /[^\r]\n/.test(t)),
+      "a final newline": some((t) => t.endsWith("\n")),
+      "no final newline": some((t) => !t.endsWith("\n")),
+      "a tab": some((t) => t.includes("\t")),
+      "trailing white space on a heading": some((t) => /^#{2,4} .*[ \t]\r?$/m.test(t)),
+      "trailing white space on a table row": some((t) => /^\|.*\|[ \t]+\r?$/m.test(t)),
+      "trailing white space on a fence": some((t) => /^(```|~~~)\w*[ \t]+\r?$/m.test(t)),
+      "trailing white space on a blank line": some((t) => /^[ \t]+\r?$/m.test(t)),
+      "a tilde fence": some((t) => /^~~~/m.test(t)),
+      "a four-backtick fence holding a three-backtick line": some((t) =>
+        /^````markdown\r?\n```[ \t]*\r?$/m.test(t),
+      ),
+      "an unclosed fence": some((t) =>
+        /\n(```sql|~~~|````text)[ \t]*\r?\n(?![\s\S]*\n(```|~~~)[ \t]*\r?(\n|$))/.test(t),
+      ),
+      "an indented code block": some((t) => /^( {4}|\t)\| /m.test(t)),
+      "a row with fewer than two pipes": some((t) => /^\| [^|\n]*$/m.test(t)),
+      "an escaped pipe": some((t) => t.includes("\\|")),
+      "an empty cell": some((t) => /^\|\s*\|/m.test(t)),
+      "a double-backtick span": some((t) => /``[a-z_.]+``/i.test(t)),
+      "a span holding a backtick": some((t) => /`` `[a-z_.]+` ``/i.test(t)),
+      "a marker lookalike the model wrote": some((t) => t.includes("*(not in schema)*")),
+      "a heading with closing hashes": some((t) => /^### .*#[ \t]*\r?$/m.test(t)),
+      "raw HTML": some((t) => /^<(pre|details|div|!--)/m.test(t)),
+      "a 20,000-character line": some((t) => t.split("\n").some((line) => line.length >= 20_000)),
+      "non-ASCII text": some((t) => t.includes("用户") && t.includes("größe")),
+    };
+    for (const [shape, count] of Object.entries(shapes)) {
+      expect(count, shape).toBeGreaterThan(0);
+    }
+  });
 
   for (const [name, inventory] of Object.entries(INVENTORIES)) {
-    it(`markers removed, the output is the input: ${name}`, () => {
+    const markers = markersFor(inventory);
+
+    it(`what the check added removed, the output is the input byte for byte: ${name}`, () => {
       let marked = 0;
-      for (const seed of SEEDS) {
-        const input = generatedDocument(seed);
+      for (const { seed, input } of DOCUMENTS) {
         const { markdown } = checkSchemaClaims(input, inventory);
         if (markdown !== input) marked += 1;
-        expect(withoutMarkers(markdown), `seed ${seed}`).toBe(input);
+        expect(withoutAdded(markdown, input, markers).text, `seed ${seed}`).toBe(input);
       }
       // The generator does produce documents the check marks.
-      expect(marked).toBeGreaterThan(SEEDS.length / 10);
+      expect(marked).toBeGreaterThan(SEEDS.length / 30);
+    });
+
+    it(`no marker lands inside code, by an independent parser: ${name}`, () => {
+      for (const { seed, input } of DOCUMENTS) {
+        const { markdown } = checkSchemaClaims(input, inventory);
+        if (markdown === input) continue;
+        expect(marksInCode(markdown), `seed ${seed}`).toEqual(marksInCode(input));
+      }
     });
 
     it(`with the note and the reference taken out as well: ${name}`, () => {
-      for (const seed of SEEDS) {
-        const input = generatedDocument(seed);
+      for (const { seed, input } of DOCUMENTS) {
         const { markdown, report } = applySchemaGrounding(input, inventory);
         const notice = renderSchemaCheckNotice(report, inventory);
         const reference = renderSchemaReference(inventory);
-        let rest = markdown;
-        // Each is inserted as whole lines, once.
-        if (notice) {
-          expect(rest.split(`\n\n${notice}`).length, `seed ${seed}`).toBe(2);
-          rest = rest.replace(`\n\n${notice}`, "");
-        }
-        if (reference) {
-          // Before the first sub-section, or at the end when there is none.
-          const before = rest.split(`${reference}\n\n`).length - 1;
-          const atEnd = rest.endsWith(`\n\n${reference}`) ? 1 : 0;
-          expect(before + atEnd, `seed ${seed}`).toBe(1);
-          rest = before
-            ? rest.replace(`${reference}\n\n`, "")
-            : rest.slice(0, -`\n\n${reference}`.length);
-        }
-        expect(withoutMarkers(rest), `seed ${seed}`).toBe(input);
+        expect(
+          isInputPlusBlocks(markdown, input, [notice, reference], markers),
+          `seed ${seed}`,
+        ).toBe(true);
+        // Neither is put where a renderer would show it as code.
+        const code = codeTexts(markdown).join("\n");
+        if (notice) expect(code, `seed ${seed}`).not.toContain("**Schema check.**");
+        if (reference) expect(code, `seed ${seed}`).not.toContain("### Schema Reference");
+      }
+    });
+
+    it(`is idempotent, checked again it adds nothing: ${name}`, () => {
+      for (const { seed, input } of DOCUMENTS) {
+        const once = checkSchemaClaims(input, inventory).markdown;
+        expect(checkSchemaClaims(once, inventory).markdown, `seed ${seed}`).toBe(once);
       }
     });
   }
 
   it("keeps every line, in order, and adds none", () => {
-    for (const seed of SEEDS) {
-      const input = generatedDocument(seed).split("\n");
-      const output = checkSchemaClaims(input.join("\n"), LIVE).markdown.split("\n");
-      expect(output).toHaveLength(input.length);
+    const markers = markersFor(LIVE);
+    for (const { seed, input } of DOCUMENTS) {
+      const before = input.split("\n");
+      const output = checkSchemaClaims(input, LIVE).markdown.split("\n");
+      expect(output).toHaveLength(before.length);
       output.forEach((line, at) => {
         // A line is the one the model wrote, or that line with markers in it.
-        expect(withoutMarkers(line), `seed ${seed} line ${at}`).toBe(input[at]);
+        expect(withoutAdded(line, before[at], markers).text, `seed ${seed} line ${at}`).toBe(
+          before[at],
+        );
       });
     }
+  });
+
+  // The idempotence rule, which is also how a lookalike is told from a mark:
+  // a name directly followed by ` *(not in schema` is taken as already marked
+  // and nothing is added there. The check cannot tell a marker it wrote on an
+  // earlier pass from the same words written by the model, and does not need
+  // to: either way the reader sees the name marked once.
+  it("takes a name the model already marked as marked, and adds no second mark", () => {
+    const written = entity("users", "| `nope` *(not in schema)* | int |\n| `nope2` | int |");
+    const { markdown, report } = check(written);
+    expect(markdown).toBe(written.replace("| `nope2` |", "| `nope2` *(not in schema)* |"));
+    expect(report.flaggedColumns).toEqual(["users.nope", "users.nope2"]);
+    // The model's own words elsewhere in the row or in prose are not a mark.
+    const apart = entity("users", "| `nope` as written *(not in schema)* | int |");
+    expect(check(apart).markdown).toBe(
+      apart.replace("`nope` as written", "`nope` *(not in schema)* as written"),
+    );
+    const { text, added } = withoutAdded(check(apart).markdown, apart, markersFor(LIVE));
+    expect(text).toBe(apart);
+    expect(added).toHaveLength(1);
+    // A lookalike after a REAL name is the model's text and is left alone.
+    const real = entity("users", "| `id` *(not in schema)* | int |");
+    expect(check(real).markdown).toBe(real);
+  });
+
+  it("is idempotent on a heading that names its schema in a parenthesis", () => {
+    const section = `### Entity: \`events\` (public schema)\n\n${FIELD}| \`nope\` | int |`;
+    const once = check(section, TWO_SCHEMAS).markdown;
+    expect(once).toContain("### Entity: `events` *(not in schema)* (public schema)");
+    // Checked again, the name is still `public.events`: the marker's own
+    // parenthesis is not taken for the heading's, so `events` is not looked
+    // for (and found) in the other schema, and its rows are not judged.
+    expect(check(once, TWO_SCHEMAS).markdown).toBe(once);
+    const bare = `### Entities: users and jobs\n\n${FIELD}| \`users.nope\` | int |`;
+    const marked = check(bare).markdown;
+    expect(marked).toContain("### Entities: users and jobs *(not in schema)*");
+    expect(check(marked).markdown).toBe(marked);
+    expect(check(marked).report.unresolvedTables).toEqual(["jobs"]);
   });
 
   it("leaves a diagram byte for byte as written, whatever it finds in it", () => {
@@ -380,7 +726,6 @@ describe("the check only marks (#1061 second review)", () => {
     }
   });
 });
-
 // ---------------------------------------------------------------------------
 // Run 7
 // ---------------------------------------------------------------------------
@@ -1115,6 +1460,479 @@ describe("applySchemaGrounding", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Where a marker may go (#1061 third review)
+// ---------------------------------------------------------------------------
+
+describe("a marker never lands inside code", () => {
+  /** Unchanged, and to the independent parser no code holds a marker. */
+  const expectUntouched = (section: string, inventory: SchemaInventory = LIVE): void => {
+    expect(check(section, inventory).markdown).toBe(section);
+  };
+
+  it("goes after the whole closing run of a double-backtick span", () => {
+    const { markdown, report } = check(entity("users", "| ``nope`` | int |"));
+    expect(markdown).toContain("| ``nope`` *(not in schema)* | int |");
+    expect(report.flaggedColumns).toEqual(["users.nope"]);
+    expect(marksInCode(markdown)).toEqual([]);
+    // Padded with a space on each side, the name is the same name.
+    expect(check(entity("users", "| `` nope `` | int |")).markdown).toContain(
+      "| `` nope `` *(not in schema)* | int |",
+    );
+    expect(check(entity("users", "| `` id `` | int |")).report.flaggedColumns).toEqual([]);
+  });
+
+  it("does not take the inside of a span that holds backticks for a span of its own", () => {
+    // Read as pairs of single backticks, `nope` is a span and the marker would
+    // go between the span's two closing backticks.
+    for (const cell of ["`` `nope` ``", "``a`nope``", "``` ``nope`` ```", "``nope`x``"]) {
+      const section = entity("users", `| ${cell} | int |`);
+      expectUntouched(section);
+      expect(check(section).report.flaggedColumns).toEqual([]);
+    }
+    // A real span beside one still gets its mark, after its own closing backtick.
+    const { markdown } = check(entity("users", "| ``a`b`` and `nope` | int |"));
+    expect(markdown).toContain("| ``a`b`` and `nope` *(not in schema)* | int |");
+    expect(marksInCode(markdown)).toEqual([]);
+  });
+
+  it("reads a backtick behind a backslash, or without a partner, as text", () => {
+    expectUntouched(entity("users", "| \\`nope\\` | int |"));
+    expectUntouched(entity("users", "| `nope | int |"));
+    // The escaped backtick opens nothing, so the span is the one after it.
+    const { markdown } = check(entity("users", "| \\``nope` | int |"));
+    expect(markdown).toContain("| \\``nope` *(not in schema)* | int |");
+    expect(marksInCode(markdown)).toEqual([]);
+    // Two backslashes are a backslash, and the backtick after them opens a span.
+    expect(check(entity("users", "| \\\\`nope` | int |")).markdown).toContain(
+      "| \\\\`nope` *(not in schema)* | int |",
+    );
+  });
+
+  it("codeSpans delimits a span by a run of the same length", () => {
+    expect(codeSpans("``a`b`` and `c` and ``` `` ``` and `d")).toEqual(["a`b", "c", "``"]);
+    expect(codeSpans("`` ` ``")).toEqual(["`"]);
+    expect(codeSpans("\\`a\\` `b`")).toEqual(["b"]);
+    expect(codeSpans("`a``b`")).toEqual(["a``b"]);
+  });
+
+  it("leaves a field table indented as a code block alone, under an Entity heading too", () => {
+    for (const indent of ["    ", "\t", "  \t", "     "]) {
+      const table = `${indent}| Field | Type |\n${indent}|---|---|\n${indent}| \`nope\` | int |`;
+      const section = `### Entity: \`users\`\n\n${table}`;
+      expectUntouched(section);
+      expect(schemaCheckFindings(check(section).report)).toBe(0);
+    }
+    // Three spaces is still a table.
+    const three = "### Entity: `users`\n\n   | Field | Type |\n   |---|---|\n   | `nope` | int |";
+    expect(check(three).markdown).toContain("   | `nope` *(not in schema)* | int |");
+  });
+
+  it("an indented field table is still the heading's first table: it takes the heading with it", () => {
+    const section = [
+      "### Entity: `ghosts`",
+      "",
+      "    | Field | Type |",
+      "    |---|---|",
+      "    | `nope` | int |",
+      "",
+      "| Field | Type |",
+      "|---|---|",
+      "| `later` | int |",
+    ].join("\n");
+    const { markdown, report } = check(section);
+    // The heading is not code: its own name is judged and marked.
+    expect(markdown).toBe(section.replace("`ghosts`", "`ghosts` *(not in schema)*"));
+    expect(report.unresolvedTables).toEqual(["ghosts"]);
+    // The later table is not judged as the heading's.
+    const known = check(section.replace("ghosts", "users"));
+    expect(known.markdown).toBe(section.replace("ghosts", "users"));
+    expect(known.report.flaggedColumns).toEqual([]);
+    // Indented with a tab, which is four columns, it does the same.
+    const tabbed = section.replace("ghosts", "users").split("    |").join("\t|");
+    expect(tabbed).toContain("\t| `nope` | int |");
+    expect(check(tabbed).markdown).toBe(tabbed);
+    expect(check(tabbed).report.flaggedColumns).toEqual([]);
+  });
+
+  it("an indented row ends the table it follows", () => {
+    const section = entity("users", "| `nope` | int |\n    | `nope2` | int |\n| `nope3` | int |");
+    const { markdown } = check(section);
+    expect(markdown).toBe(section.replace("| `nope` |", "| `nope` *(not in schema)* |"));
+  });
+
+  it("a four-backtick fence is not closed by a three-backtick line inside it", () => {
+    const inner = `${entity("users", "| `nope` | int |")}`;
+    for (const [open, close] of [
+      ["````markdown", "````"],
+      ["````", "`````"],
+      ["~~~~", "~~~~"],
+    ]) {
+      const section = `${open}\n\`\`\`\n${inner}\n\`\`\`\n${close}\n\nAfter.`;
+      expectUntouched(section);
+      expect(schemaCheckFindings(check(section).report)).toBe(0);
+    }
+    // Closed properly, what follows the fence is judged again.
+    const after = `\`\`\`\`\n\`\`\`\n\`\`\`\`\n\n${inner}`;
+    expect(check(after).report.flaggedColumns).toEqual(["users.nope"]);
+  });
+
+  it("a fence is closed only by its own character, with nothing after it", () => {
+    const inner = entity("users", "| `nope` | int |");
+    // A tilde fence is not closed by backticks, nor a fence by one that opens another.
+    expectUntouched(`~~~\n\`\`\`\n${inner}\n~~~`);
+    expectUntouched(`\`\`\`\n\`\`\`go\n${inner}\n\`\`\``);
+    expectUntouched(`\`\`\`\n~~~\n${inner}`);
+    // Fewer than three, or indented four spaces, opens nothing.
+    expect(check(`\`\`\n\n${inner}`).report.flaggedColumns).toEqual(["users.nope"]);
+    expect(check(`    \`\`\`\n\n${inner}`).report.flaggedColumns).toEqual(["users.nope"]);
+    // Backticks later on the line make it a code span, not a fence.
+    expect(check(`\`\`\`a\`\`\` text\n\n${inner}`).report.flaggedColumns).toEqual(["users.nope"]);
+  });
+
+  it("where the viewer's parser and the export's disagree on a closing fence, it is code", () => {
+    const inner = entity("users", "| `nope` | int |");
+    // A tab after the fence closes it for CommonMark and not for `marked`.
+    const tab = `\`\`\`\ncode\n\`\`\`\t\n\n${inner}`;
+    expectUntouched(tab);
+    expect(marksInCode(check(tab).markdown)).toEqual([]);
+    // A run that goes on in the other character closes it for `marked` only.
+    const mixed = `\`\`\`\ncode\n\`\`\`~\n\n${inner}\n\n\`\`\`\n\n${inner}`;
+    expectUntouched(mixed);
+    // Trailing spaces close it for both.
+    expect(check(`\`\`\`\ncode\n\`\`\`  \n\n${inner}`).report.flaggedColumns).toEqual([
+      "users.nope",
+    ]);
+    // A diagram in a fence closed that way is still read, as the viewer draws it.
+    const drawn = `\`\`\`mermaid\nerDiagram\n    USERS ||--o{ GHOSTS : x\n\`\`\`\t\n\n${inner}`;
+    expectUntouched(drawn);
+    expect(check(drawn).report.unresolvedTables).toEqual(["GHOSTS"]);
+  });
+
+  it("leaves raw HTML blocks alone", () => {
+    const inner = entity("users", "| `nope` | int |");
+    // To the closing tag, blank lines included.
+    expectUntouched(`<pre>\n${inner}\n</pre>`);
+    expectUntouched(`<PRE class="x">\n${inner}`);
+    expectUntouched(`<!--\n${inner}\n-->`);
+    expectUntouched(`<script>\n\n${inner}\n</script>`);
+    // Any other tag: to the next blank line.
+    expectUntouched(`<div>\n${inner.split("\n").filter(Boolean).join("\n")}\n</div>`);
+    const details = `<details>\n<summary>x</summary>\n\n${inner}\n\n</details>`;
+    expect(check(details).report.flaggedColumns).toEqual(["users.nope"]);
+    // After the block ends, the text is judged again.
+    expect(check(`<pre>\ncode\n</pre>\n\n${inner}`).report.flaggedColumns).toEqual(["users.nope"]);
+    expect(check(`<!-- note -->\n\n${inner}`).report.flaggedColumns).toEqual(["users.nope"]);
+    // A `<` that starts no tag is text.
+    expect(
+      check(`### Entity: \`users\`\n\n< 5 rows each\n${FIELD}| \`nope\` | int |`).report
+        .flaggedColumns,
+    ).toEqual(["users.nope"]);
+    expect(check(`<preface>\n\n${inner}`).report.flaggedColumns).toEqual(["users.nope"]);
+  });
+
+  it("judges nothing in lines no renderer draws as a table", () => {
+    // Header and delimiter rows of different cell counts are a paragraph, where
+    // a code span can run across the pipes.
+    const two = "### Entity: `users`\n\n| Field | Type | `` |\n|---|---|\n| `nope` `` | int |";
+    expectUntouched(two);
+    const one = "### Entity: `users`\n\n| Field | Type |\n|---|\n| `nope` | int |";
+    expectUntouched(one);
+    // An escaped pipe is no pipe when the cells are counted.
+    const escaped = "### Entity: `users`\n\n| Field | Type \\| x |\n|---|---|\n| `nope` | int |";
+    expect(check(escaped).report.flaggedColumns).toEqual(["users.nope"]);
+    // A delimiter row is dashes and colons between pipes, with spaces only.
+    for (const delimiter of ["|---|---|\t", "|\t---|---|", "|---|:|", "|---|- -|", "| | |"]) {
+      expectUntouched(
+        `### Entity: \`users\`\n\n| Field | Type |\n${delimiter}\n| \`nope\` | int |`,
+      );
+    }
+    for (const delimiter of ["| :--- | ---: |", "|:-:|-|  ", "   |---|---|", "|---|---"]) {
+      const section = `### Entity: \`users\`\n\n| Field | Type |\n${delimiter}\n| \`nope\` | int |`;
+      expect(check(section).report.flaggedColumns, delimiter).toEqual(["users.nope"]);
+    }
+  });
+});
+
+describe("line endings and heading shapes", () => {
+  it("judges a CRLF document as it does the LF one, and keeps every carriage return", () => {
+    const crlf = RUN7.split("\n").join("\r\n");
+    const lf = check(RUN7);
+    const { markdown, report } = check(crlf);
+    expect(report).toEqual(lf.report);
+    expect(markdown).toBe(lf.markdown.split("\n").join("\r\n"));
+    // A name written without backticks ends before the carriage return.
+    const bare = check(`### Entity: ghosts\r\n\r\n${FIELD}| \`a\` | int |`);
+    expect(bare.markdown.split("\n")[0]).toBe("### Entity: ghosts *(not in schema)*\r");
+  });
+
+  it("reads a heading's names before its closing hashes and trailing white space", () => {
+    expect(parseHeading("### Entity: users ###")?.names).toEqual([{ name: "users", end: 17 }]);
+    expect(parseHeading("### Entity: users #  \t")?.names).toEqual([{ name: "users", end: 17 }]);
+    expect(parseHeading("### Entity: `users` ##")?.names).toEqual([{ name: "users", end: 19 }]);
+    expect(parseHeading("### Tables: users and ghosts ##\r")?.names.map((n) => n.name)).toEqual([
+      "users",
+      "ghosts",
+    ]);
+    // Hashes that are part of a word are not a closing run.
+    expect(parseHeading("### Entity: users#")?.names).toEqual([]);
+    const { markdown } = check(`### Entity: ghosts ###\n\n${FIELD}| \`a\` | int |`);
+    expect(markdown.split("\n")[0]).toBe("### Entity: ghosts *(not in schema)* ###");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Never judged against nothing, per table (#1061 third panel)
+// ---------------------------------------------------------------------------
+
+describe("a table whose columns are not known is not judged by column", () => {
+  /** `orders` is known by name only, as an ORM call site leaves it. */
+  const NAME_ONLY: SchemaInventory = {
+    ...REPO_SQL,
+    tables: [...REPO_SQL.tables, { schema: "", name: "orders", columns: [], foreignKeys: [] }],
+  };
+
+  it("marks none of its field-table rows, and lists the table once", () => {
+    const section = entity(
+      "orders",
+      "| `id` | int |\n| `total` | numeric |\n| `placed_at` | date |",
+    );
+    const { markdown, report } = check(section, NAME_ONLY);
+    expect(markdown).toBe(section);
+    expect(schemaCheckUnmatched(report)).toEqual([]);
+    expect(report.notChecked).toEqual([{ name: "orders", why: "no-columns" }]);
+    expect(renderSchemaCheckNotice(report, NAME_ONLY).split("\n").slice(1)).toEqual([
+      "> - Columns not checked (no column list for this table): `orders`.",
+    ]);
+  });
+
+  it("still judges the table's name, and the columns of every other table", () => {
+    const section = [
+      entity("orders", "| `id` | int |"),
+      entity("users", "| `nope` | int |"),
+      entity("ghosts", "| `a` | int |"),
+    ].join("\n\n");
+    const { report } = check(section, NAME_ONLY);
+    expect(report.flaggedColumns).toEqual(["users.nope"]);
+    expect(report.unresolvedTables).toEqual(["ghosts"]);
+    expect(notChecked(report, "no-columns")).toEqual(["orders"]);
+  });
+
+  it("does the same in a diagram", () => {
+    const section = diagram(
+      "    ORDERS {",
+      "        int id",
+      "        numeric total",
+      "    }",
+      "    USERS {",
+      "        int nope",
+      "    }",
+    );
+    const { markdown, report } = check(section, NAME_ONLY);
+    expect(markdown).toBe(section);
+    expect(report.flaggedColumns).toEqual(["users.nope"]);
+    expect(report.inDiagram).toEqual(["users.nope"]);
+    expect(notChecked(report, "no-columns")).toEqual(["orders"]);
+  });
+
+  it("on every tier: a table a live read returned without columns", () => {
+    const inventory = liveInventory([...TABLES, table("orders", {})]);
+    const { markdown, report } = check(entity("orders", "| `id` | int |"), inventory);
+    expect(markdown).toBe(entity("orders", "| `id` | int |"));
+    expect(notChecked(report, "no-columns")).toEqual(["orders"]);
+  });
+
+  it("when a heading names two tables and one has no columns, a name that fits neither is not judged", () => {
+    const section = `### Entities: \`users\` and \`orders\`\n\n${FIELD}| \`id\` | int |\n| \`total\` | numeric |\n| \`users.nope\` | int |\n| \`orders.total\` | int |`;
+    const { markdown, report } = check(section, NAME_ONLY);
+    // `total` may be a column of `orders`; `users.nope` can only be one of `users`.
+    expect(markdown).toBe(
+      section.replace("| `users.nope` |", "| `users.nope` *(not in schema)* |"),
+    );
+    expect(report.flaggedColumns).toEqual(["users.nope"]);
+    expect(notChecked(report, "no-columns")).toEqual(["orders"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A dataset is not a table (#1061 third review, low 5)
+// ---------------------------------------------------------------------------
+
+describe("repository SQL: an entity the prompt asked for that is a dataset", () => {
+  const WITH_DATASETS: SchemaInventory = {
+    ...REPO_SQL,
+    datasets: ["work.sales", "claims_raw"],
+  };
+
+  it("lists a dataset's heading as not checked instead of marking it", () => {
+    const section = [
+      entity("claims_raw", "| `claim_id` | num |"),
+      entity("SALES", "| `amount` | num |"),
+      entity("work.sales", "| `amount` | num |"),
+      entity("ghosts", "| `a` | int |"),
+    ].join("\n\n");
+    const { markdown, report } = check(section, WITH_DATASETS);
+    // Only the name that is neither a table nor a dataset is marked.
+    expect(markdown).toBe(section.replace("`ghosts`", "`ghosts` *(not in schema)*"));
+    expect(report.unresolvedTables).toEqual(["ghosts"]);
+    expect(notChecked(report, "dataset")).toEqual(["claims_raw", "SALES", "work.sales"]);
+    expect(schemaCheckUnmatched(report)).toEqual(["ghosts"]);
+    expect(renderSchemaCheckNotice(report, WITH_DATASETS)).toContain(
+      "> - Not checked (a dataset in the code's data lineage, not a database table): " +
+        "`claims_raw`, `SALES`, `work.sales`.",
+    );
+  });
+
+  it("in a diagram and in a table of tables too", () => {
+    const drawn = check(diagram("    SALES ||--o{ GHOSTS : feeds"), WITH_DATASETS);
+    expect(drawn.report.unresolvedTables).toEqual(["GHOSTS"]);
+    expect(notChecked(drawn.report, "dataset")).toEqual(["SALES"]);
+    const roster = "| Table | Purpose |\n|---|---|\n| `claims_raw` | input |\n| `ghosts` | — |";
+    const listed = check(roster, WITH_DATASETS);
+    expect(listed.markdown).toBe(roster.replace("`ghosts`", "`ghosts` *(not in schema)*"));
+    expect(notChecked(listed.report, "dataset")).toEqual(["claims_raw"]);
+  });
+
+  it("a table of that name is still a table, and without datasets nothing changes", () => {
+    const both: SchemaInventory = { ...REPO_SQL, datasets: ["users"] };
+    expect(check(entity("users", "| `nope` | int |"), both).report.flaggedColumns).toEqual([
+      "users.nope",
+    ]);
+    const section = entity("claims_raw", "| `claim_id` | num |");
+    expect(check(section, REPO_SQL).report.unresolvedTables).toEqual(["claims_raw"]);
+    expect(check(section, { ...REPO_SQL, datasets: [" ", ""] }).report.unresolvedTables).toEqual([
+      "claims_raw",
+    ]);
+  });
+});
+// ---------------------------------------------------------------------------
+// Where the note and the reference go (#1061 third review)
+// ---------------------------------------------------------------------------
+
+describe("applySchemaGrounding: the reference is never put inside the model's code", () => {
+  const REFERENCE = renderSchemaReference(LIVE);
+
+  it("with an unclosed fence and no sub-section, goes under the heading, before the body", () => {
+    for (const open of ["```sql", "~~~", "````text", "<pre>", "<!-- never closed"]) {
+      const body = `Stored in PostgreSQL.\n\n${open}\nselect * from users;`;
+      const { markdown } = applySchemaGrounding(`## Data Architecture\n\n${body}`, LIVE);
+      // At the end it would be inside the open block, and drawn as code.
+      expect(markdown, open).toBe(`## Data Architecture\n\n${REFERENCE}\n\n${body}`);
+      expect(codeTexts(markdown).join("\n"), open).not.toContain("### Schema Reference");
+    }
+  });
+
+  it("puts the note first, then the reference, then the body the model wrote", () => {
+    const body = `### Entity: \`ghosts\`\n\n${FIELD}| \`a\` | int |\n\n\`\`\`sql\nselect 1;`;
+    const section = `## Data Architecture\n\n${body}`;
+    const { markdown, report } = applySchemaGrounding(section, LIVE);
+    const notice = renderSchemaCheckNotice(report, LIVE);
+    // A sub-section outside the fence: the reference goes before it, as ever.
+    expect(markdown).toBe(
+      `## Data Architecture\n\n${notice}\n\n${REFERENCE}\n\n${body.replace("`ghosts`", "`ghosts` *(not in schema)*")}`,
+    );
+    // No sub-section outside the fence: under the heading and the note.
+    const fenced = `## Data Architecture\n\nOne store.\n\n\`\`\`md\n${body}`;
+    const open = applySchemaGrounding(fenced, ONE_UNREAD);
+    expect(open.markdown).toBe(
+      `## Data Architecture\n\n${renderSchemaReference(ONE_UNREAD)}\n\nOne store.\n\n\`\`\`md\n${body}`,
+    );
+  });
+
+  it("with no heading at all, goes to the top", () => {
+    const body = "```sql\nselect * from users;";
+    expect(applySchemaGrounding(body, LIVE).markdown).toBe(`${REFERENCE}\n\n${body}`);
+  });
+
+  it("with every fence closed, still goes to the end", () => {
+    const body = "## Data Architecture\n\nOne store.\n\n```sql\nselect 1;\n```";
+    expect(applySchemaGrounding(body, LIVE).markdown).toBe(`${body}\n\n${REFERENCE}`);
+    // A fence the export's parser leaves open (a tab after it) counts as open.
+    const tab = "## Data Architecture\n\nOne store.\n\n```sql\nselect 1;\n```\t";
+    expect(applySchemaGrounding(tab, LIVE).markdown).toBe(
+      `## Data Architecture\n\n${REFERENCE}\n\nOne store.\n\n\`\`\`sql\nselect 1;\n\`\`\`\t`,
+    );
+  });
+
+  it("does not take a `###` in a longer fence, an indented block or raw HTML for a sub-section", () => {
+    for (const hidden of [
+      "````md\n```\n### Not a heading\n```\n````",
+      "    ### Not a heading",
+      "<pre>\n### Not a heading\n</pre>",
+    ]) {
+      const section = `## Data Architecture\n\n${hidden}\n\n### Data Stores\n\nPostgreSQL.`;
+      const { markdown } = applySchemaGrounding(section, LIVE);
+      expect(markdown, hidden).toBe(
+        `## Data Architecture\n\n${hidden}\n\n${REFERENCE}\n\n### Data Stores\n\nPostgreSQL.`,
+      );
+    }
+  });
+
+  it("does not take a `###` that only one of the two parsers reads as a heading", () => {
+    // CommonMark: one fence, closed by the last line but one, then a heading.
+    // `marked`: closed by "```~", then a heading, then a fence left open.
+    const section =
+      "## Data Architecture\n\n```\ncode\n```~\n### Code to CommonMark\n```\n\n### Code to marked";
+    const { markdown } = applySchemaGrounding(section, LIVE);
+    // Neither is a sub-section to both, and the text ends in code for one of
+    // them: the reference goes under the heading.
+    expect(markdown).toBe(section.replace("\n\n```\ncode", `\n\n${REFERENCE}\n\n\`\`\`\ncode`));
+  });
+
+  it("keeps the note a block of its own when the body starts on the next line", () => {
+    const section = `## Data Architecture\nOne store.\n\n### Entity: \`ghosts\`\n\n${FIELD}| \`a\` | int |`;
+    const { markdown, report } = applySchemaGrounding(section, REPO_SQL);
+    const notice = renderSchemaCheckNotice(report, REPO_SQL);
+    // Without the blank line after it, "One store." would be drawn inside the
+    // note's quote (a paragraph continues a block quote).
+    expect(markdown.startsWith(`## Data Architecture\n\n${notice}\n\nOne store.\n\n`)).toBe(true);
+    // With a blank line already there, none is added.
+    const spaced = applySchemaGrounding(section.replace("\nOne", "\n\nOne"), REPO_SQL).markdown;
+    expect(spaced.startsWith(`## Data Architecture\n\n${notice}\n\nOne store.\n\n`)).toBe(true);
+    // A CRLF blank line is a blank line.
+    const crlf = applySchemaGrounding(section.split("\n").join("\r\n"), REPO_SQL).markdown;
+    expect(crlf.startsWith(`## Data Architecture\r\n\n${notice}\n\nOne store.\r\n\r\n`)).toBe(true);
+  });
+});
+
+describe("no schema to check against, with a database that could not be read", () => {
+  const unread = (...connectors: string[]): SchemaInventory => ({
+    source: "none",
+    label: `no schema source; ${connectors.length} database(s) could not be read`,
+    reads: connectors.map((connector) => ({
+      connector,
+      how: "unread",
+      schemas: [],
+    })),
+    tables: [],
+  });
+
+  it("says the database could not be read, not that there is none", () => {
+    const { markdown, report } = applySchemaGrounding(RUN7, unread("miniflux-pg"));
+    expect(report.checked).toBe(false);
+    expect(markdown.split("\n")[2]).toBe(
+      '> **Schema not verified.** The project\'s database ("miniflux-pg") could not be read, and ' +
+        "there is no database document and no SQL schema in the code graph, so the table and " +
+        "column names in this section come from the code analysis alone and were not checked.",
+    );
+    expect(markdown).not.toContain("no connected database");
+    expect(markdown).not.toContain("not in schema");
+    expect(renderSchemaCheckNotice(report, unread("a", "b"))).toContain(
+      'The project\'s databases ("a", "b") could not be read, and',
+    );
+  });
+
+  it("with no database at all, still says there is none", () => {
+    expect(
+      renderSchemaCheckNotice(check(RUN7, NO_SCHEMA_INVENTORY).report, NO_SCHEMA_INVENTORY),
+    ).toBe(
+      "> **Schema not verified.** No database schema was available for this project (no " +
+        "connected database, no database document and no SQL schema in the code graph), so the " +
+        "table and column names in this section come from the code analysis alone and were not " +
+        "checked.",
+    );
+  });
+});
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1246,6 +2064,24 @@ describe("checkSchemaClaims is linear in model output (#1061)", () => {
     "a wall of pipes": (size) => `| Field | Type |\n|---|---|\n${"|".repeat(size)}`,
     "a wall of hashes": (size) => "#".repeat(size),
     "delimiter rows only": (size) => "|---|---|\n".repeat(size / 10),
+    "backtick runs of every length": (size) => {
+      let text = "";
+      for (let run = 1; text.length < size; run++) text += `${"`".repeat(run)}a`;
+      return `### Entity: \`users\`\n\n| Field | Type |\n|---|---|\n| ${text} | int |`;
+    },
+    "escaped backticks": (size) =>
+      `### Entity: \`users\`\n\n| Field | Type |\n|---|---|\n| ${"\\\\\\`".repeat(size / 4)} | int |`,
+    "a wall of backslashes before a span": (size) =>
+      `### Entity: \`users\`\n\n| Field | Type |\n|---|---|\n| ${"\\".repeat(size)}\`a\` | int |`,
+    "fences of both kinds, none closing the other": (size) => "```\n~~~\n````\n".repeat(size / 13),
+    "fences closed for one parser only": (size) => "```\n```\t\n```~\n".repeat(size / 13),
+    "raw HTML lines": (size) => "<div>\n<pre>\n<!--\n".repeat(size / 16),
+    "indented lines": (size) => "    | `a` | int |\n".repeat(size / 18),
+    "headings with closing hashes": (size) => `### Entity: users ${"#".repeat(size)}`,
+    "a heading already marked many times": (size) =>
+      `### Entity: \`ghosts\`${" *(not in schema)*".repeat(size / 18)}\n\n| Field | Type |\n|---|---|\n| \`a\` | int |`,
+    "delimiter rows of many cells": (size) =>
+      `| Field | Type |\n${"|---".repeat(size / 4)}|\n| \`a\` | int |`,
   };
   for (const [name, build] of Object.entries(SHAPES)) {
     it(name, () => {

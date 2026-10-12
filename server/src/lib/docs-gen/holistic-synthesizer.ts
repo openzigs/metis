@@ -3223,8 +3223,12 @@ export interface SectionGroup {
  * 2 — removal needed proof of what was read (#1061 review).
  * 3 — the check only marks: nothing is removed, rewritten or corrected, and
  * there is one note per section (#1061 second review).
+ * 4 — code is delimited as CommonMark does (fence lengths, code spans, raw HTML,
+ * indented blocks), a table without a column list is not judged by column, a
+ * dataset is not judged as a table, and the reference is never put inside an
+ * unclosed fence (#1061 third review).
  */
-export const SCHEMA_GROUNDING_VERSION = 3;
+export const SCHEMA_GROUNDING_VERSION = 4;
 
 /** Outcome of post-validating one synthesized section against its grounding. */
 interface SectionGroundingOutcome {
@@ -6721,11 +6725,17 @@ NAMING RULES:
 
 ${schemaBlock}`;
   } else {
+    // A database that could not be read is still one the project has.
+    const unread = inventory.reads.filter((read) => read.how === "unread").length;
+    const unreadNote =
+      unread > 0
+        ? ` The project has ${unread} database(s) that could not be read, so tables can exist that the facts do not mention.`
+        : "";
     body = `The persistence model, documented as a RECONSTRUCTION-GRADE DATA DICTIONARY. ${DATA_DICTIONARY_SHAPE}
 ${DATA_ARCHITECTURE_NARRATIVE}
 
 NAMING RULES:
-- No database schema is available for this project. Name a table or a column only when the facts state it verbatim, spelled exactly as the facts spell it.
+- No database schema is available for this project.${unreadNote} Name a table or a column only when the facts state it verbatim, spelled exactly as the facts spell it.
 - Where the facts do not give a table's columns, say so instead of listing likely ones.`;
   }
   return {

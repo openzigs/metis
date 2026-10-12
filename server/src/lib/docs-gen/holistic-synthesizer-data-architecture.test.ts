@@ -206,6 +206,28 @@ describe("the Data Architecture section definition (#1061)", () => {
     }
   });
 
+  // #1061 third panel — a database that could not be read is still a database
+  // the project has: the model is told so, and the section says so.
+  it("with no schema source but a database that could not be read: says the project has one", () => {
+    const unread: SchemaInventory = {
+      source: "none",
+      label: "no schema source; 2 database(s) could not be read",
+      reads: [
+        { connector: "A", how: "unread", schemas: [] },
+        { connector: "B", how: "unread", schemas: [] },
+      ],
+      tables: [],
+    };
+    const { instructions } = dataGroup(unread);
+    expect(instructions).toContain(
+      "- No database schema is available for this project. The project has 2 database(s) that " +
+        "could not be read, so tables can exist that the facts do not mention. Name a table or a " +
+        "column only when the facts state it verbatim",
+    );
+    expect(instructions).not.toContain("=== ");
+    expect(dataGroup(NO_SCHEMA_INVENTORY).instructions).not.toContain("could not be read");
+  });
+
   it("changes when the schema does, so a stored section is not reused across it", () => {
     const changed: SchemaInventory = {
       ...LIVE,
@@ -244,19 +266,32 @@ const ONE_ENTITY = INVENTED.slice(0, INVENTED.indexOf("### Entity: `jobs`")).tri
 const withoutMarkers = (markdown: string): string =>
   markdown.replace(/ \*\(not in schema(?:; the schema has `[^`\n]*`)?\)\*/g, "");
 
-const state: { dataSection: string; prompts: string[] } = { dataSection: INVENTED, prompts: [] };
+const state: {
+  dataSection: string;
+  prompts: string[];
+  /** How the model's stream for the Data Architecture section ends. */
+  finish: "stop" | "length";
+  /** When set, the fact-check finds a claim of that section unsupported. */
+  unsupported: boolean;
+} = { dataSection: INVENTED, prompts: [], finish: "stop", unsupported: false };
+/** A claim only the Data Architecture section's fact-check is given. */
+const UNSUPPORTED_CLAIM = "The scheduler persists refresh jobs.";
 const loadConfig = vi.hoisted(() => vi.fn());
 const provider = {
   key: "bedrock-gateway",
   model: "fixture",
   offline: false,
   chat: vi.fn(async (messages: Array<{ content: unknown }>) => {
-    const judge = messages.some((m) => String(m.content).includes("strict faithfulness judge"));
+    const text = messages.map((m) => String(m.content)).join("\n");
+    const judge = text.includes("strict faithfulness judge");
+    // The Data Architecture section is the one that holds its entity tables.
+    const aboutData = text.includes("gesture_nav") || text.includes(UNSUPPORTED_CLAIM);
+    const claim = state.unsupported && aboutData ? UNSUPPORTED_CLAIM : "Source facts.";
     return {
       content: JSON.stringify(
         judge
-          ? { verdicts: [{ claim: "Source facts.", supported: true, sourceIds: [] }] }
-          : { claims: [{ claim: "Source facts.", sourceIds: [] }] },
+          ? { verdicts: [{ claim, supported: claim === "Source facts.", sourceIds: [] }] }
+          : { claims: [{ claim, sourceIds: [] }] },
       ),
     };
   }),
@@ -267,6 +302,8 @@ const provider = {
       if (label === "Data Architecture") {
         state.prompts.push(String(messages[0]?.content));
         yield { type: "delta", content: state.dataSection };
+        yield { type: "done", finishReason: state.finish };
+        return;
       } else {
         yield { type: "delta", content: `## ${label}\n\nSource facts.` };
       }
@@ -346,6 +383,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.dataSection = INVENTED;
   state.prompts = [];
+  state.finish = "stop";
+  state.unsupported = false;
   loadConfig.mockReturnValue({
     provider: "bedrock-gateway",
     model: "fixture",
@@ -470,6 +509,117 @@ describe("synthesizeFinalDocument — a stored Data Architecture section and the
   });
 });
 
+// #1061 third panel — no test made the synthesizer itself emit the schema note
+// AND a real warning for the same section, so a change that let the note stand
+// in for the section's own warning (in the warnings, or in what the section
+// reports live) passed. The note is information; it never replaces a warning.
+describe("synthesizeFinalDocument — a schema note beside a real warning of the same section (#1061)", () => {
+  type Result = Awaited<ReturnType<typeof synthesizeFinalDocument>>;
+  type Update = { section: string; status: string; kind?: string };
+  const run = async (prior?: Result): Promise<{ result: Result; updates: Update[] }> => {
+    const updates: Update[] = [];
+    const result = await synthesizeFinalDocument(
+      facts,
+      meta,
+      "architecture",
+      "Architecture",
+      router(),
+      "p",
+      undefined,
+      (u) => updates.push({ section: u.section, status: u.status, kind: u.warning?.kind }),
+      async () => context(),
+      undefined,
+      {
+        previousManifest: prior
+          ? {
+              ...legacyGeneratedDocVersionManifest({
+                projectId: "p",
+                generatedDocumentId: "d",
+                version: 1,
+              }),
+              sectionSynthesis: prior.sectionSynthesis,
+            }
+          : undefined,
+        effectiveConfigHash: "fixture-config",
+      },
+      { schemaInventory: LIVE },
+    );
+    return { result, updates };
+  };
+  /** The section's warnings, in the order the document carries them. */
+  const ofData = (result: Result): Array<[string, string]> =>
+    result.warnings
+      .filter((w) => w.section === "Data Architecture")
+      .map((w) => [w.kind, w.severity ?? ""]);
+  /** What the section reported when it finished. */
+  const finished = (updates: Update[]): Update[] =>
+    updates.filter((u) => u.section === "Data Architecture" && u.status !== "generating");
+
+  const CASES = [
+    {
+      name: "a failed fact-check",
+      arrange: (): void => void (state.unsupported = true),
+      real: "section-ungrounded",
+      order: ["section-ungrounded", "schema-unverified"],
+    },
+    {
+      name: "a section cut off by the output cap",
+      arrange: (): void => void (state.finish = "length"),
+      real: "section-truncated",
+      order: ["schema-unverified", "section-truncated"],
+    },
+  ] as const;
+
+  for (const { name, arrange, real, order } of CASES) {
+    it(`a new run keeps both, and the section reports its own warning: ${name}`, async () => {
+      arrange();
+      const { result, updates } = await run();
+      // Both are in the document's warnings: the note did not replace the other.
+      expect(ofData(result).map(([kind]) => kind)).toEqual(order);
+      expect(ofData(result).find(([kind]) => kind === "schema-unverified")?.[1]).toBe("info");
+      expect(result.warnings.every((w) => w.section === "Data Architecture")).toBe(true);
+      expect(deriveDocStatus(result.warnings)).toBe("degraded");
+      // The section is degraded, and what it shows live is the real warning.
+      expect(finished(updates)).toEqual([
+        { section: "Data Architecture", status: "degraded", kind: real },
+      ]);
+      // The marks are in the section all the same.
+      expect(result.markdown).toContain("| `error_counter` *(not in schema)* | int | Invented |");
+    });
+
+    it(`a reused section keeps both, and reports its own warning: ${name}`, async () => {
+      arrange();
+      const cold = await run();
+      const record = cold.result.sectionSynthesis?.records.find(
+        (r) => r.sectionId === "data-architecture",
+      );
+      expect(record?.warnings.map((w) => w.kind)).toEqual(order);
+      state.prompts = [];
+      const warm = await run(cold.result);
+      // Reused: the model was not asked again.
+      expect(state.prompts).toEqual([]);
+      expect(warm.result.regeneration).toEqual({ mode: "unchanged", changed: [] });
+      expect(warm.result.warnings).toEqual(cold.result.warnings);
+      expect(ofData(warm.result).map(([kind]) => kind)).toEqual(order);
+      expect(finished(warm.updates)).toEqual([
+        { section: "Data Architecture", status: "degraded", kind: real },
+      ]);
+    });
+  }
+
+  it("the note alone leaves the section done, on a new run and reused", async () => {
+    const cold = await run();
+    expect(ofData(cold.result)).toEqual([["schema-unverified", "info"]]);
+    expect(finished(cold.updates)).toEqual([
+      { section: "Data Architecture", status: "done", kind: undefined },
+    ]);
+    const warm = await run(cold.result);
+    expect(finished(warm.updates)).toEqual([
+      { section: "Data Architecture", status: "done", kind: undefined },
+    ]);
+  });
+});
+
 describe("synthesizeFinalDocument — Data Architecture is checked against the schema (#1061)", () => {
   it("sends the schema to the model in the section's prompt", async () => {
     await synth(LIVE);
@@ -510,10 +660,23 @@ describe("synthesizeFinalDocument — Data Architecture is checked against the s
 
   // #1061 second review — a mark is information for the reader. It does not
   // degrade the document, on any tier.
-  for (const [name, inventory] of [
-    ["live", LIVE],
-    ["stored graph", STORED],
-    ["repository SQL", REPO_SQL],
+  // #1061 third panel — and it says what the names were compared with: the
+  // message spoke of "the database schema" and of a database read on the
+  // tiers where no database was read.
+  for (const [name, inventory, what, caveat] of [
+    ["live", LIVE, "the database schema", "A database read can be incomplete"],
+    [
+      "stored graph",
+      STORED,
+      "the stored schema",
+      "A stored schema can be out of date, and the read it came from incomplete",
+    ],
+    [
+      "repository SQL",
+      REPO_SQL,
+      "the SQL found in the repository",
+      "The repository's SQL is not the database",
+    ],
   ] as const) {
     it(`notes the unmatched names and leaves the document ready: ${name}`, async () => {
       const updates: Array<{ section: string; status: string; kind?: string }> = [];
@@ -537,10 +700,10 @@ describe("synthesizeFinalDocument — Data Architecture is checked against the s
           section: "Data Architecture",
           severity: "info",
           message:
-            "2 names in Data Architecture could not be matched to the database schema " +
+            `2 names in Data Architecture could not be matched to ${what} ` +
             `(jobs, users.error_counter). Compared with ${inventory.label}. They are marked or ` +
-            "listed in the section's Schema check note; nothing was removed or changed. A " +
-            "database read can be incomplete, so an unmatched name can be real.",
+            "listed in the section's Schema check note; nothing was removed or changed. " +
+            `${caveat}, so an unmatched name can be real.`,
         },
       ]);
       expect(deriveDocStatus(result.warnings)).toBe("ready");
@@ -598,6 +761,22 @@ describe("synthesizeFinalDocument — Data Architecture is checked against the s
     expect(result.warnings).toEqual([]);
     expect(result.markdown).toContain("### Schema Reference");
     expect(result.markdown).not.toContain("Schema check.");
+  });
+
+  it("with a database that could not be read and nothing else: says that, not that there is none", async () => {
+    const result = await synth({
+      source: "none",
+      label: "no schema source; 1 database(s) could not be read",
+      reads: [{ connector: "miniflux-pg", how: "unread", schemas: [] }],
+      tables: [],
+    });
+    expect(result.markdown).toContain(
+      '> **Schema not verified.** The project\'s database ("miniflux-pg") could not be read, and',
+    );
+    expect(result.markdown).not.toContain("no connected database");
+    expect(result.markdown).not.toContain("not in schema");
+    expect(result.warnings).toEqual([]);
+    expect(state.prompts[0]).toContain("The project has 1 database(s) that could not be read");
   });
 
   it("with no schema source: keeps every line the model wrote and says it was not verified", async () => {

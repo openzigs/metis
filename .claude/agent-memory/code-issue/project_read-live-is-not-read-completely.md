@@ -18,6 +18,7 @@ Every test passed each time: the fixtures had one connector, one schema, one att
 
 - Before building anything that deletes or rewrites on "absent from the introspected schema", ask what proves the read complete FOR THAT TABLE. Here nothing does. Without it: mark, and say in a note what was not checked. A wrong judgment must cost a mark, not content.
 - A mark-only check should have its mark-only property tested: output with markers and the note removed equals the input, over generated documents (`schema-claim-check.test.ts`). It caught nothing new, and it makes the next "small correction" impossible to add silently.
+- A byte-for-byte property test is only as wide as its generator: list the lexical shapes the code branches on (fence kinds, line endings, trailing whitespace, short rows, code spans) and make the generator emit each; #1093's first generator let five text-deleting mutants pass.
 - A finding from a heuristic that can be wrong is information, not a degradation: `severity: "info"`, excluded by `affectsDocStatus`, never a reason to block or force section reuse. A "rewrite until clean" rule on such a finding is unbounded.
 - Never drop a qualifier to make a name resolve, and read the qualifier from the whole heading or label, not only the code span.
 - Three outcomes, not two: mark what was looked for and not found; **list as not checked** what the read cannot speak for (unread schema or database, possibly truncated read); say nothing only about what is not a claim. Silently unjudged names read as approved.
