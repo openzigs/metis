@@ -152,7 +152,9 @@ describe("buildSpecKitRagContext — plan localisation (#1060)", () => {
       sym("st-batch", "function", `${STORAGE}/batch.go::NewBatch`, `${STORAGE}/batch.go`, 12),
     );
     graph.edges.push({ from: "sib", to: "st-batch", kind: "calls", callee: "NewBatch" });
-    const findCallers = vi.fn(async () => []);
+    const findCallers = vi.fn(
+      async (_projectId: string, _callees: ReadonlyArray<{ id: string; name: string }>) => [],
+    );
     const withSibling = (found: boolean) =>
       buildSpecKitRagContext(
         "p1",
