@@ -257,6 +257,10 @@ import {
 import { SpecKitArtifactError } from "../src/lib/spec-kit/artifacts.js";
 import { __resetConfigSingleton } from "../src/lib/config/config-service.js";
 import { fakeSource, sym } from "./helpers/plan-localisation-graph.js";
+import { prisma } from "../src/lib/prisma.js";
+
+/** The mocked store above, for a test that makes one write fail. */
+const prismaMock = prisma as any;
 
 class FakeProvider implements AIProvider {
   readonly key: ProviderKey = "offline-stub";
@@ -1044,6 +1048,7 @@ describe("feature commands are grounded (#786, #785)", () => {
     const r = await runPlanExpanded({
       projectId: "p1",
       featureSlug: "008-read-at",
+      actorId: "user-7",
       deps: { provider },
       knowledgeService,
       fusedCode,
@@ -1087,8 +1092,165 @@ describe("feature commands are grounded (#786, #785)", () => {
       "The 5 files the plan was given are recorded in `plan-context.md`.",
     );
     expect(r.message).toContain(
-      'The plan calls `internal/database/migrations.go` "not in the retrieved context", but it was in it',
+      ' Check before implementing: `internal/database/migrations.go` is in the list of files this plan was given (see `plan-context.md`), and the plan has "not in the retrieved context" next to it.',
     );
+    // The record names the plan.md it describes, and is written after it (#1094 review M4).
+    expect(context?.content).toContain("when it wrote `plan.md` v1.");
+    // Written by the same actor as the plan it describes.
+    expect(context?.updatedById).toBe("user-7");
+    expect(stored.find((row) => row.key === "plan.md")!.updatedById).toBe("user-7");
+    const written = prismaMock.specKitFeatureArtifact.create.mock.calls
+      .map((c: any) => c[0].data)
+      .filter((d: any) => d.featureId === fid)
+      .map((d: any) => d.key);
+    expect(written.slice(-2)).toEqual(["plan.md", "plan-context.md"]);
+  });
+
+  it("#1060 — a budget of 0 switches off the walk and its block, and nothing else", async () => {
+    // What the setting's description promises (#1094 review L6): 0 is not the
+    // pre-#1060 prompt. The file list, the prompt's two instructions, the record
+    // and the check all stay.
+    process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET = "0";
+    __resetConfigSingleton();
+    try {
+      const fid = seedFeature("p1", "013-off");
+      seedFeatureArtifact(fid, "spec.md", "# Spec\nRecord when an entry was read.");
+      const source = localisationSource();
+      const walked = vi.spyOn(source.schema, "getSchemaEdgesFrom");
+      const provider = new RecordingProvider(
+        `# Plan\n\n\`${ENTRY}\` is not in the retrieved context.\n`,
+      );
+      const r = await runPlanExpanded({
+        projectId: "p1",
+        featureSlug: "013-off",
+        deps: { provider },
+        knowledgeService,
+        fusedCode,
+        siblingLookup,
+        callerLookup,
+        localisationSource: source,
+      });
+      // Off: no query of the walk, no block.
+      expect(walked).not.toHaveBeenCalled();
+      for (const system of provider.systems) expect(system).not.toContain("## Change Localisation");
+      // Still on.
+      expect(provider.systems.at(0)).toContain("## Files in the Retrieved Context");
+      expect(provider.systems.at(0)).toContain("`Change Localisation` (#1060), when present");
+      expect(provider.systems.at(0)).toContain(
+        "`Files in the Retrieved Context` is the complete list",
+      );
+      expect(
+        [...featureArtifactRows.values()].some(
+          (row) => row.featureId === fid && row.key === "plan-context.md",
+        ),
+      ).toBe(true);
+      expect(r.message).toContain("recorded in `plan-context.md`");
+      expect(r.message).toContain(`Check before implementing: \`${ENTRY}\` is in the list`);
+      expect(r.retrievedFiles).not.toContain("internal/database/migrations.go");
+      const { CONFIG_KEYS } = await import("../src/lib/config/key-registry.js");
+      expect(CONFIG_KEYS.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET!.description).toContain(
+        "0 switches off the code-graph walk and its block, and nothing else",
+      );
+    } finally {
+      delete process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET;
+      __resetConfigSingleton();
+    }
+  });
+
+  it("#1060 — a failed write among the five leaves the earlier plan.md AND its earlier record", async () => {
+    // The store has no transaction. The record is written after plan.md, so a
+    // failure before plan.md cannot leave a new record beside the old plan.
+    const fid = seedFeature("p1", "011-fails");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nRecord when an entry was read.");
+    seedFeatureArtifact(fid, "plan.md", "# Plan\nThe earlier plan.\n");
+    seedFeatureArtifact(fid, "plan-context.md", "# Plan context\nThe earlier record.\n");
+    const create = prismaMock.specKitFeatureArtifact.create;
+    const original = create.getMockImplementation()!;
+    create.mockImplementation(async (args: any) => {
+      if (args.data.featureId === fid && args.data.key === "research.md") {
+        throw new Error("database is locked");
+      }
+      return original(args);
+    });
+    try {
+      await expect(
+        runPlanExpanded({
+          projectId: "p1",
+          featureSlug: "011-fails",
+          deps: { provider: new RecordingProvider("# Plan\nThe new plan.\n") },
+          knowledgeService,
+          fusedCode,
+          siblingLookup,
+          callerLookup,
+          localisationSource: localisationSource(),
+        }),
+      ).rejects.toThrow("database is locked");
+    } finally {
+      create.mockImplementation(original);
+    }
+    const stored = (key: string) =>
+      [...featureArtifactRows.values()].find((row) => row.featureId === fid && row.key === key);
+    expect(stored("plan.md")!.content).toBe("# Plan\nThe earlier plan.\n");
+    expect(stored("plan-context.md")!.content).toBe("# Plan context\nThe earlier record.\n");
+    expect(stored("plan-context.md")!.version).toBe(1);
+  });
+
+  it("#1060 — a record that cannot be saved does not fail a plan that was, and the message says so", async () => {
+    process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET = "170";
+    __resetConfigSingleton();
+    const fid = seedFeature("p1", "012-no-record");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nRecord when an entry was read.");
+    const create = prismaMock.specKitFeatureArtifact.create;
+    const original = create.getMockImplementation()!;
+    create.mockImplementation(async (args: any) => {
+      if (args.data.featureId === fid && args.data.key === "plan-context.md") {
+        throw new Error("database is locked");
+      }
+      return original(args);
+    });
+    try {
+      const r = await runPlanExpanded({
+        projectId: "p1",
+        featureSlug: "012-no-record",
+        deps: {
+          provider: new RecordingProvider(
+            // The retrieved symbol's own file: in the list at any budget.
+            `# Plan\n\n\`${ENTRY}\` is not in the retrieved context.\n`,
+          ),
+        },
+        knowledgeService,
+        fusedCode,
+        siblingLookup,
+        callerLookup,
+        localisationSource: localisationSource(),
+      });
+      expect(r.artifacts.map((a) => a.key)).toHaveLength(5);
+      expect(r.artifacts.at(-1)!.key).toBe("plan.md");
+      expect(
+        [...featureArtifactRows.values()].some(
+          (row) => row.featureId === fid && row.key === "plan-context.md",
+        ),
+      ).toBe(false);
+      expect(r.message).toContain(
+        "`plan-context.md` (the record of the files this plan was given) could not be saved",
+      );
+      expect(r.message).not.toContain("are recorded in `plan-context.md`");
+      // With no record to point at, what was left out is listed in the message itself …
+      expect(r.message).toMatch(
+        /Left out of the plan's context \(token budget, list cap or time limit\): .*not listed for the token budget/,
+      );
+      expect(r.message).not.toContain("listed in `plan-context.md`");
+      // … and the check result does not send the reader to a record that is not there.
+      expect(r.message).toContain(
+        `\`${ENTRY}\` is in the list of files this plan was given, and the plan has`,
+      );
+      // The database's own words stay in the log.
+      expect(r.message).not.toContain("database is locked");
+    } finally {
+      create.mockImplementation(original);
+      delete process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET;
+      __resetConfigSingleton();
+    }
   });
 
   it("#1060 — a plan that makes no false claim gets no note", async () => {
@@ -1108,8 +1270,8 @@ describe("feature commands are grounded (#786, #785)", () => {
       callerLookup,
       localisationSource: localisationSource(),
     });
-    expect(r.message).not.toContain("but it was in it");
-    expect(r.message).not.toContain("left out of the plan's context");
+    expect(r.message).not.toContain("Check before implementing");
+    expect(r.message).not.toContain("Left out of the plan's context");
   });
 
   it("#1060 — says in the message what the localisation left out for its budget", async () => {
@@ -1129,13 +1291,13 @@ describe("feature commands are grounded (#786, #785)", () => {
         localisationSource: localisationSource(),
       });
       expect(r.message).toMatch(
-        /\d+ groups? of related code (?:was|were) left out of the plan's context \(token budget or list cap\) — listed in `plan-context\.md`\./,
+        / Left out of the plan's context \(token budget, list cap or time limit\): \d+ items?, listed in `plan-context\.md`\./,
       );
       const context = [...featureArtifactRows.values()].find(
         (row) => row.featureId === fid && row.key === "plan-context.md",
       );
       expect(context?.content).toMatch(
-        /## Left out \(token budget or list cap\)\n\n- .*not listed for the token budget/,
+        /## Left out \(token budget, list cap or time limit\)\n\n- .*not listed for the token budget/,
       );
     } finally {
       delete process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET;

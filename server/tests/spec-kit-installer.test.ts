@@ -277,6 +277,37 @@ describe("runInstall (dryRun)", () => {
     }
   });
 
+  it("#1060 — keeps METIS's own plan-context.md out of the target repository", async () => {
+    // It records what the METIS planner was given. It is not a Spec Kit artifact,
+    // so it is not written under `specs/<slug>/` beside the ones that are.
+    const fid = seedFeature("p1", "001-build");
+    seedArtifact(fid, "spec.md", "Spec");
+    seedArtifact(fid, "plan.md", "Plan");
+    seedArtifact(fid, "plan-context.md", "# Plan context\n");
+    seedArtifact(fid, "contracts/api.openapi.yaml", "openapi: 3.1.0\n");
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "speckit-ctx-"));
+    try {
+      const result = await runInstall({
+        projectId: "p1",
+        workspaceRoot: tmp,
+        hosts: ["claude"],
+        apiBaseUrl: "https://metis.local",
+        consent: true,
+        dryRun: true,
+      });
+      const specs = result.files.map((f) => f.relPath).filter((p) => p.startsWith("specs/"));
+      expect(specs.sort()).toEqual([
+        "specs/001-build/contracts/api.openapi.yaml",
+        "specs/001-build/plan.md",
+        "specs/001-build/spec.md",
+        "specs/001-build/status.json",
+      ]);
+      expect(result.files.some((f) => f.relPath.includes("plan-context"))).toBe(false);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("emits codex skill files + AGENTS.md when --ai codex is requested", async () => {
     const fid = seedFeature("p1", "001-build");
     seedArtifact(fid, "spec.md", "Spec");

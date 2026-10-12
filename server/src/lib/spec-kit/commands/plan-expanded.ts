@@ -40,6 +40,7 @@ import {
   type RunDeps,
 } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
+import { createChildLogger } from "../../logger.js";
 import {
   findContractPlanContradictions,
   NO_REST_SURFACE_EXTENSION,
@@ -68,6 +69,8 @@ import {
   type PlanPathLookup,
 } from "../grounding.js";
 import type { PlanLocalisationSource } from "../plan-localisation.js";
+
+const log = createChildLogger("spec-kit-plan");
 
 /**
  * #786 — the `/plan` contract (AC-id traceability, grounding in the existing
@@ -358,19 +361,11 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   }
   // #1060 — record what this plan was given, beside it. Only when this run's
   // plan.md is the one being saved: a kept earlier plan keeps its own record.
-  const planContext = staged[0]!.prior ? null : renderPlanContext(rag);
-  if (planContext !== null) assertFeatureArtifactWritable(PLAN_CONTEXT_ARTIFACT, planContext);
+  // The record is not checked with the set above: it is written after it, and a
+  // record that cannot be saved must not refuse a plan that can (see below).
+  const recordsContext = !staged[0]!.prior;
   // Write the set. plan.md goes last so it is the artifact the page opens on,
   // as before.
-  // The record is not one of the five generated artifacts the result returns.
-  if (planContext !== null) {
-    await writeFeatureArtifact({
-      featureId: feature.id,
-      key: PLAN_CONTEXT_ARTIFACT,
-      content: planContext,
-      actorId: input.actorId ?? null,
-    });
-  }
   const artifacts: FeatureArtifactDto[] = [];
   for (const item of [...staged.slice(1), staged[0]!]) {
     artifacts.push(
@@ -384,6 +379,33 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     );
   }
   const plan = artifacts[artifacts.length - 1]!;
+
+  // #1060 — the record goes AFTER plan.md, and names the version it describes
+  // (#1094 review M4). The store has no transaction: written first, a failure
+  // among the five left a new record beside the old plan.md, saying it
+  // described "the current plan.md". Written last, a failure of this write
+  // leaves the new plan.md beside the older record, which names the older
+  // version and so cannot be mistaken for this plan's. It is not one of the
+  // five generated artifacts the result returns, and losing it does not fail a
+  // command whose plan is saved: the message says so instead.
+  let contextRecorded = false;
+  if (recordsContext) {
+    try {
+      await writeFeatureArtifact({
+        featureId: feature.id,
+        key: PLAN_CONTEXT_ARTIFACT,
+        content: renderPlanContext(rag, { planVersion: plan.version }),
+        actorId: input.actorId ?? null,
+      });
+      contextRecorded = true;
+    } catch (err) {
+      log.warn("plan-context.md could not be saved; the five plan artifacts were", {
+        projectId: input.projectId,
+        feature: feature.slug,
+        error: (err as Error).message,
+      });
+    }
+  }
 
   // #1057 — a cut-off plan.md does not make the feature `planned`.
   const planCut = truncated.includes("plan.md");
@@ -423,14 +445,19 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
 
   // #1060 — "not in the retrieved context" is checked against what was retrieved.
   // A kept earlier plan was written from an earlier context, so it is not checked.
-  const claimNote =
-    planContext !== null
-      ? describeFalseNotRetrievedClaims(findFalseNotRetrievedClaims(plan.content, rag.files))
-      : "";
-  const contextNote =
-    planContext !== null
-      ? ` The ${rag.files.length} file${rag.files.length === 1 ? "" : "s"} the plan was given ${rag.files.length === 1 ? "is" : "are"} recorded in \`${PLAN_CONTEXT_ARTIFACT}\`.${describeContextDropped(rag.dropped, PLAN_CONTEXT_ARTIFACT)}`
-      : "";
+  // With no record to point at, the notes carry their own detail.
+  const recordedIn = contextRecorded ? PLAN_CONTEXT_ARTIFACT : undefined;
+  const claimNote = recordsContext
+    ? describeFalseNotRetrievedClaims(
+        findFalseNotRetrievedClaims(plan.content, rag.files),
+        recordedIn,
+      )
+    : "";
+  const contextNote = !recordsContext
+    ? ""
+    : contextRecorded
+      ? ` The ${rag.files.length} file${rag.files.length === 1 ? "" : "s"} the plan was given ${rag.files.length === 1 ? "is" : "are"} recorded in \`${PLAN_CONTEXT_ARTIFACT}\`.${describeContextDropped(rag.dropped, recordedIn)}`
+      : ` \`${PLAN_CONTEXT_ARTIFACT}\` (the record of the files this plan was given) could not be saved; an earlier one, if present, describes an earlier plan.md.${describeContextDropped(rag.dropped)}`;
 
   const kept = Object.keys(partialContent);
   const keptNote =

@@ -60,7 +60,16 @@ const only =
   (key) =>
     key === name;
 
-/** `speckit.plan`'s outputs under `specs/<slug>/` (server: `plan-expanded.ts`). */
+/**
+ * `speckit.plan`'s outputs under `specs/<slug>/` (server: `plan-expanded.ts`).
+ *
+ * `plan-context.md` (#1060) is deliberately NOT one of them, though the command
+ * writes it. It is METIS's record of what the planner was given, not a result:
+ * the recovered result lists every changed key as an artifact to show, and the
+ * record is not something the page should open on. It is also written last,
+ * after `plan.md`, and can fail to save without failing the command, so a
+ * finished plan is recognised by the generated artifacts alone.
+ */
 const PLAN_KEYS = new Set(["plan.md", "research.md", "data-model.md", "quickstart.md"]);
 
 /**
