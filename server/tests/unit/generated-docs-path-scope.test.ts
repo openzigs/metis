@@ -564,6 +564,50 @@ describe("generateDocumentAsync — stored path scope", () => {
       }
     });
 
+    // #1061 second review — names the schema check could not match are
+    // information. The document is published `ready`, with the note stored
+    // for the page to show; it used to be published `degraded`.
+    it("publishes a document whose only warning is the schema note as ready", async () => {
+      const real = await vi.importActual<
+        typeof import("../../src/lib/docs-gen/grounding/degraded-warnings.js")
+      >("../../src/lib/docs-gen/grounding/degraded-warnings.js");
+      const derive = mocked(
+        (await import("../../src/lib/docs-gen/grounding/degraded-warnings.js")).deriveDocStatus,
+      );
+      const stub = derive.getMockImplementation();
+      derive.mockImplementation(real.deriveDocStatus);
+      try {
+        const note = real.schemaUnverifiedWarning("Data Architecture", ["jobs"], INVENTORY);
+        mocked(synthesizeHolisticDocument).mockResolvedValue({
+          markdown: "# Synthesized",
+          warnings: [note],
+          provenanceManifest: null,
+        });
+        architecture();
+        await generateDocumentAsync("doc-1", "proj-1");
+        const published = mocked(prisma.generatedDocument.update)
+          .mock.calls.map(([args]) => (args as { data: Record<string, unknown> }).data)
+          .find((data) => data.content === "# Synthesized");
+        expect(published).toMatchObject({ status: "ready", warnings: [note] });
+
+        // Beside a real degradation the document is degraded, and keeps both.
+        const failed = real.sectionFailedWarning("Overview", "x");
+        mocked(synthesizeHolisticDocument).mockResolvedValue({
+          markdown: "# Again",
+          warnings: [note, failed],
+          provenanceManifest: null,
+        });
+        architecture();
+        await generateDocumentAsync("doc-1", "proj-1");
+        const again = mocked(prisma.generatedDocument.update)
+          .mock.calls.map(([args]) => (args as { data: Record<string, unknown> }).data)
+          .find((data) => data.content === "# Again");
+        expect(again).toMatchObject({ status: "degraded", warnings: [note, failed] });
+      } finally {
+        derive.mockImplementation(stub!);
+      }
+    });
+
     // Stated plainly, because it is a data-flow decision: a connector belongs
     // to the project and records no repository or path, so a path-scoped
     // architecture document still reads every database of the project. Only

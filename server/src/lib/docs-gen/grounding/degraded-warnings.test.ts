@@ -8,6 +8,8 @@ import {
   deriveDocStatus,
   serializeWarnings,
   summarizeWarnings,
+  schemaUnverifiedWarning,
+  affectsDocStatus,
   faithfulnessThreshold,
   resolveSectionFaithfulnessThreshold,
   noModulesWarning,
@@ -44,6 +46,59 @@ describe("sectionFailedWarning", () => {
   it("truncates very long details", () => {
     const w = sectionFailedWarning("X", "y".repeat(1000));
     expect(w.message.length).toBeLessThan(400);
+  });
+});
+
+// #1061 second review — the schema check only marks names, and a false mark
+// is a known property of it, so its finding is information: it never decides
+// the document's status and is never counted as something to review.
+describe("schemaUnverifiedWarning — informational (#1061)", () => {
+  const inventory = { label: 'the live schema of "pg" (public)' };
+  const note = schemaUnverifiedWarning(
+    "Data Architecture",
+    ["jobs", "feeds.error_counter"],
+    inventory,
+  );
+
+  it("says how many names, where, and that nothing was removed", () => {
+    expect(note).toEqual({
+      kind: "schema-unverified",
+      section: "Data Architecture",
+      severity: "info",
+      message:
+        "2 names in Data Architecture could not be matched to the database schema " +
+        '(jobs, feeds.error_counter). Compared with the live schema of "pg" (public). They are ' +
+        "marked or listed in the section's Schema check note; nothing was removed or changed. " +
+        "A database read can be incomplete, so an unmatched name can be real.",
+    });
+    expect(schemaUnverifiedWarning("S", ["a"], inventory).message).toMatch(/^1 name in S could /);
+    const many = Array.from({ length: 11 }, (_, n) => `t${n}`);
+    expect(schemaUnverifiedWarning("S", many, inventory).message).toContain("t7 and 3 more).");
+  });
+
+  it("does not degrade the document, alone or in any number", () => {
+    expect(affectsDocStatus(note)).toBe(false);
+    expect(deriveDocStatus([note])).toBe("ready");
+    expect(deriveDocStatus([note, note, note])).toBe("ready");
+    expect(deriveDocStatus([])).toBe("ready");
+  });
+
+  it("does not hide a warning that does", () => {
+    const failed = sectionFailedWarning("Overview", "boom");
+    expect(affectsDocStatus(failed)).toBe(true);
+    expect(deriveDocStatus([note, failed])).toBe("degraded");
+    expect(deriveDocStatus([failed, note])).toBe("degraded");
+  });
+
+  it("is not a review item: the summary is empty for it and unchanged beside another", () => {
+    expect(summarizeWarnings([note])).toBe("");
+    const failed = sectionFailedWarning("Overview", "boom");
+    expect(summarizeWarnings([note, failed])).toBe(summarizeWarnings([failed]));
+    expect(summarizeWarnings([failed])).not.toBe("");
+  });
+
+  it("is still stored with the document", () => {
+    expect(JSON.parse(serializeWarnings([note])!)).toEqual([note]);
   });
 });
 

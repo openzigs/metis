@@ -86,4 +86,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Gate over LLM output: probes](project_deterministic-gate-over-llm-output-probes.md) — adversarial answer, context cue, regex timing
 - [Fuzz every regex; sweep every model field](project_redos-fix-ships-beside-new-pattern-fuzz-all.md) — ReDoS fixes ship beside new ones (#1090)
 - [Model-cannot claims: sweep at the engine](project_model-cannot-claims-need-engine-level-sweep.md) — every LLM dep on; no near-idle timing bound
-- [Read live ≠ read completely](project_read-live-is-not-read-completely.md) — one schema, [] is no proof; run docs live in dev.db (#1061)
+- [Read live ≠ read completely](project_read-live-is-not-read-completely.md) — no completeness proof: mark, never delete (#1093)

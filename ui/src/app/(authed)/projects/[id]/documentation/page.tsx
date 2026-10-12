@@ -589,6 +589,10 @@ export default function DocumentationPage(): React.ReactElement {
             />
           )}
 
+          {/* #1061 — names the schema check could not match: information for
+              the reader on a document that is `ready`, not a degradation. */}
+          <SchemaNamesNote warnings={docDetail.data.warnings} />
+
           {/* Document vs Schema Graph tabs (Epic #895 — database docs only).
               #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, and
               aria-controls linking each tab to its panel. */}
@@ -1489,9 +1493,9 @@ export function classifyWarningSeverity(warnings: DocWarning[]): {
     // #186 — a section that was not, or only partly, fact-checked has no
     // full-check result to fall short of; groundingModeNotice says so instead.
     if (w.kind === "grounding-skipped" || w.kind === "grounding-sampled") return false;
-    // #1061 — names not matched to the database schema are not a faithfulness
-    // score: nothing "falls short of the code-fidelity bar". schemaNamesNotice
-    // says what happened instead.
+    // #1061 — names not matched to the database schema are information, not a
+    // faithfulness score: nothing "falls short of the code-fidelity bar".
+    // SchemaNamesNote shows them, outside this banner.
     if (w.kind === "schema-unverified") return false;
     // A literal code-derived section below its bar is worth verifying.
     if (w.tier === "literal") return true;
@@ -1543,30 +1547,44 @@ export function groundingModeNotice(warnings: DocWarning[]): string | null {
 }
 
 /**
- * #1061 — the banner line for a section that names tables or columns the
- * schema check could not match to the database schema. `null` without one.
- * It says what happened, and only that: the names are marked in the section,
- * nothing was removed, and "not matched" is not "wrong" (only each database's
- * default schema is read). A finding the check repaired raises no warning at
- * all, so it never reaches this banner. Exported for unit testing.
+ * #1061 — the informational lines for names in a section that could not be
+ * matched to the database schema ("4 names in Data Architecture could not be
+ * matched to the database schema …"). Empty without one. The server writes the
+ * whole sentence, so the count and the names are its own. Exported for unit
+ * testing.
  */
-export function schemaNamesNotice(warnings: DocWarning[]): string | null {
-  const sections = Array.from(
-    new Set(
-      warnings
-        .filter((w) => w.kind === "schema-unverified")
-        .map((w) => w.section)
-        .filter((s): s is string => !!s && s.trim().length > 0),
-    ),
-  );
-  if (!warnings.some((w) => w.kind === "schema-unverified")) return null;
-  const where = sections.length > 0 ? formatSectionList(sections) : "A section";
+export function schemaNamesNotes(warnings: DocWarning[] | null | undefined): string[] {
+  return (warnings ?? [])
+    .filter((w) => !!w && w.kind === "schema-unverified" && typeof w.message === "string")
+    .map((w) => w.message);
+}
+
+/**
+ * #1061 — shows {@link schemaNamesNotes} as information: a neutral card with
+ * `role="status"`, never the degraded-output banner. The schema check only
+ * marks names, a mark can be false, and the document is `ready`; nothing here
+ * says a section falls short of anything. Renders nothing without a note.
+ * Exported for unit testing.
+ */
+export function SchemaNamesNote({
+  warnings,
+}: {
+  warnings?: DocWarning[] | null;
+}): React.ReactElement | null {
+  const notes = schemaNamesNotes(warnings);
+  if (notes.length === 0) return null;
   return (
-    `Names not matched to the database schema: ${where} ${
-      sections.length > 1 ? "name" : "names"
-    } tables or columns that could not be matched to the schema that was read. They are marked ` +
-    `in the section and nothing was removed; a table in a schema or database that was not read ` +
-    `can be real. Generating the document again re-checks them.`
+    <Card
+      className="p-4 text-sm text-muted-foreground"
+      role="status"
+      data-testid="schema-names-note"
+    >
+      {notes.map((note, i) => (
+        <p key={i} className={i > 0 ? "mt-2" : undefined}>
+          {note}
+        </p>
+      ))}
+    </Card>
   );
 }
 
@@ -1792,7 +1810,11 @@ export function DegradedWarningsBanner({
   warnings?: DocWarning[] | null;
   errorMessage?: string | null;
 }): React.ReactElement {
-  const warnings = resolveDocWarnings(structuredWarnings, errorMessage);
+  // #1061 — a schema-name note is information and has its own card
+  // (SchemaNamesNote); it is not a degraded-output warning.
+  const warnings = resolveDocWarnings(structuredWarnings, errorMessage).filter(
+    (w) => w.kind !== "schema-unverified",
+  );
 
   // Tier-aware headline. A doc is flagged `degraded` whenever ANY section misses
   // ITS faithfulness bar, but narrative/reconstruction sections are inferred/
@@ -1819,19 +1841,12 @@ export function DegradedWarningsBanner({
   // #186 — with fact-checking off or sampled, "grounded within tolerance" is a
   // claim nothing verified: the mode notice replaces it, and precedes a
   // review headline that names genuinely short sections.
-  // #1061 — a schema-name warning is not a grounding result. When it is the
-  // only kind present, neither the tier headline nor the footer below (both
-  // about statements checked against the retrieved source) describes it.
-  const schemaNotice = schemaNamesNotice(warnings);
-  const onlySchemaNames = warnings.every((w) => w.kind === "schema-unverified");
-  const headline =
-    (modeNotice && !reviewRecommended) || (schemaNotice && onlySchemaNames) ? null : tierHeadline;
+  const headline = modeNotice && !reviewRecommended ? null : tierHeadline;
 
   return (
     <Card className="border-warning/40 bg-warning-muted p-4" role="alert">
       {modeNotice && <p className="font-medium text-warning">{modeNotice}</p>}
       {headline && <p className="font-medium text-warning">{headline}</p>}
-      {schemaNotice && <p className="font-medium text-warning">{schemaNotice}</p>}
       {warnings.length > 0 && (
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-warning">
           {warnings.map((w, i) => (
@@ -1839,15 +1854,13 @@ export function DegradedWarningsBanner({
           ))}
         </ul>
       )}
-      {!(schemaNotice && onlySchemaNames) && (
-        <p className="mt-3 text-xs text-warning">
-          Flagged sections contain statements that could not be automatically verified against the
-          retrieved source — this does not by itself mean they are inaccurate (the supporting code
-          may simply not have been retrieved). Statements the model inferred from the code are
-          tagged <code className="rounded bg-warning-muted px-1">_(inferred)_</code> inline, so you
-          can tell verified facts from inferred ones.
-        </p>
-      )}
+      <p className="mt-3 text-xs text-warning">
+        Flagged sections contain statements that could not be automatically verified against the
+        retrieved source — this does not by itself mean they are inaccurate (the supporting code may
+        simply not have been retrieved). Statements the model inferred from the code are tagged{" "}
+        <code className="rounded bg-warning-muted px-1">_(inferred)_</code> inline, so you can tell
+        verified facts from inferred ones.
+      </p>
     </Card>
   );
 }

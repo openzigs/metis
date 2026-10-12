@@ -33,7 +33,7 @@ const warningSchema = z
     ]),
     section: z.string(),
     message: z.string(),
-    severity: z.enum(["warning", "error"]),
+    severity: z.enum(["info", "warning", "error"]),
     ratio: z.number().optional(),
     threshold: z.number().optional(),
     domainContext: z.boolean().optional(),

@@ -196,6 +196,7 @@ import {
   RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
   summarizeWarnings,
   schemaUnverifiedWarning,
+  affectsDocStatus,
 } from "./grounding/degraded-warnings.js";
 import {
   isTypedInventory,
@@ -1715,7 +1716,7 @@ async function runHolisticSynthesis(
     docType,
     markdownChars: markdown.length,
     warnings: warnings.length,
-    degraded: warnings.length > 0 ? summarizeWarnings(warnings) : undefined,
+    degraded: summarizeWarnings(warnings) || undefined,
   });
   const provenanceManifest = buildGeneratedDocVersionManifest({
     revision: provenance?.revision ?? { projectId, generatedDocumentId: "pending", version: 1 },
@@ -3219,11 +3220,11 @@ export interface SectionGroup {
 
 /**
  * Bumped when `applySchemaGrounding` changes what it does to a section.
- * 2 — removal needs proof of what was read (per connector and schema), a
- * repaired finding no longer raises a warning, and the heading context covers
- * one table (#1061 review).
+ * 2 — removal needed proof of what was read (#1061 review).
+ * 3 — the check only marks: nothing is removed, rewritten or corrected, and
+ * there is one note per section (#1061 second review).
  */
-export const SCHEMA_GROUNDING_VERSION = 2;
+export const SCHEMA_GROUNDING_VERSION = 3;
 
 /** Outcome of post-validating one synthesized section against its grounding. */
 interface SectionGroundingOutcome {
@@ -4471,29 +4472,15 @@ export async function synthesizeFinalDocument(
         prompts: JSON.stringify(prompts),
       });
       const previous = previousRecords.get(group.id);
-      // #1061 — a stored section left with names that could not be matched to
-      // the schema is written again, not reused: reused, it would carry its
-      // marks and its `schema-unverified` warning into every later run for as
-      // long as its inputs are unchanged, and the document could never come
-      // back to `ready`. Its record IS stored (below), so the snapshot stays
-      // complete and every other section is still reused; only this one costs a
-      // model call, and a rewrite with nothing unmatched carries no warning.
-      const unmatchedSchemaNames =
-        previous?.warnings.some((w) => w.kind === "schema-unverified") ?? false;
+      // #1061 — a stored section whose schema check left marks is reused like
+      // any other. Its `schema-unverified` note is informational and travels
+      // with the record; it neither blocks reuse nor forces a rewrite.
       const stillValid =
-        previous != null &&
-        !unmatchedSchemaNames &&
-        JSON.stringify(previous.inputs) === JSON.stringify(inputHashes);
+        previous != null && JSON.stringify(previous.inputs) === JSON.stringify(inputHashes);
       // #857 — say which inputs made a stored section stale, so a regenerate
       // that rewrites it can tell the user why.
       if (previous && stillValid) resume.reused.push(group.label);
-      else if (previous && unmatchedSchemaNames) {
-        log.info("Stored section has names not matched to the schema; rewriting it", {
-          projectId,
-          docType,
-          section: group.id,
-        });
-      } else if (previous) {
+      else if (previous) {
         const keys = Object.keys(inputHashes) as Array<keyof SectionInputHashes>;
         const changed = keys.filter((key) => previous.inputs[key] !== inputHashes[key]);
         resume.stale.push({ section: group.label, changed });
@@ -4526,10 +4513,10 @@ export async function synthesizeFinalDocument(
         await checkpoint();
         reportSection({
           section: group.label,
-          status: previous.warnings.length ? "degraded" : "done",
+          status: previous.warnings.some(affectsDocStatus) ? "degraded" : "done",
           index: gi + 1,
           total: groups.length,
-          warning: previous.warnings[0],
+          warning: previous.warnings.find(affectsDocStatus),
         });
         continue;
       }
@@ -4825,10 +4812,12 @@ export async function synthesizeFinalDocument(
       }
 
       // #1061 — the Data Architecture section, after it is written and
-      // fact-checked: every table and column it claims is resolved against the
-      // schema inventory, the schema reference is rendered in, and what the
-      // check found is said at the top. Deterministic; no model call.
-      let schemaWarning: DocWarning | undefined;
+      // fact-checked: the table and column names it claims are compared with
+      // the schema inventory, a name that could not be matched is MARKED (never
+      // removed or rewritten), the schema reference is rendered in, and what
+      // the check found is said in one note at the top. Deterministic; no
+      // model call.
+      let schemaNote: DocWarning | undefined;
       if (group.schemaGrounding) {
         const { inventory } = group.schemaGrounding;
         const grounded = applySchemaGrounding(finalOutcome.markdown, inventory);
@@ -4838,26 +4827,23 @@ export async function synthesizeFinalDocument(
           if (capOmitted) recordShortened(grounded.markdown, capOmitted);
           finalOutcome = { ...finalOutcome, markdown: grounded.markdown };
         }
-        // Only what is STILL in the section, marked, is a warning. A removed
-        // column, a corrected spelling and an annotated type are repairs: the
-        // section's own "Schema check" note lists them, and a document whose
-        // every finding was repaired is `ready`, not `degraded`.
+        // Informational: it is stored and shown, and the document's status
+        // does not depend on it (`affectsDocStatus`).
         const unmatched = schemaCheckUnmatched(grounded.report);
         if (unmatched.length > 0) {
-          schemaWarning = schemaUnverifiedWarning(group.label, unmatched, inventory);
+          schemaNote = schemaUnverifiedWarning(group.label, unmatched, inventory);
         }
         if (schemaCheckFindings(grounded.report) > 0) {
-          log.info("Schema check changed or marked the section", {
+          log.info("Schema check marked or listed names in the section", {
             projectId,
             docType,
             group: group.id,
             source: inventory.source,
             unmatched: unmatched.length,
             unresolvedTables: grounded.report.unresolvedTables.length,
-            removedColumns: grounded.report.removedColumns.length,
             flaggedColumns: grounded.report.flaggedColumns.length,
             typeMismatches: grounded.report.typeMismatches.length,
-            corrected: grounded.report.corrected.length,
+            notChecked: grounded.report.notChecked.length,
           });
         }
       }
@@ -4882,7 +4868,7 @@ export async function synthesizeFinalDocument(
       });
       contributed.push({ label: group.label, heading: firstH2Heading(finalOutcome.markdown) });
       if (finalOutcome.warning) warnings.push(finalOutcome.warning);
-      if (schemaWarning) warnings.push(schemaWarning);
+      if (schemaNote) warnings.push(schemaNote);
       // #1226 — the section WAS produced but the model was cut off by the
       // output-token cap, so it is incomplete. Record it (error severity) so the
       // document degrades instead of shipping a half-written section as `ready`.
@@ -4907,7 +4893,8 @@ export async function synthesizeFinalDocument(
       // #243 — a section with an ungrounded-claims warning is `degraded`, not a
       // clean `done`; surface that live so the UI shows the warning during
       // generation, not after a manual refresh.
-      const liveWarning = finalOutcome.warning ?? truncationWarning ?? schemaWarning;
+      // #1061 — the schema note is informational: the section is `done`.
+      const liveWarning = finalOutcome.warning ?? truncationWarning;
       // A failed/empty section or malformed legacy evidence cannot establish
       // completeness. Never let recording a reuse candidate break generation.
       // #246 — nor can a section whose fact-check FAILED: reused, it would keep
@@ -6718,7 +6705,7 @@ ${DATA_ARCHITECTURE_NARRATIVE}
 NAMING RULES:
 - Spell every table and column exactly as the schema does.
 - Within the schemas listed as covered, do not name a table or column that is not in the list. If the facts mention one that is not there, it was renamed or dropped, or it is not a table: leave it out, or say what the facts say it is.
-- The list is NOT the whole database. A table that the facts place in another schema, or in a database marked NOT read, may be named: write it with its schema (\`audit.events\`), say that its columns were not read, and list no columns for it.
+- The list is NOT the whole database. A table may be named from outside it in two cases only. (1) The facts give the NAME of another schema that holds it: write the table with that schema (\`audit.events\`). A package, module or struct path in the facts (\`worker.jobs\`, \`model.Job\`) is not a schema. (2) A database is marked NOT read and the facts state the table is in it: write the name as the facts give it and say which database it is in. In both cases say that its columns were not read, and list no columns for it.
 - Never state a column's type from memory.
 
 ${renderSchemaCoverage(inventory)}

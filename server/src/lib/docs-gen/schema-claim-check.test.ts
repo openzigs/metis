@@ -1,9 +1,11 @@
 /**
  * #1061 — the deterministic check on the Data Architecture section.
  *
- * The fixture is a cut-down Miniflux schema and a section carrying the eight
- * inventions the issue lists from walkthrough run 7, so each one is pinned by
- * name: caught, and handled the way the module's header says.
+ * The check MARKS and never removes, rewrites or corrects. The first block
+ * pins that as a property over generated documents; the rest pin each rule of
+ * the module header (what is judged, what is not, what is "not checked") by
+ * name, on a cut-down Miniflux schema and the eight inventions the issue lists
+ * from walkthrough run 7.
  */
 import { describe, expect, it } from "vitest";
 import { expectLinearTime } from "../../../tests/helpers/linear-time.js";
@@ -11,6 +13,10 @@ import {
   applySchemaGrounding,
   checkSchemaClaims,
   codeSpans,
+  isNonColumnType,
+  isTypeWord,
+  looksLikeIndexName,
+  numberVariants,
   parseHeading,
   renderSchemaCheckNotice,
   schemaCheckFindings,
@@ -18,9 +24,11 @@ import {
   splitCells,
   typeFamily,
   typesDisagree,
+  type SchemaCheckReport,
 } from "./schema-claim-check.js";
 import {
   NO_SCHEMA_INVENTORY,
+  renderSchemaReference,
   type SchemaInventory,
   type SchemaInventoryTable,
 } from "./schema-inventory.js";
@@ -69,9 +77,7 @@ function liveInventory(
   return { source: "live-schema", label: 'the live schema of "miniflux-pg"', reads, tables };
 }
 
-/** The one database, its `public` schema introspected in this run: columns may be removed. */
 const LIVE = liveInventory(TABLES);
-/** A stored graph: it may be out of date, so nothing is removed. */
 const STORED: SchemaInventory = {
   ...LIVE,
   source: "schema-graph",
@@ -87,6 +93,32 @@ const REPO_SQL: SchemaInventory = {
     columns: t.columns.map((c) => ({ ...c, dataType: "" })),
   })),
 };
+/** One database read live, and a second that could not be read at all. */
+const ONE_UNREAD = liveInventory(TABLES, [
+  { connector: "miniflux-pg", how: "live", schemas: ["public"] },
+  { connector: "warehouse", how: "unread", schemas: [] },
+]);
+
+const FENCE = "```";
+const FIELD = "| Field | Type |\n|---|---|\n";
+const entity = (name: string, rows: string, between = ""): string =>
+  `### Entity: \`${name}\`\n\n${between}${FIELD}${rows}`;
+const diagram = (...lines: string[]): string =>
+  [`${FENCE}mermaid`, "erDiagram", ...lines, FENCE].join("\n");
+
+const check = (markdown: string, inventory: SchemaInventory = LIVE) =>
+  checkSchemaClaims(markdown, inventory);
+const notChecked = (report: SchemaCheckReport, why: string): string[] =>
+  report.notChecked.filter((entry) => entry.why === why).map((entry) => entry.name);
+
+/**
+ * Every marker the check can write, removed. Written here from the module's
+ * header, not imported from it, so the test does not agree with the code by
+ * construction.
+ */
+function withoutMarkers(markdown: string): string {
+  return markdown.replace(/ \*\(not in schema(?:; the schema has `[^`\n]*`)?\)\*/g, "");
+}
 
 const RUN7 = `## Data Architecture
 
@@ -125,6 +157,8 @@ erDiagram
 
 ### Entity: \`jobs\` (feed-refresh queue table)
 
+The \`batchBuilder\` selects refresh jobs from a database table.
+
 | Field | Type | Constraint | Description |
 |---|---|---|---|
 | feed reference | int64 | FK → \`feeds.id\` | Feed to refresh |
@@ -151,86 +185,265 @@ erDiagram
 | Job queue | In-process Go channel (\`queue chan model.Job\`) | Feed-refresh dispatch |
 `;
 
-describe("checkSchemaClaims — the eight inventions of run 7 (#1061)", () => {
-  const live = checkSchemaClaims(RUN7, LIVE);
+// ---------------------------------------------------------------------------
+// Mark-only
+// ---------------------------------------------------------------------------
 
-  it("marks a table that does not exist, in the diagram and under its heading", () => {
-    expect(live.report.unresolvedTables).toEqual([
-      "ENTRY_TAGS",
-      "JOBS",
-      "jobs",
-      "certificate_cache",
-    ]);
-    expect(live.markdown).toContain(
-      "> **Not in the schema:** in the diagram above, `ENTRY_TAGS`, `JOBS` are not tables",
-    );
-    expect(live.markdown).toContain("> **Not in the schema:** `jobs` is not a table");
-    expect(live.markdown).toContain("> **Not in the schema:** `certificate_cache` is not a table");
-  });
+/** A small seeded generator (mulberry32), so a failure is reproducible. */
+function seeded(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
-  it("never guesses a table: `certificate_cache` is not rewritten to `acme_cache`", () => {
-    expect(live.markdown).toContain("### Entity: `certificate_cache` (ACME)");
-    expect(live.markdown).not.toContain("### Entity: `acme_cache`");
-  });
-
-  it("keeps the diagram and the entity blocks: a table-level name is never removed", () => {
-    expect(live.markdown).toContain("ENTRIES ||--o{ ENTRY_TAGS : carries");
-    expect(live.markdown).toContain(
-      "| feed reference | int64 | FK → `feeds.id` | Feed to refresh |",
-    );
-    expect(live.markdown).toContain("A SQL-backed store for ACME TLS material");
-  });
-
-  it("removes a column its table does not have, when the schema was read live", () => {
-    expect(live.report.removedColumns).toEqual([
-      "feeds.error_counter",
-      "entries.category_id",
-      "integrations.fever_password",
-    ]);
-    expect(live.markdown).not.toContain("error_counter");
-    expect(live.markdown).not.toContain("`category_id`");
-    // Only the invented name leaves a shared cell.
-    expect(live.markdown).toContain("| `fever_username` | string | — | Legacy Fever credentials |");
-  });
-
-  it("corrects a spelling that differs only by underscores, and nothing else", () => {
-    expect(live.report.corrected).toEqual([
-      {
-        from: "integrations.google_reader_username",
-        to: "integrations.googlereader_username",
-      },
-      {
-        from: "integrations.google_reader_password",
-        to: "integrations.googlereader_password",
-      },
-      { from: "integrations.rss_bridge_enabled", to: "integrations.rssbridge_enabled" },
-    ]);
-    expect(live.markdown).toContain("| `googlereader_username` / `googlereader_password` |");
-    expect(live.markdown).toContain("| `rssbridge_enabled` | bool |");
-  });
-
-  it("annotates a type the schema contradicts", () => {
-    expect(live.report.typeMismatches).toEqual([
-      { column: "users.gesture_nav", written: "bool", schema: "text" },
-    ]);
-    expect(live.markdown).toContain("| `gesture_nav` | bool *(schema: `text`)* |");
-  });
-
-  it("flags nothing that is real", () => {
-    for (const real of ["`id` | int64", "`username` | string", "`user_id` | int64"]) {
-      expect(live.markdown).toContain(real);
+/**
+ * A document made of the structures the check reads and the ones it must leave
+ * alone, with real, invented, near-miss, qualified and odd names in each.
+ */
+function generatedDocument(seed: number): string {
+  const random = seeded(seed);
+  const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)];
+  const tables = ["users", "feeds", "entries", "jobs", "Stat", "audit.users", "FeedIcon", "x.y.z"];
+  const columns = [
+    "id",
+    "username",
+    "user_id",
+    "error_counter",
+    "google_reader_username",
+    "GestureNav",
+    "users.id",
+    "users.nope",
+    "settings.theme",
+    "idx_users_email",
+    "feeds.go",
+  ];
+  const types = ["int64", "string", "bool", "btree", "UNIQUE (email)", "relation", "—", "text[]"];
+  const prose = [
+    "Stores accounts.",
+    "The `users.Len` call iterates; see `feeds.error_counter`.",
+    "**Go struct `UserSession`:**",
+    "> A note with `jobs` in it.",
+    "- a list item naming `certificate_cache`",
+    "",
+  ];
+  const cell = (): string => {
+    const shape = Math.floor(random() * 5);
+    if (shape === 0) return `\`${pick(columns)}\``;
+    if (shape === 1) return `\`${pick(columns)}\` / \`${pick(columns)}\``;
+    if (shape === 2) return `\`${pick(columns)}\` (login) and \`${pick(columns)}\` — legacy`;
+    if (shape === 3) return pick(columns);
+    return "—";
+  };
+  const out: string[] = ["## Data Architecture", "", pick(prose), ""];
+  const blocks = 3 + Math.floor(random() * 6);
+  for (let b = 0; b < blocks; b++) {
+    const kind = Math.floor(random() * 6);
+    if (kind === 0) {
+      out.push("```mermaid", "erDiagram");
+      for (let n = 0; n < 3; n++) {
+        const name = pick(tables).toUpperCase().split(".").join("_");
+        out.push(`    ${name} ||--o{ ${pick(tables).toUpperCase()} : has`);
+        out.push(`    ${name}${random() < 0.3 ? '["audit.users"]' : ""} {`);
+        for (let a = 0; a < 3; a++) {
+          const attribute = pick(columns);
+          out.push(
+            random() < 0.5
+              ? `        ${pick(types)} ${attribute} PK`
+              : `        ${attribute} bigint`,
+          );
+        }
+        out.push("    }");
+      }
+      out.push("```", "");
+    } else if (kind === 1) {
+      const label = pick(["Entity", "Table", "Entities", "Tables"]);
+      const name = pick(tables);
+      const written = pick([
+        `\`${name}\``,
+        name,
+        `\`${name}\` (audit schema)`,
+        `audit.\`${name}\``,
+        `\`${name}\` and \`${pick(tables)}\``,
+        `\`${name}\` (a view)`,
+      ]);
+      out.push(`### ${label}: ${written}`, "");
+      if (random() < 0.5) out.push(pick(prose), "");
+      out.push("| Field | Type | Constraint | Description |", "|---|---|---|---|");
+      const rows = 1 + Math.floor(random() * 5);
+      for (let r = 0; r < rows; r++) {
+        out.push(`| ${cell()} | ${pick(types)} | FK → \`users.id\` | see \`users.CreatedAt\` |`);
+      }
+      out.push("");
+    } else if (kind === 2) {
+      out.push("### Tables and Their Roles", "", "| Table | Purpose |", "|---|---|");
+      for (let r = 0; r < 3; r++) out.push(`| \`${pick(tables)}\` | ${pick(prose)} |`);
+      out.push("");
+    } else if (kind === 3) {
+      out.push("#### `Feed` struct", "", "| Field | Type |", "|---|---|");
+      out.push(`| ${cell()} | ${pick(types)} |`, "");
+    } else if (kind === 4) {
+      out.push("```go", "type Job struct { ID int64 }", "```", "");
+    } else {
+      out.push(pick(prose), "");
     }
-    expect(live.markdown).toContain("Job queue | In-process Go channel (`queue chan model.Job`)");
+  }
+  return out.join("\n");
+}
+
+describe("the check only marks (#1061 second review)", () => {
+  const INVENTORIES: Record<string, SchemaInventory> = {
+    live: LIVE,
+    stored: STORED,
+    "repository SQL": REPO_SQL,
+    "one database unread": ONE_UNREAD,
+  };
+  const SEEDS = Array.from({ length: 150 }, (_, n) => n + 1);
+
+  for (const [name, inventory] of Object.entries(INVENTORIES)) {
+    it(`markers removed, the output is the input: ${name}`, () => {
+      let marked = 0;
+      for (const seed of SEEDS) {
+        const input = generatedDocument(seed);
+        const { markdown } = checkSchemaClaims(input, inventory);
+        if (markdown !== input) marked += 1;
+        expect(withoutMarkers(markdown), `seed ${seed}`).toBe(input);
+      }
+      // The generator does produce documents the check marks.
+      expect(marked).toBeGreaterThan(SEEDS.length / 10);
+    });
+
+    it(`with the note and the reference taken out as well: ${name}`, () => {
+      for (const seed of SEEDS) {
+        const input = generatedDocument(seed);
+        const { markdown, report } = applySchemaGrounding(input, inventory);
+        const notice = renderSchemaCheckNotice(report, inventory);
+        const reference = renderSchemaReference(inventory);
+        let rest = markdown;
+        // Each is inserted as whole lines, once.
+        if (notice) {
+          expect(rest.split(`\n\n${notice}`).length, `seed ${seed}`).toBe(2);
+          rest = rest.replace(`\n\n${notice}`, "");
+        }
+        if (reference) {
+          // Before the first sub-section, or at the end when there is none.
+          const before = rest.split(`${reference}\n\n`).length - 1;
+          const atEnd = rest.endsWith(`\n\n${reference}`) ? 1 : 0;
+          expect(before + atEnd, `seed ${seed}`).toBe(1);
+          rest = before
+            ? rest.replace(`${reference}\n\n`, "")
+            : rest.slice(0, -`\n\n${reference}`.length);
+        }
+        expect(withoutMarkers(rest), `seed ${seed}`).toBe(input);
+      }
+    });
+  }
+
+  it("keeps every line, in order, and adds none", () => {
+    for (const seed of SEEDS) {
+      const input = generatedDocument(seed).split("\n");
+      const output = checkSchemaClaims(input.join("\n"), LIVE).markdown.split("\n");
+      expect(output).toHaveLength(input.length);
+      output.forEach((line, at) => {
+        // A line is the one the model wrote, or that line with markers in it.
+        expect(withoutMarkers(line), `seed ${seed} line ${at}`).toBe(input[at]);
+      });
+    }
+  });
+
+  it("leaves a diagram byte for byte as written, whatever it finds in it", () => {
+    const body = [
+      "    USERS ||--o{ GHOSTS : haunts",
+      "    USERS {",
+      "        int64 id PK",
+      "        string no_such_column",
+      "        google_reader_id text",
+      "        bool gesture_nav",
+      "    }",
+    ];
+    const section = diagram(...body);
+    const { markdown, report } = check(section);
+    expect(markdown).toBe(section);
+    expect(report.unresolvedTables).toEqual(["GHOSTS"]);
+    expect(report.flaggedColumns).toEqual(["users.no_such_column", "users.google_reader_id"]);
+    expect(report.inDiagram).toEqual(["GHOSTS", "users.no_such_column", "users.google_reader_id"]);
+  });
+
+  it("is idempotent: a marked name is not marked twice", () => {
+    for (const inventory of [LIVE, STORED, REPO_SQL]) {
+      const once = checkSchemaClaims(RUN7, inventory).markdown;
+      expect(checkSchemaClaims(once, inventory).markdown).toBe(once);
+    }
   });
 });
 
-describe("checkSchemaClaims — a schema that was not read live", () => {
-  const stored = checkSchemaClaims(RUN7, STORED);
+// ---------------------------------------------------------------------------
+// Run 7
+// ---------------------------------------------------------------------------
 
-  it("marks instead of removing: the stored graph may be out of date", () => {
-    expect(stored.report.removedColumns).toEqual([]);
-    expect(stored.report.corrected).toEqual([]);
-    expect(stored.report.flaggedColumns).toEqual([
+describe("the eight inventions of run 7 (#1061): all visible, none removed", () => {
+  const { markdown, report } = check(RUN7);
+  const notice = renderSchemaCheckNotice(report, LIVE);
+
+  it("a `jobs` table: marked in its heading, with prose between heading and table", () => {
+    expect(markdown).toContain("### Entity: `jobs` *(not in schema)* (feed-refresh queue table)");
+    expect(report.unresolvedTables).toContain("jobs");
+  });
+
+  it("an `ENTRY_TAGS` entity: in a diagram, so listed in the note", () => {
+    expect(report.unresolvedTables).toContain("ENTRY_TAGS");
+    expect(report.inDiagram).toEqual(["ENTRY_TAGS", "JOBS"]);
+    expect(notice).toContain(
+      "> - Of these, in a diagram, which is left exactly as written and so carries no mark: `ENTRY_TAGS`, `JOBS`.",
+    );
+  });
+
+  it("`feeds.error_counter` and `entries.category_id`: marked where they stand", () => {
+    expect(markdown).toContain("| `error_counter` *(not in schema)* | int | — |");
+    expect(markdown).toContain("| `category_id` *(not in schema)* | int64 |");
+  });
+
+  it("`certificate_cache`: marked, and never guessed to be `acme_cache`", () => {
+    expect(markdown).toContain("### Entity: `certificate_cache` *(not in schema)* (ACME)");
+    expect(markdown).not.toContain("`acme_cache`");
+  });
+
+  it("`fever_password`: marked beside the real name that shares its cell", () => {
+    expect(markdown).toContain(
+      "| `fever_username` / `fever_password` *(not in schema)* | string |",
+    );
+  });
+
+  it("`google_reader_*` and `rss_bridge_*`: marked, with the schema's spelling beside", () => {
+    expect(markdown).toContain(
+      "| `google_reader_username` *(not in schema; the schema has `googlereader_username`)* / " +
+        "`google_reader_password` *(not in schema; the schema has `googlereader_password`)* | string |",
+    );
+    expect(markdown).toContain(
+      "| `rss_bridge_enabled` *(not in schema; the schema has `rssbridge_enabled`)* | bool |",
+    );
+    expect(report.suggestions).toContainEqual({
+      column: "integrations.rss_bridge_enabled",
+      schema: "rssbridge_enabled",
+    });
+  });
+
+  it("`gesture_nav` typed bool: said in the note, and the cell is as written", () => {
+    expect(markdown).toContain("| `gesture_nav` | bool | — | Gesture navigation |");
+    expect(report.typeMismatches).toEqual([
+      { column: "users.gesture_nav", written: "bool", schema: "text" },
+    ]);
+    expect(notice).toContain(
+      "> - Types that differ from the schema: `users.gesture_nav` (written `bool`, schema `text`).",
+    );
+  });
+
+  it("nothing that is real is marked, and nothing at all is removed", () => {
+    expect(report.flaggedColumns).toEqual([
       "feeds.error_counter",
       "entries.category_id",
       "integrations.fever_password",
@@ -238,304 +451,609 @@ describe("checkSchemaClaims — a schema that was not read live", () => {
       "integrations.google_reader_password",
       "integrations.rss_bridge_enabled",
     ]);
-    expect(stored.markdown).toContain("| `error_counter` *(not in schema)* | int |");
-    expect(stored.markdown).toContain("`fever_username` / `fever_password` *(not in schema)*");
+    expect(report.unresolvedTables).toEqual(["ENTRY_TAGS", "JOBS", "jobs", "certificate_cache"]);
+    expect(withoutMarkers(markdown)).toBe(RUN7);
   });
 
-  it("suggests the schema's spelling without writing it in", () => {
-    expect(stored.markdown).toContain(
-      "`google_reader_username` *(not in schema; the schema has `googlereader_username`)* / " +
-        "`google_reader_password` *(not in schema; the schema has `googlereader_password`)*",
-    );
-  });
-
-  it("still reports the type, which a stored graph does carry", () => {
-    expect(stored.report.typeMismatches).toHaveLength(1);
-  });
-
-  it("checks names but not types against repository SQL, which has none", () => {
-    const repo = checkSchemaClaims(RUN7, REPO_SQL);
-    expect(repo.report.typeMismatches).toEqual([]);
-    expect(repo.report.flaggedColumns).toEqual(stored.report.flaggedColumns);
-    expect(repo.report.removedColumns).toEqual([]);
-  });
-
-  it("is idempotent: a marked name is not marked twice", () => {
-    const again = checkSchemaClaims(stored.markdown, STORED);
-    expect(again.markdown).toBe(stored.markdown);
+  it("marks the same names against a stored graph and against repository SQL", () => {
+    for (const inventory of [STORED, REPO_SQL]) {
+      const other = check(RUN7, inventory);
+      expect(other.report.flaggedColumns).toEqual(report.flaggedColumns);
+      expect(other.report.unresolvedTables).toEqual(report.unresolvedTables);
+      expect(other.markdown).toBe(markdown);
+    }
+    // Repository SQL carries no types, so no type is compared.
+    expect(check(RUN7, REPO_SQL).report.typeMismatches).toEqual([]);
+    expect(check(RUN7, STORED).report.typeMismatches).toHaveLength(1);
   });
 });
 
-describe("checkSchemaClaims — no schema to check against", () => {
-  it("changes nothing and reports nothing when there is no inventory", () => {
-    const result = checkSchemaClaims(RUN7, NO_SCHEMA_INVENTORY);
-    expect(result.markdown).toBe(RUN7);
-    expect(result.report.checked).toBe(false);
-    expect(schemaCheckFindings(result.report)).toBe(0);
-  });
+// ---------------------------------------------------------------------------
+// What is judged
+// ---------------------------------------------------------------------------
 
-  it("changes nothing when a live schema came back empty", () => {
-    const empty: SchemaInventory = { ...LIVE, tables: [] };
-    const result = checkSchemaClaims(RUN7, empty);
-    expect(result.markdown).toBe(RUN7);
-    expect(result.report.removedColumns).toEqual([]);
-  });
-
-  it("says so at the top of the section instead of inventing a verdict", () => {
-    const { markdown, report } = applySchemaGrounding(RUN7, NO_SCHEMA_INVENTORY);
-    expect(report.checked).toBe(false);
-    const lines = markdown.split("\n");
-    expect(lines[0]).toBe("## Data Architecture");
-    expect(lines[2]).toMatch(/^> \*\*Schema not verified\.\*\* No database schema was available/);
-    // Everything the model wrote is still there.
-    expect(markdown.replace(`\n${lines[2]}\n`, "")).toBe(RUN7);
-    expect(markdown).not.toContain("### Schema Reference");
-  });
-});
-
-describe("checkSchemaClaims — what is NOT a claim", () => {
-  const check = (markdown: string) => checkSchemaClaims(markdown, LIVE);
-  const untouched = (markdown: string) => {
-    const result = check(markdown);
-    expect(result.markdown).toBe(markdown);
-    expect(schemaCheckFindings(result.report)).toBe(0);
-  };
-
-  it("prose naming a queue, a cache, a struct or an index", () => {
-    untouched(
-      "## Data Architecture\n\nJobs wait in the `jobs` queue, a `session_cache` in Redis, the " +
-        "`Job` struct and the `entries_feed_idx` index. `entries.length` is read in a loop.",
+describe("judged: a Mermaid erDiagram", () => {
+  it("an entity named in a relationship line or as a block", () => {
+    const { report } = check(
+      diagram("    USERS ||--o{ GHOSTS : haunts", "    SPECTRES {", "        int id", "    }"),
     );
+    expect(report.unresolvedTables).toEqual(["GHOSTS", "SPECTRES"]);
   });
 
-  it("a table that is not a field table", () => {
-    untouched(
-      "### Data Stores\n\n| Store | Technology |\n|---|---|\n| `job_queue` | Go channel |\n" +
-        "| `redis` | cache |",
+  it("an attribute in Mermaid's order, type first", () => {
+    const { report } = check(
+      diagram("    USERS {", "        int64 id PK", "        string nope", "    }"),
     );
+    expect(report.flaggedColumns).toEqual(["users.nope"]);
   });
 
-  it("a struct documented under an unlabelled heading, even one named like a table", () => {
-    untouched(
-      "#### `Job` struct\n\n| Field | Type |\n|---|---|\n| `FeedID` | int64 |\n| `UserID` | int64 |",
+  it("an attribute written name first: real columns are not taken for types (B2)", () => {
+    const section = diagram(
+      "    USERS {",
+      "        id bigint PK",
+      "        username text",
+      "        is_admin boolean",
+      "        nope text",
+      "    }",
     );
-    // `Feed` would resolve to `feeds`; its `Entries` field is not a column, and
-    // against a live schema a column that does not resolve is removed.
-    untouched(
-      "#### `Feed` struct\n\n| Field | Type |\n|---|---|\n| `ID` | int64 |\n| `Entries` | []Entry |",
+    const { markdown, report } = check(section);
+    expect(markdown).toBe(section);
+    expect(report.flaggedColumns).toEqual(["users.nope"]);
+    expect(report.notChecked).toEqual([]);
+  });
+
+  it("a line that does not say which token is the name is not judged, and is listed", () => {
+    const { report } = check(
+      diagram(
+        "    USERS {",
+        "        widget gadget",
+        "        text uuid",
+        "        id username",
+        "    }",
+      ),
     );
-    untouched("#### `users`\n\n| Column | Type |\n|---|---|\n| `ghost` | int |");
-    untouched("### Users\n\n| Field | Type |\n|---|---|\n| `users.ghost` | int |");
+    expect(report.flaggedColumns).toEqual([]);
+    // Neither a column nor a type; two type words. Two columns: nothing to say.
+    expect(notChecked(report, "diagram-line")).toEqual([
+      "users: widget gadget",
+      "users: text uuid",
+    ]);
   });
 
-  it("a field table under a sub-heading of an entity", () => {
-    untouched(
-      "### Entity: `users`\n\nThe account table.\n\n#### The `User` struct\n\n" +
-        "| Field | Type |\n|---|---|\n| `Feeds` | []Feed |",
-    );
+  it("a line of two column names says nothing, whatever the tokens could be read as", () => {
+    // `text` is a column here, and a type word: which of the two is the name is
+    // not known, so `id` is not reported as typed `text`.
+    const inventory = liveInventory([table("notes", { id: "integer", text: "text" })]);
+    const { report } = check(diagram("    NOTES {", "        text id", "    }"), inventory);
+    expect(schemaCheckFindings(report)).toBe(0);
   });
 
-  it("an object path whose head is the singular of a table", () => {
-    untouched(
-      "### Entity: `users`\n\n| Field | Type | Constraint |\n|---|---|---|\n" +
-        "| `user.posts` | list | see `feed.entries` |",
-    );
-  });
-
-  it("a topic heading with a field table under it", () => {
-    untouched("### Overview\n\n| Field | Type |\n|---|---|\n| `whatever` | string |");
-  });
-
-  it("a row whose first cell is not a name", () => {
-    untouched(
-      "### Entity: `users`\n\n| Field | Type |\n|---|---|\n| service flags and tokens | bool |",
-    );
-  });
-
-  it("a qualified name whose qualifier is not a table", () => {
-    untouched("### Entity: `users`\n\n| Field | Type |\n|---|---|\n| `model.Themes` | string |");
-  });
-
-  it("an erDiagram inside a non-mermaid fence, and other diagrams", () => {
-    untouched("```text\nerDiagram\n    GHOSTS ||--o{ USERS : haunt\n```");
-    untouched("```mermaid\ngraph LR\n    Ghosts --> Users\n```");
-  });
-
-  it("a singular entity name for a plural table", () => {
-    untouched(
-      "```mermaid\nerDiagram\n    USER ||--o{ FEED : subscribes\n    FEED ||--o{ ENTRY : has\n```",
-    );
-  });
-
-  it("types that differ by design: a boolean in an integer, a time as text", () => {
-    expect(typesDisagree("bool", "integer")).toBe(false);
-    expect(typesDisagree("timestamp", "text")).toBe(false);
-    expect(typesDisagree("JSON blob", "bytea")).toBe(false);
-    expect(typesDisagree("string list", "ARRAY")).toBe(false);
-    expect(typesDisagree("string", "USER-DEFINED")).toBe(false);
-    expect(typesDisagree("bool", "tinyint(1)")).toBe(false);
-  });
-});
-
-describe("checkSchemaClaims — structures", () => {
-  it("marks a name that is no table in a table of tables, and removes nothing", () => {
-    const roster =
-      "### Tables and Their Roles\n\n| Table | Purpose |\n|---|---|\n| `users` | Accounts |\n" +
-      "| `jobs` | Refresh queue |\n| The scheduler | Not a name |";
-    for (const inventory of [LIVE, STORED]) {
-      const { report, markdown } = checkSchemaClaims(roster, inventory);
-      expect(report.unresolvedTables).toEqual(["jobs"]);
-      expect(markdown).toContain("| `jobs` *(not in schema)* | Refresh queue |");
-      expect(markdown).toContain("| `users` | Accounts |");
-      expect(markdown).toContain("| The scheduler | Not a name |");
+  it("a type that cannot describe the column, in either order", () => {
+    const typeFirst = check(diagram("    USERS {", "        bool gesture_nav", "    }"));
+    const nameFirst = check(diagram("    USERS {", "        gesture_nav bool", "    }"));
+    for (const { report } of [typeFirst, nameFirst]) {
+      expect(report.typeMismatches).toEqual([
+        { column: "users.gesture_nav", written: "bool", schema: "text" },
+      ]);
     }
   });
 
-  it("reads attribute lines of an entity block", () => {
-    const diagram =
-      "```mermaid\nerDiagram\n    USERS {\n        int id PK\n        bool gesture_nav\n" +
-      "        string ghost\n    }\n    GHOSTS {\n        int id\n    }\n```";
-    const live = checkSchemaClaims(diagram, LIVE);
-    expect(live.report.removedColumns).toEqual(["users.ghost"]);
-    expect(live.report.unresolvedTables).toEqual(["GHOSTS"]);
-    expect(live.markdown).not.toContain("string ghost");
-    // The schema's type is written in: the column resolved exactly.
-    expect(live.markdown).toContain("        text gesture_nav");
-    // An unresolved entity's attributes are left alone.
-    expect(live.markdown).toContain("    GHOSTS {\n        int id\n    }");
+  it("nothing in a block whose entity did not resolve, in another diagram or another fence", () => {
+    expect(
+      check(diagram("    GHOSTS {", "        string nope", "    }")).report.flaggedColumns,
+    ).toEqual([]);
+    const flow = `${FENCE}mermaid\ngraph LR\n    GHOSTS --> USERS\n${FENCE}`;
+    const text = `${FENCE}text\nerDiagram\n    GHOSTS ||--o{ USERS : x\n${FENCE}`;
+    for (const section of [flow, text]) expect(schemaCheckFindings(check(section).report)).toBe(0);
+  });
+});
 
-    const stored = checkSchemaClaims(diagram, STORED);
-    expect(stored.markdown).toContain("string ghost");
-    expect(stored.markdown).toContain("bool gesture_nav");
-    expect(stored.markdown).toContain(
-      '> **Not in the schema:** the diagram above shows `users.ghost`, which the live schema of "miniflux-pg" does not hold.',
+describe("judged: an Entity/Table heading and the field table under it", () => {
+  it("the heading's table name, marked in the heading line", () => {
+    const { markdown, report } = check(entity("ghosts", "| `a` | int |"));
+    expect(markdown.split("\n")[0]).toBe("### Entity: `ghosts` *(not in schema)*");
+    expect(report.unresolvedTables).toEqual(["ghosts"]);
+    // Its rows cannot be judged against a table that is not there.
+    expect(report.flaggedColumns).toEqual([]);
+  });
+
+  it("a name written without backticks, and one of several", () => {
+    expect(check(`### Table: ghosts\n\n${FIELD}| \`a\` | int |`).markdown.split("\n")[0]).toBe(
+      "### Table: ghosts *(not in schema)*",
+    );
+    const several = check(
+      `### Entities: \`users\` and \`ghosts\`\n\n${FIELD}| \`users.id\` | int |`,
+    );
+    expect(several.markdown.split("\n")[0]).toBe(
+      "### Entities: `users` and `ghosts` *(not in schema)*",
     );
   });
 
-  it("corrects a near miss in a diagram only against a live schema", () => {
-    const diagram =
-      "```mermaid\nerDiagram\n    INTEGRATIONS {\n        string google_reader_username\n    }\n```";
-    expect(checkSchemaClaims(diagram, LIVE).markdown).toContain("string googlereader_username");
-    const stored = checkSchemaClaims(diagram, STORED);
-    expect(stored.markdown).toContain("string google_reader_username");
-    expect(stored.report.flaggedColumns).toEqual(["integrations.google_reader_username"]);
+  it("a backticked name in the first cell is a column of the heading's table", () => {
+    const { markdown, report } = check(entity("users", "| `id` | int |\n| `nope` | int |"));
+    expect(markdown).toContain("| `nope` *(not in schema)* | int |");
+    expect(report.flaggedColumns).toEqual(["users.nope"]);
   });
 
-  it("checks qualified rows under a heading that names several tables", () => {
-    const section =
-      "### Entities: `users` and `feeds`\n\n| Field | Type |\n|---|---|\n| `users.id` | int |\n" +
-      "| `feeds.ghost` | int |\n| `username` | string |\n| `nothing_here` | string |";
-    const { report, markdown } = checkSchemaClaims(section, LIVE);
-    // `feeds.ghost` names its table. A bare name under two tables does not, so
-    // it is in neither and is marked, not removed.
-    expect(report.removedColumns).toEqual(["feeds.ghost"]);
-    expect(report.flaggedColumns).toEqual(["users.nothing_here"]);
-    expect(markdown).toContain("| `nothing_here` *(not in schema)* | string |");
-    expect(markdown).toContain("| `username` | string |");
+  it("prose between the heading and its table changes nothing (M-b)", () => {
+    const rows = "| `id` | bigint |\n| `error_counter` | int |";
+    const direct = check(entity("feeds", rows));
+    const withProse = check(entity("feeds", rows, "Stores subscriptions.\n\n"));
+    expect(withProse.report).toEqual(direct.report);
+    expect(withProse.report.flaggedColumns).toEqual(["feeds.error_counter"]);
+    expect(withProse.markdown).toContain("| `error_counter` *(not in schema)* | int |");
   });
 
-  it("does not judge bare rows when the heading also names something unknown", () => {
-    const section =
-      "### Entities: `users` and `ghosts`\n\n| Field | Type |\n|---|---|\n| `spooky` | int |\n" +
-      "| `users.spooky` | int |";
-    const { report, markdown } = checkSchemaClaims(section, LIVE);
-    expect(report.unresolvedTables).toEqual(["ghosts"]);
-    expect(markdown).toContain("| `spooky` | int |");
-    expect(report.removedColumns).toEqual(["users.spooky"]);
+  it("every name of a shared cell, and the words around them stay (was: rebuilt)", () => {
+    const row = "| `username` (login) and `fever_password` — legacy | text |";
+    const { markdown } = check(entity("users", row));
+    expect(markdown).toContain(
+      "| `username` (login) and `fever_password` *(not in schema)* — legacy | text |",
+    );
   });
 
-  it("marks an invented FK target and leaves the row in place", () => {
-    const section =
-      "### Entity: `feeds`\n\n| Field | Type | Constraint |\n|---|---|---|\n" +
-      "| `user_id` | int | FK → `users.ghost_id` |";
-    const { report, markdown } = checkSchemaClaims(section, LIVE);
-    expect(report.flaggedColumns).toEqual(["users.ghost_id"]);
-    expect(report.removedColumns).toEqual([]);
-    expect(markdown).toContain("| `user_id` | int | FK → `users.ghost_id` *(not in schema)* |");
+  it("a dotted name whose qualifier is one of the heading's own tables", () => {
+    const section = `### Entities: \`users\` and \`feeds\`\n\n${FIELD}| \`users.id\` | int |\n| \`feeds.external_icon_id\` | string |\n| \`public.feeds.nope\` | int |`;
+    const { markdown, report } = check(section);
+    expect(report.flaggedColumns).toEqual(["feeds.external_icon_id", "feeds.nope"]);
+    expect(markdown).toContain("| `feeds.external_icon_id` *(not in schema)* | string |");
   });
 
-  it("aligns slash-separated types with slash-separated names", () => {
-    const section =
-      "### Entity: `users`\n\n| Field | Type |\n|---|---|\n| `is_admin` / `gesture_nav` | bool/bool |\n" +
-      "| `username` / `ghost` | string/int |";
-    const { report, markdown } = checkSchemaClaims(section, LIVE);
+  it("a bare name is not attributed when the heading also names something unknown", () => {
+    const section = `### Entities: \`users\` and \`ghosts\`\n\n${FIELD}| \`haunted\` | int |\n| \`users.nope\` | int |`;
+    // `haunted` may be a column of `ghosts`, which is not in the schema.
+    expect(check(section).report.flaggedColumns).toEqual(["users.nope"]);
+  });
+
+  it("a type that cannot describe the column: in the note, never in the cell", () => {
+    const section = entity("users", "| `gesture_nav` | bool |\n| `is_admin` | int |");
+    const { markdown, report } = check(section);
+    expect(markdown).toBe(section);
     expect(report.typeMismatches).toEqual([
       { column: "users.gesture_nav", written: "bool", schema: "text" },
     ]);
-    expect(markdown).toContain("bool/bool *(schema: `gesture_nav` is `text`)*");
-    expect(markdown).toContain("| `username` | string |");
   });
 
-  it("leaves an unclosed fence and a table at the end of the text intact", () => {
-    const open = "```mermaid\nerDiagram\n    GHOSTS ||--o{ USERS : haunt";
-    expect(checkSchemaClaims(open, LIVE).markdown.startsWith(open)).toBe(true);
-    const tail = "### Entity: `users`\n\n| Field | Type |\n|---|---|";
-    expect(checkSchemaClaims(tail, LIVE).markdown).toBe(tail);
+  it("a type is compared only when the name means one table (panel: untested guard)", () => {
+    const twins = liveInventory(
+      [
+        table("users", { id: "integer", flag: "text" }, { read: 0 }),
+        table("users", { id: "integer", flag: "boolean" }, { read: 1 }),
+      ],
+      [
+        { connector: "a", how: "live", schemas: ["public"] },
+        { connector: "b", how: "live", schemas: ["public"] },
+      ],
+    );
+    expect(check(entity("users", "| `flag` | bool |"), twins).report.typeMismatches).toEqual([]);
+    expect(
+      check(diagram("    USERS {", "        bool flag", "    }"), twins).report.typeMismatches,
+    ).toEqual([]);
+    // And is compared when it means one.
+    const one = liveInventory([twins.tables[0]]);
+    expect(check(entity("users", "| `flag` | bool |"), one).report.typeMismatches).toHaveLength(1);
   });
 });
 
-describe("parsing helpers", () => {
-  it("parseHeading reads names only from a labelled heading", () => {
-    expect(parseHeading("### Entity: `jobs` (feed-refresh queue table)")).toEqual({
-      names: ["jobs"],
-    });
-    expect(parseHeading("### Entities: `icons` and `feed_icons`")).toEqual({
-      names: ["icons", "feed_icons"],
-    });
-    expect(parseHeading("### Tables: users, feeds and entries")).toEqual({
-      names: ["users", "feeds", "entries"],
-    });
-    expect(parseHeading("#### table: public.users")).toEqual({ names: ["public.users"] });
-    for (const other of [
-      "#### `users`",
-      "### Sessions",
-      "#### `Feed` struct",
-      "### Data Stores and Selection Rationale",
-      "### Entity: the job queue, briefly described here",
-      "### Entity:",
-    ]) {
-      expect(parseHeading(other)).toEqual({ names: [] });
-    }
-    expect(parseHeading("# Title")).toBeNull();
-    expect(parseHeading("####### too deep")).toBeNull();
-    expect(parseHeading("#hashtag")).toBeNull();
-    expect(parseHeading("plain text")).toBeNull();
+describe("judged: a table of tables", () => {
+  it("a backticked name in the first cell of a table headed Table", () => {
+    const section =
+      "| Table | Purpose |\n|---|---|\n| `users` | accounts |\n| `audit_log` | history |\n| plain text | — |";
+    const { markdown, report } = check(section);
+    expect(markdown).toContain("| `audit_log` *(not in schema)* | history |");
+    expect(markdown).toContain("| `users` | accounts |");
+    expect(report.unresolvedTables).toEqual(["audit_log"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What is not judged
+// ---------------------------------------------------------------------------
+
+describe("not judged, and left exactly as written", () => {
+  it("every cell but the first: a Go expression, a JSON path, a file name (panel)", () => {
+    const inventory = liveInventory([...TABLES, table("settings", { id: "integer" })]);
+    const section =
+      "### Entity: `users`\n\n| Field | Type | Constraint | Description |\n|---|---|---|---|\n" +
+      "| `id` | int | FK → `users.ghost_id` | iterated as `users.Len`; see `users.CreatedAt`, `settings.theme` and `feeds.go` |";
+    const { markdown, report } = check(section, inventory);
+    expect(markdown).toBe(section);
+    expect(schemaCheckFindings(report)).toBe(0);
   });
 
-  it("splitCells honours an escaped pipe; codeSpans ignores an unclosed span", () => {
-    expect(splitCells("| a \\| b | c |").map((cell) => cell.text)).toEqual([" a \\| b ", " c "]);
-    expect(splitCells("no table here")).toEqual([]);
-    expect(codeSpans("`a` and `b.c` and `open")).toEqual(["a", "b.c"]);
+  it("a row whose Type says index, constraint, key or relation: listed, not marked (M-a)", () => {
+    const rows = [
+      "| `index_users_on_email` | btree |",
+      "| `users_email_unique` | UNIQUE (email) |",
+      "| `users_org_id_foreign` | FK |",
+      "| `enclosures` | relation |",
+      "| `whatever` | unique index |",
+      "| `id` | primary key |",
+    ].join("\n");
+    const section = entity("users", rows);
+    const { markdown, report } = check(section);
+    expect(markdown).toBe(section);
+    expect(report.flaggedColumns).toEqual([]);
+    expect(notChecked(report, "not-a-column")).toEqual([
+      "users.index_users_on_email",
+      "users.users_email_unique",
+      "users.users_org_id_foreign",
+      "users.enclosures",
+      "users.whatever",
+    ]);
   });
 
-  it("typeFamily reads model and database spellings", () => {
-    expect(typeFamily("int64")).toBe("number");
-    expect(typeFamily("*int64")).toBe("number");
-    expect(typeFamily("uint32")).toBe("number");
-    expect(typeFamily("numeric(10,2)")).toBe("number");
-    expect(typeFamily("character varying(255)")).toBe("text");
-    expect(typeFamily("timestamp with time zone")).toBe("temporal");
-    expect(typeFamily("[]byte")).toBe("binary");
-    expect(typeFamily("bytea")).toBe("binary");
-    expect(typeFamily("jsonb")).toBe("json");
-    expect(typeFamily("boolean")).toBe("boolean");
-    for (const unknown of ["", "—", "ARRAY", "text[]", "_text", "USER-DEFINED", "tinyint", "x9"]) {
-      expect(typeFamily(unknown)).toBeNull();
+  it("but a column type that only mentions an index or a key is still a column (M-b)", () => {
+    const rows = "| `error_counter` | integer (indexed) |\n| `nope` | BIGSERIAL PRIMARY KEY |";
+    expect(check(entity("users", rows)).report.flaggedColumns).toEqual([
+      "users.error_counter",
+      "users.nope",
+    ]);
+  });
+
+  it("a name shaped like an index or a key, with or without a Type column (M-a)", () => {
+    const typed = check(entity("users", "| `users_pkey` | — |\n| `idx_users_email` | — |"));
+    expect(typed.report.flaggedColumns).toEqual([]);
+    expect(notChecked(typed.report, "not-a-column")).toEqual([
+      "users.users_pkey",
+      "users.idx_users_email",
+    ]);
+    const untyped = check(
+      "### Entity: `users`\n\n| Field | Description |\n|---|---|\n| `unique_email` | UNIQUE constraint on email |",
+    );
+    expect(untyped.report.flaggedColumns).toEqual([]);
+    expect(notChecked(untyped.report, "not-a-column")).toEqual(["users.unique_email"]);
+  });
+
+  it("a dotted name whose qualifier is not the heading's table: listed, not marked", () => {
+    const inventory = liveInventory([...TABLES, table("settings", { id: "integer" })]);
+    const section = entity("users", "| `settings.theme` | string |\n| `model.Job` | struct |");
+    const { markdown, report } = check(section, inventory);
+    expect(markdown).toBe(section);
+    expect(notChecked(report, "not-a-column")).toEqual(["settings.theme", "model.Job"]);
+  });
+
+  it("a first cell that is not a name, or has no backticks", () => {
+    const section = entity("users", "| nope | int |\n| `UNIQUE(email)` | — |\n| — | — |");
+    expect(schemaCheckFindings(check(section).report)).toBe(0);
+  });
+
+  it("a later field table in the same sub-section, and one under any other heading", () => {
+    const later = `${entity("users", "| `id` | int |")}\n\n**Go struct \`UserSession\`:**\n\n${FIELD}| \`Token\` | string |`;
+    expect(schemaCheckFindings(check(later).report)).toBe(0);
+    for (const heading of ["#### `Feed` struct", "### Sessions", "### users"]) {
+      const section = `${heading}\n\n${FIELD}| \`nope\` | int |`;
+      expect(schemaCheckFindings(check(section).report)).toBe(0);
     }
-    expect(typesDisagree("int", "text")).toBe(true);
-    expect(typesDisagree("bool", "text")).toBe(true);
-    expect(typesDisagree("string", "bytea")).toBe(true);
+  });
+
+  it("a field table after another heading: the Entity heading's context ends there", () => {
+    const section = `### Entity: \`users\`\n\nAccounts.\n\n#### \`UserSession\` struct\n\n${FIELD}| \`Token\` | string |`;
+    const { markdown, report } = check(section);
+    expect(markdown).toBe(section);
+    expect(schemaCheckFindings(report)).toBe(0);
+  });
+
+  it("the type of a cell that names several columns: which one it describes is not known", () => {
+    const section = entity("users", "| `id` / `gesture_nav` | int |");
+    expect(check(section).report.typeMismatches).toEqual([]);
+    // Alone in its cell, the same type is compared.
+    expect(check(entity("users", "| `gesture_nav` | int |")).report.typeMismatches).toHaveLength(1);
+  });
+
+  it("a heading with no field table under it, and a table that is not a field table", () => {
+    expect(schemaCheckFindings(check("### Table: Feature comparison\n\nProse.").report)).toBe(0);
+    const stores = "### Entity: `ghosts`\n\n| Store | Role |\n|---|---|\n| `ghosts` | none |";
+    expect(schemaCheckFindings(check(stores).report)).toBe(0);
+  });
+
+  it("a name its own heading or row calls a view: listed, not marked", () => {
+    const heading = check(`### Entity: \`active_users\` (view)\n\n${FIELD}| \`id\` | int |`);
+    expect(heading.report.unresolvedTables).toEqual([]);
+    expect(notChecked(heading.report, "view")).toEqual(["active_users"]);
+    const roster = check("| Table | Purpose |\n|---|---|\n| `active_users` | a view over users |");
+    expect(roster.report.unresolvedTables).toEqual([]);
+    expect(notChecked(roster.report, "view")).toEqual(["active_users"]);
+    // Without the word it is judged.
+    const plain = check("| Table | Purpose |\n|---|---|\n| `active_users` | recent logins |");
+    expect(plain.report.unresolvedTables).toEqual(["active_users"]);
+  });
+
+  it("free prose", () => {
+    const prose =
+      "The `jobs` queue is an in-memory channel; `certificate_cache` wraps storage.\n\n- `ghosts.id` is not a thing";
+    expect(schemaCheckFindings(check(prose).report)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Not checked
+// ---------------------------------------------------------------------------
+
+describe("not checked: a name the read cannot speak for", () => {
+  const AUDIT_SHAPES: Record<string, string> = {
+    "inside the code span": "### Entity: `audit.users`",
+    "before the code span (B3)": "### Table: audit.`users`",
+    "in a parenthesis after it (B3)": "### Entity: `users` (audit schema)",
+    "each part in its own backticks (B3)": "### Entity: `audit`.`users`",
+    "without backticks": "### Table: audit.users",
+  };
+  for (const [name, heading] of Object.entries(AUDIT_SHAPES)) {
+    it(`a heading with a schema that was not read, ${name}`, () => {
+      const section = `${heading}\n\n${FIELD}| \`id\` | bigint |\n| \`actor_ip\` | inet |`;
+      const { markdown, report } = check(section);
+      // `public.users` has no `actor_ip`; the prefix is not dropped to say so.
+      expect(markdown).toBe(section);
+      expect(schemaCheckUnmatched(report)).toEqual([]);
+      expect(notChecked(report, "unread")).toEqual(["audit.users"]);
+    });
+  }
+
+  it("a diagram entity whose alias names another schema (B3)", () => {
+    const section = diagram('    USERS["audit.users"] {', "        inet actor_ip", "    }");
+    const { markdown, report } = check(section);
+    expect(markdown).toBe(section);
+    expect(schemaCheckUnmatched(report)).toEqual([]);
+    expect(notChecked(report, "unread")).toEqual(["audit.users"]);
+  });
+
+  it("an alias that is a caption, not a name, leaves the entity's own id", () => {
+    const section = diagram('    USERS["User accounts"] {', "        string nope", "    }");
+    expect(check(section).report.flaggedColumns).toEqual(["users.nope"]);
+  });
+
+  it("a roster name in an unread schema: listed, so it is not silently accepted (M-d)", () => {
+    const section = "| Table | Purpose |\n|---|---|\n| `worker.jobs` | refresh queue |";
+    const { markdown, report } = check(section);
+    expect(markdown).toBe(section);
+    expect(schemaCheckUnmatched(report)).toEqual([]);
+    expect(notChecked(report, "unread")).toEqual(["worker.jobs"]);
+    expect(renderSchemaCheckNotice(report, LIVE)).toContain(
+      "> - Not checked (outside the schemas that were read): `worker.jobs`.",
+    );
+  });
+
+  it("a name qualified with a database, which no read identifies", () => {
+    const { report } = check("| Table | Purpose |\n|---|---|\n| `warehouse.public.facts` | — |");
+    expect(schemaCheckUnmatched(report)).toEqual([]);
+    expect(notChecked(report, "unread")).toEqual(["warehouse.public.facts"]);
+  });
+
+  it("a qualified name in a schema that WAS read, and is not there, is marked", () => {
+    const { report } = check("| Table | Purpose |\n|---|---|\n| `public.ghosts` | — |");
+    expect(report.unresolvedTables).toEqual(["public.ghosts"]);
+    expect(report.notChecked).toEqual([]);
+  });
+
+  it("a qualified name is looked for in its own schema only", () => {
+    const inventory = liveInventory(
+      [
+        table("users", { id: "integer", email: "text" }),
+        table("users", { id: "integer", actor_ip: "inet" }, { schema: "audit" }),
+      ],
+      [{ connector: "pg", how: "live", schemas: ["audit", "public"] }],
+    );
+    const audit = check(
+      entity("audit.users", "| `actor_ip` | inet |\n| `email` | text |"),
+      inventory,
+    );
+    expect(audit.report.flaggedColumns).toEqual(["users.email"]);
+    // Unqualified, it can mean either: judged against both.
+    const either = check(entity("users", "| `actor_ip` | inet |\n| `email` | text |"), inventory);
+    expect(either.report.flaggedColumns).toEqual([]);
+  });
+
+  it("an unqualified name that does not resolve, with a database unread (panel)", () => {
+    const section = "| Table | Purpose |\n|---|---|\n| `b_table` | — |\n| `public.b_table` | — |";
+    const unread = check(section, ONE_UNREAD);
+    expect(unread.markdown).toBe(section);
+    expect(schemaCheckUnmatched(unread.report)).toEqual([]);
+    expect(notChecked(unread.report, "unread")).toEqual(["b_table", "public.b_table"]);
+    // Every database read: the same names are marked.
+    expect(check(section).report.unresolvedTables).toEqual(["b_table", "public.b_table"]);
+  });
+
+  it("the same in a heading and in a diagram", () => {
+    const heading = check(entity("ghosts", "| `a` | int |"), ONE_UNREAD);
+    expect(heading.report.unresolvedTables).toEqual([]);
+    expect(notChecked(heading.report, "unread")).toEqual(["ghosts"]);
+    const drawn = check(diagram("    USERS ||--o{ GHOSTS : haunts"), ONE_UNREAD);
+    expect(drawn.report.unresolvedTables).toEqual([]);
+    expect(notChecked(drawn.report, "unread")).toEqual(["GHOSTS"]);
+  });
+
+  it("a read that may have been cut short is not taken to hold every table", () => {
+    const truncated = liveInventory(TABLES, [
+      { connector: "ora", how: "live", schemas: ["public"], possiblyTruncated: true },
+    ]);
+    const { report } = check("| Table | Purpose |\n|---|---|\n| `zz_last` | — |", truncated);
+    expect(report.unresolvedTables).toEqual([]);
+    expect(notChecked(report, "unread")).toEqual(["zz_last"]);
+    expect(renderSchemaCheckNotice(report, truncated)).toContain(
+      '> - The read of "ora" reached the driver\'s row limit and may have been cut short',
+    );
+  });
+
+  it("a name that resolves is judged against what it resolved to, unread database or not", () => {
+    const { report } = check(entity("users", "| `nope` | int |"), ONE_UNREAD);
+    expect(report.flaggedColumns).toEqual(["users.nope"]);
+  });
+
+  it("repository SQL knows no schema: a qualified name can be any table of that name", () => {
+    const tables = REPO_SQL.tables.map((t) => ({ ...t, schema: "" }));
+    const inventory: SchemaInventory = { ...REPO_SQL, tables };
+    const { report } = check(
+      "| Table | Purpose |\n|---|---|\n| `public.users` | — |\n| `public.ghosts` | — |",
+      inventory,
+    );
+    expect(report.unresolvedTables).toEqual([]);
+    expect(notChecked(report, "unread")).toEqual(["public.ghosts"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Matching
+// ---------------------------------------------------------------------------
+
+describe("matching a table-level name", () => {
+  const roster = (...names: string[]): string =>
+    `| Table | Purpose |\n|---|---|\n${names.map((name) => `| \`${name}\` | — |`).join("\n")}`;
+
+  it("ignores case and underscores, and takes a singular for its plural", () => {
+    const inventory = liveInventory([
+      table("feed_icons", { id: "integer" }),
+      table("categories", { id: "integer" }),
+      table("boxes", { id: "integer" }),
+      table("user", { id: "integer" }),
+    ]);
+    const names = ["FeedIcon", "FEED_ICONS", "feedicons", "Category", "box", "users", "User"];
+    expect(check(roster(...names), inventory).report.unresolvedTables).toEqual([]);
+  });
+
+  it("`Stat` is not `states` and `Plan` is not `planes` (L1)", () => {
+    const inventory = liveInventory([
+      table("states", { id: "integer", name: "text" }),
+      table("planes", { id: "integer", tail_number: "text" }),
+    ]);
+    const { report } = check(roster("Stat", "Plan"), inventory);
+    expect(report.unresolvedTables).toEqual(["Stat", "Plan"]);
+    // So their rows are not judged against the wrong table.
+    const rows = check(entity("Stat", "| `Hits` | int |"), inventory);
+    expect(rows.report.flaggedColumns).toEqual([]);
+    expect(rows.report.unresolvedTables).toEqual(["Stat"]);
+  });
+
+  it("needs one result: two tables a plural could mean leave the name unresolved", () => {
+    const inventory = liveInventory([
+      table("boxs", { id: "integer" }),
+      table("boxes", { id: "integer" }),
+    ]);
+    expect(check(roster("box"), inventory).report.unresolvedTables).toEqual(["box"]);
+    // The exact name always wins.
+    expect(check(roster("boxes", "boxs"), inventory).report.unresolvedTables).toEqual([]);
+  });
+
+  it("numberVariants gives the conventional forms only", () => {
+    expect(numberVariants("stat")).toEqual(["stats"]);
+    expect(numberVariants("plan")).toEqual(["plans"]);
+    expect(numberVariants("box")).toEqual(["boxs", "boxes"]);
+    expect(numberVariants("category")).toEqual(["categorys", "categories"]);
+    expect(numberVariants("categories")).toEqual([
+      "categoriess",
+      "categorie",
+      "category",
+      "categorieses",
+    ]);
+    expect(numberVariants("boxes")).toEqual(["boxess", "boxe", "boxeses", "box"]);
+    // `stat` does not take `es`, so `states` is never read back to it.
+    expect(numberVariants("states")).toEqual(["statess", "state", "stateses"]);
+  });
+});
+
+describe("matching a column: the near-miss rule", () => {
+  it("marks with the schema's spelling, and writes nothing into the name", () => {
+    const section = entity("integrations", "| `GoogleReaderUsername` | string |");
+    const { markdown, report } = check(section);
+    expect(markdown).toContain(
+      "| `GoogleReaderUsername` *(not in schema; the schema has `googlereader_username`)* | string |",
+    );
+    expect(report.flaggedColumns).toEqual(["integrations.GoogleReaderUsername"]);
+    expect(renderSchemaCheckNotice(report, LIVE)).toContain(
+      "> - Columns not in the schema: `integrations.GoogleReaderUsername` (the schema has `googlereader_username`).",
+    );
+  });
+
+  it("suggests nothing when two columns collide after squashing", () => {
+    const inventory = liveInventory([table("t", { user_id: "integer", user__id: "integer" })]);
+    const { markdown, report } = check(entity("t", "| `UserId` | int |"), inventory);
+    expect(markdown).toContain("| `UserId` *(not in schema)* | int |");
+    expect(report.suggestions).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No schema
+// ---------------------------------------------------------------------------
+
+describe("no schema to check against", () => {
+  it("changes nothing and reports nothing", () => {
+    for (const inventory of [NO_SCHEMA_INVENTORY, liveInventory([])]) {
+      const { markdown, report } = checkSchemaClaims(RUN7, inventory);
+      expect(markdown).toBe(RUN7);
+      expect(report.checked).toBe(false);
+      expect(schemaCheckFindings(report)).toBe(0);
+    }
+  });
+
+  it("says so at the top of the section instead of inventing a verdict", () => {
+    const { markdown } = applySchemaGrounding(RUN7, NO_SCHEMA_INVENTORY);
+    expect(markdown.split("\n")[2]).toMatch(/^> \*\*Schema not verified\.\*\* No database schema/);
+    expect(markdown).not.toContain("not in schema");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The note and the section
+// ---------------------------------------------------------------------------
+
+describe("renderSchemaCheckNotice: one note says everything", () => {
+  it("says that nothing was removed, and why a mark is not a verdict", () => {
+    const notice = renderSchemaCheckNotice(check(RUN7).report, LIVE);
+    expect(notice.split("\n")[0]).toBe(
+      "> **Schema check.** The table and column names in this section's diagrams, entity " +
+        'headings, field tables and table lists were compared with the live schema of "miniflux-pg". ' +
+        "Nothing was removed or changed: a name that could not be matched is marked **not in schema** " +
+        "where it stands. A database read can be incomplete (it covers one schema, and a role may " +
+        "not see every column), so a marked name is one to verify, not necessarily a mistake.",
+    );
+    expect(notice).not.toMatch(/[Rr]emoved,|corrected/);
+  });
+
+  it("lists each kind of finding, and each reason a name was not checked", () => {
+    const section = [
+      diagram("    USERS ||--o{ GHOSTS : haunts", "    USERS {", "        widget gadget", "    }"),
+      entity("users", "| `nope` | int |\n| `users_pkey` | — |\n| `gesture_nav` | bool |"),
+      "| Table | Purpose |\n|---|---|\n| `audit.events` | — |\n| `recent` | a view |",
+    ].join("\n\n");
+    const notice = renderSchemaCheckNotice(check(section).report, LIVE);
+    expect(notice.split("\n").slice(1)).toEqual([
+      "> - Named as tables, not in the schema: `GHOSTS`.",
+      "> - Columns not in the schema: `users.nope`.",
+      "> - Of these, in a diagram, which is left exactly as written and so carries no mark: `GHOSTS`.",
+      "> - Types that differ from the schema: `users.gesture_nav` (written `bool`, schema `text`).",
+      "> - Not checked (outside the schemas that were read): `audit.events`.",
+      "> - Not checked (an index, constraint, key or relation row, or a name that is not a plain column name): `users.users_pkey`.",
+      "> - Not checked (described as a view, which the schema that was read does not list as one): `recent`.",
+      "> - Not checked (a diagram line whose column name could not be told from its type): `users: widget gadget`.",
+    ]);
+  });
+
+  it("is empty when the check has nothing to say", () => {
+    const clean = entity("users", "| `id` | int |");
+    expect(renderSchemaCheckNotice(check(clean).report, LIVE)).toBe("");
+  });
+
+  it("caps how many names a line lists", () => {
+    const rows = Array.from({ length: 20 }, (_, n) => `| \`ghost_${n}\` | int |`).join("\n");
+    const { report } = check(entity("users", rows));
+    expect(report.flaggedColumns).toHaveLength(20);
+    expect(renderSchemaCheckNotice(report, LIVE)).toContain("`users.ghost_11` and 8 more.");
+  });
+
+  it("counts: unmatched is what is marked; findings also count types and not-checked", () => {
+    const section = `${entity("users", "| `nope` | int |\n| `gesture_nav` | bool |")}\n\n| Table | Purpose |\n|---|---|\n| \`audit.events\` | — |\n| \`ghosts\` | — |`;
+    const { report } = check(section);
+    expect(schemaCheckUnmatched(report)).toEqual(["ghosts", "users.nope"]);
+    expect(schemaCheckFindings(report)).toBe(4);
   });
 });
 
 describe("applySchemaGrounding", () => {
-  it("puts the notice under the heading and the reference before the first sub-section", () => {
+  it("puts the note under the heading and the reference before the first sub-section", () => {
     const { markdown } = applySchemaGrounding(RUN7, LIVE);
     const lines = markdown.split("\n");
     expect(lines[0]).toBe("## Data Architecture");
-    expect(lines[2]).toBe(
-      '> **Schema check.** The tables and columns in this section were checked against the live schema of "miniflux-pg".',
-    );
+    expect(lines[2]).toMatch(/^> \*\*Schema check\.\*\* /);
     const reference = markdown.indexOf("### Schema Reference");
     expect(reference).toBeGreaterThan(markdown.indexOf("FEEDS ||--o{ JOBS"));
     expect(reference).toBeLessThan(markdown.indexOf("### Entity: `users`"));
@@ -543,24 +1061,7 @@ describe("applySchemaGrounding", () => {
     expect(markdown).toContain("| key | character varying |");
   });
 
-  it("lists every kind of finding in the notice", () => {
-    const { report } = checkSchemaClaims(RUN7, LIVE);
-    const notice = renderSchemaCheckNotice(report, LIVE);
-    expect(notice).toContain("> - Named as tables but not in the schema: `ENTRY_TAGS`, `JOBS`");
-    expect(notice).toContain(
-      "> - Removed, because the table has no such column: `feeds.error_counter`",
-    );
-    expect(notice).toContain(
-      "> - Types that differ from the schema: `users.gesture_nav` (written `bool`, schema `text`).",
-    );
-    expect(notice).toContain(
-      "> - Spelling corrected to the schema's: `integrations.google_reader_username`",
-    );
-    const stored = renderSchemaCheckNotice(checkSchemaClaims(RUN7, STORED).report, STORED);
-    expect(stored).toContain("> - Columns not found in the schema: `feeds.error_counter`");
-  });
-
-  it("adds the reference and no notice to a section with nothing wrong", () => {
+  it("adds the reference and no note to a section with nothing wrong", () => {
     const clean = "## Data Architecture\n\nOne store.\n\n### Data Stores\n\nPostgreSQL.";
     const { markdown, report } = applySchemaGrounding(clean, LIVE);
     expect(schemaCheckFindings(report)).toBe(0);
@@ -595,365 +1096,120 @@ describe("applySchemaGrounding", () => {
     );
   });
 
-  it("caps how many names a note lists", () => {
-    const rows = Array.from({ length: 20 }, (_, n) => `| \`ghost_${n}\` | int |`).join("\n");
-    const section = `### Entity: \`users\`\n\n| Field | Type |\n|---|---|\n${rows}`;
-    const { report } = checkSchemaClaims(section, LIVE);
-    expect(report.removedColumns).toHaveLength(20);
-    expect(renderSchemaCheckNotice(report, LIVE)).toContain("`users.ghost_11` and 8 more.");
+  it("leaves an unclosed fence and a table at the end of the text intact", () => {
+    const unclosed = "```mermaid\nerDiagram\n    USERS ||--o{ GHOSTS : x";
+    expect(check(unclosed).markdown).toBe(unclosed);
+    expect(check(unclosed).report.unresolvedTables).toEqual(["GHOSTS"]);
+    const tail = entity("users", "| `nope` | int |");
+    expect(check(tail).markdown.endsWith("| `nope` *(not in schema)* | int |")).toBe(true);
   });
 });
 
-/**
- * "Read live" does not mean "read completely" (#1061 review, blocking). The
- * fixtures above have one connector and one schema, which is the one case where
- * the two are the same thing; these do not.
- */
-describe("checkSchemaClaims — what the read proves decides what may be removed", () => {
-  const USERS_COLUMNS = { id: "text", email: "text" };
-  const entity = (name: string, rows: string[]): string =>
-    `### Entity: \`${name}\`\n\n| Field | Type |\n|---|---|\n` +
-    rows.map((row) => `| \`${row}\` | text |`).join("\n");
-  const untouched = (markdown: string, inventory: SchemaInventory): void => {
-    const checked = checkSchemaClaims(markdown, inventory);
-    expect(checked.markdown).toBe(markdown);
-    expect(schemaCheckFindings(checked.report)).toBe(0);
-    // Nothing in the report, so the section carries no "Schema check" note.
-    expect(renderSchemaCheckNotice(checked.report, inventory)).toBe("");
-  };
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-  it("an empty result beside a non-empty one: the invented column is marked, not removed", () => {
-    // Connector B answered with no tables (what a role without grants gets), so
-    // it is unread. `users.ghost` may be B's, and nothing proves otherwise.
-    const partial = liveInventory(
-      [table("users", USERS_COLUMNS)],
-      [
-        { connector: "A", how: "live", schemas: ["public"] },
-        { connector: "B", how: "unread", schemas: [] },
-      ],
-    );
-    const { report, markdown } = checkSchemaClaims(entity("users", ["id", "ghost"]), partial);
-    expect(report.removedColumns).toEqual([]);
-    expect(report.flaggedColumns).toEqual(["users.ghost"]);
-    expect(markdown).toContain("| `ghost` *(not in schema)* | text |");
-    // The same section against A alone, fully read: now it is proven.
-    const whole = liveInventory([table("users", USERS_COLUMNS)]);
-    expect(
-      checkSchemaClaims(entity("users", ["id", "ghost"]), whole).report.removedColumns,
-    ).toEqual(["users.ghost"]);
-  });
+describe("parsing helpers", () => {
+  const names = (line: string): string[] | null =>
+    parseHeading(line)?.names.map((entry) => entry.name) ?? null;
 
-  it("a database known only from a stored graph beside a live one: marked, not removed", () => {
-    const mixed: SchemaInventory = {
-      ...liveInventory(
-        [table("users", USERS_COLUMNS), table("orders", { id: "integer" }, { read: 1 })],
-        [
-          { connector: "A", how: "live", schemas: ["public"] },
-          { connector: "B", how: "stored", schemas: ["public"] },
-        ],
-      ),
-      source: "schema-graph",
-    };
-    const { report } = checkSchemaClaims(entity("users", ["ghost"]), mixed);
-    expect(report.removedColumns).toEqual([]);
-    expect(report.flaggedColumns).toEqual(["users.ghost"]);
-  });
-
-  it("a table whose own schema is not in what its connector returned is not live", () => {
-    // The read record says `public` was read; a table claiming `audit` under
-    // that read was not proven by it.
-    const odd = liveInventory([table("users", USERS_COLUMNS, { schema: "audit" })]);
-    const { report } = checkSchemaClaims(entity("users", ["ghost"]), odd);
-    expect(report.removedColumns).toEqual([]);
-    expect(report.flaggedColumns).toEqual(["users.ghost"]);
-  });
-
-  describe("two schemas with a same-named table, both read", () => {
-    const both = liveInventory(
-      [
-        table("users", USERS_COLUMNS),
-        table("users", { id: "text", actor_ip: "text" }, { schema: "audit" }),
-      ],
-      [{ connector: "A", how: "live", schemas: ["audit", "public"] }],
-    );
-
-    it("an unqualified name is ambiguous: judged against both, marked at most", () => {
-      const { report, markdown } = checkSchemaClaims(
-        entity("users", ["email", "actor_ip", "ghost"]),
-        both,
-      );
-      // `email` is public.users', `actor_ip` is audit.users': both are real.
-      expect(markdown).toContain("| `email` | text |");
-      expect(markdown).toContain("| `actor_ip` | text |");
-      expect(report.removedColumns).toEqual([]);
-      expect(report.flaggedColumns).toEqual(["users.ghost"]);
-    });
-
-    it("a qualified name is resolved in its own schema only", () => {
-      // The reproduction from the review: `audit.users.actor_ip` is real and
-      // was removed, because the prefix was dropped and `public.users` judged.
-      const audit = checkSchemaClaims(entity("audit.users", ["id", "actor_ip"]), both);
-      expect(audit.markdown).toBe(entity("audit.users", ["id", "actor_ip"]));
-      expect(schemaCheckFindings(audit.report)).toBe(0);
-      // And the other way: `actor_ip` is NOT a column of `public.users`.
-      const pub = checkSchemaClaims(entity("public.users", ["id", "actor_ip"]), both);
-      expect(pub.report.removedColumns).toEqual(["users.actor_ip"]);
-      expect(pub.markdown).not.toContain("actor_ip");
-    });
-
-    it("a qualified name in a schema that WAS read, and is not there, is marked", () => {
-      const { report, markdown } = checkSchemaClaims(entity("audit.ghosts", ["id"]), both);
-      expect(report.unresolvedTables).toEqual(["audit.ghosts"]);
-      expect(markdown).toContain("> **Not in the schema:** `audit.ghosts` is not a table");
-    });
-  });
-
-  it("same-named tables in two connectors: marked at most, never removed", () => {
-    const two = liveInventory(
-      [table("users", USERS_COLUMNS), table("users", { id: "integer", plan: "text" }, { read: 1 })],
-      [
-        { connector: "A", how: "live", schemas: ["public"] },
-        { connector: "B", how: "live", schemas: ["public"] },
-      ],
-    );
-    for (const name of ["users", "public.users"]) {
-      const { report } = checkSchemaClaims(entity(name, ["plan", "ghost"]), two);
-      expect(report.removedColumns).toEqual([]);
-      expect(report.flaggedColumns).toEqual(["users.ghost"]);
-    }
-    // In a diagram too: the line stays, and no type is rewritten for a name
-    // that means two tables.
-    const diagram =
-      "```mermaid\nerDiagram\n    USERS {\n        int ghost\n        int plan\n    }\n```";
-    const checked = checkSchemaClaims(diagram, two);
-    expect(checked.markdown).toContain("        int ghost");
-    expect(checked.markdown).toContain("        int plan");
-    expect(checked.report.typeMismatches).toEqual([]);
-  });
-
-  describe("a name qualified with a schema that was NOT read is not judged", () => {
-    // LIVE read `public` of one database. Nothing is known about `audit`.
-    it("in an entity heading and its rows: nothing removed, nothing marked, no note", () => {
-      untouched(entity("audit.users", ["id", "actor_ip"]), LIVE);
-      untouched(entity("audit.ghosts", ["anything"]), LIVE);
-      // Nor against a stored graph or repository SQL.
-      untouched(entity("audit.users", ["id", "actor_ip"]), STORED);
-      untouched(entity("audit.users", ["id", "actor_ip"]), REPO_SQL);
-    });
-
-    it("in a roster row, a diagram and an FK cell", () => {
-      untouched("| Table | Purpose |\n|---|---|\n| `audit.events` | Audit trail |", LIVE);
-      untouched(
-        '```mermaid\nerDiagram\n    "audit.events" {\n        int ghost\n    }\n' +
-          '    USERS ||--o{ "audit.events" : logs\n```',
-        LIVE,
-      );
-      untouched(
-        "### Entity: `users`\n\n| Field | Type | Constraint |\n|---|---|---|\n" +
-          "| `id` | int | referenced by `audit.events.user_id` |",
-        LIVE,
-      );
-    });
-
-    it("nor is a name qualified with a database, which no read identifies", () => {
-      untouched(entity("warehouse.public.users", ["ghost"]), LIVE);
-    });
-
-    it("and the section raises no warning and gets no note", () => {
-      const { markdown, report } = applySchemaGrounding(
-        `## Data Architecture\n\n${entity("audit.users", ["id", "actor_ip"])}`,
-        LIVE,
-      );
-      expect(schemaCheckUnmatched(report)).toEqual([]);
-      expect(markdown).not.toContain("Schema check.");
-      expect(markdown).not.toContain("not in schema");
-      expect(markdown).toContain("| `actor_ip` | text |");
-    });
-  });
-
-  it("a qualified name in a schema that was read is judged, and may be removed", () => {
-    const { report, markdown } = checkSchemaClaims(entity("public.users", ["id", "ghost"]), LIVE);
-    expect(report.removedColumns).toEqual(["users.ghost"]);
-    expect(markdown).not.toContain("ghost");
-    expect(
-      checkSchemaClaims(entity("public.ghosts", ["id"]), LIVE).report.unresolvedTables,
-    ).toEqual(["public.ghosts"]);
-  });
-});
-
-describe("checkSchemaClaims — the heading's context covers one table (#1061 review)", () => {
-  const settings = liveInventory([
-    table("users", { id: "integer", email: "text", settings: "jsonb" }),
-    table("settings", { id: "integer" }),
-  ]);
-  const untouched = (markdown: string): void => {
-    const checked = checkSchemaClaims(markdown, settings);
-    expect(checked.markdown).toBe(markdown);
-    expect(schemaCheckFindings(checked.report)).toBe(0);
-  };
-  const HEAD = "### Entity: `users`\n\n| Field | Type |\n|---|---|\n| `id` | int |\n";
-
-  it("a later field table in the same sub-section is not the heading's", () => {
-    // The review's reproduction: `Token` was removed as `users.Token`.
-    untouched(
-      `${HEAD}\n**Go struct UserSession:**\n\n| Field | Type |\n|---|---|\n| \`Token\` | string |`,
-    );
-    untouched(`${HEAD}\n| Field | Type |\n|---|---|\n| \`Token\` | string |`);
-  });
-
-  it("a table with anything but blank lines between it and the heading is not read", () => {
-    for (const between of [
-      "**Go struct UserSession:**",
-      "The session object, as the handler sees it.",
-      "- one\n- two",
-      "```go\ntype UserSession struct{}\n```",
-    ]) {
-      untouched(
-        `### Entity: \`users\`\n\n${between}\n\n| Field | Type |\n|---|---|\n| \`Token\` | string |`,
-      );
+  it("parseHeading reads names only from a labelled heading", () => {
+    expect(names("### Entity: `users`")).toEqual(["users"]);
+    expect(names("### Entities: `icons` and `feed_icons`")).toEqual(["icons", "feed_icons"]);
+    expect(names("#### Table: users")).toEqual(["users"]);
+    expect(names("### Tables: users, feeds & entries")).toEqual(["users", "feeds", "entries"]);
+    expect(names("### Entity: `jobs` (feed-refresh queue table)")).toEqual(["jobs"]);
+    expect(names("### Entity: The user account record itself")).toEqual([]);
+    expect(names("### Entity: `not a name`")).toEqual([]);
+    expect(names("#### `Feed` struct")).toEqual([]);
+    expect(names("### Sessions")).toEqual([]);
+    for (const line of ["# Title", "####### deep", "###nospace", "plain", "| a | b |"]) {
+      expect(parseHeading(line)).toBeNull();
     }
   });
 
-  it("but the heading's own name is still judged there, and only marked", () => {
-    const section =
-      "### Entity: `ghosts`\n\nA paragraph first.\n\n| Field | Type |\n|---|---|\n| `x` | int |";
-    const { report, markdown } = checkSchemaClaims(section, settings);
-    expect(report.unresolvedTables).toEqual(["ghosts"]);
-    expect(markdown).toContain("| `x` | int |");
+  it("parseHeading reads the schema from the whole heading, not only the code span", () => {
+    expect(names("### Table: audit.`users`")).toEqual(["audit.users"]);
+    expect(names("### Entity: `audit`.`users`")).toEqual(["audit.users"]);
+    expect(names("### Entity: `users` (audit schema)")).toEqual(["audit.users"]);
+    expect(names("### Entity: `users` (in the audit schema)")).toEqual(["audit.users"]);
+    expect(names("### Entity: `users` (schema: audit)")).toEqual(["audit.users"]);
+    expect(names("### Entity: `users` (schema `audit`)")).toEqual(["audit.users"]);
+    // Names no schema, or already has one, or there are several names.
+    expect(names("### Entity: `users` (the default schema)")).toEqual(["users"]);
+    expect(names("### Entity: `app.users` (audit schema)")).toEqual(["app.users"]);
+    expect(names("### Entities: `a` and `b` (audit schema)")).toEqual(["a", "b"]);
   });
 
-  it("the first table directly under the heading IS read", () => {
-    const { report } = checkSchemaClaims(`${HEAD}| \`ghost\` | int |`, settings);
-    expect(report.removedColumns).toEqual(["users.ghost"]);
-  });
-
-  it("a path into a JSON column is not a column claim, even when a table has that name", () => {
-    untouched(`${HEAD}| \`settings.theme\` | string |`);
-    // Nor any dotted name whose qualifier is not the heading's table.
-    untouched(`${HEAD}| \`settings.ghost\` | string |\n| \`model.Theme\` | string |`);
-    // The heading's own table as qualifier is a claim.
-    expect(
-      checkSchemaClaims(`${HEAD}| \`users.ghost\` | string |`, settings).report.removedColumns,
-    ).toEqual(["users.ghost"]);
-  });
-
-  it("a row whose Type says index, constraint or key is not a column claim", () => {
-    for (const type of [
-      "index",
-      "unique index",
-      "**Index**",
-      "constraint",
-      "primary key",
-      "trigger",
-    ]) {
-      untouched(`${HEAD}| \`users_email_lookup\` | ${type} |`);
-    }
-  });
-
-  it("a name shaped like an index or key is marked at most", () => {
-    for (const name of ["idx_users_email", "users_pkey", "users_email_key", "fk_users_org"]) {
-      const { report, markdown } = checkSchemaClaims(`${HEAD}| \`${name}\` | text |`, settings);
-      expect(report.removedColumns).toEqual([]);
-      expect(report.flaggedColumns).toEqual([`users.${name}`]);
-      expect(markdown).toContain(`| \`${name}\` *(not in schema)* | text |`);
-    }
-  });
-});
-
-describe("checkSchemaClaims — entity names and views (#1061 review)", () => {
-  const icons = liveInventory([
-    table("feed_icons", { feed_id: "bigint", icon_id: "bigint" }),
-    table("users", { id: "integer" }),
-  ]);
-  const clean = (markdown: string, inventory = icons): void => {
-    const checked = checkSchemaClaims(markdown, inventory);
-    expect(checked.markdown).toBe(markdown);
-    expect(schemaCheckFindings(checked.report)).toBe(0);
-  };
-
-  it("resolves a PascalCase, singular or differently-cased entity name", () => {
-    for (const name of ["FeedIcon", "FeedIcons", "FEED_ICON", "feed_icon", "feedIcons", "User"]) {
-      clean(`\`\`\`mermaid\nerDiagram\n    ${name} ||--o{ USERS : belongs_to\n\`\`\``);
-      clean(`| Table | Purpose |\n|---|---|\n| \`${name}\` | Something |`);
-    }
-    clean("### Entity: `FeedIcon`\n\n| Field | Type |\n|---|---|\n| `feed_id` | int64 |");
-  });
-
-  it("still marks an entity name that matches no table", () => {
-    const { report } = checkSchemaClaims(
-      "| Table | Purpose |\n|---|---|\n| `FeedIconCache` | Something |",
-      icons,
-    );
-    expect(report.unresolvedTables).toEqual(["FeedIconCache"]);
-  });
-
-  it("two tables that differ only by underscores make the name ambiguous: no removal", () => {
-    const twins = liveInventory([
-      table("feed_icons", { feed_id: "bigint" }),
-      table("feedicons", { icon_id: "bigint" }),
+  it("parseHeading says where each name ends, which is where a marker goes", () => {
+    const line = "### Entities: `icons` and feed_icons";
+    expect(parseHeading(line)?.names).toEqual([{ name: "icons", end: 21 }]);
+    const bare = "### Tables: users, feeds";
+    expect(parseHeading(bare)?.names.map((entry) => bare.slice(0, entry.end))).toEqual([
+      "### Tables: users",
+      "### Tables: users, feeds",
     ]);
-    const { report } = checkSchemaClaims(
-      "### Entity: `FeedIcon`\n\n| Field | Type |\n|---|---|\n| `ghost` | int |",
-      twins,
-    );
-    expect(report.unresolvedTables).toEqual([]);
-    expect(report.removedColumns).toEqual([]);
-    expect(report.flaggedColumns).toEqual(["feed_icons.ghost"]);
   });
 
-  it("does not judge a name the document itself calls a view", () => {
-    clean("| Table | Purpose |\n|---|---|\n| `active_users` | View over `users` |");
-    clean("| Table | Kind |\n|---|---|\n| `active_users` | materialized view |");
-    clean(
-      "### Entity: `active_users` (view)\n\n| Field | Type |\n|---|---|\n| `id` | int |\n| `x` | int |",
-    );
-    // "review" and "viewer" are not "view".
-    const { report } = checkSchemaClaims(
-      "| Table | Purpose |\n|---|---|\n| `reviews_queue` | Holds each reviewer's items |",
-      icons,
-    );
-    expect(report.unresolvedTables).toEqual(["reviews_queue"]);
-  });
-});
-
-describe("checkSchemaClaims — the near-miss rule needs exactly one column (#1061 panel)", () => {
-  // Two columns that are the same once case and underscores are ignored.
-  const twins = liveInventory([
-    table("integrations", { google_reader_username: "text", googlereader_username: "text" }),
-  ]);
-
-  it("corrects nothing when two columns collide after squashing", () => {
-    const section =
-      "### Entity: `integrations`\n\n| Field | Type | Constraint |\n|---|---|---|\n" +
-      "| `GoogleReaderUsername` | text | — |\n" +
-      "| `google_reader_username` | text | see `integrations.GoogleReaderUser_name` |";
-    const { report, markdown } = checkSchemaClaims(section, twins);
-    expect(report.corrected).toEqual([]);
-    // Neither spelling is written in for either name.
-    expect(markdown).not.toContain("| `googlereader_username` |");
-    expect(markdown).not.toContain("`integrations.google_reader_username`");
-    expect(markdown).not.toContain("`integrations.googlereader_username`");
-    expect(markdown).toContain("`integrations.GoogleReaderUser_name` *(not in schema)*");
-    expect(report.removedColumns).toEqual(["integrations.GoogleReaderUsername"]);
-    expect(report.flaggedColumns).toEqual(["integrations.GoogleReaderUser_name"]);
+  it("splitCells honours an escaped pipe; codeSpans ignores an unclosed span", () => {
+    expect(splitCells("| a \\| b | c |").map((cell) => cell.text)).toEqual([" a \\| b ", " c "]);
+    expect(splitCells("no table here")).toEqual([]);
+    expect(codeSpans("`a` and `b.c` and `open")).toEqual(["a", "b.c"]);
   });
 
-  it("nor in a diagram", () => {
-    const diagram =
-      "```mermaid\nerDiagram\n    INTEGRATIONS {\n        string GoogleReaderUsername\n    }\n```";
-    const { report } = checkSchemaClaims(diagram, twins);
-    expect(report.corrected).toEqual([]);
+  it("typeFamily reads model and database spellings", () => {
+    expect(typeFamily("int64")).toBe("number");
+    expect(typeFamily("*int64")).toBe("number");
+    expect(typeFamily("uint32")).toBe("number");
+    expect(typeFamily("numeric(10,2)")).toBe("number");
+    expect(typeFamily("character varying(255)")).toBe("text");
+    expect(typeFamily("timestamp with time zone")).toBe("temporal");
+    expect(typeFamily("[]byte")).toBe("binary");
+    expect(typeFamily("bytea")).toBe("binary");
+    expect(typeFamily("jsonb")).toBe("json");
+    expect(typeFamily("boolean")).toBe("boolean");
+    for (const unknown of ["", "—", "ARRAY", "text[]", "_text", "USER-DEFINED", "tinyint", "x9"]) {
+      expect(typeFamily(unknown)).toBeNull();
+    }
+    expect(typesDisagree("int", "text")).toBe(true);
+    expect(typesDisagree("bool", "text")).toBe(true);
+    expect(typesDisagree("string", "bytea")).toBe(true);
+    // By design somewhere: a boolean in an integer, a time as text.
+    expect(typesDisagree("bool", "integer")).toBe(false);
+    expect(typesDisagree("timestamp", "text")).toBe(false);
   });
 
-  it("and does correct when exactly one column matches", () => {
-    const one = liveInventory([table("integrations", { googlereader_username: "text" })]);
-    const { report } = checkSchemaClaims(
-      "### Entity: `integrations`\n\n| Field | Type |\n|---|---|\n| `GoogleReaderUsername` | text |",
-      one,
-    );
-    expect(report.corrected).toEqual([
-      { from: "integrations.GoogleReaderUsername", to: "integrations.googlereader_username" },
-    ]);
+  it("isTypeWord decides on the whole word, so a name that contains a type is a name", () => {
+    for (const type of ["text", "BIGINT", "int64", "varchar(255)", "[]byte", "jsonb", "uuid"]) {
+      expect(isTypeWord(type), type).toBe(true);
+    }
+    for (const type of ["timestamp_with_time_zone", "character_varying", "user_defined"]) {
+      expect(isTypeWord(type), type).toBe(true);
+    }
+    for (const name of ["date_added", "settings_json", "int", "id", "widget", "", "x9"]) {
+      expect(isTypeWord(name), name).toBe(name === "int");
+    }
+  });
+
+  it("isNonColumnType reads the Type cell, not a parenthesis in it", () => {
+    for (const cell of ["btree", "UNIQUE (email)", "FK", " `index` ", "unique index", "relation"]) {
+      expect(isNonColumnType(cell), cell).toBe(true);
+    }
+    for (const cell of ["integer (indexed)", "BIGSERIAL PRIMARY KEY", "bigint PK", "—", ""]) {
+      expect(isNonColumnType(cell), cell).toBe(false);
+    }
+  });
+
+  it("looksLikeIndexName knows the usual shapes", () => {
+    for (const name of ["idx_users_email", "users_pkey", "index_users_on_email", "unique_email"]) {
+      expect(looksLikeIndexName(name), name).toBe(true);
+    }
+    for (const name of ["users_email_unique", "users_org_id_foreign", "entries_id_seq"]) {
+      expect(looksLikeIndexName(name), name).toBe(true);
+    }
+    for (const name of ["email", "indexed_at", "keyboard_shortcuts"]) {
+      expect(looksLikeIndexName(name), name).toBe(false);
+    }
   });
 });
 
@@ -967,8 +1223,14 @@ describe("checkSchemaClaims is linear in model output (#1061)", () => {
       `### Entity: \`users\`\n\n| Field | Type |\n|---|---|\n${Array.from({ length: size / 22 }, (_, n) => `| \`ghost_${n}\` | int |`).join("\n")}`,
     "many entity headings, each with a table": (size) =>
       "### Entity: `ghosts`\n\n| Field | Type |\n|---|---|\n| `a` | int |\n\n".repeat(size / 62),
+    "a heading of many code spans": (size) =>
+      `### Entities: ${"`a`.".repeat(size / 4)}\n\n| Field | Type |\n|---|---|\n| \`a\` | int |`,
+    "a heading with a long schema prefix": (size) =>
+      `### Table: ${"a".repeat(size)}.\`users\` (${"schema ".repeat(size / 7)}\n\n| Field | Type |\n|---|---|\n| \`a\` | int |`,
     "many diagram entities": (size) =>
       `\`\`\`mermaid\nerDiagram\n${Array.from({ length: size / 30 }, (_, n) => `    G${n} ||--o{ USERS : haunts`).join("\n")}\n\`\`\``,
+    "many diagram attributes": (size) =>
+      `\`\`\`mermaid\nerDiagram\n    USERS {\n${"        widget gadget\n".repeat(size / 22)}    }\n\`\`\``,
     "unclosed fences": (size) => "```mermaid\n".repeat(size / 11),
     "a wall of backticks": (size) =>
       `### Entity: \`users\`\n\n| Field | Type |\n|---|---|\n| ${"`".repeat(size)} | int |`,

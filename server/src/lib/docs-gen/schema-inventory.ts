@@ -19,18 +19,32 @@
  *
  * ## "Read live" does not mean "read completely"
  *
- * A live introspection reads ONE schema per database: the driver's default
- * (`public` on Postgres, `dbo` on SQL Server, the connected database on MySQL,
- * the connected user's on Oracle), which is also all the database document
- * reads. It can also return no tables without an error, which is what a role
- * without grants gets. So the inventory carries no "current" flag of its own.
- * It records, per database connector, HOW it was read and WHICH schemas
- * returned tables ({@link SchemaInventoryRead}), and every table points at its
- * read. A connector that returned nothing is `unread`.
+ * A live introspection is NOT a complete list of a database's tables and
+ * columns, and no driver here gives a per-table proof that it is:
  *
- * The claim check (`schema-claim-check.ts`) may remove or rewrite a name only
- * when {@link mayRewriteAgainst} holds for the table it resolved to, and does
- * not judge at all a name qualified with a schema that no read covered.
+ *  - it reads ONE schema per database: the driver's default (`public` on
+ *    Postgres, `dbo` on SQL Server, the connected database on MySQL, the
+ *    connected user's on Oracle), which is also all the database document reads;
+ *  - it can return no tables without an error, which is what a role without
+ *    grants gets;
+ *  - on PostgreSQL, MySQL and SQL Server the `information_schema` column
+ *    queries list only the columns the connecting role has a privilege on, so
+ *    with column-level grants (or a column-level DENY) a real column is absent
+ *    from a table that was returned;
+ *  - on Oracle the introspection is cut at `maxRows: 10_000`, one row per
+ *    column, without an error (`connectors/db/drivers/oracle.ts`): the last
+ *    table returned has a prefix of its columns and every later table is
+ *    missing.
+ *
+ * So the inventory carries no "current" or "complete" flag. It records, per
+ * database connector, HOW it was read, WHICH schemas returned tables and
+ * whether the read may have been cut short ({@link SchemaInventoryRead}); that
+ * record is what the prompt's coverage statement and the section's note say.
+ * A connector that returned nothing is `unread`.
+ *
+ * It is also why the claim check (`schema-claim-check.ts`) only MARKS: nothing
+ * in a section is removed or rewritten on the strength of a name being absent
+ * from this inventory.
  *
  * This file is the pure half: the inventory's shape, the conversions into it
  * and what is rendered from it. Reading the sources is
@@ -39,7 +53,12 @@
  */
 import type { DbTableInfo, SchemaGraph } from "@metis/shared";
 import { DYNAMIC_PLACEHOLDER_PREFIX } from "../code-graph/schema-graph.js";
-import { buildErDiagram, MAX_TABLES_ER, renderColumnTable } from "./schema-render.js";
+import {
+  breakAutolinks,
+  buildErDiagram,
+  MAX_TABLES_ER,
+  renderColumnTable,
+} from "./schema-render.js";
 
 export type SchemaInventorySource = "live-schema" | "schema-graph" | "repository-sql" | "none";
 
@@ -88,6 +107,12 @@ export interface SchemaInventoryRead {
   schemas: string[];
   /** For `stored`: the day the graph was generated, when known. */
   storedOn?: string;
+  /**
+   * For `live`: the read reached the driver's row limit, so it may have been
+   * cut short (Oracle; see `ORACLE_INTROSPECTION_ROW_CAP` in the loader).
+   * Tables and columns can then be missing from it.
+   */
+  possiblyTruncated?: boolean;
 }
 
 /**
@@ -116,42 +141,6 @@ export function isTypedInventory(inventory: SchemaInventory): boolean {
   return (
     inventory.tables.length > 0 &&
     (inventory.source === "live-schema" || inventory.source === "schema-graph")
-  );
-}
-
-/** True when every database of the project answered live, with tables. */
-export function everyDatabaseReadLive(inventory: SchemaInventory): boolean {
-  return inventory.reads.length > 0 && inventory.reads.every((read) => read.how === "live");
-}
-
-/**
- * Whether the read behind `table` shows what the table holds NOW: its connector
- * was introspected in this run, and the table's own schema is one of the
- * schemas that read returned.
- */
-export function isReadLive(inventory: SchemaInventory, table: SchemaInventoryTable): boolean {
-  const read = table.read == null ? undefined : inventory.reads[table.read];
-  return read?.how === "live" && read.schemas.includes(table.schema);
-}
-
-/**
- * The ONE condition under which the claim check may remove or rewrite what a
- * section says about `tables` (the tables a name resolved to):
- *
- *   1. the name resolved to exactly one table across everything that was read
- *      (a same-named table in a second connector or schema makes it ambiguous);
- *   2. that table's (connector, schema) was read live in this run;
- *   3. no database of the project is unread or known only from a stored graph,
- *      since the name could belong to that one.
- *
- * Anything less and the name is marked at most.
- */
-export function mayRewriteAgainst(
-  inventory: SchemaInventory,
-  tables: readonly SchemaInventoryTable[],
-): boolean {
-  return (
-    tables.length === 1 && isReadLive(inventory, tables[0]) && everyDatabaseReadLive(inventory)
   );
 }
 
@@ -309,16 +298,18 @@ export function plainSchemaText(value: string): string {
  * A connector's label as it is written into the prompt heading, the section's
  * notes and the document's warning. It is typed by whoever attached the
  * connector, so it is reduced to one line of plain text: no line break (a new
- * prompt line, a new Markdown block), no Markdown or HTML syntax, and no quote
- * that would end the quotation it is written in.
+ * prompt line, a new Markdown block), no Markdown, HTML or math syntax, no
+ * quote that would end the quotation it is written in, and a URL or address in
+ * it does not become a link ({@link breakAutolinks}).
  */
 export function plainConnectorLabel(value: string): string {
   const flat = value
     .replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ")
-    .replace(/[`|*[\]<>"\\#=]/g, " ")
+    .replace(/[`|*[\]<>"\\#=$]/g, " ")
     .replace(/ {2,}/g, " ")
     .trim();
-  return flat.length > LABEL_MAX ? `${flat.slice(0, LABEL_MAX - 1).trimEnd()}…` : flat;
+  const cut = flat.length > LABEL_MAX ? `${flat.slice(0, LABEL_MAX - 1).trimEnd()}…` : flat;
+  return breakAutolinks(cut);
 }
 
 function readSummary(read: SchemaInventoryRead): string {
@@ -327,7 +318,14 @@ function readSummary(read: SchemaInventoryRead): string {
     schemas.length === 0
       ? "its tables"
       : `schema${schemas.length === 1 ? "" : "s"} ${schemas.join(", ")}`;
-  if (read.how === "live") return `"${read.connector}": ${which}, read from the database now.`;
+  if (read.how === "live") {
+    return (
+      `"${read.connector}": ${which}, read from the database now.` +
+      (read.possiblyTruncated
+        ? " This read reached the driver's row limit and may have been cut short: tables and columns can be missing from it."
+        : "")
+    );
+  }
   if (read.how === "stored") {
     return (
       `"${read.connector}": ${which}, from a schema graph stored` +
@@ -348,8 +346,9 @@ export function renderSchemaCoverage(inventory: SchemaInventory): string {
   return [
     "WHAT THE SCHEMA BELOW COVERS:",
     ...inventory.reads.map((read) => `- ${readSummary(read)}`),
-    "Only each database's default schema is read. A table in any other schema, or in a database " +
-      "marked NOT read, is absent from the list below and may still exist.",
+    "Only each database's default schema is read, and a read lists only what the connecting " +
+      "role may see. A table in any other schema, or in a database marked NOT read, is absent " +
+      "from the list below and may still exist.",
   ].join("\n");
 }
 
@@ -441,6 +440,32 @@ export function renderSchemaReference(
   maxChars = SCHEMA_REFERENCE_MAX_CHARS,
 ): string {
   if (!isTypedInventory(inventory)) return "";
+  // A table name held by more than one table (a database and its copy, two
+  // schemas) is written with where it is from, in its heading and as its
+  // diagram entity, so the reader can tell the two apart and the diagram does
+  // not merge them into one entity.
+  const timesNamed = new Map<string, number>();
+  for (const table of inventory.tables) {
+    timesNamed.set(table.name, (timesNamed.get(table.name) ?? 0) + 1);
+  }
+  const shared = (name: string): boolean => (timesNamed.get(name) ?? 0) > 1;
+  // A read's connector label is already plain text (`plainConnectorLabel`).
+  const connectorOf = (table: SchemaInventoryTable): string =>
+    (table.read == null ? undefined : inventory.reads[table.read]?.connector) ?? "";
+  const heading = (table: SchemaInventoryTable): string => {
+    const name = `\`${plainSchemaText(table.name)}\``;
+    if (!shared(table.name)) return name;
+    const connector = connectorOf(table);
+    const where = [
+      connector ? `"${connector}"` : "",
+      table.schema ? `schema \`${plainSchemaText(table.schema)}\`` : "",
+    ].filter(Boolean);
+    return where.length > 0 ? `${name} in ${where.join(", ")}` : name;
+  };
+  const entityId = (table: SchemaInventoryTable): string =>
+    shared(table.name)
+      ? [connectorOf(table), table.schema, table.name].filter(Boolean).join("_")
+      : table.name;
   const tables = inventory.tables.map(asDbTable);
   const out: string[] = [
     "### Schema Reference",
@@ -449,10 +474,22 @@ export function renderSchemaReference(
     "",
   ];
   // Keys and relationships only: every column is in the tables that follow.
-  const keyed = tables.slice(0, MAX_TABLES_ER).map((table) => ({
-    ...table,
-    columns: table.columns.filter((col) => col.isPrimaryKey || col.isForeignKey),
-  }));
+  const keyed = tables.slice(0, MAX_TABLES_ER).map((table, at) => {
+    const source = inventory.tables[at];
+    // A foreign key points at a table of the same read.
+    const target = (refTable: string): string => {
+      const referenced = inventory.tables.find(
+        (other) => other.name === refTable && other.read === source.read,
+      );
+      return referenced ? entityId(referenced) : refTable;
+    };
+    return {
+      ...table,
+      name: entityId(source),
+      columns: table.columns.filter((col) => col.isPrimaryKey || col.isForeignKey),
+      foreignKeys: table.foreignKeys.map((fk) => ({ ...fk, refTable: target(fk.refTable) })),
+    };
+  });
   // A schema with no primary or foreign key has nothing to draw, and a block
   // holding only `erDiagram` does not render, so none is written.
   if (keyed.some((table) => table.columns.length > 0 || table.foreignKeys.length > 0)) {
@@ -463,8 +500,8 @@ export function renderSchemaReference(
   }
   let used = 0;
   const left: string[] = [];
-  for (const table of tables) {
-    const block = [`#### \`${plainSchemaText(table.name)}\``, "", ...renderColumnTable(table), ""];
+  for (const [at, table] of tables.entries()) {
+    const block = [`#### ${heading(inventory.tables[at])}`, "", ...renderColumnTable(table), ""];
     const size = block.reduce((sum, line) => sum + line.length + 1, 0);
     if (left.length === 0 && used + size <= maxChars) {
       out.push(...block);

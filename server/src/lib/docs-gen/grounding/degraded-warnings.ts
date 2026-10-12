@@ -27,10 +27,19 @@ export type DocWarningKind =
   | "grounding-sampled"
   /** #246 — the section's fact-check threw (after retries), so it was not checked at all. */
   | "grounding-failed"
-  /** #1061 — the section names tables or columns the schema does not hold. */
+  /**
+   * #1061 — the section names tables or columns that could not be matched to
+   * the database schema. Informational (`severity: "info"`): the names are
+   * marked in the section, and the document's status does not depend on it.
+   */
   | "schema-unverified";
 
-export type DocWarningSeverity = "warning" | "error";
+/**
+ * `info` is a note for the reader and nothing else: it does not make the
+ * document `degraded`, is not counted in the review summary, and does not
+ * change whether a stored section is reused ({@link affectsDocStatus}).
+ */
+export type DocWarningSeverity = "info" | "warning" | "error";
 
 /**
  * The faithfulness TIER a `section-ungrounded` warning was gated at. This is a
@@ -1039,19 +1048,16 @@ export function sectionMissingWarning(section: string, reason: string): DocWarni
 }
 
 /**
- * #1061 — the Data Architecture section still names tables or columns that
- * could not be matched to the schema it was checked against. Each is marked in
- * the section; this is the same finding for the document's status and banner.
+ * #1061 — the Data Architecture section names tables or columns that could not
+ * be matched to the schema it was compared with. Each is marked in the section
+ * (or, inside a diagram, listed in the section's "Schema check" note).
  *
- * `unmatched` is ONLY the names left in the section with a mark. What the check
- * repaired (a column its table does not have, removed; a spelling corrected; a
- * type annotated with the schema's) is said by the section's own "Schema check"
- * note and raises no warning: the document is not degraded by a finding that is
- * no longer in it. Callers do not call this with an empty list.
- *
- * The message says what happened and no more. "Not matched" is not "wrong":
- * only each database's default schema is read, so a table of another schema is
- * real and unmatched.
+ * This is INFORMATION, not a degradation (`severity: "info"`). The check is a
+ * text heuristic over model output against a schema read that is not provably
+ * complete, so a false mark is a known property of it, and the check never
+ * removes or changes anything. The document stays `ready`, the section is
+ * reused like any other, and the UI shows the message as an informational
+ * line. Callers do not call this with an empty list.
  */
 export function schemaUnverifiedWarning(
   section: string,
@@ -1065,19 +1071,28 @@ export function schemaUnverifiedWarning(
     kind: "schema-unverified",
     section,
     message:
-      `Section "${section}": ${names} could not be matched to the database schema ` +
-      `(${shown}${more}). Checked against ${inventory.label}. Each is marked in the section ` +
-      `and none was removed; a table in a schema or database that was not read can be real.`,
-    severity: "warning",
+      `${names} in ${section} could not be matched to the database schema ` +
+      `(${shown}${more}). Compared with ${inventory.label}. They are marked or listed in the ` +
+      `section's Schema check note; nothing was removed or changed. A database read can be ` +
+      `incomplete, so an unmatched name can be real.`,
+    severity: "info",
   };
 }
 
 /**
- * Derive the document health status from its warnings. Any warning at all means
- * the document is `degraded`, never a clean `ready`.
+ * Whether a warning counts toward the document's status. An `info` one does
+ * not: it is a note for the reader (#1061's `schema-unverified`).
+ */
+export function affectsDocStatus(warning: Pick<DocWarning, "severity">): boolean {
+  return warning.severity !== "info";
+}
+
+/**
+ * Derive the document health status from its warnings. Any warning that is not
+ * merely informational means the document is `degraded`, never a clean `ready`.
  */
 export function deriveDocStatus(warnings: DocWarning[]): DocHealthStatus {
-  return warnings.length > 0 ? "degraded" : "ready";
+  return warnings.some(affectsDocStatus) ? "degraded" : "ready";
 }
 
 /**
@@ -1099,7 +1114,10 @@ export function serializeWarnings(warnings: DocWarning[]): string | null {
  * the neutral "Needs review" rather than the alarming "Degraded output" so users
  * don't discard an accurate document over unverified-but-correct content.
  */
-export function summarizeWarnings(warnings: DocWarning[]): string {
+export function summarizeWarnings(allWarnings: DocWarning[]): string {
+  // An informational note is not a review item: a document that carries only
+  // those is `ready` and has nothing to summarise.
+  const warnings = allWarnings.filter(affectsDocStatus);
   if (warnings.length === 0) return "";
   // #191 — Phase-1 causes that share a kind with a section-level one are told
   // apart by their own section label, so each gets the remedy for ITS cause.
@@ -1241,14 +1259,6 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
     );
   if (spotChecked > 0)
     parts.push(`${spotChecked} section(s) were only spot-checked (DOCS_GEN_GROUNDING=sample)`);
-  // #1061 — without its own line a document whose only warning is this one
-  // summarised as "Needs review — ." with nothing after the dash.
-  const schemaUnmatched = warnings.filter((w) => w.kind === "schema-unverified").length;
-  if (schemaUnmatched > 0)
-    parts.push(
-      `${schemaUnmatched} section(s) name tables or columns that could not be matched to the ` +
-        `database schema (marked in the section)`,
-    );
   // The run-level marker adds a line only when no section line already says it.
   if (runNotChecked && notChecked === 0)
     parts.push("fact-checking was switched off for this run (DOCS_GEN_GROUNDING=off)");

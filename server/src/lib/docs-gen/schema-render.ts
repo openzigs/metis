@@ -104,7 +104,26 @@ const CELL_ESCAPES: Record<string, string> = {
   "[": "\\[",
   "]": "\\]",
   "<": "&lt;",
+  "&": "&amp;",
+  $: "\\$",
 };
+
+const ZERO_WIDTH_SPACE = "\u200b";
+
+/**
+ * Stops text from a database or a connector label becoming a link. GFM links a
+ * bare `https://…`, `www.…` and `name@host` wherever they stand, and it does so
+ * on the text AFTER escapes and character references are resolved, so neither
+ * a backslash nor an entity prevents it (measured against the viewer's
+ * `remark-gfm`). A zero-width space inside the trigger does: the text reads
+ * the same and is no longer a link. Linear: three fixed patterns.
+ */
+export function breakAutolinks(value: string): string {
+  return value
+    .replace(/(https?)(:\/\/)/gi, `$1${ZERO_WIDTH_SPACE}$2`)
+    .replace(/(www)(\.)/gi, `$1${ZERO_WIDTH_SPACE}$2`)
+    .replace(/@/g, `${ZERO_WIDTH_SPACE}@`);
+}
 
 /**
  * Text from a database (a column name, a type, a default) as the contents of
@@ -112,13 +131,20 @@ const CELL_ESCAPES: Record<string, string> = {
  * a new row, heading or link, so whoever controls the DDL could write rows into
  * the document (#1061 review). Line breaks and tabs become a space; the
  * characters that are Markdown or HTML syntax are escaped, so the value reads
- * as the database holds it. One pass, no backtracking.
+ * as the database holds it: that includes `$` (the viewer loads `remark-math`,
+ * which would typeset the text between two of them) and `&` (so a default
+ * holding `&lt;b&gt;` does not read like one holding the tag). A bare URL or
+ * address is kept from becoming a link ({@link breakAutolinks}). Underscore and
+ * tilde emphasis are NOT escaped: `_x_` in a default still renders as emphasis.
+ * No backtracking.
  */
 export function escapeMarkdownCell(value: string): string {
-  return value
-    .replace(/[\r\n\t\f\v\u2028\u2029]+/g, " ")
-    .replace(/[\\|`*[\]<]/g, (ch) => CELL_ESCAPES[ch])
-    .trim();
+  return breakAutolinks(
+    value
+      .replace(/[\r\n\t\f\v\u2028\u2029]+/g, " ")
+      .replace(/[\\|`*[\]<&$]/g, (ch) => CELL_ESCAPES[ch])
+      .trim(),
+  );
 }
 
 /**

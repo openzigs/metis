@@ -217,9 +217,10 @@ export interface DocSectionProgressEvent {
       | "grounding-sampled"
       // #246 — the section's fact-check failed, so it was not checked at all.
       | "grounding-failed"
-      // #1061 — the section names tables or columns the schema does not hold.
+      // #1061 — names in the section could not be matched to the database
+      // schema. Informational: it does not make the section `degraded`.
       | "schema-unverified";
-    severity: "warning" | "error";
+    severity: "info" | "warning" | "error";
     message: string;
   };
   ts: number;

@@ -22,8 +22,17 @@
  * `inspectDbConnector` takes no signal. The driver's catalog query keeps its
  * pooled connection until it returns or reaches the driver's own introspection
  * timeout (`DEFAULT_DB_INTROSPECT_TIMEOUT_MS`), it still writes its
- * `connector.db.inspect` audit row, and its result is dropped. The concurrency
- * bound is what limits how many of those one generation can leave behind.
+ * `connector.db.inspect` audit row, and its result is dropped. One generation
+ * leaves at most {@link LIVE_INTROSPECTION_CONCURRENCY} of those behind: a
+ * worker that gives up on a read, at its own limit or at the deadline, starts
+ * no other, so each worker abandons one at most. The connectors it would have
+ * read next count as not read now.
+ *
+ * ## What a live read does not prove
+ *
+ * See `schema-inventory.ts`: one schema, only what the role may see, and on
+ * Oracle at most {@link ORACLE_INTROSPECTION_ROW_CAP} rows. A read that
+ * reached that cap is recorded as `possiblyTruncated`.
  */
 import type { DbTableInfo } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
@@ -46,7 +55,9 @@ import {
 const log = createChildLogger("docs-gen:schema-inventory");
 
 export interface SchemaInventoryDeps {
-  listConnectors: (projectId: string) => Promise<Array<{ id: string; label?: string | null }>>;
+  listConnectors: (
+    projectId: string,
+  ) => Promise<Array<{ id: string; label?: string | null; driver?: string | null }>>;
   /**
    * One connector's tables. Called without a schema, so the driver reads its
    * default schema only — exactly what the database document reads.
@@ -65,6 +76,34 @@ export const LIVE_INTROSPECTION_TIMEOUT_MS = 30_000;
 export const SCHEMA_LOAD_DEADLINE_MS = 45_000;
 /** How many connectors are introspected at once. */
 export const LIVE_INTROSPECTION_CONCURRENCY = 4;
+/**
+ * The Oracle driver's introspection limit: `maxRows: 10_000` in
+ * `connectors/db/drivers/oracle.ts`, one row per column (more when a column is
+ * in several foreign keys), applied without an error. Kept in step with the
+ * driver by a test that reads the driver's source.
+ */
+export const ORACLE_INTROSPECTION_ROW_CAP = 10_000;
+
+/**
+ * A lower bound on the rows an introspection returned for `tables`: one per
+ * column, and one more for each further foreign key a column is in. The driver
+ * does not report its row count, so this is the nearest the loader can get; a
+ * read that was cut can still fall under it.
+ */
+export function introspectionRowsAtLeast(tables: readonly DbTableInfo[]): number {
+  let rows = 0;
+  for (const table of tables) {
+    const keysPerColumn = new Map<string, number>();
+    for (const fk of table.foreignKeys ?? []) {
+      for (const column of fk.columns) {
+        keysPerColumn.set(column, (keysPerColumn.get(column) ?? 0) + 1);
+      }
+    }
+    for (const column of table.columns) rows += Math.max(1, keysPerColumn.get(column.name) ?? 0);
+  }
+  return rows;
+}
+
 /** Upper bound on code-graph schema symbols read for the repository-SQL tier. */
 const MAX_REPOSITORY_SQL_SYMBOLS = 50_000;
 
@@ -119,6 +158,8 @@ function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 
 /** Marks a wait that was ended by the deadline or by the generation's signal. */
 const GIVEN_UP = Symbol("given-up");
+/** Marks a read that ran past its own limit. */
+const TIMED_OUT = Symbol("timed-out");
 
 export interface LoadSchemaInventoryInput {
   projectId: string;
@@ -198,20 +239,28 @@ export async function loadSchemaInventory(
     const worker = async (): Promise<void> => {
       while (actorId && next < connectors.length && !pastDeadline && !signal?.aborted) {
         const at = next++;
-        const answer = await safely<DbTableInfo[] | typeof GIVEN_UP | null>(
+        const answer = await safely<DbTableInfo[] | typeof GIVEN_UP | typeof TIMED_OUT | null>(
           "live introspection",
           () =>
             Promise.race([
-              withTimeout(deps.introspect(projectId, connectors[at].id, actorId), timeoutMs),
+              withTimeout(deps.introspect(projectId, connectors[at].id, actorId), timeoutMs).catch(
+                (err: unknown) => {
+                  if (err instanceof IntrospectionTimeout) return TIMED_OUT;
+                  throw err;
+                },
+              ),
               expired,
               aborted,
             ]),
           null,
         );
-        if (answer === GIVEN_UP) {
+        // Given up on, and still running in the driver: this worker starts no
+        // other read, which is what bounds the abandoned ones to one per worker.
+        if (answer === GIVEN_UP || answer === TIMED_OUT) {
           if (!signal?.aborted) {
-            log.warn("Schema inventory: live introspection abandoned at the load deadline", {
+            log.warn("Schema inventory: live introspection abandoned", {
               projectId,
+              at: answer === TIMED_OUT ? "its own limit" : "the load deadline",
             });
           }
           return;
@@ -232,7 +281,15 @@ export async function loadSchemaInventory(
       const liveTables = tablesFromIntrospection(live[at] ?? [], read);
       if (liveTables.length > 0) {
         tables.push(...liveTables);
-        reads.push({ connector: name, how: "live", schemas: schemaNamesOf(liveTables) });
+        const atCap =
+          connector.driver === "oracle" &&
+          introspectionRowsAtLeast(live[at] ?? []) >= ORACLE_INTROSPECTION_ROW_CAP;
+        reads.push({
+          connector: name,
+          how: "live",
+          schemas: schemaNamesOf(liveTables),
+          ...(atCap ? { possiblyTruncated: true } : {}),
+        });
         return;
       }
       const stored = graphs.find((entry) => entry.dbConnectorId === connector.id);
@@ -274,10 +331,14 @@ export async function loadSchemaInventory(
     if (signal?.aborted) return NO_SCHEMA_INVENTORY;
     const repositoryTables = tablesFromRepositorySql(symbols);
     if (repositoryTables.length > 0) {
+      // The databases that could not be read stay on the record, so the prompt
+      // and the section still say that the project has some.
       return {
         source: "repository-sql",
-        label: "the SQL found in the repository (migrations, queries and mappings)",
-        reads: [],
+        label:
+          "the SQL found in the repository (migrations, queries and mappings)" +
+          (reads.length > 0 ? `; ${reads.length} database(s) could not be read` : ""),
+        reads,
         tables: repositoryTables.sort(byQualifiedName),
       };
     }

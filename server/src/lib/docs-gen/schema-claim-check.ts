@@ -1,70 +1,92 @@
 /**
  * The deterministic check on the architecture document's Data Architecture
- * section (#1061): every table and column the section CLAIMS is resolved
- * against the schema inventory (`schema-inventory.ts`), with no model call.
+ * section (#1061): the table and column names the section CLAIMS are compared
+ * with the schema inventory (`schema-inventory.ts`), with no model call.
  *
- * ## What counts as a claim
+ * ## It marks. It never removes, rewrites or corrects.
  *
- * Only the four structures in which a name can mean nothing but a table or a
- * column:
+ * This is a text heuristic over model output, compared with a schema read that
+ * is not provably complete: an introspection covers one schema per database,
+ * returns only the columns the connecting role may see (column-level
+ * privileges on PostgreSQL, MySQL and SQL Server), and is silently cut at
+ * 10,000 rows on Oracle (`drivers/oracle.ts`). Neither the parse nor the read
+ * can prove that a name is absent from a database, so a wrong judgment must
+ * cost no more than a mark. The check's ONLY edits to the section are:
  *
- *   1. a Mermaid `erDiagram` — its entities, and the attribute lines inside an
- *      entity block;
- *   2. a heading labelled `Entity:` / `Entities:` / `Table:` / `Tables:` whose
- *      first table is a field table (first header cell Field, Column or
- *      Attribute) — the names in the heading;
- *   3. the rows of THAT table, and only when nothing but blank lines stands
- *      between the heading and it — a backticked name in the first cell is a
- *      column of the heading's table, and a backticked `table.column` in
- *      another cell is a column of that table when the table resolves;
- *   4. a table whose first header cell is `Table` — a backticked name in a
- *      row's first cell is a table.
+ *   1. a marker appended after a name it could not match: ` *(not in schema)*`,
+ *      or ` *(not in schema; the schema has \`x\`)*` for a near miss;
+ *   2. one note for the section (`renderSchemaCheckNotice`), placed under its
+ *      heading by `applySchemaGrounding`.
  *
- * What is NOT a claim, and is left exactly as written:
+ * No row, line, cell, name or type that the model wrote is deleted or changed,
+ * and a diagram is left byte for byte as written (a marker inside a Mermaid
+ * block could stop it rendering), so what the check finds in a diagram is said
+ * in the note only. Remove every marker and the note and the section is the
+ * model's text again; `schema-claim-check.test.ts` holds that as a property.
  *
- *   - a field table that is not the first table directly under such a heading.
- *     Under `#### \`Feed\` struct`, under `### Sessions`, or after a bold
- *     "Go struct UserSession:" line further down an entity's sub-section, it
- *     may describe a struct, a class or a message, whose fields are not columns;
- *   - a row whose Type cell says index, constraint, key, trigger or sequence;
- *   - a dotted name in a field row whose qualifier is not the heading's table
- *     (`settings.theme`: a path into a JSON column, even when a table called
- *     `settings` exists);
- *   - a name the heading or roster row itself calls a view, when it does not
- *     resolve: the inventory cannot tell a view from a table;
- *   - free prose. A sentence can name a queue, a cache, a Go struct, a view, an
- *     index or `entries.length`, and nothing short of understanding the
- *     sentence tells those from a table. Prose is what the grounding in the
- *     prompt is for; this check covers what can be decided.
+ * What keeps invented names out of the section is the grounding: the schema in
+ * the prompt, and the Schema Reference rendered from the schema. This is the
+ * detector behind it.
  *
- * ## Remove, mark, or say nothing
+ * ## What is judged
  *
- * "Read live" does not mean "read completely": a live introspection covers one
- * schema of each database, and can come back empty. So what the check may do
- * depends on what the read behind the name proves (`schema-inventory.ts`):
+ *   1. a Mermaid `erDiagram`: its entity names (an entity's quoted alias when
+ *      it has one, `USERS["audit.users"]`), and the attribute lines of an
+ *      entity that resolved. Mermaid's order is `type name`, and models also
+ *      write `name type`: the name is whichever of the first two tokens is a
+ *      column of the entity, else whichever is NOT a known type word. A line
+ *      where that does not single one out is not judged.
+ *   2. an `Entity:` / `Entities:` / `Table:` / `Tables:` heading that has a
+ *      field table (first header cell Field, Column or Attribute) as the first
+ *      table under it: the table names in the heading;
+ *   3. the rows of that field table: each backticked name in the FIRST cell,
+ *      as a column of the heading's table. Prose between the heading and the
+ *      table changes nothing. A dotted name is judged only when its qualifier
+ *      is one of the heading's own tables (`feed_icons.icon_id` under
+ *      `Entities: icons and feed_icons`);
+ *   4. a table whose first header cell is `Table`: each backticked name in a
+ *      row's first cell, as a table.
  *
- *   - **Say nothing** about a name qualified with a schema that was not read
- *     (`audit.users` when only `public` was). A schema prefix is never dropped
- *     to make a name resolve.
- *   - **Mark** a name at table level that is not in what was read. Never
- *     removed: the thing may be real and simply not a table, and removing an
- *     entity block would delete prose.
- *   - **Remove** a column its table does not have, **correct** a near miss and
- *     rewrite a diagram type ONLY under `mayRewriteAgainst`: the name resolved
- *     to exactly one table across everything read, that table's connector and
- *     schema were read live in this run, and no database of the project is
- *     unread or known only from a stored graph. Otherwise the name is marked:
- *     a stored graph can be out of date, repository SQL is incomplete, and a
- *     same-named table in a second connector or schema makes the claim
- *     ambiguous. A name shaped like an index or key (`idx_…`, `…_pkey`) is
- *     marked at most.
- *   - **A type** that disagrees with the schema is annotated with the schema's.
- *   - **A near miss** is recognised on one rule: the names are equal once case
- *     and underscores are ignored, and exactly one column of the table matches
- *     (`google_reader_username` for `googlereader_username`). Nothing is
- *     corrected on similarity.
+ * ## What is not judged, and is left exactly as written
  *
- * With an empty inventory nothing is checked and nothing is changed.
+ *   - every cell of a row other than the first (a Description cell holds
+ *     `users.Len`, `settings.theme`, `feeds.go`);
+ *   - a field-table row whose Type cell says index, constraint, key, trigger,
+ *     sequence or relation, or whose name has the shape of an index or key
+ *     (`idx_…`, `…_pkey`, `index_users_on_email`), or whose name is dotted with
+ *     a qualifier that is not the heading's table;
+ *   - any field table that is not the first table under such a heading (a
+ *     struct, a message), and everything under any other heading;
+ *   - a name its own heading or row calls a view, when it does not resolve;
+ *   - free prose.
+ *
+ * ## Not checked: a name the read cannot speak for
+ *
+ *   - A name written with a schema (`audit.users`, `` `audit`.`users` ``,
+ *     `audit.` before the code span, `(audit schema)` after it) is looked for
+ *     in that schema only. The prefix is never dropped to make it resolve.
+ *   - A TABLE name that does not resolve is **not checked**, instead of marked,
+ *     when the read cannot speak for where it would be: it is qualified with a
+ *     schema no read returned or with a database (`db.schema.table`), or some
+ *     database of the project went unread or was possibly cut short.
+ *   - An unqualified name that resolves is judged against what it resolved to.
+ *
+ * Everything not judged that looked like a claim is LISTED in the section note
+ * with the reason, so a clean note is not read as a clean section. It raises no
+ * warning.
+ *
+ * ## Matching
+ *
+ *   - A table-level name ignores case and underscores (`FeedIcon` is
+ *     `feed_icons`), and a singular or plural is resolved only by a
+ *     conventional transformation with one result: add or drop `s`, `y` and
+ *     `ies`, `es` only after s, x, z, ch or sh. `Stat` is not `states`.
+ *   - A column is a near miss when it equals exactly one column of the table
+ *     once case and underscores are ignored. It is marked, with the schema's
+ *     spelling in the marker; nothing is corrected.
+ *   - A type that cannot describe the schema's column is reported in the note.
+ *
+ * With an empty inventory nothing is checked and nothing is marked.
  *
  * Every scan here walks model output, so it is linear: lines are split once,
  * cells and code spans are found by index in a single pass, names resolve
@@ -72,7 +94,6 @@
  */
 import {
   isTypedInventory,
-  mayRewriteAgainst,
   plainSchemaText,
   renderSchemaReference,
   type SchemaInventory,
@@ -80,36 +101,48 @@ import {
   type SchemaInventoryTable,
 } from "./schema-inventory.js";
 
+/**
+ * Why a name that looked like a claim was not judged:
+ *
+ *  - `unread` — outside what was read: an unread schema or database;
+ *  - `not-a-column` — a row that describes an index, constraint, key or
+ *    relation, or a first-cell name that is not a plain column name;
+ *  - `view` — its own heading or row calls it a view;
+ *  - `diagram-line` — a diagram line whose name could not be told from its type.
+ */
+export type NotCheckedReason = "unread" | "not-a-column" | "view" | "diagram-line";
+
 export interface SchemaCheckReport {
   /** False when there was no inventory to check against. */
   checked: boolean;
-  /** Names claimed as tables that the inventory does not hold. Marked. */
+  /** Names claimed as tables that the schema that was read does not hold. */
   unresolvedTables: string[];
-  /** `table.column` rows and diagram lines removed (only under `mayRewriteAgainst`). */
-  removedColumns: string[];
-  /** `table.column` names marked as not in the schema. */
+  /** `table.column` names the table does not have, near misses included. */
   flaggedColumns: string[];
-  /** Spellings rewritten to the schema's (only under `mayRewriteAgainst`). */
-  corrected: Array<{ from: string; to: string }>;
-  /** Types that disagree with the schema. */
+  /** For a flagged column that is a near miss: the schema's spelling. */
+  suggestions: Array<{ column: string; schema: string }>;
+  /** Types that disagree with the schema. Said in the note, not in the cell. */
   typeMismatches: Array<{ column: string; written: string; schema: string }>;
+  /** Names that looked like claims and were not judged. Listed in the note. */
+  notChecked: Array<{ name: string; why: NotCheckedReason }>;
+  /**
+   * The unmatched names that stand in a diagram. A diagram is never edited, so
+   * these carry no marker where they stand and are said in the note only.
+   */
+  inDiagram: string[];
 }
 
-/** How many names the check did anything about, repaired or not. */
+/** How many things the check has to say about the section. */
 export function schemaCheckFindings(report: SchemaCheckReport): number {
   return (
-    schemaCheckUnmatched(report).length +
-    report.removedColumns.length +
-    report.corrected.length +
-    report.typeMismatches.length
+    schemaCheckUnmatched(report).length + report.typeMismatches.length + report.notChecked.length
   );
 }
 
 /**
- * The names the check could NOT settle: they are still in the section, marked
- * as not matched to the schema, and are what a reader has to look at. A removed
- * column, a corrected spelling and an annotated type are repairs — the section
- * already says the right thing — and are not in this list.
+ * The names that were judged and not matched to the schema: each is marked
+ * where it stands (or, in a diagram, listed in the note). They are what the
+ * document's informational `schema-unverified` line counts.
  */
 export function schemaCheckUnmatched(report: SchemaCheckReport): string[] {
   return [...report.unresolvedTables, ...report.flaggedColumns];
@@ -121,13 +154,16 @@ export function schemaCheckUnmatched(report: SchemaCheckReport): string[] {
 
 const IDENTIFIER_MAX = 200;
 
+function isIdentifierChar(c: number, first: boolean): boolean {
+  const letter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+  const digit = c >= 48 && c <= 57;
+  return letter || (!first && (digit || c === 36));
+}
+
 function isIdentifier(text: string): boolean {
   if (text.length === 0 || text.length > IDENTIFIER_MAX) return false;
   for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    const letter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
-    const digit = c >= 48 && c <= 57;
-    if (!(letter || (i > 0 && (digit || c === 36)))) return false;
+    if (!isIdentifierChar(text.charCodeAt(i), i === 0)) return false;
   }
   return true;
 }
@@ -155,13 +191,15 @@ interface ColumnLookup {
 }
 
 /**
- * A name qualified with a schema that nothing read (`audit.users` when only
- * `public` was introspected), or with a database (`db.schema.table`). Such a
- * name is NOT judged: it is not removed, not marked and not reported, because
- * the inventory holds no evidence about it either way.
+ * What the inventory says about a name at table level:
+ *
+ *  - `found` — the tables it can mean (two when a same-named table is in two
+ *    connectors or schemas);
+ *  - `absent` — looked for where it would be, and not there: marked;
+ *  - `unread` — the read cannot speak for where it would be: not checked.
  */
-const UNJUDGED = "unjudged" as const;
-type TableResolution = SchemaInventoryTable[] | null | typeof UNJUDGED;
+type TableVerdict =
+  { kind: "found"; tables: SchemaInventoryTable[] } | { kind: "absent" } | { kind: "unread" };
 
 function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   const bucket = map.get(key);
@@ -169,77 +207,96 @@ function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   else map.set(key, [value]);
 }
 
+const ES_STEMS = ["s", "x", "z", "ch", "sh"];
+
+function takesEs(stem: string): boolean {
+  return ES_STEMS.some((ending) => stem.endsWith(ending));
+}
+
+/**
+ * The other grammatical number of `key`, by the conventional transformations
+ * only. `stat` gives `stats`, never `states`: `es` is added only after s, x, z,
+ * ch and sh, and dropped only from such a stem.
+ */
+export function numberVariants(key: string): string[] {
+  const out = [`${key}s`];
+  if (key.endsWith("s")) out.push(key.slice(0, -1));
+  if (key.endsWith("y")) out.push(`${key.slice(0, -1)}ies`);
+  if (key.endsWith("ies")) out.push(`${key.slice(0, -3)}y`);
+  if (takesEs(key)) out.push(`${key}es`);
+  if (key.endsWith("es") && takesEs(key.slice(0, -2))) out.push(key.slice(0, -2));
+  return out.filter((variant) => variant.length > 0);
+}
+
 /** Lookups built once, so resolving a name does not walk the schema. */
 class InventoryIndex {
-  private readonly byName = new Map<string, SchemaInventoryTable[]>();
   /** Tables by name with case and underscores removed. */
   private readonly bySquashedName = new Map<string, SchemaInventoryTable[]>();
-  /** The schemas (lower case) that hold at least one table: the ones read. */
-  private readonly schemas = new Set<string>();
+  /** The schemas (lower case) some read returned tables of. */
+  private readonly schemasRead = new Set<string>();
+  /** True when a database of the project is unread, or its read may be cut short. */
+  private readonly partlyUnread: boolean;
   private readonly columns = new Map<SchemaInventoryTable, ColumnLookup>();
 
-  constructor(tables: readonly SchemaInventoryTable[]) {
-    for (const table of tables) {
-      push(this.byName, table.name.toLowerCase(), table);
+  constructor(inventory: SchemaInventory) {
+    this.partlyUnread = inventory.reads.some(
+      (read) => read.how === "unread" || read.possiblyTruncated === true,
+    );
+    for (const read of inventory.reads) {
+      for (const schema of read.schemas) this.schemasRead.add(schema.toLowerCase());
+    }
+    for (const table of inventory.tables) {
       push(this.bySquashedName, squash(table.name), table);
-      if (table.schema) this.schemas.add(table.schema.toLowerCase());
+      if (table.schema) this.schemasRead.add(table.schema.toLowerCase());
       const lookup: ColumnLookup = { exact: new Map(), squashed: new Map() };
       for (const column of table.columns) {
         lookup.exact.set(column.name.toLowerCase(), column);
-        const squashed = squash(column.name);
-        const same = lookup.squashed.get(squashed);
-        if (same) same.push(column);
-        else lookup.squashed.set(squashed, [column]);
+        push(lookup.squashed, squash(column.name), column);
       }
       this.columns.set(table, lookup);
     }
   }
 
   /**
-   * The tables a name refers to; `null` when it was looked for and is not
-   * there; {@link UNJUDGED} when it cannot be looked for.
+   * The tables a table-level name refers to (a diagram entity, an `Entity:`
+   * heading, a roster row).
    *
-   * **A schema prefix is never dropped.** `audit.users` is resolved among the
-   * tables of schema `audit` only, and when no table of that schema is in the
-   * inventory the schema was not read, so the name is unjudged. An unqualified
-   * name is resolved among everything that was read, and EVERY table it can
-   * mean is returned: a same-named table in two connectors or schemas gives
-   * two, which the caller treats as ambiguous (mark at most, never remove).
+   * **A schema prefix is never dropped.** `audit.users` is looked for among the
+   * tables of schema `audit` only. A table whose schema is not known (repository
+   * SQL) can be in any. An unqualified name is looked for among everything that
+   * was read, and EVERY table it can mean is returned.
    *
-   * With `entityName` (a name at table level: a diagram entity, an `Entity:`
-   * heading, a roster row) case and underscores are ignored and a singular also
-   * means its plural, so `FeedIcon`, `FEED_ICON` and `feed_icon` all mean
-   * `feed_icons`: a diagram or heading that names the entity rather than the
-   * table is not an invention. The qualifier of a `table.column` is resolved
-   * without it (the table's own name, any case), so `feed.entries` is not read
-   * as a column of `feeds`.
+   * Case and underscores are ignored, and a singular also means its plural (and
+   * the reverse) when {@link numberVariants} gives exactly one table name.
+   *
+   * A name that is not found is `unread`, not `absent`, when the read cannot
+   * speak for where it would be: see the module header.
    */
-  resolveTable(raw: string, entityName = true): TableResolution {
+  resolveTable(raw: string): TableVerdict {
     const parts = raw.trim().toLowerCase().split(".");
     const bare = parts[parts.length - 1];
-    if (!bare) return null;
-    let schema: string | null = null;
-    if (parts.length > 2) return UNJUDGED;
-    if (parts.length === 2) {
-      schema = parts[0];
-      if (!this.schemas.has(schema)) return UNJUDGED;
+    if (!bare) return { kind: "absent" };
+    // `database.schema.table`: no read identifies a database by name.
+    if (parts.length > 2) return { kind: "unread" };
+    const schema = parts.length === 2 ? parts[0] : null;
+    const inSchema = (
+      tables: readonly SchemaInventoryTable[] | undefined,
+    ): SchemaInventoryTable[] =>
+      (tables ?? []).filter(
+        (table) => schema == null || !table.schema || table.schema.toLowerCase() === schema,
+      );
+    const key = squash(bare);
+    let found = inSchema(this.bySquashedName.get(key));
+    if (found.length === 0) {
+      const byNumber = numberVariants(key).flatMap((variant) =>
+        inSchema(this.bySquashedName.get(variant)),
+      );
+      // One table name, or the transformation did not single one out.
+      if (new Set(byNumber.map((table) => squash(table.name))).size === 1) found = byNumber;
     }
-    const found = new Set<SchemaInventoryTable>();
-    const take = (tables: readonly SchemaInventoryTable[] | undefined): void => {
-      for (const table of tables ?? []) {
-        if (schema == null || table.schema.toLowerCase() === schema) found.add(table);
-      }
-    };
-    if (entityName) {
-      const key = squash(bare);
-      take(this.bySquashedName.get(key));
-      take(this.bySquashedName.get(`${key}s`));
-      take(this.bySquashedName.get(`${key}es`));
-      if (key.endsWith("y")) take(this.bySquashedName.get(`${key.slice(0, -1)}ies`));
-    } else {
-      take(this.byName.get(bare));
-    }
-    return found.size > 0 ? [...found] : null;
+    if (found.length > 0) return { kind: "found", tables: [...new Set(found)] };
+    if (schema != null && !this.schemasRead.has(schema)) return { kind: "unread" };
+    return this.partlyUnread ? { kind: "unread" } : { kind: "absent" };
   }
 
   /**
@@ -372,52 +429,127 @@ export function typesDisagree(written: string, schema: string): boolean {
   return !COMPATIBLE.has(`${a}:${b}`);
 }
 
+/** Type words {@link typeFamily} gives no family, and multi-word types as Mermaid writes them. */
+const OTHER_TYPE_WORDS = new Set([
+  "json",
+  "jsonb",
+  "tinyint",
+  "mediumint",
+  "bit",
+  "enum",
+  "array",
+  "inet",
+  "cidr",
+  "macaddr",
+  "tsvector",
+  "xml",
+  "hstore",
+  "oid",
+  "year",
+  "raw",
+  "rowid",
+  "nclob",
+  "ntext",
+  "tinytext",
+  "mediumtext",
+  "longtext",
+  "datetime2",
+  "geometry",
+  "geography",
+  "user_defined",
+  "user-defined",
+  "character_varying",
+  "double_precision",
+  "bit_varying",
+  "timestamp_with_time_zone",
+  "timestamp_without_time_zone",
+  "time_with_time_zone",
+  "time_without_time_zone",
+]);
+
+/**
+ * Whether a diagram token is a type and so cannot be the attribute's name.
+ * Decided on the whole word: `date_added` and `settings_json` are names.
+ */
+export function isTypeWord(token: string): boolean {
+  let text = token.toLowerCase().split("*").join("");
+  const paren = text.indexOf("(");
+  if (paren >= 0) text = text.slice(0, paren);
+  if (!text) return false;
+  if (text.includes("[]")) return true;
+  if (
+    NUMBER_TYPES.has(text) ||
+    TEXT_TYPES.has(text) ||
+    BINARY_TYPES.has(text) ||
+    BOOLEAN_TYPES.has(text) ||
+    TEMPORAL_TYPES.has(text) ||
+    OTHER_TYPE_WORDS.has(text)
+  ) {
+    return true;
+  }
+  // int8, int64, uint32, float64
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) >= 48 && text.charCodeAt(end - 1) <= 57) end--;
+  const stem = text.slice(0, end);
+  return end < text.length && (stem === "int" || stem === "uint" || stem === "float");
+}
+
 // ---------------------------------------------------------------------------
 // Markdown scanning (index-based; linear)
 // ---------------------------------------------------------------------------
 
-/** The contents of each `` `code span` `` in a piece of text, in order. */
-export function codeSpans(text: string): string[] {
-  const spans: string[] = [];
-  let from = 0;
+interface Span {
+  text: string;
+  /** Index of the opening backtick. */
+  open: number;
+  /** Index of the closing backtick. */
+  close: number;
+}
+
+/** Each `` `code span` `` of `text` between `from` and `to`, in order. */
+function spanRanges(text: string, from = 0, to = text.length): Span[] {
+  const spans: Span[] = [];
+  let at = from;
   for (;;) {
-    const open = text.indexOf("`", from);
-    const close = open < 0 ? -1 : text.indexOf("`", open + 1);
-    if (close < 0) break;
-    spans.push(text.slice(open + 1, close));
-    from = close + 1;
+    const open = text.indexOf("`", at);
+    const close = open < 0 || open >= to ? -1 : text.indexOf("`", open + 1);
+    if (close < 0 || close >= to) break;
+    spans.push({ text: text.slice(open + 1, close), open, close });
+    at = close + 1;
   }
   return spans;
 }
 
-const NOT_IN_SCHEMA = "*(not in schema)*";
-const MARKED = " *(not in schema";
+/** The contents of each `` `code span` `` in a piece of text, in order. */
+export function codeSpans(text: string): string[] {
+  return spanRanges(text).map((span) => span.text);
+}
 
-type SpanEdit = { replace: string } | { mark: string } | { remove: true } | null;
+/** How every marker starts; a name that already carries one is not marked again. */
+const MARKED = " *(not in schema";
+const NOT_IN_SCHEMA = `${MARKED})*`;
+
+function nearMissMarker(schemaName: string): string {
+  return `${MARKED}; the schema has \`${plainSchemaText(schemaName)}\`)*`;
+}
 
 /**
- * Rewrite the code spans of `text` in ONE pass. `edit` sees each span's
- * contents in order and may replace it, put a marker after it (skipped when the
- * span already carries one), or remove it.
+ * `line` with each marker inserted at its offset. This is the ONLY function
+ * that produces changed model text, and all it can do is insert a marker: the
+ * text on either side of every offset is copied unchanged.
  */
-function rewriteSpans(text: string, edit: (span: string) => SpanEdit): string {
+function withMarkers(line: string, markers: ReadonlyArray<{ at: number; text: string }>): string {
+  if (markers.length === 0) return line;
+  const ordered = [...markers].sort((a, b) => a.at - b.at);
   const out: string[] = [];
   let from = 0;
-  for (;;) {
-    const open = text.indexOf("`", from);
-    const close = open < 0 ? -1 : text.indexOf("`", open + 1);
-    if (close < 0) break;
-    const action = edit(text.slice(open + 1, close));
-    out.push(text.slice(from, open));
-    if (action && "replace" in action) {
-      out.push(`\`${action.replace}\``);
-    } else if (!action || "mark" in action) {
-      out.push(text.slice(open, close + 1));
-      if (action && !text.startsWith(MARKED, close + 1)) out.push(` ${action.mark}`);
-    }
-    from = close + 1;
+  for (const marker of ordered) {
+    out.push(line.slice(from, marker.at));
+    // Already there when the text has been through the check before.
+    if (!line.startsWith(MARKED, marker.at)) out.push(marker.text);
+    from = marker.at;
   }
-  out.push(text.slice(from));
+  out.push(line.slice(from));
   return out.join("");
 }
 
@@ -458,8 +590,8 @@ function isDelimiterRow(line: string): boolean {
   return true;
 }
 
-function headerName(cell: Cell): string {
-  return cell.text.split("*").join("").split("`").join("").trim().toLowerCase();
+function plainCell(text: string): string {
+  return text.split("*").join("").split("`").join("").trim().toLowerCase();
 }
 
 const FIELD_HEADERS = new Set(["field", "column", "attribute", "field name", "column name"]);
@@ -468,7 +600,7 @@ const TYPE_HEADERS = new Set(["type", "data type", "datatype"]);
 /** `{ typeIndex }` when the header is a field table's, else `null`. */
 function fieldTableShape(header: Cell[]): { typeIndex: number } | null {
   if (header.length < 2) return null;
-  const names = header.map(headerName);
+  const names = header.map((cell) => plainCell(cell.text));
   const typeIndex = names.findIndex((name) => TYPE_HEADERS.has(name));
   if (FIELD_HEADERS.has(names[0]) || (names[0] === "name" && typeIndex > 0)) return { typeIndex };
   return null;
@@ -483,9 +615,103 @@ function fenceOf(line: string): string | null {
 
 const HEADING_LABELS = ["entities:", "entity:", "tables:", "table:"];
 
+export interface HeadingName {
+  /** The table name the heading states, with its schema when it gives one. */
+  name: string;
+  /** Offset in the heading line just past the name as written. */
+  end: number;
+}
+
 export interface HeadingClaim {
   /** The names the heading states are tables; empty for any other heading. */
-  names: string[];
+  names: HeadingName[];
+}
+
+/** Words that stand beside "schema" in a parenthesis without being its name. */
+const NOT_A_SCHEMA_NAME = new Set([
+  "the",
+  "a",
+  "an",
+  "in",
+  "of",
+  "its",
+  "own",
+  "this",
+  "that",
+  "other",
+  "another",
+  "different",
+  "separate",
+  "default",
+  "database",
+  "db",
+  "is",
+  "table",
+]);
+
+/**
+ * The schema a heading's parenthesis names: `(audit schema)`, `(schema audit)`,
+ * `(in the audit schema)`, `(schema: audit)`. `null` when it names none.
+ */
+function schemaNamedIn(text: string): string | null {
+  const words = text
+    .split("`")
+    .join(" ")
+    .split(":")
+    .join(" ")
+    .split(",")
+    .join(" ")
+    .split(" ")
+    .filter(Boolean);
+  const at = words.findIndex((word) => word.toLowerCase() === "schema");
+  if (at < 0) return null;
+  for (const candidate of [words[at - 1], words[at + 1]]) {
+    if (candidate && isIdentifier(candidate) && !NOT_A_SCHEMA_NAME.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/** The names between `from` and `to` of a labelled heading, with where each ends. */
+function headingNames(line: string, from: number, to: number): HeadingName[] {
+  const spans = spanRanges(line, from, to);
+  if (spans.length > 0) {
+    const names: HeadingName[] = [];
+    for (let i = 0; i < spans.length; i++) {
+      let name = spans[i].text;
+      let close = spans[i].close;
+      // `audit`.`users`: each part in its own code span.
+      while (i + 1 < spans.length && line.slice(close + 1, spans[i + 1].open) === ".") {
+        i += 1;
+        name = `${name}.${spans[i].text}`;
+        close = spans[i].close;
+      }
+      // audit.`users`: the schema written before the code span.
+      const open = spans[i].open;
+      if (name === spans[i].text && open > from && line[open - 1] === ".") {
+        let start = open - 1;
+        while (start > from && isIdentifierChar(line.charCodeAt(start - 1), false)) start--;
+        const prefix = line.slice(start, open - 1);
+        if (isIdentifier(prefix)) name = `${prefix}.${name}`;
+      }
+      if (isQualifiedIdentifier(name)) names.push({ name, end: close + 1 });
+    }
+    return names;
+  }
+  const words: HeadingName[] = [];
+  const isGap = (ch: string): boolean => ch === " " || ch === "," || ch === "\t";
+  let at = from;
+  while (at < to) {
+    while (at < to && isGap(line[at])) at++;
+    let end = at;
+    while (end < to && !isGap(line[end])) end++;
+    const word = line.slice(at, end);
+    if (word && word !== "and" && word !== "&") words.push({ name: word, end });
+    at = end;
+  }
+  const allNames = words.every((word) => isQualifiedIdentifier(word.name));
+  return words.length > 0 && words.length <= 4 && allNames ? words : [];
 }
 
 /**
@@ -493,30 +719,29 @@ export interface HeadingClaim {
  * Only a heading labelled `Entity:` / `Entities:` / `Table:` / `Tables:` claims
  * any. Every other heading (`#### \`Feed\` struct`, `### Sessions`) carries
  * none, which also ends the context of the labelled heading before it.
+ *
+ * The schema is read from the heading's WHOLE text, not only from the code
+ * span: `audit.` before the span, `` `audit`.`users` ``, and a parenthesis
+ * that names one (`(audit schema)`) all make the name `audit.users`.
  */
 export function parseHeading(line: string): HeadingClaim | null {
   let level = 0;
   while (level < line.length && level < 7 && line[level] === "#") level++;
   if (level < 2 || level > 6 || line[level] !== " ") return null;
-  let text = line.slice(level + 1);
-  const paren = text.indexOf("(");
-  if (paren >= 0) text = text.slice(0, paren);
-  text = text.trim();
-  const lower = text.toLowerCase();
+  let at = level + 1;
+  while (at < line.length && line[at] === " ") at++;
+  const lower = line.slice(at, at + 16).toLowerCase();
   const label = HEADING_LABELS.find((candidate) => lower.startsWith(candidate));
   if (!label) return { names: [] };
-  text = text.slice(label.length).trim();
-  const spans = codeSpans(text).filter(isQualifiedIdentifier);
-  if (spans.length > 0) return { names: spans };
-  const words = text
-    .split(",")
-    .join(" ")
-    .split(" ")
-    .filter((word) => word && word !== "and" && word !== "&");
-  if (words.length > 0 && words.length <= 4 && words.every(isQualifiedIdentifier)) {
-    return { names: words };
+  const from = at + label.length;
+  const paren = line.indexOf("(", from);
+  const names = headingNames(line, from, paren >= 0 ? paren : line.length);
+  if (paren >= 0 && names.length === 1 && !names[0].name.includes(".")) {
+    const close = line.indexOf(")", paren);
+    const schema = schemaNamedIn(line.slice(paren + 1, close >= 0 ? close : line.length));
+    if (schema) names[0] = { name: `${schema}.${names[0].name}`, end: names[0].end };
   }
-  return { names: [] };
+  return { names };
 }
 
 // ---------------------------------------------------------------------------
@@ -529,38 +754,34 @@ function tick(name: string): string {
 
 const MAX_LISTED = 12;
 
+function listedWith<T>(items: readonly T[], show: (item: T) => string): string {
+  const shown = items.slice(0, MAX_LISTED).map(show).join(", ");
+  return items.length > MAX_LISTED ? `${shown} and ${items.length - MAX_LISTED} more` : shown;
+}
+
 function listed(names: readonly string[]): string {
-  const shown = names.slice(0, MAX_LISTED).map(tick).join(", ");
-  return names.length > MAX_LISTED ? `${shown} and ${names.length - MAX_LISTED} more` : shown;
+  return listedWith(names, tick);
 }
 
 interface Findings {
   unresolvedTables: Set<string>;
-  removedColumns: Set<string>;
   flaggedColumns: Set<string>;
-  corrected: Map<string, string>;
+  suggestions: Map<string, string>;
   typeMismatches: Map<string, { written: string; schema: string }>;
+  notChecked: Map<string, NotCheckedReason>;
+  inDiagram: Set<string>;
 }
 
 interface CheckState {
   index: InventoryIndex;
   typed: boolean;
-  /**
-   * Whether what the section says about `tables` may be removed or rewritten:
-   * `mayRewriteAgainst` — one table, read live, with no database unread.
-   */
-  mayRewrite: (tables: readonly SchemaInventoryTable[]) => boolean;
-  label: string;
   found: Findings;
 }
 
-function notATableNote(names: readonly string[], where: string, label: string): string {
-  const verb = names.length === 1 ? "is not a table" : "are not tables";
-  return (
-    `> **Not in the schema:** ${where}${listed(names)} ${verb} in ${label}. If what is ` +
-    `described is something else (a queue, a cache, a struct, a view or an external store), ` +
-    `read it as that; otherwise treat it as unverified.`
-  );
+/** A column the table does not have: recorded; `near` carries the schema's spelling. */
+function flagColumn(state: CheckState, qualified: string, match: ColumnMatch): void {
+  state.found.flaggedColumns.add(qualified);
+  if (match.kind === "near") state.found.suggestions.set(qualified, match.column.name);
 }
 
 function noteTypeMismatch(
@@ -575,112 +796,147 @@ function noteTypeMismatch(
   });
 }
 
-function checkErDiagram(
-  body: readonly string[],
+/**
+ * Whether the document itself calls the thing a view. The inventory cannot tell
+ * a view from a table (Postgres lists a view's columns with the tables', other
+ * drivers may not list views at all), so a name that does not resolve and is
+ * called a view by its own row or heading is not judged.
+ */
+function saysView(text: string): boolean {
+  return /\bviews?\b/i.test(text);
+}
+
+/** The first whitespace-separated tokens of a diagram line. */
+function diagramTokens(text: string): string[] {
+  return text.split(" ").join("\t").split("\t").filter(Boolean);
+}
+
+/** An entity as a block header writes it: `USERS`, `USERS["audit.users"]`. */
+function entityName(header: string): { id: string; name: string } {
+  const bracket = header.indexOf("[");
+  const id = (bracket >= 0 ? header.slice(0, bracket) : header).split('"').join("").trim();
+  if (bracket < 0) return { id, name: id };
+  const close = header.indexOf("]", bracket);
+  const alias = header
+    .slice(bracket + 1, close >= 0 ? close : header.length)
+    .split('"')
+    .join("")
+    .trim();
+  // The alias is the table when it is a name; a caption ("User accounts") is not.
+  return { id, name: isQualifiedIdentifier(alias) ? alias : id };
+}
+
+/**
+ * Which of an attribute line's first two tokens is the column's name. Mermaid's
+ * order is `type name`; models also write `name type`. `null` when the line
+ * does not say: both tokens are columns, both are type words, or neither is
+ * either.
+ */
+function attributeName(
   state: CheckState,
-): { lines: string[]; notes: string[] } {
-  const out: string[] = [];
-  const unresolved = new Set<string>();
-  const unverifiedAttributes = new Set<string>();
-  const entity = (raw: string): SchemaInventoryTable[] | null => {
-    let name = raw.split('"').join("");
-    const alias = name.indexOf("[");
-    if (alias >= 0) name = name.slice(0, alias);
-    name = name.trim();
-    if (!name || name.length > IDENTIFIER_MAX) return null;
-    const tables = state.index.resolveTable(name.split("-").join("_"));
-    // In a schema that was not read: its block is left exactly as written.
-    if (tables === UNJUDGED) return null;
-    if (!tables) {
-      unresolved.add(name);
+  block: readonly SchemaInventoryTable[],
+  first: string,
+  second: string,
+): { name: string; type: string } | null {
+  const isColumn = (token: string): boolean =>
+    isIdentifier(token) && state.index.resolveColumn(block, token).kind === "exact";
+  const firstIsColumn = isColumn(first);
+  const secondIsColumn = isColumn(second);
+  if (secondIsColumn && !firstIsColumn) return { name: second, type: first };
+  if (firstIsColumn && !secondIsColumn) return { name: first, type: second };
+  if (firstIsColumn && secondIsColumn) return null;
+  const firstIsType = isTypeWord(first);
+  const secondIsType = isTypeWord(second);
+  if (firstIsType && !secondIsType && isIdentifier(second)) return { name: second, type: first };
+  if (secondIsType && !firstIsType && isIdentifier(first)) return { name: first, type: second };
+  return null;
+}
+
+/**
+ * One `erDiagram`. Nothing is returned to write back: a diagram is never
+ * edited, so everything found here goes to the note.
+ */
+function checkErDiagram(body: readonly string[], state: CheckState): void {
+  // An entity's alias can be declared after a relationship that uses its id.
+  const aliases = new Map<string, string>();
+  for (const line of body) {
+    const text = line.trim();
+    if (!text.endsWith("{")) continue;
+    const { id, name } = entityName(text.slice(0, -1));
+    if (id && name !== id) aliases.set(id, name);
+  }
+  const entity = (rawId: string): SchemaInventoryTable[] | null => {
+    const id = rawId.split('"').join("").trim();
+    const name = (aliases.get(id) ?? id).split("-").join("_");
+    if (!isQualifiedIdentifier(name)) return null;
+    const verdict = state.index.resolveTable(name);
+    if (verdict.kind === "found") return verdict.tables;
+    if (verdict.kind === "unread") {
+      state.found.notChecked.set(name, "unread");
+    } else {
       state.found.unresolvedTables.add(name);
+      state.found.inDiagram.add(name);
     }
-    return tables;
+    return null;
   };
-  // `undefined` outside an entity block; `null` inside an unresolved entity's.
+  // `undefined` outside an entity block; `null` inside one that did not resolve.
   let block: SchemaInventoryTable[] | null | undefined;
   for (const line of body) {
     const text = line.trim();
     if (block !== undefined) {
       if (text.startsWith("}")) {
         block = undefined;
-        out.push(line);
         continue;
       }
-      const tokens = text.split(" ").filter(Boolean);
-      if (!block || tokens.length < 2 || !isIdentifier(tokens[1])) {
-        out.push(line);
-        continue;
-      }
-      const [type, name] = tokens;
-      const rewrite = state.mayRewrite(block);
-      const match = state.index.resolveColumn(block, name);
-      if (match.kind === "none") {
-        const qualified = `${block[0].name}.${name}`;
-        if (rewrite) {
-          state.found.removedColumns.add(qualified);
-          continue;
+      const tokens = diagramTokens(text);
+      if (!block || tokens.length < 2) continue;
+      const table = block[0].name;
+      const attribute = attributeName(state, block, tokens[0], tokens[1]);
+      if (!attribute) {
+        // Both columns: there is nothing to say about the line.
+        const bothColumns =
+          isIdentifier(tokens[0]) &&
+          state.index.resolveColumn(block, tokens[0]).kind === "exact" &&
+          isIdentifier(tokens[1]) &&
+          state.index.resolveColumn(block, tokens[1]).kind === "exact";
+        if (!bothColumns) {
+          state.found.notChecked.set(`${table}: ${tokens[0]} ${tokens[1]}`, "diagram-line");
         }
-        state.found.flaggedColumns.add(qualified);
-        unverifiedAttributes.add(qualified);
-        out.push(line);
         continue;
       }
-      // Rewritten by position: the type comes first, the name after it.
-      const typeAt = line.indexOf(type);
-      const nameAt = line.indexOf(name, typeAt + type.length);
-      let newType = type;
-      let newName = name;
-      if (match.kind === "near") {
-        const from = `${match.table.name}.${name}`;
-        if (rewrite && isIdentifier(match.column.name)) {
-          state.found.corrected.set(from, `${match.table.name}.${match.column.name}`);
-          newName = match.column.name;
-        } else {
-          state.found.flaggedColumns.add(from);
-          unverifiedAttributes.add(from);
-        }
+      const match = state.index.resolveColumn(block, attribute.name);
+      if (match.kind !== "exact") {
+        const qualified = `${table}.${attribute.name}`;
+        flagColumn(state, qualified, match);
+        state.found.inDiagram.add(qualified);
+        continue;
       }
       // With two tables of this name, which one's type is meant is not known.
-      if (state.typed && block.length === 1 && typesDisagree(type, match.column.dataType)) {
-        const column = `${match.table.name}.${match.column.name}`;
-        noteTypeMismatch(state, column, type, match.column.dataType);
-        const schemaType = match.column.dataType.toLowerCase().split(" ").join("_");
-        if (rewrite && isIdentifier(schemaType)) newType = schemaType;
+      if (
+        state.typed &&
+        block.length === 1 &&
+        typesDisagree(attribute.type, match.column.dataType)
+      ) {
+        noteTypeMismatch(
+          state,
+          `${match.table.name}.${match.column.name}`,
+          attribute.type,
+          match.column.dataType,
+        );
       }
-      out.push(
-        line.slice(0, typeAt) +
-          newType +
-          line.slice(typeAt + type.length, nameAt) +
-          newName +
-          line.slice(nameAt + name.length),
-      );
       continue;
     }
     if (text.endsWith("{")) {
-      block = entity(text.slice(0, -1));
-      out.push(line);
+      block = entity(entityName(text.slice(0, -1)).id);
       continue;
     }
-    const tokens = text.split(" ").filter(Boolean);
+    const tokens = diagramTokens(text);
     const relation = tokens.length >= 3 ? tokens[1] : "";
     if (relation.length <= 12 && (relation.includes("--") || relation.includes(".."))) {
       entity(tokens[0]);
       entity(tokens[2].endsWith(":") ? tokens[2].slice(0, -1) : tokens[2]);
     }
-    out.push(line);
   }
-  const notes: string[] = [];
-  if (unresolved.size > 0) {
-    notes.push(notATableNote([...unresolved], "in the diagram above, ", state.label));
-  }
-  if (unverifiedAttributes.size > 0) {
-    notes.push(
-      `> **Not in the schema:** the diagram above shows ` +
-        `${listed([...unverifiedAttributes])}, which ${state.label} does not hold.`,
-    );
-  }
-  return { lines: out, notes };
 }
 
 interface RowContext {
@@ -694,60 +950,98 @@ const ROSTER_HEADERS = new Set(["table", "tables", "table name"]);
 
 /** A table that lists tables: its first header cell is `Table`. */
 function isTableRoster(header: Cell[]): boolean {
-  return header.length > 0 && ROSTER_HEADERS.has(headerName(header[0]));
+  return header.length > 0 && ROSTER_HEADERS.has(plainCell(header[0].text));
 }
 
-/**
- * Whether the document itself calls the thing a view. The inventory cannot tell
- * a view from a table (Postgres lists a view's columns with the tables', other
- * drivers may not list views at all), so a name that does not resolve and is
- * called a view by its own row or heading is not judged.
- */
-function saysView(text: string): boolean {
-  return /\bviews?\b/i.test(text);
-}
-
-/** One row of a table roster: a name that is no table is marked, never removed. */
+/** One row of a table roster: a name in its first cell that is no table is marked. */
 function checkRosterRow(line: string, state: CheckState): string {
   const cells = splitCells(line);
   if (cells.length === 0) return line;
-  const first = rewriteSpans(cells[0].text, (name): SpanEdit => {
-    // Resolved, or in a schema that was not read: nothing to say either way.
-    if (!isQualifiedIdentifier(name) || state.index.resolveTable(name) !== null) return null;
-    if (saysView(line)) return null;
-    state.found.unresolvedTables.add(name);
-    return { mark: NOT_IN_SCHEMA };
-  });
-  if (first === cells[0].text) return line;
-  return line.slice(0, cells[0].start) + first + line.slice(cells[0].end);
+  const markers: Array<{ at: number; text: string }> = [];
+  for (const span of spanRanges(line, cells[0].start, cells[0].end)) {
+    if (!isQualifiedIdentifier(span.text)) continue;
+    const verdict = state.index.resolveTable(span.text);
+    if (verdict.kind === "found") continue;
+    if (saysView(line)) {
+      state.found.notChecked.set(span.text, "view");
+    } else if (verdict.kind === "unread") {
+      state.found.notChecked.set(span.text, "unread");
+    } else {
+      state.found.unresolvedTables.add(span.text);
+      markers.push({ at: span.close + 1, text: NOT_IN_SCHEMA });
+    }
+  }
+  return withMarkers(line, markers);
 }
 
-const NON_COLUMN_TYPES = new Set([
-  "key",
-  "primary key",
-  "foreign key",
-  "unique key",
-  "unique",
+/** Type words that are never part of a column's type. */
+const NON_COLUMN_WORDS = new Set([
+  "index",
+  "indexes",
+  "constraint",
   "trigger",
   "sequence",
+  "relation",
+  "relationship",
+]);
+/** Words that say "not a column" when the Type cell STARTS with them. */
+const NON_COLUMN_FIRST_WORDS = new Set([
+  "key",
+  "primary",
+  "foreign",
+  "unique",
+  "fk",
+  "pk",
+  "uq",
   "check",
+  "btree",
+  "hash",
+  "gin",
+  "gist",
+  "brin",
 ]);
 
 /**
  * True when a row's Type cell says the row is an index, a constraint, a key, a
- * trigger or a sequence. Such a row is not a column claim and is left as
- * written: a field table often lists a table's indexes after its columns.
+ * trigger, a sequence or a relation: `btree`, `UNIQUE (email)`, `FK`,
+ * `relation`, `unique index`. Decided on whole words, and for the key words on
+ * the FIRST word only, so `integer (indexed)` and `BIGSERIAL PRIMARY KEY` are
+ * still column types.
  */
-function isNonColumnType(cell: string): boolean {
-  const text = cell.split("*").join("").split("`").join("").trim().toLowerCase();
-  return text.includes("index") || text.includes("constraint") || NON_COLUMN_TYPES.has(text);
+export function isNonColumnType(cell: string): boolean {
+  const words = plainCell(cell).split(" ").filter(Boolean);
+  if (words.length === 0) return false;
+  return NON_COLUMN_FIRST_WORDS.has(words[0]) || words.some((word) => NON_COLUMN_WORDS.has(word));
 }
 
-const INDEX_NAME_PREFIXES = ["idx_", "ix_", "pk_", "fk_", "uq_", "uk_", "chk_"];
-const INDEX_NAME_SUFFIXES = ["_idx", "_pkey", "_fkey", "_key", "_index"];
+const INDEX_NAME_PREFIXES = [
+  "idx_",
+  "ix_",
+  "pk_",
+  "fk_",
+  "uq_",
+  "uk_",
+  "chk_",
+  "index_",
+  "unique_",
+];
+const INDEX_NAME_SUFFIXES = [
+  "_idx",
+  "_pkey",
+  "_fkey",
+  "_key",
+  "_index",
+  "_unique",
+  "_uniq",
+  "_foreign",
+  "_primary",
+  "_check",
+  "_seq",
+  "_trigger",
+];
 
-/** A name in the usual shape of an index or key constraint. */
-function looksLikeIndexName(name: string): boolean {
+/** A name in the usual shape of an index, a key constraint or a sequence. */
+export function looksLikeIndexName(name: string): boolean {
   const lower = name.toLowerCase();
   return (
     INDEX_NAME_PREFIXES.some((prefix) => lower.startsWith(prefix)) ||
@@ -755,243 +1049,140 @@ function looksLikeIndexName(name: string): boolean {
   );
 }
 
-/** One field-table row, rewritten; `null` when the row is removed. */
-function checkRow(
-  line: string,
-  typeIndex: number,
-  context: RowContext,
-  state: CheckState,
-): string | null {
+/** One field-table row: the line, with a marker after each unmatched name. */
+function checkRow(line: string, typeIndex: number, context: RowContext, state: CheckState): string {
   const cells = splitCells(line);
-  if (cells.length === 0) return line;
-  const edits = new Map<number, string>();
+  if (cells.length === 0 || context.tables.length === 0) return line;
+  const names = spanRanges(line, cells[0].start, cells[0].end).filter((span) =>
+    isQualifiedIdentifier(span.text),
+  );
+  if (names.length === 0) return line;
   const typeCell = typeIndex > 0 && typeIndex < cells.length ? cells[typeIndex] : undefined;
-  const typeParts = typeCell ? typeCell.text.split("/") : [];
-  const nameCount = codeSpans(cells[0].text).filter(isQualifiedIdentifier).length;
-  const alignedTypes = nameCount > 1 && typeParts.length === nameCount;
-  const typeNotes: string[] = [];
-  const droppedTypeParts = new Set<number>();
-  const kept: string[] = [];
-  let claims = 0;
-  let removed = 0;
-  let position = -1;
-
-  // A row that describes an index, a constraint or a trigger names no column.
+  // A row that describes an index, a constraint or a relation names no column.
   const notAColumnRow = typeCell != null && isNonColumnType(typeCell.text);
-
-  let first = rewriteSpans(cells[0].text, (name): SpanEdit => {
-    if (!isQualifiedIdentifier(name)) {
-      kept.push(name);
-      return null;
-    }
-    position += 1;
-    const dot = name.lastIndexOf(".");
-    const columnName = dot >= 0 ? name.slice(dot + 1) : name;
-    let tables: SchemaInventoryTable[] | null = null;
-    if (notAColumnRow) {
-      tables = null;
-    } else if (dot >= 0) {
+  const markers: Array<{ at: number; text: string }> = [];
+  for (const span of names) {
+    const dot = span.text.lastIndexOf(".");
+    const columnName = dot >= 0 ? span.text.slice(dot + 1) : span.text;
+    let tables = context.tables;
+    if (dot >= 0) {
       // `table.column` is a claim only when `table` is one of the heading's own
-      // tables. Anything else dotted is a path (`settings.theme` in a JSON
-      // column, `model.Themes`), and so is a qualifier that is itself a column
-      // of the heading's table, even when a table of that name exists.
-      const qualifier = name.slice(0, dot);
-      const named = state.index.resolveTable(qualifier, false);
-      const own =
-        named && named !== UNJUDGED ? named.filter((table) => context.tables.includes(table)) : [];
-      const isColumnPath =
-        context.tables.length > 0 &&
-        state.index.resolveColumn(context.tables, qualifier).kind === "exact";
-      tables = own.length > 0 && !isColumnPath ? own : null;
-    } else if (context.complete && context.tables.length > 0) {
-      tables = context.tables;
+      // tables. Anything else dotted is a path (`settings.theme`, `model.Job`).
+      const qualifier = span.text.slice(0, dot).toLowerCase();
+      tables = context.tables.filter(
+        (table) =>
+          table.name.toLowerCase() === qualifier ||
+          `${table.schema}.${table.name}`.toLowerCase() === qualifier,
+      );
+      if (tables.length === 0) {
+        state.found.notChecked.set(span.text, "not-a-column");
+        continue;
+      }
+    } else if (!context.complete) {
+      // The heading also named something unknown: a bare name may be its column.
+      continue;
     }
-    if (!tables) {
-      kept.push(name);
-      return null;
-    }
-    claims += 1;
-    const rewrite = state.mayRewrite(tables);
     const match = state.index.resolveColumn(tables, columnName);
-    if (match.kind === "none") {
-      const qualified = `${tables[0].name}.${columnName}`;
-      // A name shaped like an index or a key (`idx_users_email`, `users_pkey`)
-      // can be one, so it is marked at most.
-      if (rewrite && !looksLikeIndexName(columnName)) {
-        state.found.removedColumns.add(qualified);
-        droppedTypeParts.add(position);
-        removed += 1;
-        return { remove: true };
-      }
-      state.found.flaggedColumns.add(qualified);
-      kept.push(name);
-      return { mark: NOT_IN_SCHEMA };
-    }
-    const tableName = match.table.name;
-    let action: SpanEdit = null;
-    let keptName = name;
-    if (match.kind === "near") {
-      const qualified = `${tableName}.${columnName}`;
-      const schemaName = plainSchemaText(match.column.name);
-      if (rewrite) {
-        state.found.corrected.set(qualified, `${tableName}.${schemaName}`);
-        keptName = dot >= 0 ? `${name.slice(0, dot)}.${schemaName}` : schemaName;
-        action = { replace: keptName };
-      } else {
-        state.found.flaggedColumns.add(qualified);
-        action = { mark: `*(not in schema; the schema has \`${schemaName}\`)*` };
-      }
-    }
-    kept.push(keptName);
-    if (state.typed && typeCell && tables.length === 1) {
-      const written = alignedTypes
-        ? typeParts[position]
-        : typeParts.length === 1
-          ? typeParts[0]
-          : "";
-      if (written && typesDisagree(written, match.column.dataType)) {
-        const column = `${tableName}.${match.column.name}`;
-        noteTypeMismatch(state, column, written, match.column.dataType);
-        const schemaType = plainSchemaText(match.column.dataType);
-        typeNotes.push(
-          nameCount > 1 ? `${tick(match.column.name)} is \`${schemaType}\`` : `\`${schemaType}\``,
+    const qualified = `${tables[0].name}.${columnName}`;
+    if (match.kind === "exact") {
+      // One name, one type, one table: otherwise whose type is meant is not known.
+      if (
+        state.typed &&
+        typeCell &&
+        !notAColumnRow &&
+        names.length === 1 &&
+        tables.length === 1 &&
+        typesDisagree(typeCell.text, match.column.dataType)
+      ) {
+        noteTypeMismatch(
+          state,
+          `${match.table.name}.${match.column.name}`,
+          typeCell.text.trim(),
+          match.column.dataType,
         );
       }
+      continue;
     }
-    return action;
-  });
-
-  if (claims > 0 && removed === claims) return null;
-  // The names that are left, without the separators the removed ones leave.
-  if (removed > 0) first = ` ${kept.map((name) => `\`${name}\``).join(" / ")} `;
-  if (first !== cells[0].text) edits.set(0, first);
-  if (typeCell) {
-    let typeText = typeCell.text;
-    if (alignedTypes && droppedTypeParts.size > 0) {
-      const left = typeParts.filter((_, i) => !droppedTypeParts.has(i)).map((part) => part.trim());
-      typeText = ` ${left.join("/")} `;
+    if (notAColumnRow || looksLikeIndexName(columnName)) {
+      state.found.notChecked.set(qualified, "not-a-column");
+      continue;
     }
-    if (typeNotes.length > 0 && !typeText.includes("(schema:")) {
-      typeText = `${typeText.trimEnd()} *(schema: ${typeNotes.join(", ")})* `;
-    }
-    if (typeText !== typeCell.text) edits.set(typeIndex, typeText);
-  }
-
-  // A `table.column` elsewhere in the row (an FK target): marked, never removed.
-  for (let i = 1; i < cells.length; i++) {
-    const before = edits.get(i) ?? cells[i].text;
-    if (!before.includes("`")) continue;
-    const text = rewriteSpans(before, (span): SpanEdit => {
-      const dot = span.lastIndexOf(".");
-      if (dot <= 0 || !isQualifiedIdentifier(span)) return null;
-      const tables = state.index.resolveTable(span.slice(0, dot), false);
-      if (!tables || tables === UNJUDGED) return null;
-      const columnName = span.slice(dot + 1);
-      const match = state.index.resolveColumn(tables, columnName);
-      if (match.kind === "exact") return null;
-      const qualified = `${tables[0].name}.${columnName}`;
-      if (match.kind === "near" && state.mayRewrite(tables)) {
-        const schemaName = plainSchemaText(match.column.name);
-        state.found.corrected.set(qualified, `${tables[0].name}.${schemaName}`);
-        return { replace: `${span.slice(0, dot)}.${schemaName}` };
-      }
-      state.found.flaggedColumns.add(qualified);
-      return { mark: NOT_IN_SCHEMA };
+    flagColumn(state, qualified, match);
+    markers.push({
+      at: span.close + 1,
+      text: match.kind === "near" ? nearMissMarker(match.column.name) : NOT_IN_SCHEMA,
     });
-    if (text !== cells[i].text) edits.set(i, text);
   }
-
-  if (edits.size === 0) return line;
-  const rebuilt: string[] = [];
-  let from = 0;
-  cells.forEach((cell, i) => {
-    rebuilt.push(line.slice(from, cell.start), edits.get(i) ?? cell.text);
-    from = cell.end;
-  });
-  rebuilt.push(line.slice(from));
-  return rebuilt.join("");
+  return withMarkers(line, markers);
 }
+
+const EMPTY_REPORT: SchemaCheckReport = {
+  checked: false,
+  unresolvedTables: [],
+  flaggedColumns: [],
+  suggestions: [],
+  typeMismatches: [],
+  notChecked: [],
+  inDiagram: [],
+};
 
 /**
  * Check one section's markdown against the inventory. Returns the markdown
- * with unverifiable names marked (or, where `mayRewriteAgainst` holds for the
- * table, unresolved columns removed and near misses corrected) and a report of
- * what was found.
+ * with a marker after each name that could not be matched, and nothing else
+ * changed, and a report of what was found.
  */
 export function checkSchemaClaims(
   markdown: string,
   inventory: SchemaInventory,
 ): { markdown: string; report: SchemaCheckReport } {
-  const checked = inventory.tables.length > 0;
   // Never judge a section against nothing: that would mark all of it.
-  if (!checked) {
-    return {
-      markdown,
-      report: {
-        checked,
-        unresolvedTables: [],
-        removedColumns: [],
-        flaggedColumns: [],
-        corrected: [],
-        typeMismatches: [],
-      },
-    };
-  }
+  if (inventory.tables.length === 0) return { markdown, report: { ...EMPTY_REPORT } };
   const found: Findings = {
     unresolvedTables: new Set(),
-    removedColumns: new Set(),
     flaggedColumns: new Set(),
-    corrected: new Map(),
+    suggestions: new Map(),
     typeMismatches: new Map(),
+    notChecked: new Map(),
+    inDiagram: new Set(),
   };
-  const typed = isTypedInventory(inventory);
   const state: CheckState = {
-    index: new InventoryIndex(inventory.tables),
-    typed,
-    mayRewrite: (tables) => typed && mayRewriteAgainst(inventory, tables),
-    label: inventory.label,
+    index: new InventoryIndex(inventory),
+    typed: isTypedInventory(inventory),
     found,
   };
 
   const lines = markdown.split("\n");
   const out: string[] = [];
-  /** Notes to place after `out[index]`, kept aside so nothing is spliced. */
-  const after = new Map<number, string[]>();
   /**
    * The `Entity:` / `Table:` heading whose field table has not been reached
-   * yet. Its context covers ONE table: the first one under it. `direct` is
-   * false once anything other than blank lines has come between the two (a
-   * paragraph, a bold "Go struct UserSession:" line, a list, a diagram): the
-   * table is then no longer provably the heading's, and its rows are not read.
-   * After that first table the heading is dropped, so a later field table in
-   * the same sub-section (a struct, a message, an index list) is never judged
-   * as columns of the heading's table.
+   * yet. Its context covers ONE table, the first one under it, whatever prose
+   * stands between the two. After that table the heading is dropped, so a later
+   * field table in the same sub-section (a struct, a message, an index list) is
+   * never judged as columns of the heading's table.
    */
-  let heading: { claim: HeadingClaim; at: number; direct: boolean; line: string } | null = null;
+  let heading: { claim: HeadingClaim; at: number; line: string } | null = null;
 
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     const fence = fenceOf(line);
     if (fence) {
-      if (heading) heading.direct = false;
       let close = i + 1;
       while (close < lines.length && !lines[close].trimStart().startsWith(fence)) close++;
       const body = lines.slice(i + 1, close);
       const firstLine = body.find((entry) => entry.trim() !== "")?.trim() ?? "";
-      const isEr = line.toLowerCase().includes("mermaid") && firstLine.startsWith("erDiagram");
-      const diagram = isEr ? checkErDiagram(body, state) : { lines: body, notes: [] };
-      out.push(line);
-      for (const entry of diagram.lines) out.push(entry);
-      if (close < lines.length) out.push(lines[close]);
-      if (diagram.notes.length > 0) after.set(out.length - 1, diagram.notes);
+      if (line.toLowerCase().includes("mermaid") && firstLine.startsWith("erDiagram")) {
+        checkErDiagram(body, state);
+      }
+      // The fence and everything in it, exactly as written.
+      for (let at = i; at < Math.min(close + 1, lines.length); at++) out.push(lines[at]);
       i = close + 1;
       continue;
     }
     const claim = parseHeading(line);
     if (claim) {
       out.push(line);
-      heading = claim.names.length > 0 ? { claim, at: out.length - 1, direct: true, line } : null;
+      heading = claim.names.length > 0 ? { claim, at: out.length - 1, line } : null;
       i += 1;
       continue;
     }
@@ -1012,65 +1203,69 @@ export function checkSchemaClaims(
         i = end;
         continue;
       }
-      // The heading's own claim: each name it gives is a table. Marked only.
+      // The heading's own claim: each name it gives is a table.
       const context: RowContext = { tables: [], complete: true };
-      const unresolved: string[] = [];
-      for (const name of owner.claim.names) {
-        const tables = state.index.resolveTable(name);
-        if (tables === UNJUDGED) context.complete = false;
-        else if (tables) context.tables.push(...tables);
-        else unresolved.push(name);
-      }
-      if (unresolved.length > 0) {
+      const markers: Array<{ at: number; text: string }> = [];
+      for (const { name, end: nameEnd } of owner.claim.names) {
+        const verdict = state.index.resolveTable(name);
+        if (verdict.kind === "found") {
+          context.tables.push(...verdict.tables);
+          continue;
+        }
         context.complete = false;
-        // Called a view by the heading itself: not judged (see `saysView`).
-        if (!saysView(owner.line)) {
-          for (const name of unresolved) found.unresolvedTables.add(name);
-          after.set(owner.at, [notATableNote(unresolved, "", state.label)]);
+        if (saysView(owner.line)) {
+          found.notChecked.set(name, "view");
+        } else if (verdict.kind === "unread") {
+          found.notChecked.set(name, "unread");
+        } else {
+          found.unresolvedTables.add(name);
+          markers.push({ at: nameEnd, text: NOT_IN_SCHEMA });
         }
       }
+      out[owner.at] = withMarkers(owner.line, markers);
       out.push(line, lines[i + 1]);
       for (let row = i + 2; row < end; row++) {
-        // Not directly under the heading: the rows are not provably its columns.
-        const rewritten = owner.direct
-          ? checkRow(lines[row], shape.typeIndex, context, state)
-          : lines[row];
-        if (rewritten != null) out.push(rewritten);
+        out.push(checkRow(lines[row], shape.typeIndex, context, state));
       }
       i = end;
       continue;
     }
-    if (heading && line.trim() !== "") heading.direct = false;
     out.push(line);
     i += 1;
   }
 
   const report: SchemaCheckReport = {
-    checked,
+    checked: true,
     unresolvedTables: [...found.unresolvedTables],
-    removedColumns: [...found.removedColumns],
     flaggedColumns: [...found.flaggedColumns],
-    corrected: [...found.corrected].map(([from, to]) => ({ from, to })),
+    suggestions: [...found.suggestions].map(([column, schema]) => ({ column, schema })),
     typeMismatches: [...found.typeMismatches].map(([column, types]) => ({ column, ...types })),
+    notChecked: [...found.notChecked].map(([name, why]) => ({ name, why })),
+    inDiagram: [...found.inDiagram],
   };
-  if (after.size === 0) return { markdown: out.join("\n"), report };
-  const merged: string[] = [];
-  out.forEach((entry, at) => {
-    merged.push(entry);
-    for (const note of after.get(at) ?? []) {
-      // Already there when the text has been through the check before.
-      const present = out[at + 2] === note || out[at + 4] === note;
-      if (!present) merged.push("", note);
-    }
-  });
-  return { markdown: merged.join("\n"), report };
+  return { markdown: out.join("\n"), report };
 }
 
 // ---------------------------------------------------------------------------
 // The section as it reaches the document
 // ---------------------------------------------------------------------------
 
-/** The note at the top of the section saying what the check found, or `""`. */
+const NOT_CHECKED_WHY: Array<[NotCheckedReason, string]> = [
+  ["unread", "outside the schemas that were read"],
+  [
+    "not-a-column",
+    "an index, constraint, key or relation row, or a name that is not a plain column name",
+  ],
+  ["view", "described as a view, which the schema that was read does not list as one"],
+  ["diagram-line", "a diagram line whose column name could not be told from its type"],
+];
+
+/**
+ * The ONE note the check adds to the section, saying what it found, or `""`
+ * when it has nothing to say. Everything is here: what is marked, the schema's
+ * spelling for a near miss, the types that differ, what stands in a diagram
+ * (which carries no marker) and what was not checked, with the reason.
+ */
 export function renderSchemaCheckNotice(
   report: SchemaCheckReport,
   inventory: SchemaInventory,
@@ -1085,32 +1280,48 @@ export function renderSchemaCheckNotice(
   }
   const lines: string[] = [];
   if (report.unresolvedTables.length > 0) {
-    lines.push(`> - Named as tables but not in the schema: ${listed(report.unresolvedTables)}.`);
-  }
-  if (report.removedColumns.length > 0) {
-    lines.push(
-      `> - Removed, because the table has no such column: ${listed(report.removedColumns)}.`,
-    );
+    lines.push(`> - Named as tables, not in the schema: ${listed(report.unresolvedTables)}.`);
   }
   if (report.flaggedColumns.length > 0) {
-    lines.push(`> - Columns not found in the schema: ${listed(report.flaggedColumns)}.`);
+    const spelling = new Map(report.suggestions.map((s) => [s.column, s.schema]));
+    const shown = listedWith(report.flaggedColumns, (column) => {
+      const schema = spelling.get(column);
+      return schema ? `${tick(column)} (the schema has ${tick(schema)})` : tick(column);
+    });
+    lines.push(`> - Columns not in the schema: ${shown}.`);
+  }
+  if (report.inDiagram.length > 0) {
+    lines.push(
+      `> - Of these, in a diagram, which is left exactly as written and so carries no mark: ` +
+        `${listed(report.inDiagram)}.`,
+    );
   }
   if (report.typeMismatches.length > 0) {
-    const shown = report.typeMismatches
-      .slice(0, MAX_LISTED)
-      .map((m) => `${tick(m.column)} (written \`${m.written}\`, schema \`${m.schema}\`)`);
-    lines.push(`> - Types that differ from the schema: ${shown.join(", ")}.`);
+    const shown = listedWith(
+      report.typeMismatches,
+      (m) => `${tick(m.column)} (written \`${m.written}\`, schema \`${m.schema}\`)`,
+    );
+    lines.push(`> - Types that differ from the schema: ${shown}.`);
   }
-  if (report.corrected.length > 0) {
-    const shown = report.corrected
-      .slice(0, MAX_LISTED)
-      .map((c) => `${tick(c.from)} to ${tick(c.to)}`);
-    lines.push(`> - Spelling corrected to the schema's: ${shown.join(", ")}.`);
+  for (const [why, words] of NOT_CHECKED_WHY) {
+    const names = report.notChecked.filter((entry) => entry.why === why).map((e) => e.name);
+    if (names.length > 0) lines.push(`> - Not checked (${words}): ${listed(names)}.`);
   }
   if (lines.length === 0) return "";
+  const truncated = inventory.reads.filter((read) => read.possiblyTruncated);
+  if (truncated.length > 0) {
+    lines.push(
+      `> - The read of ${truncated.map((read) => `"${read.connector}"`).join(", ")} reached the ` +
+        `driver's row limit and may have been cut short, so tables and columns can be missing ` +
+        `from it.`,
+    );
+  }
   return [
-    `> **Schema check.** The tables and columns in this section were checked against ` +
-      `${inventory.label}.`,
+    `> **Schema check.** The table and column names in this section's diagrams, entity ` +
+      `headings, field tables and table lists were compared with ${inventory.label}. Nothing ` +
+      `was removed or changed: a name that could not be matched is marked **not in schema** ` +
+      `where it stands. A database read can be incomplete (it covers one schema, and a role may ` +
+      `not see every column), so a marked name is one to verify, not necessarily a mistake.`,
     ...lines,
   ].join("\n");
 }
@@ -1131,9 +1342,11 @@ function findLine(lines: readonly string[], from: number, test: (line: string) =
 }
 
 /**
- * Everything #1061 does to the generated section, in one place: check its
- * claims, add the schema reference rendered from the inventory, and say at the
- * top what was found. Pure, so the section's reuse record stores the result.
+ * Everything #1061 does to the generated section, in one place: mark the names
+ * that could not be matched, add the schema reference rendered from the
+ * inventory, and say at the top what was found. Pure, so the section's reuse
+ * record stores the result. Besides the markers it only INSERTS whole lines
+ * (the note and the reference); no line the model wrote is removed or changed.
  */
 export function applySchemaGrounding(
   sectionMarkdown: string,
