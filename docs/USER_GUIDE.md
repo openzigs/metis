@@ -2821,6 +2821,14 @@ Each sync records:
 - Whether the sync succeeded or failed
 - When it happened
 
+**"Go call binding is not finished"** (Go repositories): after a sync or a Deep Ingest of a
+very large Go repository, the result may end with *Go call binding is not finished: N Go
+calls in M files are not yet bound by type*. METIS stops working out which function each Go
+call reaches when that step has used its time limit, so the sync itself is never held up.
+Nothing that was already known is lost, the remaining calls are finished by the following
+syncs (the scheduled ones included), and running **Sync** again continues at once. Until
+then, impact analysis and "Tested by" may miss some Go call paths in that repository.
+
 **Rebuild AST cache** (Issue #122): each repository row on the **Connections** tab has a **Rebuild AST cache** button. Clicking it pulls (or clones) the repository and re-indexes its source files into the AST summary cache, showing an explicit status — *Rebuilding…* → completed (with indexed-file / symbol / skipped counts) or a failed status with a parsed error message. Use it after large refactors when you want the code-overview and analysis tooling to reflect the latest structure immediately rather than waiting for the next scheduled ingest.
 
 ---

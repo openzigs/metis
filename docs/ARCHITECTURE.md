@@ -3735,7 +3735,7 @@ fixture per rule pins only the rules somebody thought of. So the expected bindin
 longer written by hand:
 
 - [`server/tests/fixtures/go-oracle/`](../server/tests/fixtures/go-oracle/) holds a Go
-  **corpus that compiles** — two trees: `corpus/modules` (five modules, two of them both
+  **corpus that compiles** — two trees: `corpus/modules` (four modules, two of them both
   `module app`, one importing another, a dependency reached through a `replace`) and
   `corpus/legacy` (no `go.mod`, built in GOPATH mode, with dependencies whose import paths
   end like project directories). It is written to exercise the constructs the resolver
