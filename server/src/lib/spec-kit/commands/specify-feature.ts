@@ -69,8 +69,17 @@ export interface GitBranchClient {
   createBranch(projectId: string, branchName: string): Promise<void>;
 }
 
-export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<SpecifyFeatureResult> {
-  const trimmed = (input.prompt ?? "").trim();
+/**
+ * The title (and so the slug) a brief gives its feature: the first sentence,
+ * capped at 80 chars on a word boundary (#786: `…let a user mark eve` became
+ * the slug's last word). Throws 400 `SPECKIT_EMPTY_INPUT` for an empty brief.
+ *
+ * #1059 — exported so the route can create the feature BEFORE it starts the
+ * job: the job is then locked under the new feature's own slug rather than
+ * under the project-level key, which it never writes.
+ */
+export function specifyFeatureTitle(prompt: string): string {
+  const trimmed = (prompt ?? "").trim();
   if (trimmed.length === 0) {
     throw new SpecKitArtifactError(
       400,
@@ -78,11 +87,14 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
       "/speckit.specify requires a description after the command word",
     );
   }
+  return truncateAtWord(trimmed.split(/[.\n]/)[0]!, 80);
+}
+
+export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<SpecifyFeatureResult> {
+  const title = specifyFeatureTitle(input.prompt);
+  const trimmed = input.prompt.trim();
 
   const project = await loadProjectContext(input.projectId);
-  // Title heuristic: first sentence of the prompt, capped at 80 chars on a word
-  // boundary (#786: `…let a user mark eve` became the slug's last word).
-  const title = truncateAtWord(trimmed.split(/[.\n]/)[0]!, 80);
   const slug = input.featureSlugOverride;
 
   let feature: SpecKitFeatureDto;

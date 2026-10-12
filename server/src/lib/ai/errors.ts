@@ -82,3 +82,34 @@ export class AIToolInvalidArgsError extends AIError {
     this.name = "AIToolInvalidArgsError";
   }
 }
+
+const SAFE_TOKEN_RE = /^[A-Za-z0-9_.-]{1,60}$/;
+
+/**
+ * #1059 — a provider failure as it may be STORED and shown to other members of
+ * a project: which provider, which operation, which error class and which HTTP
+ * status, and never the upstream's own free text (which is not ours to vouch
+ * for). The full message belongs in the server log.
+ *
+ * A message METIS wrote itself is passed through when its thrower marked it
+ * `details.clientSafe`; an upstream failure is described from the structured
+ * `details` its provider attached ({@link AIProviderError} built by a
+ * provider's error mapper). Anything else is a fixed sentence.
+ */
+export function describeProviderErrorSafely(err: AIProviderError): string {
+  const details = (err.details ?? {}) as Record<string, unknown>;
+  if (details.clientSafe === true) return err.message.slice(0, 400);
+  const status =
+    Number.isInteger(err.status) && err.status >= 400 && err.status <= 599
+      ? `, HTTP ${err.status}`
+      : "";
+  const token = (value: unknown): string | null =>
+    typeof value === "string" && SAFE_TOKEN_RE.test(value) ? value : null;
+  const provider = token(details.provider);
+  const operation = token(details.operation);
+  const errorName = token(details.errorName);
+  if (provider && operation && errorName) {
+    return `The AI provider call failed: ${provider} ${operation} (${errorName}${status}). The provider's own message is in the server log.`;
+  }
+  return `The AI provider call failed${status ? ` (${status.slice(2)})` : ""}. The detail is in the server log.`;
+}
