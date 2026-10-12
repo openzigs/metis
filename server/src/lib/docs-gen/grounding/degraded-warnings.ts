@@ -26,7 +26,9 @@ export type DocWarningKind =
   /** DOCS_GEN_GROUNDING=sample — only a sample of the section was fact-checked. */
   | "grounding-sampled"
   /** #246 — the section's fact-check threw (after retries), so it was not checked at all. */
-  | "grounding-failed";
+  | "grounding-failed"
+  /** #1061 — the section names tables or columns the schema does not hold. */
+  | "schema-unverified";
 
 export type DocWarningSeverity = "warning" | "error";
 
@@ -1033,6 +1035,49 @@ export function sectionMissingWarning(section: string, reason: string): DocWarni
       `Section "${section}" is MISSING from the generated document (${reason}). The document ` +
       `does not cover everything its structure claims — regenerate before relying on it.`,
     severity: "error",
+  };
+}
+
+/**
+ * #1061 — the Data Architecture section named tables or columns that the
+ * schema it was checked against does not hold, or gave a column a type the
+ * schema contradicts. The section itself marks each one (or, against a schema
+ * read live in the same run, has the column removed); this is the same finding
+ * for the document's status and its banner.
+ *
+ * Takes the check's report as plain counts and names so this module stays free
+ * of the docs-gen pipeline.
+ */
+export function schemaUnverifiedWarning(
+  section: string,
+  report: {
+    unresolvedTables: readonly string[];
+    removedColumns: readonly string[];
+    flaggedColumns: readonly string[];
+    typeMismatches: ReadonlyArray<{ column: string }>;
+  },
+  inventory: { label: string },
+): DocWarning {
+  const names = [
+    ...report.unresolvedTables,
+    ...report.removedColumns,
+    ...report.flaggedColumns,
+    ...report.typeMismatches.map((mismatch) => mismatch.column),
+  ];
+  const shown = names.slice(0, 8).join(", ");
+  const more = names.length > 8 ? ` and ${names.length - 8} more` : "";
+  const removed =
+    report.removedColumns.length > 0
+      ? ` ${report.removedColumns.length} column(s) the table does not have were removed.`
+      : "";
+  return {
+    kind: "schema-unverified",
+    section,
+    message:
+      `Section "${section}": ${names.length} table or column name(s) written by the model do ` +
+      `not match ${inventory.label} (${shown}${more}).${removed} The rest are marked in the ` +
+      `section — review them before relying on it.`,
+    severity: "warning",
   };
 }
 

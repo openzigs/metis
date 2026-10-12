@@ -32,18 +32,15 @@ import {
 import { DOCS_GEN_AGENT_STEP, noteRunUsage } from "./run-cost.js";
 import { scopedToGeneration } from "./generation-control.js";
 import { isGenerationStop, throwIfGenerationStopped } from "./generation-scope.js";
+import { buildErDiagram, MAX_TABLES_ER, renderColumnTable } from "./schema-render.js";
+
+// The renderers live in `schema-render.ts` (#1061) so the architecture document can
+// use them without loading the connector stack; re-exported for existing importers.
+export { buildErDiagram, MAX_TABLES_ER, renderColumnTable };
 
 const log = createChildLogger("docs-gen:db-schema");
 
 export const DB_SCHEMA_PROSE_PROMPT_VERSION = 1;
-
-/**
- * Default maximum number of tables included in the Mermaid ER diagram.
- * ER diagrams beyond ~50 nodes are unreadable; extra tables are listed in
- * the Table Reference section but omitted from the diagram. Overridable via
- * the `DB_SCHEMA_SYNTH_MAX_TABLES_ER` environment variable.
- */
-export const MAX_TABLES_ER = 50;
 
 /**
  * Default number of tables described per LLM call. A larger batch reduces the
@@ -464,85 +461,6 @@ export function buildSchemaGraph(
  */
 function qualifiedTableId(schema: string | undefined, name: string): string {
   return schema ? `${schema}.${name}` : name;
-}
-
-// ---------------------------------------------------------------------------
-// Mermaid ER diagram builder
-// ---------------------------------------------------------------------------
-
-/**
- * Build a `erDiagram` Mermaid block from introspected tables.
- *
- * Mermaid ER format:
- *   erDiagram
- *     TABLE_NAME {
- *       type column_name PK
- *       type column_name FK
- *       type column_name
- *     }
- *     TABLE_A ||--o{ TABLE_B : "fk_name"
- */
-export function buildErDiagram(tables: DbTableInfo[]): string {
-  const lines: string[] = ["erDiagram"];
-
-  // For large schemas only show PK/FK columns so the Mermaid diagram stays
-  // within the parser's text-size limits and renders quickly in the browser.
-  const pkFkOnly = tables.length > 15;
-
-  for (const table of tables) {
-    // Sanitize table name for Mermaid (replace dots/spaces with underscores)
-    const safeTableName = sanitizeMermaidId(table.name);
-
-    const cols = pkFkOnly
-      ? table.columns.filter((c) => c.isPrimaryKey || c.isForeignKey)
-      : table.columns;
-
-    // Only emit an entity block when there are columns to show; entities with
-    // no PK/FK still appear in the diagram via their relationship lines.
-    if (cols.length > 0) {
-      lines.push(`  ${safeTableName} {`);
-
-      for (const col of cols) {
-        const safeType = sanitizeMermaidType(col.dataType);
-        const safeName = sanitizeMermaidId(col.name);
-        const annotations: string[] = [];
-        if (col.isPrimaryKey) annotations.push("PK");
-        if (col.isForeignKey) annotations.push("FK");
-        const annotationStr = annotations.length > 0 ? ` "${annotations.join(", ")}"` : "";
-        lines.push(`    ${safeType} ${safeName}${annotationStr}`);
-      }
-
-      lines.push("  }");
-    }
-  }
-
-  // Relationship lines from foreign keys
-  for (const table of tables) {
-    const safeFromTable = sanitizeMermaidId(table.name);
-    for (const fk of table.foreignKeys) {
-      const safeToTable = sanitizeMermaidId(fk.refTable);
-      const safeFkName = sanitizeMermaidId(fk.name);
-      // Many-to-one: current table has FK pointing to ref table (one row)
-      lines.push(`  ${safeFromTable} }o--|| ${safeToTable} : "${safeFkName}"`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-function sanitizeMermaidId(name: string): string {
-  // Mermaid identifiers must not contain spaces, dots, or special chars
-  return name.replace(/[^a-zA-Z0-9_]/g, "_");
-}
-
-function sanitizeMermaidType(dataType: string): string {
-  // Mermaid types must be word chars only; truncate parenthetical sizes
-  return (
-    dataType
-      .replace(/\(.*\)/, "")
-      .replace(/[^a-zA-Z0-9_]/g, "_")
-      .toLowerCase() || "text"
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1102,17 +1020,7 @@ function assembleDocument(
       sections.push("");
     }
 
-    // Column table
-    sections.push("| Column | Type | Constraints |");
-    sections.push("|--------|------|-------------|");
-    for (const col of table.columns) {
-      const constraints: string[] = [];
-      if (col.isPrimaryKey) constraints.push("PK");
-      if (col.isForeignKey) constraints.push("FK");
-      if (!col.nullable) constraints.push("NOT NULL");
-      if (col.defaultValue != null) constraints.push(`DEFAULT: ${col.defaultValue}`);
-      sections.push(`| ${col.name} | ${col.dataType} | ${constraints.join(", ")} |`);
-    }
+    sections.push(...renderColumnTable(table));
     sections.push("");
   }
 

@@ -1335,6 +1335,7 @@ export async function generateDocumentAsync(
     const { deriveDocStatus } = await import("../lib/docs-gen/grounding/degraded-warnings.js");
     type DocType = "business-requirements" | "architecture" | "user-guide";
     type DocWarning = import("../lib/docs-gen/grounding/degraded-warnings.js").DocWarning;
+    type SchemaInventory = import("../lib/docs-gen/schema-inventory.js").SchemaInventory;
     const { assembleDocument } = await import("../lib/docs-gen/assembler.js");
 
     // For full-project and repository docs use the holistic synthesizer.
@@ -1568,6 +1569,19 @@ export async function generateDocumentAsync(
       // #178 — the bar never moves backwards: a batched section's total grows
       // when a cut-off batch is split, which can lower done/total for a moment.
       const docPercent = monotonicPercent();
+      // #1061 — the architecture document's Data Architecture section is
+      // grounded in the schema: read live as the user this generation runs as
+      // (the same audited introspection the database document makes), else from
+      // a stored schema graph, else from the code graph's SQL. Never throws.
+      let schemaInventory: SchemaInventory | undefined;
+      if (docType === "architecture") {
+        const { loadSchemaInventory } = await import("../lib/docs-gen/schema-inventory-loader.js");
+        schemaInventory = await loadSchemaInventory({
+          projectId,
+          actorId: policy.actor.userId,
+          ...(policy.codeGraphId ? { codeGraphId: policy.codeGraphId } : {}),
+        });
+      }
       // #855 — inside the run's scope: every docs-gen provider call carries its
       // AbortSignal and reports its spend to the run's ceiling.
       const result = await withGenerationScope(control!, () =>
@@ -1604,6 +1618,7 @@ export async function generateDocumentAsync(
           ...(repoConnectorId ? { repoConnectorId } : {}),
           ...(pathPrefixes ? { pathPrefixes } : {}),
           ...(grounding ? { grounding } : {}),
+          ...(schemaInventory ? { schemaInventory } : {}),
           groundingForSection,
           // #243 — per-section live progress + degraded/failed warnings.
           onSectionProgress: (u) => {
