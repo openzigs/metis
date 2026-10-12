@@ -248,6 +248,30 @@ describe("synthesizeDbSchemaDocument", () => {
     expect(markdown).toContain("| bio | text |  |");
   });
 
+  // #1061 review — the column table is shared with the architecture document.
+  // A column name, type or default is whatever the DDL says: a pipe added a
+  // cell and a line break in a default started a new row.
+  it("keeps a hostile column name, type and default inside their table cells", async () => {
+    const notes = makeTable("notes", [
+      { name: "id", dataType: "uuid", isPrimaryKey: true, nullable: false },
+      { name: "a|b", dataType: "te|xt" },
+      { name: "note", dataType: "text" },
+    ]);
+    notes.columns[2].defaultValue = "<img src=x>\n| injected | row |\n## Heading";
+    mockInspect.mockResolvedValue(makeSnapshot([notes]));
+
+    const { markdown } = await synthesizeDbSchemaDocument("proj_1", "db_1", "system", "Notes");
+
+    expect(markdown).toContain("| id | uuid | PK, NOT NULL |");
+    expect(markdown).toContain("| a\\|b | te\\|xt |  |");
+    expect(markdown).toContain(
+      "| note | text | DEFAULT: &lt;img src=x> \\| injected \\| row \\| ## Heading |",
+    );
+    expect(markdown).not.toContain("\n| injected | row |");
+    expect(markdown).not.toContain("\n## Heading");
+    expect(markdown).not.toContain("<img");
+  });
+
   it("handles singular table count grammar", async () => {
     const tables = [makeTable("config", [{ name: "key", dataType: "text" }])];
     mockInspect.mockResolvedValue(makeSnapshot(tables));

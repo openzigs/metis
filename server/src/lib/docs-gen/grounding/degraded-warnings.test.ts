@@ -8,6 +8,8 @@ import {
   deriveDocStatus,
   serializeWarnings,
   summarizeWarnings,
+  schemaUnverifiedWarning,
+  affectsDocStatus,
   faithfulnessThreshold,
   resolveSectionFaithfulnessThreshold,
   noModulesWarning,
@@ -44,6 +46,99 @@ describe("sectionFailedWarning", () => {
   it("truncates very long details", () => {
     const w = sectionFailedWarning("X", "y".repeat(1000));
     expect(w.message.length).toBeLessThan(400);
+  });
+});
+
+// #1061 second review — the schema check only marks names, and a false mark
+// is a known property of it, so its finding is information: it never decides
+// the document's status and is never counted as something to review.
+describe("schemaUnverifiedWarning — informational (#1061)", () => {
+  const inventory = {
+    label: 'the live schema of "pg" (public)',
+    source: "live-schema" as const,
+    reads: [{ connector: "pg", how: "live" as const, schemas: ["public"] }],
+  };
+  const note = schemaUnverifiedWarning(
+    "Data Architecture",
+    ["jobs", "feeds.error_counter"],
+    inventory,
+  );
+
+  it("says how many names, where, and that nothing was removed", () => {
+    expect(note).toEqual({
+      kind: "schema-unverified",
+      section: "Data Architecture",
+      severity: "info",
+      message:
+        "2 names in Data Architecture could not be matched to the database schema " +
+        '(jobs, feeds.error_counter). Compared with the live schema of "pg" (public). They are ' +
+        "marked or listed in the section's Schema check note; nothing was removed or changed. " +
+        "A database read can be incomplete, so an unmatched name can be real.",
+    });
+    expect(schemaUnverifiedWarning("S", ["a"], inventory).message).toMatch(/^1 name in S could /);
+    const many = Array.from({ length: 11 }, (_, n) => `t${n}`);
+    expect(schemaUnverifiedWarning("S", many, inventory).message).toContain("t7 and 3 more).");
+  });
+
+  // #1061 third panel — the message said "the database schema" and "A
+  // database read can be incomplete" on every tier, including the ones where
+  // no database was read.
+  it("says what the names were compared with: repository SQL is not a database read", () => {
+    const fromSql = schemaUnverifiedWarning("Data Architecture", ["jobs"], {
+      label: "the SQL found in the repository (migrations, queries and mappings)",
+      source: "repository-sql",
+      reads: [],
+    });
+    expect(fromSql.message).toBe(
+      "1 name in Data Architecture could not be matched to the SQL found in the repository " +
+        "(jobs). Compared with the SQL found in the repository (migrations, queries and " +
+        "mappings). They are marked or listed in the section's Schema check note; nothing was " +
+        "removed or changed. The repository's SQL is not the database, so an unmatched name " +
+        "can be real.",
+    );
+    expect(fromSql.message).not.toMatch(/database schema|database read/);
+    expect(fromSql.severity).toBe("info");
+  });
+
+  it("says a stored graph is a stored schema, and from when", () => {
+    const stored = schemaUnverifiedWarning("Data Architecture", ["jobs"], {
+      label: 'the stored schema graph of "pg" (public) generated 2026-10-10',
+      source: "schema-graph",
+      reads: [{ connector: "pg", how: "stored", schemas: ["public"], storedOn: "2026-10-10" }],
+    });
+    expect(stored.message).toBe(
+      "1 name in Data Architecture could not be matched to the stored schema from 2026-10-10 " +
+        '(jobs). Compared with the stored schema graph of "pg" (public) generated 2026-10-10. ' +
+        "They are marked or listed in the section's Schema check note; nothing was removed or " +
+        "changed. A stored schema can be out of date, and the read it came from incomplete, so " +
+        "an unmatched name can be real.",
+    );
+    expect(stored.message).not.toContain("the database schema");
+  });
+
+  it("does not degrade the document, alone or in any number", () => {
+    expect(affectsDocStatus(note)).toBe(false);
+    expect(deriveDocStatus([note])).toBe("ready");
+    expect(deriveDocStatus([note, note, note])).toBe("ready");
+    expect(deriveDocStatus([])).toBe("ready");
+  });
+
+  it("does not hide a warning that does", () => {
+    const failed = sectionFailedWarning("Overview", "boom");
+    expect(affectsDocStatus(failed)).toBe(true);
+    expect(deriveDocStatus([note, failed])).toBe("degraded");
+    expect(deriveDocStatus([failed, note])).toBe("degraded");
+  });
+
+  it("is not a review item: the summary is empty for it and unchanged beside another", () => {
+    expect(summarizeWarnings([note])).toBe("");
+    const failed = sectionFailedWarning("Overview", "boom");
+    expect(summarizeWarnings([note, failed])).toBe(summarizeWarnings([failed]));
+    expect(summarizeWarnings([failed])).not.toBe("");
+  });
+
+  it("is still stored with the document", () => {
+    expect(JSON.parse(serializeWarnings([note])!)).toEqual([note]);
   });
 });
 
