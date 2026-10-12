@@ -525,12 +525,74 @@ export function assertCodeLinksMatchTarget(
   );
 }
 
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /** What stands where a link into the analysed repository was taken out. */
 const LINK_REMOVED = "(link removed)";
+
+/** The character after a blob URL that METIS wrote as a link target. */
+const LINK_URL_END = /[\s()]/;
+/** The character after a blob URL found anywhere else in a body. */
+const BARE_URL_END = /[\s()<>[\]]/;
+
+/**
+ * `s` with its ASCII capitals lower-cased and every other character left alone,
+ * so the result has the length of the input and an index into one is an index
+ * into the other. (`toLowerCase` can change the length of non-ASCII text.)
+ */
+function asciiLower(s: string): string {
+  return s.replace(/[A-Z]+/g, (run) => run.toLowerCase());
+}
+
+function endOfUrl(body: string, from: number, stop: RegExp): number {
+  let i = from;
+  while (i < body.length && !stop.test(body[i]!)) i += 1;
+  return i;
+}
+
+/**
+ * The `[` that opens the link text closing at `close`, looking back no further
+ * than `floor`; -1 when the text between holds a bracket or a line break (a
+ * linked code span never does: see `renderLink`).
+ */
+function linkTextStart(body: string, close: number, floor: number): number {
+  for (let i = close - 1; i >= floor; i -= 1) {
+    const c = body[i];
+    if (c === "[") return i;
+    if (c === "]" || c === "\n") return -1;
+  }
+  return -1;
+}
+
+/**
+ * `body` without any URL under `blobPrefix` (compared without regard to ASCII
+ * case, as a host and GitHub names are). A link METIS wrote — the inverse of
+ * `linkedLocation`, `[<text>](<blob URL>)` — is replaced by its text; any other
+ * occurrence of such a URL by {@link LINK_REMOVED}. One pass by string search:
+ * `blobPrefix` comes from stored draft metadata, and no pattern is built from it.
+ */
+function withoutBlobUrls(body: string, blobPrefix: string): string {
+  const needle = asciiLower(blobPrefix);
+  const haystack = asciiLower(body);
+  let out = "";
+  let pos = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, pos);
+    if (at < 0) break;
+    // A blob URL METIS builds never holds a space or a parenthesis (`encodeSegment`).
+    const linkEnd = endOfUrl(body, at + needle.length, LINK_URL_END);
+    const open =
+      at - 2 >= pos && body.startsWith("](", at - 2) && body[linkEnd] === ")"
+        ? linkTextStart(body, at - 2, pos)
+        : -1;
+    if (open >= 0) {
+      out += body.slice(pos, open) + body.slice(open + 1, at - 2);
+      pos = linkEnd + 1;
+    } else {
+      out += body.slice(pos, at) + LINK_REMOVED;
+      pos = endOfUrl(body, at + needle.length, BARE_URL_END);
+    }
+  }
+  return out + body.slice(pos);
+}
 
 /**
  * `body` with its Related code section in the PLAIN form: every link into
@@ -543,13 +605,7 @@ const LINK_REMOVED = "(link removed)";
  * no blob URL of the analysed repository.
  */
 export function codeLinksAsText(body: string, base: string): string {
-  const blob = `${escapeRe(base)}/blob/`;
-  // The inverse of `linkedLocation`. A linked code span never holds a square
-  // bracket (see `renderLink`), and a blob URL METIS builds never holds a
-  // space or a parenthesis (`encodeSegment`).
-  const linked = new RegExp(`\\[([^\\[\\]\\n]*)\\]\\(${blob}[^\\s()]*\\)`, "gi");
-  const bare = new RegExp(`${blob}[^\\s()<>\\[\\]]*`, "gi");
-  const text = body.replace(linked, "$1").replace(bare, LINK_REMOVED);
+  const text = withoutBlobUrls(body, `${base}/blob/`);
   if (text.includes(CODE_LINKS_AS_TEXT_NOTE)) return text;
   const lines = text.split("\n");
   // The generator writes the section after the requirement's own text.

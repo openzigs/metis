@@ -724,6 +724,29 @@ describe("codeLinksAsText / bodyWithCodeAsText — the plain form, for a tracker
     );
   });
 
+  it("finds the links by position in text whose lower-case form has another length", () => {
+    // "İ" lower-cases to two code units; every index after it would be off by one.
+    const body = `İİİ [\`a.go\`](${base}/blob/abc1234/a.go) and ${base}/blob/abc1234/b.go İ`;
+    expect(codeLinksAsText(body, base)).toBe("İİİ `a.go` and (link removed) İ");
+  });
+
+  it("does not unwrap across a bracket or a line break, and leaves other text alone", () => {
+    // Not a METIS link: the text holds a bracket, or the URL is not closed.
+    expect(codeLinksAsText(`[a [b](${base}/blob/x)`, base)).toBe("[a b");
+    expect(codeLinksAsText(`[a]b](${base}/blob/x)`, base)).toBe("[a]b]((link removed))");
+    expect(codeLinksAsText(`[a\nb](${base}/blob/x)`, base)).toBe("[a\nb]((link removed))");
+    expect(codeLinksAsText(`[a](${base}/blob/x y)`, base)).toBe("[a]((link removed) y)");
+    // The repository's own page, or another repository, is not a blob URL into it.
+    for (const other of [
+      `${base}`,
+      `${base}/issues/1`,
+      `${base}-other/blob/x`,
+      "https://x.y/blob/z",
+    ]) {
+      expect(codeLinksAsText(`see ${other} here`, base)).toBe(`see ${other} here`);
+    }
+  });
+
   it("adds the note once, under the rows, and only to a section that lists code", () => {
     const empty = [
       "## Related code",
