@@ -244,7 +244,7 @@ export async function loadSchemaInventory(
           () =>
             Promise.race([
               withTimeout(deps.introspect(projectId, connectors[at].id, actorId), timeoutMs).catch(
-                (err: unknown) => {
+                (err: unknown): typeof TIMED_OUT => {
                   if (err instanceof IntrospectionTimeout) return TIMED_OUT;
                   throw err;
                 },

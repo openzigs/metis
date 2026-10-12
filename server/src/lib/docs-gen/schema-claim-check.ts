@@ -1316,12 +1316,18 @@ export function renderSchemaCheckNotice(
         `from it.`,
     );
   }
+  // Why a mark is not a verdict, in the words that fit what was compared with.
+  const caveat =
+    inventory.source === "repository-sql"
+      ? "The repository's SQL is not the database (it can lack objects, and can include ones a " +
+        "later migration dropped)"
+      : "A database read can be incomplete (it covers one schema, and a role may not see every " +
+        "column)";
   return [
     `> **Schema check.** The table and column names in this section's diagrams, entity ` +
       `headings, field tables and table lists were compared with ${inventory.label}. Nothing ` +
       `was removed or changed: a name that could not be matched is marked **not in schema** ` +
-      `where it stands. A database read can be incomplete (it covers one schema, and a role may ` +
-      `not see every column), so a marked name is one to verify, not necessarily a mistake.`,
+      `where it stands. ${caveat}, so a marked name is one to verify, not necessarily a mistake.`,
     ...lines,
   ].join("\n");
 }

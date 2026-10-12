@@ -1007,6 +1007,15 @@ describe("renderSchemaCheckNotice: one note says everything", () => {
         "not see every column), so a marked name is one to verify, not necessarily a mistake.",
     );
     expect(notice).not.toMatch(/[Rr]emoved,|corrected/);
+    // Repository SQL is not a database read, and the note does not call it one.
+    const fromSql = renderSchemaCheckNotice(check(RUN7, REPO_SQL).report, REPO_SQL);
+    expect(fromSql.split("\n")[0]).toContain(
+      "compared with the SQL found in the repository. Nothing was removed or changed: a name " +
+        "that could not be matched is marked **not in schema** where it stands. The repository's " +
+        "SQL is not the database (it can lack objects, and can include ones a later migration " +
+        "dropped), so a marked name is one to verify, not necessarily a mistake.",
+    );
+    expect(fromSql).not.toContain("A database read can be incomplete");
   });
 
   it("lists each kind of finding, and each reason a name was not checked", () => {
