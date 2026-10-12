@@ -422,3 +422,166 @@ describe("the walker costs what the file is long, whatever its shape", () => {
     expectLinearTime("Go walker, wide parameter lists", (chars) => parse(wide(chars)), 400_000);
   });
 });
+describe("placing a directory or an import path costs its own length, not the size of the tree", () => {
+  // PR #1104, review cycle 3 (M1). Matching one import against the directories
+  // no `go.mod` covers filtered ALL of them, for every import of a file, inside
+  // one `resolveCall` and outside every budget: 5.8 s for one call on a
+  // 20,001-file tree, 23 s at 40,001. Placing a directory in its module, and an
+  // import path in the most specific module, scanned every `go.mod`: 1.2 s to
+  // build a resolver over 24,000 of them and 7.7 s to resolve. These are the
+  // reviewer's two generator shapes (`gen2.cjs`: `orphans`, `modules`).
+  type Tree = Array<[string, string]>;
+
+  /** Parse outside the timed call; the timed call builds a resolver and resolves every call. */
+  const resolveAll = (tree: Tree, modules: GoModule[]): (() => Record<string, number>) => {
+    const parsed = tree.map(([filePath, src]) => parseSource(filePath, src, "go"));
+    const files = parsed.map((p) => ({
+      filePath: p.filePath,
+      facts: p.goFacts!,
+      isTest: p.filePath.endsWith("_test.go"),
+    }));
+    return () => {
+      const resolver = createGoResolver(files, modules);
+      const out: GoCallVerdict[] = [];
+      for (const p of parsed) {
+        for (const e of p.edges) {
+          if (e.kind === "calls") out.push(resolver.resolveCall(p.filePath, e.goCallee!));
+        }
+      }
+      return tally(out);
+    };
+  };
+
+  /** `dirs` directories of one `package x` file each, no go.mod, and one file importing a path per directory. */
+  const orphans = (dirs: number): Tree => {
+    const tree: Tree = [];
+    let main = "package main\n\nimport (\n";
+    for (let i = 0; i < dirs; i += 1) {
+      tree.push([`d${i}/x/a.go`, "package x\n"]);
+      main += `\ta${i} "q/r${i}/x"\n`;
+    }
+    main += ")\n\nfunc main() {\n";
+    for (let i = 0; i < dirs; i += 1) main += `\ta${i}.Go()\n`;
+    tree.push(["cmd/main.go", `${main}}\n`]);
+    return tree;
+  };
+
+  /** The same tree where each import DOES end in one of the directories: every call binds. */
+  const orphansThatMatch = (dirs: number): Tree => {
+    const tree: Tree = [];
+    let main = "package main\n\nimport (\n";
+    for (let i = 0; i < dirs; i += 1) {
+      tree.push([`d${i}/x/a.go`, "package x\n\nfunc Go() {}\n"]);
+      main += `\ta${i} "example.org/app/d${i}/x"\n`;
+    }
+    main += ")\n\nfunc main() {\n";
+    for (let i = 0; i < dirs; i += 1) main += `\ta${i}.Go()\n`;
+    tree.push(["cmd/main.go", `${main}}\n`]);
+    return tree;
+  };
+
+  /** `count` modules, each one file importing a path outside all of them. */
+  const manyModules = (count: number): { tree: Tree; modules: GoModule[] } => {
+    const tree: Tree = [];
+    const modules: GoModule[] = [];
+    for (let i = 0; i < count; i += 1) {
+      modules.push({ dir: `m${i}`, path: `m${i}` });
+      tree.push([`m${i}/a.go`, `package a\n\nimport "q/z${i}"\n\nfunc A() {\n\tz${i}.Go()\n}\n`]);
+    }
+    return { tree, modules };
+  };
+
+  it("no go.mod: what each shape resolves to", () => {
+    expect(resolveAll(orphans(40), [])()).toEqual({ "unbound external": 40 });
+    const matched = resolveAll(orphansThatMatch(40), [])();
+    expect(Object.keys(matched)).toHaveLength(40);
+    expect(Object.keys(matched).every((k) => k.startsWith("package d"))).toBe(true);
+  });
+
+  it("no go.mod: 8,000 directories and 8,000 imports of one file", () => {
+    expectLinearTime(
+      "Go resolver, imports matched by spelling",
+      (dirs) => resolveAll(orphans(dirs), []),
+      8_000,
+    );
+  });
+
+  it("no go.mod: the same when every import matches a directory", () => {
+    expectLinearTime(
+      "Go resolver, imports matched to directories",
+      (dirs) => resolveAll(orphansThatMatch(dirs), []),
+      8_000,
+    );
+  });
+
+  it("12,000 go.mod files: building the resolver and resolving one import from each", () => {
+    const small = manyModules(30);
+    expect(resolveAll(small.tree, small.modules)()).toEqual({
+      "unbound external": 30,
+    });
+    expectLinearTime(
+      "Go resolver, many modules",
+      (count) => {
+        const { tree, modules } = manyModules(count);
+        return resolveAll(tree, modules);
+      },
+      12_000,
+    );
+  });
+});
+
+describe("a type reached from the tests of many directories is still searched once", () => {
+  // The members a test file sees differ from everyone else's only by the
+  // methods ITS directory's `_test.go` files declare. Working that out must
+  // not repeat the promotion search per directory: one type embedding a type
+  // from each of N packages, called from a test in each, would cost N × N.
+  const fan = (count: number): Array<[string, string]> => {
+    const tree: Array<[string, string]> = [];
+    let big = "package big\n\nimport (\n";
+    for (let i = 0; i < count; i += 1) big += `\t"example.com/app/e${i}"\n`;
+    big += ")\n\ntype Big struct {\n";
+    for (let i = 0; i < count; i += 1) {
+      big += `\te${i}.E${i}\n`;
+      tree.push([`e${i}/e.go`, `package e${i}\n\ntype E${i} struct{}\n`]);
+      tree.push([`e${i}/export_test.go`, `package e${i}\n\nfunc (E${i}) T${i}() {}\n`]);
+      tree.push([
+        `e${i}/x_test.go`,
+        `package e${i}_test\n\nimport "example.com/app/big"\n\nfunc probe(b big.Big) {\n\tb.T${i}()\n}\n`,
+      ]);
+    }
+    tree.push(["big/big.go", `${big}}\n`]);
+    return tree;
+  };
+  const resolveFan = (count: number): (() => string[]) => {
+    const parsed = fan(count).map(([filePath, src]) => parseSource(filePath, src, "go"));
+    const files = parsed.map((p) => ({
+      filePath: p.filePath,
+      facts: p.goFacts!,
+      isTest: p.filePath.endsWith("_test.go"),
+    }));
+    return () => {
+      const resolver = createGoResolver(files, MODULE);
+      const out: string[] = [];
+      for (const p of parsed) {
+        for (const e of p.edges) {
+          if (e.kind === "calls")
+            out.push(showGoVerdict(resolver.resolveCall(p.filePath, e.goCallee!)));
+        }
+      }
+      return out;
+    };
+  };
+
+  it("each test reaches the method its own directory's test file declares", () => {
+    expect(resolveFan(3)()).toEqual([
+      "receiver-type e0/export_test.go::E0::T0",
+      "receiver-type e1/export_test.go::E1::T1",
+      "receiver-type e2/export_test.go::E2::T2",
+    ]);
+  });
+
+  it("3,000 directories, a test in each", () => {
+    expect(3 * 3_000 + 2).toBeLessThan(GO_TYPE_STEP_BUDGET);
+    expectLinearTime("Go resolver, test views of one type", (count) => resolveFan(count), 3_000);
+  });
+});
