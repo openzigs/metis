@@ -58,6 +58,7 @@ function item(matchQuality: MatchQuality, overrides: Partial<ImpactItemView> = {
     blastRadiusFiles: [],
     droppedColumnProposals: [],
     optionalColumnProposals: [],
+    uncheckedColumnProposals: [],
     affectedTables: [],
     affectedTablesSecondary: [],
     feedback: [],
@@ -439,5 +440,36 @@ describe("ChangedRequirementGroup — ruled-out column proposals (#1051)", () =>
     render(<ChangedRequirementGroup item={item("strong")} />);
     expect(screen.queryByTestId("optional-column-proposals")).not.toBeInTheDocument();
     expect(screen.queryByTestId("dropped-column-proposals")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("unchecked-column-proposals")).not.toBeInTheDocument();
+  });
+
+  it("#791 — names a proposed column the gate could not check", () => {
+    render(
+      <ChangedRequirementGroup
+        item={item("strong", {
+          uncheckedColumnProposals: [
+            {
+              ...proposal("u1", "mark_read_delay"),
+              writer: null,
+              reason: "Not checked: no write path.",
+            },
+          ],
+        })}
+      />,
+    );
+    const unchecked = screen.getByTestId("unchecked-column-proposals");
+    expect(within(unchecked).getByTestId("column-proposal-column").textContent).toBe(
+      "users.mark_read_delay",
+    );
+    expect(within(unchecked).getByTestId("column-proposal-reason").textContent).toBe(
+      "Not checked: no write path.",
+    );
+  });
+
+  it("#791 — reads a stored run that has no unchecked list at all", () => {
+    const legacy = item("strong") as unknown as Record<string, unknown>;
+    delete legacy.uncheckedColumnProposals;
+    render(<ChangedRequirementGroup item={legacy as never} />);
+    expect(screen.queryByTestId("unchecked-column-proposals")).not.toBeInTheDocument();
   });
 });

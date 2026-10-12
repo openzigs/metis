@@ -19,7 +19,8 @@
  * column it INSERTs (a mapper-seeded column counts half, UPDATEs only), plus up
  * to 4 points for how closely its UPDATE set matches one the seeded code reaches
  * (Jaccard). Writers under a quarter of the best score are dropped, the rest
- * capped. A synthetic `sql@<line>` origin (a pre-#807 graph) is never named.
+ * capped. A synthetic `sql@<line>` origin (a pre-#807 graph) is never named; a
+ * MyBatis mapper statement (kind `method`, language `sql`) is.
  *
  * Read-only and best-effort: a data source without the optional hooks yields [].
  */
@@ -147,6 +148,20 @@ export function requirementIdentifierColumns(
     .map((c) => c.id);
 }
 
+/**
+ * True for a synthetic statement origin — `path::sql@412`, `path::exec@7`,
+ * `path::procsql@30` — which a pre-#807 graph (or SQL outside any function)
+ * records in place of the enclosing function. It names a line, not code, so it
+ * is never listed as a writer.
+ *
+ * This used to be `language !== "sql"`, which also dropped every MyBatis mapper
+ * statement: those are stored as kind `method`, language `sql`, under their own
+ * statement id in the mapper XML, and they ARE the code that writes the data.
+ */
+export function isSyntheticSqlOrigin(qualifiedName: string): boolean {
+  return /(?:^|::)[a-z]{2,12}@\d{1,9}$/.test(qualifiedName);
+}
+
 export async function resolveDataPathWriters(
   input: ResolveDataPathWritersInput,
 ): Promise<DataPathWriter[]> {
@@ -221,7 +236,7 @@ export async function resolveDataPathWriters(
   if (points.size === 0) return [];
 
   const details = (await ds.getCodeSymbolDetails([...points.keys()])).filter(
-    (d) => d.language !== "sql" && (d.kind === "function" || d.kind === "method"),
+    (d) => (d.kind === "function" || d.kind === "method") && !isSyntheticSqlOrigin(d.qualifiedName),
   );
   const scored = details.map((d) => ({ d, p: points.get(d.id) ?? 0 }));
   const top = Math.max(0, ...scored.map((s) => s.p));

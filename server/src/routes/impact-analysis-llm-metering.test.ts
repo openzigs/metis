@@ -492,7 +492,7 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
     );
 
     // The model was shown what already exists…
-    expect(prompt).toContain("EXISTING WRITE PATHS:");
+    expect(prompt).toContain("<<<EXISTING WRITE PATHS (untrusted repository content");
     expect(prompt).toContain("[W0] MarkAllAsReadBeforeDate (internal/storage/entry.go:523)");
     expect(prompt).toContain("before time.Time");
     // …and its own account of each proposal reaches the engine's gate, by writer id.

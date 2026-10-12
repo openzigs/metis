@@ -74,6 +74,7 @@ function item(opts: Partial<ImpactItemView> & { projectId: string }): ImpactItem
     blastRadiusFiles: [],
     droppedColumnProposals: [],
     optionalColumnProposals: [],
+    uncheckedColumnProposals: [],
     affectedTables: opts.affectedTables ?? [],
     affectedTablesSecondary: opts.affectedTablesSecondary ?? [],
     feedback: [],

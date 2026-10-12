@@ -14,6 +14,7 @@ import { extractChangesByShape } from "./change-request.js";
 import {
   EDIT_POOL,
   fileScore,
+  isSchemaSymbol,
   MAX_EDIT_FILES,
   MAX_RELATED,
   MAX_SYMBOLS_PER_EDIT_FILE,
@@ -210,6 +211,51 @@ describe("resolveChangeSeeds — what can be an edit candidate (#1036)", () => {
     expect(seeds.schemaSeeds.map((m) => [m.codeSymbolId, m.confidence])).toEqual([["col", 1]]);
   });
 
+  it("keeps a MyBatis mapper statement editable: kind `method`, language `sql`, in mapper XML (PR #1090 panel)", async () => {
+    // What `createOriginSymbol` stores for `<update id="updateStatus">`.
+    const XML = "src/main/resources/mapper/OrderMapper.xml";
+    const statement = row("updateStatus", XML, {
+      kind: "method",
+      language: "sql",
+      qualifiedName: "com.shop.OrderMapper.updateStatus",
+    });
+    const deps = fixed([statement, row("A", "pkg/a.java", { language: "java" })], {
+      updateStatus: 1,
+      A: 0.9,
+    });
+    const seeds = await resolveChangeSeeds(change, "p1", deps);
+    expect(seeds.editCandidates.map((m) => [m.codeSymbolId, m.filePath])).toEqual([
+      ["updateStatus", XML],
+      ["A", "pkg/a.java"],
+    ]);
+    // Code, so not a schema seed — and it is the BEST hit, so it would have been one.
+    expect(seeds.schemaSeeds).toEqual([]);
+  });
+
+  it("lists a mapper statement below the edit cut for review, rather than dropping it", async () => {
+    const XML = "src/main/resources/mapper/OrderMapper.xml";
+    const statement = row("selectAll", XML, { kind: "method", language: "sql" });
+    const deps = fixed([row("A", "pkg/a.java"), statement], { A: 1, selectAll: 0.1 });
+    const seeds = await resolveChangeSeeds(change, "p1", deps);
+    expect(seeds.editCandidates.map((m) => m.codeSymbolId)).toEqual(["A"]);
+    expect(seeds.related.map((m) => m.codeSymbolId)).toEqual(["selectAll"]);
+  });
+
+  it("decides what is schema by kind: a table, a column, a stored routine — not by language", () => {
+    const of = (kind: string, language: string) => isSchemaSymbol({ kind, language });
+    expect([of("table", "sql"), of("column", "sql"), of("procedure", "sql")]).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    // A stored SQL function shares its kind with code, so here the language decides.
+    expect(of("function", "sql")).toBe(true);
+    expect(of("function", "go")).toBe(false);
+    expect(of("method", "sql")).toBe(false);
+    expect(of("method", "java")).toBe(false);
+    expect(of("module", "sql")).toBe(false);
+  });
+
   it("only a table or column among the very best hits seeds the crossing", async () => {
     const code = Array.from({ length: SCHEMA_SEED_TOP }, (_, i) => row(`F${i}`, `pkg/f${i}.go`));
     const far = row("far", "db/migrations.go", { kind: "column", language: "sql" });
@@ -267,6 +313,7 @@ describe("resolveChangeSeeds — what can be an edit candidate (#1036)", () => {
     ]);
     expect(searcher.search).toHaveBeenCalledWith("Do the thing", "p1", {
       limit: SEED_POOL_PER_QUERY,
+      onRetrievalMode: expect.any(Function),
     });
   });
 
@@ -283,6 +330,8 @@ describe("resolveChangeSeeds — what can be an edit candidate (#1036)", () => {
 
 describe("resolveChangeSeeds — it never throws (#1036)", () => {
   const none = { editCandidates: [], related: [], schemaSeeds: [] };
+  /** Searched and found nothing: the lists are empty, and no mode was reported. */
+  const searchedNone = { ...none, retrievalMode: null };
 
   it("returns no seeds when the search fails", async () => {
     const searcher: SeedSearcher = { search: vi.fn().mockRejectedValue(new Error("lance down")) };
@@ -298,7 +347,7 @@ describe("resolveChangeSeeds — it never throws (#1036)", () => {
   });
 
   it("returns no seeds for a project with no code graph, or an empty change", async () => {
-    expect(await resolveChangeSeeds(change, "p1", fixed([], {}))).toEqual(none);
+    expect(await resolveChangeSeeds(change, "p1", fixed([], {}))).toEqual(searchedNone);
     const deps = fixed([row("A", "pkg/a.go")], { A: 1 });
     expect(await resolveChangeSeeds({ title: " ", body: "" }, "p1", deps)).toEqual(none);
     expect(deps.searcher.search).not.toHaveBeenCalled();
@@ -324,5 +373,59 @@ describe("prismaSeedSymbolLoader (#1036)", () => {
     ];
     expect(first[0].where.projectId).toBe("proj-9");
     expect(first[0].where.id.in).toHaveLength(500);
+  });
+});
+
+describe("resolveChangeSeeds — which channels answered (#1036, PR #1090 review)", () => {
+  const rows = [row("A", "pkg/a.go")];
+  /** A searcher that reports one mode per query, in order. */
+  function reporting(modes: Array<"hybrid" | "bm25-only" | null>) {
+    let call = 0;
+    const searcher: SeedSearcher = {
+      async search(_query, _projectId, opts) {
+        const mode = modes[call++] ?? null;
+        if (mode) opts?.onRetrievalMode?.(mode);
+        return [hit("A", "pkg/a.go", 1)];
+      },
+    };
+    return { searcher, loadSymbols: async () => rows };
+  }
+
+  it("is hybrid when every query had the vector channel", async () => {
+    const seeds = await resolveChangeSeeds(change, "p1", reporting(["hybrid", "hybrid"]));
+    expect(seeds.retrievalMode).toBe("hybrid");
+  });
+
+  it("is bm25-only as soon as one query ran without it", async () => {
+    const seeds = await resolveChangeSeeds(change, "p1", reporting(["hybrid", "bm25-only"]));
+    expect(seeds.retrievalMode).toBe("bm25-only");
+    expect(seeds.editCandidates.map((m) => m.codeSymbolId)).toEqual(["A"]);
+  });
+
+  it("is null when the searcher does not say — a replayed capture, an injected searcher", async () => {
+    expect(
+      (await resolveChangeSeeds(change, "p1", reporting([null, null]))).retrievalMode,
+    ).toBeNull();
+    const captured = await resolveChangeSeeds(CHANGE_4478!, "p1", {
+      searcher: capturedSearcher,
+      loadSymbols: capturedLoader,
+    });
+    expect(captured.retrievalMode).toBeNull();
+  });
+
+  it("reports the mode even when the search found nothing", async () => {
+    const searcher: SeedSearcher = {
+      async search(_q, _p, opts) {
+        opts?.onRetrievalMode?.("bm25-only");
+        return [];
+      },
+    };
+    const seeds = await resolveChangeSeeds(change, "p1", { searcher, loadSymbols: vi.fn() });
+    expect(seeds).toEqual({
+      editCandidates: [],
+      related: [],
+      schemaSeeds: [],
+      retrievalMode: "bm25-only",
+    });
   });
 });

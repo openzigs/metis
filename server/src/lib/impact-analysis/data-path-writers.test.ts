@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   expandDataPathWriters,
+  isSyntheticSqlOrigin,
   MAX_WRITER_SQL_CHARS,
   parseWriterText,
   profileDataPathWriters,
@@ -163,6 +164,77 @@ const table = (tableName: string, columnName: string | null = null): AffectedTab
 
 const READ_AT =
   "Track reading time — add read_at timestamp to entries. The changed_at field updates whenever an entry is modified (including status changes). When an entry transitions from unread to read, set read_at = NOW().";
+
+describe("resolveDataPathWriters — a MyBatis mapper statement is a writer (PR #1090 panel)", () => {
+  // What the MyBatis extractor stores: one origin per statement, kind `method`,
+  // language `sql`, in the mapper XML, with the `writes` edges starting at it.
+  const XML = "src/main/resources/mapper/OrderMapper.xml";
+  const statement: Sym = {
+    id: "stmt",
+    kind: "method",
+    name: "updateStatus",
+    qualifiedName: "com.shop.OrderMapper.updateStatus",
+    filePath: XML,
+    startLine: 41,
+    endLine: 41,
+    language: "sql",
+  };
+  const synthetic: Sym = {
+    ...statement,
+    id: "syn",
+    name: "sql@88",
+    qualifiedName: `${XML}::sql@88`,
+    startLine: 88,
+    endLine: 88,
+  };
+  const orderColumn = { ...col("orders.status"), id: "orders.status" };
+  const mybatis: DataPathDataSource = {
+    getSchemaEdgesFrom: async () => [],
+    getSchemaSymbolsByIds: async () => [],
+    getDownstreamCallEdgesFrom: async () => [],
+    getColumnsOfTables: async () => [
+      {
+        id: orderColumn.id,
+        kind: "column" as const,
+        name: "status",
+        qualifiedName: "orders.status",
+        source: "mybatis" as const,
+      },
+    ],
+    getWriterEdgesTo: async () => [
+      { fromSymbolId: "stmt", toSymbolId: "orders.status", kind: "writes" as const },
+      { fromSymbolId: "syn", toSymbolId: "orders.status", kind: "writes" as const },
+    ],
+    getCodeSymbolDetails: async (ids) => [statement, synthetic].filter((s) => ids.includes(s.id)),
+  };
+
+  it("names the mapper statement, in its XML file, and still never a synthetic origin", async () => {
+    const writers = await resolveDataPathWriters({
+      requirementText: "Set the order status to shipped when the parcel leaves.",
+      seedIds: [],
+      primaryTables: [table("orders")],
+      dataSource: mybatis,
+      excludeIds: new Set(),
+    });
+    expect(writers.map((w) => [w.qualifiedName, w.filePath, w.startLine])).toEqual([
+      ["com.shop.OrderMapper.updateStatus", XML, 41],
+    ]);
+  });
+
+  it("recognises a synthetic origin by its name, whatever the language says", () => {
+    expect(
+      ["a/b.go::sql@600", "x.sas::procsql@12", "a.java::exec@7", "sql@3"].map(isSyntheticSqlOrigin),
+    ).toEqual([true, true, true, true]);
+    expect(
+      [
+        "com.shop.OrderMapper.updateStatus",
+        "a/b.go::MarkAllAsRead",
+        "a/b.go::sql@x",
+        "user@example.com::handler",
+      ].map(isSyntheticSqlOrigin),
+    ).toEqual([false, false, false, false]);
+  });
+});
 
 describe("requirementNamedColumns (#791)", () => {
   it("matches a column the requirement names verbatim, never `id`", () => {

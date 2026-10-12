@@ -69,6 +69,8 @@ const PRIMARY_HEADINGS = new Set([
   "feature request",
   "request",
   "the request",
+  // GitHub's stock bug-report template: the description IS the report.
+  "describe the bug",
 ]);
 
 /** Headings that elaborate the request: what to build, or what should happen. */
@@ -85,6 +87,8 @@ const SUB_ASPECT_HEADINGS = new Set([
   "desired behaviour",
   "implementation",
   "implementation notes",
+  // GitHub's stock feature-request template.
+  "describe the solution you'd like",
 ]);
 
 /** Headings that explain the request without asking for anything further. */
@@ -115,6 +119,10 @@ const CONTEXT_HEADINGS = new Set([
   "logs",
   "relevant log output",
   "screenshots",
+  // GitHub's stock templates.
+  "to reproduce",
+  "is your feature request related to a problem? please describe",
+  "describe alternatives you've considered",
 ]);
 
 /**
@@ -122,7 +130,11 @@ const CONTEXT_HEADINGS = new Set([
  * the retrieval query: "a tool called `miniflux-sanity` can do this" must not
  * seed the search for code to edit.
  */
-const NON_SEEDING_CONTEXT = new Set(["alternatives considered", "alternatives"]);
+const NON_SEEDING_CONTEXT = new Set([
+  "alternatives considered",
+  "alternatives",
+  "describe alternatives you've considered",
+]);
 
 /** Template fields that describe the reporter's setup. */
 const ENVIRONMENT_HEADINGS = new Set([
@@ -134,6 +146,9 @@ const ENVIRONMENT_HEADINGS = new Set([
   "device",
   "checklist",
   "code of conduct",
+  // GitHub's stock bug-report template.
+  "desktop (please complete the following information)",
+  "smartphone (please complete the following information)",
 ]);
 
 /**
@@ -157,6 +172,15 @@ const LIST_HEADINGS = new Set([
 const MIN_RECOGNISED_HEADINGS = 2;
 
 const HEADING_LINE = /^\s*(#{1,6})\s+(.*\S)\s*$/;
+/**
+ * A whole line in bold — `**Describe the bug**` — which is how GitHub's stock
+ * MARKDOWN issue templates (as opposed to issue forms) mark a section. Bounded,
+ * and only ever a heading when its label is in the template vocabulary (see
+ * {@link splitSections}): a bold line in ordinary prose stays prose.
+ */
+const BOLD_HEADING_LINE = /^\s*(?:\*\*|__)([^*_\n]{1,120})(?:\*\*|__)\s*:?\s*$/;
+/** The level a bold-line heading is given: below a `#` title, like a form's `###`. */
+const BOLD_HEADING_LEVEL = 3;
 const FENCE_LINE = /^\s*(```|~~~)/;
 const PLACEHOLDER_LINE = /^_?(no response|n\/a|none|not applicable)_?\.?$/i;
 const BARE_URL_LINE = /^<?https?:\/\/\S+>?$/i;
@@ -176,14 +200,25 @@ interface RawSection {
   lines: string[];
 }
 
-/** Fold a heading to its comparable form: no emphasis, no trailing punctuation. */
+/** Longest heading compared against the vocabulary; no template label is near it. */
+const HEADING_LABEL_MAX = 160;
+
+/**
+ * Fold a heading to its comparable form: no emphasis, no trailing punctuation,
+ * straight apostrophes. Trailing characters are trimmed by index rather than by
+ * a `[?:.!]+\s*$` pattern, which is quadratic on a long run of punctuation.
+ */
 function normalizeHeading(heading: string): string {
-  return heading
+  const flat = heading
+    .slice(0, HEADING_LABEL_MAX)
     .replace(/[*_`]/g, "")
-    .replace(/[?:.!]+\s*$/, "")
+    .replace(/[\u2018\u2019]/g, "'")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+  let end = flat.length;
+  while (end > 0 && "?:.! ".includes(flat[end - 1]!)) end--;
+  return flat.slice(0, end);
 }
 
 function classifyHeading(heading: string): SectionClass {
@@ -204,8 +239,11 @@ function splitSections(text: string): { preamble: string[]; sections: RawSection
   for (const line of text.replace(/\r\n?/g, "\n").split("\n")) {
     if (FENCE_LINE.test(line)) inFence = !inFence;
     const heading = inFence ? null : line.match(HEADING_LINE);
+    const bold = inFence || heading ? null : line.match(BOLD_HEADING_LINE);
     if (heading) {
       sections.push({ level: heading[1]!.length, heading: heading[2]!.trim(), lines: [] });
+    } else if (bold && classifyHeading(bold[1]!) !== "unknown") {
+      sections.push({ level: BOLD_HEADING_LEVEL, heading: bold[1]!.trim(), lines: [] });
     } else if (sections.length > 0) {
       sections[sections.length - 1]!.lines.push(line);
     } else {
@@ -344,7 +382,7 @@ export function parseChangeRequest(text: string | null | undefined): ChangeReque
   const primaryRequest = [title, ...extra].join("\n\n");
 
   const bugShaped = body.some((s) =>
-    /^(steps to reproduce|how to reproduce|actual behaviou?r|bug summary)$/.test(
+    /^(steps to reproduce|how to reproduce|to reproduce|actual behaviou?r|bug summary|describe the bug)$/.test(
       normalizeHeading(s.heading),
     ),
   );
@@ -391,7 +429,11 @@ export function requestRetrievalText(request: ChangeRequest): string {
     .map((p) =>
       p
         .replace(/(```|~~~)[\s\S]*?(\1|$)/g, " ")
-        .replace(/\[([^\]]+)\]\(\s*https?:\/\/[^)]*\)/g, "$1")
+        // Bounded on both sides, and a label holds no `[`: unbounded, `[^\]]+` and
+        // `[^)]*` are quadratic on a long run of `[` or of unclosed `[a](http://…`
+        // (text is accepted up to 500,000 characters). A link longer than the
+        // bound is left to the URL pattern below.
+        .replace(/\[([^[\]\n]{1,300})\]\(\s{0,8}https?:\/\/[^)\s]{0,500}\)/g, "$1")
         .replace(/https?:\/\/\S+/g, " ")
         .replace(/[ \t]+/g, " ")
         .replace(/\n{3,}/g, "\n\n")
@@ -399,6 +441,84 @@ export function requestRetrievalText(request: ChangeRequest): string {
     )
     .filter((p) => p.length > 0)
     .join("\n\n");
+}
+
+// ── What the request ASKS, as opposed to what it says around it (#791) ───────
+
+/** Statements handed to the gate, at most, and the longest one kept whole. */
+export const MAX_REQUEST_STATEMENTS = 400;
+export const MAX_STATEMENT_CHARS = 600;
+
+/**
+ * An obligation or a suggestion: "should record", "must keep", "could store".
+ * Deliberately wide — a statement only matters to its reader when it also holds
+ * the cue that reader looks for.
+ */
+const OBLIGATION =
+  /\b(should|must|shall|will|would|could|can|needs?\s{1,4}to|ha(?:s|ve)\s{1,4}to)\b/i;
+/** A sentence that opens with an instruction verb, after any list marker. */
+const LEADING_INSTRUCTION =
+  /^(?:[-*+]\s{1,4}|\d{1,3}[.)]\s{1,4}|\[[ xX]\]\s{1,4}){0,3}(?:(?:also|then|and|please|additionally|finally)[,\s]{1,4}){0,2}(add|record|store|track|persist|audit|save|keep|log|write|remember|set|update|show|display|expose|return|include|create|introduce|populate|maintain|mark|delete|remove|allow|let|make|provide|support|ensure|send|use|change|rename|replace|implement)\b/i;
+
+/** Split prose into sentences and lines. Linear; no nested quantifier. */
+function sentencesOf(text: string): string[] {
+  return text
+    .split(/(?<=[.!?;])\s|\n/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 0);
+}
+
+/** True when a sentence instructs or obliges, rather than describes. */
+export function isImperativeStatement(sentence: string): boolean {
+  const head = sentence.slice(0, MAX_STATEMENT_CHARS);
+  return LEADING_INSTRUCTION.test(head) || OBLIGATION.test(head);
+}
+
+/** What the #791 gate and the `ALTER TABLE` fast path read of one change. */
+export interface RequestGateText {
+  /**
+   * What is being asked for: the primary request and its sub-aspects. No context
+   * section — the problem statement, the steps to reproduce, the alternatives the
+   * reporter rejected and the logs describe; they do not ask.
+   */
+  ask: string;
+  /**
+   * The sentences a "record this" cue is read from: every sentence of the
+   * primary request, and the IMPERATIVE sentences of the sub-aspects. One
+   * incidental verb in a context section ("I lose track of what I have read",
+   * "the tool keeps everything stored locally") used to flip a column to a core
+   * migration; context is not read at all, and a sub-aspect has to instruct.
+   */
+  statements: string[];
+}
+
+/**
+ * {@link RequestGateText} for a change. A change the splitter produced has no
+ * sections: it is one requirement, so all of it is the ask.
+ */
+export function requestGateText(
+  change: Pick<ChangedRequirement, "title" | "body" | "request">,
+): RequestGateText {
+  const request = change.request;
+  if (!request) {
+    const ask = `${change.title}\n${change.body}`;
+    return {
+      ask,
+      statements: sentencesOf(ask)
+        .slice(0, MAX_REQUEST_STATEMENTS)
+        .map((sentence) => sentence.slice(0, MAX_STATEMENT_CHARS)),
+    };
+  }
+  const statements = [
+    ...sentencesOf(request.primaryRequest),
+    ...request.subAspects.flatMap((s) => sentencesOf(s.text).filter(isImperativeStatement)),
+  ];
+  return {
+    ask: [request.primaryRequest, ...request.subAspects.map((s) => s.text)].join("\n\n"),
+    statements: statements
+      .slice(0, MAX_REQUEST_STATEMENTS)
+      .map((sentence) => sentence.slice(0, MAX_STATEMENT_CHARS)),
+  };
 }
 
 const REMOVED_RE =

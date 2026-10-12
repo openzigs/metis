@@ -121,8 +121,9 @@ describe("computeProjectImpact — the verbatim #4478 issue, three runs (#791)",
       `${ENTRY}::MarkAllAsReadBeforeDate`,
     );
     expect(result.droppedColumnProposals[0]!.reason).toMatch(
-      /^An existing write path covers this:/,
+      /^An existing write path may cover this:/,
     );
+    expect(result.droppedColumnProposals[0]!.reason).toContain("Checked: the request's wording");
   });
 
   it("runs the proposer once for the whole issue, not once per section", async () => {
@@ -194,8 +195,10 @@ describe("computeProjectImpact — the gate is best-effort around its collaborat
     });
     const result = await run(ISSUE_4478, proposer, {}, broken);
     expect(proposer.mock.calls[0]![2].writers).toEqual([]);
-    // With no writer profile there is nothing to cover the column: it passes.
+    // With no writer profile there is nothing to cover the column: it passes —
+    // and is marked as not checked (`impact-analysis-engine-wiring.test.ts`).
     expect(addColumns(result.affectedTables)).toEqual(["users.mark_read_delay"]);
+    expect(result.uncheckedColumnProposals).toHaveLength(1);
   });
 
   it("keeps the crossing output when the proposer throws", async () => {

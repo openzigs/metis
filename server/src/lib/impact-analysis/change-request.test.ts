@@ -11,10 +11,16 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   changeFromRequest,
+  extractChangesByShape,
+  isImperativeStatement,
+  MAX_REQUEST_STATEMENTS,
+  MAX_STATEMENT_CHARS,
   parseChangeRequest,
+  requestGateText,
   requestRetrievalText,
   shapeAwareChangeExtractor,
 } from "./change-request.js";
+import { seedQueries } from "./change-seeds.js";
 import { extractChangesHeuristically } from "./extract-changes.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -184,6 +190,18 @@ describe("parseChangeRequest — choosing the mode from the input's shape (#1036
     expect(parseChangeRequest(text)).toBeNull();
   });
 
+  it("is not an issue on ONE recognised heading and nothing else — the threshold itself", () => {
+    // No unknown heading here, so the "template headings must outnumber the
+    // others" rule passes (1 > 0) and ONLY the two-heading minimum says no. The
+    // fixture above is turned away by that other rule, and left the minimum
+    // unpinned (PR #1090 panel).
+    const one = "# Billing\n\n## Summary\n\nInvoices are sent monthly.";
+    expect(parseChangeRequest(one)).toBeNull();
+    // The same text with a second template heading IS an issue.
+    const two = `${one}\n\n## Problem\n\nThey arrive late.`;
+    expect(parseChangeRequest(two)?.title).toBe("Billing");
+  });
+
   it("stays a document when its own headings are as many as the template ones", () => {
     // Background + Problem, then one section per requirement: a requirements
     // document that opens the way an issue does.
@@ -274,4 +292,201 @@ describe("shapeAwareChangeExtractor (#1036)", () => {
     expect(changes.length).toBeGreaterThan(1);
     expect(changes.every((c) => c.request === undefined)).toBe(true);
   });
+});
+
+describe("parseChangeRequest — GitHub's stock markdown templates use bold lines, not headings (PR #1090 review)", () => {
+  // github.com → New issue → the default "Bug report" and "Feature request"
+  // templates, as they arrive in a paste. No `#` heading anywhere.
+  const BUG = [
+    "**Describe the bug**",
+    "Marking a page as read leaves the unread counter unchanged.",
+    "",
+    "**To Reproduce**",
+    "Steps to reproduce the behavior:",
+    "1. Go to the unread page",
+    "2. Click on 'Mark this page as read'",
+    "",
+    "**Expected behavior**",
+    "The counter drops by the number of entries on the page.",
+    "",
+    "**Screenshots**",
+    "_No response_",
+    "",
+    "**Desktop (please complete the following information):**",
+    " - OS: macOS",
+    " - Browser: Firefox",
+    "",
+    "**Additional context**",
+    "It worked in 2.2.",
+  ].join("\n");
+  const FEATURE = [
+    "**Is your feature request related to a problem? Please describe.**",
+    "I can only mark a page or everything as read.",
+    "",
+    "**Describe the solution you'd like**",
+    "Mark all as read older than X days.",
+    "",
+    "**Describe alternatives you've considered**",
+    "A tool called `miniflux-sanity` stores a cutoff and can do this.",
+    "",
+    "**Additional context**",
+    "None.",
+  ].join("\n");
+
+  it("reads the stock bug report as ONE change, typed as a bug", () => {
+    const changes = extractChangesByShape(BUG);
+    expect(changes).toHaveLength(1);
+    const request = changes[0]!.request!;
+    expect(request.kind).toBe("bug");
+    expect(changes[0]!.changeType).toBe("modified");
+    expect(request.primaryRequest).toBe(
+      "Marking a page as read leaves the unread counter unchanged.",
+    );
+    expect(request.subAspects.map((s) => s.heading)).toEqual(["Expected behavior"]);
+    expect(request.context.map((s) => s.heading)).toEqual(["To Reproduce", "Additional context"]);
+    // The environment block and the empty field carry no request.
+    expect(request.ignored.map((i) => [i.reason, i.text])).toEqual([
+      ["placeholder", "_No response_"],
+      ["environment", "- OS: macOS"],
+      ["environment", "- Browser: Firefox"],
+    ]);
+  });
+
+  it("reads the stock feature request as ONE change, and keeps the rejected alternative out of the search", () => {
+    const changes = extractChangesByShape(FEATURE);
+    expect(changes).toHaveLength(1);
+    const request = changes[0]!.request!;
+    expect(request.kind).toBe("feature");
+    expect(request.subAspects.map((s) => s.heading)).toEqual(["Describe the solution you'd like"]);
+    expect(request.context.map((s) => s.heading)).toEqual([
+      "Is your feature request related to a problem? Please describe.",
+      "Describe alternatives you've considered",
+    ]);
+    // "None." under Additional context is an empty field, not context.
+    expect(request.ignored).toEqual([
+      { heading: "Additional context", text: "None.", reason: "placeholder" },
+    ]);
+    expect(requestRetrievalText(request)).toContain("Mark all as read older than X days.");
+    expect(requestRetrievalText(request)).not.toContain("miniflux-sanity");
+  });
+
+  it("accepts a typographic apostrophe and `__bold__`", () => {
+    const text = FEATURE.replace("you'd", "you\u2019d").replaceAll("**", "__");
+    expect(extractChangesByShape(text)).toHaveLength(1);
+  });
+
+  it("leaves a bold line that is not a template label as prose", () => {
+    const doc = "**Refunds**\n\nRefunds must be audited.\n\n**Invoices**\n\nInvoices are monthly.";
+    expect(parseChangeRequest(doc)).toBeNull();
+    // Inside an issue, an emphasised sentence stays part of its section.
+    const request = parseChangeRequest(
+      "# T\n\n### Summary\n\nDo it.\n\n**Important**\n\n### Problem\n\nIt is slow.",
+    )!;
+    expect(request.primaryRequest).toContain("**Important**");
+  });
+
+  it("does not read a bold line inside a code fence as a heading", () => {
+    const text = `${BUG}\n\n\`\`\`md\n**Describe the bug**\n\`\`\``;
+    const request = parseChangeRequest(text)!;
+    expect(request.context.at(-1)!.text).toContain("**Describe the bug**");
+  });
+});
+
+describe("requestGateText — what the request asks, without what surrounds it (#791, PR #1090 review)", () => {
+  const ISSUE = [
+    "# [Feature]: Prune old entries",
+    "### Feature Summary",
+    "Delete entries older than 30 days.",
+    "### What problem does this feature solve?",
+    "The database grows. We should track how big it gets.",
+    "### Proposed Solution",
+    "A nightly job. Record on the feed when it was last pruned. The old script keeps a log.",
+    "### Alternatives Considered",
+    "ALTER TABLE feeds ADD COLUMN pruned_at TIMESTAMPTZ; was suggested and should be stored.",
+  ].join("\n\n");
+  const [change] = extractChangesByShape(ISSUE);
+  const gateText = requestGateText(change!);
+
+  it("asks with the primary request and the sub-aspects, and no context section", () => {
+    expect(gateText.ask).toContain("Delete entries older than 30 days.");
+    expect(gateText.ask).toContain("A nightly job.");
+    expect(gateText.ask).not.toContain("The database grows");
+    expect(gateText.ask).not.toContain("ALTER TABLE");
+  });
+
+  it("takes statements from the primary request, and from a sub-aspect only when it instructs", () => {
+    expect(gateText.statements).toEqual([
+      "Prune old entries",
+      "Delete entries older than 30 days.",
+      "Record on the feed when it was last pruned.",
+    ]);
+  });
+
+  it("reads all of a splitter-made change: one requirement is all ask", () => {
+    const text = requestGateText({ title: "Refunds", body: "Refunds are audited. Keep a log." });
+    expect(text.ask).toBe("Refunds\nRefunds are audited. Keep a log.");
+    expect(text.statements).toEqual(["Refunds", "Refunds are audited.", "Keep a log."]);
+  });
+
+  it("bounds what it hands on, however long the request", () => {
+    const body = Array.from(
+      { length: MAX_REQUEST_STATEMENTS + 50 },
+      (_, i) => `Add item ${i}.`,
+    ).join(" ");
+    const many = requestGateText({ title: "T", body });
+    expect(many.statements).toHaveLength(MAX_REQUEST_STATEMENTS);
+    const long = requestGateText({ title: "T", body: "x".repeat(MAX_STATEMENT_CHARS * 3) });
+    expect(long.statements.map((s) => s.length)).toEqual([1, MAX_STATEMENT_CHARS]);
+  });
+
+  it.each([
+    ["Record on the feed when it was last pruned.", true],
+    ["- Also store the reason", true],
+    ["1. Please keep the date", true],
+    ["The feed should show the date.", true],
+    ["It needs to save the cutoff.", true],
+    ["The old script keeps a log.", false],
+    ["A nightly job.", false],
+    ["Common options are 24 hours and 1 week.", false],
+  ])("isImperativeStatement(%j) is %s", (sentence, expected) => {
+    expect(isImperativeStatement(sentence)).toBe(expected);
+  });
+});
+
+describe("parsing stays linear on a 200 KB paste (PR #1090 review)", () => {
+  function bestOf3(run: () => unknown): number {
+    let best = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const start = performance.now();
+      run();
+      best = Math.min(best, performance.now() - start);
+    }
+    return best;
+  }
+  const SIZE = 200_000;
+  const fill = (unit: string) => unit.repeat(Math.ceil(SIZE / unit.length)).slice(0, SIZE);
+  const issueWith = (body: string) =>
+    `# [Feature]: Mark all as read older than X\n\n### Feature Summary\n\n${body}\n\n### Proposed Solution\n\n${body}\n`;
+  const INPUTS: Record<string, string> = {
+    "one whitespace-free token": fill("a."),
+    "a run of [ (an unclosed link label)": issueWith(fill("[")),
+    "unclosed links": issueWith(fill("[a](http://x")),
+    "a heading of question marks": `# ${fill("?")}x\n\n### Summary\n\nx\n\n### Problem\n\ny`,
+    "a section heading of question marks": `# T\n\n### Summary\n\nx\n\n### ${fill("?")}x\n\ny\n\n### Problem\n\nz`,
+    "a heading followed by spaces": `#${fill(" ")}x`,
+    "a bold line that never closes": `**${fill("a")}`,
+    "minified JSON in an issue": issueWith(fill('{"a":[1,2],"b":"c"},')),
+  };
+
+  it.each(Object.keys(INPUTS))(
+    "%s: parse, split and build the search queries well under 100 ms",
+    (name) => {
+      const text = INPUTS[name]!;
+      expect(text.length).toBeGreaterThanOrEqual(SIZE);
+      expect(bestOf3(() => parseChangeRequest(text))).toBeLessThan(100);
+      const changes = extractChangesByShape(text);
+      expect(bestOf3(() => changes.map((c) => seedQueries(c)))).toBeLessThan(100);
+      expect(bestOf3(() => changes.map((c) => requestGateText(c)))).toBeLessThan(100);
+    },
+  );
 });

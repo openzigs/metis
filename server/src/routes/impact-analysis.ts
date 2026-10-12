@@ -167,9 +167,12 @@ function instrumentStage(
  * levers: `IMPACT_LLM_SEEDING` (#931) swaps the seed source for an LLM re-ranker and
  * regressed table precision, while `IMPACT_LLM_ENTITY_SEEDS` (#1002) only APPENDS
  * graph-grounded entity seeds below the deterministic ones. With both off this
- * returns `undefined` so the engine keeps its own deterministic BM25 default (no
- * behaviour change, and no provider is built at all). Never throws — a provider-
- * construction failure degrades to deterministic seeding.
+ * returns `undefined` so the engine keeps its own default seeding and no provider
+ * is built at all. Since #1036 that default is the split hybrid search
+ * (`defaultSeedChange`: BM25 fused with symbol embeddings, edit candidates apart
+ * from the blast radius), not names-only BM25; a mapper returned here REPLACES
+ * it, so turning either flag on also turns the split seeding off. Never throws —
+ * a provider-construction failure degrades to the engine's default seeding.
  *
  * #1021 — the two stages share ONE built provider but get SEPARATE instrumented
  * wrappers, so their tokens land under distinct `agentStep`s.

@@ -63,6 +63,11 @@ export interface HybridSearchOptions {
   symbolKind?: string;
   /** Weight configuration. */
   weights?: SearchWeights;
+  /**
+   * #1036 — called once per search that reaches fusion, with which channels
+   * answered. Not called for a project with no symbols (nothing was searched).
+   */
+  onRetrievalMode?: (mode: "hybrid" | "bm25-only") => void;
 }
 
 export interface SearchWeights {
@@ -505,6 +510,15 @@ const sharedBm25 = new WeakMap<
 /** Distinct `fileGlob`/`symbolKind` variants kept per symbol array (oldest evicted). */
 const MAX_SHARED_FILTER_VARIANTS = 8;
 
+/**
+ * #1036 — which channels answered one search: `hybrid` when the vector channel
+ * returned at least one hit, `bm25-only` when it returned none (the project's
+ * symbols are not embedded under the active model yet, or the embed / vector
+ * search faulted) or was weighted out. The fallback is sound and silent in the
+ * ranking, so a caller that compares runs asks for this.
+ */
+export type RetrievalMode = "hybrid" | "bm25-only";
+
 export class HybridCodeSearch {
   private readonly lexical: LexicalConfig;
   private bm25: BM25Index;
@@ -752,6 +766,8 @@ export class HybridCodeSearch {
         snippet: sym.snippet ?? sym.signature,
       });
     }
+
+    opts.onRetrievalMode?.(vectorResults.length > 0 ? "hybrid" : "bm25-only");
 
     log.info("Hybrid search completed", {
       projectId,

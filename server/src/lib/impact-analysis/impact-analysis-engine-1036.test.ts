@@ -23,14 +23,26 @@ const CAPTURE = JSON.parse(read("miniflux-4478-hits.json")) as {
   symbols: SeedSymbolRow[];
 };
 
-const search = vi.fn(async (query: string) => {
-  const captured = CAPTURE.queries.find((q) => q.query === query);
-  if (!captured) throw new Error(`no capture for: ${query.slice(0, 60)}`);
-  return captured.hits;
-});
-const createDefaultCodeSearcher = vi.fn(() => ({ search }));
+/** What the replayed searcher says about its channels; null = says nothing. */
+let reportedMode: "hybrid" | "bm25-only" | null = null;
+const search = vi.fn(
+  async (
+    query: string,
+    _projectId: string,
+    opts?: { onRetrievalMode?: (mode: "hybrid" | "bm25-only") => void },
+  ) => {
+    const captured = CAPTURE.queries.find((q) => q.query === query);
+    if (!captured) throw new Error(`no capture for: ${query.slice(0, 60)}`);
+    if (reportedMode) opts?.onRetrievalMode?.(reportedMode);
+    return captured.hits;
+  },
+);
+const RUN_INDEX = { name: "run-scoped index over the injected client" };
+const createRunScopedSymbolIndex = vi.fn((_client?: unknown) => RUN_INDEX);
+const createDefaultCodeSearcher = vi.fn((_deps?: unknown) => ({ search }));
 vi.mock("../code-graph/project-code-searcher.js", () => ({
-  createDefaultCodeSearcher: () => createDefaultCodeSearcher(),
+  createDefaultCodeSearcher: (deps?: unknown) => createDefaultCodeSearcher(deps),
+  createRunScopedSymbolIndex: (client: unknown) => createRunScopedSymbolIndex(client),
 }));
 
 const mapRequirementToCode = vi.fn(async () => []);
@@ -44,6 +56,8 @@ const { computeProjectImpact, executeImpactAnalysis, InMemoryCodeGraphDataSource
 const { extractChangesByShape } = await import("./change-request.js");
 
 beforeEach(() => {
+  reportedMode = null;
+  createRunScopedSymbolIndex.mockClear();
   search.mockClear();
   createDefaultCodeSearcher.mockClear();
   mapRequirementToCode.mockClear();
@@ -389,6 +403,10 @@ describe("the verbatim run-7 #4478 issue, end to end on captured search hits (#1
     expect(items).toHaveLength(1);
     expect(items[0]!.requirementTitle).toBe("Mark all as read older than X");
     expect(createDefaultCodeSearcher).toHaveBeenCalledTimes(1);
+    // The searcher's lexical index is built over the INJECTED client, the one the
+    // hits are hydrated from — not the module-global one (PR #1090 review).
+    expect(createRunScopedSymbolIndex).toHaveBeenCalledWith(prisma);
+    expect(createDefaultCodeSearcher).toHaveBeenCalledWith({ symbolIndex: RUN_INDEX });
     // Title, then the request without its rejected alternatives.
     expect(search.mock.calls.map((c) => c[0])).toEqual(CAPTURE.queries.map((q) => q.query));
     expect(mapRequirementToCode).not.toHaveBeenCalled();
@@ -413,6 +431,29 @@ describe("the verbatim run-7 #4478 issue, end to end on captured search hits (#1
     expect(editCandidateFiles).toContain("internal/ui/unread_mark_all_read.go");
     expect(editCandidateFiles.length).toBeLessThanOrEqual(5);
     expect(blastRadiusFiles.length).toBeGreaterThan(editCandidateFiles.length);
+  });
+
+  it("says on the run when the code search was keywords only (PR #1090 review)", async () => {
+    const run = async (mode: typeof reportedMode) => {
+      reportedMode = mode;
+      const { prisma, analyses } = prismaMock();
+      await executeImpactAnalysis("ia", ["p1"], {
+        prisma: prisma as never,
+        dataSourceFor: () => graph,
+        includeSchemaImpact: false,
+      });
+      return String(analyses.get("ia")?.summary);
+    };
+    const degraded = await run("bm25-only");
+    expect(degraded).toMatch(
+      /^Impacted \d+ symbol\(s\) across 1 project\(s\) from 1 change\(s\)\./,
+    );
+    expect(degraded).toContain(
+      "\n\nCode search ran on keywords only (BM25) for this project: symbol embeddings were missing or still building",
+    );
+    // A hybrid run, and a searcher that does not say, add nothing.
+    expect(await run("hybrid")).not.toContain("keywords only");
+    expect(await run(null)).not.toContain("keywords only");
   });
 
   it("an injected mapper is used as-is — the opt-in seeding flags keep their path", async () => {

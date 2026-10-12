@@ -571,8 +571,8 @@ function impactSymbolBullet(sym: ImpactAffectedSymbolView): string {
 }
 
 /**
- * #1051 — one heading and a bullet per ruled-out proposal: the column, the
- * covering write path with its file and line, and the gate's reason. Nothing
+ * #1051 — one heading and a bullet per gated proposal: the column, the existing
+ * write path it was set against with its file and line, and the gate's reason. Nothing
  * when the list is empty. The DDL is deliberately NOT repeated here: these
  * columns are not part of the change, and a copied `ALTER TABLE` would say
  * otherwise.
@@ -583,7 +583,7 @@ function columnProposalSection(heading: string, proposals: ImpactColumnProposalV
     const column = codeSpan(`${p.tableName}.${p.columnName}`);
     const type = p.columnType ? ` (${mdInline(p.columnType)})` : "";
     const writer = p.writer
-      ? ` — covered by ${codeSpan(p.writer.qualifiedName)} at ${codeSpan(
+      ? ` — existing write path ${codeSpan(p.writer.qualifiedName)} at ${codeSpan(
           p.writer.startLine != null
             ? `${p.writer.filePath}:${p.writer.startLine}`
             : p.writer.filePath,
@@ -887,8 +887,14 @@ function impactItemSection(item: ImpactItemView, ctx: ImpactItemLabelContext): s
       item.optionalColumnProposals,
     ),
     ...columnProposalSection(
-      "#### Not proposed (an existing write path covers it)",
+      "#### Not proposed (an existing write path appears to cover it)",
       item.droppedColumnProposals,
+    ),
+    // #791 — the gate is fail-open: these columns ARE proposed above, and nothing
+    // existed to check them against. Said here so the export does not read as vetted.
+    ...columnProposalSection(
+      "#### Proposed, not checked (no existing write path to compare with)",
+      item.uncheckedColumnProposals ?? [],
     ),
   );
 

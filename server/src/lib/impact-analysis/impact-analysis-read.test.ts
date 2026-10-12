@@ -921,6 +921,7 @@ describe("#956 computeSharedTableImpacts (run-level rollup)", () => {
       blastRadiusFiles: [],
       droppedColumnProposals: [],
       optionalColumnProposals: [],
+      uncheckedColumnProposals: [],
       feedback: [],
       affectedTablesSecondary: [],
       affectedTables: tableNames.map((tableName) => ({

@@ -720,7 +720,9 @@ earlier. Record the two lists separately as well: #1073 scores the files to edit
 and recall, and the blast radius on recall only. A column listed under **Optional: settings
 persistence** or **Not proposed** (#791, #1051) is **not** a proposed column and not a
 migration: for #4478 the owner decision in #1068 accepts an optional, labelled settings column
-and rejects only a column among the proposed changes.
+and rejects only a column among the proposed changes. A column listed under **Proposed, not
+checked** IS among the proposed changes (the gate had no write path to check it against): count
+it as proposed, and record that it was unchecked.
 
 - **Files.** `tp` = set files the output names; `fp` = files it names that are neither in the
   set nor neutral; `fn` = set files it does not name. **Precision** = `tp / (tp + fp)`;

@@ -810,6 +810,7 @@ function impactItem(overrides: Partial<ImpactItemView> = {}): ImpactItemView {
     blastRadiusFiles: [],
     droppedColumnProposals: [],
     optionalColumnProposals: [],
+    uncheckedColumnProposals: [],
     feedback: [],
     ...overrides,
   };
@@ -941,14 +942,16 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
       }),
     );
     const optional = md.indexOf("#### Optional: settings persistence (not part of the migration)");
-    const dropped = md.indexOf("#### Not proposed (an existing write path covers it)");
+    const dropped = md.indexOf("#### Not proposed (an existing write path appears to cover it)");
     expect(optional).toBeGreaterThan(-1);
     expect(dropped).toBeGreaterThan(optional);
     expect(md.slice(optional, dropped)).toContain(
-      "- `users.mark_read_default` (INTEGER) — covered by `internal/storage/entry.go::MarkAllAsReadBeforeDate` at `internal/storage/entry.go:523`. MarkAllAsReadBeforeDate already filters",
+      "- `users.mark_read_default` (INTEGER) — existing write path `internal/storage/entry.go::MarkAllAsReadBeforeDate` at `internal/storage/entry.go:523`. MarkAllAsReadBeforeDate already filters",
     );
     expect(md.slice(optional, dropped)).not.toContain("mark_read_delay");
-    expect(md.slice(dropped)).toContain("- `users.mark_read_delay` (INTEGER) — covered by");
+    expect(md.slice(dropped)).toContain(
+      "- `users.mark_read_delay` (INTEGER) — existing write path",
+    );
     // No type and no writer: the bullet says only what is known.
     expect(md.slice(dropped)).toContain(
       "- `users.mark_read_times`. MarkAllAsReadBeforeDate already",
@@ -961,6 +964,43 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     const md = serializeImpactAnalysisMarkdown(impactDetail());
     expect(md).not.toContain("Optional: settings persistence");
     expect(md).not.toContain("#### Not proposed");
+    expect(md).not.toContain("#### Proposed, not checked");
+  });
+
+  it("#791 — says which proposed columns the gate could not check, and why", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            uncheckedColumnProposals: [
+              {
+                id: "u1",
+                tableName: "users",
+                columnName: "mark_read_delay",
+                columnType: "INTEGER",
+                suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER;",
+                reason: "Not checked: the SQL lineage named no write path for this request.",
+                writer: null,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    const at = md.indexOf("#### Proposed, not checked (no existing write path to compare with)");
+    expect(at).toBeGreaterThan(-1);
+    expect(md.slice(at)).toContain(
+      "- `users.mark_read_delay` (INTEGER). Not checked: the SQL lineage named no write path for this request.",
+    );
+    // It sits with the other gate sections, before the code lists.
+    expect(at).toBeLessThan(md.indexOf("#### Files to edit"));
+  });
+
+  it("#791 — exports a stored run that has no unchecked list at all", () => {
+    const legacy = impactItem() as unknown as Record<string, unknown>;
+    delete legacy.uncheckedColumnProposals;
+    const md = serializeImpactAnalysisMarkdown(impactDetail({ items: [legacy as never] }));
+    expect(md).not.toContain("#### Proposed, not checked");
   });
 
   it("is deterministic — identical input yields byte-identical output", () => {

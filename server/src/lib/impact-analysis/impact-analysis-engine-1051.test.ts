@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { executeImpactAnalysis, type ImpactServiceDeps } from "./impact-analysis-engine.js";
 import { getImpactAnalysisDetail } from "./impact-analysis-read.js";
+import type { SchemaImpactDataSource } from "./schema-impact.js";
 import {
   column,
   ENTRY,
@@ -88,13 +89,14 @@ function store(sourceText: string) {
 async function runIssue(
   text: string,
   proposer: NonNullable<ImpactServiceDeps["additiveColumnProposer"]>,
+  source: SchemaImpactDataSource = schemaDataSource(),
 ) {
   const s = store(text);
   await executeImpactAnalysis("ia", ["p1"], {
     prisma: s.prisma as never,
     seedChange: async () => UI_HANDLER_SEEDS,
     dataSourceFor: () => graph,
-    schemaDataSourceFor: () => schemaDataSource(),
+    schemaDataSourceFor: () => source,
     consumerResolver: async () => [],
     identityResolverFor: async () => null,
     additiveColumnProposer: proposer,
@@ -166,7 +168,9 @@ describe("executeImpactAnalysis — ruled-out column proposals are stored and re
         startLine: 523,
       },
     });
-    expect(item.droppedColumnProposals[0]!.reason).toMatch(/^An existing write path covers this:/);
+    expect(item.droppedColumnProposals[0]!.reason).toMatch(
+      /^An existing write path may cover this:/,
+    );
   });
 
   it("stores both kinds from one run, each under its own disposition", async () => {
@@ -221,6 +225,57 @@ describe("executeImpactAnalysis — ruled-out column proposals are stored and re
   it("writes nothing when the gate rules nothing out", async () => {
     const { columnProposalCreateMany, item } = await runIssue(ISSUE_4478, async () => []);
     expect(columnProposalCreateMany).not.toHaveBeenCalled();
+    expect(item.droppedColumnProposals).toEqual([]);
+    expect(item.optionalColumnProposals).toEqual([]);
+    expect(item.uncheckedColumnProposals).toEqual([]);
+  });
+
+  it("#791 — stores a column the gate could not check as `unchecked`, beside the affected table it stays in", async () => {
+    // Describing the write paths fails: the gate has nothing to check against.
+    const broken = schemaDataSource({
+      getCodeSymbolTexts: async () => {
+        throw new Error("db down");
+      },
+    });
+    const { proposals, item, tables } = await runIssue(
+      ISSUE_4478,
+      async () => [column("users", "mark_read_delay", "INTEGER")],
+      broken,
+    );
+
+    // Unchanged: the column is proposed.
+    expect(
+      tables
+        .filter((t) => t.changeKind === "add-column")
+        .map((t) => `${t.tableName}.${t.columnName}`),
+    ).toEqual(["users.mark_read_delay"]);
+    expect(
+      item.affectedTables.filter((t) => t.changeKind === "add-column").map((t) => t.columnName),
+    ).toEqual(["mark_read_delay"]);
+    // New: and the run records that nothing checked it.
+    expect(proposals).toEqual([
+      expect.objectContaining({
+        impactItemId: "item-1",
+        disposition: "unchecked",
+        tableName: "users",
+        columnName: "mark_read_delay",
+        writerQualifiedName: null,
+        writerFilePath: null,
+      }),
+    ]);
+    expect(item.uncheckedColumnProposals).toEqual([
+      {
+        id: expect.any(String),
+        tableName: "users",
+        columnName: "mark_read_delay",
+        columnType: "INTEGER",
+        suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER; -- SUGGESTED",
+        reason:
+          "Not checked: looking up the existing write paths failed, so there was nothing to compare this column with. Review it as an unverified proposal.",
+        writer: null,
+      },
+    ]);
+    // It is under neither ruled-out heading.
     expect(item.droppedColumnProposals).toEqual([]);
     expect(item.optionalColumnProposals).toEqual([]);
   });

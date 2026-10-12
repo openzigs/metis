@@ -125,6 +125,7 @@ const detail: ImpactAnalysisDetail = {
       blastRadiusFiles: [],
       droppedColumnProposals: [],
       optionalColumnProposals: [],
+      uncheckedColumnProposals: [],
       feedback: [],
       summary: null,
     },

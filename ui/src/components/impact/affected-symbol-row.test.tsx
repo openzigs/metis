@@ -102,6 +102,7 @@ function item(projectId: string): ImpactItemView {
     blastRadiusFiles: [],
     droppedColumnProposals: [],
     optionalColumnProposals: [],
+    uncheckedColumnProposals: [],
     affectedTables: [],
     affectedTablesSecondary: [],
     feedback: [],

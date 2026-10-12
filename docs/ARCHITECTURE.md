@@ -2500,6 +2500,51 @@ the measurement lessons behind the split — is documented once in
   code graph and cannot be reached by any stage here. A table that gains a
   column only through the LLM proposer (#4511's `feeds`) gets its `data-model`
   edit candidates only when that stage runs.
+
+  **The cut sizes are provisional.** `MAX_EDIT_FILES = 5`, `MIN_FILE_SHARE = 0.5`,
+  `FILE_HIT_DECAY = 0.5`, `EDIT_POOL = 60`, `MAX_SYMBOLS_PER_EDIT_FILE = 4` and
+  `SCHEMA_SEED_TOP = 10` (`change-seeds.ts`), and `MIN_CALLEES = 6` /
+  `MIN_TWIN_SIMILARITY = 0.7` (`structural-twins.ts`), were chosen on these six
+  Miniflux issues, and the table above is measured on the same six: it is an
+  **in-sample** number. They are to be revisited at walkthrough run 8. Two
+  consequences are already visible. A hard cap of five files bounds
+  edit-candidate recall on any change that touches more (#4511 edits six files
+  and is found at 17%). And the twin thresholds sit just under the one pair that
+  motivated the stage (#4386, similarity 0.83).
+
+  The one out-of-sample reading available offline is the committed `reqmap`
+  fixture (`eval-data/corpus/reqmap-01-precision-recall`: five replayed PRs over
+  an eight-file TypeScript micro-repo, two changed files each), run through the
+  same engine with no model and no database:
+
+  | reqmap fixture, micro-averaged | Precision | Recall |
+  |---|---|---|
+  | Names-only BM25 mapper + blast radius, every file named (what `pnpm eval:reqmap` measures) | 63% | 100% |
+  | This seeding, BM25-only mode: **edit candidates** | 56% | 100% |
+  | This seeding, BM25-only mode: **blast radius** (recall only) | — | 100% |
+
+  So the gain measured on Miniflux is **not** reproduced there: on a repository
+  of eight files the old path was already precise, and a cut of "up to five
+  files within half of the best" names four or five of the eight. The fixture
+  is a toy and carries no symbol text to embed, so it says little about the
+  hybrid mode; it does say the cut sizes are not yet shown to transfer.
+
+  **Retrieval mode.** Seeding degrades to BM25 when a project's symbols are not
+  embedded under the active model yet, or the vector search faults. That is a
+  sound fallback and a different result, so it is recorded: `HybridCodeSearch`
+  reports `hybrid` or `bm25-only` per search (`onRetrievalMode`), the seeds and
+  the per-project result carry `retrievalMode`, and a run in which any project
+  was seeded `bm25-only` says so in its `summary`, which the page and the
+  markdown export both show. The default seeding builds its lexical index over
+  the Prisma client the engine was given (`createRunScopedSymbolIndex`), so a
+  caller that injects a client searches the database it hydrates from.
+
+  **What counts as schema.** A hit is data rather than code by its KIND — a
+  table, a column, a stored procedure or a stored SQL function
+  (`isSchemaSymbol`) — not by its language. A MyBatis mapper statement is stored
+  as kind `method`, language `sql`, in its mapper XML: it stays an edit
+  candidate, and it is named as a lineage writer. Only a synthetic statement
+  origin (`path::sql@412`) is never named.
 - **Persistence** — `ImpactAnalysis` (run header), `ImpactItem` (one
   project × requirement-change row), `ImpactAffectedSymbol` (per-symbol hit with
   `relation` + `depth`), and `RequirementCodeMapping` (cached requirement→symbol links).
@@ -2718,7 +2763,9 @@ the enclosing function. The Go parser leaves `h.store.X()` calls unresolved, so
 them by Go package visibility (same directory, or a package the caller's package imports;
 only an unambiguous name binds) for the blast-radius graph and the downstream schema walk,
 where a symbol reached only that way contributes its writes, not its reads. Schema symbols
-are `language: "sql"` rows only, so an application `function` is never a DB routine. When
+are `language: "sql"` rows only, so an application `function` is never a DB routine. A
+writer is any `function` or `method` that is not a synthetic `sql@<line>` origin — so a
+MyBatis mapper statement, stored as a `method` with language `sql`, is named. When
 the #936 filter judges a table tangential, a column seed of that table leaves the direct set.
 
 **#791 — a proposed column an existing write path already covers (durable fix).** The
@@ -2734,9 +2781,10 @@ flowchart LR
   Profile --> Proposer[Proposer: covering writers first,<br/>then a justification per column]
   Profile --> Gate{Deterministic gate}
   Proposer --> Gate
-  Gate -- on a covering writer's table,<br/>or nothing covers it --> Core[Affected tables: ADD COLUMN]
+  Gate -- on the bounded writer's own table, asked to be recorded,<br/>cannot hold the bound, or nothing takes a bound --> Core[Affected tables: ADD COLUMN]
   Gate -- request asks to configure it,<br/>or proposer says user-preference --> Optional[Optional: settings persistence]
-  Gate -- a writer takes the value<br/>as a parameter --> Rejected[Not proposed, with the writer and why]
+  Gate -- could hold the bound, on another table,<br/>nothing asks to store it --> Rejected[Not proposed, with the writer and what was checked]
+  Core -- no lineage writer to check against --> Unchecked[Also marked: Proposed, not checked]
 ```
 
 - `profileDataPathWriters` (`data-path-writers.ts`) describes each lineage writer: the
@@ -2749,33 +2797,80 @@ flowchart LR
   a `justification` (`operation-needs-new-data` or `user-preference`) and a `coveredBy`.
   A `W` number outside the list resolves to nothing, as an out-of-range table index does.
 - `gateColumnProposals` (`column-proposal-gate.ts`) decides, and the model's answer is an
-  input to it, not its authority. A writer **covers** a request when the request is bounded
-  by an age or a point in time ("older than X") and the writer filters the table it writes
-  on a time-valued column. A column on a table no covering writer writes is then `core`
-  only if the request asks to record something, `optional` if it asks to configure the
-  value (or the proposer called it a user preference), and otherwise `rejected`. A column
-  on the covering writer's own table (`entries.read_at`) is untouched.
+  input to it, not its authority. The structural evidence is a request bounded by an age
+  or a point in time ("older than X") together with a lineage writer that filters the
+  table it writes on a time-valued column (`published_at`, or camelCase `publishedAt`):
+  that writer already takes such a bound as an argument. A writer has a say over a
+  proposed column only when the column sits on a table **no such writer writes**; a column
+  on the writer's own table (`entries.read_at`) is untouched. For a column it does have a
+  say over, in order:
+  1. `optional` when the proposer called it a user preference;
+  2. `core` when the request **asks to record it** — a record verb (`record`, `store`,
+     `save`, `keep`, `track`, `persist`, `audit`) in a statement that also names the
+     column's table or a word of its name;
+  3. `optional` when the request asks for the value to be configurable;
+  4. `rejected` when the column **could hold the bound** (a number, text, or no type);
+  5. otherwise `core`: a timestamp, a date or a flag on another table
+     (`feeds.last_pruned_at`, `user_entry_state.snoozed_until`) is not a copy of an age,
+     and the gate does not know whether that writer performs the rest of the request.
+  The reason on a rejected row states what was checked and names the writer with the most
+  evidence (lineage before declaration, a typed time argument, then the lineage's own
+  ranking), not the first in list order.
+- **What the gate reads of the request.** Only what the request asks
+  (`requestGateText` in `change-request.ts`): the primary request and its sub-aspects for
+  the time bound and the configure cue, and — for the record cue — the sentences of the
+  primary request plus the **imperative** sentences of the sub-aspects. Context sections
+  (the problem statement, steps to reproduce, rejected alternatives, logs) are not read:
+  "I lose track of what I have read" in a problem statement used to make a column a core
+  migration. The `ALTER TABLE … ADD COLUMN` fast path reads the same text, so DDL quoted
+  under "Alternatives considered" proposes nothing.
+- **The proposer's declarations move a column out of `core`, never in.** A writer the
+  proposer lists as covering can rule a column out (as a writer the lineage did not catch
+  filtering on a time), and only for a time-bounded request and a table it does not
+  itself write. The tables it writes shield nothing: only lineage-derived writers do. A
+  declared writer on the proposal's own table therefore changes nothing, and for any
+  answer the `core` set is a subset of what it would be with no declarations.
+- **Fail-open, and marked.** With no lineage writer at all — the lineage named none, or
+  looking them up threw — there is nothing to check a column against. It passes to `core`
+  as before, and is also returned under `uncheckedColumnProposals` with the reason, so
+  the API, the page and the export say that nothing vetted it. The #791 guarantee
+  therefore needs SQL lineage: on a project without it, every proposal is `core` and
+  marked.
+- **Request text is untrusted and long.** It is accepted up to 500,000 characters, so
+  every pattern the gate, the request parser and the retrieval-text builder apply to it
+  is bounded and linear; each has a timing test on a 200 KB whitespace-free token.
 - `optional` and `rejected` proposals never enter `affectedTables`, so neither is part of
   the migration a change is reported to need. They are returned on the result as
-  `optionalColumnProposals` / `droppedColumnProposals`, each with the covering writer's
-  file and line and the reason.
+  `optionalColumnProposals` / `droppedColumnProposals`, each with the writer's file and
+  line and the reason.
 - **Stored and shown (#1051).** Both lists are persisted per item in
-  `ImpactColumnProposal` (`impact_column_proposals`: `disposition` `rejected` | `optional`,
+  `ImpactColumnProposal` (`impact_column_proposals`: `disposition` `rejected` | `optional`
+  | `unchecked` — the last marks a column that IS among the affected tables and that the
+  gate could not check —
   the proposed column and its text-only DDL, the gate's `reason`, and the covering
   writer's `writerQualifiedName` / `writerFilePath` / `writerStartLine` / `writerEndLine`;
   `ON DELETE CASCADE` from `ImpactItem`). A table of its own rather than more rows in
   `impact_affected_tables`, so nothing that reads the affected tables — the page, the
   export, drift, the shared-table rollup, consumer resolution — can take a ruled-out column
   for a change the requirement needs. `GET /api/impact-analyses/:id` returns them on each
-  item as `droppedColumnProposals` and `optionalColumnProposals`
-  (`ImpactColumnProposalView`); the impact card shows **Optional: settings persistence**
-  (with the DDL) and **Not proposed** (without it) under the proposed column changes, and
-  the markdown export has the same two sections. A run stored before #1051 returns two
-  empty lists.
+  item as `droppedColumnProposals`, `optionalColumnProposals` and
+  `uncheckedColumnProposals` (`ImpactColumnProposalView`); the impact card shows
+  **Optional: settings persistence** (with the DDL), **Not proposed** (without it) and
+  **Proposed, not checked** (without it: the DDL is already among the proposed changes)
+  under the proposed column changes, and the markdown export has the same three
+  sections. A run stored before #1051 returns empty lists.
 
-The lexical `dropProposalsRestatingWriters` is removed. Known limit: only time/age bounds
-are recognised structurally; another kind of bound is covered only when the proposer
-declares the covering writer itself.
+The lexical `dropProposalsRestatingWriters` is removed. Known limits:
+
+- Only time/age bounds are recognised. For a request bounded by something else ("the top
+  N") no write path rules a column out; only the proposer's own per-column answers
+  (`coveredBy`, `user-preference`) can still take one out of `core`.
+- Whether a column on another table is **rejected** rather than kept rests on its type,
+  which the model chooses. On the verbatim #4478 text that does not matter — the request
+  asks for the value to be configurable, so every answer is `optional` — but a request
+  with no such sentence and a proposal typed `TIMESTAMP` is `core`.
+- `predicateColumns` is any read on a table the writer also writes, which over-approximates
+  a WHERE clause (`SET x = created_at + …`, `RETURNING published_at`).
 
 API: `POST /api/impact-analyses` (returns `202` with `{id,status,projectIds}`),
 `GET /api/impact-analyses`, `GET /api/impact-analyses/:id`. Guarded by the

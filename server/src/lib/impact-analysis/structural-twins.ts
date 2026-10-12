@@ -29,6 +29,13 @@ export function hasCalleeNames(graph: unknown): graph is CalleeNameSource {
   return typeof (graph as CalleeNameSource | null)?.calleeNameSets === "function";
 }
 
+// PROVISIONAL — {@link MIN_CALLEES} and {@link MIN_TWIN_SIMILARITY} were set on
+// ONE pair (Miniflux #4386: `showFeedEntriesPage` / `showCategoryEntriesPage`,
+// 20 of 24 callees shared, similarity 0.83) among six Miniflux issues, and sit
+// just under it. The stage only ever widens the list to review, so the cost of a
+// wrong setting is noise rather than a wrong claim. Revisit at run 8, with the
+// twins added per issue and how many were in the reference set.
+
 /** Fewest distinct callees for a function to be compared at all. */
 export const MIN_CALLEES = 6;
 /** Jaccard overlap of callee names at or above which two functions are twins. */

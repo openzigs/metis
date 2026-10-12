@@ -449,8 +449,12 @@ export interface ImpactAffectedSymbolView {
  *     as a parameter and nothing asks to store it;
  *   - `optional` — "Optional: settings persistence": it would only remember a
  *     preferred value. Not part of the migration the change needs.
+ *   - `unchecked` — different in kind: the column IS among the affected tables,
+ *     and the gate had nothing to check it against (the SQL lineage named no
+ *     write path, or looking them up failed). The gate is fail-open; this is the
+ *     mark that says so.
  */
-export const IMPACT_COLUMN_PROPOSAL_DISPOSITIONS = ["rejected", "optional"] as const;
+export const IMPACT_COLUMN_PROPOSAL_DISPOSITIONS = ["rejected", "optional", "unchecked"] as const;
 export type ImpactColumnProposalDisposition = (typeof IMPACT_COLUMN_PROPOSAL_DISPOSITIONS)[number];
 
 /** #1051 — the existing write path a ruled-out proposal is set against. */
@@ -473,7 +477,7 @@ export interface ImpactColumnProposalView {
   columnType: string | null;
   suggestedDdl: string | null;
   reason: string;
-  /** Null for an optional preference no existing write path relates to. */
+  /** Null when the ruling rests on no write path (a bare preference; an unchecked column). */
   writer: ImpactColumnProposalWriter | null;
 }
 
@@ -622,6 +626,13 @@ export interface ImpactItemView {
    * part of the migration the change needs. Empty for a run stored before #1051.
    */
   optionalColumnProposals: ImpactColumnProposalView[];
+  /**
+   * #791 — "Proposed, not checked": columns that ARE in {@link affectedTables}
+   * and that the gate could not check against any existing write path, each with
+   * the reason. A marker, not a second copy of the proposal: treat the matching
+   * `add-column` row as unverified. Empty for a run stored before this field.
+   */
+  uncheckedColumnProposals: ImpactColumnProposalView[];
   /**
    * Issue #966 (Epic #960) — accumulated BA feedback on this item's affected
    * tables (both the primary and secondary buckets share this one list; a

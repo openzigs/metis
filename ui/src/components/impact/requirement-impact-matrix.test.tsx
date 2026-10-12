@@ -50,6 +50,7 @@ function item(overrides: Partial<ImpactItemView> = {}): ImpactItemView {
     blastRadiusFiles: [],
     droppedColumnProposals: [],
     optionalColumnProposals: [],
+    uncheckedColumnProposals: [],
     feedback: [],
     ...overrides,
   };

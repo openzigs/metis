@@ -7,9 +7,14 @@
  *   - `optional` — "Optional: settings persistence". A column that would only
  *     remember a preferred value for an operation that already exists. Shown
  *     with its suggested DDL, labelled as outside the migration the change needs.
- *   - `rejected` — "Not proposed". An existing write path already takes the value
- *     as a parameter. Shown WITHOUT DDL: a copyable `ALTER TABLE` under a "not
- *     proposed" heading would say the opposite of the heading.
+ *   - `rejected` — "Not proposed". An existing write path appears to take the
+ *     value as a parameter already; each row says what was checked. Shown WITHOUT
+ *     DDL: a copyable `ALTER TABLE` under a "not proposed" heading would say the
+ *     opposite of the heading.
+ *   - `unchecked` — "Proposed, not checked". Different in kind: these columns ARE
+ *     among the proposed changes above, and the gate had no existing write path
+ *     to check them against (#791 is fail-open). Shown WITHOUT DDL, which is
+ *     already in the table above; this section is the caveat on it.
  *
  * Each row names the covering write path and links it to its file and line when
  * the caller knows the project's repo. Renders nothing for an empty list.
@@ -21,7 +26,7 @@
 import type { ImpactColumnProposalView } from "@metis/shared";
 import { buildCodeCitationBlobUrl, type CodeCitationRepo } from "@/lib/code-citation-blob-url";
 
-export type ColumnProposalVariant = "optional" | "rejected";
+export type ColumnProposalVariant = "optional" | "rejected" | "unchecked";
 
 const COPY: Record<ColumnProposalVariant, { title: string; note: string; testId: string }> = {
   optional: {
@@ -31,8 +36,13 @@ const COPY: Record<ColumnProposalVariant, { title: string; note: string; testId:
   },
   rejected: {
     title: "Not proposed",
-    note: "Existing code already covers these, so no new column is needed.",
+    note: "An existing write path appears to cover these already. Each row says what was checked.",
     testId: "dropped-column-proposals",
+  },
+  unchecked: {
+    title: "Proposed, not checked",
+    note: "These columns are in the proposed changes above, but there was no existing write path to check them against. Treat them as unverified.",
+    testId: "unchecked-column-proposals",
   },
 };
 
@@ -83,7 +93,7 @@ export function ColumnProposalsSection({ variant, proposals, repo }: ColumnPropo
               </p>
               {p.writer ? (
                 <p className="text-xs text-muted-foreground" data-testid="column-proposal-writer">
-                  Covered by{" "}
+                  Existing write path:{" "}
                   {href ? (
                     <a
                       href={href}

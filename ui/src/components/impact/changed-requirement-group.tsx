@@ -310,6 +310,13 @@ export function ChangedRequirementGroup({
         proposals={item.droppedColumnProposals}
         repo={repo}
       />
+      {/* #791 — the gate is fail-open: a proposed column it could not check is
+          kept, and named here so it does not read as vetted. */}
+      <ColumnProposalsSection
+        variant="unchecked"
+        proposals={item.uncheckedColumnProposals ?? []}
+        repo={repo}
+      />
 
       {/* #936 — low-confidence secondary bucket: tables the relevance filter
           judged tangential (`unlikely`) and pruned from the primary list for

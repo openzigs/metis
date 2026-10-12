@@ -22,10 +22,16 @@
  * edit candidates. Everything else retrieved is returned as `related`: listed
  * for review, never claimed to change.
  *
- * The cut sizes were chosen on the six run-7 issues and deliberately NOT tuned
- * further: with six issues, the differences between nearby settings (sum vs
- * decay, four files vs five) are noise. The measured before/after is in
- * docs/ARCHITECTURE.md, "Edit candidates vs blast radius".
+ * PROVISIONAL CONSTANTS. Every cut size below was chosen on the six Miniflux
+ * issues of walkthrough run 7, and the before/after in docs/ARCHITECTURE.md
+ * ("Edit candidates vs blast radius") is measured on those same six: it is an
+ * in-sample number, not a held-out one. They were deliberately not tuned
+ * further — with six issues the differences between nearby settings (sum vs
+ * decay, four files vs five) are noise — and they are to be REVISITED AT RUN 8.
+ * The one out-of-sample reading there is, the five-case TypeScript `reqmap`
+ * fixture run offline through this seeding, is recorded in the same section.
+ * A known cost: {@link MAX_EDIT_FILES} caps edit-candidate recall on any change
+ * that touches more files than it (#4511 edits six and is found at 17%).
  *
  * Read-only, and never throws: a search fault yields no seeds.
  */
@@ -38,6 +44,9 @@ import type { ChangedRequirement } from "./extract-changes.js";
 
 const log = createChildLogger("impact-change-seeds");
 
+/** How one seeding searched. See `RetrievalMode` in `hybrid-search.ts`. */
+export type RetrievalMode = "hybrid" | "bm25-only";
+
 /** One ranked hit, as the fused code searcher returns it. */
 export interface SeedSearchHit {
   symbolId: string;
@@ -49,7 +58,11 @@ export interface SeedSearchHit {
 
 /** The search this module seeds with. `FusedCodeSearcher` satisfies it. */
 export interface SeedSearcher {
-  search(query: string, projectId: string, opts?: { limit?: number }): Promise<SeedSearchHit[]>;
+  search(
+    query: string,
+    projectId: string,
+    opts?: { limit?: number; onRetrievalMode?: (mode: RetrievalMode) => void },
+  ): Promise<SeedSearchHit[]>;
 }
 
 /** What the search result does not carry: the qualified name and the lines. */
@@ -83,7 +96,16 @@ export interface ChangeSeeds {
    * column, and lists them for review.
    */
   schemaSeeds: RequirementCodeMatch[];
+  /**
+   * `bm25-only` when ANY query of this seeding ran without the vector channel
+   * (symbols not embedded yet, or a vector fault), `hybrid` when every query had
+   * it, null when the searcher did not say. Absent on hand-built seeds.
+   */
+  retrievalMode?: RetrievalMode | null;
 }
+
+// PROVISIONAL — tuned in-sample on six Miniflux issues; revisit at run 8 (see
+// the module header).
 
 /** Hits requested per query. */
 export const SEED_POOL_PER_QUERY = 120;
@@ -105,6 +127,19 @@ export const SCHEMA_SEED_TOP = 10;
 export const RELATED_CONFIDENCE_FACTOR = 0.6;
 
 const SCHEMA_KINDS: ReadonlySet<string> = new Set(["table", "column", "procedure"]);
+
+/**
+ * True for a symbol that is DATA, not code: a table, a column, or a stored
+ * routine. Decided by KIND. Language is not evidence: a MyBatis mapper statement
+ * is stored as kind `method`, language `sql`, in its mapper XML
+ * (`createOriginSymbol`), and that XML file is code a change edits — reading
+ * every `sql` symbol as schema took mapper files out of the edit candidates
+ * (PR #1090 panel). The one kind that needs the language is `function`, which a
+ * stored SQL function shares with ordinary code.
+ */
+export function isSchemaSymbol(row: Pick<SeedSymbolRow, "kind" | "language">): boolean {
+  return SCHEMA_KINDS.has(row.kind) || (row.kind === "function" && row.language === "sql");
+}
 
 /**
  * The queries a change is searched with: its title (short and specific), and the
@@ -159,7 +194,7 @@ function toMatch(hit: FusedHit, confidence: number): RequirementCodeMatch {
 }
 
 /**
- * Search for `change` and split the result. Returns two empty lists when the
+ * Search for `change` and split the result. Returns three empty lists when the
  * project has no code graph, the search fails, or nothing matches.
  */
 export async function resolveChangeSeeds(
@@ -173,9 +208,13 @@ export async function resolveChangeSeeds(
 
   // A symbol found by both queries keeps both scores.
   const fused = new Map<string, SeedSearchHit>();
+  const modes: RetrievalMode[] = [];
   try {
     for (const query of queries) {
-      const hits = await deps.searcher.search(query, projectId, { limit: SEED_POOL_PER_QUERY });
+      const hits = await deps.searcher.search(query, projectId, {
+        limit: SEED_POOL_PER_QUERY,
+        onRetrievalMode: (mode) => modes.push(mode),
+      });
       for (const h of hits) {
         const prev = fused.get(h.symbolId);
         fused.set(h.symbolId, prev ? { ...prev, score: prev.score + h.score } : { ...h });
@@ -185,7 +224,9 @@ export async function resolveChangeSeeds(
     log.warn("seed search failed; no seeds", { projectId, error: String(err) });
     return none;
   }
-  if (fused.size === 0) return none;
+  const retrievalMode: RetrievalMode | null =
+    modes.length === 0 ? null : modes.includes("bm25-only") ? "bm25-only" : "hybrid";
+  if (fused.size === 0) return { ...none, retrievalMode };
 
   let rows: SeedSymbolRow[];
   try {
@@ -207,7 +248,7 @@ export async function resolveChangeSeeds(
 
   // Only production code can be a file to edit: a test follows the change, and a
   // schema symbol is data, which the lineage stages handle.
-  const isSchema = (h: FusedHit) => SCHEMA_KINDS.has(h.row.kind) || h.row.language === "sql";
+  const isSchema = (h: FusedHit) => isSchemaSymbol(h.row);
   const editable = ranked
     .filter((h) => !isTestFilePath(h.row.filePath) && !isSchema(h))
     .slice(0, EDIT_POOL);
@@ -240,7 +281,7 @@ export async function resolveChangeSeeds(
     .slice(0, MAX_RELATED)
     .map((h) => toMatch(h, (h.score / top) * RELATED_CONFIDENCE_FACTOR));
 
-  return { editCandidates, related, schemaSeeds };
+  return { editCandidates, related, schemaSeeds, retrievalMode };
 }
 
 const SEED_SYMBOL_SELECT = {

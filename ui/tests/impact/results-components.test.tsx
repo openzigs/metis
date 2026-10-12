@@ -67,6 +67,7 @@ function item(over: Partial<ImpactItemView> = {}): ImpactItemView {
     blastRadiusFiles: [],
     droppedColumnProposals: [],
     optionalColumnProposals: [],
+    uncheckedColumnProposals: [],
     feedback: [],
     summary: null,
     ...over,

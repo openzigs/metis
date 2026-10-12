@@ -1926,8 +1926,11 @@ dependencies).
    Solution*, *Steps to Reproduce*, *Expected Behavior*) is read as **one**
    change: the proposed solution and expected behaviour refine it, the problem
    statement and reproduction steps are kept as context, and empty form fields,
-   bare links, version fields and sign-offs are left out. A document that lists
-   several requirements is still split into one change per requirement.
+   bare links, version fields and sign-offs are left out. GitHub's older
+   templates, which mark each section with a bold line (`**Describe the bug**`,
+   `**Describe the solution you'd like**`) instead of a heading, are read the
+   same way. A document that lists several requirements is still split into one
+   change per requirement.
 3. Select **two or more projects** to compare the change against. Each project's
    source must already be ingested into the code graph.
 4. Click **Run impact analysis**. METIS starts the run and opens the results
@@ -2048,26 +2051,56 @@ what they filter on — before showing it:
   the model itself classed it as a user preference — is an **optional settings
   column**. It is kept apart from the proposed changes and is **not** part of the
   migration the change needs.
-- A column whose value an existing function already takes as an argument, and
-  that nothing asks to store, is **not proposed**.
+- A column that could hold a value an existing function already takes as an
+  argument — a number of days on the `users` table, for a function that already
+  filters entries by date — and that nothing asks to store, is **not proposed**.
 
 This check is made by rules over the code graph, not by the AI model, so it gives
-the same answer whatever the model called the column.
+the same answer whatever the model called the column. It reads what the request
+*asks for* (its title, summary and proposed solution), not the background around
+it: a verb such as "track" or "store" in a problem statement or in an alternative
+you rejected does not turn an optional column into a required one.
+
+The check has limits, and the page says where it stopped:
+
+- It only recognises requests bounded by an age or a date ("older than 30 days",
+  "before a given date").
+- A new column on a *different* table from the one the existing function writes
+  is kept when it cannot be a copy of that bound (a timestamp such as
+  `feeds.last_pruned_at`, a date, a flag), or when the request asks to record,
+  store, save or keep it.
+- It needs the project's SQL to have been analysed. When METIS finds no existing
+  function that writes the affected data, there is nothing to compare a proposed
+  column with: the column is still proposed, and is listed again under
+  **Proposed, not checked**.
 
 You can see what was ruled out, and why. Under the proposed column changes, each
-impacted requirement shows two more lists when they apply:
+impacted requirement shows up to three more lists:
 
 - **Optional: settings persistence** — the optional settings columns, each with
   its suggested `ALTER TABLE` text and a note that it is not part of the
   migration the change needs.
-- **Not proposed** — the columns existing code already covers.
+- **Not proposed** — the columns an existing function appears to cover already.
+  Each entry says what was checked.
+- **Proposed, not checked** — columns that *are* in the proposed changes above,
+  which METIS could not check against any existing function. Treat them as
+  unverified.
 
-Every entry names the function that already does the work, with its file and line
+An entry names the existing function it was set against, with its file and line
 (a link to the repository when the project has one connected), and the reason —
 for example *"`MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`) already
-filters `entries.published_at` by its argument (`before time.Time`)"*. The same
-two lists are in the markdown export and in the API response. Analyses run before
-this version show neither list.
+filters `entries.published_at` by its argument (`before time.Time`), and the
+request asks for the value to be configurable"*. The same lists are in the
+markdown export and in the API response. Analyses run before this version show
+none of them.
+
+**When code search ran on keywords only.** The files to edit are found with the
+same search chat uses, which combines keyword matching with meaning-based
+(embedding) search. Right after a project is ingested, its embeddings may still
+be building; the search then runs on keywords alone. The analysis still
+completes, and its summary says so — *"Code search ran on keywords only (BM25)
+for this project…"* — so you know to re-run it once embedding has finished
+before comparing results.
 
 **Affected procedures & functions.** When the impacted code invokes a stored
 **procedure** or **function**, those routines are listed in their own *Affected

@@ -46,7 +46,7 @@ describe("ColumnProposalsSection — Not proposed (#1051)", () => {
     );
     const writer = within(section).getByTestId("column-proposal-writer");
     expect(writer.textContent).toBe(
-      "Covered by MarkAllAsReadBeforeDate (internal/storage/entry.go:523)",
+      "Existing write path: MarkAllAsReadBeforeDate (internal/storage/entry.go:523)",
     );
     expect(within(section).getByTestId("column-proposal-reason").textContent).toContain(
       "already filters entries.published_at",
@@ -107,7 +107,7 @@ describe("ColumnProposalsSection — Optional: settings persistence (#1051)", ()
       />,
     );
     expect(screen.getByTestId("column-proposal-writer").textContent).toBe(
-      "Covered by MarkAllAsReadBeforeDate (internal/storage/entry.go)",
+      "Existing write path: MarkAllAsReadBeforeDate (internal/storage/entry.go)",
     );
   });
 });
@@ -147,5 +147,36 @@ describe("ColumnProposalsSection — rendering rules (#1051)", () => {
     expect(section.querySelector("script")).toBeNull();
     expect(section.querySelector("b")).toBeNull();
     expect(section.textContent).toContain("<script>alert(1)</script>");
+  });
+});
+
+describe("ColumnProposalsSection — Proposed, not checked (#791)", () => {
+  const unchecked = proposal({
+    writer: null,
+    reason:
+      "Not checked: the SQL lineage named no write path for this request, so there was nothing to compare this column with. Review it as an unverified proposal.",
+  });
+
+  it("says the column is proposed above and was not checked, with the reason", () => {
+    render(<ColumnProposalsSection variant="unchecked" proposals={[unchecked]} />);
+    const section = screen.getByTestId("unchecked-column-proposals");
+    expect(within(section).getByText("Proposed, not checked (1)")).toBeInTheDocument();
+    expect(section.textContent).toContain("Treat them as unverified.");
+    expect(within(section).getByTestId("column-proposal-column").textContent).toBe(
+      "users.mark_read_delay",
+    );
+    expect(within(section).getByTestId("column-proposal-reason").textContent).toContain(
+      "Not checked: the SQL lineage named no write path",
+    );
+    // No write path to show, and the DDL is already in the table above.
+    expect(within(section).queryByTestId("column-proposal-writer")).not.toBeInTheDocument();
+    expect(section.textContent).not.toContain("ALTER TABLE");
+  });
+
+  it("does not claim that existing code covers a not-proposed column", () => {
+    render(<ColumnProposalsSection variant="rejected" proposals={[proposal()]} />);
+    const section = screen.getByTestId("dropped-column-proposals");
+    expect(section.textContent).toContain("appears to cover these already");
+    expect(section.textContent).not.toContain("so no new column is needed");
   });
 });

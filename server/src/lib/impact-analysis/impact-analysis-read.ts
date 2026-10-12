@@ -437,6 +437,10 @@ function toItemView(item: RawItem): ImpactItemView {
     optionalColumnProposals: (item.columnProposals ?? [])
       .filter((p) => p.disposition === "optional")
       .map(toColumnProposalView),
+    // #791 — columns that ARE among the affected tables, marked as not checked.
+    uncheckedColumnProposals: (item.columnProposals ?? [])
+      .filter((p) => p.disposition === "unchecked")
+      .map(toColumnProposalView),
     feedback: (item.feedback ?? []).map(toFeedbackView),
   };
 }

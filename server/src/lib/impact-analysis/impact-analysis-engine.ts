@@ -40,10 +40,19 @@ import {
   type DataPathWriterProfile,
 } from "./data-path-writers.js";
 import { assignImpactRoles, tablesGainingColumns } from "./impact-roles.js";
-import { prismaSeedSymbolLoader, resolveChangeSeeds, type ChangeSeeds } from "./change-seeds.js";
-import { shapeAwareChangeExtractor } from "./change-request.js";
+import {
+  prismaSeedSymbolLoader,
+  resolveChangeSeeds,
+  type ChangeSeeds,
+  type RetrievalMode,
+} from "./change-seeds.js";
+import { requestGateText, shapeAwareChangeExtractor } from "./change-request.js";
 import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
-import { createDefaultCodeSearcher } from "../code-graph/project-code-searcher.js";
+import {
+  createDefaultCodeSearcher,
+  createRunScopedSymbolIndex,
+  type CodeSearcherDeps,
+} from "../code-graph/project-code-searcher.js";
 import {
   gateColumnProposals,
   normalizeProposerOutput,
@@ -160,7 +169,25 @@ export interface ProjectImpactResult {
    * since #1051.
    */
   optionalColumnProposals: GatedColumnProposal[];
+  /**
+   * #791 — `add-column` rows that ARE in `affectedTables` and that the gate could
+   * not check: the lineage named no write path for this request, or describing
+   * the write paths failed. The gate is fail-open by design; this is the mark
+   * that says so, with the reason. Persisted and shown like the two lists above.
+   */
+  uncheckedColumnProposals: GatedColumnProposal[];
+  /**
+   * #1036 — how the default seeding searched: `hybrid` (BM25 fused with symbol
+   * embeddings), or `bm25-only` when the project's symbols were not embedded yet
+   * or the vector search failed. Null when the seeding did not report it (an
+   * injected mapper or searcher). A `bm25-only` run is named in the run summary.
+   */
+  retrievalMode: RetrievalMode | null;
 }
+
+/** Why a column passed unchecked when the write paths could not be described. */
+export const WRITERS_FAILED_REASON =
+  "Not checked: looking up the existing write paths failed, so there was nothing to compare this column with. Review it as an unverified proposal.";
 
 export const DEFAULT_MAX_DEPTH = 2;
 
@@ -295,11 +322,17 @@ export async function computeProjectImpact(
   let matches: RequirementCodeMatch[];
   let related: RequirementCodeMatch[] = [];
   let schemaSeeds: RequirementCodeMatch[] = [];
+  let retrievalMode: RetrievalMode | null = null;
+  // #791 — what the request ASKS (primary statement + sub-aspects), without its
+  // context sections. Read by the `ALTER TABLE` fast path and by the gate: DDL
+  // quoted under "Alternatives considered" is not a request for that column.
+  const gateText = requestGateText(change);
   if (deps.seedChange) {
     const seeds = await deps.seedChange(change, projectId);
     matches = seeds.editCandidates;
     related = seeds.related;
     schemaSeeds = seeds.schemaSeeds;
+    retrievalMode = seeds.retrievalMode ?? null;
     // Functions built like a retrieved one are review material too. Best-effort.
     try {
       const twins = await resolveStructuralTwins(deps.dataSourceFor(projectId), [
@@ -418,6 +451,10 @@ export async function computeProjectImpact(
   let affectedTablesSecondary: AffectedTableInput[] = [];
   let droppedColumnProposals: GatedColumnProposal[] = [];
   let optionalColumnProposals: GatedColumnProposal[] = [];
+  let uncheckedColumnProposals: GatedColumnProposal[] = [];
+  // #791 — true once a writer lookup or its profiling threw: the gate then has
+  // no writers because of a FAULT, and its `unchecked` rows say that.
+  let writerLookupFailed = false;
   let dataPathWriters: DataPathWriter[] = [];
   let dataModel: CodeSymbolDetail[] = [];
   if (deps.includeSchemaImpact !== false && deps.schemaDataSourceFor) {
@@ -439,7 +476,9 @@ export async function computeProjectImpact(
           expandDaoSiblings: deps.expandDaoSiblings ?? true,
           // #923 — feed the requirement text so an add-a-field requirement yields a
           // TEXT-ONLY ADD COLUMN suggestion even for source-only projects (no live DB).
-          requirementText: `${change.title}\n${change.body}`,
+          // The ASK only: this path is not gated, so it must not read a statement
+          // (or a literal `ALTER TABLE`) out of a context section.
+          requirementText: gateText.ask,
         },
       );
     } catch (err) {
@@ -534,6 +573,7 @@ export async function computeProjectImpact(
       affectedSymbols = expanded.symbols;
       dataPathWriters = expanded.writers;
     } catch (err) {
+      writerLookupFailed = true;
       log.warn("data-path writer expansion failed; keeping code impact", {
         projectId,
         error: String(err),
@@ -554,12 +594,14 @@ export async function computeProjectImpact(
     // (parameters, written tables, predicate columns, SQL): the model sees the
     // existing write paths before it proposes new state. Best-effort throughout —
     // a profiling fault means the proposer sees no writers, and the gate below
-    // then has none to cover anything.
+    // then has none to check anything against: its columns pass, marked
+    // `unchecked` with the reason.
     if (deps.additiveColumnProposer && proposeOn.length > 0) {
       let writerProfiles: DataPathWriterProfile[] = [];
       try {
         writerProfiles = await profileDataPathWriters(dataPathWriters, schemaDataSource);
       } catch (err) {
+        writerLookupFailed = true;
         log.warn("data-path writer profiling failed; proposing without write paths", {
           projectId,
           error: String(err),
@@ -591,16 +633,19 @@ export async function computeProjectImpact(
       // reason (`column-proposal-gate.ts`). Neither list touches `affectedTables`.
       if (proposed.proposals.length > 0) {
         const gated = gateColumnProposals({
-          requirementText: `${change.title}\n${change.body}`,
+          request: gateText,
           proposals: proposed.proposals,
           coveringWriterIds: proposed.coveringWriterIds,
           writers: writerProfiles,
+          writersUnavailableReason: writerLookupFailed ? WRITERS_FAILED_REASON : null,
         });
         droppedColumnProposals = gated.rejected;
         optionalColumnProposals = gated.optional;
+        uncheckedColumnProposals = gated.unchecked;
         for (const [outcome, list] of [
           ["not proposed", gated.rejected],
           ["optional", gated.optional],
+          ["unchecked", gated.unchecked],
         ] as const) {
           for (const g of list) {
             log.info("gated a proposed column", {
@@ -694,6 +739,8 @@ export async function computeProjectImpact(
     coverageGaps,
     droppedColumnProposals,
     optionalColumnProposals,
+    uncheckedColumnProposals,
+    retrievalMode,
   };
 }
 
@@ -1068,10 +1115,24 @@ export interface TriggerImpactAnalysisInput {
  * searcher chat's `search_code_symbols` uses (`HybridCodeSearch`: BM25 fused with
  * symbol embeddings). One searcher per run, so its lexical index is built once.
  * A project whose symbols are not embedded yet degrades to BM25 inside the
- * searcher; nothing here throws.
+ * searcher; nothing here throws, and the seeds carry `retrievalMode` so the run
+ * can say so.
+ *
+ * The lexical index reads the SAME client the hits are hydrated from. The
+ * production client keeps the shared, fingerprinted index (and its BM25 cache);
+ * any other client — a test's, a script's — gets an index of its own, so a
+ * caller that injects `deps.prisma` no longer searches one database and
+ * hydrates from another.
  */
-export function defaultSeedChange(prisma: Pick<PrismaClient, "codeSymbol">): SeedChangeFn {
-  const searcher = createDefaultCodeSearcher();
+export function defaultSeedChange(
+  prisma: Pick<PrismaClient, "codeSymbol">,
+  searcherDeps: CodeSearcherDeps = {},
+): SeedChangeFn {
+  const sameClient = (prisma as unknown) === (defaultPrisma as unknown);
+  const searcher = createDefaultCodeSearcher({
+    ...(sameClient ? {} : { symbolIndex: createRunScopedSymbolIndex(prisma) }),
+    ...searcherDeps,
+  });
   const loadSymbols = prismaSeedSymbolLoader(prisma);
   return (change, projectId) => resolveChangeSeeds(change, projectId, { searcher, loadSymbols });
 }
@@ -1150,6 +1211,21 @@ async function resolveSourceText(
     return quarantined.map((c) => c.text).join("\n\n");
   }
   return "";
+}
+
+/**
+ * #1036 — the sentence appended to a run's summary when its code search ran on
+ * keywords only. Names how many projects, not which: a project id means nothing
+ * to the reader, and the per-project results sit right below.
+ */
+export function bm25OnlyNotice(affected: number, total: number): string {
+  const scope =
+    total <= 1
+      ? "this project"
+      : affected === total
+        ? `all ${total} projects`
+        : `${affected} of ${total} projects`;
+  return `Code search ran on keywords only (BM25) for ${scope}: symbol embeddings were missing or still building, so the files to edit and the blast radius were chosen without semantic search. Re-run once embedding has finished to compare.`;
 }
 
 /** #932 — project a crossed affected-table row into a summarizer fact. */
@@ -1235,6 +1311,8 @@ async function runImpactAnalysis(
     const changes = await extractor.extract(text);
 
     let totalImpactedSymbols = 0;
+    // #1036 — projects whose code search ran on keywords only, for the summary.
+    const bm25OnlyProjects = new Set<string>();
     // #932 — per-item roll-ups fed into the run-level BA overview (best-effort).
     const runItems: RunItemFact[] = [];
 
@@ -1315,6 +1393,8 @@ async function runImpactAnalysis(
           clauseCoverageReconciler: deps.clauseCoverageReconciler,
           tableRecoveryJudge: deps.tableRecoveryJudge,
         });
+
+        if (result.retrievalMode === "bm25-only") bm25OnlyProjects.add(projectId);
 
         // Skip empty (no code hits) results to keep the report focused.
         if (result.affectedSymbolCount === 0) continue;
@@ -1562,9 +1642,12 @@ async function runImpactAnalysis(
         // reason. Stored in their own table: before this they lived only on the
         // in-memory result and in a log line, so a reviewer could not see what
         // was ruled out. Nothing is written when the gate ruled nothing out.
+        // `unchecked` rows are different in kind: the column IS among the affected
+        // tables, and the row records that the gate had nothing to check it against.
         const ruledOut = [
           ...result.droppedColumnProposals.map((g) => ({ disposition: "rejected", g })),
           ...result.optionalColumnProposals.map((g) => ({ disposition: "optional", g })),
+          ...result.uncheckedColumnProposals.map((g) => ({ disposition: "unchecked", g })),
         ];
         if (ruledOut.length > 0) {
           await prisma.impactColumnProposal.createMany({
@@ -1619,6 +1702,13 @@ async function runImpactAnalysis(
     // result the analyst reads, rather than serving a deterministic baseline that
     // is indistinguishable from an enriched one. Best-effort: a notice fault must
     // never sink a completed run.
+    // #1036 — the same honesty for retrieval. Seeding degrades to BM25 when a
+    // project's symbols are not embedded yet (or the vector search faults), which
+    // is a sound fallback and a different result: say so on the run, where the
+    // page and the export both show it.
+    if (bm25OnlyProjects.size > 0) {
+      summary = `${summary}\n\n${bm25OnlyNotice(bm25OnlyProjects.size, projectIds.length)}`;
+    }
     if (deps.llmDegradationNotice) {
       try {
         const notice = deps.llmDegradationNotice();
